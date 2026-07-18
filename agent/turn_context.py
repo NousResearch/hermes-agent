@@ -151,19 +151,6 @@ def build_turn_context(
     # null; rebuilding from scratch" warning and a needless first-turn prefix
     # cache miss. (Issue #45499.)
 
-    # Tell auxiliary_client what the live main provider/model are for this turn.
-    try:
-        from agent.auxiliary_client import set_runtime_main
-        set_runtime_main(
-            getattr(agent, "provider", "") or "",
-            getattr(agent, "model", "") or "",
-            base_url=getattr(agent, "base_url", "") or "",
-            api_key=getattr(agent, "api_key", "") or "",
-            api_mode=getattr(agent, "api_mode", "") or "",
-        )
-    except Exception:
-        pass
-
     # Tag log records on this thread with the session ID for ``hermes logs``.
     set_session_context(agent.session_id)
 
@@ -172,6 +159,21 @@ def build_turn_context(
 
     # Restore the primary runtime if the previous turn activated fallback.
     agent._restore_primary_runtime()
+
+    # Tell auxiliary_client what the live main provider/model are for this turn
+    # after primary restoration has settled the runtime.
+    try:
+        from agent.auxiliary_client import set_runtime_main
+        set_runtime_main(
+            getattr(agent, "provider", "") or "",
+            getattr(agent, "model", "") or "",
+            base_url=getattr(agent, "base_url", "") or "",
+            api_key=getattr(agent, "api_key", "") or "",
+            api_mode=getattr(agent, "api_mode", "") or "",
+            auth_mode=getattr(agent, "auth_mode", "") or "",
+        )
+    except Exception:
+        pass
 
     # Between-turns MCP refresh: an MCP server that finished connecting since
     # the previous turn (slow HTTP/OAuth servers routinely take 2-6s on a cold

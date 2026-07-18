@@ -2365,6 +2365,19 @@ class BasePlatformAdapter(ABC):
     # generic seam; Slack is merely the first consumer).
     supports_inchannel_continuable: bool = False
 
+    # Whether a human is interactively present on this platform to answer a
+    # "session restored — what next?" prompt.  The startup auto-resume turn
+    # (``_schedule_resume_pending_sessions`` → the ``_is_resume_pending``
+    # branch in ``_handle_message_with_agent``) reads this to pick its
+    # guidance: interactive platforms (Telegram, Slack, Discord DMs, …) get
+    # "report the restore and ask what the user wants next"; non-interactive
+    # event platforms (webhook) get "finish the interrupted work" because
+    # nobody is there to answer, and an acknowledgement would silently
+    # abandon the task (#57056).  Read generically via ``getattr(adapter,
+    # "interactive_resume", True)`` — no per-platform branching at the call
+    # site.
+    interactive_resume: bool = True
+
     # Back-reference to the running ``GatewayRunner``, injected by
     # ``gateway/run.py`` after the adapter is created. Adapters consume it via
     # ``getattr(self, "gateway_runner", None)`` for cross-platform delivery and
@@ -5661,7 +5674,10 @@ class BasePlatformAdapter(ABC):
             # a potential closing fence, and the chunk indicator.
             headroom = max_length - INDICATOR_RESERVE - _len(prefix) - _len(FENCE_CLOSE)
             if headroom < 1:
-                headroom = max_length // 2
+                # Floor at 1 so a pathologically small max_length (0 or 1 —
+                # e.g. a relay capability descriptor whose max_message_length
+                # is 0/1) can't make headroom 0 and stall the loop below.
+                headroom = max(1, max_length // 2)
 
             # Everything remaining fits in one final chunk
             if _len(prefix) + _len(remaining) <= max_length - INDICATOR_RESERVE:
@@ -5685,7 +5701,24 @@ class BasePlatformAdapter(ABC):
             if split_at < _cp_limit // 2:
                 split_at = region.rfind(" ")
             if split_at < 1:
-                split_at = _cp_limit
+                # Consume at least one codepoint. Without the max(1, …) floor,
+                # a zero _cp_limit — reachable when max_length is 0/1, or under
+                # utf16_len when the next char is a surrogate pair wider than
+                # the whole budget — leaves split_at at 0, so ``remaining``
+                # never shrinks and the while-loop spins forever appending
+                # empty chunks (an unbounded hang / OOM).
+                #
+                # Length contract for a degenerate budget: a codepoint is the
+                # smallest indivisible unit, so when the budget is smaller than
+                # one codepoint (e.g. max_length=1 with a 2-unit surrogate pair
+                # under utf16_len) the emitted chunk WILL exceed max_length by
+                # that one codepoint. That is intentional — emitting the
+                # codepoint whole preserves the content, whereas the only
+                # alternatives are dropping it (data loss) or looping forever.
+                # Real callers never hit this: platform caps are hundreds/
+                # thousands, and the relay path normalizes a 0/negative
+                # descriptor bound to 4096 (see gateway/relay/descriptor.py).
+                split_at = max(1, _cp_limit)
 
             # Avoid splitting inside an inline code span (`...`).
             # If the text before split_at has an odd number of unescaped

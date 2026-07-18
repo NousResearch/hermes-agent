@@ -314,6 +314,48 @@ class TestRedirectHandlerSshHint:
         err = capsys.readouterr().err
         assert "ssh -N -L" not in err
 
+    def test_configured_redirect_uri_shows_proxy_hint_not_tunnel(self, monkeypatch, capsys):
+        """With a proxy redirect_uri, the SSH hint must not push the loopback tunnel.
+
+        The Funnel/proxy callback reaches this machine on its own, so the
+        ``ssh -N -L`` guidance would be actively misleading.
+        """
+        import tools.mcp_oauth as mco
+        monkeypatch.setattr(mco, "_oauth_port", 49203)
+        monkeypatch.setattr(mco, "_is_interactive", lambda: True)
+        monkeypatch.setenv("SSH_CLIENT", "1.2.3.4 1234 22")
+        monkeypatch.setattr(mco, "_can_open_browser", lambda: False)
+
+        handler = _make_redirect_handler(
+            49203, redirect_uri="https://oauth.example.ts.net/callback"
+        )
+        self._run(handler("https://example.com/auth"))
+
+        err = capsys.readouterr().err
+        assert "https://oauth.example.ts.net/callback" in err
+        assert "no SSH tunnel needed" in err
+        assert "ssh -N -L" not in err
+        assert "127.0.0.1" not in err
+
+    def test_configured_redirect_uri_no_hint_when_local(self, monkeypatch, capsys):
+        """Off SSH, a configured redirect_uri prints no remote-session hint."""
+        import tools.mcp_oauth as mco
+        monkeypatch.setattr(mco, "_oauth_port", 49204)
+        monkeypatch.setattr(mco, "_is_interactive", lambda: True)
+        monkeypatch.delenv("SSH_CLIENT", raising=False)
+        monkeypatch.delenv("SSH_TTY", raising=False)
+        monkeypatch.setattr(mco, "_can_open_browser", lambda: True)
+        monkeypatch.setattr("webbrowser.open", lambda url, **kw: True)
+
+        handler = _make_redirect_handler(
+            49204, redirect_uri="https://oauth.example.ts.net/callback"
+        )
+        self._run(handler("https://example.com/auth"))
+
+        err = capsys.readouterr().err
+        assert "Remote session detected" not in err
+        assert "no SSH tunnel needed" not in err
+
 
 # ---------------------------------------------------------------------------
 # Path traversal protection
@@ -518,6 +560,54 @@ class TestCallbackPortReservation:
         assert state == "xyz"
         # Reservation was consumed by adoption.
         assert port not in mod._reserved_sockets
+
+    def test_concurrent_flows_keep_their_own_callback_ports(self, monkeypatch):
+        """#34260: flow A's waiter listens on A's port even after flow B
+        overwrites the legacy module-level global.
+
+        This is the callback-side sibling of the #44588 redirect-handler fix:
+        without a per-flow waiter, A's callback wait would bind B's port and
+        A's redirect (pointing at A's port) would never be received.
+        """
+        import asyncio
+        import threading
+        import urllib.request
+        import tools.mcp_oauth as mod
+
+        monkeypatch.setattr(mod, "_is_interactive", lambda: False)
+        monkeypatch.setattr(mod, "_raise_if_non_interactive", lambda lead: None)
+
+        cfg_a: dict = {}
+        port_a = mod._configure_callback_port(cfg_a)
+        waiter_a = mod._make_callback_waiter(port_a)
+        # Flow B configures afterwards — overwrites mod._oauth_port.
+        cfg_b: dict = {}
+        port_b = mod._configure_callback_port(cfg_b)
+        assert mod._oauth_port == port_b != port_a
+
+        async def drive():
+            task = asyncio.create_task(waiter_a())
+            await asyncio.sleep(0.2)
+
+            def hit():
+                # The redirect goes to flow A's port — where A's waiter
+                # must be listening despite the clobbered global.
+                urllib.request.urlopen(
+                    f"http://127.0.0.1:{port_a}/callback?code=flowA&state=sA",
+                    timeout=5,
+                )
+
+            threading.Thread(target=hit, daemon=True).start()
+            return await asyncio.wait_for(task, timeout=10)
+
+        try:
+            code, state = asyncio.run(drive())
+        finally:
+            leftover = mod._reserved_sockets.pop(port_b, None)
+            if leftover is not None:
+                leftover.close()
+        assert code == "flowA"
+        assert state == "sA"
 
 
 # ---------------------------------------------------------------------------
@@ -862,6 +952,212 @@ def test_configure_callback_port_uses_explicit_port():
     assert cfg["_resolved_port"] == 54321
 
 
+_PROXY_REDIRECT = "https://oauth.example.ts.net/callback"
+
+
+def test_resolve_redirect_uri_prefers_configured_value():
+    """An explicit redirect_uri in cfg overrides the localhost default."""
+    from tools.mcp_oauth import _resolve_redirect_uri
+
+    assert _resolve_redirect_uri({"redirect_uri": _PROXY_REDIRECT}, 1234) == _PROXY_REDIRECT
+
+
+def test_resolve_redirect_uri_falls_back_to_localhost():
+    """No redirect_uri → the loopback callback derived from the port."""
+    from tools.mcp_oauth import _resolve_redirect_uri
+
+    assert _resolve_redirect_uri({}, 1234) == "http://127.0.0.1:1234/callback"
+
+
+def test_resolve_redirect_uri_empty_string_falls_back():
+    """An empty redirect_uri is treated as unset (YAML ``redirect_uri:``)."""
+    from tools.mcp_oauth import _resolve_redirect_uri
+
+    assert _resolve_redirect_uri({"redirect_uri": ""}, 5678) == "http://127.0.0.1:5678/callback"
+
+
+def test_resolve_redirect_uri_redirect_host_localhost():
+    """``redirect_host: localhost`` swaps only the loopback hostname (WAF-safe)."""
+    from tools.mcp_oauth import _resolve_redirect_uri
+
+    assert (
+        _resolve_redirect_uri({"redirect_host": "localhost"}, 1234)
+        == "http://localhost:1234/callback"
+    )
+
+
+def test_resolve_redirect_uri_full_uri_wins_over_redirect_host():
+    """An explicit redirect_uri takes precedence over redirect_host."""
+    from tools.mcp_oauth import _resolve_redirect_uri
+
+    cfg = {"redirect_uri": _PROXY_REDIRECT, "redirect_host": "localhost"}
+    assert _resolve_redirect_uri(cfg, 1234) == _PROXY_REDIRECT
+
+
+def test_resolve_redirect_uri_empty_redirect_host_falls_back():
+    """An empty redirect_host is treated as unset (YAML ``redirect_host:``)."""
+    from tools.mcp_oauth import _resolve_redirect_uri
+
+    assert (
+        _resolve_redirect_uri({"redirect_host": ""}, 9012)
+        == "http://127.0.0.1:9012/callback"
+    )
+
+
+def test_build_client_metadata_uses_redirect_host():
+    """redirect_host flows into the client metadata's redirect_uris."""
+    pytest.importorskip("mcp")
+    from tools.mcp_oauth import _build_client_metadata, _configure_callback_port
+
+    cfg = {"redirect_host": "localhost"}
+    port = _configure_callback_port(cfg)
+    md = _build_client_metadata(cfg)
+
+    assert [str(u).rstrip("/") for u in md.redirect_uris] == [
+        f"http://localhost:{port}/callback"
+    ]
+
+
+def test_build_client_metadata_uses_configured_redirect_uri():
+    """A proxied redirect_uri (e.g. Tailscale Funnel) flows into the metadata.
+
+    Without this the redirect_uri is pinned to ``http://127.0.0.1:<port>/callback``,
+    which a public HTTPS proxy cannot reach.
+    """
+    pytest.importorskip("mcp")
+    from tools.mcp_oauth import _build_client_metadata, _configure_callback_port
+
+    cfg = {"redirect_uri": _PROXY_REDIRECT}
+    _configure_callback_port(cfg)
+    md = _build_client_metadata(cfg)
+
+    assert [str(u).rstrip("/") for u in md.redirect_uris] == [_PROXY_REDIRECT]
+
+
+def test_build_client_metadata_redirect_uri_defaults_to_localhost():
+    """Without redirect_uri, metadata keeps the loopback callback default."""
+    pytest.importorskip("mcp")
+    from tools.mcp_oauth import _build_client_metadata, _configure_callback_port
+
+    cfg: dict = {}
+    port = _configure_callback_port(cfg)
+    md = _build_client_metadata(cfg)
+
+    assert [str(u).rstrip("/") for u in md.redirect_uris] == [
+        f"http://127.0.0.1:{port}/callback"
+    ]
+
+
+def test_maybe_preregister_client_persists_configured_redirect_uri(tmp_path, monkeypatch):
+    """Pre-registered client info records the configured redirect_uri verbatim.
+
+    The redirect_uri on the stored client_info MUST match the one in the
+    authorization request, or the provider rejects the callback.
+    """
+    pytest.importorskip("mcp")
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    from tools.mcp_oauth import (
+        HermesTokenStorage,
+        _build_client_metadata,
+        _configure_callback_port,
+        _maybe_preregister_client,
+    )
+
+    cfg = {"client_id": "preset-client", "redirect_uri": _PROXY_REDIRECT}
+    _configure_callback_port(cfg)
+    storage = HermesTokenStorage("proxy-srv")
+    _maybe_preregister_client(storage, cfg, _build_client_metadata(cfg))
+
+    written = json.loads(storage._client_info_path().read_text())
+    assert [u.rstrip("/") for u in written["redirect_uris"]] == [_PROXY_REDIRECT]
+
+
+def test_maybe_preregister_client_redirect_uri_defaults_to_localhost(tmp_path, monkeypatch):
+    """Without redirect_uri, pre-registration falls back to the loopback callback."""
+    pytest.importorskip("mcp")
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    from tools.mcp_oauth import (
+        HermesTokenStorage,
+        _build_client_metadata,
+        _configure_callback_port,
+        _maybe_preregister_client,
+    )
+
+    cfg = {"client_id": "preset-client"}
+    port = _configure_callback_port(cfg)
+    storage = HermesTokenStorage("loopback-srv")
+    _maybe_preregister_client(storage, cfg, _build_client_metadata(cfg))
+
+    written = json.loads(storage._client_info_path().read_text())
+    assert [u.rstrip("/") for u in written["redirect_uris"]] == [
+        f"http://127.0.0.1:{port}/callback"
+    ]
+
+
+def test_configure_callback_port_reuses_cached_client_redirect_port(tmp_path, monkeypatch):
+    """Cached client registrations must keep using their registered port."""
+    from tools.mcp_oauth import _configure_callback_port
+
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    storage = HermesTokenStorage("summ")
+    token_dir = tmp_path / "mcp-tokens"
+    token_dir.mkdir(parents=True)
+    (token_dir / "summ.client.json").write_text(json.dumps({
+        "client_id": "client-123",
+        "redirect_uris": ["http://127.0.0.1:57727/callback"],
+    }))
+
+    cfg = {"redirect_port": 0}
+    port = _configure_callback_port(cfg, storage)
+
+    assert port == 57727
+    assert cfg["_resolved_port"] == 57727
+
+
+def test_configure_callback_reuses_cached_https_redirect_uri(tmp_path, monkeypatch):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    from tools.mcp_oauth import (
+        HermesTokenStorage,
+        _build_client_metadata,
+        _configure_callback_port,
+    )
+
+    storage = HermesTokenStorage("hosted")
+    storage._client_info_path().parent.mkdir(parents=True)
+    storage._client_info_path().write_text(json.dumps({
+        "client_id": "client-123",
+        "redirect_uris": ["https://agent.example/api/mcp/oauth/callback/hosted"],
+    }))
+
+    cfg: dict = {}
+    _configure_callback_port(cfg, storage)
+    metadata = _build_client_metadata(cfg)
+
+    assert str(metadata.redirect_uris[0]) == (
+        "https://agent.example/api/mcp/oauth/callback/hosted"
+    )
+
+
+def test_configure_callback_port_explicit_overrides_cached_client_port(tmp_path, monkeypatch):
+    """Explicit config wins over any cached registration."""
+    from tools.mcp_oauth import _configure_callback_port
+
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    storage = HermesTokenStorage("summ")
+    token_dir = tmp_path / "mcp-tokens"
+    token_dir.mkdir(parents=True)
+    (token_dir / "summ.client.json").write_text(json.dumps({
+        "client_id": "client-123",
+        "redirect_uris": ["http://127.0.0.1:57727/callback"],
+    }))
+
+    cfg = {"redirect_port": 54321}
+    port = _configure_callback_port(cfg, storage)
+
+    assert port == 54321
+    assert cfg["_resolved_port"] == 54321
+
+
 def test_build_oauth_auth_preserves_server_url_path():
     """server_url with path is forwarded to OAuthClientProvider unmodified.
 
@@ -893,6 +1189,139 @@ def test_build_oauth_auth_preserves_server_url_path():
         )
 
     assert captured["server_url"] == "https://mcp.notion.com/mcp"
+
+
+def test_build_oauth_auth_wires_configured_redirect_uri_into_handler(monkeypatch, capsys):
+    """The configured redirect_uri is bound into the redirect_handler closure so
+    the remote-session hint stays accurate for proxied callbacks."""
+    from tools import mcp_oauth
+
+    captured: dict = {}
+
+    class _FakeProvider:
+        def __init__(self, **kwargs):
+            captured.update(kwargs)
+
+    with patch.object(mcp_oauth, "_OAUTH_AVAILABLE", True), \
+         patch.object(mcp_oauth, "OAuthClientProvider", _FakeProvider), \
+         patch.object(mcp_oauth, "_is_interactive", return_value=True), \
+         patch.object(mcp_oauth, "_maybe_preregister_client"), \
+         patch.object(mcp_oauth, "HermesTokenStorage") as mock_storage_cls:
+        mock_storage_cls.return_value = MagicMock(has_cached_tokens=lambda: True)
+        build_oauth_auth(
+            server_name="proxy",
+            server_url="https://mcp.example.com/mcp",
+            oauth_config={"redirect_uri": _PROXY_REDIRECT},
+        )
+
+    # Behavior check: on a remote session, the bound handler prints the proxy
+    # callback hint (not the loopback SSH-tunnel guidance).
+    monkeypatch.setenv("SSH_CLIENT", "1.2.3.4 1234 22")
+    monkeypatch.setattr(mcp_oauth, "_is_interactive", lambda: True)
+    monkeypatch.setattr(mcp_oauth, "_can_open_browser", lambda: False)
+    asyncio.get_event_loop().run_until_complete(
+        captured["redirect_handler"]("https://example.com/auth")
+    )
+    err = capsys.readouterr().err
+    assert _PROXY_REDIRECT in err
+    assert "no SSH tunnel needed" in err
+    assert "ssh -N -L" not in err
+
+
+def test_build_oauth_auth_handler_redirect_uri_none_when_unset(monkeypatch, capsys):
+    """Without a configured redirect_uri, the bound handler falls back to the
+    loopback SSH-tunnel hint."""
+    from tools import mcp_oauth
+
+    captured: dict = {}
+
+    class _FakeProvider:
+        def __init__(self, **kwargs):
+            captured.update(kwargs)
+
+    with patch.object(mcp_oauth, "_OAUTH_AVAILABLE", True), \
+         patch.object(mcp_oauth, "OAuthClientProvider", _FakeProvider), \
+         patch.object(mcp_oauth, "_is_interactive", return_value=True), \
+         patch.object(mcp_oauth, "_maybe_preregister_client"), \
+         patch.object(mcp_oauth, "HermesTokenStorage") as mock_storage_cls:
+        mock_storage_cls.return_value = MagicMock(has_cached_tokens=lambda: True)
+        build_oauth_auth(
+            server_name="loopback",
+            server_url="https://mcp.example.com/mcp",
+            oauth_config={"redirect_port": 49299},
+        )
+
+    monkeypatch.setenv("SSH_CLIENT", "1.2.3.4 1234 22")
+    monkeypatch.setattr(mcp_oauth, "_is_interactive", lambda: True)
+    monkeypatch.setattr(mcp_oauth, "_can_open_browser", lambda: False)
+    asyncio.get_event_loop().run_until_complete(
+        captured["redirect_handler"]("https://example.com/auth")
+    )
+    err = capsys.readouterr().err
+    assert "ssh -N -L" in err
+    assert "no SSH tunnel needed" not in err
+
+
+def test_build_client_metadata_redirect_uri_without_path_is_normalized():
+    """pydantic AnyUrl appends a trailing slash to a bare-hostname redirect_uri.
+
+    Both _build_client_metadata and _maybe_preregister_client run the value
+    through AnyUrl, so they normalize identically and stay consistent — this
+    pins that behavior so a future pydantic change is caught.
+    """
+    pytest.importorskip("mcp")
+    from tools.mcp_oauth import _build_client_metadata, _configure_callback_port
+
+    cfg = {"redirect_uri": "https://oauth.example.ts.net"}
+    _configure_callback_port(cfg)
+    md = _build_client_metadata(cfg)
+
+    assert str(md.redirect_uris[0]) == "https://oauth.example.ts.net/"
+
+
+def test_maybe_preregister_client_skips_when_no_client_id(tmp_path, monkeypatch):
+    """No client_id → pre-registration is a no-op even with a configured redirect_uri."""
+    pytest.importorskip("mcp")
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    from tools.mcp_oauth import (
+        HermesTokenStorage,
+        _build_client_metadata,
+        _configure_callback_port,
+        _maybe_preregister_client,
+    )
+
+    cfg = {"redirect_uri": _PROXY_REDIRECT}  # no client_id
+    _configure_callback_port(cfg)
+    storage = HermesTokenStorage("no-client-id-srv")
+    _maybe_preregister_client(storage, cfg, _build_client_metadata(cfg))
+
+    assert not storage._client_info_path().exists()
+
+
+def test_maybe_preregister_client_redirect_uri_with_secret(tmp_path, monkeypatch):
+    """redirect_uri + client_secret: callback stored verbatim, auth method confidential."""
+    pytest.importorskip("mcp")
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    from tools.mcp_oauth import (
+        HermesTokenStorage,
+        _build_client_metadata,
+        _configure_callback_port,
+        _maybe_preregister_client,
+    )
+
+    cfg = {
+        "client_id": "my-client",
+        "client_secret": "shhh",
+        "redirect_uri": _PROXY_REDIRECT,
+    }
+    _configure_callback_port(cfg)
+    storage = HermesTokenStorage("secret-proxy-srv")
+    _maybe_preregister_client(storage, cfg, _build_client_metadata(cfg))
+
+    written = json.loads(storage._client_info_path().read_text())
+    assert [u.rstrip("/") for u in written["redirect_uris"]] == [_PROXY_REDIRECT]
+    assert written["client_secret"] == "shhh"
+    assert written["token_endpoint_auth_method"] == "client_secret_post"
 
 
 
@@ -1153,3 +1582,22 @@ class TestPoisonClientRegistration:
         monkeypatch.setenv("HERMES_HOME", str(tmp_path))
         storage = HermesTokenStorage("srv")
         assert storage.poison_client_registration() is False
+
+
+def test_wait_for_callback_port_in_use_reports_clear_error(monkeypatch):
+    """A busy loopback callback port surfaces a clear 'already in use' error,
+    not a misleading 'timed out'. Guards the stale-comment fix where the branch
+    also wrongly claimed build_oauth_auth had started a server to poll."""
+    import tools.mcp_oauth as mo
+
+    monkeypatch.setattr(mo, "_is_interactive", lambda: True)
+    with patch.object(mo, "_oauth_port", 54321), patch.object(
+        mo, "HTTPServer", side_effect=OSError("address already in use")
+    ):
+        with pytest.raises(mo.OAuthNonInteractiveError) as excinfo:
+            asyncio.run(mo._wait_for_callback())
+
+    msg = str(excinfo.value)
+    assert "54321" in msg
+    assert "already in use" in msg
+    assert "timed out" not in msg

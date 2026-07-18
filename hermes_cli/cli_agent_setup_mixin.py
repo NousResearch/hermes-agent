@@ -57,7 +57,15 @@ class CLIAgentSetupMixin:
                     if not _fb_provider or not _fb_model:
                         continue
                     try:
-                        runtime = resolve_runtime_provider(requested=_fb_provider)
+                        from hermes_cli.fallback_config import resolve_entry_api_key
+
+                        _fb_kwargs = {"requested": _fb_provider}
+                        if _fb.get("base_url"):
+                            _fb_kwargs["explicit_base_url"] = _fb["base_url"]
+                        _fb_api_key = resolve_entry_api_key(_fb)
+                        if _fb_api_key:
+                            _fb_kwargs["explicit_api_key"] = _fb_api_key
+                        runtime = resolve_runtime_provider(**_fb_kwargs)
                         logger.warning(
                             "Primary provider auth failed (%s). Falling through to fallback: %s/%s",
                             _primary_exc, _fb_provider, _fb_model,
@@ -534,6 +542,7 @@ class CLIAgentSetupMixin:
         an indicator for earlier hidden messages.
         """
         from cli import CLI_CONFIG, _record_output_history_entry, _strip_reasoning_tags, _suspend_output_history
+        from tools.ansi_strip import sanitize_display_text as _sanitize_display_text
         if not self.conversation_history:
             return
 
@@ -574,13 +583,18 @@ class CLIAgentSetupMixin:
                         elif isinstance(part, dict) and part.get("type") == "image_url":
                             parts.append("[image]")
                     text = " ".join(parts)
+                # Stored history is untrusted for display: strip escape
+                # sequences/control chars so replaying a message can't
+                # clear the screen, retitle the window, or restyle the
+                # recap panel (see tools/ansi_strip.sanitize_display_text).
+                text = _sanitize_display_text(text)
                 if len(text) > MAX_USER_LEN:
                     text = text[:MAX_USER_LEN] + "..."
                 entries.append(("user", text))
 
             elif role == "assistant":
                 text = "" if content is None else str(content)
-                text = _strip_reasoning_tags(text)
+                text = _sanitize_display_text(_strip_reasoning_tags(text))
                 parts = []
                 full_parts = []  # un-truncated version
                 if text:

@@ -217,3 +217,29 @@ class TestBindMechanics:
     def test_pre_probe_helper_removed(self):
         """The racy single-family pre-probe must not come back."""
         assert not hasattr(APIServerAdapter, "_port_is_available")
+
+    @pytest.mark.asyncio
+    async def test_port_conflict_sets_non_retryable_fatal_error(self):
+        """A real port conflict (EADDRINUSE) must set a non-retryable fatal
+        error so the reconnect watcher drops the platform from the retry
+        queue instead of looping indefinitely.
+
+        Previously connect() returned bare ``False``, which the reconnect
+        watcher treated as retryable — retrying every 5 minutes forever,
+        filling errors.log and leaking 2 fds per retry (#52132: 1568+
+        retries over 5 days in a multi-profile setup).
+        """
+        port = self._free_port()
+        first = self._make_adapter(port)
+        assert await first.connect() is True
+        second = self._make_adapter(port)
+        try:
+            result = await second.connect()
+            assert result is False
+            assert second.has_fatal_error is True
+            assert second.fatal_error_retryable is False
+            assert second.fatal_error_code == "api_server_port_in_use"
+            assert str(port) in (second.fatal_error_message or "")
+        finally:
+            await first.disconnect()
+            await second.disconnect()

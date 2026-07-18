@@ -1769,7 +1769,6 @@ class ProcessRegistry:
                 "uptime_seconds": int(time.time() - s.started_at),
                 "status": "exited" if s.exited else "running",
                 "output_preview": s.output_buffer[-200:] if s.output_buffer else "",
-                "session_key": s.session_key,
             }
             # Flag processes surfaced only because they share the gateway
             # session (not the current task) — these are the long-lived

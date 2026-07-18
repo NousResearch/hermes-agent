@@ -571,6 +571,34 @@ class TestGatewayPidState:
             record, 9999, expected_home=profile_home
         ) is True
 
+    def test_record_bare_hermes_rejects_short_profile_flag(self, monkeypatch):
+        """``hermes -p coder`` must NOT be accepted as a bare gateway entry
+        point.  An interactive profile CLI with a matching profile should not
+        register as a running gateway (false positive)."""
+        profile_home = Path("/home/hermes/test-profile")
+        monkeypatch.setattr(
+            status, "_read_process_cmdline", lambda pid: "hermes -p coder"
+        )
+        # Even with matching HERMES_HOME, the -p flag means this is an
+        # interactive session, not a bare gateway entry point.
+        record = {"pid": 9999, "kind": "hermes-gateway"}
+        assert status._record_matches_live_gateway_pid(
+            record, 9999, expected_home=profile_home
+        ) is False
+
+    def test_record_bare_hermes_rejects_long_profile_flag(self, monkeypatch):
+        """``hermes --profile=coder`` must NOT be accepted as a bare gateway
+        entry point.  Same false-positive risk as the short-flag variant."""
+        profile_home = Path("/home/hermes/test-profile")
+        monkeypatch.setattr(
+            status, "_read_process_cmdline",
+            lambda pid: "hermes --profile=coder",
+        )
+        record = {"pid": 9999, "kind": "hermes-gateway"}
+        assert status._record_matches_live_gateway_pid(
+            record, 9999, expected_home=profile_home
+        ) is False
+
 
 class TestGatewayRuntimeStatus:
     def test_write_json_file_uses_atomic_json_write(self, tmp_path, monkeypatch):

@@ -457,9 +457,14 @@ def _is_bare_hermes_command(command: str) -> bool:
     """Return True when the command is a bare ``hermes`` entry-point binary.
 
     Systemd-managed gateways show only ``hermes`` (or ``hermes.exe``) in
-    /proc/PID/cmdline — no path, no ``gateway`` subcommand, no ``--profile``
-    flag.  This fast check detects that pattern so the caller can fall back
+    /proc/PID/cmdline — one token, no path, no ``gateway`` subcommand, no
+    flags.  This fast check detects that pattern so the caller can fall back
     to /proc/PID/environ for profile validation.
+
+    The check requires EXACTLY one token in the normalized argv.  Any
+    additional token (``-p coder``, ``--profile=coder``, ``--version``, etc.)
+    means the process is an interactive CLI session or other non-gateway
+    command, not a bare hermes entry point.
     """
     if not command:
         return False
@@ -475,20 +480,13 @@ def _is_bare_hermes_command(command: str) -> bool:
     # would have been caught by looks_like_gateway_runtime_command_line.
     if "gateway" in normalized:
         return False
-    # Extract basenames and drop profile selectors.
-    basenames: list[str] = []
-    skip_next = False
-    for t in normalized:
-        if skip_next:
-            skip_next = False
-            continue
-        if t in ("--profile", "-p"):
-            skip_next = True
-            continue
-        if t.startswith(("--profile=", "-p=")):
-            continue
-        basenames.append(t.rsplit("/", 1)[-1])
-    return len(basenames) == 1 and basenames[0] in ("hermes", "hermes.exe")
+    # Bare entry point = exactly one normalized token, whose basename is
+    # hermes or hermes.exe.  Do NOT strip profile selectors — doing so
+    # would misclassify ``hermes -p coder`` (interactive session) as bare.
+    return (
+        len(normalized) == 1
+        and normalized[0].rsplit("/", 1)[-1] in ("hermes", "hermes.exe")
+    )
 
 
 def _pid_environ_matches_profile(pid: int, profile_home: Path) -> bool:

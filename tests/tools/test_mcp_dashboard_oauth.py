@@ -56,6 +56,42 @@ def test_dashboard_flow_rejects_wrong_state_without_consuming_callback():
     )
 
 
+def test_dashboard_flow_rejects_non_ascii_state_without_crashing():
+    """A crafted OAuth callback with a non-ASCII ``state`` must miss cleanly.
+
+    ``secrets.compare_digest`` raises ``TypeError`` when either str operand
+    holds a non-ASCII character. ``state`` is an attacker-controllable
+    callback query parameter, so the unencoded comparison turned a bogus
+    callback into an unhandled 500 instead of a clean rejection. Comparing the
+    UTF-8 bytes makes a non-ASCII state miss like any other wrong state.
+    """
+    from tools.mcp_dashboard_oauth import DashboardOAuthFlow
+
+    flow = DashboardOAuthFlow(
+        flow_id="flow-nonascii",
+        server_name="reports",
+        profile=None,
+        hermes_home="/tmp/hermes-test",
+        redirect_uri="https://agent.example/mcp/oauth/callback/flow-nonascii",
+    )
+    asyncio.run(
+        flow.publish_authorization_url(
+            "https://idp.example/authorize?state=expected-state"
+        )
+    )
+
+    # Before the fix this raised TypeError (an unhandled 500), not ValueError.
+    with pytest.raises(ValueError, match="state mismatch"):
+        flow.deliver_callback(code="attacker", state="café-☠-state", error=None)
+
+    # The legitimate ASCII callback still succeeds afterward.
+    flow.deliver_callback(code="legitimate", state="expected-state", error=None)
+    assert asyncio.run(flow.wait_for_callback()) == (
+        "legitimate",
+        "expected-state",
+    )
+
+
 def test_dashboard_flow_rejects_second_callback():
     from tools.mcp_dashboard_oauth import DashboardOAuthFlow
 

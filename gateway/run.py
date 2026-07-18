@@ -15151,7 +15151,8 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             async with self._get_mcp_reload_lock():
                 # Re-check at the point the process-global registry is about
                 # to change. The API handler performs the first fast-fail;
-                # this closes the queued-behind-an-interactive-reload window.
+                # this avoids reloading after a queued interactive reload, but
+                # control-plane callers must still quiesce new-work admission.
                 if self._active_work_count() > 0:
                     return None
                 return await self._reload_mcp_servers_locked()
@@ -15208,11 +15209,11 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                             continue
                         if _agent is not None:
                             refresh_agent_mcp_tools(_agent, quiet_mode=True)
-        except Exception:
+        except Exception as exc:
             # The server connections have already been safely replaced. A
             # cache refresh failure is observable in logs but must not roll the
             # connection back into a half-reloaded state.
-            logger.debug("Failed to update cached agent tools after MCP reload")
+            logger.debug("Failed to update cached agent tools after MCP reload: %s", type(exc).__name__)
 
         return {
             "added": added,
@@ -15275,11 +15276,11 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
 
             return "\n".join(lines)
 
-        except Exception:
+        except Exception as exc:
             # A config or transport exception can include materialized MCP
             # connection details. Keep the interactive command diagnostic
             # useful without reflecting that value into chat or logs.
-            logger.warning("MCP reload failed")
+            logger.warning("MCP reload failed: %s", type(exc).__name__)
             return t("gateway.reload_mcp.failed", error="an internal error")
 
 

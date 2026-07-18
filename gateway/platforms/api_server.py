@@ -2057,7 +2057,9 @@ class APIServerAdapter(BasePlatformAdapter):
         except Exception:
             return web.json_response(_openai_error("Invalid request body", code="invalid_request"), status=400)
 
-        # Refuse rather than mutate tool snapshots beneath an in-flight turn.
+        # Refuse when work is already active rather than deliberately mutate
+        # tool snapshots beneath an in-flight turn. The owning control plane
+        # must also quiesce new-work admission for the reload duration.
         # Read the whole gateway count when available so an API control caller
         # cannot reload while a separate messaging-platform turn is active.
         runner = self.gateway_runner or request.app.get("gateway_runner")
@@ -2089,17 +2091,24 @@ class APIServerAdapter(BasePlatformAdapter):
                     status=409,
                     headers={"Retry-After": "1"},
                 )
-            server_count = max(0, int(result.get("server_count", 0)))
-            tool_count = max(0, int(result.get("tool_count", 0)))
-        except Exception:
+        except Exception as exc:
             # MCP config errors can contain provider-specific details. Keep
             # them out of the control-plane response and avoid logging a raw
             # exception value that might include a materialized grant.
-            logger.warning("MCP control reload failed")
+            logger.warning("MCP control reload failed: %s", type(exc).__name__)
             return web.json_response(
                 _openai_error("MCP reload failed", code="mcp_reload_failed"),
                 status=503,
             )
+
+        def safe_count(value: Any) -> int:
+            try:
+                return max(0, int(value))
+            except (TypeError, ValueError):
+                return 0
+
+        server_count = safe_count(result.get("server_count", 0))
+        tool_count = safe_count(result.get("tool_count", 0))
 
         return web.json_response({
             "object": "hermes.mcp_reload",

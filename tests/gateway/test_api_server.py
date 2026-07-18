@@ -1101,6 +1101,23 @@ class TestMcpReloadEndpoint:
         runner.try_reload_mcp_servers.assert_awaited_once_with()
 
     @pytest.mark.asyncio
+    async def test_reload_defaults_malformed_counts_after_a_successful_reload(self, auth_adapter):
+        runner = MagicMock()
+        runner._active_work_count.return_value = 0
+        runner.try_reload_mcp_servers = AsyncMock(return_value={
+            "server_count": None,
+            "tool_count": "not-a-count",
+        })
+        auth_adapter.gateway_runner = runner
+        app = _create_app(auth_adapter)
+        async with TestClient(TestServer(app)) as cli:
+            response = await cli.post("/v1/mcp/reload", headers={"Authorization": "Bearer sk-secret"})
+            assert response.status == 200
+            body = await response.json()
+            assert body["server_count"] == 0
+            assert body["tool_count"] == 0
+
+    @pytest.mark.asyncio
     async def test_reload_returns_busy_when_another_control_reload_has_claimed_it(self, auth_adapter):
         runner = MagicMock()
         runner._active_work_count.return_value = 0

@@ -1157,6 +1157,39 @@ IDENTITIES = (
     ("muncho-passkey-authority", AUTHORITY_UID, "/usr/sbin/nologin"),
     ("muncho-storage-executor", EXECUTOR_UID, "/usr/sbin/nologin"),
 )
+IDENTITY_DIRECTORY_REQUIREMENTS = (
+    (Path("/etc/muncho-owner-gate/keys"), 0, 0, 0o700),
+    (Path("/etc/muncho-owner-gate/executor-keys"), 0, EXECUTOR_UID, 0o710),
+    (Path("/etc/muncho-owner-gate/public"), 0, 0, 0o755),
+    (
+        Path("/var/lib/muncho-owner-gate/authority"),
+        AUTHORITY_UID,
+        AUTHORITY_UID,
+        0o700,
+    ),
+    (
+        Path("/var/lib/muncho-owner-gate/executor"),
+        EXECUTOR_UID,
+        EXECUTOR_UID,
+        0o700,
+    ),
+    (
+        Path("/var/lib/muncho-owner-gate/executor/cloud-attestations"),
+        EXECUTOR_UID,
+        EXECUTOR_UID,
+        0o700,
+    ),
+    (Path("/var/lib/muncho-owner-gate/bootstrap-receipts"), 0, 0, 0o700),
+    (
+        Path(
+            "/var/lib/muncho-owner-gate/"
+            "activation-evidence-staging-receipts"
+        ),
+        0,
+        0,
+        0o700,
+    ),
+)
 SYSTEMD_ASSETS = (
     "muncho-owner-gate-metadata-firewall.service",
     "muncho-owner-gate-firewall-readiness.service",
@@ -1623,17 +1656,8 @@ def install_identities_and_directories(
             "shell": shell,
         })
     runner(("/usr/bin/systemd-tmpfiles", "--create", str(tmpfiles)))
-    expected_directories = (
-        (Path("/etc/muncho-owner-gate/keys"), 0, 0, 0o700),
-        (Path("/etc/muncho-owner-gate/executor-keys"), 0, EXECUTOR_UID, 0o710),
-        (Path("/etc/muncho-owner-gate/public"), 0, 0, 0o755),
-        (Path("/var/lib/muncho-owner-gate/authority"), AUTHORITY_UID, AUTHORITY_UID, 0o700),
-        (Path("/var/lib/muncho-owner-gate/executor"), EXECUTOR_UID, EXECUTOR_UID, 0o700),
-        (Path("/var/lib/muncho-owner-gate/executor/cloud-attestations"), EXECUTOR_UID, EXECUTOR_UID, 0o700),
-        (Path("/var/lib/muncho-owner-gate/bootstrap-receipts"), 0, 0, 0o700),
-    )
     directories: list[dict[str, Any]] = []
-    for path, uid, gid, mode in expected_directories:
+    for path, uid, gid, mode in IDENTITY_DIRECTORY_REQUIREMENTS:
         state = path.lstat()
         if (
             not stat.S_ISDIR(state.st_mode)
@@ -2975,10 +2999,19 @@ def _revalidate_committed_phase(
             }
             for name, numeric_id, shell in IDENTITIES
         ]
+        expected_directories = [
+            {
+                "path": str(path),
+                "uid": uid,
+                "gid": gid,
+                "mode": f"{mode:04o}",
+            }
+            for path, uid, gid, mode in IDENTITY_DIRECTORY_REQUIREMENTS
+        ]
         if (
             stored.get("schema") != "muncho-owner-gate-identities-directories.v1"
             or stored.get("users") != expected_users
-            or not isinstance(stored.get("directories"), list)
+            or stored.get("directories") != expected_directories
         ):
             raise OwnerGateBootstrapError(
                 "owner_gate_bootstrap_committed_phase_drift"
@@ -3002,7 +3035,7 @@ def _revalidate_committed_phase(
                 raise OwnerGateBootstrapError(
                     "owner_gate_bootstrap_committed_phase_drift"
                 )
-        for directory in stored["directories"]:
+        for directory in expected_directories:
             if (
                 not isinstance(directory, Mapping)
                 or set(directory) != {"path", "uid", "gid", "mode"}

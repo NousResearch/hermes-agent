@@ -11,4 +11,5 @@ d /var/lib/muncho-owner-gate/executor 0700 muncho-storage-executor muncho-storag
 d /var/lib/muncho-owner-gate/executor/cloud-attestations 0700 muncho-storage-executor muncho-storage-executor -
 d /var/lib/muncho-owner-gate/bootstrap-receipts 0700 root root -
 d /var/lib/muncho-owner-gate/activation-evidence 0700 root root -
+d /var/lib/muncho-owner-gate/activation-evidence-staging-receipts 0700 root root -
 d /var/lib/muncho-owner-gate/activation-receipts 0700 root root -

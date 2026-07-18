@@ -387,6 +387,11 @@ def _setup_update_mocks(monkeypatch, tmp_path):
     """Common setup for cmd_update tests."""
     (tmp_path / ".git").mkdir()
     monkeypatch.setattr(hermes_main, "PROJECT_ROOT", tmp_path)
+    monkeypatch.setattr(
+        hermes_main,
+        "_capture_head_sha",
+        lambda *args: "original-sha",
+    )
     monkeypatch.setattr(hermes_main, "_stash_local_changes_if_needed", lambda *a, **kw: None)
     monkeypatch.setattr(hermes_main, "_restore_stashed_changes", lambda *a, **kw: True)
     monkeypatch.setattr(hermes_config, "get_missing_env_vars", lambda required_only=True: [])
@@ -551,6 +556,11 @@ def test_cmd_update_rechecks_target_after_branch_switch_race(
         "_discard_lockfile_churn",
         lambda *args: discarded.append(args),
     )
+    monkeypatch.setattr(
+        hermes_main,
+        "_capture_head_sha",
+        lambda *args: "original-sha",
+    )
 
     def fake_run(cmd, **kwargs):
         nonlocal head_proofs
@@ -564,6 +574,8 @@ def test_cmd_update_rechecks_target_after_branch_switch_race(
             return SimpleNamespace(returncode=0, stdout="", stderr="")
         if "rev-list --count origin/main..refs/heads/main" in joined:
             return SimpleNamespace(returncode=0, stdout="0\n", stderr="")
+        if "rev-parse refs/heads/deploy/custom" in joined:
+            return SimpleNamespace(returncode=0, stdout="original-sha\n", stderr="")
         if "rev-list --count origin/main..HEAD" in joined:
             head_proofs += 1
             value = "0\n" if head_proofs == 1 else "2\n"
@@ -800,6 +812,8 @@ def test_cmd_update_protected_pull_abort_restores_branch_and_stash(
             return SimpleNamespace(returncode=0, stdout="", stderr="")
         if "rev-list --count origin/main..refs/heads/main" in joined:
             return SimpleNamespace(returncode=0, stdout="0\n", stderr="")
+        if "rev-parse refs/heads/deploy/custom" in joined:
+            return SimpleNamespace(returncode=0, stdout="original-sha\n", stderr="")
         if "rev-list --count origin/main..HEAD" in joined:
             head_proofs += 1
             return SimpleNamespace(returncode=0, stdout="0\n", stderr="")
@@ -866,7 +880,7 @@ def test_cmd_update_protection_disables_syntax_rollback_reset(
         hermes_main._cmd_update_impl(SimpleNamespace(yes=True), gateway_mode=False)
 
     assert exc.value.code == 3
-    assert "Automatic rollback is disabled" in capsys.readouterr().out
+    assert "Protected rollback restored" in capsys.readouterr().out
     assert not any(" reset --hard " in f" {' '.join(cmd)} " for cmd in calls)
 
 

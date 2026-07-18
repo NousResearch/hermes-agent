@@ -9995,8 +9995,8 @@ def _cmd_update_impl(args, gateway_mode: bool):
         )
         current_branch = result.stdout.strip()
         original_head_sha = _capture_head_sha(git_cmd, PROJECT_ROOT)
-        if protect_local_commits and current_branch == "HEAD" and not original_head_sha:
-            print("✗ Update blocked: detached HEAD could not be captured for restoration.")
+        if protect_local_commits and not original_head_sha:
+            print("✗ Update blocked: original HEAD could not be captured for restoration.")
             _resume_windows_gateways_after_update(_windows_gateway_resume)
             sys.exit(3)
 
@@ -10130,7 +10130,22 @@ def _cmd_update_impl(args, gateway_mode: bool):
             if current_branch == "HEAD":
                 checkout_args = ["checkout", "--detach", original_head_sha]
             else:
-                checkout_args = ["checkout", current_branch]
+                original_branch_ref = subprocess.run(
+                    git_cmd + ["rev-parse", f"refs/heads/{current_branch}"],
+                    cwd=PROJECT_ROOT,
+                    capture_output=True,
+                    text=True,
+                    check=False,
+                )
+                branch_still_exact = (
+                    original_branch_ref.returncode == 0
+                    and original_branch_ref.stdout.strip() == original_head_sha
+                )
+                checkout_args = (
+                    ["checkout", current_branch]
+                    if branch_still_exact
+                    else ["checkout", "--detach", original_head_sha]
+                )
             restore_checkout = subprocess.run(
                 git_cmd + checkout_args,
                 cwd=PROJECT_ROOT,
@@ -10372,7 +10387,34 @@ def _cmd_update_impl(args, gateway_mode: bool):
                     # ~6 lines so the user sees the actual SyntaxError text.
                     for line in str(syntax_error).splitlines()[:6]:
                         print(f"    {line}")
-                if pre_pull_sha and not protect_local_commits:
+                if pre_pull_sha and protect_local_commits:
+                    post_pull_sha = _capture_head_sha(git_cmd, PROJECT_ROOT)
+                    rollback_ref = subprocess.run(
+                        git_cmd
+                        + [
+                            "update-ref",
+                            f"refs/heads/{branch}",
+                            pre_pull_sha,
+                            post_pull_sha or "",
+                        ],
+                        cwd=PROJECT_ROOT,
+                        capture_output=True,
+                        text=True,
+                        check=False,
+                    )
+                    restored = _restore_protected_checkout()
+                    print()
+                    if rollback_ref.returncode == 0 and restored:
+                        print(
+                            "  Protected rollback restored the target ref and original checkout."
+                        )
+                    else:
+                        print(
+                            "  Protected rollback could not restore all state automatically; "
+                            "the stash was preserved."
+                        )
+                    sys.exit(3)
+                if pre_pull_sha:
                     print()
                     print(f"→ Rolling back to {pre_pull_sha[:10]}...")
                     rollback_result = subprocess.run(
@@ -10393,10 +10435,6 @@ def _cmd_update_impl(args, gateway_mode: bool):
                     print()
                     print("  Could not capture pre-pull SHA — recover manually with:")
                     print(f"    cd {PROJECT_ROOT} && git reflog && git reset --hard <prev-sha>")
-                else:
-                    print()
-                    print("  Automatic rollback is disabled while local commits are protected.")
-                    print(f"  Review the update and recover manually from {pre_pull_sha} if needed.")
                 sys.exit(3 if protect_local_commits else 1)
 
             update_succeeded = True

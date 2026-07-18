@@ -139,6 +139,23 @@ class ContextEngine(ABC):
         """
         return True
 
+    # -- Optional: host-owned compression budget ----------------------------
+
+    def set_compression_budget(
+        self,
+        context_capacity: int,
+        trigger_tokens: int,
+        *,
+        reason: str = "",
+    ) -> bool:
+        """Accept the host's effective input capacity and compaction trigger.
+
+        Third-party engines may override this to synchronize private budgets
+        with a model/runtime transition. The default is intentionally a no-op
+        so pre-existing engines retain their own policy.
+        """
+        return False
+
     # -- Optional: session lifecycle ---------------------------------------
 
     def on_session_start(self, session_id: str, **kwargs) -> None:

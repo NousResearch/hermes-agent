@@ -1,0 +1,15 @@
+[Unit]
+Description=Refresh Muncho owner-gate metadata firewall readiness
+Requires=muncho-owner-gate-metadata-firewall.service
+After=muncho-owner-gate-metadata-firewall.service
+
+[Timer]
+OnBootSec=5s
+OnUnitActiveSec=30s
+AccuracySec=1s
+RandomizedDelaySec=0
+Persistent=no
+Unit=muncho-owner-gate-firewall-readiness.service
+
+[Install]
+WantedBy=timers.target

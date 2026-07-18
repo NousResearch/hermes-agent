@@ -1,0 +1,30 @@
+[project]
+name = "muncho-owner-gate-passkey-test-runtime"
+version = "0.0.0"
+requires-python = ">=3.11,<3.14"
+dependencies = [
+  # Keep the verifier and its complete active production dependency closure
+  # exact.  These versions mirror ops/muncho/owner-gate/runtime-wheel-lock.json
+  # while remaining outside Hermes' dependency graph: WebAuthn 3 requires
+  # cryptography >=49, which is intentionally incompatible with the current
+  # DingTalk SDK's cryptography <47 boundary.
+  "cbor2==6.1.3",
+  "cffi==2.1.0",
+  "cryptography==49.0.0",
+  "packaging==26.0",
+  "pyasn1==0.6.4",
+  "pyasn1-modules==0.4.2",
+  "pycparser==3.0",
+  "pyOpenSSL==26.3.0",
+  "typing-extensions==4.16.0",
+  "webauthn==3.0.0",
+
+  # Test-only packages never enter the signed production runtime.
+  "pytest==9.0.2",
+]
+
+[tool.uv]
+package = false
+
+[tool.pytest.ini_options]
+addopts = "-p no:cacheprovider"

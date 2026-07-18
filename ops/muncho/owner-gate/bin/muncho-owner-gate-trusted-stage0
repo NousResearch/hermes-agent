@@ -1,0 +1,307 @@
+#!/bin/false
+from pathlib import Path
+import argparse
+import hashlib
+import json
+import os
+import re
+import stat
+import sys
+
+
+_MANIFEST_FIELDS = {
+    "schema",
+    "source_release_revision",
+    "source_tree_oid",
+    "trusted_runner",
+    "files",
+    "incoming_payload_code_executed",
+    "network_fetch_required",
+    "generic_shell_runtime_added",
+    "kit_manifest_sha256",
+}
+_FIXED_FILES = {
+    "scripts/__init__.py": 0o444,
+    "scripts/canary/__init__.py": 0o444,
+    "scripts/canary/owner_gate_outer_stage0.py": 0o444,
+    "scripts/canary/owner_gate_stage0.py": 0o444,
+    "scripts/canary/trusted_signer_stage0.py": 0o444,
+    "bin/muncho-owner-gate-trusted-stage0": 0o555,
+}
+_SHA256 = re.compile(r"^[0-9a-f]{64}$")
+_REVISION = re.compile(r"^[0-9a-f]{40}$")
+
+
+def _canonical_json(value):
+    return json.dumps(
+        value,
+        ensure_ascii=True,
+        sort_keys=True,
+        separators=(",", ":"),
+        allow_nan=False,
+    ).encode("ascii", errors="strict")
+
+
+def _read_root_file(path, *, mode, maximum, size=None, digest=None):
+    descriptor = None
+    try:
+        before = path.lstat()
+        if stat.S_ISLNK(before.st_mode):
+            raise ValueError
+        descriptor = os.open(
+            path,
+            os.O_RDONLY
+            | getattr(os, "O_CLOEXEC", 0)
+            | getattr(os, "O_NOFOLLOW", 0),
+        )
+        opened = os.fstat(descriptor)
+        if (
+            not stat.S_ISREG(opened.st_mode)
+            or (before.st_dev, before.st_ino) != (opened.st_dev, opened.st_ino)
+            or opened.st_uid != 0
+            or opened.st_gid != 0
+            or opened.st_nlink != 1
+            or stat.S_IMODE(opened.st_mode) != mode
+            or opened.st_size < 1
+            or opened.st_size > maximum
+            or size is not None
+            and opened.st_size != size
+        ):
+            raise ValueError
+        raw = bytearray()
+        remaining = opened.st_size
+        while remaining:
+            chunk = os.read(descriptor, min(remaining, 1024 * 1024))
+            if not chunk:
+                raise ValueError
+            raw.extend(chunk)
+            remaining -= len(chunk)
+        after = os.fstat(descriptor)
+        if (
+            opened.st_dev,
+            opened.st_ino,
+            opened.st_size,
+            opened.st_mtime_ns,
+            opened.st_ctime_ns,
+        ) != (
+            after.st_dev,
+            after.st_ino,
+            after.st_size,
+            after.st_mtime_ns,
+            after.st_ctime_ns,
+        ):
+            raise ValueError
+        result = bytes(raw)
+        if digest is not None and hashlib.sha256(result).hexdigest() != digest:
+            raise ValueError
+        return result
+    finally:
+        if descriptor is not None:
+            os.close(descriptor)
+
+
+def _verify_manifest(value, raw):
+    if not isinstance(value, dict) or set(value) != _MANIFEST_FIELDS:
+        raise ValueError
+    files = value.get("files")
+    if not isinstance(files, list) or len(files) != len(_FIXED_FILES):
+        raise ValueError
+    for expected_path, item in zip(_FIXED_FILES, files, strict=True):
+        if (
+            not isinstance(item, dict)
+            or set(item) != {"path", "sha256", "size", "mode"}
+            or item.get("path") != expected_path
+            or item.get("mode") != f"{_FIXED_FILES[expected_path]:04o}"
+            or _SHA256.fullmatch(str(item.get("sha256", ""))) is None
+            or type(item.get("size")) is not int
+            or item["size"] < 1
+            or item["size"] > 128 * 1024 * 1024
+        ):
+            raise ValueError
+    unsigned = {
+        key: item for key, item in value.items() if key != "kit_manifest_sha256"
+    }
+    if (
+        value.get("schema") != "muncho-owner-gate-outer-stage0-kit.v1"
+        or _REVISION.fullmatch(str(value.get("source_release_revision", "")))
+        is None
+        or _REVISION.fullmatch(str(value.get("source_tree_oid", ""))) is None
+        or value.get("trusted_runner")
+        != "bin/muncho-owner-gate-trusted-stage0"
+        or value.get("incoming_payload_code_executed") is not False
+        or value.get("network_fetch_required") is not False
+        or value.get("generic_shell_runtime_added") is not False
+        or value.get("kit_manifest_sha256")
+        != hashlib.sha256(_canonical_json(unsigned)).hexdigest()
+        or _canonical_json(value) != raw
+    ):
+        raise ValueError
+    return value
+
+
+def _verify_complete_release(release, manifest, manifest_raw):
+    release_state = release.lstat()
+    if (
+        stat.S_ISLNK(release_state.st_mode)
+        or not stat.S_ISDIR(release_state.st_mode)
+        or release_state.st_uid != 0
+        or release_state.st_gid != 0
+        or stat.S_IMODE(release_state.st_mode) != 0o555
+        or release.resolve(strict=True) != release
+    ):
+        raise ValueError
+    expected = {
+        item["path"]: item for item in manifest["files"]
+    }
+    expected["outer-stage0-manifest.json"] = {
+        "sha256": hashlib.sha256(manifest_raw).hexdigest(),
+        "size": len(manifest_raw),
+        "mode": "0444",
+    }
+    expected_directories = {
+        str(parent)
+        for relative in expected
+        for parent in Path(relative).parents
+        if str(parent) != "."
+    }
+    observed_files = set()
+    observed_directories = set()
+    for path in sorted(release.rglob("*"), key=lambda item: str(item)):
+        relative = str(path.relative_to(release))
+        state = path.lstat()
+        if stat.S_ISLNK(state.st_mode) or state.st_uid != 0 or state.st_gid != 0:
+            raise ValueError
+        if stat.S_ISDIR(state.st_mode):
+            if (
+                relative not in expected_directories
+                or stat.S_IMODE(state.st_mode) != 0o555
+            ):
+                raise ValueError
+            observed_directories.add(relative)
+            continue
+        item = expected.get(relative)
+        if item is None:
+            raise ValueError
+        _read_root_file(
+            path,
+            mode=int(item["mode"], 8),
+            maximum=128 * 1024 * 1024,
+            size=item["size"],
+            digest=item["sha256"],
+        )
+        observed_files.add(relative)
+    if (
+        observed_files != set(expected)
+        or observed_directories != expected_directories
+    ):
+        raise ValueError
+
+
+entrypoint = Path(__file__)
+state = entrypoint.lstat()
+if (
+    not entrypoint.is_absolute()
+    or stat.S_ISLNK(state.st_mode)
+    or os.geteuid() != 0
+    or not stat.S_ISREG(state.st_mode)
+    or state.st_nlink != 1
+    or state.st_uid != 0
+    or state.st_gid != 0
+    or stat.S_IMODE(state.st_mode) != 0o555
+    or Path(sys.executable) != Path("/usr/bin/python3")
+    or entrypoint.resolve(strict=True) != entrypoint
+):
+    raise SystemExit("owner_gate_trusted_stage0_entrypoint_invalid")
+release = entrypoint.resolve(strict=True).parents[1]
+if (
+    release.parent != Path("/opt/muncho-owner-gate-stage0/releases")
+    or re.fullmatch(r"[0-9a-f]{64}", release.name) is None
+):
+    raise SystemExit("owner_gate_trusted_stage0_release_invalid")
+manifest_path = release / "outer-stage0-manifest.json"
+try:
+    manifest_raw = _read_root_file(
+        manifest_path,
+        mode=0o444,
+        maximum=1024 * 1024,
+    )
+    if hashlib.sha256(manifest_raw).hexdigest() != release.name:
+        raise ValueError
+    manifest = _verify_manifest(
+        json.loads(manifest_raw.decode("utf-8", errors="strict")),
+        manifest_raw,
+    )
+    _verify_complete_release(release, manifest, manifest_raw)
+except (OSError, ValueError, UnicodeError, json.JSONDecodeError):
+    raise SystemExit("owner_gate_trusted_stage0_manifest_invalid")
+
+if any(name == "scripts" or name.startswith("scripts.") for name in sys.modules):
+    raise SystemExit("owner_gate_trusted_stage0_import_state_invalid")
+sys.path.insert(0, str(release))
+from scripts.canary import owner_gate_outer_stage0 as outer
+from scripts.canary import owner_gate_stage0 as stage0
+from scripts.canary import trusted_signer_stage0 as host_stage0
+
+
+try:
+    if (
+        Path(outer.__file__) != release / "scripts/canary/owner_gate_outer_stage0.py"
+        or Path(stage0.__file__) != release / "scripts/canary/owner_gate_stage0.py"
+        or Path(host_stage0.__file__)
+        != release / "scripts/canary/trusted_signer_stage0.py"
+    ):
+        raise ValueError
+    manifest = outer.validate_manifest(manifest)
+    outer._verify_release(release, manifest, uid=0, gid=0)
+except (ValueError, UnicodeError, json.JSONDecodeError, outer.OwnerGateOuterStage0Error):
+    raise SystemExit("owner_gate_trusted_stage0_manifest_invalid") from None
+
+parser = argparse.ArgumentParser(allow_abbrev=False)
+parser.add_argument(
+    "operation",
+    choices=("cloud-verify", "cloud-preflight", "cloud-install", "host-install"),
+)
+parser.add_argument("--bundle", type=Path, required=True)
+arguments = parser.parse_args()
+bundle = arguments.bundle
+if (
+    not bundle.is_absolute()
+    or bundle.parent != Path("/var/tmp/muncho-owner-gate-incoming")
+    or re.fullmatch(r"[0-9a-f]{40}", bundle.name) is None
+):
+    raise SystemExit("owner_gate_trusted_stage0_bundle_path_invalid")
+bundle_state = bundle.lstat()
+if (
+    stat.S_ISLNK(bundle_state.st_mode)
+    or not stat.S_ISDIR(bundle_state.st_mode)
+    or bundle_state.st_uid != 0
+    or bundle_state.st_gid != 0
+    or stat.S_IMODE(bundle_state.st_mode) != 0o555
+):
+    raise SystemExit("owner_gate_trusted_stage0_bundle_identity_invalid")
+
+if arguments.operation == "host-install":
+    result = host_stage0.install_host_offline_runtime(bundle)
+else:
+    package_manifest = stage0.verify_bundle_stage0(bundle, expected_uid=0)
+    if arguments.operation == "cloud-verify":
+        unsigned = {
+            "schema": "muncho-owner-gate-stage0-bundle-verification.v1",
+            "release_revision": package_manifest["release_revision"],
+            "package_sha256": package_manifest["package_sha256"],
+            "verified": True,
+            "incoming_payload_code_executed_before_verification": False,
+        }
+        result = {**unsigned, "receipt_sha256": stage0.sha256_json(unsigned)}
+    else:
+        result = stage0.run_verified_bundle_operation(
+            (
+                "preflight"
+                if arguments.operation == "cloud-preflight"
+                else "install"
+            ),
+            bundle=bundle,
+            manifest=package_manifest,
+        )
+
+print(outer.canonical_json_bytes(result).decode("ascii"))

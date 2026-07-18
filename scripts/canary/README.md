@@ -230,6 +230,85 @@ receipt hashes, and states `preboot_boot_id_evidence=false` and
 also keeps `opens_runtime_gate=false` and requires the follow-on stopped-runtime
 gate. Journaled and legacy evidence arguments are mutually exclusive.
 
+### One-time 40 -> 80 GB storage growth
+
+The completed 20 -> 40 GB contracts above remain historical evidence.  Any
+later expansion uses the canonical passkey-v2 storage-growth gate documented
+in [host-storage-growth.md](host-storage-growth.md).  The local
+`host_storage_growth` module is only a pure plan/read-only validation facade;
+it has no approval, journal, recovery, or mutation authority.  The passkey-v2
+executor pins the current bc37 host/stopped receipts, external IAM digest, and
+historical 40 GB readiness; requires the complete twelve-unit stopped runtime
+superset; performs one exact 40 -> 80 GB disk resize; and journal-reboots only
+when a fresh read-only post-resize observation proves boot expansion is
+required.  Its readiness receipt requires at least 84,000,000,000 root bytes
+and 32 GiB free and never opens a runtime gate.
+
+The gate is callable only through the exact release-bound full owner launcher;
+its direct module entry points fail closed.  The local launcher has read-only
+source-observation authority and no gcloud storage mutator.  Production
+approval is an exact-action, single-use WebAuthn/passkey grant from Emil, not
+the local UID-501 SSH key, legacy same-UID Cloud guard, or same-UID TOTP
+fallback.  The initial passkey is live for at most five minutes and, once
+atomically consumed, opens only the plan-pinned 3600-second execution window.
+An expired incomplete mutation needs a domain-separated passkey resume request
+built from the privileged executor's authoritative append-only stage and fresh
+versioned live/IAM projection; already-proven commands are reconciled
+mechanically without being repeated.
+
+Do not operate this gate until the dedicated private `muncho-owner-gate-01`
+attests split no-shell passkey/executor identities, root-owned code and units,
+passkey-only approval, a complete canonical payload/full-hash UI, strict
+path/token validation, atomic challenge/grant claims, a durable append-only
+ledger, and a narrow attached service account inaccessible to the shared
+gateway.  That executor owns the mutation credential, journal, and every Cloud
+mutation; local files and local gcloud are never replay authority or fallback.
+
+### Owner-side foundation author-and-apply entrypoint
+
+The initial nine-operation owner-gate foundation is an owner-side,
+pre-foundation mutation and is intentionally excluded from the Cloud owner-gate
+package, `ROOT_RUNTIME_FILES`, and `REQUIRED_ENTRYPOINTS`.  Run the existing
+entrypoint directly by its absolute path inside the reviewed, immutable
+release-bound owner-support tree. Replace the SHA placeholder once with the
+exact reviewed 40-character release SHA; do not use `-m`, a worktree path, a
+relative path, a symlink, or caller-authored evidence/key/journal flags:
+
+```bash
+/Users/emillomliev/.local/share/uv/python/\
+cpython-3.11.15-macos-aarch64-none/bin/python3.11 \
+  -I -S -B \
+  /Users/emillomliev/.hermes/trusted/\
+owner-support-<exact-40-character-release-sha>/source/scripts/canary/\
+owner_gate_author_and_apply.py \
+  author-and-apply
+```
+
+This is the sole production operation. It derives the release revision and
+source tree only from the sealed owner-support path and manifest, loads the
+fixed pinned release/network keys and trusted gcloud runtime, performs the
+interactive owner gcloud reauthentication, collects the fixed interpreter,
+network, and organization-ancestry evidence, mechanically authors the exact
+nine-operation plan, and invokes the fixed foundation apply boundary. There is
+deliberately no SHA, private-key, runtime, provider, journal, clock, evidence,
+or output-path argument. The append-only outer journal reconciles the fixed
+inner journal before recovery; an ambiguous partial mutation becomes a durable
+manual-reconciliation block and is never skipped in favor of fresh authoring.
+Stdout contains only the stable terminal envelope, never a bearer token, key
+material, raw evidence, or signed receipt body.
+
+`success.json` is a signed journal transition wrapper, not a raw foundation
+apply receipt.  Downstream owner gates must not copy it, loosen its mode, or
+extract `.receipt` with `jq`.  They receive the opaque
+`ValidatedFoundationAChain` and call
+`load_validated_foundation_apply_chain(foundation_a)`.  That read-only boundary
+derives the transaction ID and fixed journal path, performs no pending-file
+recovery or write, verifies the transition signature/domain and exact chain,
+rejects any conflicting failure terminal, validates the nested signed apply
+receipt, and returns the opaque `ValidatedFoundationApplyChain` capability.
+There is no caller-selected journal path, raw receipt, output path, or semantic
+field in this handoff.
+
 ## Later host/runtime gates
 
 1. Install one root-owned immutable release by exact 40-character Git SHA;
@@ -249,6 +328,16 @@ gate. Journaled and legacy evidence arguments are mutually exclusive.
    remain mechanically blocked.
 6. Run the fresh root collector and deterministic deployment preflight before
    gateway, writer, or Discord egress is enabled.
+
+The package supply-chain path has a rerunnable real-platform check. It uses a
+digest-pinned Debian 12 amd64 container, verifies the exact runtime-lock
+artifacts, disconnects Docker networking, corrupts the disposable host pip
+wheel, and then exercises the signed bootstrap install, inventory/replay, and
+hostile `.pth` rejection:
+
+```bash
+.venv/bin/python scripts/canary/run_owner_gate_debian12_e2e.py
+```
 
 ## Stopped release publication
 
@@ -367,6 +456,29 @@ step is digest-bound and must succeed before the next. A failure is a gate:
 preserve its receipt and do not skip ahead.
 
 First bootstrap the fixed local gcloud runtime:
+
+If an earlier read-only SDK invocation left Python bytecode and the bootstrap
+fails specifically with `trusted_gcloud_sdk_bytecode_forbidden`, run the
+separate bounded repair once before retrying bootstrap:
+
+```bash
+/Users/emillomliev/.local/share/uv/python/\
+cpython-3.11.15-macos-aarch64-none/bin/python3.11 \
+  -I -S -B -X pycache_prefix=/var/empty/muncho-canary \
+  /absolute/clean/hermes-agent/scripts/canary/full_canary_owner_launcher.py \
+  --release-sha <exact-40-character-release-sha> \
+  --repair-trusted-sdk-bytecode
+```
+
+This action has no fallback cleanup path. Before deleting anything it proves
+that the exact pinned SDK, with only owner-owned non-hardlinked `*.pyc` leaves
+inside `__pycache__`, still equals its sealed publication intent. It removes
+only those leaves and now-empty cache directories, revalidates the complete
+publication, and durably records a self-hashed release-bound receipt. The exact
+audited set is journaled and fsynced before the first descriptor-relative
+unlink, so an interrupted retry can remove only the proven survivors and still
+bind the terminal receipt to the original complete set. A completed retry only
+revalidates and returns that same receipt.
 
 ```bash
 /Users/emillomliev/.local/share/uv/python/\

@@ -29,11 +29,12 @@ DEFAULT = {
     "deps": True,
     "npm_lock": True,
     "mcp_catalog": False,
+    "owner_gate": True,
     "ci_review": True,
 }
 
 
-def _lanes(python=False, frontend=False, site=False, scan=False, deps=False, npm_lock=False, mcp_catalog=False, docker_meta=False, ci_review=False) -> dict[str, bool]:
+def _lanes(python=False, frontend=False, site=False, scan=False, deps=False, npm_lock=False, mcp_catalog=False, owner_gate=False, docker_meta=False, ci_review=False) -> dict[str, bool]:
     return {
         "python": python,
         "frontend": frontend,
@@ -43,6 +44,7 @@ def _lanes(python=False, frontend=False, site=False, scan=False, deps=False, npm
         "deps": deps,
         "npm_lock": npm_lock,
         "mcp_catalog": mcp_catalog,
+        "owner_gate": owner_gate,
         "ci_review": ci_review,
     }
 
@@ -50,8 +52,8 @@ def _lanes(python=False, frontend=False, site=False, scan=False, deps=False, npm
 CASES = {
     "docs-only → nothing heavy": (["README.md", "docs/guide.md"], _lanes()),
     "python source → python": (["run_agent.py"], _lanes(python=True, scan=True)),
-    "dep manifest → python": (["pyproject.toml"], _lanes(python=True, scan=True, deps=True)),
-    "uv.lock → python": (["uv.lock"], _lanes(python=True)),
+    "dep manifest → python": (["pyproject.toml"], _lanes(python=True, scan=True, deps=True, owner_gate=True)),
+    "uv.lock → python": (["uv.lock"], _lanes(python=True, owner_gate=True)),
     "ts package → frontend": (["apps/desktop/src/app.tsx"], _lanes(frontend=True)),
     "ui-tui → frontend": (["ui-tui/src/entry.ts"], _lanes(frontend=True)),
     # Lockfile bump shifts every TS package's tree, but not the Python suite.
@@ -62,6 +64,22 @@ CASES = {
     # skill edit must still run Python.
     "skill md → python + site": (["skills/github/SKILL.md"], _lanes(python=True, site=True)),
     "dockerfile → docker meta": (["Dockerfile"], _lanes(docker_meta=True)),
+    "owner-gate runtime → owner_gate": (
+        ["ops/muncho/owner-gate/runtime-wheel-lock.json"],
+        _lanes(python=True, owner_gate=True),
+    ),
+    "canary source → owner_gate": (
+        ["scripts/canary/passkey_v2_webauthn.py"],
+        _lanes(python=True, scan=True, owner_gate=True),
+    ),
+    "canary tests → owner_gate": (
+        ["tests/scripts/canary/test_passkey_v2_security.py"],
+        _lanes(python=True, scan=True, owner_gate=True),
+    ),
+    "canonical runner → owner_gate": (
+        ["scripts/run_tests.sh"],
+        _lanes(python=True, owner_gate=True),
+    ),
     # Unknown top-level file keeps Python on rather than risk a silent skip.
     "unknown toplevel → python": (["Makefile"], _lanes(python=True)),
     "mixed docs+python → python": (["README.md", "agent/x.py"], _lanes(python=True, scan=True)),

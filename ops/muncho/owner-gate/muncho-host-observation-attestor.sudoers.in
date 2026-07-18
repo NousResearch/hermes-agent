@@ -1,0 +1,3 @@
+Cmnd_Alias MUNCHO_HOST_TRUSTED_SIGNER_PROVISION = /opt/muncho-trusted-observation/releases/@RELEASE_SHA@/venv/bin/python -I -B /opt/muncho-trusted-observation/releases/@RELEASE_SHA@/bin/muncho-host-trusted-signer-provision
+Cmnd_Alias MUNCHO_HOST_OBSERVATION_ATTESTOR = /opt/muncho-trusted-observation/releases/@RELEASE_SHA@/venv/bin/python -I -B /opt/muncho-trusted-observation/releases/@RELEASE_SHA@/bin/muncho-host-observation-attestor
+%google-sudoers ALL=(root) NOPASSWD: MUNCHO_HOST_TRUSTED_SIGNER_PROVISION, MUNCHO_HOST_OBSERVATION_ATTESTOR

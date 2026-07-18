@@ -1,0 +1,49 @@
+[Unit]
+Description=Muncho passkey v2 WebAuthn authority
+Requires=muncho-passkey-authority.socket
+After=muncho-passkey-authority.socket
+
+[Service]
+Type=simple
+User=muncho-passkey-authority
+Group=muncho-passkey-authority
+ExecStartPre=/usr/bin/sha256sum --check --status /etc/muncho-owner-gate/python3.sha256
+ExecStart=/opt/muncho-owner-gate/current/venv/bin/python -I -B /opt/muncho-owner-gate/current/bin/muncho-passkey-v2-authority serve-authority --config /etc/muncho-owner-gate/authority.json --socket-activation
+LoadCredential=receipt-signing-key:/etc/muncho-owner-gate/keys/receipt-signing-key.pem
+Restart=on-failure
+RestartSec=2s
+UMask=0077
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+PrivateDevices=yes
+PrivateNetwork=yes
+ProtectClock=yes
+ProtectControlGroups=yes
+ProtectKernelLogs=yes
+ProtectKernelModules=yes
+ProtectKernelTunables=yes
+ProtectProc=invisible
+ProcSubset=pid
+LockPersonality=yes
+MemoryDenyWriteExecute=yes
+RestrictRealtime=yes
+RestrictSUIDSGID=yes
+RestrictNamespaces=yes
+SystemCallArchitectures=native
+SystemCallFilter=@system-service
+SystemCallFilter=~@mount @privileged @resources @reboot @swap
+CapabilityBoundingSet=
+AmbientCapabilities=
+RestrictAddressFamilies=AF_UNIX
+IPAddressDeny=any
+ReadOnlyPaths=/opt/muncho-owner-gate/current
+ReadOnlyPaths=/etc/muncho-owner-gate
+ReadWritePaths=/var/lib/muncho-owner-gate/authority
+ReadWritePaths=/run/muncho-owner-gate
+InaccessiblePaths=/var/lib/muncho-owner-gate/executor
+InaccessiblePaths=/etc/muncho-owner-gate/compute-api-hosts
+
+[Install]
+WantedBy=multi-user.target

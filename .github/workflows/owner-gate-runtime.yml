@@ -1,0 +1,54 @@
+name: Owner-gate exact runtime
+
+on:
+  workflow_call:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: owner-gate-runtime-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  exact-runtime:
+    name: Exact WebAuthn and Debian 12 E2E
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@fac544c07dec837d0ccb6301d7b5580bf5edae39 # 8.2.0
+        with:
+          enable-cache: true
+          cache-dependency-glob: |
+            pyproject.toml
+            uv.lock
+            tests/scripts/canary/isolated_passkey_runtime/pyproject.toml
+            tests/scripts/canary/isolated_passkey_runtime/uv.lock
+            ops/muncho/owner-gate/runtime-wheel-lock.json
+
+      - name: Set up Python 3.11
+        run: uv python install 3.11
+
+      - name: Install Hermes test dependencies
+        uses: ./.github/actions/retry
+        with:
+          command: uv sync --locked --python 3.11 --extra all --extra dev
+
+      - name: Run exact isolated passkey verifier suites
+        run: |
+          source .venv/bin/activate
+          scripts/run_tests.sh \
+            tests/scripts/canary/test_passkey_v2_isolated_runtime.py \
+            --file-timeout 240 \
+            -q
+        env:
+          OPENROUTER_API_KEY: ""
+          OPENAI_API_KEY: ""
+          NOUS_API_KEY: ""
+
+      - name: Run offline Debian 12 amd64 package E2E
+        run: .venv/bin/python scripts/canary/run_owner_gate_debian12_e2e.py

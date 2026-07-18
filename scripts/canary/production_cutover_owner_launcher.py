@@ -11,7 +11,6 @@ The private key is never transported, copied, printed, or staged.
 from __future__ import annotations
 
 import argparse
-import base64
 import copy
 import hashlib
 import json
@@ -20,7 +19,6 @@ import re
 import secrets
 import shlex
 import stat
-import struct
 import subprocess
 import sys
 import time
@@ -138,65 +136,19 @@ class PinnedProductionGoogleComputeKnownHosts(
 ):
     """Pin the SSH host key for the one production instance identity."""
 
-    @staticmethod
-    def _validate_known_hosts_payload(payload: bytes) -> None:
-        try:
-            text = payload.decode("ascii", errors="strict")
-        except UnicodeError:
-            raise canary_transport.OwnerLauncherError(
-                "trusted_known_hosts_invalid"
-            ) from None
-        if not text.endswith("\n") or "\r" in text or "\x00" in text:
-            raise canary_transport.OwnerLauncherError(
-                "trusted_known_hosts_invalid"
-            )
-        hosts: set[str] = set()
-        target_count = 0
-        lines = text.splitlines()
-        if not lines or len(lines) > 1_000:
-            raise canary_transport.OwnerLauncherError(
-                "trusted_known_hosts_invalid"
-            )
-        for line in lines:
-            parts = line.split(" ")
-            if len(parts) != 3 or any(not part for part in parts):
-                raise canary_transport.OwnerLauncherError(
-                    "trusted_known_hosts_invalid"
-                )
-            host, algorithm, encoded = parts
-            if (
-                re.fullmatch(r"compute\.[1-9][0-9]*", host) is None
-                or host in hosts
-                or algorithm != "ssh-ed25519"
-                or re.fullmatch(r"[A-Za-z0-9+/]+={0,2}", encoded) is None
-            ):
-                raise canary_transport.OwnerLauncherError(
-                    "trusted_known_hosts_invalid"
-                )
-            try:
-                blob = base64.b64decode(encoded, validate=True)
-            except (TypeError, ValueError):
-                raise canary_transport.OwnerLauncherError(
-                    "trusted_known_hosts_invalid"
-                ) from None
-            algorithm_bytes = b"ssh-ed25519"
-            if (
-                len(blob) != 4 + len(algorithm_bytes) + 4 + 32
-                or blob[:4] != struct.pack(">I", len(algorithm_bytes))
-                or blob[4 : 4 + len(algorithm_bytes)] != algorithm_bytes
-                or blob[4 + len(algorithm_bytes) : 8 + len(algorithm_bytes)]
-                != struct.pack(">I", 32)
-            ):
-                raise canary_transport.OwnerLauncherError(
-                    "trusted_known_hosts_invalid"
-                )
-            hosts.add(host)
-            if host == f"compute.{PRODUCTION_VM_INSTANCE_ID}":
-                target_count += 1
-        if target_count != 1:
-            raise canary_transport.OwnerLauncherError(
-                "trusted_known_hosts_invalid"
-            )
+    def __init__(
+        self,
+        path: str | os.PathLike[str] | None = None,
+        *,
+        private_key: str | os.PathLike[str] | None = None,
+        public_key: str | os.PathLike[str] | None = None,
+    ) -> None:
+        super().__init__(
+            path,
+            private_key=private_key,
+            public_key=public_key,
+            expected_instance_id=PRODUCTION_VM_INSTANCE_ID,
+        )
 
 
 class ProductionCutoverTransport(canary_transport.IapStoppedReleaseTransport):
@@ -1830,7 +1782,7 @@ def execute_production_cutover_workflow(
                         "owner_cutover_freeze_abort_receipt_invalid"
                     )
             except BaseException as abort_error:
-                raise ExceptionGroup(
+                raise BaseExceptionGroup(
                     "production cutover failed and freeze abort was incomplete",
                     [primary, abort_error],
                 ) from None

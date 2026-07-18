@@ -16,6 +16,7 @@ Lanes:
 * ``deps``        — pyproject.toml dependency bounds check.
 * ``npm_lock``    — semantic package-lock.json diff PR comment.
 * ``mcp_catalog`` — bundled MCP catalog / installer review.
+* ``owner_gate``  — exact isolated WebAuthn + Debian owner-gate E2E.
 
 Docker is not a lane — it builds on push-to-main and release only,
 never per-PR.
@@ -63,6 +64,20 @@ _SCAN_FILES = {"setup.cfg", "pyproject.toml"}
 _MCP_CATALOG_PATHS = ("optional-mcps/",)
 _MCP_CATALOG_FILES = {"hermes_cli/mcp_catalog.py"}
 
+# The owner-gate lane is intentionally broad within the fork-local canary
+# surface. Missing a transitive security-boundary change is more expensive
+# than running one extra isolated E2E job.
+_OWNER_GATE_PATHS = (
+    "ops/muncho/owner-gate/",
+    "scripts/canary/",
+    "tests/scripts/canary/",
+)
+_OWNER_GATE_FILES = {
+    "pyproject.toml",
+    "uv.lock",
+    "scripts/run_tests.sh",
+}
+
 def _is_docs(p: str) -> bool:
     if p.startswith(("skills/", "optional-skills/")):
         return False
@@ -89,6 +104,10 @@ def _is_ci_review(p: str) -> bool:
     return os.path.basename(p).startswith("eslint.config.")
 
 
+def _is_owner_gate(p: str) -> bool:
+    return p in _OWNER_GATE_FILES or p.startswith(_OWNER_GATE_PATHS)
+
+
 def classify(files: list[str]) -> dict[str, bool]:
     """Map changed paths to ``{lane: should_run}``."""
     files = [f.strip() for f in files if f.strip()]
@@ -101,6 +120,7 @@ def classify(files: list[str]) -> dict[str, bool]:
         "deps": any(f == "pyproject.toml" for f in files),
         "npm_lock": any(f.split("/")[-1] == "package-lock.json" for f in files),
         "mcp_catalog": any(_is_mcp_catalog(f) for f in files),
+        "owner_gate": any(_is_owner_gate(f) for f in files),
         "ci_review": any(_is_ci_review(f) for f in files),
     }
     if not files or any(f.startswith(".github/") for f in files):
@@ -111,6 +131,7 @@ def classify(files: list[str]) -> dict[str, bool]:
         ret["scan"] = True
         ret["deps"] = True
         ret["npm_lock"] = True
+        ret["owner_gate"] = True
         ret["ci_review"] = True
 
         # explicitly skip mcp catalog here. it's not needed unless those files are modified.

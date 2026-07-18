@@ -44,6 +44,7 @@ jobs:
       npm_lock: ${{ steps.classify.outputs.npm_lock }}
       docker_meta: ${{ steps.classify.outputs.docker_meta }}
       mcp_catalog: ${{ steps.classify.outputs.mcp_catalog }}
+      owner_gate: ${{ steps.classify.outputs.owner_gate }}
       ci_review: ${{ steps.classify.outputs.ci_review }}
       event_name: ${{ github.event_name }}
     steps:
@@ -63,6 +64,12 @@ jobs:
     uses: ./.github/workflows/tests.yml
     with:
       slice_count: 8
+
+  owner-gate-runtime:
+    name: Owner-gate exact runtime
+    needs: detect
+    if: needs.detect.outputs.owner_gate == 'true'
+    uses: ./.github/workflows/owner-gate-runtime.yml
 
   lint:
     name: Python lints
@@ -147,6 +154,7 @@ jobs:
     name: All required checks pass
     needs:
       - tests
+      - owner-gate-runtime
       - lint
       - js-tests
       - docs-site

@@ -26,9 +26,10 @@ import stat
 import sys
 import time
 from pathlib import Path
-from typing import Any, Callable, Mapping, Sequence
+from typing import Any, Callable, Mapping, NoReturn, Sequence, TypedDict
 
 from scripts.canary import writer_release as _release
+from scripts.canary.runtime_units import CANARY_RUNTIME_UNITS
 
 
 HOST_RECEIPT_ROTATION_PLAN_SCHEMA = (
@@ -53,13 +54,17 @@ _MAX_HOST_RECEIPT_BYTES = 16 * 1024
 _MAX_ROTATION_ARTIFACT_BYTES = 128 * 1024
 _SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
 _REVISION_RE = re.compile(r"^[0-9a-f]{40}$")
-_ROTATION_FILES = frozenset({
+_ROTATION_ARTIFACT_NAMES = frozenset({
     "intent.json",
     "prior-host-identity.json",
+    "fresh-host-identity.json",
     "tombstone.json",
     "completion.json",
 })
-
+_ROTATION_FILES = _ROTATION_ARTIFACT_NAMES | frozenset(
+    f".{name}{_release._PUBLICATION_CANDIDATE_SUFFIX}"
+    for name in _ROTATION_ARTIFACT_NAMES
+)
 Clock = Callable[[], float]
 HostObserver = Callable[[], Mapping[str, str]]
 HostReceiptCollector = Callable[[int], Mapping[str, Any]]
@@ -119,6 +124,7 @@ def _transaction_paths(rotation_id: str) -> dict[str, Path]:
         "root": root,
         "intent": root / "intent.json",
         "archive": root / "prior-host-identity.json",
+        "fresh_candidate": root / "fresh-host-identity.json",
         "tombstone": root / "tombstone.json",
         "completion": root / "completion.json",
     }
@@ -133,6 +139,22 @@ def _validate_rotation_parent() -> None:
             DEFAULT_ROTATION_ROOT,
             exact_mode=_ROTATION_DIRECTORY_MODE,
         )
+
+
+def _rotation_lock_path() -> Path:
+    expected = DEFAULT_ROTATION_ROOT.with_name(f"{DEFAULT_ROTATION_ROOT.name}.lock")
+    shared = _release._host_receipt_lease_path()
+    if shared != expected:
+        raise RuntimeError("host receipt rotation lock is not the shared lease")
+    return shared
+
+
+def _acquire_rotation_lock() -> int:
+    """Acquire the fixed lock that spans the complete destructive transition."""
+
+    _validate_rotation_parent()
+    _rotation_lock_path()
+    return _release._acquire_host_receipt_lease()
 
 
 def _validate_transaction_directory(path: Path) -> None:
@@ -185,34 +207,76 @@ def _read_exact_file(path: Path, *, maximum_bytes: int) -> bytes:
     )
 
 
-def _write_no_replace(path: Path, raw: bytes) -> None:
-    if not isinstance(raw, bytes) or not raw or len(raw) > _MAX_ROTATION_ARTIFACT_BYTES:
-        raise RuntimeError("host receipt rotation artifact exceeds its bound")
-    flags = (
-        os.O_WRONLY
-        | os.O_CREAT
-        | os.O_EXCL
-        | getattr(os, "O_CLOEXEC", 0)
-        | getattr(os, "O_NOFOLLOW", 0)
+def _read_committed_rotation_artifact(
+    path: Path,
+    *,
+    maximum_bytes: int,
+) -> bytes:
+    scratch = _release._publication_candidate_path(path)
+    if not os.path.lexists(scratch):
+        return _read_exact_file(path, maximum_bytes=maximum_bytes)
+    scratch_raw = _release._read_stable_publication_file(
+        scratch,
+        maximum_bytes=maximum_bytes,
+        exact_mode=_RECEIPT_MODE,
+        allowed_nlinks=frozenset({1, 2}),
     )
-    descriptor = os.open(path, flags, _RECEIPT_MODE)
-    try:
-        os.fchown(
-            descriptor,
-            _release._BUILD_OWNER_UID,
-            _release._BUILD_OWNER_GID,
-        )
-        offset = 0
-        while offset < len(raw):
-            written = os.write(descriptor, raw[offset:])
-            if written <= 0:
-                raise OSError("host receipt rotation write made no progress")
-            offset += written
-        os.fchmod(descriptor, _RECEIPT_MODE)
-        os.fsync(descriptor)
-    finally:
-        os.close(descriptor)
-    _release._fsync_directory(path.parent)
+    if not os.path.lexists(path):
+        return scratch_raw
+    final_raw = _release._read_stable_publication_file(
+        path,
+        maximum_bytes=maximum_bytes,
+        exact_mode=_RECEIPT_MODE,
+        allowed_nlinks=frozenset({2}),
+    )
+    scratch_item = os.lstat(scratch)
+    final_item = os.lstat(path)
+    if (
+        scratch_raw != final_raw
+        or scratch_item.st_dev != final_item.st_dev
+        or scratch_item.st_ino != final_item.st_ino
+    ):
+        raise RuntimeError("host receipt rotation publication diverged")
+    return final_raw
+
+
+def _read_current_host_receipt_raw() -> bytes:
+    """Read the current name, including a crashed hardlink cleanup state."""
+
+    path = _release.DEFAULT_HOST_RECEIPT_PATH
+    candidate = _release._publication_candidate_path(path)
+    if not os.path.lexists(candidate):
+        return _read_exact_file(path, maximum_bytes=_MAX_HOST_RECEIPT_BYTES)
+    candidate_raw = _release._read_stable_publication_file(
+        candidate,
+        maximum_bytes=_MAX_HOST_RECEIPT_BYTES,
+        exact_mode=_RECEIPT_MODE,
+        allowed_nlinks=frozenset({2}),
+    )
+    current_raw = _release._read_stable_publication_file(
+        path,
+        maximum_bytes=_MAX_HOST_RECEIPT_BYTES,
+        exact_mode=_RECEIPT_MODE,
+        allowed_nlinks=frozenset({2}),
+    )
+    candidate_item = os.lstat(candidate)
+    current_item = os.lstat(path)
+    if (
+        candidate_raw != current_raw
+        or candidate_item.st_dev != current_item.st_dev
+        or candidate_item.st_ino != current_item.st_ino
+    ):
+        raise RuntimeError("current host receipt publication diverged")
+    return current_raw
+
+
+def _write_no_replace(path: Path, raw: bytes) -> None:
+    _release._publish_bytes_no_replace(
+        path,
+        raw,
+        maximum_bytes=_MAX_ROTATION_ARTIFACT_BYTES,
+        exact_mode=_RECEIPT_MODE,
+    )
 
 
 def _publish_or_validate_exact_file(
@@ -221,11 +285,6 @@ def _publish_or_validate_exact_file(
     *,
     maximum_bytes: int,
 ) -> bytes:
-    if os.path.lexists(path):
-        existing = _read_exact_file(path, maximum_bytes=maximum_bytes)
-        if existing != raw:
-            raise RuntimeError("host receipt rotation artifact diverged")
-        return existing
     _write_no_replace(path, raw)
     existing = _read_exact_file(path, maximum_bytes=maximum_bytes)
     if existing != raw:
@@ -301,7 +360,10 @@ def _prior_raw_for_plan(
     archive = paths["archive"]
     current = _release.DEFAULT_HOST_RECEIPT_PATH
     if os.path.lexists(archive):
-        raw = _read_exact_file(archive, maximum_bytes=_MAX_HOST_RECEIPT_BYTES)
+        raw = _read_committed_rotation_artifact(
+            archive,
+            maximum_bytes=_MAX_HOST_RECEIPT_BYTES,
+        )
         if _sha256_bytes(raw) != expected_file_sha256:
             raise RuntimeError("archived prior host receipt diverged")
         return raw
@@ -318,7 +380,13 @@ def _safe_service_states(
     runner: _release.Runner = _release._runner,
 ) -> list[dict[str, Any]]:
     states = _release._collect_service_states(runner=runner)
-    if any(state["state"] not in {"absent", "disabled_inactive"} for state in states):
+    if (
+        [state.get("unit") for state in states] != list(CANARY_RUNTIME_UNITS)
+        or any(
+            state["state"] not in {"absent", "disabled_inactive"}
+            for state in states
+        )
+    ):
         raise RuntimeError("host receipt rotation requires stopped services")
     return states
 
@@ -385,15 +453,16 @@ def plan_host_receipt_rotation(
         expected_boot_id_sha256=expected_prior_boot_id_sha256,
     )
     current_path = _release.DEFAULT_HOST_RECEIPT_PATH
+    current_is_fresh = False
     if os.path.lexists(current_path):
-        current_raw = _read_exact_file(
-            current_path,
-            maximum_bytes=_MAX_HOST_RECEIPT_BYTES,
-        )
+        current_raw = _read_current_host_receipt_raw()
         if _sha256_bytes(current_raw) != expected_prior_file_sha256:
             if not os.path.lexists(paths["archive"]):
                 raise RuntimeError("fresh host receipt exists without prior archive")
+            if not os.path.lexists(paths["intent"]):
+                raise RuntimeError("fresh host receipt exists without matching intent")
             _validate_current_receipt(current_raw, current_host=current_host)
+            current_is_fresh = True
     elif not os.path.lexists(paths["archive"]):
         raise RuntimeError("host receipt and its archive are both absent")
 
@@ -425,7 +494,15 @@ def plan_host_receipt_rotation(
             "fresh_receipt_collected_on_target_boot": True,
         },
     }
-    return {**unsigned, "plan_sha256": _sha256_json(unsigned)}
+    plan = {**unsigned, "plan_sha256": _sha256_json(unsigned)}
+    if current_is_fresh:
+        intent_raw = _read_committed_rotation_artifact(
+            paths["intent"],
+            maximum_bytes=_MAX_ROTATION_ARTIFACT_BYTES,
+        )
+        if intent_raw != _canonical_bytes(plan):
+            raise RuntimeError("fresh host receipt intent diverged")
+    return plan
 
 
 def _validate_exact_plan(value: Mapping[str, Any]) -> dict[str, Any]:
@@ -591,12 +668,20 @@ def _remove_exact_prior_current(
     current_path = _release.DEFAULT_HOST_RECEIPT_PATH
     if not os.path.lexists(current_path):
         return
-    current_raw = _read_exact_file(
-        current_path,
-        maximum_bytes=_MAX_HOST_RECEIPT_BYTES,
-    )
+    current_raw = _read_current_host_receipt_raw()
     if current_raw != expected_prior_raw:
         return
+    if os.path.lexists(_release._publication_candidate_path(current_path)):
+        _release._write_host_receipt_no_replace(
+            current_path,
+            _decode_mapping(current_raw, label="prior host identity receipt"),
+        )
+        current_raw = _read_exact_file(
+            current_path,
+            maximum_bytes=_MAX_HOST_RECEIPT_BYTES,
+        )
+        if current_raw != expected_prior_raw:
+            raise RuntimeError("prior host receipt recovery diverged")
     archive_raw = _read_exact_file(
         archive_path,
         maximum_bytes=_MAX_HOST_RECEIPT_BYTES,
@@ -616,7 +701,93 @@ def _remove_exact_prior_current(
     _release._fsync_directory(current_path.parent)
 
 
-def apply_host_receipt_rotation(
+def _publish_or_reuse_fresh_candidate(
+    plan: Mapping[str, Any],
+    paths: Mapping[str, Path],
+    *,
+    host_receipt_collector: HostReceiptCollector,
+    clock: Clock,
+    prior_raw: bytes,
+) -> tuple[bytes, dict[str, Any]]:
+    """Commit the fresh receipt before the prior current name is retired."""
+
+    candidate_path = paths["fresh_candidate"]
+    candidate_scratch = _release._publication_candidate_path(candidate_path)
+    if os.path.lexists(candidate_path) or os.path.lexists(candidate_scratch):
+        candidate_raw = _release._read_complete_publication_candidate(
+            candidate_path,
+            maximum_bytes=_MAX_HOST_RECEIPT_BYTES,
+            exact_mode=_RECEIPT_MODE,
+        )
+        if candidate_raw is None:
+            if not os.path.lexists(candidate_path):
+                candidate_raw = b""
+            else:
+                candidate_raw = _read_exact_file(
+                    candidate_path,
+                    maximum_bytes=_MAX_HOST_RECEIPT_BYTES,
+                )
+        if candidate_raw:
+            _publish_or_validate_exact_file(
+                candidate_path,
+                candidate_raw,
+                maximum_bytes=_MAX_HOST_RECEIPT_BYTES,
+            )
+            candidate_raw = _read_exact_file(
+                candidate_path,
+                maximum_bytes=_MAX_HOST_RECEIPT_BYTES,
+            )
+            return candidate_raw, _validate_current_receipt(
+                candidate_raw,
+                current_host=plan["target_host"],
+            )
+
+    current_path = _release.DEFAULT_HOST_RECEIPT_PATH
+    if os.path.lexists(current_path):
+        current_raw = _read_current_host_receipt_raw()
+        if current_raw != prior_raw:
+            fresh_receipt = _validate_current_receipt(
+                current_raw,
+                current_host=plan["target_host"],
+            )
+            fresh_raw = current_raw
+        else:
+            fresh_raw = b""
+            fresh_receipt = {}
+    else:
+        fresh_raw = b""
+        fresh_receipt = {}
+
+    if not fresh_raw:
+        observed_at_unix = int(clock())
+        if observed_at_unix < 0:
+            raise ValueError("host receipt rotation time is invalid")
+        fresh_receipt = _release._validate_host_receipt_mapping(
+            host_receipt_collector(observed_at_unix),
+            plan={"dedicated_host": plan["target_host"]},
+        )
+        fresh_raw = _canonical_bytes(fresh_receipt)
+        if len(fresh_raw) > _MAX_HOST_RECEIPT_BYTES:
+            raise RuntimeError("fresh host identity receipt exceeds its bound")
+
+    _publish_or_validate_exact_file(
+        candidate_path,
+        fresh_raw,
+        maximum_bytes=_MAX_HOST_RECEIPT_BYTES,
+    )
+    committed = _read_exact_file(
+        candidate_path,
+        maximum_bytes=_MAX_HOST_RECEIPT_BYTES,
+    )
+    if committed != fresh_raw:
+        raise RuntimeError("fresh host receipt candidate readback diverged")
+    return committed, _validate_current_receipt(
+        committed,
+        current_host=plan["target_host"],
+    )
+
+
+def _apply_host_receipt_rotation_locked(
     revision: str,
     approved_plan_sha256: str,
     *,
@@ -675,6 +846,13 @@ def apply_host_receipt_rotation(
         prior_raw,
         maximum_bytes=_MAX_HOST_RECEIPT_BYTES,
     )
+    fresh_raw, fresh_receipt = _publish_or_reuse_fresh_candidate(
+        plan,
+        paths,
+        host_receipt_collector=host_receipt_collector,
+        clock=clock,
+        prior_raw=prior_raw,
+    )
     tombstone = _tombstone(plan)
     tombstone_raw = _canonical_bytes(tombstone)
     _publish_or_validate_exact_file(
@@ -689,25 +867,20 @@ def apply_host_receipt_rotation(
 
     current_path = _release.DEFAULT_HOST_RECEIPT_PATH
     if os.path.lexists(current_path):
-        fresh_raw = _read_exact_file(
+        current_raw = _read_current_host_receipt_raw()
+        if current_raw != fresh_raw:
+            raise RuntimeError("fresh host identity receipt diverged from candidate")
+        fresh_receipt = _validate_current_receipt(
+            current_raw, current_host=plan["target_host"]
+        )
+        _release._write_host_receipt_no_replace(current_path, fresh_receipt)
+        current_raw = _read_exact_file(
             current_path,
             maximum_bytes=_MAX_HOST_RECEIPT_BYTES,
         )
-        fresh_receipt = _validate_current_receipt(
-            fresh_raw,
-            current_host=plan["target_host"],
-        )
+        if current_raw != fresh_raw:
+            raise RuntimeError("fresh host identity recovery diverged")
     else:
-        observed_at_unix = int(clock())
-        if observed_at_unix < 0:
-            raise ValueError("host receipt rotation time is invalid")
-        fresh_receipt = _release._validate_host_receipt_mapping(
-            host_receipt_collector(observed_at_unix),
-            plan={"dedicated_host": plan["target_host"]},
-        )
-        fresh_raw = _canonical_bytes(fresh_receipt)
-        if len(fresh_raw) > _MAX_HOST_RECEIPT_BYTES:
-            raise RuntimeError("fresh host identity receipt exceeds its bound")
         _release._write_host_receipt_no_replace(current_path, fresh_receipt)
         readback = _read_exact_file(
             current_path,
@@ -746,8 +919,46 @@ def apply_host_receipt_rotation(
     )
 
 
+def apply_host_receipt_rotation(
+    revision: str,
+    approved_plan_sha256: str,
+    *,
+    external_iam_policy_sha256: str,
+    expected_prior_file_sha256: str,
+    expected_prior_receipt_sha256: str,
+    expected_prior_boot_id_sha256: str,
+    expected_current_boot_id_sha256: str,
+    runner: _release.Runner = _release._runner,
+    host_observer: HostObserver = _release._default_host_observer,
+    host_receipt_collector: HostReceiptCollector = (
+        _release._default_host_receipt_collector
+    ),
+    clock: Clock = time.time,
+) -> dict[str, Any]:
+    """Apply one exact transition under the fixed whole-rotation lease."""
+
+    _release._require_root_linux()
+    descriptor = _acquire_rotation_lock()
+    try:
+        return _apply_host_receipt_rotation_locked(
+            revision,
+            approved_plan_sha256,
+            external_iam_policy_sha256=external_iam_policy_sha256,
+            expected_prior_file_sha256=expected_prior_file_sha256,
+            expected_prior_receipt_sha256=expected_prior_receipt_sha256,
+            expected_prior_boot_id_sha256=expected_prior_boot_id_sha256,
+            expected_current_boot_id_sha256=expected_current_boot_id_sha256,
+            runner=runner,
+            host_observer=host_observer,
+            host_receipt_collector=host_receipt_collector,
+            clock=clock,
+        )
+    finally:
+        os.close(descriptor)
+
+
 class _ExactParser(argparse.ArgumentParser):
-    def error(self, message: str) -> None:
+    def error(self, message: str) -> NoReturn:
         del message
         raise ValueError("invalid host receipt rotation CLI arguments")
 
@@ -832,7 +1043,15 @@ def _parser() -> argparse.ArgumentParser:
     return parser
 
 
-def _intent_kwargs(arguments: argparse.Namespace) -> dict[str, str]:
+class _RotationIntentKwargs(TypedDict):
+    external_iam_policy_sha256: str
+    expected_prior_file_sha256: str
+    expected_prior_receipt_sha256: str
+    expected_prior_boot_id_sha256: str
+    expected_current_boot_id_sha256: str
+
+
+def _intent_kwargs(arguments: argparse.Namespace) -> _RotationIntentKwargs:
     return {
         "external_iam_policy_sha256": arguments.external_iam_policy_sha256,
         "expected_prior_file_sha256": arguments.expected_prior_file_sha256,

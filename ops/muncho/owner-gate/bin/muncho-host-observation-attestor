@@ -1,0 +1,25 @@
+#!/bin/false
+from pathlib import Path
+import os
+import re
+import sys
+
+entrypoint = Path(__file__)
+if entrypoint.is_symlink() or os.geteuid() != 0:
+    raise SystemExit("trusted_observation_host_entrypoint_invalid")
+release = entrypoint.resolve(strict=True).parents[1]
+if (
+    release.parent != Path("/opt/muncho-trusted-observation/releases")
+    or re.fullmatch(r"[0-9a-f]{40}", release.name) is None
+    or Path(sys.executable).resolve(strict=True)
+    != (release / "venv/bin/python").resolve(strict=True)
+):
+    raise SystemExit("trusted_observation_host_runtime_invalid")
+sys.path.insert(0, str(release))
+from scripts.canary.trusted_signer_provisioning import (
+    verify_host_signer_runtime_readiness,
+)
+from scripts.canary.storage_growth_trusted_collector import host_attestor_main
+
+verify_host_signer_runtime_readiness(release.name)
+raise SystemExit(host_attestor_main(sys.argv[1:]))

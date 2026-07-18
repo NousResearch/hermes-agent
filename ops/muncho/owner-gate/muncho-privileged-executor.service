@@ -1,0 +1,51 @@
+[Unit]
+Description=Muncho exact storage mutation executor
+Requires=muncho-privileged-executor.socket muncho-owner-gate-firewall-readiness.service
+After=muncho-privileged-executor.socket muncho-owner-gate-firewall-readiness.service
+
+[Service]
+Type=simple
+User=muncho-storage-executor
+Group=muncho-storage-executor
+ExecStartPre=/usr/bin/sha256sum --check --status /etc/muncho-owner-gate/python3.sha256
+ExecStartPre=/opt/muncho-owner-gate/current/venv/bin/python -I -B /opt/muncho-owner-gate/current/bin/muncho-passkey-v2-executor preflight --config /etc/muncho-owner-gate/executor.json --require-firewall-readiness-receipt /run/muncho-owner-gate/metadata-firewall-ready.json
+ExecStart=/opt/muncho-owner-gate/current/venv/bin/python -I -B /opt/muncho-owner-gate/current/bin/muncho-passkey-v2-executor serve-executor --config /etc/muncho-owner-gate/executor.json --socket-activation
+Restart=on-failure
+RestartSec=2s
+UMask=0077
+UnsetEnvironment=SSLKEYLOGFILE SSL_CERT_FILE SSL_CERT_DIR REQUESTS_CA_BUNDLE CURL_CA_BUNDLE HTTPS_PROXY HTTP_PROXY ALL_PROXY NO_PROXY OPENSSL_CONF OPENSSL_MODULES
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectClock=yes
+ProtectControlGroups=yes
+ProtectKernelLogs=yes
+ProtectKernelModules=yes
+ProtectKernelTunables=yes
+ProtectProc=invisible
+ProcSubset=pid
+LockPersonality=yes
+MemoryDenyWriteExecute=yes
+RestrictRealtime=yes
+RestrictSUIDSGID=yes
+RestrictNamespaces=yes
+SystemCallArchitectures=native
+SystemCallFilter=@system-service
+SystemCallFilter=~@mount @privileged @resources @reboot @swap
+CapabilityBoundingSet=
+AmbientCapabilities=
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+IPAddressDeny=any
+IPAddressAllow=169.254.169.254/32
+IPAddressAllow=199.36.153.8/30
+ReadOnlyPaths=/opt/muncho-owner-gate/current
+ReadOnlyPaths=/etc/muncho-owner-gate
+BindReadOnlyPaths=/etc/muncho-owner-gate/compute-api-hosts:/etc/hosts
+ReadWritePaths=/var/lib/muncho-owner-gate/executor
+ReadWritePaths=/run/muncho-owner-gate
+InaccessiblePaths=/var/lib/muncho-owner-gate/authority
+
+[Install]
+WantedBy=multi-user.target

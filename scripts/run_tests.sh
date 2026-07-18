@@ -12,6 +12,9 @@
 #     is belt-and-suspenders for anyone running pytest outside our
 #     conftest path — e.g. on a single file)
 #   * Proper venv activation (probes .venv, venv, then ~/.hermes/...)
+#   * An explicit isolated interpreter override via
+#     ``--python /absolute/executable``. The override must import pytest and is
+#     intended for dependency-incompatible security suites only.
 #
 # Usage:
 #   scripts/run_tests.sh                            # full suite
@@ -21,6 +24,7 @@
 #   scripts/run_tests.sh tests/foo.py               # single file
 #   scripts/run_tests.sh tests/foo.py -q            # path + bare pytest flag
 #   scripts/run_tests.sh tests/foo.py -v --tb=long  # bare flags "just work"
+#   scripts/run_tests.sh --python /tmp/test-venv/bin/python tests/foo.py
 #   scripts/run_tests.sh -k 'pattern'               # value flags pass through too
 #   scripts/run_tests.sh tests/foo.py -- --tb=long  # explicit '--' still works
 #
@@ -37,31 +41,98 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 
-# ── Locate python ───────────────────────────────────────────────────────────
-# Probe local venvs first; fall back to the Nix devShell's editable venv
-# (HERMES_PYTHON is exported by the devShell hook and ships [dev] extras:
-# pytest, pytest-asyncio, pytest-timeout, ruff, ty).
-VENV=""
-for candidate in "$REPO_ROOT/.venv" "$REPO_ROOT/venv" "$HOME/.hermes/hermes-agent/venv"; do
-  if [ -f "$candidate/bin/activate" ]; then
-    VENV="$candidate"
-    break
-  fi
+# ── Canonical-runner-only options ──────────────────────────────────────────
+# Strip the isolated Python override before forwarding all remaining args to
+# run_tests_parallel.py. This is intentionally a CLI option, not a HERMES_*
+# environment/config surface.
+TEST_PYTHON=""
+FORWARDED_ARGS=()
+while [ "$#" -gt 0 ]; do
+  case "$1" in
+    --)
+      # Everything after the canonical separator belongs to pytest. Never
+      # reinterpret a passthrough `--python` as a runner option.
+      FORWARDED_ARGS+=("$@")
+      set --
+      ;;
+    --python)
+      if [ "$#" -lt 2 ] || [ -z "$2" ]; then
+        echo "error: --python requires an absolute executable path" >&2
+        exit 1
+      fi
+      if [ -n "$TEST_PYTHON" ]; then
+        echo "error: --python may be specified only once" >&2
+        exit 1
+      fi
+      TEST_PYTHON="$2"
+      shift 2
+      ;;
+    --python=*)
+      if [ -n "$TEST_PYTHON" ]; then
+        echo "error: --python may be specified only once" >&2
+        exit 1
+      fi
+      TEST_PYTHON="${1#--python=}"
+      if [ -z "$TEST_PYTHON" ]; then
+        echo "error: --python requires an absolute executable path" >&2
+        exit 1
+      fi
+      shift
+      ;;
+    *)
+      FORWARDED_ARGS+=("$1")
+      shift
+      ;;
+  esac
 done
+set -- "${FORWARDED_ARGS[@]}"
 
-if [ -n "$VENV" ]; then
-  PYTHON="$VENV/bin/python"
-elif [ -n "${HERMES_PYTHON:-}" ] && [ -x "$HERMES_PYTHON" ] \
-    && "$HERMES_PYTHON" -c 'import pytest' 2>/dev/null; then
-  # Guard with an import check: HERMES_PYTHON may point at the RELEASE
-  # venv (no pytest) when inherited from a wrapped `hermes` binary rather
-  # than the devShell hook.
-  PYTHON="$HERMES_PYTHON"
-  echo "▶ no local venv — using Nix dev venv via HERMES_PYTHON: $PYTHON"
+# ── Locate python ───────────────────────────────────────────────────────────
+# An explicitly selected isolated test interpreter takes precedence. This
+# keeps dependency-incompatible suites (for example WebAuthn 3 / cryptography
+# 49) outside Hermes' production dependency graph. The absolute-path and
+# import checks make the override fail closed.
+if [ -n "$TEST_PYTHON" ]; then
+  case "$TEST_PYTHON" in
+    /*) ;;
+    *)
+      echo "error: --python must be an absolute path" >&2
+      exit 1
+      ;;
+  esac
+  if [ ! -x "$TEST_PYTHON" ] \
+      || ! "$TEST_PYTHON" -I -c 'import pytest' 2>/dev/null; then
+    echo "error: --python must be executable and import pytest" >&2
+    exit 1
+  fi
+  PYTHON="$TEST_PYTHON"
+  echo "▶ using explicit isolated test Python: $PYTHON"
 else
-  echo "error: no virtualenv found in $REPO_ROOT/.venv or $REPO_ROOT/venv," >&2
-  echo "       and HERMES_PYTHON is not a python with pytest (enter the Nix devShell or create a venv)" >&2
-  exit 1
+  # Probe local venvs first; fall back to the Nix devShell's editable venv
+  # (HERMES_PYTHON is exported by the devShell hook and ships [dev] extras:
+  # pytest, pytest-asyncio, pytest-timeout, ruff, ty).
+  VENV=""
+  for candidate in "$REPO_ROOT/.venv" "$REPO_ROOT/venv" "$HOME/.hermes/hermes-agent/venv"; do
+    if [ -f "$candidate/bin/activate" ]; then
+      VENV="$candidate"
+      break
+    fi
+  done
+
+  if [ -n "$VENV" ]; then
+    PYTHON="$VENV/bin/python"
+  elif [ -n "${HERMES_PYTHON:-}" ] && [ -x "$HERMES_PYTHON" ] \
+      && "$HERMES_PYTHON" -c 'import pytest' 2>/dev/null; then
+    # Guard with an import check: HERMES_PYTHON may point at the RELEASE
+    # venv (no pytest) when inherited from a wrapped `hermes` binary rather
+    # than the devShell hook.
+    PYTHON="$HERMES_PYTHON"
+    echo "▶ no local venv — using Nix dev venv via HERMES_PYTHON: $PYTHON"
+  else
+    echo "error: no virtualenv found in $REPO_ROOT/.venv or $REPO_ROOT/venv," >&2
+    echo "       and HERMES_PYTHON is not a python with pytest (enter the Nix devShell or create a venv)" >&2
+    exit 1
+  fi
 fi
 
 
@@ -99,6 +170,7 @@ exec env -i \
   LC_ALL=C.UTF-8 \
   PYTHONHASHSEED=0 \
   ${HERMES_RUN_SLOW_PET_TESTS:+HERMES_RUN_SLOW_PET_TESTS="$HERMES_RUN_SLOW_PET_TESTS"} \
+  ${MUNCHO_OWNER_GATE_ISOLATED_TEST_RUNTIME:+MUNCHO_OWNER_GATE_ISOLATED_TEST_RUNTIME="$MUNCHO_OWNER_GATE_ISOLATED_TEST_RUNTIME"} \
   ${EXTRA_PYTHONPATH:+PYTHONPATH="$EXTRA_PYTHONPATH"} \
   ${EXTRA_PYTEST_PLUGINS:+PYTEST_PLUGINS="$EXTRA_PYTEST_PLUGINS"} \
   "$PYTHON" "$SCRIPT_DIR/run_tests_parallel.py" "$@"

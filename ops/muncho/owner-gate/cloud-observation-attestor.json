@@ -1,0 +1,13 @@
+{
+  "private_key_gid": 29103,
+  "private_key_mode": "0400",
+  "private_key_path": "/etc/muncho-owner-gate/executor-keys/cloud-observation-attestation.key",
+  "private_key_uid": 29103,
+  "public_key_id": "@CLOUD_OBSERVATION_PUBLIC_KEY_ID@",
+  "replay_directory": "/var/lib/muncho-owner-gate/executor/cloud-attestations",
+  "replay_directory_gid": 29103,
+  "replay_directory_mode": "0700",
+  "replay_directory_uid": 29103,
+  "role": "cloud",
+  "schema": "muncho-storage-growth-cloud-attestor-config.v1"
+}

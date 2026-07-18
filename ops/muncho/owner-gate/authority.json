@@ -1,0 +1,11 @@
+{
+  "database": "/var/lib/muncho-owner-gate/authority/passkey-v2.sqlite3",
+  "executor_socket": "/run/muncho-owner-gate/privileged-executor.sock",
+  "origin": "https://auth.lomliev.com",
+  "owner_discord_user_id": "1279454038731264061",
+  "rp_id": "lomliev.com",
+  "schema": "muncho-owner-gate-authority-config.v1",
+  "sqlite_journal_mode": "DELETE",
+  "sqlite_synchronous": "FULL",
+  "totp_dangerous_actions_enabled": false
+}

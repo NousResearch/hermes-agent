@@ -1,0 +1,37 @@
+[Unit]
+Description=Muncho owner gate metadata UID firewall
+DefaultDependencies=no
+Before=network-pre.target
+Wants=network-pre.target
+
+[Service]
+Type=oneshot
+ExecStart=/opt/muncho-owner-gate/current/venv/bin/python -I -B /opt/muncho-owner-gate/current/scripts/canary/owner_gate_firewall_readiness.py install --rules /etc/muncho-owner-gate/metadata-firewall.rules
+RemainAfterExit=yes
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectClock=yes
+ProtectControlGroups=yes
+ProtectKernelLogs=yes
+ProtectKernelModules=yes
+ProtectKernelTunables=yes
+ProtectProc=invisible
+ProcSubset=pid
+LockPersonality=yes
+MemoryDenyWriteExecute=yes
+RestrictRealtime=yes
+RestrictSUIDSGID=yes
+RestrictNamespaces=yes
+InaccessiblePaths=/etc/muncho-owner-gate/compute-api-hosts
+CapabilityBoundingSet=CAP_NET_ADMIN
+AmbientCapabilities=
+RestrictAddressFamilies=AF_NETLINK AF_INET
+SystemCallArchitectures=native
+SystemCallFilter=@system-service
+SystemCallFilter=~@mount @resources @reboot @swap
+
+[Install]
+WantedBy=network-pre.target

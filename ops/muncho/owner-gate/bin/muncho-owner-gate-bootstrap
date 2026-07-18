@@ -1,0 +1,6 @@
+#!/bin/false
+
+# Deliberate fail-closed sentinel.  An uploaded package cannot verify itself.
+# The owner-provenance stage-zero kit under /opt/muncho-owner-gate-stage0 is
+# the only pre-verification entrypoint.
+raise SystemExit("owner_gate_trusted_outer_stage0_required")

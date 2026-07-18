@@ -1,0 +1,21 @@
+#!/bin/false
+from pathlib import Path
+import os
+import re
+import sys
+
+entrypoint = Path(__file__)
+if entrypoint.is_symlink() or os.geteuid() != 0:
+    raise SystemExit("trusted_signer_cloud_entrypoint_invalid")
+release = entrypoint.resolve(strict=True).parents[1]
+if (
+    release.parent != Path("/opt/muncho-owner-gate/releases")
+    or re.fullmatch(r"[0-9a-f]{40}", release.name) is None
+    or Path(sys.executable).resolve(strict=True)
+    != (release / "venv/bin/python").resolve(strict=True)
+):
+    raise SystemExit("trusted_signer_cloud_runtime_invalid")
+sys.path.insert(0, str(release))
+from scripts.canary.trusted_signer_provisioning import cloud_provision_main
+
+raise SystemExit(cloud_provision_main(sys.argv[1:]))

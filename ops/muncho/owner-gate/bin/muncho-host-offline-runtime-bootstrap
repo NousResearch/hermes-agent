@@ -1,0 +1,5 @@
+#!/bin/false
+
+# Deliberate fail-closed sentinel.  Host stage zero is imported only from the
+# root-owned owner-provenance kit after that kit's exact digest is sealed.
+raise SystemExit("owner_gate_trusted_outer_stage0_required")

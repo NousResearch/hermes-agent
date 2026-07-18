@@ -1,0 +1,9 @@
+{
+  "authority_socket": "/run/muncho-owner-gate/passkey-authority.sock",
+  "listen_host": "0.0.0.0",
+  "listen_port": 8080,
+  "origin": "https://auth.lomliev.com",
+  "owner_discord_user_id": "1279454038731264061",
+  "rp_id": "lomliev.com",
+  "schema": "muncho-owner-gate-web-config.v1"
+}

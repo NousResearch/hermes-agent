@@ -1,0 +1,2 @@
+Cmnd_Alias MUNCHO_CLOUD_TRUSTED_SIGNER_PROVISION = /opt/muncho-owner-gate/releases/@RELEASE_SHA@/venv/bin/python -I -B /opt/muncho-owner-gate/releases/@RELEASE_SHA@/bin/muncho-cloud-trusted-signer-provision
+%google-sudoers ALL=(root) NOPASSWD: MUNCHO_CLOUD_TRUSTED_SIGNER_PROVISION

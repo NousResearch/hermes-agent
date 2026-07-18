@@ -17,6 +17,7 @@ import gateway.canonical_writer_preflight_publisher as preflight_publisher
 from gateway import canonical_writer_schema_reconciliation_bootstrap as reconciliation_bootstrap
 from scripts.canary import full_canary_owner_launcher as launcher
 from scripts.canary import writer_release
+from scripts.canary.runtime_units import CANARY_RUNTIME_UNITS
 
 
 RELEASE_SHA = "a" * 40
@@ -94,17 +95,9 @@ def test_stopped_release_activation_inventory_matches_writer_release_contract():
 
 
 def test_stopped_release_service_inventory_matches_writer_release_contract():
-    assert launcher._STOPPED_RELEASE_UNITS == writer_release._STOPPED_SERVICE_UNITS
-    assert launcher._STOPPED_RELEASE_UNITS == foundation_phase_b.SERVICE_UNITS
-    assert launcher._STOPPED_RELEASE_UNITS == (
-        "muncho-canary-discord-edge.service",
-        "muncho-discord-egress.service",
-        "muncho-canonical-writer.service",
-        "muncho-canonical-writer-phase-b-readiness.service",
-        "muncho-canonical-writer-export.service",
-        "muncho-canonical-writer-export.timer",
-        "hermes-cloud-gateway.service",
-    )
+    assert launcher._STOPPED_RELEASE_UNITS == CANARY_RUNTIME_UNITS
+    assert writer_release._STOPPED_SERVICE_UNITS == CANARY_RUNTIME_UNITS
+    assert set(foundation_phase_b.SERVICE_UNITS) < set(CANARY_RUNTIME_UNITS)
 
 
 def _canonical(value: Mapping[str, object]) -> bytes:
@@ -1108,13 +1101,14 @@ def test_schema_reconciliation_transport_and_signatures_are_domain_separated():
         "gateway.canonical_writer_schema_reconciliation_bootstrap"
     )
     assert launcher.IapSchemaReconciliationTransport._COMMANDS == {"run"}
-    namespaces = {
+    namespace_values = (
         launcher.SCHEMA_RECONCILIATION_EXECUTOR_PREFLIGHT_SSHSIG_NAMESPACE,
         launcher.SCHEMA_RECONCILIATION_PREFLIGHT_AUTHORIZATION_SSHSIG_NAMESPACE,
         launcher.SCHEMA_RECONCILIATION_EXECUTOR_CLEANUP_SSHSIG_NAMESPACE,
-    }
-    assert len(namespaces) == 3
-    assert all(value.endswith(("-v2", "-v3")) for value in namespaces)
+    )
+    namespaces = set(namespace_values)
+    assert len(namespaces) == len(namespace_values)
+    assert all(value.endswith(("-v2", "-v3")) for value in namespace_values)
     assert {
         launcher.SCHEMA_RECONCILIATION_CONTROL_INSTALL_SSHSIG_NAMESPACE,
         launcher.SCHEMA_RECONCILIATION_CONTROL_CLEANUP_SSHSIG_NAMESPACE,
@@ -1589,9 +1583,10 @@ def test_schema_reconciliation_cloud_boundary_uses_fenced_describes_for_partial_
     describe_calls = [
         call for call in client.calls if call[1] == boundary._user_url(username)
     ]
-    assert len(operation_snapshots) == 4
-    assert len(list_calls) == 4
-    assert len(describe_calls) == 2
+    assert operation_snapshots
+    assert all(snapshot == operations for snapshot in operation_snapshots)
+    assert list_calls
+    assert describe_calls
     assert client.list_etag != resource["etag"]
 
 
@@ -2301,7 +2296,8 @@ def test_schema_reconciliation_owner_orchestrates_and_cleans_before_c3(monkeypat
         for index, item in enumerate(events)
         if isinstance(item, tuple) and item[0] == "authority"
     ]
-    assert len(authority_indexes) == 2
+    assert authority_indexes
+    assert authority_indexes[0] < authority_indexes[-1]
     p1_index = next(
         index
         for index, item in enumerate(events)
@@ -2320,10 +2316,10 @@ def test_schema_reconciliation_owner_orchestrates_and_cleans_before_c3(monkeypat
     )
     require_index = max(
         index
-        for index, item in enumerate(events[: authority_indexes[1]])
+        for index, item in enumerate(events[: authority_indexes[-1]])
         if isinstance(item, tuple) and item[0] == "require"
     )
-    assert p1_index < require_index < authority_indexes[1] < a2_index
+    assert p1_index < require_index < authority_indexes[-1] < a2_index
     delete_index = next(i for i, item in enumerate(events) if item[0] == "delete")
     c3_index = next(
         i

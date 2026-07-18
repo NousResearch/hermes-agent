@@ -1,0 +1,91 @@
+#!/usr/bin/python3
+from pathlib import Path
+import os
+import re
+import stat
+import sys
+
+
+def _validated_release(
+    *,
+    expected_name="muncho-passkey-v2-web",
+    expected_uid=29101,
+    entrypoint=None,
+    executable=None,
+    releases_root=Path("/opt/muncho-owner-gate/releases"),
+    lstat_fn=os.lstat,
+    getuid_fn=os.getuid,
+    geteuid_fn=os.geteuid,
+    getgid_fn=os.getgid,
+    getegid_fn=os.getegid,
+    flags=None,
+):
+    entrypoint = Path(__file__) if entrypoint is None else Path(entrypoint)
+    executable = Path(sys.executable) if executable is None else Path(executable)
+    flags = sys.flags if flags is None else flags
+    try:
+        entrypoint_state = lstat_fn(entrypoint)
+        resolved_entrypoint = entrypoint.resolve(strict=True)
+        release = resolved_entrypoint.parents[1]
+        release_state = lstat_fn(release)
+        releases_state = lstat_fn(releases_root)
+        install_state = lstat_fn(releases_root.parent)
+        interpreter = release / "venv/bin/python"
+        interpreter_state = lstat_fn(interpreter)
+        resolved_interpreter = interpreter.resolve(strict=True)
+        resolved_executable = executable.resolve(strict=True)
+    except (OSError, RuntimeError):
+        raise SystemExit("owner_gate_runtime_entrypoint_invalid") from None
+    if (
+        not entrypoint.is_absolute()
+        or release.parent != releases_root
+        or re.fullmatch(r"[0-9a-f]{40}", release.name) is None
+        or resolved_entrypoint != release / "bin" / expected_name
+        or not stat.S_ISREG(entrypoint_state.st_mode)
+        or entrypoint_state.st_uid != 0
+        or entrypoint_state.st_gid != 0
+        or stat.S_IMODE(entrypoint_state.st_mode) != 0o555
+        or entrypoint_state.st_nlink != 1
+        or not stat.S_ISDIR(release_state.st_mode)
+        or release_state.st_uid != 0
+        or release_state.st_gid != 0
+        or stat.S_IMODE(release_state.st_mode) != 0o555
+        or not stat.S_ISDIR(releases_state.st_mode)
+        or releases_state.st_uid != 0
+        or releases_state.st_gid != 0
+        or stat.S_IMODE(releases_state.st_mode) != 0o755
+        or not stat.S_ISDIR(install_state.st_mode)
+        or install_state.st_uid != 0
+        or install_state.st_gid != 0
+        or stat.S_IMODE(install_state.st_mode) != 0o755
+        or not executable.is_absolute()
+        or resolved_executable != resolved_interpreter
+        or not stat.S_ISREG(interpreter_state.st_mode)
+        or interpreter_state.st_uid != 0
+        or interpreter_state.st_gid != 0
+        or stat.S_IMODE(interpreter_state.st_mode) != 0o755
+        or interpreter_state.st_nlink != 1
+        or getuid_fn() != expected_uid
+        or geteuid_fn() != expected_uid
+        or getgid_fn() != expected_uid
+        or getegid_fn() != expected_uid
+        or flags.isolated != 1
+        or flags.ignore_environment != 1
+        or flags.no_user_site != 1
+        or flags.safe_path is not True
+        or flags.dont_write_bytecode != 1
+    ):
+        raise SystemExit("owner_gate_runtime_entrypoint_invalid")
+    return release
+
+
+def _main():
+    release = _validated_release()
+    sys.path.insert(0, str(release))
+    from scripts.canary.passkey_v2_service import web_main
+
+    return web_main(sys.argv[1:])
+
+
+if __name__ == "__main__":
+    raise SystemExit(_main())

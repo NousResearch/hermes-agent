@@ -1,0 +1,47 @@
+[Unit]
+Description=Muncho passkey v2 public web edge
+After=network-online.target muncho-passkey-authority.socket
+Wants=network-online.target muncho-passkey-authority.socket
+
+[Service]
+Type=simple
+User=muncho-passkey-web
+Group=muncho-passkey-web
+ExecStartPre=/usr/bin/sha256sum --check --status /etc/muncho-owner-gate/python3.sha256
+ExecStart=/opt/muncho-owner-gate/current/venv/bin/python -I -B /opt/muncho-owner-gate/current/bin/muncho-passkey-v2-web serve-web --config /etc/muncho-owner-gate/web.json
+Restart=on-failure
+RestartSec=2s
+UMask=0077
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectClock=yes
+ProtectControlGroups=yes
+ProtectKernelLogs=yes
+ProtectKernelModules=yes
+ProtectKernelTunables=yes
+ProtectProc=invisible
+ProcSubset=pid
+LockPersonality=yes
+MemoryDenyWriteExecute=yes
+RestrictRealtime=yes
+RestrictSUIDSGID=yes
+RestrictNamespaces=yes
+SystemCallArchitectures=native
+SystemCallFilter=@system-service
+SystemCallFilter=~@mount @privileged @resources @reboot @swap
+CapabilityBoundingSet=
+AmbientCapabilities=
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+IPAddressDeny=any
+IPAddressAllow=127.0.0.0/8
+IPAddressAllow=10.80.0.2/32
+ReadOnlyPaths=/opt/muncho-owner-gate/current
+ReadOnlyPaths=/etc/muncho-owner-gate
+InaccessiblePaths=/var/lib/muncho-owner-gate
+InaccessiblePaths=/etc/muncho-owner-gate/compute-api-hosts
+
+[Install]
+WantedBy=multi-user.target

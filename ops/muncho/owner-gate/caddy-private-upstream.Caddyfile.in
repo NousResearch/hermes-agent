@@ -1,0 +1,26 @@
+auth.lomliev.com {
+    request_body {
+        max_size 64KB
+    }
+    header {
+        Cache-Control "no-store, max-age=0"
+        Content-Security-Policy "default-src 'none'; script-src 'self'; style-src 'self'; connect-src 'self'; img-src 'self'; form-action 'self'; frame-ancestors 'none'; base-uri 'none'"
+        Cross-Origin-Opener-Policy "same-origin"
+        Cross-Origin-Resource-Policy "same-origin"
+        Pragma "no-cache"
+        Referrer-Policy "no-referrer"
+        Strict-Transport-Security "max-age=31536000; includeSubDomains"
+        X-Content-Type-Options "nosniff"
+        X-Frame-Options "DENY"
+    }
+    reverse_proxy 10.80.3.2:8080 {
+        health_uri /readyz
+        health_headers {
+            Host auth.lomliev.com
+        }
+        health_interval 5s
+        health_timeout 2s
+        fail_duration 30s
+        max_fails 1
+    }
+}

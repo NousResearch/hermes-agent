@@ -20,6 +20,7 @@ from scripts.canary import full_canary_owner_launcher as launcher
 
 
 RELEASE_SHA = "a" * 40
+SOURCE_TREE_OID = "b" * 40
 SOURCE_ARCHIVE = b"release-bound-gateway-and-scripts"
 REPOSITORY_ROOT = Path(launcher.__file__).parents[2]
 
@@ -90,6 +91,7 @@ def _support_tree(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
 
     manifest = launcher._owner_support_manifest_value(
         RELEASE_SHA,
+        source_tree_oid=SOURCE_TREE_OID,
         source_archive_bytes=len(SOURCE_ARCHIVE),
         source_archive_sha256=hashlib.sha256(SOURCE_ARCHIVE).hexdigest(),
     )
@@ -137,6 +139,7 @@ def _real_import_support_tree(
 
     manifest = launcher._owner_support_manifest_value(
         RELEASE_SHA,
+        source_tree_oid=SOURCE_TREE_OID,
         source_archive_bytes=len(SOURCE_ARCHIVE),
         source_archive_sha256=hashlib.sha256(SOURCE_ARCHIVE).hexdigest(),
     )
@@ -262,6 +265,7 @@ def test_v2_bootstrap_receipt_binds_owner_support_tree_and_sources(
         "muncho-full-canary-owner-trusted-runtime-bootstrap-receipt.v2"
     )
     assert receipt["owner_support_release_sha"] == RELEASE_SHA
+    assert receipt["owner_support_source_tree_oid"] == SOURCE_TREE_OID
     assert receipt["owner_support_tree_sha256"] == runtime._owner_support_fingerprint[2]
     assert receipt["owner_support_manifest_sha256"] == (
         runtime._owner_support_manifest["manifest_sha256"]
@@ -287,6 +291,7 @@ def test_v2_bootstrap_receipt_binds_owner_support_tree_and_sources(
     "field,replacement",
     [
         ("owner_support_release_sha", "b" * 40),
+        ("owner_support_source_tree_oid", "c" * 40),
         ("owner_support_tree_sha256", "f" * 64),
         ("owner_support_manifest_sha256", "e" * 64),
         ("owner_support_source_archive_sha256", "d" * 64),
@@ -500,6 +505,82 @@ print(json.dumps({{
     assert not list(root.rglob("__pycache__"))
 
 
+def test_sealed_author_and_apply_has_one_exact_hostile_ambient_safe_command(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    root = _real_import_support_tree(tmp_path, monkeypatch)
+    manifest = launcher._validate_owner_support_manifest(
+        str(root),
+        release_sha=RELEASE_SHA,
+    )
+    assert manifest["source_tree_oid"] == SOURCE_TREE_OID
+    entrypoint = (
+        root
+        / "source/scripts/canary/owner_gate_author_and_apply.py"
+    )
+    assert entrypoint.is_absolute()
+    hostile = tmp_path / "hostile"
+    hostile.mkdir()
+    marker = tmp_path / "ambient-imported"
+    (hostile / "sitecustomize.py").write_text(
+        f"from pathlib import Path\nPath({str(marker)!r}).write_text('bad')\n",
+        encoding="ascii",
+    )
+    command = (
+        sys.executable,
+        "-I",
+        "-S",
+        "-B",
+        str(entrypoint),
+        "author-and-apply",
+    )
+    environment = {
+        "HOME": str(tmp_path),
+        "LANG": "C",
+        "LC_ALL": "C",
+        "PATH": "/usr/bin:/bin:/usr/sbin:/sbin",
+        "PYTHONPATH": os.pathsep.join((str(hostile), str(REPOSITORY_ROOT))),
+    }
+    completed = subprocess.run(
+        command,
+        cwd=hostile,
+        stdin=subprocess.DEVNULL,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        env=environment,
+        check=False,
+        timeout=60,
+    )
+
+    assert completed.returncode == 1, completed.stderr.decode(
+        "utf-8", errors="replace"
+    )
+    assert json.loads(completed.stdout) == {
+        "error": "owner_gate_author_runtime_invalid",
+        "ok": False,
+    }
+    assert not marker.exists()
+    assert not list(root.rglob("*.pyc"))
+    assert not list(root.rglob("__pycache__"))
+
+    extra = subprocess.run(
+        (*command, "--release-sha", "b" * 40),
+        cwd=hostile,
+        stdin=subprocess.DEVNULL,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        env=environment,
+        check=False,
+        timeout=60,
+    )
+    assert extra.returncode == 2
+    assert json.loads(extra.stdout) == {
+        "error": "owner_gate_author_operation_invalid",
+        "ok": False,
+    }
+
+
 def _synthetic_publication_inputs(
     monkeypatch: pytest.MonkeyPatch,
 ) -> tuple[tuple[object, ...], bytes, bytes, str]:
@@ -547,6 +628,7 @@ def test_unreceipted_existing_destination_is_rebuilt_and_compared(
     (root / "source/gateway/__init__.py").write_bytes(b"# preseeded tamper\n")
     manifest = launcher._owner_support_manifest_value(
         RELEASE_SHA,
+        source_tree_oid=SOURCE_TREE_OID,
         source_archive_bytes=len(source_payload),
         source_archive_sha256=source_sha256,
     )
@@ -588,7 +670,7 @@ def test_unreceipted_existing_destination_is_rebuilt_and_compared(
 
     monkeypatch.setattr(
         launcher,
-        "_darwin_rename_no_replace",
+        "_atomic_rename_no_replace",
         destination_exists,
     )
 
@@ -601,16 +683,17 @@ def test_unreceipted_existing_destination_is_rebuilt_and_compared(
             trusted_root=str(trusted_root),
             source_archiver=source_archiver,
             wheel_downloader=wheel_downloader,
+            source_tree_resolver=lambda _release: SOURCE_TREE_OID,
         )
 
     assert calls == ["source", "wheel"]
 
 
 @pytest.mark.skipif(
-    sys.platform != "darwin",
-    reason="requires Darwin renamex_np publication semantics",
+    sys.platform not in {"darwin", "linux"},
+    reason="requires supported atomic no-replace publication semantics",
 )
-def test_fresh_darwin_publication_reseals_the_destination_root(
+def test_fresh_platform_publication_reseals_the_destination_root(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -645,6 +728,7 @@ def test_fresh_darwin_publication_reseals_the_destination_root(
         trusted_root=str(trusted_root),
         source_archiver=source_archiver,
         wheel_downloader=wheel_downloader,
+        source_tree_resolver=lambda _release: SOURCE_TREE_OID,
     )
 
     assert calls == ["source", "wheel"]
@@ -661,8 +745,8 @@ def test_fresh_darwin_publication_reseals_the_destination_root(
 
 
 @pytest.mark.skipif(
-    sys.platform != "darwin",
-    reason="requires Darwin renamex_np publication semantics",
+    sys.platform not in {"darwin", "linux"},
+    reason="requires supported atomic no-replace publication semantics",
 )
 def test_retry_recovers_exact_interrupted_post_rename_root(
     tmp_path: Path,
@@ -694,7 +778,7 @@ def test_retry_recovers_exact_interrupted_post_rename_root(
         wheel_path.write_bytes(wheel_payload)
         wheel_path.chmod(0o600)
 
-    atomic_rename = launcher._darwin_rename_no_replace
+    atomic_rename = launcher._atomic_rename_no_replace
 
     def interrupt_after_rename(*args: object, **kwargs: object) -> None:
         atomic_rename(*args, **kwargs)
@@ -702,7 +786,7 @@ def test_retry_recovers_exact_interrupted_post_rename_root(
 
     monkeypatch.setattr(
         launcher,
-        "_darwin_rename_no_replace",
+        "_atomic_rename_no_replace",
         interrupt_after_rename,
     )
     with pytest.raises(launcher.OwnerLauncherError) as interrupted:
@@ -711,6 +795,7 @@ def test_retry_recovers_exact_interrupted_post_rename_root(
             trusted_root=str(trusted_root),
             source_archiver=source_archiver,
             wheel_downloader=wheel_downloader,
+            source_tree_resolver=lambda _release: SOURCE_TREE_OID,
         )
     assert interrupted.value.code == "simulated_post_rename_interruption"
 
@@ -719,7 +804,7 @@ def test_retry_recovers_exact_interrupted_post_rename_root(
 
     monkeypatch.setattr(
         launcher,
-        "_darwin_rename_no_replace",
+        "_atomic_rename_no_replace",
         atomic_rename,
     )
     root, tree, manifest = launcher._publish_trusted_owner_support_runtime(
@@ -727,6 +812,7 @@ def test_retry_recovers_exact_interrupted_post_rename_root(
         trusted_root=str(trusted_root),
         source_archiver=source_archiver,
         wheel_downloader=wheel_downloader,
+        source_tree_resolver=lambda _release: SOURCE_TREE_OID,
     )
 
     assert calls == ["source", "wheel", "source", "wheel"]

@@ -1,0 +1,14 @@
+d /opt/muncho-owner-gate 0755 root root -
+d /opt/muncho-owner-gate/releases 0755 root root -
+d /etc/muncho-owner-gate 0755 root root -
+d /etc/muncho-owner-gate/keys 0700 root root -
+d /etc/muncho-owner-gate/executor-keys 0710 root muncho-storage-executor -
+d /etc/muncho-owner-gate/public 0755 root root -
+d /run/muncho-owner-gate 0755 root root -
+d /var/lib/muncho-owner-gate 0711 root root -
+d /var/lib/muncho-owner-gate/authority 0700 muncho-passkey-authority muncho-passkey-authority -
+d /var/lib/muncho-owner-gate/executor 0700 muncho-storage-executor muncho-storage-executor -
+d /var/lib/muncho-owner-gate/executor/cloud-attestations 0700 muncho-storage-executor muncho-storage-executor -
+d /var/lib/muncho-owner-gate/bootstrap-receipts 0700 root root -
+d /var/lib/muncho-owner-gate/activation-evidence 0700 root root -
+d /var/lib/muncho-owner-gate/activation-receipts 0700 root root -

@@ -1,0 +1,51 @@
+{
+  "admin_transport": "iap_tcp_forwarding_only",
+  "artifact_transfer": "offline_package_over_iap",
+  "bootstrap_network_package_install": false,
+  "bootstrap_transaction": "strict_prefix_crash_replay_journal",
+  "compute_api_hosts_fragment": "199.36.153.8 compute.googleapis.com\n199.36.153.8 cloudresourcemanager.googleapis.com\n199.36.153.8 iam.googleapis.com",
+  "compute_api_hosts_install": "executor_only_root_owned_file",
+  "compute_api_hosts_path": "/etc/muncho-owner-gate/compute-api-hosts",
+  "compute_api_hosts_bind_read_only": "/etc/muncho-owner-gate/compute-api-hosts:/etc/hosts",
+  "global_etc_hosts_mutation": false,
+  "current_symlink_activation_is_separate_gate": true,
+  "executor_activation_seal": "/etc/muncho-owner-gate/storage-executor-enabled",
+  "identities": [
+    {
+      "gid": 29101,
+      "name": "muncho-passkey-web",
+      "shell": "/usr/sbin/nologin",
+      "uid": 29101
+    },
+    {
+      "gid": 29102,
+      "name": "muncho-passkey-authority",
+      "shell": "/usr/sbin/nologin",
+      "uid": 29102
+    },
+    {
+      "gid": 29103,
+      "name": "muncho-storage-executor",
+      "shell": "/usr/sbin/nologin",
+      "uid": 29103
+    }
+  ],
+  "mutation_iam_binding_installed_during_bootstrap": false,
+  "offline_install_receipt": "target_generated_ed25519_signed_activation_false",
+  "metadata_firewall_root_admin_allowed": true,
+  "metadata_firewall_unprivileged_uids_allowed": [29103],
+  "old_v1_masked_before_caddy_cutover": true,
+  "public_ports_added_on_owner_gate_vm": [],
+  "release_mode": "0555",
+  "release_owner": "root:root",
+  "release_root_template": "/opt/muncho-owner-gate/releases/<exact-40-char-revision>",
+  "schema": "muncho-owner-gate-offline-bootstrap-manifest.v1",
+  "service_activation_order": [
+    "muncho-owner-gate-metadata-firewall.service",
+    "muncho-owner-gate-firewall-readiness.timer",
+    "muncho-passkey-authority.socket",
+    "muncho-privileged-executor.socket",
+    "muncho-passkey-web.service"
+  ],
+  "web_ingress": "current_caddy_private_proxy_only"
+}

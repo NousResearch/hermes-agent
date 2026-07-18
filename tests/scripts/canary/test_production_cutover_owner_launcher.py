@@ -969,17 +969,45 @@ def _known_host_line(instance_id: str) -> bytes:
     )
 
 
-def test_production_known_hosts_requires_exact_production_instance_id() -> None:
-    owner.PinnedProductionGoogleComputeKnownHosts._validate_known_hosts_payload(
-        _known_host_line(owner.PRODUCTION_VM_INSTANCE_ID)
-    )
+def test_production_known_hosts_requires_exact_production_instance_id(
+    tmp_path: Path,
+) -> None:
+    ssh_root = tmp_path / ".ssh"
+    ssh_root.mkdir(mode=0o700)
+    known_hosts = ssh_root / "google_compute_known_hosts"
+    private_key = ssh_root / "google_compute_engine"
+    public_key = ssh_root / "google_compute_engine.pub"
+    production_line = _known_host_line(owner.PRODUCTION_VM_INSTANCE_ID)
+    known_hosts.write_bytes(production_line)
+    known_hosts.chmod(0o644)
+    private_key.write_bytes(b"private-key-fixture")
+    private_key.chmod(0o600)
+    public_key.write_bytes(b"ssh-ed25519 public-key-fixture\n")
+    public_key.chmod(0o644)
 
+    pinned = owner.PinnedProductionGoogleComputeKnownHosts(
+        path=known_hosts,
+        private_key=private_key,
+        public_key=public_key,
+    )
+    assert pinned.server_host_key_line(owner.PRODUCTION_VM_INSTANCE_ID) == (
+        production_line.decode("ascii").rstrip("\n")
+    )
+    with pytest.raises(
+        canary_transport.OwnerLauncherError,
+        match="trusted_known_hosts_instance_changed",
+    ):
+        pinned.server_host_key_line(canary_transport.VM_INSTANCE_ID)
+
+    known_hosts.write_bytes(_known_host_line(canary_transport.VM_INSTANCE_ID))
     with pytest.raises(
         canary_transport.OwnerLauncherError,
         match="trusted_known_hosts_invalid",
     ):
-        owner.PinnedProductionGoogleComputeKnownHosts._validate_known_hosts_payload(
-            _known_host_line(canary_transport.VM_INSTANCE_ID)
+        owner.PinnedProductionGoogleComputeKnownHosts(
+            path=known_hosts,
+            private_key=private_key,
+            public_key=public_key,
         )
 
 

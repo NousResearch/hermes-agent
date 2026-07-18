@@ -60,6 +60,30 @@ from dataclasses import dataclass, field
 from pathlib import Path, PurePosixPath
 from typing import Any, BinaryIO, Callable, Mapping, Protocol, Sequence
 
+try:
+    from scripts.canary.runtime_units import CANARY_RUNTIME_UNITS
+except ModuleNotFoundError:
+    if __package__:
+        raise
+    # The owner launcher is intentionally executable with ``-I -S`` via an
+    # absolute path, where the repository is absent from ``sys.path``.  Keep
+    # that sealed standalone entry point while tests require byte-for-byte
+    # equality with the canonical data-only module in normal imports.
+    CANARY_RUNTIME_UNITS = (
+        "hermes-cloud-gateway.service",
+        "muncho-canary-discord-edge.service",
+        "muncho-canonical-writer-phase-b-readiness.service",
+        "muncho-canonical-writer.service",
+        "muncho-canonical-writer-export.service",
+        "muncho-canonical-writer-export.timer",
+        "muncho-isolated-worker.socket",
+        "muncho-isolated-worker.service",
+        "muncho-capability-browser.service",
+        "muncho-discord-connector.service",
+        "muncho-discord-egress.service",
+        "muncho-mac-ops-edge.service",
+    )
+
 PROJECT = "adventico-ai-platform"
 ZONE = "europe-west3-a"
 VM_NAME = "muncho-canary-v2-01"
@@ -244,6 +268,27 @@ PHASE_B_OWNER_PUBLIC_KEY_COMMENT = "skyvision-mac-ops-emil-20260710"
 PHASE_B_OWNER_PUBLIC_KEY_FINGERPRINT = (
     "SHA256:7Ea5WNys9ui7FL/p0FlOnL1ZLr6NPFuewekwqRw/rdw"
 )
+OWNER_GATE_HOST_IDENTITY_RECEIPT_SCHEMA = (
+    "muncho-owner-gate-iap-host-identity-receipt.v2"
+)
+OWNER_GATE_HOST_IDENTITY_SSHSIG_NAMESPACE = (
+    "muncho-owner-gate-iap-host-identity-v2"
+)
+OWNER_GATE_HOST_IDENTITY_RECEIPT_RELATIVE = (
+    ".hermes/trusted/owner-gate-iap-host-identity-v2.json"
+)
+OWNER_GATE_PROJECT_NUMBER = "39589465056"
+OWNER_GATE_SERVICE_ACCOUNT_EMAIL = (
+    "muncho-owner-gate-executor@adventico-ai-platform.iam.gserviceaccount.com"
+)
+OWNER_GATE_HOST_IDENTITY_COLLECTION_METHOD = (
+    "gcloud-start-iap-tunnel-openssh-noauth-ed25519-v1"
+)
+# Intentionally unset.  The inert owner-gate bootstrap must first yield the
+# exact numeric instance ID and SSH host key in an externally owner-signed
+# receipt.  A reviewed follow-up pins that receipt digest; until then the
+# production IAP transport cannot be constructed and no Cloud call is made.
+OWNER_GATE_HOST_IDENTITY_RECEIPT_SHA256: str | None = None
 PHASE_B_PINNED_APPROVAL_SOURCE_SHA256 = hashlib.sha256(
     PHASE_B_OWNER_PUBLIC_KEY_FINGERPRINT.encode("ascii")
 ).hexdigest()
@@ -365,6 +410,12 @@ TRUSTED_RUNTIME_BOOTSTRAP_RECEIPT_SCHEMA = (
 TRUSTED_SDK_PUBLICATION_INTENT_SCHEMA = (
     "muncho-full-canary-owner-trusted-sdk-publication-intent.v1"
 )
+TRUSTED_SDK_BYTECODE_REPAIR_RECEIPT_SCHEMA = (
+    "muncho-full-canary-owner-trusted-sdk-bytecode-repair-receipt.v1"
+)
+TRUSTED_SDK_BYTECODE_REPAIR_INTENT_SCHEMA = (
+    "muncho-full-canary-owner-trusted-sdk-bytecode-repair-intent.v1"
+)
 TRUSTED_OWNER_SUPPORT_TREE_SCHEMA = (
     "muncho-full-canary-owner-support-tree.v1"
 )
@@ -416,15 +467,7 @@ _STOPPED_RELEASE_ACTIVATION_PATHS = (
     "/etc/muncho-canonical-writer/writer.json",
     "/etc/hermes/config.yaml",
 )
-_STOPPED_RELEASE_UNITS = (
-    "muncho-canary-discord-edge.service",
-    "muncho-discord-egress.service",
-    "muncho-canonical-writer.service",
-    "muncho-canonical-writer-phase-b-readiness.service",
-    "muncho-canonical-writer-export.service",
-    "muncho-canonical-writer-export.timer",
-    "hermes-cloud-gateway.service",
-)
+_STOPPED_RELEASE_UNITS = CANARY_RUNTIME_UNITS
 _STOPPED_RELEASE_SERVICE_PROPERTIES = (
     "LoadState",
     "ActiveState",
@@ -460,6 +503,13 @@ _TRUSTED_SDK_PUBLICATION_INTENT_RELATIVE = (
     ".hermes/trusted/trusted-sdk-publication-569.0.0-"
     "2d4ab8eb0a9362a69feabade6df4163763cd989cb840dc3f7ced5ac24dde6e67.json"
 )
+_TRUSTED_SDK_BYTECODE_REPAIR_RECEIPT_PREFIX = (
+    "trusted-sdk-bytecode-repair-569.0.0-"
+)
+_TRUSTED_SDK_BYTECODE_REPAIR_INTENT_PREFIX = (
+    "trusted-sdk-bytecode-repair-intent-569.0.0-"
+)
+_TRUSTED_SDK_BYTECODE_REPAIR_INTENT_MAX_BYTES = 2 * 1024 * 1024
 _TRUSTED_PYTHON_RELATIVE = (
     ".local/share/uv/python/cpython-3.11.15-macos-aarch64-none/bin/python3.11"
 )
@@ -573,6 +623,11 @@ _AMBIGUOUS_CLOUD_SQL_CREATE_ERRORS = frozenset({
 
 _SHA256 = re.compile(r"^[0-9a-f]{64}$")
 _RELEASE_SHA = re.compile(r"^[0-9a-f]{40}$")
+_OWNER_GATE_NUMERIC_ID = re.compile(r"^[1-9][0-9]{5,30}$")
+_OWNER_GATE_RFC3339_TIMESTAMP = re.compile(
+    r"^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}"
+    r"(?:\.[0-9]{1,9})?(?:Z|[+-][0-9]{2}:[0-9]{2})$"
+)
 _CONTROL_RE = re.compile(r"[\x00-\x1f\x7f]")
 _ADMIN_USERNAME = re.compile(r"^muncho_canary_admin_[0-9a-f]{16}$")
 _SCHEMA_RECONCILIATION_EXECUTOR_USERNAME = re.compile(
@@ -1241,6 +1296,147 @@ def _read_ssh_wire_string(
     return value[start:end], end
 
 
+def _verify_owner_ed25519_sshsig(
+    signature: str,
+    *,
+    message: bytes,
+    public_key_ed25519_hex: str,
+    namespace: str,
+    code: str,
+) -> None:
+    """Verify one pinned OpenSSH SSHSIG without importing gateway runtime.
+
+    The owner launcher is an isolated security boundary.  Pulling the broad
+    gateway Phase-B module into this primitive also imports its planner and
+    optional YAML stack.  Keep the verifier local and limited to the already
+    pinned Ed25519 key, canonical SSHSIG envelope, and exact namespace.
+    """
+
+    if (
+        not isinstance(signature, str)
+        or not isinstance(message, bytes)
+        or not message
+        or len(message) > 64 * 1024
+        or not isinstance(namespace, str)
+        or not namespace
+        or re.fullmatch(r"[0-9a-f]{64}", public_key_ed25519_hex or "") is None
+    ):
+        raise OwnerLauncherError(code)
+    try:
+        signature_bytes = signature.encode("ascii", errors="strict")
+        namespace_bytes = namespace.encode("ascii", errors="strict")
+    except UnicodeError:
+        raise OwnerLauncherError(code) from None
+    if (
+        len(signature_bytes) > PHASE_B_MAX_SSHSIG_BYTES
+        or not signature.startswith("-----BEGIN SSH SIGNATURE-----\n")
+        or not signature.endswith("\n-----END SSH SIGNATURE-----\n")
+    ):
+        raise OwnerLauncherError(code)
+    lines = signature.splitlines()
+    if (
+        len(lines) < 3
+        or lines[0] != "-----BEGIN SSH SIGNATURE-----"
+        or lines[-1] != "-----END SSH SIGNATURE-----"
+        or any(
+            re.fullmatch(r"[A-Za-z0-9+/=]{1,70}", line) is None
+            for line in lines[1:-1]
+        )
+        or any(len(line) != 70 for line in lines[1:-2])
+    ):
+        raise OwnerLauncherError(code)
+    encoded_envelope = "".join(lines[1:-1])
+    try:
+        envelope = base64.b64decode(encoded_envelope, validate=True)
+    except (UnicodeError, ValueError):
+        raise OwnerLauncherError(code) from None
+    if (
+        base64.b64encode(envelope).decode("ascii") != encoded_envelope
+        or not envelope.startswith(b"SSHSIG")
+    ):
+        raise OwnerLauncherError(code)
+    offset = 6
+    if (
+        offset + 4 > len(envelope)
+        or struct.unpack(">I", envelope[offset : offset + 4])[0] != 1
+    ):
+        raise OwnerLauncherError(code)
+    offset += 4
+    public_blob, offset = _read_ssh_wire_string(envelope, offset, code=code)
+    observed_namespace, offset = _read_ssh_wire_string(
+        envelope,
+        offset,
+        code=code,
+    )
+    reserved, offset = _read_ssh_wire_string(envelope, offset, code=code)
+    hash_algorithm, offset = _read_ssh_wire_string(
+        envelope,
+        offset,
+        code=code,
+    )
+    signature_blob, offset = _read_ssh_wire_string(
+        envelope,
+        offset,
+        code=code,
+    )
+    if offset != len(envelope):
+        raise OwnerLauncherError(code)
+    key_type, key_offset = _read_ssh_wire_string(public_blob, 0, code=code)
+    public_bytes, key_offset = _read_ssh_wire_string(
+        public_blob,
+        key_offset,
+        code=code,
+    )
+    algorithm, signature_offset = _read_ssh_wire_string(
+        signature_blob,
+        0,
+        code=code,
+    )
+    raw_signature, signature_offset = _read_ssh_wire_string(
+        signature_blob,
+        signature_offset,
+        code=code,
+    )
+    try:
+        expected_public = bytes.fromhex(public_key_ed25519_hex)
+    except ValueError:
+        raise OwnerLauncherError(code) from None
+    if (
+        key_offset != len(public_blob)
+        or signature_offset != len(signature_blob)
+        or key_type != b"ssh-ed25519"
+        or algorithm != b"ssh-ed25519"
+        or public_bytes != expected_public
+        or len(public_bytes) != 32
+        or len(raw_signature) != 64
+        or observed_namespace != namespace_bytes
+        or reserved != b""
+        or hash_algorithm != b"sha512"
+    ):
+        raise OwnerLauncherError(code)
+    signed = (
+        b"SSHSIG"
+        + _ssh_wire_string(observed_namespace)
+        + _ssh_wire_string(reserved)
+        + _ssh_wire_string(hash_algorithm)
+        + _ssh_wire_string(hashlib.sha512(message).digest())
+    )
+    try:
+        from cryptography.exceptions import InvalidSignature
+        from cryptography.hazmat.primitives.asymmetric.ed25519 import (
+            Ed25519PublicKey,
+        )
+    except ImportError:
+        raise OwnerLauncherError(code) from None
+    try:
+        Ed25519PublicKey.from_public_bytes(public_bytes).verify(
+            raw_signature,
+            signed,
+        )
+    except (InvalidSignature, ValueError):
+        raise OwnerLauncherError(code) from None
+
+
 def _phase_b_key_file_identity(
     path: Path,
     *,
@@ -1455,6 +1651,7 @@ class _PhaseBOwnerExternalSigner:
                 SCHEMA_RECONCILIATION_EXECUTOR_CLEANUP_SSHSIG_NAMESPACE,
                 SCHEMA_RECONCILIATION_CONTROL_INSTALL_SSHSIG_NAMESPACE,
                 SCHEMA_RECONCILIATION_CONTROL_CLEANUP_SSHSIG_NAMESPACE,
+                OWNER_GATE_HOST_IDENTITY_SSHSIG_NAMESPACE,
             }
         ):
             raise OwnerLauncherError("phase_b_owner_signing_request_invalid")
@@ -1588,17 +1785,13 @@ class _PhaseBOwnerExternalSigner:
         after = self.inspect()
         if after != before:
             raise OwnerLauncherError("phase_b_owner_key_changed")
-        from gateway import canonical_writer_foundation_phase_b as phase_b
-
-        try:
-            phase_b.verify_phase_b_sshsig(
-                signature,
-                message=message,
-                public_key_ed25519_hex=before.public_key_ed25519_hex,
-                namespace=namespace,
-            )
-        except (TypeError, ValueError) as exc:
-            raise OwnerLauncherError("phase_b_owner_signature_invalid") from exc
+        _verify_owner_ed25519_sshsig(
+            signature,
+            message=message,
+            public_key_ed25519_hex=before.public_key_ed25519_hex,
+            namespace=namespace,
+            code="phase_b_owner_signature_invalid",
+        )
         return signature
 
 
@@ -3056,6 +3249,8 @@ class StableKnownHosts(Protocol):
 
     def public_key_line(self) -> str: ...
 
+    def server_host_key_line(self, instance_id: str) -> str: ...
+
 
 class PinnedGoogleComputeKnownHosts:
     """Pin the exact owner SSH directory, host keys, and IAP identity key."""
@@ -3068,7 +3263,10 @@ class PinnedGoogleComputeKnownHosts:
         *,
         private_key: str | os.PathLike[str] | None = None,
         public_key: str | os.PathLike[str] | None = None,
+        expected_instance_id: str = VM_INSTANCE_ID,
     ) -> None:
+        if re.fullmatch(r"[1-9][0-9]{0,31}", expected_instance_id) is None:
+            raise OwnerLauncherError("trusted_known_hosts_instance_invalid")
         ssh_root = os.path.join(_canonical_owner_home(), ".ssh")
         default = os.path.join(ssh_root, "google_compute_known_hosts")
         self._path = os.path.abspath(os.fspath(default if path is None else path))
@@ -3088,10 +3286,11 @@ class PinnedGoogleComputeKnownHosts:
             )
         )
         self._ssh_root = material_root
+        self._expected_instance_id = expected_instance_id
         self._fingerprint = self._capture()
 
     @staticmethod
-    def _validate_known_hosts_payload(payload: bytes) -> None:
+    def _known_host_lines(payload: bytes) -> Mapping[str, str]:
         try:
             text = payload.decode("ascii", errors="strict")
         except UnicodeError:
@@ -3099,7 +3298,7 @@ class PinnedGoogleComputeKnownHosts:
         if not text.endswith("\n") or "\r" in text or "\x00" in text:
             raise OwnerLauncherError("trusted_known_hosts_invalid")
         hosts: set[str] = set()
-        target_count = 0
+        host_lines: dict[str, str] = {}
         lines = text.splitlines()
         if not lines or len(lines) > 1_000:
             raise OwnerLauncherError("trusted_known_hosts_invalid")
@@ -3129,9 +3328,19 @@ class PinnedGoogleComputeKnownHosts:
             ):
                 raise OwnerLauncherError("trusted_known_hosts_invalid")
             hosts.add(host)
-            if host == f"compute.{VM_INSTANCE_ID}":
-                target_count += 1
-        if target_count != 1:
+            host_lines[host] = line
+        return host_lines
+
+    @classmethod
+    def _validate_known_hosts_payload(
+        cls,
+        payload: bytes,
+        expected_instance_id: str = VM_INSTANCE_ID,
+    ) -> None:
+        if re.fullmatch(r"[1-9][0-9]{0,31}", expected_instance_id) is None:
+            raise OwnerLauncherError("trusted_known_hosts_instance_invalid")
+        host_lines = cls._known_host_lines(payload)
+        if f"compute.{expected_instance_id}" not in host_lines:
             raise OwnerLauncherError("trusted_known_hosts_invalid")
 
     def _capture(self) -> tuple[Any, ...]:
@@ -3174,7 +3383,10 @@ class PinnedGoogleComputeKnownHosts:
                 allowed_owners=frozenset({os.getuid()}),  # windows-footgun: ok
             )
             if candidate == self._path:
-                self._validate_known_hosts_payload(payload)
+                self._validate_known_hosts_payload(
+                    payload,
+                    self._expected_instance_id,
+                )
             files.append(fingerprint)
         return (
             (
@@ -3228,6 +3440,535 @@ class PinnedGoogleComputeKnownHosts:
         ):
             raise OwnerLauncherError("trusted_public_key_invalid")
         return line[:-1]
+
+    def server_host_key_line(self, instance_id: str) -> str:
+        if instance_id != self._expected_instance_id:
+            raise OwnerLauncherError("trusted_known_hosts_instance_changed")
+        self._assert_stable()
+        _fingerprint, payload = _read_pinned_regular_file(
+            self._path,
+            maximum=self._MAX_BYTES,
+            unavailable_code="trusted_known_hosts_unavailable",
+            invalid_code="trusted_known_hosts_invalid",
+            changed_code="trusted_known_hosts_changed",
+            allowed_owners=frozenset({os.getuid()}),  # windows-footgun: ok
+        )
+        host_lines = self._known_host_lines(payload)
+        try:
+            return host_lines[f"compute.{instance_id}"]
+        except KeyError:
+            raise OwnerLauncherError("trusted_known_hosts_invalid") from None
+
+
+@dataclass(frozen=True)
+class OwnerGateHostIdentitySnapshot:
+    """Externally signed identity of the one private owner-gate VM."""
+
+    vm_numeric_id: str
+    host_key_algorithm: str
+    host_key_base64: str
+    known_hosts_line: str
+    receipt_sha256: str
+    receipt_file_sha256: str
+
+
+class StableOwnerGateHostIdentity(Protocol):
+    def snapshot(self) -> OwnerGateHostIdentitySnapshot: ...
+
+
+class PinnedOwnerGateHostIdentityReceipt:
+    """Verify the v2 first-contact chain, VM identity, and SSH host key.
+
+    This class has no collector and makes no Cloud call.  Production remains
+    deliberately unavailable while ``OWNER_GATE_HOST_IDENTITY_RECEIPT_SHA256``
+    is unset.  The inert bootstrap must publish the canonical signed receipt,
+    after which a distinct reviewed source revision can pin its exact content
+    digest.  That A-to-B separation prevents the foundation source revision
+    from trusting the identity evidence it produced itself.
+    """
+
+    _MAX_BYTES = 64 * 1024
+    _FIELDS = frozenset({
+        "schema",
+        "foundation_source_revision",
+        "foundation_source_tree_oid",
+        "owner_reauthentication_receipt_sha256",
+        "pre_foundation_authority_sha256",
+        "foundation_apply_receipt_sha256",
+        "direct_iam_authority_sha256",
+        "ancestry_evidence_sha256",
+        "ancestry_chain_sha256",
+        "signed_network_evidence_sha256",
+        "network_evidence_sha256",
+        "project",
+        "project_number",
+        "zone",
+        "vm_name",
+        "vm_self_link",
+        "vm_numeric_id",
+        "vm_creation_timestamp",
+        "machine_type_self_link",
+        "scheduling",
+        "labels",
+        "resource_policies",
+        "minimum_cpu_platform",
+        "confidential_compute",
+        "owner_gate_service_account_email",
+        "owner_gate_service_account_unique_id",
+        "oauth_scopes",
+        "network_tags",
+        "instance_metadata",
+        "shielded_instance_config",
+        "can_ip_forward",
+        "external_ip_present",
+        "internal_ip",
+        "network_self_link",
+        "network_numeric_id",
+        "subnetwork_self_link",
+        "subnetwork_numeric_id",
+        "boot_disk_self_link",
+        "boot_disk_numeric_id",
+        "boot_disk_type_self_link",
+        "boot_disk_size_gb",
+        "boot_disk_auto_delete",
+        "boot_disk_architecture",
+        "boot_disk_physical_block_size_bytes",
+        "boot_disk_licenses",
+        "boot_image_self_link",
+        "boot_image_numeric_id",
+        "boot_image_architecture",
+        "boot_image_licenses",
+        "owner_account",
+        "host_key_algorithm",
+        "host_key_base64",
+        "collection_method",
+        "direct_identity_sha256",
+        "direct_observed_before_unix",
+        "host_key_observed_at_unix",
+        "direct_observed_after_unix",
+        "owner_reauthentication_expires_at_unix",
+        "sealed_runtime_identity_sha256",
+        "ssh_executable_sha256",
+        "ssh_version",
+        "shell_executable_sha256",
+        "shell_version",
+        "first_contact_toolchain_sha256",
+        "owner_public_key_id",
+        "receipt_sha256",
+        "signature_sshsig",
+    })
+
+    def __init__(
+        self,
+        *,
+        path: str | os.PathLike[str] | None = None,
+        expected_receipt_sha256: str | None = (
+            OWNER_GATE_HOST_IDENTITY_RECEIPT_SHA256
+        ),
+        pinning_source_revision: str | None = None,
+        owner_signer: _PhaseBOwnerExternalSigner | None = None,
+    ) -> None:
+        if (
+            not isinstance(expected_receipt_sha256, str)
+            or _SHA256.fullmatch(expected_receipt_sha256) is None
+        ):
+            raise OwnerLauncherError(
+                "owner_gate_iap_identity_receipt_unpinned"
+            )
+        if (
+            not isinstance(pinning_source_revision, str)
+            or _RELEASE_SHA.fullmatch(pinning_source_revision) is None
+        ):
+            raise OwnerLauncherError(
+                "owner_gate_iap_identity_pinning_source_invalid"
+            )
+        selected = (
+            os.path.join(
+                _canonical_owner_home(),
+                OWNER_GATE_HOST_IDENTITY_RECEIPT_RELATIVE,
+            )
+            if path is None
+            else os.path.abspath(os.fspath(path))
+        )
+        if not os.path.isabs(selected) or os.path.realpath(selected) != selected:
+            raise OwnerLauncherError("owner_gate_iap_identity_receipt_invalid")
+        self._path = selected
+        self._expected_receipt_sha256 = expected_receipt_sha256
+        self._pinning_source_revision = pinning_source_revision
+        self._owner_signer = owner_signer or _PhaseBOwnerExternalSigner()
+        if not isinstance(self._owner_signer, _PhaseBOwnerExternalSigner):
+            raise OwnerLauncherError("owner_gate_iap_identity_receipt_invalid")
+        self._fingerprint, self._authority, self._value = self._capture()
+
+    @staticmethod
+    def _validate_host_key(encoded: str) -> None:
+        if (
+            not isinstance(encoded, str)
+            or re.fullmatch(r"[A-Za-z0-9+/]+={0,2}", encoded) is None
+        ):
+            raise OwnerLauncherError("owner_gate_iap_identity_receipt_invalid")
+        try:
+            blob = base64.b64decode(encoded, validate=True)
+        except (TypeError, ValueError):
+            raise OwnerLauncherError(
+                "owner_gate_iap_identity_receipt_invalid"
+            ) from None
+        algorithm = b"ssh-ed25519"
+        if (
+            len(blob) != 4 + len(algorithm) + 4 + 32
+            or blob[:4] != struct.pack(">I", len(algorithm))
+            or blob[4 : 4 + len(algorithm)] != algorithm
+            or blob[4 + len(algorithm) : 8 + len(algorithm)]
+            != struct.pack(">I", 32)
+        ):
+            raise OwnerLauncherError("owner_gate_iap_identity_receipt_invalid")
+
+    def _capture(
+        self,
+    ) -> tuple[
+        tuple[Any, ...],
+        _PhaseBOwnerPublicAuthority,
+        OwnerGateHostIdentitySnapshot,
+    ]:
+        parent = os.path.dirname(self._path)
+        try:
+            parent_metadata = os.lstat(parent)
+        except OSError:
+            raise OwnerLauncherError(
+                "owner_gate_iap_identity_receipt_unavailable"
+            ) from None
+        if (
+            not stat.S_ISDIR(parent_metadata.st_mode)
+            or stat.S_ISLNK(parent_metadata.st_mode)
+            or parent_metadata.st_uid != os.getuid()  # windows-footgun: ok
+            or stat.S_IMODE(parent_metadata.st_mode) != 0o700
+        ):
+            raise OwnerLauncherError("owner_gate_iap_identity_receipt_invalid")
+        fingerprint, payload = _read_pinned_regular_file(
+            self._path,
+            maximum=self._MAX_BYTES,
+            unavailable_code="owner_gate_iap_identity_receipt_unavailable",
+            invalid_code="owner_gate_iap_identity_receipt_invalid",
+            changed_code="owner_gate_iap_identity_receipt_changed",
+            allowed_owners=frozenset({os.getuid()}),  # windows-footgun: ok
+        )
+        if stat.S_IMODE(int(fingerprint[0])) != 0o600 or int(fingerprint[5]) != 1:
+            raise OwnerLauncherError("owner_gate_iap_identity_receipt_invalid")
+        if not payload.endswith(b"\n") or payload.count(b"\n") != 1:
+            raise OwnerLauncherError("owner_gate_iap_identity_receipt_invalid")
+        try:
+            receipt = _decode_json_object(payload[:-1], maximum=self._MAX_BYTES)
+        except OwnerLauncherError:
+            raise OwnerLauncherError(
+                "owner_gate_iap_identity_receipt_invalid"
+            ) from None
+        if _canonical_bytes(receipt) + b"\n" != payload or set(receipt) != self._FIELDS:
+            raise OwnerLauncherError("owner_gate_iap_identity_receipt_invalid")
+        unsigned = {
+            name: item
+            for name, item in receipt.items()
+            if name not in {"receipt_sha256", "signature_sshsig"}
+        }
+        digest = receipt.get("receipt_sha256")
+        instance_id = receipt.get("vm_numeric_id")
+        encoded = receipt.get("host_key_base64")
+        signature = receipt.get("signature_sshsig")
+        foundation_revision = receipt.get("foundation_source_revision")
+        before_unix = receipt.get("direct_observed_before_unix")
+        host_key_unix = receipt.get("host_key_observed_at_unix")
+        after_unix = receipt.get("direct_observed_after_unix")
+        reauth_expires = receipt.get(
+            "owner_reauthentication_expires_at_unix"
+        )
+        expected_vm_self_link = (
+            "https://www.googleapis.com/compute/v1/projects/"
+            f"{PROJECT}/zones/{ZONE}/instances/muncho-owner-gate-01"
+        )
+        expected_network_self_link = (
+            "https://www.googleapis.com/compute/v1/projects/"
+            f"{PROJECT}/global/networks/ai-platform-vpc"
+        )
+        expected_subnetwork_self_link = (
+            "https://www.googleapis.com/compute/v1/projects/"
+            f"{PROJECT}/regions/europe-west3/subnetworks/"
+            "muncho-owner-gate-europe-west3"
+        )
+        expected_boot_disk_self_link = (
+            "https://www.googleapis.com/compute/v1/projects/"
+            f"{PROJECT}/zones/{ZONE}/disks/muncho-owner-gate-01"
+        )
+        direct_identity = {
+            name: receipt.get(name)
+            for name in (
+                "project",
+                "project_number",
+                "zone",
+                "vm_name",
+                "vm_self_link",
+                "vm_numeric_id",
+                "vm_creation_timestamp",
+                "machine_type_self_link",
+                "scheduling",
+                "labels",
+                "resource_policies",
+                "minimum_cpu_platform",
+                "confidential_compute",
+                "owner_gate_service_account_email",
+                "owner_gate_service_account_unique_id",
+                "oauth_scopes",
+                "network_tags",
+                "instance_metadata",
+                "shielded_instance_config",
+                "can_ip_forward",
+                "external_ip_present",
+                "internal_ip",
+                "network_self_link",
+                "network_numeric_id",
+                "subnetwork_self_link",
+                "subnetwork_numeric_id",
+                "boot_disk_self_link",
+                "boot_disk_numeric_id",
+                "boot_disk_type_self_link",
+                "boot_disk_size_gb",
+                "boot_disk_auto_delete",
+                "boot_disk_architecture",
+                "boot_disk_physical_block_size_bytes",
+                "boot_disk_licenses",
+                "boot_image_self_link",
+                "boot_image_numeric_id",
+                "boot_image_architecture",
+                "boot_image_licenses",
+            )
+        }
+        authority = self._owner_signer.inspect()
+        toolchain = {
+            name: receipt.get(name)
+            for name in (
+                "sealed_runtime_identity_sha256",
+                "ssh_executable_sha256",
+                "ssh_version",
+                "shell_executable_sha256",
+                "shell_version",
+            )
+        }
+        if (
+            receipt.get("schema") != OWNER_GATE_HOST_IDENTITY_RECEIPT_SCHEMA
+            or not isinstance(foundation_revision, str)
+            or _RELEASE_SHA.fullmatch(foundation_revision) is None
+            or foundation_revision == self._pinning_source_revision
+            or _RELEASE_SHA.fullmatch(
+                str(receipt.get("foundation_source_tree_oid", ""))
+            )
+            is None
+            or any(
+                _SHA256.fullmatch(str(receipt.get(name, ""))) is None
+                for name in (
+                    "owner_reauthentication_receipt_sha256",
+                    "pre_foundation_authority_sha256",
+                    "foundation_apply_receipt_sha256",
+                    "direct_iam_authority_sha256",
+                    "ancestry_evidence_sha256",
+                    "ancestry_chain_sha256",
+                    "signed_network_evidence_sha256",
+                    "network_evidence_sha256",
+                )
+            )
+            or receipt.get("project") != PROJECT
+            or receipt.get("project_number") != OWNER_GATE_PROJECT_NUMBER
+            or receipt.get("zone") != ZONE
+            or receipt.get("vm_name") != "muncho-owner-gate-01"
+            or receipt.get("vm_self_link") != expected_vm_self_link
+            or not isinstance(receipt.get("vm_creation_timestamp"), str)
+            or _OWNER_GATE_RFC3339_TIMESTAMP.fullmatch(
+                str(receipt.get("vm_creation_timestamp", ""))
+            )
+            is None
+            or receipt.get("machine_type_self_link")
+            != (
+                "https://www.googleapis.com/compute/v1/projects/"
+                f"{PROJECT}/zones/{ZONE}/machineTypes/e2-small"
+            )
+            or receipt.get("owner_account") != "lomliev@adventico.com"
+            or receipt.get("scheduling")
+            != {
+                "automaticRestart": True,
+                "instanceTerminationAction": "DELETE",
+                "onHostMaintenance": "MIGRATE",
+                "preemptible": False,
+                "provisioningModel": "STANDARD",
+            }
+            or receipt.get("labels") != {}
+            or receipt.get("resource_policies") != []
+            or receipt.get("minimum_cpu_platform") != "Automatic"
+            or receipt.get("confidential_compute") is not False
+            or not isinstance(instance_id, str)
+            or _OWNER_GATE_NUMERIC_ID.fullmatch(instance_id) is None
+            or instance_id == VM_INSTANCE_ID
+            or receipt.get("owner_gate_service_account_email")
+            != OWNER_GATE_SERVICE_ACCOUNT_EMAIL
+            or _OWNER_GATE_NUMERIC_ID.fullmatch(
+                str(receipt.get("owner_gate_service_account_unique_id", ""))
+            )
+            is None
+            or receipt.get("oauth_scopes")
+            != [
+                "https://www.googleapis.com/auth/cloudplatformfolders.readonly",
+                "https://www.googleapis.com/auth/cloudplatformorganizations.readonly",
+                "https://www.googleapis.com/auth/cloudplatformprojects.readonly",
+                "https://www.googleapis.com/auth/compute",
+                "https://www.googleapis.com/auth/iam",
+            ]
+            or receipt.get("network_tags")
+            != ["iap-ssh", "muncho-owner-gate"]
+            or receipt.get("instance_metadata")
+            != {
+                "block-project-ssh-keys": "TRUE",
+                "enable-oslogin": "TRUE",
+                "serial-port-enable": "FALSE",
+            }
+            or receipt.get("shielded_instance_config")
+            != {
+                "enableIntegrityMonitoring": True,
+                "enableSecureBoot": True,
+                "enableVtpm": True,
+            }
+            or receipt.get("can_ip_forward") is not False
+            or receipt.get("external_ip_present") is not False
+            or receipt.get("internal_ip") != "10.80.3.2"
+            or receipt.get("network_self_link") != expected_network_self_link
+            or _OWNER_GATE_NUMERIC_ID.fullmatch(
+                str(receipt.get("network_numeric_id", ""))
+            )
+            is None
+            or receipt.get("subnetwork_self_link")
+            != expected_subnetwork_self_link
+            or _OWNER_GATE_NUMERIC_ID.fullmatch(
+                str(receipt.get("subnetwork_numeric_id", ""))
+            )
+            is None
+            or receipt.get("boot_disk_self_link")
+            != expected_boot_disk_self_link
+            or _OWNER_GATE_NUMERIC_ID.fullmatch(
+                str(receipt.get("boot_disk_numeric_id", ""))
+            )
+            is None
+            or receipt.get("boot_disk_type_self_link")
+            != (
+                "https://www.googleapis.com/compute/v1/projects/"
+                f"{PROJECT}/zones/{ZONE}/diskTypes/pd-balanced"
+            )
+            or receipt.get("boot_disk_size_gb") != 20
+            or receipt.get("boot_disk_auto_delete") is not True
+            or receipt.get("boot_disk_architecture") != "X86_64"
+            or receipt.get("boot_disk_physical_block_size_bytes") != 4096
+            or receipt.get("boot_disk_licenses")
+            != [
+                "https://www.googleapis.com/compute/v1/projects/"
+                "debian-cloud/global/licenses/debian-12-bookworm"
+            ]
+            or re.fullmatch(
+                r"https://www\.googleapis\.com/compute/v1/projects/"
+                r"debian-cloud/global/images/debian-12-bookworm-v[0-9]{8}",
+                str(receipt.get("boot_image_self_link", "")),
+            )
+            is None
+            or receipt.get("boot_image_architecture") != "X86_64"
+            or receipt.get("boot_image_licenses")
+            != [
+                "https://www.googleapis.com/compute/v1/projects/"
+                "debian-cloud/global/licenses/debian-12-bookworm"
+            ]
+            or _OWNER_GATE_NUMERIC_ID.fullmatch(
+                str(receipt.get("boot_image_numeric_id", ""))
+            )
+            is None
+            or receipt.get("host_key_algorithm") != "ssh-ed25519"
+            or not isinstance(encoded, str)
+            or receipt.get("collection_method")
+            != OWNER_GATE_HOST_IDENTITY_COLLECTION_METHOD
+            or receipt.get("direct_identity_sha256")
+            != _sha256(_canonical_bytes(direct_identity))
+            or any(
+                type(value) is not int or value <= 0
+                for value in (
+                    before_unix,
+                    host_key_unix,
+                    after_unix,
+                    reauth_expires,
+                )
+            )
+            or not before_unix <= host_key_unix <= after_unix
+            or after_unix - before_unix > 300
+            or after_unix > reauth_expires
+            or any(
+                _SHA256.fullmatch(str(receipt.get(name, ""))) is None
+                for name in (
+                    "sealed_runtime_identity_sha256",
+                    "ssh_executable_sha256",
+                    "shell_executable_sha256",
+                )
+            )
+            or any(
+                not isinstance(receipt.get(name), str)
+                or not receipt.get(name)
+                or len(str(receipt.get(name))) > 512
+                or any(
+                    ord(character) < 0x20 or ord(character) > 0x7E
+                    for character in str(receipt.get(name))
+                )
+                for name in ("ssh_version", "shell_version")
+            )
+            or receipt.get("first_contact_toolchain_sha256")
+            != _sha256(_canonical_bytes(toolchain))
+            or receipt.get("owner_public_key_id") != authority.key_id
+            or not isinstance(digest, str)
+            or digest != _sha256(_canonical_bytes(unsigned))
+            or digest != self._expected_receipt_sha256
+            or not isinstance(signature, str)
+            or not signature
+        ):
+            raise OwnerLauncherError("owner_gate_iap_identity_receipt_invalid")
+        self._validate_host_key(encoded)
+        signed = {**unsigned, "receipt_sha256": digest}
+        _verify_owner_ed25519_sshsig(
+            signature,
+            message=_canonical_bytes(signed),
+            public_key_ed25519_hex=authority.public_key_ed25519_hex,
+            namespace=OWNER_GATE_HOST_IDENTITY_SSHSIG_NAMESPACE,
+            code="owner_gate_iap_identity_receipt_signature_invalid",
+        )
+        return (
+            (*fingerprint, *(
+                parent_metadata.st_mode,
+                parent_metadata.st_uid,
+                parent_metadata.st_gid,
+                parent_metadata.st_dev,
+                parent_metadata.st_ino,
+                parent_metadata.st_mtime_ns,
+                parent_metadata.st_ctime_ns,
+            )),
+            authority,
+            OwnerGateHostIdentitySnapshot(
+                vm_numeric_id=instance_id,
+                host_key_algorithm="ssh-ed25519",
+                host_key_base64=encoded,
+                known_hosts_line=(
+                    f"compute.{instance_id} ssh-ed25519 {encoded}"
+                ),
+                receipt_sha256=digest,
+                receipt_file_sha256=str(fingerprint[-1]),
+            ),
+        )
+
+    def snapshot(self) -> OwnerGateHostIdentitySnapshot:
+        fingerprint, authority, value = self._capture()
+        if (
+            fingerprint != self._fingerprint
+            or authority != self._authority
+            or value != self._value
+        ):
+            raise OwnerLauncherError("owner_gate_iap_identity_receipt_changed")
+        return value
 
 
 class _PinnedExecutablePath:
@@ -3764,6 +4505,9 @@ class TrustedGcloudExecutable:
             "owner_support_manifest_sha256": self._owner_support_manifest[
                 "manifest_sha256"
             ],
+            "owner_support_source_tree_oid": self._owner_support_manifest[
+                "source_tree_oid"
+            ],
             "owner_support_source_archive_bytes": self._owner_support_manifest[
                 "source_archive_bytes"
             ],
@@ -3859,6 +4603,59 @@ class TrustedGcloudExecutable:
             raise OwnerLauncherError("trusted_gcloud_sdk_invalid")
         return (python, *_GCLOUD_PYTHON_ISOLATION_ARGS, module)
 
+    def sealed_runtime_identity(
+        self,
+        *,
+        expected_release_sha: str,
+    ) -> Mapping[str, Any]:
+        """Return the revalidated production SDK/Python publication identity."""
+
+        if (
+            not self._production_runtime
+            or _RELEASE_SHA.fullmatch(expected_release_sha or "") is None
+            or self._release_sha != expected_release_sha
+            or self._sdk_publication_fingerprint is None
+            or self._publication_intent is None
+            or self._python_version is None
+            or self._owner_support_fingerprint is None
+            or self._owner_support_manifest is None
+            or self._bootstrap_receipt_fingerprint is None
+        ):
+            raise OwnerLauncherError("trusted_runtime_release_unbound")
+        prefix = self.trusted_command_prefix()
+        unsigned = {
+            "schema": "muncho-owner-sealed-gcloud-runtime-identity.v1",
+            "release_sha": expected_release_sha,
+            "command_prefix_sha256": _sha256(_canonical_bytes(list(prefix))),
+            "sdk_tree_entries": self._sdk_fingerprint[0],
+            "sdk_tree_bytes": self._sdk_fingerprint[1],
+            "sdk_tree_sha256": self._sdk_fingerprint[2],
+            "sdk_publication_tree_entries": self._sdk_publication_fingerprint[0],
+            "sdk_publication_tree_bytes": self._sdk_publication_fingerprint[1],
+            "sdk_publication_tree_sha256": self._sdk_publication_fingerprint[2],
+            "sdk_publication_intent_sha256": self._publication_intent[
+                "intent_sha256"
+            ],
+            "python_version": self._python_version,
+            "python_tree_entries": self._python_fingerprint[0],
+            "python_tree_bytes": self._python_fingerprint[1],
+            "python_tree_sha256": self._python_fingerprint[2],
+            "owner_support_tree_entries": self._owner_support_fingerprint[0],
+            "owner_support_tree_bytes": self._owner_support_fingerprint[1],
+            "owner_support_tree_sha256": self._owner_support_fingerprint[2],
+            "owner_support_manifest_sha256": self._owner_support_manifest[
+                "manifest_sha256"
+            ],
+            "owner_support_source_tree_oid": self._owner_support_manifest[
+                "source_tree_oid"
+            ],
+            "bootstrap_receipt_file_sha256": self._bootstrap_receipt_fingerprint[-1],
+        }
+        return {
+            **unsigned,
+            "identity_sha256": _sha256(_canonical_bytes(unsigned)),
+        }
+
     def _revalidate_owner_support(self) -> None:
         if (
             not self._production_runtime
@@ -3892,6 +4689,25 @@ class TrustedGcloudExecutable:
         if self._owner_support_source is None or self._owner_support_site is None:
             raise OwnerLauncherError("trusted_owner_support_unavailable")
         return self._owner_support_source, self._owner_support_site
+
+    def sealed_owner_support_manifest(
+        self,
+        *,
+        expected_release_sha: str,
+    ) -> Mapping[str, Any]:
+        """Return the immutable release manifest after a full runtime recheck."""
+
+        if (
+            not self._production_runtime
+            or self._release_sha != expected_release_sha
+            or _RELEASE_SHA.fullmatch(expected_release_sha or "") is None
+        ):
+            raise OwnerLauncherError("trusted_runtime_release_unbound")
+        self.trusted_command_prefix()
+        self._revalidate_owner_support()
+        if self._owner_support_manifest is None:
+            raise OwnerLauncherError("trusted_owner_support_unavailable")
+        return dict(self._owner_support_manifest)
 
 
 def _owner_gcloud_environment(
@@ -3952,26 +4768,53 @@ def _require_private_owner_directory(
         raise OwnerLauncherError("trusted_runtime_directory_invalid")
 
 
-def _darwin_rename_no_replace(
+def _atomic_rename_no_replace(
     source: str,
     destination: str,
     *,
     exists_code: str,
     failed_code: str,
 ) -> None:
-    """Atomically publish one Darwin pathname without replacing any object."""
+    """Atomically publish one pathname without replacing any existing object."""
 
-    if sys.platform != "darwin":
-        raise OwnerLauncherError("atomic_no_replace_unavailable")
     try:
         libc = ctypes.CDLL(None, use_errno=True)
-        renamex = libc.renamex_np
-        renamex.argtypes = (ctypes.c_char_p, ctypes.c_char_p, ctypes.c_uint)
-        renamex.restype = ctypes.c_int
+        if sys.platform == "darwin":
+            rename_no_replace = libc.renamex_np
+            rename_no_replace.argtypes = (
+                ctypes.c_char_p,
+                ctypes.c_char_p,
+                ctypes.c_uint,
+            )
+            rename_no_replace.restype = ctypes.c_int
+            arguments = (
+                os.fsencode(source),
+                os.fsencode(destination),
+                0x00000004,  # RENAME_EXCL
+            )
+        elif sys.platform == "linux":
+            rename_no_replace = libc.renameat2
+            rename_no_replace.argtypes = (
+                ctypes.c_int,
+                ctypes.c_char_p,
+                ctypes.c_int,
+                ctypes.c_char_p,
+                ctypes.c_uint,
+            )
+            rename_no_replace.restype = ctypes.c_int
+            arguments = (
+                -100,  # AT_FDCWD
+                os.fsencode(source),
+                -100,  # AT_FDCWD
+                os.fsencode(destination),
+                1,  # RENAME_NOREPLACE
+            )
+        else:
+            raise OwnerLauncherError("atomic_no_replace_unavailable")
     except (AttributeError, OSError):
         raise OwnerLauncherError("atomic_no_replace_unavailable") from None
     ctypes.set_errno(0)
-    if renamex(os.fsencode(source), os.fsencode(destination), 0x00000004) != 0:
+    if rename_no_replace(*arguments) != 0:
         error = ctypes.get_errno()
         if error in {
             errno.EEXIST,
@@ -3982,9 +4825,9 @@ def _darwin_rename_no_replace(
 
 
 def _rename_directory_no_replace(source: str, destination: str) -> None:
-    """Darwin atomic directory publication with an explicit exclusion flag."""
+    """Atomic directory publication with an explicit exclusion flag."""
 
-    _darwin_rename_no_replace(
+    _atomic_rename_no_replace(
         source,
         destination,
         exists_code="trusted_runtime_destination_exists",
@@ -4003,7 +4846,7 @@ def _publish_regular_no_replace(
     """Atomically add one regular file name without a two-link crash state."""
 
     del cleanup_code
-    _darwin_rename_no_replace(
+    _atomic_rename_no_replace(
         source,
         destination,
         exists_code=exists_code,
@@ -4090,29 +4933,161 @@ def _current_launcher_sha256() -> str:
     return str(fingerprint[-1])
 
 
-def _capture_sdk_publication_tree(root: str) -> tuple[int, int, str]:
-    """Return a deterministic complete SDK fingerprint across re-extraction."""
+@dataclass(frozen=True)
+class _TrustedSdkBytecodeFile:
+    absolute_path: str
+    relative_path: str
+    cache_path: str
+    fingerprint: tuple[Any, ...]
+
+
+@dataclass(frozen=True)
+class _TrustedSdkBytecodeCache:
+    absolute_path: str
+    relative_path: str
+    identity: tuple[int, ...]
+
+
+def _trusted_sdk_repair_stat_identity(value: os.stat_result) -> tuple[int, ...]:
+    return (
+        value.st_dev,
+        value.st_ino,
+        value.st_mode,
+        value.st_nlink,
+        value.st_uid,
+        value.st_gid,
+        value.st_size,
+        value.st_mtime_ns,
+        value.st_ctime_ns,
+    )
+
+
+def _capture_sdk_bytecode_cache(
+    path: str,
+    *,
+    root: str,
+    metadata: os.stat_result,
+) -> tuple[_TrustedSdkBytecodeCache, tuple[_TrustedSdkBytecodeFile, ...]]:
+    """Prove that one unexpected cache contains only owner-only ``*.pyc``."""
+
+    owner = os.getuid()  # windows-footgun: ok
+    relative = os.path.relpath(path, root)
+    if (
+        relative == "."
+        or not stat.S_ISDIR(metadata.st_mode)
+        or stat.S_ISLNK(metadata.st_mode)
+        or metadata.st_uid != owner
+        or metadata.st_mode & (stat.S_IWGRP | stat.S_IWOTH)
+    ):
+        raise OwnerLauncherError("trusted_sdk_bytecode_repair_scope_invalid")
+    identity = _trusted_sdk_repair_stat_identity(metadata)
+    try:
+        with os.scandir(path) as entries:
+            children = sorted(
+                (entry.path for entry in entries),
+                key=os.fsencode,
+            )
+    except OSError:
+        raise OwnerLauncherError("trusted_sdk_bytecode_repair_tree_changed") from None
+    files: list[_TrustedSdkBytecodeFile] = []
+    for child in children:
+        if not os.path.basename(child).endswith(".pyc"):
+            raise OwnerLauncherError("trusted_sdk_bytecode_repair_scope_invalid")
+        fingerprint, _payload = _read_pinned_regular_file(
+            child,
+            maximum=_GCLOUD_MAX_SDK_FILE_BYTES,
+            unavailable_code="trusted_sdk_bytecode_repair_tree_changed",
+            invalid_code="trusted_sdk_bytecode_repair_scope_invalid",
+            changed_code="trusted_sdk_bytecode_repair_tree_changed",
+            allowed_owners=frozenset({owner}),
+            allow_empty=True,
+        )
+        if int(fingerprint[5]) != 1:
+            raise OwnerLauncherError("trusted_sdk_bytecode_repair_scope_invalid")
+        files.append(
+            _TrustedSdkBytecodeFile(
+                absolute_path=child,
+                relative_path=os.path.relpath(child, root),
+                cache_path=path,
+                fingerprint=fingerprint,
+            )
+        )
+    try:
+        after = os.lstat(path)
+    except OSError:
+        raise OwnerLauncherError("trusted_sdk_bytecode_repair_tree_changed") from None
+    if _trusted_sdk_repair_stat_identity(after) != identity:
+        raise OwnerLauncherError("trusted_sdk_bytecode_repair_tree_changed")
+    return (
+        _TrustedSdkBytecodeCache(
+            absolute_path=path,
+            relative_path=relative,
+            identity=identity,
+        ),
+        tuple(files),
+    )
+
+
+def _capture_sdk_publication_tree_internal(
+    root: str,
+    *,
+    collect_repairable_bytecode: bool,
+) -> tuple[
+    tuple[int, int, str],
+    tuple[_TrustedSdkBytecodeCache, ...],
+    tuple[_TrustedSdkBytecodeFile, ...],
+]:
+    """Fingerprint the publication, optionally omitting one exact cache class."""
 
     digest = hashlib.sha256()
     entry_count = 0
     total_bytes = 0
+    caches: list[_TrustedSdkBytecodeCache] = []
+    bytecode_files: list[_TrustedSdkBytecodeFile] = []
     pending = [root]
     while pending:
         path = pending.pop()
         try:
             metadata = os.lstat(path)
         except OSError:
-            raise OwnerLauncherError(
-                "trusted_runtime_publication_tree_changed"
-            ) from None
+            code = (
+                "trusted_sdk_bytecode_repair_tree_changed"
+                if collect_repairable_bytecode
+                else "trusted_runtime_publication_tree_changed"
+            )
+            raise OwnerLauncherError(code) from None
         relative = os.path.relpath(path, root)
-        if os.path.basename(path) == "__pycache__" or path.endswith((".pyc", ".pyo")):
+        if os.path.basename(path) == "__pycache__":
+            if not collect_repairable_bytecode:
+                raise OwnerLauncherError("trusted_gcloud_sdk_bytecode_forbidden")
+            cache, files = _capture_sdk_bytecode_cache(
+                path,
+                root=root,
+                metadata=metadata,
+            )
+            caches.append(cache)
+            bytecode_files.extend(files)
+            if (
+                len(caches) + len(bytecode_files) > _GCLOUD_MAX_SDK_ENTRIES
+                or sum(int(item.fingerprint[-2]) for item in bytecode_files)
+                > _GCLOUD_MAX_SDK_BYTES
+            ):
+                raise OwnerLauncherError("trusted_sdk_bytecode_repair_tree_oversized")
+            continue
+        if path.endswith((".pyc", ".pyo")):
+            if collect_repairable_bytecode:
+                raise OwnerLauncherError("trusted_sdk_bytecode_repair_scope_invalid")
             raise OwnerLauncherError("trusted_gcloud_sdk_bytecode_forbidden")
         if metadata.st_uid not in {
             0,
             os.getuid(),  # windows-footgun: ok
         } or metadata.st_mode & (stat.S_IWGRP | stat.S_IWOTH):
-            raise OwnerLauncherError("trusted_runtime_publication_tree_invalid")
+            code = (
+                "trusted_sdk_bytecode_repair_publication_invalid"
+                if collect_repairable_bytecode
+                else "trusted_runtime_publication_tree_invalid"
+            )
+            raise OwnerLauncherError(code)
         if stat.S_ISDIR(metadata.st_mode):
             TrustedGcloudExecutable._feed_tree_entry(
                 digest,
@@ -4126,17 +5101,30 @@ def _capture_sdk_publication_tree(root: str) -> tuple[int, int, str]:
                         reverse=True,
                     )
             except OSError:
-                raise OwnerLauncherError(
-                    "trusted_runtime_publication_tree_changed"
-                ) from None
+                code = (
+                    "trusted_sdk_bytecode_repair_tree_changed"
+                    if collect_repairable_bytecode
+                    else "trusted_runtime_publication_tree_changed"
+                )
+                raise OwnerLauncherError(code) from None
             pending.extend(children)
         elif stat.S_ISREG(metadata.st_mode):
+            changed_code = (
+                "trusted_sdk_bytecode_repair_tree_changed"
+                if collect_repairable_bytecode
+                else "trusted_runtime_publication_tree_changed"
+            )
+            invalid_code = (
+                "trusted_sdk_bytecode_repair_publication_invalid"
+                if collect_repairable_bytecode
+                else "trusted_runtime_publication_tree_invalid"
+            )
             _fingerprint, payload = _read_pinned_regular_file(
                 path,
                 maximum=_GCLOUD_MAX_SDK_FILE_BYTES,
-                unavailable_code="trusted_runtime_publication_tree_changed",
-                invalid_code="trusted_runtime_publication_tree_invalid",
-                changed_code="trusted_runtime_publication_tree_changed",
+                unavailable_code=changed_code,
+                invalid_code=invalid_code,
+                changed_code=changed_code,
                 allowed_owners=frozenset({0, os.getuid()}),  # windows-footgun: ok
                 allow_empty=True,
             )
@@ -4160,17 +5148,46 @@ def _capture_sdk_publication_tree(root: str) -> tuple[int, int, str]:
                 inside = False
                 target = ""
             if not inside:
-                raise OwnerLauncherError("trusted_runtime_publication_tree_invalid")
+                code = (
+                    "trusted_sdk_bytecode_repair_publication_invalid"
+                    if collect_repairable_bytecode
+                    else "trusted_runtime_publication_tree_invalid"
+                )
+                raise OwnerLauncherError(code)
             TrustedGcloudExecutable._feed_tree_entry(
                 digest,
                 ("symlink", relative, target),
             )
         else:
-            raise OwnerLauncherError("trusted_runtime_publication_tree_invalid")
+            code = (
+                "trusted_sdk_bytecode_repair_publication_invalid"
+                if collect_repairable_bytecode
+                else "trusted_runtime_publication_tree_invalid"
+            )
+            raise OwnerLauncherError(code)
         entry_count += 1
         if entry_count > _GCLOUD_MAX_SDK_ENTRIES or total_bytes > _GCLOUD_MAX_SDK_BYTES:
-            raise OwnerLauncherError("trusted_runtime_publication_tree_oversized")
-    return entry_count, total_bytes, digest.hexdigest()
+            code = (
+                "trusted_sdk_bytecode_repair_tree_oversized"
+                if collect_repairable_bytecode
+                else "trusted_runtime_publication_tree_oversized"
+            )
+            raise OwnerLauncherError(code)
+    return (
+        (entry_count, total_bytes, digest.hexdigest()),
+        tuple(caches),
+        tuple(bytecode_files),
+    )
+
+
+def _capture_sdk_publication_tree(root: str) -> tuple[int, int, str]:
+    """Return a deterministic complete SDK fingerprint across re-extraction."""
+
+    publication_tree, _caches, _files = _capture_sdk_publication_tree_internal(
+        root,
+        collect_repairable_bytecode=False,
+    )
+    return publication_tree
 
 
 def _validate_sdk_publication_intent(
@@ -4235,6 +5252,838 @@ def _validate_sdk_publication_intent(
     ):
         raise OwnerLauncherError("trusted_runtime_publication_intent_invalid")
     return fingerprint, value
+
+
+def _trusted_sdk_bytecode_repair_receipt_path(
+    home: str,
+    release_sha: str,
+) -> str:
+    return os.path.join(
+        home,
+        ".hermes",
+        "trusted",
+        f"{_TRUSTED_SDK_BYTECODE_REPAIR_RECEIPT_PREFIX}{release_sha}.json",
+    )
+
+
+def _trusted_sdk_bytecode_repair_intent_path(
+    home: str,
+    release_sha: str,
+) -> str:
+    return os.path.join(
+        home,
+        ".hermes",
+        "trusted",
+        f"{_TRUSTED_SDK_BYTECODE_REPAIR_INTENT_PREFIX}{release_sha}.json",
+    )
+
+
+def _trusted_sdk_bytecode_repair_set_digests(
+    caches: Sequence[_TrustedSdkBytecodeCache],
+    files: Sequence[_TrustedSdkBytecodeFile],
+) -> tuple[str, str]:
+    cache_digest = hashlib.sha256()
+    for cache in sorted(caches, key=lambda item: os.fsencode(item.relative_path)):
+        TrustedGcloudExecutable._feed_tree_entry(
+            cache_digest,
+            ("cache", cache.relative_path, *cache.identity),
+        )
+    file_digest = hashlib.sha256()
+    for item in sorted(files, key=lambda value: os.fsencode(value.relative_path)):
+        TrustedGcloudExecutable._feed_tree_entry(
+            file_digest,
+            ("pyc", item.relative_path, *item.fingerprint),
+        )
+    return cache_digest.hexdigest(), file_digest.hexdigest()
+
+
+def _trusted_sdk_bytecode_repair_intent_value(
+    *,
+    release_sha: str,
+    launcher_sha256: str,
+    destination: str,
+    publication_tree: tuple[int, int, str],
+    publication_intent: Mapping[str, Any],
+    caches: Sequence[_TrustedSdkBytecodeCache],
+    files: Sequence[_TrustedSdkBytecodeFile],
+    planned_at_unix: int,
+) -> Mapping[str, Any]:
+    cache_set_sha256, file_set_sha256 = _trusted_sdk_bytecode_repair_set_digests(
+        caches,
+        files,
+    )
+    cache_entries = [
+        {
+            "relative_path": item.relative_path,
+            "identity": list(item.identity),
+        }
+        for item in sorted(caches, key=lambda value: os.fsencode(value.relative_path))
+    ]
+    file_entries = [
+        {
+            "relative_path": item.relative_path,
+            "cache_relative_path": os.path.relpath(item.cache_path, destination),
+            "fingerprint": list(item.fingerprint),
+        }
+        for item in sorted(files, key=lambda value: os.fsencode(value.relative_path))
+    ]
+    unsigned = {
+        "schema": TRUSTED_SDK_BYTECODE_REPAIR_INTENT_SCHEMA,
+        "ok": True,
+        "state": "trusted_sdk_bytecode_repair_planned",
+        "release_sha": release_sha,
+        "launcher_sha256": launcher_sha256,
+        "sdk_root": destination,
+        "sdk_version": _GCLOUD_SDK_VERSION,
+        "sdk_archive_sha256": _GCLOUD_SDK_ARCHIVE_SHA256,
+        "sdk_publication_release_sha": publication_intent[
+            "publication_release_sha"
+        ],
+        "sdk_publication_intent_sha256": publication_intent["intent_sha256"],
+        "sdk_publication_tree_entries": publication_tree[0],
+        "sdk_publication_tree_bytes": publication_tree[1],
+        "sdk_publication_tree_sha256": publication_tree[2],
+        "cache_directories": cache_entries,
+        "cache_directory_set_sha256": cache_set_sha256,
+        "bytecode_files": file_entries,
+        "bytecode_file_set_sha256": file_set_sha256,
+        "bytecode_bytes": sum(int(item.fingerprint[-2]) for item in files),
+        "planned_at_unix": planned_at_unix,
+    }
+    return {**unsigned, "intent_sha256": _sha256(_canonical_bytes(unsigned))}
+
+
+def _validate_trusted_sdk_bytecode_repair_intent(
+    intent_path: str,
+    *,
+    release_sha: str,
+    launcher_sha256: str,
+    destination: str,
+    publication_tree: tuple[int, int, str],
+    publication_intent: Mapping[str, Any],
+) -> Mapping[str, Any]:
+    fingerprint, payload = _read_pinned_regular_file(
+        intent_path,
+        maximum=_TRUSTED_SDK_BYTECODE_REPAIR_INTENT_MAX_BYTES,
+        unavailable_code="trusted_sdk_bytecode_repair_intent_unavailable",
+        invalid_code="trusted_sdk_bytecode_repair_intent_invalid",
+        changed_code="trusted_sdk_bytecode_repair_intent_changed",
+        allowed_owners=frozenset({os.getuid()}),  # windows-footgun: ok
+    )
+    if stat.S_IMODE(int(fingerprint[0])) != 0o600 or int(fingerprint[5]) != 1:
+        raise OwnerLauncherError("trusted_sdk_bytecode_repair_intent_invalid")
+    try:
+        value = _decode_json_object(
+            payload,
+            maximum=_TRUSTED_SDK_BYTECODE_REPAIR_INTENT_MAX_BYTES,
+        )
+    except OwnerLauncherError:
+        raise OwnerLauncherError("trusted_sdk_bytecode_repair_intent_invalid") from None
+    if payload != _canonical_bytes(value) + b"\n":
+        raise OwnerLauncherError("trusted_sdk_bytecode_repair_intent_invalid")
+    expected = {
+        "schema": TRUSTED_SDK_BYTECODE_REPAIR_INTENT_SCHEMA,
+        "ok": True,
+        "state": "trusted_sdk_bytecode_repair_planned",
+        "release_sha": release_sha,
+        "launcher_sha256": launcher_sha256,
+        "sdk_root": destination,
+        "sdk_version": _GCLOUD_SDK_VERSION,
+        "sdk_archive_sha256": _GCLOUD_SDK_ARCHIVE_SHA256,
+        "sdk_publication_release_sha": publication_intent[
+            "publication_release_sha"
+        ],
+        "sdk_publication_intent_sha256": publication_intent["intent_sha256"],
+        "sdk_publication_tree_entries": publication_tree[0],
+        "sdk_publication_tree_bytes": publication_tree[1],
+        "sdk_publication_tree_sha256": publication_tree[2],
+    }
+    caches = value.get("cache_directories")
+    files = value.get("bytecode_files")
+    cache_set_sha256 = value.get("cache_directory_set_sha256")
+    file_set_sha256 = value.get("bytecode_file_set_sha256")
+    bytecode_bytes = value.get("bytecode_bytes")
+    planned_at = value.get("planned_at_unix")
+    intent_sha256 = value.get("intent_sha256")
+    unsigned = dict(value)
+    unsigned.pop("intent_sha256", None)
+    if (
+        set(value)
+        != set(expected)
+        | {
+            "cache_directories",
+            "cache_directory_set_sha256",
+            "bytecode_files",
+            "bytecode_file_set_sha256",
+            "bytecode_bytes",
+            "planned_at_unix",
+            "intent_sha256",
+        }
+        or any(value.get(name) != item for name, item in expected.items())
+        or not isinstance(caches, list)
+        or not caches
+        or len(caches) > _GCLOUD_MAX_SDK_ENTRIES
+        or not isinstance(files, list)
+        or len(caches) + len(files) > _GCLOUD_MAX_SDK_ENTRIES
+        or not isinstance(cache_set_sha256, str)
+        or re.fullmatch(r"[0-9a-f]{64}", cache_set_sha256) is None
+        or not isinstance(file_set_sha256, str)
+        or re.fullmatch(r"[0-9a-f]{64}", file_set_sha256) is None
+        or type(bytecode_bytes) is not int
+        or not 0 <= bytecode_bytes <= _GCLOUD_MAX_SDK_BYTES
+        or type(planned_at) is not int
+        or planned_at < 0
+        or not isinstance(intent_sha256, str)
+        or intent_sha256 != _sha256(_canonical_bytes(unsigned))
+    ):
+        raise OwnerLauncherError("trusted_sdk_bytecode_repair_intent_invalid")
+
+    cache_paths: list[str] = []
+    cache_objects: list[_TrustedSdkBytecodeCache] = []
+    for raw in caches:
+        if not isinstance(raw, Mapping) or set(raw) != {"relative_path", "identity"}:
+            raise OwnerLauncherError("trusted_sdk_bytecode_repair_intent_invalid")
+        relative = raw.get("relative_path")
+        identity = raw.get("identity")
+        if (
+            not isinstance(relative, str)
+            or not relative
+            or os.path.isabs(relative)
+            or os.path.normpath(relative) != relative
+            or relative.startswith(f"..{os.sep}")
+            or os.path.basename(relative) != "__pycache__"
+            or not isinstance(identity, list)
+            or len(identity) != 9
+            or any(type(item) is not int for item in identity)
+        ):
+            raise OwnerLauncherError("trusted_sdk_bytecode_repair_intent_invalid")
+        cache_paths.append(relative)
+        cache_objects.append(
+            _TrustedSdkBytecodeCache(
+                absolute_path=os.path.join(destination, relative),
+                relative_path=relative,
+                identity=tuple(identity),
+            )
+        )
+    if cache_paths != sorted(cache_paths, key=os.fsencode) or len(set(cache_paths)) != len(
+        cache_paths
+    ):
+        raise OwnerLauncherError("trusted_sdk_bytecode_repair_intent_invalid")
+
+    file_paths: list[str] = []
+    file_objects: list[_TrustedSdkBytecodeFile] = []
+    for raw in files:
+        if not isinstance(raw, Mapping) or set(raw) != {
+            "relative_path",
+            "cache_relative_path",
+            "fingerprint",
+        }:
+            raise OwnerLauncherError("trusted_sdk_bytecode_repair_intent_invalid")
+        relative = raw.get("relative_path")
+        cache_relative = raw.get("cache_relative_path")
+        item_fingerprint = raw.get("fingerprint")
+        if (
+            not isinstance(relative, str)
+            or not relative
+            or os.path.isabs(relative)
+            or os.path.normpath(relative) != relative
+            or relative.startswith(f"..{os.sep}")
+            or not relative.endswith(".pyc")
+            or not isinstance(cache_relative, str)
+            or cache_relative not in cache_paths
+            or os.path.dirname(relative) != cache_relative
+            or not isinstance(item_fingerprint, list)
+            or len(item_fingerprint) != 10
+            or any(type(item) is not int for item in item_fingerprint[:-1])
+            or not isinstance(item_fingerprint[-1], str)
+            or re.fullmatch(r"[0-9a-f]{64}", item_fingerprint[-1]) is None
+            or int(item_fingerprint[5]) != 1
+        ):
+            raise OwnerLauncherError("trusted_sdk_bytecode_repair_intent_invalid")
+        file_paths.append(relative)
+        file_objects.append(
+            _TrustedSdkBytecodeFile(
+                absolute_path=os.path.join(destination, relative),
+                relative_path=relative,
+                cache_path=os.path.join(destination, cache_relative),
+                fingerprint=tuple(item_fingerprint),
+            )
+        )
+    if file_paths != sorted(file_paths, key=os.fsencode) or len(set(file_paths)) != len(
+        file_paths
+    ):
+        raise OwnerLauncherError("trusted_sdk_bytecode_repair_intent_invalid")
+    observed_cache_sha, observed_file_sha = _trusted_sdk_bytecode_repair_set_digests(
+        cache_objects,
+        file_objects,
+    )
+    if (
+        observed_cache_sha != cache_set_sha256
+        or observed_file_sha != file_set_sha256
+        or sum(int(item.fingerprint[-2]) for item in file_objects) != bytecode_bytes
+    ):
+        raise OwnerLauncherError("trusted_sdk_bytecode_repair_intent_invalid")
+    return value
+
+
+def _require_trusted_sdk_repair_subset(
+    intent: Mapping[str, Any],
+    *,
+    destination: str,
+    caches: Sequence[_TrustedSdkBytecodeCache],
+    files: Sequence[_TrustedSdkBytecodeFile],
+) -> None:
+    planned_caches = {
+        str(item["relative_path"]): tuple(item["identity"])
+        for item in intent["cache_directories"]
+    }
+    for cache in caches:
+        planned = planned_caches.get(cache.relative_path)
+        if planned is None or (
+            cache.identity[0],
+            cache.identity[1],
+            cache.identity[2],
+            cache.identity[4],
+            cache.identity[5],
+        ) != (
+            planned[0],
+            planned[1],
+            planned[2],
+            planned[4],
+            planned[5],
+        ):
+            raise OwnerLauncherError("trusted_sdk_bytecode_repair_recovery_invalid")
+    planned_files = {
+        str(item["relative_path"]): (
+            str(item["cache_relative_path"]),
+            tuple(item["fingerprint"]),
+        )
+        for item in intent["bytecode_files"]
+    }
+    for item in files:
+        planned = planned_files.get(item.relative_path)
+        if planned is None or planned != (
+            os.path.relpath(item.cache_path, destination),
+            item.fingerprint,
+        ):
+            raise OwnerLauncherError("trusted_sdk_bytecode_repair_recovery_invalid")
+
+
+def _validate_trusted_sdk_bytecode_repair_receipt(
+    receipt_path: str,
+    *,
+    release_sha: str,
+    launcher_sha256: str,
+    destination: str,
+    publication_tree: tuple[int, int, str],
+    publication_intent: Mapping[str, Any],
+    sdk_tree: tuple[int, int, str],
+    repair_intent_sha256: str,
+) -> Mapping[str, Any]:
+    _fingerprint, payload = _read_pinned_regular_file(
+        receipt_path,
+        maximum=_GCLOUD_MAX_CONFIG_BYTES,
+        unavailable_code="trusted_sdk_bytecode_repair_receipt_unavailable",
+        invalid_code="trusted_sdk_bytecode_repair_receipt_invalid",
+        changed_code="trusted_sdk_bytecode_repair_receipt_changed",
+        allowed_owners=frozenset({os.getuid()}),  # windows-footgun: ok
+    )
+    if stat.S_IMODE(int(_fingerprint[0])) != 0o600 or int(_fingerprint[5]) != 1:
+        raise OwnerLauncherError("trusted_sdk_bytecode_repair_receipt_invalid")
+    try:
+        value = _decode_json_object(payload, maximum=_GCLOUD_MAX_CONFIG_BYTES)
+    except OwnerLauncherError:
+        raise OwnerLauncherError(
+            "trusted_sdk_bytecode_repair_receipt_invalid"
+        ) from None
+    if payload != _canonical_bytes(value) + b"\n":
+        raise OwnerLauncherError("trusted_sdk_bytecode_repair_receipt_invalid")
+    expected = {
+        "schema": TRUSTED_SDK_BYTECODE_REPAIR_RECEIPT_SCHEMA,
+        "ok": True,
+        "state": "trusted_sdk_bytecode_removed",
+        "release_sha": release_sha,
+        "launcher_sha256": launcher_sha256,
+        "sdk_root": destination,
+        "sdk_version": _GCLOUD_SDK_VERSION,
+        "sdk_archive_sha256": _GCLOUD_SDK_ARCHIVE_SHA256,
+        "sdk_publication_release_sha": publication_intent[
+            "publication_release_sha"
+        ],
+        "sdk_publication_intent_sha256": publication_intent["intent_sha256"],
+        "repair_intent_sha256": repair_intent_sha256,
+        "sdk_publication_tree_entries": publication_tree[0],
+        "sdk_publication_tree_bytes": publication_tree[1],
+        "sdk_publication_tree_sha256": publication_tree[2],
+        "post_repair_sdk_tree_entries": sdk_tree[0],
+        "post_repair_sdk_tree_bytes": sdk_tree[1],
+        "post_repair_sdk_tree_sha256": sdk_tree[2],
+    }
+    files_removed = value.get("bytecode_files_removed")
+    bytes_removed = value.get("bytecode_bytes_removed")
+    file_set_sha256 = value.get("bytecode_file_set_sha256")
+    caches_removed = value.get("cache_directories_removed")
+    cache_set_sha256 = value.get("cache_directory_set_sha256")
+    repaired_at = value.get("repaired_at_unix")
+    receipt_sha256 = value.get("receipt_sha256")
+    unsigned = dict(value)
+    unsigned.pop("receipt_sha256", None)
+    if (
+        set(value)
+        != set(expected)
+        | {
+            "bytecode_files_removed",
+            "bytecode_bytes_removed",
+            "bytecode_file_set_sha256",
+            "cache_directories_removed",
+            "cache_directory_set_sha256",
+            "repaired_at_unix",
+            "receipt_sha256",
+        }
+        or any(value.get(name) != item for name, item in expected.items())
+        or type(files_removed) is not int
+        or files_removed < 0
+        or type(bytes_removed) is not int
+        or bytes_removed < 0
+        or (files_removed == 0 and bytes_removed != 0)
+        or not isinstance(file_set_sha256, str)
+        or re.fullmatch(r"[0-9a-f]{64}", file_set_sha256) is None
+        or type(caches_removed) is not int
+        or caches_removed <= 0
+        or not isinstance(cache_set_sha256, str)
+        or re.fullmatch(r"[0-9a-f]{64}", cache_set_sha256) is None
+        or type(repaired_at) is not int
+        or repaired_at < 0
+        or not isinstance(receipt_sha256, str)
+        or receipt_sha256 != _sha256(_canonical_bytes(unsigned))
+    ):
+        raise OwnerLauncherError("trusted_sdk_bytecode_repair_receipt_invalid")
+    return value
+
+
+def _remove_trusted_sdk_bytecode(
+    destination: str,
+    *,
+    caches: Sequence[_TrustedSdkBytecodeCache],
+    files: Sequence[_TrustedSdkBytecodeFile],
+) -> None:
+    files_by_cache: dict[str, list[_TrustedSdkBytecodeFile]] = {
+        cache.absolute_path: [] for cache in caches
+    }
+    for item in files:
+        try:
+            files_by_cache[item.cache_path].append(item)
+        except KeyError:
+            raise OwnerLauncherError("trusted_sdk_bytecode_repair_scope_invalid") from None
+    ordered_caches = sorted(
+        caches,
+        key=lambda item: (
+            item.relative_path.count(os.sep),
+            os.fsencode(item.relative_path),
+        ),
+        reverse=True,
+    )
+    directory_flags = (
+        os.O_RDONLY
+        | getattr(os, "O_DIRECTORY", 0)
+        | getattr(os, "O_CLOEXEC", 0)
+        | getattr(os, "O_NOFOLLOW", 0)
+    )
+    file_flags = (
+        os.O_RDONLY
+        | getattr(os, "O_CLOEXEC", 0)
+        | getattr(os, "O_NOFOLLOW", 0)
+    )
+    root_descriptor = -1
+    try:
+        root_descriptor = os.open(destination, directory_flags)
+        opened_root = os.fstat(root_descriptor)
+        expected_root = os.lstat(destination)
+        if _trusted_sdk_repair_stat_identity(opened_root) != (
+            _trusted_sdk_repair_stat_identity(expected_root)
+        ):
+            raise OwnerLauncherError("trusted_sdk_bytecode_repair_tree_changed")
+        for cache in ordered_caches:
+            components = tuple(Path(cache.relative_path).parts)
+            if not components or components[-1] != "__pycache__" or any(
+                item in {"", ".", ".."} for item in components
+            ):
+                raise OwnerLauncherError("trusted_sdk_bytecode_repair_scope_invalid")
+            parent_descriptor = os.dup(root_descriptor)
+            cache_descriptor = -1
+            try:
+                for component in components[:-1]:
+                    child_descriptor = os.open(
+                        component,
+                        directory_flags,
+                        dir_fd=parent_descriptor,
+                    )
+                    os.close(parent_descriptor)
+                    parent_descriptor = child_descriptor
+                cache_descriptor = os.open(
+                    components[-1],
+                    directory_flags,
+                    dir_fd=parent_descriptor,
+                )
+                current_cache = os.fstat(cache_descriptor)
+                if _trusted_sdk_repair_stat_identity(current_cache) != cache.identity:
+                    raise OwnerLauncherError("trusted_sdk_bytecode_repair_tree_changed")
+                for item in sorted(
+                    files_by_cache[cache.absolute_path],
+                    key=lambda value: os.fsencode(value.relative_path),
+                ):
+                    name = os.path.basename(item.relative_path)
+                    if (
+                        not name.endswith(".pyc")
+                        or os.path.dirname(item.relative_path) != cache.relative_path
+                    ):
+                        raise OwnerLauncherError(
+                            "trusted_sdk_bytecode_repair_scope_invalid"
+                        )
+                    descriptor = -1
+                    try:
+                        descriptor = os.open(name, file_flags, dir_fd=cache_descriptor)
+                        before = os.fstat(descriptor)
+                        chunks: list[bytes] = []
+                        remaining = _GCLOUD_MAX_SDK_FILE_BYTES + 1
+                        while remaining > 0:
+                            chunk = os.read(descriptor, min(1024 * 1024, remaining))
+                            if not chunk:
+                                break
+                            chunks.append(chunk)
+                            remaining -= len(chunk)
+                        payload = b"".join(chunks)
+                        after = os.fstat(descriptor)
+                        fingerprint = (
+                            before.st_mode,
+                            before.st_uid,
+                            before.st_gid,
+                            before.st_dev,
+                            before.st_ino,
+                            before.st_nlink,
+                            before.st_mtime_ns,
+                            before.st_ctime_ns,
+                            before.st_size,
+                            _sha256(payload),
+                        )
+                        if (
+                            _trusted_sdk_repair_stat_identity(before)
+                            != _trusted_sdk_repair_stat_identity(after)
+                            or len(payload) != before.st_size
+                            or fingerprint != item.fingerprint
+                            or before.st_uid != os.getuid()  # windows-footgun: ok
+                            or before.st_nlink != 1
+                            or not stat.S_ISREG(before.st_mode)
+                        ):
+                            raise OwnerLauncherError(
+                                "trusted_sdk_bytecode_repair_tree_changed"
+                            )
+                        current_name = os.stat(
+                            name,
+                            dir_fd=cache_descriptor,
+                            follow_symlinks=False,
+                        )
+                        if _trusted_sdk_repair_stat_identity(current_name) != (
+                            _trusted_sdk_repair_stat_identity(before)
+                        ):
+                            raise OwnerLauncherError(
+                                "trusted_sdk_bytecode_repair_tree_changed"
+                            )
+                        os.unlink(name, dir_fd=cache_descriptor)
+                    finally:
+                        if descriptor >= 0:
+                            os.close(descriptor)
+                    try:
+                        os.stat(
+                            name,
+                            dir_fd=cache_descriptor,
+                            follow_symlinks=False,
+                        )
+                    except FileNotFoundError:
+                        pass
+                    else:
+                        raise OwnerLauncherError(
+                            "trusted_sdk_bytecode_repair_remove_failed"
+                        )
+                os.fsync(cache_descriptor)
+                after_removal = os.fstat(cache_descriptor)
+                if os.listdir(cache_descriptor) or (
+                    after_removal.st_dev,
+                    after_removal.st_ino,
+                    after_removal.st_mode,
+                    after_removal.st_uid,
+                    after_removal.st_gid,
+                ) != (
+                    cache.identity[0],
+                    cache.identity[1],
+                    cache.identity[2],
+                    cache.identity[4],
+                    cache.identity[5],
+                ):
+                    raise OwnerLauncherError(
+                        "trusted_sdk_bytecode_repair_tree_changed"
+                    )
+                os.rmdir(components[-1], dir_fd=parent_descriptor)
+                os.fsync(parent_descriptor)
+            except OwnerLauncherError:
+                raise
+            except OSError:
+                raise OwnerLauncherError(
+                    "trusted_sdk_bytecode_repair_remove_failed"
+                ) from None
+            finally:
+                if cache_descriptor >= 0:
+                    os.close(cache_descriptor)
+                os.close(parent_descriptor)
+        os.fsync(root_descriptor)
+    except OwnerLauncherError:
+        raise
+    except OSError:
+        raise OwnerLauncherError("trusted_sdk_bytecode_repair_fsync_failed") from None
+    finally:
+        if root_descriptor >= 0:
+            os.close(root_descriptor)
+
+
+def repair_trusted_gcloud_sdk_bytecode(
+    release_sha: str,
+    *,
+    now_unix: int | None = None,
+    launcher_sha256: str | None = None,
+) -> Mapping[str, Any]:
+    """Remove only audited Python bytecode from the one pinned SDK tree."""
+
+    if _RELEASE_SHA.fullmatch(release_sha) is None:
+        raise OwnerLauncherError("invalid_release_sha")
+    current_launcher_sha256 = _current_launcher_sha256()
+    if launcher_sha256 is not None and launcher_sha256 != current_launcher_sha256:
+        raise OwnerLauncherError("local_launcher_changed")
+    repaired_at = int(time.time()) if now_unix is None else now_unix
+    if type(repaired_at) is not int or repaired_at < 0:
+        raise OwnerLauncherError("trusted_sdk_bytecode_repair_clock_invalid")
+    home = _canonical_owner_home()
+    hermes_root = os.path.join(home, ".hermes")
+    trusted_root = os.path.join(hermes_root, "trusted")
+    _require_private_owner_directory(hermes_root, create=False)
+    _require_private_owner_directory(trusted_root, create=False)
+    destination = os.path.join(home, _TRUSTED_SDK_RELATIVE)
+    intent_path = os.path.join(home, _TRUSTED_SDK_PUBLICATION_INTENT_RELATIVE)
+    receipt_path = _trusted_sdk_bytecode_repair_receipt_path(home, release_sha)
+    repair_intent_path = _trusted_sdk_bytecode_repair_intent_path(
+        home,
+        release_sha,
+    )
+    try:
+        destination_metadata = os.lstat(destination)
+        destination_real = os.path.realpath(destination, strict=True)
+    except OSError:
+        raise OwnerLauncherError("trusted_sdk_bytecode_repair_sdk_unavailable") from None
+    if (
+        destination_real != destination
+        or not stat.S_ISDIR(destination_metadata.st_mode)
+        or stat.S_ISLNK(destination_metadata.st_mode)
+        or destination_metadata.st_uid != os.getuid()  # windows-footgun: ok
+        or destination_metadata.st_mode & (stat.S_IWGRP | stat.S_IWOTH)
+    ):
+        raise OwnerLauncherError("trusted_sdk_bytecode_repair_sdk_invalid")
+
+    if os.path.lexists(receipt_path):
+        publication_tree = _capture_sdk_publication_tree(destination)
+        _intent_fingerprint, publication_intent = _validate_sdk_publication_intent(
+            intent_path,
+            destination=destination,
+            publication_tree=publication_tree,
+        )
+        repair_intent = _validate_trusted_sdk_bytecode_repair_intent(
+            repair_intent_path,
+            release_sha=release_sha,
+            launcher_sha256=current_launcher_sha256,
+            destination=destination,
+            publication_tree=publication_tree,
+            publication_intent=publication_intent,
+        )
+        sdk_tree = TrustedGcloudExecutable._capture_tree(destination, scope="sdk")
+        return _validate_trusted_sdk_bytecode_repair_receipt(
+            receipt_path,
+            release_sha=release_sha,
+            launcher_sha256=current_launcher_sha256,
+            destination=destination,
+            publication_tree=publication_tree,
+            publication_intent=publication_intent,
+            sdk_tree=sdk_tree,
+            repair_intent_sha256=str(repair_intent["intent_sha256"]),
+        )
+
+    publication_tree, caches, files = _capture_sdk_publication_tree_internal(
+        destination,
+        collect_repairable_bytecode=True,
+    )
+    _intent_fingerprint, publication_intent = _validate_sdk_publication_intent(
+        intent_path,
+        destination=destination,
+        publication_tree=publication_tree,
+    )
+    _version_fingerprint, version = _read_pinned_regular_file(
+        os.path.join(destination, "VERSION"),
+        maximum=128,
+        unavailable_code="trusted_sdk_bytecode_repair_tree_changed",
+        invalid_code="trusted_sdk_bytecode_repair_publication_invalid",
+        changed_code="trusted_sdk_bytecode_repair_tree_changed",
+        allowed_owners=frozenset({0, os.getuid()}),  # windows-footgun: ok
+    )
+    if version != f"{_GCLOUD_SDK_VERSION}\n".encode("ascii"):
+        raise OwnerLauncherError("trusted_gcloud_sdk_version_invalid")
+    if os.path.lexists(repair_intent_path):
+        repair_intent = _validate_trusted_sdk_bytecode_repair_intent(
+            repair_intent_path,
+            release_sha=release_sha,
+            launcher_sha256=current_launcher_sha256,
+            destination=destination,
+            publication_tree=publication_tree,
+            publication_intent=publication_intent,
+        )
+        _require_trusted_sdk_repair_subset(
+            repair_intent,
+            destination=destination,
+            caches=caches,
+            files=files,
+        )
+    else:
+        if not caches:
+            raise OwnerLauncherError("trusted_sdk_bytecode_repair_not_required")
+        verified_tree, verified_caches, verified_files = (
+            _capture_sdk_publication_tree_internal(
+                destination,
+                collect_repairable_bytecode=True,
+            )
+        )
+        if (
+            verified_tree != publication_tree
+            or verified_caches != caches
+            or verified_files != files
+        ):
+            raise OwnerLauncherError("trusted_sdk_bytecode_repair_tree_changed")
+        planned = _trusted_sdk_bytecode_repair_intent_value(
+            release_sha=release_sha,
+            launcher_sha256=current_launcher_sha256,
+            destination=destination,
+            publication_tree=publication_tree,
+            publication_intent=publication_intent,
+            caches=caches,
+            files=files,
+            planned_at_unix=repaired_at,
+        )
+        if len(_canonical_bytes(planned)) + 1 > (
+            _TRUSTED_SDK_BYTECODE_REPAIR_INTENT_MAX_BYTES
+        ):
+            raise OwnerLauncherError("trusted_sdk_bytecode_repair_intent_oversized")
+        try:
+            _write_owner_file_no_replace(
+                repair_intent_path,
+                _canonical_bytes(planned) + b"\n",
+                parent=trusted_root,
+                temporary_prefix=(
+                    f".{_TRUSTED_SDK_BYTECODE_REPAIR_INTENT_PREFIX}"
+                ),
+                exists_code="trusted_sdk_bytecode_repair_intent_exists",
+                failed_code="trusted_sdk_bytecode_repair_intent_write_failed",
+            )
+        except OwnerLauncherError as exc:
+            if exc.code != "trusted_sdk_bytecode_repair_intent_exists":
+                raise
+        repair_intent = _validate_trusted_sdk_bytecode_repair_intent(
+            repair_intent_path,
+            release_sha=release_sha,
+            launcher_sha256=current_launcher_sha256,
+            destination=destination,
+            publication_tree=publication_tree,
+            publication_intent=publication_intent,
+        )
+        _require_trusted_sdk_repair_subset(
+            repair_intent,
+            destination=destination,
+            caches=caches,
+            files=files,
+        )
+    if caches:
+        _remove_trusted_sdk_bytecode(
+            destination,
+            caches=caches,
+            files=files,
+        )
+
+    repaired_publication_tree = _capture_sdk_publication_tree(destination)
+    if repaired_publication_tree != publication_tree:
+        raise OwnerLauncherError("trusted_sdk_bytecode_repair_publication_changed")
+    _repaired_intent_fingerprint, repaired_intent = _validate_sdk_publication_intent(
+        intent_path,
+        destination=destination,
+        publication_tree=repaired_publication_tree,
+    )
+    if repaired_intent != publication_intent:
+        raise OwnerLauncherError("trusted_sdk_bytecode_repair_publication_changed")
+    sdk_tree = TrustedGcloudExecutable._capture_tree(destination, scope="sdk")
+    unsigned = {
+        "schema": TRUSTED_SDK_BYTECODE_REPAIR_RECEIPT_SCHEMA,
+        "ok": True,
+        "state": "trusted_sdk_bytecode_removed",
+        "release_sha": release_sha,
+        "launcher_sha256": current_launcher_sha256,
+        "sdk_root": destination,
+        "sdk_version": _GCLOUD_SDK_VERSION,
+        "sdk_archive_sha256": _GCLOUD_SDK_ARCHIVE_SHA256,
+        "sdk_publication_release_sha": publication_intent[
+            "publication_release_sha"
+        ],
+        "sdk_publication_intent_sha256": publication_intent["intent_sha256"],
+        "repair_intent_sha256": repair_intent["intent_sha256"],
+        "sdk_publication_tree_entries": publication_tree[0],
+        "sdk_publication_tree_bytes": publication_tree[1],
+        "sdk_publication_tree_sha256": publication_tree[2],
+        "bytecode_files_removed": len(repair_intent["bytecode_files"]),
+        "bytecode_bytes_removed": repair_intent["bytecode_bytes"],
+        "bytecode_file_set_sha256": repair_intent[
+            "bytecode_file_set_sha256"
+        ],
+        "cache_directories_removed": len(repair_intent["cache_directories"]),
+        "cache_directory_set_sha256": repair_intent[
+            "cache_directory_set_sha256"
+        ],
+        "post_repair_sdk_tree_entries": sdk_tree[0],
+        "post_repair_sdk_tree_bytes": sdk_tree[1],
+        "post_repair_sdk_tree_sha256": sdk_tree[2],
+        "repaired_at_unix": repaired_at,
+    }
+    receipt = {**unsigned, "receipt_sha256": _sha256(_canonical_bytes(unsigned))}
+    try:
+        _write_owner_file_no_replace(
+            receipt_path,
+            _canonical_bytes(receipt) + b"\n",
+            parent=trusted_root,
+            temporary_prefix=f".{_TRUSTED_SDK_BYTECODE_REPAIR_RECEIPT_PREFIX}",
+            exists_code="trusted_sdk_bytecode_repair_receipt_exists",
+            failed_code="trusted_sdk_bytecode_repair_receipt_write_failed",
+        )
+    except OwnerLauncherError as exc:
+        if exc.code != "trusted_sdk_bytecode_repair_receipt_exists":
+            raise
+    final_publication_tree = _capture_sdk_publication_tree(destination)
+    _final_intent_fingerprint, final_intent = _validate_sdk_publication_intent(
+        intent_path,
+        destination=destination,
+        publication_tree=final_publication_tree,
+    )
+    final_sdk_tree = TrustedGcloudExecutable._capture_tree(destination, scope="sdk")
+    return _validate_trusted_sdk_bytecode_repair_receipt(
+        receipt_path,
+        release_sha=release_sha,
+        launcher_sha256=current_launcher_sha256,
+        destination=destination,
+        publication_tree=final_publication_tree,
+        publication_intent=final_intent,
+        sdk_tree=final_sdk_tree,
+        repair_intent_sha256=str(repair_intent["intent_sha256"]),
+    )
 
 
 def _download_pinned_gcloud_archive(destination: str) -> None:
@@ -4515,12 +6364,15 @@ def _owner_support_wheel_receipt_values() -> list[Mapping[str, Any]]:
 def _owner_support_manifest_value(
     release_sha: str,
     *,
+    source_tree_oid: str,
     source_archive_bytes: int,
     source_archive_sha256: str,
 ) -> Mapping[str, Any]:
     if (
         not isinstance(release_sha, str)
         or _RELEASE_SHA.fullmatch(release_sha) is None
+        or not isinstance(source_tree_oid, str)
+        or _RELEASE_SHA.fullmatch(source_tree_oid) is None
         or type(source_archive_bytes) is not int
         or source_archive_bytes <= 0
         or source_archive_bytes > _TRUSTED_OWNER_SUPPORT_SOURCE_ARCHIVE_MAX_BYTES
@@ -4533,6 +6385,7 @@ def _owner_support_manifest_value(
         "ok": True,
         "state": "release_bound_owner_support_ready",
         "release_sha": release_sha,
+        "source_tree_oid": source_tree_oid,
         "source_archive_format": "git-archive-tar",
         "source_archive_paths": ["gateway", "scripts"],
         "source_archive_bytes": source_archive_bytes,
@@ -4571,13 +6424,16 @@ def _validate_owner_support_manifest(
         raise OwnerLauncherError("trusted_owner_support_manifest_invalid")
     source_bytes = value.get("source_archive_bytes")
     source_sha256 = value.get("source_archive_sha256")
+    source_tree_oid = value.get("source_tree_oid")
     if (
         type(source_bytes) is not int
         or not isinstance(source_sha256, str)
+        or not isinstance(source_tree_oid, str)
     ):
         raise OwnerLauncherError("trusted_owner_support_manifest_invalid")
     expected = _owner_support_manifest_value(
         release_sha,
+        source_tree_oid=source_tree_oid,
         source_archive_bytes=source_bytes,
         source_archive_sha256=source_sha256,
     )
@@ -4828,6 +6684,37 @@ def _create_owner_support_source_archive(
         allowed_owners=frozenset({os.getuid()}),  # windows-footgun: ok
     )
     return int(fingerprint[-2]), str(fingerprint[-1])
+
+
+def _release_source_tree_oid(release_sha: str) -> str:
+    """Resolve one release tree through the same pinned local git boundary."""
+
+    if _RELEASE_SHA.fullmatch(release_sha or "") is None:
+        raise OwnerLauncherError("invalid_release_sha")
+    provenance = LocalLauncherProvenance()
+    provenance(release_sha)
+    git_before = provenance._git_identity()
+    repository = Path(__file__).absolute().parents[2]
+    raw = provenance._run_git((
+        "-C",
+        str(repository),
+        "rev-parse",
+        "--verify",
+        f"{release_sha}^{{tree}}",
+    ))
+    try:
+        tree_oid = raw.decode("ascii", errors="strict").strip()
+    except UnicodeError:
+        raise OwnerLauncherError(
+            "trusted_owner_support_tree_oid_invalid"
+        ) from None
+    provenance(release_sha)
+    if (
+        _RELEASE_SHA.fullmatch(tree_oid or "") is None
+        or provenance._git_identity() != git_before
+    ):
+        raise OwnerLauncherError("trusted_owner_support_tree_oid_invalid")
+    return tree_oid
 
 
 def _safe_extract_owner_support_source_archive(
@@ -5199,6 +7086,7 @@ def _publish_trusted_owner_support_runtime(
     wheel_downloader: Callable[[Sequence[Any], str], None] = (
         _download_pinned_owner_support_wheel
     ),
+    source_tree_resolver: Callable[[str], str] = _release_source_tree_oid,
 ) -> tuple[str, tuple[int, int, str], Mapping[str, Any]]:
     destination, _source_root, _site_root = _trusted_owner_support_paths(
         release_sha
@@ -5220,6 +7108,9 @@ def _publish_trusted_owner_support_runtime(
     archive_path = os.path.join(stage_parent, "source.tar")
     try:
         os.mkdir(stage_root, 0o700)
+        source_tree_oid = source_tree_resolver(release_sha)
+        if _RELEASE_SHA.fullmatch(source_tree_oid or "") is None:
+            raise OwnerLauncherError("trusted_owner_support_tree_oid_invalid")
         source_archive_bytes, source_archive_sha256 = source_archiver(
             release_sha,
             archive_path,
@@ -5272,6 +7163,7 @@ def _publish_trusted_owner_support_runtime(
             os.unlink(wheel_path)
         manifest = _owner_support_manifest_value(
             release_sha,
+            source_tree_oid=source_tree_oid,
             source_archive_bytes=source_archive_bytes,
             source_archive_sha256=source_archive_sha256,
         )
@@ -5316,7 +7208,7 @@ def _publish_trusted_owner_support_runtime(
             raise OwnerLauncherError("trusted_owner_support_publish_failed") from None
         published_here = False
         try:
-            _darwin_rename_no_replace(
+            _atomic_rename_no_replace(
                 stage_root,
                 destination,
                 exists_code="trusted_owner_support_destination_exists",
@@ -5447,6 +7339,9 @@ def bootstrap_trusted_gcloud_runtime(
     runtime_validator: Callable[[str], None] | None = None,
     owner_support_source_archiver: Callable[[str, str], tuple[int, str]] = (
         _create_owner_support_source_archive
+    ),
+    owner_support_source_tree_resolver: Callable[[str], str] = (
+        _release_source_tree_oid
     ),
     owner_support_wheel_downloader: Callable[[Sequence[Any], str], None] = (
         _download_pinned_owner_support_wheel
@@ -5616,6 +7511,7 @@ def bootstrap_trusted_gcloud_runtime(
             trusted_root=trusted_root,
             source_archiver=owner_support_source_archiver,
             wheel_downloader=owner_support_wheel_downloader,
+            source_tree_resolver=owner_support_source_tree_resolver,
         )
     )
     (
@@ -5677,6 +7573,9 @@ def bootstrap_trusted_gcloud_runtime(
         "owner_support_tree_sha256": owner_support_tree[2],
         "owner_support_manifest_sha256": owner_support_manifest[
             "manifest_sha256"
+        ],
+        "owner_support_source_tree_oid": owner_support_manifest[
+            "source_tree_oid"
         ],
         "owner_support_source_archive_bytes": owner_support_manifest[
             "source_archive_bytes"
@@ -16417,6 +18316,1528 @@ def launch_session_bound_full_canary(
 launch_full_canary = launch_session_bound_full_canary
 
 
+def collect_fresh_storage_growth_external_iam(
+    *,
+    owner_identity: GcloudOwnerAccessToken,
+    source_approval_sha256: str,
+    now_unix: int | None = None,
+) -> Mapping[str, Any]:
+    """Collect current IAM while treating disk capacity/lifecycle as orthogonal.
+
+    The generic host preflight intentionally describes the historical create
+    target and therefore rejects the later 40/80 GB disk and a stopped VM.  IAM
+    authority does not include either capacity or lifecycle state.  This
+    storage-specific projection records the actual RUNNING/TERMINATED state
+    and 40/80 GB size, validates the exact service account and scopes, and
+    preserves the reviewed foundation/host policy digest without fabricating
+    a generic RUNNING host report.
+    """
+
+    from gateway import canonical_writer_host_authority as host_authority
+    from scripts.canary import storage_growth_contract as storage_contract
+    from scripts.canary.host import HostSpec, build_plan as build_host_plan
+    from scripts.canary.foundation_preflight import (
+        collect as collect_foundation,
+        evaluate as evaluate_foundation,
+    )
+    from scripts.canary.host_preflight import collect as collect_host
+    from scripts.canary.network_boundary import (
+        NetworkBoundarySpec,
+        build_plan as build_network_plan,
+    )
+
+    source = _require_sha256(
+        source_approval_sha256,
+        "storage_growth_external_iam_invalid",
+    )
+    runner = owner_identity.run_canary_iam_read_only_json
+    try:
+        foundation_report = evaluate_foundation(collect_foundation(run_json=runner))
+        host_evidence = collect_host(run_json=runner)
+        planned_vm = host_evidence.get("planned_vm")
+        planned_disk = host_evidence.get("planned_vm_disk")
+        service_accounts = (
+            planned_vm.get("serviceAccounts")
+            if isinstance(planned_vm, Mapping)
+            else None
+        )
+        account = (
+            service_accounts[0]
+            if isinstance(service_accounts, list)
+            and len(service_accounts) == 1
+            and isinstance(service_accounts[0], Mapping)
+            else None
+        )
+        if (
+            not isinstance(planned_vm, Mapping)
+            or planned_vm.get("status") not in {"RUNNING", "TERMINATED"}
+            or not isinstance(planned_disk, Mapping)
+            or str(planned_disk.get("sizeGb")) not in {"40", "80"}
+            or not isinstance(account, Mapping)
+            or account.get("email") != host_authority._CANARY_SERVICE_ACCOUNT
+            or tuple(account.get("scopes") or ()) != host_authority._CANARY_SCOPES
+            or planned_vm.get("id") != storage_contract.VM_INSTANCE_ID
+            or planned_vm.get("name") != storage_contract.VM_NAME
+            or not isinstance(planned_vm.get("zone"), str)
+            or not planned_vm["zone"].endswith(
+                f"/zones/{storage_contract.ZONE}"
+            )
+            or planned_disk.get("id") != storage_contract.DISK_ID
+            or planned_disk.get("name") != storage_contract.DISK_NAME
+            or planned_disk.get("status") != "READY"
+        ):
+            raise OwnerLauncherError("storage_growth_external_iam_invalid")
+        summary = foundation_report.get("evidence_summary")
+        sql_ip = summary.get("sql_private_ip") if isinstance(summary, Mapping) else None
+        if not isinstance(sql_ip, str):
+            raise OwnerLauncherError("storage_growth_external_iam_invalid")
+        network_plan = build_network_plan(NetworkBoundarySpec(sql_private_ip=sql_ip))
+        host_plan = build_host_plan(
+            HostSpec(
+                sql_private_ip=sql_ip,
+                network_plan_sha256=network_plan.sha256,
+            )
+        )
+        current = int(time.time()) if now_unix is None else now_unix
+        foundation_collected = foundation_report.get("collected_at_unix")
+        host_collected = host_evidence.get("collected_at_unix")
+        foundation_spec = foundation_report.get("spec")
+        if (
+            foundation_report.get("schema")
+            != "muncho-isolated-canary-foundation-preflight.v3"
+            or foundation_report.get("ok") is not True
+            or not isinstance(foundation_spec, Mapping)
+            or foundation_spec.get("project") != host_authority._CANARY_PROJECT
+            or foundation_spec.get("zone") != host_authority._CANARY_ZONE
+            or foundation_spec.get("service_account_name")
+            != "muncho-canary-v2-runtime"
+            or tuple(foundation_report.get("satisfied_steps") or ())
+            != host_authority._FOUNDATION_REQUIRED_STEPS
+            or type(foundation_collected) is not int
+            or type(host_collected) is not int
+            or not 0 <= current - foundation_collected <= 300
+            or not 0 <= current - host_collected <= 300
+        ):
+            raise OwnerLauncherError("storage_growth_external_iam_invalid")
+        host_authority._successful_check_names(
+            foundation_report,
+            expected=host_authority._FOUNDATION_REQUIRED_CHECKS,
+            label="storage growth foundation preflight",
+        )
+        host_projection = {
+            "schema": "muncho-storage-growth-live-host-iam-projection.v1",
+            "instance_status": planned_vm["status"],
+            "instance_id": planned_vm["id"],
+            "disk_id": planned_disk["id"],
+            "disk_size_gb": int(str(planned_disk["sizeGb"])),
+            "service_account": account["email"],
+            "scopes": list(account["scopes"]),
+            "instance_sha256": _sha256(_canonical_bytes(dict(planned_vm))),
+            "disk_sha256": _sha256(_canonical_bytes(dict(planned_disk))),
+            "collected_at_unix": current,
+        }
+        receipt = host_authority.ExternalIAMReceipt.from_mapping(
+            {
+                "schema": host_authority.EXTERNAL_IAM_RECEIPT_SCHEMA,
+                "project": host_authority._CANARY_PROJECT,
+                "zone": host_authority._CANARY_ZONE,
+                "instance": host_authority._CANARY_INSTANCE,
+                "service_account": host_authority._CANARY_SERVICE_ACCOUNT,
+                "scopes": list(host_authority._CANARY_SCOPES),
+                "roles": list(host_authority._CANARY_ROLES),
+                "permissions": list(host_authority._CANARY_PERMISSIONS),
+                "foundation_plan_sha256": foundation_report["plan_sha256"],
+                "host_plan_sha256": host_plan.sha256,
+                "foundation_report_sha256": _sha256(
+                    _canonical_bytes(dict(foundation_report))
+                ),
+                "host_report_sha256": _sha256(
+                    _canonical_bytes(host_projection)
+                ),
+                "source_approval_sha256": source,
+                "collected_at_unix": current,
+                "expires_at_unix": current
+                + host_authority.EXTERNAL_IAM_TTL_SECONDS,
+            }
+        )
+        receipt.require_fresh(current, minimum_remaining_seconds=720)
+        if receipt.policy_sha256 != storage_contract.EXTERNAL_IAM_POLICY_SHA256:
+            raise OwnerLauncherError("storage_growth_external_iam_invalid")
+    except OwnerLauncherError:
+        raise
+    except (ImportError, KeyError, RuntimeError, TypeError, ValueError):
+        raise OwnerLauncherError("storage_growth_external_iam_invalid") from None
+    owner_identity.require_stable()
+    return receipt.to_mapping()
+
+
+def _storage_growth_owner_observer(
+    *,
+    release_sha: str,
+    gcloud_executable: TrustedGcloudExecutable,
+    gcloud_configuration: PinnedGcloudConfiguration,
+    owner_identity: GcloudOwnerAccessToken,
+    stopped_receipt_snapshot: Mapping[str, Any] | None = None,
+) -> Callable[[], Mapping[str, Any]]:
+    """Construct the bounded read-only source observer for storage growth.
+
+    Mutation authority deliberately does not live in this owner process.  The
+    local gcloud identity can collect the exact source evidence, but the
+    passkey-v2 cutover executor must own the mutation credential, durable
+    journal, grant claim, and every resize/stop/start attempt.
+    """
+
+    from scripts.canary import host_storage_growth as growth
+    from scripts.canary import storage_growth_contract as storage_contract
+    from scripts.canary import host_storage_growth_preflight as growth_preflight
+    from scripts.canary.host_storage_boot import BOOT_ID_COMMAND
+
+    require_trusted_owner_support_activation(
+        gcloud_executable,
+        release_sha=release_sha,
+    )
+    require_local_launcher_provenance(release_sha)
+    account = owner_identity.account_for_read_only_preflight()
+    if account != storage_contract.OWNER_ACCOUNT:
+        raise OwnerLauncherError("storage_growth_owner_identity_invalid")
+    transport = IapStoppedReleaseTransport(
+        owner_identity,
+        gcloud_executable=gcloud_executable,
+        gcloud_configuration=gcloud_configuration,
+    )
+    allowed_guest = {
+        BOOT_ID_COMMAND,
+        growth_preflight._root_command(),
+        growth_preflight.HOST_RECEIPT_COMMAND,
+        growth_preflight.STOPPED_RELEASE_RECEIPT_COMMAND,
+        *(
+            growth_preflight._service_command(unit)
+            for unit in growth.CANARY_RUNTIME_UNITS
+        ),
+    }
+
+    def run_guest(argv: Sequence[str]) -> bytes:
+        logical = tuple(argv)
+        if logical not in allowed_guest:
+            raise RuntimeError("storage growth guest command is not exact")
+        completed = transport._run_remote(
+            logical,
+            account=account,
+            timeout_seconds=90.0,
+            maximum_output_bytes=growth_preflight._MAX_GUEST_OUTPUT_BYTES,
+        )
+        if (
+            completed.returncode != 0
+            or not isinstance(completed.stdout, bytes)
+            or not completed.stdout
+            or len(completed.stdout) > growth_preflight._MAX_GUEST_OUTPUT_BYTES
+        ):
+            raise RuntimeError("storage growth guest evidence unavailable")
+        return completed.stdout
+
+    def observe() -> Mapping[str, Any]:
+        require_trusted_owner_support_activation(
+            gcloud_executable,
+            release_sha=release_sha,
+        )
+        require_local_launcher_provenance(release_sha)
+        live_external_iam = collect_fresh_storage_growth_external_iam(
+            owner_identity=owner_identity,
+            source_approval_sha256=growth.build_plan().sha256,
+        )
+        value = growth_preflight.collect(
+            run_json=owner_identity.run_canary_iam_read_only_json,
+            run_guest=run_guest,
+            external_iam_receipt=live_external_iam,
+            stopped_receipt_snapshot=stopped_receipt_snapshot,
+        )
+        owner_identity.require_stable()
+        return value
+
+    return observe
+
+
+class StorageGrowthPrivilegedBoundary(Protocol):
+    """Remote passkey-v2 executor boundary; never implemented with local gcloud."""
+
+    def require_ready(self) -> Mapping[str, Any]: ...
+
+    def request_initial(
+        self,
+        *,
+        release_sha: str,
+        plan: Mapping[str, Any],
+        source_preflight: Mapping[str, Any],
+        transaction_id: str,
+    ) -> Mapping[str, Any]: ...
+
+    def observation_request(
+        self,
+        *,
+        release_sha: str,
+        plan: Mapping[str, Any],
+        transaction_id: str,
+    ) -> Mapping[str, Any]: ...
+
+    def attest_cloud_observation(
+        self,
+        *,
+        release_sha: str,
+        plan: Mapping[str, Any],
+        transaction_id: str,
+        attestation_request: Mapping[str, Any],
+    ) -> Mapping[str, Any]: ...
+
+    def request_resume(
+        self,
+        *,
+        release_sha: str,
+        plan: Mapping[str, Any],
+        transaction_id: str,
+        continuation_preflight: Mapping[str, Any],
+    ) -> Mapping[str, Any]: ...
+
+    def execute_or_recover(
+        self,
+        *,
+        release_sha: str,
+        plan: Mapping[str, Any],
+        transaction_id: str,
+        request_id: str,
+        consume_attempt_id: str,
+        continuation_preflight: Mapping[str, Any],
+    ) -> Mapping[str, Any]: ...
+
+    def verify_terminal(
+        self,
+        *,
+        release_sha: str,
+        plan: Mapping[str, Any],
+        transaction_id: str,
+    ) -> Mapping[str, Any]: ...
+
+
+class StorageGrowthHostAttestorBoundary(Protocol):
+    """Fixed canary-host signer transport with no generic command surface."""
+
+    def attest_host_observation(
+        self, canonical_frame: bytes
+    ) -> Mapping[str, Any]: ...
+
+
+class CanaryHostObservationAttestorTransport:
+    """One fixed root-only canary signer command over pinned IAP stdin."""
+
+    _MAX_FRAME_BYTES = 1024 * 1024
+
+    def __init__(
+        self,
+        *,
+        release_sha: str,
+        owner_identity: GcloudOwnerAccessToken,
+        gcloud_executable: TrustedGcloudExecutable,
+        gcloud_configuration: PinnedGcloudConfiguration,
+        transport: IapStoppedReleaseTransport | None = None,
+    ) -> None:
+        if _RELEASE_SHA.fullmatch(release_sha) is None:
+            raise OwnerLauncherError("invalid_release_sha")
+        self._release_sha = release_sha
+        self._owner_identity = owner_identity
+        self._account = owner_identity.account_for_read_only_preflight()
+        self._transport = transport or IapStoppedReleaseTransport(
+            owner_identity,
+            gcloud_executable=gcloud_executable,
+            gcloud_configuration=gcloud_configuration,
+        )
+        trusted_release = (
+            "/opt/muncho-trusted-observation/releases/"
+            f"{release_sha}"
+        )
+        self._remote_interpreter = f"{trusted_release}/venv/bin/python"
+        self._remote_entrypoint = (
+            f"{trusted_release}/bin/muncho-host-observation-attestor"
+        )
+
+    def attest_host_observation(
+        self, canonical_frame: bytes
+    ) -> Mapping[str, Any]:
+        from scripts.canary import storage_growth_trusted_collector as trusted
+
+        if (
+            type(canonical_frame) is not bytes
+            or not canonical_frame
+            or len(canonical_frame) > self._MAX_FRAME_BYTES
+            or canonical_frame.endswith(b"\n")
+        ):
+            raise OwnerLauncherError(
+                "storage_growth_host_attestation_frame_invalid"
+            )
+        try:
+            frame = trusted.protocol.decode_canonical_json(
+                canonical_frame,
+                maximum_bytes=self._MAX_FRAME_BYTES,
+            )
+        except trusted.protocol.PasskeyV2ProtocolError:
+            raise OwnerLauncherError(
+                "storage_growth_host_attestation_frame_invalid"
+            ) from None
+        if (
+            not isinstance(frame, Mapping)
+            or frame.get("role") != "host"
+            or frame.get("schema") != trusted.ATTESTATION_REQUEST_SCHEMA
+        ):
+            raise OwnerLauncherError(
+                "storage_growth_host_attestation_frame_invalid"
+            )
+        completed = self._transport._run_remote_input(
+            (
+                self._remote_interpreter,
+                "-I",
+                "-B",
+                self._remote_entrypoint,
+            ),
+            account=self._account,
+            input_bytes=canonical_frame + b"\n",
+            timeout_seconds=90.0,
+            maximum_input_bytes=self._MAX_FRAME_BYTES + 1,
+            maximum_output_bytes=self._MAX_FRAME_BYTES + 1,
+        )
+        self._owner_identity.require_stable()
+        raw = completed.stdout
+        if (
+            not isinstance(raw, bytes)
+            or not raw.endswith(b"\n")
+            or b"\n" in raw[:-1]
+            or len(raw) > self._MAX_FRAME_BYTES + 1
+        ):
+            raise OwnerLauncherError(
+                "storage_growth_host_attestation_response_invalid"
+            )
+        try:
+            response = trusted.protocol.decode_canonical_json(
+                raw[:-1], maximum_bytes=self._MAX_FRAME_BYTES
+            )
+        except trusted.protocol.PasskeyV2ProtocolError:
+            raise OwnerLauncherError(
+                "storage_growth_host_attestation_response_invalid"
+            ) from None
+        if (
+            not isinstance(response, Mapping)
+            or response.get("role") != "host"
+            or response.get("schema") != trusted.ATTESTATION_RESPONSE_SCHEMA
+        ):
+            raise OwnerLauncherError(
+                "storage_growth_host_attestation_response_invalid"
+            )
+        return dict(response)
+
+
+class OwnerGateIapTransport:
+    """One fixed stdin-only IAP path to the private passkey-v2 intake.
+
+    This class deliberately has no generic command method.  Its caller can
+    supply only one canonical frame; every argv item, remote executable,
+    target identity and environment value is fixed here.  The owner process
+    never receives a Compute mutation credential and exposes no local
+    mutation callback or fallback.
+    """
+
+    _VM_NAME = "muncho-owner-gate-01"
+    _OWNER_ACCOUNT = "lomliev@adventico.com"
+    _AUTHORITY_USER = "muncho-passkey-authority"
+    _REMOTE_PYTHON = "/opt/muncho-owner-gate/current/venv/bin/python"
+    _REMOTE_INTAKE = "/opt/muncho-owner-gate/current/bin/muncho-owner-gate-intake"
+    _MAX_FRAME_BYTES = 1024 * 1024
+    _MAX_RESPONSE_BYTES = 1024 * 1024
+    _ENVIRONMENT_KEYS = frozenset({
+        "HOME",
+        "CLOUDSDK_CONFIG",
+        "PATH",
+        "TMPDIR",
+        "LANG",
+        "LC_ALL",
+        "CLOUDSDK_CORE_PROJECT",
+        "CLOUDSDK_COMPUTE_ZONE",
+        "CLOUDSDK_CORE_DISABLE_PROMPTS",
+        "CLOUDSDK_CORE_LOG_HTTP",
+        "CLOUDSDK_CORE_LOG_HTTP_SHOW_REQUEST_BODY",
+        "CLOUDSDK_CORE_LOG_HTTP_REDACT_TOKEN",
+        "CLOUDSDK_CORE_DISABLE_FILE_LOGGING",
+        "CLOUDSDK_CORE_DISABLE_USAGE_REPORTING",
+        "CLOUDSDK_COMPONENT_MANAGER_DISABLE_UPDATE_CHECK",
+        "CLOUDSDK_CORE_VERBOSITY",
+        "CLOUDSDK_PYTHON",
+        "CLOUDSDK_PYTHON_ARGS",
+        "PYTHONNOUSERSITE",
+        "PYTHONDONTWRITEBYTECODE",
+    })
+
+    def __init__(
+        self,
+        *,
+        release_sha: str,
+        owner_identity: GcloudOwnerAccessToken,
+        gcloud_executable: TrustedGcloudExecutable,
+        gcloud_configuration: PinnedGcloudConfiguration,
+        host_identity: StableOwnerGateHostIdentity | None = None,
+        known_hosts: StableKnownHosts | None = None,
+        popen_factory: Callable[..., subprocess.Popen[bytes]] = subprocess.Popen,
+        timeout_seconds: float = 900.0,
+    ) -> None:
+        if _RELEASE_SHA.fullmatch(release_sha) is None:
+            raise OwnerLauncherError("owner_gate_iap_release_invalid")
+        identity_configuration = getattr(
+            owner_identity,
+            "gcloud_configuration",
+            None,
+        )
+        if identity_configuration is not gcloud_configuration:
+            raise OwnerLauncherError("owner_gate_iap_configuration_not_shared")
+        if not callable(popen_factory):
+            raise OwnerLauncherError("owner_gate_iap_process_factory_invalid")
+        if (
+            isinstance(timeout_seconds, bool)
+            or not isinstance(timeout_seconds, (int, float))
+            or not 0 < timeout_seconds <= 2_400
+        ):
+            raise OwnerLauncherError("owner_gate_iap_timeout_invalid")
+        self._release_sha = release_sha
+        self._owner_identity = owner_identity
+        self._gcloud_executable = gcloud_executable
+        self._gcloud_configuration = gcloud_configuration
+        self._host_identity = (
+            host_identity
+            or PinnedOwnerGateHostIdentityReceipt(
+                pinning_source_revision=release_sha,
+            )
+        )
+        identity = self._host_identity.snapshot()
+        if not isinstance(identity, OwnerGateHostIdentitySnapshot):
+            raise OwnerLauncherError("owner_gate_iap_identity_receipt_invalid")
+        self._known_hosts = known_hosts or PinnedGoogleComputeKnownHosts(
+            expected_instance_id=identity.vm_numeric_id,
+        )
+        self._popen_factory = popen_factory
+        self._timeout_seconds = float(timeout_seconds)
+
+    @staticmethod
+    def _terminate_process(process: subprocess.Popen[bytes]) -> None:
+        """Bound cleanup to the one local IAP client process group."""
+
+        try:
+            if process.poll() is None:
+                try:
+                    os.killpg(process.pid, signal.SIGTERM)  # windows-footgun: ok
+                except Exception:
+                    try:
+                        process.terminate()
+                    except Exception:
+                        pass
+                try:
+                    process.wait(timeout=5.0)
+                except (OSError, subprocess.SubprocessError):
+                    pass
+            if process.poll() is None:
+                try:
+                    os.killpg(process.pid, signal.SIGKILL)  # windows-footgun: ok
+                except Exception:
+                    try:
+                        process.kill()
+                    except Exception:
+                        pass
+                try:
+                    process.wait(timeout=5.0)
+                except (OSError, subprocess.SubprocessError):
+                    pass
+            if process.poll() is None:
+                raise OwnerLauncherError("owner_gate_iap_process_reap_failed")
+        finally:
+            for stream in (
+                getattr(process, "stdin", None),
+                getattr(process, "stdout", None),
+            ):
+                try:
+                    if stream is not None and not stream.closed:
+                        stream.close()
+                except (AttributeError, OSError):
+                    pass
+
+    @staticmethod
+    def _command_prefix(
+        executable: TrustedGcloudExecutable,
+    ) -> tuple[str, ...]:
+        prefix = executable.trusted_command_prefix()
+        if (
+            len(prefix) != len(_GCLOUD_PYTHON_ISOLATION_ARGS) + 2
+            or prefix[1:-1] != _GCLOUD_PYTHON_ISOLATION_ARGS
+            or not os.path.isabs(prefix[0])
+            or not os.path.isabs(prefix[-1])
+            or os.path.basename(prefix[-1]) != "gcloud.py"
+        ):
+            raise OwnerLauncherError("invalid_gcloud_command_prefix")
+        return prefix
+
+    def _authority_snapshot(self) -> tuple[Any, ...]:
+        """Revalidate the exact local authority before and after every call."""
+
+        require_trusted_owner_support_activation(
+            self._gcloud_executable,
+            release_sha=self._release_sha,
+        )
+        launcher_sha256 = require_local_launcher_provenance(self._release_sha)
+        prefix = self._command_prefix(self._gcloud_executable)
+        self._gcloud_configuration.assert_stable()
+        account = self._owner_identity.account_for_read_only_preflight()
+        self._owner_identity.require_stable()
+        if (
+            account != self._OWNER_ACCOUNT
+            or account != self._gcloud_configuration.account
+        ):
+            raise OwnerLauncherError("owner_gate_iap_owner_identity_invalid")
+        known_hosts = self._known_hosts.absolute_path()
+        private_key = self._known_hosts.private_key_path()
+        public_key = self._known_hosts.public_key_line()
+        host_identity = self._host_identity.snapshot()
+        if not isinstance(host_identity, OwnerGateHostIdentitySnapshot):
+            raise OwnerLauncherError("owner_gate_iap_identity_receipt_invalid")
+        server_host_key = self._known_hosts.server_host_key_line(
+            host_identity.vm_numeric_id
+        )
+        if server_host_key != host_identity.known_hosts_line:
+            raise OwnerLauncherError("owner_gate_iap_host_key_mismatch")
+        return (
+            prefix,
+            account,
+            launcher_sha256,
+            known_hosts,
+            private_key,
+            public_key,
+            host_identity,
+            server_host_key,
+        )
+
+    @staticmethod
+    def _sealed_ssh_flags(
+        known_hosts: str,
+        private_key: str,
+        instance_id: str,
+    ) -> tuple[str, ...]:
+        if (
+            not os.path.isabs(known_hosts)
+            or not os.path.isabs(private_key)
+            or _CONTROL_RE.search(known_hosts) is not None
+            or _CONTROL_RE.search(private_key) is not None
+            or re.fullmatch(r"[1-9][0-9]{0,31}", instance_id) is None
+        ):
+            raise OwnerLauncherError("owner_gate_iap_ssh_identity_invalid")
+        # This complete tuple is local to the privileged boundary.  Do not
+        # reuse a broader transport helper: additions, omissions and ordering
+        # are part of the reviewed security contract.
+        return (
+            "--ssh-flag=-F/dev/null",
+            "--ssh-flag=-T",
+            f"--ssh-flag=-i{private_key}",
+            "--ssh-flag=-oBatchMode=yes",
+            "--ssh-flag=-oIdentitiesOnly=yes",
+            "--ssh-flag=-oIdentityAgent=none",
+            "--ssh-flag=-oCertificateFile=none",
+            "--ssh-flag=-oPreferredAuthentications=publickey",
+            "--ssh-flag=-oPubkeyAuthentication=yes",
+            "--ssh-flag=-oPasswordAuthentication=no",
+            "--ssh-flag=-oKbdInteractiveAuthentication=no",
+            "--ssh-flag=-oGSSAPIAuthentication=no",
+            "--ssh-flag=-oHostbasedAuthentication=no",
+            "--ssh-flag=-oPermitLocalCommand=no",
+            "--ssh-flag=-oClearAllForwardings=yes",
+            "--ssh-flag=-oControlMaster=no",
+            "--ssh-flag=-oControlPath=none",
+            "--ssh-flag=-oKnownHostsCommand=none",
+            "--ssh-flag=-oCanonicalizeHostname=no",
+            "--ssh-flag=-oForwardAgent=no",
+            "--ssh-flag=-oEscapeChar=none",
+            "--ssh-flag=-oRequestTTY=no",
+            "--ssh-flag=-oStrictHostKeyChecking=yes",
+            f"--ssh-flag=-oHostKeyAlias=compute.{instance_id}",
+            f"--ssh-flag=-oUserKnownHostsFile={known_hosts}",
+            "--ssh-flag=-oGlobalKnownHostsFile=none",
+            "--ssh-flag=-oUpdateHostKeys=no",
+            "--ssh-flag=-oVerifyHostKeyDNS=no",
+            "--ssh-flag=-oServerAliveInterval=15",
+            "--ssh-flag=-oServerAliveCountMax=4",
+        )
+
+    def _argv(self, snapshot: tuple[Any, ...]) -> tuple[str, ...]:
+        (
+            prefix,
+            account,
+            _launcher,
+            known_hosts,
+            private_key,
+            _public_key,
+            host_identity,
+            _server_host_key,
+        ) = snapshot
+        if not isinstance(host_identity, OwnerGateHostIdentitySnapshot):
+            raise OwnerLauncherError("owner_gate_iap_identity_receipt_invalid")
+        remote_command = shlex.join((
+            "/usr/bin/sudo",
+            "--non-interactive",
+            f"--user={self._AUTHORITY_USER}",
+            "--",
+            self._REMOTE_PYTHON,
+            "-I",
+            "-B",
+            self._REMOTE_INTAKE,
+        ))
+        ssh_flags = self._sealed_ssh_flags(
+            known_hosts,
+            private_key,
+            host_identity.vm_numeric_id,
+        )
+        expected_ssh_flags = (
+            "--ssh-flag=-F/dev/null",
+            "--ssh-flag=-T",
+            f"--ssh-flag=-i{private_key}",
+            "--ssh-flag=-oBatchMode=yes",
+            "--ssh-flag=-oIdentitiesOnly=yes",
+            "--ssh-flag=-oIdentityAgent=none",
+            "--ssh-flag=-oCertificateFile=none",
+            "--ssh-flag=-oPreferredAuthentications=publickey",
+            "--ssh-flag=-oPubkeyAuthentication=yes",
+            "--ssh-flag=-oPasswordAuthentication=no",
+            "--ssh-flag=-oKbdInteractiveAuthentication=no",
+            "--ssh-flag=-oGSSAPIAuthentication=no",
+            "--ssh-flag=-oHostbasedAuthentication=no",
+            "--ssh-flag=-oPermitLocalCommand=no",
+            "--ssh-flag=-oClearAllForwardings=yes",
+            "--ssh-flag=-oControlMaster=no",
+            "--ssh-flag=-oControlPath=none",
+            "--ssh-flag=-oKnownHostsCommand=none",
+            "--ssh-flag=-oCanonicalizeHostname=no",
+            "--ssh-flag=-oForwardAgent=no",
+            "--ssh-flag=-oEscapeChar=none",
+            "--ssh-flag=-oRequestTTY=no",
+            "--ssh-flag=-oStrictHostKeyChecking=yes",
+            (
+                "--ssh-flag=-oHostKeyAlias="
+                f"compute.{host_identity.vm_numeric_id}"
+            ),
+            f"--ssh-flag=-oUserKnownHostsFile={known_hosts}",
+            "--ssh-flag=-oGlobalKnownHostsFile=none",
+            "--ssh-flag=-oUpdateHostKeys=no",
+            "--ssh-flag=-oVerifyHostKeyDNS=no",
+            "--ssh-flag=-oServerAliveInterval=15",
+            "--ssh-flag=-oServerAliveCountMax=4",
+        )
+        if ssh_flags != expected_ssh_flags:
+            raise OwnerLauncherError("owner_gate_iap_argv_invalid")
+        expected = (
+            *prefix,
+            "compute",
+            "ssh",
+            f"{OS_LOGIN_USERNAME}@{self._VM_NAME}",
+            f"--project={PROJECT}",
+            f"--zone={ZONE}",
+            f"--account={account}",
+            "--plain",
+            "--tunnel-through-iap",
+            "--quiet",
+            f"--command={remote_command}",
+            *ssh_flags,
+        )
+        argv = tuple(expected)
+        if (
+            argv != expected
+            or argv[-len(ssh_flags) :] != ssh_flags
+            or len(argv) != len(prefix) + 10 + len(ssh_flags)
+            or argv[len(prefix) :] != (
+                "compute",
+                "ssh",
+                f"{OS_LOGIN_USERNAME}@{self._VM_NAME}",
+                f"--project={PROJECT}",
+                f"--zone={ZONE}",
+                f"--account={account}",
+                "--plain",
+                "--tunnel-through-iap",
+                "--quiet",
+                f"--command={remote_command}",
+                *ssh_flags,
+            )
+        ):
+            raise OwnerLauncherError("owner_gate_iap_argv_invalid")
+        return argv
+
+    def _environment(self, prefix: tuple[str, ...]) -> Mapping[str, str]:
+        environment = dict(
+            _owner_gcloud_environment(
+                self._gcloud_configuration,
+                prefix[0],
+            )
+        )
+        if (
+            set(environment) != self._ENVIRONMENT_KEYS
+            or any(
+                name.casefold().endswith("proxy")
+                or "proxy_" in name.casefold()
+                for name in environment
+            )
+            or environment.get("CLOUDSDK_CORE_PROJECT") != PROJECT
+            or environment.get("CLOUDSDK_COMPUTE_ZONE") != ZONE
+        ):
+            raise OwnerLauncherError("owner_gate_iap_environment_invalid")
+        return environment
+
+    def _bounded_exchange(
+        self,
+        argv: tuple[str, ...],
+        environment: Mapping[str, str],
+        frame: bytes,
+    ) -> bytes:
+        try:
+            process = self._popen_factory(
+                argv,
+                stdin=subprocess.PIPE,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.DEVNULL,
+                env=dict(environment),
+                shell=False,
+                start_new_session=True,
+                bufsize=0,
+            )
+        except (OSError, subprocess.SubprocessError):
+            raise OwnerLauncherError("owner_gate_iap_unavailable") from None
+        if process.stdin is None or process.stdout is None:
+            self._terminate_process(process)
+            raise OwnerLauncherError("owner_gate_iap_unavailable")
+
+        input_view = memoryview(frame)
+        output = bytearray()
+        selector = selectors.DefaultSelector()
+        input_open = True
+        output_open = True
+        input_offset = 0
+        deadline = time.monotonic() + self._timeout_seconds
+        try:
+            input_fd = process.stdin.fileno()
+            output_fd = process.stdout.fileno()
+            os.set_blocking(input_fd, False)
+            os.set_blocking(output_fd, False)
+            selector.register(input_fd, selectors.EVENT_WRITE, "stdin")
+            selector.register(output_fd, selectors.EVENT_READ, "stdout")
+            while True:
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    raise OwnerLauncherError("owner_gate_iap_timeout")
+                for key, _mask in selector.select(min(remaining, 0.25)):
+                    if key.data == "stdin":
+                        try:
+                            written = os.write(
+                                input_fd,
+                                input_view[input_offset : input_offset + 64 * 1024],
+                            )
+                        except BlockingIOError:
+                            continue
+                        except OSError:
+                            raise OwnerLauncherError(
+                                "owner_gate_iap_stdin_failed"
+                            ) from None
+                        if written <= 0:
+                            raise OwnerLauncherError("owner_gate_iap_stdin_failed")
+                        input_offset += written
+                        if input_offset == len(frame):
+                            selector.unregister(input_fd)
+                            process.stdin.close()
+                            input_open = False
+                    else:
+                        try:
+                            chunk = os.read(output_fd, 64 * 1024)
+                        except BlockingIOError:
+                            continue
+                        except OSError:
+                            raise OwnerLauncherError(
+                                "owner_gate_iap_stdout_failed"
+                            ) from None
+                        if chunk:
+                            output.extend(chunk)
+                            if len(output) > self._MAX_RESPONSE_BYTES:
+                                raise OwnerLauncherError(
+                                    "owner_gate_iap_response_oversized"
+                                )
+                        else:
+                            selector.unregister(output_fd)
+                            process.stdout.close()
+                            output_open = False
+                if process.poll() is not None and not output_open:
+                    break
+            if input_open or input_offset != len(frame):
+                raise OwnerLauncherError("owner_gate_iap_stdin_failed")
+            try:
+                returncode = process.wait(max(0.1, deadline - time.monotonic()))
+            except subprocess.TimeoutExpired:
+                raise OwnerLauncherError("owner_gate_iap_timeout") from None
+            if returncode != 0 or not output:
+                raise OwnerLauncherError("owner_gate_iap_remote_failed")
+            return bytes(output)
+        except BaseException:
+            self._terminate_process(process)
+            raise
+        finally:
+            input_view.release()
+            selector.close()
+            if process.poll() is not None:
+                for stream in (process.stdin, process.stdout):
+                    try:
+                        if stream is not None and not stream.closed:
+                            stream.close()
+                    except OSError:
+                        pass
+
+    def invoke_owner_gate(self, canonical_frame: bytes) -> bytes:
+        if (
+            type(canonical_frame) is not bytes
+            or not canonical_frame
+            or len(canonical_frame) > self._MAX_FRAME_BYTES
+            or canonical_frame.endswith(b"\n")
+        ):
+            raise OwnerLauncherError("owner_gate_iap_frame_invalid")
+        try:
+            frame = _decode_json_object(
+                canonical_frame,
+                maximum=self._MAX_FRAME_BYTES,
+            )
+        except OwnerLauncherError:
+            raise OwnerLauncherError("owner_gate_iap_frame_invalid") from None
+        if _canonical_bytes(frame) != canonical_frame:
+            raise OwnerLauncherError("owner_gate_iap_frame_invalid")
+
+        before = self._authority_snapshot()
+        argv = self._argv(before)
+        environment = self._environment(before[0])
+        try:
+            response = self._bounded_exchange(argv, environment, canonical_frame)
+        finally:
+            after = self._authority_snapshot()
+            if after != before:
+                raise OwnerLauncherError("owner_gate_iap_authority_changed")
+        if len(response) > self._MAX_RESPONSE_BYTES or response.endswith(b"\n"):
+            raise OwnerLauncherError("owner_gate_iap_response_invalid")
+        try:
+            decoded = _decode_json_object(
+                response,
+                maximum=self._MAX_RESPONSE_BYTES,
+            )
+        except OwnerLauncherError:
+            raise OwnerLauncherError("owner_gate_iap_response_invalid") from None
+        if _canonical_bytes(decoded) != response:
+            raise OwnerLauncherError("owner_gate_iap_response_invalid")
+        return response
+
+
+def _require_storage_growth_privileged_boundary(
+    *,
+    release_sha: str,
+    gcloud_executable: TrustedGcloudExecutable,
+    gcloud_configuration: PinnedGcloudConfiguration,
+    owner_identity: GcloudOwnerAccessToken,
+) -> StorageGrowthPrivilegedBoundary:
+    """Resolve only the split-identity, authoritative remote executor.
+
+    The current same-UID Cloud helper is intentionally not a fallback.  The
+    passkey-v2 package must attest distinct authorizer/executor identities,
+    root-owned code, an atomic grant ledger, and an executor-owned narrow
+    Cloud credential before this factory can return.
+    """
+
+    try:
+        from scripts.canary import passkey_v2_storage_growth as passkey_v2
+
+        transport = OwnerGateIapTransport(
+            release_sha=release_sha,
+            owner_identity=owner_identity,
+            gcloud_executable=gcloud_executable,
+            gcloud_configuration=gcloud_configuration,
+        )
+        boundary = passkey_v2.ProductionStorageGrowthBoundary(
+            release_sha,
+            transport,
+        )
+    except OwnerLauncherError:
+        raise
+    except (AttributeError, ImportError, RuntimeError, TypeError, ValueError):
+        raise OwnerLauncherError(
+            "storage_growth_privileged_boundary_not_ready"
+        ) from None
+    return boundary
+
+
+def _storage_growth_boundary(
+    explicit: StorageGrowthPrivilegedBoundary | None,
+    *,
+    release_sha: str,
+    gcloud_executable: TrustedGcloudExecutable,
+    gcloud_configuration: PinnedGcloudConfiguration,
+    owner_identity: GcloudOwnerAccessToken,
+) -> StorageGrowthPrivilegedBoundary:
+    if explicit is not None:
+        return explicit
+    return _require_storage_growth_privileged_boundary(
+        release_sha=release_sha,
+        gcloud_executable=gcloud_executable,
+        gcloud_configuration=gcloud_configuration,
+        owner_identity=owner_identity,
+    )
+
+
+def _storage_growth_attestor_public_keys(
+    readiness: Mapping[str, Any],
+) -> Mapping[str, Any]:
+    """Load only the raw public keys attested by the remote executor."""
+
+    from cryptography.hazmat.primitives.asymmetric.ed25519 import (
+        Ed25519PublicKey,
+    )
+
+    attestors = readiness.get("observation_attestors")
+    if not isinstance(attestors, Mapping) or set(attestors) != {
+        "cloud", "host"
+    }:
+        raise OwnerLauncherError(
+            "storage_growth_observation_attestors_unavailable"
+        )
+    result: dict[str, Any] = {}
+    for role in ("cloud", "host"):
+        item = attestors[role]
+        if not isinstance(item, Mapping) or set(item) != {
+            "public_key_id", "public_key_b64url"
+        }:
+            raise OwnerLauncherError(
+                "storage_growth_observation_attestors_unavailable"
+            )
+        encoded = item["public_key_b64url"]
+        try:
+            raw = base64.urlsafe_b64decode(
+                (str(encoded) + "=" * (-len(str(encoded)) % 4)).encode(
+                    "ascii"
+                )
+            )
+        except (UnicodeError, ValueError):
+            raise OwnerLauncherError(
+                "storage_growth_observation_attestors_unavailable"
+            ) from None
+        if (
+            len(raw) != 32
+            or base64.urlsafe_b64encode(raw).rstrip(b"=").decode("ascii")
+            != encoded
+            or hashlib.sha256(raw).hexdigest() != item["public_key_id"]
+        ):
+            raise OwnerLauncherError(
+                "storage_growth_observation_attestors_unavailable"
+            )
+        try:
+            result[role] = Ed25519PublicKey.from_public_bytes(raw)
+        except ValueError:
+            raise OwnerLauncherError(
+                "storage_growth_observation_attestors_unavailable"
+            ) from None
+    return result
+
+
+def _stopped_storage_growth_receipt_snapshot() -> Mapping[str, Any]:
+    from scripts.canary import storage_growth_contract as storage_contract
+
+    return {
+        "source": "durable_signed_source_snapshot_for_stopped_vm",
+        "current_stopped_release_sha": (
+            storage_contract.CURRENT_STOPPED_RELEASE_SHA
+        ),
+        "current_host_receipt_file_sha256": (
+            storage_contract.CURRENT_HOST_RECEIPT_FILE_SHA256
+        ),
+        "current_host_receipt_sha256": (
+            storage_contract.CURRENT_HOST_RECEIPT_SHA256
+        ),
+        "current_stopped_release_receipt_file_sha256": (
+            storage_contract.CURRENT_STOPPED_RELEASE_RECEIPT_FILE_SHA256
+        ),
+        "current_stopped_release_receipt_sha256": (
+            storage_contract.CURRENT_STOPPED_RELEASE_RECEIPT_SHA256
+        ),
+    }
+
+
+def _storage_growth_observation_request(
+    boundary: StorageGrowthPrivilegedBoundary,
+    *,
+    release_sha: str,
+    plan: Mapping[str, Any],
+    transaction_id: str,
+) -> Mapping[str, Any]:
+    from scripts.canary import storage_growth_trusted_collector as trusted
+
+    try:
+        request = boundary.observation_request(
+            release_sha=release_sha,
+            plan=plan,
+            transaction_id=transaction_id,
+        )
+        return trusted.classify_observation_request(request)
+    except (AttributeError, RuntimeError, TypeError, ValueError):
+        raise OwnerLauncherError(
+            "storage_growth_observation_request_invalid"
+        ) from None
+
+
+def _attest_storage_growth_observation(
+    *,
+    boundary: StorageGrowthPrivilegedBoundary,
+    host_attestor: StorageGrowthHostAttestorBoundary,
+    release_sha: str,
+    plan: Mapping[str, Any],
+    transaction_id: str,
+    observation_request: Mapping[str, Any],
+    candidate_observation: Mapping[str, Any],
+    now_unix: int,
+) -> Mapping[str, Any]:
+    from scripts.canary import storage_growth_trusted_collector as trusted
+
+    try:
+        readiness = boundary.require_ready()
+        public_keys = _storage_growth_attestor_public_keys(readiness)
+        cloud_frame = trusted.build_attestation_request(
+            observation_request,
+            candidate_observation,
+            role="cloud",
+            now_unix=now_unix,
+        )
+        cloud_result = boundary.attest_cloud_observation(
+            release_sha=release_sha,
+            plan=plan,
+            transaction_id=transaction_id,
+            attestation_request=cloud_frame,
+        )
+        if (
+            not isinstance(cloud_result, Mapping)
+            or cloud_result.get("terminal") is not False
+            or cloud_result.get("terminal_receipt") is not None
+            or cloud_result.get("observation_request")
+            != observation_request
+            or not isinstance(
+                cloud_result.get("attestation_response"), Mapping
+            )
+        ):
+            raise OwnerLauncherError(
+                "storage_growth_cloud_attestation_invalid"
+            )
+        if trusted.host_attestation_required(
+            observation_request,
+            candidate_observation,
+            now_unix=now_unix,
+        ):
+            host_frame = trusted.build_attestation_request(
+                observation_request,
+                candidate_observation,
+                role="host",
+                trusted_iam_projection=cloud_result[
+                    "attestation_response"
+                ].get("trusted_iam_projection"),
+                now_unix=now_unix,
+            )
+            host_response = host_attestor.attest_host_observation(
+                trusted.protocol.canonical_json_bytes(host_frame)
+            )
+        else:
+            host_response = None
+        refreshed = _storage_growth_observation_request(
+            boundary,
+            release_sha=release_sha,
+            plan=plan,
+            transaction_id=transaction_id,
+        )
+        return trusted.combine_trusted_attestations(
+            observation_request=observation_request,
+            refreshed_observation_request=refreshed,
+            candidate_observation=candidate_observation,
+            cloud_response=cloud_result["attestation_response"],
+            cloud_public_key=public_keys["cloud"],
+            host_response=host_response,
+            host_public_key=public_keys["host"],
+            now_unix=now_unix,
+        )
+    except OwnerLauncherError:
+        raise
+    except (AttributeError, RuntimeError, TypeError, ValueError):
+        raise OwnerLauncherError(
+            "storage_growth_trusted_observation_failed"
+        ) from None
+
+
+def _storage_growth_consume_attempt_id(
+    *, transaction_id: str, request_id: str
+) -> str:
+    from scripts.canary import passkey_v2_protocol as passkey_protocol
+
+    return passkey_protocol.sha256_json({
+        "schema": "muncho-storage-growth-consume-attempt.v1",
+        "transaction_id": transaction_id,
+        "request_id": request_id,
+    })
+
+
+def _verify_storage_growth_terminal(
+    *,
+    boundary: StorageGrowthPrivilegedBoundary,
+    release_sha: str,
+    plan: Mapping[str, Any],
+    transaction_id: str,
+) -> Mapping[str, Any]:
+    """Return canonical terminal truth without touching readiness or signers."""
+
+    try:
+        result = boundary.verify_terminal(
+            release_sha=release_sha,
+            plan=plan,
+            transaction_id=transaction_id,
+        )
+    except (AttributeError, RuntimeError, TypeError, ValueError):
+        raise OwnerLauncherError(
+            "storage_growth_terminal_verification_failed"
+        ) from None
+    receipt = result.get("terminal_receipt") if isinstance(result, Mapping) else None
+    if (
+        not isinstance(result, Mapping)
+        or result.get("terminal") is not True
+        or result.get("transaction_id") != transaction_id
+        or result.get("release_sha") != release_sha
+        or result.get("plan_sha256") != plan.get("plan_sha256")
+        or not isinstance(receipt, Mapping)
+        or receipt.get("terminal") is not True
+        or receipt.get("transaction_id") != transaction_id
+        or receipt.get("release_sha") != release_sha
+        or receipt.get("plan_sha256") != plan.get("plan_sha256")
+    ):
+        raise OwnerLauncherError(
+            "storage_growth_terminal_verification_failed"
+        )
+    return {
+        "schema": "muncho-storage-growth-owner-terminal.v1",
+        "terminal": True,
+        "state": "terminal_verified",
+        "release_sha": release_sha,
+        "plan_sha256": plan["plan_sha256"],
+        "transaction_id": transaction_id,
+        "terminal_receipt": dict(receipt),
+        "authoritative_remote_executor": True,
+        "local_mutation_performed": False,
+        "opens_runtime_gate": False,
+    }
+
+
+def _collect_attested_storage_growth_observation(
+    *,
+    boundary: StorageGrowthPrivilegedBoundary,
+    release_sha: str,
+    plan: Mapping[str, Any],
+    transaction_id: str,
+    observation_request: Mapping[str, Any],
+    gcloud_executable: TrustedGcloudExecutable,
+    gcloud_configuration: PinnedGcloudConfiguration,
+    owner_identity: GcloudOwnerAccessToken,
+    now_unix: int | None,
+    observer: Callable[[], Mapping[str, Any]] | None,
+    host_attestor: StorageGrowthHostAttestorBoundary | None,
+) -> Mapping[str, Any]:
+    """Collect and independently attest one executor-authored checkpoint."""
+
+    if observation_request.get("canonical_state") == "terminal":
+        raise OwnerLauncherError("storage_growth_observation_request_invalid")
+    if observer is None:
+        observer = _storage_growth_owner_observer(
+            release_sha=release_sha,
+            gcloud_executable=gcloud_executable,
+            gcloud_configuration=gcloud_configuration,
+            owner_identity=owner_identity,
+            stopped_receipt_snapshot=(
+                _stopped_storage_growth_receipt_snapshot()
+                if observation_request.get("checkpoint") == "post_stop"
+                else None
+            ),
+        )
+    candidate = observer()
+    current = int(time.time()) if now_unix is None else now_unix
+    if host_attestor is None:
+        host_attestor = CanaryHostObservationAttestorTransport(
+            release_sha=release_sha,
+            owner_identity=owner_identity,
+            gcloud_executable=gcloud_executable,
+            gcloud_configuration=gcloud_configuration,
+        )
+    return _attest_storage_growth_observation(
+        boundary=boundary,
+        host_attestor=host_attestor,
+        release_sha=release_sha,
+        plan=plan,
+        transaction_id=transaction_id,
+        observation_request=observation_request,
+        candidate_observation=candidate,
+        now_unix=current,
+    )
+
+
+def author_storage_growth_owner_approval(
+    *,
+    release_sha: str,
+    gcloud_executable: TrustedGcloudExecutable,
+    gcloud_configuration: PinnedGcloudConfiguration,
+    owner_identity: GcloudOwnerAccessToken,
+    now_unix: int | None = None,
+    privileged_boundary: StorageGrowthPrivilegedBoundary | None = None,
+    source_observer: Callable[[], Mapping[str, Any]] | None = None,
+    host_attestor: StorageGrowthHostAttestorBoundary | None = None,
+) -> Mapping[str, Any]:
+    """Collect exact source truth and create a remote passkey-v2 request."""
+
+    from scripts.canary import host_storage_growth as growth
+
+    observe = source_observer or _storage_growth_owner_observer(
+        release_sha=release_sha,
+        gcloud_executable=gcloud_executable,
+        gcloud_configuration=gcloud_configuration,
+        owner_identity=owner_identity,
+    )
+    observed = observe()
+    current = int(time.time()) if now_unix is None else now_unix
+    plan = growth.build_plan()
+    preflight = growth._require_initial_preflight(
+        observed,
+        plan=plan,
+        now_unix=current,
+    )
+    from scripts.canary import passkey_v2_storage_growth as passkey_v2
+
+    transaction_id = passkey_v2.transaction_id_for_observation(preflight)
+    boundary = _storage_growth_boundary(
+        privileged_boundary,
+        release_sha=release_sha,
+        gcloud_executable=gcloud_executable,
+        gcloud_configuration=gcloud_configuration,
+        owner_identity=owner_identity,
+    )
+    plan_report = plan.report()
+    observation_request = _storage_growth_observation_request(
+        boundary,
+        release_sha=release_sha,
+        plan=plan_report,
+        transaction_id=transaction_id,
+    )
+    if observation_request["canonical_state"] == "terminal":
+        return _verify_storage_growth_terminal(
+            boundary=boundary,
+            release_sha=release_sha,
+            plan=plan_report,
+            transaction_id=transaction_id,
+        )
+    attested = _collect_attested_storage_growth_observation(
+        boundary=boundary,
+        release_sha=release_sha,
+        plan=plan_report,
+        transaction_id=transaction_id,
+        observation_request=observation_request,
+        gcloud_executable=gcloud_executable,
+        gcloud_configuration=gcloud_configuration,
+        owner_identity=owner_identity,
+        now_unix=current,
+        observer=lambda: preflight,
+        host_attestor=host_attestor,
+    )
+    result = boundary.request_initial(
+        release_sha=release_sha,
+        plan=plan_report,
+        source_preflight=attested,
+        transaction_id=transaction_id,
+    )
+    if (
+        not isinstance(result, Mapping)
+        or result.get("release_sha") != release_sha
+        or result.get("plan_sha256") != plan.sha256
+        or result.get("transaction_id") != transaction_id
+        or result.get("attested_observation_bundle_sha256")
+        != attested["bundle_sha256"]
+        or result.get("passkey_only") is not True
+        or result.get("local_mutation_authority") is not False
+        or result.get("opens_runtime_gate") is not False
+    ):
+        raise OwnerLauncherError("storage_growth_passkey_request_invalid")
+    return dict(result)
+
+
+def apply_storage_growth_owner_gate(
+    *,
+    release_sha: str,
+    transaction_id: str,
+    request_id: str,
+    gcloud_executable: TrustedGcloudExecutable,
+    gcloud_configuration: PinnedGcloudConfiguration,
+    owner_identity: GcloudOwnerAccessToken,
+    privileged_boundary: StorageGrowthPrivilegedBoundary | None = None,
+    now_unix: int | None = None,
+    continuation_observer: Callable[[], Mapping[str, Any]] | None = None,
+    host_attestor: StorageGrowthHostAttestorBoundary | None = None,
+) -> Mapping[str, Any]:
+    """Ask the remote privileged executor to apply or recover one transaction."""
+
+    from scripts.canary import host_storage_growth as growth
+
+    if not isinstance(transaction_id, str) or _SHA256.fullmatch(transaction_id) is None:
+        raise OwnerLauncherError("storage_growth_transaction_invalid")
+    if (
+        not isinstance(request_id, str)
+        or re.fullmatch(r"[A-Za-z0-9_-]{32,64}", request_id) is None
+    ):
+        raise OwnerLauncherError("storage_growth_passkey_request_invalid")
+    require_trusted_owner_support_activation(
+        gcloud_executable,
+        release_sha=release_sha,
+    )
+    require_local_launcher_provenance(release_sha)
+    plan = growth.build_plan()
+    boundary = _storage_growth_boundary(
+        privileged_boundary,
+        release_sha=release_sha,
+        gcloud_executable=gcloud_executable,
+        gcloud_configuration=gcloud_configuration,
+        owner_identity=owner_identity,
+    )
+    plan_report = plan.report()
+    observation_request = _storage_growth_observation_request(
+        boundary,
+        release_sha=release_sha,
+        plan=plan_report,
+        transaction_id=transaction_id,
+    )
+    if observation_request["canonical_state"] == "terminal":
+        return _verify_storage_growth_terminal(
+            boundary=boundary,
+            release_sha=release_sha,
+            plan=plan_report,
+            transaction_id=transaction_id,
+        )
+    continuation = _collect_attested_storage_growth_observation(
+        boundary=boundary,
+        release_sha=release_sha,
+        plan=plan_report,
+        transaction_id=transaction_id,
+        observation_request=observation_request,
+        gcloud_executable=gcloud_executable,
+        gcloud_configuration=gcloud_configuration,
+        owner_identity=owner_identity,
+        now_unix=now_unix,
+        observer=continuation_observer,
+        host_attestor=host_attestor,
+    )
+    receipt = boundary.execute_or_recover(
+        release_sha=release_sha,
+        plan=plan_report,
+        transaction_id=transaction_id,
+        request_id=request_id,
+        consume_attempt_id=_storage_growth_consume_attempt_id(
+            transaction_id=transaction_id,
+            request_id=request_id,
+        ),
+        continuation_preflight=continuation,
+    )
+    if (
+        not isinstance(receipt, Mapping)
+        or receipt.get("release_sha") != release_sha
+        or receipt.get("plan_sha256") != plan.sha256
+        or receipt.get("transaction_id") != transaction_id
+        or receipt.get("request_id") != request_id
+        or receipt.get("authoritative_remote_executor") is not True
+        or receipt.get("local_mutation_performed") is not False
+        or receipt.get("passkey_method") != "passkey"
+    ):
+        raise OwnerLauncherError("storage_growth_privileged_receipt_invalid")
+    require_trusted_owner_support_activation(
+        gcloud_executable,
+        release_sha=release_sha,
+    )
+    require_local_launcher_provenance(release_sha)
+    return receipt
+
+
+def author_storage_growth_resume_approval(
+    *,
+    release_sha: str,
+    transaction_id: str,
+    gcloud_executable: TrustedGcloudExecutable,
+    gcloud_configuration: PinnedGcloudConfiguration,
+    owner_identity: GcloudOwnerAccessToken,
+    now_unix: int | None = None,
+    privileged_boundary: StorageGrowthPrivilegedBoundary | None = None,
+    continuation_observer: Callable[[], Mapping[str, Any]] | None = None,
+    host_attestor: StorageGrowthHostAttestorBoundary | None = None,
+) -> Mapping[str, Any]:
+    """Create a passkey-v2 request for the remote executor's next stage."""
+
+    from scripts.canary import host_storage_growth as growth
+
+    if not isinstance(transaction_id, str) or _SHA256.fullmatch(transaction_id) is None:
+        raise OwnerLauncherError("storage_growth_transaction_invalid")
+    plan = growth.build_plan()
+    boundary = _storage_growth_boundary(
+        privileged_boundary,
+        release_sha=release_sha,
+        gcloud_executable=gcloud_executable,
+        gcloud_configuration=gcloud_configuration,
+        owner_identity=owner_identity,
+    )
+    plan_report = plan.report()
+    observation_request = _storage_growth_observation_request(
+        boundary,
+        release_sha=release_sha,
+        plan=plan_report,
+        transaction_id=transaction_id,
+    )
+    if observation_request["canonical_state"] == "terminal":
+        return _verify_storage_growth_terminal(
+            boundary=boundary,
+            release_sha=release_sha,
+            plan=plan_report,
+            transaction_id=transaction_id,
+        )
+    continuation = _collect_attested_storage_growth_observation(
+        boundary=boundary,
+        release_sha=release_sha,
+        plan=plan_report,
+        transaction_id=transaction_id,
+        observation_request=observation_request,
+        gcloud_executable=gcloud_executable,
+        gcloud_configuration=gcloud_configuration,
+        owner_identity=owner_identity,
+        now_unix=now_unix,
+        observer=continuation_observer,
+        host_attestor=host_attestor,
+    )
+    result = boundary.request_resume(
+        release_sha=release_sha,
+        plan=plan_report,
+        transaction_id=transaction_id,
+        continuation_preflight=continuation,
+    )
+    if (
+        not isinstance(result, Mapping)
+        or result.get("release_sha") != release_sha
+        or result.get("plan_sha256") != plan.sha256
+        or result.get("transaction_id") != transaction_id
+        or result.get("attested_observation_bundle_sha256")
+        != continuation["bundle_sha256"]
+        or result.get("passkey_only") is not True
+        or result.get("local_mutation_authority") is not False
+        or result.get("opens_runtime_gate") is not False
+    ):
+        raise OwnerLauncherError("storage_growth_passkey_request_invalid")
+    return dict(result)
+
+
 class _OwnerStoreOnce(argparse.Action):
     def __call__(
         self,
@@ -16451,9 +19872,41 @@ def _cli_parser() -> argparse.ArgumentParser:
         help="publish the reviewed owner-only gcloud SDK snapshot and receipt",
     )
     actions.add_argument(
+        "--repair-trusted-sdk-bytecode",
+        action="store_true",
+        help=(
+            "remove only proven owner-only Python bytecode from the exact "
+            "published gcloud SDK"
+        ),
+    )
+    actions.add_argument(
         "--publish-stopped-release",
         action="store_true",
         help="publish the exact fork revision while every canary service is stopped",
+    )
+    actions.add_argument(
+        "--author-storage-growth",
+        action="store_true",
+        help=(
+            "collect the exact stopped 40 GB source and create a passkey-v2 "
+            "request at the split privileged executor"
+        ),
+    )
+    actions.add_argument(
+        "--author-storage-growth-resume",
+        action="store_true",
+        help=(
+            "create a passkey-v2 request for only the next exact stage of "
+            "one remotely journaled incomplete transaction"
+        ),
+    )
+    actions.add_argument(
+        "--apply-storage-growth",
+        action="store_true",
+        help=(
+            "ask the split privileged executor to atomically consume one "
+            "passkey grant and apply or recover its exact 40 to 80 GB action"
+        ),
     )
     actions.add_argument(
         "--rotate-host-identity-receipt",
@@ -16522,6 +19975,16 @@ def _cli_parser() -> argparse.ArgumentParser:
         action=_OwnerStoreOnce,
     )
     parser.add_argument(
+        "--storage-growth-transaction-id",
+        help="exact transaction digest returned by --author-storage-growth",
+        action=_OwnerStoreOnce,
+    )
+    parser.add_argument(
+        "--storage-growth-passkey-request-id",
+        help="strict opaque passkey-v2 request id returned by authoring",
+        action=_OwnerStoreOnce,
+    )
+    parser.add_argument(
         "--expected-prior-host-receipt-file-sha256",
         help="exact immutable file digest of the stale host receipt",
         action=_OwnerStoreOnce,
@@ -16552,6 +20015,34 @@ def _emit_canonical_line(value: Mapping[str, Any]) -> None:
     sys.stdout.buffer.flush()
 
 
+def _validate_storage_growth_cli_arguments(arguments: argparse.Namespace) -> None:
+    storage_action = bool(
+        arguments.author_storage_growth
+        or arguments.author_storage_growth_resume
+        or arguments.apply_storage_growth
+    )
+    transaction_required = bool(
+        arguments.apply_storage_growth or arguments.author_storage_growth_resume
+    )
+    transaction_id = arguments.storage_growth_transaction_id
+    request_id = arguments.storage_growth_passkey_request_id
+    if transaction_required is (transaction_id is None):
+        raise OwnerLauncherError("storage_growth_transaction_invalid")
+    if transaction_id is not None and (
+        not isinstance(transaction_id, str) or _SHA256.fullmatch(transaction_id) is None
+    ):
+        raise OwnerLauncherError("storage_growth_transaction_invalid")
+    if arguments.apply_storage_growth is (request_id is None):
+        raise OwnerLauncherError("storage_growth_passkey_request_invalid")
+    if request_id is not None and (
+        not isinstance(request_id, str)
+        or re.fullmatch(r"[A-Za-z0-9_-]{32,64}", request_id) is None
+    ):
+        raise OwnerLauncherError("storage_growth_passkey_request_invalid")
+    if not storage_action and (transaction_id is not None or request_id is not None):
+        raise OwnerLauncherError("storage_growth_owner_cli_invalid")
+
+
 def main(argv: Sequence[str] | None = None) -> int:
     arguments = _cli_parser().parse_args(argv)
     release_sha = arguments.release_sha
@@ -16573,6 +20064,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             arguments.expected_prior_boot_id_sha256,
             arguments.expected_current_boot_id_sha256,
         )
+        _validate_storage_growth_cli_arguments(arguments)
         if (
             not arguments.rotate_host_identity_receipt
             and any(item is not None for item in host_rotation_bindings)
@@ -16613,6 +20105,19 @@ def main(argv: Sequence[str] | None = None) -> int:
             require_local_launcher_provenance(release_sha)
             _emit_canonical_line(receipt)
             return 0
+        if arguments.repair_trusted_sdk_bytecode:
+            if arguments.external_iam_policy_sha256 is not None:
+                raise OwnerLauncherError("trusted_sdk_bytecode_repair_cli_invalid")
+            require_trusted_bootstrap_interpreter()
+            launcher_sha256 = require_local_launcher_provenance(release_sha)
+            receipt = repair_trusted_gcloud_sdk_bytecode(
+                release_sha,
+                launcher_sha256=launcher_sha256,
+            )
+            require_trusted_bootstrap_interpreter()
+            require_local_launcher_provenance(release_sha)
+            _emit_canonical_line(receipt)
+            return 0
         # The fixed isolated interpreter and its release-bound runtime receipt
         # precede git, auth, IAP, and every secret-bearing source.
         gcloud_executable = require_trusted_owner_runtime(release_sha)
@@ -16635,6 +20140,46 @@ def main(argv: Sequence[str] | None = None) -> int:
                 release_sha=exact_release,
             )
             require_local_launcher_provenance(exact_release)
+
+        if arguments.author_storage_growth:
+            if arguments.external_iam_policy_sha256 is not None:
+                raise OwnerLauncherError("storage_growth_owner_cli_invalid")
+            receipt = author_storage_growth_owner_approval(
+                release_sha=release_sha,
+                gcloud_executable=gcloud_executable,
+                gcloud_configuration=gcloud_configuration,
+                owner_identity=owner_identity,
+            )
+            runtime_and_provenance_guard(release_sha)
+            _emit_canonical_line(receipt)
+            return 0
+        if arguments.author_storage_growth_resume:
+            if arguments.external_iam_policy_sha256 is not None:
+                raise OwnerLauncherError("storage_growth_owner_cli_invalid")
+            receipt = author_storage_growth_resume_approval(
+                release_sha=release_sha,
+                transaction_id=str(arguments.storage_growth_transaction_id),
+                gcloud_executable=gcloud_executable,
+                gcloud_configuration=gcloud_configuration,
+                owner_identity=owner_identity,
+            )
+            runtime_and_provenance_guard(release_sha)
+            _emit_canonical_line(receipt)
+            return 0
+        if arguments.apply_storage_growth:
+            if arguments.external_iam_policy_sha256 is not None:
+                raise OwnerLauncherError("storage_growth_owner_cli_invalid")
+            receipt = apply_storage_growth_owner_gate(
+                release_sha=release_sha,
+                transaction_id=str(arguments.storage_growth_transaction_id),
+                request_id=str(arguments.storage_growth_passkey_request_id),
+                gcloud_executable=gcloud_executable,
+                gcloud_configuration=gcloud_configuration,
+                owner_identity=owner_identity,
+            )
+            runtime_and_provenance_guard(release_sha)
+            _emit_canonical_line(receipt)
+            return 0
 
         if arguments.rotate_host_identity_receipt:
             external_iam_policy_sha256 = _require_sha256(
@@ -16910,6 +20455,7 @@ __all__ = [
     "LocalLauncherProvenance",
     "OWNER_DISCORD_INPUT_MAGIC",
     "OWNER_RECEIPT_SCHEMA",
+    "OwnerGateIapTransport",
     "OwnerDiscordTokenReader",
     "OwnerLauncherError",
     "OwnerStdinDiscordTokenReader",
@@ -16970,6 +20516,7 @@ __all__ = [
     "STOPPED_RELEASE_SOURCE_REPOSITORY",
     "TRUSTED_RUNTIME_BOOTSTRAP_RECEIPT_SCHEMA",
     "TRUSTED_OWNER_SUPPORT_TREE_SCHEMA",
+    "TRUSTED_SDK_BYTECODE_REPAIR_RECEIPT_SCHEMA",
     "TRUSTED_SDK_PUBLICATION_INTENT_SCHEMA",
     "TrustedGcloudExecutable",
     "VM_INSTANCE_ID",
@@ -16989,6 +20536,7 @@ __all__ = [
     "build_writer_authority_frame",
     "build_writer_owner_approval",
     "bootstrap_trusted_gcloud_runtime",
+    "repair_trusted_gcloud_sdk_bytecode",
     "bootstrap_schema_reconciliation_control",
     "activate_trusted_owner_support",
     "harden_owner_secret_process",

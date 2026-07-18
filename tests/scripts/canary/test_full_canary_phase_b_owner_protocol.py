@@ -293,6 +293,22 @@ def test_owner_external_signer_uses_strict_sshsig_and_pins_public_source(
     assert "PRIVATE" not in json.dumps(authority.to_mapping())
 
 
+def test_owner_external_signer_rejects_unregistered_namespace(
+    tmp_path: Path,
+) -> None:
+    signer = _test_signer(tmp_path)
+
+    with pytest.raises(
+        launcher.OwnerLauncherError,
+        match="phase_b_owner_signing_request_invalid",
+    ):
+        signer.sign(
+            b"fixed-message",
+            namespace="unregistered-owner-signing-namespace",
+            expected_authority=signer.inspect(),
+        )
+
+
 def test_owner_external_signer_rejects_private_key_metadata_drift(
     tmp_path: Path,
 ) -> None:

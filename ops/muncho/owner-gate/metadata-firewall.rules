@@ -1,0 +1,6 @@
+-A OUTPUT -d 169.254.169.254/32 -j @CHAIN@
+-A @CHAIN@ -m owner --uid-owner 0 -j RETURN
+-A @CHAIN@ -p udp -m udp --dport 53 -m owner --uid-owner 29103 -j RETURN
+-A @CHAIN@ -p tcp -m tcp --dport 53 -m owner --uid-owner 29103 -j RETURN
+-A @CHAIN@ -p tcp -m tcp --dport 80 -m owner --uid-owner 29103 -j RETURN
+-A @CHAIN@ -j REJECT --reject-with icmp-admin-prohibited

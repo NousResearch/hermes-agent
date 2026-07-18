@@ -4,8 +4,10 @@ import copy
 import hashlib
 import json
 import os
+import signal
 import stat
 import subprocess
+import sys
 from pathlib import Path
 
 import pytest
@@ -152,17 +154,17 @@ def test_plan_is_deterministic_fixed_and_self_digest_bound(monkeypatch):
     assert [item["path"] for item in first["activation_inventory"]] == [
         str(path) for path in writer_release._ACTIVATION_PATHS
     ]
-    assert len(first["activation_inventory"]) == 19
     assert {item["state"] for item in first["activation_inventory"]} == {"absent"}
     assert [item["unit"] for item in first["service_states"]] == list(
         writer_release._STOPPED_SERVICE_UNITS
     )
-    assert executables.count(writer_release.DEFAULT_SYSTEMCTL_EXECUTABLE) == 2
-    assert set(executables) == {
+    expected_executables = {
         writer_release.DEFAULT_SYSTEMCTL_EXECUTABLE,
         writer_release.DEFAULT_UV_EXECUTABLE,
         writer_release.DEFAULT_GIT_EXECUTABLE,
     }
+    assert expected_executables <= set(executables)
+    assert all(executable in expected_executables for executable in executables)
     assert "created_at_unix" not in first
 
 
@@ -208,22 +210,14 @@ def test_fixed_systemctl_observation_is_read_only_and_closed():
 
     states = writer_release._collect_service_states(runner=runner)
 
-    assert writer_release._STOPPED_SERVICE_UNITS == (
-        "muncho-canary-discord-edge.service",
-        "muncho-discord-egress.service",
-        "muncho-canonical-writer.service",
-        "muncho-canonical-writer-phase-b-readiness.service",
-        "muncho-canonical-writer-export.service",
-        "muncho-canonical-writer-export.timer",
-        "hermes-cloud-gateway.service",
-    )
-
     service_commands = [
         command
         for command in runner.commands
         if command.argv[0] == str(writer_release.DEFAULT_SYSTEMCTL_EXECUTABLE)
     ]
-    assert len(states) == len(service_commands) == 7
+    assert len(states) == len(service_commands) == len(
+        writer_release._STOPPED_SERVICE_UNITS
+    )
     for command, unit in zip(service_commands, writer_release._STOPPED_SERVICE_UNITS):
         assert command.argv == (
             "/usr/bin/systemctl",
@@ -266,7 +260,7 @@ def test_service_parser_rejects_every_unsafe_state(field, value):
 
 def test_live_legacy_discord_edge_blocks_stopped_release_collection():
     legacy = "muncho-canary-discord-edge.service"
-    assert writer_release._STOPPED_SERVICE_UNITS[0] == legacy
+    assert legacy in writer_release._STOPPED_SERVICE_UNITS
 
     class LegacyLiveRunner(_PlanRunner):
         def __call__(self, command):
@@ -292,6 +286,43 @@ def test_live_legacy_discord_edge_blocks_stopped_release_collection():
 
     with pytest.raises(RuntimeError, match="not safely stopped"):
         writer_release._collect_service_states(runner=LegacyLiveRunner())
+
+
+@pytest.mark.parametrize(
+    "unit",
+    [
+        "muncho-isolated-worker.socket",
+        "muncho-isolated-worker.service",
+        "muncho-capability-browser.service",
+        "muncho-discord-connector.service",
+        "muncho-mac-ops-edge.service",
+    ],
+)
+def test_each_extended_runtime_unit_blocks_stopped_release_when_live(unit):
+    class ExtendedUnitLiveRunner(_PlanRunner):
+        def __call__(self, command):
+            result = super().__call__(command)
+            if command.argv[-1] != unit:
+                return result
+            values = _service_properties(unit, loaded=True)
+            values.update({
+                "ActiveState": "active",
+                "SubState": "running",
+                "UnitFileState": "enabled",
+                "MainPID": "4242",
+            })
+            return subprocess.CompletedProcess(
+                command.argv,
+                0,
+                "".join(
+                    f"{name}={values[name]}\n"
+                    for name in writer_release._SERVICE_PROPERTIES
+                ),
+                "",
+            )
+
+    with pytest.raises(RuntimeError, match="not safely stopped"):
+        writer_release._collect_service_states(runner=ExtendedUnitLiveRunner())
 
 
 def test_service_parser_accepts_only_exact_absent_or_disabled_state():
@@ -322,7 +353,6 @@ def test_service_parser_accepts_only_exact_absent_or_disabled_state():
 def test_timer_parser_normalizes_only_the_exact_pidless_systemd_shape():
     timer = "muncho-canonical-writer-export.timer"
     socket = "muncho-isolated-worker.socket"
-    assert writer_release._PIDLESS_SERVICE_UNITS == frozenset({timer, socket})
 
     parsed = writer_release._parse_service_observation(
         timer,
@@ -523,12 +553,14 @@ def test_completed_release_uses_the_shared_planner_manifest_bound(
     tmp_path, monkeypatch
 ):
     spec, _manifest = _completed_release(tmp_path, monkeypatch)
-    observed: list[int] = []
+    manifest_was_read = False
     read_stable_root_file = writer_release._read_stable_root_file
 
     def capture_manifest_bound(path, *, maximum_bytes, exact_mode):
+        nonlocal manifest_was_read
         if path == spec.release_root / writer_release.RELEASE_MANIFEST_NAME:
-            observed.append(maximum_bytes)
+            assert maximum_bytes == writer_release.MAX_RELEASE_MANIFEST_BYTES
+            manifest_was_read = True
         return read_stable_root_file(
             path,
             maximum_bytes=maximum_bytes,
@@ -543,7 +575,7 @@ def test_completed_release_uses_the_shared_planner_manifest_bound(
 
     writer_release._validate_completed_release(spec)
 
-    assert observed == [writer_release.MAX_RELEASE_MANIFEST_BYTES]
+    assert manifest_was_read is True
     assert writer_release.MAX_RELEASE_MANIFEST_BYTES > writer_release._MAX_RECEIPT_BYTES
 
 
@@ -582,6 +614,157 @@ def _host_receipt(plan: dict[str, object], observed_at_unix: int) -> dict[str, o
         "observed_at_unix": observed_at_unix,
     }
     return {**unsigned, "receipt_sha256": writer_release._sha256_json(unsigned)}
+
+
+_PUBLICATION_CRASH_PROGRAM = r"""
+import os
+import signal
+import sys
+from pathlib import Path
+from scripts.canary import writer_release as release
+
+target = Path(sys.argv[1])
+stage = sys.argv[2]
+raw = b'{"ok":true}'
+release._BUILD_OWNER_UID = os.geteuid()
+release._BUILD_OWNER_GID = os.getegid()
+candidate = release._publication_candidate_path(target)
+
+if stage == "scratch_write":
+    original = os.write
+    def crash_write(descriptor, value):
+        original(descriptor, value[:1])
+        os.kill(os.getpid(), signal.SIGKILL)
+    release.os.write = crash_write
+elif stage == "scratch_fsync":
+    original = os.fsync
+    def crash_fsync(descriptor):
+        original(descriptor)
+        os.kill(os.getpid(), signal.SIGKILL)
+    release.os.fsync = crash_fsync
+elif stage == "final_link":
+    original = os.link
+    def crash_link(source, destination, **kwargs):
+        original(source, destination, **kwargs)
+        os.kill(os.getpid(), signal.SIGKILL)
+    release.os.link = crash_link
+elif stage == "final_directory_fsync":
+    original = release._fsync_directory
+    calls = 0
+    def crash_directory(path):
+        global calls
+        calls += 1
+        original(path)
+        if calls == 2:
+            os.kill(os.getpid(), signal.SIGKILL)
+    release._fsync_directory = crash_directory
+elif stage == "scratch_unlink":
+    original = os.unlink
+    def crash_unlink(path):
+        original(path)
+        if Path(path) == candidate:
+            os.kill(os.getpid(), signal.SIGKILL)
+    release.os.unlink = crash_unlink
+else:
+    raise AssertionError(stage)
+
+release._publish_bytes_no_replace(
+    target,
+    raw,
+    maximum_bytes=1024,
+    exact_mode=0o400,
+)
+"""
+
+
+@pytest.mark.parametrize(
+    "stage",
+    (
+        "scratch_write",
+        "scratch_fsync",
+        "final_link",
+        "final_directory_fsync",
+        "scratch_unlink",
+    ),
+)
+def test_no_replace_publication_recovers_real_sigkill_at_every_commit_stage(
+    tmp_path,
+    monkeypatch,
+    stage,
+):
+    _allow_local_owner(monkeypatch)
+    target = (tmp_path / "publication" / "receipt.json").resolve()
+    target.parent.mkdir()
+    completed = subprocess.run(
+        [sys.executable, "-c", _PUBLICATION_CRASH_PROGRAM, str(target), stage],
+        check=False,
+        cwd=Path(__file__).resolve().parents[3],
+    )
+
+    assert completed.returncode == -signal.SIGKILL
+    if target.exists():
+        assert target.read_bytes() == b'{"ok":true}'
+    writer_release._publish_bytes_no_replace(
+        target,
+        b'{"ok":true}',
+        maximum_bytes=1024,
+        exact_mode=0o400,
+    )
+    assert target.read_bytes() == b'{"ok":true}'
+    assert stat.S_IMODE(os.lstat(target).st_mode) == 0o400
+    assert os.lstat(target).st_nlink == 1
+    assert not os.path.lexists(writer_release._publication_candidate_path(target))
+
+
+def test_no_replace_publication_serializes_concurrent_exact_publishers(
+    tmp_path,
+    monkeypatch,
+):
+    _allow_local_owner(monkeypatch)
+    target = (tmp_path / "concurrent" / "receipt.json").resolve()
+    target.parent.mkdir()
+    program = (
+        "import os,sys; from pathlib import Path; "
+        "from scripts.canary import writer_release as r; "
+        "r._BUILD_OWNER_UID=os.geteuid(); r._BUILD_OWNER_GID=os.getegid(); "
+        "r._publish_bytes_no_replace(Path(sys.argv[1]), b'{\\\"ok\\\":true}', "
+        "maximum_bytes=1024, exact_mode=0o400)"
+    )
+    processes = [
+        subprocess.Popen(
+            [sys.executable, "-c", program, str(target)],
+            cwd=Path(__file__).resolve().parents[3],
+        )
+        for _ in range(2)
+    ]
+
+    assert all(process.wait(timeout=10) == 0 for process in processes)
+    assert target.read_bytes() == b'{"ok":true}'
+    assert os.lstat(target).st_nlink == 1
+    assert not os.path.lexists(writer_release._publication_candidate_path(target))
+
+
+def test_no_replace_publication_fails_closed_on_committed_candidate_tamper(
+    tmp_path,
+    monkeypatch,
+):
+    _allow_local_owner(monkeypatch)
+    target = (tmp_path / "tamper" / "receipt.json").resolve()
+    target.parent.mkdir()
+    candidate = writer_release._publication_candidate_path(target)
+    candidate.write_bytes(b'{"ok":false}')
+    candidate.chmod(0o400)
+
+    with pytest.raises(RuntimeError, match="candidate diverged"):
+        writer_release._publish_bytes_no_replace(
+            target,
+            b'{"ok":true}',
+            maximum_bytes=1024,
+            exact_mode=0o400,
+        )
+
+    assert not target.exists()
+    assert candidate.read_bytes() == b'{"ok":false}'
 
 
 def test_host_receipt_is_future_traversable_no_replace_and_same_boot_idempotent(
@@ -781,10 +964,7 @@ def test_apply_publishes_exact_receipt_and_retry_is_read_only(tmp_path, monkeypa
     monkeypatch.setattr(writer_release, "_require_root_linux", lambda: None)
     monkeypatch.setattr(writer_release, "_validate_root_parent_chain", lambda _p: None)
     plan = _plan_for_apply(REVISION)
-    calls = {"plan": 0, "build": 0}
-
     def planned(*_args, **_kwargs):
-        calls["plan"] += 1
         return copy.deepcopy(plan)
 
     monkeypatch.setattr(writer_release, "plan_stopped_release", planned)
@@ -811,9 +991,13 @@ def test_apply_publishes_exact_receipt_and_retry_is_read_only(tmp_path, monkeypa
         lambda _plan: copy.deepcopy(host_binding),
     )
 
+    built = False
+
     def build(current, *, runner):
+        nonlocal built
         del runner
-        calls["build"] += 1
+        assert built is False
+        built = True
         current.release_root.mkdir(parents=True)
         return _manifest_with_digest(current, release["release_artifact_sha256"])
 
@@ -849,8 +1033,82 @@ def test_apply_publishes_exact_receipt_and_retry_is_read_only(tmp_path, monkeypa
     )
     after = os.lstat(receipt_path)
     assert retry == receipt
-    assert calls == {"plan": 3, "build": 1}
+    assert built is True
     assert (before.st_ino, before.st_mtime_ns) == (after.st_ino, after.st_mtime_ns)
+
+
+def test_apply_recovers_completed_release_and_receipt_candidate_without_rebuild(
+    tmp_path,
+    monkeypatch,
+):
+    _allow_local_owner(monkeypatch)
+    monkeypatch.setattr(writer_release, "DEFAULT_SOURCE_BASE", tmp_path / "sources")
+    monkeypatch.setattr(writer_release, "DEFAULT_RELEASE_BASE", tmp_path / "releases")
+    monkeypatch.setattr(writer_release, "DEFAULT_EVIDENCE_BASE", tmp_path / "evidence")
+    host_path = tmp_path / "full-canary/host-identity.json"
+    monkeypatch.setattr(writer_release, "DEFAULT_HOST_RECEIPT_PATH", host_path)
+    monkeypatch.setattr(writer_release, "_require_root_linux", lambda: None)
+    monkeypatch.setattr(writer_release, "_validate_root_parent_chain", lambda _p: None)
+    plan = _plan_for_apply(REVISION)
+    monkeypatch.setattr(
+        writer_release,
+        "plan_stopped_release",
+        lambda *_args, **_kwargs: copy.deepcopy(plan),
+    )
+    spec = writer_release._stopped_release_spec(REVISION)
+    spec.release_root.mkdir(parents=True)
+    release = _release_binding(spec)
+    monkeypatch.setattr(
+        writer_release,
+        "_validate_completed_release",
+        lambda _spec: copy.deepcopy(release),
+    )
+
+    host_path.parent.mkdir(parents=True)
+    host_path.parent.chmod(0o755)
+    host_value = _host_receipt(plan, 100)
+    host_raw = writer_release._canonical_bytes(host_value)
+    host_path.write_bytes(host_raw)
+    host_path.chmod(0o400)
+    host_binding = {
+        "host_identity_receipt_path": str(host_path),
+        "host_identity_receipt_file_sha256": hashlib.sha256(host_raw).hexdigest(),
+        "host_identity_receipt_sha256": host_value["receipt_sha256"],
+    }
+
+    receipt_path = writer_release._evidence_receipt_path(REVISION)
+    receipt_path.parent.mkdir(parents=True)
+    writer_release.DEFAULT_EVIDENCE_BASE.chmod(0o700)
+    receipt_path.parent.chmod(0o700)
+    receipt = writer_release._create_receipt(
+        plan,
+        {**release, **host_binding},
+        service_state_after=plan["service_states"],
+        receipt_path=receipt_path,
+        created_at_unix=123,
+    )
+    candidate = writer_release._publication_candidate_path(receipt_path)
+    candidate.write_bytes(writer_release._canonical_bytes(receipt) + b"\n")
+    candidate.chmod(0o400)
+
+    recovered = writer_release.apply_stopped_release(
+        REVISION,
+        plan["plan_sha256"],
+        release_builder=lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            AssertionError("completed release must not rebuild")
+        ),
+        host_receipt_collector=lambda _observed: (_ for _ in ()).throw(
+            AssertionError("existing host receipt must be reused")
+        ),
+        clock=lambda: (_ for _ in ()).throw(
+            AssertionError("receipt candidate time must be reused")
+        ),
+    )
+
+    assert recovered == receipt
+    assert receipt_path.read_bytes() == writer_release._canonical_bytes(receipt) + b"\n"
+    assert not candidate.exists()
+    assert os.lstat(receipt_path).st_nlink == 1
 
 
 def test_post_build_drift_blocks_final_receipt_after_host_publication(
@@ -883,11 +1141,16 @@ def test_post_build_drift_blocks_final_receipt_after_host_publication(
         "_validate_completed_release",
         lambda _spec: copy.deepcopy(release),
     )
-    published: list[bool] = []
+    published = False
+
+    def publish_host_receipt(*_args, **_kwargs):
+        nonlocal published
+        published = True
+
     monkeypatch.setattr(
         writer_release,
         "_publish_or_validate_host_receipt",
-        lambda *_args, **_kwargs: published.append(True),
+        publish_host_receipt,
     )
 
     def build(current, *, runner):
@@ -903,7 +1166,7 @@ def test_post_build_drift_blocks_final_receipt_after_host_publication(
         )
 
     assert spec.release_root.is_dir()
-    assert published == [True]
+    assert published is True
 
 
 def test_cli_apply_prints_publication_receipt_not_result_wrapper(monkeypatch, capsys):

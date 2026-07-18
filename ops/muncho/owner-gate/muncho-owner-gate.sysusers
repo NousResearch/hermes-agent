@@ -1,0 +1,6 @@
+g muncho-passkey-web 29101
+u muncho-passkey-web 29101:29101 "Muncho passkey web edge" /nonexistent /usr/sbin/nologin
+g muncho-passkey-authority 29102
+u muncho-passkey-authority 29102:29102 "Muncho passkey authority" /nonexistent /usr/sbin/nologin
+g muncho-storage-executor 29103
+u muncho-storage-executor 29103:29103 "Muncho storage executor" /nonexistent /usr/sbin/nologin

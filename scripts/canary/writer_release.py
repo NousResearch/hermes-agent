@@ -19,6 +19,7 @@ units, changes service state, or accepts environment/secret payloads.
 from __future__ import annotations
 
 import argparse
+import fcntl
 import hashlib
 import json
 import os
@@ -30,7 +31,9 @@ import sys
 import time
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Callable, Mapping, Sequence
+from typing import Any, Callable, Mapping, NoReturn, Sequence
+
+from scripts.canary.runtime_units import CANARY_RUNTIME_UNITS
 
 from gateway.canonical_writer_release_contract import (
     DEFAULT_EXPORT_LIMIT,
@@ -193,6 +196,7 @@ DEFAULT_HOST_RECEIPT_PATH = Path("/etc/muncho/full-canary/host-identity.json")
 DEFAULT_SYSTEMCTL_EXECUTABLE = Path("/usr/bin/systemctl")
 _EVIDENCE_DIRECTORY_MODE = 0o700
 _HOST_RECEIPT_DIRECTORY_MODE = 0o755
+_HOST_RECEIPT_LEASE_MODE = 0o600
 _RECEIPT_MODE = 0o400
 _MAX_RECEIPT_BYTES = 1024 * 1024
 _MAX_SERVICE_OUTPUT_BYTES = 64 * 1024
@@ -225,15 +229,7 @@ _ACTIVATION_PATHS = (
     Path("/etc/muncho-canonical-writer/writer.json"),
     Path("/etc/hermes/config.yaml"),
 )
-_STOPPED_SERVICE_UNITS = (
-    "muncho-canary-discord-edge.service",
-    "muncho-discord-egress.service",
-    "muncho-canonical-writer.service",
-    "muncho-canonical-writer-phase-b-readiness.service",
-    "muncho-canonical-writer-export.service",
-    "muncho-canonical-writer-export.timer",
-    "hermes-cloud-gateway.service",
-)
+_STOPPED_SERVICE_UNITS = CANARY_RUNTIME_UNITS
 _PIDLESS_SERVICE_UNITS = frozenset({
     "muncho-canonical-writer-export.timer",
     "muncho-isolated-worker.socket",
@@ -731,7 +727,7 @@ def runtime_dependency_commands(
         "--revision",
         spec.revision,
     )
-    return tuple(
+    commands = tuple(
         BuildCommand(
             (*base, action, *arguments),
             cwd=spec.release_root,
@@ -739,6 +735,7 @@ def runtime_dependency_commands(
         )
         for action in ("install", "verify")
     )
+    return commands[0], commands[1]
 
 
 Runner = Callable[[BuildCommand], subprocess.CompletedProcess[str]]
@@ -2908,8 +2905,318 @@ def _fsync_directory(path: Path) -> None:
         os.close(descriptor)
 
 
+_PUBLICATION_CANDIDATE_SUFFIX = ".publication-candidate"
+_PUBLICATION_INCOMPLETE_MODE = 0o600
+
+
+def _publication_candidate_path(path: Path) -> Path:
+    """Return the fixed same-directory scratch name for one fixed artifact."""
+
+    if not path.is_absolute() or path.name in {"", ".", ".."}:
+        raise ValueError("publication target path is invalid")
+    return path.with_name(f".{path.name}{_PUBLICATION_CANDIDATE_SUFFIX}")
+
+
+def _read_stable_publication_file(
+    path: Path,
+    *,
+    maximum_bytes: int,
+    exact_mode: int,
+    allowed_nlinks: frozenset[int] = frozenset({1}),
+) -> bytes:
+    """Read a publication artifact, including the transient hardlink state."""
+
+    before = os.lstat(path)
+    if (
+        not stat.S_ISREG(before.st_mode)
+        or stat.S_ISLNK(before.st_mode)
+        or before.st_uid != _BUILD_OWNER_UID
+        or before.st_gid != _BUILD_OWNER_GID
+        or before.st_nlink not in allowed_nlinks
+        or stat.S_IMODE(before.st_mode) != exact_mode
+        or not 0 <= before.st_size <= maximum_bytes
+        or _list_xattrs(path)
+    ):
+        raise RuntimeError("publication file is not exact")
+    descriptor = os.open(
+        path,
+        os.O_RDONLY | getattr(os, "O_CLOEXEC", 0) | getattr(os, "O_NOFOLLOW", 0),
+    )
+    try:
+        opened = os.fstat(descriptor)
+        if _stat_identity(opened) != _stat_identity(before):
+            raise RuntimeError("publication file changed during open")
+        chunks: list[bytes] = []
+        size = 0
+        while chunk := os.read(
+            descriptor,
+            min(64 * 1024, maximum_bytes + 1 - size),
+        ):
+            chunks.append(chunk)
+            size += len(chunk)
+            if size > maximum_bytes:
+                raise RuntimeError("publication file exceeds its bound")
+        after = os.fstat(descriptor)
+    finally:
+        os.close(descriptor)
+    reachable = os.lstat(path)
+    if (
+        size != before.st_size
+        or _stat_identity(after) != _stat_identity(before)
+        or _stat_identity(reachable) != _stat_identity(before)
+    ):
+        raise RuntimeError("publication file changed during read")
+    return b"".join(chunks)
+
+
+def _discard_incomplete_publication_candidate(path: Path) -> bool:
+    """Remove only our recognisable pre-commit (0600) scratch state."""
+
+    if not os.path.lexists(path):
+        return False
+    item = os.lstat(path)
+    if (
+        not stat.S_ISREG(item.st_mode)
+        or stat.S_ISLNK(item.st_mode)
+        or item.st_uid != _BUILD_OWNER_UID
+        or item.st_gid != _BUILD_OWNER_GID
+        or item.st_nlink != 1
+        or stat.S_IMODE(item.st_mode) != _PUBLICATION_INCOMPLETE_MODE
+        or _list_xattrs(path)
+    ):
+        return False
+    os.unlink(path)
+    _fsync_directory(path.parent)
+    return True
+
+
+def _read_complete_publication_candidate(
+    path: Path,
+    *,
+    maximum_bytes: int,
+    exact_mode: int,
+    discard_incomplete: bool = True,
+) -> bytes | None:
+    """Return a committed scratch candidate, never a partial write."""
+
+    candidate = _publication_candidate_path(path)
+    if not os.path.lexists(candidate):
+        return None
+    item = os.lstat(candidate)
+    if stat.S_IMODE(item.st_mode) == _PUBLICATION_INCOMPLETE_MODE:
+        if not discard_incomplete:
+            return None
+        if not _discard_incomplete_publication_candidate(candidate):
+            raise RuntimeError("publication candidate is not recoverable")
+        return None
+    return _read_stable_publication_file(
+        candidate,
+        maximum_bytes=maximum_bytes,
+        exact_mode=exact_mode,
+        allowed_nlinks=frozenset({1, 2}),
+    )
+
+
+def _create_fsynced_publication_candidate(
+    candidate: Path,
+    raw: bytes,
+    *,
+    maximum_bytes: int,
+    exact_mode: int,
+) -> None:
+    if not raw or len(raw) > maximum_bytes:
+        raise RuntimeError("publication artifact exceeds its bound")
+    flags = (
+        os.O_WRONLY
+        | os.O_CREAT
+        | os.O_EXCL
+        | getattr(os, "O_CLOEXEC", 0)
+        | getattr(os, "O_NOFOLLOW", 0)
+    )
+    descriptor = os.open(candidate, flags, _PUBLICATION_INCOMPLETE_MODE)
+    try:
+        os.fchown(descriptor, _BUILD_OWNER_UID, _BUILD_OWNER_GID)
+        offset = 0
+        while offset < len(raw):
+            written = os.write(descriptor, raw[offset:])
+            if written <= 0:
+                raise OSError("publication candidate write made no progress")
+            offset += written
+        # 0600 is the durable marker for an uncommitted/repairable scratch.
+        os.fsync(descriptor)
+        os.fchmod(descriptor, exact_mode)
+        os.fsync(descriptor)
+    finally:
+        os.close(descriptor)
+    committed = _read_stable_publication_file(
+        candidate,
+        maximum_bytes=maximum_bytes,
+        exact_mode=exact_mode,
+    )
+    if committed != raw:
+        raise RuntimeError("publication candidate readback diverged")
+    _fsync_directory(candidate.parent)
+
+
+def _publish_bytes_no_replace_locked(
+    path: Path,
+    raw: bytes,
+    *,
+    maximum_bytes: int,
+    exact_mode: int,
+) -> None:
+    """Crash-safely publish exact bytes with an append-only hardlink commit.
+
+    The target is never opened for writing.  A same-filesystem scratch is
+    written and fsynced first, then hardlinked to the final no-replace name.
+    Replays finish a committed link/dir-fsync/unlink sequence and reject every
+    complete divergent candidate or final artifact.
+    """
+
+    if not isinstance(raw, bytes) or not raw or len(raw) > maximum_bytes:
+        raise RuntimeError("publication artifact exceeds its bound")
+    candidate = _publication_candidate_path(path)
+
+    if os.path.lexists(candidate):
+        candidate_raw = _read_complete_publication_candidate(
+            path,
+            maximum_bytes=maximum_bytes,
+            exact_mode=exact_mode,
+        )
+        if candidate_raw is not None and candidate_raw != raw:
+            raise RuntimeError("publication candidate diverged")
+
+    if os.path.lexists(path) and not os.path.lexists(candidate):
+        exact = _read_stable_root_file(
+            path,
+            maximum_bytes=maximum_bytes,
+            exact_mode=exact_mode,
+        )
+        if exact != raw:
+            raise RuntimeError("publication final artifact diverged")
+        _fsync_directory(path.parent)
+        return
+
+    if not os.path.lexists(candidate):
+        try:
+            _create_fsynced_publication_candidate(
+                candidate,
+                raw,
+                maximum_bytes=maximum_bytes,
+                exact_mode=exact_mode,
+            )
+        except FileExistsError:
+            candidate_raw = _read_complete_publication_candidate(
+                path,
+                maximum_bytes=maximum_bytes,
+                exact_mode=exact_mode,
+            )
+            if candidate_raw is None:
+                _create_fsynced_publication_candidate(
+                    candidate,
+                    raw,
+                    maximum_bytes=maximum_bytes,
+                    exact_mode=exact_mode,
+                )
+            elif candidate_raw != raw:
+                raise RuntimeError("publication candidate diverged")
+
+    candidate_raw = _read_complete_publication_candidate(
+        path,
+        maximum_bytes=maximum_bytes,
+        exact_mode=exact_mode,
+    )
+    if candidate_raw != raw:
+        raise RuntimeError("publication candidate diverged")
+
+    if not os.path.lexists(path):
+        try:
+            os.link(candidate, path, follow_symlinks=False)
+        except FileExistsError:
+            pass
+        else:
+            _fsync_directory(path.parent)
+
+    final_raw = _read_stable_publication_file(
+        path,
+        maximum_bytes=maximum_bytes,
+        exact_mode=exact_mode,
+        allowed_nlinks=frozenset({1, 2}),
+    )
+    if final_raw != raw:
+        raise RuntimeError("publication final artifact diverged")
+
+    if os.path.lexists(candidate):
+        candidate_item = os.lstat(candidate)
+        final_item = os.lstat(path)
+        if (
+            candidate_item.st_dev != final_item.st_dev
+            or candidate_item.st_ino != final_item.st_ino
+        ):
+            raise RuntimeError("publication candidate is not the final hardlink")
+        os.unlink(candidate)
+        _fsync_directory(path.parent)
+
+    exact = _read_stable_root_file(
+        path,
+        maximum_bytes=maximum_bytes,
+        exact_mode=exact_mode,
+    )
+    if exact != raw:
+        raise RuntimeError("publication final readback diverged")
+
+
+def _publish_bytes_no_replace(
+    path: Path,
+    raw: bytes,
+    *,
+    maximum_bytes: int,
+    exact_mode: int,
+) -> None:
+    """Serialize the exact crash-safe publication on the parent inode."""
+
+    _validate_root_directory(path.parent)
+    descriptor = os.open(
+        path.parent,
+        os.O_RDONLY
+        | getattr(os, "O_DIRECTORY", 0)
+        | getattr(os, "O_CLOEXEC", 0),
+    )
+    try:
+        opened = os.fstat(descriptor)
+        reachable = os.lstat(path.parent)
+        if (
+            not stat.S_ISDIR(opened.st_mode)
+            or opened.st_dev != reachable.st_dev
+            or opened.st_ino != reachable.st_ino
+        ):
+            raise RuntimeError("publication parent changed during open")
+        fcntl.flock(descriptor, fcntl.LOCK_EX)
+        locked = os.fstat(descriptor)
+        reachable = os.lstat(path.parent)
+        if (
+            not stat.S_ISDIR(locked.st_mode)
+            or locked.st_dev != reachable.st_dev
+            or locked.st_ino != reachable.st_ino
+            or locked.st_uid != _BUILD_OWNER_UID
+            or locked.st_gid != _BUILD_OWNER_GID
+            or stat.S_IMODE(locked.st_mode) & 0o022
+            or _list_xattrs(path.parent)
+        ):
+            raise RuntimeError("publication parent changed while locked")
+        _publish_bytes_no_replace_locked(
+            path,
+            raw,
+            maximum_bytes=maximum_bytes,
+            exact_mode=exact_mode,
+        )
+    finally:
+        os.close(descriptor)
+
+
 def _validate_evidence_namespace(revision: str, *, receipt_exists: bool) -> None:
     receipt_path = _evidence_receipt_path(revision)
+    candidate_path = _publication_candidate_path(receipt_path)
     revision_root = receipt_path.parent
     _validate_root_parent_chain(DEFAULT_EVIDENCE_BASE.parent)
     if not os.path.lexists(DEFAULT_EVIDENCE_BASE):
@@ -2917,12 +3224,18 @@ def _validate_evidence_namespace(revision: str, *, receipt_exists: bool) -> None
             raise RuntimeError("stopped-release evidence namespace is inconsistent")
         return
     _validate_evidence_directory(DEFAULT_EVIDENCE_BASE)
-    if receipt_exists:
+    if os.path.lexists(revision_root):
         _validate_evidence_directory(revision_root)
-        if sorted(os.listdir(revision_root)) != [receipt_path.name]:
+        entries = frozenset(os.listdir(revision_root))
+        allowed = frozenset({receipt_path.name, candidate_path.name})
+        if (
+            not entries <= allowed
+            or (receipt_exists and receipt_path.name not in entries)
+            or (not receipt_exists and receipt_path.name in entries)
+        ):
             raise RuntimeError("stopped-release evidence revision has extra entries")
-    elif os.path.lexists(revision_root):
-        raise RuntimeError("stopped-release evidence revision collision exists")
+    elif receipt_exists:
+        raise RuntimeError("stopped-release receipt has no evidence directory")
 
 
 def _create_root_evidence_directory(path: Path) -> None:
@@ -2950,7 +3263,14 @@ def _create_evidence_namespace(revision: str) -> Path:
         _validate_evidence_directory(DEFAULT_EVIDENCE_BASE)
     else:
         _create_root_evidence_directory(DEFAULT_EVIDENCE_BASE)
-    _create_root_evidence_directory(receipt_path.parent)
+    if os.path.lexists(receipt_path.parent):
+        _validate_evidence_directory(receipt_path.parent)
+        _validate_evidence_namespace(
+            revision,
+            receipt_exists=os.path.lexists(receipt_path),
+        )
+    else:
+        _create_root_evidence_directory(receipt_path.parent)
     return receipt_path
 
 
@@ -3003,56 +3323,22 @@ def _create_receipt(
 
 def _write_receipt_no_replace(path: Path, receipt: Mapping[str, Any]) -> None:
     raw = _canonical_bytes(receipt) + b"\n"
-    if len(raw) > _MAX_RECEIPT_BYTES:
-        raise RuntimeError("stopped-release receipt exceeds its bound")
-    flags = (
-        os.O_WRONLY
-        | os.O_CREAT
-        | os.O_EXCL
-        | getattr(os, "O_CLOEXEC", 0)
-        | getattr(os, "O_NOFOLLOW", 0)
+    _publish_bytes_no_replace(
+        path,
+        raw,
+        maximum_bytes=_MAX_RECEIPT_BYTES,
+        exact_mode=_RECEIPT_MODE,
     )
-    descriptor = os.open(path, flags, 0o600)
-    try:
-        os.fchown(descriptor, _BUILD_OWNER_UID, _BUILD_OWNER_GID)
-        offset = 0
-        while offset < len(raw):
-            written = os.write(descriptor, raw[offset:])
-            if written <= 0:
-                raise OSError("stopped-release receipt write made no progress")
-            offset += written
-        os.fchmod(descriptor, _RECEIPT_MODE)
-        os.fsync(descriptor)
-    finally:
-        os.close(descriptor)
-    _fsync_directory(path.parent)
 
 
 def _write_host_receipt_no_replace(path: Path, receipt: Mapping[str, Any]) -> None:
     raw = _canonical_bytes(receipt)
-    if len(raw) > 16 * 1024:
-        raise RuntimeError("full-canary host identity receipt exceeds its bound")
-    flags = (
-        os.O_WRONLY
-        | os.O_CREAT
-        | os.O_EXCL
-        | getattr(os, "O_CLOEXEC", 0)
-        | getattr(os, "O_NOFOLLOW", 0)
+    _publish_bytes_no_replace(
+        path,
+        raw,
+        maximum_bytes=16 * 1024,
+        exact_mode=_RECEIPT_MODE,
     )
-    descriptor = os.open(path, flags, 0o600)
-    try:
-        os.fchown(descriptor, _BUILD_OWNER_UID, _BUILD_OWNER_GID)
-        offset = 0
-        while offset < len(raw):
-            written = os.write(descriptor, raw[offset:])
-            if written <= 0:
-                raise OSError("full-canary host identity write made no progress")
-            offset += written
-        os.fchmod(descriptor, _RECEIPT_MODE)
-        os.fsync(descriptor)
-    finally:
-        os.close(descriptor)
-    _fsync_directory(path.parent)
 
 
 def _default_host_receipt_collector(observed_at_unix: int) -> Mapping[str, Any]:
@@ -3123,10 +3409,9 @@ def _create_host_receipt_parent() -> None:
         return
     try:
         os.mkdir(parent, _HOST_RECEIPT_DIRECTORY_MODE)
-    except FileExistsError as exc:
-        raise RuntimeError(
-            "full-canary host receipt directory collision exists"
-        ) from exc
+    except FileExistsError:
+        _validate_host_receipt_parent()
+        return
     os.chown(
         parent,
         _BUILD_OWNER_UID,
@@ -3136,6 +3421,74 @@ def _create_host_receipt_parent() -> None:
     os.chmod(parent, _HOST_RECEIPT_DIRECTORY_MODE, follow_symlinks=False)
     _validate_host_receipt_parent()
     _fsync_directory(parent.parent)
+
+
+def _host_receipt_lease_path() -> Path:
+    return DEFAULT_HOST_RECEIPT_PATH.parent / "host-identity-rotations.lock"
+
+
+def _acquire_host_receipt_lease() -> int:
+    """Acquire the fixed lease shared by stopped publication and rotation."""
+
+    _validate_host_receipt_parent()
+    path = _host_receipt_lease_path()
+    flags = (
+        os.O_RDWR
+        | os.O_CREAT
+        | os.O_EXCL
+        | getattr(os, "O_CLOEXEC", 0)
+        | getattr(os, "O_NOFOLLOW", 0)
+    )
+    created = False
+    try:
+        descriptor = os.open(path, flags, _HOST_RECEIPT_LEASE_MODE)
+        created = True
+    except FileExistsError:
+        descriptor = os.open(
+            path,
+            os.O_RDWR
+            | getattr(os, "O_CLOEXEC", 0)
+            | getattr(os, "O_NOFOLLOW", 0),
+        )
+    try:
+        if created:
+            os.fchown(descriptor, _BUILD_OWNER_UID, _BUILD_OWNER_GID)
+            os.fchmod(descriptor, _HOST_RECEIPT_LEASE_MODE)
+            os.fsync(descriptor)
+            _fsync_directory(path.parent)
+        opened = os.fstat(descriptor)
+        reachable = os.lstat(path)
+        if (
+            not stat.S_ISREG(opened.st_mode)
+            or stat.S_ISLNK(reachable.st_mode)
+            or opened.st_dev != reachable.st_dev
+            or opened.st_ino != reachable.st_ino
+            or opened.st_uid != _BUILD_OWNER_UID
+            or opened.st_gid != _BUILD_OWNER_GID
+            or opened.st_nlink != 1
+            or opened.st_size != 0
+            or stat.S_IMODE(opened.st_mode) != _HOST_RECEIPT_LEASE_MODE
+            or _list_xattrs(path)
+        ):
+            raise RuntimeError("host receipt lease is not exact")
+        fcntl.flock(descriptor, fcntl.LOCK_EX)
+        locked = os.fstat(descriptor)
+        reachable = os.lstat(path)
+        if (
+            locked.st_dev != reachable.st_dev
+            or locked.st_ino != reachable.st_ino
+            or locked.st_uid != _BUILD_OWNER_UID
+            or locked.st_gid != _BUILD_OWNER_GID
+            or locked.st_nlink != 1
+            or locked.st_size != 0
+            or stat.S_IMODE(locked.st_mode) != _HOST_RECEIPT_LEASE_MODE
+            or _list_xattrs(path)
+        ):
+            raise RuntimeError("host receipt lease changed")
+        return descriptor
+    except BaseException:
+        os.close(descriptor)
+        raise
 
 
 def _read_host_receipt_binding(plan: Mapping[str, Any]) -> dict[str, str]:
@@ -3157,32 +3510,72 @@ def _read_host_receipt_binding(plan: Mapping[str, Any]) -> dict[str, str]:
     }
 
 
+def _read_host_receipt_publication_candidate(
+    plan: Mapping[str, Any],
+) -> dict[str, Any] | None:
+    raw = _read_complete_publication_candidate(
+        DEFAULT_HOST_RECEIPT_PATH,
+        maximum_bytes=16 * 1024,
+        exact_mode=_RECEIPT_MODE,
+    )
+    if raw is None:
+        return None
+    value = _decode_unframed_canonical_mapping(
+        raw,
+        label="full-canary host identity publication candidate",
+    )
+    return _validate_host_receipt_mapping(value, plan=plan)
+
+
 def _publish_or_validate_host_receipt(
     plan: Mapping[str, Any],
     *,
     observed_at_unix: int,
     collector: HostReceiptCollector,
 ) -> dict[str, str]:
-    if os.path.lexists(DEFAULT_HOST_RECEIPT_PATH):
-        return _read_host_receipt_binding(plan)
-    collected = _validate_host_receipt_mapping(
-        collector(observed_at_unix),
-        plan=plan,
-    )
     _create_host_receipt_parent()
-    _write_host_receipt_no_replace(DEFAULT_HOST_RECEIPT_PATH, collected)
-    return _read_host_receipt_binding(plan)
+    descriptor = _acquire_host_receipt_lease()
+    try:
+        candidate_path = _publication_candidate_path(DEFAULT_HOST_RECEIPT_PATH)
+        if os.path.lexists(DEFAULT_HOST_RECEIPT_PATH) and not os.path.lexists(
+            candidate_path
+        ):
+            return _read_host_receipt_binding(plan)
+        collected = _read_host_receipt_publication_candidate(plan)
+        if collected is None:
+            collected = _validate_host_receipt_mapping(
+                collector(observed_at_unix),
+                plan=plan,
+            )
+        _write_host_receipt_no_replace(DEFAULT_HOST_RECEIPT_PATH, collected)
+        return _read_host_receipt_binding(plan)
+    finally:
+        os.close(descriptor)
 
 
 def _preflight_host_receipt_namespace(plan: Mapping[str, Any]) -> None:
     """Reject deterministic host-receipt collisions before release creation."""
 
-    if os.path.lexists(DEFAULT_HOST_RECEIPT_PATH):
-        _read_host_receipt_binding(plan)
-    elif os.path.lexists(DEFAULT_HOST_RECEIPT_PATH.parent):
-        _validate_host_receipt_parent()
-    else:
+    if not os.path.lexists(DEFAULT_HOST_RECEIPT_PATH.parent):
         _validate_root_parent_chain(DEFAULT_HOST_RECEIPT_PATH.parent.parent)
+        return
+    _validate_host_receipt_parent()
+    descriptor = _acquire_host_receipt_lease()
+    try:
+        candidate_path = _publication_candidate_path(DEFAULT_HOST_RECEIPT_PATH)
+        if os.path.lexists(DEFAULT_HOST_RECEIPT_PATH):
+            if os.path.lexists(candidate_path):
+                candidate = _read_host_receipt_publication_candidate(plan)
+                if candidate is None:
+                    raise RuntimeError("host receipt publication is incomplete")
+                _write_host_receipt_no_replace(DEFAULT_HOST_RECEIPT_PATH, candidate)
+            _read_host_receipt_binding(plan)
+        elif os.path.lexists(candidate_path):
+            candidate = _read_host_receipt_publication_candidate(plan)
+            if candidate is None:
+                return
+    finally:
+        os.close(descriptor)
 
 
 def _validate_existing_receipt(
@@ -3210,6 +3603,58 @@ def _validate_existing_receipt(
     if receipt != expected:
         raise RuntimeError("stopped-release receipt binding is invalid")
     return receipt
+
+
+def _read_stopped_receipt_publication_candidate(
+    path: Path,
+    *,
+    plan: Mapping[str, Any],
+    release: Mapping[str, Any],
+) -> dict[str, Any] | None:
+    raw = _read_complete_publication_candidate(
+        path,
+        maximum_bytes=_MAX_RECEIPT_BYTES,
+        exact_mode=_RECEIPT_MODE,
+        discard_incomplete=False,
+    )
+    if raw is None:
+        return None
+    receipt = _decode_canonical_mapping(
+        raw,
+        label="stopped-release publication candidate",
+    )
+    created_at_unix = receipt.get("created_at_unix")
+    if type(created_at_unix) is not int or created_at_unix < 0:
+        raise RuntimeError("stopped-release receipt time is invalid")
+    expected = _create_receipt(
+        plan,
+        release,
+        service_state_after=plan["service_states"],
+        receipt_path=path,
+        created_at_unix=created_at_unix,
+    )
+    if receipt != expected:
+        raise RuntimeError("stopped-release publication candidate is invalid")
+    return receipt
+
+
+def _read_stopped_receipt_candidate_time(path: Path) -> int | None:
+    raw = _read_complete_publication_candidate(
+        path,
+        maximum_bytes=_MAX_RECEIPT_BYTES,
+        exact_mode=_RECEIPT_MODE,
+        discard_incomplete=False,
+    )
+    if raw is None:
+        return None
+    receipt = _decode_canonical_mapping(
+        raw,
+        label="stopped-release publication candidate",
+    )
+    created_at_unix = receipt.get("created_at_unix")
+    if type(created_at_unix) is not int or created_at_unix < 0:
+        raise RuntimeError("stopped-release receipt time is invalid")
+    return created_at_unix
 
 
 def apply_stopped_release(
@@ -3250,32 +3695,83 @@ def apply_stopped_release(
         if not release_exists:
             raise RuntimeError("stopped-release receipt exists without its release")
         release = _validate_completed_release(spec)
-        if not os.path.lexists(DEFAULT_HOST_RECEIPT_PATH):
+        if (
+            not os.path.lexists(DEFAULT_HOST_RECEIPT_PATH)
+            and not os.path.lexists(
+                _publication_candidate_path(DEFAULT_HOST_RECEIPT_PATH)
+            )
+        ):
             raise RuntimeError("stopped-release receipt lacks its host receipt")
-        host_receipt = _read_host_receipt_binding(plan)
+        host_receipt = _publish_or_validate_host_receipt(
+            plan,
+            observed_at_unix=0,
+            collector=lambda _observed: (_ for _ in ()).throw(
+                RuntimeError("stopped-release receipt lacks its host receipt")
+            ),
+        )
+        release_with_host = {**release, **host_receipt}
+        candidate = _read_stopped_receipt_publication_candidate(
+            receipt_path,
+            plan=plan,
+            release=release_with_host,
+        )
+        if candidate is not None:
+            _write_receipt_no_replace(receipt_path, candidate)
         return _validate_existing_receipt(
+            receipt_path,
+            plan=plan,
+            release=release_with_host,
+        )
+    _preflight_host_receipt_namespace(plan)
+
+    if release_exists:
+        release = _validate_completed_release(spec)
+    else:
+        built = release_builder(spec, runner=runner)
+        if not isinstance(built, ReleaseManifest):
+            raise TypeError("stopped-release builder returned an invalid manifest")
+        release = _validate_completed_release(spec)
+        if built.artifact_sha256 != release["release_artifact_sha256"]:
+            raise RuntimeError("stopped-release builder result does not match artifact")
+
+    candidate_time = _read_stopped_receipt_candidate_time(receipt_path)
+    if candidate_time is None:
+        created_at_unix = int(clock())
+        if created_at_unix < 0:
+            raise ValueError("stopped-release receipt time is invalid")
+        host_receipt = _publish_or_validate_host_receipt(
+            plan,
+            observed_at_unix=created_at_unix,
+            collector=host_receipt_collector,
+        )
+        receipt_candidate = None
+    else:
+        created_at_unix = candidate_time
+        if (
+            not os.path.lexists(DEFAULT_HOST_RECEIPT_PATH)
+            and not os.path.lexists(
+                _publication_candidate_path(DEFAULT_HOST_RECEIPT_PATH)
+            )
+        ):
+            raise RuntimeError(
+                "stopped-release candidate exists without its host receipt"
+            )
+        host_receipt = _publish_or_validate_host_receipt(
+            plan,
+            observed_at_unix=created_at_unix,
+            collector=lambda _observed: (_ for _ in ()).throw(
+                RuntimeError(
+                    "stopped-release candidate exists without its host receipt"
+                )
+            ),
+        )
+        receipt_candidate = _read_stopped_receipt_publication_candidate(
             receipt_path,
             plan=plan,
             release={**release, **host_receipt},
         )
-    if release_exists:
-        raise RuntimeError("stopped-release release collision has no receipt")
-    _preflight_host_receipt_namespace(plan)
-
-    built = release_builder(spec, runner=runner)
-    if not isinstance(built, ReleaseManifest):
-        raise TypeError("stopped-release builder returned an invalid manifest")
-    release = _validate_completed_release(spec)
-    if built.artifact_sha256 != release["release_artifact_sha256"]:
-        raise RuntimeError("stopped-release builder result does not match artifact")
-    created_at_unix = int(clock())
-    if created_at_unix < 0:
-        raise ValueError("stopped-release receipt time is invalid")
-    host_receipt = _publish_or_validate_host_receipt(
-        plan,
-        observed_at_unix=created_at_unix,
-        collector=host_receipt_collector,
-    )
+        if receipt_candidate is None:
+            raise RuntimeError("stopped-release publication candidate disappeared")
     post_build_plan = plan_stopped_release(
         revision,
         runner=runner,
@@ -3287,13 +3783,21 @@ def apply_stopped_release(
     release_with_host = {**release, **host_receipt}
 
     receipt_path = _create_evidence_namespace(revision)
-    receipt = _create_receipt(
-        plan,
-        release_with_host,
-        service_state_after=post_build_plan["service_states"],
-        receipt_path=receipt_path,
-        created_at_unix=created_at_unix,
-    )
+    receipt = receipt_candidate
+    if receipt is None:
+        receipt = _read_stopped_receipt_publication_candidate(
+            receipt_path,
+            plan=plan,
+            release=release_with_host,
+        )
+    if receipt is None:
+        receipt = _create_receipt(
+            plan,
+            release_with_host,
+            service_state_after=post_build_plan["service_states"],
+            receipt_path=receipt_path,
+            created_at_unix=created_at_unix,
+        )
     _write_receipt_no_replace(receipt_path, receipt)
     return _validate_existing_receipt(
         receipt_path,
@@ -3303,7 +3807,7 @@ def apply_stopped_release(
 
 
 class _CanonicalArgumentParser(argparse.ArgumentParser):
-    def error(self, message: str) -> None:
+    def error(self, message: str) -> NoReturn:
         del message
         raise ValueError("invalid stopped-release CLI arguments")
 

@@ -1,0 +1,41 @@
+[Unit]
+Description=Muncho owner gate live metadata firewall readiness
+Requires=muncho-owner-gate-metadata-firewall.service
+After=muncho-owner-gate-metadata-firewall.service
+Before=muncho-privileged-executor.service
+
+[Service]
+Type=oneshot
+User=root
+Group=root
+ExecStart=/opt/muncho-owner-gate/current/venv/bin/python -I -B /opt/muncho-owner-gate/current/scripts/canary/owner_gate_firewall_readiness.py receipt --rules /etc/muncho-owner-gate/metadata-firewall.rules --receipt /run/muncho-owner-gate/metadata-firewall-ready.json
+UMask=0077
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectClock=yes
+ProtectControlGroups=yes
+ProtectKernelLogs=yes
+ProtectKernelModules=yes
+ProtectKernelTunables=yes
+ProtectProc=invisible
+ProcSubset=pid
+LockPersonality=yes
+MemoryDenyWriteExecute=yes
+RestrictRealtime=yes
+RestrictSUIDSGID=yes
+RestrictNamespaces=yes
+ReadWritePaths=/run/muncho-owner-gate
+ReadOnlyPaths=/etc/muncho-owner-gate
+InaccessiblePaths=/etc/muncho-owner-gate/compute-api-hosts
+CapabilityBoundingSet=CAP_NET_ADMIN
+AmbientCapabilities=
+RestrictAddressFamilies=AF_NETLINK AF_INET
+SystemCallArchitectures=native
+SystemCallFilter=@system-service
+SystemCallFilter=~@mount @resources @reboot @swap
+
+[Install]
+WantedBy=multi-user.target

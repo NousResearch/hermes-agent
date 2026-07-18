@@ -55,6 +55,7 @@ from scripts.canary.host_storage_boot_journal import (
     DEFAULT_JOURNAL_ROOT,
     StorageBootJournal,
 )
+from scripts.canary.runtime_units import CANARY_RUNTIME_UNITS
 from scripts.canary.writer_release import (
     DEFAULT_SYSTEMCTL_EXECUTABLE,
     _SERVICE_PROPERTIES,
@@ -75,20 +76,6 @@ _BOOT_ID = re.compile(r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f
 _SHA256 = re.compile(r"^[0-9a-f]{64}$")
 _MAX_GUEST_OUTPUT_BYTES = 64 * 1024
 _TRANSACTION_MAX_AGE_SECONDS = 60 * 60
-CANARY_RUNTIME_UNITS = (
-    "hermes-cloud-gateway.service",
-    "muncho-canary-discord-edge.service",
-    "muncho-canonical-writer-phase-b-readiness.service",
-    "muncho-canonical-writer.service",
-    "muncho-canonical-writer-export.service",
-    "muncho-canonical-writer-export.timer",
-    "muncho-isolated-worker.socket",
-    "muncho-isolated-worker.service",
-    "muncho-capability-browser.service",
-    "muncho-discord-connector.service",
-    "muncho-discord-egress.service",
-    "muncho-mac-ops-edge.service",
-)
 _PREFLIGHT_FIELDS = {
     "schema",
     "ok",

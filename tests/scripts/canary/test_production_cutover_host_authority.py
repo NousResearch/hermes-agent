@@ -1070,6 +1070,71 @@ def test_failure_after_signed_freeze_invokes_abort_before_any_apply(
     assert "apply-cutover" not in transport.calls
 
 
+def test_cutover_and_abort_base_failures_are_both_preserved(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        "scripts.canary.production_cutover_public_stager.time.time",
+        lambda: NOW,
+    )
+    monkeypatch.setattr(
+        "gateway.canonical_writer_production_cutover.time.time",
+        lambda: NOW,
+    )
+    services, initial, host, plan = _workflow_inputs()
+
+    class OwnerStop(BaseException):
+        pass
+
+    primary = OwnerStop("injected owner stop")
+    abort_error = RuntimeError("injected abort failure")
+
+    class DualFailureTransport(_WorkflowTransport):
+        def invoke(
+            self,
+            revision: str,
+            action: str,
+            *,
+            publication=None,
+            authority_request=None,
+        ) -> dict:
+            if action == "capture-final-tail":
+                self.calls.append(action)
+                raise primary
+            if action == "abort-freeze":
+                self.calls.append(action)
+                raise abort_error
+            return super().invoke(
+                revision,
+                action,
+                publication=publication,
+                authority_request=authority_request,
+            )
+
+    transport = DualFailureTransport(initial, host, services)
+    with pytest.raises(BaseExceptionGroup) as caught:
+        owner.execute_production_cutover_workflow(
+            release_revision=REVISION,
+            owner_identity=object(),
+            owner_subject_sha256="a" * 64,
+            private_key=Ed25519PrivateKey.generate(),
+            host_authority_plan=plan,
+            isolated_canary_goal_prerequisite=(
+                _isolated_canary_goal_prerequisite()
+            ),
+            truth_mode="start_new_truth_epoch",
+            transport_factory=lambda _identity: transport,
+            now_unix=NOW,
+        )
+
+    assert caught.value.message == (
+        "production cutover failed and freeze abort was incomplete"
+    )
+    assert caught.value.exceptions == (primary, abort_error)
+    assert transport.calls[-2:] == ["capture-final-tail", "abort-freeze"]
+    assert "apply-cutover" not in transport.calls
+
+
 def test_cron_stage_mismatch_aborts_freeze_before_cutover_plan(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

@@ -1,0 +1,14 @@
+[Unit]
+Description=Muncho passkey authority to privileged executor socket
+
+[Socket]
+ListenStream=/run/muncho-owner-gate/privileged-executor.sock
+FileDescriptorName=privileged-executor
+SocketUser=muncho-storage-executor
+SocketGroup=muncho-passkey-authority
+SocketMode=0660
+RemoveOnStop=yes
+DirectoryMode=0755
+
+[Install]
+WantedBy=sockets.target

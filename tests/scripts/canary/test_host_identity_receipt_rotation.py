@@ -1,15 +1,19 @@
 from __future__ import annotations
 
 import hashlib
+import json
 import os
 import stat
 import subprocess
+import sys
+from pathlib import Path
 
 import pytest
 
 from scripts.canary import host_identity_receipt_rotation as rotation
 from scripts.canary import full_canary_owner_launcher as owner_launcher
 from scripts.canary import writer_release
+from scripts.canary.runtime_units import CANARY_RUNTIME_UNITS
 
 
 REVISION = "a" * 40
@@ -86,6 +90,12 @@ class _StoppedRunner:
             _service_stdout(command.argv[-1]),
             "",
         )
+
+
+def test_rotation_uses_complete_runtime_unit_superset():
+    states = rotation._safe_service_states(runner=_StoppedRunner())
+
+    assert [state["unit"] for state in states] == list(CANARY_RUNTIME_UNITS)
 
 
 def _prepare_namespace(tmp_path, monkeypatch):
@@ -254,6 +264,9 @@ def test_rotation_resumes_after_crash_between_tombstone_and_fresh_receipt(
     transaction = rotation._transaction_paths(plan["rotation_id"])
     assert not host_path.exists()
     assert transaction["archive"].read_bytes() == prior_raw
+    assert transaction["fresh_candidate"].read_bytes() == rotation._canonical_bytes(
+        _host_receipt(current, 200)
+    )
     assert transaction["tombstone"].is_file()
     assert not transaction["completion"].exists()
 
@@ -268,10 +281,14 @@ def test_rotation_resumes_after_crash_between_tombstone_and_fresh_receipt(
         **intent,
         runner=runner,
         host_observer=lambda: current,
-        host_receipt_collector=lambda observed: _host_receipt(current, observed),
-        clock=lambda: 201,
+        host_receipt_collector=lambda _observed: (_ for _ in ()).throw(
+            AssertionError("durable fresh candidate must be reused")
+        ),
+        clock=lambda: (_ for _ in ()).throw(
+            AssertionError("durable fresh candidate time must be reused")
+        ),
     )
-    assert receipt["fresh_observed_at_unix"] == 201
+    assert receipt["fresh_observed_at_unix"] == 200
     assert host_path.exists()
     assert transaction["completion"].exists()
 
@@ -322,6 +339,195 @@ def test_rotation_rejects_divergent_archive_and_current_boot_drift(
             },
         )
 
+
+def test_rotation_rejects_fresh_final_without_matching_intent(
+    tmp_path,
+    monkeypatch,
+):
+    host_path, _rotations, prior, prior_raw = _prepare_namespace(
+        tmp_path,
+        monkeypatch,
+    )
+    current = _host(boot_id_sha256=CURRENT_BOOT_SHA256)
+    intent = _intent(prior, prior_raw)
+    rotation_id = rotation._rotation_id(
+        revision=REVISION,
+        external_iam_policy_sha256=EXTERNAL_IAM_POLICY_SHA256,
+        prior_file_sha256=intent["expected_prior_file_sha256"],
+        prior_receipt_sha256=intent["expected_prior_receipt_sha256"],
+        prior_boot_id_sha256=PRIOR_BOOT_SHA256,
+        current_boot_id_sha256=CURRENT_BOOT_SHA256,
+    )
+    paths = rotation._create_transaction_namespace(rotation_id)
+    rotation._publish_or_validate_exact_file(
+        paths["archive"],
+        prior_raw,
+        maximum_bytes=rotation._MAX_HOST_RECEIPT_BYTES,
+    )
+    host_path.unlink()
+    host_path.write_bytes(rotation._canonical_bytes(_host_receipt(current, 200)))
+    host_path.chmod(0o400)
+
+    with pytest.raises(RuntimeError, match="without matching intent"):
+        rotation.plan_host_receipt_rotation(
+            REVISION,
+            **intent,
+            runner=_StoppedRunner(),
+            host_observer=lambda: current,
+        )
+
+
+@pytest.mark.parametrize(
+    "crash_name",
+    (
+        "intent.json",
+        "prior-host-identity.json",
+        "fresh-host-identity.json",
+        "tombstone.json",
+        "completion.json",
+    ),
+)
+def test_rotation_replays_every_durable_artifact_boundary_without_divergence(
+    tmp_path,
+    monkeypatch,
+    crash_name,
+):
+    _host_path, _rotations, prior, prior_raw = _prepare_namespace(
+        tmp_path,
+        monkeypatch,
+    )
+    current = _host(boot_id_sha256=CURRENT_BOOT_SHA256)
+    intent = _intent(prior, prior_raw)
+    runner = _StoppedRunner()
+    plan = rotation.plan_host_receipt_rotation(
+        REVISION,
+        **intent,
+        runner=runner,
+        host_observer=lambda: current,
+    )
+    original = rotation._publish_or_validate_exact_file
+    crashed = False
+
+    def publish_then_crash(path, raw, *, maximum_bytes):
+        nonlocal crashed
+        result = original(path, raw, maximum_bytes=maximum_bytes)
+        if path.name == crash_name and not crashed:
+            crashed = True
+            raise RuntimeError("simulated durable-boundary crash")
+        return result
+
+    monkeypatch.setattr(
+        rotation,
+        "_publish_or_validate_exact_file",
+        publish_then_crash,
+    )
+    with pytest.raises(RuntimeError, match="durable-boundary crash"):
+        rotation.apply_host_receipt_rotation(
+            REVISION,
+            plan["plan_sha256"],
+            **intent,
+            runner=runner,
+            host_observer=lambda: current,
+            host_receipt_collector=lambda observed: _host_receipt(current, observed),
+            clock=lambda: 200,
+        )
+    monkeypatch.setattr(rotation, "_publish_or_validate_exact_file", original)
+
+    candidate_was_committed = crash_name in {
+        "fresh-host-identity.json",
+        "tombstone.json",
+        "completion.json",
+    }
+    receipt = rotation.apply_host_receipt_rotation(
+        REVISION,
+        plan["plan_sha256"],
+        **intent,
+        runner=runner,
+        host_observer=lambda: current,
+        host_receipt_collector=(
+            (lambda _observed: (_ for _ in ()).throw(AssertionError()))
+            if candidate_was_committed
+            else (lambda observed: _host_receipt(current, observed))
+        ),
+        clock=(
+            (lambda: (_ for _ in ()).throw(AssertionError()))
+            if candidate_was_committed
+            else (lambda: 201)
+        ),
+    )
+    assert receipt["fresh_observed_at_unix"] == (
+        200 if candidate_was_committed else 201
+    )
+
+
+def test_apply_holds_fixed_rotation_flock_while_revalidating_plan(
+    tmp_path,
+    monkeypatch,
+):
+    _host_path, _rotations, prior, prior_raw = _prepare_namespace(
+        tmp_path,
+        monkeypatch,
+    )
+    current = _host(boot_id_sha256=CURRENT_BOOT_SHA256)
+    intent = _intent(prior, prior_raw)
+    runner = _StoppedRunner()
+    plan = rotation.plan_host_receipt_rotation(
+        REVISION,
+        **intent,
+        runner=runner,
+        host_observer=lambda: current,
+    )
+    original = rotation.plan_host_receipt_rotation
+    plan_path = tmp_path / "writer-plan.json"
+    plan_path.write_text(
+        json.dumps({"dedicated_host": current}),
+        encoding="utf-8",
+    )
+    writer_process: subprocess.Popen[bytes] | None = None
+    program = (
+        "import json,os,sys; from pathlib import Path; "
+        "from scripts.canary import writer_release as r; "
+        "r._BUILD_OWNER_UID=os.geteuid(); r._BUILD_OWNER_GID=os.getegid(); "
+        "r.DEFAULT_HOST_RECEIPT_PATH=Path(sys.argv[1]); "
+        "r._validate_root_parent_chain=lambda _path: None; "
+        "plan=json.loads(Path(sys.argv[2]).read_text()); "
+        "r._publish_or_validate_host_receipt(plan, observed_at_unix=999, "
+        "collector=lambda _value: (_ for _ in ()).throw(AssertionError()))"
+    )
+
+    def plan_while_checking_lock(*args, **kwargs):
+        nonlocal writer_process
+        assert writer_process is None
+        writer_process = subprocess.Popen(
+            [
+                sys.executable,
+                "-c",
+                program,
+                str(writer_release.DEFAULT_HOST_RECEIPT_PATH),
+                str(plan_path),
+            ],
+            cwd=Path(__file__).resolve().parents[3],
+        )
+        with pytest.raises(subprocess.TimeoutExpired):
+            writer_process.wait(timeout=0.1)
+        return original(*args, **kwargs)
+
+    monkeypatch.setattr(rotation, "plan_host_receipt_rotation", plan_while_checking_lock)
+    receipt = rotation.apply_host_receipt_rotation(
+        REVISION,
+        plan["plan_sha256"],
+        **intent,
+        runner=runner,
+        host_observer=lambda: current,
+        host_receipt_collector=lambda observed: _host_receipt(current, observed),
+        clock=lambda: 200,
+    )
+    assert receipt["fresh_observed_at_unix"] == 200
+    assert writer_process is not None
+    assert writer_process.wait(timeout=10) == 0
+    assert writer_release.DEFAULT_HOST_RECEIPT_PATH.read_bytes() == (
+        rotation._canonical_bytes(_host_receipt(current, 200))
+    )
 
 def test_rotation_cli_requires_every_exact_owner_binding():
     parser = rotation._parser()
@@ -434,24 +640,32 @@ def test_owner_cli_rotation_is_isolated_from_live_secret_boundaries(
         CURRENT_BOOT_SHA256,
     )) == 0
     assert owner_launcher.json.loads(capfd.readouterr().out) == receipt
-    assert events == [
-        "provenance",
-        "transport",
-        (
-            "rotate",
-            REVISION,
-            {
-                "external_iam_policy_sha256": EXTERNAL_IAM_POLICY_SHA256,
-                "expected_prior_file_sha256": "1" * 64,
-                "expected_prior_receipt_sha256": "2" * 64,
-                "expected_prior_boot_id_sha256": PRIOR_BOOT_SHA256,
-                "expected_current_boot_id_sha256": CURRENT_BOOT_SHA256,
-            },
-        ),
-        "runtime",
-        "interpreter",
-        "provenance",
-    ]
+    rotation_event = next(
+        event
+        for event in events
+        if isinstance(event, tuple) and event[0] == "rotate"
+    )
+    assert rotation_event == (
+        "rotate",
+        REVISION,
+        {
+            "external_iam_policy_sha256": EXTERNAL_IAM_POLICY_SHA256,
+            "expected_prior_file_sha256": "1" * 64,
+            "expected_prior_receipt_sha256": "2" * 64,
+            "expected_prior_boot_id_sha256": PRIOR_BOOT_SHA256,
+            "expected_current_boot_id_sha256": CURRENT_BOOT_SHA256,
+        },
+    )
+    first_provenance = events.index("provenance")
+    last_provenance = len(events) - 1 - events[::-1].index("provenance")
+    assert (
+        first_provenance
+        < events.index("transport")
+        < events.index(rotation_event)
+        < events.index("runtime")
+        < events.index("interpreter")
+        < last_provenance
+    )
 
 
 def test_owner_rotation_remote_command_is_fixed_and_digest_only():

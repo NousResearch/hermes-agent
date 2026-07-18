@@ -451,6 +451,35 @@ def _channel_info(token: str, channel_id: str, **_kwargs: Any) -> str:
     })
 
 
+def _set_default_auto_archive_duration(
+    token: str,
+    channel_id: str,
+    auto_archive_duration: Optional[int] = None,
+    **_kwargs: Any,
+) -> str:
+    """Set the default archive duration for new threads in a text channel."""
+    valid_durations = {60, 1440, 4320, 10080}
+    if auto_archive_duration not in valid_durations:
+        return json.dumps({
+            "error": (
+                "auto_archive_duration must be one of "
+                f"{sorted(valid_durations)}, got {auto_archive_duration}."
+            ),
+        })
+    ch = _discord_request(
+        "PATCH",
+        f"/channels/{channel_id}",
+        token,
+        body={"default_auto_archive_duration": auto_archive_duration},
+    )
+    return json.dumps({
+        "success": True,
+        "channel_id": ch["id"],
+        "name": ch.get("name"),
+        "default_auto_archive_duration": ch.get("default_auto_archive_duration"),
+    })
+
+
 def _list_roles(token: str, guild_id: str, **_kwargs: Any) -> str:
     """List all roles in a guild."""
     roles = _discord_request("GET", f"/guilds/{guild_id}/roles", token)
@@ -591,6 +620,8 @@ def _create_thread(
     **_kwargs: Any,
 ) -> str:
     """Create a thread in a channel."""
+    if auto_archive_duration is None:
+        auto_archive_duration = 1440
     if message_id:
         # Create thread from an existing message
         path = f"/channels/{channel_id}/messages/{message_id}/threads"
@@ -635,6 +666,7 @@ _ACTIONS = {
     "server_info": _server_info,
     "list_channels": _list_channels,
     "channel_info": _channel_info,
+    "set_default_auto_archive_duration": _set_default_auto_archive_duration,
     "list_roles": _list_roles,
     "member_info": _member_info,
     "search_members": _search_members,
@@ -662,6 +694,7 @@ _ACTION_MANIFEST: List[Tuple[str, str, str]] = [
     ("server_info", "(guild_id)", "server details + member counts"),
     ("list_channels", "(guild_id)", "all channels grouped by category"),
     ("channel_info", "(channel_id)", "single channel details"),
+    ("set_default_auto_archive_duration", "(channel_id, auto_archive_duration)", "set the default archive duration for new threads"),
     ("list_roles", "(guild_id)", "roles sorted by position"),
     ("member_info", "(guild_id, user_id)", "lookup a specific member"),
     ("search_members", "(guild_id, query)", "find members by name prefix"),
@@ -686,6 +719,7 @@ _REQUIRED_PARAMS: Dict[str, List[str]] = {
     "member_info": ["guild_id", "user_id"],
     "search_members": ["guild_id", "query"],
     "channel_info": ["channel_id"],
+    "set_default_auto_archive_duration": ["channel_id", "auto_archive_duration"],
     "fetch_messages": ["channel_id"],
     "list_pins": ["channel_id"],
     "pin_message": ["channel_id", "message_id"],
@@ -870,7 +904,7 @@ def _build_schema(
         "auto_archive_duration": {
             "type": "integer",
             "enum": [60, 1440, 4320, 10080],
-            "description": "Thread archive duration in minutes (create_thread, default 1440).",
+            "description": "Thread archive duration in minutes (create_thread defaults to 1440; required for set_default_auto_archive_duration).",
         },
     }
 
@@ -951,6 +985,10 @@ _ACTION_403_HINT = {
     "channel_info": (
         "Bot cannot view this channel (missing VIEW_CHANNEL)."
     ),
+    "set_default_auto_archive_duration": (
+        "Bot lacks MANAGE_CHANNELS permission in this channel, or a channel/category "
+        "permission overwrite denies it."
+    ),
     "search_members": (
         "Likely missing the Server Members privileged intent — enable it in the "
         "Discord Developer Portal under your bot's settings."
@@ -998,7 +1036,7 @@ def _run_discord_action(
     limit: int = 50,
     before: str = "",
     after: str = "",
-    auto_archive_duration: int = 1440,
+    auto_archive_duration: Optional[int] = None,
 ) -> str:
     """Shared handler logic for both discord tools."""
     token = _get_bot_token()
@@ -1032,6 +1070,7 @@ def _run_discord_action(
         "message_id": message_id,
         "query": query,
         "name": name,
+        "auto_archive_duration": auto_archive_duration,
     }
 
     missing = [p for p in _REQUIRED_PARAMS.get(action, []) if not local_vars.get(p)]
@@ -1082,7 +1121,7 @@ def discord_admin_handler(action: str, **kwargs) -> str:
 _HANDLER_DEFAULTS = {
     "action": "", "guild_id": "", "channel_id": "", "user_id": "",
     "role_id": "", "message_id": "", "query": "", "name": "",
-    "limit": 50, "before": "", "after": "", "auto_archive_duration": 1440,
+    "limit": 50, "before": "", "after": "", "auto_archive_duration": None,
 }
 
 

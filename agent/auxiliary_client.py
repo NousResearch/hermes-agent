@@ -770,6 +770,25 @@ def _codex_cloudflare_headers(access_token: str) -> Dict[str, str]:
     return headers
 
 
+def _url_has_versioned_path(url: str) -> bool:
+    """Check if a URL path already includes a version indicator (e.g. /v1, /v2, /v1beta).
+
+    Returns True when any path segment matches the pattern ``v<digit>...``, which
+    covers standard API versioning schemes such as ``/v1/``, ``/api/v1/``,
+    ``/v1beta/``, ``/v2023-01-01/``, etc.  This prevents double-versioning when
+    ``_to_openai_base_url`` is called on already-correct URLs.
+    """
+    parsed = urlparse(url)
+    path = parsed.path.rstrip("/")
+    if not path:
+        return False
+    segments = [s for s in path.split("/") if s]
+    for segment in segments:
+        if segment.startswith("v") and len(segment) > 1 and segment[1].isdigit():
+            return True
+    return False
+
+
 def _to_openai_base_url(base_url: str) -> str:
     """Normalize an Anthropic-style base URL to OpenAI-compatible format.
 
@@ -778,8 +797,16 @@ def _to_openai_base_url(base_url: str) -> str:
     completions.  The auxiliary client uses the OpenAI SDK, so it must hit the
     ``/v1`` surface.  Passing the raw ``inference_base_url`` causes requests to
     land on ``/anthropic/chat/completions`` — a 404.
+
+    For generic OpenAI-compatible endpoints, auto-appends ``/v1`` when the URL
+    path doesn't already include a versioned prefix (e.g. ``http://localhost:8000``
+    is normalized to ``http://localhost:8000/v1``).  This is needed because the
+    OpenAI SDK appends ``/chat/completions`` to the base URL, and standard servers
+    expect ``/v1/chat/completions``.  See GitHub #65488.
     """
     url = str(base_url or "").strip().rstrip("/")
+    if not url:
+        return url
     if url.endswith("/anthropic"):
         # ZAI (open.bigmodel.cn) uses /api/anthropic for Anthropic wire
         # but /api/paas/v4 for OpenAI wire — the generic /v1 rewrite is wrong.
@@ -796,6 +823,13 @@ def _to_openai_base_url(base_url: str) -> str:
         # Without /v1 here, OpenAI SDK hits /coding/chat/completions — a 404.
         rewritten = url + "/v1"
         logger.debug("Auxiliary client: rewrote Kimi base URL %s → %s", url, rewritten)
+        return rewritten
+    # Auto-append /v1 for generic OpenAI-compatible endpoints that omit
+    # the version prefix (e.g., http://localhost:8000 instead of
+    # http://localhost:8000/v1). (#65488)
+    if not _url_has_versioned_path(url):
+        rewritten = url + "/v1"
+        logger.debug("Auxiliary client: auto-appended /v1 to base URL %s → %s", url, rewritten)
         return rewritten
     return url
 
@@ -2573,6 +2607,10 @@ def _try_custom_endpoint() -> Tuple[Optional[Any], Optional[str]]:
         return None, None
     if custom_base.lower().startswith(_CODEX_AUX_BASE_URL.lower()):
         return None, None
+    # Normalize through _to_openai_base_url so a custom endpoint configured
+    # without a /v1 prefix (e.g., http://localhost:8000) is rewritten to
+    # http://localhost:8000/v1 before the OpenAI SDK appends /chat/completions. (#65488)
+    custom_base = _to_openai_base_url(custom_base)
     model = _read_main_model() or "gpt-4o-mini"
     logger.debug("Auxiliary client: custom endpoint (%s, api_mode=%s)", model, custom_mode or "chat_completions")
     _clean_base, _dq = _extract_url_query_params(custom_base)
@@ -4932,7 +4970,7 @@ def resolve_provider_client(
             _main_base = str(main_runtime.get("base_url") or "").strip().rstrip("/")
             _main_key = str(main_runtime.get("api_key") or "").strip()
             if _main_base and _main_key:
-                custom_base = _main_base
+                custom_base = _to_openai_base_url(_main_base)
                 custom_key = _main_key
         if custom_base and custom_key:
             final_model = _normalize_resolved_model(

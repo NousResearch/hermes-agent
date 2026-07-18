@@ -50,6 +50,21 @@ def test_bootstrap_append_only_journal_is_in_root_runtime_inventory() -> None:
     )
 
 
+def test_target_cloud_observation_signer_is_in_exact_offline_package() -> None:
+    assert (
+        "bin/muncho-owner-gate-cloud-observation-signer"
+        in package.REQUIRED_ENTRYPOINTS
+    )
+    assert (
+        "scripts/canary/owner_gate_cloud_observation_signer.py"
+        in package.ROOT_RUNTIME_FILES
+    )
+    assert (
+        "ops/muncho/owner-gate/bin/muncho-owner-gate-cloud-observation-signer"
+        in package.REQUIRED_ASSET_FILES
+    )
+
+
 def test_activation_evidence_stager_is_in_exact_release_closure(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

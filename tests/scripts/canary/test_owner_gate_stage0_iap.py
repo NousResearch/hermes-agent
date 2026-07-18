@@ -58,6 +58,7 @@ def _foundation_projection() -> transport_module._FoundationProjection:
         project_ancestry_chain_sha256="a" * 64,
         resource_ancestor_chain=("organizations/123456789012",),
         interpreter_sha256="8" * 64,
+        owner_reauthentication_receipt_sha256="7" * 64,
     )
 
 
@@ -949,6 +950,133 @@ def test_composite_public_surface_has_only_two_fixed_streams_and_no_journal() ->
         for name in ("operation", "path", "argv", "url", "journal")
     )
     assert "journal" not in inspect.getsource(method)
+
+
+def test_owner_gate_observation_composite_and_target_signer_surfaces_are_exact() -> (
+    None
+):
+    composite = transport_module.OwnerGateStage0IapTransport.__dict__[
+        "collect_owner_gate_host_observation"
+    ]
+    signer = transport_module.OwnerGateStage0IapTransport.__dict__[
+        "_sign_owner_gate_cloud_observation_on_target"
+    ]
+
+    assert tuple(inspect.signature(composite).parameters) == (
+        "self",
+        "phase",
+        "plan",
+        "kit_stream",
+        "bundle_stream",
+    )
+    assert tuple(inspect.signature(signer).parameters) == (
+        "self",
+        "phase",
+        "unsigned_observation",
+        "terminal_binding",
+    )
+    for method in (composite, signer):
+        parameters = inspect.signature(method).parameters
+        assert all(
+            parameter.kind is inspect.Parameter.KEYWORD_ONLY
+            for name, parameter in parameters.items()
+            if name != "self"
+        )
+        assert all(
+            name not in parameters
+            for name in ("command", "path", "signer", "token", "receipt")
+        )
+
+
+def test_host_observation_handoff_is_opaque_and_factory_bound() -> None:
+    with pytest.raises(
+        launcher.OwnerLauncherError,
+        match="owner_gate_host_observation_handoff_factory_required",
+    ):
+        transport_module.OwnerGateHostObservationHandoff()
+
+    value = transport_module.OwnerGateHostObservationHandoff._create(
+        terminal_receipt={"terminal": True},
+        host_observation={"host": True},
+    )
+    assert value._marker is transport_module._HOST_OBSERVATION_HANDOFF_MARKER
+
+
+def test_mutable_observation_frame_is_explicitly_wiped() -> None:
+    frame = bytearray(b"one-use-request-frame")
+    reader = transport_module._MutableFrameReader(frame)
+    assert reader.read(7) == b"one-use"
+    assert reader.read() == b"-request-frame"
+    transport_module._wipe(frame)
+    assert frame == bytearray(len(frame))
+
+
+def test_host_request_variants_share_one_exact_observation_binding() -> None:
+    values = {
+        "phase": "inert",
+        "plan_sha256": "1" * 64,
+        "collected_at_unix": 1_800_000_000,
+        "cloud_install_receipt": {"receipt_sha256": "2" * 64},
+        "cloud_receipt": {"receipt_sha256": "3" * 64},
+        "cloud_readiness": {"readiness_sha256": "4" * 64},
+        "host_receipt": {"receipt_sha256": "5" * 64},
+        "host_readiness": {"readiness_sha256": "6" * 64},
+    }
+    host = transport_module.OwnerGateStage0IapTransport._host_request(
+        schema="muncho-owner-gate-host-observation-request.v1",
+        **values,
+    )
+    probe = transport_module.OwnerGateStage0IapTransport._host_request(
+        schema=("muncho-owner-gate-attached-sa-permission-probe-request.v1"),
+        **values,
+    )
+
+    assert host["observation_binding_sha256"] == probe["observation_binding_sha256"]
+    assert host["request_sha256"] != probe["request_sha256"]
+    assert set(host) == {
+        "schema",
+        "phase",
+        "collected_at_unix",
+        "plan_sha256",
+        "cloud_install_receipt",
+        "cloud_signer_provisioning_receipt_sha256",
+        "cloud_signer_readiness_sha256",
+        "host_signer_provisioning_receipt_sha256",
+        "host_signer_readiness_sha256",
+        "observation_binding_sha256",
+        "request_sha256",
+    }
+
+
+def test_cloud_observation_signer_uses_only_fixed_target_executor_command() -> None:
+    transport = _minimal_transport(transport_module._ProcessResult(0, b"", b""))
+    transport._release_sha = REVISION
+    argv = transport._cloud_observation_signer_argv(transport._authority_snapshot())
+    command = next(
+        item.removeprefix("--command=")
+        for item in argv
+        if item.startswith("--command=")
+    )
+    release = f"/opt/muncho-owner-gate/releases/{REVISION}"
+
+    assert tuple(shlex.split(command)) == (
+        "/usr/bin/sudo",
+        "--non-interactive",
+        "--user=muncho-storage-executor",
+        "--",
+        "/usr/bin/env",
+        "-i",
+        f"{release}/venv/bin/python",
+        "-I",
+        "-B",
+        f"{release}/bin/muncho-owner-gate-cloud-observation-signer",
+    )
+    assert (
+        "--command"
+        not in inspect.signature(
+            transport._sign_owner_gate_cloud_observation_on_target
+        ).parameters
+    )
 
 
 def test_fixed_iap_transport_rejects_remote_receipt_drift(tmp_path: Path) -> None:

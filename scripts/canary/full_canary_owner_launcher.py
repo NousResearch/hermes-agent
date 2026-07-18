@@ -603,6 +603,8 @@ _TRUSTED_OWNER_SUPPORT_PREFLIGHT_MODULES = (
     "scripts.canary.foundation_preflight",
     "scripts.canary.host_preflight",
 )
+_CANONICAL_LAUNCHER_MODULE = "scripts.canary.full_canary_owner_launcher"
+_CANONICAL_LAUNCHER_BRIDGE: tuple[str, str, str, int] | None = None
 _GCLOUD_PYTHON_ISOLATION_ARGS = (
     "-I",
     "-S",
@@ -7752,6 +7754,66 @@ def require_local_launcher_provenance(release_sha: str) -> str:
     return LocalLauncherProvenance()(release_sha)
 
 
+def _install_canonical_launcher_bridge(release_sha: str) -> None:
+    """Alias a proven direct launcher to its one canonical module identity.
+
+    The reviewed CLI is executed as an absolute file and therefore starts as
+    ``__main__``.  Sealed support modules import its canonical package name.
+    Without this exact bridge Python would create a second class universe and
+    the capability identity checks would correctly reject production objects.
+    """
+
+    global _CANONICAL_LAUNCHER_BRIDGE
+    current = sys.modules.get(__name__)
+    if current is None:
+        raise OwnerLauncherError("canonical_launcher_bridge_invalid")
+    if __name__ == _CANONICAL_LAUNCHER_MODULE:
+        if sys.modules.get(_CANONICAL_LAUNCHER_MODULE) is not current:
+            raise OwnerLauncherError("canonical_launcher_bridge_invalid")
+        return
+    if __name__ != "__main__" or sys.modules.get("__main__") is not current:
+        raise OwnerLauncherError("canonical_launcher_bridge_invalid")
+    existing = sys.modules.get(_CANONICAL_LAUNCHER_MODULE)
+    if existing is not None and existing is not current:
+        raise OwnerLauncherError("canonical_launcher_bridge_conflict")
+    module_file = os.path.abspath(str(getattr(current, "__file__", "")))
+    if module_file != os.path.abspath(__file__):
+        raise OwnerLauncherError("canonical_launcher_bridge_invalid")
+    launcher_sha256 = require_local_launcher_provenance(release_sha)
+    _CANONICAL_LAUNCHER_BRIDGE = (
+        release_sha,
+        launcher_sha256,
+        module_file,
+        id(current),
+    )
+    sys.modules[_CANONICAL_LAUNCHER_MODULE] = current
+    package = sys.modules.get("scripts.canary")
+    if package is None:
+        raise OwnerLauncherError("canonical_launcher_bridge_invalid")
+    setattr(package, "full_canary_owner_launcher", current)
+
+
+def _canonical_launcher_bridge_valid(module: Any) -> bool:
+    proof = _CANONICAL_LAUNCHER_BRIDGE
+    if proof is None or len(proof) != 4:
+        return False
+    release_sha, expected_sha256, module_file, module_id = proof
+    if (
+        module is not sys.modules.get("__main__")
+        or module is not sys.modules.get(_CANONICAL_LAUNCHER_MODULE)
+        or id(module) != module_id
+        or os.path.abspath(str(getattr(module, "__file__", ""))) != module_file
+        or _RELEASE_SHA.fullmatch(release_sha) is None
+        or _SHA256.fullmatch(expected_sha256) is None
+    ):
+        return False
+    try:
+        observed = LocalLauncherProvenance(module_path=module_file)(release_sha)
+    except OwnerLauncherError:
+        return False
+    return observed == expected_sha256
+
+
 def _validate_owner_interpreter_invocation(python_path: str) -> None:
     try:
         executable = os.path.realpath(sys.executable, strict=True)
@@ -7823,6 +7885,11 @@ def _validate_trusted_owner_support_module_origins(
     site_root: str,
 ) -> None:
     for name, module in tuple(sys.modules.items()):
+        if (
+            name == _CANONICAL_LAUNCHER_MODULE
+            and _canonical_launcher_bridge_valid(module)
+        ):
+            continue
         expected_root = _trusted_owner_support_module_root(
             name,
             source_root=source_root,
@@ -19885,6 +19952,14 @@ def _cli_parser() -> argparse.ArgumentParser:
         help="publish the exact fork revision while every canary service is stopped",
     )
     actions.add_argument(
+        "--observe-owner-gate-inert",
+        action="store_true",
+        help=(
+            "consume the fixed release-bound stage-zero streams and emit one "
+            "bound inert HOST/CLOUD preflight receipt"
+        ),
+    )
+    actions.add_argument(
         "--author-storage-growth",
         action="store_true",
         help=(
@@ -20126,6 +20201,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             release_sha=release_sha,
         )
         require_local_launcher_provenance(release_sha)
+        _install_canonical_launcher_bridge(release_sha)
         gcloud_configuration = PinnedGcloudConfiguration()
         owner_identity = GcloudOwnerAccessToken(
             gcloud_executable=gcloud_executable,
@@ -20140,6 +20216,21 @@ def main(argv: Sequence[str] | None = None) -> int:
                 release_sha=exact_release,
             )
             require_local_launcher_provenance(exact_release)
+
+        if arguments.observe_owner_gate_inert:
+            if arguments.external_iam_policy_sha256 is not None:
+                raise OwnerLauncherError("owner_gate_inert_observation_cli_invalid")
+            from scripts.canary import owner_gate_inert_observation
+
+            receipt = owner_gate_inert_observation.collect_inert_observation(
+                release_revision=release_sha,
+                gcloud_executable=gcloud_executable,
+                gcloud_configuration=gcloud_configuration,
+                owner_identity=owner_identity,
+            )
+            runtime_and_provenance_guard(release_sha)
+            _emit_canonical_line(receipt)
+            return 0
 
         if arguments.author_storage_growth:
             if arguments.external_iam_policy_sha256 is not None:

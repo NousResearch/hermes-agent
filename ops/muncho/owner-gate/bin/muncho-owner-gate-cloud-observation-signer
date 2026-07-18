@@ -1,0 +1,67 @@
+#!/bin/false
+from pathlib import Path
+import os
+import re
+import stat
+import sys
+
+entrypoint = Path(__file__)
+releases_root = Path("/opt/muncho-owner-gate/releases")
+try:
+    entrypoint_state = entrypoint.lstat()
+    resolved_entrypoint = entrypoint.resolve(strict=True)
+    release = resolved_entrypoint.parents[1]
+    release_state = release.lstat()
+    releases_state = releases_root.lstat()
+    install_state = releases_root.parent.lstat()
+    interpreter = release / "venv/bin/python"
+    interpreter_state = interpreter.lstat()
+    resolved_interpreter = interpreter.resolve(strict=True)
+    resolved_executable = Path(sys.executable).resolve(strict=True)
+except (OSError, RuntimeError):
+    raise SystemExit("owner_gate_cloud_signer_entrypoint_invalid")
+if (
+    not entrypoint.is_absolute()
+    or release.parent != releases_root
+    or re.fullmatch(r"[0-9a-f]{40}", release.name) is None
+    or resolved_entrypoint
+    != release / "bin/muncho-owner-gate-cloud-observation-signer"
+    or not stat.S_ISREG(entrypoint_state.st_mode)
+    or entrypoint_state.st_uid != 0
+    or entrypoint_state.st_gid != 0
+    or stat.S_IMODE(entrypoint_state.st_mode) != 0o555
+    or entrypoint_state.st_nlink != 1
+    or not stat.S_ISDIR(release_state.st_mode)
+    or release_state.st_uid != 0
+    or release_state.st_gid != 0
+    or stat.S_IMODE(release_state.st_mode) != 0o555
+    or not stat.S_ISDIR(releases_state.st_mode)
+    or releases_state.st_uid != 0
+    or releases_state.st_gid != 0
+    or stat.S_IMODE(releases_state.st_mode) != 0o755
+    or not stat.S_ISDIR(install_state.st_mode)
+    or install_state.st_uid != 0
+    or install_state.st_gid != 0
+    or stat.S_IMODE(install_state.st_mode) != 0o755
+    or resolved_executable != resolved_interpreter
+    or not stat.S_ISREG(interpreter_state.st_mode)
+    or interpreter_state.st_uid != 0
+    or interpreter_state.st_gid != 0
+    or stat.S_IMODE(interpreter_state.st_mode) != 0o755
+    or interpreter_state.st_nlink != 1
+    or os.getuid() != 29103
+    or os.geteuid() != 29103
+    or os.getgid() != 29103
+    or os.getegid() != 29103
+    or os.getgroups() != []
+    or sys.flags.isolated != 1
+    or sys.flags.ignore_environment != 1
+    or sys.flags.no_user_site != 1
+    or sys.flags.safe_path is not True
+    or sys.flags.dont_write_bytecode != 1
+):
+    raise SystemExit("owner_gate_cloud_signer_runtime_invalid")
+sys.path.insert(0, str(release))
+from scripts.canary.owner_gate_cloud_observation_signer import main
+
+raise SystemExit(main(sys.argv[1:]))

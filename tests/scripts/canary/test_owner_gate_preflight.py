@@ -68,9 +68,7 @@ def _attest(body: dict, key: Ed25519PrivateKey) -> dict:
 
 
 def _cloud(plan, key, *, iam: bool) -> dict:
-    executor_sa = (
-        f"{foundation.SERVICE_ACCOUNT_NAME}@{foundation.PROJECT}.iam.gserviceaccount.com"
-    )
+    executor_sa = f"{foundation.SERVICE_ACCOUNT_NAME}@{foundation.PROJECT}.iam.gserviceaccount.com"
     body = {
         "schema": preflight.CLOUD_OBSERVATION_SCHEMA,
         "collected_at_unix": NOW - 1,
@@ -187,7 +185,32 @@ def _cloud(plan, key, *, iam: bool) -> dict:
             "disk_numeric_id": foundation.TARGET_DISK_ID,
             "boot_device_name": foundation.TARGET_BOOT_DEVICE,
         },
-        "collector": "trusted_read_only_rest",
+        "release_binding": {
+            "phase": "post_iam" if iam else "inert",
+            "release_revision": REVISION,
+            "source_tree_oid": "a" * 40,
+            "package_sha256": "3" * 64,
+            "package_inventory_sha256": "5" * 64,
+            "pre_foundation_authority_sha256": "7" * 64,
+            "foundation_apply_receipt_sha256": "8" * 64,
+            "project_ancestry_evidence_sha256": "9" * 64,
+            "project_ancestry_chain_sha256": "a" * 64,
+            "resource_ancestor_chain": [plan.spec.organization_resource],
+            "terminal_receipt_sha256": "e" * 64,
+            "host_observation_report_sha256": _host(
+                plan, Ed25519PrivateKey.generate(), iam=iam
+            )["report_sha256"],
+            "host_observation_binding_sha256": "4" * 64,
+            "attached_sa_permission_probe_report_sha256": "3" * 64,
+            "cloud_signer_provisioning_receipt_sha256": "f" * 64,
+            "cloud_signer_readiness_sha256": "0" * 64,
+            "host_signer_provisioning_receipt_sha256": "1" * 64,
+            "host_signer_readiness_sha256": "2" * 64,
+            "effective_permission_probe_sha256": foundation.sha256_json(
+                preflight.expected_effective_permission_probe(iam)
+            ),
+        },
+        "collector": "owner_read_only_rest_remote_executor_attested",
         "credential_values_read": False,
     }
     return _attest(body, key)
@@ -216,10 +239,7 @@ def _host(plan, key, *, iam: bool) -> dict:
             "foundation_apply_receipt_sha256": "8" * 64,
             "project_ancestry_evidence_sha256": "9" * 64,
             "project_ancestry_chain_sha256": "a" * 64,
-            "resource_ancestor_chain": [
-                "organizations/123456789012",
-                "projects/123456789012",
-            ],
+            "resource_ancestor_chain": [plan.spec.organization_resource],
             "install_receipt_sha256": "c" * 64,
             "install_receipt_file_sha256": "d" * 64,
             "cloud_signer_provisioning_receipt_sha256": "f" * 64,
@@ -250,13 +270,38 @@ def _host(plan, key, *, iam: bool) -> dict:
             "python_hash_revalidated_by_sha256sum": True,
         },
         "identities": {
-            "web": {"name": "muncho-passkey-web", "uid": 29101, "gid": 29101, "shell": "/usr/sbin/nologin"},
-            "authority": {"name": "muncho-passkey-authority", "uid": 29102, "gid": 29102, "shell": "/usr/sbin/nologin"},
-            "executor": {"name": "muncho-storage-executor", "uid": 29103, "gid": 29103, "shell": "/usr/sbin/nologin"},
+            "web": {
+                "name": "muncho-passkey-web",
+                "uid": 29101,
+                "gid": 29101,
+                "shell": "/usr/sbin/nologin",
+            },
+            "authority": {
+                "name": "muncho-passkey-authority",
+                "uid": 29102,
+                "gid": 29102,
+                "shell": "/usr/sbin/nologin",
+            },
+            "executor": {
+                "name": "muncho-storage-executor",
+                "uid": 29103,
+                "gid": 29103,
+                "shell": "/usr/sbin/nologin",
+            },
         },
         "sockets": {
-            "web_authority": {"path": str(foundation.PASSKEY_AUTHORITY_SOCKET), "uid": 29102, "gid": 29101, "mode": "0660"},
-            "authority_executor": {"path": str(foundation.PRIVILEGED_EXECUTOR_SOCKET), "uid": 29103, "gid": 29102, "mode": "0660"},
+            "web_authority": {
+                "path": str(foundation.PASSKEY_AUTHORITY_SOCKET),
+                "uid": 29102,
+                "gid": 29101,
+                "mode": "0660",
+            },
+            "authority_executor": {
+                "path": str(foundation.PRIVILEGED_EXECUTOR_SOCKET),
+                "uid": 29103,
+                "gid": 29102,
+                "mode": "0660",
+            },
         },
         "units": copy.deepcopy(preflight.EXPECTED_UNIT_PROPERTIES),
         "filesystem_boundaries": {
@@ -404,6 +449,50 @@ def test_attacker_collector_key_is_rejected() -> None:
         )
 
 
+def test_individually_valid_cloud_and_host_from_different_runs_are_rejected() -> None:
+    network_key = Ed25519PrivateKey.generate()
+    cloud_key = Ed25519PrivateKey.generate()
+    host_key = Ed25519PrivateKey.generate()
+    plan = _plan(network_key, cloud_key, host_key)
+    cloud = _cloud(plan, cloud_key, iam=False)
+    matching_host = _host(plan, host_key, iam=False)
+    other_host_body = {
+        name: copy.deepcopy(item)
+        for name, item in matching_host.items()
+        if name not in {"report_sha256", "attestation"}
+    }
+    other_host_body["observation_binding_sha256"] = "b" * 64
+    other_host = _attest(other_host_body, host_key)
+
+    preflight._validate_cloud(
+        cloud,
+        plan_sha256=plan.sha256,
+        public_key=cloud_key.public_key(),
+        expected_public_key_id=plan.spec.cloud_collector_public_key_id,
+        mutation_binding_present=False,
+    )
+    preflight._validate_host(
+        other_host,
+        spec=plan.spec,
+        plan_sha256=plan.sha256,
+        public_key=host_key.public_key(),
+        expected_public_key_id=plan.spec.host_collector_public_key_id,
+        mutation_binding_present=False,
+    )
+    with pytest.raises(
+        preflight.OwnerGatePreflightError,
+        match="owner_gate_observation_cross_binding_invalid",
+    ):
+        preflight.build_preflight_report(
+            plan=plan,
+            cloud_observation=cloud,
+            host_observation=other_host,
+            cloud_collector_public_key=cloud_key.public_key(),
+            host_collector_public_key=host_key.public_key(),
+            now_unix=NOW,
+        )
+
+
 def test_public_ingress_or_wrong_disk_id_is_rejected() -> None:
     network_key = Ed25519PrivateKey.generate()
     cloud_key = Ed25519PrivateKey.generate()
@@ -432,20 +521,7 @@ def test_read_only_inventory_uses_post_for_iam_and_effective_firewalls() -> None
     assert requests[-1]["method"] == "POST"
     assert requests[-1]["url"].endswith(":getIamPolicy")
     assert requests[-1]["body"] == '{"options":{"requestedPolicyVersion":3}}'
-    permission_probes = [
-        item for item in requests if "testIamPermissions" in item["url"]
-    ]
-    assert all(item["method"] == "POST" for item in permission_probes)
-    observed_permission_sets = {
-        tuple(json.loads(item["body"])["permissions"])
-        for item in permission_probes
-    }
-    assert observed_permission_sets == {
-        preflight.INSTANCE_PERMISSION_PROBE,
-        preflight.DISK_PERMISSION_PROBE,
-        preflight.SERVICE_ACCOUNT_PERMISSION_PROBE,
-        preflight.PROJECT_PERMISSION_PROBE,
-    }
+    assert not any("testIamPermissions" in item["url"] for item in requests)
     assert any("getEffectiveFirewalls" in item["url"] for item in requests)
     assert all("gcloud" not in repr(item) for item in requests)
 

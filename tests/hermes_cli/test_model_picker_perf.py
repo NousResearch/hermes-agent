@@ -9,6 +9,7 @@ single endpoint instead of the sum.
 
 from __future__ import annotations
 
+import threading
 import time
 from unittest.mock import patch
 
@@ -192,15 +193,31 @@ def test_parallel_probe_no_headers_passes_none():
 
 
 def test_parallel_probe_max_workers_capped():
-    """With many targets, max_workers is capped at 8 to avoid excessive threads."""
-    # Create 20 targets
+    """With many targets, concurrent probes are capped at 8 workers."""
     targets = [
         {"api_key": f"key{i}", "api_url": f"https://api{i}.test.com/v1"}
         for i in range(20)
     ]
 
-    with patch("hermes_cli.models.fetch_api_models", return_value=["m"]):
-        # Just verify it completes without error
+    lock = threading.Lock()
+    active = 0
+    peak = 0
+
+    def slow_fetch(*_args, **_kwargs):
+        nonlocal active, peak
+        with lock:
+            active += 1
+            peak = max(peak, active)
+        # Hold long enough for the pool to fill before releasing slots.
+        time.sleep(0.1)
+        with lock:
+            active -= 1
+        return ["m"]
+
+    with patch("hermes_cli.models.fetch_api_models", side_effect=slow_fetch):
         result = _parallel_probe_providers(targets)
 
     assert len(result) == 20
+    assert peak <= 8
+    # With 20 delayed probes the pool should saturate at the worker cap.
+    assert peak == 8

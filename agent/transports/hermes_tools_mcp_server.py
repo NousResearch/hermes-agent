@@ -21,8 +21,12 @@ Scope (what we expose):
   - skill_view, skills_list              — Hermes' skill library
   - text_to_speech                       — TTS
   - kanban_* (complete/block/comment/    — kanban worker + orchestrator
-    heartbeat/show/list/create/            handoff (stateless: read env var,
-    unblock/link)                          write ~/.hermes/kanban.db)
+    heartbeat/show + worker-visible         handoff (stateless: read env var,
+    follow-ups create/link + orchestrator-  write ~/.hermes/kanban.db).
+    only list/unblock/archive)              Worker-visible: kanban_create,
+                                            kanban_link. Orchestrator-only
+                                            routing: kanban_list,
+                                            kanban_unblock, kanban_archive.
 
 What we DO NOT expose:
   - terminal / shell                     — codex's own shell tool

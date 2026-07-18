@@ -3153,16 +3153,16 @@ class TestDiscordVoiceAutoJoin:
         assert adapter._voice_auto_join_targets[111] is newer_target
 
     @pytest.mark.asyncio
-    async def test_join_signature_inspected_never_parses_typeerror_or_retries_modern(self, tmp_path):
+    async def test_join_signature_inspected_and_fails_closed_without_gate_kwargs(self, tmp_path):
         """P1: the gateway inspects join_voice_channel's SIGNATURE before calling —
-        it never parses a TypeError message and never retries a MODERN call
-        tokenless. A modern adapter that raises an internal TypeError makes exactly
-        ONE failed call; a genuinely legacy signature (no gate kwargs) is called
-        tokenless exactly once."""
+        it never parses a TypeError and never retries tokenless. A gate-aware
+        adapter that raises an internal TypeError makes exactly ONE failed call; an
+        adapter whose callable LACKS the gate kwargs is FAILED CLOSED (never invoked
+        tokenless, so the ownership gate can't be bypassed)."""
         from gateway.config import Platform
 
-        # -- MODERN signature (accepts the gate kwargs) that raises an internal
-        #    TypeError → propagates → single failed call, NO tokenless retry --
+        # -- gate-aware signature that raises an internal TypeError → propagates →
+        #    single failed call, NO tokenless retry --
         runner = _make_runner(tmp_path)
         adapter = MagicMock()
         adapter.platform = Platform.DISCORD
@@ -3190,13 +3190,13 @@ class TestDiscordVoiceAutoJoin:
         assert calls["last_kwargs"] == {"manual_owner": True, "attempt_token": None}
         assert runner._voice_mode == {}                   # no side effects
 
-        # -- LEGACY signature (no gate kwargs, no **kwargs) → single tokenless call --
+        # -- signature WITHOUT the gate kwargs → FAIL CLOSED: never invoked --
         runner2 = _make_runner(tmp_path)
         adapter2 = MagicMock()
         adapter2.platform = Platform.DISCORD
         legacy = {"n": 0}
 
-        async def _legacy_join(channel):   # genuinely older signature
+        async def _legacy_join(channel):   # no manual_owner / attempt_token, no **kwargs
             legacy["n"] += 1
             return True
 
@@ -3215,8 +3215,9 @@ class TestDiscordVoiceAutoJoin:
         vch2 = _FakeVoiceChannel(222, guild_id=111, members=[SimpleNamespace(id=42)])
         event2 = self._voice_event("333")
         result2 = await runner2._handle_voice_channel_join(event2, voice_channel=vch2, manual=True, attempt_token=None)
-        assert "joined" in result2.lower()
-        assert legacy["n"] == 1                            # single tokenless call
+        assert "failed" in result2.lower()
+        assert legacy["n"] == 0                            # NEVER invoked (fail closed)
+        assert runner2._voice_mode == {}                  # no side effects
 
     @pytest.mark.asyncio
     async def test_public_leave_holds_lock_until_disconnect_completes_under_cancel(self):
@@ -3269,18 +3270,29 @@ class TestDiscordVoiceAutoJoin:
         assert got_lock.is_set()
 
     @pytest.mark.asyncio
-    async def test_mid_move_rollback_failure_tears_session_down(self):
+    async def test_mid_move_rollback_failure_runs_full_profile_bound_teardown(self, tmp_path):
         """P1 (1): if the mid-move supersession ROLLBACK itself fails, the session
-        is deterministically torn down rather than left stranded on the wrong
-        channel — no stale physical mutation can remain."""
-        from plugins.platforms.discord.adapter import VoiceSessionOwner
+        is torn down via the FULL profile-bound teardown — physical + maps + owner +
+        target AND the runner cleanup (persisted voice mode off, auto-TTS enabled
+        cleared / disabled set) — all inside the run-to-completion unit."""
+        from plugins.platforms.discord.adapter import VoiceSessionOwner, VoiceAutoJoinTarget
 
+        runner = _make_runner(tmp_path)
         adapter = self._make_adapter({
             "enabled": True,
             "allowed_user_ids": ["42"],
             "allowed_voice_channel_ids": ["222", "555"],
             "text_channel_id": "333",
         })
+        adapter._auto_tts_enabled_chats = {"333"}
+        adapter._auto_tts_disabled_chats = set()
+        runner.adapters[Platform.DISCORD] = adapter
+        runner._voice_mode["discord:333"] = "all"
+        # The bound, profile-scoped runner cleanup — exactly as the join path wires.
+        adapter._on_voice_disconnect = (
+            lambda chat_id: runner._handle_voice_timeout_cleanup(chat_id, adapter=adapter, profile=None)
+        )
+
         move_started = asyncio.Event()
         move_gate = asyncio.Event()
         # Existing session on 222; the FIRST move (222→555) succeeds, the SECOND
@@ -3292,6 +3304,10 @@ class TestDiscordVoiceAutoJoin:
         adapter._voice_clients[111] = existing
         adapter._voice_session_owner[111] = VoiceSessionOwner.auto(1)
         adapter._voice_text_channels[111] = 333
+        adapter._voice_sources[111] = {"chat_id": "333"}
+        adapter._voice_auto_join_targets[111] = VoiceAutoJoinTarget(
+            guild_id=111, user_id="42", voice_channel_id="222", text_channel_id="333",
+        )
         adapter._voice_locks[111] = asyncio.Lock()
 
         token_a = adapter._register_pending_auto_join(111, "42", "555")
@@ -3305,17 +3321,25 @@ class TestDiscordVoiceAutoJoin:
         result = await join_task
 
         assert result is False
-        # Restore failed → deterministic teardown: no dangling session/maps/owner.
+        # Restore failed → FULL profile-bound teardown: no dangling physical/maps.
+        assert existing.disconnected is True
         assert 111 not in adapter._voice_clients
         assert 111 not in adapter._voice_session_owner
         assert 111 not in adapter._voice_text_channels
+        assert 111 not in adapter._voice_sources
+        assert 111 not in adapter._voice_auto_join_targets
+        # ...and the runner profile cleanup ran.
+        assert runner._voice_mode["discord:333"] == "off"
+        assert "333" not in adapter._auto_tts_enabled_chats
+        assert "333" in adapter._auto_tts_disabled_chats
 
     @pytest.mark.asyncio
-    async def test_target_leave_preserves_replacement_target_same_object_check(self):
-        """P1 (2): a REPLACEMENT target object on the SAME channel (even with an
-        unchanged owner) is preserved — the cleanup matches the exact captured
-        target object, not just channel/owner."""
-        from plugins.platforms.discord.adapter import VoiceSessionOwner, VoiceAutoJoinTarget
+    async def test_target_leave_preserves_replacement_target_same_channel(self):
+        """P1 (2): driven through the real voice-state/behavior path and the real
+        ``mark_voice_auto_join_target`` API — a REPLACEMENT target object on the
+        SAME channel (same user, same owner token) is preserved. The cleanup
+        matches the exact captured target OBJECT, not just channel/owner."""
+        from plugins.platforms.discord.adapter import VoiceSessionOwner
 
         adapter = self._make_adapter({
             "enabled": True,
@@ -3328,28 +3352,37 @@ class TestDiscordVoiceAutoJoin:
         adapter._voice_clients[111] = vc
         adapter._voice_text_channels[111] = 333
         adapter._voice_session_owner[111] = VoiceSessionOwner.auto(1)
-        captured = VoiceAutoJoinTarget(
-            guild_id=111, user_id="42", voice_channel_id="222", text_channel_id="333",
+        # Establish the followed target through the REAL API.
+        adapter.mark_voice_auto_join_target(
+            111, user_id="42", voice_channel_id="222", text_channel_id="333",
         )
-        adapter._voice_auto_join_targets[111] = captured
+        captured = adapter._voice_auto_join_targets[111]
+
         instrumented = _InstrumentedLock()
         adapter._voice_locks[111] = instrumented
 
+        guild = SimpleNamespace(id=111, name="Guild")
+        member = SimpleNamespace(id=42, display_name="Martin", guild=guild)
+        before = SimpleNamespace(channel=SimpleNamespace(id=222, name="General"))
+        after = SimpleNamespace(channel=None)
+
+        # Hold the lock so the target-leave cleanup (driven by the real voice-state
+        # handler) blocks after capturing the original target object.
         await instrumented.acquire()
-        cleanup_task = asyncio.ensure_future(
-            adapter._maybe_cleanup_voice_auto_join_target(
-                111, "42", SimpleNamespace(id=222, name="General"), None,
-            )
+        leave_task = asyncio.ensure_future(
+            adapter._handle_voice_state_update(member, before, after)
         )
         await instrumented.waiter_arrived.wait()
 
-        # A replacement target object (same user/channel, same owner token) is set.
-        replacement = VoiceAutoJoinTarget(
-            guild_id=111, user_id="42", voice_channel_id="222", text_channel_id="333",
+        # A newer follow RE-MARKS the target through the real API (new object, same
+        # user/channel/owner token).
+        adapter.mark_voice_auto_join_target(
+            111, user_id="42", voice_channel_id="222", text_channel_id="333",
         )
-        adapter._voice_auto_join_targets[111] = replacement
+        replacement = adapter._voice_auto_join_targets[111]
+        assert replacement is not captured
         instrumented.release()
-        await cleanup_task
+        await leave_task
 
         # The replacement target AND its session survive.
         assert adapter._voice_auto_join_targets[111] is replacement

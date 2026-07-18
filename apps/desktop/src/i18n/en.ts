@@ -322,6 +322,7 @@ export const en: Translations = {
       mcp: 'MCP',
       archivedChats: 'Archived Chats',
       about: 'About',
+      billing: 'Billing',
       notifications: 'Notifications',
       plugins: 'Plugins'
     },

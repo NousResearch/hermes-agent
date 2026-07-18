@@ -199,6 +199,26 @@ export const $connection = atom<HermesConnection | null>(null)
 export const $gatewayState = atom('idle')
 export const $sessions = atom<SessionInfo[]>([])
 export const $sessionsTotal = atom<number>(0)
+// Latest refreshSessions() rejection surfaced to the sidebar. `initial` is true
+// only when the failure happened before any successful fetch in this window
+// (see useSessionListActions.refreshSessions). The boot path surfaces this via
+// failDesktopBoot with a session-specific message; the sidebar reads it on
+// subsequent failures to offer recovery without dropping existing rows.
+export interface SessionLoadError {
+  initial: boolean
+  message: string
+  timestamp: number
+}
+
+export const $sessionLoadError = atom<SessionLoadError | null>(null)
+
+export function setSessionLoadError(error: SessionLoadError | null) {
+  $sessionLoadError.set(error)
+}
+
+export function clearSessionLoadError() {
+  $sessionLoadError.set(null)
+}
 // Cron-job sessions (source === 'cron') are fetched as their own list so the
 // scheduler's always-newest sessions never crowd recents out of the page
 // budget. Powers the collapsed "Cron jobs" sidebar section.

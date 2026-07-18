@@ -78,7 +78,8 @@ export const ja = defineLocale({
       desktopBootFailed: 'デスクトップの起動に失敗しました',
       gatewayConnectionLost: 'ゲートウェイへの接続が切断されました',
       gatewaySignInRequired: 'ゲートウェイへのサインインが必要です',
-      ipcBridgeUnavailable: 'デスクトップ IPC ブリッジが利用できません。'
+      ipcBridgeUnavailable: 'デスクトップ IPC ブリッジが利用できません。',
+      sessionLoadFailed: '最近のセッションを読み込めませんでした'
     },
     failure: {
       title: 'Hermes を起動できませんでした',

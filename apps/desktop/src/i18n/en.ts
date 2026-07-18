@@ -78,7 +78,8 @@ export const en: Translations = {
       desktopBootFailed: 'Desktop boot failed',
       gatewayConnectionLost: 'Lost connection to the gateway',
       gatewaySignInRequired: 'Gateway sign-in required',
-      ipcBridgeUnavailable: 'Desktop IPC bridge is unavailable.'
+      ipcBridgeUnavailable: 'Desktop IPC bridge is unavailable.',
+      sessionLoadFailed: "Couldn't load recent sessions"
     },
     failure: {
       title: "Hermes couldn't start",

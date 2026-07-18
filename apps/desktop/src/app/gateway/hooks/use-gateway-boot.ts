@@ -24,6 +24,7 @@ import {
   touchSecondaryGateways
 } from '@/store/gateway'
 import { $gatewaySwitching, wipeSessionListsForGatewaySwitch } from '@/store/gateway-switch'
+import { SessionRefreshError } from '@/app/session/hooks/use-session-list-actions'
 import { notify, notifyError } from '@/store/notifications'
 import { $activeGatewayProfile, normalizeProfileKey, touchActiveGatewayBackend } from '@/store/profile'
 import {
@@ -55,7 +56,7 @@ interface GatewayBootOptions {
   ) => void
   onGatewayReady: (gateway: HermesGateway | null) => void
   refreshHermesConfig: () => Promise<void>
-  refreshSessions: () => Promise<void>
+  refreshSessions: (options?: { isBoot?: boolean }) => Promise<void>
 }
 
 export function useGatewayBoot({
@@ -475,14 +476,21 @@ export function useGatewayBoot({
           message: translateNow('boot.steps.loadingSessions'),
           progress: 99
         })
-        await callbacksRef.current.refreshSessions()
+        await callbacksRef.current.refreshSessions({ isBoot: true })
         completeDesktopBoot()
         bootCompleted = true
       } catch (err) {
         if (!cancelled) {
           const message = err instanceof Error ? err.message : String(err)
+          // A session-list failure gets its own error key so the toast/overlay
+          // tells the user it's the session fetch, not the whole desktop boot.
+          // Anything else (gateway, settings, cwd) keeps the generic copy.
+          const errorKey =
+            err instanceof SessionRefreshError
+              ? 'boot.errors.sessionLoadFailed'
+              : 'boot.errors.desktopBootFailed'
           failDesktopBoot(message)
-          notifyError(err, translateNow('boot.errors.desktopBootFailed'))
+          notifyError(err, translateNow(errorKey))
           setSessionsLoading(false)
         }
       }

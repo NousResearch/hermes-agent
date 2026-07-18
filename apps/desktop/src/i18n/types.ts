@@ -124,6 +124,7 @@ export interface Translations {
       gatewayConnectionLost: string
       gatewaySignInRequired: string
       ipcBridgeUnavailable: string
+      sessionLoadFailed: string
     }
     failure: {
       title: string

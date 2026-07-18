@@ -78,7 +78,8 @@ export const zhHant = defineLocale({
       desktopBootFailed: '桌面啟動失敗',
       gatewayConnectionLost: '與閘道的連線已中斷',
       gatewaySignInRequired: '需要閘道登入',
-      ipcBridgeUnavailable: '桌面 IPC 橋接器不可用。'
+      ipcBridgeUnavailable: '桌面 IPC 橋接器不可用。',
+      sessionLoadFailed: '無法載入最近工作階段'
     },
     failure: {
       title: 'Hermes 無法啟動',

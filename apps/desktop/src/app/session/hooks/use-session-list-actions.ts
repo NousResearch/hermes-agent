@@ -15,6 +15,7 @@ import {
   $selectedStoredSessionId,
   $sessions,
   $workingSessionIds,
+  clearSessionLoadError,
   CRON_SECTION_LIMIT,
   getRecentlySettledSessionIds,
   mergeSessionPage,
@@ -25,11 +26,27 @@ import {
   setMessagingTruncated,
   setSessionProfileTotals,
   setSessions,
+  setSessionLoadError,
   setSessionsLoading,
   setSessionsTotal
 } from '@/store/session'
 
 import { sameCronSignature } from '../../desktop-controller-utils'
+
+// Thrown by refreshSessions() on a cold-boot rejection so the boot hook can
+// distinguish a session-list failure from other gateway/boot failures and show
+// a session-specific error. Caught only on the boot path; background callers
+// see the rejection swallowed into $sessionLoadError and resolve normally.
+export class SessionRefreshError extends Error {
+  override name = 'SessionRefreshError'
+
+  constructor(
+    message: string,
+    readonly cause?: unknown
+  ) {
+    super(message)
+  }
+}
 
 // The recents list is local-only: cron rows have their own section, and each
 // messaging platform (telegram, discord, …) is fetched separately into its own
@@ -152,9 +169,10 @@ export function useSessionListActions({ profileScope }: UseSessionListActionsArg
     }
   }, [])
 
-  const refreshSessions = useCallback(async () => {
+  const refreshSessions = useCallback(async (options?: { isBoot?: boolean }) => {
     const requestId = refreshSessionsRequestRef.current + 1
     refreshSessionsRequestRef.current = requestId
+    const isBoot = options?.isBoot === true
     setSessionsLoading(true)
 
     try {
@@ -181,13 +199,21 @@ export function useSessionListActions({ profileScope }: UseSessionListActionsArg
         setSessions(prev => mergeSessionPage(prev, result.sessions, sessionsToKeep()))
         setSessionsTotal(typeof result.total === 'number' ? result.total : result.sessions.length)
         setSessionProfileTotals(result.profile_totals ?? {})
+        // A successful refresh invalidates any previously recorded load error;
+        // the sidebar should clear its banner without waiting for a Retry click.
+        clearSessionLoadError()
       }
     } catch (err) {
-      // Preserve the previous session list on transient fetch failures
-      // (backend startup delay, network blip). Without this guard, the
-      // try/finally pattern left $sessions at its initial [] — the sidebar
-      // rendered "no sessions" with zero error indication, and on cold
-      // boot after an update this looks exactly like data loss.
+      const message = err instanceof Error ? err.message : String(err)
+      // Cold-boot callers (use-gateway-boot) need the failure to keep boot in
+      // its error path so the user sees the existing failDesktopBoot overlay
+      // and notifyError toast. Background callers (sidebar refresh, profile
+      // switch, reconnect) keep their stale rows and surface a recoverable
+      // error via $sessionLoadError instead of dropping to empty.
+      if (isBoot) {
+        throw new SessionRefreshError(message, err)
+      }
+      setSessionLoadError({ initial: false, message, timestamp: Date.now() })
       console.error('refreshSessions: fetch failed, preserving previous list', err)
     } finally {
       if (refreshSessionsRequestRef.current === requestId) {

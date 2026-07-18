@@ -78,7 +78,8 @@ export const zh: Translations = {
       desktopBootFailed: '桌面启动失败',
       gatewayConnectionLost: '与网关的连接已断开',
       gatewaySignInRequired: '需要登录网关',
-      ipcBridgeUnavailable: '桌面 IPC 桥不可用。'
+      ipcBridgeUnavailable: '桌面 IPC 桥不可用。',
+      sessionLoadFailed: '无法加载最近会话'
     },
     failure: {
       title: 'Hermes 无法启动',

@@ -3494,10 +3494,11 @@ DELEGATE_TASK_SCHEMA = {
                 "type": "number",
                 "description": (
                     "Optional per-call wall-clock cap for each child agent. "
-                    "Overrides delegation.child_timeout_seconds for this "
-                    "delegate_task call. Omit to use config; set 0 to disable "
-                    "the hard cap for this call. Positive values below 30 are "
-                    "floored to 30 seconds."
+                    "Precedence is per-task timeout_seconds, then this "
+                    "top-level timeout_seconds, then "
+                    "delegation.child_timeout_seconds. Omit to use config; "
+                    "set 0 to disable the hard cap for this call. Positive "
+                    "values below 30 are floored to 30 seconds."
                 ),
             },
             "tasks": {
@@ -3523,7 +3524,8 @@ DELEGATE_TASK_SCHEMA = {
                                 "timeout_seconds and "
                                 "delegation.child_timeout_seconds. Omit to "
                                 "inherit; set 0 to disable the hard cap for "
-                                "this child."
+                                "this child. Positive values below 30 are "
+                                "floored to 30 seconds."
                             ),
                         },
                     },

@@ -348,6 +348,21 @@ class TestDelegateTask(unittest.TestCase):
         self.assertIsNone(mock_run.call_args.kwargs["timeout_seconds"])
 
     @patch("tools.delegate_tool._run_single_child")
+    def test_timeout_override_floor_applied_before_forwarding(self, mock_run):
+        mock_run.return_value = {
+            "task_index": 0,
+            "status": "completed",
+            "summary": "Done!",
+            "api_calls": 3,
+            "duration_seconds": 5.0,
+        }
+        parent = _make_mock_parent()
+
+        delegate_task(goal="Tiny cap", timeout_seconds=5, parent_agent=parent)
+
+        self.assertEqual(mock_run.call_args.kwargs["timeout_seconds"], 30.0)
+
+    @patch("tools.delegate_tool._run_single_child")
     def test_batch_mode_accepts_json_string_tasks(self, mock_run):
         mock_run.side_effect = [
             {
@@ -2205,6 +2220,74 @@ class TestDelegateHeartbeat(unittest.TestCase):
         time.sleep(0.15)
         self.assertEqual(len(touch_calls), count_after,
                          "Heartbeat continued firing after child error")
+
+    def test_timeout_override_hits_blocking_child_timeout_branch(self):
+        """A per-child timeout must reach Future.result(timeout=...) itself.
+
+        The forwarding tests above prove precedence. This regression proves the
+        applied value is the one that cuts off a blocked child and is reported
+        in the timeout result.
+        """
+        from tools.delegate_tool import _run_single_child
+
+        parent = _make_mock_parent()
+        released = threading.Event()
+        interrupted = threading.Event()
+
+        class BlockingChild:
+            tool_progress_callback = None
+            _credential_pool = None
+            _delegate_saved_tool_names = []
+            _delegate_role = "leaf"
+            session_prompt_tokens = 0
+            session_completion_tokens = 0
+            session_estimated_cost_usd = 0.0
+            model = "test-model"
+
+            def run_conversation(self, **_kwargs):
+                released.wait(timeout=1.0)
+                return {
+                    "final_response": "late",
+                    "completed": True,
+                    "api_calls": 0,
+                    "messages": [],
+                }
+
+            def get_activity_summary(self):
+                return {
+                    "current_tool": None,
+                    "api_call_count": 0,
+                    "max_iterations": 50,
+                    "last_activity_desc": "blocked before first API call",
+                }
+
+            def interrupt(self):
+                interrupted.set()
+                released.set()
+
+        child = BlockingChild()
+
+        with patch(
+            "tools.delegate_tool._dump_subagent_timeout_diagnostic",
+            return_value="/tmp/subagent-timeout-test.log",
+        ):
+            started = time.monotonic()
+            result = _run_single_child(
+                task_index=0,
+                goal="Block until timeout",
+                child=child,
+                parent_agent=parent,
+                timeout_seconds=0.05,
+            )
+            elapsed = time.monotonic() - started
+
+        self.assertEqual(result["status"], "timeout")
+        self.assertEqual(result["exit_reason"], "timeout")
+        self.assertEqual(result["api_calls"], 0)
+        self.assertEqual(result["diagnostic_path"], "/tmp/subagent-timeout-test.log")
+        self.assertIn("0.05s", result["error"])
+        self.assertTrue(interrupted.wait(timeout=0.5))
+        self.assertLess(elapsed, 0.75)
 
     def test_heartbeat_includes_child_activity_desc_when_no_tool(self):
         """When child has no current_tool, heartbeat uses last_activity_desc."""

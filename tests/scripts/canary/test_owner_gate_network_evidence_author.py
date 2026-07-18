@@ -377,6 +377,7 @@ def _sealed_identity(prefix: tuple[str, ...]) -> dict:
         "owner_support_tree_bytes": 50,
         "owner_support_tree_sha256": "5" * 64,
         "owner_support_manifest_sha256": "6" * 64,
+        "owner_support_source_tree_oid": "b" * 40,
         "bootstrap_receipt_file_sha256": "7" * 64,
     }
     return {**unsigned, "identity_sha256": foundation.sha256_json(unsigned)}

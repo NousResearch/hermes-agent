@@ -17,6 +17,7 @@ from pathlib import Path
 import pytest
 
 from scripts.canary import full_canary_owner_launcher as launcher
+from scripts.canary import owner_gate_owner_reauth as owner_reauth
 
 
 RELEASE_SHA = "a" * 40
@@ -285,6 +286,37 @@ def test_v2_bootstrap_receipt_binds_owner_support_tree_and_sources(
         _canonical(unsigned)
     ).hexdigest()
     assert runtime._validate_bootstrap_receipt()
+
+
+def test_sealed_runtime_identity_matches_owner_reauth_contract(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    runtime, receipt_path, _receipt = _bootstrap_receipt_fixture(
+        tmp_path,
+        monkeypatch,
+    )
+    prefix = (
+        "/trusted/python3.11",
+        *launcher._GCLOUD_PYTHON_ISOLATION_ARGS,
+        "/trusted/google-cloud-sdk/lib/gcloud.py",
+    )
+    runtime._production_runtime = True
+    runtime._bootstrap_receipt_fingerprint = (
+        hashlib.sha256(receipt_path.read_bytes()).hexdigest(),
+    )
+    monkeypatch.setattr(runtime, "trusted_command_prefix", lambda: prefix)
+
+    identity = runtime.sealed_runtime_identity(
+        expected_release_sha=RELEASE_SHA,
+    )
+
+    assert identity["owner_support_source_tree_oid"] == SOURCE_TREE_OID
+    assert owner_reauth._validate_sealed_runtime_identity(
+        identity,
+        expected_release_revision=RELEASE_SHA,
+        prefix=prefix,
+    ) == identity
 
 
 @pytest.mark.parametrize(

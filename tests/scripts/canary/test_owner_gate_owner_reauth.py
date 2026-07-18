@@ -137,9 +137,70 @@ def _sealed_identity(prefix: tuple[str, ...]) -> dict:
         "owner_support_tree_bytes": 50,
         "owner_support_tree_sha256": "5" * 64,
         "owner_support_manifest_sha256": "6" * 64,
+        "owner_support_source_tree_oid": "b" * 40,
         "bootstrap_receipt_file_sha256": "7" * 64,
     }
     return {**unsigned, "identity_sha256": foundation.sha256_json(unsigned)}
+
+
+@pytest.mark.parametrize(
+    "source_tree_oid",
+    ("a" * 39, "A" * 40, "g" * 40, int("1" * 40)),
+)
+def test_sealed_identity_rejects_invalid_source_tree_oid(
+    tmp_path: Path,
+    source_tree_oid: object,
+) -> None:
+    executable, _configuration = _runtime(tmp_path)
+    identity = _sealed_identity(executable.prefix)
+    identity["owner_support_source_tree_oid"] = source_tree_oid
+    unsigned = dict(identity)
+    unsigned.pop("identity_sha256")
+    identity["identity_sha256"] = foundation.sha256_json(unsigned)
+
+    with pytest.raises(
+        reauth.OwnerGateOwnerReauthError,
+        match="owner_gate_owner_reauth_runtime_invalid",
+    ):
+        reauth._validate_sealed_runtime_identity(
+            identity,
+            expected_release_revision=REVISION,
+            prefix=executable.prefix,
+        )
+
+
+@pytest.mark.parametrize(
+    "sha_field",
+    (
+        "sdk_tree_sha256",
+        "sdk_publication_tree_sha256",
+        "sdk_publication_intent_sha256",
+        "python_tree_sha256",
+        "owner_support_tree_sha256",
+        "owner_support_manifest_sha256",
+        "bootstrap_receipt_file_sha256",
+    ),
+)
+def test_sealed_identity_rejects_integer_sha256_field(
+    tmp_path: Path,
+    sha_field: str,
+) -> None:
+    executable, _configuration = _runtime(tmp_path)
+    identity = _sealed_identity(executable.prefix)
+    identity[sha_field] = int("1" * 64)
+    unsigned = dict(identity)
+    unsigned.pop("identity_sha256")
+    identity["identity_sha256"] = foundation.sha256_json(unsigned)
+
+    with pytest.raises(
+        reauth.OwnerGateOwnerReauthError,
+        match="owner_gate_owner_reauth_runtime_invalid",
+    ):
+        reauth._validate_sealed_runtime_identity(
+            identity,
+            expected_release_revision=REVISION,
+            prefix=executable.prefix,
+        )
 
 
 def _receipt(tmp_path: Path) -> tuple[dict, _Runner]:
@@ -155,6 +216,31 @@ def _receipt(tmp_path: Path) -> tuple[dict, _Runner]:
         sealed_runtime_snapshot=lambda: _sealed_identity(executable.prefix),
     )
     return dict(value), runner
+
+
+def _resign_receipt(receipt: dict) -> dict:
+    body = {
+        key: value
+        for key, value in receipt.items()
+        if key
+        not in {
+            "owner_reauthentication_receipt_sha256",
+            "signature_ed25519_b64url",
+        }
+    }
+    signed = {
+        **body,
+        "owner_reauthentication_receipt_sha256": foundation.sha256_json(body),
+    }
+    signature = PRIVATE_KEY.sign(
+        reauth.SIGNATURE_DOMAIN + foundation.canonical_json_bytes(signed)
+    )
+    return {
+        **signed,
+        "signature_ed25519_b64url": base64.urlsafe_b64encode(signature)
+        .rstrip(b"=")
+        .decode("ascii"),
+    }
 
 
 def test_producer_uses_sealed_prefix_closed_environment_and_no_token(
@@ -270,6 +356,53 @@ def test_validator_rejects_tampered_security_identity(
     with pytest.raises(reauth.OwnerGateOwnerReauthError):
         reauth.validate_owner_reauth_receipt(
             receipt,
+            public_key=PRIVATE_KEY.public_key(),
+            now_unix=NOW + 5,
+        )
+
+
+@pytest.mark.parametrize(
+    ("path", "replacement"),
+    [
+        (("trusted_runtime_identity", "command_prefix_sha256"), int("1" * 64)),
+        (("trusted_runtime_identity", "python_executable_sha256"), int("1" * 64)),
+        (("trusted_runtime_identity", "gcloud_module_sha256"), int("1" * 64)),
+        (
+            ("trusted_runtime_identity", "sdk_python_config_identity_sha256"),
+            int("1" * 64),
+        ),
+        (("trusted_runtime_identity", "closed_environment_sha256"), int("1" * 64)),
+        (("trusted_runtime_identity", "release_revision"), int("1" * 40)),
+        (
+            ("trusted_runtime_identity", "sealed_runtime_identity_sha256"),
+            int("1" * 64),
+        ),
+        (("trusted_runtime_identity", "sdk_root"), 1),
+        (("interactive_reauthentication", "command_sha256"), int("1" * 64)),
+        (("authenticated_probe", "command_sha256"), int("1" * 64)),
+        (("authenticated_probe", "output_sha256"), int("1" * 64)),
+        (("authenticated_probe", "project_number"), 123456789012),
+        (("signer_key_id",), int("1" * 64)),
+    ],
+)
+def test_validator_rejects_resigned_non_string_formatted_field(
+    tmp_path: Path,
+    path: tuple[str, ...],
+    replacement: int,
+) -> None:
+    receipt, _ = _receipt(tmp_path)
+    target = receipt
+    for name in path[:-1]:
+        target = target[name]
+    target[path[-1]] = replacement
+    resigned = _resign_receipt(receipt)
+
+    with pytest.raises(
+        reauth.OwnerGateOwnerReauthError,
+        match="owner_gate_owner_reauth_receipt_invalid",
+    ):
+        reauth.validate_owner_reauth_receipt(
+            resigned,
             public_key=PRIVATE_KEY.public_key(),
             now_unix=NOW + 5,
         )

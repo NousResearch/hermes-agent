@@ -1604,7 +1604,7 @@ class SlackAdapter(BasePlatformAdapter):
             }
         try:
             _status = (
-                self._status_text.get(str(chat_id))
+                getattr(self, "_status_text", {}).get(str(chat_id))
                 or getattr(self.config, "typing_status_text", None)
                 or "is thinking..."
             )

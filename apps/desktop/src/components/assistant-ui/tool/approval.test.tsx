@@ -30,9 +30,13 @@ function part(toolName: string): ToolPart {
   return { toolName, type: `tool-${toolName}` } as unknown as ToolPart
 }
 
-function setRequest(command = 'rm -rf /tmp/x', allowPermanent?: boolean, description = 'dangerous command') {
+function setRequest(
+  command = 'rm -rf /tmp/x',
+  allowPermanent?: boolean,
+  extra: { choices?: string[]; description?: string; smartDenied?: boolean } = {}
+) {
   $activeSessionId.set('sess-1')
-  setApprovalRequest({ allowPermanent, command, description, sessionId: 'sess-1' })
+  setApprovalRequest({ allowPermanent, command, description: 'dangerous command', sessionId: 'sess-1', ...extra })
 }
 
 function mockGateway() {
@@ -73,7 +77,7 @@ describe('PendingToolApproval', () => {
 
   it('shows multi-line approval descriptions on the inline tool card', () => {
     const description = 'Runs:\npwd'
-    setRequest('<terminal> (plugin approval rule)', undefined, description)
+    setRequest('<terminal> (plugin approval rule)', undefined, { description })
     render(<PendingToolApproval part={part('terminal')} />)
 
     const descriptionElement = screen.getByText((_, element) => element?.textContent === description)
@@ -143,6 +147,26 @@ describe('PendingToolApproval', () => {
     expect(screen.queryByRole('menuitem', { name: /Always allow/ })).toBeNull()
   })
 
+  it('renders only Once and Deny for a Smart DENY owner override', () => {
+    setRequest('rm -rf /tmp/x', true, { smartDenied: true })
+    render(<PendingToolApproval part={part('terminal')} />)
+
+    expect(screen.getByRole('button', { name: /Run/ })).toBeTruthy()
+    expect(screen.getByRole('button', { name: /Reject/ })).toBeTruthy()
+    expect(screen.queryByRole('button', { name: /More approval options/ })).toBeNull()
+    expect(screen.queryByText(/Allow this session/)).toBeNull()
+    expect(screen.queryByText(/Always allow/)).toBeNull()
+  })
+
+  it('renders only choices explicitly supplied by the gateway event', () => {
+    setRequest('rm -rf /tmp/x', true, { choices: ['once', 'deny'] })
+    render(<PendingToolApproval part={part('terminal')} />)
+
+    expect(screen.getByRole('button', { name: /Run/ })).toBeTruthy()
+    expect(screen.getByRole('button', { name: /Reject/ })).toBeTruthy()
+    expect(screen.queryByRole('button', { name: /More approval options/ })).toBeNull()
+  })
+
   it('renders a floating fallback when no pending tool row is mounted', () => {
     setRequest('rm /tmp/hermes_approval_test.txt')
     const { container } = render(<PendingApprovalFallback />)
@@ -155,7 +179,7 @@ describe('PendingToolApproval', () => {
 
   it('keeps multi-line fallback descriptions readable', () => {
     const description = 'Before:\nold value\nAfter:\nnew value'
-    setRequest('apply changes', undefined, description)
+    setRequest('apply changes', undefined, { description })
     render(<PendingApprovalFallback />)
 
     const descriptionElement = screen.getByText((_, element) => element?.textContent === description)

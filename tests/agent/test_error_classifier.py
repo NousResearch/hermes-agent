@@ -261,6 +261,40 @@ class TestClassifyApiError:
         result = classify_api_error(e, provider="openrouter")
         assert result.reason == FailoverReason.billing
 
+    def test_xai_403_structured_spending_limit_code_classified_as_billing(self):
+        """xAI reports exhausted Grok credits as a provider-specific 403 code."""
+        e = MockAPIError(
+            "Error code: 403",
+            status_code=403,
+            body={
+                "code": "personal-team-blocked:spending-limit",
+                "error": (
+                    "You have run out of credits or need a Grok subscription. "
+                    "Add credits at Grok or upgrade at Grok."
+                ),
+            },
+        )
+
+        result = classify_api_error(e, provider="xai-oauth")
+
+        assert result.reason == FailoverReason.billing
+        assert result.retryable is False
+        assert result.should_rotate_credential is True
+        assert result.should_fallback is True
+
+    def test_non_xai_403_generic_billing_code_remains_auth(self):
+        """Do not broaden generic providers' historical structured-403 behavior."""
+        e = MockAPIError(
+            "Error code: 403",
+            status_code=403,
+            body={"code": "insufficient_quota", "error": "Forbidden"},
+        )
+
+        result = classify_api_error(e, provider="openrouter")
+
+        assert result.reason == FailoverReason.auth
+        assert result.should_rotate_credential is False
+
     # ── Billing ──
 
     def test_402_plain_billing(self):
@@ -841,6 +875,26 @@ class TestClassifyApiError:
         assert result.retryable is True
         assert result.should_fallback is False
 
+    def test_xai_invalid_encrypted_content_wording_uses_replay_recovery(self):
+        e = MockAPIError(
+            "Error code: 400 - Could not decrypt the provided encrypted_content. "
+            "Ensure the value is the unmodified encrypted_content from a previous response.",
+            status_code=400,
+            body={
+                "code": "Client specified an invalid argument",
+                "error": (
+                    "Could not decrypt the provided encrypted_content. Ensure the value "
+                    "is the unmodified encrypted_content from a previous response."
+                ),
+            },
+        )
+
+        result = classify_api_error(e, provider="xai-oauth", model="grok-4.3")
+
+        assert result.reason == FailoverReason.invalid_encrypted_content
+        assert result.retryable is True
+        assert result.should_fallback is False
+
     def test_invalid_encrypted_content_broad_message_match_does_not_catch_generic_parse_error(self):
         message = "Encrypted content could not be decrypted or parsed."
         e = MockAPIError(
@@ -1224,6 +1278,20 @@ class TestClassifyApiError:
     def test_chinese_context_overflow(self):
         e = MockAPIError("超过最大长度限制", status_code=400)
         result = classify_api_error(e)
+        assert result.reason == FailoverReason.context_overflow
+
+    # ── Z.AI / Zhipu GLM error messages ──
+
+    def test_zai_glm_token_limit_overflow(self):
+        """Z.AI GLM's 'tokens in request more than max tokens allowed'
+        (error code 1210) → context_overflow, so the agent compresses
+        instead of blindly retrying. Port of anomalyco/opencode#35671."""
+        e = MockAPIError(
+            '{"error": {"code": "1210", "message": '
+            '"tokens in request more than max tokens allowed"}}',
+            status_code=400,
+        )
+        result = classify_api_error(e, provider="zai")
         assert result.reason == FailoverReason.context_overflow
 
     # ── vLLM / local inference server error messages ──
@@ -2045,5 +2113,28 @@ class Test408RequestTimeout:
         result = classify_api_error(e, provider="openai", model="gpt-5.5")
         assert result.reason == FailoverReason.timeout
         assert result.retryable is True
+        assert result.should_compress is False
+
+    def test_stale_breaker_runtime_error_triggers_fallback_not_retry(self):
+        # The cross-turn stale-call circuit breaker (_check_stale_giveup in
+        # chat_completion_helpers.py) raises a RuntimeError when the provider
+        # has been unresponsive for N consecutive stale attempts.  This must
+        # be classified as non-retryable + should_fallback so the retry loop
+        # activates the fallback provider immediately instead of burning all
+        # max_retries against the same dead provider (each retry hitting the
+        # circuit breaker instantly with zero network overhead).
+        e = RuntimeError(
+            "Provider has been unresponsive (no response received) for "
+            "6 consecutive stale attempts — aborting this call to "
+            "avoid an indefinite stall. Switch models or start a new "
+            "session, then retry."
+        )
+        result = classify_api_error(
+            e, provider="openrouter", model="anthropic/claude-fable-5",
+            approx_tokens=126327, context_length=200000, num_messages=274,
+        )
+        assert result.reason == FailoverReason.timeout
+        assert result.retryable is False
+        assert result.should_fallback is True
         assert result.should_compress is False
 

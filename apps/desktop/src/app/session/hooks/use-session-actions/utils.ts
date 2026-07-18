@@ -2,11 +2,13 @@ import { getSession } from '@/hermes'
 import { type ChatMessage, chatMessageText } from '@/lib/chat-messages'
 import { normalizePersonalityValue } from '@/lib/chat-runtime'
 import { embeddedImageUrls, textWithoutEmbeddedImages } from '@/lib/embedded-images'
+import { reconcileApprovalModeForProfile } from '@/store/approval-mode'
 import { requestDesktopOnboarding } from '@/store/onboarding'
 import { $activeGatewayProfile, $profiles, normalizeProfileKey } from '@/store/profile'
 import {
   $currentCwd,
   $sessions,
+  sessionMatchesStoredId,
   setCurrentBranch,
   setCurrentCwd,
   setCurrentFastMode,
@@ -19,6 +21,10 @@ import {
   setSessions,
   setYoloActive
 } from '@/store/session'
+
+// Re-exported for the many session-actions/tile call sites that already import
+// it from here; the canonical definition lives in @/store/session.
+export { sessionMatchesStoredId }
 import { reportBackendContract, reportInstallMethodWarning } from '@/store/updates'
 import type { SessionCreateResponse, SessionInfo, SessionRuntimeInfo } from '@/types/hermes'
 
@@ -50,7 +56,98 @@ function preserveReasoningParts(message: ChatMessage, previous: ChatMessage): Ch
   return reasoningParts.length ? { ...message, parts: [...reasoningParts, ...message.parts] } : message
 }
 
-function chatMessagesEquivalent(a: ChatMessage, b: ChatMessage): boolean {
+// Compile-time exhaustiveness guards. If a new field is added to ChatMessage
+// or a new part type appears in the ChatMessagePart union (e.g. @assistant-ui
+// ships one), these fail tsc until someone explicitly classifies it.
+//
+// COMPARED: fields whose change must trigger a re-render (setMessages).
+// IGNORED:  fields that are intentionally not compared — display-only metadata
+//           or reference identity the runtime already guarantees.
+//   timestamp  — presentation-only (sort/age display), never affects transcript equality
+//   attachmentRefs — composer-side metadata; already reconciled in reconcileResumeMessages
+//
+// If your new field affects what the user sees in the transcript, add it to
+// COMPARED. If it's metadata that shouldn't trigger a re-render, add it to
+// IGNORED.
+const _chatMessageFieldsExhaustive: {
+  [K in Exclude<keyof ChatMessage, (typeof COMPARED_FIELDS)[number] | (typeof IGNORED_FIELDS)[number]>]: never
+} = {}
+
+const COMPARED_FIELDS = ['id', 'role', 'pending', 'error', 'hidden', 'branchGroupId'] as const
+const IGNORED_FIELDS = ['timestamp', 'attachmentRefs', 'parts'] as const
+
+// Compile-time check: every ChatMessagePart discriminant must be handled by
+// chatPartsEquivalent. If @assistant-ui adds a new part type, this fails tsc.
+//   text, reasoning      → compared by .text
+//   tool-call             → compared by toolCallId/toolName + result presence
+//   source, image, file, data, generative-ui, audio, data-* → shallow primitive compare
+const _chatMessagePartTypesExhaustive: {
+  [T in Exclude<ChatMessage['parts'][number]['type'], (typeof HANDLED_PART_TYPES)[number]>]: never
+} = {}
+
+const HANDLED_PART_TYPES = [
+  'text',
+  'reasoning',
+  'tool-call',
+  'source',
+  'image',
+  'file',
+  'data',
+  'generative-ui',
+  'audio'
+] as const
+
+// Structural compare WITHOUT JSON.stringify — the only consumer asks "did
+// the transcript change, should I call setMessages?", so a slightly
+// conservative compare (occasionally false-negative → one extra idempotent
+// setMessages) is safe, but a false-POSITIVE (claiming equal when different)
+// would skip a needed update.
+export function chatPartsEquivalent(aPart: ChatMessage['parts'][number], bPart: ChatMessage['parts'][number]): boolean {
+  // Reference equality fast-path
+  if (aPart === bPart) {
+    return true
+  }
+
+  if (aPart.type !== bPart.type) {
+    return false
+  }
+
+  if (aPart.type === 'text' || aPart.type === 'reasoning') {
+    return (aPart as { text: string }).text === (bPart as { text: string }).text
+  }
+
+  if (aPart.type === 'tool-call') {
+    const aCall = aPart as { toolCallId?: string; toolName?: string; result?: unknown }
+    const bCall = bPart as { toolCallId?: string; toolName?: string; result?: unknown }
+
+    if (aCall.toolCallId !== bCall.toolCallId || aCall.toolName !== bCall.toolName) {
+      return false
+    }
+
+    // Compare whether result is present (undefined on both or defined on both)
+    const aHasResult = aCall.result !== undefined
+    const bHasResult = bCall.result !== undefined
+
+    return aHasResult === bHasResult
+  }
+
+  // For all other handled part types (source, image, file, data, generative-ui,
+  // audio, data-*), fall back to shallow primitive-key comparison — conservative:
+  // if we're not sure, claim not-equal (one extra setMessages is harmless, but
+  // skipping an update would break the UI).
+  const aPrimitive = aPart as Record<string, unknown>
+  const bPrimitive = bPart as Record<string, unknown>
+  const aKeys = Object.keys(aPrimitive).filter(k => typeof aPrimitive[k] !== 'object' || aPrimitive[k] === null)
+  const bKeys = Object.keys(bPrimitive).filter(k => typeof bPrimitive[k] !== 'object' || bPrimitive[k] === null)
+
+  if (aKeys.length !== bKeys.length) {
+    return false
+  }
+
+  return aKeys.every(k => aPrimitive[k] === bPrimitive[k])
+}
+
+export function chatMessagesEquivalent(a: ChatMessage, b: ChatMessage): boolean {
   if (
     a.id !== b.id ||
     a.role !== b.role ||
@@ -66,10 +163,15 @@ function chatMessagesEquivalent(a: ChatMessage, b: ChatMessage): boolean {
     return false
   }
 
-  return a.parts.every((part, index) => JSON.stringify(part) === JSON.stringify(b.parts[index]))
+  return a.parts.every((part, index) => chatPartsEquivalent(part, b.parts[index]))
 }
 
 export function chatMessageArraysEquivalent(a: ChatMessage[], b: ChatMessage[]): boolean {
+  // Array-level identity fast-path (same reference)
+  if (a === b) {
+    return true
+  }
+
   return a.length === b.length && a.every((message, index) => chatMessagesEquivalent(message, b[index]))
 }
 
@@ -182,10 +284,6 @@ export function patchSessionWorkspace(sessionId: string, cwd: string | undefined
   setSessions(prev => prev.map(session => (session.id === sessionId ? { ...session, cwd } : session)))
 }
 
-export function sessionMatchesStoredId(session: SessionInfo, storedSessionId: string): boolean {
-  return session.id === storedSessionId || session._lineage_root_id === storedSessionId
-}
-
 export function sessionShouldHaveTranscript(session: SessionInfo | undefined): boolean {
   return (session?.message_count ?? 0) > 0
 }
@@ -265,6 +363,10 @@ export function applyRuntimeInfo(info: SessionRuntimeInfo | undefined): SessionR
   const sessionState: SessionRuntimeStatePatch = {}
 
   reportBackendContract(info.desktop_contract)
+
+  if (info.approval_mode !== undefined) {
+    reconcileApprovalModeForProfile($activeGatewayProfile.get(), info.approval_mode)
+  }
 
   if (info.credential_warning) {
     requestDesktopOnboarding(info.credential_warning)

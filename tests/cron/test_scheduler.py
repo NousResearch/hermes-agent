@@ -1,6 +1,7 @@
 """Tests for cron/scheduler.py — origin resolution, delivery routing, and error logging."""
 
 import contextlib
+import itertools
 import json
 import logging
 import os
@@ -1532,6 +1533,25 @@ class TestRunJobSessionPersistence:
         assert "final fallback report" in output
         assert "(FAILED)" not in output
 
+    def test_tick_skips_due_jobs_while_dispatch_is_paused(self, tmp_path):
+        """The drain gate runs before advancing a due job's schedule."""
+        from cron.scheduler import tick
+
+        job = {
+            "id": "paused-due-job",
+            "name": "paused due job",
+            "schedule": {"kind": "interval", "seconds": 60},
+            "next_run_at": "2020-01-01T00:00:00+00:00",
+            "enabled": True,
+        }
+        with patch("cron.scheduler.get_due_jobs", return_value=[job]), patch(
+            "cron.scheduler.advance_next_run"
+        ) as advance, patch("cron.scheduler.run_one_job") as run_one:
+            assert tick(verbose=False, sync=True, can_dispatch=lambda: False) == 0
+
+        advance.assert_not_called()
+        run_one.assert_not_called()
+
     def test_tick_marks_empty_response_as_error(self, tmp_path):
         """When run_job returns success=True but final_response is empty,
         tick() should mark the job as error so last_status != 'ok'.
@@ -1622,6 +1642,63 @@ class TestRunJobSessionPersistence:
         assert os.getenv("HERMES_CRON_AUTO_DELIVER_CHAT_ID") is None
         assert os.getenv("HERMES_CRON_AUTO_DELIVER_THREAD_ID") is None
         fake_db.close.assert_called_once()
+
+    @pytest.mark.parametrize("timeout_value", ["600", "0"])
+    def test_run_job_heartbeats_oneshot_claim_in_both_wait_modes(
+        self, tmp_path, monkeypatch, timeout_value
+    ):
+        """Timed and unlimited one-shot monitors both refresh their owned claim."""
+        job = {
+            "id": "heartbeat-job",
+            "name": "heartbeat",
+            "prompt": "hello",
+            "schedule": {"kind": "once", "run_at": "2026-07-10T12:00:00Z"},
+            "run_claim": {"at": "2026-07-10T12:00:00Z", "by": "owner-token"},
+        }
+        fake_db = MagicMock()
+
+        class FakeAgent:
+            def __init__(self, *args, **kwargs):
+                pass
+
+            def run_conversation(self, *args, **kwargs):
+                return {"final_response": "ok"}
+
+        class FakeFuture:
+            def result(self):
+                return {"final_response": "ok"}
+
+        fake_future = FakeFuture()
+        fake_pool = MagicMock()
+        fake_pool.submit.return_value = fake_future
+        wait_results = [(set(), set()), ({fake_future}, set())]
+        monotonic_ticks = itertools.count(step=61.0)
+        monkeypatch.setenv("HERMES_CRON_TIMEOUT", timeout_value)
+
+        with patch("cron.scheduler._hermes_home", tmp_path), \
+             patch("hermes_state.SessionDB", return_value=fake_db), \
+             patch(
+                 "hermes_cli.runtime_provider.resolve_runtime_provider",
+                 return_value={
+                     "api_key": "***",
+                     "base_url": "https://example.invalid/v1",
+                     "provider": "openrouter",
+                     "api_mode": "chat_completions",
+                 },
+             ), \
+             patch("run_agent.AIAgent", FakeAgent), \
+             patch("cron.scheduler.concurrent.futures.ThreadPoolExecutor", return_value=fake_pool), \
+             patch("cron.scheduler.concurrent.futures.wait", side_effect=wait_results), \
+             patch("cron.scheduler.time.monotonic", side_effect=monotonic_ticks.__next__), \
+             patch("cron.scheduler.heartbeat_run_claim", return_value=True) as heartbeat:
+            success, _output, final_response, error = run_job(job)
+
+        assert success is True
+        assert error is None
+        assert final_response == "ok"
+        heartbeat.assert_called_once_with(
+            "heartbeat-job", expected_owner="owner-token"
+        )
 
     def test_run_job_resets_secret_source_cache_before_reload(self, tmp_path, monkeypatch):
         """Each run must clear the secret-source cache before re-reading the
@@ -1924,6 +2001,61 @@ class TestRunJobConfigEnvVarExpansion:
             f"Expected expanded fallback model in {expanded!r}. "
             "config.yaml ${VAR} in fallback_providers was not expanded."
         )
+
+    def test_auth_fallback_switches_provider_and_model_together(self, tmp_path):
+        """Codex auth failure must produce OpenRouter+GLM, never OpenRouter+GPT."""
+        from hermes_cli.auth import AuthError
+
+        (tmp_path / "config.yaml").write_text(
+            "model:\n"
+            "  default: gpt-5.6-sol\n"
+            "  provider: openai-codex\n"
+            "fallback_providers:\n"
+            "  - provider: anthropic\n"
+            "  - provider: openrouter\n"
+            "    model: z-ai/glm-5.2\n",
+            encoding="utf-8",
+        )
+        job = {
+            "id": "auth-fallback",
+            "name": "auth fallback",
+            "prompt": "hi",
+            "provider_snapshot": "openai-codex",
+            "model_snapshot": "gpt-5.6-sol",
+        }
+        fake_db = MagicMock()
+        requested = []
+
+        def resolve_runtime(**kwargs):
+            requested.append(kwargs.get("requested"))
+            if kwargs.get("requested") in (None, "openai-codex"):
+                # Cron must retain the configured primary provider for drift
+                # comparison even when older/custom AuthError sites omit it.
+                raise AuthError("No Codex credentials stored")
+            assert kwargs["requested"] == "openrouter"
+            assert kwargs["target_model"] == "z-ai/glm-5.2"
+            return {**self._RUNTIME, "provider": "openrouter"}
+
+        with patch("cron.scheduler._hermes_home", tmp_path), \
+             patch("cron.scheduler._resolve_origin", return_value=None), \
+             patch("hermes_cli.env_loader.load_hermes_dotenv"), \
+             patch("hermes_cli.env_loader.reset_secret_source_cache"), \
+             patch("hermes_state.SessionDB", return_value=fake_db), \
+             patch("hermes_cli.runtime_provider.resolve_runtime_provider",
+                   side_effect=resolve_runtime), \
+             patch("tools.mcp_tool.discover_mcp_tools", return_value=[]), \
+             patch("run_agent.AIAgent") as mock_agent_cls:
+            mock_agent = MagicMock()
+            mock_agent.run_conversation.return_value = {"final_response": "ok"}
+            mock_agent_cls.return_value = mock_agent
+            success, _, _, error = run_job(job)
+
+        assert success is True
+        assert error is None
+        assert requested == [None, "openrouter"]
+        kwargs = mock_agent_cls.call_args.kwargs
+        assert kwargs["provider"] == "openrouter"
+        assert kwargs["model"] == "z-ai/glm-5.2"
 
     def test_fallback_chain_merges_providers_and_legacy_model(self, tmp_path, monkeypatch):
         """Cron uses get_fallback_chain so legacy fallback_model is not dropped."""
@@ -4810,3 +4942,43 @@ class TestMultiTargetDeliveryContinuesOnFailure:
         assert "a@example.com" in result
         assert "b@example.com" in result
         assert mock_pool.submit.call_count == 2
+
+
+class TestSetCronSessionTitle:
+    """Robust cron session titling: #50535/#50536/#50537."""
+
+    def test_sets_title_when_no_collision(self):
+        from cron.scheduler import _set_cron_session_title
+        db = MagicMock()
+        db.set_session_title.return_value = True
+        out = _set_cron_session_title(db, "sess-1", "Nightly Synthesis")
+        assert out == "Nightly Synthesis"
+        db.set_session_title.assert_called_once_with("sess-1", "Nightly Synthesis")
+
+    def test_dedupes_on_duplicate_title(self):
+        # First write collides (ValueError); helper falls back to lineage #N.
+        from cron.scheduler import _set_cron_session_title
+        db = MagicMock()
+        db.set_session_title.side_effect = [ValueError("in use"), True]
+        db.get_next_title_in_lineage.return_value = "Nightly Synthesis #2"
+        out = _set_cron_session_title(db, "sess-1", "Nightly Synthesis")
+        assert out == "Nightly Synthesis #2"
+        db.get_next_title_in_lineage.assert_called_once_with("Nightly Synthesis")
+
+    def test_reraises_when_no_lineage_support(self):
+        from cron.scheduler import _set_cron_session_title
+        db = MagicMock(spec=["set_session_title"])
+        db.set_session_title.side_effect = ValueError("in use")
+        with pytest.raises(ValueError):
+            _set_cron_session_title(db, "sess-1", "Dup")
+
+    def test_returns_none_for_blank_base(self):
+        from cron.scheduler import _set_cron_session_title
+        db = MagicMock()
+        assert _set_cron_session_title(db, "sess-1", "   ") is None
+        db.set_session_title.assert_not_called()
+
+    def test_returns_none_without_db_or_session(self):
+        from cron.scheduler import _set_cron_session_title
+        assert _set_cron_session_title(None, "sess-1", "X") is None
+        assert _set_cron_session_title(MagicMock(), "", "X") is None

@@ -743,7 +743,7 @@ def get_container_exec_info() -> Optional[dict]:
 # =============================================================================
 
 # Re-export from hermes_constants — canonical definition lives there.
-from hermes_constants import get_hermes_home  # noqa: F811,E402
+from hermes_constants import get_hermes_home, get_process_hermes_home  # noqa: F811,E402
 from utils import atomic_replace, fast_safe_load
 
 def get_config_path() -> Path:
@@ -913,14 +913,32 @@ def _ensure_default_soul_md(home: Path) -> None:
     _secure_file(soul_path)
 
 
+# Home paths whose directory skeleton has been created this process — see
+# ensure_hermes_home(). Only successful passes are recorded, so a raised
+# managed-mode/missing-profile error keeps re-checking on later loads.
+_HERMES_HOME_ENSURED: set = set()
+
+
 def ensure_hermes_home():
     """Ensure ~/.hermes directory structure exists with secure permissions.
 
     In managed mode (NixOS), dirs are created by the activation script with
     setgid + group-writable (2770). We skip mkdir and set umask(0o007) so
     any files created (e.g. SOUL.md) are group-writable (0660).
+
+    Memoized per home path: this runs on EVERY ``load_config()`` (inside the
+    config lock), and the ~14 mkdir/chmod syscalls per call made repeated
+    config loads the dominant cost of hot read paths like ``model.options``.
+    After the first successful pass for a given ``HERMES_HOME`` we only re-run
+    the full walk if the home directory itself has vanished (a deleted home is
+    recreated on the next load, as before). Profile switches change
+    ``get_hermes_home()`` and therefore re-run for the new path.
     """
     home = get_hermes_home()
+    key = str(home)
+
+    if key in _HERMES_HOME_ENSURED and home.is_dir():
+        return
     # Named profiles must be created explicitly (e.g. ``hermes profile create``).
     # If a stale process keeps running after the profile was renamed/deleted,
     # silently mkdir-ing the old HERMES_HOME would resurrect an empty skeleton
@@ -947,6 +965,8 @@ def ensure_hermes_home():
             d.mkdir(parents=True, exist_ok=True)
             _secure_dir(d)
         _ensure_default_soul_md(home)
+
+    _HERMES_HOME_ENSURED.add(key)
 
 
 def _ensure_hermes_home_managed(home: Path):
@@ -1287,7 +1307,8 @@ DEFAULT_CONFIG = {
         "engine": "auto",
         "auto_local_for_private_urls": True,  # When a cloud provider is set, auto-spawn local Chromium for LAN/localhost URLs instead of sending them to the cloud
         "cdp_url": "",  # Optional persistent CDP endpoint for attaching to an existing Chromium/Chrome
-        "allow_unsafe_evaluate": False,  # Allow browser_console(expression=...) to use sensitive JS primitives (cookies/storage/clipboard/network/form values)
+        "allow_unsafe_evaluate": False,  # Legacy override: when true, browser_console(expression=...) bypasses the restrict_evaluate denylist entirely
+        "restrict_evaluate": False,  # Opt-in denylist blocking sensitive JS primitives (cookies/storage/clipboard/network/form values) in browser_console(expression=...)
         # CDP supervisor — dialog + frame detection via a persistent WebSocket.
         # Active only when a CDP-capable backend is attached (Browserbase or
         # local Chrome via /browser connect). See
@@ -1643,6 +1664,7 @@ DEFAULT_CONFIG = {
             "reasoning_effort": "",  # per-task thinking level: none|minimal|low|medium|high|xhigh|max|ultra (empty = provider default)
         },
         "title_generation": {
+            "enabled": True,
             "provider": "auto",
             "model": "",
             "base_url": "",
@@ -1905,6 +1927,12 @@ DEFAULT_CONFIG = {
             "last_lines": 2,
         },
         "interim_assistant_messages": True,  # Gateway: show natural mid-turn assistant status messages
+        # Codex Responses models narrate progress in a dedicated commentary
+        # channel. When true (default), completed commentary messages are
+        # delivered as visible mid-turn updates via the interim message path.
+        # When false, commentary falls back to the reasoning channel and is
+        # only visible when show_reasoning is enabled.
+        "show_commentary": True,
         "tool_progress_command": False,  # Enable /verbose command in messaging gateway
         "tool_progress_overrides": {},  # DEPRECATED — use display.platforms instead
         "tool_preview_length": 0,  # Max chars for tool call previews (0 = no limit, show full paths/commands)

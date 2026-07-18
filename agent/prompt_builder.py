@@ -114,6 +114,7 @@ def _strip_yaml_frontmatter(content: str) -> str:
     strip it so only the human-readable markdown body is injected into the
     system prompt.
     """
+    content = content.lstrip("\ufeff")  # tolerate UTF-8 BOM (Windows editors)
     if content.startswith("---"):
         end = content.find("\n---", 3)
         if end != -1:

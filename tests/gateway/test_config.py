@@ -4,6 +4,8 @@ import logging
 import os
 from unittest.mock import patch
 
+import pytest
+
 from agent.secret_scope import reset_secret_scope, set_secret_scope
 from hermes_constants import reset_hermes_home_override, set_hermes_home_override
 from gateway.config import (
@@ -304,6 +306,7 @@ class TestGatewayConfigRoundtrip:
             quick_commands={"limits": {"type": "exec", "command": "echo ok"}},
             group_sessions_per_user=False,
             thread_sessions_per_user=True,
+            systemd_watchdog_seconds=120,
         )
         d = config.to_dict()
         restored = GatewayConfig.from_dict(d)
@@ -314,6 +317,33 @@ class TestGatewayConfigRoundtrip:
         assert restored.quick_commands == {"limits": {"type": "exec", "command": "echo ok"}}
         assert restored.group_sessions_per_user is False
         assert restored.thread_sessions_per_user is True
+        assert restored.systemd_watchdog_seconds == 120
+
+    def test_systemd_watchdog_from_dict_disables_invalid_values(self):
+        invalid_values = [
+            None,
+            0,
+            -1,
+            True,
+            1.5,
+            float("nan"),
+            float("inf"),
+            "120.0",
+            "1e3",
+            "bad",
+            2_147_483_648,
+        ]
+
+        for raw in invalid_values:
+            config = GatewayConfig.from_dict({"systemd_watchdog_seconds": raw})
+            assert config.systemd_watchdog_seconds == 0
+
+    def test_systemd_watchdog_from_dict_accepts_nested_positive_integer(self):
+        config = GatewayConfig.from_dict(
+            {"gateway": {"systemd_watchdog_seconds": "45"}}
+        )
+
+        assert config.systemd_watchdog_seconds == 45
 
     def test_max_concurrent_sessions_from_dict_normalizes_disabled_values(self):
         assert GatewayConfig.from_dict({}).max_concurrent_sessions is None
@@ -477,6 +507,32 @@ class TestLoadGatewayConfig:
         config = load_gateway_config()
 
         assert config.multiplex_profiles is True
+
+    def test_discord_websocket_health_settings_seed_platform_extra(self, tmp_path, monkeypatch):
+        hermes_home = tmp_path / ".hermes"
+        hermes_home.mkdir()
+        (hermes_home / "config.yaml").write_text(
+            "discord:\n"
+            "  websocket_liveness_interval_seconds: 17\n"
+            "  websocket_liveness_failure_threshold: 4\n"
+            "  websocket_heartbeat_ack_max_age_seconds: 75\n"
+            "  websocket_max_latency_seconds: 30\n",
+            encoding="utf-8",
+        )
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+        for key in (
+            "HERMES_DISCORD_LIVENESS_INTERVAL_SECONDS",
+            "HERMES_DISCORD_LIVENESS_FAILURE_THRESHOLD",
+        ):
+            monkeypatch.delenv(key, raising=False)
+
+        config = load_gateway_config()
+
+        extra = config.platforms[Platform.DISCORD].extra
+        assert extra["websocket_liveness_interval_seconds"] == 17
+        assert extra["websocket_liveness_failure_threshold"] == 4
+        assert extra["websocket_heartbeat_ack_max_age_seconds"] == 75
+        assert extra["websocket_max_latency_seconds"] == 30
 
     def test_relay_platform_enabled_from_env_url(self, tmp_path, monkeypatch):
         """GATEWAY_RELAY_URL must enable Platform.RELAY in config.platforms so

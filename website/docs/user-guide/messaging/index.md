@@ -154,6 +154,30 @@ hermes gateway status       # Check default service status
 hermes gateway status --system         # Linux only: inspect the system service explicitly
 ```
 
+### Optional Linux event-loop watchdog
+
+A systemd-managed gateway can opt into process recovery when Python's asyncio
+event loop stops receiving scheduling time. This covers whole-process stalls
+that also prevent platform-specific liveness tasks from running:
+
+```yaml title="~/.hermes/config.yaml"
+gateway:
+  systemd_watchdog_seconds: 120
+```
+
+Regenerate the service unit after changing this setting:
+
+```bash
+hermes gateway install --force
+```
+
+A positive value makes the generated unit use `Type=notify`,
+`NotifyAccess=main`, and the matching `WatchdogSec`. Hermes sends heartbeats
+only while its event loop is making timely progress; systemd restarts the
+process when they stop. The default `0` keeps the existing `Type=simple`
+behavior. This setting is Linux/systemd-only and does not treat an ordinary
+platform network disconnect as an event-loop failure.
+
 ## Chat Commands (Inside Messaging)
 
 | Command | Description |

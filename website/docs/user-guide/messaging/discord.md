@@ -82,6 +82,24 @@ With `group_sessions_per_user: false`:
 
 This guide walks you through the full setup process — from creating your bot on Discord's Developer Portal to sending your first message.
 
+### Gateway WebSocket health
+
+Discord REST and the Gateway WebSocket are separate transports. A successful REST response (including `fetch_user()` returning HTTP 200) does not prove that the bot can still receive Gateway events. Hermes therefore combines the ready state, client/socket closure state, socket openness, heartbeat ACK age, and finite heartbeat latency.
+
+After the configured number of consecutive unhealthy samples, the adapter emits one retryable fatal event. The existing gateway reconnect watcher creates a fresh adapter; the Discord adapter does not start a second unbounded reconnect loop.
+
+Configure the non-secret thresholds in `config.yaml`:
+
+```yaml
+discord:
+  websocket_liveness_interval_seconds: 15
+  websocket_liveness_failure_threshold: 2
+  websocket_heartbeat_ack_max_age_seconds: 60
+  websocket_max_latency_seconds: 30
+```
+
+The old `liveness_interval_seconds` and `liveness_failure_threshold` names remain compatibility aliases only; they no longer mean REST probing.
+
 ## Step 1: Create a Discord Application
 
 1. Go to the [Discord Developer Portal](https://discord.com/developers/applications) and sign in with your Discord account.

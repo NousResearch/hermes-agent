@@ -82,6 +82,22 @@ Hermes 按会话键跟踪正在运行的 agent。
 
 本指南将引导你完成完整的设置流程——从在 Discord 开发者门户创建机器人到发送第一条消息。
 
+### Discord Gateway WebSocket 健康
+
+Discord REST 与 Gateway WebSocket 是独立传输。REST 请求成功不代表机器人仍能接收 Gateway 事件。Hermes 会组合检查 ready 状态、client/socket 关闭状态、socket 是否打开、heartbeat ACK 年龄和有限 heartbeat latency。
+
+连续异常达到阈值后，适配器只上报一次可重试失败；现有 Gateway 重连器创建新适配器，不会启动第二个无限重连循环。
+
+```yaml
+discord:
+  websocket_liveness_interval_seconds: 15
+  websocket_liveness_failure_threshold: 2
+  websocket_heartbeat_ack_max_age_seconds: 60
+  websocket_max_latency_seconds: 30
+```
+
+旧的 `liveness_interval_seconds` / `liveness_failure_threshold` 仅作为迁移别名保留，不再表示 REST probe。
+
 ## 第一步：创建 Discord 应用
 
 1. 前往 [Discord 开发者门户](https://discord.com/developers/applications) 并使用你的 Discord 账号登录。

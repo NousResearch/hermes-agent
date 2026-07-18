@@ -561,7 +561,10 @@ export function ModelSettings({ onMainModelChanged }: ModelSettingsProps) {
   // local-endpoint form (URL + optional API key) instead of being dead-ended
   // on the OAuth picker (the original "booted back to the first screen" loop).
   const startProviderSetup = useCallback(() => {
-    const slug = selectedProviderRow?.slug
+    // The saved provider can be present even when the options inventory has no
+    // matching row. That state renders the generic "Set up provider" action;
+    // fall back to the selected slug so the action does not become a no-op.
+    const slug = selectedProviderRow?.slug || selectedProvider
 
     if (!slug) {
       return
@@ -574,7 +577,7 @@ export function ModelSettings({ onMainModelChanged }: ModelSettingsProps) {
     } else {
       startManualProviderOAuth(slug)
     }
-  }, [selectedProviderRow])
+  }, [selectedProvider, selectedProviderRow])
 
   const applyMainModel = useCallback(async () => {
     if (!selectedProvider || !selectedModel) {

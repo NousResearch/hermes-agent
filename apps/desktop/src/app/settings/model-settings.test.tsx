@@ -21,6 +21,7 @@ const saveMoaModels = vi.fn()
 const setEnvVar = vi.fn()
 const getHermesConfigRecord = vi.fn()
 const saveHermesConfig = vi.fn()
+const startManualLocalEndpoint = vi.fn()
 const startManualProviderOAuth = vi.fn()
 
 vi.mock('@/hermes', () => ({
@@ -38,6 +39,7 @@ vi.mock('@/hermes', () => ({
 }))
 
 vi.mock('@/store/onboarding', () => ({
+  startManualLocalEndpoint: () => startManualLocalEndpoint(),
   startManualProviderOAuth: (slug: string) => startManualProviderOAuth(slug)
 }))
 
@@ -96,6 +98,17 @@ describe('ModelSettings', () => {
     // "Nous" shows in both the trigger and the open list.
     expect((await screen.findAllByText('Nous')).length).toBeGreaterThan(0)
     expect(screen.queryByText(/DeepSeek/)).toBeNull()
+  })
+
+  it('opens custom endpoint setup when the selected provider has no inventory row', async () => {
+    getGlobalModelInfo.mockResolvedValueOnce({ provider: 'custom', model: '' })
+    getGlobalModelOptions.mockResolvedValueOnce({ providers: [] })
+
+    await renderModelSettings()
+
+    fireEvent.click(await screen.findByRole('button', { name: 'Set up provider' }))
+
+    expect(startManualLocalEndpoint).toHaveBeenCalledOnce()
   })
 
   it('writes the profile default speed (service_tier) when the fast switch is toggled', async () => {

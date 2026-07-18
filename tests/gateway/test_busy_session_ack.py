@@ -54,6 +54,24 @@ def _make_event(text="hello", chat_id="123", platform_val="telegram"):
     return evt
 
 
+def _make_voice_event(chat_id="123"):
+    """Build a cached Telegram voice event before gateway STT enrichment."""
+    source = SessionSource(
+        platform=Platform.TELEGRAM,
+        chat_id=chat_id,
+        chat_type="dm",
+        user_id="user1",
+    )
+    return MessageEvent(
+        text="",
+        message_type=MessageType.VOICE,
+        source=source,
+        message_id="voice-msg1",
+        media_urls=["/tmp/clarify-answer.ogg"],
+        media_types=["audio/ogg"],
+    )
+
+
 def _make_runner():
     """Build a minimal GatewayRunner-like object for testing."""
     from gateway.run import GatewayRunner, _AGENT_PENDING_SENTINEL
@@ -69,6 +87,7 @@ def _make_runner():
     runner.config = MagicMock()
     runner.config.group_sessions_per_user = True
     runner.config.thread_sessions_per_user = False
+    runner.config.multiplex_profiles = False
     runner.session_store = None
     runner.hooks = MagicMock()
     runner.hooks.emit = AsyncMock()
@@ -121,6 +140,36 @@ class TestBusySessionAck:
         assert adapter._pending_messages[sk] is event
         assert sk not in runner._pending_messages
         running_agent.interrupt.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_pending_clarify_accepts_transcribed_voice_response(self):
+        """A voice reply must unblock clarify instead of remaining empty/queued."""
+        from gateway.run import GatewayRunner
+        from tools import clarify_gateway as clarify
+
+        runner, _sentinel = _make_runner()
+        event = _make_voice_event()
+        session_key = build_session_key(event.source)
+        clarify.register("voice-clarify", session_key, "Your answer?", None)
+
+        runner._enrich_message_with_transcription = AsyncMock(
+            return_value=('"My spoken answer"', ["My spoken answer"])
+        )
+        runner._should_echo_stt_transcripts = MagicMock(return_value=False)
+
+        try:
+            result = await GatewayRunner._handle_message(runner, event)
+
+            assert result == ""
+            pending = clarify.get_pending_for_session(session_key)
+            assert pending is not None
+            assert pending.response == "My spoken answer"
+            assert pending.event.is_set()
+            runner._enrich_message_with_transcription.assert_awaited_once_with(
+                "", ["/tmp/clarify-answer.ogg"]
+            )
+        finally:
+            clarify.clear_session(session_key)
 
     @pytest.mark.asyncio
     async def test_telegram_grace_followups_respect_queue_fifo(self, monkeypatch):

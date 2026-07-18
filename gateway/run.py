@@ -9685,6 +9685,51 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
 
         await adapter.send(source.chat_id, content, metadata=metadata)
 
+    async def _clarify_reply_text(self, event: MessageEvent) -> str:
+        """Return text for a pending clarify reply, transcribing voice input first."""
+        raw_text = (event.text or "").strip()
+        if raw_text:
+            return raw_text
+
+        if event.message_type != MessageType.VOICE:
+            return ""
+
+        media_urls = list(getattr(event, "media_urls", None) or [])
+        audio_paths = [
+            path
+            for index, path in enumerate(media_urls)
+            if _event_media_is_audio(event, index)
+        ]
+        if not audio_paths:
+            return ""
+
+        _, transcripts = await self._enrich_message_with_transcription("", audio_paths)
+        reply_text = "\n".join(
+            transcript.strip()
+            for transcript in transcripts
+            if isinstance(transcript, str) and transcript.strip()
+        )
+        if not reply_text:
+            return ""
+
+        if self._should_echo_stt_transcripts():
+            adapter = self._adapter_for_source(event.source)
+            metadata = self._thread_metadata_for_source(
+                event.source,
+                self._reply_anchor_for_event(event),
+            )
+            if adapter:
+                try:
+                    await adapter.send(
+                        event.source.chat_id,
+                        f'🎙️ "{reply_text}"',
+                        metadata=metadata,
+                    )
+                except Exception as exc:
+                    logger.debug("Clarify transcript echo failed (non-fatal): %s", exc)
+
+        return reply_text
+
     async def _handle_message(self, event: MessageEvent) -> Optional[str]:
         """
         Handle an incoming message from any platform.
@@ -9922,7 +9967,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         except Exception:
             _pending_clarify = None
         if _pending_clarify is not None and _clarify_mod is not None:
-            _raw_clarify_reply = (event.text or "").strip()
+            _raw_clarify_reply = await self._clarify_reply_text(event)
             # Skip slash commands — the user clearly wanted to issue a
             # command, not answer the clarify.  Leave the clarify pending
             # so the user can retry; if it times out, the agent unblocks

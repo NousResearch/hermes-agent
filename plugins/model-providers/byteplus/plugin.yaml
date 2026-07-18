@@ -1,0 +1,5 @@
+name: byteplus-provider
+kind: model-provider
+version: 1.0.0
+description: BytePlus
+author: Nous Research

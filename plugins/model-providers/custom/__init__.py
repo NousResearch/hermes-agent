@@ -84,9 +84,9 @@ class CustomProfile(ProviderProfile):
 custom = CustomProfile(
     name="custom",
     aliases=(
-        "ollama",
+        "ollama",  # bare ollama → custom path; use ollama-local / ollama-cloud for first-class
         "local",
-        "vllm",
+        # "vllm" is a first-class provider (plugins/model-providers/vllm)
         "llamacpp",
         "llama.cpp",
         "llama-cpp",

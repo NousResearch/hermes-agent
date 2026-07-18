@@ -1295,9 +1295,22 @@ _PROVIDER_ALIASES = {
     "lmstudio": "lmstudio",
     "lm-studio": "lmstudio",
     "lm_studio": "lmstudio",
-    "ollama": "custom",  # bare "ollama" = local; use "ollama-cloud" for cloud
+    "ollama": "custom",  # bare "ollama" = custom endpoint path; use "ollama-local" or "ollama-cloud"
     "ollama_cloud": "ollama-cloud",
 }
+
+# Extend with aliases declared on provider plugins (same pattern as hermes_cli/auth.py).
+try:
+    from providers import list_providers as _list_providers_for_aliases
+    for _pp in _list_providers_for_aliases():
+        for _alias in _pp.aliases:
+            if _alias not in _PROVIDER_ALIASES:
+                _PROVIDER_ALIASES[_alias] = _pp.name
+        # Ensure the canonical name maps to itself when not already present.
+        if _pp.name not in _PROVIDER_ALIASES:
+            _PROVIDER_ALIASES[_pp.name] = _pp.name
+except Exception:
+    pass
 
 
 # In-repo fallback for the model Hermes silently lands on when the user never

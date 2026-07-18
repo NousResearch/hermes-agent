@@ -1,0 +1,5 @@
+name: baseten-provider
+kind: model-provider
+version: 1.0.0
+description: Baseten
+author: Nous Research

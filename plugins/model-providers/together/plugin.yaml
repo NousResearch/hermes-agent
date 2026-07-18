@@ -1,0 +1,5 @@
+name: together-provider
+kind: model-provider
+version: 1.0.0
+description: Together AI
+author: Nous Research

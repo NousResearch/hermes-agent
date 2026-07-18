@@ -51,7 +51,37 @@ You need at least one way to connect to an LLM. Use `hermes model` to switch pro
 | **MiniMax OAuth** | `hermes model` → "MiniMax (OAuth)" (provider: `minimax-oauth`; browser PKCE login) |
 | **StepFun** | `STEPFUN_API_KEY` in `~/.hermes/.env` (provider: `stepfun`) |
 | **LM Studio** | `hermes model` → "LM Studio" (provider: `lmstudio`, optional `LM_API_KEY`) |
+| **Groq** | `GROQ_API_KEY` in `~/.hermes/.env` (provider: `groq`; aliases: `groq-cloud`) |
+| **Mistral AI** | `MISTRAL_API_KEY` in `~/.hermes/.env` (provider: `mistral`; also powers Voxtral STT/TTS tools) |
+| **Cohere** | `COHERE_API_KEY` in `~/.hermes/.env` (provider: `cohere`) |
+| **Together AI** | `TOGETHER_API_KEY` in `~/.hermes/.env` (provider: `together`; aliases: `together-ai`) |
+| **Cerebras** | `CEREBRAS_API_KEY` in `~/.hermes/.env` (provider: `cerebras`) |
+| **Venice AI** | `VENICE_API_KEY` in `~/.hermes/.env` (provider: `venice`) |
+| **Featherless AI** | `FEATHERLESS_API_KEY` in `~/.hermes/.env` (provider: `featherless`) |
+| **Baseten** | `BASETEN_API_KEY` in `~/.hermes/.env` (provider: `baseten`) |
+| **Chutes** | `CHUTES_API_KEY` in `~/.hermes/.env` (provider: `chutes`) |
+| **LongCat** | `LONGCAT_API_KEY` in `~/.hermes/.env` (provider: `longcat`) |
+| **Vercel AI Gateway** | `AI_GATEWAY_API_KEY` in `~/.hermes/.env` (provider: `vercel-ai-gateway`; aliases: `vercel`, `ai-gateway`) |
+| **DeepInfra** | `DEEPINFRA_API_KEY` in `~/.hermes/.env` (provider: `deepinfra`) |
+| **Baidu Qianfan** | `QIANFAN_API_KEY` in `~/.hermes/.env` (provider: `qianfan`; aliases: `baidu-qianfan`) |
+| **BytePlus** | `BYTEPLUS_API_KEY` in `~/.hermes/.env` (provider: `byteplus`) |
+| **Volcengine (Doubao)** | `VOLCANO_ENGINE_API_KEY` in `~/.hermes/.env` (provider: `volcengine`; aliases: `doubao`) |
+| **vLLM (local)** | `VLLM_API_KEY` (any non-empty value if server has no auth) + optional `VLLM_BASE_URL` (default `http://127.0.0.1:8000/v1`) |
+| **SGLang (local)** | `SGLANG_API_KEY` (any non-empty value if no auth) + optional `SGLANG_BASE_URL` (default `http://127.0.0.1:30000/v1`) |
+| **LiteLLM Proxy** | `LITELLM_API_KEY` + optional `LITELLM_BASE_URL` (default `http://127.0.0.1:4000/v1`) |
+| **Ollama (local)** | `OLLAMA_LOCAL_API_KEY` (any non-empty value) + optional `OLLAMA_LOCAL_BASE_URL` (default `http://127.0.0.1:11434/v1`; provider: `ollama-local`). Bare `ollama` still maps to the custom-endpoint path. Prefer tool-capable models. |
 | **Custom Endpoint** | `hermes model` → choose "Custom endpoint" (saved in `config.yaml`) |
+
+:::note Still via Custom / OpenRouter (not first-class yet)
+Some OpenClaw-only surfaces remain intentionally out of scope as dedicated chat providers:
+
+- **Cloudflare AI Gateway** — account/gateway-id–specific base URL; use Custom endpoint
+- **Synthetic** — Anthropic Messages transport (needs a native adapter, not chat-completions)
+- **ClawRouter / media-only hosts** (Vydra, Runway, …) — tool backends, not chat model providers
+- **Chutes OAuth** — API-key path is first-class; browser OAuth can be added later
+
+Most models on those hosts are already reachable through **OpenRouter** or a **custom base URL**.
+:::
 
 For the official API-key path, see the dedicated [Google Gemini guide](/guides/google-gemini).
 

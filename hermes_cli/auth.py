@@ -1784,7 +1784,8 @@ def resolve_provider(
         "lmstudio": "lmstudio", "lm-studio": "lmstudio", "lm_studio": "lmstudio",
         # Local server aliases — route through the generic custom provider
         "ollama": "custom", "ollama_cloud": "ollama-cloud",
-        "vllm": "custom", "llamacpp": "custom",
+        # vllm is first-class (plugins/model-providers/vllm); keep llama.cpp aliases on custom
+        "llamacpp": "custom",
         "llama.cpp": "custom", "llama-cpp": "custom",
     }
     # Extend with aliases declared in plugins/model-providers/<name>/ that aren't already mapped.

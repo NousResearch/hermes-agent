@@ -1,0 +1,5 @@
+name: ollama-local-provider
+kind: model-provider
+version: 1.0.0
+description: Ollama (local OpenAI-compatible /v1)
+author: Nous Research

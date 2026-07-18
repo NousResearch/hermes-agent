@@ -365,8 +365,8 @@ ALIASES: Dict[str, str] = {
     "lmstudio": "lmstudio",
     "lm-studio": "lmstudio",
     "lm_studio": "lmstudio",
-    "ollama": "custom",  # bare "ollama" = local; use "ollama-cloud" for cloud
-    "vllm": "local",
+    "ollama": "custom",  # bare "ollama" = custom; use "ollama-local" / "ollama-cloud"
+    "vllm": "vllm",  # first-class local OpenAI-compatible server
     "llamacpp": "local",
     "llama.cpp": "local",
     "llama-cpp": "local",

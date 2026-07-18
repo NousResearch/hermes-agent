@@ -1,0 +1,5 @@
+name: volcengine-provider
+kind: model-provider
+version: 1.0.0
+description: Volcengine (Doubao)
+author: Nous Research

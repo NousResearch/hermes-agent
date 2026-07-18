@@ -1,0 +1,5 @@
+name: longcat-provider
+kind: model-provider
+version: 1.0.0
+description: LongCat
+author: Nous Research

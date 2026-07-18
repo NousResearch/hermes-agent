@@ -1,0 +1,5 @@
+name: venice-provider
+kind: model-provider
+version: 1.0.0
+description: Venice AI
+author: Nous Research

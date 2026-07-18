@@ -73,7 +73,7 @@ def _config_base_url_trustworthy_for_bare_custom(cfg_base_url: str, cfg_provider
 
     GitHub #14676: the model picker can select Custom while ``model.provider`` still reflects a
     previous provider. Reject non-loopback URLs unless the YAML provider is already ``custom``
-    (or one of the local-server aliases that resolve to ``custom`` — ollama, vllm, llamacpp, …),
+    (or one of the local-server aliases that resolve to ``custom`` — ollama, llamacpp, …),
     so a stale OpenRouter/Z.ai base_url cannot hijack local ``custom`` sessions.
     """
     cfg_provider_norm = (cfg_provider or "").strip().lower()
@@ -83,7 +83,7 @@ def _config_base_url_trustworthy_for_bare_custom(cfg_base_url: str, cfg_provider
     if cfg_provider_norm == "custom":
         return True
     # GitHub #27132: provider aliases that resolve to "custom" at runtime
-    # (ollama, vllm, llamacpp, …) should be trusted the same way "custom"
+    # (ollama, llamacpp, …) should be trusted the same way "custom"
     # is, otherwise a legit LAN/WireGuard ollama endpoint silently falls
     # through to OpenRouter.
     try:
@@ -925,7 +925,7 @@ def _resolve_named_custom_runtime(
     # directly so the alias's base_url actually takes effect.
     #
     # GitHub #27132: provider aliases that resolve to "custom" at runtime
-    # (ollama, vllm, llamacpp, …) are treated identically here, so a YAML
+    # (ollama, llamacpp, …) are treated identically here, so a YAML
     # `provider: ollama` with a LAN/WireGuard `base_url` doesn't silently
     # fall through to OpenRouter.
     requested_norm = (requested_provider or "").strip().lower()

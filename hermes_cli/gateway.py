@@ -4151,6 +4151,33 @@ def refresh_launchd_plist_if_needed() -> bool:
     return True
 
 
+def refresh_launchd_plist_write_only() -> bool:
+    """Rewrite the launchd plist when stale, WITHOUT triggering a reload.
+
+    Safe for gateway-startup reconciliation: updates the on-disk plist so
+    the NEXT launchd bootstrap picks up the new definition (e.g. new
+    resource limits).  Unlike :func:`refresh_launchd_plist_if_needed`,
+    this never bootouts/bootstraps — it only writes the file.  Calling
+    it from inside the gateway's own process tree is harmless.
+
+    Returns True when the plist was out of date and was rewritten.
+    """
+    plist_path = get_launchd_plist_path()
+    if not plist_path.exists() or launchd_plist_is_current():
+        return False
+
+    new_plist = generate_launchd_plist()
+    if _refuse_temp_home_service_write(new_plist, "launchd plist"):
+        return False
+
+    plist_path.write_text(new_plist, encoding="utf-8")
+    logger.info(
+        "Updated launchd plist at %s (new limits take effect on next restart)",
+        plist_path,
+    )
+    return True
+
+
 def launchd_install(force: bool = False):
     plist_path = get_launchd_plist_path()
 
@@ -4800,6 +4827,16 @@ def run_gateway(verbose: int = 0, quiet: bool = False, replace: bool = False, fo
     if supports_systemd_services():
         try:
             refresh_systemd_unit_if_needed(system=False)
+        except Exception:
+            pass  # best-effort; don't block gateway startup
+
+    # Mirror: refresh the launchd plist on every boot so resource limits
+    # and other plist-level settings stay current even for gateways that
+    # were installed before those settings existed.  Write-only — safe
+    # from inside the gateway process tree.
+    if is_macos():
+        try:
+            refresh_launchd_plist_write_only()
         except Exception:
             pass  # best-effort; don't block gateway startup
 

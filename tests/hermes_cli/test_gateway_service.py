@@ -507,6 +507,70 @@ class TestGeneratedSystemdUnits:
         assert "<key>NumberOfFiles</key>" in plist
         assert "<integer>65536</integer>" in plist
 
+    def test_launchd_plist_write_only_refresh_updates_stale_plist(
+        self, tmp_path, monkeypatch,
+    ):
+        """Stale installed plist (no FD limits) is rewritten by write-only refresh."""
+        # Write a plist that's missing the resource-limit keys (simulates
+        # an installation from before #36899 was merged).
+        old_plist = """\
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN"
+  "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.hermes.gateway</string>
+    <key>ProgramArguments</key>
+    <array>
+        <string>/usr/local/bin/hermes</string>
+        <string>gateway</string>
+        <string>run</string>
+    </array>
+    <key>RunAtLoad</key>
+    <true/>
+    <key>KeepAlive</key>
+    <true/>
+</dict>
+</plist>
+"""
+        plist_path = tmp_path / "com.hermes.gateway.plist"
+        plist_path.write_text(old_plist)
+
+        monkeypatch.setattr(
+            gateway_cli, "get_launchd_plist_path", lambda: plist_path,
+        )
+        monkeypatch.setattr(
+            gateway_cli, "_refuse_temp_home_service_write", lambda *a, **kw: False,
+        )
+
+        # Before: stale
+        assert "NumberOfFiles" not in plist_path.read_text()
+
+        result = gateway_cli.refresh_launchd_plist_write_only()
+        assert result is True
+
+        # After: rewritten with limits
+        new_text = plist_path.read_text()
+        assert "NumberOfFiles" in new_text
+        assert "65536" in new_text
+
+    def test_launchd_plist_write_only_noop_when_current(self, tmp_path, monkeypatch):
+        """Write-only refresh is a no-op when plist already matches generated."""
+        current_plist = gateway_cli.generate_launchd_plist()
+        plist_path = tmp_path / "com.hermes.gateway.plist"
+        plist_path.write_text(current_plist)
+
+        monkeypatch.setattr(
+            gateway_cli, "get_launchd_plist_path", lambda: plist_path,
+        )
+        monkeypatch.setattr(
+            gateway_cli, "_refuse_temp_home_service_write", lambda *a, **kw: False,
+        )
+
+        result = gateway_cli.refresh_launchd_plist_write_only()
+        assert result is False  # already current — no rewrite
+
     def test_user_unit_includes_wsl_windows_interop_paths(self, monkeypatch):
         monkeypatch.setattr(gateway_cli, "is_wsl", lambda: True)
         monkeypatch.setenv(

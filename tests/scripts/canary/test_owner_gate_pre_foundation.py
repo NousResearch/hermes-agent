@@ -532,7 +532,7 @@ def _resource_identity(
         "self_link": provider
         + f"projects/{gate.PROJECT}/global/firewalls/{name}",
         "numeric_id": "4444444444444444444",
-        "fingerprint": "fingerprint-firewall-1",
+        "creation_timestamp": "2026-07-18T10:57:39.516-07:00",
         "network_self_link": network,
         "direction": "INGRESS",
         "priority": 700,
@@ -1028,6 +1028,10 @@ def test_apply_receipt_requires_exact_ordered_step_receipts() -> None:
         (
             "allow_private_web_upstream_from_current_caddy_host",
             "disabled",
+        ),
+        (
+            "allow_private_web_upstream_from_current_caddy_host",
+            "creation_timestamp",
         ),
         ("allow_private_web_upstream_from_current_caddy_host", "action"),
         ("allow_private_web_upstream_from_current_caddy_host", "allowed"),

@@ -1900,12 +1900,25 @@ def _rollback_created(
                         raise OwnerGateFoundationApplyError(
                             "owner_gate_foundation_rollback_interrupted_unknown"
                         )
-                    before = provider.inspect_resource(step, plan=chain.plan)
-                    before.validate()
-                    if before.state != "exact":
+                    created_post = _read_transition(
+                        journal=journal,
+                        chain=chain,
+                        transaction_id=transaction_id,
+                        name=f"s{index}-post",
+                        phase="postcondition_exact",
+                        step_index=index,
+                        step=step,
+                    )
+                    if created_post is None:
                         raise OwnerGateFoundationApplyError(
-                            "owner_gate_foundation_rollback_precondition_unknown"
+                            "owner_gate_foundation_rollback_journal_invalid"
                         )
+                    before = _require_live_journaled_exact(
+                        provider=provider,
+                        chain=chain,
+                        step=step,
+                        transition=created_post,
+                    )
                     before_precondition = before.precondition
                     attempt_id = _sha256_json({
                         "transaction_id": transaction_id,
@@ -4040,7 +4053,7 @@ class _TrustedGcloudFoundationProvider:
                     "name": firewall.get("name"),
                     "self_link": _provider_link(firewall.get("selfLink")),
                     "numeric_id": str(firewall.get("id", "")),
-                    "fingerprint": firewall.get("fingerprint"),
+                    "creation_timestamp": firewall.get("creationTimestamp"),
                     "network_self_link": _provider_link(firewall.get("network")),
                     "direction": firewall.get("direction"),
                     "priority": firewall.get("priority"),

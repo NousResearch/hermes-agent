@@ -287,6 +287,76 @@ class _PreflightRuntimeFailureProvider(_FakeProvider):
         )
 
 
+class _RecreatedRollbackTargetProvider(_FakeProvider):
+    def __init__(
+        self,
+        chain: apply.ValidatedFoundationAChain,
+        *,
+        recreated_step: str,
+        **kwargs: Any,
+    ) -> None:
+        super().__init__(chain, **kwargs)
+        self.recreated_step = recreated_step
+
+    def inspect_resource(
+        self,
+        step: gate.PlanStep,
+        *,
+        plan: gate.OwnerGateFoundationPlan,
+    ) -> apply.ResourceObservation:
+        observed = super().inspect_resource(step, plan=plan)
+        if (
+            self.failed
+            and step.name == self.recreated_step
+            and observed.state == "exact"
+        ):
+            identity = dict(observed.resource_identity or {})
+            identity["unique_id"] = "999999999999999999999"
+            return apply.ResourceObservation(
+                "exact",
+                _digest(f"inspect:{step.name}:recreated"),
+                resource_identity=identity,
+                precondition=observed.precondition,
+            )
+        return observed
+
+
+class _RecreatedBindingRollbackTargetProvider(_FakeProvider):
+    def __init__(
+        self,
+        chain: apply.ValidatedFoundationAChain,
+        *,
+        recreated_step: str,
+        **kwargs: Any,
+    ) -> None:
+        super().__init__(chain, **kwargs)
+        self.recreated_step = recreated_step
+
+    def inspect_resource(
+        self,
+        step: gate.PlanStep,
+        *,
+        plan: gate.OwnerGateFoundationPlan,
+    ) -> apply.ResourceObservation:
+        observed = super().inspect_resource(step, plan=plan)
+        if (
+            self.failed
+            and step.name == self.recreated_step
+            and observed.state == "exact"
+        ):
+            identity = dict(observed.resource_identity or {})
+            identity["policy_etag"] = "etag-policy-recreated"
+            precondition = dict(observed.precondition or {})
+            precondition["policy_etag"] = "etag-policy-recreated"
+            return apply.ResourceObservation(
+                "exact",
+                _digest(f"inspect:{step.name}:recreated"),
+                resource_identity=identity,
+                precondition=precondition,
+            )
+        return observed
+
+
 class _DelayedVisibilityProvider(_FakeProvider):
     def __init__(
         self,
@@ -946,6 +1016,58 @@ def test_provider_inventory_ignores_same_name_outside_exact_scope(
     assert observed.state == "absent"
 
 
+def test_provider_accepts_exact_compute_firewall_without_fingerprint(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    chain = _chain()
+    provider = object.__new__(apply._TrustedGcloudFoundationProvider)
+    provider._plan_sha256 = apply.pre_foundation.inert_plan_sha256(chain.plan)
+    name = "muncho-owner-gate-web-from-production"
+    live_firewall = {
+        "allowed": [{
+            "IPProtocol": "tcp",
+            "ports": [str(gate.WEB_LISTEN_PORT)],
+        }],
+        "creationTimestamp": "2026-07-18T10:57:39.516-07:00",
+        "direction": "INGRESS",
+        "disabled": False,
+        "id": "348870584353292412",
+        "logConfig": {"enable": True},
+        "name": name,
+        "network": (
+            "https://www.googleapis.com/compute/v1/projects/"
+            f"{gate.PROJECT}/global/networks/{gate.NETWORK_NAME}"
+        ),
+        "priority": 700,
+        "selfLink": (
+            "https://www.googleapis.com/compute/v1/projects/"
+            f"{gate.PROJECT}/global/firewalls/{name}"
+        ),
+        "sourceServiceAccounts": [gate.PRODUCTION_SOURCE_SERVICE_ACCOUNT],
+        "targetServiceAccounts": [chain.plan.spec.service_account_email],
+    }
+    assert "fingerprint" not in live_firewall
+    monkeypatch.setattr(
+        provider,
+        "_read_json",
+        lambda _logical: ([live_firewall], _digest("firewall-read")),
+    )
+    step = next(
+        item
+        for item in chain.plan.foundation_steps
+        if item.name == "allow_private_web_upstream_from_current_caddy_host"
+    )
+
+    observed = provider.inspect_resource(step, plan=chain.plan)
+
+    assert observed.state == "exact"
+    assert observed.resource_identity is not None
+    assert observed.resource_identity["creation_timestamp"] == (
+        live_firewall["creationTimestamp"]
+    )
+    assert "fingerprint" not in observed.resource_identity
+
+
 @pytest.mark.parametrize(
     ("step_name", "exact_item"),
     [
@@ -1160,6 +1282,112 @@ def test_known_mutation_failure_still_rolls_back_cleanly(
         item["disposition"]
         for item in caught.value.receipt["rollback_step_receipts"]
     ] == ["rolled_back"]
+
+
+def test_rollback_refuses_exact_recreated_resource_identity(
+    tmp_path: Path,
+) -> None:
+    chain = _chain()
+    created = chain.plan.foundation_steps[0]
+    failed = chain.plan.foundation_steps[1]
+    provider = _RecreatedRollbackTargetProvider(
+        chain,
+        recreated_step=created.name,
+        fail_step=failed.name,
+        failure_state="failed",
+    )
+    store = _journal_for_test(tmp_path / "journal")
+
+    with pytest.raises(apply.FoundationApplyFailed) as caught:
+        apply._apply_with_provider(
+            chain=chain,
+            private_key=helpers.RELEASE_KEY,
+            provider=provider,
+            journal=store,
+            now_unix=lambda: helpers.NOW + 2,
+        )
+
+    assert provider.rollback_calls == []
+    assert provider.states[created.name] == "exact"
+    assert "s0-rollback-intent" not in store.list(
+        apply._transaction_id(chain)
+    )
+    assert caught.value.receipt["terminal_state"] == (
+        "manual_reconciliation_required"
+    )
+    assert caught.value.receipt["partial_unknown_state"] is True
+    assert caught.value.receipt["rollback_step_receipts"][0][
+        "disposition"
+    ] == "rollback_unknown"
+
+
+def test_rollback_refuses_recreated_iam_binding_etag(
+    tmp_path: Path,
+) -> None:
+    chain = _chain()
+    created = chain.plan.foundation_steps[2]
+    failed = chain.plan.foundation_steps[3]
+    provider = _RecreatedBindingRollbackTargetProvider(
+        chain,
+        recreated_step=created.name,
+        fail_step=failed.name,
+        failure_state="failed",
+    )
+    store = _journal_for_test(tmp_path / "journal")
+
+    with pytest.raises(apply.FoundationApplyFailed) as caught:
+        apply._apply_with_provider(
+            chain=chain,
+            private_key=helpers.RELEASE_KEY,
+            provider=provider,
+            journal=store,
+            now_unix=lambda: helpers.NOW + 2,
+        )
+
+    assert provider.rollback_calls == []
+    assert provider.states[created.name] == "exact"
+    assert "s2-rollback-intent" not in store.list(
+        apply._transaction_id(chain)
+    )
+    assert caught.value.receipt["terminal_state"] == (
+        "manual_reconciliation_required"
+    )
+    assert caught.value.receipt["partial_unknown_state"] is True
+    assert caught.value.receipt["rollback_step_receipts"][0][
+        "disposition"
+    ] == "rollback_unknown"
+
+
+@pytest.mark.parametrize("corrupt_created_post", [False, True])
+def test_rollback_requires_signed_created_postcondition_identity(
+    tmp_path: Path,
+    corrupt_created_post: bool,
+) -> None:
+    chain = _chain()
+    created = chain.plan.foundation_steps[0]
+    provider = _FakeProvider(chain)
+    provider.states[created.name] = "exact"
+    store = _journal_for_test(tmp_path / "journal")
+    transaction_id = apply._transaction_id(chain)
+    if corrupt_created_post:
+        store.publish(transaction_id, "s0-post", {"invalid": True})
+
+    receipts, partial_unknown = apply._rollback_created(
+        provider=provider,
+        chain=chain,
+        private_key=helpers.RELEASE_KEY,
+        journal=store,
+        transaction_id=transaction_id,
+        created_steps=[created],
+        now_unix=lambda: helpers.NOW + 2,
+        postcondition_wait=lambda _seconds: None,
+    )
+
+    assert provider.rollback_calls == []
+    assert provider.states[created.name] == "exact"
+    assert "s0-rollback-intent" not in store.list(transaction_id)
+    assert partial_unknown is True
+    assert receipts[0]["disposition"] == "rollback_unknown"
 
 
 def test_unknown_current_operation_dispatches_zero_rollbacks(tmp_path: Path) -> None:

@@ -1,7 +1,8 @@
 import asyncio
+import sys
+from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
-import sys
 
 import pytest
 
@@ -445,3 +446,198 @@ async def test_typing_stop_cleans_up():
 
     await adapter.stop_typing("12345")
     assert "12345" not in adapter._typing_tasks
+
+
+# ---------------------------------------------------------------------------
+# #66797 — outbound MEDIA video must reach channel.send as a real attachment
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_send_video_uses_path_based_files_kwarg(tmp_path, monkeypatch):
+    """Regression for #66797: video MEDIA delivery must use path-based
+    ``discord.File`` via ``files=[...]`` (same pattern as image batching).
+
+    The previous open-handle + singular ``file=`` form could return a successful
+    message with zero attachments after an earlier image batch on the same
+    channel — silent drop from the user's perspective.
+    """
+    import plugins.platforms.discord.adapter as discord_platform
+
+    video = tmp_path / "clip.mp4"
+    video.write_bytes(b"\x00\x00\x00\x18ftypmp42fake")
+
+    captured = {}
+
+    class _FakeFile:
+        def __init__(self, fp, filename=None, **kwargs):
+            captured["fp"] = fp
+            captured["filename"] = filename
+
+    monkeypatch.setattr(discord_platform.discord, "File", _FakeFile)
+
+    adapter = DiscordAdapter(PlatformConfig(enabled=True, token="***"))
+    sent_msg = SimpleNamespace(
+        id=4242,
+        attachments=[SimpleNamespace(filename="clip.mp4", url="https://cdn.example/clip.mp4")],
+    )
+    channel = SimpleNamespace(
+        send=AsyncMock(return_value=sent_msg),
+        type=0,
+    )
+    adapter._client = SimpleNamespace(
+        get_channel=lambda _chat_id: channel,
+        fetch_channel=AsyncMock(),
+    )
+    monkeypatch.setattr(adapter, "_is_forum_parent", lambda _ch: False)
+
+    result = await adapter.send_video("555", str(video))
+
+    assert result.success is True
+    assert result.message_id == "4242"
+    assert captured["fp"] == str(video)
+    assert captured["filename"] == "clip.mp4"
+    channel.send.assert_awaited_once()
+    send_kwargs = channel.send.await_args.kwargs
+    assert send_kwargs.get("file") is None
+    assert isinstance(send_kwargs.get("files"), list) and len(send_kwargs["files"]) == 1
+
+
+@pytest.mark.asyncio
+async def test_send_video_fails_loud_when_message_has_no_attachments(tmp_path, monkeypatch):
+    """If Discord accepts the message but attaches nothing, fail loud (#66797)."""
+    import plugins.platforms.discord.adapter as discord_platform
+
+    video = tmp_path / "clip.mp4"
+    video.write_bytes(b"fake-mp4")
+
+    monkeypatch.setattr(
+        discord_platform.discord,
+        "File",
+        lambda fp, filename=None, **kwargs: SimpleNamespace(fp=fp, filename=filename),
+    )
+
+    adapter = DiscordAdapter(PlatformConfig(enabled=True, token="***"))
+    # Message id present, but no attachments — the silent-drop failure mode.
+    sent_msg = SimpleNamespace(id=99, attachments=[])
+    channel = SimpleNamespace(send=AsyncMock(return_value=sent_msg), type=0)
+    adapter._client = SimpleNamespace(
+        get_channel=lambda _chat_id: channel,
+        fetch_channel=AsyncMock(),
+    )
+    monkeypatch.setattr(adapter, "_is_forum_parent", lambda _ch: False)
+
+    result = await adapter.send_video("555", str(video))
+
+    assert result.success is False
+    assert "no files" in (result.error or "").lower()
+    channel.send.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_deliver_media_from_response_routes_mp4_to_send_video(tmp_path, monkeypatch):
+    """Streaming/post-stream dispatch must call send_video for MEDIA:.mp4."""
+    from gateway.platforms.base import BasePlatformAdapter, SendResult
+    from gateway.run import GatewayRunner
+
+    video = tmp_path / "clip.mp4"
+    video.write_bytes(b"fake-mp4")
+    image = tmp_path / "figure.png"
+    image.write_bytes(b"fake-png")
+
+    # Allow delivery from tmp_path in non-strict mode (default).
+    monkeypatch.chdir(tmp_path)
+
+    adapter = SimpleNamespace(
+        name="Discord",
+        extract_media=BasePlatformAdapter.extract_media,
+        extract_images=BasePlatformAdapter.extract_images,
+        extract_local_files=BasePlatformAdapter.extract_local_files,
+        send_voice=AsyncMock(return_value=SendResult(success=True, message_id="v")),
+        send_document=AsyncMock(return_value=SendResult(success=True, message_id="d")),
+        send_image_file=AsyncMock(return_value=SendResult(success=True, message_id="i")),
+        send_video=AsyncMock(return_value=SendResult(success=True, message_id="vid")),
+        send_multiple_images=AsyncMock(),
+    )
+    event = SimpleNamespace(
+        source=SimpleNamespace(
+            platform="discord",
+            chat_id="chat-1",
+            thread_id=None,
+        )
+    )
+    runner = SimpleNamespace(
+        _thread_metadata_for_source=lambda source, anchor=None: {},
+        _reply_anchor_for_event=lambda event: None,
+    )
+    response = (
+        f"Here is the figure:\n\nMEDIA:{image}\n\n"
+        f"And the clip:\n\nMEDIA:{video}\n"
+    )
+
+    await GatewayRunner._deliver_media_from_response(runner, response, event, adapter)
+
+    adapter.send_video.assert_awaited_once()
+    sent_path = adapter.send_video.await_args.kwargs["video_path"]
+    assert Path(sent_path).resolve() == video.resolve()
+    adapter.send_multiple_images.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_send_video_missing_file_fails_fast_without_touching_channel():
+    """A missing MEDIA path must fail loud before any Discord I/O (#66797).
+
+    The pre-flight ``os.path.isfile`` guard turns a would-be crash inside
+    ``discord.File`` into an actionable ``File not found`` result, and must
+    short-circuit before the channel is ever resolved.
+    """
+    def _boom(*_args, **_kwargs):
+        raise AssertionError("channel must not be resolved for a missing file")
+
+    adapter = DiscordAdapter(PlatformConfig(enabled=True, token="***"))
+    adapter._client = SimpleNamespace(get_channel=_boom, fetch_channel=AsyncMock(side_effect=_boom))
+
+    result = await adapter.send_video("555", "/no/such/clip.mp4")
+
+    assert result.success is False
+    assert "not found" in (result.error or "").lower()
+
+
+@pytest.mark.asyncio
+async def test_send_file_attachment_forum_uses_files_kwarg(tmp_path, monkeypatch):
+    """Forum-parent delivery must also route the path-based file through the
+    plural ``files=[...]`` kwarg (#66797), so the create_thread starter message
+    carries the attachment rather than silently dropping it."""
+    import plugins.platforms.discord.adapter as discord_platform
+
+    video = tmp_path / "clip.mp4"
+    video.write_bytes(b"fake-mp4")
+
+    monkeypatch.setattr(
+        discord_platform.discord,
+        "File",
+        lambda fp, filename=None, **kwargs: SimpleNamespace(fp=fp, filename=filename),
+    )
+
+    adapter = DiscordAdapter(PlatformConfig(enabled=True, token="***"))
+    created_thread = SimpleNamespace(
+        id=7,
+        message=SimpleNamespace(id=8),
+    )
+    forum_channel = SimpleNamespace(
+        id=7,
+        create_thread=AsyncMock(return_value=created_thread),
+    )
+    adapter._client = SimpleNamespace(
+        get_channel=lambda _chat_id: forum_channel,
+        fetch_channel=AsyncMock(),
+    )
+    monkeypatch.setattr(adapter, "_is_forum_parent", lambda _ch: True)
+
+    result = await adapter.send_video("555", str(video))
+
+    assert result.success is True
+    forum_channel.create_thread.assert_awaited_once()
+    thread_kwargs = forum_channel.create_thread.await_args.kwargs
+    assert thread_kwargs.get("file") is None
+    assert isinstance(thread_kwargs.get("files"), list) and len(thread_kwargs["files"]) == 1

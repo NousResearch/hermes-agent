@@ -812,7 +812,7 @@ export const ru = defineLocale({
       selectedTitle: 'Провайдер выбран',
       selectedMessage: provider => `${provider} теперь активен.`,
       failedSelect: provider => `Не удалось выбрать ${provider}`,
-      failedLoad: 'Не удалось загрузить профили',
+      failedLoad: 'Не удалось загрузить конфигурацию инструментов',
       noProviderOptions:
         'У этого набора инструментов нет опций провайдера — включите его, и он заработает с текущей конфигурацией.',
       noProviders: 'Сейчас нет доступных провайдеров для этого набора инструментов.',
@@ -930,7 +930,7 @@ export const ru = defineLocale({
       installing: 'Установка…',
       uninstall: 'Удалить',
       uninstalling: 'Удаление…',
-      updateAll: 'Обновить все',
+      updateAll: 'Обновить установленные навыки',
       updating: 'Обновление…',
       preview: 'Предпросмотр',
       scan: 'Сканировать',
@@ -946,9 +946,9 @@ export const ru = defineLocale({
       verdictSafe: 'Безопасно',
       verdictCaution: 'Требует внимания',
       verdictDangerous: 'Опасно',
-      policyAllow: 'Разрешать',
-      policyAsk: 'Спрашивать',
-      policyBlock: 'Блокировать',
+      policyAllow: 'Установка разрешена',
+      policyAsk: 'Проверить перед установкой',
+      policyBlock: 'Установка заблокирована политикой',
       findings: count => countRu(count, 'проблема', 'проблемы', 'проблем'),
       noFindings: 'Проблем не найдено.',
       installStarted: name => `Установка ${name} начата`,
@@ -1130,7 +1130,7 @@ export const ru = defineLocale({
     nav: {
       newChat: { title: 'Новая сессия', detail: 'Начать новую сессию' },
       settings: { title: 'Настройки', detail: 'Настроить Hermes Desktop' },
-      skills: { title: 'Навыки и инструменты', detail: 'Включить навыки, наборы инструментов и провайдеров' },
+      skills: { title: 'Навыки и инструменты', detail: 'Навыки, инструменты и MCP-серверы' },
       messaging: { title: 'Мессенджеры', detail: 'Настроить Telegram, Slack, Discord и другие' },
       artifacts: { title: 'Артефакты', detail: 'Просмотр созданных результатов' }
     },
@@ -1188,7 +1188,7 @@ export const ru = defineLocale({
       doctor: 'Диагностика',
       doctorDesc: 'Проверить состояние Hermes и найти проблемы',
       securityAudit: 'Аудит безопасности',
-      securityAuditDesc: 'Проверить конфигурацию на уязвимости',
+      securityAuditDesc: 'Проверить конфигурацию и навыки на наличие небезопасных настроек',
       backup: 'Резервное копирование',
       backupDesc: 'Создать резервную копию данных Hermes',
       debugShare: 'Отладка и доступ',
@@ -1200,7 +1200,7 @@ export const ru = defineLocale({
       copyLink: 'Копировать ссылку',
       linkCopied: 'Ссылка скопирована',
       curator: 'Куратор навыков',
-      curatorDesc: 'Анализирует использование навыков и предлагает улучшения',
+      curatorDesc: 'Фоновая проверка, которая архивирует устаревшие навыки, созданные агентом',
       curatorPaused: 'На паузе',
       curatorActive: 'Активен',
       curatorDisabled: 'Отключён',
@@ -1210,18 +1210,18 @@ export const ru = defineLocale({
       resume: 'Возобновить',
       runNow: 'Запустить сейчас',
       memoryData: 'Данные памяти',
-      memoryDataDesc: 'Просмотр и управление сохранённой памятью',
+      memoryDataDesc: 'Встроенные файлы памяти, добавляемые в каждую сессию',
       memoryProvider: name => `Провайдер памяти: ${name}`,
       builtinMemory: 'Встроенная память',
-      memoryFile: 'Файл памяти',
-      userFile: 'Пользовательский файл',
+      memoryFile: 'Память агента (MEMORY.md)',
+      userFile: 'Профиль пользователя (USER.md)',
       bytes: size => `${size} Б`,
       empty: 'Пусто',
       resetMemory: 'Сбросить память',
       resetUser: 'Сбросить пользовательские данные',
       resetAll: 'Сбросить всё',
-      resetConfirm: target => `Сбросить ${target}? Действие необратимо.`,
-      resetDone: files => `Сброшено: ${files}`,
+      resetConfirm: target => `Удалить ${target}? Это действие нельзя отменить.`,
+      resetDone: files => `Удалено: ${files}.`,
       resetFailed: 'Не удалось выполнить сброс',
       actionStarted: name => `Запущено: ${name}. Журнал обновляется…`,
       actionFailed: name => `Не удалось выполнить: ${name}`,
@@ -1426,7 +1426,7 @@ export const ru = defineLocale({
     nameLabel: 'Имя',
     cloneFrom: 'Клонировать из',
     cloneFromNone: 'Ничего (пустой профиль)',
-    cloneFromDesc: 'Скопировать настройки из существующего профиля.',
+    cloneFromDesc: 'Копирует конфигурацию, навыки и SOUL.md из выбранного профиля.',
     cloneFromDefault: 'Клонировать из профиля по умолчанию',
     cloneFromDefaultDesc: 'Скопировать конфигурацию, навыки и SOUL.md из профиля по умолчанию.',
     invalidName: hint => `Недопустимое имя. ${hint}`,
@@ -1611,7 +1611,7 @@ export const ru = defineLocale({
       artifacts: 'Артефакты'
     },
     searchAria: 'Поиск сессий',
-    searchPlaceholder: 'Поиск сессий, разделов и действий',
+    searchPlaceholder: 'Поиск сессий…',
     clearSearch: 'Очистить поиск',
     noMatch: query => `Нет сессий, соответствующих «${query}».`,
     results: 'Результаты',
@@ -1846,13 +1846,13 @@ export const ru = defineLocale({
       },
       implementationPlan: {
         label: 'План реализации',
-        description: 'Пошаговый план внедрения функции или исправления.',
-        text: 'Пожалуйста, составь пошаговый план реализации для этой задачи.'
+        description: 'Наметить подход до изменения кода, чтобы изменения оставались целевыми.',
+        text: 'Пожалуйста, составь краткий план реализации до внесения изменений в код.'
       },
       explainThis: {
         label: 'Объясни это',
-        description: 'Понятное объяснение выделенного кода или концепции.',
-        text: 'Пожалуйста, объясни этот код или концепцию простыми словами.'
+        description: 'Объяснение работы выбранного кода со ссылками на ключевые файлы.',
+        text: 'Пожалуйста, объясни, как это работает, и укажи ключевые файлы.'
       }
     },
     speakReplies: 'Озвучивать ответы',
@@ -1990,7 +1990,8 @@ export const ru = defineLocale({
       xai: { short: 'Модели Grok', description: 'Прямой доступ к моделям xAI Grok.' },
       local: {
         short: 'собственный хостинг',
-        description: 'Запускайте модели локально через llama.cpp, Ollama или другие серверы вывода.'
+        description:
+          'Подключите Hermes к локальной либо развёрнутой на собственном сервере конечной точке, совместимой с OpenAI (vLLM, llama.cpp, Ollama и др.).'
       },
       fireworks: {
         short: 'прямой API моделей',
@@ -2092,7 +2093,7 @@ export const ru = defineLocale({
       updateFailed: 'Не удалось обновить опцию модели',
       fastFailed: 'Не удалось обновить быстрый режим',
       xhigh: 'Очень высокий',
-      ultra: 'Максимальный'
+      ultra: 'Ультра'
     },
     gatewayMenu: {
       gateway: 'Шлюз',
@@ -2349,7 +2350,8 @@ export const ru = defineLocale({
       restoreCheckpoint: 'Восстановить точку',
       restoreFromHere: 'Восстановить точку и снова выполнить этот запрос',
       restoreTitle: 'Восстановить точку сохранения?',
-      restoreBody: 'Будут удалены все сообщения после этой точки. Действие необратимо.',
+      restoreBody:
+        'Все сообщения после этого запроса будут удалены из диалога, а запрос будет снова выполнен с этой точки.',
       restoreConfirm: 'Восстановить',
       restoreNext: 'Восстановить следующую точку',
       goForward: 'Вперёд',
@@ -2504,16 +2506,16 @@ export const ru = defineLocale({
     stopFailed: 'Не удалось остановить',
     regenerateFailed: 'Не удалось создать ответ заново',
     editFailed: 'Не удалось изменить сообщение',
-    resumeStrandedTitle: 'Сессия была прервана',
+    resumeStrandedTitle: 'Не удалось загрузить эту сессию',
     resumeStrandedBody:
-      'Похоже, предыдущая сессия Hermes не завершилась корректно. Хотите восстановить состояние и продолжить, или начать заново?',
-    resumeRetry: 'Повторить восстановление',
+      'Не удалось подключиться к этой сессии, и автоматические повторные попытки исчерпаны. Убедитесь, что шлюз запущен, затем повторите попытку.',
+    resumeRetry: 'Повторить',
     nothingToBranch: 'Нет сообщения для создания ответвления',
     branchNeedsChat: 'Начните или возобновите чат, прежде чем создавать ответвление.',
     sessionBusy: 'Сессия занята',
     branchStopCurrent: 'Остановите текущий ход, прежде чем создавать ответвление чата.',
     branchNoText: 'В сообщении нет текста, с которого можно создать ответвление.',
-    branchTitle: (n: number) => `Ответвление (${n})`,
+    branchTitle: (n: number) => `Черновик: ответвление №${n}`,
     branchFailed: 'Не удалось создать ответвление',
     deleteFailed: 'Не удалось удалить',
     archived: 'Архивировано',

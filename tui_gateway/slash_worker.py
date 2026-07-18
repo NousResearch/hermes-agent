@@ -72,6 +72,8 @@ def _prepare_slash_worker_runtime() -> None:
         logger=logger,
         thread_name="slash-worker-mcp-discovery",
     )
+    # Persistent slash workers stay on the bounded interactive path so a
+    # slow/dead MCP server cannot delay slash readiness (#51322 review).
     wait_for_mcp_discovery()
 
 

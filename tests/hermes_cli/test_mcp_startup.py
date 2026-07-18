@@ -212,7 +212,7 @@ def test_init_agent_waits_for_mcp_discovery_before_agent_build(monkeypatch):
     monkeypatch.setattr(
         mcp_startup,
         "wait_for_mcp_discovery",
-        lambda timeout=0.75: waited.__setitem__("done", True),
+        lambda timeout=0.75, single_query=False: waited.__setitem__("done", True),
     )
 
     def _fake_agent(*_a, **_k):
@@ -222,3 +222,125 @@ def test_init_agent_waits_for_mcp_discovery_before_agent_build(monkeypatch):
     monkeypatch.setattr(cli_mod, "AIAgent", _fake_agent)
 
     assert cli._init_agent() is True
+
+
+def test_init_agent_passes_single_query_flag_to_discovery_wait(monkeypatch):
+    """Single-query mode forwards single_query=True so the larger MCP cold-start
+    bound is used — the one tool snapshot must wait for slow servers (#51316)."""
+    seen = {}
+
+    cli = cli_mod.HermesCLI(compact=True)
+    cli._session_db = object()
+    cli._resumed = False
+    cli.conversation_history = []
+    cli._install_tool_callbacks = lambda: None
+    cli._ensure_tirith_security = lambda: None
+    cli._ensure_runtime_credentials = lambda: True
+    cli._single_query_mode = True
+
+    monkeypatch.setattr(
+        mcp_startup,
+        "wait_for_mcp_discovery",
+        lambda timeout=0.75, single_query=False: seen.__setitem__(
+            "single_query", single_query
+        ),
+    )
+    monkeypatch.setattr(cli_mod, "AIAgent", lambda *_a, **_k: types.SimpleNamespace())
+
+    assert cli._init_agent() is True
+    assert seen.get("single_query") is True
+
+
+def test_oneshot_run_agent_waits_single_query_mcp_before_aiagent(monkeypatch):
+    """Top-level `hermes -z` routes to oneshot; MCP wait must precede AIAgent (#51316)."""
+    import inspect
+
+    import hermes_cli.oneshot as oneshot_mod
+
+    order: list[str] = []
+
+    def _wait(*, timeout=None, single_query=False):
+        order.append(f"wait:{single_query}")
+
+    class _FakeAgent:
+        def __init__(self, *args, **kwargs):
+            order.append("aiagent")
+            self.suppress_status_output = False
+            self.stream_delta_callback = None
+            self.tool_gen_callback = None
+
+        def run_conversation(self, prompt):
+            return {"final_response": "ok"}
+
+    monkeypatch.setattr(
+        oneshot_mod, "wait_for_mcp_discovery", _wait, raising=False
+    )
+    # Patch the imported symbol used inside _run_agent.
+    monkeypatch.setattr(
+        "hermes_cli.mcp_startup.wait_for_mcp_discovery",
+        _wait,
+    )
+    monkeypatch.setattr(oneshot_mod, "AIAgent", _FakeAgent, raising=False)
+    monkeypatch.setattr(
+        "run_agent.AIAgent",
+        _FakeAgent,
+    )
+    monkeypatch.setattr(
+        "hermes_cli.config.load_config",
+        lambda: {"model": {"default": "test-model"}},
+    )
+    monkeypatch.setattr(
+        "hermes_cli.models.detect_provider_for_model",
+        lambda *a, **k: None,
+    )
+    monkeypatch.setattr(
+        "hermes_cli.runtime_provider.resolve_runtime_provider",
+        lambda **k: {
+            "api_key": "k",
+            "base_url": "http://x",
+            "provider": "test",
+            "api_mode": "chat",
+            "credential_pool": None,
+        },
+    )
+    monkeypatch.setattr(
+        "hermes_cli.tools_config._get_platform_tools",
+        lambda *a, **k: set(),
+    )
+    monkeypatch.setattr(
+        oneshot_mod,
+        "_create_session_db_for_oneshot",
+        lambda: None,
+    )
+    monkeypatch.setattr(
+        oneshot_mod,
+        "get_fallback_chain",
+        lambda cfg: None,
+    )
+
+    text, _ = oneshot_mod._run_agent("hello", use_config_toolsets=False)
+    assert text == "ok"
+    assert order[:2] == ["wait:True", "aiagent"]
+
+    # Dispatch: -z / --oneshot exits via run_oneshot (not cli single-query).
+    main_src = inspect.getsource(
+        __import__("hermes_cli.main", fromlist=["*"])
+    )
+    assert "run_oneshot" in main_src
+    assert 'getattr(args, "oneshot", None)' in main_src
+
+
+def test_top_level_z_dispatches_to_oneshot_not_cli_query(monkeypatch):
+    """Regression: -z must not rely on cli.py `_single_query_mode` (#51322 review)."""
+    import inspect
+    import hermes_cli.main as main_mod
+    import hermes_cli.oneshot as oneshot_mod
+
+    src = inspect.getsource(oneshot_mod._run_agent)
+    wait_idx = src.find("wait_for_mcp_discovery(single_query=True)")
+    agent_idx = src.find("AIAgent(")
+    assert wait_idx != -1 and agent_idx != -1 and wait_idx < agent_idx
+
+    main_src = inspect.getsource(main_mod)
+    z_block = main_src
+    assert "from hermes_cli.oneshot import run_oneshot" in z_block

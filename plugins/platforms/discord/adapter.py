@@ -2131,6 +2131,9 @@ class DiscordAdapter(BasePlatformAdapter):
                 and not (channel_keys & free_channels)
                 and not in_bot_thread
                 and not self._self_is_explicitly_mentioned(message)
+                and not self._discord_message_matches_mention_patterns(
+                    str(getattr(message, "content", "") or "")
+                )
             ):
                 return False
         admitted, role_authorized = self._discord_message_admission(
@@ -5642,6 +5645,54 @@ class DiscordAdapter(BasePlatformAdapter):
             return bool(configured)
         return os.getenv("DISCORD_REQUIRE_MENTION", "true").lower() not in {"false", "0", "no", "off"}
 
+    def _discord_mention_patterns(self) -> List["re.Pattern"]:
+        """Compile optional regex wake-word patterns for mention gating."""
+        cached = getattr(self, "_compiled_mention_patterns", None)
+        if cached is not None:
+            return cached
+
+        patterns = self.config.extra.get("mention_patterns") if self.config.extra else None
+        if patterns is None:
+            raw = os.getenv("DISCORD_MENTION_PATTERNS", "").strip()
+            if raw:
+                try:
+                    patterns = json.loads(raw)
+                except Exception:
+                    patterns = [
+                        part.strip()
+                        for part in raw.replace("\n", ",").split(",")
+                        if part.strip()
+                    ]
+
+        if isinstance(patterns, str):
+            patterns = [patterns]
+
+        compiled: List["re.Pattern"] = []
+        if isinstance(patterns, list):
+            for pattern in patterns:
+                if not isinstance(pattern, str) or not pattern.strip():
+                    continue
+                try:
+                    compiled.append(re.compile(pattern, re.IGNORECASE))
+                except re.error as exc:
+                    logger.warning("[Discord] Invalid mention pattern %r: %s", pattern, exc)
+        elif patterns is not None:
+            logger.warning(
+                "[Discord] mention_patterns must be a list or string; got %s",
+                type(patterns).__name__,
+            )
+
+        if compiled:
+            logger.info("[Discord] Loaded %d mention pattern(s)", len(compiled))
+        self._compiled_mention_patterns = compiled
+        return compiled
+
+    def _discord_message_matches_mention_patterns(self, text: str) -> bool:
+        """Return True when text matches a configured wake-word pattern."""
+        if not text:
+            return False
+        return any(pattern.search(text) for pattern in self._discord_mention_patterns())
+
     def _discord_allow_any_attachment(self) -> bool:
         """Return whether Discord attachments bypass the SUPPORTED_DOCUMENT_TYPES allowlist.
 
@@ -7068,6 +7119,7 @@ class DiscordAdapter(BasePlatformAdapter):
         #
         # Config (all settable via discord.* in config.yaml or DISCORD_* env vars):
         #   discord.require_mention: Require @mention in server channels (default: true)
+        #   discord.mention_patterns: Regex wake words accepted instead of an @mention
         #   discord.free_response_channels: Channel IDs where bot responds without mention
         #   discord.ignored_channels: Channel IDs where bot NEVER responds (even when mentioned)
         #   discord.allowed_channels: If set, bot ONLY responds in these channels (whitelist)
@@ -7105,6 +7157,10 @@ class DiscordAdapter(BasePlatformAdapter):
                 normalized_content = normalized_content.replace(f"<@{self._client.user.id}>", "").strip()
                 normalized_content = normalized_content.replace(f"<@!{self._client.user.id}>", "").strip()
             message.content = normalized_content
+        mention_pattern_match = (
+            not mention_prefix
+            and self._discord_message_matches_mention_patterns(normalized_content)
+        )
         if not isinstance(message.channel, discord.DMChannel):
             channel_ids = {str(message.channel.id)}
             if parent_channel_id:
@@ -7152,7 +7208,11 @@ class DiscordAdapter(BasePlatformAdapter):
             )
 
             if require_mention and not is_free_channel and not in_bot_thread:
-                if not self._self_is_explicitly_mentioned(message) and not mention_prefix:
+                if (
+                    not self._self_is_explicitly_mentioned(message)
+                    and not mention_prefix
+                    and not mention_pattern_match
+                ):
                     return False
         # Auto-thread: when enabled, automatically create a thread for every
         # @mention in a text channel so each conversation is isolated (like Slack).

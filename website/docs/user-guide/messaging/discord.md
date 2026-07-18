@@ -333,6 +333,7 @@ The `discord` section in `~/.hermes/config.yaml` mirrors the env vars above. Con
 # Discord-specific settings
 discord:
   require_mention: true           # Require @mention in server channels
+  mention_patterns: []            # Optional regex wake words accepted as mentions
   thread_require_mention: false   # If true, require @mention in threads too (multi-bot threads)
   free_response_channels: ""      # Comma-separated channel IDs (or YAML list)
   auto_thread: true               # Auto-create threads on @mention
@@ -363,6 +364,25 @@ group_sessions_per_user: true     # Isolate sessions per user in shared channels
 **Type:** boolean — **Default:** `true`
 
 When enabled, the bot only responds in server channels when directly `@mentioned`. DMs always get a response regardless of this setting.
+
+#### `discord.mention_patterns`
+
+**Type:** string or list of strings — **Default:** `[]`
+
+Optional case-insensitive regular expressions that count as a bot mention when
+`require_mention` is enabled. Use an anchored pattern when the wake word must
+appear at the start of the message:
+
+```yaml
+discord:
+  require_mention: true
+  mention_patterns:
+    - '^hermes(?:\\s|[:：,，!！?？])'
+```
+
+This keeps unrelated channel conversation gated while allowing messages such
+as `hermes status` without a literal Discord `@mention`. Invalid patterns are
+ignored with a warning instead of stopping the gateway.
 
 #### `discord.thread_require_mention`
 

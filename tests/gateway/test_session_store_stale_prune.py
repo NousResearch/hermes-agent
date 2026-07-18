@@ -12,7 +12,7 @@ from datetime import datetime, timedelta
 from unittest.mock import MagicMock, patch
 
 from gateway.config import GatewayConfig, Platform, SessionResetPolicy
-from gateway.session import SessionEntry, SessionStore
+from gateway.session import SessionEntry, SessionSource, SessionStore
 
 
 # ---------------------------------------------------------------------------
@@ -29,6 +29,18 @@ def _make_entry(key: str, session_id: str) -> SessionEntry:
         platform=Platform.TELEGRAM,
         chat_type="dm",
     )
+
+
+def _make_entry_with_origin(key: str, session_id: str) -> SessionEntry:
+    entry = _make_entry(key, session_id)
+    entry.origin = SessionSource(
+        platform=Platform.TELEGRAM,
+        chat_id="5140768830",
+        chat_type="dm",
+        user_id="5140768830",
+        user_name="João",
+    )
+    return entry
 
 
 def _make_store_with_db(tmp_path, db_mock) -> SessionStore:
@@ -97,6 +109,66 @@ class TestPruneStaleSessionsLocked:
         assert "key_a" not in store._entries
         assert "key_b" not in store._entries
         assert "key_c" in store._entries
+
+    def test_repoints_stale_compression_parent_to_latest_live_child(self, tmp_path):
+        """Compression-ended parents should recover their live child mapping.
+
+        A gateway crash can leave sessions.json pointing at the pre-compression
+        parent (end_reason='compression') even though the agent already rotated
+        into a live child session. If the child has gateway peer metadata, the
+        startup prune pass must repoint the route instead of deleting it, or
+        restart auto-resume and queued follow-ups have no session to continue.
+        """
+        key = "agent:main:telegram:dm:5140768830"
+        db = _db_returning({
+            "sid_parent": {"end_reason": "compression", "id": "sid_parent"},
+        })
+        db.find_latest_gateway_session_for_peer.return_value = {
+            "id": "sid_child",
+            "started_at": 1782744974.0,
+        }
+        store = _make_store_with_db(tmp_path, db)
+        store._entries[key] = _make_entry_with_origin(key, "sid_parent")
+
+        store._prune_stale_sessions_locked()
+
+        assert key in store._entries
+        assert store._entries[key].session_id == "sid_child"
+        db.find_latest_gateway_session_for_peer.assert_called_once()
+        db.reopen_session.assert_called_once_with("sid_child")
+
+    def test_prunes_stale_entry_when_recovery_only_finds_same_ended_session(self, tmp_path):
+        key = "agent:main:telegram:dm:5140768830"
+        db = _db_returning({"sid_parent": {"end_reason": "agent_close", "id": "sid_parent"}})
+        db.find_latest_gateway_session_for_peer.return_value = {
+            "id": "sid_parent",
+            "started_at": 1782744974.0,
+        }
+        store = _make_store_with_db(tmp_path, db)
+        store._entries[key] = _make_entry_with_origin(key, "sid_parent")
+
+        store._prune_stale_sessions_locked()
+
+        assert key not in store._entries
+
+    def test_keeps_stale_entry_when_recovery_lookup_raises(self, tmp_path):
+        """Indeterminate recovery must not delete the only routing handle.
+
+        Startup pruning sees an ended parent and tries to repoint it to the
+        latest live gateway child.  If that recovery query raises, deleting the
+        sessions.json entry loses the routing key entirely; keeping it lets the
+        runtime stale guard retry recovery on the next message.
+        """
+        key = "agent:main:telegram:dm:5140768830"
+        db = _db_returning({"sid_parent": {"end_reason": "compression", "id": "sid_parent"}})
+        db.find_latest_gateway_session_for_peer.side_effect = RuntimeError("db busy")
+        store = _make_store_with_db(tmp_path, db)
+        store._entries[key] = _make_entry_with_origin(key, "sid_parent")
+
+        store._prune_stale_sessions_locked()
+
+        assert key in store._entries
+        assert store._entries[key].session_id == "sid_parent"
 
     def test_noop_when_db_is_none(self, tmp_path):
         config = GatewayConfig(default_reset_policy=SessionResetPolicy(mode="none"))

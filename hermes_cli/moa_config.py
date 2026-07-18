@@ -21,13 +21,20 @@ DEFAULT_MOA_AGGREGATOR: dict[str, str] = {
 }
 
 
-def _coerce_float(value: Any, default: float) -> float:
+def _coerce_float_or_none(value: Any) -> float | None:
+    """Coerce to a float, or None when unset/blank/invalid.
+
+    Used for optional sampling params (reference_temperature /
+    aggregator_temperature) where None means 'don't send the parameter —
+    provider default applies', matching how a single-model Hermes agent
+    never sends temperature unless explicitly configured.
+    """
     if value is None or value == "":
-        return default
+        return None
     try:
         return float(value)
     except (TypeError, ValueError):
-        return default
+        return None
 
 
 def _coerce_int(value: Any, default: int) -> int:
@@ -42,7 +49,45 @@ def _coerce_int(value: Any, default: int) -> int:
             return default
 
 
-def _clean_slot(slot: Any) -> dict[str, str] | None:
+def _coerce_int_or_none(value: Any) -> int | None:
+    """Coerce to a positive int, or None when unset/blank/invalid/non-positive.
+
+    Used for optional caps (e.g. reference_max_tokens) where None means
+    'no cap' — the safe default that preserves prior uncapped behavior.
+    """
+    if value is None or value == "":
+        return None
+    try:
+        n = int(value)
+    except (TypeError, ValueError):
+        try:
+            n = int(float(value))
+        except (TypeError, ValueError):
+            return None
+    return n if n > 0 else None
+
+
+def _coerce_fanout(value: Any) -> str:
+    """Normalize the fan-out cadence; unknown values fall back to default."""
+    mode = str(value or "").strip().lower()
+    return mode if mode in {"per_iteration", "user_turn"} else "per_iteration"
+
+
+def _clean_reasoning_effort(value: Any) -> str | None:
+    """Return a canonical per-slot reasoning effort, or None when unset/invalid."""
+    from hermes_constants import parse_reasoning_effort
+
+    if value is None or value is True:
+        return None
+    parsed = parse_reasoning_effort(value)
+    if parsed is None:
+        return None
+    if parsed.get("enabled") is False:
+        return "none"
+    return parsed.get("effort")
+
+
+def _clean_slot(slot: Any) -> dict[str, Any] | None:
     if not isinstance(slot, dict):
         return None
     provider = str(slot.get("provider") or "").strip()
@@ -56,16 +101,95 @@ def _clean_slot(slot: Any) -> dict[str, str] | None:
     # an invalid slot is dropped, falling back to the preset's defaults.
     if provider.lower() == "moa":
         return None
-    return {"provider": provider, "model": model}
+    clean: dict[str, Any] = {"provider": provider, "model": model}
+    effort = _clean_reasoning_effort(slot.get("reasoning_effort"))
+    if effort:
+        clean["reasoning_effort"] = effort
+    return clean
+
+
+def _slot_problem(slot: Any) -> str | None:
+    """Return a human-readable problem for a slot ``_clean_slot`` would drop.
+
+    None means the slot is complete and valid. Mirrors ``_clean_slot`` exactly
+    so the write-boundary validator (``validate_moa_payload``) and the
+    tolerant runtime normalizer can never disagree about what is acceptable.
+    """
+    if not isinstance(slot, dict):
+        return "must be an object with 'provider' and 'model'"
+    provider = str(slot.get("provider") or "").strip()
+    model = str(slot.get("model") or "").strip()
+    if not provider and not model:
+        return "provider and model are required"
+    if not provider:
+        return "provider is required"
+    if not model:
+        return f"model is required (provider '{provider}' has no model selected)"
+    if provider.lower() == "moa":
+        return "the Mixture of Agents provider cannot be used inside a preset (recursive MoA)"
+    return None
+
+
+def validate_moa_payload(raw: Any) -> list[str]:
+    """Return the problems ``normalize_moa_config`` would silently paper over.
+
+    ``normalize_moa_config`` is deliberately tolerant: at *read* time a
+    hand-edited config must degrade to defaults rather than crash the agent.
+    That same tolerance at *write* time is a corruption engine — a client that
+    sends a half-filled slot gets its whole preset silently replaced with the
+    hardcoded defaults (#64156). API write paths call this first and reject
+    invalid payloads loudly instead of saving something the user never chose.
+
+    Returns a list of human-readable problems; empty means safe to save.
+    """
+    if not isinstance(raw, dict):
+        return ["MoA config must be an object"]
+
+    presets_raw = raw.get("presets")
+    if isinstance(presets_raw, dict) and presets_raw:
+        presets: dict[Any, Any] = presets_raw
+    else:
+        # Legacy flat payload: the top-level object is the default preset.
+        presets = {DEFAULT_MOA_PRESET_NAME: raw}
+
+    problems: list[str] = []
+    for name, preset in presets.items():
+        label = str(name or "").strip() or "(unnamed)"
+        if not isinstance(preset, dict):
+            problems.append(f"preset '{label}': must be an object")
+            continue
+
+        refs = preset.get("reference_models")
+        if not isinstance(refs, list):
+            refs = [refs] if isinstance(refs, dict) else []
+        complete_refs = 0
+        for index, slot in enumerate(refs):
+            issue = _slot_problem(slot)
+            if issue:
+                problems.append(f"preset '{label}' reference {index + 1}: {issue}")
+            else:
+                complete_refs += 1
+        if not complete_refs:
+            problems.append(f"preset '{label}': needs at least one complete reference model")
+
+        agg_issue = _slot_problem(preset.get("aggregator"))
+        if agg_issue:
+            problems.append(f"preset '{label}' aggregator: {agg_issue}")
+
+    return problems
 
 
 def _default_preset() -> dict[str, Any]:
     return {
         "reference_models": deepcopy(DEFAULT_MOA_REFERENCE_MODELS),
         "aggregator": deepcopy(DEFAULT_MOA_AGGREGATOR),
-        "reference_temperature": 0.6,
-        "aggregator_temperature": 0.4,
+        # None = temperature omitted from API calls (provider default),
+        # matching single-model agent behavior.
+        "reference_temperature": None,
+        "aggregator_temperature": None,
         "max_tokens": 4096,
+        "reference_max_tokens": None,
+        "fanout": "per_iteration",
         "enabled": True,
     }
 
@@ -91,9 +215,25 @@ def _normalize_preset(raw: Any) -> dict[str, Any]:
         "enabled": bool(raw.get("enabled", True)),
         "reference_models": refs,
         "aggregator": aggregator,
-        "reference_temperature": _coerce_float(raw.get("reference_temperature"), 0.6),
-        "aggregator_temperature": _coerce_float(raw.get("aggregator_temperature"), 0.4),
+        "reference_temperature": _coerce_float_or_none(raw.get("reference_temperature")),
+        "aggregator_temperature": _coerce_float_or_none(raw.get("aggregator_temperature")),
         "max_tokens": _coerce_int(raw.get("max_tokens"), 4096),
+        # Optional cap on how much each reference ADVISOR may generate per turn.
+        # None (default) = uncapped: advisors write full-length advice, matching
+        # prior behavior so existing presets are unchanged. Set a value (e.g.
+        # 600) to make advisors give concise advice — the dominant MoA latency
+        # is advisor generation (turn latency correlates ~0.88 with output
+        # tokens), and the aggregator only needs the gist of each advisor's
+        # judgement, so capping roughly halves per-turn wall time. Does NOT cap
+        # the acting aggregator (its output is the user-visible answer).
+        "reference_max_tokens": _coerce_int_or_none(raw.get("reference_max_tokens")),
+        # When the reference fan-out runs. "per_iteration" (default) re-runs
+        # the advisors whenever the advisory view changes — i.e. every tool
+        # iteration, so advice tracks live task state. "user_turn" runs the
+        # advisors ONCE per user turn (the original MoA shape): the
+        # aggregator gets their upfront plan-level advice, then acts alone
+        # for the rest of the tool loop.
+        "fanout": _coerce_fanout(raw.get("fanout")),
     }
 
 
@@ -139,6 +279,8 @@ def normalize_moa_config(raw: Any) -> dict[str, Any]:
         "reference_temperature": active["reference_temperature"],
         "aggregator_temperature": active["aggregator_temperature"],
         "max_tokens": active["max_tokens"],
+        "reference_max_tokens": active.get("reference_max_tokens"),
+        "fanout": active.get("fanout", "per_iteration"),
         "enabled": active["enabled"],
     }
 
@@ -153,16 +295,37 @@ def resolve_moa_preset(config: Any, name: str | None = None) -> dict[str, Any]:
     preset_name = str(name or cfg.get("default_preset") or DEFAULT_MOA_PRESET_NAME).strip()
     preset = cfg["presets"].get(preset_name)
     if preset is None:
-        raise KeyError(preset_name)
+        from agent.errors import MoAPresetNotFoundError
+
+        available = ", ".join(cfg["presets"]) or "(none)"
+        raise MoAPresetNotFoundError(
+            f"MoA preset '{preset_name}' was not found. Available presets: "
+            f"{available}. Run `hermes moa list`."
+        )
     return deepcopy(preset)
 
 
 def exact_moa_preset_name(config: Any, text: str) -> str | None:
+    """Return the preset name iff ``text`` exactly matches an *enabled* preset.
+
+    Used by the no-explicit-provider switch path (PATH B in
+    ``hermes_cli/model_switch.py``) to recognize a bare ``/model <preset>``
+    that the user typed without the ``moa:`` prefix. This is an *implicit*
+    match, so it must honor the per-preset ``enabled`` opt-out: a user who set
+    ``enabled: false`` to disable a preset must not have a plain model switch
+    whose name happens to collide with that preset key silently pivot the
+    session onto the MoA virtual provider (issue #55187). Explicit selection
+    via ``--provider moa`` / the model picker does not go through here, so a
+    disabled preset is still reachable when the user explicitly asks for it.
+    """
     wanted = str(text or "").strip()
     if not wanted:
         return None
     cfg = normalize_moa_config(config)
-    return wanted if wanted in cfg["presets"] else None
+    preset = cfg["presets"].get(wanted)
+    if preset is None or not preset.get("enabled", True):
+        return None
+    return wanted
 
 
 def set_active_moa_preset(config: Any, name: str | None) -> dict[str, Any]:

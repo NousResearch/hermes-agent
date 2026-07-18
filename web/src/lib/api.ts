@@ -1,3 +1,5 @@
+import { buildHermesWebSocketUrl } from "@hermes/shared";
+
 // The dashboard can be served either at the root of its host (e.g.
 // https://kanban.tilos.com/) or under a URL prefix when reverse-proxied
 // (e.g. https://mission-control.tilos.com/hermes/). The Python backend
@@ -32,7 +34,6 @@ declare global {
     __HERMES_AUTH_REQUIRED__?: boolean;
   }
 }
-let _sessionToken: string | null = null;
 const SESSION_HEADER = "X-Hermes-Session-Token";
 
 function setSessionHeader(headers: Headers, token: string): void {
@@ -73,6 +74,7 @@ const PROFILE_SCOPED_PREFIXES = [
   "/api/mcp",
   "/api/messaging/platforms",
   "/api/messaging/telegram/onboarding",
+  "/api/messaging/whatsapp/onboarding",
   "/api/model/info",
   "/api/model/set",
   "/api/model/auxiliary",
@@ -194,16 +196,6 @@ function pluginPath(name: string): string {
   return name.split("/").map(encodeURIComponent).join("/");
 }
 
-async function getSessionToken(): Promise<string> {
-  if (_sessionToken) return _sessionToken;
-  const injected = window.__HERMES_SESSION_TOKEN__;
-  if (injected) {
-    _sessionToken = injected;
-    return _sessionToken;
-  }
-  throw new Error("Session token not available — page must be served by the Hermes dashboard server");
-}
-
 /**
  * Fetch a single-use ticket for a WebSocket upgrade in gated mode.
  *
@@ -291,11 +283,12 @@ export async function buildWsUrl(
   path: string,
   params?: Record<string, string>,
 ): Promise<string> {
-  const [authName, authValue] = await buildWsAuthParam();
-  const proto = window.location.protocol === "https:" ? "wss:" : "ws:";
-  const qs = new URLSearchParams(params ?? {});
-  qs.set(authName, authValue);
-  return `${proto}//${window.location.host}${BASE}${path}?${qs}`;
+  return buildHermesWebSocketUrl({
+    authParam: await buildWsAuthParam(),
+    basePath: BASE,
+    params,
+    path,
+  });
 }
 
 /** Build a ``?profile=<name>`` query suffix, or "" when unset.
@@ -312,6 +305,7 @@ function appendProfileParam(url: string, profile?: string): string {
 }
 
 export const api = {
+  buildWsUrl,
   getStatus: () => fetchJSON<StatusResponse>("/api/status"),
   /**
    * Identity probe for the dashboard auth gate (Phase 7).
@@ -365,9 +359,12 @@ export const api = {
     fetchJSON<SessionInfo>(
       appendProfileParam(`/api/sessions/${encodeURIComponent(id)}`, profile),
     ),
-  getSessionLatestDescendant: (id: string) =>
+  getSessionLatestDescendant: (id: string, profile = getManagementProfile()) =>
     fetchJSON<SessionLatestDescendantResponse>(
-      `/api/sessions/${encodeURIComponent(id)}/latest-descendant`,
+      appendProfileParam(
+        `/api/sessions/${encodeURIComponent(id)}/latest-descendant`,
+        profile,
+      ),
     ),
   deleteSession: (id: string, profile = getManagementProfile()) =>
     fetchJSON<{ ok: boolean }>(
@@ -406,6 +403,15 @@ export const api = {
     fetchJSON<SessionStoreStats>(appendProfileParam("/api/sessions/stats", profile)),
   exportSessionUrl: (id: string, profile = getManagementProfile()) =>
     appendProfileParam(`/api/sessions/${encodeURIComponent(id)}/export`, profile),
+  importSessions: (
+    sessions: Array<Record<string, unknown>>,
+    profile = getManagementProfile(),
+  ) =>
+    fetchJSON<SessionImportResponse>("/api/sessions/import", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ sessions, profile: profile || undefined }),
+    }),
   pruneSessions: (
     older_than_days: number,
     source?: string,
@@ -467,13 +473,36 @@ export const api = {
     fetchJSON<ModelsAnalyticsResponse>(
       appendProfileParam(`/api/analytics/models?days=${days}`, profile),
     ),
-  getConfig: () => fetchJSON<Record<string, unknown>>("/api/config"),
+  getConfig: (profile = getManagementProfile()) =>
+    fetchJSON<Record<string, unknown>>(appendProfileParam("/api/config", profile)),
   getDefaults: () => fetchJSON<Record<string, unknown>>("/api/config/defaults"),
   getSchema: () => fetchJSON<{ fields: Record<string, unknown>; category_order: string[] }>("/api/config/schema"),
-  getModelInfo: () => fetchJSON<ModelInfoResponse>("/api/model/info"),
-  getModelOptions: (profile?: string) =>
-    fetchJSON<ModelOptionsResponse>(`/api/model/options${profileQuery(profile)}`),
-  getAuxiliaryModels: () => fetchJSON<AuxiliaryModelsResponse>("/api/model/auxiliary"),
+  getModelInfo: (profile = getManagementProfile()) =>
+    fetchJSON<ModelInfoResponse>(appendProfileParam("/api/model/info", profile)),
+  getModelOptions: (
+    profileOrOptions?: string | { profile?: string; refresh?: boolean },
+  ) => {
+    const profile =
+      typeof profileOrOptions === "string"
+        ? profileOrOptions
+        : profileOrOptions?.profile;
+    const refresh =
+      typeof profileOrOptions === "object" && !!profileOrOptions.refresh;
+    const qs = new URLSearchParams();
+    if (profile) qs.set("profile", profile);
+    if (refresh) qs.set("refresh", "1");
+    // Dashboard surfaces (Models page, profile builder, cron) are
+    // management/setup UIs: keep the full provider universe with setup
+    // affordances. The endpoint now defaults to the configured subset for
+    // desktop chat pickers (#56974), so opt in explicitly here.
+    qs.set("include_unconfigured", "1");
+    const suffix = qs.toString() ? `?${qs.toString()}` : "";
+    return fetchJSON<ModelOptionsResponse>(`/api/model/options${suffix}`);
+  },
+  getAuxiliaryModels: (profile = getManagementProfile()) =>
+    fetchJSON<AuxiliaryModelsResponse>(
+      appendProfileParam("/api/model/auxiliary", profile),
+    ),
   getMoaModels: () => fetchJSON<MoaConfigResponse>("/api/model/moa"),
   saveMoaModels: (body: MoaConfigResponse) =>
     fetchJSON<MoaConfigResponse & { ok: boolean }>("/api/model/moa", {
@@ -481,21 +510,30 @@ export const api = {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(body),
     }),
-  setModelAssignment: (body: ModelAssignmentRequest) =>
-    fetchJSON<ModelAssignmentResponse>("/api/model/set", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(body),
-    }),
-  saveConfig: (config: Record<string, unknown>) =>
-    fetchJSON<{ ok: boolean }>("/api/config", {
+  setModelAssignment: (
+    body: ModelAssignmentRequest,
+    profile = getManagementProfile(),
+  ) =>
+    fetchJSON<ModelAssignmentResponse>(
+      appendProfileParam("/api/model/set", profile),
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(body),
+      },
+    ),
+  saveConfig: (config: Record<string, unknown>, profile = getManagementProfile()) =>
+    fetchJSON<{ ok: boolean }>(appendProfileParam("/api/config", profile), {
       method: "PUT",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ config }),
     }),
-  getConfigRaw: () => fetchJSON<{ yaml: string; path?: string }>("/api/config/raw"),
-  saveConfigRaw: (yaml_text: string) =>
-    fetchJSON<{ ok: boolean }>("/api/config/raw", {
+  getConfigRaw: (profile = getManagementProfile()) =>
+    fetchJSON<{ yaml: string; path?: string }>(
+      appendProfileParam("/api/config/raw", profile),
+    ),
+  saveConfigRaw: (yaml_text: string, profile = getManagementProfile()) =>
+    fetchJSON<{ ok: boolean }>(appendProfileParam("/api/config/raw", profile), {
       method: "PUT",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ yaml_text }),
@@ -513,17 +551,12 @@ export const api = {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ key }),
     }),
-  revealEnvVar: async (key: string) => {
-    const token = await getSessionToken();
-    return fetchJSON<{ key: string; value: string }>("/api/env/reveal", {
+  revealEnvVar: (key: string) =>
+    fetchJSON<{ key: string; value: string }>("/api/env/reveal", {
       method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        [SESSION_HEADER]: token,
-      },
+      headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ key }),
-    });
-  },
+    }),
 
   // Cron jobs
   getCronJobs: (profile = "all") =>
@@ -699,7 +732,7 @@ export const api = {
   getToolsets: (profile?: string) =>
     fetchJSON<ToolsetInfo[]>(`/api/tools/toolsets${profileQuery(profile)}`),
   toggleToolset: (name: string, enabled: boolean, profile?: string) =>
-    fetchJSON<{ ok: boolean; name: string; enabled: boolean }>(
+    fetchJSON<{ ok: boolean; name: string; platform: string; enabled: boolean }>(
       `/api/tools/toolsets/${encodeURIComponent(name)}`,
       {
         method: "PUT",
@@ -748,58 +781,42 @@ export const api = {
   // OAuth provider management
   getOAuthProviders: () =>
     fetchJSON<OAuthProvidersResponse>("/api/providers/oauth"),
-  disconnectOAuthProvider: async (providerId: string) => {
-    const token = await getSessionToken();
-    return fetchJSON<{ ok: boolean; provider: string }>(
+  disconnectOAuthProvider: (providerId: string) =>
+    fetchJSON<{ ok: boolean; provider: string }>(
       `/api/providers/oauth/${encodeURIComponent(providerId)}`,
       {
         method: "DELETE",
-        headers: { [SESSION_HEADER]: token },
       },
-    );
-  },
-  startOAuthLogin: async (providerId: string) => {
-    const token = await getSessionToken();
-    return fetchJSON<OAuthStartResponse>(
+    ),
+  startOAuthLogin: (providerId: string) =>
+    fetchJSON<OAuthStartResponse>(
       `/api/providers/oauth/${encodeURIComponent(providerId)}/start`,
       {
         method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          [SESSION_HEADER]: token,
-        },
+        headers: { "Content-Type": "application/json" },
         body: "{}",
       },
-    );
-  },
-  submitOAuthCode: async (providerId: string, sessionId: string, code: string) => {
-    const token = await getSessionToken();
-    return fetchJSON<OAuthSubmitResponse>(
+    ),
+  submitOAuthCode: (providerId: string, sessionId: string, code: string) =>
+    fetchJSON<OAuthSubmitResponse>(
       `/api/providers/oauth/${encodeURIComponent(providerId)}/submit`,
       {
         method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          [SESSION_HEADER]: token,
-        },
+        headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ session_id: sessionId, code }),
       },
-    );
-  },
+    ),
   pollOAuthSession: (providerId: string, sessionId: string) =>
     fetchJSON<OAuthPollResponse>(
       `/api/providers/oauth/${encodeURIComponent(providerId)}/poll/${encodeURIComponent(sessionId)}`,
     ),
-  cancelOAuthSession: async (sessionId: string) => {
-    const token = await getSessionToken();
-    return fetchJSON<{ ok: boolean }>(
+  cancelOAuthSession: (sessionId: string) =>
+    fetchJSON<{ ok: boolean }>(
       `/api/providers/oauth/sessions/${encodeURIComponent(sessionId)}`,
       {
         method: "DELETE",
-        headers: { [SESSION_HEADER]: token },
       },
-    );
-  },
+    ),
 
   // Messaging platforms (gateway channels)
   getMessagingPlatforms: () =>
@@ -846,6 +863,39 @@ export const api = {
   cancelTelegramOnboarding: (pairingId: string) =>
     fetchJSON<{ ok: boolean }>(
       `/api/messaging/telegram/onboarding/${encodeURIComponent(pairingId)}`,
+      { method: "DELETE" },
+    ),
+  startWhatsAppOnboarding: (body: {
+    mode?: "bot" | "self-chat";
+    allowed_users?: string;
+  }) =>
+    fetchJSON<WhatsAppOnboardingStartResponse>(
+      "/api/messaging/whatsapp/onboarding/start",
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(body),
+      },
+    ),
+  getWhatsAppOnboardingStatus: (pairingId: string) =>
+    fetchJSON<WhatsAppOnboardingStatusResponse>(
+      `/api/messaging/whatsapp/onboarding/${encodeURIComponent(pairingId)}`,
+    ),
+  applyWhatsAppOnboarding: (
+    pairingId: string,
+    body: { mode?: "bot" | "self-chat"; allowed_users?: string; profile?: string },
+  ) =>
+    fetchJSON<WhatsAppOnboardingApplyResponse>(
+      `/api/messaging/whatsapp/onboarding/${encodeURIComponent(pairingId)}/apply`,
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(body),
+      },
+    ),
+  cancelWhatsAppOnboarding: (pairingId: string) =>
+    fetchJSON<{ ok: boolean }>(
+      `/api/messaging/whatsapp/onboarding/${encodeURIComponent(pairingId)}`,
       { method: "DELETE" },
     ),
 
@@ -945,6 +995,15 @@ export const api = {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(body),
     }),
+  authMcpServer: (name: string) =>
+    fetchJSON<McpOAuthFlow>(
+      `/api/mcp/servers/${encodeURIComponent(name)}/auth`,
+      { method: "POST" },
+    ),
+  getMcpOAuthFlow: (flowId: string) =>
+    fetchJSON<McpOAuthFlow>(
+      `/api/mcp/oauth/flows/${encodeURIComponent(flowId)}`,
+    ),
   removeMcpServer: (name: string) =>
     fetchJSON<{ ok: boolean }>(`/api/mcp/servers/${encodeURIComponent(name)}`, {
       method: "DELETE",
@@ -1048,6 +1107,28 @@ export const api = {
 
   // ── Admin: Memory provider ──────────────────────────────────────────
   getMemory: () => fetchJSON<MemoryStatus>("/api/memory"),
+  getMemoryProviderConfig: (provider: string) =>
+    fetchJSON<MemoryProviderConfig>(
+      `/api/memory/providers/${encodeURIComponent(provider)}/config`,
+    ),
+  updateMemoryProviderConfig: (provider: string, values: Record<string, unknown>) =>
+    fetchJSON<{ ok: boolean; active: string }>(
+      `/api/memory/providers/${encodeURIComponent(provider)}/config`,
+      {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ values }),
+      },
+    ),
+  setupMemoryProvider: (provider: string, values: Record<string, unknown> = {}) =>
+    fetchJSON<MemoryProviderSetupResponse>(
+      `/api/memory/providers/${encodeURIComponent(provider)}/setup`,
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ values }),
+      },
+    ),
   setMemoryProvider: (provider: string) =>
     fetchJSON<{ ok: boolean; active: string }>("/api/memory/provider", {
       method: "PUT",
@@ -1078,12 +1159,25 @@ export const api = {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ output }),
     }),
+  downloadBackup: (archive: string) =>
+    authedFetch(
+      `/api/ops/backup/download?archive=${encodeURIComponent(archive)}`,
+    ),
   runImport: (archive: string, force = false) =>
     fetchJSON<ActionResponse>("/api/ops/import", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ archive, force }),
     }),
+  runImportUpload: (file: File, force = false) => {
+    const form = new FormData();
+    form.append("force", String(force));
+    form.append("file", file, file.name);
+    return fetchJSON<ActionResponse>("/api/ops/import-upload", {
+      method: "POST",
+      body: form,
+    });
+  },
   getHooks: () => fetchJSON<HooksResponse>("/api/ops/hooks"),
   createHook: (body: HookCreate) =>
     fetchJSON<{ ok: boolean; event: string; command: string; approved: boolean }>(
@@ -1194,11 +1288,13 @@ export interface AuthMeResponse {
 }
 
 export interface ActionResponse {
+  archive?: string;
   name: string;
   ok: boolean;
   pid: number | null;
   error?: string;
   message?: string;
+  uploaded_bytes?: number;
   update_command?: string;
 }
 
@@ -1218,6 +1314,16 @@ export interface SessionStoreStats {
   archived: number;
   messages: number;
   by_source: Record<string, number>;
+}
+
+export interface SessionImportResponse {
+  ok: boolean;
+  imported: number;
+  skipped: number;
+  detached: number;
+  imported_ids: string[];
+  skipped_ids: string[];
+  errors: Array<Record<string, unknown>>;
 }
 
 export interface SkillHubResult {
@@ -1310,7 +1416,7 @@ export interface McpServer {
   command: string | null;
   args: string[];
   env: Record<string, string>;
-  auth: string | null;
+  auth: "header" | "oauth" | null;
   enabled: boolean;
   tools: string[] | null;
 }
@@ -1345,19 +1451,31 @@ export interface McpCatalogDiagnostic {
 }
 
 
+export type McpHttpAuth = "none" | "header" | "oauth";
+
 export interface McpServerCreate {
   name: string;
   url?: string;
   command?: string;
   args?: string[];
   env?: Record<string, string>;
-  auth?: string;
+  auth?: McpHttpAuth;
+  bearer_token?: string;
 }
 
 export interface McpTestResult {
   ok: boolean;
   error?: string;
   tools: Array<{ name: string; description: string }>;
+}
+
+export interface McpOAuthFlow {
+  flow_id: string;
+  server_name: string;
+  status: "starting" | "authorization_required" | "approved" | "error";
+  authorization_url: string | null;
+  error: string | null;
+  tools?: Array<{ name: string; description: string }>;
 }
 
 export interface MessagingPlatformEnvVar {
@@ -1390,6 +1508,11 @@ export interface MessagingPlatform {
   error_message: string | null;
   updated_at: string | null;
   home_channel: { platform: string; chat_id: string; name: string; thread_id?: string } | null;
+  whatsapp_setup?: {
+    mode?: string;
+    allowed_users_set?: boolean;
+    home_channel_set?: boolean;
+  } | null;
   env_vars: MessagingPlatformEnvVar[];
 }
 
@@ -1487,13 +1610,73 @@ export interface CredentialPoolProvider {
 export interface MemoryProviderInfo {
   name: string;
   description: string;
+  available: boolean;
   configured: boolean;
+  status: "ready" | "needs_config" | "unavailable" | "missing";
+  setup?: MemoryProviderSetupInfo;
 }
 
 export interface MemoryStatus {
   active: string;
   providers: MemoryProviderInfo[];
   builtin_files: { memory: number; user: number };
+}
+
+export interface MemoryProviderExternalDependency {
+  name: string;
+  install: string;
+  check: string;
+}
+
+export interface MemoryProviderSetupInfo {
+  pip_dependencies: string[];
+  external_dependencies: MemoryProviderExternalDependency[];
+  required_env: string[];
+  dependencies_installed: boolean;
+}
+
+export interface MemoryProviderSetupResult {
+  kind: string;
+  name: string;
+  status: string;
+  command: string;
+  returncode: number | null;
+  stdout: string;
+  stderr: string;
+}
+
+export interface MemoryProviderSetupResponse {
+  ok: boolean;
+  provider: string;
+  results: MemoryProviderSetupResult[];
+  status?: MemoryProviderInfo | null;
+}
+
+export interface MemoryProviderFieldOption {
+  value: string;
+  label: string;
+  description?: string;
+}
+
+export interface MemoryProviderField {
+  key: string;
+  label: string;
+  kind: "text" | "secret" | "select" | "boolean";
+  description: string;
+  placeholder: string;
+  required: boolean;
+  value: string | boolean;
+  is_set: boolean;
+  options: MemoryProviderFieldOption[];
+  url: string;
+  when?: Record<string, string | boolean | number> | null;
+}
+
+export interface MemoryProviderConfig {
+  name: string;
+  label: string;
+  fields: MemoryProviderField[];
+  setup?: MemoryProviderSetupInfo;
 }
 
 export interface HookEntry {
@@ -1681,6 +1864,8 @@ export interface EnvVarInfo {
   advanced: boolean;
   /** True when this var is a messaging-platform credential owned by the Channels page. */
   channel_managed?: boolean;
+  /** True when this key is set in .env but not in any catalog (user-added custom key). */
+  custom?: boolean;
 }
 
 export interface TelegramOnboardingStartResponse {
@@ -1704,6 +1889,38 @@ export interface TelegramOnboardingApplyResponse {
   ok: boolean;
   platform: "telegram";
   bot_username?: string;
+  needs_restart: boolean;
+  restart_started?: boolean;
+  restart_action?: string;
+  restart_pid?: number | null;
+  restart_error?: string;
+}
+
+export interface WhatsAppOnboardingStartResponse {
+  pairing_id: string;
+  status:
+    | "starting"
+    | "installing"
+    | "waiting"
+    | "connected"
+    | "error"
+    | "expired"
+    | "cancelled";
+  qr_payload?: string | null;
+  expires_at: string;
+  mode: "bot" | "self-chat";
+  allowed_users: string;
+  account_id?: string | null;
+  account_name?: string | null;
+  account_phone?: string | null;
+  error?: string | null;
+}
+
+export type WhatsAppOnboardingStatusResponse = WhatsAppOnboardingStartResponse;
+
+export interface WhatsAppOnboardingApplyResponse {
+  ok: boolean;
+  platform: "whatsapp";
   needs_restart: boolean;
   restart_started?: boolean;
   restart_action?: string;
@@ -2001,6 +2218,8 @@ export interface ToolsetInfo {
   name: string;
   label: string;
   description: string;
+  platform: string;
+  platform_label: string;
   enabled: boolean;
   configured: boolean;
   tools: string[];
@@ -2105,6 +2324,8 @@ export interface AuxiliaryModelsResponse {
 export interface MoaModelSlot {
   provider: string;
   model: string;
+  /** Optional per-slot reasoning effort — round-tripped, not edited here. */
+  reasoning_effort?: string;
 }
 
 export interface MoaConfigResponse {
@@ -2116,6 +2337,10 @@ export interface MoaConfigResponse {
     reference_temperature: number;
     aggregator_temperature: number;
     max_tokens: number;
+    /** Optional advisor output cap — round-tripped, not edited here. */
+    reference_max_tokens?: number | null;
+    /** Fan-out cadence (per_iteration | user_turn) — round-tripped. */
+    fanout?: string;
     enabled: boolean;
   }>;
   reference_models: MoaModelSlot[];
@@ -2278,7 +2503,7 @@ export interface HubAgentPluginRow {
 
 export interface PluginsHubProviders {
   memory_provider: string;
-  memory_options: Array<{ name: string; description: string }>;
+  memory_options: MemoryProviderInfo[];
   context_engine: string;
   context_options: Array<{ name: string; description: string }>;
 }

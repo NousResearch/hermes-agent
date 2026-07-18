@@ -379,6 +379,7 @@ def test_termux_fast_cli_launch_oneshot_uses_light_parser(monkeypatch, main_mod)
         "model": "gpt-test",
         "provider": "openai",
         "toolsets": None,
+        "usage_file": None,
     }
 
 
@@ -407,7 +408,7 @@ def test_termux_ultrafast_version_runs_before_heavy_startup(
 
     out = capsys.readouterr().out
     assert "Hermes Agent v" in out
-    assert "Project:" in out
+    assert "Install directory:" in out
     assert "Python:" in out
     assert "OpenAI SDK:" in out
 
@@ -617,6 +618,7 @@ def test_main_top_level_oneshot_accepts_toolsets(monkeypatch, main_mod):
         "model": None,
         "provider": None,
         "toolsets": "web,terminal",
+        "usage_file": None,
     }
 
 
@@ -920,6 +922,44 @@ def test_launch_tui_exports_model_provider_and_toolsets(monkeypatch, main_mod):
     assert active_path_during_call == active_path
     assert not active_path.exists()
     assert env["NODE_ENV"] == "production"
+
+
+def test_launch_tui_worktree_validates_relative_python_against_final_cwd(
+    monkeypatch, main_mod, tmp_path
+):
+    import cli as cli_mod
+
+    parent_cwd = tmp_path / "parent"
+    parent_cwd.mkdir()
+    worktree = tmp_path / "worktree"
+    relative_python = Path(".review-venv") / "bin" / Path(sys.executable).name
+    python_path = worktree / relative_python
+    python_path.parent.mkdir(parents=True)
+    os.link(sys.executable, python_path)
+    captured = {}
+
+    monkeypatch.setenv("HERMES_CWD", str(parent_cwd))
+    monkeypatch.setenv("HERMES_PYTHON", str(relative_python))
+    monkeypatch.setattr(cli_mod, "_git_repo_root", lambda: None)
+    monkeypatch.setattr(cli_mod, "_prune_stale_worktrees", lambda _repo: None)
+    monkeypatch.setattr(cli_mod, "_setup_worktree", lambda: {"path": str(worktree)})
+    monkeypatch.setattr(cli_mod, "_cleanup_worktree", lambda _info: None)
+    monkeypatch.setattr(
+        main_mod,
+        "_make_tui_argv",
+        lambda tui_dir, tui_dev: (["node", "dist/entry.js"], Path(".")),
+    )
+    monkeypatch.setattr(
+        main_mod.subprocess,
+        "call",
+        lambda argv, cwd=None, env=None: captured.update({"env": env}) or 1,
+    )
+
+    with pytest.raises(SystemExit):
+        main_mod._launch_tui(worktree=True)
+
+    assert captured["env"]["HERMES_CWD"] == str(worktree)
+    assert captured["env"]["HERMES_PYTHON"] == str(relative_python)
 
 
 def test_launch_tui_applies_terminal_backend_config(

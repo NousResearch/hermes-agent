@@ -57,6 +57,7 @@ def test_kanban_tools_visible_with_env_var(monkeypatch, tmp_path):
     expected = {
         "kanban_show", "kanban_complete", "kanban_block", "kanban_heartbeat",
         "kanban_comment", "kanban_create", "kanban_link",
+        "kanban_attach", "kanban_attach_url", "kanban_attachments",
     }
     assert kanban == expected, f"expected {expected}, got {kanban}"
 
@@ -138,6 +139,7 @@ def test_kanban_tools_visible_with_toolset_config(monkeypatch, tmp_path):
         "kanban_show", "kanban_complete", "kanban_block", "kanban_heartbeat",
         "kanban_comment", "kanban_create", "kanban_link",
         "kanban_unblock",
+        "kanban_attach", "kanban_attach_url", "kanban_attachments",
     }
     assert kanban == expected, f"expected {expected}, got {kanban}"
 
@@ -484,6 +486,31 @@ def test_complete_rejects_non_list_artifacts(worker_env):
     assert "artifacts must be a list" in err
 
 
+def test_complete_missing_scratch_artifact_stays_in_flight(worker_env):
+    """A false deliverable claim must return retry guidance, not mark Done."""
+    from hermes_cli import kanban_db as kb
+    from tools import kanban_tools as kt
+
+    with kb.connect() as conn:
+        task = kb.get_task(conn, worker_env)
+        assert task is not None
+        workspace = kb.resolve_workspace(task)
+        kb.set_workspace_path(conn, worker_env, workspace)
+
+    output = kt._handle_complete({
+        "summary": "report complete",
+        "artifacts": [str(workspace / "missing-report.md")],
+    })
+    error = json.loads(output).get("error", "")
+
+    assert "could not preserve" in error
+    assert "still in-flight" in error
+    assert "retry kanban_complete" in error
+    with kb.connect() as conn:
+        assert kb.get_task(conn, worker_env).status == "running"
+    assert workspace.exists()
+
+
 def test_complete_rejects_no_handoff(worker_env):
     from tools import kanban_tools as kt
     out = kt._handle_complete({})
@@ -589,11 +616,108 @@ def test_complete_retry_with_corrected_created_cards_succeeds(worker_env):
     }))
     assert ok.get("ok") is True
 
+
+def test_complete_goal_mode_rejected_by_judge(monkeypatch, tmp_path):
+    """Goal-mode tasks must pass the auxiliary judge before completion.
+    Regression for #38367: workers bypassing the judge via early kanban_complete."""
+    from pathlib import Path as _Path
+    from hermes_cli import kanban_db as kb
+    from tools import kanban_tools as kt
+
+    # Set up isolated HERMES_HOME
+    home = tmp_path / ".hermes"
+    home.mkdir()
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    monkeypatch.setenv("HERMES_PROFILE", "test-worker")
+    monkeypatch.delenv("HERMES_SESSION_ID", raising=False)
+    monkeypatch.setattr(_Path, "home", lambda: tmp_path)
+
+    kb._INITIALIZED_PATHS.clear()
+    kb.init_db()
     conn = kb.connect()
     try:
-        assert kb.get_task(conn, worker_env).status == "done"
+        goal_task_id = kb.create_task(
+            conn, title="goal-mode-test", assignee="test-worker",
+            body="Must achieve X with verified evidence.", goal_mode=True
+        )
+        kb.claim_task(conn, goal_task_id)
     finally:
         conn.close()
+    monkeypatch.setenv("HERMES_KANBAN_TASK", goal_task_id)
+
+    # Mock the judge to reject the completion. The gate only runs when a
+    # judge is reachable, so force the availability probe True as well.
+    def mock_judge_goal(goal, last_response, *, timeout=30.0, subgoals=None):
+        return "continue", "missing verification evidence", False
+
+    monkeypatch.setattr("tools.kanban_tools.judge_goal", mock_judge_goal)
+    monkeypatch.setattr("tools.kanban_tools._goal_judge_available", lambda: True)
+
+    # Attempt to complete should be rejected
+    out = kt._handle_complete({"summary": "I did some stuff but not X"})
+    d = json.loads(out)
+    assert "error" in d
+    assert "Goal completion rejected by judge" in d["error"]
+    assert "missing verification evidence" in d["error"]
+    assert f"parents=[{goal_task_id}]" in d["error"]
+
+    # Verify the task is NOT completed in the DB
+    conn2 = kb.connect()
+    try:
+        task = kb.get_task(conn2, goal_task_id)
+        assert task.status == "running"  # Should still be running, not done
+    finally:
+        conn2.close()
+
+
+def test_complete_goal_mode_allows_when_judge_unavailable(monkeypatch, tmp_path):
+    """Fail-open: an unreachable judge must not wedge a goal_mode worker.
+
+    judge_goal returns a "continue" verdict when no auxiliary model is
+    configured, which is indistinguishable from a real "not done" judgment.
+    The gate probes availability first, so completion proceeds rather than
+    being rejected forever when no judge can be reached."""
+    from pathlib import Path as _Path
+    from hermes_cli import kanban_db as kb
+    from tools import kanban_tools as kt
+
+    home = tmp_path / ".hermes"
+    home.mkdir()
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    monkeypatch.setenv("HERMES_PROFILE", "test-worker")
+    monkeypatch.delenv("HERMES_SESSION_ID", raising=False)
+    monkeypatch.setattr(_Path, "home", lambda: tmp_path)
+
+    kb._INITIALIZED_PATHS.clear()
+    kb.init_db()
+    conn = kb.connect()
+    try:
+        goal_task_id = kb.create_task(
+            conn, title="goal-mode-test", assignee="test-worker",
+            body="Must achieve X with verified evidence.", goal_mode=True
+        )
+        kb.claim_task(conn, goal_task_id)
+    finally:
+        conn.close()
+    monkeypatch.setenv("HERMES_KANBAN_TASK", goal_task_id)
+
+    # No judge reachable. judge_goal must not even be consulted; if it were,
+    # this stub would reject — so reaching "done" proves the probe short-circuit.
+    def fail_if_called(goal, last_response, *, timeout=30.0, subgoals=None):
+        raise AssertionError("judge_goal must not run when no judge is available")
+
+    monkeypatch.setattr("tools.kanban_tools.judge_goal", fail_if_called)
+    monkeypatch.setattr("tools.kanban_tools._goal_judge_available", lambda: False)
+
+    out = kt._handle_complete({"summary": "done enough"})
+    d = json.loads(out)
+    assert d.get("ok") is True
+
+    conn2 = kb.connect()
+    try:
+        assert kb.get_task(conn2, goal_task_id).status == "done"
+    finally:
+        conn2.close()
 
 
 def test_block_happy_path(worker_env):
@@ -614,6 +738,120 @@ def test_block_rejects_empty_reason(worker_env):
     for bad in ["", "   ", None]:
         out = kt._handle_block({"reason": bad})
         assert json.loads(out).get("error")
+
+
+def _make_goal_mode_worker_env(monkeypatch, tmp_path):
+    """Set up an isolated HERMES_HOME with one claimed goal_mode task,
+    matching the pattern used by the kanban_complete judge gate tests."""
+    from pathlib import Path as _Path
+    from hermes_cli import kanban_db as kb
+
+    home = tmp_path / ".hermes"
+    home.mkdir()
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    monkeypatch.setenv("HERMES_PROFILE", "test-worker")
+    monkeypatch.delenv("HERMES_SESSION_ID", raising=False)
+    monkeypatch.setattr(_Path, "home", lambda: tmp_path)
+
+    kb._INITIALIZED_PATHS.clear()
+    kb.init_db()
+    conn = kb.connect()
+    try:
+        goal_task_id = kb.create_task(
+            conn, title="goal-mode-block-test", assignee="test-worker",
+            body="Must achieve X.", goal_mode=True,
+        )
+        kb.claim_task(conn, goal_task_id)
+    finally:
+        conn.close()
+    monkeypatch.setenv("HERMES_KANBAN_TASK", goal_task_id)
+    return goal_task_id
+
+
+def test_block_goal_mode_rejects_missing_kind(monkeypatch, tmp_path):
+    """A goal_mode worker calling kanban_block with no kind must not be able
+    to use it as an unguarded escape from the goal loop (Issue #38696,
+    sibling of the kanban_complete judge gate / Issue #38367)."""
+    from tools import kanban_tools as kt
+    from hermes_cli import kanban_db as kb
+
+    tid = _make_goal_mode_worker_env(monkeypatch, tmp_path)
+    out = kt._handle_block({"reason": "giving up"})
+    d = json.loads(out)
+    assert "error" in d
+    assert "goal_mode" in d["error"]
+
+    conn = kb.connect()
+    try:
+        assert kb.get_task(conn, tid).status == "running"
+    finally:
+        conn.close()
+
+
+def test_block_goal_mode_rejects_disallowed_kind(monkeypatch, tmp_path):
+    """`capability` / `transient` are valid kinds in general but must not
+    let a goal_mode worker exit the loop without going through the judge."""
+    from tools import kanban_tools as kt
+    from hermes_cli import kanban_db as kb
+
+    tid = _make_goal_mode_worker_env(monkeypatch, tmp_path)
+    for kind in ("capability", "transient"):
+        out = kt._handle_block({"reason": "blocked", "kind": kind})
+        d = json.loads(out)
+        assert "error" in d, f"kind={kind} should be rejected for goal_mode"
+
+    conn = kb.connect()
+    try:
+        assert kb.get_task(conn, tid).status == "running"
+    finally:
+        conn.close()
+
+
+def test_block_goal_mode_allows_dependency_kind(monkeypatch, tmp_path):
+    """`dependency` and `needs_input` represent a genuine external blocker
+    the worker cannot resolve itself — these remain ungated.
+
+    `dependency` routes to status='todo' (not 'blocked') per block_task's
+    own kind-routing — the goal loop still treats anything outside
+    running/ready/done/blocked as a stop, so this is still a legitimate,
+    judge-free exit; it's just not the literal 'blocked' status."""
+    from tools import kanban_tools as kt
+    from hermes_cli import kanban_db as kb
+
+    tid = _make_goal_mode_worker_env(monkeypatch, tmp_path)
+    out = kt._handle_block({"reason": "waiting on another task", "kind": "dependency"})
+    d = json.loads(out)
+    assert d.get("ok") is True
+
+    conn = kb.connect()
+    try:
+        assert kb.get_task(conn, tid).status == "todo"
+    finally:
+        conn.close()
+
+
+def test_block_goal_mode_allows_needs_input_kind(monkeypatch, tmp_path):
+    from tools import kanban_tools as kt
+    from hermes_cli import kanban_db as kb
+
+    tid = _make_goal_mode_worker_env(monkeypatch, tmp_path)
+    out = kt._handle_block({"reason": "need a decision from the user", "kind": "needs_input"})
+    d = json.loads(out)
+    assert d.get("ok") is True
+
+    conn = kb.connect()
+    try:
+        assert kb.get_task(conn, tid).status == "blocked"
+    finally:
+        conn.close()
+
+
+def test_block_non_goal_mode_task_unaffected_by_new_gate(worker_env):
+    """The new gate only applies to goal_mode tasks — plain tasks must keep
+    blocking freely with no kind, exactly as before this fix."""
+    from tools import kanban_tools as kt
+    out = kt._handle_block({"reason": "need clarification"})
+    assert json.loads(out).get("ok") is True
 
 
 def test_heartbeat_happy_path(worker_env):
@@ -1086,6 +1324,40 @@ def test_unblock_happy_path(monkeypatch, worker_env):
     conn = kb.connect()
     try:
         assert kb.get_task(conn, tid).status == "ready"
+    finally:
+        conn.close()
+
+
+def test_unblock_with_pending_parents_returns_todo(monkeypatch, tmp_path):
+    monkeypatch.delenv("HERMES_KANBAN_TASK", raising=False)
+    home = tmp_path / ".hermes"
+    home.mkdir()
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    monkeypatch.setenv("HERMES_PROFILE", "orchestrator")
+    from pathlib import Path as _Path
+    monkeypatch.setattr(_Path, "home", lambda: tmp_path)
+
+    from hermes_cli import kanban_db as kb
+    kb._INITIALIZED_PATHS.clear()
+    kb.init_db()
+    conn = kb.connect()
+    try:
+        parent = kb.create_task(conn, title="parent", assignee="worker")
+        child = kb.create_task(conn, title="child", assignee="worker", parents=[parent])
+        conn.execute("UPDATE tasks SET status='blocked' WHERE id=?", (child,))
+        conn.commit()
+    finally:
+        conn.close()
+
+    from tools import kanban_tools as kt
+    out = kt._handle_unblock({"task_id": child})
+    d = json.loads(out)
+    assert d["ok"] is True
+    assert d["status"] == "todo"
+
+    conn = kb.connect()
+    try:
+        assert kb.get_task(conn, child).status == "todo"
     finally:
         conn.close()
 
@@ -1794,7 +2066,7 @@ def test_board_param_rejects_invalid_slug(multi_board_env):
 
 
 def test_board_param_in_all_schemas():
-    """All nine kanban_* tool schemas must expose an optional ``board``
+    """Every kanban_* tool schema must expose an optional ``board``
     parameter. This pins the contract surfaced to the LLM — adding a
     new kanban tool without ``board`` will fail CI immediately."""
     from tools import kanban_tools as kt
@@ -1809,6 +2081,9 @@ def test_board_param_in_all_schemas():
         kt.KANBAN_CREATE_SCHEMA,
         kt.KANBAN_UNBLOCK_SCHEMA,
         kt.KANBAN_LINK_SCHEMA,
+        kt.KANBAN_ATTACH_SCHEMA,
+        kt.KANBAN_ATTACH_URL_SCHEMA,
+        kt.KANBAN_ATTACHMENTS_SCHEMA,
     ]
     for schema in schemas:
         props = schema["parameters"]["properties"]
@@ -2010,3 +2285,433 @@ def test_maybe_auto_subscribe_swallows_add_notify_sub_failure(monkeypatch, worke
     d = json.loads(out)
     assert d["ok"] is True, d
     assert d["subscribed"] is False, d
+
+
+# ---------------------------------------------------------------------------
+# Attachments — kanban_attach / kanban_attach_url / kanban_attachments
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture
+def allow_private_urls(monkeypatch):
+    """Opt the SSRF guard into private/loopback targets for local fixtures.
+
+    Mirrors a user setting HERMES_ALLOW_PRIVATE_URLS on a private network.
+    Resets the url_safety process-lifetime cache on both sides so the
+    override neither leaks in nor out of the test.
+    """
+    from tools import url_safety
+
+    monkeypatch.setenv("HERMES_ALLOW_PRIVATE_URLS", "true")
+    url_safety._reset_allow_private_cache()
+    yield
+    url_safety._reset_allow_private_cache()
+
+
+def test_attach_roundtrips_bytes_to_row_and_disk(worker_env):
+    """kanban_attach decodes base64, writes the blob, and records the row."""
+    import base64
+    from pathlib import Path
+
+    from hermes_cli import kanban_db as kb
+    from tools import kanban_tools as kt
+
+    content = b"hello attachment from a tool"
+    out = kt._handle_attach({
+        "filename": "notes.txt",
+        "content_base64": base64.b64encode(content).decode(),
+        "content_type": "text/plain",
+    })
+    d = json.loads(out)
+    assert d.get("ok") is True, out
+    assert d["size"] == len(content)
+    att_id = d["attachment_id"]
+
+    conn = kb.connect()
+    try:
+        atts = kb.list_attachments(conn, worker_env)
+        assert [a.filename for a in atts] == ["notes.txt"]
+        a = atts[0]
+        assert a.id == att_id
+        assert a.content_type == "text/plain"
+        assert a.uploaded_by == "agent"
+        # Blob is on disk under the task's attachments dir with the bytes.
+        assert Path(a.stored_path).read_bytes() == content
+        assert Path(a.stored_path).resolve().is_relative_to(
+            kb.task_attachments_dir(worker_env).resolve()
+        )
+    finally:
+        conn.close()
+
+
+def test_attach_rejects_oversize(worker_env, monkeypatch):
+    """A decoded payload over the cap returns a clean tool error, no row."""
+    import base64
+
+    from hermes_cli import kanban_db as kb
+    from tools import kanban_tools as kt
+
+    # Shrink the cap so we don't have to build a 25 MB payload.
+    monkeypatch.setattr(kb, "KANBAN_ATTACHMENT_MAX_BYTES", 8)
+    out = kt._handle_attach({
+        "filename": "big.bin",
+        "content_base64": base64.b64encode(b"0123456789").decode(),
+    })
+    d = json.loads(out)
+    assert "error" in d
+    assert "MB limit" in d["error"]
+
+    conn = kb.connect()
+    try:
+        assert kb.list_attachments(conn, worker_env) == []
+    finally:
+        conn.close()
+
+
+def test_attach_rejects_bad_base64(worker_env):
+    from tools import kanban_tools as kt
+
+    out = kt._handle_attach({"filename": "x.txt", "content_base64": "not base64!!!"})
+    d = json.loads(out)
+    assert "error" in d and "base64" in d["error"]
+
+
+def test_attach_requires_filename_and_content(worker_env):
+    from tools import kanban_tools as kt
+
+    assert "error" in json.loads(kt._handle_attach({"content_base64": "QQ=="}))
+    assert "error" in json.loads(kt._handle_attach({"filename": "x.txt"}))
+
+
+def test_attach_enforces_worker_task_ownership(worker_env):
+    """A worker scoped to its own task can't attach to a foreign task."""
+    import base64
+
+    from hermes_cli import kanban_db as kb
+    from tools import kanban_tools as kt
+
+    conn = kb.connect()
+    try:
+        other = kb.create_task(conn, title="someone else's task", assignee="peer")
+    finally:
+        conn.close()
+
+    out = kt._handle_attach({
+        "task_id": other,
+        "filename": "x.txt",
+        "content_base64": base64.b64encode(b"x").decode(),
+    })
+    d = json.loads(out)
+    assert "error" in d
+    assert "scoped to task" in d["error"]
+
+
+def test_attachments_lists_uploaded_files(worker_env):
+    import base64
+
+    from tools import kanban_tools as kt
+
+    kt._handle_attach({
+        "filename": "a.txt",
+        "content_base64": base64.b64encode(b"aaa").decode(),
+    })
+    kt._handle_attach({
+        "filename": "b.txt",
+        "content_base64": base64.b64encode(b"bbbb").decode(),
+    })
+    out = kt._handle_attachments({})
+    d = json.loads(out)
+    assert d.get("ok") is True
+    names = sorted(a["filename"] for a in d["attachments"])
+    assert names == ["a.txt", "b.txt"]
+    sizes = {a["filename"]: a["size"] for a in d["attachments"]}
+    assert sizes == {"a.txt": 3, "b.txt": 4}
+
+
+def test_attachments_unknown_task_errors(worker_env):
+    from tools import kanban_tools as kt
+
+    out = kt._handle_attachments({"task_id": "t_nope"})
+    assert "error" in json.loads(out)
+
+
+def test_attach_url_fetches_local_fixture(worker_env, allow_private_urls):
+    """kanban_attach_url downloads from an http(s) URL and stores the bytes.
+
+    The fixture server lives on loopback, which the SSRF guard blocks by
+    default — opted in via the allow_private_urls fixture exactly like a
+    user on a private network would.
+    """
+    import http.server
+    import threading
+    from pathlib import Path
+
+    from hermes_cli import kanban_db as kb
+    from tools import kanban_tools as kt
+
+    payload = b"downloaded-by-url body"
+
+    class _Handler(http.server.BaseHTTPRequestHandler):
+        def do_GET(self):  # noqa: N802
+            self.send_response(200)
+            self.send_header("Content-Type", "application/octet-stream")
+            self.send_header("Content-Length", str(len(payload)))
+            self.end_headers()
+            self.wfile.write(payload)
+
+        def log_message(self, *a):  # silence
+            pass
+
+    srv = http.server.HTTPServer(("127.0.0.1", 0), _Handler)
+    threading.Thread(target=srv.serve_forever, daemon=True).start()
+    try:
+        port = srv.server_address[1]
+        out = kt._handle_attach_url({
+            "url": f"http://127.0.0.1:{port}/files/report.bin",
+        })
+    finally:
+        srv.shutdown()
+    d = json.loads(out)
+    assert d.get("ok") is True, out
+    assert d["size"] == len(payload)
+
+    conn = kb.connect()
+    try:
+        atts = kb.list_attachments(conn, worker_env)
+        # Filename derived from the URL path leaf.
+        assert atts[0].filename == "report.bin"
+        assert Path(atts[0].stored_path).read_bytes() == payload
+    finally:
+        conn.close()
+
+
+def test_attach_url_rejects_oversize_stream(worker_env, monkeypatch, allow_private_urls):
+    """An oversize response body is rejected during download, no row written."""
+    import http.server
+    import threading
+
+    from hermes_cli import kanban_db as kb
+    from tools import kanban_tools as kt
+
+    big = b"x" * (64 * 1024)
+
+    class _Handler(http.server.BaseHTTPRequestHandler):
+        def do_GET(self):  # noqa: N802
+            self.send_response(200)
+            self.send_header("Content-Type", "application/octet-stream")
+            self.send_header("Content-Length", str(len(big)))
+            self.end_headers()
+            self.wfile.write(big)
+
+        def log_message(self, *a):
+            pass
+
+    monkeypatch.setattr(kb, "KANBAN_ATTACHMENT_MAX_BYTES", 1024)
+    srv = http.server.HTTPServer(("127.0.0.1", 0), _Handler)
+    threading.Thread(target=srv.serve_forever, daemon=True).start()
+    try:
+        port = srv.server_address[1]
+        out = kt._handle_attach_url({"url": f"http://127.0.0.1:{port}/big.bin"})
+    finally:
+        srv.shutdown()
+    d = json.loads(out)
+    assert "error" in d
+    assert "MB limit" in d["error"]
+
+    conn = kb.connect()
+    try:
+        assert kb.list_attachments(conn, worker_env) == []
+    finally:
+        conn.close()
+
+
+def test_attach_url_rejects_non_http_scheme(worker_env):
+    from tools import kanban_tools as kt
+
+    out = kt._handle_attach_url({"url": "file:///etc/passwd"})
+    d = json.loads(out)
+    assert "error" in d
+    assert "scheme" in d["error"]
+
+
+# ---------------------------------------------------------------------------
+# kanban_attach_url — SSRF guard (tools/url_safety.is_safe_url per hop)
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture
+def default_url_guard(monkeypatch):
+    """Force the SSRF guard to its secure default for this test.
+
+    Clears HERMES_ALLOW_PRIVATE_URLS and resets url_safety's process-lifetime
+    cache on both sides so a prior test's opt-in can't leak in.
+    """
+    from tools import url_safety
+
+    monkeypatch.delenv("HERMES_ALLOW_PRIVATE_URLS", raising=False)
+    url_safety._reset_allow_private_cache()
+    yield
+    url_safety._reset_allow_private_cache()
+
+
+def _assert_attach_url_blocked(worker_env, url):
+    """Call kanban_attach_url with ``url`` and assert the SSRF guard fired
+    (clean tool error, no attachment row, no network fetch needed)."""
+    from hermes_cli import kanban_db as kb
+    from tools import kanban_tools as kt
+
+    out = kt._handle_attach_url({"url": url})
+    d = json.loads(out)
+    assert "error" in d, out
+    assert "SSRF" in d["error"] or "blocked" in d["error"].lower(), out
+    conn = kb.connect()
+    try:
+        assert kb.list_attachments(conn, worker_env) == []
+    finally:
+        conn.close()
+
+
+def test_attach_url_blocks_loopback(worker_env, default_url_guard):
+    """http://127.0.0.1/ is rejected before any connection is made."""
+    _assert_attach_url_blocked(worker_env, "http://127.0.0.1/")
+
+
+def test_attach_url_blocks_cloud_metadata(worker_env, default_url_guard):
+    """The cloud metadata endpoint is rejected — the #1 SSRF target."""
+    _assert_attach_url_blocked(
+        worker_env, "http://169.254.169.254/latest/meta-data/"
+    )
+
+
+def test_attach_url_blocks_private_range(worker_env, default_url_guard):
+    """RFC1918 addresses (http://10.0.0.1/) are rejected."""
+    _assert_attach_url_blocked(worker_env, "http://10.0.0.1/")
+
+
+def _fake_public_dns(monkeypatch, mapping):
+    """Patch url_safety's getaddrinfo so hostnames in ``mapping`` resolve to
+    the given (public) IPs and literal IPs resolve to themselves — no real
+    DNS or network traffic."""
+    import ipaddress
+    import socket as _socket
+
+    real_af, real_sock = _socket.AF_INET, _socket.SOCK_STREAM
+
+    def fake_getaddrinfo(host, *args, **kwargs):
+        ip = mapping.get(host)
+        if ip is None:
+            # Literal IPs pass through; unknown hostnames fail like NXDOMAIN.
+            try:
+                ipaddress.ip_address(host)
+            except ValueError:
+                raise _socket.gaierror(f"fake DNS: unknown host {host!r}")
+            ip = host
+        return [(real_af, real_sock, 6, "", (ip, 0))]
+
+    from tools import url_safety
+    monkeypatch.setattr(url_safety.socket, "getaddrinfo", fake_getaddrinfo)
+
+
+class _FakeStreamResponse:
+    def __init__(self, *, status_code=200, headers=None, body=b""):
+        self.status_code = status_code
+        self.headers = headers or {}
+        self._body = body
+
+    @property
+    def is_redirect(self):
+        return 300 <= self.status_code < 400 and "location" in {
+            k.lower() for k in self.headers
+        }
+
+    def raise_for_status(self):
+        if self.status_code >= 400:
+            raise RuntimeError(f"HTTP {self.status_code}")
+
+    def iter_bytes(self, chunk_size):
+        for i in range(0, len(self._body), chunk_size):
+            yield self._body[i:i + chunk_size]
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc):
+        return False
+
+
+def test_attach_url_blocks_redirect_to_loopback(worker_env, default_url_guard, monkeypatch):
+    """A public host 302ing to loopback is caught on the redirect hop.
+
+    The pre-flight check passes (public IP), then the mocked response
+    redirects to http://127.0.0.1/ — the guard must re-validate the
+    Location target and refuse to follow it.
+    """
+    import httpx
+
+    from hermes_cli import kanban_db as kb
+    from tools import kanban_tools as kt
+
+    _fake_public_dns(monkeypatch, {"files.example.com": "93.184.216.34"})
+
+    requested = []
+
+    def fake_stream(method, url, **kwargs):
+        requested.append(url)
+        assert kwargs.get("follow_redirects") is False
+        return _FakeStreamResponse(
+            status_code=302,
+            headers={"location": "http://127.0.0.1/latest/secrets"},
+        )
+
+    monkeypatch.setattr(httpx, "stream", fake_stream)
+
+    out = kt._handle_attach_url({"url": "http://files.example.com/report.pdf"})
+    d = json.loads(out)
+    assert "error" in d, out
+    assert "127.0.0.1" in d["error"], out
+    # Only the public hop was ever fetched; the loopback target never was.
+    assert requested == ["http://files.example.com/report.pdf"]
+
+    conn = kb.connect()
+    try:
+        assert kb.list_attachments(conn, worker_env) == []
+    finally:
+        conn.close()
+
+
+def test_attach_url_happy_path_public_host(worker_env, default_url_guard, monkeypatch):
+    """A public URL passes the guard and the bytes are stored (mocked fetch)."""
+    from pathlib import Path
+
+    import httpx
+
+    from hermes_cli import kanban_db as kb
+    from tools import kanban_tools as kt
+
+    _fake_public_dns(monkeypatch, {"files.example.com": "93.184.216.34"})
+
+    payload = b"public fetch body"
+
+    def fake_stream(method, url, **kwargs):
+        assert url == "http://files.example.com/docs/spec.pdf"
+        return _FakeStreamResponse(
+            status_code=200,
+            headers={"content-type": "application/pdf; charset=binary"},
+            body=payload,
+        )
+
+    monkeypatch.setattr(httpx, "stream", fake_stream)
+
+    out = kt._handle_attach_url({"url": "http://files.example.com/docs/spec.pdf"})
+    d = json.loads(out)
+    assert d.get("ok") is True, out
+    assert d["size"] == len(payload)
+
+    conn = kb.connect()
+    try:
+        atts = kb.list_attachments(conn, worker_env)
+        assert [a.filename for a in atts] == ["spec.pdf"]
+        assert atts[0].content_type == "application/pdf"
+        assert Path(atts[0].stored_path).read_bytes() == payload
+    finally:
+        conn.close()

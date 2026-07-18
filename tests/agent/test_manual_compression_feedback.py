@@ -32,6 +32,14 @@ def test_aborted_compression_reports_preserved_messages_and_reason():
 
     assert feedback["aborted"] is True
     assert feedback["fallback_used"] is False
+    assert feedback["before_count"] == 12
+    assert feedback["after_count"] == 12
+    assert feedback["before_tokens"] == 120_000
+    assert feedback["after_tokens"] == 120_000
+    assert feedback["dropped_count"] == 0
+    assert feedback["failure_reason"] == (
+        "Provider 'opencode-zen' is set in config.yaml but no API key was found."
+    )
     assert feedback["headline"] == "Compression aborted: 12 messages preserved"
     assert "no messages were removed" in feedback["note"]
     assert "no API key was found" in feedback["note"]
@@ -56,6 +64,7 @@ def test_failure_reason_redaction_is_forced_at_ui_boundary(monkeypatch):
     )
 
     assert fake_secret not in feedback["note"]
+    assert fake_secret not in feedback["failure_reason"]
     assert "OPENAI_API_KEY=" in feedback["note"]
 
 
@@ -79,6 +88,8 @@ def test_fallback_compression_reports_dropped_message_count():
 
     assert feedback["aborted"] is False
     assert feedback["fallback_used"] is True
+    assert feedback["dropped_count"] == 8
+    assert feedback["failure_reason"] == "summary provider returned an invalid response"
     assert feedback["headline"] == "Compressed with fallback: 12 → 4 messages"
     assert "removed 8 message(s)" in feedback["note"]
     assert "invalid response" in feedback["note"]

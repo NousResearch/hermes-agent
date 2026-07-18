@@ -1079,7 +1079,7 @@ export const ToolTrail = memo(function ToolTrail({
                       {toolLabel(group)}
                       {isDelegateGroup ? (
                         <Text color={t.color.statusFg} dim>
-                          {'  (/agents to monitor)'}
+                          {ti('activity.agentsMonitorHint')}
                         </Text>
                       ) : null}
                     </>

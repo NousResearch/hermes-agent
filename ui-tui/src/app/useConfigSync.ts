@@ -3,8 +3,8 @@ import { useEffect, useRef } from 'react'
 
 import { resolveDetailsMode, resolveSections } from '../domain/details.js'
 import type { GatewayClient } from '../gatewayClient.js'
-import type { ConfigFullResponse, ConfigMtimeResponse, ReloadMcpResponse } from '../gatewayTypes.js'
-import { normalizeLocale, translate } from '../i18n/index.js'
+import type { ConfigFullResponse, ConfigMtimeResponse } from '../gatewayTypes.js'
+import { normalizeLocale } from '../i18n/index.js'
 import { DEFAULT_VOICE_RECORD_KEY, type ParsedVoiceRecordKey, parseVoiceRecordKey } from '../lib/platform.js'
 import { asRpcResult } from '../lib/rpc.js'
 
@@ -15,7 +15,6 @@ import {
   type IndicatorStyle,
   type StatusBarMode
 } from './interfaces.js'
-import { turnController } from './turnController.js'
 import { getUiState, patchUiState } from './uiStore.js'
 
 const STATUSBAR_ALIAS: Record<string, StatusBarMode> = {
@@ -181,11 +180,9 @@ const _pasteCollapseCharsFromConfig = (cfg: ConfigFullResponse | null): number =
 
 /** Fetch ``config.get full`` and fan the result through ``applyDisplay``.
  *
- * Extracted so the mtime-reload path can be exercised by the test
- * suite without a React runtime (Copilot round-12 review on #19835).
- * Both the initial hydration and the mtime poller use this shared
- * helper, so a regression in the fetch/apply plumbing now fails the
- * useConfigSync tests instead of only being visible at runtime. */
+ * Both initial hydration and live config refresh use this helper. Keeping
+ * display hydration separate from MCP reload is load-bearing: rebuilding the
+ * tool schema after a turn has started invalidates the prompt cache. */
 export async function hydrateFullConfig(
   gw: GatewayClient,
   setBell: (v: boolean) => void,
@@ -196,6 +193,15 @@ export async function hydrateFullConfig(
 
   return cfg
 }
+
+/** Apply a live config-file change without rebuilding the agent tool schema.
+ *
+ * ``reload.mcp`` invalidates the conversation's prompt cache and therefore
+ * remains an explicit, user-confirmed slash command. Display-only changes —
+ * most notably ``display.language`` — must never pay that cost merely because
+ * they share ``config.yaml`` with MCP settings.
+ */
+export const syncChangedConfig = hydrateFullConfig
 
 export const applyDisplay = (
   cfg: ConfigFullResponse | null,
@@ -286,10 +292,7 @@ export function useConfigSync({
 
         mtimeRef.current = next
 
-        quietRpc<ReloadMcpResponse>(gw, 'reload.mcp', { session_id: sid, confirm: true }).then(
-          r => r && turnController.pushActivity(translate(getUiState().locale, 'sys.mcpReloaded'))
-        )
-        void hydrateFullConfig(gw, setBellOnComplete, setVoiceRecordKey)
+        void syncChangedConfig(gw, setBellOnComplete, setVoiceRecordKey)
       })
     }, MTIME_POLL_MS)
 

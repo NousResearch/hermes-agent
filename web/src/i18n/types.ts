@@ -16,7 +16,25 @@ export type Locale =
   | "ru"
   | "hu";
 
+/** Localized metadata for config-schema fields.
+ *
+ * Schema keys are supplied by the backend and can grow independently of the
+ * Dashboard. Locale packs therefore overlay keyed wording and may opt into a
+ * generic glossary-based label generator without adding locale branches to
+ * form components.
+ */
+export interface SchemaTranslations {
+  descriptions: Record<string, string>;
+  generateLabels: boolean;
+  labels: Record<string, string>;
+  pathSeparator: string;
+  segments: Record<string, string>;
+  terms: Record<string, string>;
+}
+
 export interface Translations {
+  schema: SchemaTranslations;
+
   // ── Common ──
   common: {
     save: string;
@@ -137,6 +155,16 @@ export interface Translations {
     eventsDisconnected: string;
     eventsRejected: string;
     reasoning: string;
+    reasoningEfforts: {
+      none: string;
+      minimal: string;
+      low: string;
+      medium: string;
+      high: string;
+      xhigh: string;
+      max: string;
+      ultra: string;
+    };
     reasoningEffortSet: string;
     modelSetRequiresReload: string;
     reconnecting: string;
@@ -287,6 +315,7 @@ export interface Translations {
       assistant: string;
       system: string;
       tool: string;
+      compaction: string;
     };
   };
 
@@ -600,6 +629,13 @@ export interface Translations {
     profile: string;
     allProfiles: string;
     repeat: string;
+    repeatForever: string;
+    repeatTimes: string;
+    fallbackJobTitle: string;
+    views: {
+      jobs: string;
+      blueprints: string;
+    };
     deliveryLabel: string;
     skillsCount: string;
     toolsetsCount: string;
@@ -1757,6 +1793,7 @@ export interface Translations {
     reassignTo: string;
     copied: string;
     copyCommand: string;
+    copyCommandPrompt: string;
     reclaim: string;
     reassign: string;
     renderingError: string;
@@ -1776,8 +1813,11 @@ export interface Translations {
     archiveBoardTitle: string;
     boardSwitcherHint: string;
     taskCreatedWarning: string;
+    actionFailed: string;
     moveFailed: string;
     bulkFailed: string;
+    bulkMoveFailed: string;
+    bulkFailedDetails: string;
     completionBlockedHallucination: string;
     suspectedHallucinatedReferences: string;
     pickProfileFirst: string;
@@ -1816,6 +1856,8 @@ export interface Translations {
     confirmBlocked: string;
     confirmScheduled: string;
     completionSummary: string;
+    completionSummaryThisTask: string;
+    completionSummarySelectedTasks: string;
     completionSummaryRequired: string;
     triagePlaceholder: string;
     taskTitlePlaceholder: string;
@@ -1828,26 +1870,183 @@ export interface Translations {
     workspacePathOptional: string;
     logTruncated: string;
     logAt: string;
-    // Optional keys added with the modal create-task dialog, board-settings
-    // dialog, and comment workflow hint. Non-English locales fall back to
-    // the English literal in the plugin bundle until translated, so these
-    // are optional to avoid churning every locale file.
-    newTaskTitle?: string;
-    taskTitleLabel?: string;
-    assigneeLabel?: string;
-    assigneeLabelHint?: string;
-    skillsLabel?: string;
-    skillsLabelHint?: string;
-    parentLabel?: string;
-    parentLabelHint?: string;
-    create?: string;
-    boardSettings?: string;
-    boardSettingsTitle?: string;
-    boardSettingsTitleFor?: string;
-    projectDirectoryOverrideHint?: string;
-    saving?: string;
-    commentHint?: string;
-    commentHintTitle?: string;
+    newTaskTitle: string;
+    taskTitleLabel: string;
+    assigneeLabel: string;
+    assigneeLabelHint: string;
+    skillsLabel: string;
+    skillsLabelHint: string;
+    parentLabel: string;
+    parentLabelHint: string;
+    create: string;
+    boardSettings: string;
+    boardSettingsTitle: string;
+    boardSettingsTitleFor: string;
+    projectDirectoryOverrideHint: string;
+    saving: string;
+    commentHint: string;
+    commentHintTitle: string;
+    attachments: string;
+    childResults: string;
+    clearFilters: string;
+    confirmRemoveAttachment: string;
+    delete: string;
+    doneNoResult: string;
+    doneParentNote: string;
+    finalResult: string;
+    goalMaxTurns: string;
+    goalEnabled: string;
+    goalEnabledMax: string;
+    goalMode: string;
+    noAttachments: string;
+    noChildResult: string;
+    projectDirectory: string;
+    projectDirectoryExplanation: string;
+    projectDirectoryHelp: string;
+    projectDirectoryHint: string;
+    projectDirectoryPlaceholder: string;
+    removeAttachment: string;
+    setPriority: string;
+    uploadFile: string;
+    uploading: string;
+    workspaceDir: string;
+    workspaceScratch: string;
+    workspaceScratchWarning: string;
+    workspaceWorktree: string;
+    trash: {
+      confirm: string;
+      confirmMany: string;
+      dropHint: string;
+    };
+    hints: {
+      assignee: string;
+      boardSwitcher: string;
+      clearFilters: string;
+      createBoard: string;
+      filterAssignee: string;
+      filterArchived: string;
+      filterSearch: string;
+      filterTenant: string;
+      groupRunning: string;
+      goalMaxTurns: string;
+      goalMode: string;
+      hideUntilReload: string;
+      nudgeDispatcher: string;
+      parent: string;
+      priority: string;
+      refreshBoard: string;
+      skills: string;
+      specifier: string;
+      workspace: string;
+    };
+    bulk: {
+      applyAssignee: string;
+      archive: string;
+      block: string;
+      blockConfirm: string;
+      clear: string;
+      delete: string;
+      deselectAll: string;
+      moveReady: string;
+      moveTodo: string;
+      reassign: string;
+      reassignHelp: string;
+      reclaimFirst: string;
+      reclaimFirstHelp: string;
+      selectAll: string;
+      selectAllColumn: string;
+      selectAllHelp: string;
+      setPriorityHelp: string;
+      unassign: string;
+      unblock: string;
+      unblockConfirm: string;
+    };
+    cardHints: {
+      assignedProfile: string;
+      childProgress: string;
+      columnTasks: string;
+      comments: string;
+      created: string;
+      dependencies: string;
+      diagnostics: string;
+      noProfile: string;
+      priority: string;
+      selectAllColumn: string;
+      selectTask: string;
+      task: string;
+      taskId: string;
+      tenant: string;
+    };
+    boardForm: {
+      descriptionPlaceholder: string;
+      slugRequired: string;
+    };
+    docs: {
+      ariaLabel: string;
+      open: string;
+    };
+    orchestration: {
+      auto: string;
+      autoDecomposeLabel: string;
+      autoDescription: string;
+      autoGenerate: string;
+      autoGenerateFailed: string;
+      autoModeHelp: string;
+      autoReview: string;
+      configure: string;
+      defaultAssignee: string;
+      defaultProfile: string;
+      defaultValue: string;
+      descriptionGenerated: string;
+      descriptionSaved: string;
+      generating: string;
+      label: string;
+      loadFailed: string;
+      loading: string;
+      loadingMode: string;
+      manual: string;
+      manualDescription: string;
+      manualModeHelp: string;
+      mode: string;
+      noDescription: string;
+      noProfiles: string;
+      orchestratorHelp: string;
+      profile: string;
+      profileDescriptionPlaceholder: string;
+      profileDescriptions: string;
+      profileDescriptionsHelp: string;
+      reload: string;
+      resolved: string;
+      saveDescription: string;
+      saveFailed: string;
+      saved: string;
+      settings: string;
+    };
+    run: {
+      earlier: string;
+      emptyLog: string;
+      metadata: string;
+      refreshLog: string;
+    };
+    taskActions: {
+      addChild: string;
+      addParent: string;
+      decompose: string;
+      decomposeFailed: string;
+      decomposed: string;
+      decomposing: string;
+      editDescription: string;
+      moveReady: string;
+      moveTodo: string;
+      moveTriage: string;
+      retitled: string;
+      singleTask: string;
+      specify: string;
+      specifyFailed: string;
+      specified: string;
+      specifying: string;
+      unknownError: string;
+    };
   };
 }
 

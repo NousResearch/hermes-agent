@@ -6,7 +6,7 @@ import { Card, CardContent, CardHeader, CardTitle } from "@nous-research/ui/ui/c
 import { useI18n } from "@/i18n";
 
 export function PlatformsCard({ platforms }: PlatformsCardProps) {
-  const { t } = useI18n();
+  const { locale, t } = useI18n();
   const platformStateBadge: Record<
     string,
     { tone: "success" | "warning" | "destructive" | "outline"; label: string }
@@ -80,7 +80,8 @@ export function PlatformsCard({ platforms }: PlatformsCardProps) {
 
                   {info.updated_at && (
                     <span className="font-mondwest normal-case text-xs text-muted-foreground">
-                      {t.status.lastUpdate}: {isoTimeAgo(info.updated_at)}
+                      {t.status.lastUpdate}:{" "}
+                      {isoTimeAgo(info.updated_at, locale, t.common.unknown)}
                     </span>
                   )}
                 </div>

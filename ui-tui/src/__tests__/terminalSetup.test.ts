@@ -299,7 +299,7 @@ describe('configureTerminalKeybindings', () => {
     })
 
     expect(result.success).toBe(false)
-    expect(result.message).toContain('Failed to read')
+    expect(result.message).toContain('failed to read')
     expect(writeFile).not.toHaveBeenCalled()
   })
 

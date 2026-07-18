@@ -7,7 +7,8 @@ import {
   normalizeBusyInputMode,
   normalizeIndicatorStyle,
   normalizeMouseTracking,
-  normalizeStatusBar
+  normalizeStatusBar,
+  syncChangedConfig
 } from '../app/useConfigSync.js'
 
 describe('applyDisplay', () => {
@@ -382,11 +383,7 @@ describe('applyDisplay → voice.record_key (#18994)', () => {
   })
 })
 
-// Round-12 Copilot review regression on #19835: the live mtime-reload
-// path was previously untested, so a regression in the polling/RPC
-// wiring to applyDisplay would only be visible at runtime. The fetch
-// + apply body is now shared as ``hydrateFullConfig()``, exercised
-// directly from both the initial hydration and the poll-tick body.
+// The live mtime path shares the same config hydration body as startup.
 describe('hydrateFullConfig', () => {
   beforeEach(() => {
     resetUiState()
@@ -411,7 +408,7 @@ describe('hydrateFullConfig', () => {
     expect(setBell).toHaveBeenCalledWith(false)
   })
 
-  it('reapplies the latest value on each invocation (mtime-reload semantics)', async () => {
+  it('reapplies the latest value on each invocation (mtime refresh semantics)', async () => {
     const gw = makeFakeGw({ config: { display: {}, voice: { record_key: 'ctrl+b' } } })
     const setBell = vi.fn()
     const setVoiceRecordKey = vi.fn()
@@ -426,6 +423,18 @@ describe('hydrateFullConfig', () => {
     expect(setVoiceRecordKey).toHaveBeenLastCalledWith(
       expect.objectContaining({ ch: 'space', mod: 'alt', named: 'space' })
     )
+  })
+
+  it('refreshes display config without rebuilding MCP tools', async () => {
+    const gw = makeFakeGw({ config: { display: { language: 'zh' } } })
+    const setBell = vi.fn()
+
+    await syncChangedConfig(gw, setBell)
+
+    expect(gw.request).toHaveBeenCalledTimes(1)
+    expect(gw.request).toHaveBeenCalledWith('config.get', { key: 'full' })
+    expect(gw.request).not.toHaveBeenCalledWith('reload.mcp', expect.anything())
+    expect($uiState.get().locale).toBe('zh')
   })
 
   it('leaves cached voiceRecordKey untouched when the RPC fails', async () => {

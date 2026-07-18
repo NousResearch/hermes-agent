@@ -35,6 +35,16 @@ def summarize_manual_compression(
     if not isinstance(failure_reason, str) or not failure_reason.strip():
         failure_reason = None
 
+    dropped_count = max(before_count - after_count, 0)
+    if fallback_used:
+        reported_dropped_count = getattr(
+            compression_state, "_last_summary_dropped_count", None
+        )
+        if isinstance(reported_dropped_count, int) and not isinstance(
+            reported_dropped_count, bool
+        ):
+            dropped_count = reported_dropped_count
+
     if aborted:
         headline = f"Compression aborted: {before_count} messages preserved"
     elif fallback_used:
@@ -58,11 +68,6 @@ def summarize_manual_compression(
     if aborted:
         note = "Summary generation failed; no messages were removed."
     elif fallback_used:
-        dropped_count = getattr(
-            compression_state, "_last_summary_dropped_count", None
-        )
-        if not isinstance(dropped_count, int) or isinstance(dropped_count, bool):
-            dropped_count = max(before_count - after_count, 0)
         note = (
             "Summary generation failed; Hermes used limited fallback context "
             f"and removed {dropped_count} message(s)."
@@ -73,17 +78,24 @@ def summarize_manual_compression(
             "compression rewrites the transcript into denser summaries."
         )
 
+    safe_failure_reason = None
     if failure_reason and (aborted or fallback_used):
         # This text crosses a user-facing UI boundary.  Never let a disabled
         # global redaction preference expose credentials embedded in provider
         # exception text.
-        safe_reason = redact_sensitive_text(failure_reason.strip(), force=True)
-        note = f"{note} Reason: {safe_reason}"
+        safe_failure_reason = redact_sensitive_text(failure_reason.strip(), force=True)
+        note = f"{note} Reason: {safe_failure_reason}"
 
     return {
         "noop": noop,
         "aborted": aborted,
         "fallback_used": fallback_used,
+        "before_count": before_count,
+        "after_count": after_count,
+        "before_tokens": before_tokens,
+        "after_tokens": after_tokens,
+        "dropped_count": dropped_count,
+        "failure_reason": safe_failure_reason,
         "headline": headline,
         "token_line": token_line,
         "note": note,

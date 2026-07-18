@@ -624,7 +624,7 @@ export function StatusRuleView({
         <Box flexDirection="row" flexShrink={0}>
           {DEV_CREDITS_MODE ? (
             <Text color={t.color.warn} wrap="truncate-end">
-              {' (dev credits)'}
+              {i18n.t('status.devCredits')}
             </Text>
           ) : null}
           <Text color={t.color.muted} wrap="truncate-end">

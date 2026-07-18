@@ -13,7 +13,12 @@ import type {
   SessionTitleResponse,
   SessionUndoResponse
 } from '../../../gatewayTypes.js'
-import { translate, type TranslationKey } from '../../../i18n/index.js'
+import {
+  translate,
+  translateSlashCategory,
+  translateSlashDescription,
+  type TranslationKey
+} from '../../../i18n/index.js'
 import { writeClipboardText } from '../../../lib/clipboard.js'
 import { writeOsc52Clipboard } from '../../../lib/osc52.js'
 import { configureDetectedTerminalKeybindings, configureTerminalKeybindings } from '../../../lib/terminalSetup.js'
@@ -84,8 +89,15 @@ export const coreCommands: SlashCommand[] = [
     name: 'help',
     run: (_arg, ctx) => {
       const sections: PanelSection[] = (ctx.local.catalog?.categories ?? []).map(cat => ({
-        rows: cat.pairs,
-        title: cat.name
+        rows: cat.pairs.map(([command, description]) => [
+          command,
+          translateSlashDescription(
+            ctx.ui.locale,
+            ctx.local.catalog?.descriptionKeys[command],
+            description
+          )
+        ]),
+        title: translateSlashCategory(ctx.ui.locale, cat.key, cat.name)
       }))
 
       if (ctx.local.catalog?.skillCount) {
@@ -480,8 +492,8 @@ export const coreCommands: SlashCommand[] = [
 
       const runner =
         !target || target === 'auto'
-          ? configureDetectedTerminalKeybindings()
-          : configureTerminalKeybindings(target as 'cursor' | 'vscode' | 'windsurf')
+          ? configureDetectedTerminalKeybindings({ locale: ctx.ui.locale })
+          : configureTerminalKeybindings(target as 'cursor' | 'vscode' | 'windsurf', { locale: ctx.ui.locale })
 
       void runner
         .then(result => {

@@ -296,7 +296,7 @@ export const SCHEMA_ZH_LABEL: Record<string, string> = {
 // Only backend descriptions that add information beyond the generated field
 // path belong here. Generated English path descriptions are intentionally not
 // repeated under a Chinese label.
-const SCHEMA_ZH_DESCRIPTION: Record<string, string> = {
+export const SCHEMA_ZH_DESCRIPTION: Record<string, string> = {
   model: "默认使用的模型，例如 anthropic/claude-sonnet-4.6。",
   model_context_length: "覆盖模型上下文窗口；设为 0 时从模型元数据自动检测。",
   "terminal.backend": "执行终端命令所使用的后端。",
@@ -326,7 +326,7 @@ const SCHEMA_ZH_DESCRIPTION: Record<string, string> = {
 // labels above preserve domain-quality wording for known fields; this glossary
 // gives every newly added path a readable Chinese label until an explicit
 // override is warranted, instead of silently falling back to an English leaf.
-const SCHEMA_ZH_TERM: Record<string, string> = {
+export const SCHEMA_ZH_TERM: Record<string, string> = {
   abort: "中止",
   access: "访问",
   account: "账号",
@@ -664,7 +664,7 @@ const SCHEMA_ZH_TERM: Record<string, string> = {
   zero: "零",
 };
 
-const SCHEMA_ZH_SEGMENT: Record<string, string> = {
+export const SCHEMA_ZH_SEGMENT: Record<string, string> = {
   active_preset: "当前预设",
   adopt_existing_tab: "接管现有标签页",
   allow_any_attachment: "允许任意附件",
@@ -701,42 +701,3 @@ const SCHEMA_ZH_SEGMENT: Record<string, string> = {
   voice_fx: "语音音效",
   _config_version: "配置版本",
 };
-
-function joinTranslatedTerms(terms: string[]): string {
-  return terms.reduce((label, term) => {
-    if (!label) return term;
-
-    // 技术标识与中文词之间保留空格，普通中文复合词则自然连写。
-    const previousIsTechnical = /[A-Za-z0-9]$/.test(label);
-    const currentIsTechnical = /^[A-Za-z0-9]/.test(term);
-    return `${label}${previousIsTechnical || currentIsTechnical ? " " : ""}${term}`;
-  }, "");
-}
-
-function generatedSchemaZhLabel(schemaKey: string): string {
-  return schemaKey
-    .split(".")
-    .map(
-      (segment) =>
-        SCHEMA_ZH_SEGMENT[segment] ??
-        joinTranslatedTerms(
-          segment.split("_").map((term) => SCHEMA_ZH_TERM[term] ?? term),
-        ),
-    )
-    .join(" → ");
-}
-
-/** Resolve a Chinese schema label with manual wording first, generated fallback second. */
-export function schemaZhLabel(schemaKey: string): string {
-  return SCHEMA_ZH_LABEL[schemaKey] ?? generatedSchemaZhLabel(schemaKey);
-}
-
-/** Resolve a concise leaf label for nested object and array editors. */
-export function schemaZhLeafLabel(schemaKey: string): string {
-  return schemaZhLabel(schemaKey).split(" → ").at(-1) ?? schemaKey;
-}
-
-/** Return a curated Chinese description when the backend description is informative. */
-export function schemaZhDescription(schemaKey: string): string {
-  return SCHEMA_ZH_DESCRIPTION[schemaKey] ?? "";
-}

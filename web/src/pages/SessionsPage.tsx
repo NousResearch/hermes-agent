@@ -222,7 +222,7 @@ function MessageBubble({
   msg: SessionMessage;
   highlight?: string;
 }) {
-  const { t } = useI18n();
+  const { locale, t } = useI18n();
 
   const ROLE_STYLES: Record<
     string,
@@ -254,7 +254,7 @@ function MessageBubble({
     compaction: {
       bg: "bg-muted/50",
       text: "text-muted-foreground italic",
-      label: "Context handoff",
+      label: t.sessions.roles.compaction,
     },
   };
 
@@ -329,7 +329,7 @@ function MessageBubble({
         )}
         {msg.timestamp && (
           <span className="text-xs text-text-tertiary">
-            {timeAgo(msg.timestamp)}
+            {timeAgo(msg.timestamp, locale)}
           </span>
         )}
       </div>
@@ -404,7 +404,7 @@ function SessionRow({
   const [renaming, setRenaming] = useState(false);
   const [renameValue, setRenameValue] = useState(session.title ?? "");
   const [renameSaving, setRenameSaving] = useState(false);
-  const { t } = useI18n();
+  const { locale, t } = useI18n();
   const navigate = useNavigate();
 
   useEffect(() => {
@@ -636,7 +636,9 @@ function SessionRow({
                   </>
                 )}
                 <span className="text-border">&#183;</span>
-                <span className="shrink-0">{timeAgo(session.last_active)}</span>
+                <span className="shrink-0">
+                  {timeAgo(session.last_active, locale)}
+                </span>
               </div>
               {snippet && <SnippetHighlight snippet={snippet} />}
             </div>
@@ -775,7 +777,7 @@ export default function SessionsPage() {
   const [pruning, setPruning] = useState(false);
   const [importingSessions, setImportingSessions] = useState(false);
   const { toast, showToast } = useToast();
-  const { format, t } = useI18n();
+  const { format, locale, t } = useI18n();
   const { setAfterTitle, setEnd } = usePageHeader();
   const { activeAction, actionStatus, dismissLog } = useSystemActions();
   const resumeInChatEnabled = isDashboardEmbeddedChatEnabled();
@@ -1785,7 +1787,7 @@ export default function SessionsPage() {
                           {(s.model ?? t.common.unknown).split("/").pop()}
                         </span>{" "}
                         · {s.message_count} {t.common.msgs} ·{" "}
-                        {timeAgo(s.last_active)}
+                        {timeAgo(s.last_active, locale)}
                       </span>
 
                       {s.preview && (

@@ -304,7 +304,11 @@ export function useMainApp(gw: GatewayClient) {
   const empty = !historyItems.some(msg => msg.kind !== 'intro')
 
   useEffect(() => {
-    void terminalParityHints()
+    if (!ui.sid) {
+      return
+    }
+
+    void terminalParityHints(process.env, { locale: ui.locale })
       .then(hints => {
         for (const hint of hints) {
           if (terminalHintsShownRef.current.has(hint.key)) {
@@ -316,7 +320,7 @@ export function useMainApp(gw: GatewayClient) {
         }
       })
       .catch(() => {})
-  }, [])
+  }, [ui.locale, ui.sid])
 
   const messageId = useCallback((msg: Msg) => {
     const hit = msgIdsRef.current.get(msg)
@@ -833,7 +837,7 @@ export function useMainApp(gw: GatewayClient) {
 
       if (plan.recover && plan.sid) {
         recoverSidRef.current = plan.sid
-        turnController.pushActivity('gateway exited · recovering session…', 'warn')
+        turnController.pushActivity(ti('activity.gatewayRecovering'), 'warn')
         sys(ti('sys.gatewayRecovering'))
         gw.start()
 
@@ -841,7 +845,7 @@ export function useMainApp(gw: GatewayClient) {
       }
 
       recoverSidRef.current = null
-      turnController.pushActivity('gateway exited · /logs to inspect', 'error')
+      turnController.pushActivity(ti('activity.gatewayInspectLogs'), 'error')
       sys(ti('errors.gatewayExited'))
     }
 

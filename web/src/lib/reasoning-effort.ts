@@ -11,18 +11,18 @@
 
 export interface EffortOption {
   value: string;
-  label: string;
+  labelKey: "none" | "minimal" | "low" | "medium" | "high" | "xhigh" | "max" | "ultra";
 }
 
 export const EFFORT_OPTIONS: ReadonlyArray<EffortOption> = [
-  { value: "none", label: "Off (no thinking)" },
-  { value: "minimal", label: "Minimal" },
-  { value: "low", label: "Low" },
-  { value: "medium", label: "Medium" },
-  { value: "high", label: "High" },
-  { value: "xhigh", label: "Extra High" },
-  { value: "max", label: "Max" },
-  { value: "ultra", label: "Ultra" },
+  { value: "none", labelKey: "none" },
+  { value: "minimal", labelKey: "minimal" },
+  { value: "low", labelKey: "low" },
+  { value: "medium", labelKey: "medium" },
+  { value: "high", labelKey: "high" },
+  { value: "xhigh", labelKey: "xhigh" },
+  { value: "max", labelKey: "max" },
+  { value: "ultra", labelKey: "ultra" },
 ];
 
 export const VALID_EFFORTS: ReadonlySet<string> = new Set(

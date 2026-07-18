@@ -1,12 +1,19 @@
-import { useEffect, useRef, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 
 import type { CompletionItem } from '../app/interfaces.js'
 import { looksLikeSlashCommand } from '../domain/slash.js'
 import type { GatewayClient } from '../gatewayClient.js'
 import type { CompletionResponse } from '../gatewayTypes.js'
+import { translate, translateSlashDescription, type TranslationKey, useI18n } from '../i18n/index.js'
 import { asRpcResult } from '../lib/rpc.js'
 
 const TAB_PATH_RE = /((?:["']?(?:[A-Za-z]:[\\/]|\.{1,2}\/|~\/|\/|@|[^"'`\s]+\/))[^\s]*)$/
+
+interface LocalizableCompletionItem extends CompletionItem {
+  displayTranslationKey?: TranslationKey
+  metaTranslationKey?: TranslationKey
+  slashDescriptionId?: string
+}
 
 export function completionRequestForInput(
   input: string
@@ -39,14 +46,29 @@ export function completionRequestForInput(
 }
 
 export function useCompletion(input: string, blocked: boolean, gw: GatewayClient) {
-  const [completions, setCompletions] = useState<CompletionItem[]>([])
+  const { locale } = useI18n()
+  const [rawCompletions, setRawCompletions] = useState<LocalizableCompletionItem[]>([])
   const [compIdx, setCompIdx] = useState(0)
   const [compReplace, setCompReplace] = useState(0)
   const ref = useRef('')
 
+  const completions = useMemo<CompletionItem[]>(
+    () =>
+      rawCompletions.map(item => ({
+        display: item.displayTranslationKey ? translate(locale, item.displayTranslationKey) : item.display,
+        meta: item.slashDescriptionId
+          ? translateSlashDescription(locale, item.slashDescriptionId, item.meta ?? '')
+          : item.metaTranslationKey
+            ? translate(locale, item.metaTranslationKey)
+            : item.meta,
+        text: item.text
+      })),
+    [locale, rawCompletions]
+  )
+
   useEffect(() => {
     const clear = () => {
-      setCompletions(prev => (prev.length ? [] : prev))
+      setRawCompletions(prev => (prev.length ? [] : prev))
       setCompIdx(prev => (prev ? 0 : prev))
       setCompReplace(prev => (prev ? 0 : prev))
     }
@@ -85,7 +107,14 @@ export function useCompletion(input: string, blocked: boolean, gw: GatewayClient
 
           const r = asRpcResult<CompletionResponse>(raw)
 
-          setCompletions(r?.items ?? [])
+          setRawCompletions(
+            (r?.items ?? []).map(item => ({
+              display: item.display,
+              meta: item.meta,
+              slashDescriptionId: item.meta_key,
+              text: item.text
+            }))
+          )
           setCompIdx(0)
           setCompReplace(request.method === 'complete.slash' ? (r?.replace_from ?? 1) : request.replaceFrom)
         })
@@ -94,11 +123,13 @@ export function useCompletion(input: string, blocked: boolean, gw: GatewayClient
             return
           }
 
-          setCompletions([
+          setRawCompletions([
             {
               text: '',
-              display: 'completion unavailable',
-              meta: e instanceof Error && e.message ? e.message : 'unavailable'
+              display: '',
+              displayTranslationKey: 'completion.unavailable',
+              meta: e instanceof Error && e.message ? e.message : undefined,
+              metaTranslationKey: e instanceof Error && e.message ? undefined : 'completion.unavailableMeta'
             }
           ])
           setCompIdx(0)

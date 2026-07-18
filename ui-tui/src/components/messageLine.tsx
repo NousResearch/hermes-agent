@@ -224,7 +224,7 @@ export const MessageLine = memo(function MessageLine({
             <Text color={t.color.border}>└─ </Text>
           </NoSelect>
           <Text color={t.color.muted} dim>
-            Response
+            {ti('common.response')}
           </Text>
         </Box>
       )}

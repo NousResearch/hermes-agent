@@ -4,27 +4,25 @@ import { Input } from "@nous-research/ui/ui/components/input";
 import { Label } from "@nous-research/ui/ui/components/label";
 import { useI18n } from "@/i18n";
 import {
-  schemaZhDescription,
-  schemaZhLabel,
-  schemaZhLeafLabel,
-} from "@/i18n/schemaZh";
+  resolveSchemaDescription,
+  resolveSchemaLabel,
+  resolveSchemaLeafLabel,
+} from "@/i18n/schema";
 
 function FieldHint({
-  locale,
   schema,
   schemaKey,
 }: {
-  locale: string;
   schema: Record<string, unknown>;
   schemaKey: string;
 }) {
+  const { t } = useI18n();
   const keyPath = schemaKey.includes(".") ? schemaKey : "";
-  const description =
-    locale === "zh"
-      ? schemaZhDescription(schemaKey)
-      : schema.description
-        ? String(schema.description)
-        : "";
+  const description = resolveSchemaDescription(
+    t.schema,
+    schemaKey,
+    schema.description ? String(schema.description) : "",
+  );
 
   if (!keyPath && !description) return null;
 
@@ -54,12 +52,10 @@ function formatScalar(value: unknown): string {
 
 function NestedValueEditor({
   fieldKey,
-  locale,
   value,
   onChange,
 }: {
   fieldKey: string;
-  locale: string;
   value: unknown;
   onChange: (v: unknown) => void;
 }) {
@@ -70,13 +66,14 @@ function NestedValueEditor({
         {Object.entries(value).map(([subKey, subVal]) => (
           <div key={subKey} className="grid gap-1">
             <Label className="text-xs text-muted-foreground">
-              {locale === "zh"
-                ? schemaZhLeafLabel(`${fieldKey}.${subKey}`)
-                : subKey}
+              {resolveSchemaLeafLabel(
+                t.schema,
+                `${fieldKey}.${subKey}`,
+                subKey,
+              )}
             </Label>
             <NestedValueEditor
               fieldKey={`${fieldKey}.${subKey}`}
-              locale={locale}
               value={subVal}
               onChange={(next) => onChange({ ...value, [subKey]: next })}
             />
@@ -96,7 +93,6 @@ function NestedValueEditor({
             </Label>
             <NestedValueEditor
               fieldKey={`${fieldKey}.${index}`}
-              locale={locale}
               value={item}
               onChange={(next) =>
                 onChange(
@@ -125,12 +121,12 @@ export function AutoField({
   value,
   onChange,
 }: AutoFieldProps) {
-  const { locale, t } = useI18n();
+  const { t } = useI18n();
   const rawLabel = schemaKey.split(".").pop() ?? schemaKey;
   const enLabel = rawLabel
     .replace(/_/g, " ")
     .replace(/\b\w/g, (c) => c.toUpperCase());
-  const label = locale === "zh" ? schemaZhLabel(schemaKey) : enLabel;
+  const label = resolveSchemaLabel(t.schema, schemaKey, enLabel);
 
   if (
     isRecord(value) ||
@@ -139,10 +135,9 @@ export function AutoField({
     return (
       <div className="grid gap-3 border border-border p-3">
         <Label className="text-xs font-medium">{label}</Label>
-        <FieldHint locale={locale} schema={schema} schemaKey={schemaKey} />
+        <FieldHint schema={schema} schemaKey={schemaKey} />
         <NestedValueEditor
           fieldKey={schemaKey}
-          locale={locale}
           value={value}
           onChange={onChange}
         />
@@ -155,7 +150,7 @@ export function AutoField({
       <div className="flex items-center justify-between gap-4">
         <div className="flex flex-col gap-0.5">
           <Label className="text-sm">{label}</Label>
-          <FieldHint locale={locale} schema={schema} schemaKey={schemaKey} />
+          <FieldHint schema={schema} schemaKey={schemaKey} />
         </div>
         <Switch checked={!!value} onCheckedChange={onChange} />
       </div>
@@ -167,7 +162,7 @@ export function AutoField({
     return (
       <div className="grid gap-1.5">
         <Label className="text-sm">{label}</Label>
-        <FieldHint locale={locale} schema={schema} schemaKey={schemaKey} />
+        <FieldHint schema={schema} schemaKey={schemaKey} />
         <Select value={String(value ?? "")} onValueChange={(v) => onChange(v)}>
           {options.map((opt) => (
             <SelectOption key={opt} value={opt}>
@@ -183,7 +178,7 @@ export function AutoField({
     return (
       <div className="grid gap-1.5">
         <Label className="text-sm">{label}</Label>
-        <FieldHint locale={locale} schema={schema} schemaKey={schemaKey} />
+        <FieldHint schema={schema} schemaKey={schemaKey} />
         <Input
           type="number"
           value={value === undefined || value === null ? "" : String(value)}
@@ -207,7 +202,7 @@ export function AutoField({
     return (
       <div className="grid gap-1.5">
         <Label className="text-sm">{label}</Label>
-        <FieldHint locale={locale} schema={schema} schemaKey={schemaKey} />
+        <FieldHint schema={schema} schemaKey={schemaKey} />
         <textarea
           className="flex min-h-[80px] w-full border border-input bg-transparent px-3 py-2 text-sm shadow-sm placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
           value={String(value ?? "")}
@@ -221,7 +216,7 @@ export function AutoField({
     return (
       <div className="grid gap-1.5">
         <Label className="text-sm">{label}</Label>
-        <FieldHint locale={locale} schema={schema} schemaKey={schemaKey} />
+        <FieldHint schema={schema} schemaKey={schemaKey} />
         <Input
           value={Array.isArray(value) ? value.join(", ") : String(value ?? "")}
           onChange={(e) =>
@@ -241,7 +236,7 @@ export function AutoField({
   return (
     <div className="grid gap-1.5">
       <Label className="text-sm">{label}</Label>
-      <FieldHint locale={locale} schema={schema} schemaKey={schemaKey} />
+      <FieldHint schema={schema} schemaKey={schemaKey} />
       <Input
         value={String(value ?? "")}
         onChange={(e) => onChange(e.target.value)}

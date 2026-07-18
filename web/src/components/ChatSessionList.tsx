@@ -62,7 +62,7 @@ export function ChatSessionList({
   onPicked,
   onNewChat,
 }: ChatSessionListProps) {
-  const { format, t } = useI18n();
+  const { format, locale, t } = useI18n();
   const [, setSearchParams] = useSearchParams();
   const [sessions, setSessions] = useState<SessionInfo[] | null>(null);
   const [loading, setLoading] = useState(false);
@@ -198,7 +198,7 @@ export function ChatSessionList({
                 {rowLabel(s, t.sessions.untitledSession)}
               </span>
               <span className="flex w-full items-center gap-1.5 text-[0.6875rem] text-text-tertiary">
-                <span>{timeAgo(s.last_active)}</span>
+                <span>{timeAgo(s.last_active, locale)}</span>
                 {s.message_count > 0 && (
                   <>
                     <span aria-hidden>·</span>
@@ -221,7 +221,7 @@ export function ChatSessionList({
         })}
       </div>
     );
-  }, [activeSessionId, error, format, loading, pick, reload, sessions, t]);
+  }, [activeSessionId, error, format, loading, locale, pick, reload, sessions, t]);
 
   return (
     <aside

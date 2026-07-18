@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 from pathlib import Path
 
 import pytest
@@ -11,6 +12,7 @@ from agent import i18n
 
 
 LOCALES_DIR = Path(__file__).resolve().parents[2] / "locales"
+REPO_ROOT = LOCALES_DIR.parent
 
 
 def _load_raw(lang: str) -> dict:
@@ -30,9 +32,10 @@ def _flatten(d, prefix="") -> dict:
 
 
 # ---------------------------------------------------------------------------
-# Catalog completeness -- this is the key invariant test.  If someone adds a
-# new key to en.yaml they MUST add it to every other locale, else runtime
-# falls back to English for those users and defeats the feature.
+# Catalog completeness. English is the complete source/fallback and Simplified
+# Chinese is the first complete non-English implementation. Other language
+# files are independent overlays: contributors may translate them incrementally
+# without inheriting Simplified Chinese wording.
 # ---------------------------------------------------------------------------
 
 def test_all_locales_exist():
@@ -41,14 +44,40 @@ def test_all_locales_exist():
         assert (LOCALES_DIR / f"{lang}.yaml").is_file(), f"missing locales/{lang}.yaml"
 
 
+def test_runtime_locale_registries_stay_aligned():
+    """Python, Dashboard, and Ink must expose the same language identities.
+
+    Each runtime keeps a native typed registry, but this contract prevents one
+    surface from silently accepting or dropping a language that the others do
+    not know. Translation completeness remains a separate per-locale concern.
+    """
+    tui_source = (REPO_ROOT / "ui-tui/src/i18n/types.ts").read_text(encoding="utf-8")
+    tui_block = re.search(r"export const LOCALES = \[(.*?)\] as const", tui_source, re.S)
+    assert tui_block is not None
+    tui_locales = tuple(re.findall(r"['\"]([a-z]+(?:-[a-z]+)?)['\"]", tui_block.group(1)))
+
+    web_source = (REPO_ROOT / "web/src/i18n/types.ts").read_text(encoding="utf-8")
+    web_block = re.search(r"export type Locale\s*=\s*(.*?);", web_source, re.S)
+    assert web_block is not None
+    web_locales = tuple(re.findall(r"['\"]([a-z]+(?:-[a-z]+)?)['\"]", web_block.group(1)))
+
+    assert tui_locales == i18n.SUPPORTED_LANGUAGES
+    assert web_locales == i18n.SUPPORTED_LANGUAGES
+
+
+def test_simplified_chinese_catalog_keys_match_english():
+    """The first localization instance must cover the complete source catalog."""
+    en_keys = set(_flatten(_load_raw("en")).keys())
+    zh_keys = set(_flatten(_load_raw("zh")).keys())
+    assert zh_keys == en_keys
+
+
 @pytest.mark.parametrize("lang", [l for l in i18n.SUPPORTED_LANGUAGES if l != "en"])
-def test_catalog_keys_match_english(lang: str):
-    """Every non-English catalog must have exactly the same key set as English."""
+def test_locale_overlays_do_not_invent_keys(lang: str):
+    """Partial locale overlays may omit English keys but cannot add unknown ones."""
     en_keys = set(_flatten(_load_raw("en")).keys())
     lang_keys = set(_flatten(_load_raw(lang)).keys())
-    missing = en_keys - lang_keys
     extra = lang_keys - en_keys
-    assert not missing, f"{lang}.yaml missing keys: {sorted(missing)}"
     assert not extra, f"{lang}.yaml has keys not in en.yaml: {sorted(extra)}"
 
 
@@ -64,9 +93,9 @@ def test_catalog_placeholders_match_english(lang: str):
     placeholder_re = re.compile(r"\{([a-zA-Z_][a-zA-Z0-9_]*)\}")
     en_flat = _flatten(_load_raw("en"))
     lang_flat = _flatten(_load_raw(lang))
-    for key, en_value in en_flat.items():
+    for key, lang_value in lang_flat.items():
+        en_value = en_flat[key]
         en_placeholders = set(placeholder_re.findall(en_value))
-        lang_value = lang_flat.get(key, "")
         lang_placeholders = set(placeholder_re.findall(lang_value))
         assert en_placeholders == lang_placeholders, (
             f"{lang}.yaml key={key!r}: placeholders {lang_placeholders} "

@@ -120,7 +120,7 @@ export function ReasoningPicker({
       >
         {EFFORT_OPTIONS.map((opt) => (
           <SelectOption key={opt.value} value={opt.value}>
-            {opt.label}
+            {t.chatSidebar.reasoningEfforts[opt.labelKey]}
           </SelectOption>
         ))}
       </Select>

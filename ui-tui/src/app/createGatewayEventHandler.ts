@@ -217,7 +217,7 @@ export function createGatewayEventHandler(ctx: GatewayEventHandlerContext): (ev:
     }
 
     agentsNudgedThisTurn = true
-    turnController.pushActivity('subagents working · /agents to watch live', 'info')
+    turnController.pushActivity(translate(getUiState().locale, 'activity.subagentsWorking'), 'info')
   }
 
   const resetAgentsNudgeTurnState = () => {
@@ -333,6 +333,7 @@ export function createGatewayEventHandler(ctx: GatewayEventHandlerContext): (ev:
         setCatalog({
           canon: (r.canon ?? {}) as Record<string, string>,
           categories: r.categories ?? [],
+          descriptionKeys: (r.description_keys ?? {}) as Record<string, string>,
           pairs: r.pairs as [string, string][],
           skillCount: (r.skill_count ?? 0) as number,
           sub: (r.sub ?? {}) as Record<string, string[]>

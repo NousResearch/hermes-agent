@@ -37,11 +37,7 @@ import { api } from "@/lib/api";
 import type { ManagedFileEntry, ManagedFilesResponse } from "@/lib/api";
 import { PluginSlot } from "@/plugins";
 import { useI18n } from "@/i18n";
-
-const DATE_FORMAT = new Intl.DateTimeFormat(undefined, {
-  dateStyle: "medium",
-  timeStyle: "short",
-});
+import { formatDateTime } from "@/lib/utils";
 
 function joinPath(base: string, name: string): string {
   const cleanName = name.trim().replace(/^[\\/]+/, "");
@@ -77,7 +73,7 @@ function transferHasFiles(event: ReactDragEvent<HTMLElement>): boolean {
 }
 
 export default function FilesPage() {
-  const { format, t } = useI18n();
+  const { format, locale, t } = useI18n();
   const { toast, showToast } = useToast();
   const { setAfterTitle, setEnd } = usePageHeader();
   const fileInputRef = useRef<HTMLInputElement | null>(null);
@@ -425,7 +421,9 @@ export default function FilesPage() {
                 </button>
                 <span className="text-xs tabular-nums text-text-secondary">{formatBytes(entry.size)}</span>
                 <span className="truncate text-xs text-text-secondary">
-                  {Number.isFinite(entry.mtime) ? DATE_FORMAT.format(entry.mtime * 1000) : "-"}
+                  {Number.isFinite(entry.mtime)
+                    ? formatDateTime(entry.mtime * 1000, locale)
+                    : "-"}
                 </span>
                 <span className="flex justify-end gap-1">
                   {entry.is_directory ? (

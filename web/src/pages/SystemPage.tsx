@@ -45,7 +45,7 @@ import { DeleteConfirmDialog } from "@/components/DeleteConfirmDialog";
 import { HermesConsoleModal } from "@/components/HermesConsoleModal";
 import { useI18n } from "@/i18n";
 import type { Translations } from "@/i18n/types";
-import { cn, themedBody } from "@/lib/utils";
+import { cn, formatDateTime, themedBody } from "@/lib/utils";
 import { api } from "@/lib/api";
 import type {
   StatusResponse,
@@ -210,7 +210,7 @@ const MEMORY_STATUS_TONE: Record<
 };
 
 export default function SystemPage() {
-  const { format, t } = useI18n();
+  const { format, locale, t } = useI18n();
   const { toast, showToast } = useToast();
 
   const [status, setStatus] = useState<StatusResponse | null>(null);
@@ -1153,7 +1153,7 @@ export default function SystemPage() {
                 {" · "}
                 {curator?.last_run_at
                   ? format(t.systemPage.curator.lastRun, {
-                      time: new Date(curator.last_run_at).toLocaleString(),
+                      time: formatDateTime(curator.last_run_at, locale),
                     })
                   : t.systemPage.curator.neverRun}
               </span>

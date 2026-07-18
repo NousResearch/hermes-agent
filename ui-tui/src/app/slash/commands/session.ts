@@ -25,6 +25,61 @@ const TUI_SESSION_MODEL_RE = new RegExp(`(?:^|\\s)${TUI_SESSION_MODEL_FLAG}(?:\\
 const formatUsageCost = (r: SessionUsageResponse) =>
   r.cost_usd != null ? `${r.cost_status === 'estimated' ? '~' : ''}$${r.cost_usd.toFixed(4)}` : null
 
+/** Render structured compression feedback in the active TUI locale.
+ * Legacy backends without structured fields return ``null`` so their
+ * pre-rendered summary remains a compatibility fallback. */
+export const formatCompressionSummary = (
+  locale: Parameters<typeof translate>[0],
+  response: SessionCompressResponse
+): null | string[] => {
+  const summary = response.summary
+
+  if (!summary || summary.before_count == null || summary.after_count == null) {
+    return null
+  }
+
+  const values = { before: summary.before_count, after: summary.after_count }
+
+  const headline = summary.aborted
+    ? translate(locale, 'compression.aborted', values)
+    : summary.fallback_used
+      ? translate(locale, 'compression.fallback', values)
+      : summary.noop
+        ? translate(locale, 'compression.noop', values)
+        : translate(locale, 'compression.done', values)
+
+  const lines = [headline]
+
+  if (summary.before_tokens != null && summary.after_tokens != null) {
+    lines.push(
+      summary.noop && summary.before_tokens === summary.after_tokens
+        ? translate(locale, 'compression.tokensUnchanged', { before: String(summary.before_tokens) })
+        : translate(locale, 'compression.tokensChanged', {
+            before: String(summary.before_tokens),
+            after: String(summary.after_tokens)
+          })
+    )
+  }
+
+  if (summary.aborted) {
+    lines.push(translate(locale, 'compression.abortedNote'))
+  } else if (summary.fallback_used) {
+    lines.push(translate(locale, 'compression.fallbackNote', { count: summary.dropped_count ?? 0 }))
+  } else if (
+    !summary.noop &&
+    summary.after_count < summary.before_count &&
+    (summary.after_tokens ?? 0) > (summary.before_tokens ?? 0)
+  ) {
+    lines.push(translate(locale, 'compression.denseNote'))
+  }
+
+  if (summary.failure_reason) {
+    lines.push(translate(locale, 'compression.reason', { reason: summary.failure_reason }))
+  }
+
+  return lines
+}
+
 const modelValueForConfigSet = (arg: string) => {
   const trimmed = arg.trim()
 
@@ -211,6 +266,18 @@ export const sessionCommands: SlashCommand[] = [
 
             if (r.usage) {
               patchUiState(state => ({ ...state, usage: { ...state.usage, ...r.usage } }))
+            }
+
+            const localizedSummary = formatCompressionSummary(ctx.ui.locale, r)
+
+            if (localizedSummary) {
+              localizedSummary.forEach((line, index) => {
+                const prefix = index === 0 ? (!r.summary?.aborted && !r.summary?.noop ? '✓ ' : '') : '  '
+
+                ctx.transcript.sys(`${prefix}${line}`)
+              })
+
+              return
             }
 
             if (r.summary?.headline) {

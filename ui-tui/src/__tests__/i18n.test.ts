@@ -17,6 +17,8 @@ import {
   shouldEllipsisVerb,
   toolsetLabel,
   translate,
+  translateSlashCategory,
+  translateSlashDescription,
   translateStatus
 } from '../i18n/index.js'
 import { it as itLang } from '../i18n/it.js'
@@ -29,8 +31,8 @@ import { uk } from '../i18n/uk.js'
 import { zhHant } from '../i18n/zh-hant.js'
 import { zh } from '../i18n/zh.js'
 
-// ── Shell packs: languages that re-export English until translated ──
-const SHELL_PACKS: [string, TuiLocaleOverlay][] = [
+// ── Empty overlays: independent locales fall back to English until translated ──
+const EMPTY_OVERLAYS: [string, TuiLocaleOverlay][] = [
   ['af', af],
   ['de', de],
   ['es', es],
@@ -60,7 +62,7 @@ describe('LOCALES', () => {
     expect(LOCALES).toContain('en')
     expect(LOCALES).toContain('zh')
 
-    for (const [name] of SHELL_PACKS) {
+    for (const [name] of EMPTY_OVERLAYS) {
       expect(LOCALES).toContain(name)
     }
   })
@@ -100,7 +102,7 @@ describe('TranslationKey coverage', () => {
   })
 
   it('every shell overlay resolves to exactly the same catalog keys as EN', () => {
-    for (const [name, overlay] of SHELL_PACKS) {
+    for (const [name, overlay] of EMPTY_OVERLAYS) {
       const pack = resolveLangPack(overlay)
       const packKeys = new Set(Object.keys(pack.catalog))
       const missing = enKeys.filter(k => !packKeys.has(k))
@@ -165,8 +167,8 @@ describe('fallback chain', () => {
     }
   })
 
-  it('translate: ja (shell) returns EN value for known keys', () => {
-    // ja re-exports en, so it should return EN text
+  it('translate: ja (empty overlay) returns EN value for known keys', () => {
+    // An untranslated locale resolves through the shared English baseline.
     const result = translate('ja', 'branding.tagline')
     expect(result).toBe(en.catalog['branding.tagline'])
   })
@@ -295,7 +297,7 @@ describe('verbStyle', () => {
   })
 
   it('shell packs inherit EN verbStyle (pad)', () => {
-    for (const [name, overlay] of SHELL_PACKS) {
+    for (const [name, overlay] of EMPTY_OVERLAYS) {
       expect(resolveLangPack(overlay).verbStyle, `${name} verbStyle`).toBe('pad')
     }
   })
@@ -304,7 +306,7 @@ describe('verbStyle', () => {
     expect(getThinkingVerbs('en')).toEqual(en.verbs)
     expect(getThinkingVerbs('zh')).toEqual(zh.verbs)
 
-    for (const [name] of SHELL_PACKS) {
+    for (const [name] of EMPTY_OVERLAYS) {
       expect(getThinkingVerbs(name as (typeof LOCALES)[number])).toEqual(en.verbs)
     }
   })
@@ -314,13 +316,13 @@ describe('verbStyle', () => {
 
 describe('shell packs', () => {
   it('all shell locales are in LOCALES', () => {
-    for (const [name] of SHELL_PACKS) {
+    for (const [name] of EMPTY_OVERLAYS) {
       expect(LOCALES).toContain(name)
     }
   })
 
   it('empty overlays produce complete English-equivalent runtime packs', () => {
-    for (const [name, overlay] of SHELL_PACKS) {
+    for (const [name, overlay] of EMPTY_OVERLAYS) {
       const pack = resolveLangPack(overlay)
 
       expect(pack.catalog, `${name} catalog`).toEqual(en.catalog)
@@ -351,6 +353,18 @@ describe('interpolation', () => {
     const result = translate('en', 'voice.idle' as TranslationKey, { state: 'on' })
     expect(result).toContain('on')
     expect(result).not.toContain('{state}')
+  })
+})
+
+describe('slash command presentation', () => {
+  it('localizes stable command and category ids in the Ink client', () => {
+    expect(translateSlashDescription('zh', 'new', 'Start a new session')).toContain('新会话')
+    expect(translateSlashCategory('zh', 'session', 'Session')).toBe('会话')
+  })
+
+  it('keeps English fallback copy for untranslated languages and extensions', () => {
+    expect(translateSlashDescription('zh-hant', 'new', 'wire fallback')).toBe(en.catalog['slash.new'])
+    expect(translateSlashDescription('zh', undefined, 'User-authored command')).toBe('User-authored command')
   })
 })
 

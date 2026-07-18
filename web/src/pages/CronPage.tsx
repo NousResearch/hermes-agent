@@ -45,12 +45,14 @@ import { usePageHeader } from "@/contexts/usePageHeader";
 import { PluginSlot } from "@/plugins";
 import { Segmented } from "@nous-research/ui/ui/components/segmented";
 import { AutomationBlueprints } from "@/components/AutomationBlueprints";
-import { cn, themedBody } from "@/lib/utils";
+import { cn, formatDateTime, themedBody } from "@/lib/utils";
 
-function formatTime(iso?: string | null): string {
+function formatTime(
+  iso: string | null | undefined,
+  locale: ReturnType<typeof useI18n>["locale"],
+): string {
   if (!iso) return "—";
-  const d = new Date(iso);
-  return d.toLocaleString();
+  return formatDateTime(iso, locale);
 }
 
 function asText(value: unknown): string {
@@ -433,7 +435,7 @@ function getJobName(job: CronJob): string {
   return asText(job.name).trim();
 }
 
-function getJobTitle(job: CronJob): string {
+function getJobTitle(job: CronJob, fallback: string): string {
   const name = getJobName(job);
   if (name) return name;
 
@@ -443,7 +445,7 @@ function getJobTitle(job: CronJob): string {
   const script = asText(job.script);
   if (script) return truncateText(script, 60);
 
-  return job.id || "Cron job";
+  return job.id || fallback;
 }
 
 function getJobScheduleDisplay(
@@ -467,11 +469,15 @@ function getJobState(job: CronJob): string {
   return asText(job.state) || (job.enabled === false ? "disabled" : "scheduled");
 }
 
-function getRepeatDisplay(job: CronJob): string {
+function getRepeatDisplay(
+  job: CronJob,
+  forever: string,
+  formatTimes: (count: number) => string,
+): string {
   const repeat = job.repeat;
-  if (!repeat || repeat.times == null) return "forever";
+  if (!repeat || repeat.times == null) return forever;
   const completed = repeat.completed ?? 0;
-  return completed > 0 ? `${completed}/${repeat.times}` : `${repeat.times} times`;
+  return completed > 0 ? `${completed}/${repeat.times}` : formatTimes(repeat.times);
 }
 
 function getJobMode(job: CronJob): string {
@@ -711,7 +717,7 @@ export default function CronPage() {
         showToast(
           format(t.cron.jobAction, {
             action: t.cron.resume,
-            title: truncateText(getJobTitle(job), 30),
+            title: truncateText(getJobTitle(job, t.cron.fallbackJobTitle), 30),
           }),
           "success",
         );
@@ -720,7 +726,7 @@ export default function CronPage() {
         showToast(
           format(t.cron.jobAction, {
             action: t.cron.pause,
-            title: truncateText(getJobTitle(job), 30),
+            title: truncateText(getJobTitle(job, t.cron.fallbackJobTitle), 30),
           }),
           "success",
         );
@@ -743,7 +749,7 @@ export default function CronPage() {
       showToast(
         format(t.cron.jobAction, {
           action: t.cron.triggerNow,
-          title: truncateText(getJobTitle(job), 30),
+          title: truncateText(getJobTitle(job, t.cron.fallbackJobTitle), 30),
         }),
         "success",
       );
@@ -769,7 +775,9 @@ export default function CronPage() {
           showToast(
             format(t.cron.jobAction, {
               action: t.common.delete,
-              title: job ? truncateText(getJobTitle(job), 30) : id,
+              title: job
+                ? truncateText(getJobTitle(job, t.cron.fallbackJobTitle), 30)
+                : id,
             }),
             "success",
           );
@@ -829,8 +837,8 @@ export default function CronPage() {
         value={view}
         onChange={(v) => setView(v as "jobs" | "blueprints")}
         options={[
-          { value: "jobs", label: "Jobs" },
-          { value: "blueprints", label: "Blueprints" },
+          { value: "jobs", label: t.cron.views.jobs },
+          { value: "blueprints", label: t.cron.views.blueprints },
         ]}
       />
 
@@ -849,7 +857,7 @@ export default function CronPage() {
         title={t.cron.confirmDeleteTitle}
         description={
           pendingJob
-            ? `"${truncateText(getJobTitle(pendingJob), 40)}" — ${
+            ? `"${truncateText(getJobTitle(pendingJob, t.cron.fallbackJobTitle), 40)}" — ${
                 t.cron.confirmDeleteMessage
               }`
             : t.cron.confirmDeleteMessage
@@ -1034,7 +1042,7 @@ export default function CronPage() {
         {jobs.map((job) => {
           const state = getJobState(job);
           const promptText = getJobPrompt(job);
-          const title = getJobTitle(job);
+          const title = getJobTitle(job, t.cron.fallbackJobTitle);
           const hasName = Boolean(getJobName(job));
           const deliver = asText(job.deliver);
           const profile = getJobProfile(job);
@@ -1095,13 +1103,18 @@ export default function CronPage() {
                       {getJobScheduleDisplay(job, scheduleDescribeStrings)}
                     </span>
                     <span>
-                      {t.cron.repeat} {getRepeatDisplay(job)}
+                      {t.cron.repeat}{" "}
+                      {getRepeatDisplay(
+                        job,
+                        t.cron.repeatForever,
+                        (count) => format(t.cron.repeatTimes, { count }),
+                      )}
                     </span>
                     <span>
-                      {t.cron.last}: {formatTime(job.last_run_at)}
+                      {t.cron.last}: {formatTime(job.last_run_at, locale)}
                     </span>
                     <span>
-                      {t.cron.next}: {formatTime(job.next_run_at)}
+                      {t.cron.next}: {formatTime(job.next_run_at, locale)}
                     </span>
                   </div>
                   {job.last_delivery_error && (

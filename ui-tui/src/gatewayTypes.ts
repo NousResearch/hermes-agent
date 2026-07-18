@@ -12,6 +12,7 @@ export interface GatewaySkin {
 export interface GatewayCompletionItem {
   display: string
   meta?: string
+  meta_key?: string
   text: string
 }
 
@@ -27,6 +28,7 @@ export interface GatewayTranscriptMessage {
 export interface CommandsCatalogResponse {
   canon?: Record<string, string>
   categories?: SlashCategory[]
+  description_keys?: Record<string, string>
   pairs?: [string, string][]
   skill_count?: number
   sub?: Record<string, string[]>
@@ -346,6 +348,14 @@ export interface SessionCompressResponse {
   messages?: GatewayTranscriptMessage[]
   removed?: number
   summary?: {
+    aborted?: boolean
+    after_count?: number
+    after_tokens?: number
+    before_count?: number
+    before_tokens?: number
+    dropped_count?: number
+    failure_reason?: null | string
+    fallback_used?: boolean
     headline?: string
     noop?: boolean
     note?: null | string

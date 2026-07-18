@@ -1,6 +1,14 @@
 import type { Translations } from "./types";
 
 export const en: Translations = {
+  schema: {
+    descriptions: {},
+    generateLabels: false,
+    labels: {},
+    pathSeparator: " → ",
+    segments: {},
+    terms: {},
+  },
   common: {
     save: "Save",
     saving: "Saving...",
@@ -122,6 +130,16 @@ export const en: Translations = {
     eventsDisconnected: "events feed disconnected — tool calls may not appear",
     eventsRejected: "events feed rejected ({code}) — reload the page",
     reasoning: "reasoning",
+    reasoningEfforts: {
+      none: "Off (no thinking)",
+      minimal: "Minimal",
+      low: "Low",
+      medium: "Medium",
+      high: "High",
+      xhigh: "Extra High",
+      max: "Max",
+      ultra: "Ultra",
+    },
     reasoningEffortSet:
       "Reasoning effort set to {effort}. Run /new or refresh the page to apply it to this chat.",
     modelSetRequiresReload:
@@ -281,6 +299,7 @@ export const en: Translations = {
       assistant: "Assistant",
       system: "System",
       tool: "Tool",
+      compaction: "Context handoff",
     },
   },
 
@@ -650,6 +669,13 @@ export const en: Translations = {
     profile: "Profile",
     allProfiles: "All profiles",
     repeat: "repeat:",
+    repeatForever: "forever",
+    repeatTimes: "{count} times",
+    fallbackJobTitle: "Cron job",
+    views: {
+      jobs: "Jobs",
+      blueprints: "Blueprints",
+    },
     deliveryLabel: "delivery:",
     skillsCount: "{count} skills",
     toolsetsCount: "{count} toolsets",
@@ -1895,6 +1921,7 @@ export const en: Translations = {
     reassignTo: "Reassign to:",
     copied: "Copied",
     copyCommand: "Copy command to clipboard",
+    copyCommandPrompt: "Copy this command:",
     reclaim: "Reclaim",
     reassign: "Reassign",
     renderingError: "Kanban tab hit a rendering error",
@@ -1916,8 +1943,11 @@ export const en: Translations = {
     archiveBoardTitle: "Archive this board",
     boardSwitcherHint: "Boards let you separate unrelated streams of work",
     taskCreatedWarning: "Task created, but: ",
+    actionFailed: "Action failed: ",
     moveFailed: "Move failed: ",
     bulkFailed: "Bulk: ",
+    bulkMoveFailed: "Bulk move: {failed} of {total} failed",
+    bulkFailedDetails: "Bulk: {failed} of {total} failed: {details}",
     completionBlockedHallucination: "⚠ Completion blocked — phantom card ids",
     suspectedHallucinatedReferences: "⚠ Prose referenced phantom card ids",
     pickProfileFirst: "Pick a profile first.",
@@ -1961,6 +1991,8 @@ export const en: Translations = {
       "Move this task to Scheduled? Use this for known time delays rather than human blockers.",
     completionSummary:
       "Completion summary for {label}. This is stored as the task result.",
+    completionSummaryThisTask: "this task",
+    completionSummarySelectedTasks: "{count} selected task(s)",
     completionSummaryRequired:
       "Completion summary is required before marking a task done.",
     triagePlaceholder: "Rough idea — AI will spec it…",
@@ -1996,5 +2028,196 @@ export const en: Translations = {
       "Comments reach the worker on its next run or kanban_show() — no need to block the task first.",
     commentHintTitle:
       "Comments are the channel for talking to a task's worker. They land on the thread immediately — no need to block the task first. A running worker picks the thread up on its next kanban_show() or respawn; blocking is only for when you want the worker to STOP and wait for your input.",
+    attachments: "Attachments",
+    childResults: "Child Results",
+    clearFilters: "Clear filters",
+    confirmRemoveAttachment: "Remove this attachment?",
+    delete: "Delete",
+    doneNoResult:
+      "No final result was recorded. Check Run History, Logs, or Child Tasks for the worker output.",
+    doneParentNote:
+      "This card is an orchestrator / parent task. Review the child results section for the substantive work.",
+    finalResult: "Final Result (run summary)",
+    goalMaxTurns: "max turns (default 20)",
+    goalEnabled: "on",
+    goalEnabledMax: "on (max {turns} turns)",
+    goalMode: "goal mode",
+    noAttachments: "— no attachments —",
+    noChildResult: "No result recorded yet.",
+    projectDirectory: "Project directory",
+    projectDirectoryExplanation:
+      "Sets the default location for task files so project output is preserved.",
+    projectDirectoryHelp:
+      "Git projects use preserved worktrees. Other folders use the directory directly. Leave blank only for temporary work.",
+    projectDirectoryHint: "(recommended)",
+    projectDirectoryPlaceholder: "Absolute path to the project folder",
+    removeAttachment: "Remove attachment",
+    setPriority: "Set priority",
+    uploadFile: "Upload file",
+    uploading: "Uploading…",
+    workspaceDir: "Directory — preserved",
+    workspaceScratch: "Temporary — deleted on completion",
+    workspaceScratchWarning:
+      "This workspace and any files left in it are deleted when the task completes.",
+    workspaceWorktree: "Git worktree — preserved",
+    trash: {
+      confirm: "Permanently delete this task? This cannot be undone.",
+      confirmMany:
+        "Permanently delete {n} selected tasks? This cannot be undone.",
+      dropHint: "Drop to delete",
+    },
+    hints: {
+      assignee:
+        "Hermes profile to assign. Leave blank and the dispatcher will pick from available profiles when the task is Ready.",
+      boardSwitcher:
+        "Boards are independent work streams. Each board has its own tasks, tenants, and assignees.",
+      clearFilters:
+        "Clear all active filters (search, tenant, assignee, archived).",
+      createBoard:
+        "Create a new board for an unrelated work stream, project, team, or isolated scratch area.",
+      filterAssignee:
+        "Filter by assigned Hermes profile. Profiles are the named agent identities that claim and work on tasks.",
+      filterArchived:
+        "Include archived tasks in the board view. Archived tasks are hidden by default.",
+      filterSearch:
+        "Fuzzy-match tasks by id, title, or description across all columns.",
+      filterTenant:
+        "Tenants are free-form task tags such as customer, project, or team. Set them in the task drawer or with kanban_create.",
+      groupRunning: "Group the Running column by assigned profile.",
+      goalMaxTurns: "Turn budget for the goal loop. Blank uses the backend default of 20.",
+      goalMode:
+        "Goal mode keeps the worker in the same session until a judge agrees the card is done or the turn budget runs out.",
+      hideUntilReload: "Hide until the next page reload",
+      nudgeDispatcher:
+        "Wake the dispatcher to claim ready tasks now instead of waiting for the next tick.",
+      parent:
+        "Optional parent task. A child stays blocked until the parent is marked done.",
+      priority:
+        "Higher-priority tasks are claimed first by the dispatcher. 0 is the default.",
+      refreshBoard:
+        "Reload the board from the database. The board already refreshes on task events.",
+      skills:
+        "Force-load these skills in addition to the built-in kanban-worker skill.",
+      specifier:
+        "Hermes profile that will spec this task. Leave blank to use the dispatcher configuration.",
+      workspace:
+        "Choose whether task files are temporary or preserved after completion.",
+    },
+    bulk: {
+      applyAssignee: "Apply the selected assignee to all selected tasks.",
+      archive: "Archive selected tasks. They remain in the database.",
+      block: "Block selected tasks and release active claims.",
+      blockConfirm: "Block {n} selected task(s)?",
+      clear: "Clear selection",
+      delete: "Permanently delete selected tasks. This cannot be undone.",
+      deselectAll: "Deselect all tasks and hide this bar.",
+      moveReady: "Move selected tasks to Ready for dispatch on the next tick.",
+      moveTodo: "Move selected tasks to Todo.",
+      reassign: "— reassign —",
+      reassignHelp:
+        "Reassign selected tasks to a different Hermes profile, or unassign them.",
+      reclaimFirst: "Reclaim first",
+      reclaimFirstHelp: "Reclaim active claims before reassigning.",
+      selectAll: "Select all visible",
+      selectAllColumn: "Select all tasks in this column",
+      selectAllHelp: "Select all visible cards across columns.",
+      setPriorityHelp:
+        "Set priority on selected tasks. Higher values are claimed first.",
+      unassign: "(unassign)",
+      unblock: "Unblock selected tasks and promote them to Ready.",
+      unblockConfirm: "Unblock {n} selected task(s)?",
+    },
+    cardHints: {
+      assignedProfile: "Assigned to Hermes profile @{profile}",
+      childProgress: "{done} of {total} child tasks done",
+      columnTasks: "{count} tasks in this column",
+      comments: "{count} comments on this task",
+      created: "Created {time}",
+      dependencies:
+        "{parents} parent tasks, {children} child tasks. Children stay blocked until their parent is done.",
+      diagnostics:
+        "{count} active diagnostics (severity: {severity}). Open the task for details.",
+      noProfile: "No profile assigned.",
+      priority: "Priority {priority}. Higher-priority tasks are claimed first.",
+      selectAllColumn: "Select all tasks in {column}",
+      selectTask: "Select task {id}",
+      task: "{title} — {id} — {status}",
+      taskId: "Task id: {id}. Use it with kanban_show or the Kanban CLI.",
+      tenant: "Tenant: {tenant}. Free-form tag for grouping tasks.",
+    },
+    boardForm: {
+      descriptionPlaceholder: "What goes on this board?",
+      slugRequired: "A board slug is required.",
+    },
+    docs: {
+      ariaLabel: "Hermes Kanban documentation",
+      open: "Open Hermes Kanban documentation in a new tab",
+    },
+    orchestration: {
+      auto: "Auto",
+      autoDecomposeLabel: "Auto-decompose triage tasks",
+      autoDescription: "The dispatcher decomposes new triage tasks automatically.",
+      autoGenerate: "⚗ Auto",
+      autoGenerateFailed: "Auto-generate failed: {error}",
+      autoModeHelp:
+        "Automatic orchestration decomposes new triage tasks every tick. Click to switch to Manual.",
+      autoReview: "auto — review",
+      configure: "Configure the Kanban orchestrator and profile routing.",
+      defaultAssignee: "Default assignee",
+      defaultProfile: "(default)",
+      defaultValue: "(default: {profile})",
+      descriptionGenerated: "Auto-generated description for {profile}.",
+      descriptionSaved: "Description saved for {profile}.",
+      generating: "Generating…",
+      label: "Orchestration",
+      loadFailed: "Failed to load orchestration settings: {error}",
+      loading: "Loading…",
+      loadingMode: "Loading mode…",
+      manual: "Manual",
+      manualDescription: "Triage tasks wait until you click ⚗ Decompose.",
+      manualModeHelp:
+        "Manual orchestration leaves triage tasks in place until you click ⚗ Decompose. Click to switch to Auto.",
+      mode: "Orchestration mode",
+      noDescription: "⚠ no description",
+      noProfiles: "No profiles installed.",
+      orchestratorHelp:
+        "Owns the root task after fan-out and judges completion. Configure the decomposer model under auxiliary.kanban_decomposer.",
+      profile: "Orchestrator profile",
+      profileDescriptionPlaceholder: "What is this profile good at?",
+      profileDescriptions: "Profile descriptions",
+      profileDescriptionsHelp:
+        "Descriptions guide routing. Click ⚗ to auto-generate, or edit and save.",
+      reload: "Reload",
+      resolved: "Resolved: {profile}",
+      saveDescription: "Save this as a user-authored description",
+      saveFailed: "Save failed: {error}",
+      saved: "Settings saved.",
+      settings: "Orchestration settings",
+    },
+    run: {
+      earlier: "+{count} earlier",
+      emptyLog: "(empty)",
+      metadata: "Metadata",
+      refreshLog: "Refresh log",
+    },
+    taskActions: {
+      addChild: "+ child",
+      addParent: "+ parent",
+      decompose: "⚗ Decompose",
+      decomposeFailed: "Decompose failed: {error}",
+      decomposed: "Decomposed into {count} children: {ids}",
+      decomposing: "Decomposing…",
+      editDescription: "Edit description",
+      moveReady: "→ ready",
+      moveTodo: "→ todo",
+      moveTriage: "→ triage",
+      retitled: " — retitled: {title}",
+      singleTask: "Single task (no fanout){suffix}",
+      specify: "✨ Specify",
+      specifyFailed: "Specify failed: {error}",
+      specified: "Specified{suffix}",
+      specifying: "Specifying…",
+      unknownError: "unknown error",
+    },
   },
 };

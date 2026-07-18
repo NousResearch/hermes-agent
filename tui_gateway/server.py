@@ -12189,15 +12189,12 @@ _TUI_HIDDEN: frozenset[str] = frozenset(
     }
 )
 
-_TUI_EXTRA_META: dict[str, dict[str, str]] = {
-    "/compact": {"en": "Toggle compact display mode", "zh": "切换紧凑显示模式"},
-    "/details": {"en": "Control agent detail visibility", "zh": "控制 Agent 详情可见性"},
-    "/logs": {"en": "Show recent gateway log lines", "zh": "显示最近的网关日志"},
-    "/mouse": {
-        "en": "Set mouse tracking preset [on|off|toggle|wheel|buttons|all]",
-        "zh": "设置鼠标追踪预设 [on|off|toggle|wheel|buttons|all]",
-    },
-    "/sessions": {"en": "Switch between live TUI sessions", "zh": "切换实时 TUI 会话"},
+_TUI_EXTRA_META: dict[str, str] = {
+    "/compact": "Toggle compact display mode",
+    "/details": "Control agent detail visibility",
+    "/logs": "Show recent gateway log lines",
+    "/mouse": "Set mouse tracking preset [on|off|toggle|wheel|buttons|all]",
+    "/sessions": "Switch between live TUI sessions",
 }
 
 _TUI_EXTRA: list[tuple[str, str]] = [
@@ -12210,10 +12207,21 @@ _TUI_EXTRA: list[tuple[str, str]] = [
 
 
 def _tui_extra_meta(command: str) -> str:
-    """Return localized metadata for TUI-only slash commands."""
-    lang = resolve_language().lower()
-    meta = _TUI_EXTRA_META[command]
-    return meta.get(lang, meta.get("en", ""))
+    """Return the canonical English fallback for a TUI-only command."""
+    return _TUI_EXTRA_META[command]
+
+
+def _command_category_key(category: str) -> str:
+    """Stable presentation id; clients localize it in their own framework."""
+    return {
+        "Session": "session",
+        "Configuration": "configuration",
+        "Tools & Skills": "tools",
+        "Info": "info",
+        "Exit": "exit",
+        "TUI": "tui",
+        "User commands": "userCommands",
+    }.get(category, "")
 
 # Commands that queue messages onto _pending_input in the CLI.
 # In the TUI the slash worker subprocess has no reader for that queue,
@@ -12251,6 +12259,7 @@ def _(rid, params: dict) -> dict:
 
         all_pairs: list[list[str]] = []
         canon: dict[str, str] = {}
+        description_keys: dict[str, str] = {}
         categories: list[dict] = []
         cat_map: dict[str, list[list[str]]] = {}
         cat_order: list[str] = []
@@ -12266,6 +12275,7 @@ def _(rid, params: dict) -> dict:
 
             desc = _build_description(cmd)
             all_pairs.append([c, desc])
+            description_keys[c] = cmd.name
 
             cat = cmd.category
             if cat not in cat_map:
@@ -12276,6 +12286,7 @@ def _(rid, params: dict) -> dict:
         for name, cat in _TUI_EXTRA:
             desc = _tui_extra_meta(name)
             all_pairs.append([name, desc])
+            description_keys[name] = name.lstrip("/")
             if cat not in cat_map:
                 cat_map[cat] = []
                 cat_order.append(cat)
@@ -12321,7 +12332,13 @@ def _(rid, params: dict) -> dict:
             warning = f"skill discovery unavailable: {e}"
 
         for cat in cat_order:
-            categories.append({"name": cat, "pairs": cat_map[cat]})
+            categories.append(
+                {
+                    "name": cat,
+                    "key": _command_category_key(cat),
+                    "pairs": cat_map[cat],
+                }
+            )
 
         sub = {k: v[:] for k, v in SUBCOMMANDS.items()}
         return _ok(
@@ -12331,6 +12348,7 @@ def _(rid, params: dict) -> dict:
                 "sub": sub,
                 "canon": canon,
                 "categories": categories,
+                "description_keys": description_keys,
                 "skill_count": skill_count,
                 "warning": warning,
             },
@@ -13403,7 +13421,7 @@ def _(rid, params: dict) -> dict:
         return _ok(rid, {"items": []})
 
     try:
-        from hermes_cli.commands import SlashCommandCompleter
+        from hermes_cli.commands import COMMAND_REGISTRY, SlashCommandCompleter
         from prompt_toolkit.document import Document
         from prompt_toolkit.formatted_text import to_plain_text
 
@@ -13415,22 +13433,51 @@ def _(rid, params: dict) -> dict:
             skill_bundles_provider=lambda: get_skill_bundles(),
         )
         doc = Document(text, len(text))
-        items = [
-            {
-                "text": c.text,
+        command_keys: dict[str, str] = {}
+        for command in COMMAND_REGISTRY:
+            command_keys[f"/{command.name}"] = command.name
+            for alias in command.aliases:
+                command_keys[f"/{alias}"] = command.name
+
+        items = []
+        for completion in completer.get_completions(doc, None):
+            item = {
+                "text": completion.text,
                 # prompt_toolkit gives us FormattedText (a list of (style,
                 # text) tuples) for display/display_meta. Serialize both as
                 # plain strings — the TUI's CompletionItem.display contract
                 # is a string, and sending the raw list trips Ink's row
                 # layout into 1-char truncation of the next column.
-                "display": to_plain_text(c.display) if c.display else c.text,
-                "meta": to_plain_text(c.display_meta) if c.display_meta else "",
+                "display": (
+                    to_plain_text(completion.display)
+                    if completion.display
+                    else completion.text
+                ),
+                "meta": (
+                    to_plain_text(completion.display_meta)
+                    if completion.display_meta
+                    else ""
+                ),
             }
-            for c in completer.get_completions(doc, None)
-        ][:30]
+            completion_token = (
+                completion.text
+                if completion.text.startswith("/")
+                else f"/{completion.text}"
+            )
+            command_key = command_keys.get(completion_token)
+            if command_key:
+                item["meta_key"] = command_key
+            items.append(item)
+            if len(items) >= 30:
+                break
         text_lower = text.lower()
         extras = [
-            {"text": command, "display": command, "meta": _tui_extra_meta(command)}
+            {
+                "text": command,
+                "display": command,
+                "meta": _tui_extra_meta(command),
+                "meta_key": command.lstrip("/"),
+            }
             for command in _TUI_EXTRA_META
         ]
         for extra in extras:

@@ -205,6 +205,20 @@ export const translate = (locale: Locale, key: TranslationKey, vars?: Record<str
   return interpolate(value, vars)
 }
 
+/** Resolve an optional, data-driven catalog id with an English wire fallback. */
+export const translateOptional = (locale: Locale, key: string, fallback: string) => {
+  const pack = getPack(locale)
+  const value = pack.catalog[key] ?? en.catalog[key]
+
+  return value == null ? fallback : interpolate(value)
+}
+
+export const translateSlashDescription = (locale: Locale, id: string | undefined, fallback: string) =>
+  id ? translateOptional(locale, `slash.${id}`, fallback) : fallback
+
+export const translateSlashCategory = (locale: Locale, id: string | undefined, fallback: string) =>
+  id ? translateOptional(locale, `slashCategory.${id}`, fallback) : fallback
+
 export const translateStatus = (locale: Locale, status: string) =>
   getPack(locale).status[status] ?? en.status[status] ?? status
 

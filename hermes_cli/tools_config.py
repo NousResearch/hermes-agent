@@ -4347,7 +4347,34 @@ def tools_command(args=None, first_install: bool = False, config: dict = None):
             force_fresh=True,
         )
 
-        if new_enabled != current_enabled:
+        # Selected toolsets still missing provider/API-key setup must open
+        # configuration even when the checklist selection itself didn't
+        # change (e.g. Web Search already enabled but web.backend missing).
+        # Mirrors the "Configure all platforms (global)" flow above.
+        selected_to_configure = [
+            ts_key for ts_key in sorted(new_enabled)
+            if (TOOL_CATEGORIES.get(ts_key) or TOOLSET_ENV_REQUIREMENTS.get(ts_key))
+            and _toolset_needs_configuration_prompt(
+                ts_key,
+                config,
+                force_fresh=True,
+            )
+        ]
+
+        selected_to_configure_set = set(selected_to_configure)
+
+        if selected_to_configure:
+            print()
+            print(color(f"  Configuring {len(selected_to_configure)} selected tool(s):", Colors.YELLOW))
+            for ts_key in selected_to_configure:
+                label = next((l for k, l, _ in _get_effective_configurable_toolsets() if k == ts_key), ts_key)
+                print(color(f"    • {label}", Colors.DIM))
+            print(color("  You can skip any tool you don't need right now.", Colors.DIM))
+            print()
+            for ts_key in selected_to_configure:
+                _configure_toolset(ts_key, config)
+
+        if new_enabled != current_enabled or selected_to_configure:
             # Scope the printed diff to the checklist's universe (see
             # _checklist_toolset_keys) so non-configurable toolsets like
             # ``kanban`` aren't reported as added/removed.
@@ -4364,8 +4391,9 @@ def tools_command(args=None, first_install: bool = False, config: dict = None):
                     label = next((l for k, l, _ in _get_effective_configurable_toolsets() if k == ts), ts)
                     print(color(f"  - {label}", Colors.RED))
 
-            # Configure newly enabled toolsets that need API keys
-            for ts_key in sorted(added):
+            # Configure newly enabled toolsets that need API keys, skipping
+            # any already handled by the selected-tool pass above.
+            for ts_key in sorted(added - selected_to_configure_set):
                 if (TOOL_CATEGORIES.get(ts_key) or TOOLSET_ENV_REQUIREMENTS.get(ts_key)):
                     if _toolset_needs_configuration_prompt(
                         ts_key,

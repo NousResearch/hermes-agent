@@ -1442,6 +1442,43 @@ def _is_channel_dm_topic(
     return is_channel
 
 
+def _wait_for_live_adapter_rate_limit_cooldown(
+    runtime_adapter: Any,
+    *,
+    job_id: Optional[str] = None,
+) -> float:
+    """Sleep until the live adapter's rate-limit circuit breaker closes.
+
+    The standalone fallback path (see ``_deliver_result``) builds a fresh
+    adapter with its own (closed) circuit breaker, so it has no way to know
+    iLink is still server-side rate limited after the live adapter tripped.
+    Issuing an immediate fallback send hits the same -2 and opens the
+    standalone breaker too, double-failing the cron job (issue #66928).
+
+    Returns the number of seconds slept (0 if the breaker wasn't open or the
+    adapter didn't expose one). Exposed at module level so a unit test can
+    drive it directly without spinning up the full delivery state machine.
+    A 0.1s safety buffer is added so the local breaker closes *before* the
+    next send is issued, not simultaneously with it.
+    """
+    if runtime_adapter is None:
+        return 0.0
+    cooldown_until = getattr(runtime_adapter, "_rate_limit_circuit_until", None)
+    if not isinstance(cooldown_until, (int, float)) or cooldown_until <= 0:
+        return 0.0
+    remaining = cooldown_until - time.monotonic()
+    if remaining <= 0:
+        return 0.0
+    sleep_for = remaining + 0.1
+    logger.info(
+        "Job '%s': waiting %.1fs for live adapter rate-limit cooldown"
+        " before standalone fallback (issue #66928)",
+        job_id or "?", sleep_for,
+    )
+    time.sleep(sleep_for)
+    return sleep_for
+
+
 def _deliver_result(job: dict, content: str, adapters=None, loop=None) -> Optional[str]:
     """
     Deliver job output to the configured target(s) (origin chat, specific platform, etc.).
@@ -1924,6 +1961,17 @@ def _deliver_result(job: dict, content: str, adapters=None, loop=None) -> Option
                 logger.warning(
                     "Job '%s': %s, falling back to standalone",
                     job["id"], err_msg,
+                )
+                # If the live adapter tripped its rate-limit circuit breaker,
+                # wait out the cooldown before falling back. The standalone
+                # path builds a fresh adapter with its own (closed) breaker,
+                # so it has no way to know iLink is still server-side rate
+                # limited — issuing an immediate fallback send hits the same
+                # -2 and opens the standalone breaker too, double-failing the
+                # job (issue #66928). Sleeping here both respects the local
+                # breaker and gives iLink's server-side window time to clear.
+                _wait_for_live_adapter_rate_limit_cooldown(
+                    runtime_adapter, job_id=job["id"]
                 )
 
         if not delivered:

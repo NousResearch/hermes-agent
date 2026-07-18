@@ -10124,12 +10124,19 @@ def _cmd_update_impl(args, gateway_mode: bool):
             auto_stash_ref = _stash_local_changes_if_needed(git_cmd, PROJECT_ROOT)
 
         def _restore_protected_checkout(
-            *, restore_stash: bool = True, prompt_user: bool = False
+            *,
+            restore_stash: bool = True,
+            prompt_user: bool = False,
+            allow_updated_target: bool = False,
         ) -> bool:
             """Restore the exact caller checkout before a protected-mode abort."""
             nonlocal auto_stash_ref
 
-            if current_branch == "HEAD":
+            if allow_updated_target and current_branch == branch:
+                # A successful pull/upstream sync is the expected movement of
+                # the update target. Keep that branch attached at its new tip.
+                checkout_args = ["checkout", current_branch]
+            elif current_branch == "HEAD":
                 checkout_args = ["checkout", "--detach", original_head_sha]
             else:
                 original_branch_ref = subprocess.run(
@@ -10253,7 +10260,10 @@ def _cmd_update_impl(args, gateway_mode: bool):
                     _discard_stashed_changes(git_cmd, PROJECT_ROOT, auto_stash_ref)
                     auto_stash_ref = None
                 else:
-                    _restore_protected_checkout(prompt_user=prompt_for_restore)
+                    _restore_protected_checkout(
+                        prompt_user=prompt_for_restore,
+                        allow_updated_target=True,
+                    )
             else:
                 if current_branch == "HEAD":
                     subprocess.run(
@@ -10484,30 +10494,18 @@ def _cmd_update_impl(args, gateway_mode: bool):
 
             update_succeeded = True
         finally:
-            if update_succeeded and protect_local_commits:
-                # Successful protected updates must return to the exact caller
-                # checkout before applying staged/unstaged changes. Otherwise a
-                # custom-branch stash is consumed on the update target branch.
-                if discard_local_changes and auto_stash_ref is not None:
-                    _restore_protected_checkout(restore_stash=False)
-                    _discard_stashed_changes(git_cmd, PROJECT_ROOT, auto_stash_ref)
-                    auto_stash_ref = None
-                else:
-                    restored = _restore_protected_checkout(
-                        prompt_user=prompt_for_restore
-                    )
-                    if not restored and auto_stash_ref is not None:
-                        print(
-                            f"  ℹ️  Local changes preserved in stash (ref: {auto_stash_ref})"
-                        )
-            elif auto_stash_ref is not None:
+            if auto_stash_ref is not None:
                 # Don't attempt stash restore if the code update itself failed —
                 # working tree is in an unknown state.
                 if not update_succeeded:
                     print(
                         f"  ℹ️  Local changes preserved in stash (ref: {auto_stash_ref})"
                     )
-                    print("  Restore manually with: git stash apply")
+                    print("  Restore manually with: git stash apply --index")
+                elif protect_local_commits:
+                    # Defer protected success restoration until all dependency,
+                    # build, and gateway-restart work finishes on the updated tree.
+                    pass
                 elif discard_local_changes:
                     # Non-interactive update + user opted into discarding local
                     # source edits (updates.non_interactive_local_changes:
@@ -11715,6 +11713,28 @@ def _cmd_update_impl(args, gateway_mode: bool):
             print("    Node.js dependency refresh did not complete.")
         else:
             _kill_stale_dashboard_processes()
+
+        if protect_local_commits:
+            # Keep the updated target checked out through dependency install,
+            # builds, and gateway restarts. Only now return to a custom caller
+            # branch/detached SHA and replay its exact index/worktree state.
+            if discard_local_changes and auto_stash_ref is not None:
+                restored = _restore_protected_checkout(
+                    restore_stash=False,
+                    allow_updated_target=True,
+                )
+                if restored:
+                    _discard_stashed_changes(git_cmd, PROJECT_ROOT, auto_stash_ref)
+                    auto_stash_ref = None
+            else:
+                restored = _restore_protected_checkout(
+                    prompt_user=prompt_for_restore,
+                    allow_updated_target=True,
+                )
+            if not restored and auto_stash_ref is not None:
+                print(
+                    f"  ℹ️  Local changes preserved in stash (ref: {auto_stash_ref})"
+                )
 
         print()
         print("Tip: You can now select a provider and model:")

@@ -223,17 +223,36 @@ async def _expand_reference(
     allowed_root: Path | None = None,
 ) -> tuple[str | None, str | None]:
     try:
+        # These expanders are synchronous and do real blocking work: disk reads
+        # and a ``git`` subprocess that may run to its 30s timeout. Called
+        # inline they hold whatever loop runs this coroutine — on the gateway
+        # path (``preprocess_context_references_async`` from gateway/run.py)
+        # that is the shared loop serving every other platform. It also defeats
+        # the ``asyncio.gather`` above: blocking calls cannot interleave, so N
+        # refs cost the SUM of their runtimes instead of the max. Hop to a
+        # worker thread so the gather delivers the concurrency it documents.
         if ref.kind == "file":
-            return _expand_file_reference(ref, cwd, allowed_root=allowed_root)
+            return await asyncio.to_thread(
+                _expand_file_reference, ref, cwd, allowed_root=allowed_root
+            )
         if ref.kind == "folder":
-            return _expand_folder_reference(ref, cwd, allowed_root=allowed_root)
+            return await asyncio.to_thread(
+                _expand_folder_reference, ref, cwd, allowed_root=allowed_root
+            )
         if ref.kind == "diff":
-            return _expand_git_reference(ref, cwd, ["diff"], "git diff")
+            return await asyncio.to_thread(
+                _expand_git_reference, ref, cwd, ["diff"], "git diff"
+            )
         if ref.kind == "staged":
-            return _expand_git_reference(ref, cwd, ["diff", "--staged"], "git diff --staged")
+            return await asyncio.to_thread(
+                _expand_git_reference, ref, cwd, ["diff", "--staged"], "git diff --staged"
+            )
         if ref.kind == "git":
             count = max(1, min(int(ref.target or "1"), 10))
-            return _expand_git_reference(ref, cwd, ["log", f"-{count}", "-p"], f"git log -{count} -p")
+            return await asyncio.to_thread(
+                _expand_git_reference,
+                ref, cwd, ["log", f"-{count}", "-p"], f"git log -{count} -p",
+            )
         if ref.kind == "url":
             content = await _fetch_url_content(ref.target, url_fetcher=url_fetcher)
             if not content:

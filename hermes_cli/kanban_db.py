@@ -3603,6 +3603,57 @@ def claim_task(
     return claimed
 
 
+def to_review_task(
+    conn: sqlite3.Connection,
+    task_id: str,
+    *,
+    pr_url: str,
+    claimer: str,
+) -> Optional[Task]:
+    """Atomically hand a claimed running task to human ``review``.
+
+    Only the holder of the current claim can transition a running task.  The
+    PR URL becomes the task result and closing-run summary, then a ``reviewed``
+    event records the handoff.  Retrying the same handoff is idempotent; a
+    different PR URL, an unowned claim, or any other status returns ``None``
+    without mutation.
+    """
+    if not pr_url or not claimer:
+        return None
+    with write_txn(conn):
+        row = conn.execute(
+            "SELECT status, claim_lock, result FROM tasks WHERE id = ?",
+            (task_id,),
+        ).fetchone()
+        if row is None:
+            return None
+        if row["status"] == "review":
+            return get_task(conn, task_id) if row["result"] == pr_url else None
+        if row["status"] != "running" or row["claim_lock"] != claimer:
+            return None
+        cur = conn.execute(
+            """
+            UPDATE tasks
+               SET status        = 'review',
+                   result        = ?,
+                   claim_lock    = NULL,
+                   claim_expires = NULL,
+                   worker_pid    = NULL
+             WHERE id = ?
+               AND status = 'running'
+               AND claim_lock = ?
+            """,
+            (pr_url, task_id, claimer),
+        )
+        if cur.rowcount != 1:
+            return None
+        run_id = _end_run(
+            conn, task_id, outcome="review", status="review", summary=pr_url,
+        )
+        _append_event(conn, task_id, "reviewed", {"pr_url": pr_url}, run_id=run_id)
+        return get_task(conn, task_id)
+
+
 def claim_review_task(
     conn: sqlite3.Connection,
     task_id: str,

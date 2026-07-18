@@ -43,6 +43,16 @@ _INFER_RUNNERS = frozenset(
         "rspec", "cucumber", "behave", "tox", "nox", "bunx",
     }
 )
+# Wrapper executables that precede a test runner (e.g. `uv run --frozen
+# pytest`, `poetry run pytest`, `npx vitest`). The inference
+# walker consumes these plus their trailing flags so the real runner
+# is scored regardless of position (#62736).
+_WRAPPER_EXES = frozenset(
+    {
+        "uv", "poetry", "pipenv", "npx", "pnpx", "dotnet",
+        "bunx", "yarn", "npm", "npx", "deno", "node",
+    }
+)
 # Commands whose presence means the invocation is NOT a verification run, even
 # when arguments contain a keyword (e.g. `git commit src/test_util.py`).
 _INFER_DENY_COMMANDS = frozenset(
@@ -444,10 +454,36 @@ def _infer_test_signal(tokens: list[str]) -> int:
     """
     if not tokens:
         return 0
-    head = tokens[0]
+    # A test runner is not always tokens[0]: wrapper forms such as
+    # ``python3.11 -m pytest`` or ``uv run --frozen pytest`` put
+    # the interpreter / launcher first and flag the rest. Walk past
+    # leading wrapper executables and their flags so the real runner
+    # (or a test-keyword head) is scored regardless of position.
+    head_idx = 0
+    while head_idx < len(tokens):
+        tok = tokens[head_idx]
+        if tok in _INFER_RUNNERS:
+            break
+        # Skip a wrapper executable (python3, uv, poetry, npx, ...)
+        # and the flags immediately following it.
+        if tok.startswith("-"):
+            head_idx += 1
+            continue
+        base = tok.rsplit("/", 1)[-1].rsplit("\\", 1)[-1]
+        if base.startswith("python") or base in _WRAPPER_EXES:
+            # Consume this token and any trailing short/long flags
+            # (``-m``, ``--frozen``, ``-E foo`` ...).
+            head_idx += 1
+            while head_idx < len(tokens) and tokens[head_idx].startswith("-"):
+                head_idx += 1
+            continue
+        break
+    if head_idx >= len(tokens):
+        return 0
+    head = tokens[head_idx]
     if head in _INFER_DENY_COMMANDS:
         return 0
-    if head in _INFER_PM_COMMANDS and len(tokens) > 1 and tokens[1] in _INFER_PM_INSTALL_SUBCOMMANDS:
+    if head in _INFER_PM_COMMANDS and len(tokens) > head_idx + 1 and tokens[head_idx + 1] in _INFER_PM_INSTALL_SUBCOMMANDS:
         return 0
 
     score = 0
@@ -456,7 +492,7 @@ def _infer_test_signal(tokens: list[str]) -> int:
     if _KEYWORD_RE.search(head):
         score += 1
 
-    for arg in tokens[1:]:
+    for arg in tokens[head_idx + 1:]:
         if arg.startswith("-"):
             continue
         if _KEYWORD_RE.search(arg) or _TEST_FILE_RE.search(arg) or _looks_like_target(arg):
@@ -482,6 +518,7 @@ def _cwd_has_test_files(cwd: str | Path | None) -> bool:
 
     dirs_seen = 0
     files_seen = 0
+    scan_exhausted = False
     stack = [root]
     while stack and dirs_seen < 200:
         current = stack.pop()
@@ -499,7 +536,11 @@ def _cwd_has_test_files(cwd: str | Path | None) -> bool:
                 else:
                     files_seen += 1
                     if files_seen > 5000:
-                        return True
+                        # Budget exhausted without finding a test file:
+                        # a large non-test tree must NOT become passing
+                        # verification evidence. Fail closed (#62736 review).
+                        scan_exhausted = True
+                        break
                     name = entry.name
                     if (
                         name.startswith(("test_", "spec_"))
@@ -518,6 +559,8 @@ def _cwd_has_test_files(cwd: str | Path | None) -> bool:
                         return True
             except Exception:
                 continue
+        if scan_exhausted:
+            break
     return False
 
 

@@ -540,3 +540,57 @@ def test_recording_expires_old_edit_only_state(tmp_path, monkeypatch):
     status = verification_status(session_id="old-session", cwd=tmp_path)
     assert status["status"] == "unverified"
     assert status["changed_paths"] == []
+
+
+def test_inference_recognizes_versioned_interpreter_wrapper(tmp_path, monkeypatch):
+    # ``python3.11 -m pytest`` — the versioned interpreter is a
+    # wrapper, not the runner. The walker must skip it + its flag and
+    # score the real runner (#62736).
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / ".hermes"))
+    _python_project_with_tests(tmp_path)
+
+    for cmd in ("python3.11 -m pytest", "python3.13 -m pytest tests/"):
+        evidence = classify_verification_command(
+            cmd, cwd=tmp_path, session_id="s1", exit_code=0, output="ok",
+        )
+        assert evidence is not None, cmd
+        assert evidence.kind == "test", cmd
+        assert evidence.canonical_command == "inferred verification run", cmd
+
+
+def test_inference_recognizes_uv_run_frozen_wrapper(tmp_path, monkeypatch):
+    # ``uv run --frozen pytest`` — the launcher + flags precede the
+    # runner and must be normalized away (#62736).
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / ".hermes"))
+    _python_project_with_tests(tmp_path)
+
+    evidence = classify_verification_command(
+        "uv run --frozen pytest tests/test_calc.py",
+        cwd=tmp_path, session_id="s1", exit_code=0, output="ok",
+    )
+    assert evidence is not None
+    assert evidence.kind == "test"
+    assert evidence.canonical_command == "inferred verification run"
+
+
+def test_inference_fails_closed_on_large_non_test_tree(tmp_path, monkeypatch):
+    # A huge tree with no test files must NOT classify a weak-keyword
+    # command (e.g. `./check status`) as passing verification. The
+    # conservative scan budget exhausts closed (#62736 review).
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / ".hermes"))
+    (tmp_path / "pyproject.toml").write_text("[project]\nname = 'demo'\n")
+    (tmp_path / "src").mkdir()
+    (tmp_path / "src" / "main.py").write_text("print('hi')\n")
+
+    # Pad the tree past the 5000-file scan budget without any test file.
+    for i in range(5200):
+        (tmp_path / "src" / f"module_{i}.py").write_text(f"X = {i}\n")
+
+    evidence = classify_verification_command(
+        "./check status",
+        cwd=tmp_path,
+        session_id="s1",
+        exit_code=0,
+        output="ok",
+    )
+    assert evidence is None

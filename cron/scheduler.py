@@ -11,6 +11,7 @@ runs at a time if multiple processes overlap.
 import asyncio
 import atexit
 import concurrent.futures
+import contextlib
 import contextvars
 import json
 import logging
@@ -3703,6 +3704,46 @@ def _teardown_cron_agent(agent, job_id: str) -> None:
         logger.debug("Job '%s': failed to reap stale auxiliary clients: %s", job_id, e)
 
 
+@contextlib.contextmanager
+def _cron_secret_scope():
+    """Install the profile secret scope for a cron run — but ONLY when profile
+    multiplexing is active.
+
+    ``get_secret()`` fails closed outside a scope once multiplexing is on, so a
+    cron run must install the profile scope before ``resolve_runtime_provider``
+    reads provider credentials (the earlier ``UnscopedSecretError`` fix).
+
+    But installing the scope *unconditionally* broke single-profile deployments
+    (#66868): once a scope is installed, ``get_secret`` treats it as
+    authoritative and does NOT fall through to ``os.environ`` — so provider keys
+    supplied as container/process env vars (``OLLAMA_API_KEY``, ``GROQ_API_KEY``,
+    …) that live only in ``os.environ`` and not in the profile ``.env`` resolved
+    to empty, and every cron job failed HTTP 401 while interactive turns (which
+    run unscoped in single-profile mode) authenticated fine.
+
+    This mirrors gateway/run.py's ``_profile_runtime_scope``, which is "only used
+    on the multiplexed inbound path": single-profile gateways never enter a
+    scope. When multiplexing is off we install nothing, so ``get_secret`` reads
+    ``os.environ`` exactly as the interactive single-profile path does.
+    """
+    from agent.secret_scope import (
+        build_profile_secret_scope,
+        is_multiplex_active,
+        reset_secret_scope,
+        set_secret_scope,
+    )
+
+    if not is_multiplex_active():
+        yield
+        return
+
+    token = set_secret_scope(build_profile_secret_scope(_get_hermes_home()))
+    try:
+        yield
+    finally:
+        reset_secret_scope(token)
+
+
 def run_one_job(job: dict, *, adapters=None, loop=None, verbose: bool = False) -> bool:
     """Run ONE due job end-to-end: execute → save output → deliver → mark.
 
@@ -3745,22 +3786,17 @@ def run_one_job(job: dict, *, adapters=None, loop=None, verbose: bool = False) -
         # becomes running only immediately before the actual run.
         mark_execution_running(execution_id)
 
-        # Run the job under the profile's secret scope. get_secret() fails
-        # closed outside a scope once profile isolation is in play (multiple
-        # gateway profiles / room→profile multiplexing), and cron fires from
-        # the ticker thread where no per-turn scope is installed — so
-        # resolve_runtime_provider() raised UnscopedSecretError before model
-        # selection, breaking every cron job. Mirrors the per-turn pattern in
-        # gateway/run.py (_profile_runtime_scope).
-        from agent.secret_scope import (
-            build_profile_secret_scope,
-            reset_secret_scope,
-            set_secret_scope,
-        )
-
-        _scope_token = set_secret_scope(
-            build_profile_secret_scope(_get_hermes_home())
-        )
+        # Run the job under the profile's secret scope when — and only when —
+        # profile multiplexing is active. get_secret() fails closed outside a
+        # scope once profile isolation is in play (multiple gateway profiles /
+        # room→profile multiplexing), and cron fires from the ticker thread
+        # where no per-turn scope is installed — so resolve_runtime_provider()
+        # raised UnscopedSecretError before model selection. But installing a
+        # scope in a single-profile deployment shadowed os.environ and broke
+        # cron auth for container/process-env credentials (#66868), so the
+        # scope decision lives in _cron_secret_scope (mirroring
+        # gateway/run.py's _profile_runtime_scope).
+        #
         # Defer the cron agent's async-resource teardown until AFTER delivery.
         # run_job normally closes the agent (and reaps stale async clients) in
         # its finally block; doing that before _deliver_result runs means the
@@ -3770,9 +3806,10 @@ def run_one_job(job: dict, *, adapters=None, loop=None, verbose: bool = False) -
         # interpreter-shutdown guard in _deliver_result.
         _deferred_agents: list = []
         try:
-            success, output, final_response, error = run_job(
-                job, defer_agent_teardown=_deferred_agents
-            )
+            with _cron_secret_scope():
+                success, output, final_response, error = run_job(
+                    job, defer_agent_teardown=_deferred_agents
+                )
         except BaseException:
             # run_job's finally still hands back the agent when it raises; tear
             # it down here so a failed run never leaks its async resources
@@ -3782,8 +3819,6 @@ def run_one_job(job: dict, *, adapters=None, loop=None, verbose: bool = False) -
             for _deferred_agent in _deferred_agents:
                 _teardown_cron_agent(_deferred_agent, job["id"])
             raise
-        finally:
-            reset_secret_scope(_scope_token)
 
         # Everything from here through delivery runs with the agent still live
         # (deferred teardown). Wrap it ALL in a try/finally so that if any step

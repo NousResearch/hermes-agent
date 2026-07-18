@@ -10,6 +10,8 @@ The first test characterizes the sequence as driven through `tick()` (proving
 the extraction didn't change `tick`'s behavior); the rest unit-test the
 extracted helper directly.
 """
+import pytest
+
 import cron.scheduler as s
 
 
@@ -274,3 +276,52 @@ def test_run_one_job_tears_down_deferred_agent_when_save_raises(monkeypatch):
     assert ok is False
     assert "deliver" not in order
     assert order == ["save-raise", "agent.close", "cleanup_stale"], order
+
+
+# ── _cron_secret_scope credential-resolution scoping (#66868) ────────────────
+# A cron run must be able to read provider credentials the same way an
+# interactive turn does. The scope must be installed ONLY when profile
+# multiplexing is active; installing it unconditionally made the profile
+# .env-only scope authoritative and shadowed os.environ, so container/process
+# env credentials (OLLAMA_API_KEY, GROQ_API_KEY, …) resolved to empty and every
+# cron job failed HTTP 401 — while interactive single-profile turns worked.
+
+def test_cron_secret_scope_noop_when_not_multiplexed(monkeypatch):
+    """Single-profile deployment: no scope is installed, so get_secret falls
+    through to os.environ and container/process env credentials resolve.
+    Regression guard for #66868."""
+    import agent.secret_scope as ss
+
+    monkeypatch.setattr(ss, "_MULTIPLEX_ACTIVE", False)
+    monkeypatch.setenv("OLLAMA_API_KEY", "env-key-123")
+    # Even if a profile home with a .env existed, it must not be consulted while
+    # multiplexing is off — os.environ stays authoritative.
+    monkeypatch.setattr(s, "_get_hermes_home", lambda: __import__("pathlib").Path("/nonexistent-home"))
+
+    with s._cron_secret_scope():
+        assert ss.current_secret_scope() is None
+        assert ss.get_secret("OLLAMA_API_KEY") == "env-key-123"
+
+    assert ss.current_secret_scope() is None
+
+
+def test_cron_secret_scope_installs_profile_scope_when_multiplexed(monkeypatch, tmp_path):
+    """Multiplexed deployment: the profile scope is installed and is
+    authoritative — get_secret reads the profile .env, NOT os.environ — and the
+    scope is reset on exit."""
+    import agent.secret_scope as ss
+
+    (tmp_path / ".env").write_text("GROQ_API_KEY=profile-key-abc\n", encoding="utf-8")
+    monkeypatch.setattr(s, "_get_hermes_home", lambda: tmp_path)
+    monkeypatch.setattr(ss, "_MULTIPLEX_ACTIVE", True)
+    # An os.environ value must be shadowed by the profile scope under multiplex.
+    monkeypatch.setenv("GROQ_API_KEY", "cross-profile-leak")
+
+    with s._cron_secret_scope():
+        assert ss.current_secret_scope() is not None
+        assert ss.get_secret("GROQ_API_KEY") == "profile-key-abc"
+
+    # Scope cleared on exit; the fail-closed contract is back in force.
+    assert ss.current_secret_scope() is None
+    with pytest.raises(ss.UnscopedSecretError):
+        ss.get_secret("GROQ_API_KEY")

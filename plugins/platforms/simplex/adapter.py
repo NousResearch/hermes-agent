@@ -838,7 +838,14 @@ class SimplexAdapter(BasePlatformAdapter):
                 )
                 cmd_str = f"/_send #{chat_id[6:]} json {composed}"
             else:
-                cmd_str = f"@{chat_id} {content}"
+                # Direct message: chat_id is a numeric contactId. The bare
+                # "@<id> text" form treats the number as a contact *name*
+                # (contactNotFound), so use the structured "/_send @<id> json"
+                # form which addresses by numeric ID and escapes correctly.
+                composed = json.dumps(
+                    [{"msgContent": {"type": "text", "text": content}}]
+                )
+                cmd_str = f"/_send @{chat_id} json {composed}"
 
             await self._send_ws({"corrId": corr_id, "cmd": cmd_str})
 

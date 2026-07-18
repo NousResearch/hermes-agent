@@ -205,12 +205,14 @@ def test_corr_id_pending_set_self_trims():
 
 @pytest.mark.asyncio
 async def test_send_dm():
-    """DMs use the bare ``@<id> text`` chat-command form.
+    """DMs use the structured ``/_send @<id> json [...]`` form.
 
-    The bracketed form ``@[<id>] text`` is what the daemon's man page
-    documents, but in practice both addressing styles route through
-    the same chat-command parser; bare ``@<id>`` matches what every
-    Hermes deployment has been using in production for months.
+    chat_id is a numeric contactId. The bare ``@<id> text`` form parses
+    the number as a display-*name* lookup, so the daemon returns
+    ``contactNotFound`` and the send silently drops (no corrId error is
+    returned for chat commands). The structured ``/_send @<id> json``
+    form addresses by numeric ID and survives newlines/quoting through
+    ``json.dumps`` — matching the group send path.
     """
     from gateway.config import PlatformConfig
     cfg = PlatformConfig(enabled=True, extra={"ws_url": "ws://localhost:5225"})
@@ -219,10 +221,12 @@ async def test_send_dm():
     mock_ws = AsyncMock()
     adapter._ws = mock_ws
 
-    result = await adapter.send("contact-42", "Hello, SimpleX!")
+    result = await adapter.send("42", "Hello, SimpleX!")
     mock_ws.send.assert_called_once()
     payload = json.loads(mock_ws.send.call_args[0][0])
-    assert payload["cmd"] == "@contact-42 Hello, SimpleX!"
+    assert payload["cmd"].startswith("/_send @42 json ")
+    composed = json.loads(payload["cmd"].split(" json ", 1)[1])
+    assert composed == [{"msgContent": {"type": "text", "text": "Hello, SimpleX!"}}]
     assert payload["corrId"].startswith(_CORR_PREFIX)
     assert result.success is True
 

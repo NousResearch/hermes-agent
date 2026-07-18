@@ -2469,6 +2469,15 @@ def _git_path(path: str) -> str:
 class GitPathBody(BaseModel):
     path: str
 
+
+class GitReviewSnapshotBody(GitPathBody):
+    pin: Optional[str] = None
+
+
+class GitReviewSnapshotReleaseBody(GitPathBody):
+    pin: str
+
+
 class GitFileBody(BaseModel):
     path: str
     file: Optional[str] = None
@@ -2547,8 +2556,23 @@ async def git_rev_parse_route(path: str, ref: Optional[str] = None):
 
 
 @app.post("/api/git/review/snapshot")
-async def git_review_snapshot_route(body: GitPathBody):
-    return {"tree": await _git_op(_web_git.review_snapshot, _git_path(body.path))}
+async def git_review_snapshot_route(body: GitReviewSnapshotBody):
+    return {
+        "tree": await _git_op(
+            _web_git.review_snapshot,
+            _git_path(body.path),
+            body.pin,
+        )
+    }
+
+
+@app.post("/api/git/review/snapshot/release")
+async def git_review_snapshot_release_route(body: GitReviewSnapshotReleaseBody):
+    return await _git_op(
+        _web_git.release_review_snapshot,
+        _git_path(body.path),
+        body.pin,
+    )
 
 
 @app.get("/api/git/review/ship-info")

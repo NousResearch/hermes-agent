@@ -98,11 +98,19 @@ describe('desktop git facade', () => {
   it('captures last-turn baselines on the remote workspace', async () => {
     $connection.set({ mode: 'remote', profile: 'remote-docker' } as never)
 
-    await expect(desktopGit()?.review.snapshot('/srv/work')).resolves.toBe('abc123')
+    await expect(desktopGit()?.review.snapshot('/srv/work', 'session-a')).resolves.toBe('abc123')
     expect(api).toHaveBeenCalledWith({
-      body: { path: '/srv/work' },
+      body: { path: '/srv/work', pin: 'session-a' },
       method: 'POST',
       path: '/api/git/review/snapshot',
+      profile: 'remote-docker'
+    })
+
+    await desktopGit()?.review.releaseSnapshot('/srv/work', 'session-a')
+    expect(api).toHaveBeenCalledWith({
+      body: { path: '/srv/work', pin: 'session-a' },
+      method: 'POST',
+      path: '/api/git/review/snapshot/release',
       profile: 'remote-docker'
     })
   })

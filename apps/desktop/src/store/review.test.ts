@@ -9,13 +9,16 @@ import {
 } from './review'
 import { $activeSessionId, $currentCwd, $selectedStoredSessionId } from './session'
 
-const snapshot = vi.fn<(cwd: string) => Promise<null | string>>()
+const snapshot = vi.fn<(cwd: string, pin?: string) => Promise<null | string>>()
+const releaseSnapshot = vi.fn<(cwd: string, pin: string) => Promise<{ ok: boolean }>>()
 
 describe('last-turn review baseline', () => {
   beforeEach(() => {
     snapshot.mockReset()
+    releaseSnapshot.mockReset()
+    releaseSnapshot.mockResolvedValue({ ok: true })
     ;(window as unknown as { hermesDesktop: unknown }).hermesDesktop = {
-      git: { review: { snapshot } }
+      git: { review: { releaseSnapshot, snapshot } }
     }
     $currentCwd.set('/repo')
     $activeSessionId.set(null)
@@ -73,5 +76,26 @@ describe('last-turn review baseline', () => {
 
     expect(snapshot).not.toHaveBeenCalled()
     expect($reviewLastTurnBaseRef.get()).toBeNull()
+  })
+
+  it('reuses a session pin across turns and releases it when tracking clears', async () => {
+    snapshot.mockResolvedValueOnce('tree-one').mockResolvedValueOnce('tree-two')
+    $activeSessionId.set('runtime-pin-lifecycle')
+
+    await captureReviewTurnBaseline()
+    const pin = snapshot.mock.calls[0]?.[1]
+
+    expect(pin).toBeTruthy()
+
+    await captureReviewTurnBaseline()
+
+    expect(snapshot.mock.calls[1]?.[1]).toBe(pin)
+    expect(releaseSnapshot).not.toHaveBeenCalled()
+
+    $reviewOpen.set(false)
+    await captureReviewTurnBaseline()
+
+    expect(releaseSnapshot).toHaveBeenCalledOnce()
+    expect(releaseSnapshot).toHaveBeenCalledWith('/repo', pin)
   })
 })

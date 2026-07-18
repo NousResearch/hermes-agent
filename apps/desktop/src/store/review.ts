@@ -110,19 +110,65 @@ let shipInfoLastCheckedAt = 0
 
 interface ReviewTurnBaseline {
   cwd: string
+  pin: string
   ref: string
 }
 
 const MAX_TURN_BASELINES = 100
 const reviewTurnBaselines = new Map<string, ReviewTurnBaseline>()
 let pendingDraftBaseline: ReviewTurnBaseline | null = null
+let nextTurnBaselinePin = 0
 
 const runtimeBaselineKey = (id: string): string => `runtime:${id}`
 const storedBaselineKey = (id: string): string => `stored:${id}`
 
+const createTurnBaselinePin = (): string =>
+  `review-turn-${globalThis.crypto?.randomUUID?.() ?? `${Date.now().toString(36)}-${++nextTurnBaselinePin}`}`
+
+function releaseTurnBaselineIfUnused(baseline: ReviewTurnBaseline): void {
+  const stillUsed =
+    pendingDraftBaseline?.pin === baseline.pin ||
+    [...reviewTurnBaselines.values()].some(candidate => candidate.pin === baseline.pin)
+
+  if (stillUsed) {
+    return
+  }
+
+  const release = desktopGit()?.review.releaseSnapshot
+
+  if (release) {
+    void release(baseline.cwd, baseline.pin).catch(() => undefined)
+  }
+}
+
+function forgetTurnBaseline(key: string): void {
+  const baseline = reviewTurnBaselines.get(key)
+
+  if (!baseline) {
+    return
+  }
+
+  reviewTurnBaselines.delete(key)
+  releaseTurnBaselineIfUnused(baseline)
+}
+
+function replacePendingDraftBaseline(baseline: ReviewTurnBaseline | null): void {
+  const previous = pendingDraftBaseline
+  pendingDraftBaseline = baseline
+
+  if (previous && previous.pin !== baseline?.pin) {
+    releaseTurnBaselineIfUnused(previous)
+  }
+}
+
 function rememberTurnBaseline(key: string, baseline: ReviewTurnBaseline): void {
+  const previous = reviewTurnBaselines.get(key)
   reviewTurnBaselines.delete(key)
   reviewTurnBaselines.set(key, baseline)
+
+  if (previous && previous.pin !== baseline.pin) {
+    releaseTurnBaselineIfUnused(previous)
+  }
 
   while (reviewTurnBaselines.size > MAX_TURN_BASELINES) {
     const oldest = reviewTurnBaselines.keys().next().value
@@ -131,7 +177,7 @@ function rememberTurnBaseline(key: string, baseline: ReviewTurnBaseline): void {
       break
     }
 
-    reviewTurnBaselines.delete(oldest)
+    forgetTurnBaseline(oldest)
   }
 }
 
@@ -345,15 +391,15 @@ export async function captureReviewTurnBaseline(): Promise<void> {
     const storedId = $selectedStoredSessionId.get()
 
     if (runtimeId) {
-      reviewTurnBaselines.delete(runtimeBaselineKey(runtimeId))
+      forgetTurnBaseline(runtimeBaselineKey(runtimeId))
     }
 
     if (storedId) {
-      reviewTurnBaselines.delete(storedBaselineKey(storedId))
+      forgetTurnBaseline(storedBaselineKey(storedId))
     }
 
     if (!runtimeId && !storedId) {
-      pendingDraftBaseline = null
+      replacePendingDraftBaseline(null)
     }
 
     syncCurrentTurnBaseline()
@@ -369,7 +415,9 @@ export async function captureReviewTurnBaseline(): Promise<void> {
     return
   }
 
-  const ref = await ctx.review.snapshot(ctx.cwd).catch(() => null)
+  const previous = currentTurnBaseline()
+  const pin = previous?.cwd === ctx.cwd ? previous.pin : createTurnBaselinePin()
+  const ref = await ctx.review.snapshot(ctx.cwd, pin).catch(() => null)
 
   if (!ref) {
     $reviewLastTurnBaseRef.set(null)
@@ -377,7 +425,7 @@ export async function captureReviewTurnBaseline(): Promise<void> {
     return
   }
 
-  const baseline = { cwd: ctx.cwd, ref }
+  const baseline = { cwd: ctx.cwd, pin, ref }
   const runtimeId = $activeSessionId.get()
   const storedId = $selectedStoredSessionId.get()
 
@@ -389,7 +437,7 @@ export async function captureReviewTurnBaseline(): Promise<void> {
     rememberTurnBaseline(storedBaselineKey(storedId), baseline)
   }
 
-  pendingDraftBaseline = runtimeId || storedId ? null : baseline
+  replacePendingDraftBaseline(runtimeId || storedId ? null : baseline)
   $reviewLastTurnBaseRef.set(ref)
 }
 
@@ -409,7 +457,7 @@ export function bindReviewTurnBaseline(runtimeId: string): void {
     rememberTurnBaseline(storedBaselineKey(storedId), pendingDraftBaseline)
   }
 
-  pendingDraftBaseline = null
+  replacePendingDraftBaseline(null)
   syncCurrentTurnBaseline()
 }
 

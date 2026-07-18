@@ -3,7 +3,7 @@ from pathlib import Path
 
 import pytest
 
-from hermes_cli import web_server
+from hermes_cli import web_git, web_server
 
 pytest.importorskip("starlette.testclient")
 from starlette.testclient import TestClient
@@ -151,6 +151,28 @@ def test_last_turn_snapshot_excludes_unchanged_preexisting_dirt(client, repo):
     ).json()["diff"]
     assert old_untracked == ""
     assert "new in turn" in turn_untracked
+
+
+def test_last_turn_baseline_survives_transient_snapshot_retention(repo, monkeypatch):
+    snapshot_limit = 2
+    monkeypatch.setattr(web_git, "_REVIEW_SNAPSHOT_LIMIT", snapshot_limit)
+    baseline = web_git.review_snapshot(str(repo), "session-a")
+    assert baseline
+
+    for index in range(snapshot_limit + 1):
+        (repo / "a.txt").write_text(f"refresh {index}\n")
+        web_git.review_list(str(repo), "uncommitted", None)
+
+    diff = web_git.review_diff(
+        str(repo),
+        "a.txt",
+        "lastTurn",
+        baseline,
+        False,
+    )
+
+    assert f"+refresh {snapshot_limit}" in diff
+    assert web_git.release_review_snapshot(str(repo), "session-a") == {"ok": True}
 
 
 def test_review_snapshot_does_not_execute_repository_filters(client, repo):

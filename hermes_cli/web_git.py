@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import atexit
 from collections import OrderedDict
+from dataclasses import dataclass, field
 import json
 import os
 import re
@@ -32,31 +33,113 @@ _COMMIT_CONTEXT_DIFF_MAX_CHARS = 120_000
 _COMMIT_CONTEXT_UNTRACKED_MAX = 80
 _TRUNK_BRANCHES = ("main", "master")
 _REVIEW_SNAPSHOT_LIMIT = 64
+_REVIEW_SNAPSHOT_PIN_MAX_CHARS = 256
+_REVIEW_SNAPSHOT_PIN_LIMIT = 128
 _review_snapshot_lock = threading.Lock()
-_review_snapshots: OrderedDict[tuple[str, str], tuple[str, str]] = OrderedDict()
+
+
+@dataclass
+class _ReviewSnapshotRecord:
+    root: str
+    objects: str
+    pins: set[str] = field(default_factory=set)
+
+
+_review_snapshots: OrderedDict[tuple[str, str], _ReviewSnapshotRecord] = OrderedDict()
+_review_snapshot_pins: dict[tuple[str, str], tuple[str, str]] = {}
+
+
+def _valid_review_snapshot_pin(pin: str | None) -> bool:
+    return isinstance(pin, str) and 0 < len(pin) <= _REVIEW_SNAPSHOT_PIN_MAX_CHARS
 
 
 def _drop_review_snapshot(key: tuple[str, str]) -> None:
     record = _review_snapshots.pop(key, None)
     if record:
-        shutil.rmtree(record[0], ignore_errors=True)
+        for pin in record.pins:
+            _review_snapshot_pins.pop((key[0], pin), None)
+        shutil.rmtree(record.root, ignore_errors=True)
 
 
-def _remember_review_snapshot(cwd: str, tree: str, root: str, objects: str) -> None:
+def _evict_transient_review_snapshots() -> None:
+    transient_count = sum(not record.pins for record in _review_snapshots.values())
+    while transient_count > _REVIEW_SNAPSHOT_LIMIT:
+        oldest = next(
+            (key for key, record in _review_snapshots.items() if not record.pins),
+            None,
+        )
+        if oldest is None:
+            break
+        _drop_review_snapshot(oldest)
+        transient_count -= 1
+
+
+def _pin_review_snapshot(key: tuple[str, str], pin: str) -> bool:
+    record = _review_snapshots.get(key)
+    if record is None:
+        return False
+
+    pin_key = (key[0], pin)
+    previous_key = _review_snapshot_pins.get(pin_key)
+    if previous_key is None and len(_review_snapshot_pins) >= _REVIEW_SNAPSHOT_PIN_LIMIT:
+        return False
+    if previous_key and previous_key != key:
+        previous = _review_snapshots.get(previous_key)
+        if previous:
+            previous.pins.discard(pin)
+
+    record.pins.add(pin)
+    _review_snapshot_pins[pin_key] = key
+    return True
+
+
+def _remember_review_snapshot(
+    cwd: str,
+    tree: str,
+    root: str,
+    objects: str,
+    pin: str | None = None,
+) -> bool | None:
     key = (str(Path(cwd).resolve()), tree)
     with _review_snapshot_lock:
-        _drop_review_snapshot(key)
-        _review_snapshots[key] = (root, objects)
-        while len(_review_snapshots) > _REVIEW_SNAPSHOT_LIMIT:
-            oldest = next(iter(_review_snapshots))
-            _drop_review_snapshot(oldest)
+        existing = _review_snapshots.get(key)
+        if existing:
+            if pin and not _pin_review_snapshot(key, pin):
+                return None
+            if not existing.pins:
+                _review_snapshots.move_to_end(key)
+            _evict_transient_review_snapshots()
+            return False
+
+        _review_snapshots[key] = _ReviewSnapshotRecord(root=root, objects=objects)
+        if pin and not _pin_review_snapshot(key, pin):
+            _review_snapshots.pop(key, None)
+            return None
+        _evict_transient_review_snapshots()
+        return key in _review_snapshots
+
+
+def release_review_snapshot(cwd: str, pin: str) -> dict[str, bool]:
+    if not _is_dir(cwd) or not _valid_review_snapshot_pin(pin):
+        return {"ok": False}
+
+    resolved = str(Path(cwd).resolve())
+    with _review_snapshot_lock:
+        key = _review_snapshot_pins.pop((resolved, pin), None)
+        if key:
+            record = _review_snapshots.get(key)
+            if record:
+                record.pins.discard(pin)
+        _evict_transient_review_snapshots()
+
+    return {"ok": True}
 
 
 def _snapshot_env(cwd: str, refs: list[str | None]) -> dict[str, str] | None:
     resolved = str(Path(cwd).resolve())
     with _review_snapshot_lock:
         objects = [
-            record[1]
+            record.objects
             for ref in refs
             if ref and (record := _review_snapshots.get((resolved, ref)))
         ]
@@ -202,7 +285,7 @@ def _snapshot_git_config(cwd: str) -> list[str]:
     return args
 
 
-def review_snapshot(cwd: str) -> str | None:
+def review_snapshot(cwd: str, pin: str | None = None) -> str | None:
     """Snapshot HEAD + index/worktree/untracked files as an anonymous Git tree.
 
     A temporary index keeps the user's real staging area byte-for-byte intact.
@@ -210,6 +293,8 @@ def review_snapshot(cwd: str) -> str | None:
     when files were already dirty before the turn began.
     """
     if not _is_dir(cwd):
+        return None
+    if pin is not None and not _valid_review_snapshot_pin(pin):
         return None
 
     root = tempfile.mkdtemp(prefix="hermes-review-snapshot-")
@@ -247,8 +332,10 @@ def review_snapshot(cwd: str) -> str | None:
         valid = re.fullmatch(r"[0-9a-fA-F]{40}(?:[0-9a-fA-F]{24})?", value)
         if code != 0 or not valid:
             return None
-        _remember_review_snapshot(cwd, value, root, object_path)
-        keep_snapshot = True
+        remembered = _remember_review_snapshot(cwd, value, root, object_path, pin)
+        if remembered is None:
+            return None
+        keep_snapshot = remembered
         return value
     finally:
         if not keep_snapshot:

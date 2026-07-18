@@ -6,7 +6,14 @@ import path from 'node:path'
 
 import { afterEach, test } from 'vitest'
 
-import { resolveRenamePath, reviewDiff, reviewList, reviewSnapshot } from './git-review-ops'
+import {
+  resolveRenamePath,
+  REVIEW_SNAPSHOT_LIMIT,
+  reviewDiff,
+  reviewList,
+  reviewReleaseSnapshot,
+  reviewSnapshot
+} from './git-review-ops'
 
 const roots: string[] = []
 
@@ -86,6 +93,24 @@ test('last-turn trees exclude unchanged pre-existing dirt while preserving the r
   assert.match(String(await reviewDiff(root, 'turn-only.txt', 'lastTurn', baseline, false, undefined)), /new this turn/)
   assert.match(await git(root, 'status', '--porcelain=v1'), /pre-existing\.txt/)
 })
+
+test('last-turn baseline survives more transient snapshots than the retention limit', async () => {
+  const root = await repository()
+  const baseline = await reviewSnapshot(root, undefined, 'session-a')
+  const transientSnapshotCount = REVIEW_SNAPSHOT_LIMIT + 1
+
+  assert.match(baseline ?? '', /^[0-9a-f]{40,64}$/)
+
+  for (let index = 0; index < transientSnapshotCount; index++) {
+    fs.writeFileSync(path.join(root, 'tracked.txt'), `refresh ${index}\n`)
+    await reviewList(root, 'uncommitted', null, undefined)
+  }
+
+  const diff = await reviewDiff(root, 'tracked.txt', 'lastTurn', baseline, false, undefined)
+
+  assert.match(String(diff), new RegExp(`\\+refresh ${transientSnapshotCount - 1}`))
+  assert.deepEqual(reviewReleaseSnapshot(root, 'session-a'), { ok: true })
+}, 15_000)
 
 test('branch scope includes uncommitted and untracked workspace changes', async () => {
   const root = await repository()

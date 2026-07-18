@@ -76,6 +76,7 @@ import {
   reviewDiff,
   reviewList,
   reviewPush,
+  reviewReleaseSnapshot,
   reviewRevert,
   reviewRevParse,
   reviewShipInfo,
@@ -8850,7 +8851,12 @@ ipcMain.handle('hermes:git:review:revert', async (_event, repoPath, filePath) =>
 ipcMain.handle('hermes:git:review:revParse', async (_event, repoPath, ref) =>
   reviewRevParse(repoPath, ref, resolveGitBinary())
 )
-ipcMain.handle('hermes:git:review:snapshot', async (_event, repoPath) => reviewSnapshot(repoPath, resolveGitBinary()))
+ipcMain.handle('hermes:git:review:snapshot', async (_event, repoPath, pin) =>
+  reviewSnapshot(repoPath, resolveGitBinary(), pin)
+)
+ipcMain.handle('hermes:git:review:releaseSnapshot', async (_event, repoPath, pin) =>
+  reviewReleaseSnapshot(repoPath, pin)
+)
 ipcMain.handle('hermes:git:review:commit', async (_event, repoPath, message, push) =>
   reviewCommit(repoPath, message, Boolean(push), resolveGitBinary())
 )

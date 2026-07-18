@@ -84,7 +84,10 @@ const remoteGit: GitBridge = {
     revParse: async (repoPath, ref) =>
       (await gitGet<{ sha: null | string }>('review/rev-parse', { path: repoPath, ref })).sha,
 
-    snapshot: async repoPath => (await gitPost<{ tree: null | string }>('review/snapshot', { path: repoPath })).tree,
+    snapshot: async (repoPath, pin) =>
+      (await gitPost<{ tree: null | string }>('review/snapshot', { path: repoPath, pin })).tree,
+
+    releaseSnapshot: (repoPath, pin) => gitPost('review/snapshot/release', { path: repoPath, pin }),
 
     commit: (repoPath, message, push) => gitPost('review/commit', { message, path: repoPath, push }),
 

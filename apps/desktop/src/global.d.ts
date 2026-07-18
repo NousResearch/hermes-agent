@@ -174,7 +174,8 @@ declare global {
           unstage: (repoPath: string, filePath?: null | string) => Promise<{ ok: boolean }>
           revert: (repoPath: string, filePath?: null | string) => Promise<{ ok: boolean }>
           revParse: (repoPath: string, ref?: null | string) => Promise<null | string>
-          snapshot: (repoPath: string) => Promise<null | string>
+          snapshot: (repoPath: string, pin?: string) => Promise<null | string>
+          releaseSnapshot: (repoPath: string, pin: string) => Promise<{ ok: boolean }>
           commit: (repoPath: string, message: string, push: boolean) => Promise<{ ok: boolean }>
           // Diff (staged-or-all) + recent commit subjects for drafting a
           // commit message. Reads only; empty strings off-repo.

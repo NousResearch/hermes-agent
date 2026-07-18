@@ -19,17 +19,26 @@ const COMMIT_CONTEXT_UNTRACKED_MAX = 80
 const UNTRACKED_LINE_COUNT_CONCURRENCY = 16
 const UNTRACKED_LINE_COUNT_MAX_BYTES = 1024 * 1024
 const REVIEW_SNAPSHOT_LIMIT = 64
+const REVIEW_SNAPSHOT_PIN_MAX_CHARS = 256
+const REVIEW_SNAPSHOT_PIN_LIMIT = 128
 
 interface ReviewSnapshotRecord {
   cwd: string
   objectDirectory: string
+  pins: Set<string>
   root: string
   tree: string
 }
 
 const reviewSnapshots = new Map<string, ReviewSnapshotRecord>()
+const reviewSnapshotPins = new Map<string, string>()
 
 const snapshotKey = (cwd: string, tree: string): string => `${path.resolve(cwd)}\0${tree}`
+const snapshotPinKey = (cwd: string, pin: string): string => `${path.resolve(cwd)}\0${pin}`
+
+function validSnapshotPin(pin: null | string | undefined): pin is string {
+  return typeof pin === 'string' && pin.length > 0 && pin.length <= REVIEW_SNAPSHOT_PIN_MAX_CHARS
+}
 
 function forgetSnapshot(key: string): void {
   const snapshot = reviewSnapshots.get(key)
@@ -39,23 +48,96 @@ function forgetSnapshot(key: string): void {
   }
 
   reviewSnapshots.delete(key)
+
+  for (const pin of snapshot.pins) {
+    reviewSnapshotPins.delete(snapshotPinKey(snapshot.cwd, pin))
+  }
+
   fsSync.rmSync(snapshot.root, { force: true, recursive: true })
 }
 
-function rememberSnapshot(snapshot: ReviewSnapshotRecord): void {
-  const key = snapshotKey(snapshot.cwd, snapshot.tree)
-  forgetSnapshot(key)
-  reviewSnapshots.set(key, snapshot)
+function evictTransientSnapshots(): void {
+  let transientCount = [...reviewSnapshots.values()].filter(snapshot => snapshot.pins.size === 0).length
 
-  while (reviewSnapshots.size > REVIEW_SNAPSHOT_LIMIT) {
-    const oldest = reviewSnapshots.keys().next().value
+  while (transientCount > REVIEW_SNAPSHOT_LIMIT) {
+    const oldest = [...reviewSnapshots].find(([, snapshot]) => snapshot.pins.size === 0)?.[0]
 
-    if (typeof oldest !== 'string') {
+    if (!oldest) {
       break
     }
 
     forgetSnapshot(oldest)
+    transientCount--
   }
+}
+
+function pinSnapshot(key: string, pin: string): boolean {
+  const snapshot = reviewSnapshots.get(key)
+
+  if (!snapshot) {
+    return false
+  }
+
+  const pinKey = snapshotPinKey(snapshot.cwd, pin)
+  const previousKey = reviewSnapshotPins.get(pinKey)
+
+  if (!previousKey && reviewSnapshotPins.size >= REVIEW_SNAPSHOT_PIN_LIMIT) {
+    return false
+  }
+
+  if (previousKey && previousKey !== key) {
+    reviewSnapshots.get(previousKey)?.pins.delete(pin)
+  }
+
+  snapshot.pins.add(pin)
+  reviewSnapshotPins.set(pinKey, key)
+
+  return true
+}
+
+function rememberSnapshot(snapshot: Omit<ReviewSnapshotRecord, 'pins'>, pin?: string): boolean | null {
+  const key = snapshotKey(snapshot.cwd, snapshot.tree)
+  const existing = reviewSnapshots.get(key)
+
+  if (existing) {
+    if (pin && !pinSnapshot(key, pin)) {
+      return null
+    }
+
+    if (existing.pins.size === 0) {
+      reviewSnapshots.delete(key)
+      reviewSnapshots.set(key, existing)
+    }
+
+    evictTransientSnapshots()
+
+    return false
+  }
+
+  reviewSnapshots.set(key, { ...snapshot, pins: new Set() })
+
+  if (pin && !pinSnapshot(key, pin)) {
+    reviewSnapshots.delete(key)
+
+    return null
+  }
+
+  evictTransientSnapshots()
+
+  return reviewSnapshots.has(key)
+}
+
+function releaseSnapshotPin(cwd: string, pin: string): void {
+  const pinKey = snapshotPinKey(cwd, pin)
+  const key = reviewSnapshotPins.get(pinKey)
+
+  if (!key) {
+    return
+  }
+
+  reviewSnapshotPins.delete(pinKey)
+  reviewSnapshots.get(key)?.pins.delete(pin)
+  evictTransientSnapshots()
 }
 
 function snapshotObjectDirectories(cwd: string, refs: Array<null | string | undefined>): string[] {
@@ -186,12 +268,16 @@ async function snapshotGitConfig(cwd, gitBin) {
 
 /** Snapshot HEAD + the current index/worktree/untracked files as an anonymous
  * Git tree. Both the index and new objects live outside the repository. */
-async function reviewSnapshot(repoPath, gitBin) {
+async function reviewSnapshot(repoPath, gitBin, pin?: null | string) {
   let cwd
 
   try {
     cwd = resolveRequestedPathForIpc(repoPath, { purpose: 'Review snapshot' })
   } catch {
+    return null
+  }
+
+  if (pin != null && !validSnapshotPin(pin)) {
     return null
   }
 
@@ -229,8 +315,16 @@ async function reviewSnapshot(repoPath, gitBin) {
       return null
     }
 
-    rememberSnapshot({ cwd: path.resolve(cwd), objectDirectory: temporaryObjects, root: temporaryRoot, tree })
-    keepSnapshot = true
+    const remembered = rememberSnapshot(
+      { cwd: path.resolve(cwd), objectDirectory: temporaryObjects, root: temporaryRoot, tree },
+      pin ?? undefined
+    )
+
+    if (remembered === null) {
+      return null
+    }
+
+    keepSnapshot = remembered
 
     return tree
   } catch {
@@ -240,6 +334,24 @@ async function reviewSnapshot(repoPath, gitBin) {
       await fs.rm(temporaryRoot, { force: true, recursive: true }).catch(() => undefined)
     }
   }
+}
+
+function reviewReleaseSnapshot(repoPath, pin: string): { ok: boolean } {
+  let cwd
+
+  try {
+    cwd = resolveRequestedPathForIpc(repoPath, { purpose: 'Release review snapshot' })
+  } catch {
+    return { ok: false }
+  }
+
+  if (!validSnapshotPin(pin)) {
+    return { ok: false }
+  }
+
+  releaseSnapshotPin(cwd, pin)
+
+  return { ok: true }
 }
 
 // simple-git reports renames as `old => new` (and `dir/{old => new}/f`); resolve
@@ -867,12 +979,14 @@ export {
   fileDiffVsHead,
   repoStatus,
   resolveRenamePath,
+  REVIEW_SNAPSHOT_LIMIT,
   reviewCommit,
   reviewCommitContext,
   reviewCreatePr,
   reviewDiff,
   reviewList,
   reviewPush,
+  reviewReleaseSnapshot,
   reviewRevert,
   reviewRevParse,
   reviewShipInfo,

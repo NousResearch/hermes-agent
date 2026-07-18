@@ -1500,16 +1500,80 @@ class SessionStore:
                 session_key,
             )
             return None
-        try:
-            self._db.reopen_session(str(recovered["id"]))
-        except Exception as exc:
-            logger.debug("Gateway session DB reopen failed for %s: %s", session_key, exc)
-        return self._create_entry_from_recovered_row(
+        entry, _, _ = self._resolve_recovered_session_row(
             row=recovered,
             session_key=session_key,
             source=source,
             now=now,
         )
+        return entry
+
+    def _resolve_recovered_session_row(
+        self,
+        *,
+        row: Dict[str, Any],
+        session_key: str,
+        source: SessionSource,
+        now: datetime,
+    ) -> tuple[Optional[SessionEntry], Optional[str], bool]:
+        """Apply reset policy before publishing or reopening a recovered row.
+
+        Returns ``(entry, reset_reason, had_activity)``.  Expired rows are
+        promoted to a durable reset boundary and never reopened; valid resume
+        candidates are reopened only after the policy check (#66255).
+        """
+        entry = self._create_entry_from_recovered_row(
+            row=row,
+            session_key=session_key,
+            source=source,
+            now=now,
+        )
+        reset_reason = self._should_reset(entry, source)
+        if reset_reason:
+            logger.info(
+                "gateway.session: recovered session %s for %r is past its "
+                "reset policy (%s) — ending it instead of resuming (#66255)",
+                entry.session_id, session_key, reset_reason,
+            )
+            try:
+                _promote = getattr(self._db, "promote_to_session_reset", None)
+                if callable(_promote):
+                    _promote(entry.session_id, reset_reason)
+                else:
+                    self._db.end_session(entry.session_id, reset_reason)
+            except Exception as exc:
+                logger.debug("Session DB operation failed: %s", exc)
+            return None, reset_reason, bool(row.get("message_count") or 0)
+
+        try:
+            # reopen_recoverable_session, not plain reopen_session: the
+            # policy check above ran without holding a lock, so another
+            # thread could have finalized this row with an explicit
+            # boundary (session_reset/session_switch/compression) in the
+            # meantime. An unconditional reopen would silently erase that
+            # boundary and resurrect the session anyway (#66255).
+            _conditional_reopen = getattr(self._db, "reopen_recoverable_session", None)
+            if callable(_conditional_reopen):
+                if not _conditional_reopen(entry.session_id):
+                    # The conditional UPDATE affected no rows: the row no
+                    # longer matches the recoverable set (live or
+                    # agent_close/ws_orphan_reap) because another thread
+                    # already claimed it with an explicit boundary between
+                    # our lookup and this call. Honor that boundary instead
+                    # of resurrecting the session -- fall through to a
+                    # fresh session the same way a failed lookup would.
+                    logger.info(
+                        "gateway.session: recovered session %s for %r was "
+                        "claimed by an explicit boundary before it could be "
+                        "reopened -- declining recovery (#66255)",
+                        entry.session_id, session_key,
+                    )
+                    return None, None, False
+            else:
+                self._db.reopen_session(entry.session_id)
+        except Exception as exc:
+            logger.debug("Gateway session DB reopen failed for %s: %s", session_key, exc)
+        return entry, None, False
 
     def _query_recoverable_session(self, *, session_key, source, now):
         """DB-only half of _recover_session_from_db (no lock needed).
@@ -1556,34 +1620,10 @@ class SessionStore:
                 session_key,
             )
             return None, None, False
-        try:
-            self._db.reopen_session(str(recovered["id"]))
-        except Exception as exc:
-            logger.debug("Gateway session DB reopen failed for %s: %s",
-                         session_key, exc)
-        entry = self._create_entry_from_recovered_row(
+        return self._resolve_recovered_session_row(
             row=recovered, session_key=session_key, source=source, now=now,
         )
 
-        # A recovered row is only a live resume candidate if it's still
-        # within the configured reset policy. Without this check, a session
-        # recovered after a gateway restart bypassed _should_reset() entirely
-        # and could be adopted indefinitely (#66255).
-        reset_reason = self._should_reset(entry, source)
-        if reset_reason:
-            logger.info(
-                "gateway.session: recovered session %s for %r is past its "
-                "reset policy (%s) — ending it instead of resuming (#66255)",
-                entry.session_id, session_key, reset_reason,
-            )
-            try:
-                self._db.end_session(entry.session_id, "session_reset")
-            except Exception as exc:
-                logger.debug("Session DB operation failed: %s", exc)
-            had_activity = bool(recovered.get("message_count") or 0)
-            return None, reset_reason, had_activity
-
-        return entry, None, False
     def _record_gateway_session_peer(
         self,
         session_id: str,

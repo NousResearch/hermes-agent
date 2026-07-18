@@ -135,7 +135,7 @@ class TestPruneStaleSessionsLocked:
         assert key in store._entries
         assert store._entries[key].session_id == "sid_child"
         db.find_latest_gateway_session_for_peer.assert_called_once()
-        db.reopen_session.assert_called_once_with("sid_child")
+        db.reopen_recoverable_session.assert_called_once_with("sid_child")
 
     def test_prunes_stale_entry_when_recovery_only_finds_same_ended_session(self, tmp_path):
         key = "agent:main:telegram:dm:5140768830"

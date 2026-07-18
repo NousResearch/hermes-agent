@@ -782,6 +782,20 @@ class TestExternalDriftGuard:
         result = store.replace("memory", "Entry two", "Entry two replaced.")
         assert result["success"] is True
 
+    def test_replace_normalizes_one_terminal_delimiter(self, store):
+        """A legacy trailing separator carries no content and is safe to normalize."""
+        store.add("memory", "Entry one.")
+        store.add("memory", "Entry two.")
+        path = store._path_for("memory")
+        canonical = path.read_text(encoding="utf-8")
+        path.write_text(canonical + "\n§\n", encoding="utf-8")
+
+        result = store.replace("memory", "Entry two", "Entry two replaced.")
+
+        assert result["success"] is True
+        assert "drift_backup" not in result
+        assert path.read_text(encoding="utf-8") == "Entry one.\n§\nEntry two replaced."
+
     def test_error_message_points_at_remediation(self, store):
         """The error string must reference the backup AND remediation steps."""
         store.add("memory", "Initial.")

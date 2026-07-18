@@ -83,9 +83,11 @@ except ImportError:
 
 from gateway.config import Platform, PlatformConfig
 from gateway.platforms.base import (
+    MEDIA_DELIVERY_EXTS,
     MEDIA_TAG_CLEANUP_RE,
     BasePlatformAdapter,
     SendResult,
+    _normalize_media_tag_path,
     is_network_accessible,
     validate_media_delivery_path,
 )
@@ -4628,14 +4630,15 @@ class APIServerAdapter(BasePlatformAdapter):
 
         When ``API_UPLOAD_FILES_URL`` is configured this method:
 
-        1. Extracts ``MEDIA:<path>`` tags and bare local file paths from
-           *text* (reusing ``BasePlatformAdapter.extract_media`` and
-           ``extract_local_files`` with their safety filters).
-        2. Uploads each file to the remote server via
+        1. Discovers files via ``extract_media`` and ``extract_local_files``
+           (the text itself is left untouched until step 3).
+        2. Uploads each discovered file to the remote server via
            ``_upload_file_to_server``.
-        3. Appends ``[filename](url)`` markdown links for each uploaded
-           file to the cleaned text.
-        4. Returns ``(cleaned_text, uploaded_file_items)``.
+        3. Replaces each successfully-uploaded ``MEDIA:<path>`` tag or bare
+           path in the **original** text with a ``[filename](url)`` markdown
+           link — preserving the original position.
+        4. Strips any remaining (un-uploaded) MEDIA: tags and inlines
+           remaining images via ``_resolve_media_to_data_urls``.
 
         When ``API_UPLOAD_FILES_URL`` is **not** configured, falls back to
         the existing ``_resolve_media_to_data_urls`` inlining and returns
@@ -4644,19 +4647,21 @@ class APIServerAdapter(BasePlatformAdapter):
         if not text:
             return text, []
 
-        # Fallback: no upload endpoint configured → inline images only
+        # Fallback: no upload endpoint configured → strip MEDIA: tags,
+        # inline images, keep bare paths as-is.
         if not self._upload_files_url:
-            return _resolve_media_to_data_urls(text), []
+            _, cleaned = BasePlatformAdapter.extract_media(text)
+            cleaned = _resolve_media_to_data_urls(cleaned)
+            return cleaned.strip(), []
 
-        # 1. Extract MEDIA: tags and their is_voice annotations
-        media_files, cleaned = BasePlatformAdapter.extract_media(text)
+        # 1. Discover files — extract paths from text without modifying it.
+        media_files, _ = BasePlatformAdapter.extract_media(text)
         media_files = BasePlatformAdapter.filter_media_delivery_paths(media_files)
 
-        # 2. Extract bare local file paths from the already-cleaned text
-        local_files, cleaned = BasePlatformAdapter.extract_local_files(cleaned)
+        local_files, _ = BasePlatformAdapter.extract_local_files(text)
         local_files = BasePlatformAdapter.filter_local_delivery_paths(local_files)
 
-        # Collect all unique file paths (media_files is List[(path, is_voice)])
+        # Combine and deduplicate (media_files is List[(path, is_voice)])
         all_paths: List[str] = [p for p, _ in media_files] + list(local_files)
         seen: set[str] = set()
         unique_paths: List[str] = []
@@ -4666,10 +4671,11 @@ class APIServerAdapter(BasePlatformAdapter):
                 unique_paths.append(p)
 
         if not unique_paths:
-            return _resolve_media_to_data_urls(cleaned).strip(), []
+            # Nothing to upload — still clean up MEDIA: tags from the text.
+            return _resolve_media_to_data_urls(text).strip(), []
 
-        # 3. Upload each file
-        uploaded_items: List[Dict[str, Any]] = []
+        # 2. Upload each file — build path → file_obj mapping.
+        path_to_file: Dict[str, Dict[str, Any]] = {}
         for file_path in unique_paths:
             uploaded = await self._upload_file_to_server(file_path)
             if uploaded:
@@ -4683,13 +4689,9 @@ class APIServerAdapter(BasePlatformAdapter):
                     "filename": file_name,
                     "purpose": uploaded.get("purpose", "user_data"),
                 }
-                # Pass through optional / deprecated fields from the
-                # upstream FileObject exactly as the backend returns them.
                 for _opt in ("expires_at", "status", "status_details"):
                     if _opt in uploaded:
                         file_obj[_opt] = uploaded[_opt]
-                # Build the download URL (or file: reference) and store it
-                # on the file object for downstream annotation building.
                 if self._upload_files_download_url:
                     download_url = self._upload_files_download_url.replace(
                         "{file_id}", file_id
@@ -4697,21 +4699,79 @@ class APIServerAdapter(BasePlatformAdapter):
                 else:
                     download_url = f"file:{file_id}"
                 file_obj["download_url"] = download_url
+                path_to_file[file_path] = file_obj
+
+        if not path_to_file:
+            return _resolve_media_to_data_urls(text).strip(), []
+
+        # 3. Replace file references in the original text with markdown
+        #    links at the original positions.  Process MEDIA: tags first
+        #    (they have a known prefix), then bare paths.
+        cleaned = text
+        uploaded_items: List[Dict[str, Any]] = []
+        uploaded_ids: set[str] = set()
+
+        # 3a. Replace MEDIA: tags whose file was uploaded.
+        #     Reuse the same regex and scanning logic as extract_media so
+        #     we never touch MEDIA: tags inside code blocks or JSON strings.
+        scan_content = BasePlatformAdapter._mask_protected_spans(cleaned)
+        scan_content = BasePlatformAdapter._mask_json_string_media(scan_content)
+        media_spans: list = [
+            (m.span(), m.group("path"))
+            for m in MEDIA_TAG_CLEANUP_RE.finditer(scan_content)
+        ]
+        # Apply in reverse order so earlier replacements don't shift later
+        # spans (each replacement string is shorter than the MEDIA: tag).
+        for (start, end), raw_path in sorted(media_spans, reverse=True):
+            norm = _normalize_media_tag_path(raw_path)
+            if not norm:
+                continue
+            safe = validate_media_delivery_path(norm)
+            if not safe:
+                continue
+            try:
+                expanded = os.path.expanduser(safe)
+            except (OSError, RuntimeError, ValueError):
+                continue
+            file_obj = path_to_file.get(expanded)
+            if file_obj is None:
+                continue
+            replacement = (
+                f"[{file_obj['filename']}]({file_obj['download_url']})"
+            )
+            cleaned = cleaned[:start] + replacement + cleaned[end:]
+            if file_obj["id"] not in uploaded_ids:
+                uploaded_ids.add(file_obj["id"])
                 uploaded_items.append(file_obj)
 
-        # 3b. Append markdown links for successfully uploaded files to the
-        # cleaned text.  We append rather than replace because extract_media /
-        # extract_local_files already removed the original MEDIA: tags and
-        # bare paths from the text — there is nothing left to replace.
-        if uploaded_items:
-            ref_lines = "\n".join(
-                f"[{item['filename']}]({item['download_url']})"
-                for item in uploaded_items
+        # 3b. Replace bare local paths that weren't already covered by a
+        #     MEDIA: tag.  Regex mirrors extract_local_files.
+        _LOCAL_MEDIA_EXTS = MEDIA_DELIVERY_EXTS
+        ext_part = '|'.join(e.lstrip('.') for e in _LOCAL_MEDIA_EXTS)
+        local_path_re = re.compile(
+            r'(?<![/:\w.])(?:~/|/|[A-Za-z]:[/\\])(?:[\w.\-]+[/\\])*[\w.\-]+\.(?:'
+            + ext_part + r')\b',
+            re.IGNORECASE,
+        )
+        for match in local_path_re.finditer(cleaned):
+            raw = match.group(0)
+            try:
+                expanded = os.path.expanduser(raw)
+            except (OSError, RuntimeError, ValueError):
+                continue
+            file_obj = path_to_file.get(expanded)
+            if file_obj is None or file_obj["id"] in uploaded_ids:
+                continue
+            replacement = (
+                f"[{file_obj['filename']}]({file_obj['download_url']})"
             )
-            cleaned = f"{cleaned}\n\n{ref_lines}" if cleaned else ref_lines
+            cleaned = cleaned.replace(raw, replacement, 1)
+            uploaded_ids.add(file_obj["id"])
+            uploaded_items.append(file_obj)
 
-        # 4. Any remaining MEDIA: tags that weren't uploaded (e.g. upload
-        #    failed) should still be inlined for images where possible.
+        # 4. Strip any remaining MEDIA: tags (files that weren't uploaded)
+        #    and inline remaining images.
+        cleaned = BasePlatformAdapter.strip_media_directives_for_display(cleaned)
         cleaned = _resolve_media_to_data_urls(cleaned)
 
         return cleaned.strip(), uploaded_items

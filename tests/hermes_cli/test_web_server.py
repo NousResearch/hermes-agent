@@ -5452,14 +5452,25 @@ class TestNewEndpoints:
         (get_hermes_home() / "profiles" / "coder").mkdir(parents=True)
         calls = []
         monkeypatch.setattr(web_server.sys, "platform", "win32")
-        monkeypatch.setattr(web_server.subprocess, "Popen", lambda args, **kwargs: calls.append(args))
+        monkeypatch.setattr(
+            web_server,
+            "windows_hide_flags",
+            lambda: 0x08000000,
+        )
+        monkeypatch.setattr(
+            web_server.subprocess,
+            "Popen",
+            lambda args, **kwargs: calls.append((args, kwargs)),
+        )
 
         resp = self.client.post("/api/profiles/coder/open-terminal")
 
         assert resp.status_code == 200
         assert calls
-        assert calls[0][:4] == ["cmd.exe", "/c", "start", ""]
-        assert calls[0][-1] == "coder setup"
+        args, kwargs = calls[0]
+        assert args[:4] == ["cmd.exe", "/c", "start", ""]
+        assert args[-1] == "coder setup"
+        assert kwargs.get("creationflags") == 0x08000000
 
     def test_profiles_create_rejects_invalid_name(self):
         resp = self.client.post("/api/profiles", json={"name": "Has Spaces"})

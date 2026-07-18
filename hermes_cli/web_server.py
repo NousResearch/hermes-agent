@@ -14962,7 +14962,12 @@ async def open_profile_terminal_endpoint(name: str):
         command = _profile_setup_command(name)
 
         if sys.platform.startswith("win"):
-            subprocess.Popen(["cmd.exe", "/c", "start", "", command])
+            # Hide the intermediate cmd.exe flash; `start` still opens a
+            # visible terminal for the profile setup command.
+            subprocess.Popen(
+                ["cmd.exe", "/c", "start", "", command],
+                creationflags=windows_hide_flags(),
+            )
         elif sys.platform == "darwin":
             escaped = command.replace("\\", "\\\\").replace('"', '\\"')
             applescript = (

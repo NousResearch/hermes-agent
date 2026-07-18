@@ -191,6 +191,7 @@ class TestModuleSurface:
         # one of {complete, block, comment} to close out its task.
         for worker_tool in (
             "kanban_complete",
+            "kanban_to_review",
             "kanban_block",
             "kanban_comment",
             "kanban_heartbeat",

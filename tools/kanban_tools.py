@@ -93,6 +93,11 @@ def _check_kanban_orchestrator_mode() -> bool:
     return _profile_has_kanban_toolset()
 
 
+def _check_kanban_worker_mode() -> bool:
+    """Expose worker-only handoff tools only in dispatcher task scope."""
+    return bool(os.environ.get("HERMES_KANBAN_TASK"))
+
+
 # ---------------------------------------------------------------------------
 # Shared helpers
 # ---------------------------------------------------------------------------
@@ -670,6 +675,40 @@ def _handle_complete(args: dict, **kw) -> str:
     except Exception as e:
         logger.exception("kanban_complete failed")
         return tool_error(f"kanban_complete: {e}")
+
+
+def _handle_to_review(args: dict, **kw) -> str:
+    """Hand this dispatcher-owned task to review through the DB kernel."""
+    task_id = os.environ.get("HERMES_KANBAN_TASK")
+    claim_lock = os.environ.get("HERMES_KANBAN_CLAIM_LOCK")
+    if not task_id:
+        return tool_error(
+            "kanban_to_review requires a dispatcher-scoped HERMES_KANBAN_TASK"
+        )
+    if not claim_lock:
+        return tool_error(
+            "kanban_to_review requires dispatcher-injected HERMES_KANBAN_CLAIM_LOCK"
+        )
+    pr_url = str(args.get("pr_url") or "").strip()
+    if not pr_url:
+        return tool_error("pr_url is required")
+    try:
+        kb, conn = _connect()
+        try:
+            task = kb.to_review_task(
+                conn, task_id, pr_url=pr_url, claimer=claim_lock,
+            )
+            if task is None:
+                return tool_error(
+                    "kanban_to_review refused: task is no longer your running claim "
+                    "or has conflicting review evidence"
+                )
+            return _ok(task_id=task.id, status=task.status, pr_url=pr_url)
+        finally:
+            conn.close()
+    except Exception as e:
+        logger.exception("kanban_to_review failed")
+        return tool_error(f"kanban_to_review: {e}")
 
 
 def _handle_block(args: dict, **kw) -> str:
@@ -1516,6 +1555,26 @@ KANBAN_COMPLETE_SCHEMA = {
     },
 }
 
+KANBAN_TO_REVIEW_SCHEMA = {
+    "name": "kanban_to_review",
+    "description": (
+        "Submit the PR for your dispatcher-owned task to human review. "
+        "This uses the worker claim injected by Hermes; do not supply a task "
+        "id or claim token. The same PR URL may be safely retried, but a "
+        "different URL is refused."
+    ),
+    "parameters": {
+        "type": "object",
+        "properties": {
+            "pr_url": {
+                "type": "string",
+                "description": "Pull-request URL for this completed implementation.",
+            },
+        },
+        "required": ["pr_url"],
+    },
+}
+
 KANBAN_BLOCK_SCHEMA = {
     "name": "kanban_block",
     "description": (
@@ -1941,6 +2000,15 @@ registry.register(
     handler=_handle_complete,
     check_fn=_check_kanban_mode,
     emoji="✔",
+)
+
+registry.register(
+    name="kanban_to_review",
+    toolset="kanban",
+    schema=KANBAN_TO_REVIEW_SCHEMA,
+    handler=_handle_to_review,
+    check_fn=_check_kanban_worker_mode,
+    emoji="🔎",
 )
 
 registry.register(

@@ -55,7 +55,7 @@ def test_kanban_tools_visible_with_env_var(monkeypatch, tmp_path):
     names = {s["function"].get("name") for s in schema if "function" in s}
     kanban = {n for n in names if n and n.startswith("kanban_")}
     expected = {
-        "kanban_show", "kanban_complete", "kanban_block", "kanban_heartbeat",
+        "kanban_show", "kanban_complete", "kanban_to_review", "kanban_block", "kanban_heartbeat",
         "kanban_comment", "kanban_create", "kanban_link",
         "kanban_attach", "kanban_attach_url", "kanban_attachments",
     }
@@ -311,6 +311,48 @@ def test_complete_happy_path(worker_env):
         assert run.metadata == {"files": 2}
     finally:
         conn.close()
+
+
+def test_review_handoff_uses_dispatcher_claim_identity(monkeypatch, worker_env):
+    """A scoped Hermes worker can submit its PR only with its injected claim."""
+    from hermes_cli import kanban_db as kb
+    from tools import kanban_tools as kt
+
+    pr_url = "https://github.com/acme/widgets/pull/42"
+    with kb.connect() as conn:
+        task = kb.get_task(conn, worker_env)
+        assert task is not None and task.claim_lock
+        monkeypatch.setenv("HERMES_KANBAN_CLAIM_LOCK", task.claim_lock)
+
+    out = kt._handle_to_review({"pr_url": pr_url})
+
+    assert json.loads(out) == {
+        "ok": True,
+        "task_id": worker_env,
+        "status": "review",
+        "pr_url": pr_url,
+    }
+    with kb.connect() as conn:
+        task = kb.get_task(conn, worker_env)
+        assert task is not None
+        assert task.status == "review"
+        assert task.result == pr_url
+
+
+def test_review_handoff_requires_dispatcher_claim_identity(monkeypatch, worker_env):
+    """Untrusted tool arguments cannot substitute for the dispatcher claim."""
+    from hermes_cli import kanban_db as kb
+    from tools import kanban_tools as kt
+
+    monkeypatch.delenv("HERMES_KANBAN_CLAIM_LOCK", raising=False)
+    out = kt._handle_to_review({"pr_url": "https://github.com/acme/widgets/pull/42"})
+
+    assert "HERMES_KANBAN_CLAIM_LOCK" in json.loads(out)["error"]
+    with kb.connect() as conn:
+        task = kb.get_task(conn, worker_env)
+        assert task is not None
+        assert task.status == "running"
+        assert task.result is None
 
 
 def test_complete_metadata_round_trips_through_show(worker_env):

@@ -137,6 +137,38 @@ def test_format_footer_custom_field_order():
     assert out == "50% · gpt-5.4"
 
 
+def test_format_footer_shows_profile_and_short_session_owner():
+    out = format_runtime_footer(
+        model="",
+        context_tokens=0,
+        context_length=None,
+        cwd="",
+        profile="default",
+        session_id="abcdef1234567890",
+        fields=("profile", "session"),
+    )
+    assert out == "profile:default · session:abcdef12"
+
+
+def test_format_footer_preserves_tokens_cost_and_cwd_fields(monkeypatch):
+    monkeypatch.setenv("HOME", "/root")
+    out = format_runtime_footer(
+        model="openai/gpt-5.6-sol",
+        context_tokens=128_000,
+        context_length=272_000,
+        cwd="/root/hermes-agent",
+        total_tokens=278_400,
+        estimated_cost_usd=0.0,
+        profile="default",
+        session_id="abcdef1234567890",
+        fields=("model", "tokens", "context_pct", "cost", "profile", "session", "cwd"),
+    )
+    assert out == (
+        "gpt-5.6-sol · 278.4k tok · 47% · $0.0000 · "
+        "profile:default · session:abcdef12 · ~/hermes-agent"
+    )
+
+
 def test_format_footer_unknown_field_silently_ignored():
     out = format_runtime_footer(
         model="openai/gpt-5.4",

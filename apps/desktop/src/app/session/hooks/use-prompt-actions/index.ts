@@ -597,14 +597,7 @@ export function usePromptActions({
       releaseBusy()
       notifyError(stopError, copy.stopFailed)
     }
-  }, [
-    activeSessionIdRef,
-    busyRef,
-    copy.stopFailed,
-    requestGateway,
-    selectedStoredSessionIdRef,
-    updateSessionState
-  ])
+  }, [activeSessionIdRef, busyRef, copy.stopFailed, requestGateway, selectedStoredSessionIdRef, updateSessionState])
 
   // Steer = nudge the live turn without interrupting: the gateway appends the
   // text to the next tool result so the model reads it on its next iteration

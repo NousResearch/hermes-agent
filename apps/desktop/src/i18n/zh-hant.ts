@@ -217,6 +217,7 @@ export const zhHant = defineLocale({
       mcp: 'MCP',
       archivedChats: '已封存聊天',
       about: '關於',
+      billing: '帳單',
       notifications: '通知'
     },
     notifications: {
@@ -775,6 +776,10 @@ export const zhHant = defineLocale({
       noProviderKeys: '沒有可用的提供方 API 金鑰。',
       searchKeys: '搜尋提供方…',
       noKeysMatch: '沒有符合的提供方。',
+      localEndpoint: {
+        title: '本地 / 自訂端點',
+        description: '將 Hermes 指向任意 OpenAI 相容端點（Zyphra、vLLM、llama.cpp、Ollama 等）。'
+      },
       loading: '正在載入提供方...'
     },
     sessions: {

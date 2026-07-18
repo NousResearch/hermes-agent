@@ -313,6 +313,7 @@ export const zh: Translations = {
       mcp: 'MCP',
       archivedChats: '已归档对话',
       about: '关于',
+      billing: '账单',
       notifications: '通知',
       plugins: '插件'
     },
@@ -953,6 +954,10 @@ export const zh: Translations = {
       noProviderKeys: '没有可用的提供方 API 密钥。',
       searchKeys: '搜索提供方…',
       noKeysMatch: '没有匹配的提供方。',
+      localEndpoint: {
+        title: '本地 / 自定义端点',
+        description: '将 Hermes 指向任意 OpenAI 兼容端点（Zyphra、vLLM、llama.cpp、Ollama 等）。'
+      },
       loading: '正在加载提供方...'
     },
     sessions: {

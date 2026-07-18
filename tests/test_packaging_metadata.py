@@ -242,19 +242,27 @@ def test_locked_starlette_is_not_vulnerable_to_cve_2026_48710():
 
 
 def test_locale_catalogs_ship_in_both_wheel_and_sdist():
-    """Regression test for #27632 / #35374 / #23943.
+    """Regression test for #27632 / #35374 / #23943 / #66733.
 
     locales/ is a bare data directory (no __init__.py), so it is invisible to
-    packages.find and to package-data (which attaches to a package). It must be
-    declared as setuptools data-files (wheel) AND grafted in MANIFEST.in
+    packages.find and to package-data (which attaches to a package). It must
+    be declared as setuptools data_files (wheel) AND grafted in MANIFEST.in
     (sdist). Without both, sealed installs drop the catalogs and gateway/CLI
     commands surface raw i18n keys like `gateway.reset.header_default`.
+
+    Historically this was enforced against pyproject.toml's
+    [tool.setuptools.data-files] section, but that section silently overrides
+    setup.py's data_files (setuptools does not merge them — see issue #66733),
+    which caused skills/optional-skills/ to fall out of the wheel. The
+    declaration has since moved to setup.py via _data_file_tree(); this test
+    now asserts the contract against setup.py.
     """
-    data = tomllib.loads((REPO_ROOT / "pyproject.toml").read_text(encoding="utf-8"))
-    data_files = data["tool"]["setuptools"].get("data-files", {})
-    assert data_files.get("locales") == ["locales/*.yaml"], (
-        "pyproject [tool.setuptools.data-files] must declare "
-        'locales = ["locales/*.yaml"] so the wheel ships i18n catalogs'
+    setup_py = (REPO_ROOT / "setup.py").read_text(encoding="utf-8")
+    assert '_data_file_tree("locales")' in setup_py, (
+        "setup.py must include _data_file_tree('locales') so the wheel ships "
+        "i18n catalogs. Declaring data-files in pyproject.toml "
+        "[tool.setuptools.data-files] instead would shadow setup.py "
+        "data_files and drop skills/optional-skills (#66733)."
     )
 
     manifest = (REPO_ROOT / "MANIFEST.in").read_text(encoding="utf-8")
@@ -265,6 +273,40 @@ def test_locale_catalogs_ship_in_both_wheel_and_sdist():
     # Every on-disk catalog has the .yaml extension the globs above match.
     on_disk = list((REPO_ROOT / "locales").glob("*.yaml"))
     assert on_disk, "expected locales/*.yaml catalogs on disk"
+
+
+def test_skills_and_optional_skills_ship_in_wheel():
+    """Regression test for #66733.
+
+    skills/ and optional-skills/ are bare data directories (no __init__.py),
+    so they are invisible to packages.find and to package-data. They must be
+    declared as setuptools data_files in setup.py so the wheel ships them.
+    Concurrently declaring [tool.setuptools.data-files] in pyproject.toml
+    would shadow setup.py data_files entirely (setuptools does not merge
+    them) and silently drop skills/optional-skills from the wheel — that is
+    the regression this test guards against.
+    """
+    setup_py = (REPO_ROOT / "setup.py").read_text(encoding="utf-8")
+    # pyproject must NOT carry [tool.setuptools.data-files] — that section
+    # overrides setup.py data_files and would drop skills/optional-skills.
+    pyproject = tomllib.loads((REPO_ROOT / "pyproject.toml").read_text(encoding="utf-8"))
+    setuptools_cfg = pyproject.get("tool", {}).get("setuptools", {})
+    assert "data-files" not in setuptools_cfg, (
+        "pyproject.toml [tool.setuptools.data-files] must not be declared — "
+        "it would shadow setup.py data_files and drop "
+        "skills/optional-skills/optional-mcps from the wheel (#66733)."
+    )
+
+    for root in ("skills", "optional-skills", "optional-mcps"):
+        assert f'_data_file_tree("{root}")' in setup_py, (
+            f'setup.py must include _data_file_tree("{root}") so the wheel '
+            f"ships {root}/."
+        )
+
+    for root in ("skills", "optional-skills", "optional-mcps"):
+        assert (REPO_ROOT / root).is_dir() and any(
+            (REPO_ROOT / root).rglob("*")
+        ), f"expected {root}/ to exist on disk"
 
 
 # ---------------------------------------------------------------------------

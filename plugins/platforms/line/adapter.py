@@ -1297,11 +1297,8 @@ class LineAdapter(BasePlatformAdapter):
         if not path.exists() or not path.is_file():
             return web.Response(status=404, text="not found")
 
-        try:
-            from hermes_constants import get_hermes_home
-            hermes_home = Path(get_hermes_home()).resolve()
-        except Exception:
-            hermes_home = Path.home().joinpath(".hermes").resolve()
+        from hermes_constants import get_hermes_home
+        hermes_home = Path(get_hermes_home()).resolve()
 
         allowed_roots = {
             Path(tempfile.gettempdir()).resolve(),

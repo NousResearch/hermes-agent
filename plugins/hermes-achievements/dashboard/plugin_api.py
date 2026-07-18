@@ -12,13 +12,7 @@ import time
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Set
 
-try:
-    from hermes_constants import get_hermes_home
-except ImportError:
-    import os as _os
-    def get_hermes_home() -> Path:  # type: ignore[misc]
-        val = (_os.environ.get("HERMES_HOME") or "").strip()
-        return Path(val) if val else Path.home() / ".hermes"
+from hermes_constants import get_hermes_home
 
 try:
     from fastapi import APIRouter

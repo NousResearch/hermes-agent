@@ -473,3 +473,45 @@ def test_skill_patch_off_silent_verbose_shows_diff():
     )
     assert len(verbose) == 1
     assert "demo" in verbose[0] and "→" in verbose[0]
+
+
+def test_background_review_fork_seeds_write_markers_before_init(monkeypatch):
+    """The fork's write markers must be visible DURING AIAgent.__init__.
+
+    A plugin context engine's on_session_start fires inside agent init with
+    the fork's fresh session_id and classifies auxiliary frames by reading
+    _memory_write_origin off the constructing agent. Markers set only after
+    construction arrive too late: the fork's session gets bound as a real
+    engine session and the replayed snapshot is bulk-ingested as a new
+    wrong-timestamped session.
+    """
+    seen = {}
+
+    class FakeReviewAgent:
+        def __init__(self, **kwargs):
+            seen["origin_at_init"] = getattr(self, "_memory_write_origin", None)
+            seen["context_at_init"] = getattr(self, "_memory_write_context", None)
+            self._session_messages = []
+
+        def run_conversation(self, **kwargs):
+            pass
+
+        def shutdown_memory_provider(self):
+            pass
+
+        def close(self):
+            pass
+
+    monkeypatch.setattr(run_agent_module, "AIAgent", FakeReviewAgent)
+    monkeypatch.setattr(run_agent_module.threading, "Thread", ImmediateThread)
+
+    agent = _bare_agent()
+
+    AIAgent._spawn_background_review(
+        agent,
+        messages_snapshot=[{"role": "user", "content": "hello"}],
+        review_memory=True,
+    )
+
+    assert seen["origin_at_init"] == "background_review"
+    assert seen["context_at_init"] == "background_review"

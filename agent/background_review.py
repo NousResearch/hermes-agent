@@ -709,7 +709,22 @@ def _run_review_in_thread(
             # _cached_system_prompt below.
             if not _routed:
                 _fork_kwargs["reasoning_config"] = getattr(agent, "reasoning_config", None)
-            review_agent = AIAgent(
+
+            # The background_review markers must exist BEFORE __init__ runs:
+            # a plugin context engine's on_session_start fires inside
+            # agent_init with the fork's fresh session_id, and
+            # auxiliary-frame detection (e.g. hermes-lcm's) reads
+            # _memory_write_origin off the constructing agent. Set only
+            # after construction (as before), the fork's fresh session_id
+            # gets bound as a real engine session and the whole conversation
+            # snapshot is bulk-ingested as a new wrong-timestamped session.
+            class _ReviewAgent(AIAgent):
+                def __init__(self, *args, **kwargs):
+                    self._memory_write_origin = "background_review"
+                    self._memory_write_context = "background_review"
+                    super().__init__(*args, **kwargs)
+
+            review_agent = _ReviewAgent(
                 model=_rt.get("model") or agent.model,
                 max_iterations=16,
                 quiet_mode=True,

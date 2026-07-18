@@ -3672,12 +3672,34 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         task.add_done_callback(consume_detached_task_result)
         return False
 
-    def _sync_voice_auto_join_state_to_adapter(self, adapter) -> None:
-        """Wire Discord voice auto-join callbacks onto a live adapter."""
+    def _sync_voice_auto_join_state_to_adapter(self, adapter, *, profile_name=None) -> None:
+        """Wire Discord voice auto-join callbacks onto a live adapter.
+
+        The callback is bound to THIS adapter instance and its owning profile so
+        a multiplexed gateway (one Discord adapter per profile) routes the join
+        back to the adapter that fired the event — never blindly to the active
+        profile's adapter. ``profile_name`` is normalized to ``None`` for the
+        active/default profile, matching ``_authorization_adapter`` resolution.
+        """
         if getattr(adapter, "platform", None) != Platform.DISCORD:
             return
-        if hasattr(adapter, "_voice_auto_join_callback"):
-            adapter._voice_auto_join_callback = self._handle_discord_voice_auto_join
+        if not hasattr(adapter, "_voice_auto_join_callback"):
+            return
+        profile = (str(profile_name).strip() if profile_name else "") or None
+        if profile == "default":
+            profile = None
+
+        async def _callback(*, guild_id, user_id, voice_channel_id, text_channel_id):
+            return await self._handle_discord_voice_auto_join(
+                adapter=adapter,
+                profile=profile,
+                guild_id=guild_id,
+                user_id=user_id,
+                voice_channel_id=voice_channel_id,
+                text_channel_id=text_channel_id,
+            )
+
+        adapter._voice_auto_join_callback = _callback
 
     async def _safe_adapter_disconnect(self, adapter, platform) -> None:
         """Call adapter.disconnect() defensively, swallowing any error.
@@ -9425,6 +9447,9 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     success = await self._connect_adapter_with_timeout(adapter, platform)
                 if success:
                     profile_map[platform] = adapter
+                    self._sync_voice_auto_join_state_to_adapter(
+                        adapter, profile_name=profile_name
+                    )
                     connected += 1
                     logger.info("✓ %s connected (profile: %s)", platform.value, profile_name)
                 else:
@@ -9492,6 +9517,9 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                         if platform not in profile_map:
                             profile_map[platform] = adapter
                             self._sync_voice_mode_state_to_adapter(adapter)
+                            self._sync_voice_auto_join_state_to_adapter(
+                                adapter, profile_name=profile_name
+                            )
                             logger.info(
                                 "✓ %s reconnected (profile: %s)",
                                 platform.value,
@@ -14163,10 +14191,31 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         user_id: str,
         voice_channel_id: str,
         text_channel_id: str,
+        adapter=None,
+        profile=None,
     ) -> bool:
-        """Auto-join Discord voice by reusing the manual /voice join path."""
-        adapter = self.adapters.get(Platform.DISCORD)
-        if not adapter or "get_user_voice_channel" not in dir(adapter):
+        """Auto-join Discord voice by reusing the manual /voice join path.
+
+        ``adapter``/``profile`` identify the adapter that fired the event. Only
+        the live registered adapter for that profile may drive the join — a
+        stale adapter left over from a reconnect (identity mismatch) is rejected
+        so it cannot connect on a replaced bot session.
+        """
+        profile_name = (str(profile).strip() if profile else "") or None
+        if profile_name == "default":
+            profile_name = None
+        # Ownership/identity: resolve the adapter currently registered for this
+        # profile and require it to be the exact instance that fired.
+        current_adapter = self._authorization_adapter(Platform.DISCORD, profile_name)
+        if adapter is None:
+            adapter = current_adapter
+        if current_adapter is None or current_adapter is not adapter:
+            logger.warning(
+                "Discord voice auto-join blocked: adapter identity mismatch for profile %s",
+                profile_name or "default",
+            )
+            return False
+        if "get_user_voice_channel" not in dir(adapter):
             return False
 
         text_channel = None
@@ -14237,6 +14286,12 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             guild_id=str(guild_id),
             parent_chat_id=parent_id or None,
         )
+        # Stamp the owning profile so the session is namespaced to this adapter's
+        # profile and the join path resolves back to the SAME adapter instance.
+        try:
+            source.profile = profile_name
+        except Exception:
+            pass
 
         from types import SimpleNamespace
         event = MessageEvent(
@@ -14247,12 +14302,11 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             channel_prompt=channel_prompt,
         )
 
-        # Revalidate the user's CURRENT voice channel against the configured
-        # allowlist immediately before joining. The allowlist was checked when
-        # the voice-state event fired, but the manual join path re-resolves the
-        # user's live channel; re-checking here closes a channel-move race where
-        # the user hops to a non-allowlisted channel before the join lands, which
-        # would otherwise put the bot in a channel outside policy.
+        # Resolve the user's CURRENT voice channel EXACTLY ONCE, here in the
+        # deepest join path, and validate THAT exact channel — allowlist and
+        # guild — before joining. The resolved channel is then handed to the
+        # join so it is never re-resolved (which would reopen a channel-move
+        # TOCTOU where the user hops to a disallowed channel after the check).
         auto_join_cfg = getattr(adapter, "_voice_auto_join_cfg", None)
         allowed_channels_raw = (
             auto_join_cfg.get("allowed_voice_channel_ids")
@@ -14268,41 +14322,84 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             )
         }
         try:
-            current_voice_channel = await adapter.get_user_voice_channel(
+            voice_channel = await adapter.get_user_voice_channel(
                 int(guild_id), str(user_id)
             )
         except Exception:
-            current_voice_channel = None
-        current_voice_channel_id = str(getattr(current_voice_channel, "id", "") or "")
-        if not allowed_channels or current_voice_channel_id not in allowed_channels:
+            voice_channel = None
+        if voice_channel is None:
+            logger.warning(
+                "Discord voice auto-join blocked: user %s is not in a voice channel",
+                user_id,
+            )
+            return False
+        resolved_channel_id = str(getattr(voice_channel, "id", "") or "")
+        if not allowed_channels or resolved_channel_id not in allowed_channels:
             logger.warning(
                 "Discord voice auto-join blocked: user %s current voice channel %s is not "
                 "in the configured allowlist",
                 user_id,
-                current_voice_channel_id or "<none>",
+                resolved_channel_id or "<none>",
+            )
+            return False
+        resolved_guild_id = getattr(getattr(voice_channel, "guild", None), "id", None)
+        try:
+            channel_same_guild = (
+                resolved_guild_id is not None and int(resolved_guild_id) == int(guild_id)
+            )
+        except (TypeError, ValueError):
+            channel_same_guild = False
+        if not channel_same_guild:
+            logger.warning(
+                "Discord voice auto-join blocked: resolved voice channel %s is in guild %s, "
+                "not the voice event guild %s",
+                resolved_channel_id,
+                resolved_guild_id,
+                guild_id,
             )
             return False
 
-        result = await self._handle_voice_channel_join(event)
-        success = (
+        # Join the EXACT resolved channel (single resolution — no second lookup).
+        result = await self._handle_voice_channel_join(event, voice_channel=voice_channel)
+
+        # Verify and record the ACTUAL connected channel, not the event's
+        # (possibly stale) channel id.
+        connected_channel_id = None
+        if "connected_voice_channel_id" in dir(adapter):
+            connected_channel_id = adapter.connected_voice_channel_id(int(guild_id))
+        elif (
             "is_in_voice_channel" in dir(adapter)
             and adapter.is_in_voice_channel(int(guild_id))
-            and str(getattr(adapter, "_voice_text_channels", {}).get(int(guild_id))) == str(text_channel_id)
-        )
+        ):
+            vc = getattr(adapter, "_voice_clients", {}).get(int(guild_id))
+            connected_channel_id = str(
+                getattr(getattr(vc, "channel", None), "id", "") or ""
+            ) or None
+        text_ok = str(
+            getattr(adapter, "_voice_text_channels", {}).get(int(guild_id))
+        ) == str(text_channel_id)
+        success = bool(connected_channel_id) and text_ok
         if success and "mark_voice_auto_join_target" in dir(adapter):
             adapter.mark_voice_auto_join_target(
                 int(guild_id),
                 user_id=str(user_id),
-                voice_channel_id=str(voice_channel_id),
+                voice_channel_id=str(connected_channel_id),
                 text_channel_id=str(text_channel_id),
+                profile=profile_name,
             )
         if not success:
             logger.debug("Discord voice auto-join did not connect: %s", result)
         return bool(success)
 
 
-    async def _handle_voice_channel_join(self, event: MessageEvent) -> str:
-        """Join the user's current Discord voice channel."""
+    async def _handle_voice_channel_join(self, event: MessageEvent, *, voice_channel=None) -> str:
+        """Join the user's current Discord voice channel.
+
+        ``voice_channel`` may be a channel already resolved by the caller (the
+        auto-join path resolves it once and validates it against policy). When
+        provided it is used verbatim — the user's live channel is NOT looked up
+        again, so the channel that was validated is the channel that is joined.
+        """
         adapter = self._adapter_for_source(event.source)
         if not hasattr(adapter, "join_voice_channel"):
             return "Voice channels are not supported on this platform."
@@ -14311,9 +14408,10 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         if not guild_id:
             return "This command only works in a Discord server."
 
-        voice_channel = await adapter.get_user_voice_channel(
-            guild_id, event.source.user_id
-        )
+        if voice_channel is None:
+            voice_channel = await adapter.get_user_voice_channel(
+                guild_id, event.source.user_id
+            )
         if not voice_channel:
             return "You need to be in a voice channel first."
 
@@ -14375,26 +14473,41 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             else None
         )
         if suppress_auto_join is not None:
-            voice_channel_id = None
-            get_user_voice_channel = (
-                getattr(adapter, "get_user_voice_channel", None)
-                if "get_user_voice_channel" in dir(adapter)
-                else None
-            )
-            if get_user_voice_channel is not None:
-                try:
-                    voice_channel = await get_user_voice_channel(
-                        guild_id,
-                        event.source.user_id,
-                    )
-                    voice_channel_id = getattr(voice_channel, "id", None)
-                except Exception:
-                    voice_channel_id = None
-            suppress_auto_join(
-                guild_id,
-                user_id=event.source.user_id,
-                channel_id=str(voice_channel_id) if voice_channel_id is not None else None,
-            )
+            # Prefer the TRACKED target so a manual /voice leave stops the follow
+            # of the configured user/channel regardless of which operator issued
+            # the command (they may differ from the followed user). Fall back to
+            # the issuer's live channel when no auto-join target is tracked.
+            targets = getattr(adapter, "_voice_auto_join_targets", None)
+            target = targets.get(guild_id) if isinstance(targets, dict) else None
+            target_user = getattr(target, "user_id", None)
+            target_channel = getattr(target, "voice_channel_id", None)
+            if target is not None and target_user:
+                suppress_auto_join(
+                    guild_id,
+                    user_id=str(target_user),
+                    channel_id=str(target_channel) if target_channel is not None else None,
+                )
+            else:
+                voice_channel_id = None
+                get_user_voice_channel = (
+                    getattr(adapter, "get_user_voice_channel", None)
+                    if "get_user_voice_channel" in dir(adapter)
+                    else None
+                )
+                if get_user_voice_channel is not None:
+                    try:
+                        voice_channel = await get_user_voice_channel(
+                            guild_id,
+                            event.source.user_id,
+                        )
+                        voice_channel_id = getattr(voice_channel, "id", None)
+                    except Exception:
+                        voice_channel_id = None
+                suppress_auto_join(
+                    guild_id,
+                    user_id=event.source.user_id,
+                    channel_id=str(voice_channel_id) if voice_channel_id is not None else None,
+                )
 
         try:
             await adapter.leave_voice_channel(guild_id)

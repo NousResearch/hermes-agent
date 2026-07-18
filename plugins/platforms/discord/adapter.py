@@ -25,6 +25,7 @@ import threading
 import time
 from collections import defaultdict
 from contextlib import suppress
+from dataclasses import dataclass
 from typing import Callable, Dict, List, Optional, Any, Tuple
 
 from agent.async_utils import (
@@ -298,6 +299,24 @@ def _clean_discord_id(entry: str) -> str:
     if entry.lower().startswith("user:"):
         entry = entry[5:]
     return entry.strip()
+
+
+@dataclass
+class VoiceAutoJoinTarget:
+    """The user/channel a guild is currently auto-following.
+
+    Carries the owning ``profile`` so a multiplexed gateway (one process, one
+    Discord adapter per profile) can prove which profile established the
+    follow. Only auto-join creates one of these — a manually established voice
+    connection has no target and is therefore never torn down by auto-follow
+    cleanup.
+    """
+
+    guild_id: int
+    user_id: str
+    voice_channel_id: str
+    text_channel_id: str
+    profile: Optional[str] = None
 
 
 def _clean_discord_channel_id(entry: str) -> str:
@@ -913,9 +932,12 @@ class DiscordAdapter(BasePlatformAdapter):
         self._voice_auto_join_callback: Optional[Callable] = None  # set by run.py
         self._voice_auto_join_cfg: Dict[str, Any] = self._load_voice_auto_join_config()
         self._voice_timeout_seconds: float = self._voice_auto_join_cfg["idle_timeout_seconds"]
-        self._voice_auto_join_targets: Dict[int, Dict[str, str]] = {}
+        self._voice_auto_join_targets: Dict[int, VoiceAutoJoinTarget] = {}
         self._voice_auto_join_suppressed_until: Dict[Tuple[int, str, str], float] = {}
         self._voice_auto_join_next_attempt_at: Dict[Tuple[int, str], float] = {}
+        # One cancellable retry task per guild, scheduled after a failed
+        # auto-join so a reconnect does not require a second voice-state event.
+        self._voice_auto_join_retry_tasks: Dict[int, asyncio.Task] = {}
         # Resolves the current voice-reply mode ("off"|"voice_only"|"all") for a
         # linked text-channel id; set by run.py. Lets the inactivity timer leave
         # the bot in the channel when the user deliberately picked text-only
@@ -3840,10 +3862,19 @@ class DiscordAdapter(BasePlatformAdapter):
         channel_id: Optional[str] = None,
         seconds: Optional[float] = None,
     ) -> None:
-        """Suppress auto-rejoin after an intentional manual /voice leave."""
+        """Suppress auto-rejoin after an intentional manual /voice leave.
+
+        The suppression is keyed to the tracked target (guild, user, channel)
+        and retained until its monotonic deadline expires — it is NOT cleared
+        when the user later leaves and rejoins the channel, so a manual leave
+        cannot be defeated by immediately hopping back in.
+        """
         cfg = getattr(self, "_voice_auto_join_cfg", {}) or {}
         cooldown = cfg.get("manual_leave_cooldown_seconds", 300.0) if seconds is None else seconds
         cooldown = _discord_config_float(cooldown, 300.0, minimum=0.0)
+        # A manual leave always cancels any pending auto-rejoin retry, even when
+        # the cooldown itself is disabled.
+        self._cancel_voice_auto_join_retry(guild_id)
         if cooldown <= 0:
             return
 
@@ -3854,10 +3885,20 @@ class DiscordAdapter(BasePlatformAdapter):
             current_channel_id = getattr(current_channel, "id", None)
             if current_channel_id is not None:
                 channel_ids.add(str(current_channel_id))
+        # Fall back to the tracked target's channel so suppression stays keyed
+        # to the followed target even if the live connection is already gone.
+        if not channel_ids:
+            target = self._voice_auto_join_targets.get(int(guild_id))
+            if target is not None:
+                channel_ids.add(str(target.voice_channel_id))
         if not channel_ids:
             return
 
         user_ids = {str(user_id)} if user_id is not None else set()
+        if not user_ids:
+            target = self._voice_auto_join_targets.get(int(guild_id))
+            if target is not None:
+                user_ids.add(str(target.user_id))
         if not user_ids:
             user_ids.update(cfg.get("allowed_user_ids") or set())
         if not user_ids:
@@ -3880,12 +3921,6 @@ class DiscordAdapter(BasePlatformAdapter):
             return False
         return True
 
-    def _clear_voice_auto_join_suppression(self, guild_id: int, user_id: str, channel_id: str) -> None:
-        self._voice_auto_join_suppressed_until.pop(
-            (int(guild_id), str(user_id), str(channel_id)),
-            None,
-        )
-
     def mark_voice_auto_join_target(
         self,
         guild_id: int,
@@ -3893,13 +3928,16 @@ class DiscordAdapter(BasePlatformAdapter):
         user_id: str,
         voice_channel_id: str,
         text_channel_id: str,
+        profile: Optional[str] = None,
     ) -> None:
         """Record which configured user/channel this guild is following."""
-        self._voice_auto_join_targets[int(guild_id)] = {
-            "user_id": str(user_id),
-            "voice_channel_id": str(voice_channel_id),
-            "text_channel_id": str(text_channel_id),
-        }
+        self._voice_auto_join_targets[int(guild_id)] = VoiceAutoJoinTarget(
+            guild_id=int(guild_id),
+            user_id=str(user_id),
+            voice_channel_id=str(voice_channel_id),
+            text_channel_id=str(text_channel_id),
+            profile=(str(profile) if profile else None),
+        )
 
     def _voice_auto_join_target_present(self, guild_id: int) -> bool:
         target = self._voice_auto_join_targets.get(int(guild_id))
@@ -3909,12 +3947,158 @@ class DiscordAdapter(BasePlatformAdapter):
         channel = getattr(vc, "channel", None)
         if channel is None:
             return False
-        if str(getattr(channel, "id", "")) != str(target.get("voice_channel_id")):
+        if str(getattr(channel, "id", "")) != str(target.voice_channel_id):
             return False
         for member in getattr(channel, "members", []) or []:
-            if str(getattr(member, "id", "")) == str(target.get("user_id")):
+            if str(getattr(member, "id", "")) == str(target.user_id):
                 return True
         return False
+
+    def connected_voice_channel_id(self, guild_id: int) -> Optional[str]:
+        """Return the id of the voice channel the bot is actually connected to."""
+        vc = self._voice_clients.get(int(guild_id))
+        if vc is None or not getattr(vc, "is_connected", lambda: False)():
+            return None
+        channel = getattr(vc, "channel", None)
+        channel_id = getattr(channel, "id", None)
+        return str(channel_id) if channel_id is not None else None
+
+    def _schedule_voice_auto_join_retry(
+        self,
+        guild_id: int,
+        user_id: str,
+        voice_channel_id: str,
+        text_channel_id: str,
+        backoff: float,
+    ) -> None:
+        """Schedule (or replace) the single retry task for this guild."""
+        # A newer attempt/target supersedes any in-flight retry.
+        self._cancel_voice_auto_join_retry(guild_id)
+        if backoff is None or float(backoff) <= 0:
+            # No backoff configured → no unattended retry; the next voice-state
+            # event drives any further attempt.
+            return
+        try:
+            asyncio.get_running_loop()
+        except RuntimeError:
+            return
+        gid = int(guild_id)
+        task = asyncio.ensure_future(
+            self._voice_auto_join_retry_loop(
+                gid, str(user_id), str(voice_channel_id), str(text_channel_id), float(backoff)
+            )
+        )
+        self._voice_auto_join_retry_tasks[gid] = task
+
+        def _cleanup(finished: asyncio.Task, _gid: int = gid) -> None:
+            if self._voice_auto_join_retry_tasks.get(_gid) is finished:
+                self._voice_auto_join_retry_tasks.pop(_gid, None)
+
+        task.add_done_callback(_cleanup)
+
+    def _cancel_voice_auto_join_retry(self, guild_id: int) -> None:
+        """Cancel the pending auto-join retry task for this guild, if any."""
+        tasks = getattr(self, "_voice_auto_join_retry_tasks", None)
+        if not isinstance(tasks, dict):
+            return
+        task = tasks.pop(int(guild_id), None)
+        if task is not None:
+            task.cancel()
+
+    async def _voice_auto_join_retry_still_valid(
+        self,
+        guild_id: int,
+        user_id: str,
+        voice_channel_id: str,
+    ) -> bool:
+        """Post-backoff revalidation before a retry attempt actually joins."""
+        cfg = getattr(self, "_voice_auto_join_cfg", {}) or {}
+        if not cfg.get("enabled", False):
+            return False
+        allowed_users = cfg.get("allowed_user_ids") or set()
+        allowed_channels = cfg.get("allowed_voice_channel_ids") or set()
+        if str(user_id) not in allowed_users:
+            return False
+        if str(voice_channel_id) not in allowed_channels:
+            return False
+        if not cfg.get("text_channel_id"):
+            return False
+        if self._is_voice_auto_join_suppressed(guild_id, user_id, voice_channel_id):
+            return False
+        # Already connected to the target channel → nothing to retry.
+        if self.connected_voice_channel_id(guild_id) == str(voice_channel_id):
+            return False
+        # The target user must currently be in the target voice channel.
+        try:
+            current = await self.get_user_voice_channel(int(guild_id), str(user_id))
+        except Exception:
+            current = None
+        if str(getattr(current, "id", "")) != str(voice_channel_id):
+            return False
+        return True
+
+    async def _voice_auto_join_retry_loop(
+        self,
+        guild_id: int,
+        user_id: str,
+        voice_channel_id: str,
+        text_channel_id: str,
+        backoff: float,
+    ) -> None:
+        """Retry a failed auto-join without waiting for a second voice event.
+
+        Backoff is measured from the completion of the previous failed attempt.
+        Cancelled on target leave, manual leave, disconnect, or replacement.
+        """
+        try:
+            while True:
+                try:
+                    await asyncio.sleep(max(0.0, float(backoff)))
+                except asyncio.CancelledError:
+                    return
+                if not await self._voice_auto_join_retry_still_valid(
+                    guild_id, user_id, voice_channel_id
+                ):
+                    return
+                callback = getattr(self, "_voice_auto_join_callback", None)
+                if callback is None:
+                    return
+                success = False
+                try:
+                    success = bool(await callback(
+                        guild_id=int(guild_id),
+                        user_id=str(user_id),
+                        voice_channel_id=str(voice_channel_id),
+                        text_channel_id=str(text_channel_id),
+                    ))
+                except asyncio.CancelledError:
+                    return
+                except Exception as exc:
+                    logger.warning(
+                        "Discord voice auto-join retry failed: %s", exc, exc_info=True
+                    )
+                now = time.monotonic()
+                if success:
+                    if int(guild_id) not in self._voice_auto_join_targets:
+                        self.mark_voice_auto_join_target(
+                            guild_id,
+                            user_id=user_id,
+                            voice_channel_id=voice_channel_id,
+                            text_channel_id=text_channel_id,
+                        )
+                    self._voice_auto_join_next_attempt_at[
+                        (int(guild_id), str(voice_channel_id))
+                    ] = now
+                    return
+                cfg = getattr(self, "_voice_auto_join_cfg", {}) or {}
+                backoff = float(cfg.get("failure_backoff_seconds", 60.0) or 0.0)
+                self._voice_auto_join_next_attempt_at[
+                    (int(guild_id), str(voice_channel_id))
+                ] = now + backoff
+                if backoff <= 0:
+                    return
+        except asyncio.CancelledError:
+            return
 
     async def _handle_voice_state_update(self, member, before, after) -> None:
         """Handle Discord voice-state changes for logging and auto-follow."""
@@ -3986,12 +4170,19 @@ class DiscordAdapter(BasePlatformAdapter):
 
         existing = self._voice_clients.get(guild_id)
         if existing and existing.is_connected() and str(getattr(existing.channel, "id", "")) == voice_channel_id:
-            self.mark_voice_auto_join_target(
-                guild_id,
-                user_id=user_id,
-                voice_channel_id=voice_channel_id,
-                text_channel_id=str(text_channel_id),
-            )
+            # Already connected to the target channel. Refresh an EXISTING
+            # auto-join target only — never adopt a manual connection into
+            # auto-follow, or target-leave cleanup would tear down a session the
+            # user established by hand.
+            current_target = self._voice_auto_join_targets.get(guild_id)
+            if current_target is not None:
+                self.mark_voice_auto_join_target(
+                    guild_id,
+                    user_id=user_id,
+                    voice_channel_id=voice_channel_id,
+                    text_channel_id=str(text_channel_id),
+                    profile=current_target.profile,
+                )
             return
 
         if self._is_voice_auto_join_suppressed(guild_id, user_id, voice_channel_id):
@@ -4001,37 +4192,66 @@ class DiscordAdapter(BasePlatformAdapter):
         now = time.monotonic()
         next_allowed = self._voice_auto_join_next_attempt_at.get(attempt_key, 0.0)
         if now < next_allowed:
+            # A retry task (if any) remains the live path back into the channel;
+            # replacement is handled when an attempt actually reschedules it.
             return
 
+        await self._attempt_voice_auto_join(
+            guild_id, user_id, voice_channel_id, str(text_channel_id)
+        )
+
+    async def _attempt_voice_auto_join(
+        self,
+        guild_id: int,
+        user_id: str,
+        voice_channel_id: str,
+        text_channel_id: str,
+    ) -> bool:
+        """Invoke the join callback once; schedule a retry on failure."""
+        cfg = getattr(self, "_voice_auto_join_cfg", {}) or {}
+        attempt_key = (int(guild_id), str(voice_channel_id))
+        now = time.monotonic()
         cooldown = float(cfg.get("reconnect_cooldown_seconds", 15.0) or 0.0)
         self._voice_auto_join_next_attempt_at[attempt_key] = now + cooldown
 
         callback = getattr(self, "_voice_auto_join_callback", None)
         if callback is None:
-            return
+            return False
 
         success = False
         try:
             success = bool(await callback(
-                guild_id=guild_id,
-                user_id=user_id,
-                voice_channel_id=voice_channel_id,
+                guild_id=int(guild_id),
+                user_id=str(user_id),
+                voice_channel_id=str(voice_channel_id),
                 text_channel_id=str(text_channel_id),
             ))
         except Exception as exc:
             logger.warning("Discord voice auto-join failed: %s", exc, exc_info=True)
 
         if success:
-            self.mark_voice_auto_join_target(
-                guild_id,
-                user_id=user_id,
-                voice_channel_id=voice_channel_id,
-                text_channel_id=str(text_channel_id),
-            )
-            return
+            # The join callback records the target against the ACTUAL connected
+            # channel (and owning profile). Only synthesize one here if it did
+            # not, so we never overwrite the verified target with the event's
+            # (possibly stale) channel id.
+            if int(guild_id) not in self._voice_auto_join_targets:
+                self.mark_voice_auto_join_target(
+                    guild_id,
+                    user_id=user_id,
+                    voice_channel_id=voice_channel_id,
+                    text_channel_id=text_channel_id,
+                )
+            self._cancel_voice_auto_join_retry(guild_id)
+            return True
 
+        # Failure: measure backoff from failure completion and schedule the one
+        # retry task for this guild so a reconnect needs no second event.
         backoff = float(cfg.get("failure_backoff_seconds", 60.0) or 0.0)
-        self._voice_auto_join_next_attempt_at[attempt_key] = now + max(cooldown, backoff)
+        self._voice_auto_join_next_attempt_at[attempt_key] = time.monotonic() + max(cooldown, backoff)
+        self._schedule_voice_auto_join_retry(
+            guild_id, user_id, voice_channel_id, text_channel_id, backoff
+        )
+        return False
 
     async def _maybe_cleanup_voice_auto_join_target(
         self,
@@ -4041,19 +4261,23 @@ class DiscordAdapter(BasePlatformAdapter):
         after_channel,
     ) -> None:
         before_channel_id = str(getattr(before_channel, "id", "") or "")
-        self._clear_voice_auto_join_suppression(guild_id, user_id, before_channel_id)
+        # NB: manual-leave suppression is deliberately NOT cleared here. It is
+        # keyed to the tracked target and must survive a target leave/rejoin
+        # until its monotonic deadline expires.
 
         target = self._voice_auto_join_targets.get(int(guild_id))
         if not target:
             return
-        if str(target.get("user_id")) != str(user_id):
+        if str(target.user_id) != str(user_id):
             return
-        if str(target.get("voice_channel_id")) != before_channel_id:
+        if str(target.voice_channel_id) != before_channel_id:
             return
         if after_channel is not None and str(getattr(after_channel, "id", "")) == before_channel_id:
             return
 
         self._voice_auto_join_targets.pop(int(guild_id), None)
+        # Target left the followed channel — cancel any pending rejoin retry.
+        self._cancel_voice_auto_join_retry(int(guild_id))
         cfg = getattr(self, "_voice_auto_join_cfg", {}) or {}
         if not cfg.get("target_leave_cleanup", True):
             return
@@ -4136,6 +4360,8 @@ class DiscordAdapter(BasePlatformAdapter):
                 task.cancel()
             self._voice_text_channels.pop(guild_id, None)
             self._voice_sources.pop(guild_id, None)
+        # Disconnecting cancels any pending auto-rejoin retry for this guild.
+        self._cancel_voice_auto_join_retry(guild_id)
 
     # Maximum seconds to wait for voice playback before giving up
     PLAYBACK_TIMEOUT = 120
@@ -4263,6 +4489,13 @@ class DiscordAdapter(BasePlatformAdapter):
             auto_join_cfg.get("stay_while_target_present")
             and self._voice_auto_join_target_present(guild_id)
         ):
+            # Stay while the followed target is still here, but REARM the timer.
+            # Otherwise the timer dies and, once the target later leaves (and
+            # target_leave_cleanup is False, so the leave event does not
+            # disconnect), nothing would ever tear the idle session down.
+            self._voice_timeout_tasks[guild_id] = asyncio.ensure_future(
+                self._voice_timeout_handler(guild_id)
+            )
             return
         await self.leave_voice_channel(guild_id)
         # Notify the runner so it can clean up voice_mode state

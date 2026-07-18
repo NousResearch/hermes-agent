@@ -16,6 +16,8 @@ import yaml
 
 pytest.importorskip("mcp.server.fastmcp")
 
+_SLASH_WORKER_RESPONSE_TIMEOUT_S = 60
+
 
 def test_profile_local_mcp_tool_is_visible_in_slash_worker(tmp_path):
     profile_home = tmp_path / "profile-home"
@@ -105,9 +107,12 @@ def test_profile_local_mcp_tool_is_visible_in_slash_worker(tmp_path):
             # Must exceed mcp_discovery_timeout above (30s): the worker waits
             # for discovery before its first snapshot, so on a loaded shard
             # the response arrives just after the FastMCP probe connects.
-            line = output.get(timeout=60)
+            line = output.get(timeout=_SLASH_WORKER_RESPONSE_TIMEOUT_S)
         except queue.Empty:
-            pytest.fail("slash worker produced no /tools response within 60 seconds")
+            pytest.fail(
+                "slash worker produced no /tools response within "
+                f"{_SLASH_WORKER_RESPONSE_TIMEOUT_S} seconds"
+            )
         response = json.loads(line)
         assert response["ok"] is True
         assert "mcp__profileprobe__hermes_61922_profile_probe" in response["output"]

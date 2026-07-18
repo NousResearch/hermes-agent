@@ -629,6 +629,8 @@ class WebhookAdapter(BasePlatformAdapter):
         event_type = (
             request.headers.get("X-GitHub-Event", "")
             or request.headers.get("X-GitLab-Event", "")
+            or request.headers.get("X-Gitea-Event", "")
+            or request.headers.get("X-Forgejo-Event", "")
             or payload.get("event_type", "")
             or payload.get("type", "")
             or "unknown"
@@ -1007,6 +1009,16 @@ class WebhookAdapter(BasePlatformAdapter):
                 secret.encode(), body, hashlib.sha256
             ).hexdigest()
             return _hmac_str_equal(gitea_sig, expected)
+
+        # Forgejo: X-Forgejo-Signature = <hex HMAC-SHA256 of body>
+        # Forgejo is a Gitea fork and uses the same signature format.
+        # Like Gitea, it sends the raw hex digest without a prefix.
+        forgejo_sig = request.headers.get("X-Forgejo-Signature", "")
+        if forgejo_sig:
+            expected = hmac.new(
+                secret.encode(), body, hashlib.sha256
+            ).hexdigest()
+            return _hmac_str_equal(forgejo_sig, expected)
 
         # Generic V2: X-Webhook-Signature-V2 = <hex HMAC-SHA256 of "<timestamp>.<body>">
         #             X-Webhook-Timestamp = <unix seconds> (required for V2)

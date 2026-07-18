@@ -1143,6 +1143,32 @@ def handle_function_call(
                 disabled_toolsets=disabled_toolsets,
             )
 
+    if enabled_toolsets is not None:
+        try:
+            current_defs = get_tool_definitions(
+                enabled_toolsets=enabled_toolsets,
+                disabled_toolsets=disabled_toolsets,
+                quiet_mode=True,
+                skip_tool_search_assembly=True,
+            ) or []
+            available_tool_names = {
+                tool["function"]["name"]
+                for tool in current_defs
+                if isinstance(tool, dict) and isinstance(tool.get("function"), dict)
+            }
+        except Exception:
+            available_tool_names = set()
+        if function_name not in available_tool_names:
+            return json.dumps(
+                {
+                    "error": (
+                        f"'{function_name}' is not available in this session. "
+                        "Use the tools registered for this session."
+                    )
+                },
+                ensure_ascii=False,
+            )
+
     _tool_original_args = dict(function_args)
     if not skip_tool_request_middleware:
         try:

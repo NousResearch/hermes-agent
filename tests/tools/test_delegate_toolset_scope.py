@@ -65,6 +65,93 @@ class TestToolsetIntersection:
         assert scoped == []
 
 
+class TestReadOnlyDelegation:
+    def test_build_child_agent_read_only_strips_side_effect_toolsets(self, monkeypatch):
+        import sys
+        import types
+        import tools.delegate_tool as dt
+
+        captured = {}
+
+        class FakeAgent:
+            def __init__(self, **kwargs):
+                captured.update(kwargs)
+                self.session_id = "child-session"
+                self.enabled_toolsets = kwargs.get("enabled_toolsets")
+
+        fake_mod = types.ModuleType("run_agent")
+        fake_mod.AIAgent = FakeAgent
+        monkeypatch.setitem(sys.modules, "run_agent", fake_mod)
+        monkeypatch.setattr(dt, "_load_config", lambda: {})
+        monkeypatch.setattr(dt, "_build_child_progress_callback", lambda *a, **k: None)
+
+        parent = SimpleNamespace(
+            enabled_toolsets=[
+                "terminal",
+                "file",
+                "web",
+                "browser",
+                "skills",
+                "memory",
+                "delegation",
+                "cronjob",
+                "code_execution",
+                "computer_use",
+            ],
+            model="parent-model",
+            provider="test",
+            base_url="http://test.local",
+            api_key="key",
+            _delegate_depth=0,
+            session_id="parent-session",
+        )
+
+        child = dt._build_child_agent(
+            task_index=0,
+            goal="read the repo",
+            context=None,
+            toolsets=None,
+            model=None,
+            max_iterations=1,
+            task_count=1,
+            parent_agent=parent,
+            capability="read_only",
+        )
+
+        assert set(child.enabled_toolsets) == {
+            "browser_read",
+            "file_read",
+            "skills_read",
+            "web",
+        }
+        assert captured["enabled_toolsets"] == child.enabled_toolsets
+        assert "terminal" not in child.enabled_toolsets
+        assert "file" not in child.enabled_toolsets
+        assert "skills" not in child.enabled_toolsets
+        assert "memory" not in child.enabled_toolsets
+        assert "delegation" not in child.enabled_toolsets
+        assert "cronjob" not in child.enabled_toolsets
+        assert "code_execution" not in child.enabled_toolsets
+        assert "computer_use" not in child.enabled_toolsets
+
+    def test_dispatch_rejects_tool_not_available_in_enabled_toolsets(self, tmp_path):
+        import json
+        from model_tools import handle_function_call
+
+        target = tmp_path / "should-not-exist.txt"
+        raw = handle_function_call(
+            "write_file",
+            {"path": str(target), "content": "nope"},
+            task_id="read-only-adversarial",
+            enabled_toolsets=["file_read"],
+            skip_pre_tool_call_hook=True,
+        )
+
+        result = json.loads(raw)
+        assert "not available in this session" in result["error"]
+        assert not target.exists()
+
+
 class TestEmitParentConsole:
     """Progress lines (e.g. ``✓ [N/M] …``) must route through the parent's
     configured ``_safe_print`` in headless stdio hosts (ACP, gateway) so

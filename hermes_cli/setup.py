@@ -3022,7 +3022,7 @@ def _blank_slate_minimal_toolsets(config: dict):
     config.setdefault("platform_toolsets", {})["cli"] = sorted(keep)
 
     try:
-        from toolsets import TOOLSETS
+        from toolsets import TOOLSETS, resolve_toolset
         from hermes_cli.tools_config import CONFIGURABLE_TOOLSETS, _get_plugin_toolset_keys
 
         all_keys = set()
@@ -3043,7 +3043,18 @@ def _blank_slate_minimal_toolsets(config: dict):
                 # minimal Blank Slate surface (#57315).
             all_keys.add(k)
 
-        disabled = sorted(all_keys - keep)
+        # disabled_toolsets is applied at tool granularity.  Do not disable an
+        # alias/leaf that shares tools with the retained minimal surface (for
+        # example ``file_read`` shares read_file/search_files with ``file``),
+        # or model_tools would subtract those retained tools again.
+        kept_tools = set()
+        for key in keep:
+            kept_tools.update(resolve_toolset(key))
+        disabled = sorted(
+            key
+            for key in all_keys - keep
+            if not (set(resolve_toolset(key)) & kept_tools)
+        )
         if disabled:
             config.setdefault("agent", {})["disabled_toolsets"] = disabled
     except Exception as exc:

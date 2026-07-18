@@ -9112,6 +9112,23 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
 
     def _sweep_resume_requests(self) -> None:
         """Fold safe-restart dropbox requests into the canonical resume rail."""
+        # SGR-6EA95669 follow-up (2026-07-18): a DRAINING gateway must NOT
+        # consume dropbox requests. During a long restart drain the OLD
+        # process's housekeeping tick would sweep the dropbox, log
+        # "honored", and mark resume_pending in memory that dies with the
+        # process — so the successor boot found an empty dropbox and the
+        # initiating session of a safe-restart silently never resumed.
+        # Requests written during a drain belong to the NEW gateway: leave
+        # the files on disk for its boot sweep.
+        shutdown_event = getattr(self, "_shutdown_event", None)
+        if getattr(self, "_draining", False) or bool(
+            shutdown_event is not None and shutdown_event.is_set()
+        ):
+            logger.info(
+                "PHASE=dropbox_resume_deferred (draining/shutting down — "
+                "leaving resume requests for the successor boot sweep)"
+            )
+            return
         try:
             from gateway import resume_requests as _resume_requests
 

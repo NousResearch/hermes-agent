@@ -109,3 +109,56 @@ def test_boot_sweep_marks_and_gates_via_session_store(tmp_path: Path, monkeypatc
     assert ("agent:main:discord:thread:6:6", "restart_interrupted") in calls
     assert ("agent:main:discord:thread:GONE:0", "restart_interrupted") in calls
     assert rr.sweep_resume_requests(tmp_path) == []  # consumed either way
+
+
+def test_draining_gateway_defers_dropbox_to_successor(tmp_path: Path, monkeypatch) -> None:
+    """SGR-6EA95669 follow-up (2026-07-18): the OLD gateway's housekeeping
+    tick during a long restart drain used to CONSUME dropbox requests and
+    mark resume_pending in memory that died with the process — the successor
+    boot then found an empty dropbox and the initiating session of a
+    safe-restart never resumed. A draining/shutting-down runner must leave
+    the request files on disk for the successor's boot sweep."""
+    import asyncio
+
+    import gateway.run as run_mod
+    from gateway.run import GatewayRunner
+
+    monkeypatch.setattr(run_mod, "_hermes_home", tmp_path)
+
+    consumed = []
+
+    class _Store:
+        def mark_resume_pending(self, key, reason):
+            consumed.append((key, reason))
+            return True
+
+    path = _submit(tmp_path, "agent:main:discord:thread:7:7")
+
+    runner = object.__new__(GatewayRunner)
+    runner.session_store = _Store()
+
+    loop = asyncio.new_event_loop()
+    try:
+        shutdown_event = asyncio.Event()
+
+        # Case 1: draining flag set → request file untouched, store untouched.
+        runner._draining = True
+        runner._shutdown_event = shutdown_event
+        GatewayRunner._sweep_resume_requests(runner)
+        assert path.exists(), "draining sweep must NOT consume the request"
+        assert consumed == []
+
+        # Case 2: not draining but shutdown_event set → same deferral.
+        runner._draining = False
+        shutdown_event.set()
+        GatewayRunner._sweep_resume_requests(runner)
+        assert path.exists(), "shutting-down sweep must NOT consume the request"
+        assert consumed == []
+
+        # Case 3: healthy runner → consumes and honors as before.
+        runner._shutdown_event = asyncio.Event()  # cleared
+        GatewayRunner._sweep_resume_requests(runner)
+        assert not path.exists(), "healthy sweep must consume the request"
+        assert consumed == [("agent:main:discord:thread:7:7", "restart_interrupted")]
+    finally:
+        loop.close()

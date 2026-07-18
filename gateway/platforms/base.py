@@ -2365,6 +2365,19 @@ class BasePlatformAdapter(ABC):
     # generic seam; Slack is merely the first consumer).
     supports_inchannel_continuable: bool = False
 
+    # Whether a human is interactively present on this platform to answer a
+    # "session restored — what next?" prompt.  The startup auto-resume turn
+    # (``_schedule_resume_pending_sessions`` → the ``_is_resume_pending``
+    # branch in ``_handle_message_with_agent``) reads this to pick its
+    # guidance: interactive platforms (Telegram, Slack, Discord DMs, …) get
+    # "report the restore and ask what the user wants next"; non-interactive
+    # event platforms (webhook) get "finish the interrupted work" because
+    # nobody is there to answer, and an acknowledgement would silently
+    # abandon the task (#57056).  Read generically via ``getattr(adapter,
+    # "interactive_resume", True)`` — no per-platform branching at the call
+    # site.
+    interactive_resume: bool = True
+
     # Back-reference to the running ``GatewayRunner``, injected by
     # ``gateway/run.py`` after the adapter is created. Adapters consume it via
     # ``getattr(self, "gateway_runner", None)`` for cross-platform delivery and

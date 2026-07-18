@@ -66,6 +66,8 @@ import { DeleteProfileDialog } from '../../profiles/delete-profile-dialog'
 import { RenameProfileDialog } from '../../profiles/rename-profile-dialog'
 import { PROFILES_ROUTE } from '../../routes'
 
+import { useProfilePrewarm } from './use-profile-prewarm'
+
 const RAIL_GAP = 4 // px — matches gap-1 between squares.
 
 // Past this many profiles the strip of colored squares stops scaling (tiny
@@ -457,27 +459,37 @@ function ProfileDropdown({
         <SelectValue placeholder={p.title} />
       </SelectTrigger>
       <SelectContent collisionPadding={{ bottom: 44, left: 8, right: 8, top: 8 }} side="top">
-        {profiles.map(profile => {
-          const color = resolveProfileColor(profile.name, colors)
-          const hue = color ?? 'var(--ui-text-quaternary)'
-
-          return (
-            <SelectItem key={profile.name} value={profile.name}>
-              <span className="flex min-w-0 items-center gap-1.5">
-                <span
-                  aria-hidden="true"
-                  className="grid size-4 shrink-0 place-items-center rounded-[3px] text-[0.5rem] font-semibold uppercase leading-none"
-                  style={{ backgroundColor: profileColorSoft(hue, 22), color: color ?? undefined }}
-                >
-                  {profile.name.replace(/[^a-z0-9]/gi, '').charAt(0) || '?'}
-                </span>
-                <span className="truncate">{profile.name}</span>
-              </span>
-            </SelectItem>
-          )
-        })}
+        {profiles.map(profile => (
+          <ProfileDropdownItem
+            color={resolveProfileColor(profile.name, colors)}
+            key={profile.name}
+            name={profile.name}
+          />
+        ))}
       </SelectContent>
     </Select>
+  )
+}
+
+// One dropdown row per profile — its own component so each row can own a
+// hover-intent prewarm timer (see useProfilePrewarm).
+function ProfileDropdownItem({ color, name }: { color: null | string; name: string }) {
+  const hue = color ?? 'var(--ui-text-quaternary)'
+  const { cancelPrewarm, startPrewarm } = useProfilePrewarm(name)
+
+  return (
+    <SelectItem onPointerEnter={startPrewarm} onPointerLeave={cancelPrewarm} value={name}>
+      <span className="flex min-w-0 items-center gap-1.5">
+        <span
+          aria-hidden="true"
+          className="grid size-4 shrink-0 place-items-center rounded-[3px] text-[0.5rem] font-semibold uppercase leading-none"
+          style={{ backgroundColor: profileColorSoft(hue, 22), color: color ?? undefined }}
+        >
+          {name.replace(/[^a-z0-9]/gi, '').charAt(0) || '?'}
+        </span>
+        <span className="truncate">{name}</span>
+      </span>
+    </SelectItem>
   )
 }
 
@@ -548,6 +560,9 @@ function ProfileSquare({
   const [pickerOpen, setPickerOpen] = useState(false)
   const pressTimer = useRef<null | number>(null)
   const suppressClick = useRef(false)
+  // Hovering a square telegraphs the switch — start that profile's backend
+  // spawn now so a cold click doesn't pay the full boot.
+  const { cancelPrewarm, startPrewarm } = useProfilePrewarm(label)
 
   const { attributes, isDragging, listeners, setNodeRef, transform, transition } = useSortable({
     id: label,
@@ -637,7 +652,11 @@ function ProfileSquare({
                         setPickerOpen(true)
                       }, LONG_PRESS_MS)
                     }}
-                    onPointerLeave={clearPress}
+                    onPointerEnter={startPrewarm}
+                    onPointerLeave={() => {
+                      clearPress()
+                      cancelPrewarm()
+                    }}
                     onPointerUp={clearPress}
                   >
                     {label.replace(/[^a-z0-9]/gi, '').charAt(0) || '?'}

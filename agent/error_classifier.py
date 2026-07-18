@@ -286,6 +286,8 @@ _CONTEXT_OVERFLOW_PATTERNS = [
     # Chinese error messages (some providers return these)
     "超过最大长度",
     "上下文长度",
+    # Z.AI / Zhipu GLM pattern (English form; error code 1210)
+    "tokens in request more than max tokens allowed",
     # AWS Bedrock Converse API error patterns
     "input is too long",
     "max input token",
@@ -772,6 +774,14 @@ def classify_api_error(
         )
         if classified is not None:
             return classified
+
+    # Local MoA config drift is deterministic: a persisted session can retain
+    # a preset name that was later renamed/deleted. Retrying the same lookup
+    # cannot recover and makes a clear config error look like an API outage.
+    from agent.errors import MoAPresetNotFoundError
+
+    if isinstance(error, MoAPresetNotFoundError):
+        return _result(FailoverReason.model_not_found, retryable=False)
 
     # ── 3. Error code classification ────────────────────────────────
 

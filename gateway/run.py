@@ -712,6 +712,75 @@ def _is_fresh_gateway_interruption(
     return current - timestamp <= window
 
 
+def build_resume_recovery_note(
+    reason: Optional[str],
+    message: str = "",
+    *,
+    interactive: bool = True,
+) -> str:
+    """Build the resume-pending recovery system note for an interrupted turn.
+
+    ``reason`` is the session's ``resume_reason`` (``restart_timeout``,
+    ``shutdown_timeout``, or anything else → generic interruption phrasing).
+    ``message`` is the user's NEW message text; empty means this is the
+    startup auto-resume turn synthesized by
+    ``_schedule_resume_pending_sessions`` with no human message attached.
+
+    ``interactive`` selects the empty-message guidance: on interactive
+    platforms a human is present, so "report the restore and ask what next"
+    is right.  On non-interactive event platforms (webhook, API server —
+    adapters with ``interactive_resume = False``) nobody can answer; the
+    resumed turn must instead complete the interrupted work, or the task is
+    silently abandoned behind a "restored" acknowledgement that goes
+    nowhere (#57056).
+    """
+    reason_phrase = (
+        "a gateway restart"
+        if reason == "restart_timeout"
+        else "a gateway shutdown"
+        if reason == "shutdown_timeout"
+        else "a gateway interruption"
+    )
+    if message:
+        resume_guidance = (
+            "Address the user's NEW message below FIRST and focus "
+            "on what the user is asking now."
+        )
+        tail_guidance = (
+            "Do NOT re-execute old tool calls — skip any "
+            "unfinished work from the conversation history."
+        )
+    elif interactive:
+        resume_guidance = (
+            "Report to the user that the session was restored "
+            "successfully and ask what they would like to do next."
+        )
+        tail_guidance = (
+            "Do NOT re-execute old tool calls — skip any "
+            "unfinished work from the conversation history."
+        )
+    else:
+        resume_guidance = (
+            "No user is present on this non-interactive platform, "
+            "so do NOT emit a 'session restored' acknowledgement "
+            "or ask questions. Review the conversation history and "
+            "CONTINUE the interrupted task to completion."
+        )
+        tail_guidance = (
+            "Do NOT re-run tool calls whose results already "
+            "appear in the history — resume from the first step "
+            "that has no recorded result."
+        )
+    return (
+        f"[System note: The previous turn was interrupted by "
+        f"{reason_phrase}; the gateway is now back online. "
+        f"Any restart/shutdown command in the history has already "
+        f"run — do NOT re-execute or verify it. {resume_guidance} "
+        f"{tail_guidance}]"
+        + (f"\n\n{message}" if message else "")
+    )
+
+
 # Assistant-message fields that must survive transcript replay so multi-turn
 # reasoning context, prefix-cache hits, and provider-specific echo
 # requirements all behave the same on the gateway as they do in the CLI.
@@ -2275,6 +2344,7 @@ def _skill_slug_from_frontmatter(skill_md: Path) -> tuple[str | None, str | None
         content = skill_md.read_text(encoding="utf-8", errors="replace")
     except Exception:
         return None, None
+    content = content.lstrip("\ufeff")  # tolerate UTF-8 BOM (Windows editors)
     if not content.startswith("---"):
         return None, None
     end = content.find("\n---", 3)
@@ -6186,7 +6256,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         """
         if agent is None:
             return
-        if context.startswith("shutdown"):
+        if context.startswith("shutdown") or context == "session expiry":
             try:
                 agent._end_session_on_close = False
             except Exception:
@@ -10209,8 +10279,8 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         if canonical == "usage":
             return await self._handle_usage_command(event)
 
-        if canonical == "credits":
-            return await self._handle_credits_command(event)
+        if canonical == "topup":
+            return await self._handle_topup_command(event)
 
         if canonical == "insights":
             return await self._handle_insights_command(event)
@@ -10770,7 +10840,13 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             if image_paths:
                 # Decide routing: native (attach pixels) vs text (vision_analyze
                 # pre-run + prepend description).  See agent/image_routing.py.
-                _img_mode = self._decide_image_input_mode(
+                # Offload to a worker thread: the decision does blocking network
+                # I/O — a models.dev fetch on cache miss, and the Ollama
+                # ``/api/show`` capability probe for local servers — whose
+                # request timeout would otherwise stall the whole gateway event
+                # loop (every session) while a single image is routed.
+                _img_mode = await asyncio.to_thread(
+                    self._decide_image_input_mode,
                     source=source,
                     session_key=session_key,
                 )
@@ -10790,10 +10866,30 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                         "Image routing: text (mode=%s). Pre-analyzing %d image(s) via vision_analyze.",
                         _img_mode, len(image_paths),
                     )
-                    message_text = await self._enrich_message_with_vision(
-                        message_text,
-                        image_paths,
-                    )
+                    # Vision enrichment runs before AIAgent.run_conversation(),
+                    # so bind this session's resolved runtime explicitly rather
+                    # than consulting process-global compatibility mirrors.
+                    vision_runtime = None
+                    try:
+                        turn_model, runtime_kwargs = self._resolve_session_agent_runtime(
+                            source=source,
+                            session_key=session_key,
+                        )
+                        vision_runtime = dict(runtime_kwargs or {})
+                        vision_runtime["model"] = turn_model
+                    except Exception:
+                        logger.debug(
+                            "vision enrichment: session runtime resolution failed",
+                            exc_info=True,
+                        )
+
+                    from agent.auxiliary_client import scoped_runtime_main
+
+                    with scoped_runtime_main(vision_runtime):
+                        message_text = await self._enrich_message_with_vision(
+                            message_text,
+                            image_paths,
+                        )
 
             if audio_paths:
                 message_text, _successful_transcripts = await self._enrich_message_with_transcription(
@@ -11317,6 +11413,8 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 context_note = "[System note: The user's previous session was stopped and suspended. This is a fresh conversation with no prior context.]"
             elif reset_reason == "daily":
                 context_note = "[System note: The user's session was automatically reset by the daily schedule. This is a fresh conversation with no prior context.]"
+            elif reset_reason == "resume_pending_expired":
+                context_note = "[System note: The previous gateway session could not be recovered after a restart (API recovery timed out). This is a fresh conversation — use /resume to restore history if needed.]"
             else:
                 context_note = "[System note: The user's previous session expired due to inactivity. This is a fresh conversation with no prior context.]"
             context_prompt = context_note + "\n\n" + context_prompt
@@ -11332,9 +11430,11 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 )
                 platform_name = source.platform.value if source.platform else ""
                 had_activity = getattr(session_entry, 'reset_had_activity', False)
-                # Suspended sessions always notify (they were explicitly stopped
-                # or crashed mid-operation) — skip the policy check.
-                should_notify = reset_reason == "suspended" or (
+                # Suspended and restart-recovery-expired sessions always notify
+                # regardless of policy.notify — the user had an active session
+                # that was silently replaced, so they need to know they can
+                # /resume it.  Idle/daily resets respect the policy flag.
+                should_notify = reset_reason in {"suspended", "resume_pending_expired"} or (
                     policy.notify
                     and had_activity
                     and platform_name not in policy.notify_exclude_platforms
@@ -11344,6 +11444,8 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     if adapter:
                         if reset_reason == "suspended":
                             reason_text = "previous session was stopped or interrupted"
+                        elif reset_reason == "resume_pending_expired":
+                            reason_text = "gateway restart recovery timed out"
                         elif reset_reason == "daily":
                             reason_text = f"daily schedule at {policy.at_hour}:00"
                         else:
@@ -19514,36 +19616,21 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
 
             if _is_resume_pending:
                 _reason = getattr(_resume_entry, "resume_reason", None) or "restart_timeout"
-                _reason_phrase = (
-                    "a gateway restart"
-                    if _reason == "restart_timeout"
-                    else "a gateway shutdown"
-                    if _reason == "shutdown_timeout"
-                    else "a gateway interruption"
-                )
                 _persist_user_message_override = message
                 # The empty-message case is the auto-resume startup turn
                 # synthesized by _schedule_resume_pending_sessions — there is
-                # no NEW user message to address, so tell the model to report
-                # recovery instead of the (nonexistent) "new message".
-                if message:
-                    _resume_guidance = (
-                        "Address the user's NEW message below FIRST and focus "
-                        "on what the user is asking now."
-                    )
-                else:
-                    _resume_guidance = (
-                        "Report to the user that the session was restored "
-                        "successfully and ask what they would like to do next."
-                    )
-                message = (
-                    f"[System note: The previous turn was interrupted by "
-                    f"{_reason_phrase}; the gateway is now back online. "
-                    f"Any restart/shutdown command in the history has already "
-                    f"run — do NOT re-execute or verify it. {_resume_guidance} "
-                    f"Do NOT re-execute old tool calls — skip any unfinished "
-                    f"work from the conversation history.]"
-                    + (f"\n\n{message}" if message else "")
+                # no NEW user message to address.  Guidance is adapter-aware:
+                # interactive platforms report the restore and ask what next;
+                # non-interactive event platforms (webhook, API server)
+                # continue the interrupted work instead, because nobody is
+                # present to answer and an acknowledgement would silently
+                # abandon the task (#57056).
+                _resume_adapter = self._adapter_for_source(source)
+                _interactive_resume = bool(
+                    getattr(_resume_adapter, "interactive_resume", True)
+                )
+                message = build_resume_recovery_note(
+                    _reason, message, interactive=_interactive_resume,
                 )
             elif _has_fresh_tool_tail:
                 _persist_user_message_override = message
@@ -19584,22 +19671,13 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 _sn_reason = (
                     getattr(_resume_entry, "resume_reason", None) or "restart_timeout"
                 )
-                _sn_reason_phrase = (
-                    "a gateway restart"
-                    if _sn_reason == "restart_timeout"
-                    else "a gateway shutdown"
-                    if _sn_reason == "shutdown_timeout"
-                    else "a gateway interruption"
-                )
-                message = (
-                    f"[System note: The previous turn was interrupted by "
-                    f"{_sn_reason_phrase}; the gateway is now back online. "
-                    f"Any restart/shutdown command in the history has already "
-                    f"run — do NOT re-execute or verify it. Report to the user "
-                    f"that the session was restored successfully and ask what "
-                    f"they would like to do next. Do NOT re-execute old tool "
-                    f"calls — skip any unfinished work from the conversation "
-                    f"history.]"
+                _sn_adapter = self._adapter_for_source(source)
+                message = build_resume_recovery_note(
+                    _sn_reason,
+                    "",
+                    interactive=bool(
+                        getattr(_sn_adapter, "interactive_resume", True)
+                    ),
                 )
 
             _approval_session_key = session_key or ""

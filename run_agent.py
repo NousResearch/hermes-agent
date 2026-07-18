@@ -1901,6 +1901,11 @@ class AIAgent:
                 id(item) for item in (conversation_history or [])
                 if isinstance(item, dict)
             }
+            context_snapshot_ids = getattr(
+                self, "_context_snapshot_message_ids", set()
+            )
+            if not isinstance(context_snapshot_ids, set):
+                context_snapshot_ids = set()
 
             for _msg_idx, msg in enumerate(messages):
                 if not isinstance(msg, dict):
@@ -1983,13 +1988,17 @@ class AIAgent:
                     codex_reasoning_items=msg.get("codex_reasoning_items") if role == "assistant" else None,
                     codex_message_items=msg.get("codex_message_items") if role == "assistant" else None,
                     timestamp=_row_timestamp,
-                    context_snapshot=bool(msg.get("_context_snapshot")),
+                    context_snapshot=bool(
+                        msg.get("_context_snapshot")
+                        or id(msg) in context_snapshot_ids
+                    ),
                 )
                 msg[_DB_PERSISTED_MARKER] = True
             # The intrinsic markers are now the sole source of truth. Reset the
             # one-shot seed so no id() outlives this flush to alias a message
             # allocated next turn at a recycled address.
             self._flushed_db_message_ids = set()
+            self._context_snapshot_message_ids = set()
             self._last_flushed_db_idx = len(messages)
             return True
         except Exception as e:

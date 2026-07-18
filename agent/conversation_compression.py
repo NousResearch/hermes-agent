@@ -815,7 +815,7 @@ def compress_context(
         # Snapshot metadata belongs only to the copied post-compaction model
         # context. Some protected head/tail entries are shared by identity with
         # ``messages`` and must remain genuine durable transcript rows.
-        compressed = [
+        persistence_snapshot = [
             {**message, "_context_snapshot": True}
             if isinstance(message, dict)
             else message
@@ -860,7 +860,9 @@ def compress_context(
                     # for search/recovery (Teknium review — keep one durable id
                     # WITHOUT destroying history, unlike a hard replace_messages).
                     # See #38763.
-                    agent._session_db.archive_and_compact(agent.session_id, compressed)
+                    agent._session_db.archive_and_compact(
+                        agent.session_id, persistence_snapshot
+                    )
                     durable_committed = True
                     # Reset the flush identity set so the next turn's appends are
                     # diffed against the COMPACTED transcript: the compacted dicts
@@ -951,6 +953,10 @@ def compress_context(
                         raise
                     agent._session_db_created = True
                     durable_committed = True
+                    agent._context_snapshot_message_ids = {
+                        id(message) for message in compressed
+                        if isinstance(message, dict)
+                    }
                     # Carry a persistent /goal onto the continuation session.
                     # Compression mints a fresh child id; load_goal does a flat
                     # per-session lookup with no parent walk, so without this an

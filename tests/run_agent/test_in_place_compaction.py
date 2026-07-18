@@ -239,7 +239,11 @@ class TestInPlaceCompaction:
             )
 
             assert "_context_snapshot" not in original[-1]
-            assert compressed[-1]["_context_snapshot"] is True
+            assert all("_context_snapshot" not in message for message in compressed)
+            assert all(
+                row.get("context_snapshot")
+                for row in db.get_messages("snapshot_copy")
+            )
             db.close()
 
     def test_rotation_still_preflushes(self):

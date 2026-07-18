@@ -487,6 +487,33 @@ def build_turn_context(
         # should_defer_preflight_to_real_usage ratchet.
         _compressor.note_rough_sent(_preflight_tokens)
         _calibrated = _compressor.calibrated_tokens(_preflight_tokens)
+        # Cold-start observability (Greptile PR #392 P2): on an empty skew history the
+        # DISPLAY calibration (_calibrated, via _current_skew=1.0 identity) can read
+        # >= threshold while the TRIGGER decision correctly DEFERS using the
+        # conservative cold-start prior (_trigger_skew). Without this note an operator
+        # reading the displayed value sees a number above threshold and no explanation
+        # for why compaction was skipped. Log ONLY when display and trigger diverge on
+        # a deferral (empty history); a normal below-threshold skip stays quiet. Pure
+        # logging — no effect on the decision below (INV: never perturb control flow).
+        try:
+            _trig_cal = _compressor._trigger_calibrated_tokens(_preflight_tokens)
+            _thr = _compressor.threshold_tokens
+            if _calibrated >= _thr and _trig_cal < _thr:
+                logger.debug(
+                    "Preflight compression DEFERRED (cold-start skew): display "
+                    "calibrated ~%s (skew %.3f) >= %s threshold, but trigger calibrated "
+                    "~%s (cold-start skew %.3f) < threshold — skew history empty, using "
+                    "conservative prior until a real prompt_tokens pairs (model %s, ctx %s)",
+                    f"{_calibrated:,}",
+                    _compressor._current_skew(),
+                    f"{_thr:,}",
+                    f"{_trig_cal:,}",
+                    _compressor._trigger_skew(),
+                    agent.model,
+                    f"{_compressor.context_length:,}",
+                )
+        except Exception:
+            pass
         _last = _compressor.last_prompt_tokens
         # Do NOT overwrite the -1 sentinel (#36718). Store the CALIBRATED estimate,
         # not the raw rough: this value lands in the real-usage slot, so if the

@@ -96,12 +96,36 @@ class TestIncidentRegression:
         assert c2.calibrated_tokens(preflight_raw) < c2.threshold_tokens
         assert c2.should_compress_calibrated(preflight_raw) is False
 
-    def test_prefix_behavior_reproduced_without_seed(self):
-        """Sanity: WITHOUT the persisted seed the false-fire happens (documents
-        the pre-fix behavior the seed prevents)."""
+    def test_cold_start_prior_prevents_false_fire_without_seed(self):
+        """Defense-in-depth: even WITHOUT the persisted seed (genuinely fresh
+        session, empty seed row, or a pre-deploy session with no persisted
+        history), the cold-start TRIGGER prior prevents the false-fire.
+
+        Superseded the pre-fix ``test_prefix_behavior_reproduced_without_seed``,
+        which asserted the false-fire (calibrated==raw 767k >= 750k -> True) was
+        the documented behavior when the seed was absent. The 2026-07-18
+        cold-start-skew fix makes the trigger use the conservative skew_floor
+        (default 0.7) on empty history: 767k * 0.7 = 536,900 < 750k threshold
+        -> defer. Real usage on the incident was 476k, so deferring is correct.
+
+        DISPLAY skew stays identity (1.0) on empty history — the shown estimate
+        remains an honest 'not yet measured' value (Greptile #111 contract).
+        """
         c = make_compressor()  # no session binding, empty history
+        # Display contract preserved: identity on empty.
         assert c._current_skew() == 1.0
-        assert c.should_compress_calibrated(767_000) is True
+        assert c.calibrated_tokens(767_000) == 767_000
+        # Trigger uses the cold-start floor and defers the false-fire.
+        assert c._trigger_skew() == c._skew_floor
+        assert c.should_compress_calibrated(767_000) is False
+
+    def test_cold_start_still_fires_at_window_ceiling_without_seed(self):
+        """The cold-start deferral is bounded by the skew-independent hard-frac
+        ceiling: a genuinely near-full window (>= 0.95 * 1M = 950k) still
+        compacts even with an empty history, so overflow can never be deferred
+        away."""
+        c = make_compressor()  # empty history
+        assert c.should_compress_calibrated(960_000) is True
 
 
 class TestPersistRoundtrip:

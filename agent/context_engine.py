@@ -130,6 +130,12 @@ class ContextEngine(ABC):
     _SKEW_FLOOR_DEFAULT = 0.7
     _HARD_FRAC_DEFAULT = 0.95
     _SKEW_HISTORY = 5
+    # Positive lower bound for the COLD-START trigger prior (``_trigger_skew`` on an
+    # empty history). Guards against a misconfigured near-zero ``skew_floor`` (e.g.
+    # 0.01) shrinking the calibrated estimate so far that the soft threshold becomes
+    # unreachable and only the 95% hard-frac ceiling ever fires. 0.5 keeps the soft
+    # threshold reachable while still deferring the raw-rough over-count false-fire.
+    _TRIGGER_SKEW_MIN = 0.5
 
     def reset_skew_calibration(self) -> None:
         """Clear per-conversation skew state at a session boundary. The engine is a
@@ -279,24 +285,81 @@ class ContextEngine(ABC):
         floor = getattr(self, "_skew_floor", self._SKEW_FLOOR_DEFAULT)
         return max(floor, min(1.0, med))
 
+    def _trigger_skew(self) -> float:
+        """Skew used for the compaction TRIGGER decision only (never for display).
+
+        Identical to ``_current_skew`` once at least one real reading has paired.
+        On an EMPTY history it returns the conservative cold-start prior
+        (``_skew_floor``) instead of 1.0, so the FIRST uncalibrated preflight on a
+        large resumed/fresh session does not FALSE-FIRE a premature lossy
+        compaction off the raw over-counting rough estimate (2026-07-18 incident:
+        raw 316,953 at skew 1.000 >= 279,000 threshold fired while real usage was
+        ~48% of the window; empirically the rough estimator's p10 skew is 0.67 and
+        min 0.10 across 5,268 samples, so an uncalibrated estimate can over-count
+        badly on dense/schema-heavy sessions).
+
+        This is trigger-ONLY: ``_current_skew`` deliberately stays identity (1.0)
+        on empty history so the displayed/logged estimate remains an honest 'not
+        yet measured' value (Greptile #111 display contract). Deferring here can
+        never cause an overflow because ``should_compress_calibrated`` keeps the
+        window hard-frac ceiling as a skew-independent 413 backstop.
+        """
+        hist = getattr(self, "_recent_skews", None)
+        if hist:
+            return self._current_skew()
+        floor = getattr(self, "_skew_floor", self._SKEW_FLOOR_DEFAULT)
+        # Clamp defensively to a sane band; a misconfigured floor must not scale the
+        # estimate UP (rough never under-counts) or so low it silently disables the
+        # SOFT threshold path. A near-zero floor (e.g. 0.01) is not just the exact
+        # 0.0 case Python truthiness would rescue — it would shrink the calibrated
+        # estimate to ~1% of raw, so the threshold target (e.g. 75% of window) is
+        # unreachable and NOTHING compacts until the hard-frac ceiling (95%) fires —
+        # the very late-compaction hazard this cold-start prior exists to avoid. So
+        # enforce a positive lower bound (``_TRIGGER_SKEW_MIN``): overflow is always
+        # backstopped by the ceiling, but the soft threshold must stay reachable.
+        try:
+            floor = float(floor)
+        except (TypeError, ValueError):
+            floor = self._SKEW_FLOOR_DEFAULT
+        return max(self._TRIGGER_SKEW_MIN, min(1.0, floor))
+
     def calibrated_tokens(self, rough_tokens: int) -> int:
         """``round(rough × skew)`` — the rough estimate scaled to the provider's
-        measured accounting. Safe default (skew 1.0) ⇒ identical to raw rough."""
+        measured accounting. Safe default (skew 1.0) ⇒ identical to raw rough.
+
+        Uses the DISPLAY skew (``_current_skew``): this value is shown to the user
+        in the preflight status line and logged, so it must stay identity until a
+        real reading pairs. The TRIGGER decision applies the cold-start prior
+        separately via ``_trigger_calibrated_tokens`` inside
+        ``should_compress_calibrated``."""
         if rough_tokens <= 0:
             return rough_tokens
         return int(round(rough_tokens * self._current_skew()))
+
+    def _trigger_calibrated_tokens(self, rough_tokens: int) -> int:
+        """``round(rough × trigger_skew)`` — the trigger-decision calibration.
+        Identical to ``calibrated_tokens`` once history exists; applies the
+        cold-start prior on empty history."""
+        if rough_tokens <= 0:
+            return rough_tokens
+        return int(round(rough_tokens * self._trigger_skew()))
 
     def should_compress_calibrated(self, rough_tokens: int) -> bool:
         """P2 trigger: compact when CALIBRATED rough ≥ threshold, OR when RAW rough
         reaches the window ceiling (skew-independent 413 / dense-paste guard — a
         dense in-turn paste raises raw rough so the ceiling fires even if a stale
         skew would defer). Delegates the actual threshold + anti-thrash to the
-        engine's ``should_compress``."""
+        engine's ``should_compress``.
+
+        The calibrated compare uses the TRIGGER skew (cold-start prior on empty
+        history) so a fresh/resumed large session does not false-fire; the window
+        hard-frac ceiling below is skew-independent and remains the overflow
+        backstop, so the cold-start deferral can never cause a 413."""
         ctx_len = getattr(self, "context_length", 0) or 0
         hard_frac = getattr(self, "_hard_frac", self._HARD_FRAC_DEFAULT)
         if ctx_len > 0 and rough_tokens >= int(ctx_len * hard_frac):
             return self.should_compress(rough_tokens)
-        return self.should_compress(self.calibrated_tokens(rough_tokens))
+        return self.should_compress(self._trigger_calibrated_tokens(rough_tokens))
 
     # -- Optional: manual /compress preflight ------------------------------
 

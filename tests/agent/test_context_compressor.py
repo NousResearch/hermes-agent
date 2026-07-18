@@ -284,11 +284,30 @@ class TestPreflightDeferral:
 
         assert compressor.should_compress_calibrated(160_000) is True
 
-    def test_calibrated_preflight_uses_raw_without_recent_real_usage(self, compressor):
+    def test_calibrated_preflight_cold_start_defers_without_recent_real_usage(self, compressor):
+        """Empty skew history (no recent real usage) uses the conservative
+        cold-start TRIGGER prior (skew_floor 0.7), not raw rough, so a
+        schema-heavy first preflight doesn't false-fire a premature lossy
+        compaction (2026-07-18 cold-start-skew fix). ctx=100k, threshold=85k:
+        93k * 0.7 = 65,100 < 85k -> defer (real usage on the incident class fit).
+        Superseded the pre-fix ``..._uses_raw_without_recent_real_usage`` which
+        asserted the raw-rough false-fire."""
         compressor.threshold_tokens = 85_000
         compressor.last_real_prompt_tokens = 0
 
-        assert compressor.should_compress_calibrated(93_000) is True
+        # Display skew stays identity (honest 'not measured'); trigger uses floor.
+        assert compressor._current_skew() == 1.0
+        assert compressor._trigger_skew() == compressor._skew_floor
+        assert compressor.should_compress_calibrated(93_000) is False
+
+    def test_calibrated_preflight_cold_start_still_fires_at_ceiling(self, compressor):
+        """The cold-start deferral is bounded by the skew-independent hard-frac
+        ceiling (0.95 * 100k = 95k): a near-full window still compacts on empty
+        history, so overflow can never be deferred away."""
+        compressor.threshold_tokens = 85_000
+        compressor.last_real_prompt_tokens = 0
+
+        assert compressor.should_compress_calibrated(96_000) is True
 
     def test_awaiting_real_usage_after_compaction_uses_compression_rough_pair(self, compressor):
         compressor.threshold_tokens = 85_000

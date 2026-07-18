@@ -187,10 +187,14 @@ def _persist_autolowered_threshold(safe_pct: int) -> bool:
     though it "auto-corrected" last time. Writing the corrected ratio back
     to disk makes the correction stick across restarts.
 
-    Reuses ``hermes_cli.config``'s existing minimal-diff YAML read/merge/
-    write path (the same one ``hermes config set`` uses) instead of
-    hand-rolling YAML mutation, so unrelated keys and comments in
-    config.yaml are preserved.
+    Uses :func:`utils.atomic_roundtrip_yaml_update` — a ruamel.yaml
+    round-trip update scoped to the single ``compression.threshold`` key —
+    instead of the plain read/merge/:func:`hermes_cli.config.atomic_config_write`
+    path. ``atomic_config_write`` dumps the whole parsed dict back out via
+    plain ``yaml.safe_dump`` under the hood, which preserves *sibling keys*
+    but not comments, ordering, or quoting; the round-trip updater preserves
+    all of that because it edits the loaded ``CommentedMap`` in place rather
+    than re-serialising a plain dict.
 
     Returns ``True`` if the value was durably written, ``False`` if the
     write was skipped or failed for any reason (managed/package-managed
@@ -202,6 +206,7 @@ def _persist_autolowered_threshold(safe_pct: int) -> bool:
     try:
         from hermes_cli import config as hermes_config
         from hermes_cli import managed_scope
+        from utils import atomic_roundtrip_yaml_update
 
         # Package-manager-managed installs (NixOS/Homebrew service mode)
         # treat config.yaml as owned by the activation script — mirror the
@@ -221,16 +226,10 @@ def _persist_autolowered_threshold(safe_pct: int) -> bool:
         # with a partial write.
         hermes_config.require_readable_config_before_write(config_path)
 
-        user_config: dict = {}
-        if config_path.exists():
-            with open(config_path, encoding="utf-8") as f:
-                user_config = hermes_config.fast_safe_load(f) or {}
-
-        hermes_config._set_nested(
-            user_config, "compression.threshold", round(safe_pct / 100, 2)
-        )
         hermes_config.ensure_hermes_home()
-        hermes_config.atomic_config_write(config_path, user_config, sort_keys=False)
+        atomic_roundtrip_yaml_update(
+            config_path, "compression.threshold", round(safe_pct / 100, 2)
+        )
         return True
     except Exception as exc:
         logger.debug(

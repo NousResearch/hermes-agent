@@ -556,6 +556,56 @@ def test_autolower_persists_corrected_ratio_to_config_yaml(mock_get_client, mock
 
 @patch("agent.model_metadata.get_model_context_length", return_value=80_000)
 @patch("agent.auxiliary_client.get_text_auxiliary_client")
+def test_autolower_persist_preserves_comments_and_formatting(mock_get_client, mock_ctx_len):
+    """E2E: the persisted write must survive as a genuine round-trip edit —
+    user comments, key ordering, and quoting in config.yaml must all still
+    be present afterward, not just sibling *values*.
+
+    This is the regression test for the review finding on #65934: the
+    original implementation went through hermes_cli.config.atomic_config_write,
+    which re-serialises the whole parsed dict via plain yaml.safe_dump and
+    silently drops comments even though sibling *keys* survive (which is
+    all the prior test actually checked). The fix routes through
+    utils.atomic_roundtrip_yaml_update (ruamel.yaml round-trip), which
+    edits the loaded CommentedMap in place instead of re-dumping a plain
+    dict, so comments/ordering/quoting all survive.
+    """
+    from hermes_cli import config as hermes_config
+
+    agent = _make_agent(main_context=200_000, threshold_percent=0.50)
+    mock_client = MagicMock()
+    mock_client.base_url = "https://openrouter.ai/api/v1"
+    mock_client.api_key = "sk-aux"
+    mock_get_client.return_value = (mock_client, "google/gemini-3-flash-preview")
+
+    config_path = hermes_config.get_config_path()
+    config_path.write_text(
+        "# top-of-file user comment — must survive\n"
+        "model:\n"
+        "  default: some/model  # inline comment on the model key\n"
+        "compression:\n"
+        "  # comment directly above the threshold key\n"
+        "  threshold: 0.50\n",
+        encoding="utf-8",
+    )
+
+    messages = []
+    agent._emit_status = lambda msg: messages.append(msg)
+    agent._check_compression_model_feasibility()
+
+    assert "updated compression.threshold" in messages[0]
+
+    written = config_path.read_text(encoding="utf-8")
+    assert "# top-of-file user comment — must survive" in written
+    assert "# inline comment on the model key" in written
+    assert "# comment directly above the threshold key" in written
+    # The corrected value landed, in place of the stale one.
+    assert "threshold: 0.39" in written
+    assert "threshold: 0.5" not in written
+
+
+@patch("agent.model_metadata.get_model_context_length", return_value=80_000)
+@patch("agent.auxiliary_client.get_text_auxiliary_client")
 def test_autolower_managed_scope_blocked_falls_back_to_in_memory(mock_get_client, mock_ctx_len, tmp_path, monkeypatch):
     """When compression.threshold is pinned by the managed scope, the
     write must not crash and must fall back to in-memory-only correction
@@ -635,7 +685,7 @@ def test_persist_autolowered_threshold_readonly_write_returns_false(tmp_path, mo
     config_path.write_text("compression:\n  threshold: 0.50\n", encoding="utf-8")
 
     with patch(
-        "hermes_cli.config.atomic_config_write",
+        "utils.atomic_roundtrip_yaml_update",
         side_effect=OSError("Read-only file system"),
     ):
         result = _persist_autolowered_threshold(39)

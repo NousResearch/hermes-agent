@@ -198,6 +198,26 @@ def _collect(runner: _Runner) -> Mapping[str, Any]:
     )
 
 
+def test_instance_command_projects_attached_disks_with_list_slice() -> None:
+    host = provenance.FIXED_HOSTS[0]
+
+    assert provenance._instance_command(
+        host,
+        owner_reauth.OWNER_ACCOUNT,
+    ) == (
+        "compute",
+        "instances",
+        "describe",
+        host.name,
+        f"--project={foundation.PROJECT}",
+        f"--zone={foundation.ZONE}",
+        f"--account={owner_reauth.OWNER_ACCOUNT}",
+        "--format=json(id,name,zone,status,disks[].boot,"
+        "disks[].deviceName,disks[].source)",
+        "--quiet",
+    )
+
+
 def test_two_fixed_hosts_bind_exact_image_package_and_digest() -> None:
     evidence = _collect(_Runner())
 

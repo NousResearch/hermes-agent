@@ -8049,7 +8049,12 @@ def save_anthropic_api_key(value: str, save_fn=None):
 
 
 def save_env_value_secure(key: str, value: str) -> Dict[str, Any]:
-    save_env_value(key, value)
+    # Route through the unified credential lifecycle so a rotation via the
+    # secret-capture path also refreshes any config.yaml mirror of the old
+    # value and lifts a prior env-source suppression (#62269 fix family).
+    from hermes_cli.credential_lifecycle import save_provider_env_credential
+
+    save_provider_env_credential(key, value)
     return {
         "success": True,
         "stored_as": key,
@@ -8469,7 +8474,11 @@ def set_config_value(key: str, value: str):
         sys.exit(1)
     # Check if it's an API key (goes to .env)
     if _is_env_config_key(key):
-        save_env_value(key.upper(), value)
+        # Unified lifecycle: also rotates any config.yaml mirror of the old
+        # value so a stale higher-precedence copy can't win (#62269).
+        from hermes_cli.credential_lifecycle import save_provider_env_credential
+
+        save_provider_env_credential(key.upper(), value)
         print(f"✓ Set {key} in {get_env_path()}")
         return
     
@@ -8575,8 +8584,12 @@ def unset_config_value(key: str):
         sys.exit(1)
 
     if _is_env_config_key(key):
-        removed = remove_env_value(key.upper())
-        if not removed:
+        # Unified lifecycle: prune env-seeded credential_pool entries and
+        # model-cache rows too, so `hermes config unset <KEY>` fully removes
+        # the provider instead of leaving it resurrectable (#51071 family).
+        from hermes_cli.credential_lifecycle import remove_provider_env_credential
+
+        if not remove_provider_env_credential(key.upper()).get("found"):
             print(f"Config key not set: {key}", file=sys.stderr)
             sys.exit(1)
         print(f"✓ Unset {key} from {get_env_path()}")

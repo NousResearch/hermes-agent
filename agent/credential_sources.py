@@ -328,7 +328,9 @@ def _remove_qwen_cli(provider: str, removed) -> RemovalResult:
     return RemovalResult(hints=[
         "Suppressed qwen-cli credential — it will not be re-seeded.",
         "Note: Qwen CLI credentials still live in ~/.qwen/oauth_creds.json",
-        "Run `hermes auth add qwen-oauth` to re-enable if needed.",
+        # The `qwen auth` CLI subcommand was removed in Qwen CLI 0.19.x.
+        "Run `qwen` interactively and use `/auth` to re-enable, or edit",
+        "~/.qwen/oauth_creds.json / ~/.qwen/settings.json manually.",
     ])
 
 

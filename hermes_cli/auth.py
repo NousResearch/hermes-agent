@@ -2308,7 +2308,9 @@ def _read_qwen_cli_tokens() -> Dict[str, Any]:
     auth_path = _qwen_cli_auth_path()
     if not auth_path.exists():
         raise AuthError(
-            "Qwen CLI credentials not found. Run 'qwen auth qwen-oauth' first.",
+            "Qwen CLI credentials not found. The Qwen CLI's `qwen auth` subcommand "
+            "was removed in 0.19.x — run `qwen` interactively and use `/auth`, "
+            "or write ~/.qwen/oauth_creds.json / ~/.qwen/settings.json manually.",
             provider="qwen-oauth",
             code="qwen_auth_missing",
         )
@@ -2372,7 +2374,9 @@ def _refresh_qwen_cli_tokens(tokens: Dict[str, Any], timeout_seconds: float = 20
     refresh_token = str(tokens.get("refresh_token", "") or "").strip()
     if not refresh_token:
         raise AuthError(
-            "Qwen OAuth refresh token missing. Re-run 'qwen auth qwen-oauth'.",
+            "Qwen OAuth refresh token missing. Run `qwen` interactively and use "
+            "`/auth` to re-authenticate (the `qwen auth` CLI subcommand was "
+            "removed in Qwen CLI 0.19.x).",
             provider="qwen-oauth",
             code="qwen_refresh_token_missing",
         )
@@ -2401,7 +2405,9 @@ def _refresh_qwen_cli_tokens(tokens: Dict[str, Any], timeout_seconds: float = 20
     if response.status_code >= 400:
         body = response.text.strip()
         raise AuthError(
-            "Qwen OAuth refresh failed. Re-run 'qwen auth qwen-oauth'."
+            "Qwen OAuth refresh failed. The `qwen auth` CLI subcommand was "
+            "removed in Qwen CLI 0.19.x — run `qwen` interactively and use "
+            "`/auth` to re-authenticate, or update ~/.qwen/oauth_creds.json."
             + (f" Response: {body}" if body else ""),
             provider="qwen-oauth",
             code="qwen_refresh_failed",
@@ -2475,7 +2481,9 @@ def resolve_qwen_runtime_credentials(
         access_token = str(tokens.get("access_token", "") or "").strip()
     if not access_token:
         raise AuthError(
-            "Qwen OAuth access token missing. Re-run 'qwen auth qwen-oauth'.",
+            "Qwen OAuth access token missing. Run `qwen` interactively and use "
+            "`/auth` to re-authenticate (the `qwen auth` CLI subcommand was "
+            "removed in Qwen CLI 0.19.x).",
             provider="qwen-oauth",
             code="qwen_access_token_missing",
         )

@@ -287,6 +287,389 @@ class _PreflightRuntimeFailureProvider(_FakeProvider):
         )
 
 
+class _DelayedVisibilityProvider(_FakeProvider):
+    def __init__(
+        self,
+        chain: apply.ValidatedFoundationAChain,
+        *,
+        hidden_reads: int,
+    ) -> None:
+        super().__init__(chain)
+        self.hidden_reads = hidden_reads
+
+    def inspect_resource(
+        self,
+        step: gate.PlanStep,
+        *,
+        plan: gate.OwnerGateFoundationPlan,
+    ) -> apply.ResourceObservation:
+        if (
+            step.name == self.plan.foundation_steps[0].name
+            and self.states[step.name] == "exact"
+            and self.hidden_reads > 0
+        ):
+            self.hidden_reads -= 1
+            return apply.ResourceObservation(
+                "absent",
+                _digest(f"delayed:{step.name}:{self.hidden_reads}"),
+            )
+        return super().inspect_resource(step, plan=plan)
+
+
+class _DriftingPostconditionProvider(_FakeProvider):
+    def __init__(self, chain: apply.ValidatedFoundationAChain) -> None:
+        super().__init__(chain)
+        self.returned_drift = False
+
+    def inspect_resource(
+        self,
+        step: gate.PlanStep,
+        *,
+        plan: gate.OwnerGateFoundationPlan,
+    ) -> apply.ResourceObservation:
+        if (
+            step.name == self.plan.foundation_steps[0].name
+            and self.states[step.name] == "exact"
+            and not self.returned_drift
+        ):
+            self.returned_drift = True
+            return apply.ResourceObservation(
+                "drift",
+                _digest(f"drift:{step.name}"),
+            )
+        return super().inspect_resource(step, plan=plan)
+
+
+class _RollbackPostconditionProvider(_FakeProvider):
+    def __init__(
+        self,
+        chain: apply.ValidatedFoundationAChain,
+        *,
+        rollback_post_states: list[str],
+        **kwargs: Any,
+    ) -> None:
+        super().__init__(chain, **kwargs)
+        self.rollback_post_states = list(rollback_post_states)
+        self.rollback_target: str | None = None
+        self.rollback_inspections = 0
+
+    def rollback_step(
+        self,
+        original_step: gate.PlanStep,
+        rollback_step: gate.PlanStep,
+        *,
+        plan: gate.OwnerGateFoundationPlan,
+        attempt_id: str,
+        precondition: Mapping[str, Any] | None,
+    ) -> apply.OperationObservation:
+        operation = super().rollback_step(
+            original_step,
+            rollback_step,
+            plan=plan,
+            attempt_id=attempt_id,
+            precondition=precondition,
+        )
+        self.rollback_target = original_step.name
+        return operation
+
+    def inspect_resource(
+        self,
+        step: gate.PlanStep,
+        *,
+        plan: gate.OwnerGateFoundationPlan,
+    ) -> apply.ResourceObservation:
+        if (
+            step.name == self.rollback_target
+            and self.rollback_post_states
+        ):
+            self.rollback_inspections += 1
+            state = self.rollback_post_states.pop(0)
+            if state == "exact":
+                stored = self.states[step.name]
+                self.states[step.name] = "exact"
+                try:
+                    return super().inspect_resource(step, plan=plan)
+                finally:
+                    self.states[step.name] = stored
+            if state in {"drift", "unknown"}:
+                return apply.ResourceObservation(
+                    state,
+                    _digest(
+                        f"rollback-post:{step.name}:{state}:"
+                        f"{self.rollback_inspections}"
+                    ),
+                )
+            assert state == "absent"
+        return super().inspect_resource(step, plan=plan)
+
+
+def test_completed_create_waits_for_exact_provider_visibility(
+    tmp_path: Path,
+) -> None:
+    chain = _chain()
+    provider = _DelayedVisibilityProvider(chain, hidden_reads=3)
+    waits: list[float] = []
+
+    receipt = apply._apply_with_provider(
+        chain=chain,
+        private_key=helpers.RELEASE_KEY,
+        provider=provider,
+        journal=_journal_for_test(tmp_path / "journal"),
+        now_unix=lambda: helpers.NOW + 2,
+        postcondition_wait=waits.append,
+    )
+
+    assert len(receipt["applied_steps"]) == len(
+        chain.plan.foundation_steps
+    )
+    assert waits == [apply._POSTCONDITION_VISIBILITY_DELAY_SECONDS] * 3
+    assert provider.execute_calls == [
+        step.name for step in chain.plan.foundation_steps
+    ]
+
+
+def test_completed_create_visibility_wait_is_finite_and_fail_closed(
+    tmp_path: Path,
+) -> None:
+    chain = _chain()
+    provider = _DelayedVisibilityProvider(
+        chain,
+        hidden_reads=apply._POSTCONDITION_VISIBILITY_ATTEMPTS + 1,
+    )
+    waits: list[float] = []
+
+    with pytest.raises(apply.FoundationApplyFailed) as caught:
+        apply._apply_with_provider(
+            chain=chain,
+            private_key=helpers.RELEASE_KEY,
+            provider=provider,
+            journal=_journal_for_test(tmp_path / "journal"),
+            now_unix=lambda: helpers.NOW + 2,
+            postcondition_wait=waits.append,
+        )
+
+    assert caught.value.receipt["failure_code"] == (
+        "owner_gate_foundation_postcondition_not_exact"
+    )
+    assert caught.value.receipt["terminal_state"] == (
+        "manual_reconciliation_required"
+    )
+    assert waits == [apply._POSTCONDITION_VISIBILITY_DELAY_SECONDS] * (
+        apply._POSTCONDITION_VISIBILITY_ATTEMPTS - 1
+    )
+
+
+def test_completed_create_never_retries_postcondition_drift(
+    tmp_path: Path,
+) -> None:
+    chain = _chain()
+    provider = _DriftingPostconditionProvider(chain)
+    waits: list[float] = []
+
+    with pytest.raises(apply.FoundationApplyFailed) as caught:
+        apply._apply_with_provider(
+            chain=chain,
+            private_key=helpers.RELEASE_KEY,
+            provider=provider,
+            journal=_journal_for_test(tmp_path / "journal"),
+            now_unix=lambda: helpers.NOW + 2,
+            postcondition_wait=waits.append,
+        )
+
+    assert caught.value.receipt["failure_code"] == (
+        "owner_gate_foundation_postcondition_not_exact"
+    )
+    assert waits == []
+
+
+def test_completed_rollback_waits_for_absent_provider_visibility(
+    tmp_path: Path,
+) -> None:
+    chain = _chain()
+    created = chain.plan.foundation_steps[0]
+    failed = chain.plan.foundation_steps[1]
+    provider = _RollbackPostconditionProvider(
+        chain,
+        rollback_post_states=["exact"] * 3,
+        fail_step=failed.name,
+        failure_state="failed",
+    )
+    waits: list[float] = []
+
+    with pytest.raises(apply.FoundationApplyFailed) as caught:
+        apply._apply_with_provider(
+            chain=chain,
+            private_key=helpers.RELEASE_KEY,
+            provider=provider,
+            journal=_journal_for_test(tmp_path / "journal"),
+            now_unix=lambda: helpers.NOW + 2,
+            postcondition_wait=waits.append,
+        )
+
+    assert provider.rollback_calls == [created.name]
+    assert provider.rollback_inspections == 3
+    assert waits == [apply._POSTCONDITION_VISIBILITY_DELAY_SECONDS] * 3
+    assert caught.value.receipt["terminal_state"] == "rolled_back_clean"
+    assert [
+        item["disposition"]
+        for item in caught.value.receipt["rollback_step_receipts"]
+    ] == ["rolled_back"]
+
+
+def test_completed_rollback_never_retries_postcondition_drift(
+    tmp_path: Path,
+) -> None:
+    chain = _chain()
+    failed = chain.plan.foundation_steps[1]
+    provider = _RollbackPostconditionProvider(
+        chain,
+        rollback_post_states=["drift"],
+        fail_step=failed.name,
+        failure_state="failed",
+    )
+    waits: list[float] = []
+
+    with pytest.raises(apply.FoundationApplyFailed) as caught:
+        apply._apply_with_provider(
+            chain=chain,
+            private_key=helpers.RELEASE_KEY,
+            provider=provider,
+            journal=_journal_for_test(tmp_path / "journal"),
+            now_unix=lambda: helpers.NOW + 2,
+            postcondition_wait=waits.append,
+        )
+
+    assert provider.rollback_inspections == 1
+    assert waits == []
+    assert caught.value.receipt["terminal_state"] == (
+        "manual_reconciliation_required"
+    )
+    assert caught.value.receipt["rollback_step_receipts"][0][
+        "disposition"
+    ] == "rollback_unknown"
+
+
+def test_noncompleted_rollback_observes_once_without_waiting(
+    tmp_path: Path,
+) -> None:
+    chain = _chain()
+    created = chain.plan.foundation_steps[0]
+    failed = chain.plan.foundation_steps[1]
+    provider = _RollbackPostconditionProvider(
+        chain,
+        rollback_post_states=["exact", "absent"],
+        fail_step=failed.name,
+        failure_state="failed",
+        rollback_failure_step=created.name,
+    )
+    waits: list[float] = []
+
+    with pytest.raises(apply.FoundationApplyFailed) as caught:
+        apply._apply_with_provider(
+            chain=chain,
+            private_key=helpers.RELEASE_KEY,
+            provider=provider,
+            journal=_journal_for_test(tmp_path / "journal"),
+            now_unix=lambda: helpers.NOW + 2,
+            postcondition_wait=waits.append,
+        )
+
+    assert provider.rollback_inspections == 1
+    assert provider.rollback_post_states == ["absent"]
+    assert waits == []
+    assert caught.value.receipt["terminal_state"] == (
+        "manual_reconciliation_required"
+    )
+    assert caught.value.receipt["rollback_step_receipts"][0][
+        "disposition"
+    ] == "rollback_unknown"
+
+
+def test_rollback_visibility_recheck_fails_when_reauth_expires(
+    tmp_path: Path,
+) -> None:
+    chain = _chain()
+    failed = chain.plan.foundation_steps[1]
+    provider = _RollbackPostconditionProvider(
+        chain,
+        rollback_post_states=["exact", "absent"],
+        fail_step=failed.name,
+        failure_state="failed",
+    )
+    expired = False
+    expires_at = int(
+        chain.owner_reauthentication_receipt["expires_at_unix"]
+    )
+    waits: list[float] = []
+
+    def now_unix() -> int:
+        return expires_at + 1 if expired else helpers.NOW + 2
+
+    def wait(seconds: float) -> None:
+        nonlocal expired
+        waits.append(seconds)
+        expired = True
+
+    with pytest.raises(apply.FoundationApplyFailed) as caught:
+        apply._apply_with_provider(
+            chain=chain,
+            private_key=helpers.RELEASE_KEY,
+            provider=provider,
+            journal=_journal_for_test(tmp_path / "journal"),
+            now_unix=now_unix,
+            postcondition_wait=wait,
+        )
+
+    assert provider.rollback_inspections == 1
+    assert provider.rollback_post_states == ["absent"]
+    assert waits == [apply._POSTCONDITION_VISIBILITY_DELAY_SECONDS]
+    assert caught.value.receipt["terminal_state"] == (
+        "manual_reconciliation_required"
+    )
+    assert caught.value.receipt["rollback_step_receipts"][0][
+        "disposition"
+    ] == "rollback_unknown"
+
+
+def test_completed_rollback_visibility_wait_is_finite_and_manual(
+    tmp_path: Path,
+) -> None:
+    chain = _chain()
+    failed = chain.plan.foundation_steps[1]
+    provider = _RollbackPostconditionProvider(
+        chain,
+        rollback_post_states=["exact"]
+        * (apply._POSTCONDITION_VISIBILITY_ATTEMPTS + 1),
+        fail_step=failed.name,
+        failure_state="failed",
+    )
+    waits: list[float] = []
+
+    with pytest.raises(apply.FoundationApplyFailed) as caught:
+        apply._apply_with_provider(
+            chain=chain,
+            private_key=helpers.RELEASE_KEY,
+            provider=provider,
+            journal=_journal_for_test(tmp_path / "journal"),
+            now_unix=lambda: helpers.NOW + 2,
+            postcondition_wait=waits.append,
+        )
+
+    assert provider.rollback_inspections == (
+        apply._POSTCONDITION_VISIBILITY_ATTEMPTS
+    )
+    assert provider.rollback_post_states == ["exact"]
+    assert waits == [apply._POSTCONDITION_VISIBILITY_DELAY_SECONDS] * (
+        apply._POSTCONDITION_VISIBILITY_ATTEMPTS - 1
+    )
+    assert caught.value.receipt["terminal_state"] == (
+        "manual_reconciliation_required"
+    )
+    assert caught.value.receipt["rollback_step_receipts"][0][
+        "disposition"
+    ] == "rollback_unknown"
+
+
 def test_iam_cas_add_and_remove_use_real_policy_etag(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

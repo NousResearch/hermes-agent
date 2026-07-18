@@ -185,6 +185,8 @@ JOURNAL_TRANSITION_PURPOSE = "muncho_owner_gate_crash_safe_foundation_transition
 JOURNAL_SIGNATURE_DOMAIN = b"muncho-owner-gate/foundation-transition/v1\x00"
 MAX_JSON_BYTES = 16 * 1024 * 1024
 COMMAND_TIMEOUT_SECONDS = 180.0
+_POSTCONDITION_VISIBILITY_ATTEMPTS = 12
+_POSTCONDITION_VISIBILITY_DELAY_SECONDS = 1.0
 
 _SHA256 = re.compile(r"^[0-9a-f]{64}$")
 _NUMERIC_ID = re.compile(r"^[1-9][0-9]{5,30}$")
@@ -219,6 +221,10 @@ _ROLLBACK_DISPOSITIONS = frozenset({
     "rollback_unknown",
     "not_attempted_manual",
 })
+
+
+def _no_postcondition_wait(_seconds: float) -> None:
+    """Keep the private test seam fast; production supplies ``time.sleep``."""
 
 _FAILURE_BODY_FIELDS = frozenset({
     "schema",
@@ -1740,6 +1746,48 @@ def _binding_cas_exact(
     )
 
 
+def _observe_completed_postcondition(
+    *,
+    provider: FoundationApplyProvider,
+    chain: ValidatedFoundationAChain,
+    step: foundation.PlanStep,
+    operation: OperationObservation,
+    expected_state: str,
+    now_unix: Callable[[], int],
+    wait: Callable[[float], None],
+) -> ResourceObservation:
+    """Bound only provider visibility lag after a confirmed operation.
+
+    Drift is never retried.  After a provider reported ``completed``, only the
+    inverse stable state or an unstable read may be observed again.  Every
+    retry rechecks the sealed runtime and owner-reauthentication lifetime.
+    """
+
+    if expected_state not in {"exact", "absent"}:
+        _error("owner_gate_foundation_postcondition_state_invalid")
+    if operation.state != "completed":
+        post = provider.inspect_resource(step, plan=chain.plan)
+        post.validate()
+        return post
+    transient_states = (
+        {"absent", "unknown"}
+        if expected_state == "exact"
+        else {"exact", "unknown"}
+    )
+    for attempt in range(_POSTCONDITION_VISIBILITY_ATTEMPTS):
+        provider.assert_stable()
+        _fresh_reauth(chain, now_unix=now_unix())
+        post = provider.inspect_resource(step, plan=chain.plan)
+        post.validate()
+        if (
+            post.state not in transient_states
+            or attempt + 1 == _POSTCONDITION_VISIBILITY_ATTEMPTS
+        ):
+            return post
+        wait(_POSTCONDITION_VISIBILITY_DELAY_SECONDS)
+    raise AssertionError("bounded postcondition observation exhausted")
+
+
 def _rollback_binding_cas_exact(
     step: foundation.PlanStep,
     *,
@@ -1779,6 +1827,7 @@ def _rollback_created(
     transaction_id: str,
     created_steps: Sequence[foundation.PlanStep],
     now_unix: Callable[[], int],
+    postcondition_wait: Callable[[float], None],
 ) -> tuple[list[Mapping[str, Any]], bool]:
     receipts: list[Mapping[str, Any]] = []
     partial_unknown = False
@@ -1946,8 +1995,15 @@ def _rollback_created(
                         )
                     before_precondition = dict(raw_precondition)
                 operation = _operation_from_transition(operation_body)
-                post = provider.inspect_resource(step, plan=chain.plan)
-                post.validate()
+                post = _observe_completed_postcondition(
+                    provider=provider,
+                    chain=chain,
+                    step=step,
+                    operation=operation,
+                    expected_state="absent",
+                    now_unix=now_unix,
+                    wait=postcondition_wait,
+                )
                 disposition = (
                     "rolled_back"
                     if (
@@ -2035,6 +2091,7 @@ def _failure(
     created_steps: Sequence[foundation.PlanStep],
     inherently_unknown: bool,
     now_unix: Callable[[], int],
+    postcondition_wait: Callable[[float], None],
 ) -> FoundationApplyFailed:
     existing = _read_transition(
         journal=journal,
@@ -2105,6 +2162,7 @@ def _failure(
             transaction_id=transaction_id,
             created_steps=created_steps,
             now_unix=now_unix,
+            postcondition_wait=postcondition_wait,
         )
     partial = inherently_unknown or rollback_unknown
     body = {
@@ -2188,6 +2246,7 @@ def _apply_with_provider(
     provider: FoundationApplyProvider,
     journal: foundation_journal.FoundationApplyJournal,
     now_unix: Callable[[], int],
+    postcondition_wait: Callable[[float], None] = _no_postcondition_wait,
 ) -> Mapping[str, Any]:
     """Private seam holding one OS lease for the complete state machine."""
     if (
@@ -2195,6 +2254,7 @@ def _apply_with_provider(
         or chain._marker is not _CHAIN_MARKER
         or not isinstance(private_key, Ed25519PrivateKey)
         or not isinstance(journal, foundation_journal.FoundationApplyJournal)
+        or not callable(postcondition_wait)
     ):
         _error("owner_gate_foundation_apply_boundary_invalid")
     transaction_id = _transaction_id(chain)
@@ -2207,6 +2267,7 @@ def _apply_with_provider(
                 journal=journal,
                 transaction_id=transaction_id,
                 now_unix=now_unix,
+                postcondition_wait=postcondition_wait,
             )
     except FoundationApplyFailed:
         raise
@@ -2224,6 +2285,7 @@ def _apply_with_leased_provider(
     journal: foundation_journal.FoundationApplyJournal,
     transaction_id: str,
     now_unix: Callable[[], int],
+    postcondition_wait: Callable[[float], None],
 ) -> Mapping[str, Any]:
     started_now = now_unix()
     if type(started_now) is not int or started_now <= 0:
@@ -2365,6 +2427,7 @@ def _apply_with_leased_provider(
             created_steps=created_steps_from_intent,
             inherently_unknown=inherently_unknown,
             now_unix=now_unix,
+            postcondition_wait=postcondition_wait,
         )
     if success is not None and isinstance(success.get("receipt"), Mapping):
         provider.assert_stable()
@@ -2523,6 +2586,7 @@ def _apply_with_leased_provider(
                         created_steps=created_steps,
                         inherently_unknown=True,
                         now_unix=now_unix,
+                        postcondition_wait=postcondition_wait,
                     )
                 if before.state == "exact":
                     body = _transition_body(
@@ -2604,6 +2668,7 @@ def _apply_with_leased_provider(
                     created_steps=created_steps,
                     inherently_unknown=True,
                     now_unix=now_unix,
+                    postcondition_wait=postcondition_wait,
                 )
             if operation_body is None:
                 if pre_body is None:
@@ -2673,8 +2738,15 @@ def _apply_with_leased_provider(
                     private_key=private_key,
                 )
             operation = _operation_from_transition(operation_body)
-            post = provider.inspect_resource(step, plan=chain.plan)
-            post.validate()
+            post = _observe_completed_postcondition(
+                provider=provider,
+                chain=chain,
+                step=step,
+                operation=operation,
+                expected_state="exact",
+                now_unix=now_unix,
+                wait=postcondition_wait,
+            )
             if (
                 operation.state != "completed"
                 or post.state != "exact"
@@ -2710,6 +2782,7 @@ def _apply_with_leased_provider(
                         or step.name.startswith("bind_narrow_")
                     ),
                     now_unix=now_unix,
+                    postcondition_wait=postcondition_wait,
                 )
             post_body = _transition_body(
                 chain=chain,
@@ -2800,6 +2873,7 @@ def _apply_with_leased_provider(
                 created_steps=created_steps,
             ),
             now_unix=now_unix,
+            postcondition_wait=postcondition_wait,
         ) from None
     except Exception as exc:
         raise _failure(
@@ -2822,6 +2896,7 @@ def _apply_with_leased_provider(
                 created_steps=created_steps,
             ),
             now_unix=now_unix,
+            postcondition_wait=postcondition_wait,
         ) from None
 
 
@@ -4301,6 +4376,7 @@ def apply_foundation_from_canonical_artifacts(
         provider=provider,
         journal=foundation_journal.FoundationApplyJournal(),
         now_unix=lambda: int(time.time()),
+        postcondition_wait=time.sleep,
     )
 
 

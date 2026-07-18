@@ -196,3 +196,75 @@ def test_final_response_closes_tool_tail_before_persistence(monkeypatch):
     assert result["messages"][-1] == {"role": "assistant", "content": "Done."}
     assert agent.persisted_messages is not None
     assert agent.persisted_messages[-1] == {"role": "assistant", "content": "Done."}
+
+
+def test_finalizer_hands_leftover_steer_to_caller(monkeypatch):
+    """A /steer that landed after the last tool batch (e.g. during a text-only
+    final answer, which the streaming loop now breaks at the steer point) has
+    no tool result to drain into. The finalizer must hand it back in
+    result["pending_steer"] so the caller (gateway/TUI) can deliver it as the
+    next turn instead of dropping it."""
+    monkeypatch.setattr("hermes_cli.plugins.invoke_hook", lambda *_a, **_kw: [])
+    agent = FakeAgent()
+    # The drain returns the pending steer exactly once (the real
+    # _drain_pending_steer clears the slot on read).
+    drained = {"n": 0}
+
+    def _drain_once():
+        drained["n"] += 1
+        return "check the logs instead" if drained["n"] == 1 else None
+
+    agent._drain_pending_steer = _drain_once
+    messages = [
+        {"role": "user", "content": "write the summary"},
+        {"role": "assistant", "content": "Here is the summary..."},
+    ]
+
+    result = finalize_turn(
+        agent,
+        final_response="Here is the summary...",
+        api_call_count=1,
+        interrupted=False,
+        failed=False,
+        messages=messages,
+        conversation_history=[],
+        effective_task_id="task",
+        turn_id="turn",
+        user_message="write the summary",
+        original_user_message="write the summary",
+        _should_review_memory=False,
+        _turn_exit_reason="text_response(finish_reason=stop)",
+    )
+
+    assert result["pending_steer"] == "check the logs instead"
+    # Drained exactly once — the slot is not read twice within a turn.
+    assert drained["n"] == 1
+
+
+def test_finalizer_omits_pending_steer_when_none(monkeypatch):
+    """No pending steer → the key is absent, so the caller's
+    ``result.get("pending_steer")`` delivery guard stays inert."""
+    monkeypatch.setattr("hermes_cli.plugins.invoke_hook", lambda *_a, **_kw: [])
+    agent = FakeAgent()  # FakeAgent._drain_pending_steer returns None
+    messages = [
+        {"role": "user", "content": "hi"},
+        {"role": "assistant", "content": "hello"},
+    ]
+
+    result = finalize_turn(
+        agent,
+        final_response="hello",
+        api_call_count=1,
+        interrupted=False,
+        failed=False,
+        messages=messages,
+        conversation_history=[],
+        effective_task_id="task",
+        turn_id="turn",
+        user_message="hi",
+        original_user_message="hi",
+        _should_review_memory=False,
+        _turn_exit_reason="text_response(finish_reason=stop)",
+    )
+
+    assert "pending_steer" not in result

@@ -2460,6 +2460,27 @@ def interruptible_streaming_api_call(agent, api_kwargs: dict, *, on_first_delta=
             if agent._interrupt_requested:
                 break
 
+            # A /steer that arrives while the model is generating a text-only
+            # final answer has no tool result to piggyback on: it sits pending
+            # until the whole answer finishes and only then runs as a queued
+            # follow-up turn.  Break the stream at the steer point instead —
+            # the partial answer commits normally (effective_finish_reason
+            # falls back to "stop") and the leftover steer is handed back by
+            # the turn finalizer in result["pending_steer"] for immediate
+            # redelivery as the next turn.  Tool-call generation is untouched
+            # (the injection path already owns it), and the size floor keeps a
+            # just-started answer streaming: breaking on the first token would
+            # commit a bare sentence fragment as a real message, while an
+            # answer that never reaches the floor finishes quickly and the
+            # steer still lands through the leftover path.
+            if (
+                getattr(agent, "_pending_steer", None)
+                and not tool_calls_acc
+                and sum(len(_p) for _p in content_parts) >= 120
+            ):
+                finish_reason = "stop"
+                break
+
             if not chunk.choices:
                 if hasattr(chunk, "model") and chunk.model:
                     model_name = chunk.model

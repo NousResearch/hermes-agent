@@ -219,6 +219,21 @@ def arm_shutdown_watchdog(
                 stream.flush()
             except Exception:
                 pass
+        # Mirror _exit_after_graceful_shutdown: release PID file + runtime
+        # lock BEFORE the log drain (locks must never be stranded), then
+        # drain the async log queue so the logger.critical above actually
+        # reaches the file before os._exit bypasses atexit. (#66892)
+        try:
+            from gateway.status import remove_pid_file, release_gateway_runtime_lock
+            remove_pid_file()
+            release_gateway_runtime_lock()
+        except Exception:
+            pass
+        try:
+            from hermes_logging import drain_log_queue
+            drain_log_queue(timeout=1.0)
+        except Exception:
+            pass
         os._exit(exit_code)
 
     try:

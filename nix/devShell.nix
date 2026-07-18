@@ -32,6 +32,10 @@
               mkdir -p $out/bin
               install -Dm755 ${../hermes} $out/bin/hermes
             '')
+            (pkgs.runCommand "dev-sandbox" { } ''
+              mkdir -p $out/bin
+              install -Dm755 ${../scripts/dev-sandbox.sh} $out/bin/sandbox
+            '')
             uv
           ]
           ++ self'.packages.default.passthru.devDeps;
@@ -42,7 +46,7 @@
           # for the devshell to pick up the src
           export HERMES_PYTHON_SRC_ROOT=$(git rev-parse --show-toplevel)
           echo "Hermes Agent dev shell in $HERMES_PYTHON_SRC_ROOT"
-          echo "Ready. Run 'hermes' to start."
+          echo "Ready. Run 'hermes' or 'sandbox hermes' to start."
         '';
       };
     };

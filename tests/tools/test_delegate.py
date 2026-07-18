@@ -200,6 +200,96 @@ class TestStripBlockedTools(unittest.TestCase):
                     f"but was not stripped",
                 )
 
+    def test_mixed_composite_is_subtracted_at_child_assembly(self):
+        """A mixed platform bundle must not re-expose blocked leaf tools.
+
+        ``hermes-cli`` contains both allowed tools and every sensitive
+        delegate tool, so it cannot be dropped wholesale. Child construction
+        must instead pass exact one-tool deny toolsets to AIAgent, where
+        model_tools applies them after resolving the composite.
+        """
+        import model_tools
+
+        parent = _make_mock_parent()
+        parent.enabled_toolsets = ["hermes-cli"]
+        parent.disabled_toolsets = ["browser"]
+
+        with patch("run_agent.AIAgent") as MockAgent:
+            MockAgent.return_value = MagicMock()
+            _build_child_agent(
+                task_index=0,
+                goal="Inspect safely",
+                context=None,
+                toolsets=None,
+                model=None,
+                max_iterations=10,
+                parent_agent=parent,
+                task_count=1,
+                role="leaf",
+            )
+
+        _, kwargs = MockAgent.call_args
+        disabled = kwargs["disabled_toolsets"]
+        self.assertIn("browser", disabled)
+        for toolset_name in (
+            "clarify",
+            "cronjob",
+            "delegation",
+            "code_execution",
+            "memory",
+        ):
+            self.assertIn(toolset_name, disabled)
+
+        definitions = model_tools.get_tool_definitions(
+            enabled_toolsets=kwargs["enabled_toolsets"],
+            disabled_toolsets=disabled,
+            quiet_mode=True,
+            skip_tool_search_assembly=True,
+        )
+        names = {item["function"]["name"] for item in definitions}
+        self.assertTrue(names & {"terminal", "read_file", "web_search"})
+        self.assertTrue(DELEGATE_BLOCKED_TOOLS.isdisjoint(names))
+
+    def test_orchestrator_composite_regains_only_delegate_task(self):
+        import model_tools
+
+        parent = _make_mock_parent()
+        parent.enabled_toolsets = ["hermes-cli"]
+        parent.disabled_toolsets = ["delegation", "browser"]
+
+        with (
+            patch("run_agent.AIAgent") as MockAgent,
+            patch("tools.delegate_tool._get_orchestrator_enabled", return_value=True),
+            patch("tools.delegate_tool._get_max_spawn_depth", return_value=2),
+        ):
+            MockAgent.return_value = MagicMock()
+            _build_child_agent(
+                task_index=0,
+                goal="Coordinate safely",
+                context=None,
+                toolsets=None,
+                model=None,
+                max_iterations=10,
+                parent_agent=parent,
+                task_count=1,
+                role="orchestrator",
+            )
+
+        _, kwargs = MockAgent.call_args
+        disabled = kwargs["disabled_toolsets"]
+        self.assertNotIn("delegation", disabled)
+        definitions = model_tools.get_tool_definitions(
+            enabled_toolsets=kwargs["enabled_toolsets"],
+            disabled_toolsets=disabled,
+            quiet_mode=True,
+            skip_tool_search_assembly=True,
+        )
+        names = {item["function"]["name"] for item in definitions}
+        self.assertIn("delegate_task", names)
+        self.assertTrue(
+            (DELEGATE_BLOCKED_TOOLS - {"delegate_task"}).isdisjoint(names)
+        )
+
 
 class TestDelegateTask(unittest.TestCase):
     def test_no_parent_agent(self):
@@ -562,7 +652,11 @@ class TestToolNamePreservation(unittest.TestCase):
             captured["acp_command"] = kwargs.get("acp_command")
             captured["acp_args"] = kwargs.get("acp_args")
 
-        mock_which.assert_called_with("copilot")
+        # any_call, not called_with: the patch is global to shutil.which, so an
+        # unrelated which("uv") from a code path reached later in the same
+        # process (order-dependent under CI test-slicing) can be the *last*
+        # call. The intent here is only that the copilot binary was probed.
+        mock_which.assert_any_call("copilot")
         self.assertNotEqual(
             captured["provider"],
             "copilot-acp",
@@ -1266,6 +1360,24 @@ class TestDelegationCredentialResolution(unittest.TestCase):
         )
 
     @patch("hermes_cli.runtime_provider.resolve_runtime_provider")
+    def test_provider_forwards_runtime_request_overrides_and_output_cap(self, mock_resolve):
+        mock_resolve.return_value = {
+            "provider": "custom",
+            "model": "real-model",
+            "base_url": "https://gateway.example/v1",
+            "api_key": "gateway-key",
+            "api_mode": "chat_completions",
+            "request_overrides": {"extra_body": {"store": False}},
+            "max_output_tokens": 3072,
+        }
+        creds = _resolve_delegation_credentials(
+            {"model": "real-model", "provider": "gateway"},
+            _make_mock_parent(depth=0),
+        )
+        self.assertEqual(creds["request_overrides"], {"extra_body": {"store": False}})
+        self.assertEqual(creds["max_output_tokens"], 3072)
+
+    @patch("hermes_cli.runtime_provider.resolve_runtime_provider")
     def test_standard_provider_not_overwritten_by_configured_name(self, mock_resolve):
         """Standard (non-custom) providers must still return runtime identity,
         not the configured name, to preserve existing behaviour for openrouter,
@@ -1446,6 +1558,8 @@ class TestDelegationProviderIntegration(unittest.TestCase):
         parent.providers_ignored = ["openai/gpt-4o-mini"]
         parent.providers_order = ["google/gemini-2.5-pro"]
         parent.provider_sort = "price"
+        parent.provider_require_parameters = True
+        parent.provider_data_collection = "deny"
 
         with patch("run_agent.AIAgent") as MockAgent:
             mock_child = MagicMock()
@@ -1464,6 +1578,44 @@ class TestDelegationProviderIntegration(unittest.TestCase):
             self.assertIsNone(kwargs["providers_ignored"])
             self.assertIsNone(kwargs["providers_order"])
             self.assertIsNone(kwargs["provider_sort"])
+            self.assertIs(kwargs["provider_require_parameters"], False)
+            self.assertEqual(kwargs["provider_data_collection"], "")
+
+    @patch("tools.delegate_tool._load_config")
+    @patch("tools.delegate_tool._resolve_delegation_credentials")
+    def test_same_provider_inherits_all_routing_preferences(self, mock_creds, mock_cfg):
+        mock_cfg.return_value = {"max_iterations": 45}
+        mock_creds.return_value = {
+            "model": None,
+            "provider": None,
+            "base_url": None,
+            "api_key": None,
+            "api_mode": None,
+        }
+        parent = _make_mock_parent(depth=0)
+        parent.provider = "nous"
+        parent.providers_allowed = ["deepseek"]
+        parent.providers_ignored = ["deepinfra"]
+        parent.providers_order = ["anthropic"]
+        parent.provider_sort = "throughput"
+        parent.provider_require_parameters = True
+        parent.provider_data_collection = "deny"
+
+        with patch("run_agent.AIAgent") as MockAgent:
+            mock_child = MagicMock()
+            mock_child.run_conversation.return_value = {
+                "final_response": "done", "completed": True, "api_calls": 1
+            }
+            MockAgent.return_value = mock_child
+            delegate_task(goal="Keep routing", parent_agent=parent)
+
+        _, kwargs = MockAgent.call_args
+        self.assertEqual(kwargs["providers_allowed"], ["deepseek"])
+        self.assertEqual(kwargs["providers_ignored"], ["deepinfra"])
+        self.assertEqual(kwargs["providers_order"], ["anthropic"])
+        self.assertEqual(kwargs["provider_sort"], "throughput")
+        self.assertIs(kwargs["provider_require_parameters"], True)
+        self.assertEqual(kwargs["provider_data_collection"], "deny")
 
     @patch("tools.delegate_tool._load_config")
     @patch("tools.delegate_tool._resolve_delegation_credentials")

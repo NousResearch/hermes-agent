@@ -8,6 +8,7 @@ import { DisclosureCaret } from '@/components/ui/disclosure-caret'
 import { ErrorBanner } from '@/components/ui/error-state'
 import { Input } from '@/components/ui/input'
 import { Switch } from '@/components/ui/switch'
+import { Tip } from '@/components/ui/tooltip'
 import {
   getMessagingPlatforms,
   type MessagingEnvVarInfo,
@@ -609,22 +610,25 @@ function MessagingField({
             value={edits[field.key] || ''}
           />
           {field.url && (
-            <Button asChild className="size-8 shrink-0" title={m.openDocs} variant="ghost">
-              <a href={field.url} rel="noreferrer" target="_blank">
-                <ExternalLink className="size-3.5" />
-              </a>
-            </Button>
+            <Tip label={m.openDocs}>
+              <Button asChild className="size-8 shrink-0" variant="ghost">
+                <a href={field.url} rel="noreferrer" target="_blank">
+                  <ExternalLink className="size-3.5" />
+                </a>
+              </Button>
+            </Tip>
           )}
           {field.is_set && (
-            <Button
-              className="size-8 shrink-0"
-              disabled={saving === `clear:${field.key}`}
-              onClick={() => onClear(field.key)}
-              title={m.clearField(field.key)}
-              variant="ghost"
-            >
-              <Trash2 className="size-3.5" />
-            </Button>
+            <Tip label={m.clearField(field.key)}>
+              <Button
+                className="size-8 shrink-0"
+                disabled={saving === `clear:${field.key}`}
+                onClick={() => onClear(field.key)}
+                variant="ghost"
+              >
+                <Trash2 className="size-3.5" />
+              </Button>
+            </Tip>
           )}
         </div>
       }

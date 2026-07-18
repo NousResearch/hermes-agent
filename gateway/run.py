@@ -19035,16 +19035,39 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                                 )
                                 continue
                             if "flood" in _err or "retry after" in _err:
-                                # Flood control hit — backoff but keep editing.
-                                # Only disable edits for non-recoverable errors.
+                                # Flood control hit. The previous behaviour was
+                                # to fall back to a brand-new
+                                # ``adapter.send()`` here — but that send is
+                                # exactly the kind of burst that triggered the
+                                # penalty in the first place, and re-firing it
+                                # during the penalty window keeps the timer
+                                # pinned at "Retry in 7000+ seconds". Instead,
+                                # drop this tick's update, leave the progress
+                                # message and ``progress_lines`` intact, and
+                                # let the next tick try the edit again once the
+                                # per-chat send cooldown (added in
+                                # ``plugins/platforms/telegram/adapter.py``)
+                                # releases the chat. The user will see a
+                                # short stale-bubble window; that's strictly
+                                # better than escalating the Telegram penalty
+                                # by minutes.
                                 logger.info(
-                                    "[%s] Progress edit flood control, backing off",
+                                    "[%s] Progress edit flood control — skipping "
+                                    "fallback send (would re-trigger penalty); "
+                                    "will retry edit on next tick",
                                     adapter.name,
                                 )
                                 _last_edit_ts = time.monotonic()
-                            else:
-                                can_edit = False
-                            _flood_result = await adapter.send(
+                                continue
+                            can_edit = False
+                            # Non-flood permanent failure (message deleted,
+                            # permission revoked, etc.) — fall back to a fresh
+                            # message bubble so the user still sees the
+                            # progress line. This branch intentionally keeps
+                            # the legacy send() fallback because the failure
+                            # mode here is local, not a Telegram rate-limit
+                            # signal.
+                            _perm_result = await adapter.send(
                                 chat_id=source.chat_id,
                                 content=msg,
                                 reply_to=_progress_reply_to,
@@ -19052,10 +19075,10 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                             )
                             if (
                                 _cleanup_progress
-                                and getattr(_flood_result, "success", False)
-                                and getattr(_flood_result, "message_id", None)
+                                and getattr(_perm_result, "success", False)
+                                and getattr(_perm_result, "message_id", None)
                             ):
-                                _cleanup_msg_ids.append(str(_flood_result.message_id))
+                                _cleanup_msg_ids.append(str(_perm_result.message_id))
                     else:
                         if can_edit:
                             # First tool: send all accumulated text as new message

@@ -14,9 +14,10 @@ import inspect
 import json
 import logging
 import os
-import html as _html
 import re
 import threading
+import time
+import html as _html
 from contextvars import ContextVar
 from datetime import datetime, timezone
 from typing import Dict, List, Optional, Set, Any
@@ -679,6 +680,44 @@ class TelegramAdapter(BasePlatformAdapter):
             30.0,
             min_value=1.0,
             max_value=300.0,
+        )
+        # Per-chat send-cooldown. Telegram's Bot API enforces ~1 msg/sec/chat
+        # in private DMs and a global ~30 msg/sec budget across all chats for
+        # bots. A single user turn routinely fans out 3-5 sends (status
+        # callbacks, progress bubbles, streaming previews, final answer) and
+        # they were historically fired in parallel from independent code paths
+        # (status callbacks via safe_schedule_threadsafe, progress via the
+        # progress-queue consumer, final via the stream consumer). Even
+        # though each path has its own per-send retry-after handling, the
+        # burst pattern crosses Telegram's threshold and triggers a flood
+        # control penalty that escalates into multi-thousand-second back-offs
+        # ("Retry in 7019 seconds"). The fix is a cross-cutting per-chat gate
+        # that forces every send to honour a minimum gap so the cumulative
+        # send rate stays under the threshold regardless of how many
+        # components fire concurrently.
+        #
+        # Stored as a timestamp-by-chat dict so multiple chats don't
+        # serialise on a single lock. ``_send_cooldown_seconds`` defaults to
+        # 1.1s — comfortably above Telegram's per-chat limit while still
+        # feeling responsive (status bubbles lag by at most ~1s, well below
+        # the user-visible threshold for "did anything happen?").
+        self._send_cooldown_until: Dict[str, float] = {}
+        self._send_cooldown_seconds: float = self._coerce_float_extra(
+            "send_cooldown_seconds",
+            1.1,
+            min_value=0.0,
+            max_value=10.0,
+        )
+        # Hard cap on how long a send will block waiting for its cooldown
+        # to expire. Without this, a 7000-second flood penalty would stall
+        # the whole chat path for two hours. We let the caller observe the
+        # wait via a flood_control-style error so upstream retries can
+        # back off too, instead of silently dropping messages.
+        self._send_cooldown_max_wait: float = self._coerce_float_extra(
+            "send_cooldown_max_wait_seconds",
+            5.0,
+            min_value=0.5,
+            max_value=60.0,
         )
         # Buffer rapid/album photo updates so Telegram image bursts are handled
         # as a single MessageEvent instead of self-interrupting multiple turns.
@@ -3950,7 +3989,52 @@ class TelegramAdapter(BasePlatformAdapter):
         # Skip whitespace-only text to prevent Telegram 400 empty-text errors.
         if not content or not content.strip():
             return SendResult(success=True, message_id=None)
-        
+
+        # Per-chat send cooldown. Telegram's Bot API enforces ~1 msg/sec/chat
+        # in private DMs and a ~30 msg/sec global budget across all chats for
+        # bots. A single user turn historically fans out 3-5 sends from
+        # independent code paths (status callbacks fired via
+        # safe_schedule_threadsafe, progress bubbles from the progress-queue
+        # consumer, streaming previews from the stream consumer, the final
+        # answer, photo batches). Even though each path does its own
+        # retry-after handling, the burst pattern crosses Telegram's
+        # threshold and triggers a flood-control penalty that escalates
+        # into multi-thousand-second back-offs ("Retry in 7019 seconds").
+        # This gate serialises every outbound send per-chat with a small
+        # minimum gap, so the cumulative rate stays under the threshold
+        # regardless of how many components fire concurrently.
+        #
+        # The wait is bounded by ``_send_cooldown_max_wait``: a 7000-second
+        # Telegram penalty shouldn't stall the chat path for two hours.
+        # When the bounded wait would be exceeded, we return a non-fatal
+        # flood_control-style error so upstream retries can back off too,
+        # instead of silently dropping the message.
+        # getattr() — tests build adapters via object.__new__() (no __init__).
+        _cooldown_until_map = getattr(self, "_send_cooldown_until", None)
+        if _cooldown_until_map is not None:
+            _now_mono = time.monotonic()
+            _chat_key = str(chat_id)
+            _until = _cooldown_until_map.get(_chat_key, 0.0)
+            if _until > _now_mono:
+                _wait = _until - _now_mono
+                _max_wait = getattr(self, "_send_cooldown_max_wait", 5.0)
+                if _wait > _max_wait:
+                    logger.warning(
+                        "[%s] send cooldown for chat %s exceeds max wait (%.1fs > %.1fs); "
+                        "yielding with retryable error so upstream can back off",
+                        self.name, _chat_key, _wait, _max_wait,
+                    )
+                    return SendResult(
+                        success=False,
+                        error=f"flood_control:{_wait:.0f}",
+                        retryable=True,
+                    )
+                logger.debug(
+                    "[%s] send cooldown for chat %s: sleeping %.2fs",
+                    self.name, _chat_key, _wait,
+                )
+                await asyncio.sleep(_wait)
+
         try:
             # Bot API 10.1 rich fast-path: send the raw agent markdown via
             # sendRichMessage so tables/task lists/etc. render natively. Falls
@@ -3961,6 +4045,17 @@ class TelegramAdapter(BasePlatformAdapter):
                 rich_result = await self._try_send_rich(chat_id, content, reply_to, metadata)
                 if rich_result is not None:
                     if rich_result.success:
+                        # Stamp the cooldown on the rich fast-path too so the
+                        # next non-rich send (or another rich one) honours
+                        # the per-chat gate. Without this, the rich path
+                        # would bypass the limiter entirely and a
+                        # rich→markdown sequence would race.
+                        _cooldown_until_map = getattr(self, "_send_cooldown_until", None)
+                        if _cooldown_until_map is not None:
+                            _cooldown_until_map[str(chat_id)] = (
+                                time.monotonic()
+                                + getattr(self, "_send_cooldown_seconds", 1.1)
+                            )
                         # Re-trigger typing like the legacy success path does,
                         # but ONLY for intermediate sends. On the final reply
                         # (metadata["notify"]) the gateway has already torn down
@@ -4011,6 +4106,17 @@ class TelegramAdapter(BasePlatformAdapter):
                 _TimedOut = None  # type: ignore[assignment,misc]
 
             for i, chunk in enumerate(chunks):
+                # Stamp the per-chat cooldown immediately before the Bot API
+                # call so subsequent chunks / sends queue behind this one
+                # for ``_send_cooldown_seconds``. Updating here (rather than
+                # at the top of the gate) means a Telegram retry-after wait
+                # we did NOT spend — i.e. the previous send's actual
+                # wall-clock cost — is what gets credited.
+                _cooldown_until_map = getattr(self, "_send_cooldown_until", None)
+                if _cooldown_until_map is not None:
+                    _cooldown_until_map[str(chat_id)] = (
+                        time.monotonic() + getattr(self, "_send_cooldown_seconds", 1.1)
+                    )
                 retried_thread_not_found = False
                 metadata_reply_to = self._metadata_reply_to_message_id(metadata)
                 private_dm_topic_send = self._is_private_dm_topic_send(chat_id, thread_id, metadata)

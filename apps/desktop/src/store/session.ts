@@ -34,6 +34,16 @@ export const setRememberedSessionId = (id: null | string) => persistString(LAST_
 // relaunch lands back where you were instead of a bare new-chat.
 const LAST_ROUTE_KEY = 'hermes.desktop.lastRoute'
 
+// Stable only for the lifetime of the current sessionless chat. Persisting the
+// key (rather than just its text) lets a reload restore that exact fresh draft;
+// starting another new chat rotates the key so abandoned unsent drafts cannot
+// bleed into the next lifecycle.
+const FRESH_DRAFT_KEY = 'hermes.desktop.freshDraftKey'
+const LEGACY_FRESH_DRAFT_SCOPE = '__new__'
+
+const createFreshDraftKey = (): string =>
+  `__new__:${globalThis.crypto?.randomUUID?.() ?? `${Date.now()}-${Math.random().toString(36).slice(2)}`}`
+
 export const getRememberedRoute = (): null | string => storedString(LAST_ROUTE_KEY)
 export const setRememberedRoute = (path: null | string) => persistString(LAST_ROUTE_KEY, path)
 
@@ -265,6 +275,7 @@ export const $messagesEmpty = computed($messages, messages => messages.length ==
 export const $lastVisibleMessageIsUser = computed($messages, lastVisibleMessageIsUser)
 
 export const $freshDraftReady = atom(false)
+export const $freshDraftKey = atom(storedString(FRESH_DRAFT_KEY) ?? LEGACY_FRESH_DRAFT_SCOPE)
 export const $busy = atom(false)
 export const $awaitingResponse = atom(false)
 // Stored-session id whose most recent resume FAILED terminally (the gateway RPC
@@ -344,6 +355,15 @@ export const setSelectedStoredSessionId = (next: Updater<string | null>) => {
 
 export const setMessages = (next: Updater<ChatMessage[]>) => updateAtom($messages, next)
 export const setFreshDraftReady = (next: Updater<boolean>) => updateAtom($freshDraftReady, next)
+
+export const rotateFreshDraftKey = (): string => {
+  const key = createFreshDraftKey()
+  $freshDraftKey.set(key)
+  persistString(FRESH_DRAFT_KEY, key)
+
+  return key
+}
+
 export const setResumeFailedSessionId = (next: Updater<string | null>) => updateAtom($resumeFailedSessionId, next)
 export const setResumeExhaustedSessionId = (next: Updater<string | null>) => updateAtom($resumeExhaustedSessionId, next)
 export const setBusy = (next: Updater<boolean>) => updateAtom($busy, next)

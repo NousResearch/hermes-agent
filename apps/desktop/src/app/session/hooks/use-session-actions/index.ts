@@ -25,6 +25,7 @@ import {
   $sessions,
   $yoloActive,
   type NewChatWorkspaceTarget,
+  rotateFreshDraftKey,
   sessionPinId,
   setActiveSessionId,
   setAwaitingResponse,
@@ -233,6 +234,7 @@ export function useSessionActions({
         ? normalizeNewChatWorkspaceTarget(draftOptions.workspaceTarget)
         : undefined
 
+      rotateFreshDraftKey()
       resetViewSync()
       busyRef.current = false
       setBusy(false)

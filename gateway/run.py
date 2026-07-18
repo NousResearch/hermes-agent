@@ -2988,6 +2988,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
     _profile_failed_platforms: Optional[Dict[str, Dict[Platform, asyncio.Task]]] = None
     _systemd_watchdog: Optional[Any] = None
     _session_model_overrides: Dict[str, Dict[str, str]] = {}
+    _pending_one_turn_model_restores: Dict[str, Dict[str, Any]] = {}
     _session_reasoning_overrides: Dict[str, Dict[str, Any]] = {}
     _startup_restore_in_progress: bool = False
     # Loop-liveness heartbeat / shutdown-watchdog handles (#66892). Class-level
@@ -3180,6 +3181,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         # Per-session model overrides from /model command.
         # Key: session_key, Value: dict with model/provider/api_key/base_url/api_mode
         self._session_model_overrides: Dict[str, Dict[str, str]] = {}
+        self._pending_one_turn_model_restores: Dict[str, Dict[str, Any]] = {}
         # Per-session reasoning effort overrides from /reasoning.
         # Key: session_key, Value: parsed reasoning config dict.
         self._session_reasoning_overrides: Dict[str, Dict[str, Any]] = {}
@@ -8178,6 +8180,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                         # its agent from these overrides. Only true session
                         # finalization, /new, and /reset clear them.)
                         self._session_model_overrides.pop(key, None)
+                        self._pending_one_turn_model_restores.pop(key, None)
                         self._set_session_reasoning_override(key, None)
                         if hasattr(self, "_pending_model_notes"):
                             self._pending_model_notes.pop(key, None)
@@ -11176,6 +11179,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             # Putting it in finally guarantees the revert on success, exception,
             # and interrupt alike.
             self._restore_moa_one_shot(event, _quick_key)
+            self._restore_pending_one_turn_model_override(_quick_key)
             # Unconditional release covers every exit path. _release_running_agent_state
             # is idempotent (pop-on-absent is harmless) and, called without a
             # run_generation guard, always clears the slot regardless of which
@@ -11205,6 +11209,18 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             self._evict_cached_agent(quick_key)
         except Exception:
             pass
+
+    def _restore_pending_one_turn_model_override(self, session_key: str) -> None:
+        """Restore a per-session model override after ``/model --once`` runs."""
+        if not session_key:
+            return
+        try:
+            snapshot = self._pending_one_turn_model_restores.pop(session_key, None)
+            if not snapshot:
+                return
+            self._restore_session_model_override(session_key, snapshot)
+        except Exception:
+            logger.debug("Failed to restore one-turn model override", exc_info=True)
 
     async def _prepare_inbound_message_text(
         self,
@@ -11802,6 +11818,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             # inherit the previous conversation's model/reasoning overrides
             # or a queued "/model switched" note.
             self._session_model_overrides.pop(session_key, None)
+            self._pending_one_turn_model_restores.pop(session_key, None)
             self._set_session_reasoning_override(session_key, None)
             if hasattr(self, "_pending_model_notes"):
                 self._pending_model_notes.pop(session_key, None)
@@ -12912,6 +12929,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 new_entry = await self.async_session_store.reset_session(session_key)
                 self._evict_cached_agent(session_key)
                 self._session_model_overrides.pop(session_key, None)
+                self._pending_one_turn_model_restores.pop(session_key, None)
                 self._set_session_reasoning_override(session_key, None)
                 if hasattr(self, "_pending_model_notes"):
                     self._pending_model_notes.pop(session_key, None)
@@ -17107,6 +17125,26 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             )
         return model, runtime_kwargs
 
+    def _snapshot_session_model_override(self, session_key: str) -> dict:
+        """Capture a gateway session override before a one-turn switch."""
+        override = self._session_model_overrides.get(session_key)
+        return {
+            "had_override": override is not None,
+            "override": dict(override) if override is not None else None,
+        }
+
+    def _restore_session_model_override(self, session_key: str, snapshot: dict) -> None:
+        """Restore the session override captured before a one-turn switch."""
+        if not session_key:
+            return
+        if snapshot.get("had_override"):
+            self._session_model_overrides[session_key] = dict(
+                snapshot.get("override") or {}
+            )
+        else:
+            self._session_model_overrides.pop(session_key, None)
+        self._evict_cached_agent(session_key)
+
     def _is_intentional_model_switch(self, session_key: str, agent_model: str) -> bool:
         """Return True if *agent_model* matches an active /model session override."""
         override = self._session_model_overrides.get(session_key)
@@ -20393,7 +20431,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     "model": _resolved_model,
                     "context_length": _context_length,
                 }
-            
+
             # Scan tool results for MEDIA:<path> tags that need to be delivered
             # as native audio/file attachments.  The TTS tool embeds MEDIA: tags
             # in its JSON response, but the model's final text reply usually
@@ -20431,7 +20469,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     if has_voice_directive:
                         unique_tags.insert(0, "[[audio_as_voice]]")
                     final_response = final_response + "\n" + "\n".join(unique_tags)
-            
+
             # Auto-generate session title after first exchange (non-blocking)
             if final_response and self._session_db:
                 try:

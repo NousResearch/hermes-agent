@@ -6,14 +6,15 @@ from unittest.mock import MagicMock
 
 import agent.display as display_module
 from agent.display import (
+    _detect_tool_failure,
+    _render_inline_unified_diff,
+    _summarize_rendered_diff_sections,
     build_tool_preview,
     capture_local_edit_snapshot,
     extract_edit_diff,
     get_cute_tool_message,
     redact_tool_args_for_display,
     set_tool_preview_max_len,
-    _render_inline_unified_diff,
-    _summarize_rendered_diff_sections,
     render_edit_diff_with_delta,
 )
 
@@ -492,3 +493,19 @@ class TestBuildToolLabel:
         for tool_name in _TOOL_VERBS:
             label = build_tool_label(tool_name, {"query": "x", "path": "x", "url": "x"})
             assert label, f"{tool_name} produced empty label"
+
+
+class TestDetectToolFailure:
+    def test_success_true_wins_over_nested_error_text(self):
+        result = (
+            '{"success": true, "data": {"kind": "standalone", '
+            '"notes": "contains the word error in ordinary data"}}'
+        )
+
+        assert _detect_tool_failure("dsl_songbook_save", result) == (False, "")
+
+    def test_success_false_is_failure(self):
+        assert _detect_tool_failure("dsl_songbook_save", '{"success": false, "error": "nope"}') == (
+            True,
+            " [nope]",
+        )

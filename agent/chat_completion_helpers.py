@@ -2144,7 +2144,13 @@ def cleanup_task_resources(agent, task_id: str) -> None:
         if agent.verbose_logging:
             logger.warning(f"Failed to cleanup VM for task {task_id}: {e}")
     try:
-        if os.environ.get("AGENT_BROWSER_HEADED"):
+        headed = False
+        try:
+            from tools.browser_tool import _is_headed_mode
+            headed = _is_headed_mode()
+        except Exception:
+            headed = bool(os.environ.get("AGENT_BROWSER_HEADED"))
+        if headed:
             if agent.verbose_logging:
                 logging.debug(
                     f"Skipping per-turn cleanup_browser for headed session {task_id}; "

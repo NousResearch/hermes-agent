@@ -966,6 +966,7 @@ def test_prepare_then_resume_consumes_once_before_first_mutation(
         passkey_boundary=boundary,
         prepare_only=True,
         transport_factory=lambda _identity: prepare_transport,
+        database_recovery_gate_runner=_recovery_gate_runner,
         now_unix=NOW,
     )
 
@@ -1075,6 +1076,7 @@ def test_resume_rejects_tampered_approval_url_before_consumption(
         transport_factory=lambda _identity: _WorkflowTransport(
             initial, host, services
         ),
+        database_recovery_gate_runner=_recovery_gate_runner,
         now_unix=NOW,
     ))
     workspace["passkey_request"] = dict(workspace["passkey_request"])
@@ -1154,6 +1156,7 @@ def test_prepare_rejects_non_sha256_cutover_request_id(
             transport_factory=lambda _identity: _WorkflowTransport(
                 initial, host, services
             ),
+            database_recovery_gate_runner=_recovery_gate_runner,
             now_unix=NOW,
         )
 

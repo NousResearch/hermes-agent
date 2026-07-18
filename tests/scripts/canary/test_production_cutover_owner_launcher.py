@@ -447,6 +447,9 @@ def test_stager_rejects_bare_freeze_before_any_write(
         isolated_canary_goal_prerequisite=(
             _isolated_canary_goal_prerequisite()
         ),
+        database_recovery_receipt=_database_recovery_receipt(
+            rechecked_at_unix=now
+        ),
         truth_mode="start_new_truth_epoch",
         now_unix=now,
     )
@@ -483,6 +486,9 @@ def test_stager_accepts_exact_replay_and_pre_mutation_reauthorization(
         owner_runtime_attestation=_runtime_attestation(),
         isolated_canary_goal_prerequisite=(
             _isolated_canary_goal_prerequisite()
+        ),
+        database_recovery_receipt=_database_recovery_receipt(
+            rechecked_at_unix=now
         ),
         truth_mode="start_new_truth_epoch",
         now_unix=now,
@@ -556,6 +562,9 @@ def test_stager_rejects_reauthorization_after_freeze_intent(
         isolated_canary_goal_prerequisite=(
             _isolated_canary_goal_prerequisite()
         ),
+        database_recovery_receipt=_database_recovery_receipt(
+            rechecked_at_unix=now
+        ),
         truth_mode="start_new_truth_epoch",
         now_unix=now,
     )
@@ -617,6 +626,9 @@ def test_stager_recovers_claim_to_authority_crash_without_backdating(
         owner_runtime_attestation=_runtime_attestation(),
         isolated_canary_goal_prerequisite=(
             _isolated_canary_goal_prerequisite()
+        ),
+        database_recovery_receipt=_database_recovery_receipt(
+            rechecked_at_unix=now
         ),
         truth_mode="start_new_truth_epoch",
         now_unix=now,
@@ -754,6 +766,9 @@ def test_stager_rejects_expired_unused_claim_before_any_write(
         owner_runtime_attestation=_runtime_attestation(),
         isolated_canary_goal_prerequisite=(
             _isolated_canary_goal_prerequisite()
+        ),
+        database_recovery_receipt=_database_recovery_receipt(
+            rechecked_at_unix=now
         ),
         truth_mode="start_new_truth_epoch",
         now_unix=now,

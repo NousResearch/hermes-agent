@@ -12,6 +12,7 @@ from scripts.canary import production_cutover_passkey as passkey
 from tests.gateway.test_canonical_writer_production_cutover import (
     NOW,
     Services,
+    _database_recovery_receipt,
     _isolated_canary_goal_prerequisite,
     _runtime_attestation,
 )
@@ -30,6 +31,9 @@ def _freeze_publication() -> dict:
         owner_runtime_attestation=_runtime_attestation(),
         isolated_canary_goal_prerequisite=(
             _isolated_canary_goal_prerequisite()
+        ),
+        database_recovery_receipt=_database_recovery_receipt(
+            rechecked_at_unix=NOW
         ),
         truth_mode="start_new_truth_epoch",
         now_unix=NOW,

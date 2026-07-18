@@ -2,7 +2,7 @@ import { useStore } from '@nanostores/react'
 import { useQuery } from '@tanstack/react-query'
 import { Dialog as DialogPrimitive } from 'radix-ui'
 import { useCallback, useEffect, useMemo, useState } from 'react'
-import { useNavigate } from 'react-router-dom'
+import { useLocation, useNavigate } from 'react-router-dom'
 
 import { requestComposerStageSlash } from '@/app/chat/composer/focus'
 import { HUD_HEADING, HUD_ITEM, HUD_POSITION, HUD_SURFACE, HUD_TEXT } from '@/app/floating-hud'
@@ -82,7 +82,7 @@ import { FIELD_LABELS, SECTIONS } from '../settings/constants'
 import { fieldCopyForSchemaKey } from '../settings/field-copy'
 import { prettyName } from '../settings/helpers'
 
-import { buildChatActionsGroup } from './chat-actions'
+import { buildChatActionsGroup, canStageChatAction } from './chat-actions'
 import { usePaletteContributions } from './contrib'
 import { MarketplaceThemePage } from './marketplace-theme-page'
 import { PetInlineToggle, PetPalettePage } from './pet-palette-page'
@@ -310,6 +310,7 @@ export function CommandPalette() {
   const activeSessionId = useStore($activeSessionId)
   const selectedStoredSessionId = useStore($selectedStoredSessionId)
   const hasActiveSession = Boolean(selectedStoredSessionId || activeSessionId)
+  const { pathname } = useLocation()
   const navigate = useNavigate()
   const { availableThemes, resolvedMode, setMode, setTheme, themeName } = useTheme()
   const [search, setSearch] = useState('')
@@ -629,9 +630,10 @@ export function CommandPalette() {
     // Chat slash actions (/compress, /title, /handoff, …), searchable by both
     // their plain-English label and the /command string. Selecting one STAGES
     // the command into the composer (a directive chip to review + send) — it
-    // never executes. Disabled with a hint while no session is open.
+    // never executes. Disabled unless a session and its composer are both on
+    // the active route, so the one-shot staging event always has a listener.
     const chatActions = buildChatActionsGroup({
-      hasActiveSession,
+      hasActiveSession: canStageChatAction(pathname, hasActiveSession),
       heading: t.commandCenter.chatActions,
       hint: t.commandCenter.chatActionsHint,
       onStage: command => {
@@ -781,6 +783,7 @@ export function CommandPalette() {
     go,
     hasActiveSession,
     mcpServers,
+    pathname,
     resolvedMode,
     search,
     sessions,

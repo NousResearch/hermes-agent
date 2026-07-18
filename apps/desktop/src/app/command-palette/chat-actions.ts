@@ -1,6 +1,8 @@
 import { type DesktopChatActionCommand, desktopChatActionCommands } from '@/lib/desktop-slash-commands'
 import { Terminal } from '@/lib/icons'
 
+import { appViewForPath } from '../routes'
+
 import type { PaletteGroup, PaletteItem } from './index'
 
 interface ChatActionsGroupOptions {
@@ -15,6 +17,12 @@ interface ChatActionsGroupOptions {
   onStage: (command: string) => void
   /** Injectable for tests; defaults to the spec-derived command list. */
   commands?: DesktopChatActionCommand[]
+}
+
+/** A retained session id is not enough: the one-shot staging event needs the
+ * main chat composer to be mounted on the active route. */
+export function canStageChatAction(pathname: string, hasActiveSession: boolean): boolean {
+  return hasActiveSession && appViewForPath(pathname) === 'chat'
 }
 
 /** Keywords so a row matches BOTH its plain-English description AND the literal

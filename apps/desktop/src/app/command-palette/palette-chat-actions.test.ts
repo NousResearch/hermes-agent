@@ -3,7 +3,7 @@ import { describe, expect, it, vi } from 'vitest'
 import { composerPlainText, RICH_INPUT_SLOT, stageSlashCommandIntoEditor } from '@/app/chat/composer/rich-editor'
 import { desktopChatActionCommands } from '@/lib/desktop-slash-commands'
 
-import { buildChatActionsGroup } from './chat-actions'
+import { buildChatActionsGroup, canStageChatAction } from './chat-actions'
 
 import type { PaletteItem } from './index'
 
@@ -108,6 +108,21 @@ describe('buildChatActionsGroup', () => {
 
   it('omits the group entirely when nothing is eligible', () => {
     expect(buildChatActionsGroup({ ...base, hasActiveSession: true, commands: [] })).toBeNull()
+  })
+})
+
+describe('canStageChatAction', () => {
+  it('allows an existing session on its chat route', () => {
+    expect(canStageChatAction('/20260719_120000_abcdef', true)).toBe(true)
+  })
+
+  it('blocks a retained session while a non-chat route owns the screen', () => {
+    expect(canStageChatAction('/settings', true)).toBe(false)
+    expect(canStageChatAction('/skills', true)).toBe(false)
+  })
+
+  it('blocks the new-chat route until a session exists', () => {
+    expect(canStageChatAction('/', false)).toBe(false)
   })
 })
 

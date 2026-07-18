@@ -196,7 +196,20 @@ def _sanitize_env_file_if_needed(path: Path) -> None:
         # crashes with ValueError).
         stripped = [line.replace("\x00", "") for line in original]
         sanitized = _sanitize_env_lines(stripped)
-        if sanitized != original:
+
+        # Detect UTF-8 BOM (0xEF 0xBB 0xBF) in the raw file.  utf-8-sig
+        # silently strips it on read, so the BOM is invisible in `original`,
+        # but when the file is later read with plain utf-8 by
+        # _load_dotenv_with_fallback() / python-dotenv, \ufeff is prepended
+        # to the first key, causing it to be silently dropped (#65123).
+        has_bom = False
+        try:
+            with open(path, "rb") as f:
+                has_bom = f.read(3) == b"\xef\xbb\xbf"
+        except Exception:
+            pass
+
+        if sanitized != original or has_bom:
             import tempfile
             fd, tmp = tempfile.mkstemp(
                 dir=str(path.parent), suffix=".tmp", prefix=".env_"

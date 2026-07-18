@@ -3416,3 +3416,52 @@ def test_resolve_named_custom_runtime_pool_result_includes_extra_headers(monkeyp
     }
     assert resolved["api_key"] == "pooled-key"
     assert resolved["source"] == "pool:lmstudio-pool"
+
+
+def test_explicit_provider_not_hijacked_by_local_config_base_url(monkeypatch):
+    """Regression: `hermes --provider gemini` must reach the named provider
+    even when config.yaml still carries a leftover local base_url.
+
+    The auto/unset path deliberately routes a local config base_url (e.g.
+    Ollama at localhost:11434) through the OpenAI-compatible resolver so env
+    cloud creds don't hijack it (#3846). But that block keyed only off the
+    CONFIG provider, not the CALLER's explicit request — so an explicit
+    `--provider gemini` was silently rerouted to the local endpoint (and on to
+    _resolve_openrouter_runtime), sending the request to the wrong place with
+    the wrong key. The explicit request must win.
+    """
+    monkeypatch.setattr(
+        rp,
+        "_get_model_config",
+        lambda: {"provider": "", "base_url": "http://localhost:11434/v1"},
+    )
+    monkeypatch.setattr(rp, "load_pool", lambda provider: None)
+    # Give the named provider a credential so resolution reaches a runtime
+    # result rather than raising for missing creds; the point under test is
+    # WHERE it routes, not auth.
+    monkeypatch.setenv("GEMINI_API_KEY", "AIza-test-key")
+    monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
+
+    resolved = rp.resolve_runtime_provider(requested="gemini", target_model="gemini-2.5-flash")
+
+    # Must reach the gemini endpoint, NOT the leftover local base_url and NOT
+    # the openrouter hijack the unguarded block used to produce.
+    assert resolved["base_url"] != "http://localhost:11434/v1"
+    assert "openrouter.ai" not in (resolved.get("base_url") or "")
+    assert "generativelanguage.googleapis.com" in resolved["base_url"]
+    assert resolved["requested_provider"] == "gemini"
+
+
+def test_unset_provider_still_honors_local_config_base_url(monkeypatch):
+    """Guard the #3846 behavior the fix must NOT break: with no explicit
+    provider (requested resolves to 'auto'), a local config base_url is still
+    honored so the local model keeps working."""
+    monkeypatch.setattr(
+        rp,
+        "_get_model_config",
+        lambda: {"provider": "", "base_url": "http://localhost:11434/v1"},
+    )
+
+    resolved = rp.resolve_runtime_provider(requested=None)
+
+    assert resolved["base_url"] == "http://localhost:11434/v1"

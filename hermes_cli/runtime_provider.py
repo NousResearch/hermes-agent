@@ -1623,7 +1623,17 @@ def resolve_runtime_provider(
     # route through the OpenAI-compatible resolver instead of letting
     # resolve_provider() pick up an ANTHROPIC_API_KEY or OPENAI_API_KEY from
     # the environment and send the request to a cloud API. Fixes #3846.
-    if not explicit_base_url and not explicit_api_key:
+    #
+    # Only when the caller did NOT explicitly name a provider. Without this
+    # guard, `--provider gemini` (requested_provider="gemini") is hijacked by a
+    # leftover local base_url in config: the block below sees a non-cloud host
+    # and routes to _resolve_openrouter_runtime, sending the request to the
+    # wrong endpoint with the wrong key.
+    if (
+        not explicit_base_url
+        and not explicit_api_key
+        and requested_provider in ("auto", "")
+    ):
         model_cfg = _get_model_config()
         cfg_provider = str(model_cfg.get("provider") or "").strip().lower()
         cfg_base_url = str(model_cfg.get("base_url") or "").strip()

@@ -296,3 +296,71 @@ def test_wait_returns_instantly_when_no_discovery_thread(monkeypatch):
     t0 = time.time()
     mcp_startup.wait_for_mcp_discovery()
     assert time.time() - t0 < 0.2  # never blocks on the bound when nothing's pending
+
+
+def test_refresh_preserves_wrapped_context_engine_schemas(monkeypatch):
+    """Wrapped-schema regression: the LCM engine's get_tool_schemas() returns
+    entries already in OpenAI tool form ({"type": "function", "function":
+    {...}}) — see plugins/context_engine/lcm/engine.py::get_tool_schemas.
+    agent_init handles this via normalize_tool_schema (#47707), but the
+    refresh re-injector read schema["name"] on the WRAPPER (no top-level
+    name) and silently dropped every lcm_* tool on the first between-turns
+    MCP refresh. Result in production: LCM's recall tools never reached any
+    session with a connected MCP server — the model could never call
+    lcm_grep/lcm_expand (functionally-lossy compaction, 2026-07-18).
+    """
+    agent = _agent(["read_file", "lcm_grep", "lcm_expand"])
+
+    # Real LCM shape: WRAPPED entries.
+    agent.context_compressor = types.SimpleNamespace(
+        get_tool_schemas=lambda: [
+            {"type": "function", "function": {"name": "lcm_grep", "description": "", "parameters": {}}},
+            {"type": "function", "function": {"name": "lcm_expand", "description": "", "parameters": {}}},
+        ]
+    )
+    agent._context_engine_tool_names = {"lcm_grep", "lcm_expand"}
+
+    import model_tools
+    monkeypatch.setattr(
+        model_tools, "get_tool_definitions",
+        lambda **kw: [_tool("read_file"), _tool("mcp_new_server_tool")],
+    )
+
+    added = mcp_tool.refresh_agent_mcp_tools(agent)
+
+    # The refresh must not amputate the context-engine tools.
+    assert "lcm_grep" in agent.valid_tool_names
+    assert "lcm_expand" in agent.valid_tool_names
+    assert "mcp_new_server_tool" in agent.valid_tool_names
+    assert added == {"mcp_new_server_tool"}
+    # Routing names republished intact (they route via handle_tool_call).
+    assert agent._context_engine_tool_names == {"lcm_grep", "lcm_expand"}
+    # And the published entries are canonically wrapped exactly ONCE —
+    # a double-wrap would 400 the whole request on strict providers (#47707).
+    for t in agent.tools:
+        fn = t.get("function", {})
+        assert fn.get("name"), f"nameless tool entry published: {t!r}"
+        assert fn.get("type") != "function", f"double-wrapped entry: {t!r}"
+
+
+def test_refresh_preserves_wrapped_memory_provider_schemas(monkeypatch):
+    """Same wrapped-shape hazard for the memory-provider re-injection path —
+    fix the whole bug class, not just the lcm_* site (a provider returning
+    OpenAI-form entries would be silently dropped identically)."""
+    agent = _agent(["read_file", "memory_search"])
+
+    agent._memory_manager = types.SimpleNamespace(
+        get_all_tool_schemas=lambda: [
+            {"type": "function", "function": {"name": "memory_search", "description": "", "parameters": {}}},
+        ]
+    )
+
+    import model_tools
+    monkeypatch.setattr(
+        model_tools, "get_tool_definitions",
+        lambda **kw: [_tool("read_file")],
+    )
+
+    mcp_tool.refresh_agent_mcp_tools(agent)
+
+    assert "memory_search" in agent.valid_tool_names

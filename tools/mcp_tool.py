@@ -5571,11 +5571,22 @@ def _reinject_post_build_tools(agent, tools_list: list, name_set: set) -> set:
     caller publishes this into ``agent._context_engine_tool_names`` atomically
     with the snapshot.
     """
+    # Normalize through the SAME helper agent_init uses (#47707): context
+    # engines (e.g. LCM) return entries already in OpenAI tool form
+    # ({"type": "function", "function": {...}}) whose wrapper has no top-level
+    # ``name``. Reading schema["name"] on the wrapper silently dropped every
+    # lcm_* tool on the first between-turns MCP refresh — the model never saw
+    # the recall tools even though agent_init injected them (2026-07-18).
+    from agent.memory_manager import normalize_tool_schema
+
     def _add(schema: dict) -> bool:
-        name = schema.get("name", "")
-        if not name or name in name_set:
+        normalized = normalize_tool_schema(schema)
+        if normalized is None:
             return False
-        tools_list.append({"type": "function", "function": schema})
+        name = normalized["name"]
+        if name in name_set:
+            return False
+        tools_list.append({"type": "function", "function": normalized})
         name_set.add(name)
         return True
 
@@ -5609,7 +5620,12 @@ def _reinject_post_build_tools(agent, tools_list: list, name_set: set) -> set:
             for schema in get_schemas():
                 if not isinstance(schema, dict):
                     continue
-                name = schema.get("name", "")
+                # Resolve the name from the NORMALIZED shape — wrapped entries
+                # (LCM) carry no top-level "name", and an unresolved name here
+                # would leave the routing set empty even when _add appended
+                # the schema (dispatch would fall through to "unknown tool").
+                _normalized = normalize_tool_schema(schema)
+                name = _normalized["name"] if _normalized else ""
                 # Only claim the routing name when WE appended the schema, so a
                 # name already owned by a registry/plugin tool keeps its own
                 # dispatch (matches agent_init.py's `continue`-before-claim).

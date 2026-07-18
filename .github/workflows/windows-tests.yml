@@ -1,0 +1,111 @@
+name: Windows tests (stable subset)
+
+# Non-blocking Windows CI lane. Full suite is slow and many tests are
+# POSIX-only (~46 win32 skip markers). This job runs a curated stable
+# subset that exercises cross-platform pure-Python paths Windows users
+# actually hit (delegate tool, agent core helpers, hermes_cli config /
+# atomic IO, Windows-specific gateway + slash-confirm).
+#
+# Failures do NOT block merge: continue-on-error here and on the ci.yml
+# caller; not listed in all-checks-pass.
+
+on:
+  workflow_call:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: windows-tests-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  windows-stable:
+    name: Windows stable subset
+    runs-on: windows-latest
+    timeout-minutes: 30
+    # Soft-fail while Windows stability is proven. Existing pytest
+    # skipif(sys.platform == "win32") markers are honored automatically.
+    continue-on-error: true
+    defaults:
+      run:
+        # GitHub-hosted windows-latest ships Git Bash; keep shell parity
+        # with ubuntu jobs (uv, retry action, path quoting).
+        shell: bash
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@fac544c07dec837d0ccb6301d7b5580bf5edae39 # 8.2.0
+        with:
+          enable-cache: true
+          cache-dependency-glob: |
+            pyproject.toml
+            uv.lock
+
+      - name: Set up Python 3.11
+        run: uv python install 3.11
+
+      - name: Install dependencies
+        uses: ./.github/actions/retry
+        with:
+          command: uv sync --locked --python 3.11 --extra all --extra dev
+
+      - name: Minimize uv cache
+        run: uv cache prune --ci
+
+      - name: Run Windows-stable pytest subset
+        # scripts/run_tests.sh probes only .venv/bin/activate (POSIX layout)
+        # and is not reliable on native Windows venvs (.venv/Scripts). Invoke
+        # pytest directly with the documented Windows env:
+        #   PYTHONPATH=<repo>  PYTHONNOUSERSITE=1
+        # Prefer the venv interpreter under Scripts/ when present.
+        env:
+          OPENROUTER_API_KEY: ""
+          OPENAI_API_KEY: ""
+          NOUS_API_KEY: ""
+          PYTHONNOUSERSITE: "1"
+          PYTHONHASHSEED: "0"
+          TZ: UTC
+        run: |
+          set -euo pipefail
+          export PYTHONPATH="${GITHUB_WORKSPACE}${PYTHONPATH:+:${PYTHONPATH}}"
+
+          if [ -x .venv/Scripts/python.exe ]; then
+            PY=".venv/Scripts/python.exe"
+          elif [ -x .venv/Scripts/python ]; then
+            PY=".venv/Scripts/python"
+          elif [ -x .venv/bin/python ]; then
+            PY=".venv/bin/python"
+          else
+            echo "::error::no venv python found under .venv/Scripts or .venv/bin"
+            ls -la .venv || true
+            ls -la .venv/Scripts 2>/dev/null || true
+            exit 1
+          fi
+          echo "Using interpreter: $PY"
+          "$PY" -c "import sys; print(sys.platform, sys.executable); print('PYTHONPATH=', __import__('os').environ.get('PYTHONPATH',''))"
+
+          # Curated stable subset — pure-Python / Windows-aware modules.
+          # Globs expand under bash. win32 skip markers still apply.
+          "$PY" -m pytest -v --tb=short \
+            tests/tools/test_delegate.py \
+            tests/tools/test_delegate_composite_toolsets.py \
+            tests/tools/test_delegate_model_router_integration.py \
+            tests/tools/test_delegate_subagent_timeout_diagnostic.py \
+            tests/tools/test_delegate_summary_budget.py \
+            tests/tools/test_delegate_toolset_scope.py \
+            tests/agent/test_async_utils.py \
+            tests/agent/test_prompt_builder.py \
+            tests/agent/test_skill_utils.py \
+            tests/agent/test_skill_commands.py \
+            tests/agent/test_anthropic_keychain.py \
+            tests/hermes_cli/test_config.py \
+            tests/hermes_cli/test_atomic_json_write.py \
+            tests/hermes_cli/test_atomic_yaml_write.py \
+            tests/hermes_cli/test_gateway_windows.py \
+            tests/hermes_cli/test_ensure_utf8_locale.py \
+            tests/hermes_cli/test_banner.py \
+            tests/cli/test_slash_confirm_windows.py \
+            tests/ci/

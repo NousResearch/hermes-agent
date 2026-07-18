@@ -70,6 +70,25 @@ jobs:
       slice_count: 8
     secrets: inherit
 
+  # Non-blocking Windows stable subset. Surfaces win32 regressions Linux
+  # CI never sees; continue-on-error + omitted from all-checks-pass so it
+  # cannot break branch protection while the subset is proven stable.
+  windows-tests:
+    name: Windows tests (stable, non-blocking)
+    needs: detect
+    if: needs.detect.outputs.python == 'true'
+    continue-on-error: true
+    uses: ./.github/workflows/windows-tests.yml
+
+  # Informational pytest-cov report (XML+HTML artifact). No coverage
+  # percentage gate. continue-on-error + omitted from all-checks-pass.
+  coverage:
+    name: Coverage (informational)
+    needs: detect
+    if: needs.detect.outputs.python == 'true'
+    continue-on-error: true
+    uses: ./.github/workflows/coverage.yml
+
   lint:
     name: Python lints
     needs: detect

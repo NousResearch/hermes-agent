@@ -951,12 +951,125 @@ def _approval(private: Ed25519PrivateKey, plan, *, sequence: int = 0, previous=N
     return raw
 
 
+def _seed_passkey_authority(
+    journal: MemoryJournal,
+    plan: cutover.FreezePlan,
+    approval_value: dict,
+    *,
+    recorded_at_unix: int = NOW,
+) -> None:
+    approval = cutover.CutoverApproval.from_mapping(
+        approval_value,
+        plan=plan,
+        now_unix=approval_value["issued_at_unix"],
+    )
+    journal.append(
+        plan.sha256,
+        "passkey_claim",
+        {
+            "schema": cutover.PASSKEY_CLAIM_SCHEMA,
+            "freeze_plan_sha256": plan.sha256,
+            "freeze_approval_sha256": approval.sha256,
+            "freeze_publication_sha256": "1" * 64,
+            "passkey_proof_sha256": "2" * 64,
+            "authorization_receipt_sha256": "3" * 64,
+            "action_envelope_sha256": "4" * 64,
+            "action_payload_sha256": "6" * 64,
+            "request_id": "a" * 64,
+            "consume_attempt_id": "5" * 64,
+            "authority_release_sha": REVISION,
+            "execution_window_expires_at_unix": NOW + 600,
+        },
+        recorded_at_unix,
+    )
+    cutover._append_authority(
+        journal,
+        plan.sha256,
+        approval,
+        recorded_at_unix,
+    )
+
+
+def _seed_cutover_passkey(
+    journal: MemoryJournal,
+    plan: cutover.CutoverPlan,
+    approval_value: dict,
+    *,
+    with_apply_intent: bool = False,
+    recorded_at_unix: int = NOW,
+) -> None:
+    freeze = cutover.FreezePlan.from_mapping(plan.value["freeze_plan"])
+    _seed_passkey_authority(
+        journal,
+        freeze,
+        approval_value,
+        recorded_at_unix=recorded_at_unix,
+    )
+    claim_entry, claim = cutover.require_recorded_passkey_claim(
+        journal,
+        plan_sha256=freeze.sha256,
+        approval_sha256=approval_value["approval_sha256"],
+        release_revision=freeze.value["release_revision"],
+    )
+    cutover._require_or_record_passkey_intent(
+        journal,
+        journal_plan_sha256=freeze.sha256,
+        phase="freeze_stop",
+        freeze_plan_sha256=freeze.sha256,
+        freeze_approval_sha256=approval_value["approval_sha256"],
+        cutover_plan_sha256=None,
+        claim_entry=claim_entry,
+        claim=claim,
+        now_unix=recorded_at_unix,
+    )
+    journal.append(
+        freeze.sha256,
+        "gateway_stopped",
+        {
+            "gateway": plan.value["gateway_legacy_identity"],
+            "writer": plan.value["writer_pre_identity"],
+        },
+        recorded_at_unix,
+    )
+    journal.append(
+        freeze.sha256,
+        "final_tail_captured",
+        plan.value["final_tail_receipt"],
+        recorded_at_unix,
+    )
+    if with_apply_intent:
+        cutover._require_or_record_passkey_intent(
+            journal,
+            journal_plan_sha256=plan.sha256,
+            phase="cutover_apply",
+            freeze_plan_sha256=freeze.sha256,
+            freeze_approval_sha256=approval_value["approval_sha256"],
+            cutover_plan_sha256=plan.sha256,
+            claim_entry=claim_entry,
+            claim=claim,
+            now_unix=recorded_at_unix,
+            cutover_plan=plan,
+        )
+        cutover._append_authority(
+            journal,
+            plan.sha256,
+            cutover.CutoverApproval.from_mapping(
+                approval_value,
+                plan=freeze,
+                now_unix=recorded_at_unix,
+            ),
+            recorded_at_unix,
+        )
+
+
 def _capture(private, services, *, initial_rows=14_073, final_rows=14_081):
     plan = _freeze(private, services, initial_rows)
     journal = MemoryJournal()
+    approval = _approval(private, plan)
+    _seed_passkey_authority(journal, plan, approval)
     receipt = cutover.execute_final_tail_capture(
         plan,
-        _approval(private, plan),
+        approval,
         cutover.FreezeDependencies(
             services=services,
             snapshots=Snapshots(_snapshot(final_rows, marker="2")),
@@ -2221,7 +2334,11 @@ def test_freeze_stops_exact_gateway_and_captures_final_append_only_tail() -> Non
     assert receipt.value["initial_row_count"] == 14_073
     assert receipt.value["final_row_count"] == 14_081
     assert [entry.value["event"] for entry in journal.load(plan.sha256)] == [
-        "authority", "gateway_stopped", "final_tail_captured"
+        "passkey_claim",
+        "authority",
+        "passkey_intent",
+        "gateway_stopped",
+        "final_tail_captured",
     ]
     assert cutover.execute_final_tail_capture(
         plan, _approval(private, plan),
@@ -2354,9 +2471,11 @@ def test_freeze_rejects_row_floor_regression_after_stopping_gateway() -> None:
     services = Services()
     plan = _freeze(private, services, initial_rows=100)
     journal = MemoryJournal()
+    approval = _approval(private, plan)
+    _seed_passkey_authority(journal, plan, approval)
     with pytest.raises(cutover.ProductionCutoverError, match="row_floor"):
         cutover.execute_final_tail_capture(
-            plan, _approval(private, plan),
+            plan, approval,
             cutover.FreezeDependencies(
                 services,
                 Snapshots(_snapshot(99)),
@@ -2373,18 +2492,138 @@ def test_freeze_rejects_row_floor_regression_after_stopping_gateway() -> None:
     assert entries[-1].value["evidence"]["host_mutated"] is False
 
 
+def test_expired_unused_claim_cannot_start_freeze_stop() -> None:
+    private = Ed25519PrivateKey.generate()
+    services = Services()
+    plan = _freeze(private, services, initial_rows=100)
+    approval = _approval(private, plan)
+    journal = MemoryJournal()
+    _seed_passkey_authority(journal, plan, approval)
+
+    with pytest.raises(
+        PermissionError,
+        match="execution window expired before intent",
+    ):
+        cutover.execute_final_tail_capture(
+            plan,
+            approval,
+            cutover.FreezeDependencies(
+                services,
+                Snapshots(_snapshot(101)),
+                journal,
+                nullcontext,
+            ),
+            now_unix=NOW + 601,
+        )
+
+    assert services.calls == []
+    assert [entry.value["event"] for entry in journal.load(plan.sha256)] == [
+        "passkey_claim",
+        "authority",
+    ]
+
+
+def test_expired_claim_resumes_only_after_durable_freeze_stop_intent() -> None:
+    private = Ed25519PrivateKey.generate()
+    services = Services()
+    plan = _freeze(private, services, initial_rows=100)
+    approval = _approval(private, plan)
+    journal = MemoryJournal()
+    _seed_passkey_authority(journal, plan, approval)
+    claim_entry, claim = cutover.require_recorded_passkey_claim(
+        journal,
+        plan_sha256=plan.sha256,
+        approval_sha256=approval["approval_sha256"],
+        release_revision=plan.value["release_revision"],
+    )
+    cutover._require_or_record_passkey_intent(
+        journal,
+        journal_plan_sha256=plan.sha256,
+        phase="freeze_stop",
+        freeze_plan_sha256=plan.sha256,
+        freeze_approval_sha256=approval["approval_sha256"],
+        cutover_plan_sha256=None,
+        claim_entry=claim_entry,
+        claim=claim,
+        now_unix=NOW,
+    )
+
+    receipt = cutover.execute_final_tail_capture(
+        plan,
+        approval,
+        cutover.FreezeDependencies(
+            services,
+            Snapshots(_snapshot(101, marker="2")),
+            journal,
+            nullcontext,
+        ),
+        now_unix=NOW + 700,
+    )
+
+    assert receipt.value["final_row_count"] == 101
+    assert services.gateway.stopped
+
+
+def test_passkey_supersession_reader_rejects_forged_early_entry() -> None:
+    private = Ed25519PrivateKey.generate()
+    plan = _freeze(private, Services(), initial_rows=100)
+    approval = _approval(private, plan)
+    journal = MemoryJournal()
+    _seed_passkey_authority(journal, plan, approval)
+    old_entry, old_claim = cutover.require_recorded_passkey_claim(
+        journal,
+        plan_sha256=plan.sha256,
+        approval_sha256=approval["approval_sha256"],
+        release_revision=REVISION,
+    )
+    new_claim = {
+        **old_claim,
+        "passkey_proof_sha256": "7" * 64,
+        "authorization_receipt_sha256": "8" * 64,
+        "action_envelope_sha256": "9" * 64,
+        "request_id": "b" * 64,
+        "consume_attempt_id": "a" * 64,
+        "execution_window_expires_at_unix": NOW + 1_200,
+    }
+    appended, _active = cutover.supersede_recorded_passkey_claim(
+        journal,
+        plan_sha256=plan.sha256,
+        approval_sha256=approval["approval_sha256"],
+        release_revision=REVISION,
+        new_claim_value=new_claim,
+        now_unix=NOW + 600,
+    )
+    forged_unsigned = {
+        name: item
+        for name, item in appended.value.items()
+        if name != "entry_sha256"
+    }
+    forged_unsigned["recorded_at_unix"] = NOW + 1
+    journal.values[plan.sha256][-1] = cutover.JournalEntry.from_mapping(
+        _hashed(forged_unsigned, "entry_sha256"),
+        plan_sha256=plan.sha256,
+    )
+
+    with pytest.raises(
+        PermissionError,
+        match="supersession is invalid",
+    ):
+        cutover.require_recorded_passkey_claim(
+            journal,
+            plan_sha256=plan.sha256,
+            approval_sha256=approval["approval_sha256"],
+            release_revision=REVISION,
+        )
+    assert old_entry.value["recorded_at_unix"] == NOW
+
+
 def test_explicit_pre_mutation_freeze_abort_recovers_after_process_crash() -> None:
     private = Ed25519PrivateKey.generate()
     services = Services()
     plan = _freeze(private, services, initial_rows=100)
     approval_value = _approval(private, plan)
-    approval = cutover.CutoverApproval.from_mapping(
-        approval_value,
-        plan=plan,
-        now_unix=NOW,
-    )
     journal = MemoryJournal()
-    cutover._append_authority(journal, plan.sha256, approval, NOW)
+    _seed_passkey_authority(journal, plan, approval_value)
     services.stop_writer()
     services.stop_connector()
     services.stop_gateway()
@@ -2467,16 +2706,19 @@ def test_freeze_rejects_exact_relation_acl_or_index_identity_drift(
     private = Ed25519PrivateKey.generate()
     services = Services()
     plan = _freeze(private, services, initial_rows=100)
+    approval = _approval(private, plan)
+    journal = MemoryJournal()
+    _seed_passkey_authority(journal, plan, approval)
     with pytest.raises(cutover.ProductionCutoverError, match="storage_identity"):
         cutover.execute_final_tail_capture(
             plan,
-            _approval(private, plan),
+            approval,
             cutover.FreezeDependencies(
                 services,
                 Snapshots(
                     _snapshot(101, identity_override={field: value})
                 ),
-                MemoryJournal(),
+                journal,
                 nullcontext,
             ),
             now_unix=NOW,
@@ -2535,8 +2777,10 @@ def test_successful_cutover_preserves_full_archive_and_canonical_digest_proofs()
     database = Database(plan)
     host = Host(plan, services)
     journal = MemoryJournal()
+    approval = _approval(private, plan)
+    _seed_cutover_passkey(journal, plan, approval)
     terminal = cutover.execute_cutover(
-        plan, _approval(private, plan),
+        plan, approval,
         cutover.CutoverDependencies(
             services, Snapshots(plan.final_snapshot), database, host, journal,
             Prerequisites(), nullcontext
@@ -2551,7 +2795,7 @@ def test_successful_cutover_preserves_full_archive_and_canonical_digest_proofs()
     assert services.connector.value["active_state"] == "active"
     assert database.calls == ["preflight", "apply", "terminal"]
     assert cutover.execute_cutover(
-        plan, _approval(private, plan),
+        plan, approval,
         cutover.CutoverDependencies(
             services, Snapshots(plan.final_snapshot), database, host, journal,
             Prerequisites(), nullcontext
@@ -2559,6 +2803,222 @@ def test_successful_cutover_preserves_full_archive_and_canonical_digest_proofs()
         now_unix=NOW,
     )["receipt_sha256"] == terminal["receipt_sha256"]
     assert database.calls == ["preflight", "apply", "terminal"]
+
+
+def test_cutover_apply_without_parent_freeze_intent_fails() -> None:
+    private = Ed25519PrivateKey.generate()
+    services = Services()
+    plan = _cutover_plan(private, services)
+    approval = _approval(private, plan)
+    journal = MemoryJournal()
+    freeze = cutover.FreezePlan.from_mapping(plan.value["freeze_plan"])
+    _seed_passkey_authority(journal, freeze, approval)
+    database = Database(plan)
+
+    with pytest.raises(
+        PermissionError,
+        match="requires exact parent freeze intent",
+    ):
+        cutover.execute_cutover(
+            plan,
+            approval,
+            cutover.CutoverDependencies(
+                services,
+                Snapshots(plan.final_snapshot),
+                database,
+                Host(plan, services),
+                journal,
+                Prerequisites(),
+                nullcontext,
+            ),
+            now_unix=NOW,
+        )
+
+    assert database.calls == []
+    assert journal.load(plan.sha256) == []
+
+
+def test_expired_claim_can_record_apply_intent_from_durable_freeze_terminal() -> None:
+    private = Ed25519PrivateKey.generate()
+    services = Services()
+    plan = _cutover_plan(private, services)
+    approval = _approval(private, plan)
+    journal = MemoryJournal()
+    _seed_cutover_passkey(journal, plan, approval)
+    database = Database(plan)
+
+    terminal = cutover.execute_cutover(
+        plan,
+        approval,
+        cutover.CutoverDependencies(
+            services,
+            Snapshots(plan.final_snapshot),
+            database,
+            Host(plan, services),
+            journal,
+            Prerequisites(),
+            nullcontext,
+        ),
+        now_unix=NOW + 3_600,
+    )
+
+    assert terminal["schema"] == cutover.TERMINAL_SCHEMA
+    apply_intent = next(
+        entry
+        for entry in journal.load(plan.sha256)
+        if entry.value["event"] == "passkey_intent"
+    )
+    freeze = cutover.FreezePlan.from_mapping(plan.value["freeze_plan"])
+    freeze_entries = journal.load(freeze.sha256)
+    freeze_intent = next(
+        entry
+        for entry in freeze_entries
+        if entry.value["event"] == "passkey_intent"
+    )
+    final_tail = next(
+        entry
+        for entry in freeze_entries
+        if entry.value["event"] == "final_tail_captured"
+    )
+    assert apply_intent.value["recorded_at_unix"] == NOW + 3_600
+    assert apply_intent.value["evidence"][
+        "parent_freeze_intent_entry_sha256"
+    ] == freeze_intent.sha256
+    assert apply_intent.value["evidence"][
+        "parent_freeze_terminal_entry_sha256"
+    ] == final_tail.sha256
+    assert database.calls == ["preflight", "apply", "terminal"]
+
+
+def test_cutover_apply_rejects_parent_intent_bound_to_different_claim() -> None:
+    private = Ed25519PrivateKey.generate()
+    services = Services()
+    plan = _cutover_plan(private, services)
+    approval = _approval(private, plan)
+    journal = MemoryJournal()
+    _seed_cutover_passkey(journal, plan, approval)
+    freeze = cutover.FreezePlan.from_mapping(plan.value["freeze_plan"])
+    freeze_entries = journal.values[freeze.sha256]
+    intent_index = next(
+        index
+        for index, entry in enumerate(freeze_entries)
+        if entry.value["event"] == "passkey_intent"
+    )
+    forged = {
+        name: item
+        for name, item in freeze_entries[intent_index].value.items()
+        if name != "entry_sha256"
+    }
+    forged["evidence"] = {
+        **forged["evidence"],
+        "passkey_claim_entry_sha256": "f" * 64,
+    }
+    freeze_entries[intent_index] = cutover.JournalEntry.from_mapping(
+        _hashed(forged, "entry_sha256"),
+        plan_sha256=freeze.sha256,
+    )
+    database = Database(plan)
+
+    with pytest.raises(
+        PermissionError,
+        match="requires exact parent freeze intent",
+    ):
+        cutover.execute_cutover(
+            plan,
+            approval,
+            cutover.CutoverDependencies(
+                services,
+                Snapshots(plan.final_snapshot),
+                database,
+                Host(plan, services),
+                journal,
+                Prerequisites(),
+                nullcontext,
+            ),
+            now_unix=NOW,
+        )
+
+    assert database.calls == []
+    assert journal.load(plan.sha256) == []
+
+
+def test_cutover_apply_rejects_stale_plan_after_abort_following_tail() -> None:
+    private = Ed25519PrivateKey.generate()
+    services = Services()
+    plan = _cutover_plan(private, services)
+    approval = _approval(private, plan)
+    journal = MemoryJournal()
+    _seed_cutover_passkey(journal, plan, approval)
+    freeze = cutover.FreezePlan.from_mapping(plan.value["freeze_plan"])
+    journal.append(
+        freeze.sha256,
+        "freeze_aborted",
+        {
+            "database_mutated": False,
+            "host_mutated": False,
+        },
+        NOW + 1,
+    )
+    database = Database(plan)
+
+    with pytest.raises(
+        PermissionError,
+        match="parent final tail is invalid",
+    ):
+        cutover.execute_cutover(
+            plan,
+            approval,
+            cutover.CutoverDependencies(
+                services,
+                Snapshots(plan.final_snapshot),
+                database,
+                Host(plan, services),
+                journal,
+                Prerequisites(),
+                nullcontext,
+            ),
+            now_unix=NOW + 2,
+        )
+
+    assert database.calls == []
+    assert journal.load(plan.sha256) == []
+
+
+def test_expired_claim_resumes_exact_cutover_after_durable_apply_intent() -> None:
+    private = Ed25519PrivateKey.generate()
+    services = Services()
+    plan = _cutover_plan(private, services)
+    approval = _approval(private, plan)
+    journal = MemoryJournal()
+    _seed_cutover_passkey(
+        journal,
+        plan,
+        approval,
+        with_apply_intent=True,
+    )
+
+    terminal = cutover.execute_cutover(
+        plan,
+        approval,
+        cutover.CutoverDependencies(
+            services,
+            Snapshots(plan.final_snapshot),
+            Database(plan),
+            Host(plan, services),
+            journal,
+            Prerequisites(),
+            nullcontext,
+        ),
+        now_unix=NOW + 3_600,
+    )
+
+    assert terminal["schema"] == cutover.TERMINAL_SCHEMA
+    intent = next(
+        entry
+        for entry in journal.load(plan.sha256)
+        if entry.value["event"] == "passkey_intent"
+    )
+    assert intent.value["recorded_at_unix"] == NOW
 
 
 def test_packaged_cron_cutover_is_ordered_and_journal_authority_is_exact() -> None:
@@ -2569,10 +3029,12 @@ def test_packaged_cron_cutover_is_ordered_and_journal_authority_is_exact() -> No
     host = Host(plan, services)
     cron = CronBoundary(services)
     journal = MemoryJournal()
+    approval = _approval(private, plan)
+    _seed_cutover_passkey(journal, plan, approval)
 
     terminal = cutover.execute_cutover(
         plan,
-        _approval(private, plan),
+        approval,
         cutover.CutoverDependencies(
             services,
             Snapshots(plan.final_snapshot),
@@ -2629,7 +3091,7 @@ def test_packaged_cron_cutover_is_ordered_and_journal_authority_is_exact() -> No
     )
     assert cutover.execute_cutover(
         plan,
-        _approval(private, plan),
+        approval,
         cutover.CutoverDependencies(
             services,
             Snapshots(plan.final_snapshot),
@@ -2650,15 +3112,18 @@ def test_legacy_cron_plan_keeps_optional_boundary_as_strict_noop() -> None:
     services = Services()
     plan = _cutover_plan(private, services)
     cron = CronBoundary(services)
+    journal = MemoryJournal()
+    approval = _approval(private, plan)
+    _seed_cutover_passkey(journal, plan, approval)
     terminal = cutover.execute_cutover(
         plan,
-        _approval(private, plan),
+        approval,
         cutover.CutoverDependencies(
             services,
             Snapshots(plan.final_snapshot),
             Database(plan),
             Host(plan, services),
-            MemoryJournal(),
+            journal,
             Prerequisites(),
             nullcontext,
             cron=cron,
@@ -2689,10 +3154,12 @@ def test_packaged_cron_rollback_precedes_host_and_database_rollback() -> None:
     database.apply_override = {"archive_extended19_sha256": "f" * 64}
     cron = CronBoundary(services, trace)
     journal = MemoryJournal()
+    approval = _approval(private, plan)
+    _seed_cutover_passkey(journal, plan, approval)
     with pytest.raises(cutover.ProductionCutoverError, match="rolled_back"):
         cutover.execute_cutover(
             plan,
-            _approval(private, plan),
+            approval,
             cutover.CutoverDependencies(
                 services,
                 Snapshots(plan.final_snapshot),
@@ -2735,13 +3202,15 @@ def test_forged_cron_activation_receipt_is_not_appended_after_commit() -> None:
             return _hashed(unsigned, "receipt_sha256")
 
     journal = MemoryJournal()
+    approval = _approval(private, plan)
+    _seed_cutover_passkey(journal, plan, approval)
     with pytest.raises(
         cutover.ProductionCutoverError,
         match="forward_recovery_required",
     ):
         cutover.execute_cutover(
             plan,
-            _approval(private, plan),
+            approval,
             cutover.CutoverDependencies(
                 services,
                 Snapshots(plan.final_snapshot),
@@ -2810,11 +3279,14 @@ def test_final_tail_drift_blocks_before_any_database_mutation() -> None:
     database = Database(plan)
     snapshots = Snapshots(plan.final_snapshot)
     snapshots.before = _snapshot(plan.final_snapshot.value["source_row_count"] + 1)
+    journal = MemoryJournal()
+    approval = _approval(private, plan)
+    _seed_cutover_passkey(journal, plan, approval)
     with pytest.raises(cutover.ProductionCutoverError, match="rolled_back"):
         cutover.execute_cutover(
-            plan, _approval(private, plan),
+            plan, approval,
             cutover.CutoverDependencies(
-                services, snapshots, database, Host(plan, services), MemoryJournal(),
+                services, snapshots, database, Host(plan, services), journal,
                 Prerequisites(), nullcontext
             ),
             now_unix=NOW,
@@ -2843,15 +3315,18 @@ def test_final_tail_reobservation_ignores_only_collection_timestamp() -> None:
             "snapshot_sha256",
         )
     )
+    journal = MemoryJournal()
+    approval = _approval(private, plan)
+    _seed_cutover_passkey(journal, plan, approval)
     terminal = cutover.execute_cutover(
         plan,
-        _approval(private, plan),
+        approval,
         cutover.CutoverDependencies(
             services,
             snapshots,
             database,
             Host(plan, services),
-            MemoryJournal(),
+            journal,
             Prerequisites(),
             nullcontext,
         ),
@@ -2868,14 +3343,11 @@ def test_resume_after_host_applied_accepts_exact_target_unit_identities() -> Non
     host = Host(plan, services)
     journal = MemoryJournal()
     first_approval = _approval(private, plan)
-    validated = cutover.CutoverApproval.from_mapping(
-        first_approval, plan=plan, now_unix=NOW
-    )
-    journal.append(
-        plan.sha256,
-        "authority",
-        {"approval_sha256": validated.sha256, "sequence": 0},
-        NOW,
+    _seed_cutover_passkey(
+        journal,
+        plan,
+        first_approval,
+        with_apply_intent=True,
     )
     journal.append(
         plan.sha256,
@@ -2905,12 +3377,7 @@ def test_resume_after_host_applied_accepts_exact_target_unit_identities() -> Non
 
     terminal = cutover.execute_cutover(
         plan,
-        _approval(
-            private,
-            plan,
-            sequence=1,
-            previous=validated.sha256,
-        ),
+        first_approval,
         cutover.CutoverDependencies(
             services,
             Snapshots(plan.final_snapshot),
@@ -3004,14 +3471,11 @@ def test_resume_target_drift_rolls_back_fail_closed_instead_of_leaving_database_
     host = Host(plan, services)
     journal = MemoryJournal()
     first = _approval(private, plan)
-    validated = cutover.CutoverApproval.from_mapping(
-        first, plan=plan, now_unix=NOW
-    )
-    journal.append(
-        plan.sha256,
-        "authority",
-        {"approval_sha256": validated.sha256, "sequence": 0},
-        NOW,
+    _seed_cutover_passkey(
+        journal,
+        plan,
+        first,
+        with_apply_intent=True,
     )
     journal.append(
         plan.sha256,
@@ -3047,12 +3511,7 @@ def test_resume_target_drift_rolls_back_fail_closed_instead_of_leaving_database_
     with pytest.raises(cutover.ProductionCutoverError, match="rolled_back"):
         cutover.execute_cutover(
             plan,
-            _approval(
-                private,
-                plan,
-                sequence=1,
-                previous=validated.sha256,
-            ),
+            first,
             cutover.CutoverDependencies(
                 services,
                 Snapshots(plan.final_snapshot),
@@ -3077,9 +3536,11 @@ def test_host_failure_rolls_back_host_and_database_fail_closed() -> None:
     database = Database(plan)
     host = Host(plan, services, fail_start=True)
     journal = MemoryJournal()
+    approval = _approval(private, plan)
+    _seed_cutover_passkey(journal, plan, approval)
     with pytest.raises(cutover.ProductionCutoverError, match="rolled_back"):
         cutover.execute_cutover(
-            plan, _approval(private, plan),
+            plan, approval,
             cutover.CutoverDependencies(
                 services, Snapshots(plan.final_snapshot), database, host, journal,
                 Prerequisites(), nullcontext
@@ -3100,11 +3561,14 @@ def test_wrong_archive_digest_rolls_back_started_prerequisites_and_database() ->
     database = Database(plan)
     database.apply_override = {"archive_extended19_sha256": "f" * 64}
     host = Host(plan, services)
+    journal = MemoryJournal()
+    approval = _approval(private, plan)
+    _seed_cutover_passkey(journal, plan, approval)
     with pytest.raises(cutover.ProductionCutoverError, match="rolled_back"):
         cutover.execute_cutover(
-            plan, _approval(private, plan),
+            plan, approval,
             cutover.CutoverDependencies(
-                services, Snapshots(plan.final_snapshot), database, host, MemoryJournal(),
+                services, Snapshots(plan.final_snapshot), database, host, journal,
                 Prerequisites(), nullcontext
             ),
             now_unix=NOW,
@@ -3121,10 +3585,12 @@ def test_database_apply_exception_reconciles_without_accepted_receipt() -> None:
     plan = _cutover_plan(private, services)
     database = ApplyResponseLostDatabase(plan)
     journal = MemoryJournal()
+    approval = _approval(private, plan)
+    _seed_cutover_passkey(journal, plan, approval)
     with pytest.raises(cutover.ProductionCutoverError, match="rolled_back"):
         cutover.execute_cutover(
             plan,
-            _approval(private, plan),
+            approval,
             cutover.CutoverDependencies(
                 services,
                 Snapshots(plan.final_snapshot),
@@ -3148,14 +3614,11 @@ def test_unreceipted_database_apply_intent_rolls_back_instead_of_replaying() -> 
     database = Database(plan)
     journal = MemoryJournal()
     first = _approval(private, plan)
-    validated = cutover.CutoverApproval.from_mapping(
-        first, plan=plan, now_unix=NOW
-    )
-    journal.append(
-        plan.sha256,
-        "authority",
-        {"approval_sha256": validated.sha256, "sequence": 0},
-        NOW,
+    _seed_cutover_passkey(
+        journal,
+        plan,
+        first,
+        with_apply_intent=True,
     )
     journal.append(
         plan.sha256,
@@ -3166,12 +3629,7 @@ def test_unreceipted_database_apply_intent_rolls_back_instead_of_replaying() -> 
     with pytest.raises(cutover.ProductionCutoverError, match="rolled_back"):
         cutover.execute_cutover(
             plan,
-            _approval(
-                private,
-                plan,
-                sequence=1,
-                previous=validated.sha256,
-            ),
+            first,
             cutover.CutoverDependencies(
                 services,
                 Snapshots(plan.final_snapshot),
@@ -3193,9 +3651,7 @@ def test_rollback_terminal_prevents_stale_forward_replay() -> None:
     database = ApplyResponseLostDatabase(plan)
     journal = MemoryJournal()
     first = _approval(private, plan)
-    validated = cutover.CutoverApproval.from_mapping(
-        first, plan=plan, now_unix=NOW
-    )
+    _seed_cutover_passkey(journal, plan, first)
     dependencies = cutover.CutoverDependencies(
         services,
         Snapshots(plan.final_snapshot),
@@ -3217,12 +3673,7 @@ def test_rollback_terminal_prevents_stale_forward_replay() -> None:
     ):
         cutover.execute_cutover(
             plan,
-            _approval(
-                private,
-                plan,
-                sequence=1,
-                previous=validated.sha256,
-            ),
+            first,
             dependencies,
             now_unix=NOW,
         )

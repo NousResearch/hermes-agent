@@ -59,6 +59,33 @@ def _sealed_owner_runtime(monkeypatch) -> None:
         "_active_owner_runtime_attestation",
         lambda revision: _runtime_attestation(revision),
     )
+    monkeypatch.setattr(
+        owner.cutover_passkey,
+        "build_claim_frame",
+        lambda *, publication, passkey_proof, now_unix: {
+            "schema": owner.cutover_passkey.CUTOVER_CLAIM_FRAME_SCHEMA,
+            "publication": publication,
+            "passkey_proof": passkey_proof,
+            "claim_sha256": "5" * 64,
+        },
+    )
+
+
+def _workflow_passkey_proof() -> dict:
+    return {
+        "proof_sha256": "1" * 64,
+        "action_envelope": {
+            "request_id": "a" * 64,
+            "envelope_sha256": "2" * 64,
+            "action_payload_sha256": "6" * 64,
+            "authority_release_sha": REVISION,
+        },
+        "authorization_receipt": {
+            "receipt_sha256": "3" * 64,
+            "consume_attempt_id": "4" * 64,
+            "execution_window_expires_at_unix": NOW + 3600,
+        },
+    }
 
 
 def _canonical(value: object) -> bytes:
@@ -547,6 +574,7 @@ class _WorkflowTransport:
         self.freeze: cutover.FreezePlan | None = None
         self.approval: dict | None = None
         self.cutover_plan: cutover.CutoverPlan | None = None
+        self.journal = MemoryJournal()
 
     def invoke(
         self,
@@ -565,7 +593,13 @@ class _WorkflowTransport:
             assert publication is None
             return self.host
         if action == "stage-publication":
+            if publication.get("schema") == owner.cutover_passkey.CUTOVER_CLAIM_FRAME_SCHEMA:
+                proof = publication["passkey_proof"]
+                publication = publication["publication"]
+            else:
+                proof = None
             if publication["action"] == "freeze-authority":
+                assert proof is not None
                 self.freeze = cutover.FreezePlan.from_mapping(
                     publication["documents"]["plan"]
                 )
@@ -576,6 +610,54 @@ class _WorkflowTransport:
                         "issued_at_unix"
                     ],
                 ).value
+                recorded_at = self.approval["issued_at_unix"]
+                self.journal.append(
+                    self.freeze.sha256,
+                    "passkey_claim",
+                    {
+                        "schema": cutover.PASSKEY_CLAIM_SCHEMA,
+                        "freeze_plan_sha256": self.freeze.sha256,
+                        "freeze_approval_sha256": self.approval[
+                            "approval_sha256"
+                        ],
+                        "freeze_publication_sha256": publication[
+                            "publication_sha256"
+                        ],
+                        "passkey_proof_sha256": proof["proof_sha256"],
+                        "authorization_receipt_sha256": proof[
+                            "authorization_receipt"
+                        ]["receipt_sha256"],
+                        "action_envelope_sha256": proof[
+                            "action_envelope"
+                        ]["envelope_sha256"],
+                        "action_payload_sha256": proof[
+                            "action_envelope"
+                        ]["action_payload_sha256"],
+                        "request_id": proof["action_envelope"][
+                            "request_id"
+                        ],
+                        "consume_attempt_id": proof[
+                            "authorization_receipt"
+                        ]["consume_attempt_id"],
+                        "authority_release_sha": proof[
+                            "action_envelope"
+                        ]["authority_release_sha"],
+                        "execution_window_expires_at_unix": proof[
+                            "authorization_receipt"
+                        ]["execution_window_expires_at_unix"],
+                    },
+                    recorded_at,
+                )
+                cutover._append_authority(
+                    self.journal,
+                    self.freeze.sha256,
+                    cutover.CutoverApproval.from_mapping(
+                        self.approval,
+                        plan=self.freeze,
+                        now_unix=self.approval["issued_at_unix"],
+                    ),
+                    recorded_at,
+                )
             else:
                 self.cutover_plan = cutover.CutoverPlan.from_mapping(
                     publication["documents"]["plan"]
@@ -591,7 +673,7 @@ class _WorkflowTransport:
                 cutover.FreezeDependencies(
                     services=self.services,
                     snapshots=Snapshots(_snapshot(14_081, marker="2")),
-                    journal=MemoryJournal(),
+                    journal=self.journal,
                     lock=nullcontext,
                 ),
                 now_unix=int(self.clock()),
@@ -696,6 +778,426 @@ def _recovery_gate_runner(*_args: object) -> dict:
     return dict(_database_recovery_receipt(rechecked_at_unix=NOW))
 
 
+def _bridge_request(document: dict) -> dict:
+    legacy_request_id = "L" * 32
+    unsigned = {
+        "schema": owner.BRIDGE_REQUEST_SCHEMA,
+        "release_revision": document["release_revision"],
+        "freeze_plan_sha256": document["freeze_plan_sha256"],
+        "freeze_approval_sha256": document["freeze_approval_sha256"],
+        "freeze_publication_sha256": document[
+            "freeze_publication_sha256"
+        ],
+        "v2_request_id": document["v2_request_id"],
+        "v2_transaction_id": document["v2_transaction_id"],
+        "v2_approval_url_sha256": document["v2_approval_url_sha256"],
+        "v2_action_payload_sha256": document[
+            "v2_action_payload_sha256"
+        ],
+        "bootstrap_input_sha256": document["document_sha256"],
+        "legacy_passkey_request_id": legacy_request_id,
+        "legacy_passkey_request_sha256": "1" * 64,
+        "legacy_approval_url": (
+            f"{owner.cutover_passkey.protocol.PRODUCTION_ORIGIN}/approve/"
+            f"{legacy_request_id}"
+        ),
+        "bridge_action_sha256": "2" * 64,
+        "route_contract_sha256": "3" * 64,
+        "original_caddy_sha256": "4" * 64,
+        "approval_bridge_template_sha256": "5" * 64,
+        "approval_bridge_caddy_sha256": "6" * 64,
+        "default_local_v1_route_preserved": True,
+        "production_mutation_performed": False,
+        "caller_selected_input_accepted": False,
+        "secret_material_recorded": False,
+        "secret_digest_recorded": False,
+        "requested_at_unix": NOW,
+    }
+    return _hashed(unsigned, "receipt_sha256")
+
+
+def _bridge_receipt(document: dict, request: dict) -> dict:
+    unsigned = {
+        "schema": owner.BRIDGE_RECEIPT_SCHEMA,
+        "release_revision": document["release_revision"],
+        "freeze_plan_sha256": document["freeze_plan_sha256"],
+        "freeze_approval_sha256": document["freeze_approval_sha256"],
+        "freeze_publication_sha256": document[
+            "freeze_publication_sha256"
+        ],
+        "v2_request_id": document["v2_request_id"],
+        "v2_transaction_id": document["v2_transaction_id"],
+        "v2_approval_url_sha256": document["v2_approval_url_sha256"],
+        "v2_action_payload_sha256": document[
+            "v2_action_payload_sha256"
+        ],
+        "bootstrap_input_sha256": document["document_sha256"],
+        "bridge_request_receipt_sha256": request["receipt_sha256"],
+        "legacy_passkey_request_id": request[
+            "legacy_passkey_request_id"
+        ],
+        "legacy_passkey_request_sha256": request[
+            "legacy_passkey_request_sha256"
+        ],
+        "legacy_passkey_grant_id": "G" * 43,
+        "legacy_passkey_grant_sha256": "7" * 64,
+        "legacy_passkey_consumed_grant_sha256": "8" * 64,
+        "legacy_passkey_consume_entry_sha256": "9" * 64,
+        "legacy_service_active_before_sha256": "a" * 64,
+        "legacy_service_inactive_sha256": "b" * 64,
+        "legacy_service_active_after_sha256": "c" * 64,
+        "legacy_service_local_health_sha256": "d" * 64,
+        "bridge_action_sha256": request["bridge_action_sha256"],
+        "route_contract_sha256": request["route_contract_sha256"],
+        "original_caddy_sha256": request["original_caddy_sha256"],
+        "approval_bridge_caddy_sha256": request[
+            "approval_bridge_caddy_sha256"
+        ],
+        "active_route_projection_sha256": "e" * 64,
+        "default_local_v1_route_preserved": True,
+        "exact_v2_approval_routes_only": True,
+        "caddy_validated": True,
+        "caddy_reloaded": True,
+        "caddy_readback_verified": True,
+        "rollback_mode": "pre_migration_exact_bytes",
+        "caller_selected_input_accepted": False,
+        "secret_material_recorded": False,
+        "secret_digest_recorded": False,
+        "activated_at_unix": NOW,
+    }
+    return _hashed(unsigned, "receipt_sha256")
+
+
+def test_prepare_then_resume_consumes_once_before_first_mutation(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        "scripts.canary.production_cutover_public_stager.time.time",
+        lambda: NOW,
+    )
+    monkeypatch.setattr(
+        "gateway.canonical_writer_production_cutover.time.time",
+        lambda: NOW,
+    )
+    services, initial, host, plan = _workflow_inputs()
+    prepare_transport = _WorkflowTransport(initial, host, services)
+
+    class PasskeyBoundary:
+        def __init__(self) -> None:
+            self.request_id = "a" * 64
+            self.consume_calls = 0
+
+        def request(self, publication: dict) -> dict:
+            plan_sha256 = publication["documents"]["plan"][
+                "plan_sha256"
+            ]
+            return {
+                "request_id": self.request_id,
+                "action_envelope_sha256": "6" * 64,
+                "challenge_record_sha256": "7" * 64,
+                "expires_at_unix": NOW + 900,
+                "release_sha": REVISION,
+                "plan_sha256": plan_sha256,
+                "freeze_publication_sha256": publication[
+                    "publication_sha256"
+                ],
+                "action_payload_sha256": "8" * 64,
+                "transaction_id": "9" * 64,
+                "approval_url": (
+                    f"{owner.cutover_passkey.protocol.PRODUCTION_ORIGIN}/"
+                    f"approve/{self.request_id}"
+                ),
+                "passkey_only": True,
+                "single_use": True,
+                "production_mutation_performed": False,
+            }
+
+        def consume(
+            self,
+            *,
+            freeze_publication: dict,
+            request_id: str,
+            consume_attempt_id: str,
+        ) -> dict:
+            self.consume_calls += 1
+            assert request_id == self.request_id
+            return {
+                "request_id": request_id,
+                "consume_attempt_id": consume_attempt_id,
+                "disposition": "authorized_once",
+                "passkey_proof": _workflow_passkey_proof(),
+                "release_sha": REVISION,
+                "plan_sha256": freeze_publication["documents"]["plan"][
+                    "plan_sha256"
+                ],
+                "single_use": True,
+                "production_mutation_performed": False,
+            }
+
+    boundary = PasskeyBoundary()
+
+    class BridgeBootstrap:
+        def __init__(self) -> None:
+            self.prepare_calls = 0
+            self.consume_calls = 0
+            self.request: dict | None = None
+
+        def prepare(self, document: dict) -> dict:
+            self.prepare_calls += 1
+            self.request = _bridge_request(document)
+            return self.request
+
+        def consume_and_install(self, document: dict) -> dict:
+            self.consume_calls += 1
+            assert self.request is not None
+            return _bridge_receipt(document, self.request)
+
+    bridge = BridgeBootstrap()
+    workspace = owner.execute_production_cutover_workflow(
+        release_revision=REVISION,
+        owner_identity=object(),
+        owner_subject_sha256="a" * 64,
+        private_key=Ed25519PrivateKey.generate(),
+        host_authority_plan=plan,
+        isolated_canary_goal_prerequisite=(
+            _isolated_canary_goal_prerequisite()
+        ),
+        truth_mode="start_new_truth_epoch",
+        passkey_boundary=boundary,
+        prepare_only=True,
+        transport_factory=lambda _identity: prepare_transport,
+        now_unix=NOW,
+    )
+
+    assert workspace["state"] == "awaiting_bridge_bootstrap"
+    assert workspace["advertised_approval_url"] is None
+    assert prepare_transport.calls == ["collect-initial", "collect-authority"]
+    assert boundary.consume_calls == 0
+
+    resume_transport = _WorkflowTransport(initial, host, services)
+    bridge_workspace = owner.resume_prepared_production_cutover_workflow(
+        workspace=workspace,
+        owner_identity=object(),
+        passkey_boundary=boundary,
+        bridge_bootstrap=bridge,
+        transport_factory=lambda _identity: resume_transport,
+        now_unix=NOW,
+    )
+    assert bridge_workspace["state"] == "awaiting_bridge_passkey"
+    assert bridge_workspace["advertised_approval_url"] is None
+    assert bridge.prepare_calls == 1
+    assert bridge.consume_calls == 0
+    assert boundary.consume_calls == 0
+    assert resume_transport.calls == []
+
+    passkey_workspace = owner.resume_prepared_production_cutover_workflow(
+        workspace=bridge_workspace,
+        owner_identity=object(),
+        passkey_boundary=boundary,
+        bridge_bootstrap=bridge,
+        transport_factory=lambda _identity: resume_transport,
+        now_unix=NOW,
+    )
+    assert passkey_workspace["state"] == "awaiting_cutover_passkey"
+    assert (
+        passkey_workspace["advertised_approval_url"]
+        == workspace["passkey_request"]["approval_url"]
+    )
+    assert passkey_workspace["production_mutation_performed"] is True
+    assert bridge.consume_calls == 1
+    assert boundary.consume_calls == 0
+    assert resume_transport.calls == []
+
+    receipt = owner.resume_prepared_production_cutover_workflow(
+        workspace=passkey_workspace,
+        owner_identity=object(),
+        passkey_boundary=boundary,
+        bridge_bootstrap=bridge,
+        transport_factory=lambda _identity: resume_transport,
+        now_unix=NOW,
+    )
+
+    assert receipt["schema"] == owner.WORKFLOW_RECEIPT_SCHEMA
+    assert boundary.consume_calls == 1
+    assert resume_transport.calls[0] == "stage-publication"
+
+
+def test_resume_rejects_tampered_approval_url_before_consumption(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    services, initial, host, plan = _workflow_inputs()
+
+    class Boundary:
+        consume_calls = 0
+
+        def request(self, publication: dict) -> dict:
+            request_id = "a" * 64
+            return {
+                "request_id": request_id,
+                "action_envelope_sha256": "6" * 64,
+                "challenge_record_sha256": "7" * 64,
+                "expires_at_unix": NOW + 900,
+                "release_sha": REVISION,
+                "plan_sha256": publication["documents"]["plan"][
+                    "plan_sha256"
+                ],
+                "freeze_publication_sha256": publication[
+                    "publication_sha256"
+                ],
+                "action_payload_sha256": "8" * 64,
+                "transaction_id": "9" * 64,
+                "approval_url": (
+                    f"{owner.cutover_passkey.protocol.PRODUCTION_ORIGIN}/"
+                    f"approve/{request_id}"
+                ),
+                "passkey_only": True,
+                "single_use": True,
+                "production_mutation_performed": False,
+            }
+
+        def consume(self, **_kwargs) -> dict:
+            self.consume_calls += 1
+            raise AssertionError("tampered workspace reached consume")
+
+    boundary = Boundary()
+    workspace = dict(owner.execute_production_cutover_workflow(
+        release_revision=REVISION,
+        owner_identity=object(),
+        owner_subject_sha256="a" * 64,
+        private_key=Ed25519PrivateKey.generate(),
+        host_authority_plan=plan,
+        isolated_canary_goal_prerequisite=(
+            _isolated_canary_goal_prerequisite()
+        ),
+        truth_mode="start_new_truth_epoch",
+        passkey_boundary=boundary,
+        prepare_only=True,
+        transport_factory=lambda _identity: _WorkflowTransport(
+            initial, host, services
+        ),
+        now_unix=NOW,
+    ))
+    workspace["passkey_request"] = dict(workspace["passkey_request"])
+    workspace["passkey_request"]["approval_url"] = "https://evil.example/"
+    workspace["workspace_sha256"] = hashlib.sha256(_canonical({
+        name: item
+        for name, item in workspace.items()
+        if name != "workspace_sha256"
+    })).hexdigest()
+
+    with pytest.raises(
+        owner.OwnerCutoverError,
+        match="owner_cutover_passkey_request_invalid",
+    ):
+        owner.resume_prepared_production_cutover_workflow(
+            workspace=workspace,
+            owner_identity=object(),
+            passkey_boundary=boundary,
+            bridge_bootstrap=object(),
+            transport_factory=lambda _identity: None,
+            now_unix=NOW,
+        )
+
+    assert boundary.consume_calls == 0
+
+
+@pytest.mark.parametrize(
+    "request_id",
+    ("A" * 64, "a" * 63, "_" * 64),
+)
+def test_prepare_rejects_non_sha256_cutover_request_id(
+    request_id: str,
+) -> None:
+    services, initial, host, plan = _workflow_inputs()
+
+    class Boundary:
+        def request(self, publication: dict) -> dict:
+            return {
+                "request_id": request_id,
+                "action_envelope_sha256": "6" * 64,
+                "challenge_record_sha256": "7" * 64,
+                "expires_at_unix": NOW + 900,
+                "release_sha": REVISION,
+                "plan_sha256": publication["documents"]["plan"][
+                    "plan_sha256"
+                ],
+                "freeze_publication_sha256": publication[
+                    "publication_sha256"
+                ],
+                "action_payload_sha256": "8" * 64,
+                "transaction_id": "9" * 64,
+                "approval_url": (
+                    f"{owner.cutover_passkey.protocol.PRODUCTION_ORIGIN}/"
+                    f"approve/{request_id}"
+                ),
+                "passkey_only": True,
+                "single_use": True,
+                "production_mutation_performed": False,
+            }
+
+    with pytest.raises(
+        owner.OwnerCutoverError,
+        match="owner_cutover_passkey_request_invalid",
+    ):
+        owner.execute_production_cutover_workflow(
+            release_revision=REVISION,
+            owner_identity=object(),
+            owner_subject_sha256="a" * 64,
+            private_key=Ed25519PrivateKey.generate(),
+            host_authority_plan=plan,
+            isolated_canary_goal_prerequisite=(
+                _isolated_canary_goal_prerequisite()
+            ),
+            truth_mode="start_new_truth_epoch",
+            passkey_boundary=Boundary(),
+            prepare_only=True,
+            transport_factory=lambda _identity: _WorkflowTransport(
+                initial, host, services
+            ),
+            now_unix=NOW,
+        )
+
+
+@pytest.mark.parametrize("legacy_request_id", ("L" * 31, "L" * 33))
+def test_bridge_request_rejects_non_exact_legacy_request_id(
+    legacy_request_id: str,
+) -> None:
+    unsigned = {
+        "schema": owner.BRIDGE_BOOTSTRAP_INPUT_SCHEMA,
+        "release_revision": REVISION,
+        "freeze_plan_sha256": "1" * 64,
+        "freeze_approval_sha256": "2" * 64,
+        "freeze_publication_sha256": "3" * 64,
+        "v2_request_id": "a" * 64,
+        "v2_transaction_id": "4" * 64,
+        "v2_approval_url_sha256": hashlib.sha256(
+            (
+                f"{owner.cutover_passkey.protocol.PRODUCTION_ORIGIN}/"
+                f"approve/{'a' * 64}"
+            ).encode("ascii")
+        ).hexdigest(),
+        "v2_action_payload_sha256": "5" * 64,
+    }
+    document = _hashed(unsigned, "document_sha256")
+    request = _bridge_request(document)
+    request["legacy_passkey_request_id"] = legacy_request_id
+    request["legacy_approval_url"] = (
+        f"{owner.cutover_passkey.protocol.PRODUCTION_ORIGIN}/approve/"
+        f"{legacy_request_id}"
+    )
+    request["receipt_sha256"] = hashlib.sha256(_canonical({
+        name: item
+        for name, item in request.items()
+        if name != "receipt_sha256"
+    })).hexdigest()
+
+    with pytest.raises(
+        owner.OwnerCutoverError,
+        match="owner_cutover_bridge_request_invalid",
+    ):
+        owner._validate_bridge_request(request, document=document)
+
+
 def test_workflow_order_is_fixed_and_first_mutation_has_signed_freeze(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -721,6 +1223,7 @@ def test_workflow_order_is_fixed_and_first_mutation_has_signed_freeze(
             _isolated_canary_goal_prerequisite()
         ),
         truth_mode="start_new_truth_epoch",
+        passkey_proof=_workflow_passkey_proof(),
         transport_factory=lambda _identity: transport,
         database_recovery_gate_runner=_recovery_gate_runner,
         now_unix=NOW,
@@ -744,6 +1247,7 @@ def test_workflow_order_is_fixed_and_first_mutation_has_signed_freeze(
         "full_authority_composed",
         "database_recovery_validated",
         "freeze_owner_signed",
+        "single_use_passkey_consumed",
         "freeze_authority_staged",
         "final_tail_captured",
         "stopped_services_collected",
@@ -789,6 +1293,7 @@ def test_workflow_samples_fresh_time_at_each_long_running_gate(
             _isolated_canary_goal_prerequisite()
         ),
         truth_mode="start_new_truth_epoch",
+        passkey_proof=_workflow_passkey_proof(),
         transport_factory=lambda _identity: transport,
         database_recovery_gate_runner=lambda *_args: (
             _database_recovery_receipt(rechecked_at_unix=tick["value"])
@@ -908,6 +1413,7 @@ def test_workflow_stages_exact_packaged_cron_before_cutover_plan(
             _isolated_canary_goal_prerequisite()
         ),
         truth_mode="start_new_truth_epoch",
+        passkey_proof=_workflow_passkey_proof(),
         transport_factory=lambda _identity: transport,
         database_recovery_gate_runner=_recovery_gate_runner,
         now_unix=NOW,
@@ -1110,6 +1616,7 @@ def test_failure_after_signed_freeze_invokes_abort_before_any_apply(
                 _isolated_canary_goal_prerequisite()
             ),
             truth_mode="start_new_truth_epoch",
+            passkey_proof=_workflow_passkey_proof(),
             transport_factory=lambda _identity: transport,
             database_recovery_gate_runner=_recovery_gate_runner,
             now_unix=NOW,
@@ -1179,6 +1686,7 @@ def test_cutover_and_abort_base_failures_are_both_preserved(
                 _isolated_canary_goal_prerequisite()
             ),
             truth_mode="start_new_truth_epoch",
+            passkey_proof=_workflow_passkey_proof(),
             transport_factory=lambda _identity: transport,
             database_recovery_gate_runner=_recovery_gate_runner,
             now_unix=NOW,
@@ -1225,6 +1733,7 @@ def test_cron_stage_mismatch_aborts_freeze_before_cutover_plan(
                 _isolated_canary_goal_prerequisite()
             ),
             truth_mode="start_new_truth_epoch",
+            passkey_proof=_workflow_passkey_proof(),
             transport_factory=lambda _identity: transport,
             database_recovery_gate_runner=_recovery_gate_runner,
             now_unix=NOW,

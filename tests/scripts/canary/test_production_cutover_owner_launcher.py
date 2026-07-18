@@ -223,6 +223,66 @@ def _patch_staged_paths(monkeypatch, staged: Path) -> None:
     )
 
 
+def _stage_freeze_with_test_claim(
+    monkeypatch: pytest.MonkeyPatch,
+    publication: dict,
+    *,
+    now: int,
+    journal: MemoryJournal,
+    proof_marker: str = "1",
+    proof_consumed_at: int | None = None,
+    proof_window_seconds: int = 3_600,
+    action_payload_marker: str = "a",
+) -> dict:
+    consumed_at = now if proof_consumed_at is None else proof_consumed_at
+    proof = {
+        "proof_sha256": proof_marker * 64,
+        "action_envelope": {
+            "request_id": proof_marker * 64,
+            "envelope_sha256": proof_marker * 64,
+            "action_payload_sha256": action_payload_marker * 64,
+            "authority_release_sha": REVISION,
+        },
+        "authorization_receipt": {
+            "receipt_sha256": proof_marker * 64,
+            "consume_attempt_id": proof_marker * 64,
+            "consumed_at_unix": consumed_at,
+            "execution_window_expires_at_unix": (
+                consumed_at + proof_window_seconds
+            ),
+        },
+    }
+    frame = {
+        "schema": stager.passkey.CUTOVER_CLAIM_FRAME_SCHEMA,
+        "publication": publication,
+        "passkey_proof": proof,
+        "claim_sha256": "5" * 64,
+    }
+
+    def validate(_value, *, now_unix):
+        if now_unix >= proof["authorization_receipt"][
+            "execution_window_expires_at_unix"
+        ]:
+            raise stager.passkey.ProductionCutoverPasskeyError(
+                "production_cutover_passkey_proof_invalid"
+            )
+        return publication, proof
+
+    monkeypatch.setattr(stager.passkey, "validate_claim_frame", validate)
+    monkeypatch.setattr(
+        stager.passkey,
+        "validate_claim_frame_for_recorded_replay",
+        lambda value: (publication, proof),
+    )
+    return stager.stage_publication(
+        frame,
+        require_root=False,
+        now_unix=now,
+        journal=journal,
+        lock_factory=nullcontext,
+    )
+
+
 def test_owner_key_stays_local_while_freeze_publication_is_staged(
     monkeypatch,
     tmp_path: Path,
@@ -257,7 +317,9 @@ def test_owner_key_stays_local_while_freeze_publication_is_staged(
     assert b"PRIVATE KEY" not in serialized
     staged = (tmp_path / "staged").resolve()
     _patch_staged_paths(monkeypatch, staged)
-    receipt = stager.stage_publication(publication, require_root=False)
+    receipt = _stage_freeze_with_test_claim(
+        monkeypatch, publication, now=now, journal=MemoryJournal()
+    )
     assert receipt["action"] == "freeze-authority"
     assert stat.S_IMODE((staged / "freeze-plan.json").stat().st_mode) == 0o400
     assert stat.S_IMODE((staged / "freeze-approval.json").stat().st_mode) == 0o400
@@ -288,7 +350,13 @@ def test_approved_sequence_runs_freeze_tail_then_cutover_plan_without_new_semant
     )
     staged = (tmp_path / "staged").resolve()
     _patch_staged_paths(monkeypatch, staged)
-    stager.stage_publication(freeze_publication, require_root=False)
+    journal = MemoryJournal()
+    _stage_freeze_with_test_claim(
+        monkeypatch,
+        freeze_publication,
+        now=now,
+        journal=journal,
+    )
 
     tail = cutover.execute_final_tail_capture(
         freeze,
@@ -296,7 +364,7 @@ def test_approved_sequence_runs_freeze_tail_then_cutover_plan_without_new_semant
         cutover.FreezeDependencies(
             services=services,
             snapshots=Snapshots(_snapshot(14_081, marker="2", observed_at=now)),
-            journal=MemoryJournal(),
+            journal=journal,
             lock=nullcontext,
         ),
         now_unix=now,
@@ -309,7 +377,13 @@ def test_approved_sequence_runs_freeze_tail_then_cutover_plan_without_new_semant
         writer_stopped=services.writer.to_mapping(),
         connector_stopped=services.connector.to_mapping(),
     )
-    receipt = stager.stage_publication(publication, require_root=False)
+    receipt = stager.stage_publication(
+        publication,
+        require_root=False,
+        now_unix=now,
+        journal=journal,
+        lock_factory=nullcontext,
+    )
 
     assert receipt["action"] == "cutover-plan"
     assert plan.value["freeze_approval_sha256"] == approval["approval_sha256"]
@@ -345,13 +419,255 @@ def test_stager_rejects_tampered_publication_without_creating_files(
     _patch_staged_paths(monkeypatch, staged)
 
     try:
-        stager.stage_publication(publication, require_root=False)
+        _stage_freeze_with_test_claim(
+            monkeypatch,
+            publication,
+            now=now,
+            journal=MemoryJournal(),
+        )
     except stager.PublicStagingError:
         pass
     else:
         raise AssertionError("tampered publication unexpectedly staged")
 
     assert list(staged.iterdir()) == []
+
+
+def test_stager_rejects_bare_freeze_before_any_write(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    now = int(time.time())
+    _plan, _approval, publication = owner.author_freeze(
+        collector_receipt=_collector_receipt(now, Services()),
+        release_revision=REVISION,
+        owner_subject_sha256="a" * 64,
+        private_key=Ed25519PrivateKey.generate(),
+        owner_runtime_attestation=_runtime_attestation(),
+        isolated_canary_goal_prerequisite=(
+            _isolated_canary_goal_prerequisite()
+        ),
+        truth_mode="start_new_truth_epoch",
+        now_unix=now,
+    )
+    staged = (tmp_path / "staged").resolve()
+    _patch_staged_paths(monkeypatch, staged)
+    journal = MemoryJournal()
+
+    with pytest.raises(
+        stager.PublicStagingError,
+        match="public_staging_passkey_claim_required",
+    ):
+        stager.stage_publication(
+            publication,
+            require_root=False,
+            now_unix=now,
+            journal=journal,
+            lock_factory=nullcontext,
+        )
+
+    assert journal.load(publication["documents"]["plan"]["plan_sha256"]) == []
+    assert list(staged.iterdir()) == []
+
+
+def test_stager_accepts_exact_replay_and_pre_mutation_reauthorization(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    now = int(time.time())
+    plan, _approval, publication = owner.author_freeze(
+        collector_receipt=_collector_receipt(now, Services()),
+        release_revision=REVISION,
+        owner_subject_sha256="a" * 64,
+        private_key=Ed25519PrivateKey.generate(),
+        owner_runtime_attestation=_runtime_attestation(),
+        isolated_canary_goal_prerequisite=(
+            _isolated_canary_goal_prerequisite()
+        ),
+        truth_mode="start_new_truth_epoch",
+        now_unix=now,
+    )
+    staged = (tmp_path / "staged").resolve()
+    _patch_staged_paths(monkeypatch, staged)
+    journal = MemoryJournal()
+
+    first = _stage_freeze_with_test_claim(
+        monkeypatch,
+        publication,
+        now=now,
+        journal=journal,
+        proof_window_seconds=60,
+    )
+    replay = _stage_freeze_with_test_claim(
+        monkeypatch,
+        publication,
+        now=now,
+        journal=journal,
+        proof_window_seconds=60,
+    )
+    with pytest.raises(
+        stager.PublicStagingError,
+        match="public_staging_passkey_claim_conflict",
+    ):
+        _stage_freeze_with_test_claim(
+            monkeypatch,
+            publication,
+            now=now,
+            journal=journal,
+            proof_marker="6",
+        )
+    superseded = _stage_freeze_with_test_claim(
+        monkeypatch,
+        publication,
+        now=now + 60,
+        journal=journal,
+        proof_marker="6",
+    )
+
+    assert all(item["created"] is True for item in first["files"])
+    assert all(item["created"] is False for item in replay["files"])
+    assert all(item["created"] is False for item in superseded["files"])
+    assert [
+        entry.value["event"] for entry in journal.load(plan.sha256)
+    ] == ["passkey_claim", "authority", "passkey_claim_superseded"]
+    active_entry, active_claim = cutover.require_recorded_passkey_claim(
+        journal,
+        plan_sha256=plan.sha256,
+        approval_sha256=publication["documents"]["approval"][
+            "approval_sha256"
+        ],
+        release_revision=REVISION,
+    )
+    assert active_entry.value["event"] == "passkey_claim_superseded"
+    assert active_claim["passkey_proof_sha256"] == "6" * 64
+
+
+def test_stager_rejects_reauthorization_after_freeze_intent(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    now = int(time.time())
+    plan, approval, publication = owner.author_freeze(
+        collector_receipt=_collector_receipt(now, Services()),
+        release_revision=REVISION,
+        owner_subject_sha256="a" * 64,
+        private_key=Ed25519PrivateKey.generate(),
+        owner_runtime_attestation=_runtime_attestation(),
+        isolated_canary_goal_prerequisite=(
+            _isolated_canary_goal_prerequisite()
+        ),
+        truth_mode="start_new_truth_epoch",
+        now_unix=now,
+    )
+    staged = (tmp_path / "staged").resolve()
+    _patch_staged_paths(monkeypatch, staged)
+    journal = MemoryJournal()
+    _stage_freeze_with_test_claim(
+        monkeypatch,
+        publication,
+        now=now,
+        journal=journal,
+        proof_window_seconds=60,
+    )
+    claim_entry, claim = cutover.require_recorded_passkey_claim(
+        journal,
+        plan_sha256=plan.sha256,
+        approval_sha256=approval["approval_sha256"],
+        release_revision=REVISION,
+    )
+    cutover._require_or_record_passkey_intent(
+        journal,
+        journal_plan_sha256=plan.sha256,
+        phase="freeze_stop",
+        freeze_plan_sha256=plan.sha256,
+        freeze_approval_sha256=approval["approval_sha256"],
+        cutover_plan_sha256=None,
+        claim_entry=claim_entry,
+        claim=claim,
+        now_unix=now,
+    )
+
+    with pytest.raises(
+        stager.PublicStagingError,
+        match="public_staging_passkey_claim_conflict",
+    ):
+        _stage_freeze_with_test_claim(
+            monkeypatch,
+            publication,
+            now=now + 60,
+            journal=journal,
+            proof_marker="6",
+        )
+
+    assert [
+        entry.value["event"] for entry in journal.load(plan.sha256)
+    ] == ["passkey_claim", "authority", "passkey_intent"]
+
+
+def test_stager_recovers_claim_to_authority_crash_without_backdating(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    now = int(time.time())
+    plan, approval, publication = owner.author_freeze(
+        collector_receipt=_collector_receipt(now, Services()),
+        release_revision=REVISION,
+        owner_subject_sha256="a" * 64,
+        private_key=Ed25519PrivateKey.generate(),
+        owner_runtime_attestation=_runtime_attestation(),
+        isolated_canary_goal_prerequisite=(
+            _isolated_canary_goal_prerequisite()
+        ),
+        truth_mode="start_new_truth_epoch",
+        now_unix=now,
+    )
+    staged = (tmp_path / "staged").resolve()
+    _patch_staged_paths(monkeypatch, staged)
+    journal = MemoryJournal()
+    original = cutover._append_authority
+    monkeypatch.setattr(
+        cutover,
+        "_append_authority",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            OSError("injected authority journal failure")
+        ),
+    )
+
+    with pytest.raises(OSError, match="injected authority"):
+        _stage_freeze_with_test_claim(
+            monkeypatch,
+            publication,
+            now=now,
+            journal=journal,
+        )
+    assert [
+        entry.value["event"] for entry in journal.load(plan.sha256)
+    ] == ["passkey_claim"]
+    assert list(staged.iterdir()) == []
+
+    monkeypatch.setattr(cutover, "_append_authority", original)
+    recovered = _stage_freeze_with_test_claim(
+        monkeypatch,
+        publication,
+        now=now + 4_000,
+        journal=journal,
+        proof_consumed_at=now,
+    )
+    entries = journal.load(plan.sha256)
+
+    assert all(item["created"] is True for item in recovered["files"])
+    assert [entry.value["event"] for entry in entries] == [
+        "passkey_claim",
+        "authority",
+    ]
+    assert entries[0].value["recorded_at_unix"] == now
+    assert entries[1].value["recorded_at_unix"] == now + 4_000
+    validated, _claim_entry, _claim = cutover._validated_claimed_approval(
+        journal,
+        plan=plan,
+        approval_value=approval,
+    )
+    assert validated.sha256 == approval["approval_sha256"]
 
 
 def test_stager_rolls_back_only_new_files_after_partial_publication_failure(
@@ -388,13 +704,78 @@ def test_stager_rolls_back_only_new_files_after_partial_publication_failure(
         return original(path, payload, uid=uid, gid=gid)
 
     monkeypatch.setattr(stager, "_install_exact", fail_second)
+    journal = MemoryJournal()
     try:
-        stager.stage_publication(publication, require_root=False)
+        _stage_freeze_with_test_claim(
+            monkeypatch,
+            publication,
+            now=now,
+            journal=journal,
+        )
     except stager.PublicStagingError:
         pass
     else:
         raise AssertionError("partial publication unexpectedly succeeded")
 
+    assert list(staged.iterdir()) == []
+    plan_sha256 = publication["documents"]["plan"]["plan_sha256"]
+    assert [
+        entry.value["event"] for entry in journal.load(plan_sha256)
+    ] == ["passkey_claim", "authority"]
+
+    # The durable claim is the recovery authority after a crash between the
+    # journal commit and file installation.  Exact old bytes may finish that
+    # interrupted publication after both short leases expire.
+    monkeypatch.setattr(stager, "_install_exact", original)
+    recovered = _stage_freeze_with_test_claim(
+        monkeypatch,
+        publication,
+        now=now + 4_000,
+        journal=journal,
+        proof_consumed_at=now,
+    )
+
+    assert all(item["created"] is True for item in recovered["files"])
+    assert [
+        entry.value["event"] for entry in journal.load(plan_sha256)
+    ] == ["passkey_claim", "authority"]
+
+
+def test_stager_rejects_expired_unused_claim_before_any_write(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    now = int(time.time())
+    _plan, _approval, publication = owner.author_freeze(
+        collector_receipt=_collector_receipt(now, Services()),
+        release_revision=REVISION,
+        owner_subject_sha256="a" * 64,
+        private_key=Ed25519PrivateKey.generate(),
+        owner_runtime_attestation=_runtime_attestation(),
+        isolated_canary_goal_prerequisite=(
+            _isolated_canary_goal_prerequisite()
+        ),
+        truth_mode="start_new_truth_epoch",
+        now_unix=now,
+    )
+    staged = (tmp_path / "staged").resolve()
+    _patch_staged_paths(monkeypatch, staged)
+    journal = MemoryJournal()
+
+    with pytest.raises(
+        stager.PublicStagingError,
+        match="public_staging_passkey_claim_expired",
+    ):
+        _stage_freeze_with_test_claim(
+            monkeypatch,
+            publication,
+            now=now + 4_000,
+            journal=journal,
+            proof_consumed_at=now,
+        )
+
+    plan_sha256 = publication["documents"]["plan"]["plan_sha256"]
+    assert journal.load(plan_sha256) == []
     assert list(staged.iterdir()) == []
 
 
@@ -786,6 +1167,11 @@ def test_sealed_cli_is_the_only_full_cutover_workflow_entrypoint(
         owner,
         "build_production_cutover_owner_identity",
         lambda revision: (Identity(), object(), object()),
+    )
+    monkeypatch.setattr(
+        owner,
+        "build_production_cutover_passkey_boundary",
+        lambda *args, **kwargs: object(),
     )
     monkeypatch.setattr(
         owner.canary_transport,

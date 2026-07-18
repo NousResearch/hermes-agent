@@ -43,6 +43,7 @@ from cryptography.hazmat.primitives.asymmetric.ed25519 import (
 
 from scripts.canary import passkey_v2_protocol as protocol
 from scripts.canary import passkey_v2_storage_growth as storage
+from scripts.canary import production_cutover_passkey as production_cutover
 from scripts.canary import owner_gate_firewall_readiness as firewall
 from scripts.canary import storage_growth_evidence as growth_evidence
 from scripts.canary import storage_growth_contract as growth_contract
@@ -77,6 +78,7 @@ CLOUD_OBSERVATION_PUBLIC_KEY = Path(
 HOST_OBSERVATION_PUBLIC_KEY = Path(
     "/etc/muncho-owner-gate/public/host-observation-attestation.pub"
 )
+CUTOVER_TRUST_BUNDLE = production_cutover.CUTOVER_TRUST_BUNDLE_PATH
 
 # The public web worker is the only expected caller of the authority socket,
 # and the authority worker is the only expected caller of the executor socket.
@@ -758,6 +760,111 @@ def _local_action_authority_binding(
     )
 
 
+def _local_cutover_authority_binding(
+    release_revision: str,
+    freeze_plan_sha256: str,
+) -> tuple[Mapping[str, Any], str, str, Mapping[str, Any]]:
+    """Bind a cutover receipt to installed bytes and portable signed trust."""
+
+    if _SHA256.fullmatch(freeze_plan_sha256 or "") is None:
+        raise PasskeyV2ServiceError(
+            "passkey_v2_cutover_plan_binding_invalid"
+        )
+    release = Path(__file__).resolve(strict=True).parents[2]
+    if release.name != release_revision:
+        raise PasskeyV2ServiceError("passkey_v2_runtime_release_invalid")
+    manifest_raw, manifest_state = _read_regular_file(
+        release / "package-manifest.json",
+        maximum=MAX_FRAME_BYTES,
+        expected_uid=0,
+        expected_gid=0,
+        expected_mode=0o444,
+    )
+    manifest = protocol.decode_canonical_json(manifest_raw)
+    if (
+        not isinstance(manifest, Mapping)
+        or manifest.get("release_revision") != release_revision
+        or manifest.get("release_root") != str(release)
+        or manifest_state.st_nlink != 1
+        or not isinstance(manifest.get("payloads"), list)
+        or _SHA256.fullmatch(str(manifest.get("package_sha256"))) is None
+    ):
+        raise PasskeyV2ServiceError("passkey_v2_runtime_manifest_invalid")
+
+    def payload_digest(path: Path) -> str:
+        try:
+            relative = str(path.resolve(strict=True).relative_to(release))
+        except (OSError, ValueError):
+            raise PasskeyV2ServiceError(
+                "passkey_v2_runtime_payload_invalid"
+            ) from None
+        matches = [
+            item for item in manifest["payloads"]
+            if isinstance(item, Mapping)
+            and item.get("release_relative") == relative
+        ]
+        if len(matches) != 1:
+            raise PasskeyV2ServiceError(
+                "passkey_v2_runtime_payload_invalid"
+            )
+        raw, state = _read_regular_file(
+            path,
+            maximum=MAX_FRAME_BYTES,
+            expected_uid=0,
+            expected_gid=0,
+            expected_mode=(
+                0o555 if relative.startswith("bin/") else 0o444
+            ),
+        )
+        digest = hashlib.sha256(raw).hexdigest()
+        if matches[0].get("sha256") != digest or matches[0].get(
+            "size"
+        ) != state.st_size:
+            raise PasskeyV2ServiceError(
+                "passkey_v2_runtime_payload_invalid"
+            )
+        return digest
+
+    runtime = protocol.build_runtime_binding(
+        executor_release_sha=release_revision,
+        executor_plan_sha256=freeze_plan_sha256,
+        executor_binary_sha256=payload_digest(Path(__file__)),
+        mutation_wrapper_sha256=payload_digest(
+            Path(production_cutover.__file__)
+        ),
+        remote_transport_sha256=payload_digest(
+            release / "bin/muncho-owner-gate-intake"
+        ),
+    )
+    trust_raw, _trust_state = _read_regular_file(
+        CUTOVER_TRUST_BUNDLE,
+        maximum=MAX_FRAME_BYTES,
+        expected_uid=0,
+        expected_gid=0,
+        expected_mode=0o444,
+    )
+    trust_bundle = protocol.decode_canonical_json(trust_raw)
+    try:
+        checked_trust, _receipt_key = (
+            production_cutover.validate_trust_bundle(trust_bundle)
+        )
+    except production_cutover.ProductionCutoverPasskeyError:
+        raise PasskeyV2ServiceError(
+            "passkey_v2_cutover_trust_invalid"
+        ) from None
+    host_observation = checked_trust["post_iam_host_observation"]
+    if checked_trust["authority_release_sha"] != release_revision:
+        raise PasskeyV2ServiceError(
+            "passkey_v2_cutover_trust_invalid"
+        )
+    return (
+        runtime,
+        str(manifest["package_sha256"]),
+        str(host_observation["report_sha256"]),
+        checked_trust,
+    )
+
+
 def build_service_frame(
     operation: str, document: Mapping[str, Any]
 ) -> Mapping[str, Any]:
@@ -1031,6 +1138,37 @@ def _authority_options(
     }
 
 
+def _validate_authority_action(value: Any) -> Mapping[str, Any]:
+    """Closed action-schema dispatch; unknown capabilities stay absent."""
+
+    if not isinstance(value, Mapping):
+        raise PasskeyV2ServiceError("passkey_v2_action_invalid")
+    payload = value.get("action_payload")
+    schema = payload.get("schema") if isinstance(payload, Mapping) else None
+    try:
+        if schema == storage.STORAGE_ACTION_SCHEMA:
+            return storage.validate_storage_growth_envelope(value)
+        if schema == production_cutover.CUTOVER_ACTION_SCHEMA:
+            return production_cutover.validate_cutover_action_envelope(value)
+    except (
+        storage.PasskeyV2StorageBoundaryError,
+        production_cutover.ProductionCutoverPasskeyError,
+    ):
+        raise PasskeyV2ServiceError("passkey_v2_action_invalid") from None
+    raise PasskeyV2ServiceError("passkey_v2_action_schema_forbidden")
+
+
+def _mechanical_authority_facts(
+    action: Mapping[str, Any],
+) -> Mapping[str, Any]:
+    payload = action["action_payload"]
+    if payload["schema"] == storage.STORAGE_ACTION_SCHEMA:
+        return storage.mechanical_approval_facts(action)
+    if payload["schema"] == production_cutover.CUTOVER_ACTION_SCHEMA:
+        return production_cutover.mechanical_approval_facts(action)
+    raise PasskeyV2ServiceError("passkey_v2_action_schema_forbidden")
+
+
 def handle_authority_frame(
     value: Any,
     *,
@@ -1054,12 +1192,10 @@ def handle_authority_frame(
         request_id = str(document["request_id"])
         if operation == "render":
             state = authority.read_request_state(request_id)
-            action = storage.validate_storage_growth_envelope(
-                state["action_envelope"]
-            )
+            action = _validate_authority_action(state["action_envelope"])
             result = {
                 **protocol.build_ui_view(action),
-                "mechanical_facts": storage.mechanical_approval_facts(action),
+                "mechanical_facts": _mechanical_authority_facts(action),
             }
         else:
             result = _authority_options(authority, request_id)
@@ -1093,7 +1229,10 @@ def handle_authority_frame(
         if operation == "create_request":
             if set(document) != {"action_envelope"}:
                 raise PasskeyV2ServiceError("passkey_v2_service_document_invalid")
-            action = authority.create_request(document["action_envelope"])
+            checked = _validate_authority_action(
+                document["action_envelope"]
+            )
+            action = authority.create_request(checked)
             challenge_bytes = secrets.token_bytes(32)
             challenge = protocol.build_challenge_record(
                 envelope=action,
@@ -1124,6 +1263,7 @@ def handle_authority_frame(
             }:
                 raise PasskeyV2ServiceError("passkey_v2_service_document_invalid")
             state = authority.read_request_state(str(document["request_id"]))
+            _validate_authority_action(state["action_envelope"])
             if state["grant_record"] is None or state["challenge_record"] is None:
                 raise PasskeyV2ServiceError("passkey_v2_request_not_granted")
             consumed = authority.consume_or_replay(
@@ -2058,7 +2198,7 @@ const bytesToB64 = value => btoa(String.fromCharCode(...new Uint8Array(value))).
 const base = location.pathname;
 const csrf = () => document.cookie.split('; ').find(v => v.startsWith('muncho_csrf='))?.split('=')[1];
 const approve = document.getElementById('approve');
-async function load() { const response=await fetch(base + '/view',{cache:'no-store'}); if(!response.ok) throw new Error('view'); const view=await response.json(); if(view.mechanical_facts?.schema!=='muncho-passkey-v2-storage-growth-facts.v1'||view.values_are_complete_and_untruncated!==true) throw new Error('facts'); document.getElementById('facts').textContent=JSON.stringify(view.mechanical_facts,null,2); document.getElementById('action').textContent=view.exact_action_envelope_canonical_json; document.getElementById('status').textContent='Review all facts before approval.'; approve.disabled=false; }
+async function load() { const response=await fetch(base + '/view',{cache:'no-store'}); if(!response.ok) throw new Error('view'); const view=await response.json(); const schemas=new Set(['muncho-passkey-v2-storage-growth-facts.v1','muncho-passkey-v2-production-cutover-facts.v1']); if(!schemas.has(view.mechanical_facts?.schema)||view.values_are_complete_and_untruncated!==true) throw new Error('facts'); document.getElementById('facts').textContent=JSON.stringify(view.mechanical_facts,null,2); document.getElementById('action').textContent=view.exact_action_envelope_canonical_json; document.getElementById('status').textContent='Review all facts before approval.'; approve.disabled=false; }
 approve.addEventListener('click', async () => { if(approve.disabled) return; approve.disabled=true; try { const optionsResponse=await fetch(base + '/options',{cache:'no-store'}); if(!optionsResponse.ok) throw new Error('options'); const options=await optionsResponse.json(); options.publicKey.challenge=b64ToBytes(options.publicKey.challenge); options.publicKey.allowCredentials=options.publicKey.allowCredentials.map(v=>({...v,id:b64ToBytes(v.id)})); const value=await navigator.credentials.get(options); const c=value; const assertion={id:c.id,rawId:bytesToB64(c.rawId),type:c.type,authenticatorAttachment:c.authenticatorAttachment,clientExtensionResults:c.getClientExtensionResults(),response:{clientDataJSON:bytesToB64(c.response.clientDataJSON),authenticatorData:bytesToB64(c.response.authenticatorData),signature:bytesToB64(c.response.signature),userHandle:c.response.userHandle===null?null:bytesToB64(c.response.userHandle)}}; const response=await fetch(base+'/verify',{method:'POST',headers:{'Content-Type':'application/json','X-Muncho-CSRF':csrf()},body:JSON.stringify({schema:'muncho-passkey-v2-web-verify.v1',assertion:{schema:'muncho-passkey-v2-assertion.v1',credential:assertion}})}); if(!response.ok) throw new Error('verify'); const result=await response.json(); document.getElementById('status').textContent=result.state==='granted'?'Approved. You may return to Muncho.':'Approval failed.'; } catch (_error) { document.getElementById('status').textContent='Approval failed safely.'; approve.disabled=false; }});
 load().catch(()=>{approve.disabled=true;document.getElementById('status').textContent='Request unavailable.';});
 """
@@ -4096,6 +4236,10 @@ def handle_intake_frame(
     binding_loader: Callable[
         [str], tuple[Mapping[str, Any], str, str]
     ] = _local_action_authority_binding,
+    cutover_binding_loader: Callable[
+        [str, str],
+        tuple[Mapping[str, Any], str, str, Mapping[str, Any]],
+    ] = _local_cutover_authority_binding,
 ) -> Mapping[str, Any]:
     if not isinstance(value, Mapping) or set(value) != {
         "schema", "operation", "release_sha", "document", "frame_sha256"
@@ -4176,6 +4320,157 @@ def handle_intake_frame(
                 "attestation_request": document["attestation_request"],
             },
         )
+    elif operation == "request_production_cutover":
+        if set(document) != {"freeze_publication"} or not isinstance(
+            document.get("freeze_publication"), Mapping
+        ):
+            raise PasskeyV2ServiceError(
+                "passkey_v2_service_document_invalid"
+            )
+        publication = document["freeze_publication"]
+        plan_sha = publication.get("documents", {}).get(
+            "plan", {}
+        ).get("plan_sha256") if isinstance(
+            publication.get("documents"), Mapping
+        ) and isinstance(
+            publication.get("documents", {}).get("plan"), Mapping
+        ) else None
+        if not isinstance(plan_sha, str) or _SHA256.fullmatch(plan_sha) is None:
+            raise PasskeyV2ServiceError(
+                "passkey_v2_service_document_invalid"
+            )
+        (
+            _runtime_binding,
+            manifest_sha,
+            host_receipt_sha,
+            _trust_bundle,
+        ) = cutover_binding_loader(release_revision, plan_sha)
+        try:
+            action = production_cutover.build_cutover_action_envelope(
+                freeze_publication=publication,
+                authority_release_sha=release_revision,
+                authority_manifest_sha256=manifest_sha,
+                authority_host_receipt_sha256=host_receipt_sha,
+                issued_at_unix=now_unix,
+            )
+        except production_cutover.ProductionCutoverPasskeyError:
+            raise PasskeyV2ServiceError(
+                "passkey_v2_cutover_request_invalid"
+            ) from None
+        created = authority_client.call(
+            "create_request", {"action_envelope": action}
+        )
+        result = {
+            **created,
+            "release_sha": release_revision,
+            "plan_sha256": action["executor_plan_sha256"],
+            "freeze_publication_sha256": action[
+                "external_iam_receipt_sha256"
+            ],
+            "action_payload_sha256": action[
+                "action_payload_sha256"
+            ],
+            "transaction_id": action["transaction_id"],
+            "approval_url": (
+                f"{protocol.PRODUCTION_ORIGIN}/approve/"
+                f"{action['request_id']}"
+            ),
+            "passkey_only": True,
+            "single_use": True,
+            "production_mutation_performed": False,
+        }
+    elif operation == "consume_production_cutover":
+        if set(document) != {
+            "freeze_publication", "request_id", "consume_attempt_id"
+        } or not isinstance(document.get("freeze_publication"), Mapping):
+            raise PasskeyV2ServiceError(
+                "passkey_v2_service_document_invalid"
+            )
+        publication = document["freeze_publication"]
+        plan_sha = publication.get("documents", {}).get(
+            "plan", {}
+        ).get("plan_sha256") if isinstance(
+            publication.get("documents"), Mapping
+        ) and isinstance(
+            publication.get("documents", {}).get("plan"), Mapping
+        ) else None
+        if (
+            not isinstance(plan_sha, str)
+            or _SHA256.fullmatch(plan_sha) is None
+            or not isinstance(document.get("request_id"), str)
+            or _SHA256.fullmatch(document["request_id"]) is None
+            or not isinstance(document.get("consume_attempt_id"), str)
+            or _SHA256.fullmatch(document["consume_attempt_id"]) is None
+        ):
+            raise PasskeyV2ServiceError(
+                "passkey_v2_service_document_invalid"
+            )
+        runtime_binding, _manifest, _host, trust_bundle = (
+            cutover_binding_loader(release_revision, plan_sha)
+        )
+        preview = authority_client.call(
+            "render", {"request_id": document["request_id"]}
+        )
+        try:
+            rendered = preview["exact_action_envelope_canonical_json"]
+            if not isinstance(rendered, str):
+                raise PasskeyV2ServiceError(
+                    "passkey_v2_cutover_request_binding_invalid"
+                )
+            preview_action = protocol.decode_canonical_json(
+                rendered.encode("utf-8", errors="strict")
+            )
+            production_cutover.validate_cutover_action_envelope(
+                preview_action,
+                freeze_publication=publication,
+            )
+        except (
+            KeyError,
+            UnicodeError,
+            protocol.PasskeyV2ProtocolError,
+            production_cutover.ProductionCutoverPasskeyError,
+        ):
+            raise PasskeyV2ServiceError(
+                "passkey_v2_cutover_request_binding_invalid"
+            ) from None
+        consumed = authority_client.call(
+            "consume",
+            {
+                "request_id": document["request_id"],
+                "consume_attempt_id": document["consume_attempt_id"],
+                "runtime_binding": runtime_binding,
+            },
+        )
+        if consumed.get("action_envelope") != preview_action:
+            raise PasskeyV2ServiceError(
+                "passkey_v2_cutover_request_binding_invalid"
+            )
+        try:
+            proof = production_cutover.build_passkey_proof(
+                freeze_publication=publication,
+                action_envelope=consumed["action_envelope"],
+                challenge_record=consumed["challenge_record"],
+                grant_record=consumed["grant_record"],
+                authorization_receipt=consumed["authorization_receipt"],
+                trust_bundle=trust_bundle,
+            )
+        except (
+            KeyError,
+            production_cutover.ProductionCutoverPasskeyError,
+        ):
+            raise PasskeyV2ServiceError(
+                "passkey_v2_cutover_proof_invalid"
+            ) from None
+        result = {
+            "request_id": document["request_id"],
+            "consume_attempt_id": document["consume_attempt_id"],
+            "disposition": consumed["disposition"],
+            "passkey_proof": proof,
+            "release_sha": release_revision,
+            "plan_sha256": plan_sha,
+            "single_use": True,
+            "production_mutation_performed": False,
+        }
     elif operation in {"request_initial", "request_resume"}:
         expected_fields = (
             {"plan_sha256", "transaction_id", "source_preflight"}

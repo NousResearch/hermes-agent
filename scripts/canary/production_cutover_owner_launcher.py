@@ -39,7 +39,11 @@ from scripts.canary import full_canary_owner_launcher as canary_transport
 from scripts.canary import package_production_cutover_artifacts as package
 from scripts.canary import production_cutover_host_authority as host_authority
 from scripts.canary import production_database_recovery_gate as database_recovery
-from scripts.canary.production_cutover_public_stager import build_publication
+from scripts.canary import production_cutover_passkey as cutover_passkey
+from scripts.canary.production_cutover_public_stager import (
+    PublicStagingError,
+    build_publication,
+)
 
 
 COLLECTOR_SCHEMA = "muncho-production-cutover-authority-inputs.v1"
@@ -47,10 +51,115 @@ INITIAL_COLLECTOR_SCHEMA = "muncho-production-cutover-initial-observations.v1"
 STOPPED_COLLECTOR_SCHEMA = "muncho-production-cutover-stopped-services.v1"
 OWNER_WORKSPACE_SCHEMA = "muncho-production-cutover-owner-workspace.v1"
 WORKFLOW_RECEIPT_SCHEMA = "muncho-production-cutover-owner-workflow.v1"
+PREPARED_WORKSPACE_SCHEMA = (
+    "muncho-production-cutover-passkey-workspace.v1"
+)
+BRIDGE_BOOTSTRAP_INPUT_SCHEMA = (
+    "muncho-production-cutover-bridge-bootstrap-input.v1"
+)
+BRIDGE_REQUEST_SCHEMA = (
+    "muncho-owner-gate-caddy-approval-bridge-request.v1"
+)
+BRIDGE_RECEIPT_SCHEMA = "muncho-owner-gate-caddy-approval-bridge.v1"
 CRON_STAGE_NOOP_SCHEMA = "muncho-production-cron-continuity-stage-noop.v1"
 MAX_JSON = 16 * 1024 * 1024
 MAX_COLLECTOR_AGE_SECONDS = 900
 _SHA256 = re.compile(r"^[0-9a-f]{64}$")
+_CUTOVER_REQUEST_ID = re.compile(r"^[0-9a-f]{64}$")
+_LEGACY_REQUEST_ID = re.compile(r"^[A-Za-z0-9_-]{32}$")
+_CUTOVER_PASSKEY_REQUEST_FIELDS = frozenset({
+    "request_id",
+    "action_envelope_sha256",
+    "challenge_record_sha256",
+    "expires_at_unix",
+    "release_sha",
+    "plan_sha256",
+    "freeze_publication_sha256",
+    "action_payload_sha256",
+    "transaction_id",
+    "approval_url",
+    "passkey_only",
+    "single_use",
+    "production_mutation_performed",
+})
+_BRIDGE_BOOTSTRAP_INPUT_FIELDS = frozenset({
+    "schema",
+    "release_revision",
+    "freeze_plan_sha256",
+    "freeze_approval_sha256",
+    "freeze_publication_sha256",
+    "v2_request_id",
+    "v2_transaction_id",
+    "v2_approval_url_sha256",
+    "v2_action_payload_sha256",
+    "document_sha256",
+})
+_BRIDGE_REQUEST_FIELDS = frozenset({
+    "schema",
+    "release_revision",
+    "freeze_plan_sha256",
+    "freeze_approval_sha256",
+    "freeze_publication_sha256",
+    "v2_request_id",
+    "v2_transaction_id",
+    "v2_approval_url_sha256",
+    "v2_action_payload_sha256",
+    "bootstrap_input_sha256",
+    "legacy_passkey_request_id",
+    "legacy_passkey_request_sha256",
+    "legacy_approval_url",
+    "bridge_action_sha256",
+    "route_contract_sha256",
+    "original_caddy_sha256",
+    "approval_bridge_template_sha256",
+    "approval_bridge_caddy_sha256",
+    "default_local_v1_route_preserved",
+    "production_mutation_performed",
+    "caller_selected_input_accepted",
+    "secret_material_recorded",
+    "secret_digest_recorded",
+    "requested_at_unix",
+    "receipt_sha256",
+})
+_BRIDGE_RECEIPT_FIELDS = frozenset({
+    "schema",
+    "release_revision",
+    "freeze_plan_sha256",
+    "freeze_approval_sha256",
+    "freeze_publication_sha256",
+    "v2_request_id",
+    "v2_transaction_id",
+    "v2_approval_url_sha256",
+    "v2_action_payload_sha256",
+    "bootstrap_input_sha256",
+    "bridge_request_receipt_sha256",
+    "legacy_passkey_request_id",
+    "legacy_passkey_request_sha256",
+    "legacy_passkey_grant_id",
+    "legacy_passkey_grant_sha256",
+    "legacy_passkey_consumed_grant_sha256",
+    "legacy_passkey_consume_entry_sha256",
+    "legacy_service_active_before_sha256",
+    "legacy_service_inactive_sha256",
+    "legacy_service_active_after_sha256",
+    "legacy_service_local_health_sha256",
+    "bridge_action_sha256",
+    "route_contract_sha256",
+    "original_caddy_sha256",
+    "approval_bridge_caddy_sha256",
+    "active_route_projection_sha256",
+    "default_local_v1_route_preserved",
+    "exact_v2_approval_routes_only",
+    "caddy_validated",
+    "caddy_reloaded",
+    "caddy_readback_verified",
+    "rollback_mode",
+    "caller_selected_input_accepted",
+    "secret_material_recorded",
+    "secret_digest_recorded",
+    "activated_at_unix",
+    "receipt_sha256",
+})
 PRODUCTION_PROJECT = cutover.PROJECT
 PRODUCTION_PROJECT_NUMBER = "39589465056"
 PRODUCTION_ZONE = cutover.ZONE
@@ -158,6 +267,8 @@ class ProductionCutoverTransport(canary_transport.IapStoppedReleaseTransport):
     _ACTIONS = frozenset({
         "collect-initial",
         "collect-authority",
+        "prepare-bridge",
+        "activate-bridge",
         "stage-publication",
         "stage-cron-continuity",
         "capture-final-tail",
@@ -515,6 +626,16 @@ class ProductionCutoverTransport(canary_transport.IapStoppedReleaseTransport):
                 "-m",
                 "scripts.canary.production_cutover_public_stager",
             )
+        if action in {"prepare-bridge", "activate-bridge"}:
+            return (
+                *prefix,
+                interpreter,
+                "-B",
+                "-I",
+                "-m",
+                "scripts.canary.owner_gate_caddy_cutover",
+                action,
+            )
         if action == "stage-cron-continuity":
             return (
                 *prefix,
@@ -544,19 +665,37 @@ class ProductionCutoverTransport(canary_transport.IapStoppedReleaseTransport):
         *,
         publication: Mapping[str, Any] | None = None,
         authority_request: Mapping[str, Any] | None = None,
+        bridge_bootstrap_input: Mapping[str, Any] | None = None,
     ) -> Mapping[str, Any]:
         account = self._owner_identity.account_for_read_only_preflight()
         self._owner_identity.require_stable()
         command = self._remote_command(revision, action)
-        if action in {"stage-publication", "collect-authority"}:
-            input_value = (
-                publication if action == "stage-publication" else authority_request
-            )
+        input_actions = {
+            "stage-publication",
+            "collect-authority",
+            "prepare-bridge",
+            "activate-bridge",
+        }
+        if action in input_actions:
+            if action == "stage-publication":
+                input_value = publication
+            elif action == "collect-authority":
+                input_value = authority_request
+            else:
+                input_value = bridge_bootstrap_input
             if input_value is None:
                 raise OwnerCutoverError("owner_cutover_publication_missing")
             if (
-                action == "stage-publication" and authority_request is not None
-            ) or (action == "collect-authority" and publication is not None):
+                sum(
+                    item is not None
+                    for item in (
+                        publication,
+                        authority_request,
+                        bridge_bootstrap_input,
+                    )
+                )
+                != 1
+            ):
                 raise OwnerCutoverError("owner_cutover_publication_unexpected")
             frame = _canonical(input_value)
             completed = self._run_remote_input(
@@ -568,7 +707,11 @@ class ProductionCutoverTransport(canary_transport.IapStoppedReleaseTransport):
                 maximum_output_bytes=MAX_JSON,
             )
         else:
-            if publication is not None or authority_request is not None:
+            if (
+                publication is not None
+                or authority_request is not None
+                or bridge_bootstrap_input is not None
+            ):
                 raise OwnerCutoverError("owner_cutover_publication_unexpected")
             completed = self._run_remote(
                 command,
@@ -585,6 +728,42 @@ class ProductionCutoverTransport(canary_transport.IapStoppedReleaseTransport):
         ):
             raise OwnerCutoverError("owner_cutover_remote_output_invalid")
         return _decode(stdout[:-1])
+
+
+class ProductionCutoverBridgeBootstrap:
+    """Drive only the two fixed remote Caddy bridge bootstrap phases."""
+
+    def __init__(
+        self,
+        release_revision: str,
+        transport: ProductionCutoverTransport,
+    ) -> None:
+        if (
+            package.REVISION.fullmatch(release_revision or "") is None
+            or not callable(getattr(transport, "invoke", None))
+        ):
+            raise OwnerCutoverError(
+                "owner_cutover_bridge_bootstrap_invalid"
+            )
+        self._release_revision = release_revision
+        self._transport = transport
+
+    def prepare(self, document: Mapping[str, Any]) -> Mapping[str, Any]:
+        return self._transport.invoke(
+            self._release_revision,
+            "prepare-bridge",
+            bridge_bootstrap_input=document,
+        )
+
+    def consume_and_install(
+        self,
+        document: Mapping[str, Any],
+    ) -> Mapping[str, Any]:
+        return self._transport.invoke(
+            self._release_revision,
+            "activate-bridge",
+            bridge_bootstrap_input=document,
+        )
 
 
 def _canonical(value: Any) -> bytes:
@@ -1592,6 +1771,272 @@ def _validate_terminal_receipt(
     return copy.deepcopy(dict(value))
 
 
+def _validate_cutover_passkey_request(
+    value: Any,
+    *,
+    release_revision: str,
+    freeze_plan_sha256: str,
+    freeze_publication_sha256: str,
+) -> Mapping[str, Any]:
+    if not isinstance(value, Mapping):
+        raise OwnerCutoverError("owner_cutover_passkey_request_invalid")
+    request = copy.deepcopy(dict(value))
+    request_id = request.get("request_id")
+    if (
+        set(request) != _CUTOVER_PASSKEY_REQUEST_FIELDS
+        or not isinstance(request_id, str)
+        or _CUTOVER_REQUEST_ID.fullmatch(request_id) is None
+        or _SHA256.fullmatch(
+            str(request.get("action_envelope_sha256"))
+        ) is None
+        or _SHA256.fullmatch(
+            str(request.get("challenge_record_sha256"))
+        ) is None
+        or type(request.get("expires_at_unix")) is not int
+        or request["expires_at_unix"] <= 0
+        or request.get("release_sha") != release_revision
+        or request.get("plan_sha256") != freeze_plan_sha256
+        or request.get("freeze_publication_sha256")
+        != freeze_publication_sha256
+        or _SHA256.fullmatch(str(request.get("transaction_id"))) is None
+        or _SHA256.fullmatch(
+            str(request.get("action_payload_sha256"))
+        ) is None
+        or request.get("approval_url")
+        != (
+            f"{cutover_passkey.protocol.PRODUCTION_ORIGIN}/approve/"
+            f"{request_id}"
+        )
+        or request.get("passkey_only") is not True
+        or request.get("single_use") is not True
+        or request.get("production_mutation_performed") is not False
+    ):
+        raise OwnerCutoverError("owner_cutover_passkey_request_invalid")
+    return request
+
+
+def _build_bridge_bootstrap_input(
+    *,
+    release_revision: str,
+    freeze_plan_sha256: str,
+    freeze_approval_sha256: str,
+    freeze_publication_sha256: str,
+    passkey_request: Mapping[str, Any],
+) -> Mapping[str, Any]:
+    unsigned = {
+        "schema": BRIDGE_BOOTSTRAP_INPUT_SCHEMA,
+        "release_revision": release_revision,
+        "freeze_plan_sha256": freeze_plan_sha256,
+        "freeze_approval_sha256": freeze_approval_sha256,
+        "freeze_publication_sha256": freeze_publication_sha256,
+        "v2_request_id": passkey_request["request_id"],
+        "v2_transaction_id": passkey_request["transaction_id"],
+        "v2_approval_url_sha256": _sha(
+            str(passkey_request["approval_url"]).encode(
+                "ascii", errors="strict"
+            )
+        ),
+        "v2_action_payload_sha256": passkey_request[
+            "action_payload_sha256"
+        ],
+    }
+    return {
+        **unsigned,
+        "document_sha256": _sha(_canonical(unsigned)),
+    }
+
+
+def _validate_bridge_bootstrap_input(value: Any) -> Mapping[str, Any]:
+    if (
+        not isinstance(value, Mapping)
+        or set(value) != _BRIDGE_BOOTSTRAP_INPUT_FIELDS
+    ):
+        raise OwnerCutoverError("owner_cutover_bridge_bootstrap_invalid")
+    document = copy.deepcopy(dict(value))
+    unsigned = {
+        name: item for name, item in document.items()
+        if name != "document_sha256"
+    }
+    request_id = document.get("v2_request_id")
+    approval_url = (
+        f"{cutover_passkey.protocol.PRODUCTION_ORIGIN}/approve/{request_id}"
+    )
+    if (
+        document.get("schema") != BRIDGE_BOOTSTRAP_INPUT_SCHEMA
+        or package.REVISION.fullmatch(
+            str(document.get("release_revision", ""))
+        )
+        is None
+        or not isinstance(request_id, str)
+        or _CUTOVER_REQUEST_ID.fullmatch(request_id) is None
+        or any(
+            _SHA256.fullmatch(str(document.get(name, ""))) is None
+            for name in (
+                "freeze_plan_sha256",
+                "freeze_approval_sha256",
+                "freeze_publication_sha256",
+                "v2_transaction_id",
+                "v2_approval_url_sha256",
+                "v2_action_payload_sha256",
+                "document_sha256",
+            )
+        )
+        or document["v2_approval_url_sha256"]
+        != _sha(approval_url.encode("ascii", errors="strict"))
+        or document["document_sha256"] != _sha(_canonical(unsigned))
+    ):
+        raise OwnerCutoverError("owner_cutover_bridge_bootstrap_invalid")
+    return document
+
+
+def _validate_bridge_request(
+    value: Any,
+    *,
+    document: Mapping[str, Any],
+) -> Mapping[str, Any]:
+    bootstrap = _validate_bridge_bootstrap_input(document)
+    if not isinstance(value, Mapping) or set(value) != _BRIDGE_REQUEST_FIELDS:
+        raise OwnerCutoverError("owner_cutover_bridge_request_invalid")
+    request = copy.deepcopy(dict(value))
+    unsigned = {
+        name: item for name, item in request.items()
+        if name != "receipt_sha256"
+    }
+    legacy_request_id = request.get("legacy_passkey_request_id")
+    binding = {
+        "release_revision": "release_revision",
+        "freeze_plan_sha256": "freeze_plan_sha256",
+        "freeze_approval_sha256": "freeze_approval_sha256",
+        "freeze_publication_sha256": "freeze_publication_sha256",
+        "v2_request_id": "v2_request_id",
+        "v2_transaction_id": "v2_transaction_id",
+        "v2_approval_url_sha256": "v2_approval_url_sha256",
+        "v2_action_payload_sha256": "v2_action_payload_sha256",
+    }
+    if (
+        request.get("schema") != BRIDGE_REQUEST_SCHEMA
+        or any(
+            request.get(left) != bootstrap[right]
+            for left, right in binding.items()
+        )
+        or request.get("bootstrap_input_sha256")
+        != bootstrap["document_sha256"]
+        or not isinstance(legacy_request_id, str)
+        or _LEGACY_REQUEST_ID.fullmatch(legacy_request_id) is None
+        or request.get("legacy_approval_url")
+        != (
+            f"{cutover_passkey.protocol.PRODUCTION_ORIGIN}/approve/"
+            f"{legacy_request_id}"
+        )
+        or any(
+            _SHA256.fullmatch(str(request.get(name, ""))) is None
+            for name in (
+                "legacy_passkey_request_sha256",
+                "bridge_action_sha256",
+                "route_contract_sha256",
+                "original_caddy_sha256",
+                "approval_bridge_template_sha256",
+                "approval_bridge_caddy_sha256",
+                "receipt_sha256",
+            )
+        )
+        or request.get("default_local_v1_route_preserved") is not True
+        or request.get("production_mutation_performed") is not False
+        or request.get("caller_selected_input_accepted") is not False
+        or request.get("secret_material_recorded") is not False
+        or request.get("secret_digest_recorded") is not False
+        or type(request.get("requested_at_unix")) is not int
+        or request["requested_at_unix"] <= 0
+        or request["receipt_sha256"] != _sha(_canonical(unsigned))
+    ):
+        raise OwnerCutoverError("owner_cutover_bridge_request_invalid")
+    return request
+
+
+def _validate_bridge_receipt(
+    value: Any,
+    *,
+    document: Mapping[str, Any],
+    bridge_request: Mapping[str, Any],
+) -> Mapping[str, Any]:
+    bootstrap = _validate_bridge_bootstrap_input(document)
+    requested = _validate_bridge_request(
+        bridge_request,
+        document=bootstrap,
+    )
+    if not isinstance(value, Mapping) or set(value) != _BRIDGE_RECEIPT_FIELDS:
+        raise OwnerCutoverError("owner_cutover_bridge_receipt_invalid")
+    receipt = copy.deepcopy(dict(value))
+    unsigned = {
+        name: item for name, item in receipt.items()
+        if name != "receipt_sha256"
+    }
+    binding_names = (
+        "release_revision",
+        "freeze_plan_sha256",
+        "freeze_approval_sha256",
+        "freeze_publication_sha256",
+        "v2_request_id",
+        "v2_transaction_id",
+        "v2_approval_url_sha256",
+        "v2_action_payload_sha256",
+    )
+    if (
+        receipt.get("schema") != BRIDGE_RECEIPT_SCHEMA
+        or any(receipt.get(name) != bootstrap[name] for name in binding_names)
+        or receipt.get("bootstrap_input_sha256")
+        != bootstrap["document_sha256"]
+        or receipt.get("bridge_request_receipt_sha256")
+        != requested["receipt_sha256"]
+        or receipt.get("legacy_passkey_request_id")
+        != requested["legacy_passkey_request_id"]
+        or receipt.get("legacy_passkey_request_sha256")
+        != requested["legacy_passkey_request_sha256"]
+        or receipt.get("bridge_action_sha256")
+        != requested["bridge_action_sha256"]
+        or receipt.get("route_contract_sha256")
+        != requested["route_contract_sha256"]
+        or receipt.get("original_caddy_sha256")
+        != requested["original_caddy_sha256"]
+        or receipt.get("approval_bridge_caddy_sha256")
+        != requested["approval_bridge_caddy_sha256"]
+        or not isinstance(receipt.get("legacy_passkey_grant_id"), str)
+        or re.fullmatch(
+            r"[A-Za-z0-9_-]{16,128}",
+            receipt["legacy_passkey_grant_id"],
+        )
+        is None
+        or any(
+            _SHA256.fullmatch(str(receipt.get(name, ""))) is None
+            for name in (
+                "legacy_passkey_grant_sha256",
+                "legacy_passkey_consumed_grant_sha256",
+                "legacy_passkey_consume_entry_sha256",
+                "legacy_service_active_before_sha256",
+                "legacy_service_inactive_sha256",
+                "legacy_service_active_after_sha256",
+                "legacy_service_local_health_sha256",
+                "active_route_projection_sha256",
+                "receipt_sha256",
+            )
+        )
+        or receipt.get("default_local_v1_route_preserved") is not True
+        or receipt.get("exact_v2_approval_routes_only") is not True
+        or receipt.get("caddy_validated") is not True
+        or receipt.get("caddy_reloaded") is not True
+        or receipt.get("caddy_readback_verified") is not True
+        or receipt.get("rollback_mode") != "pre_migration_exact_bytes"
+        or receipt.get("caller_selected_input_accepted") is not False
+        or receipt.get("secret_material_recorded") is not False
+        or receipt.get("secret_digest_recorded") is not False
+        or type(receipt.get("activated_at_unix")) is not int
+        or receipt["activated_at_unix"] <= 0
+        or receipt["receipt_sha256"] != _sha(_canonical(unsigned))
+    ):
+        raise OwnerCutoverError("owner_cutover_bridge_receipt_invalid")
+    return receipt
+
+
 def execute_production_cutover_workflow(
     *,
     release_revision: str,
@@ -1602,6 +2047,9 @@ def execute_production_cutover_workflow(
     isolated_canary_goal_prerequisite: Mapping[str, Any],
     truth_mode: str,
     accepted_event_receipts: list[Mapping[str, Any]] | None = None,
+    passkey_proof: Mapping[str, Any] | None = None,
+    passkey_boundary: Any | None = None,
+    prepare_only: bool = False,
     transport_factory: Any = ProductionCutoverTransport,
     database_recovery_gate_runner: Any = database_recovery.run_for_owner,
     now_unix: int | None = None,
@@ -1733,6 +2181,78 @@ def execute_production_cutover_workflow(
         "approval_sha256": freeze_approval["approval_sha256"],
         "publication_sha256": freeze_publication["publication_sha256"],
     })
+    if prepare_only:
+        if (
+            passkey_proof is not None
+            or not callable(getattr(passkey_boundary, "request", None))
+        ):
+            raise OwnerCutoverError(
+                "owner_cutover_passkey_prepare_boundary_invalid"
+            )
+        request = _validate_cutover_passkey_request(
+            passkey_boundary.request(freeze_publication),
+            release_revision=release_revision,
+            freeze_plan_sha256=freeze.sha256,
+            freeze_publication_sha256=freeze_publication[
+                "publication_sha256"
+            ],
+        )
+        record("single_use_passkey_requested", request)
+        bridge_bootstrap_input = _build_bridge_bootstrap_input(
+            release_revision=release_revision,
+            freeze_plan_sha256=freeze.sha256,
+            freeze_approval_sha256=freeze_approval[
+                "approval_sha256"
+            ],
+            freeze_publication_sha256=freeze_publication[
+                "publication_sha256"
+            ],
+            passkey_request=request,
+        )
+        unsigned_workspace = {
+            "schema": PREPARED_WORKSPACE_SCHEMA,
+            "state": "awaiting_bridge_bootstrap",
+            "release_revision": release_revision,
+            "owner_subject_sha256": owner_subject_sha256,
+            "freeze_plan": freeze.to_mapping(),
+            "freeze_approval": freeze_approval,
+            "freeze_publication": freeze_publication,
+            "passkey_request": copy.deepcopy(dict(request)),
+            "bridge_bootstrap_input": bridge_bootstrap_input,
+            "bridge_request": None,
+            "bridge_receipt": None,
+            "advertised_approval_url": None,
+            "gates": gates,
+            "private_key_staged": False,
+            "production_mutation_performed": False,
+            "secret_material_recorded": False,
+            "secret_digest_recorded": False,
+        }
+        return {
+            **unsigned_workspace,
+            "workspace_sha256": _sha(_canonical(unsigned_workspace)),
+        }
+    if passkey_proof is None:
+        raise OwnerCutoverError(
+            "owner_cutover_passkey_proof_required_before_first_write"
+        )
+    try:
+        claim_frame = cutover_passkey.build_claim_frame(
+            publication=freeze_publication,
+            passkey_proof=passkey_proof,
+            now_unix=gate_now(),
+        )
+    except cutover_passkey.ProductionCutoverPasskeyError:
+        raise OwnerCutoverError(
+            "owner_cutover_passkey_proof_invalid"
+        ) from None
+    record("single_use_passkey_consumed", {
+        "proof_sha256": passkey_proof["proof_sha256"],
+        "authorization_receipt_sha256": passkey_proof[
+            "authorization_receipt"
+        ]["receipt_sha256"],
+        "claim_sha256": claim_frame["claim_sha256"],
+    })
 
     freeze_staged = False
     cutover_staged = False
@@ -1741,7 +2261,7 @@ def execute_production_cutover_workflow(
             transport.invoke(
                 release_revision,
                 "stage-publication",
-                publication=freeze_publication,
+                publication=claim_frame,
             ),
             publication=freeze_publication,
             expected_file_count=2,
@@ -1827,6 +2347,392 @@ def execute_production_cutover_workflow(
         "release_revision": release_revision,
         "freeze_plan_sha256": freeze.sha256,
         "freeze_approval_sha256": freeze_approval["approval_sha256"],
+        "cutover_plan_sha256": cutover_plan.sha256,
+        "terminal_receipt_sha256": terminal["receipt_sha256"],
+        "gates": gates,
+        "private_key_staged": False,
+        "secret_material_recorded": False,
+        "secret_digest_recorded": False,
+    }
+    return {**unsigned, "receipt_sha256": _sha(_canonical(unsigned))}
+
+
+_PREPARED_WORKSPACE_FIELDS = frozenset({
+    "schema",
+    "state",
+    "release_revision",
+    "owner_subject_sha256",
+    "freeze_plan",
+    "freeze_approval",
+    "freeze_publication",
+    "passkey_request",
+    "bridge_bootstrap_input",
+    "bridge_request",
+    "bridge_receipt",
+    "advertised_approval_url",
+    "gates",
+    "private_key_staged",
+    "production_mutation_performed",
+    "secret_material_recorded",
+    "secret_digest_recorded",
+    "workspace_sha256",
+})
+
+
+def resume_prepared_production_cutover_workflow(
+    *,
+    workspace: Mapping[str, Any],
+    owner_identity: Any,
+    passkey_boundary: Any,
+    bridge_bootstrap: Any | None = None,
+    transport_factory: Any = ProductionCutoverTransport,
+    now_unix: int | None = None,
+    clock: Callable[[], float] = time.time,
+) -> Mapping[str, Any]:
+    """Advance one durable owner-gate phase for the exact workspace."""
+
+    if (
+        not isinstance(workspace, Mapping)
+        or set(workspace) != _PREPARED_WORKSPACE_FIELDS
+        or not callable(clock)
+        or not callable(transport_factory)
+    ):
+        raise OwnerCutoverError("owner_cutover_workspace_invalid")
+    unsigned_workspace = {
+        name: item for name, item in workspace.items()
+        if name != "workspace_sha256"
+    }
+    if (
+        workspace.get("schema") != PREPARED_WORKSPACE_SCHEMA
+        or workspace.get("state") not in {
+            "awaiting_bridge_bootstrap",
+            "awaiting_bridge_passkey",
+            "awaiting_cutover_passkey",
+        }
+        or workspace.get("workspace_sha256")
+        != _sha(_canonical(unsigned_workspace))
+        or package.REVISION.fullmatch(
+            str(workspace.get("release_revision"))
+        ) is None
+        or _SHA256.fullmatch(
+            str(workspace.get("owner_subject_sha256"))
+        ) is None
+        or workspace.get("private_key_staged") is not False
+        or workspace.get("secret_material_recorded") is not False
+        or workspace.get("secret_digest_recorded") is not False
+        or not isinstance(workspace.get("gates"), list)
+        or not isinstance(workspace.get("passkey_request"), Mapping)
+        or not isinstance(
+            workspace.get("bridge_bootstrap_input"), Mapping
+        )
+    ):
+        raise OwnerCutoverError("owner_cutover_workspace_invalid")
+    state = str(workspace["state"])
+    if (
+        (
+            state in {
+                "awaiting_bridge_bootstrap",
+                "awaiting_bridge_passkey",
+            }
+            and workspace.get("production_mutation_performed") is not False
+        )
+        or (
+            state == "awaiting_cutover_passkey"
+            and workspace.get("production_mutation_performed") is not True
+        )
+    ):
+        raise OwnerCutoverError("owner_cutover_workspace_invalid")
+
+    def gate_now() -> int:
+        return int(clock()) if now_unix is None else now_unix
+
+    release_revision = str(workspace["release_revision"])
+    try:
+        freeze = cutover.FreezePlan.from_mapping(workspace["freeze_plan"])
+        approval_issued_at = workspace["freeze_approval"][
+            "issued_at_unix"
+        ]
+        approval = cutover.CutoverApproval.from_mapping(
+            workspace["freeze_approval"],
+            plan=freeze,
+            now_unix=approval_issued_at,
+        ).value
+        freeze_publication = copy.deepcopy(
+            dict(workspace["freeze_publication"])
+        )
+        rebuilt_publication = build_publication(
+            action="freeze-authority",
+            release_revision=release_revision,
+            documents={
+                "plan": freeze.to_mapping(),
+                "approval": approval,
+            },
+            now_unix=approval_issued_at,
+        )
+    except (
+        KeyError,
+        PermissionError,
+        PublicStagingError,
+        TypeError,
+        ValueError,
+    ):
+        raise OwnerCutoverError("owner_cutover_workspace_invalid") from None
+    if (
+        freeze.value["release_revision"] != release_revision
+        or freeze_publication != rebuilt_publication
+        or freeze_publication.get("publication_sha256")
+        != workspace["passkey_request"].get(
+            "freeze_publication_sha256"
+        )
+        or workspace["passkey_request"].get("plan_sha256") != freeze.sha256
+    ):
+        raise OwnerCutoverError("owner_cutover_workspace_invalid")
+    request = _validate_cutover_passkey_request(
+        workspace["passkey_request"],
+        release_revision=release_revision,
+        freeze_plan_sha256=freeze.sha256,
+        freeze_publication_sha256=freeze_publication[
+            "publication_sha256"
+        ],
+    )
+    expected_bootstrap = _build_bridge_bootstrap_input(
+        release_revision=release_revision,
+        freeze_plan_sha256=freeze.sha256,
+        freeze_approval_sha256=approval["approval_sha256"],
+        freeze_publication_sha256=freeze_publication[
+            "publication_sha256"
+        ],
+        passkey_request=request,
+    )
+    bridge_input = _validate_bridge_bootstrap_input(
+        workspace["bridge_bootstrap_input"]
+    )
+    if bridge_input != expected_bootstrap:
+        raise OwnerCutoverError("owner_cutover_workspace_invalid")
+
+    gates = copy.deepcopy(list(workspace["gates"]))
+
+    def record(stage: str, value: Mapping[str, Any]) -> None:
+        gates.append({
+            "sequence": len(gates),
+            "stage": stage,
+            "evidence_sha256": _sha(_canonical(value)),
+        })
+
+    def next_workspace(**updates: Any) -> Mapping[str, Any]:
+        unsigned = copy.deepcopy(dict(unsigned_workspace))
+        unsigned.update(updates)
+        unsigned["gates"] = copy.deepcopy(gates)
+        return {
+            **unsigned,
+            "workspace_sha256": _sha(_canonical(unsigned)),
+        }
+
+    if state == "awaiting_bridge_bootstrap":
+        if (
+            workspace.get("bridge_request") is not None
+            or workspace.get("bridge_receipt") is not None
+            or workspace.get("advertised_approval_url") is not None
+            or not callable(getattr(bridge_bootstrap, "prepare", None))
+        ):
+            raise OwnerCutoverError(
+                "owner_cutover_bridge_bootstrap_invalid"
+            )
+        bridge_request = _validate_bridge_request(
+            bridge_bootstrap.prepare(bridge_input),
+            document=bridge_input,
+        )
+        record("legacy_bridge_passkey_requested", bridge_request)
+        return next_workspace(
+            state="awaiting_bridge_passkey",
+            bridge_request=bridge_request,
+        )
+
+    if state == "awaiting_bridge_passkey":
+        if (
+            not isinstance(workspace.get("bridge_request"), Mapping)
+            or workspace.get("bridge_receipt") is not None
+            or workspace.get("advertised_approval_url") is not None
+            or not callable(
+                getattr(bridge_bootstrap, "consume_and_install", None)
+            )
+        ):
+            raise OwnerCutoverError("owner_cutover_bridge_request_invalid")
+        bridge_request = _validate_bridge_request(
+            workspace["bridge_request"],
+            document=bridge_input,
+        )
+        bridge_receipt = _validate_bridge_receipt(
+            bridge_bootstrap.consume_and_install(bridge_input),
+            document=bridge_input,
+            bridge_request=bridge_request,
+        )
+        record("approval_bridge_installed", bridge_receipt)
+        return next_workspace(
+            state="awaiting_cutover_passkey",
+            bridge_receipt=bridge_receipt,
+            advertised_approval_url=request["approval_url"],
+            production_mutation_performed=True,
+        )
+
+    if (
+        not isinstance(workspace.get("bridge_request"), Mapping)
+        or not isinstance(workspace.get("bridge_receipt"), Mapping)
+        or workspace.get("advertised_approval_url")
+        != request["approval_url"]
+        or not callable(getattr(passkey_boundary, "consume", None))
+    ):
+        raise OwnerCutoverError("owner_cutover_bridge_receipt_invalid")
+    _validate_bridge_receipt(
+        workspace["bridge_receipt"],
+        document=bridge_input,
+        bridge_request=workspace["bridge_request"],
+    )
+    consume_attempt_id = _sha(_canonical({
+        "schema": "muncho-production-cutover-consume-attempt.v1",
+        "release_revision": release_revision,
+        "freeze_plan_sha256": freeze.sha256,
+        "freeze_publication_sha256": freeze_publication[
+            "publication_sha256"
+        ],
+        "request_id": request["request_id"],
+        "operation": "claim_exact_freeze_plan",
+    }))
+    consumed = passkey_boundary.consume(
+        freeze_publication=freeze_publication,
+        request_id=request["request_id"],
+        consume_attempt_id=consume_attempt_id,
+    )
+    if (
+        not isinstance(consumed, Mapping)
+        or consumed.get("request_id") != request["request_id"]
+        or consumed.get("consume_attempt_id") != consume_attempt_id
+        or consumed.get("release_sha") != release_revision
+        or consumed.get("plan_sha256") != freeze.sha256
+        or consumed.get("single_use") is not True
+        or consumed.get("production_mutation_performed") is not False
+        or consumed.get("disposition") not in {
+            "authorized_once",
+            "receipt_replay",
+        }
+    ):
+        raise OwnerCutoverError(
+            "owner_cutover_passkey_consumption_invalid"
+        )
+    proof = consumed.get("passkey_proof")
+    if not isinstance(proof, Mapping):
+        raise OwnerCutoverError("owner_cutover_passkey_proof_invalid")
+    try:
+        claim_frame = cutover_passkey.build_claim_frame(
+            publication=freeze_publication,
+            passkey_proof=proof,
+            now_unix=gate_now(),
+        )
+    except cutover_passkey.ProductionCutoverPasskeyError:
+        raise OwnerCutoverError(
+            "owner_cutover_passkey_proof_invalid"
+        ) from None
+    transport = transport_factory(owner_identity)
+    record("single_use_passkey_consumed", {
+        "consume_attempt_id": consume_attempt_id,
+        "proof_sha256": proof["proof_sha256"],
+        "authorization_receipt_sha256": proof[
+            "authorization_receipt"
+        ]["receipt_sha256"],
+        "claim_sha256": claim_frame["claim_sha256"],
+    })
+    freeze_staged = False
+    cutover_staged = False
+    try:
+        stage_receipt = _validate_publication_stage_receipt(
+            transport.invoke(
+                release_revision,
+                "stage-publication",
+                publication=claim_frame,
+            ),
+            publication=freeze_publication,
+            expected_file_count=2,
+        )
+        freeze_staged = True
+        record("freeze_authority_staged", stage_receipt)
+        tail = cutover.FinalTailReceipt.from_mapping(
+            transport.invoke(release_revision, "capture-final-tail"),
+            plan=freeze,
+        )
+        if tail.value["approval_sha256"] != approval["approval_sha256"]:
+            raise OwnerCutoverError(
+                "owner_cutover_final_tail_authority_mismatch"
+            )
+        record("final_tail_captured", tail.to_mapping())
+        stopped = validate_stopped_collector_receipt(
+            transport.invoke(release_revision, "collect-stopped"),
+            freeze_plan=freeze.to_mapping(),
+            freeze_approval=approval,
+            now_unix=gate_now(),
+        )
+        record("stopped_services_collected", stopped)
+        cron_stage = _validate_cron_continuity_stage_receipt(
+            transport.invoke(release_revision, "stage-cron-continuity"),
+            freeze_plan=freeze,
+        )
+        record("cron_continuity_stage_accepted", cron_stage)
+        cutover_plan, cutover_publication = author_cutover(
+            freeze_plan=freeze.to_mapping(),
+            freeze_approval=approval,
+            final_tail_receipt=tail.to_mapping(),
+            gateway_stopped=stopped["gateway_stopped"],
+            writer_stopped=stopped["writer_stopped"],
+            connector_stopped=stopped["connector_stopped"],
+            now_unix=tail.value["captured_at_unix"],
+        )
+        record("cutover_plan_composed", {
+            "plan_sha256": cutover_plan.sha256,
+            "publication_sha256": cutover_publication[
+                "publication_sha256"
+            ],
+        })
+        cutover_stage_receipt = _validate_publication_stage_receipt(
+            transport.invoke(
+                release_revision,
+                "stage-publication",
+                publication=cutover_publication,
+            ),
+            publication=cutover_publication,
+            expected_file_count=1,
+        )
+        cutover_staged = True
+        record("cutover_plan_staged", cutover_stage_receipt)
+        preflight_receipt = _validate_preflight_receipt(
+            transport.invoke(release_revision, "phase-b-preflight"),
+            plan=cutover_plan,
+        )
+        record("phase_b_preflight_accepted", preflight_receipt)
+        terminal = _validate_terminal_receipt(
+            transport.invoke(release_revision, "apply-cutover"),
+            plan=cutover_plan,
+        )
+        record("cutover_terminal_accepted", terminal)
+    except BaseException as primary:
+        if freeze_staged and not cutover_staged:
+            try:
+                aborted = transport.invoke(release_revision, "abort-freeze")
+                if cutover._validate_freeze_abort_receipt(
+                    aborted, plan=freeze
+                )["approval_sha256"] != approval["approval_sha256"]:
+                    raise OwnerCutoverError(
+                        "owner_cutover_freeze_abort_receipt_invalid"
+                    )
+            except BaseException as abort_error:
+                raise BaseExceptionGroup(
+                    "production cutover failed and freeze abort was incomplete",
+                    [primary, abort_error],
+                ) from None
+        raise
+    unsigned = {
+        "schema": WORKFLOW_RECEIPT_SCHEMA,
+        "release_revision": release_revision,
+        "freeze_plan_sha256": freeze.sha256,
+        "freeze_approval_sha256": approval["approval_sha256"],
         "cutover_plan_sha256": cutover_plan.sha256,
         "terminal_receipt_sha256": terminal["receipt_sha256"],
         "gates": gates,
@@ -1927,6 +2833,26 @@ def build_production_cutover_owner_identity(
     )
     identity.account_for_read_only_preflight()
     return identity, trusted, configuration
+
+
+def build_production_cutover_passkey_boundary(
+    release_revision: str,
+    *,
+    owner_identity: Any,
+    gcloud_executable: Any,
+    gcloud_configuration: Any,
+) -> cutover_passkey.ProductionCutoverPasskeyBoundary:
+    """Construct only the fixed IAP owner-gate passkey intake boundary."""
+
+    transport = canary_transport.OwnerGateIapTransport(
+        release_sha=release_revision,
+        owner_identity=owner_identity,
+        gcloud_executable=gcloud_executable,
+        gcloud_configuration=gcloud_configuration,
+    )
+    return cutover_passkey.ProductionCutoverPasskeyBoundary(
+        release_revision, transport
+    )
 
 
 def _execute_os_login_migration_signal_safe(
@@ -2068,7 +2994,26 @@ def main(argv: Sequence[str] | None = None) -> int:
         required=True,
     )
     workflow.add_argument("--accepted-event-receipts", type=Path)
+    workflow.add_argument("--passkey-proof", type=Path)
     workflow.add_argument("--output", type=Path, required=True)
+    prepare = subparsers.add_parser("prepare-cutover")
+    prepare.add_argument("--revision", required=True)
+    prepare.add_argument("--host-authority-plan", type=Path, required=True)
+    prepare.add_argument(
+        "--isolated-canary-goal-prerequisite", type=Path, required=True
+    )
+    prepare.add_argument("--owner-private-key", type=Path, required=True)
+    prepare.add_argument(
+        "--truth-mode",
+        choices=("start_new_truth_epoch", "reseed_accepted_events"),
+        required=True,
+    )
+    prepare.add_argument("--accepted-event-receipts", type=Path)
+    prepare.add_argument("--output", type=Path, required=True)
+    resume = subparsers.add_parser("resume-cutover")
+    resume.add_argument("--revision", required=True)
+    resume.add_argument("--workspace", type=Path, required=True)
+    resume.add_argument("--output", type=Path, required=True)
     arguments = parser.parse_args(argv)
     try:
         if not arguments.output.is_absolute():
@@ -2076,7 +3021,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         runtime_attestation = _active_owner_runtime_attestation(
             arguments.revision
         )
-        if arguments.command == "execute-cutover":
+        if arguments.command in {"execute-cutover", "prepare-cutover"}:
             if (
                 not arguments.host_authority_plan.is_absolute()
                 or not arguments.isolated_canary_goal_prerequisite.is_absolute()
@@ -2127,6 +3072,22 @@ def main(argv: Sequence[str] | None = None) -> int:
                     gcloud_configuration=configuration,
                 )
 
+            passkey_boundary = build_production_cutover_passkey_boundary(
+                arguments.revision,
+                owner_identity=identity,
+                gcloud_executable=trusted,
+                gcloud_configuration=configuration,
+            )
+            proof = None
+            if (
+                arguments.command == "execute-cutover"
+                and arguments.passkey_proof is not None
+            ):
+                if not arguments.passkey_proof.is_absolute():
+                    raise OwnerCutoverError(
+                        "owner_cutover_passkey_proof_invalid"
+                    )
+                proof = _read_public_json(arguments.passkey_proof)
             output_value = execute_production_cutover_workflow(
                 release_revision=arguments.revision,
                 owner_identity=identity,
@@ -2140,6 +3101,9 @@ def main(argv: Sequence[str] | None = None) -> int:
                 ),
                 truth_mode=arguments.truth_mode,
                 accepted_event_receipts=accepted,
+                passkey_proof=proof,
+                passkey_boundary=passkey_boundary,
+                prepare_only=arguments.command == "prepare-cutover",
                 transport_factory=transport_factory,
             )
             created = _write_public_output(arguments.output, output_value)
@@ -2147,7 +3111,57 @@ def main(argv: Sequence[str] | None = None) -> int:
                 "schema": OWNER_WORKSPACE_SCHEMA,
                 "action": arguments.command,
                 "output_path": str(arguments.output),
-                "output_sha256": output_value["receipt_sha256"],
+                "output_sha256": output_value.get(
+                    "receipt_sha256", output_value.get("workspace_sha256")
+                ),
+                "created": created,
+                "private_key_staged": False,
+                "secret_material_recorded": False,
+            }).decode("utf-8"))
+            return 0
+        if arguments.command == "resume-cutover":
+            if not arguments.workspace.is_absolute():
+                raise OwnerCutoverError("owner_cutover_workspace_invalid")
+            identity, trusted, configuration = (
+                build_production_cutover_owner_identity(arguments.revision)
+            )
+            passkey_boundary = build_production_cutover_passkey_boundary(
+                arguments.revision,
+                owner_identity=identity,
+                gcloud_executable=trusted,
+                gcloud_configuration=configuration,
+            )
+            bridge_bootstrap = ProductionCutoverBridgeBootstrap(
+                arguments.revision,
+                ProductionCutoverTransport(
+                    identity,
+                    gcloud_executable=trusted,
+                    gcloud_configuration=configuration,
+                ),
+            )
+
+            def transport_factory(owner_identity: Any) -> Any:
+                return ProductionCutoverTransport(
+                    owner_identity,
+                    gcloud_executable=trusted,
+                    gcloud_configuration=configuration,
+                )
+
+            output_value = resume_prepared_production_cutover_workflow(
+                workspace=_read_public_json(arguments.workspace),
+                owner_identity=identity,
+                passkey_boundary=passkey_boundary,
+                bridge_bootstrap=bridge_bootstrap,
+                transport_factory=transport_factory,
+            )
+            created = _write_public_output(arguments.output, output_value)
+            print(_canonical({
+                "schema": OWNER_WORKSPACE_SCHEMA,
+                "action": arguments.command,
+                "output_path": str(arguments.output),
+                "output_sha256": output_value.get(
+                    "receipt_sha256", output_value.get("workspace_sha256")
+                ),
                 "created": created,
                 "private_key_staged": False,
                 "secret_material_recorded": False,

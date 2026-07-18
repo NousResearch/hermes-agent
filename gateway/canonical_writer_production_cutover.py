@@ -3040,6 +3040,52 @@ _JOURNAL_FIELDS = frozenset({
     "schema", "plan_sha256", "sequence", "event", "previous_entry_sha256",
     "evidence", "recorded_at_unix", "entry_sha256",
 })
+PASSKEY_CLAIM_SCHEMA = "muncho-production-cutover-passkey-claim.v1"
+PASSKEY_CLAIM_SUPERSEDED_SCHEMA = (
+    "muncho-production-cutover-passkey-claim-superseded.v1"
+)
+PASSKEY_INTENT_SCHEMA = "muncho-production-cutover-passkey-intent.v1"
+_PASSKEY_CLAIM_FIELDS = frozenset({
+    "schema",
+    "freeze_plan_sha256",
+    "freeze_approval_sha256",
+    "freeze_publication_sha256",
+    "passkey_proof_sha256",
+    "authorization_receipt_sha256",
+    "action_envelope_sha256",
+    "action_payload_sha256",
+    "request_id",
+    "consume_attempt_id",
+    "authority_release_sha",
+    "execution_window_expires_at_unix",
+})
+_PASSKEY_CLAIM_SUPERSEDED_FIELDS = frozenset({
+    "schema",
+    "freeze_plan_sha256",
+    "freeze_approval_sha256",
+    "freeze_publication_sha256",
+    "action_payload_sha256",
+    "old_claim_entry_sha256",
+    "old_claim_sha256",
+    "old_passkey_proof_sha256",
+    "old_authorization_receipt_sha256",
+    "old_execution_window_expires_at_unix",
+    "new_claim",
+    "new_claim_sha256",
+    "new_passkey_proof_sha256",
+    "new_authorization_receipt_sha256",
+    "new_execution_window_expires_at_unix",
+})
+_PASSKEY_INTENT_FIELDS = frozenset({
+    "schema",
+    "phase",
+    "freeze_plan_sha256",
+    "freeze_approval_sha256",
+    "passkey_claim_entry_sha256",
+    "cutover_plan_sha256",
+    "parent_freeze_intent_entry_sha256",
+    "parent_freeze_terminal_entry_sha256",
+})
 
 
 @dataclass(frozen=True)
@@ -3122,6 +3168,562 @@ class RootCutoverJournal:
         )
         activation._write_root_receipt(root / f"{len(entries):06d}.json", entry.value)
         return entry
+
+
+def validate_passkey_claim_evidence(
+    value: Any,
+    *,
+    plan_sha256: str,
+    approval_sha256: str,
+    release_revision: str,
+) -> Mapping[str, Any]:
+    """Validate the compact root-journal projection of one consumed grant."""
+
+    if not isinstance(value, Mapping) or set(value) != _PASSKEY_CLAIM_FIELDS:
+        raise PermissionError("production passkey claim is invalid")
+    claim = copy.deepcopy(dict(value))
+    if (
+        claim.get("schema") != PASSKEY_CLAIM_SCHEMA
+        or _REVISION.fullmatch(release_revision or "") is None
+        or claim.get("freeze_plan_sha256") != plan_sha256
+        or claim.get("freeze_approval_sha256") != approval_sha256
+        or claim.get("authority_release_sha") != release_revision
+        or any(
+            _SHA256.fullmatch(str(claim.get(name))) is None
+            for name in (
+                "freeze_publication_sha256",
+                "passkey_proof_sha256",
+                "authorization_receipt_sha256",
+                "action_envelope_sha256",
+                "action_payload_sha256",
+                "consume_attempt_id",
+            )
+        )
+        or not isinstance(claim.get("request_id"), str)
+        or _SHA256.fullmatch(claim["request_id"]) is None
+        or not isinstance(claim.get("authority_release_sha"), str)
+        or re.fullmatch(r"[0-9a-f]{40}", claim["authority_release_sha"])
+        is None
+        or type(claim.get("execution_window_expires_at_unix")) is not int
+        or claim["execution_window_expires_at_unix"] <= 0
+    ):
+        raise PermissionError("production passkey claim is invalid")
+    return claim
+
+
+def require_recorded_passkey_claim(
+    journal: CutoverJournal,
+    *,
+    plan_sha256: str,
+    approval_sha256: str,
+    release_revision: str,
+) -> tuple[JournalEntry, Mapping[str, Any]]:
+    entries = journal.load(plan_sha256)
+    claims = [entry for entry in entries if entry.value["event"] == "passkey_claim"]
+    if len(claims) != 1 or claims[0].value["sequence"] != 0:
+        raise PermissionError(
+            "production cutover requires one recorded passkey claim"
+        )
+    active_entry = claims[0]
+    active_claim = validate_passkey_claim_evidence(
+        claims[0].value["evidence"],
+        plan_sha256=plan_sha256,
+        approval_sha256=approval_sha256,
+        release_revision=release_revision,
+    )
+    if (
+        active_entry.value["recorded_at_unix"] <= 0
+        or active_entry.value["recorded_at_unix"]
+        >= active_claim["execution_window_expires_at_unix"]
+    ):
+        raise PermissionError("production passkey claim timing is invalid")
+    allowed_prelude = {
+        "passkey_claim",
+        "authority",
+        "passkey_claim_superseded",
+    }
+    for entry in entries:
+        if entry.value["event"] != "passkey_claim_superseded":
+            continue
+        if any(
+            prior.value["event"] not in allowed_prelude
+            for prior in entries[:entry.value["sequence"]]
+        ):
+            raise PermissionError(
+                "production passkey claim supersession followed state change"
+            )
+        value = entry.value["evidence"]
+        if (
+            not isinstance(value, Mapping)
+            or set(value) != _PASSKEY_CLAIM_SUPERSEDED_FIELDS
+            or value.get("schema") != PASSKEY_CLAIM_SUPERSEDED_SCHEMA
+            or value.get("freeze_plan_sha256") != plan_sha256
+            or value.get("freeze_approval_sha256") != approval_sha256
+            or value.get("freeze_publication_sha256")
+            != active_claim["freeze_publication_sha256"]
+            or value.get("action_payload_sha256")
+            != active_claim["action_payload_sha256"]
+            or value.get("old_claim_entry_sha256") != active_entry.sha256
+            or value.get("old_claim_sha256") != _sha256_json(active_claim)
+            or value.get("old_passkey_proof_sha256")
+            != active_claim["passkey_proof_sha256"]
+            or value.get("old_authorization_receipt_sha256")
+            != active_claim["authorization_receipt_sha256"]
+            or value.get("old_execution_window_expires_at_unix")
+            != active_claim["execution_window_expires_at_unix"]
+            or not isinstance(value.get("new_claim"), Mapping)
+        ):
+            raise PermissionError(
+                "production passkey claim supersession is invalid"
+            )
+        new_claim = validate_passkey_claim_evidence(
+            value["new_claim"],
+            plan_sha256=plan_sha256,
+            approval_sha256=approval_sha256,
+            release_revision=release_revision,
+        )
+        if (
+            value.get("new_claim_sha256") != _sha256_json(new_claim)
+            or value.get("new_passkey_proof_sha256")
+            != new_claim["passkey_proof_sha256"]
+            or value.get("new_authorization_receipt_sha256")
+            != new_claim["authorization_receipt_sha256"]
+            or value.get("new_execution_window_expires_at_unix")
+            != new_claim["execution_window_expires_at_unix"]
+            or new_claim["freeze_publication_sha256"]
+            != active_claim["freeze_publication_sha256"]
+            or new_claim["action_payload_sha256"]
+            != active_claim["action_payload_sha256"]
+            or any(
+                new_claim[name] == active_claim[name]
+                for name in (
+                    "passkey_proof_sha256",
+                    "authorization_receipt_sha256",
+                    "action_envelope_sha256",
+                    "request_id",
+                    "consume_attempt_id",
+                )
+            )
+            or entry.value["recorded_at_unix"]
+            < active_entry.value["recorded_at_unix"]
+            or entry.value["recorded_at_unix"]
+            < active_claim["execution_window_expires_at_unix"]
+            or entry.value["recorded_at_unix"]
+            >= new_claim["execution_window_expires_at_unix"]
+        ):
+            raise PermissionError(
+                "production passkey claim supersession is invalid"
+            )
+        active_entry = entry
+        active_claim = new_claim
+    return active_entry, active_claim
+
+
+def supersede_recorded_passkey_claim(
+    journal: CutoverJournal,
+    *,
+    plan_sha256: str,
+    approval_sha256: str,
+    release_revision: str,
+    new_claim_value: Mapping[str, Any],
+    now_unix: int,
+) -> tuple[JournalEntry, Mapping[str, Any]]:
+    """Atomically replace only the active authorization, never its history."""
+
+    if type(now_unix) is not int or now_unix <= 0:
+        raise PermissionError("production passkey claim supersession is invalid")
+    active_entry, active_claim = require_recorded_passkey_claim(
+        journal,
+        plan_sha256=plan_sha256,
+        approval_sha256=approval_sha256,
+        release_revision=release_revision,
+    )
+    new_claim = validate_passkey_claim_evidence(
+        new_claim_value,
+        plan_sha256=plan_sha256,
+        approval_sha256=approval_sha256,
+        release_revision=release_revision,
+    )
+    entries = journal.load(plan_sha256)
+    if (
+        any(
+            entry.value["event"]
+            not in {
+                "passkey_claim",
+                "authority",
+                "passkey_claim_superseded",
+            }
+            for entry in entries
+        )
+        or len([
+            entry for entry in entries if entry.value["event"] == "authority"
+        ]) > 1
+        or new_claim == active_claim
+        or now_unix < active_entry.value["recorded_at_unix"]
+        or now_unix < active_claim["execution_window_expires_at_unix"]
+        or now_unix >= new_claim["execution_window_expires_at_unix"]
+        or any(
+            new_claim[name] != active_claim[name]
+            for name in (
+                "freeze_plan_sha256",
+                "freeze_approval_sha256",
+                "freeze_publication_sha256",
+                "action_payload_sha256",
+                "authority_release_sha",
+            )
+        )
+        or any(
+            new_claim[name] == active_claim[name]
+            for name in (
+                "passkey_proof_sha256",
+                "authorization_receipt_sha256",
+                "action_envelope_sha256",
+                "request_id",
+                "consume_attempt_id",
+            )
+        )
+    ):
+        raise PermissionError("production passkey claim supersession is invalid")
+    evidence = {
+        "schema": PASSKEY_CLAIM_SUPERSEDED_SCHEMA,
+        "freeze_plan_sha256": plan_sha256,
+        "freeze_approval_sha256": approval_sha256,
+        "freeze_publication_sha256": active_claim[
+            "freeze_publication_sha256"
+        ],
+        "action_payload_sha256": active_claim["action_payload_sha256"],
+        "old_claim_entry_sha256": active_entry.sha256,
+        "old_claim_sha256": _sha256_json(active_claim),
+        "old_passkey_proof_sha256": active_claim[
+            "passkey_proof_sha256"
+        ],
+        "old_authorization_receipt_sha256": active_claim[
+            "authorization_receipt_sha256"
+        ],
+        "old_execution_window_expires_at_unix": active_claim[
+            "execution_window_expires_at_unix"
+        ],
+        "new_claim": copy.deepcopy(dict(new_claim)),
+        "new_claim_sha256": _sha256_json(new_claim),
+        "new_passkey_proof_sha256": new_claim["passkey_proof_sha256"],
+        "new_authorization_receipt_sha256": new_claim[
+            "authorization_receipt_sha256"
+        ],
+        "new_execution_window_expires_at_unix": new_claim[
+            "execution_window_expires_at_unix"
+        ],
+    }
+    appended = journal.append(
+        plan_sha256,
+        "passkey_claim_superseded",
+        evidence,
+        now_unix,
+    )
+    checked_entry, checked_claim = require_recorded_passkey_claim(
+        journal,
+        plan_sha256=plan_sha256,
+        approval_sha256=approval_sha256,
+        release_revision=release_revision,
+    )
+    if checked_entry.sha256 != appended.sha256 or checked_claim != new_claim:
+        raise PermissionError("production passkey claim supersession is invalid")
+    return checked_entry, checked_claim
+
+
+def _validated_claimed_approval(
+    journal: CutoverJournal,
+    *,
+    plan: FreezePlan,
+    approval_value: Mapping[str, Any],
+) -> tuple[CutoverApproval, JournalEntry, Mapping[str, Any]]:
+    entries = journal.load(plan.sha256)
+    authorities = [
+        entry for entry in entries
+        if entry.value["event"] == "authority"
+        and entry.value["evidence"].get("approval_sha256")
+        == approval_value.get("approval_sha256")
+    ]
+    if len(authorities) != 1:
+        raise PermissionError(
+            "production cutover requires one recorded owner authority"
+        )
+    claim_entry, claim = require_recorded_passkey_claim(
+        journal,
+        plan_sha256=plan.sha256,
+        approval_sha256=str(approval_value.get("approval_sha256")),
+        release_revision=plan.value["release_revision"],
+    )
+    authority_entry = authorities[0]
+    initial_claims = [
+        entry for entry in entries if entry.value["event"] == "passkey_claim"
+    ]
+    initial_claim = initial_claims[0] if len(initial_claims) == 1 else None
+    if (
+        initial_claim is None
+        or initial_claim.value["sequence"] >= authority_entry.value["sequence"]
+        or authority_entry.value["recorded_at_unix"]
+        < initial_claim.value["recorded_at_unix"]
+        or any(
+            entry.value["event"]
+            not in {"passkey_claim", "passkey_claim_superseded"}
+            for entry in entries[:authority_entry.value["sequence"]]
+        )
+    ):
+        raise PermissionError(
+            "production passkey claim and owner authority ordering is invalid"
+        )
+    approval = CutoverApproval.from_mapping(
+        approval_value,
+        plan=plan,
+        now_unix=claim_entry.value["recorded_at_unix"],
+    )
+    return approval, claim_entry, claim
+
+
+def _require_or_record_passkey_intent(
+    journal: CutoverJournal,
+    *,
+    journal_plan_sha256: str,
+    phase: str,
+    freeze_plan_sha256: str,
+    freeze_approval_sha256: str,
+    cutover_plan_sha256: str | None,
+    claim_entry: JournalEntry,
+    claim: Mapping[str, Any],
+    now_unix: int,
+    cutover_plan: CutoverPlan | None = None,
+) -> JournalEntry:
+    if phase not in {"freeze_stop", "cutover_apply"}:
+        raise PermissionError("production passkey intent is invalid")
+
+    def valid_freeze_prelude(entries: list[JournalEntry]) -> bool:
+        authorization_entries = [
+            entry
+            for entry in entries
+            if entry.value["event"]
+            in {"passkey_claim", "passkey_claim_superseded"}
+        ]
+        return (
+            all(
+                entry.value["event"]
+                in {
+                    "passkey_claim",
+                    "passkey_claim_superseded",
+                    "authority",
+                }
+                for entry in entries
+            )
+            and len([
+                entry for entry in entries
+                if entry.value["event"] == "passkey_claim"
+            ]) == 1
+            and len([
+                entry for entry in entries
+                if entry.value["event"] == "authority"
+            ]) == 1
+            and bool(authorization_entries)
+            and authorization_entries[-1].sha256 == claim_entry.sha256
+        )
+
+    parent_freeze_intent: JournalEntry | None = None
+    parent_freeze_terminal: JournalEntry | None = None
+    if phase == "cutover_apply":
+        freeze_entries = journal.load(freeze_plan_sha256)
+        freeze_intents = [
+            entry for entry in freeze_entries
+            if entry.value["event"] == "passkey_intent"
+        ]
+        if len(freeze_intents) == 1:
+            candidate = freeze_intents[0]
+            expected_parent = {
+                "schema": PASSKEY_INTENT_SCHEMA,
+                "phase": "freeze_stop",
+                "freeze_plan_sha256": freeze_plan_sha256,
+                "freeze_approval_sha256": freeze_approval_sha256,
+                "passkey_claim_entry_sha256": claim_entry.sha256,
+                "cutover_plan_sha256": None,
+                "parent_freeze_intent_entry_sha256": None,
+                "parent_freeze_terminal_entry_sha256": None,
+            }
+            if (
+                set(candidate.value["evidence"]) == _PASSKEY_INTENT_FIELDS
+                and candidate.value["evidence"] == expected_parent
+                and valid_freeze_prelude(
+                    freeze_entries[:candidate.value["sequence"]]
+                )
+                and candidate.value["recorded_at_unix"]
+                >= claim_entry.value["recorded_at_unix"]
+                and candidate.value["recorded_at_unix"]
+                < claim["execution_window_expires_at_unix"]
+            ):
+                parent_freeze_intent = candidate
+        if parent_freeze_intent is None:
+            raise PermissionError(
+                "production cutover requires exact parent freeze intent"
+            )
+        final_tail_entries = [
+            entry for entry in freeze_entries
+            if entry.value["event"] == "final_tail_captured"
+        ]
+        gateway_stopped_entries = [
+            entry for entry in freeze_entries
+            if entry.value["event"] == "gateway_stopped"
+        ]
+        try:
+            if (
+                not isinstance(cutover_plan, CutoverPlan)
+                or cutover_plan.sha256 != cutover_plan_sha256
+                or cutover_plan.value["freeze_plan_sha256"]
+                != freeze_plan_sha256
+                or cutover_plan.value["freeze_approval_sha256"]
+                != freeze_approval_sha256
+            ):
+                raise ValueError("cutover plan mismatch")
+            tail = FinalTailReceipt.from_mapping(
+                cutover_plan.value["final_tail_receipt"],
+                plan=FreezePlan.from_mapping(
+                    cutover_plan.value["freeze_plan"]
+                ),
+            )
+            gateway_evidence = gateway_stopped_entries[0].value[
+                "evidence"
+            ]
+            if (
+                set(gateway_evidence) != {"gateway", "writer"}
+                or ServiceObservation.from_mapping(
+                    gateway_evidence["gateway"]
+                ).to_mapping()
+                != cutover_plan.value["gateway_legacy_identity"]
+                or ServiceObservation.from_mapping(
+                    gateway_evidence["writer"]
+                ).to_mapping()
+                != cutover_plan.value["writer_pre_identity"]
+            ):
+                raise ValueError("gateway stop mismatch")
+        except (IndexError, KeyError, TypeError, ValueError):
+            raise PermissionError(
+                "production cutover parent final tail is invalid"
+            ) from None
+        if (
+            len(final_tail_entries) != 1
+            or len(gateway_stopped_entries) != 1
+            or any(
+                entry.value["event"] == "freeze_aborted"
+                for entry in freeze_entries
+            )
+            or any(
+                entry.value["event"]
+                not in {
+                    "passkey_claim",
+                    "passkey_claim_superseded",
+                    "authority",
+                    "passkey_intent",
+                    "gateway_stopped",
+                    "final_tail_captured",
+                }
+                for entry in freeze_entries
+            )
+            or tail.value["freeze_plan_sha256"] != freeze_plan_sha256
+            or tail.value["approval_sha256"] != freeze_approval_sha256
+            or final_tail_entries[0].value["evidence"] != tail.to_mapping()
+            or not (
+                parent_freeze_intent.value["sequence"]
+                < gateway_stopped_entries[0].value["sequence"]
+                < final_tail_entries[0].value["sequence"]
+            )
+        ):
+            raise PermissionError(
+                "production cutover parent final tail is invalid"
+            )
+        parent_freeze_terminal = final_tail_entries[0]
+    elif cutover_plan is not None:
+        raise PermissionError("production passkey intent is invalid")
+    expected = {
+        "schema": PASSKEY_INTENT_SCHEMA,
+        "phase": phase,
+        "freeze_plan_sha256": freeze_plan_sha256,
+        "freeze_approval_sha256": freeze_approval_sha256,
+        "passkey_claim_entry_sha256": claim_entry.sha256,
+        "cutover_plan_sha256": cutover_plan_sha256,
+        "parent_freeze_intent_entry_sha256": (
+            None
+            if parent_freeze_intent is None
+            else parent_freeze_intent.sha256
+        ),
+        "parent_freeze_terminal_entry_sha256": (
+            None
+            if parent_freeze_terminal is None
+            else parent_freeze_terminal.sha256
+        ),
+    }
+    journal_entries = journal.load(journal_plan_sha256)
+    intents = [
+        entry for entry in journal_entries
+        if entry.value["event"] == "passkey_intent"
+    ]
+
+    def valid_prelude(entries: list[JournalEntry]) -> bool:
+        if phase == "cutover_apply":
+            return entries == []
+        return valid_freeze_prelude(entries)
+
+    if intents:
+        intent_sequence = intents[0].value["sequence"]
+        if (
+            len(intents) != 1
+            or set(intents[0].value["evidence"])
+            != _PASSKEY_INTENT_FIELDS
+            or intents[0].value["evidence"] != expected
+            or not valid_prelude(journal_entries[:intent_sequence])
+            or intents[0].value["recorded_at_unix"]
+            < claim_entry.value["recorded_at_unix"]
+            or (
+                phase == "freeze_stop"
+                and intents[0].value["recorded_at_unix"]
+                >= claim["execution_window_expires_at_unix"]
+            )
+            or (
+                parent_freeze_intent is not None
+                and intents[0].value["recorded_at_unix"]
+                < parent_freeze_intent.value["recorded_at_unix"]
+            )
+            or (
+                parent_freeze_terminal is not None
+                and intents[0].value["recorded_at_unix"]
+                < parent_freeze_terminal.value["recorded_at_unix"]
+            )
+        ):
+            raise PermissionError("production passkey intent is invalid")
+        return intents[0]
+    if not valid_prelude(journal_entries):
+        raise PermissionError(
+            "production passkey intent cannot be recorded after state change"
+        )
+    if (
+        claim_entry.value["recorded_at_unix"]
+        >= claim["execution_window_expires_at_unix"]
+        or (
+            phase == "freeze_stop"
+            and now_unix >= claim["execution_window_expires_at_unix"]
+        )
+        or (
+            parent_freeze_intent is not None
+            and now_unix < parent_freeze_intent.value["recorded_at_unix"]
+        )
+        or (
+            parent_freeze_terminal is not None
+            and now_unix < parent_freeze_terminal.value["recorded_at_unix"]
+        )
+    ):
+        raise PermissionError(
+            "production passkey execution window expired before intent"
+        )
+    return journal.append(
+        journal_plan_sha256,
+        "passkey_intent",
+        expected,
+        now_unix,
+    )
 
 
 class ServiceBoundary(Protocol):
@@ -4424,7 +5026,11 @@ def _append_authority(
 ) -> list[JournalEntry]:
     entries = journal.load(plan_sha256)
     authorities = [entry for entry in entries if entry.value["event"] == "authority"]
-    if authorities and authorities[-1].value["evidence"]["approval_sha256"] == approval.sha256:
+    if (
+        authorities
+        and authorities[-1].value["evidence"]["approval_sha256"]
+        == approval.sha256
+    ):
         return entries
     expected_sequence = len(authorities)
     previous = None if not authorities else authorities[-1].value["evidence"]["approval_sha256"]
@@ -4581,6 +5187,9 @@ def abort_freeze(
         if any(
             entry.value["event"]
             not in {
+                "passkey_claim",
+                "passkey_claim_superseded",
+                "passkey_intent",
                 "authority",
                 "gateway_stopped",
                 "final_tail_captured",
@@ -4591,27 +5200,23 @@ def abort_freeze(
             raise ProductionCutoverError(
                 "production_freeze_abort_journal_not_pre_mutation"
             )
-        authorities = [
-            entry for entry in entries if entry.value["event"] == "authority"
-        ]
-        matching = next(
-            (
-                entry
-                for entry in authorities
-                if entry.value["evidence"].get("approval_sha256")
-                == approval_value.get("approval_sha256")
-            ),
-            None,
-        )
-        if matching is None:
-            raise PermissionError(
-                "freeze abort requires a recorded owner authority"
-            )
-        approval = CutoverApproval.from_mapping(
-            approval_value,
+        approval, claim_entry, claim = _validated_claimed_approval(
+            dependencies.journal,
             plan=plan,
-            now_unix=matching.value["recorded_at_unix"],
+            approval_value=approval_value,
         )
+        if _last(entries, "passkey_intent") is not None:
+            _require_or_record_passkey_intent(
+                dependencies.journal,
+                journal_plan_sha256=plan.sha256,
+                phase="freeze_stop",
+                freeze_plan_sha256=plan.sha256,
+                freeze_approval_sha256=approval.sha256,
+                cutover_plan_sha256=None,
+                claim_entry=claim_entry,
+                claim=claim,
+                now_unix=now,
+            )
         return _restore_legacy_gateway_after_freeze(
             plan=plan,
             approval=approval,
@@ -4632,9 +5237,24 @@ def execute_final_tail_capture(
     """Stop the exact gateway and capture the final append-only legacy tail."""
 
     now = int(time.time()) if now_unix is None else now_unix
-    approval = CutoverApproval.from_mapping(approval_value, plan=plan, now_unix=now)
     with dependencies.lock():
-        entries = _append_authority(dependencies.journal, plan.sha256, approval, now)
+        approval, claim_entry, claim = _validated_claimed_approval(
+            dependencies.journal,
+            plan=plan,
+            approval_value=approval_value,
+        )
+        _require_or_record_passkey_intent(
+            dependencies.journal,
+            journal_plan_sha256=plan.sha256,
+            phase="freeze_stop",
+            freeze_plan_sha256=plan.sha256,
+            freeze_approval_sha256=approval.sha256,
+            cutover_plan_sha256=None,
+            claim_entry=claim_entry,
+            claim=claim,
+            now_unix=now,
+        )
+        entries = dependencies.journal.load(plan.sha256)
         terminal = _last(entries, "final_tail_captured")
         if terminal is not None:
             return FinalTailReceipt.from_mapping(terminal.value["evidence"], plan=plan)
@@ -6323,12 +6943,28 @@ def execute_cutover(
 
     now = int(time.time()) if now_unix is None else now_unix
     freeze = FreezePlan.from_mapping(plan.value["freeze_plan"])
-    approval = CutoverApproval.from_mapping(
-        approval_value,
-        plan=freeze,
-        now_unix=now,
-    )
     with dependencies.lock():
+        approval, claim_entry, claim = _validated_claimed_approval(
+            dependencies.journal,
+            plan=freeze,
+            approval_value=approval_value,
+        )
+        if approval.sha256 != plan.value["freeze_approval_sha256"]:
+            raise PermissionError(
+                "cutover does not reuse the pre-stop owner approval"
+            )
+        _require_or_record_passkey_intent(
+            dependencies.journal,
+            journal_plan_sha256=plan.sha256,
+            phase="cutover_apply",
+            freeze_plan_sha256=freeze.sha256,
+            freeze_approval_sha256=approval.sha256,
+            cutover_plan_sha256=plan.sha256,
+            claim_entry=claim_entry,
+            claim=claim,
+            now_unix=now,
+            cutover_plan=plan,
+        )
         entries = dependencies.journal.load(plan.sha256)
         rollback_terminal = _last(entries, "rollback_terminal")
         if rollback_terminal is not None:
@@ -6349,8 +6985,6 @@ def execute_cutover(
                     "production_cron_cutover_terminal_lineage_invalid"
                 )
             return copy.deepcopy(dict(terminal_entry.value["evidence"]))
-        if not entries and approval.sha256 != plan.value["freeze_approval_sha256"]:
-            raise PermissionError("cutover does not reuse the pre-stop owner approval")
         entries = _append_authority(
             dependencies.journal,
             plan.sha256,
@@ -7167,9 +7801,16 @@ def execute_fixed_staged(command: str) -> Mapping[str, Any]:
         plan = FreezePlan.from_mapping(
             _load_staged_json(STAGED_FREEZE_PLAN_PATH)
         )
+        approval_value = _load_staged_json(STAGED_FREEZE_APPROVAL_PATH)
+        require_recorded_passkey_claim(
+            journal,
+            plan_sha256=plan.sha256,
+            approval_sha256=str(approval_value.get("approval_sha256")),
+            release_revision=plan.value["release_revision"],
+        )
         receipt = abort_freeze(
             plan,
-            _load_staged_json(STAGED_FREEZE_APPROVAL_PATH),
+            approval_value,
             FreezeDependencies(
                 services=services,
                 snapshots=process,
@@ -7183,9 +7824,11 @@ def execute_fixed_staged(command: str) -> Mapping[str, Any]:
             _load_staged_json(STAGED_CUTOVER_PLAN_PATH)
         )
         freeze = FreezePlan.from_mapping(plan.value["freeze_plan"])
-        CutoverApproval.from_mapping(
-            _load_staged_json(STAGED_FREEZE_APPROVAL_PATH),
+        approval_value = _load_staged_json(STAGED_FREEZE_APPROVAL_PATH)
+        _validated_claimed_approval(
+            journal,
             plan=freeze,
+            approval_value=approval_value,
         )
         receipt = _require_database_receipt(
             ProductionDatabaseArtifactBoundary(process).preflight(plan),
@@ -7232,9 +7875,11 @@ def execute_fixed_staged(command: str) -> Mapping[str, Any]:
         plan = CutoverPlan.from_mapping(
             _load_staged_json(STAGED_CUTOVER_PLAN_PATH)
         )
+        freeze = FreezePlan.from_mapping(plan.value["freeze_plan"])
+        approval_value = _load_staged_json(STAGED_FREEZE_APPROVAL_PATH)
         return execute_cutover(
             plan,
-            _load_staged_json(STAGED_FREEZE_APPROVAL_PATH),
+            approval_value,
             CutoverDependencies(
                 services=services,
                 snapshots=process,

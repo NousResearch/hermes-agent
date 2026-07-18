@@ -86,6 +86,90 @@ class TestRunConversationCodexPath:
         assert result["codex_thread_id"] == "thread-stub-1"
         assert result["codex_turn_id"] == "turn-stub-1"
 
+    def test_gateway_approval_callback_reaches_shared_queue(self, monkeypatch):
+        from agent.codex_runtime import _resolve_codex_approval_callback
+        from tools.approval import (
+            register_gateway_notify,
+            reset_current_session_key,
+            resolve_gateway_approval,
+            set_current_session_key,
+            unregister_gateway_notify,
+        )
+
+        session_key = "test-codex-gateway-approval"
+        seen = {}
+
+        token_value = "gho_1234567890abcdefghijklmnopqrstuv"
+        redaction_calls = []
+        from agent import redact as redact_module
+
+        original_redact = redact_module.redact_sensitive_text
+
+        def recording_redact(text, **kwargs):
+            redaction_calls.append(kwargs)
+            return original_redact(text, **kwargs)
+
+        monkeypatch.setattr(redact_module, "redact_sensitive_text", recording_redact)
+
+        def notify(data):
+            seen.update(data)
+            resolve_gateway_approval(session_key, "once")
+
+        monkeypatch.setattr("tools.approval._get_approval_mode", lambda: "manual")
+        token = set_current_session_key(session_key)
+        register_gateway_notify(session_key, notify)
+        try:
+            callback = _resolve_codex_approval_callback()
+            assert callback is not None
+            assert callback(
+                f"printf 'token={token_value}'",
+                "Codex requests exec",
+                allow_permanent=False,
+            ) == "once"
+            assert token_value not in seen["command"]
+            assert seen["description"] == "Codex requests exec"
+            assert len(redaction_calls) == 2
+            assert all(call.get("force") is True for call in redaction_calls)
+        finally:
+            unregister_gateway_notify(session_key)
+            reset_current_session_key(token)
+
+    def test_gateway_approval_honors_smart_and_hardline_policy(self, monkeypatch):
+        from agent.codex_runtime import _resolve_codex_approval_callback
+        from tools import approval as approval_module
+        from tools.approval import (
+            register_gateway_notify,
+            reset_current_session_key,
+            set_current_session_key,
+            unregister_gateway_notify,
+        )
+
+        session_key = "test-codex-gateway-smart"
+        prompted = []
+        token = set_current_session_key(session_key)
+        register_gateway_notify(session_key, lambda data: prompted.append(data))
+        try:
+            monkeypatch.setattr(approval_module, "_get_approval_mode", lambda: "smart")
+            monkeypatch.setattr(approval_module, "_smart_approve", lambda *_: "approve")
+            callback = _resolve_codex_approval_callback()
+            assert callback is not None
+            assert callback("git status", "read-only inspection") == "once"
+            assert prompted == []
+
+            assert callback("rm -rf /", "destructive command") == "deny"
+            assert prompted == []
+        finally:
+            unregister_gateway_notify(session_key)
+            reset_current_session_key(token)
+
+    def test_gateway_approval_without_notifier_fails_closed(self, monkeypatch):
+        from agent.codex_runtime import _resolve_codex_approval_callback
+        from tools import approval as approval_module
+
+        monkeypatch.setattr(approval_module, "_get_approval_mode", lambda: "manual")
+        callback = _resolve_codex_approval_callback()
+        assert callback is None
+
     def test_codex_app_server_token_usage_updates_session_accounting(self, monkeypatch):
         def fake_run_turn(self, user_input: str, **kwargs):
             return TurnResult(

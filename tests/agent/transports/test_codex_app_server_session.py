@@ -753,6 +753,42 @@ class TestServerRequestRouting:
         s.run_turn("hi", turn_timeout=1.0)
         assert ("r1", {"decision": "accept"}) in client.responses
 
+    def test_routing_auto_approve_apply_patch_without_callback(self):
+        client = FakeClient()
+        client.queue_server_request(
+            "item/fileChange/requestApproval",
+            request_id="r-patch",
+            itemId="fc-1",
+            reason="update documentation",
+        )
+        client.queue_notification(
+            "turn/completed",
+            threadId="t",
+            turn={"id": "tu1", "status": "completed", "error": None},
+        )
+        s = make_session(client, request_routing=_ServerRequestRouting(
+            auto_approve_apply_patch=True))
+        s.run_turn("hi", turn_timeout=1.0)
+        assert ("r-patch", {"decision": "accept"}) in client.responses
+
+    def test_routing_auto_approve_still_enforces_unconditional_guards(self):
+        client = FakeClient()
+        client.queue_server_request(
+            "item/commandExecution/requestApproval",
+            request_id="r-hardline",
+            command="rm -rf /",
+            cwd="/",
+        )
+        client.queue_notification(
+            "turn/completed",
+            threadId="t",
+            turn={"id": "tu1", "status": "completed", "error": None},
+        )
+        s = make_session(client, request_routing=_ServerRequestRouting(
+            auto_approve_exec=True))
+        s.run_turn("hi", turn_timeout=1.0)
+        assert ("r-hardline", {"decision": "decline"}) in client.responses
+
     def test_callback_raises_falls_back_to_decline(self):
         client = FakeClient()
         client.queue_server_request("item/commandExecution/requestApproval", request_id="r1",

@@ -2045,6 +2045,101 @@ _gateway_queues: dict[str, list] = {}        # session_key → [_ApprovalEntry, 
 _gateway_notify_cbs: dict[str, object] = {}  # session_key → callable(approval_data)
 
 
+def has_gateway_notify(session_key: Optional[str] = None) -> bool:
+    """Return whether a live gateway approval notifier is registered."""
+    key = session_key if session_key is not None else get_current_session_key(default="")
+    if not key:
+        return False
+    with _lock:
+        return key in _gateway_notify_cbs
+
+
+def check_unconditional_command_guards(command: str) -> tuple[bool, str | None]:
+    """Apply approval policy floors that no bypass may override."""
+    is_hardline, description = detect_hardline_command(command)
+    if is_hardline:
+        return True, description
+
+    is_sudo_guess, description = _check_sudo_stdin_guard(command)
+    if is_sudo_guess:
+        return True, description
+
+    deny_pattern = _match_user_deny_rule(command)
+    if deny_pattern is not None:
+        return True, f"blocked by approvals.deny rule: {deny_pattern}"
+
+    return False, None
+
+
+def prompt_gateway_approval(
+    command: str,
+    description: str,
+    *,
+    pattern_key: str = "codex_app_server",
+    pattern_keys: Optional[list[str]] = None,
+    allow_permanent: bool = False,
+) -> str:
+    """Resolve an approval request through the shared gateway approval path.
+
+    External runtimes such as Codex app-server do not pass through Hermes'
+    normal terminal guard, but their approval requests must retain the same
+    hardline, smart-approval, redaction, queue, timeout, hook, and interrupt
+    semantics.
+    """
+    session_key = get_current_session_key(default="")
+    all_keys = list(pattern_keys or [pattern_key])
+
+    blocked, _blocked_description = check_unconditional_command_guards(command)
+    if blocked:
+        return "deny"
+
+    if is_approval_bypass_active():
+        return "once"
+    if is_approved(session_key, pattern_key):
+        return "session"
+
+    smart_denied = False
+    if _get_approval_mode() == "smart":
+        verdict = _smart_approve(command, description)
+        if verdict == "approve":
+            return "once"
+        if verdict == "deny":
+            # An interactive owner may still override a Smart DENY for this
+            # operation, but permanent approval is never offered.
+            smart_denied = True
+
+    with _lock:
+        notify_cb = _gateway_notify_cbs.get(session_key)
+    if notify_cb is None:
+        return "deny"
+
+    from agent.redact import redact_sensitive_text
+
+    approval_data = {
+        "command": redact_sensitive_text(command, force=True),
+        "pattern_key": pattern_key,
+        "pattern_keys": all_keys,
+        "description": redact_sensitive_text(description, force=True),
+        "allow_permanent": bool(allow_permanent and not smart_denied),
+    }
+    if smart_denied:
+        approval_data["smart_denied"] = True
+
+    decision = _await_gateway_decision(
+        session_key,
+        notify_cb,
+        approval_data,
+        surface="gateway",
+    )
+    if decision.get("notify_failed") or not decision.get("resolved"):
+        return "deny"
+
+    choice = decision.get("choice") or "deny"
+    if choice == "always" and not approval_data["allow_permanent"]:
+        return "session"
+    return choice
+
+
 def register_gateway_notify(session_key: str, cb) -> None:
     """Register a per-session callback for sending approval requests to the user.
 

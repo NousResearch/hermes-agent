@@ -873,9 +873,14 @@ class CodexAppServerSession:
             )
 
     def _decide_exec_approval(self, params: dict) -> str:
+        command = params.get("command") or ""
+        from tools.approval import check_unconditional_command_guards
+
+        blocked, _blocked_description = check_unconditional_command_guards(command)
+        if blocked:
+            return "decline"
         if self._routing.auto_approve_exec:
             return "accept"
-        command = params.get("command") or ""
         # Codex's CommandExecutionRequestApprovalParams has cwd as Optional —
         # fall back to the session's cwd when codex doesn't include it so the
         # approval prompt is never empty (quirk #10 fix).
@@ -896,34 +901,38 @@ class CodexAppServerSession:
         return "decline"  # fail-closed when no callback wired
 
     def _decide_apply_patch_approval(self, params: dict) -> str:
+        # FileChangeRequestApprovalParams gives us reason + grantRoot. The
+        # actual changeset lives on the corresponding fileChange item which
+        # the projector has already cached for us.
+        reason = params.get("reason")
+        grant_root = params.get("grantRoot")
+        item_id = params.get("itemId") or ""
+        change_summary = self._lookup_pending_file_change(item_id)
+        description_parts = []
+        if reason:
+            description_parts.append(reason)
+        if change_summary:
+            description_parts.append(change_summary)
+        if grant_root:
+            description_parts.append(f"grants write to {grant_root}")
+        description = (
+            "; ".join(description_parts)
+            if description_parts
+            else "Codex requests to apply a patch"
+        )
+        command_label = (
+            f"apply_patch: {change_summary}" if change_summary
+            else f"apply_patch: {reason}" if reason
+            else "apply_patch"
+        )
+        from tools.approval import check_unconditional_command_guards
+
+        blocked, _blocked_description = check_unconditional_command_guards(command_label)
+        if blocked:
+            return "decline"
         if self._routing.auto_approve_apply_patch:
             return "accept"
         if self._approval_callback is not None:
-            # FileChangeRequestApprovalParams gives us reason + grantRoot.
-            # The actual changeset lives on the corresponding fileChange
-            # item which the projector has already cached for us — look it
-            # up by item_id so the user sees what's actually changing.
-            reason = params.get("reason")
-            grant_root = params.get("grantRoot")
-            item_id = params.get("itemId") or ""
-            change_summary = self._lookup_pending_file_change(item_id)
-            description_parts = []
-            if reason:
-                description_parts.append(reason)
-            if change_summary:
-                description_parts.append(change_summary)
-            if grant_root:
-                description_parts.append(f"grants write to {grant_root}")
-            description = (
-                "; ".join(description_parts)
-                if description_parts
-                else "Codex requests to apply a patch"
-            )
-            command_label = (
-                f"apply_patch: {change_summary}" if change_summary
-                else f"apply_patch: {reason}" if reason
-                else "apply_patch"
-            )
             try:
                 choice = self._approval_callback(
                     command_label,

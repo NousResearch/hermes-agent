@@ -65,16 +65,27 @@ function lexIncrementally(text: string): null | string[] {
     return null
   }
 
-  // Settled boundary: drop trailing whitespace-only blocks, then the last
-  // content block (the only one appended text can reinterpret).
+  // Settled boundary: drop the last TWO content blocks (skipping any
+  // whitespace-only blocks around them). Dropping only the single last content
+  // block is unsound: appended text can retroactively merge the previous
+  // parse's last two blocks into one. The trigger is a trailing Setext
+  // underline — `marked` only treats `-`/`=` as an underline for the paragraph
+  // ABOVE it, so a settled `"#e\n5\n-"` lexes as ["#e\n", "5\n-"], but growing
+  // the tail to `"#e\n5\n-p2=kj:c"` collapses both into one paragraph. The
+  // block before the last is the deepest an append can reach (the underline
+  // consumes exactly one preceding block), so re-lexing the last two is safe;
+  // earlier blocks are fenced off by settled blank lines. join('') === text
+  // still holds either way, so the reconstruction check below can't catch this.
   let keep = entry.blocks.length
 
-  while (keep > 0 && !entry.blocks[keep - 1].trim()) {
-    keep -= 1
-  }
+  for (let dropped = 0; dropped < 2 && keep > 0; dropped += 1) {
+    while (keep > 0 && !entry.blocks[keep - 1].trim()) {
+      keep -= 1
+    }
 
-  if (keep > 0) {
-    keep -= 1
+    if (keep > 0) {
+      keep -= 1
+    }
   }
 
   if (keep === 0) {

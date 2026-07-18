@@ -30,6 +30,7 @@ Hermes calls this **no-agent mode**. It's the cron system minus the LLM.
 - **Script is the job.** The script decides whether to alert. Emit output → message gets sent. Emit nothing → silent tick.
 - **Bash or Python.** `.sh` / `.bash` files run under `/bin/bash`; any other extension runs under the current Python interpreter. Anything in `~/.hermes/scripts/` is accepted.
 - **Same scheduler.** Lives in `cronjob` alongside LLM jobs — pausing, resuming, listing, logs, and delivery targeting all work the same way.
+- **Same run history.** Every tick — output, silent, or failed — is recorded as a cron session, so script-only runs show up in the Desktop **Cron Jobs** run history next to agent-backed ones. Open a failed run there to read the script's exit code, stdout, and stderr. A silent tick is recorded too, so "did it even run?" is always answerable.
 
 ## When to Use It
 

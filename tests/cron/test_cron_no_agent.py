@@ -31,6 +31,11 @@ def hermes_env(tmp_path, monkeypatch):
     import importlib
     import hermes_constants
     importlib.reload(hermes_constants)
+    # hermes_state.DEFAULT_DB_PATH is computed at import time, so it must be
+    # reloaded after HERMES_HOME is set — otherwise run_job would persist cron
+    # sessions into the developer's real profile state.db instead of tmp_path.
+    import hermes_state
+    importlib.reload(hermes_state)
     import cron.jobs
     importlib.reload(cron.jobs)
     import cron.scheduler
@@ -278,6 +283,175 @@ def test_run_job_no_agent_never_invokes_aiagent(hermes_env):
         run_job(job)
 
     ai_mock.assert_not_called()
+
+
+# ---------------------------------------------------------------------------
+# run_job: no_agent runs must land in the profile state.db so the Desktop
+# "Cron Jobs" sidebar can list and open them.
+#
+# The sidebar's run history calls SessionDB.list_cron_job_runs(job_id), which
+# only matches rows with source='cron' AND id starting 'cron_{job_id}_'. The
+# no_agent short-circuit used to return before any SessionDB was constructed,
+# so *no* script run — success, silent, or failure — was ever visible there,
+# even though cron/output/*.md and executions.db both recorded it.
+# ---------------------------------------------------------------------------
+
+
+def _runs_for(home, job_id):
+    """Read the cron run sessions the Desktop sidebar would show for a job."""
+    from hermes_state import SessionDB
+
+    db = SessionDB(db_path=home / "state.db")
+    try:
+        return db.list_cron_job_runs(job_id)
+    finally:
+        db.close()
+
+
+def _session_text(home, session_id):
+    """Concatenated message content for a session, as Desktop would render it."""
+    from hermes_state import SessionDB
+
+    db = SessionDB(db_path=home / "state.db")
+    try:
+        return "\n".join(
+            str(m.get("content") or "") for m in db.get_messages(session_id)
+        )
+    finally:
+        db.close()
+
+
+def test_run_job_no_agent_failure_is_visible_in_sidebar(hermes_env):
+    """A failed script run must appear in the profile state.db run history.
+
+    This is the reported bug: the run was written to cron/output and
+    executions.db, but the Desktop sidebar (which reads state.db) showed
+    nothing, so the failure was invisible.
+    """
+    from cron.jobs import create_job
+    from cron.scheduler import run_job
+
+    script_path = hermes_env / "scripts" / "broken.sh"
+    script_path.write_text("#!/bin/bash\necho oops >&2\nexit 3\n")
+
+    job = create_job(
+        prompt=None,
+        schedule="every 5m",
+        script="broken.sh",
+        no_agent=True,
+        deliver="local",
+        name="gigarepo-weekly-cleanup",
+    )
+    success, _doc, _final_response, error = run_job(job)
+    assert success is False
+    assert error is not None
+
+    runs = _runs_for(hermes_env, job["id"])
+    assert len(runs) == 1, "failed no_agent run is missing from the sidebar query"
+
+    run = runs[0]
+    # Opening the run from the sidebar navigates by session id.
+    assert run["id"].startswith(f"cron_{job['id']}_")
+    # A useful title, not a blank row.
+    assert "gigarepo-weekly-cleanup" in (run.get("title") or "")
+    # The failure must be inspectable, not just recorded as "ended".
+    assert run.get("end_reason") == "cron_failed"
+
+    body = _session_text(hermes_env, run["id"])
+    assert "exited with code 3" in body or "oops" in body
+
+
+def test_run_job_no_agent_success_is_visible_in_sidebar(hermes_env):
+    """Success shares the same persistence path — assert it too, not just failure."""
+    from cron.jobs import create_job
+    from cron.scheduler import run_job
+
+    script_path = hermes_env / "scripts" / "alert.sh"
+    script_path.write_text("#!/bin/bash\necho 'RAM 92% on host'\n")
+
+    job = create_job(
+        prompt=None,
+        schedule="every 5m",
+        script="alert.sh",
+        no_agent=True,
+        deliver="local",
+        name="ram-watchdog",
+    )
+    success, _doc, _final_response, error = run_job(job)
+    assert success is True
+    assert error is None
+
+    runs = _runs_for(hermes_env, job["id"])
+    assert len(runs) == 1
+    assert runs[0].get("end_reason") == "cron_complete"
+    assert "ram-watchdog" in (runs[0].get("title") or "")
+    assert "RAM 92% on host" in _session_text(hermes_env, runs[0]["id"])
+
+
+def test_run_job_no_agent_silent_run_is_visible_in_sidebar(hermes_env):
+    """Silent runs are recorded too — the agent path creates a session for a
+    [SILENT] response, and save_job_output writes markdown for every tick, so
+    the run history stays consistent across all three outcomes."""
+    from cron.jobs import create_job
+    from cron.scheduler import run_job
+
+    script_path = hermes_env / "scripts" / "quiet.sh"
+    script_path.write_text("#!/bin/bash\n# nothing to say\n")
+
+    job = create_job(
+        prompt=None, schedule="every 5m", script="quiet.sh", no_agent=True, deliver="local"
+    )
+    success, _doc, _final_response, error = run_job(job)
+    assert success is True
+    assert error is None
+
+    runs = _runs_for(hermes_env, job["id"])
+    assert len(runs) == 1
+    assert runs[0].get("end_reason") == "cron_complete"
+
+
+def test_run_job_no_agent_creates_one_session_per_run(hermes_env):
+    """No duplicate/synthetic sessions: each tick yields exactly one row."""
+    from cron.jobs import create_job
+    from cron.scheduler import run_job
+
+    script_path = hermes_env / "scripts" / "alert.sh"
+    script_path.write_text("#!/bin/bash\necho tick\n")
+
+    job = create_job(
+        prompt=None, schedule="every 5m", script="alert.sh", no_agent=True, deliver="local"
+    )
+    run_job(job)
+    assert len(_runs_for(hermes_env, job["id"])) == 1
+
+    # Distinct ids across ticks — the id carries a second-resolution stamp, so
+    # a same-second rerun must still not collapse onto the first row.
+    run_job(job)
+    runs = _runs_for(hermes_env, job["id"])
+    assert len(runs) == 2
+    assert len({r["id"] for r in runs}) == 2
+
+
+def test_run_job_no_agent_session_failure_does_not_break_the_run(hermes_env):
+    """Session persistence is best-effort — a broken state.db must not turn a
+    working script run into a failed one."""
+    from cron.jobs import create_job
+    from cron.scheduler import run_job
+
+    script_path = hermes_env / "scripts" / "alert.sh"
+    script_path.write_text("#!/bin/bash\necho 'still delivered'\n")
+
+    job = create_job(
+        prompt=None, schedule="every 5m", script="alert.sh", no_agent=True, deliver="local"
+    )
+
+    with patch("cron.scheduler._open_cron_session_db", side_effect=RuntimeError("db down")):
+        success, doc, final_response, error = run_job(job)
+
+    assert success is True
+    assert error is None
+    assert "still delivered" in final_response
+    assert "still delivered" in doc
 
 
 # ---------------------------------------------------------------------------

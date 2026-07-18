@@ -87,6 +87,132 @@ def _set_cron_session_title(session_db, session_id, base_title):
         return deduped
 
 
+def _open_cron_session_db(job_id: str):
+    """Open the profile SQLite session store for a cron run, or return None.
+
+    Shared by both run_job paths (agent and no_agent) so a cron run is
+    persisted the same way regardless of whether an LLM was involved.
+
+    SessionDB.__init__ opens/migrates state.db synchronously and has no timeout
+    of its own against a wedged sqlite3.connect (e.g. a stale flock left by a
+    crashed sibling process), so the construction is bounded here:
+    env override → config.yaml → default 10s. A timeout is not fatal — the run
+    proceeds without a session store rather than blocking forever.
+    """
+    from hermes_state import SessionDB
+
+    # Resolve timeout: env override → config.yaml → default 10s.
+    # Mirrors the script_timeout_seconds resolution pattern.
+    session_db_timeout: float | None = None
+    raw_env_timeout = os.getenv("HERMES_CRON_SESSION_DB_TIMEOUT", "").strip()
+    if raw_env_timeout:
+        try:
+            session_db_timeout = float(raw_env_timeout)
+        except (ValueError, TypeError):
+            logger.warning(
+                "Invalid HERMES_CRON_SESSION_DB_TIMEOUT=%r; using config/default",
+                raw_env_timeout,
+            )
+    if session_db_timeout is None:
+        try:
+            from hermes_cli.config import load_config
+            cfg = load_config() or {}
+            cron_cfg = cfg.get("cron", {}) if isinstance(cfg, dict) else {}
+            configured = cron_cfg.get("session_db_timeout_seconds")
+            if configured is not None:
+                session_db_timeout = float(configured)
+        except Exception as exc:
+            logger.debug(
+                "Failed to load cron.session_db_timeout_seconds from config: %s",
+                exc,
+            )
+    if session_db_timeout is None:
+        session_db_timeout = 10.0
+
+    if session_db_timeout <= 0:
+        # 0 = unlimited (legacy behavior, opt-in for debugging)
+        return SessionDB()
+
+    pool = concurrent.futures.ThreadPoolExecutor(max_workers=1)
+    try:
+        return pool.submit(SessionDB).result(timeout=session_db_timeout)
+    except concurrent.futures.TimeoutError:
+        logger.error(
+            "Job '%s': SessionDB init did not return within %.0fs — proceeding "
+            "without a session store for this run instead of blocking it "
+            "forever",
+            job_id, session_db_timeout,
+        )
+        return None
+    finally:
+        # Don't wait for a wedged connect() to unwind — abandon the worker
+        # thread (same pattern as the agent inactivity timeout further down)
+        # rather than blocking shutdown on it too.
+        pool.shutdown(wait=False)
+
+
+def _persist_no_agent_cron_session(
+    job_id: str,
+    job_name: str,
+    session_id: str,
+    *,
+    invocation: str,
+    result_text: str,
+    succeeded: bool,
+) -> None:
+    """Record a no_agent script run as a cron session in the profile state.db.
+
+    no_agent runs never construct an AIAgent, so nothing calls the agent's
+    ``_ensure_db_session`` — without this the run exists only in
+    ``cron/output/*.md`` and ``executions.db``, and the Desktop "Cron Jobs"
+    sidebar (``SessionDB.list_cron_job_runs``, which matches ``source='cron'``
+    AND an id prefixed ``cron_{job_id}_``) shows nothing for the job. Failed
+    watchdog runs going silently missing there is the worst case, since an
+    alerting job that breaks is exactly the one you need to see.
+
+    This mirrors the agent path's lifecycle — create → messages → title →
+    end_session — using the same canonical SessionDB APIs, so a script run and
+    an agent run look and open identically in Desktop.
+
+    Best-effort by design: any failure here is logged and swallowed. Persisting
+    the run must never turn a working script into a failed cron run.
+    """
+    session_db = None
+    try:
+        session_db = _open_cron_session_db(job_id)
+        if session_db is None:
+            return
+
+        session_db.create_session(session_id=session_id, source="cron")
+        # The script invocation stands in for the user turn, so the sidebar's
+        # `preview` column (first user message) is populated. The result is the
+        # assistant turn, so opening the run in Desktop shows the stdout /
+        # failure detail rather than an empty transcript.
+        session_db.append_message(session_id, "user", content=invocation)
+        session_db.append_message(session_id, "assistant", content=result_text)
+
+        title_base = " ".join(job_name.split())[:60].strip() or f"cron {job_id}"
+        title = f"{title_base} · {_hermes_now().strftime('%b %d %H:%M')}"
+        if not _set_cron_session_title(session_db, session_id, title):
+            _set_cron_session_title(session_db, session_id, f"cron {job_id}")
+
+        session_db.end_session(
+            session_id, "cron_complete" if succeeded else "cron_failed"
+        )
+    except (Exception, KeyboardInterrupt) as e:
+        logger.debug(
+            "Job '%s': failed to persist no_agent cron session: %s", job_id, e
+        )
+    finally:
+        if session_db is not None:
+            try:
+                session_db.close()
+            except (Exception, KeyboardInterrupt) as e:
+                logger.debug(
+                    "Job '%s': failed to close SQLite session store: %s", job_id, e
+                )
+
+
 def _summarize_cron_failure_for_delivery(job: dict, error: str | None) -> str:
     """Return a compact one-line failure message for chat delivery.
 
@@ -2685,9 +2811,16 @@ def run_job(
     # stdout to telegram" watchdog pattern. The agent path is skipped
     # entirely: no AIAgent, no prompt, no tool loop, no token spend.
     #
-    # We check this BEFORE importing run_agent / constructing SessionDB so
-    # a pure-script tick never pays for the agent machinery it isn't going
-    # to use. Keep this block self-contained.
+    # We check this BEFORE importing run_agent so a pure-script tick never
+    # pays for the agent machinery it isn't going to use. Keep this block
+    # self-contained.
+    #
+    # It DOES still open the session store at the end (see
+    # _persist_no_agent_cron_session): skipping that is what made every
+    # no_agent run invisible in the Desktop "Cron Jobs" sidebar, which lists
+    # runs out of the profile state.db. The cost is one SQLite open per tick,
+    # paid after the script has already run, and it is best-effort — never
+    # fatal to the run.
     #
     # Semantics:
     #   - script stdout (trimmed) → delivered verbatim as the final message
@@ -2724,13 +2857,25 @@ def run_job(
                 except OSError:
                     pass
 
-        now_iso = _hermes_now().strftime("%Y-%m-%d %H:%M:%S")
+        now = _hermes_now()
+        now_iso = now.strftime("%Y-%m-%d %H:%M:%S")
+
+        # Every outcome below funnels through a single persistence call rather
+        # than returning early, so success, silent, and failure runs are all
+        # recorded in the profile state.db the same way. Microseconds are in
+        # the id because a fast script can run twice inside one second (a
+        # manual trigger landing on a scheduled fire); at the agent path's
+        # second resolution the second run would upsert onto the first row and
+        # silently vanish — the exact class of bug this block exists to fix.
+        # Nothing parses this stamp; consumers match the `cron_{job_id}_`
+        # prefix and read the started_at/last_active columns.
+        session_id = f"cron_{job_id}_{now.strftime('%Y%m%d_%H%M%S_%f')}"
 
         if not ok:
             # Script crashed / timed out / exited non-zero.  Deliver the
             # error so the user knows the watchdog itself broke — silent
             # failure for an alerting job is the worst-case outcome.
-            alert = (
+            final_response = (
                 f"⚠ Cron watchdog '{job_name}' script failed\n\n"
                 f"{output}\n\n"
                 f"Time: {now_iso}"
@@ -2743,11 +2888,12 @@ def run_job(
                 f"**Status:** script failed\n\n"
                 f"{output}\n"
             )
-            return False, doc, alert, output
+            result = (False, doc, final_response, output)
+            session_body = final_response
 
         # Honour the wakeAgent gate as a silent signal — `wakeAgent: false`
         # means "nothing to report this tick", same as empty stdout.
-        if not _parse_wake_gate(output):
+        elif not _parse_wake_gate(output):
             logger.info(
                 "Job '%s' (no_agent): wakeAgent=false gate — silent run", job_id
             )
@@ -2758,9 +2904,10 @@ def run_job(
                 f"**Mode:** no_agent (script)\n"
                 f"**Status:** silent (wakeAgent=false)\n"
             )
-            return True, silent_doc, SILENT_MARKER, None
+            result = (True, silent_doc, SILENT_MARKER, None)
+            session_body = "Silent run — script returned wakeAgent=false."
 
-        if not output.strip():
+        elif not output.strip():
             logger.info("Job '%s' (no_agent): empty stdout — silent run", job_id)
             silent_doc = (
                 f"# Cron Job: {job_name}\n\n"
@@ -2769,17 +2916,30 @@ def run_job(
                 f"**Mode:** no_agent (script)\n"
                 f"**Status:** silent (empty output)\n"
             )
-            return True, silent_doc, SILENT_MARKER, None
+            result = (True, silent_doc, SILENT_MARKER, None)
+            session_body = "Silent run — script produced no output."
 
-        doc = (
-            f"# Cron Job: {job_name}\n\n"
-            f"**Job ID:** {job_id}\n"
-            f"**Run Time:** {now_iso}\n"
-            f"**Mode:** no_agent (script)\n\n"
-            f"---\n\n"
-            f"{output}\n"
+        else:
+            doc = (
+                f"# Cron Job: {job_name}\n\n"
+                f"**Job ID:** {job_id}\n"
+                f"**Run Time:** {now_iso}\n"
+                f"**Mode:** no_agent (script)\n\n"
+                f"---\n\n"
+                f"{output}\n"
+            )
+            result = (True, doc, output, None)
+            session_body = output
+
+        _persist_no_agent_cron_session(
+            job_id,
+            job_name,
+            session_id,
+            invocation=f"Ran cron script `{script_path}` (no_agent mode).",
+            result_text=session_body,
+            succeeded=result[0],
         )
-        return True, doc, output, None
+        return result
 
     # ---------------------------------------------------------------
     # Default (LLM) path — import and construct the agent machinery now
@@ -2804,55 +2964,7 @@ def run_job(
     # scheduled fire in between with "already running — skipping".
     _session_db = None
     try:
-        from hermes_state import SessionDB
-
-        # Resolve timeout: env override → config.yaml → default 10s.
-        # Mirrors the script_timeout_seconds resolution pattern.
-        _session_db_timeout: float | None = None
-        _raw_env_timeout = os.getenv("HERMES_CRON_SESSION_DB_TIMEOUT", "").strip()
-        if _raw_env_timeout:
-            try:
-                _session_db_timeout = float(_raw_env_timeout)
-            except (ValueError, TypeError):
-                logger.warning(
-                    "Invalid HERMES_CRON_SESSION_DB_TIMEOUT=%r; using config/default",
-                    _raw_env_timeout,
-                )
-        if _session_db_timeout is None:
-            try:
-                from hermes_cli.config import load_config
-                _cfg = load_config() or {}
-                _cron_cfg = _cfg.get("cron", {}) if isinstance(_cfg, dict) else {}
-                _configured = _cron_cfg.get("session_db_timeout_seconds")
-                if _configured is not None:
-                    _session_db_timeout = float(_configured)
-            except Exception as exc:
-                logger.debug(
-                    "Failed to load cron.session_db_timeout_seconds from config: %s",
-                    exc,
-                )
-        if _session_db_timeout is None:
-            _session_db_timeout = 10.0
-
-        if _session_db_timeout > 0:
-            _session_db_pool = concurrent.futures.ThreadPoolExecutor(max_workers=1)
-            try:
-                _session_db = _session_db_pool.submit(SessionDB).result(timeout=_session_db_timeout)
-            finally:
-                # Don't wait for a wedged connect() to unwind — abandon the
-                # worker thread (same pattern as the agent inactivity timeout
-                # further down) rather than blocking shutdown on it too.
-                _session_db_pool.shutdown(wait=False)
-        else:
-            # 0 = unlimited (legacy behavior, opt-in for debugging)
-            _session_db = SessionDB()
-    except concurrent.futures.TimeoutError:
-        logger.error(
-            "Job '%s': SessionDB init did not return within %.0fs — proceeding "
-            "without a session store for this run instead of blocking it "
-            "forever",
-            job.get("id", "?"), _session_db_timeout,
-        )
+        _session_db = _open_cron_session_db(job.get("id", "?"))
     except Exception as e:
         logger.debug("Job '%s': SQLite session store not available: %s", job.get("id", "?"), e)
 

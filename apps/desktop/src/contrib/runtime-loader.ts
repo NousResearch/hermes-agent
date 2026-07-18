@@ -28,6 +28,7 @@
  */
 
 import { getStatus } from '@/hermes'
+import { isDesktopFsRemoteMode } from '@/lib/desktop-fs'
 import { installPluginSdk, sdkImportMap } from '@/sdk/runtime'
 import { notifyError } from '@/store/notifications'
 
@@ -240,6 +241,13 @@ async function scanDiskPlugins(): Promise<void> {
   // Re-entrancy guard: the 5s poll must not overlap a slow in-flight scan
   // (reads/loads can exceed the interval).
   if (!desktop || scanning) {
+    return
+  }
+
+  // Disk plugins execute with full desktop authority, so they are a local-only
+  // feature. More importantly, a remote gateway's POSIX HERMES_HOME is not a
+  // host path: probing it through Electron can trigger the Windows WSL bridge.
+  if (isDesktopFsRemoteMode()) {
     return
   }
 

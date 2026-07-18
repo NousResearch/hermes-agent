@@ -12687,7 +12687,10 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     _media_adapter = self._adapter_for_source(source)
                     if _media_adapter:
                         await self._deliver_media_from_response(
-                            response, event, _media_adapter,
+                            response,
+                            event,
+                            _media_adapter,
+                            stream_message_id=agent_result.get("stream_message_id"),
                         )
                 # Streaming already delivered the body text, but the footer was
                 # intentionally held back (see the `not already_sent` gate above).
@@ -13742,6 +13745,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         response: str,
         event: MessageEvent,
         adapter,
+        stream_message_id: Optional[str] = None,
     ) -> None:
         """Extract MEDIA: tags and local file paths from a response and deliver them.
 
@@ -13775,6 +13779,29 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             local_files = BasePlatformAdapter.filter_local_delivery_paths(local_files)
 
             _thread_meta = self._thread_metadata_for_source(event.source, self._reply_anchor_for_event(event))
+
+            # If streaming already created the final text message, adapters may
+            # upgrade it in place with embedded media. ``None`` means unsupported
+            # and falls through to conventional attachments. Any SendResult owns
+            # the request to avoid duplicates after uncertain network failures.
+            if stream_message_id and media_files and not force_document_attachments:
+                rich_editor = getattr(adapter, "edit_rich_media", None)
+                if callable(rich_editor):
+                    rich_result = await rich_editor(
+                        event.source.chat_id,
+                        stream_message_id,
+                        cleaned,
+                        media_files,
+                        metadata=_thread_meta,
+                    )
+                    if rich_result is not None:
+                        if not rich_result.success:
+                            logger.warning(
+                                "[%s] Inline-media finalization failed: %s",
+                                adapter.name,
+                                rich_result.error,
+                            )
+                        return
 
             _VIDEO_EXTS = {'.mp4', '.mov', '.avi', '.mkv', '.webm', '.3gp'}
             _IMAGE_EXTS = {'.jpg', '.jpeg', '.png', '.webp', '.gif'}
@@ -14924,7 +14951,21 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             if team_id:
                 metadata = dict(metadata or {})
                 metadata["slack_team_id"] = str(team_id)
+        delivery_metadata = getattr(source, "delivery_metadata", None)
+        if isinstance(delivery_metadata, dict):
+            metadata = dict(metadata or {})
+            metadata.update(delivery_metadata)
         return metadata
+
+    @staticmethod
+    def _streaming_allowed_for_source(source, enabled: bool) -> bool:
+        """Honor adapter-provided delivery constraints for activity previews."""
+        delivery_metadata = getattr(source, "delivery_metadata", None)
+        if isinstance(delivery_metadata, dict) and delivery_metadata.get(
+            "suppress_streaming"
+        ):
+            return False
+        return bool(enabled)
 
     def _thread_metadata_for_target(
         self,
@@ -17408,6 +17449,9 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             if _plat_streaming is None
             else bool(_plat_streaming)
         )
+        _streaming_enabled = self._streaming_allowed_for_source(
+            source, _streaming_enabled
+        )
 
         _thread_metadata: Optional[Dict[str, Any]] = self._thread_metadata_for_source(source, event_message_id)
 
@@ -17466,7 +17510,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
 
         # Send typing indicator
         _adapter = self._adapter_for_source(source)
-        if _adapter:
+        if _adapter and self._streaming_allowed_for_source(source, True):
             try:
                 await _adapter.send_typing(source.chat_id, metadata=_thread_metadata)
             except Exception:
@@ -18497,8 +18541,13 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     if await _roll_progress_overflow_if_needed():
                         _last_edit_ts = time.monotonic()
                         await asyncio.sleep(0.3)
-                        if _run_still_current():
-                            await adapter.send_typing(source.chat_id, metadata=_progress_metadata)
+                        if (
+                            _run_still_current()
+                            and self._streaming_allowed_for_source(source, True)
+                        ):
+                            await adapter.send_typing(
+                                source.chat_id, metadata=_progress_metadata
+                            )
                         continue
 
                     # Throttle edits: batch rapid tool updates into fewer
@@ -18583,8 +18632,13 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
 
                     # Restore typing indicator
                     await asyncio.sleep(0.3)
-                    if _run_still_current():
-                        await adapter.send_typing(source.chat_id, metadata=_progress_metadata)
+                    if (
+                        _run_still_current()
+                        and self._streaming_allowed_for_source(source, True)
+                    ):
+                        await adapter.send_typing(
+                            source.chat_id, metadata=_progress_metadata
+                        )
 
                 except queue.Empty:
                     await asyncio.sleep(0.3)
@@ -18821,8 +18875,14 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 if _plat_streaming is None
                 else bool(_plat_streaming)
             )
+            _streaming_enabled = self._streaming_allowed_for_source(
+                source, _streaming_enabled
+            )
             _want_stream_deltas = _streaming_enabled
-            _want_interim_messages = interim_assistant_messages_enabled
+            _want_interim_messages = (
+                interim_assistant_messages_enabled
+                and self._streaming_allowed_for_source(source, True)
+            )
             _want_interim_consumer = _want_interim_messages
             if _want_stream_deltas or _want_interim_consumer:
                 try:
@@ -20753,7 +20813,9 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 # the follow-up turn runs.  The outer _process_message_background
                 # typing task is still alive but may be stale.
                 _followup_adapter = self._adapter_for_source(source)
-                if _followup_adapter:
+                if _followup_adapter and self._streaming_allowed_for_source(
+                    source, True
+                ):
                     try:
                         await _followup_adapter.send_typing(
                             source.chat_id,
@@ -20899,6 +20961,8 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     _content_delivered,
                 )
                 response["already_sent"] = True
+                if _sc is not None and _sc.message_id:
+                    response["stream_message_id"] = str(_sc.message_id)
             elif not _is_empty_sentinel and _transformed and _sc is not None:
                 # Plugin hooks transformed the response after streaming — edit the
                 # existing streamed message instead of sending a duplicate.
@@ -20912,6 +20976,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                             finalize=True,
                         )
                         response["already_sent"] = True
+                        response["stream_message_id"] = str(_sc_msg_id)
                         logger.info(
                             "Edited streamed message %s for session %s to include plugin-transformed content.",
                             _sc_msg_id, session_key or "?",

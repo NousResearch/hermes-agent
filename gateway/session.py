@@ -17,7 +17,7 @@ import threading
 import uuid
 from pathlib import Path
 from datetime import datetime, timedelta
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Dict, List, Optional, Any
 
 logger = logging.getLogger(__name__)
@@ -202,6 +202,17 @@ class SessionSource:
     # deliberately excluded from ``to_dict``/``from_dict`` so a peer can never
     # forge it across the wire or have it restored from persistence.
     delivered_via_upstream_relay: bool = False
+
+    # Per-message outbound constraints supplied by a platform adapter (for
+    # example Telegram ephemeral recipient targeting). This is intentionally
+    # wire-invisible: to_dict()/from_dict() must never persist or restore it,
+    # because stale or remote data must not be able to forge private routing.
+    # Keep this at the end to preserve the existing positional constructor.
+    delivery_metadata: Optional[Dict[str, Any]] = field(
+        default=None,
+        repr=False,
+        compare=False,
+    )
 
     def __post_init__(self) -> None:
         # D-Q2.5 dual-field reconciliation: `scope_id` is canonical, `guild_id`

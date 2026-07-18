@@ -182,6 +182,29 @@ def test_get_platform_tools_context_engine_respects_explicit_empty_selection():
     assert "context_engine" not in enabled
 
 
+def test_get_explicit_platform_tools_empty_means_exact_zero():
+    from hermes_cli.tools_config import _get_explicit_platform_tools
+
+    config = {
+        "platform_toolsets": {"request_response": []},
+        "mcp_servers": {"default-mcp": {"url": "https://example.invalid/mcp"}},
+    }
+
+    assert _get_explicit_platform_tools(config, "request_response") == set()
+
+
+def test_get_explicit_platform_tools_returns_only_named_allowlist():
+    from hermes_cli.tools_config import _get_explicit_platform_tools
+
+    config = {
+        "platform_toolsets": {"request_response": ["web"]},
+        "mcp_servers": {"default-mcp": {"url": "https://example.invalid/mcp"}},
+        "known_plugin_toolsets": {"request_response": []},
+    }
+
+    assert _get_explicit_platform_tools(config, "request_response") == {"web"}
+
+
 def test_get_platform_tools_default_whatsapp_includes_web():
     enabled = _get_platform_tools({}, "whatsapp")
 

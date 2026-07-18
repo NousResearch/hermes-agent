@@ -274,6 +274,43 @@ class TestReconnectFDLeakRegression:
         await _dispose_unused_adapter(_RaisingAdapter())  # must not raise
         assert disconnect_calls == 1
 
+    @pytest.mark.asyncio
+    async def test_dispose_finishes_disconnect_before_reraising_outer_cancel(self):
+        entered = asyncio.Event()
+        release = asyncio.Event()
+
+        class _BlockingAdapter(_CountingAdapter):
+            async def disconnect(self) -> None:
+                entered.set()
+                await release.wait()
+                await super().disconnect()
+
+        adapter = _BlockingAdapter(succeed=False)
+        adapter.set_session_interrupt_handler(AsyncMock())
+        task = asyncio.create_task(_dispose_unused_adapter(adapter))
+        await entered.wait()
+        task.cancel()
+        release.set()
+
+        with pytest.raises(asyncio.CancelledError):
+            await task
+
+        assert adapter._disconnect_calls == 1
+        assert adapter._session_interrupt_handler is None
+
+    @pytest.mark.asyncio
+    async def test_dispose_swallows_child_cancelled_disconnect_future(self):
+        adapter = _CountingAdapter(succeed=False)
+        adapter.set_session_interrupt_handler(AsyncMock())
+        cancelled = asyncio.get_running_loop().create_future()
+        cancelled.cancel()
+        adapter.disconnect = MagicMock(return_value=cancelled)
+
+        await _dispose_unused_adapter(adapter)
+
+        adapter.disconnect.assert_called_once_with()
+        assert adapter._session_interrupt_handler is None
+
 
 class TestAPIServerDisconnectClosesResponseStore:
     """The platform-level fix: ``APIServerAdapter.disconnect()`` must close its ResponseStore.

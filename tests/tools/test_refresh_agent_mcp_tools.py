@@ -24,7 +24,110 @@ def _agent(tool_names, *, enabled=None, disabled=None):
     a.valid_tool_names = set(tool_names)
     a.enabled_toolsets = enabled
     a.disabled_toolsets = disabled
+    a.agent_tool_policy = "configured"
     return a
+
+
+def test_refresh_cannot_reintroduce_tools_when_policy_is_none(monkeypatch):
+    agent = _agent([])
+    agent.agent_tool_policy = "none"
+    agent._memory_manager = types.SimpleNamespace(
+        get_all_tool_schemas=lambda: [
+            {"name": "memory_search", "description": "", "parameters": {}}
+        ]
+    )
+    agent.context_compressor = types.SimpleNamespace(
+        get_tool_schemas=lambda: [
+            {"name": "lcm_grep", "description": "", "parameters": {}}
+        ]
+    )
+    agent._context_engine_tool_names = set()
+    seen = {}
+
+    import model_tools
+
+    def _capture(**kwargs):
+        seen.update(kwargs)
+        return [] if kwargs.get("agent_tool_policy") == "none" else [_tool("mcp_late_tool")]
+
+    monkeypatch.setattr(model_tools, "get_tool_definitions", _capture)
+
+    added = mcp_tool.refresh_agent_mcp_tools(agent)
+
+    assert added == set()
+    assert seen["agent_tool_policy"] == "none"
+    assert agent.tools == []
+    assert agent.valid_tool_names == set()
+
+
+def test_refresh_preserves_explicit_policy(monkeypatch):
+    agent = _agent(["web_search"], enabled=["web"])
+    agent.agent_tool_policy = "explicit"
+    seen = {}
+
+    import model_tools
+
+    def _capture(**kwargs):
+        seen.update(kwargs)
+        return [_tool("web_search")]
+
+    monkeypatch.setattr(model_tools, "get_tool_definitions", _capture)
+
+    assert mcp_tool.refresh_agent_mcp_tools(agent) == set()
+    assert seen["enabled_toolsets"] == ["web"]
+    assert seen["agent_tool_policy"] == "explicit"
+
+
+def test_explicit_web_refresh_does_not_infer_memory_or_context(monkeypatch):
+    agent = _agent(["web_search"], enabled=["web"])
+    agent.agent_tool_policy = "explicit"
+    agent._memory_manager = types.SimpleNamespace(
+        get_all_tool_schemas=lambda: [
+            {"name": "memory_search", "description": "", "parameters": {}}
+        ]
+    )
+    agent.context_compressor = types.SimpleNamespace(
+        get_tool_schemas=lambda: [
+            {"name": "lcm_grep", "description": "", "parameters": {}}
+        ]
+    )
+    agent._context_engine_tool_names = set()
+
+    import model_tools
+
+    monkeypatch.setattr(
+        model_tools,
+        "get_tool_definitions",
+        lambda **kwargs: [_tool("web_search")],
+    )
+
+    mcp_tool.refresh_agent_mcp_tools(agent)
+
+    assert agent.valid_tool_names == {"web_search"}
+
+
+def test_explicit_named_memory_and_context_are_reinjected(monkeypatch):
+    agent = _agent([], enabled=["memory", "context_engine"])
+    agent.agent_tool_policy = "explicit"
+    agent._memory_manager = types.SimpleNamespace(
+        get_all_tool_schemas=lambda: [
+            {"name": "memory_search", "description": "", "parameters": {}}
+        ]
+    )
+    agent.context_compressor = types.SimpleNamespace(
+        get_tool_schemas=lambda: [
+            {"name": "lcm_grep", "description": "", "parameters": {}}
+        ]
+    )
+    agent._context_engine_tool_names = set()
+
+    import model_tools
+
+    monkeypatch.setattr(model_tools, "get_tool_definitions", lambda **kwargs: [])
+
+    mcp_tool.refresh_agent_mcp_tools(agent)
+
+    assert agent.valid_tool_names == {"memory_search", "lcm_grep"}
 
 
 def test_refresh_adds_late_landing_tools(monkeypatch):

@@ -86,6 +86,35 @@ class TestAgentConfigSignature:
         sig2 = GatewayRunner._agent_config_signature("claude-sonnet-4", runtime, ["hermes-discord"], "")
         assert sig1 != sig2
 
+    def test_agent_tool_policy_change_busts_cache(self):
+        from gateway.run import GatewayRunner
+
+        runtime = {"api_key": "k", "base_url": "u", "provider": "p"}
+        configured = GatewayRunner._agent_config_signature(
+            "m", runtime, [], "", agent_tool_policy="configured"
+        )
+        explicit = GatewayRunner._agent_config_signature(
+            "m", runtime, [], "", agent_tool_policy=" EXPLICIT "
+        )
+        none = GatewayRunner._agent_config_signature(
+            "m", runtime, [], "", agent_tool_policy="none"
+        )
+
+        assert len({configured, explicit, none}) == 3
+
+    def test_agent_tool_policy_signature_is_normalized(self):
+        from gateway.run import GatewayRunner
+
+        runtime = {"api_key": "k", "base_url": "u", "provider": "p"}
+        lower = GatewayRunner._agent_config_signature(
+            "m", runtime, [], "", agent_tool_policy="explicit"
+        )
+        padded = GatewayRunner._agent_config_signature(
+            "m", runtime, [], "", agent_tool_policy=" EXPLICIT "
+        )
+
+        assert lower == padded
+
     def test_reasoning_not_in_signature(self):
         """Reasoning config is set per-message, not part of the signature."""
         from gateway.run import GatewayRunner
@@ -445,6 +474,38 @@ class TestAgentCacheLifecycle:
         assert cached is not None
         assert cached[1] == sig
         assert cached[0] is agent1  # same instance
+
+    @pytest.mark.parametrize("new_policy", ["explicit", "none"])
+    def test_narrower_tool_policy_rejects_cached_wider_agent(self, new_policy):
+        from types import SimpleNamespace
+
+        runner = _make_runner()
+        runtime = {
+            "api_key": "test",
+            "base_url": "https://openrouter.ai/api/v1",
+            "provider": "openrouter",
+            "api_mode": "chat_completions",
+        }
+        old_sig = runner._agent_config_signature(
+            "model",
+            runtime,
+            ["web"],
+            "",
+            agent_tool_policy="configured",
+        )
+        new_sig = runner._agent_config_signature(
+            "model",
+            runtime,
+            ["web"],
+            "",
+            agent_tool_policy=new_policy,
+        )
+        stale_agent = SimpleNamespace(tools=[{"function": {"name": "too_wide"}}])
+        runner._agent_cache["session"] = (stale_agent, old_sig)
+
+        cached = runner._agent_cache["session"]
+
+        assert cached[1] != new_sig
 
     def test_cache_miss_on_model_change(self):
         """Model change produces different signature → cache miss."""

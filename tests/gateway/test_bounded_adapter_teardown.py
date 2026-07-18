@@ -31,9 +31,18 @@ def bare_runner():
 
 @pytest.mark.asyncio
 async def test_teardown_calls_both_methods(bare_runner):
-    """The helper cancels background tasks AND disconnects, in that order."""
+    """Prepare runs with authority live, then revoke, cancel, disconnect."""
     calls = []
     adapter = MagicMock()
+    handler_live = True
+    adapter.prepare_disconnect = AsyncMock(
+        side_effect=lambda: calls.append(f"prepare:{handler_live}")
+    )
+    def revoke(_handler):
+        nonlocal handler_live
+        handler_live = False
+        calls.append("revoke")
+    adapter.set_session_interrupt_handler = MagicMock(side_effect=revoke)
     adapter.cancel_background_tasks = AsyncMock(
         side_effect=lambda: calls.append("cancel")
     )
@@ -43,7 +52,7 @@ async def test_teardown_calls_both_methods(bare_runner):
 
     adapter.cancel_background_tasks.assert_awaited_once()
     adapter.disconnect.assert_awaited_once()
-    assert calls == ["cancel", "disconnect"]
+    assert calls == ["prepare:True", "revoke", "cancel", "disconnect"]
 
 
 @pytest.mark.asyncio
@@ -66,6 +75,109 @@ async def test_teardown_bounds_hanging_disconnect(bare_runner, monkeypatch, capl
 
     adapter.disconnect.assert_awaited_once()
     assert "feishu disconnect timed out" in caplog.text
+
+
+@pytest.mark.asyncio
+async def test_teardown_bounds_hanging_prepare_before_revocation(
+    bare_runner, monkeypatch, caplog
+):
+    monkeypatch.setenv("HERMES_GATEWAY_ADAPTER_DISCONNECT_TIMEOUT", "0.01")
+    adapter = MagicMock()
+
+    async def hang():
+        await asyncio.sleep(60)
+
+    adapter.prepare_disconnect = AsyncMock(side_effect=hang)
+    adapter.cancel_background_tasks = AsyncMock(return_value=None)
+    adapter.disconnect = AsyncMock(return_value=None)
+
+    with caplog.at_level(logging.WARNING, logger="gateway.run"):
+        await bare_runner._bounded_adapter_teardown(adapter, Platform.FEISHU)
+
+    assert "preparing feishu adapter disconnect" in caplog.text
+    adapter.set_session_interrupt_handler.assert_called_once_with(None)
+    adapter.disconnect.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_teardown_does_not_wait_for_cancellation_resistant_prepare(
+    bare_runner, monkeypatch
+):
+    """A prepare coroutine suppressing cancellation cannot wedge shutdown."""
+    monkeypatch.setenv("HERMES_GATEWAY_ADAPTER_DISCONNECT_TIMEOUT", "0.01")
+    cancelled = asyncio.Event()
+    release = asyncio.Event()
+    finished = asyncio.Event()
+    adapter = MagicMock()
+
+    async def resist_cancellation():
+        try:
+            await asyncio.sleep(60)
+        except asyncio.CancelledError:
+            cancelled.set()
+            await release.wait()
+        finally:
+            finished.set()
+
+    adapter.prepare_disconnect = AsyncMock(side_effect=resist_cancellation)
+    adapter.cancel_background_tasks = AsyncMock(return_value=None)
+    adapter.disconnect = AsyncMock(return_value=None)
+
+    try:
+        await asyncio.wait_for(
+            bare_runner._bounded_adapter_teardown(adapter, Platform.FEISHU),
+            timeout=0.5,
+        )
+        await asyncio.wait_for(cancelled.wait(), timeout=0.5)
+        adapter.disconnect.assert_awaited_once()
+    finally:
+        release.set()
+        await asyncio.wait_for(finished.wait(), timeout=0.5)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("phase", ["prepare", "fallback", "disconnect"])
+async def test_bounded_teardown_finishes_before_reraising_outer_cancel(
+    bare_runner, monkeypatch, phase
+):
+    monkeypatch.setenv("HERMES_GATEWAY_ADAPTER_DISCONNECT_TIMEOUT", "0.2")
+    entered = asyncio.Event()
+    release = asyncio.Event()
+    source = MagicMock()
+    adapter = MagicMock()
+    adapter.active_session_sources.return_value = (source,) if phase == "fallback" else ()
+
+    async def block_here(*_args):
+        entered.set()
+        await release.wait()
+
+    if phase == "prepare":
+        adapter.prepare_disconnect = AsyncMock(side_effect=block_here)
+    elif phase == "fallback":
+        failed = asyncio.get_running_loop().create_future()
+        failed.cancel()
+        adapter.prepare_disconnect = MagicMock(return_value=failed)
+        adapter.request_session_interrupt = AsyncMock(side_effect=block_here)
+    else:
+        adapter.prepare_disconnect = AsyncMock(return_value=None)
+
+    adapter.cancel_background_tasks = AsyncMock(return_value=None)
+    adapter.disconnect = AsyncMock(
+        side_effect=block_here if phase == "disconnect" else None
+    )
+    task = asyncio.create_task(
+        bare_runner._bounded_adapter_teardown(adapter, Platform.TELEGRAM)
+    )
+    await entered.wait()
+    task.cancel()
+    release.set()
+
+    with pytest.raises(asyncio.CancelledError):
+        await task
+
+    adapter.cancel_background_tasks.assert_awaited_once()
+    adapter.disconnect.assert_awaited_once()
+    adapter.set_session_interrupt_handler.assert_called_once_with(None)
 
 
 @pytest.mark.asyncio

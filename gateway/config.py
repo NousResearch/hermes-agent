@@ -322,6 +322,7 @@ _BUILTIN_PLATFORM_VALUES = frozenset(m.value for m in Platform.__members__.value
 # dashboard's pre-write mutation validation (hermes_cli/web_server.py) so
 # the two policies cannot drift. Stored as platform .value strings.
 PORT_BINDING_PLATFORM_VALUES = frozenset({
+    "a2a",
     "webhook",
     "api_server",
     "msgraph_webhook",

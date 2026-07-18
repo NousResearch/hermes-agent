@@ -1221,13 +1221,17 @@ def _load_config_safe() -> Optional[dict]:
 
     Intentionally duplicated from ``agent.credential_pool._load_config_safe``
     to avoid a circular import — credential_pool imports from this module at
-    multiple call sites. The two copies must be kept identical. If you change
-    one, change the other.
+    multiple call sites. Keep the two copies behaviourally in sync.
+
+    Uses ``load_config_readonly()`` — the read-only fast path that skips
+    ``load_config()``'s defensive deepcopy (~135us per call). Callers of this
+    helper sit on the credential-resolution hot path and only ever READ the
+    returned dict; never mutate it, as it is the shared cached instance.
     """
     try:
-        from hermes_cli.config import load_config
+        from hermes_cli.config import load_config_readonly
 
-        return load_config()
+        return load_config_readonly()
     except Exception:
         return None
 

@@ -149,41 +149,26 @@ def test_kanban_tools_visible_with_toolset_config(monkeypatch, tmp_path):
 # ---------------------------------------------------------------------------
 
 @pytest.fixture
-def worker_env(monkeypatch, tmp_path):
+def worker_env(monkeypatch, tmp_path, isolate_kanban_root):
     """Simulate being a worker: HERMES_HOME isolated, HERMES_KANBAN_TASK set
     after we've created the task.
 
     Every mutation-capable test built on this fixture must run against a
-    freshly-created temp DB, never a developer's (or CI's) live board. So
-    before init we explicitly scrub any inherited Kanban pins — a stray
-    ``HERMES_KANBAN_DB`` / ``HERMES_KANBAN_BOARD`` / ``HERMES_KANBAN_TASK``
-    would otherwise route resolution away from this test's tempdir — and we
-    assert that the resolved ``kanban.db`` path actually lives under the
-    temp ``HERMES_HOME``. (conftest's autouse ``_hermetic_environment``
-    already blanks these, but pinning it here keeps the guarantee visible
-    and local to the fixture that depends on it.)
+    freshly-created temp DB, never a developer's (or CI's) live board. The
+    shared :func:`tests.conftest._isolate_kanban_root` helper scrubs any
+    inherited Kanban pins — a stray ``HERMES_KANBAN_DB`` /
+    ``HERMES_KANBAN_BOARD`` / ``HERMES_KANBAN_TASK`` would otherwise route
+    resolution away from this test's tempdir — and asserts that BOTH the
+    resolved kanban home and ``kanban.db`` live under the temp root before
+    anything is created. (conftest's autouse ``_hermetic_environment``
+    already blanks these; the helper is the second, fail-closed layer.)
     """
-    home = tmp_path / ".hermes"
-    home.mkdir()
-    monkeypatch.setenv("HERMES_HOME", str(home))
+    home = isolate_kanban_root(tmp_path, monkeypatch)
     monkeypatch.setenv("HERMES_PROFILE", "test-worker")
     monkeypatch.delenv("HERMES_SESSION_ID", raising=False)
-    # Scrub inherited board/DB/task pins BEFORE init so path resolution
-    # cannot escape the tempdir.
-    monkeypatch.delenv("HERMES_KANBAN_DB", raising=False)
-    monkeypatch.delenv("HERMES_KANBAN_BOARD", raising=False)
-    monkeypatch.delenv("HERMES_KANBAN_TASK", raising=False)
-    from pathlib import Path as _Path
-    monkeypatch.setattr(_Path, "home", lambda: tmp_path)
 
     from hermes_cli import kanban_db as kb
-    kb._INITIALIZED_PATHS.clear()
-    # The DB we're about to create must resolve to a file under this test's
-    # temp home — proof we're not about to mutate a live board.
     resolved_db = kb.kanban_db_path().resolve()
-    assert resolved_db.is_relative_to(home.resolve()), (
-        f"resolved kanban DB {resolved_db} escaped temp home {home}"
-    )
     kb.init_db()
     assert resolved_db.exists(), f"temp kanban DB not created at {resolved_db}"
     conn = kb.connect()
@@ -640,22 +625,17 @@ def test_complete_retry_with_corrected_created_cards_succeeds(worker_env):
     assert ok.get("ok") is True
 
 
-def test_complete_goal_mode_rejected_by_judge(monkeypatch, tmp_path):
+def test_complete_goal_mode_rejected_by_judge(monkeypatch, tmp_path, isolate_kanban_root):
     """Goal-mode tasks must pass the auxiliary judge before completion.
     Regression for #38367: workers bypassing the judge via early kanban_complete."""
-    from pathlib import Path as _Path
     from hermes_cli import kanban_db as kb
     from tools import kanban_tools as kt
 
-    # Set up isolated HERMES_HOME
-    home = tmp_path / ".hermes"
-    home.mkdir()
-    monkeypatch.setenv("HERMES_HOME", str(home))
+    # Fail-closed isolation of Kanban home+DB inside the per-test tmp root.
+    isolate_kanban_root(tmp_path, monkeypatch)
     monkeypatch.setenv("HERMES_PROFILE", "test-worker")
     monkeypatch.delenv("HERMES_SESSION_ID", raising=False)
-    monkeypatch.setattr(_Path, "home", lambda: tmp_path)
 
-    kb._INITIALIZED_PATHS.clear()
     kb.init_db()
     conn = kb.connect()
     try:
@@ -671,7 +651,7 @@ def test_complete_goal_mode_rejected_by_judge(monkeypatch, tmp_path):
     # Mock the judge to reject the completion. The gate only runs when a
     # judge is reachable, so force the availability probe True as well.
     def mock_judge_goal(goal, last_response, *, timeout=30.0, subgoals=None):
-        return "continue", "missing verification evidence", False
+        return "continue", "missing verification evidence", False, None
 
     monkeypatch.setattr("tools.kanban_tools.judge_goal", mock_judge_goal)
     monkeypatch.setattr("tools.kanban_tools._goal_judge_available", lambda: True)
@@ -693,25 +673,20 @@ def test_complete_goal_mode_rejected_by_judge(monkeypatch, tmp_path):
         conn2.close()
 
 
-def test_complete_goal_mode_allows_when_judge_unavailable(monkeypatch, tmp_path):
+def test_complete_goal_mode_allows_when_judge_unavailable(monkeypatch, tmp_path, isolate_kanban_root):
     """Fail-open: an unreachable judge must not wedge a goal_mode worker.
 
     judge_goal returns a "continue" verdict when no auxiliary model is
     configured, which is indistinguishable from a real "not done" judgment.
     The gate probes availability first, so completion proceeds rather than
     being rejected forever when no judge can be reached."""
-    from pathlib import Path as _Path
     from hermes_cli import kanban_db as kb
     from tools import kanban_tools as kt
 
-    home = tmp_path / ".hermes"
-    home.mkdir()
-    monkeypatch.setenv("HERMES_HOME", str(home))
+    isolate_kanban_root(tmp_path, monkeypatch)
     monkeypatch.setenv("HERMES_PROFILE", "test-worker")
     monkeypatch.delenv("HERMES_SESSION_ID", raising=False)
-    monkeypatch.setattr(_Path, "home", lambda: tmp_path)
 
-    kb._INITIALIZED_PATHS.clear()
     kb.init_db()
     conn = kb.connect()
     try:
@@ -763,20 +738,19 @@ def test_block_rejects_empty_reason(worker_env):
         assert json.loads(out).get("error")
 
 
-def _make_goal_mode_worker_env(monkeypatch, tmp_path):
+def _make_goal_mode_worker_env(monkeypatch, tmp_path, isolate_kanban_root):
     """Set up an isolated HERMES_HOME with one claimed goal_mode task,
-    matching the pattern used by the kanban_complete judge gate tests."""
-    from pathlib import Path as _Path
+    matching the pattern used by the kanban_complete judge gate tests.
+
+    Uses the shared fail-closed :func:`tests.conftest._isolate_kanban_root`
+    helper (passed in, since a plain function cannot request a fixture) so
+    the goal-mode block tests can never touch a live board."""
     from hermes_cli import kanban_db as kb
 
-    home = tmp_path / ".hermes"
-    home.mkdir()
-    monkeypatch.setenv("HERMES_HOME", str(home))
+    isolate_kanban_root(tmp_path, monkeypatch)
     monkeypatch.setenv("HERMES_PROFILE", "test-worker")
     monkeypatch.delenv("HERMES_SESSION_ID", raising=False)
-    monkeypatch.setattr(_Path, "home", lambda: tmp_path)
 
-    kb._INITIALIZED_PATHS.clear()
     kb.init_db()
     conn = kb.connect()
     try:
@@ -791,14 +765,14 @@ def _make_goal_mode_worker_env(monkeypatch, tmp_path):
     return goal_task_id
 
 
-def test_block_goal_mode_rejects_missing_kind(monkeypatch, tmp_path):
+def test_block_goal_mode_rejects_missing_kind(monkeypatch, tmp_path, isolate_kanban_root):
     """A goal_mode worker calling kanban_block with no kind must not be able
     to use it as an unguarded escape from the goal loop (Issue #38696,
     sibling of the kanban_complete judge gate / Issue #38367)."""
     from tools import kanban_tools as kt
     from hermes_cli import kanban_db as kb
 
-    tid = _make_goal_mode_worker_env(monkeypatch, tmp_path)
+    tid = _make_goal_mode_worker_env(monkeypatch, tmp_path, isolate_kanban_root)
     out = kt._handle_block({"reason": "giving up"})
     d = json.loads(out)
     assert "error" in d
@@ -811,13 +785,13 @@ def test_block_goal_mode_rejects_missing_kind(monkeypatch, tmp_path):
         conn.close()
 
 
-def test_block_goal_mode_rejects_disallowed_kind(monkeypatch, tmp_path):
+def test_block_goal_mode_rejects_disallowed_kind(monkeypatch, tmp_path, isolate_kanban_root):
     """`capability` / `transient` are valid kinds in general but must not
     let a goal_mode worker exit the loop without going through the judge."""
     from tools import kanban_tools as kt
     from hermes_cli import kanban_db as kb
 
-    tid = _make_goal_mode_worker_env(monkeypatch, tmp_path)
+    tid = _make_goal_mode_worker_env(monkeypatch, tmp_path, isolate_kanban_root)
     for kind in ("capability", "transient"):
         out = kt._handle_block({"reason": "blocked", "kind": kind})
         d = json.loads(out)
@@ -830,7 +804,7 @@ def test_block_goal_mode_rejects_disallowed_kind(monkeypatch, tmp_path):
         conn.close()
 
 
-def test_block_goal_mode_allows_dependency_kind(monkeypatch, tmp_path):
+def test_block_goal_mode_allows_dependency_kind(monkeypatch, tmp_path, isolate_kanban_root):
     """`dependency` and `needs_input` represent a genuine external blocker
     the worker cannot resolve itself — these remain ungated.
 
@@ -841,7 +815,7 @@ def test_block_goal_mode_allows_dependency_kind(monkeypatch, tmp_path):
     from tools import kanban_tools as kt
     from hermes_cli import kanban_db as kb
 
-    tid = _make_goal_mode_worker_env(monkeypatch, tmp_path)
+    tid = _make_goal_mode_worker_env(monkeypatch, tmp_path, isolate_kanban_root)
     out = kt._handle_block({"reason": "waiting on another task", "kind": "dependency"})
     d = json.loads(out)
     assert d.get("ok") is True
@@ -853,11 +827,11 @@ def test_block_goal_mode_allows_dependency_kind(monkeypatch, tmp_path):
         conn.close()
 
 
-def test_block_goal_mode_allows_needs_input_kind(monkeypatch, tmp_path):
+def test_block_goal_mode_allows_needs_input_kind(monkeypatch, tmp_path, isolate_kanban_root):
     from tools import kanban_tools as kt
     from hermes_cli import kanban_db as kb
 
-    tid = _make_goal_mode_worker_env(monkeypatch, tmp_path)
+    tid = _make_goal_mode_worker_env(monkeypatch, tmp_path, isolate_kanban_root)
     out = kt._handle_block({"reason": "need a decision from the user", "kind": "needs_input"})
     d = json.loads(out)
     assert d.get("ok") is True

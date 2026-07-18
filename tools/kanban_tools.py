@@ -33,6 +33,8 @@ import logging
 import os
 from typing import Any, Optional
 
+import httpx
+
 from agent.redact import redact_sensitive_text
 from hermes_cli.goals import judge_goal
 from tools.registry import registry, tool_error
@@ -602,7 +604,7 @@ def _handle_complete(args: dict, **kw) -> str:
                 verdict = "done"
                 reason = ""
                 try:
-                    verdict, reason, _ = judge_goal(
+                    verdict, reason, _parse_failed, _wait_directive = judge_goal(
                         goal=f"{task.title}\n\n{task.body or ''}".strip(),
                         last_response=(summary or result or "").strip(),
                     )
@@ -945,8 +947,6 @@ def _download_url_with_cap(url: str, max_bytes: int) -> tuple[bytes, Optional[st
     thing.
     """
     from urllib.parse import urljoin, urlparse
-
-    import httpx
 
     from tools.url_safety import is_safe_url
 

@@ -18,14 +18,63 @@ from hermes_cli import kanban_db as kb
 
 
 @pytest.fixture
-def kanban_home(tmp_path, monkeypatch):
-    """Isolated HERMES_HOME with an empty kanban DB."""
-    home = tmp_path / ".hermes"
-    home.mkdir()
-    monkeypatch.setenv("HERMES_HOME", str(home))
-    monkeypatch.setattr(Path, "home", lambda: tmp_path)
+def kanban_home(tmp_path, monkeypatch, isolate_kanban_root):
+    """Isolated HERMES_HOME with an empty kanban DB.
+
+    Resolution is pinned strictly inside ``tmp_path`` and fails closed if
+    any inherited Kanban path pin would route it elsewhere — see
+    :func:`tests.conftest._isolate_kanban_root`.
+    """
+    home = isolate_kanban_root(tmp_path, monkeypatch)
     kb.init_db()
     return home
+
+
+def test_kanban_root_isolation_rejects_inherited_pins(
+    tmp_path, tmp_path_factory, monkeypatch, isolate_kanban_root
+):
+    """A poisoned ``HERMES_KANBAN_DB`` / ``HERMES_KANBAN_HOME`` pointing
+    OUTSIDE the per-test tmp root must never route kanban init/mutation to
+    that target.
+
+    The shared isolation must clear every inherited pin before resolution
+    and fail closed unless BOTH the resolved kanban home and ``kanban.db``
+    land under ``tmp_path`` — so the poison target is never created or
+    mutated. This is the mutation-capable safety boundary that must hold
+    under direct pytest and under ``scripts/run_tests.sh`` regardless of
+    the autouse hermetic scrub.
+    """
+    poison_root = tmp_path_factory.mktemp("kanban_poison")
+    poison_db = poison_root / "kanban.db"
+    assert not poison_db.exists()
+
+    # Simulate an inherited developer/worker override that is present at the
+    # moment resolution happens (as it would be after the autouse scrub in a
+    # dispatched worker shell).
+    monkeypatch.setenv("HERMES_KANBAN_HOME", str(poison_root))
+    monkeypatch.setenv("HERMES_KANBAN_DB", str(poison_db))
+    monkeypatch.setenv("HERMES_KANBAN_BOARD", "poison-board")
+
+    home = isolate_kanban_root(tmp_path, monkeypatch)
+    kb.init_db()
+    with kb.connect() as conn:
+        kb.create_task(conn, title="isolated-under-temp-root")
+
+    root = tmp_path.resolve()
+    resolved_home = kb.kanban_home().resolve()
+    resolved_db = kb.kanban_db_path().resolve()
+    assert resolved_home.is_relative_to(root), (
+        f"resolved kanban home {resolved_home} escaped temp root {root}"
+    )
+    assert resolved_db.is_relative_to(root), (
+        f"resolved kanban DB {resolved_db} escaped temp root {root}"
+    )
+    assert resolved_db.is_relative_to(home.resolve())
+    assert resolved_db.exists()
+    # The poisoned target must never have been created or mutated.
+    assert not poison_db.exists(), (
+        f"kanban init/mutation leaked to poisoned target {poison_db}"
+    )
 
 
 def _init_git_repo(repo: Path) -> None:

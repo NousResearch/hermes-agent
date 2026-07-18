@@ -436,6 +436,79 @@ def tmp_dir(tmp_path):
     return tmp_path
 
 
+# ── Kanban temp-root isolation helper ──────────────────────────────────────
+#
+# Every mutation-capable Kanban test must fail CLOSED unless BOTH the
+# resolved kanban home and the resolved ``kanban.db`` live inside the
+# fresh per-test ``tmp_path`` root. A stray inherited pin
+# (``HERMES_KANBAN_DB`` / ``HERMES_KANBAN_HOME`` / ``HERMES_KANBAN_BOARD`` …)
+# from a developer shell or a dispatched worker would otherwise route
+# ``init_db`` / ``connect`` at a live board and let a unit test mutate it.
+#
+# conftest's autouse ``_hermetic_environment`` already blanks these, but
+# that is one layer. This helper is the second, fixture-local layer so the
+# guarantee holds even if the autouse layer is bypassed, and so it holds
+# identically under direct ``pytest`` and under ``scripts/run_tests.sh``.
+# Exposed as a fixture returning a callable so it is injectable into the
+# Kanban mutation fixtures across test files without fragile conftest
+# imports.
+
+def _isolate_kanban_root(tmp_path, monkeypatch, *, home=None):
+    """Pin Kanban home+DB resolution strictly inside ``tmp_path``.
+
+    Clears every inherited Kanban path pin BEFORE anything resolves them,
+    points ``HERMES_HOME`` (and ``Path.home``) at the per-test temp root,
+    resets the per-process init cache, then asserts BOTH the resolved
+    kanban home and the resolved ``kanban.db`` live under ``tmp_path`` —
+    raising ``AssertionError`` (fail closed) otherwise. Returns the home
+    dir. Does NOT create the schema; the caller decides when to
+    ``init_db``.
+    """
+    from pathlib import Path as _Path
+
+    from hermes_cli import kanban_db as _kb
+
+    if home is None:
+        home = tmp_path / ".hermes"
+    home.mkdir(parents=True, exist_ok=True)
+
+    # Clear ALL inherited Kanban pins that could redirect resolution
+    # outside the temp root, before any of them is read.
+    for _var in (
+        "HERMES_KANBAN_DB",
+        "HERMES_KANBAN_HOME",
+        "HERMES_KANBAN_BOARD",
+        "HERMES_KANBAN_TASK",
+        "HERMES_KANBAN_WORKSPACES_ROOT",
+        "HERMES_KANBAN_LOGS_ROOT",
+    ):
+        monkeypatch.delenv(_var, raising=False)
+
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    monkeypatch.setattr(_Path, "home", lambda: tmp_path)
+    _kb._INITIALIZED_PATHS.clear()
+
+    # Fail closed: both the resolved kanban home and the resolved
+    # ``kanban.db`` must live inside the fresh per-test temp root, or no
+    # mutation-capable test built on this helper is allowed to proceed.
+    root = tmp_path.resolve()
+    resolved_home = _kb.kanban_home().resolve()
+    resolved_db = _kb.kanban_db_path().resolve()
+    assert resolved_home.is_relative_to(root), (
+        f"resolved kanban home {resolved_home} escaped temp root {root}"
+    )
+    assert resolved_db.is_relative_to(root), (
+        f"resolved kanban DB {resolved_db} escaped temp root {root}"
+    )
+    return home
+
+
+@pytest.fixture()
+def isolate_kanban_root():
+    """Return the :func:`_isolate_kanban_root` helper for mutation fixtures."""
+    return _isolate_kanban_root
+
+
 @pytest.fixture()
 def mock_config():
     """Return a minimal hermes config dict suitable for unit tests."""

@@ -1204,8 +1204,12 @@ def test_ensure_tui_cached_bundle_uses_root_lockfile_and_workspace_install(
 
     result = main_mod._ensure_tui_cached_bundle(tui_dir, node="node", npm="npm")
 
-    assert result == cache_dir
-    assert (cache_dir / "dist" / "entry.js").read_text(encoding="utf-8") == "console.log('cached bundle')\n"
+    assert result.parent == cache_dir / "generations"
+    assert main_mod._tui_cached_active_bundle_dir(cache_dir) == result
+    assert (cache_dir / "current").read_text(encoding="utf-8").strip() == result.name
+    assert (result / "dist" / "entry.js").read_text(encoding="utf-8") == (
+        "console.log('cached bundle')\n"
+    )
     assert not cache_dir.with_name("tui-bundle.lock").exists()
     assert calls[0][0] == [
         "npm",
@@ -1218,6 +1222,64 @@ def test_ensure_tui_cached_bundle_uses_root_lockfile_and_workspace_install(
         "--progress=false",
     ]
     assert calls[1][0] == ["npm", "run", "build", "--workspace", "ui-tui"]
+
+
+def test_tui_cache_refresh_keeps_previous_returned_generation_launchable(
+    monkeypatch, main_mod, tmp_path
+):
+    repo = tmp_path / "repo"
+    tui_dir = repo / "ui-tui"
+    (tui_dir / "src").mkdir(parents=True)
+    (tui_dir / "scripts").mkdir()
+    (repo / "package.json").write_text(
+        '{"private":true,"workspaces":["ui-tui"]}', encoding="utf-8"
+    )
+    (repo / "package-lock.json").write_text(
+        '{"name":"hermes-agent","lockfileVersion":3,"packages":{}}',
+        encoding="utf-8",
+    )
+    (tui_dir / "package.json").write_text(
+        '{"name":"hermes-tui","scripts":{"build":"node scripts/build.mjs"}}',
+        encoding="utf-8",
+    )
+    (tui_dir / "scripts" / "build.mjs").write_text(
+        "console.log('build')\n", encoding="utf-8"
+    )
+    source_entry = tui_dir / "src" / "entry.tsx"
+    source_entry.write_text("console.log('source-v1')\n", encoding="utf-8")
+
+    cache_dir = tmp_path / "home" / "cache" / "tui-bundle"
+    build_dir = tmp_path / "home" / "cache" / "tui-bundle-build"
+    monkeypatch.setattr(main_mod, "_tui_cached_bundle_dir", lambda: cache_dir)
+    monkeypatch.setattr(main_mod, "_tui_cached_build_dir", lambda: build_dir)
+    monkeypatch.setenv("HERMES_QUIET", "1")
+
+    build_number = 0
+
+    def fake_run(cmd, cwd=None, **_kwargs):
+        nonlocal build_number
+        if cmd == ["npm", "run", "build", "--workspace", "ui-tui"]:
+            build_number += 1
+            entry = build_dir / "ui-tui" / "dist" / "entry.js"
+            entry.parent.mkdir(parents=True, exist_ok=True)
+            entry.write_text(f"console.log('bundle-v{build_number}')\n", encoding="utf-8")
+        return types.SimpleNamespace(returncode=0, stdout="", stderr="")
+
+    monkeypatch.setattr(main_mod.subprocess, "run", fake_run)
+
+    first = main_mod._ensure_tui_cached_bundle(tui_dir, node="node", npm="npm")
+    first_entry = first / "dist" / "entry.js"
+    assert first_entry.read_text(encoding="utf-8") == "console.log('bundle-v1')\n"
+
+    source_entry.write_text("console.log('source-v2')\n", encoding="utf-8")
+    second = main_mod._ensure_tui_cached_bundle(tui_dir, node="node", npm="npm")
+
+    assert second != first
+    assert first_entry.is_file()
+    assert first_entry.read_text(encoding="utf-8") == "console.log('bundle-v1')\n"
+    assert (second / "dist" / "entry.js").read_text(encoding="utf-8") == (
+        "console.log('bundle-v2')\n"
+    )
 
 
 def test_print_tui_exit_summary_includes_resume_and_token_totals(monkeypatch, capsys):

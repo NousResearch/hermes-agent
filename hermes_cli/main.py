@@ -1643,6 +1643,64 @@ def _tui_cached_build_dir() -> Path:
     return get_hermes_home() / "cache" / "tui-bundle-build"
 
 
+def _tui_cached_active_bundle_dir(cache_root: Path) -> Path:
+    """Resolve the atomically selected immutable bundle generation."""
+    selector = cache_root / "current"
+    try:
+        generation_name = selector.read_text(encoding="utf-8").strip()
+    except OSError:
+        return cache_root  # Backward-compatible legacy single-directory cache.
+    if not generation_name or Path(generation_name).name != generation_name:
+        return cache_root
+    generations = (cache_root / "generations").resolve()
+    candidate = (generations / generation_name).resolve()
+    try:
+        candidate.relative_to(generations)
+    except ValueError:
+        return cache_root
+    return candidate if candidate.is_dir() else cache_root
+
+
+def _publish_tui_cached_generation(cache_root: Path, staged: Path, stamp: str) -> Path:
+    """Publish *staged* immutably, then atomically select it for new launches."""
+    generations = cache_root / "generations"
+    generations.mkdir(parents=True, exist_ok=True)
+    generation = generations / f"{stamp[:16]}-{os.getpid()}-{_time.time_ns()}"
+    staged.replace(generation)
+
+    selector_tmp = cache_root / f".current.{os.getpid()}.{_time.time_ns()}.tmp"
+    try:
+        with selector_tmp.open("w", encoding="utf-8") as handle:
+            handle.write(f"{generation.name}\n")
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(selector_tmp, cache_root / "current")
+    finally:
+        selector_tmp.unlink(missing_ok=True)
+    return generation
+
+
+def _cleanup_tui_cached_generations(cache_root: Path, active: Path) -> None:
+    """Best-effort cleanup, separate from publish, after a seven-day grace period."""
+    generations = cache_root / "generations"
+    if not generations.is_dir():
+        return
+    cutoff = _time.time() - 7 * 24 * 60 * 60
+    try:
+        candidates = list(generations.iterdir())
+    except OSError:
+        return
+    for candidate in candidates:
+        if candidate == active or candidate.name.startswith(".tmp-"):
+            continue
+        try:
+            if candidate.stat().st_mtime >= cutoff:
+                continue
+        except OSError:
+            continue
+        shutil.rmtree(candidate, ignore_errors=True)
+
+
 def _tui_bundle_stamp(root: Path) -> str:
     """Content stamp for the self-contained TUI bundle cache."""
     h = hashlib.sha256()
@@ -1696,7 +1754,8 @@ def _ensure_tui_cached_bundle(
     locked root, runs the existing build script, then atomically publishes only
     ``package.json`` + ``dist/`` as the runtime bundle.
     """
-    cache_dir = _tui_cached_bundle_dir()
+    cache_root = _tui_cached_bundle_dir()
+    cache_dir = _tui_cached_active_bundle_dir(cache_root)
     if _tui_cached_bundle_current(tui_dir, cache_dir):
         return cache_dir
 
@@ -1705,8 +1764,8 @@ def _ensure_tui_cached_bundle(
         print("npm not found — install Node.js/npm to build the dashboard TUI cache.")
         sys.exit(1)
 
-    cache_dir.parent.mkdir(parents=True, exist_ok=True)
-    lock_dir = cache_dir.with_name(f"{cache_dir.name}.lock")
+    cache_root.mkdir(parents=True, exist_ok=True)
+    lock_dir = cache_root.with_name(f"{cache_root.name}.lock")
     lock_deadline = _time.monotonic() + 180.0
     lock_acquired = False
     while not lock_acquired:
@@ -1730,17 +1789,20 @@ def _ensure_tui_cached_bundle(
             _time.sleep(0.25)
 
     try:
+        cache_dir = _tui_cached_active_bundle_dir(cache_root)
         if _tui_cached_bundle_current(tui_dir, cache_dir):
             return cache_dir
 
         source_root = _workspace_root(tui_dir)
         build_dir = _tui_cached_build_dir()
         tmp_build = build_dir.with_name(f"{build_dir.name}.{os.getpid()}.tmp")
-        tmp_cache = cache_dir.with_name(f"{cache_dir.name}.{os.getpid()}.tmp")
+        generations = cache_root / "generations"
+        generations.mkdir(parents=True, exist_ok=True)
+        tmp_cache = generations / f".tmp-{os.getpid()}-{_time.time_ns()}"
         stamp = _tui_bundle_stamp(tui_dir)
 
         if not os.environ.get("HERMES_QUIET"):
-            print(f"Building TUI bundle cache in {cache_dir}…")
+            print(f"Building TUI bundle cache in {cache_root}…")
 
         try:
             if tmp_build.exists():
@@ -1825,15 +1887,12 @@ def _ensure_tui_cached_bundle(
                     print(preview)
                 sys.exit(1)
 
-            if tmp_cache.exists():
-                shutil.rmtree(tmp_cache)
             tmp_cache.mkdir(parents=True, exist_ok=True)
             shutil.copy2(build_dir / "ui-tui" / "package.json", tmp_cache / "package.json")
             shutil.copytree(build_dir / "ui-tui" / "dist", tmp_cache / "dist")
             (tmp_cache / ".hermes-tui-bundle-stamp").write_text(stamp, encoding="utf-8")
-            if cache_dir.exists():
-                shutil.rmtree(cache_dir)
-            tmp_cache.replace(cache_dir)
+            cache_dir = _publish_tui_cached_generation(cache_root, tmp_cache, stamp)
+            _cleanup_tui_cached_generations(cache_root, cache_dir)
         finally:
             if tmp_build.exists():
                 shutil.rmtree(tmp_build, ignore_errors=True)
@@ -1848,7 +1907,8 @@ def _ensure_tui_cached_bundle(
 
 def _refresh_tui_cached_bundle_after_update(tui_dir: Path) -> None:
     """Best-effort post-update refresh for installs that already use the cache."""
-    cache_dir = _tui_cached_bundle_dir()
+    cache_root = _tui_cached_bundle_dir()
+    cache_dir = _tui_cached_active_bundle_dir(cache_root)
     if not cache_dir.exists() and _tui_workspace_writable(tui_dir):
         return
     try:

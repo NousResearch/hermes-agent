@@ -1165,6 +1165,13 @@ DEFAULT_CONFIG = {
         # default is 1800s) plus runtime slack.  Set to 0 to disable the
         # gate and restore pre-fix behaviour (always inject).
         "gateway_auto_continue_freshness": 3600,
+        # Stale-stream ceiling for local providers (Ollama, oMLX, llama-cpp) in
+        # seconds. When the base stale timeout is at its default (180s) and a
+        # local endpoint is detected, this finite ceiling replaces the former
+        # infinite disable so a wedged local server eventually trips the
+        # detector instead of hanging forever. The env var
+        # ``HERMES_LOCAL_STREAM_STALE_TIMEOUT`` overrides for escape-hatch use.
+        "local_stream_stale_timeout": 900,
         # How user-attached images are presented to the main model on each turn.
         #   "auto"   — attach natively when the active model reports
         #              supports_vision=True AND the user hasn't explicitly
@@ -2986,6 +2993,19 @@ DEFAULT_CONFIG = {
         "restart_loop_guard": {
             "max_restarts": 3,
             "window_seconds": 60,
+        },
+
+        # Portable respawn-storm circuit breaker (complements
+        # ``restart_loop_guard`` above). Counts gateway (re)starts in a sliding
+        # window and, when too many land, sleeps an exponential backoff before
+        # booting so a crash-looping supervisor (launchd KeepAlive, systemd
+        # Restart=always) can't hammer the process into a respawn storm.
+        # ``max_starts <= 0`` disables the breaker. The env vars
+        # ``HERMES_GATEWAY_MAX_STARTS`` / ``HERMES_GATEWAY_START_WINDOW_S``
+        # override these defaults for escape-hatch use.
+        "respawn_storm": {
+            "max_starts": 5,
+            "window_seconds": 120,
         },
 
         # Inject a human-readable timestamp prefix (e.g.

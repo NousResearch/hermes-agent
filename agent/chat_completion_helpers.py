@@ -3376,9 +3376,24 @@ def interruptible_streaming_api_call(agent, api_kwargs: dict, *, on_first_delta=
     # or deadlocked local endpoint stalled the session indefinitely).  900s
     # tolerates slow prefill while still bounding a hung endpoint.  Applies
     # unless the user explicitly set HERMES_STREAM_STALE_TIMEOUT; override the
-    # local ceiling with HERMES_LOCAL_STREAM_STALE_TIMEOUT.
+    # local ceiling with HERMES_LOCAL_STREAM_STALE_TIMEOUT (documented in
+    # website/docs/reference/environment-variables.md).
     if _stream_stale_timeout_base == 180.0 and agent.base_url and is_local_endpoint(agent.base_url):
-        _stream_stale_timeout = env_float("HERMES_LOCAL_STREAM_STALE_TIMEOUT", 900.0)
+        # Read config.yaml ``agent.local_stream_stale_timeout`` (default 900),
+        # env var ``HERMES_LOCAL_STREAM_STALE_TIMEOUT`` overrides for escape-hatch.
+        _local_default = 900.0
+        try:
+            from hermes_cli.config import load_config
+
+            _cfg = load_config()
+            _agent_cfg = _cfg.get("agent") if isinstance(_cfg, dict) else None
+            if isinstance(_agent_cfg, dict):
+                _v = _agent_cfg.get("local_stream_stale_timeout")
+                if isinstance(_v, (int, float)):
+                    _local_default = float(_v)
+        except Exception:
+            pass
+        _stream_stale_timeout = env_float("HERMES_LOCAL_STREAM_STALE_TIMEOUT", _local_default)
         logger.debug(
             "Local provider detected (%s) — stale stream timeout set to %.0fs",
             agent.base_url, _stream_stale_timeout,

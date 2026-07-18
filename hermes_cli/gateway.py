@@ -4868,21 +4868,46 @@ def run_gateway(verbose: int = 0, quiet: bool = False, replace: bool = False, fo
 
     # Portable, app-level respawn-storm circuit breaker. launchd/systemd have
     # their own throttles, but this backstop works on every platform (and covers
-    # supervisors that lack a respawn floor). Set HERMES_GATEWAY_MAX_STARTS<=0 to
-    # disable. Kept best-effort: a bookkeeping failure must never block startup.
+    # supervisors that lack a respawn floor). Configured via
+    # ``gateway.respawn_storm`` in config.yaml (``max_starts`` / ``window_seconds``);
+    # the env vars ``HERMES_GATEWAY_MAX_STARTS`` /
+    # ``HERMES_GATEWAY_START_WINDOW_S`` override for escape-hatch use.
+    # Set max_starts <= 0 to disable. Best-effort: a bookkeeping failure must
+    # never block startup.
     try:
         import time as _time
 
         from gateway.status import record_start_and_check_storm
 
+        # Defaults mirror config.yaml DEFAULT_CONFIG ``gateway.respawn_storm``.
+        _max_starts = 5
+        _win = 120.0
         try:
-            _max_starts = int(os.getenv("HERMES_GATEWAY_MAX_STARTS", "5"))
-        except ValueError:
-            _max_starts = 5
+            from hermes_cli.config import load_config
+
+            _cfg = load_config()
+            _gw = _cfg.get("gateway") if isinstance(_cfg, dict) else None
+            _rs = _gw.get("respawn_storm") if isinstance(_gw, dict) else None
+            if isinstance(_rs, dict):
+                if isinstance(_rs.get("max_starts"), int):
+                    _max_starts = _rs["max_starts"]
+                if isinstance(_rs.get("window_seconds"), (int, float)):
+                    _win = float(_rs["window_seconds"])
+        except Exception:
+            pass
+        # Env vars override config for escape-hatch use.
         try:
-            _win = float(os.getenv("HERMES_GATEWAY_START_WINDOW_S", "120"))
+            _env_starts = os.getenv("HERMES_GATEWAY_MAX_STARTS")
+            if _env_starts is not None:
+                _max_starts = int(_env_starts)
         except ValueError:
-            _win = 120.0
+            pass
+        try:
+            _env_win = os.getenv("HERMES_GATEWAY_START_WINDOW_S")
+            if _env_win is not None:
+                _win = float(_env_win)
+        except ValueError:
+            pass
         _storm = (
             record_start_and_check_storm(max_starts=_max_starts, window_s=_win)
             if _max_starts > 0

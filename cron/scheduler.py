@@ -2788,6 +2788,12 @@ def _fallback_was_declared(job: dict, new_provider, new_model) -> bool:
         # (pool face vs sub) but the model slug is the stable identity.
         if em and em == new_model and (not ep or not new_provider or ep == new_provider):
             return True
+        # Greptile #385: a PROVIDER-ONLY entry ({"provider": "openai-codex"},
+        # model omitted) declares "any model on this provider is my sanctioned
+        # net". Without this arm the `em and …` guard skips it and a fallback
+        # that ran exactly as configured pages #alerts as UNDECLARED.
+        if not em and ep and new_provider and ep == new_provider:
+            return True
     return False
 
 

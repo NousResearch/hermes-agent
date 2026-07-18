@@ -200,3 +200,40 @@ def test_alert_handles_event_missing_providers(monkeypatch):
 
     content = calls[0]["content"]
     assert "gpt-5.5" in content and "claude-opus-4-8" in content
+
+
+# Greptile #385: a PROVIDER-ONLY fallback entry ({"provider": ...}, model omitted) declares
+# "any model on this provider is my sanctioned net" — it must count as DECLARED.
+PROVIDER_ONLY_JOB = {
+    "id": "md", "name": "morning-digest", "deliver": "discord:LOGS",
+    "fallback": [{"provider": "claude-app"}],
+}
+
+
+def test_provider_only_fallback_entry_counts_as_declared(monkeypatch):
+    """A fallback that lands on ANY model of a provider-only declared entry is the
+    configured safety net firing — calm #logs, never a 🚨 #alerts page."""
+    calls = _capture_deliver(monkeypatch)
+    agent = _FakeAgent(FALLBACK_EVENT)
+
+    sched._emit_cron_fallback_alert(PROVIDER_ONLY_JOB, agent)
+
+    assert len(calls) == 1
+    content = calls[0]["content"]
+    assert "🚨" not in content
+    assert "as designed" in content.lower()
+    assert calls[0]["job"]["deliver"] == sched._DEFAULT_FALLBACK_LOG_DELIVER
+
+
+def test_provider_only_entry_other_provider_still_undeclared():
+    """The provider-only arm must not over-match: a fallback onto a DIFFERENT
+    provider than the declared one stays UNDECLARED."""
+    job = {"id": "md", "fallback": [{"provider": "openai-codex"}]}
+    assert sched._fallback_was_declared(job, "claude-app", "claude-opus-4-8") is False
+
+
+def test_provider_only_entry_missing_runtime_provider_stays_undeclared():
+    """With no runtime provider recorded, a provider-only entry cannot vouch for
+    the switch — fail toward LOUD (undeclared), never silently calm."""
+    job = {"id": "md", "fallback": [{"provider": "claude-app"}]}
+    assert sched._fallback_was_declared(job, "", "claude-opus-4-8") is False

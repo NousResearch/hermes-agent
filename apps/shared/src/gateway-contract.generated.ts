@@ -3205,6 +3205,7 @@ export interface SessionListRow {
   message_count?: number
   live_message_count?: number | null
   source?: string
+  _lineage_root_id?: string | null
 }
 export interface SessionMostRecentParams {
   profile?: string | null

@@ -31226,6 +31226,18 @@
             "default": "",
             "title": "Source",
             "type": "string"
+          },
+          "_lineage_root_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Lineage Root Id"
           }
         },
         "required": [

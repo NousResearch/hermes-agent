@@ -24,6 +24,7 @@ KIT_RELEASE_ID = "b" * 64
 
 def _owner_directory(path: Path) -> None:
     path.mkdir()
+    os.chown(path, -1, os.getegid())
     path.chmod(0o700)
 
 
@@ -607,7 +608,7 @@ def test_interrupted_publish_leaves_pending_for_manual_reconciliation(
         )
 
 
-def test_production_orchestration_consumes_one_pair_then_runs_real_preflight(
+def test_production_orchestration_resamples_time_after_remote_collection(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     network_key = Ed25519PrivateKey.generate()
@@ -726,6 +727,11 @@ def test_production_orchestration_consumes_one_pair_then_runs_real_preflight(
             events.append("unlock")
 
     def find_replay(**kwargs: object):
+        expected_now = (
+            preflight_fixture.NOW
+            if published
+            else preflight_fixture.NOW - 2
+        )
         assert kwargs == {
             "phase_root": phase_root,
             "release_revision": REVISION,
@@ -735,7 +741,7 @@ def test_production_orchestration_consumes_one_pair_then_runs_real_preflight(
             "plan": plan,
             "cloud_key": cloud_public,
             "host_key": host_public,
-            "now_unix": preflight_fixture.NOW,
+            "now_unix": expected_now,
         }
         events.append("scan")
         return published.get("receipt")
@@ -768,7 +774,12 @@ def test_production_orchestration_consumes_one_pair_then_runs_real_preflight(
     monkeypatch.setattr(inert, "_evidence_lease", lambda _revision: EvidenceLease())
     monkeypatch.setattr(inert, "_find_fresh_replay", find_replay)
     monkeypatch.setattr(inert, "_publish_evidence", publish_evidence)
-    monkeypatch.setattr(inert.time, "time", lambda: float(preflight_fixture.NOW))
+    clock = iter((
+        preflight_fixture.NOW - 2,
+        preflight_fixture.NOW,
+        preflight_fixture.NOW,
+    ))
+    monkeypatch.setattr(inert.time, "time", lambda: float(next(clock)))
 
     receipt = inert._collect_inert_observation(
         release_revision=REVISION,

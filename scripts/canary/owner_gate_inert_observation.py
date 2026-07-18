@@ -1233,8 +1233,8 @@ def _collect_inert_observation(
     inputs = _PinnedObservationInputs.load(release_revision)
     loaded = _load_successful_foundation(release_revision)
     plan, package = _final_plan(loaded.chain, inputs.bundle_stream)
-    now_unix = int(time.time())
-    if now_unix <= 0:
+    replay_now_unix = int(time.time())
+    if replay_now_unix <= 0:
         _error("owner_gate_inert_observation_time_invalid")
     cloud_key = _collector_key(release_revision, role="cloud")
     host_key = _collector_key(release_revision, role="host")
@@ -1248,7 +1248,7 @@ def _collect_inert_observation(
             plan=plan,
             cloud_key=cloud_key,
             host_key=host_key,
-            now_unix=now_unix,
+            now_unix=replay_now_unix,
         )
         if replay is not None:
             inputs.assert_stable()
@@ -1279,6 +1279,9 @@ def _collect_inert_observation(
                 phase=EVIDENCE_PHASE,
             )
         )
+        validation_now_unix = int(time.time())
+        if validation_now_unix <= 0:
+            _error("owner_gate_inert_observation_time_invalid")
         try:
             report = preflight.build_preflight_report(
                 plan=plan,
@@ -1286,7 +1289,7 @@ def _collect_inert_observation(
                 host_observation=host_observation,
                 cloud_collector_public_key=cloud_key,
                 host_collector_public_key=host_key,
-                now_unix=now_unix,
+                now_unix=validation_now_unix,
             )
         except preflight.OwnerGatePreflightError as exc:
             _error("owner_gate_inert_observation_preflight_invalid", exc)
@@ -1322,7 +1325,7 @@ def _collect_inert_observation(
             plan=plan,
             cloud_key=cloud_key,
             host_key=host_key,
-            now_unix=now_unix,
+            now_unix=validation_now_unix,
         )
         inputs.assert_stable()
         if persisted != receipt:

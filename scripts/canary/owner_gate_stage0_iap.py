@@ -64,6 +64,46 @@ _FOLDER_RESOURCE = re.compile(r"^folders/[1-9][0-9]{5,30}$")
 _ORGANIZATION_RESOURCE = re.compile(
     r"^organizations/[1-9][0-9]{5,30}$"
 )
+_NUMERIC_ID = re.compile(r"^[1-9][0-9]{5,30}$")
+_ATTACHED_SA_PROBE_SCHEMA = (
+    "muncho-owner-gate-attached-sa-permission-probe.v1"
+)
+_ATTACHED_SA_REQUEST_SCHEMA = (
+    "muncho-owner-gate-attached-sa-permission-probe-request.v1"
+)
+_ATTACHED_SA_REQUEST_FIELDS = frozenset({
+    "schema",
+    "phase",
+    "collected_at_unix",
+    "plan_sha256",
+    "cloud_install_receipt",
+    "cloud_signer_provisioning_receipt_sha256",
+    "cloud_signer_readiness_sha256",
+    "host_signer_provisioning_receipt_sha256",
+    "host_signer_readiness_sha256",
+    "observation_binding_sha256",
+    "request_sha256",
+})
+_ATTACHED_SA_PROBE_FIELDS = frozenset({
+    "schema", "phase", "collected_at_unix", "completed_at_unix",
+    "fresh_through_unix", "release_revision", "plan_sha256",
+    "observation_binding_sha256", "attached_request_sha256",
+    "source_tree_oid", "package_sha256", "package_inventory_sha256",
+    "pre_foundation_authority_sha256", "foundation_apply_receipt_sha256",
+    "project_ancestry_evidence_sha256", "project_ancestry_chain_sha256",
+    "resource_ancestor_chain", "install_receipt_sha256",
+    "cloud_signer_provisioning_receipt_sha256",
+    "cloud_signer_readiness_sha256",
+    "host_signer_provisioning_receipt_sha256",
+    "host_signer_readiness_sha256", "runtime_instance_numeric_id",
+    "runtime_service_account_email", "runtime_service_account_unique_id",
+    "metadata_scopes", "effective_permission_probe",
+    "target_instance_numeric_id", "target_disk_numeric_id",
+    "numeric_targets_reverified", "inherited_bindings_evaluated",
+    "conditional_bindings_evaluated", "metadata_token_acquired",
+    "metadata_token_wiped", "owner_credential_values_read",
+    "report_sha256", "attestation",
+})
 
 
 class StableOuterSealer(Protocol):
@@ -467,6 +507,203 @@ def _signer_readiness_from_receipt(
         "iam_mutation_performed": False,
     }
     return {**unsigned, "readiness_sha256": foundation.sha256_json(unsigned)}
+
+
+def _validate_attached_sa_probe_stable_projection(
+    probe: Mapping[str, Any],
+    *,
+    request: Mapping[str, Any],
+    release_revision: str,
+    plan: foundation.OwnerGateFoundationPlan,
+    binding: _BoundInertCloudBundle,
+    foundation_projection: _FoundationProjection,
+    cloud_install_receipt: Mapping[str, Any],
+    cloud_receipt: Mapping[str, Any],
+    cloud_readiness: Mapping[str, Any],
+    host_receipt: Mapping[str, Any],
+    host_readiness: Mapping[str, Any],
+    host_public_key: Ed25519PublicKey,
+) -> Mapping[str, Any]:
+    error_code = "owner_gate_attached_sa_probe_invalid"
+    try:
+        owner_preflight._strict(
+            request,
+            set(_ATTACHED_SA_REQUEST_FIELDS),
+            "attached_sa_probe_request",
+        )
+        owner_preflight._strict(
+            probe,
+            set(_ATTACHED_SA_PROBE_FIELDS),
+            "attached_sa_probe",
+        )
+        owner_preflight._verify_seal(probe, label="attached_sa_probe")
+        owner_preflight._verify_attestation(
+            probe,
+            public_key=host_public_key,
+            expected_public_key_id=str(plan.spec.host_collector_public_key_id),
+            label="attached_sa_probe",
+        )
+    except owner_preflight.OwnerGatePreflightError:
+        raise launcher.OwnerLauncherError(error_code) from None
+    completed_at_unix = probe.get("completed_at_unix")
+    fresh_through_unix = probe.get("fresh_through_unix")
+    collected_at_unix = request.get("collected_at_unix")
+    attestation = probe.get("attestation")
+    expected_signer_lineage = {
+        "cloud_signer_provisioning_receipt_sha256": cloud_receipt.get(
+            "receipt_sha256"
+        ),
+        "cloud_signer_readiness_sha256": cloud_readiness.get(
+            "readiness_sha256"
+        ),
+        "host_signer_provisioning_receipt_sha256": host_receipt.get(
+            "receipt_sha256"
+        ),
+        "host_signer_readiness_sha256": host_readiness.get(
+            "readiness_sha256"
+        ),
+    }
+    request_binding = {
+        "phase": request.get("phase"),
+        "collected_at_unix": collected_at_unix,
+        "plan_sha256": request.get("plan_sha256"),
+        "cloud_install_receipt": request.get("cloud_install_receipt"),
+        **expected_signer_lineage,
+    }
+    request_unsigned = {
+        "schema": _ATTACHED_SA_REQUEST_SCHEMA,
+        **request_binding,
+        "observation_binding_sha256": foundation.sha256_json(
+            request_binding
+        ),
+    }
+    expected_release_lineage = {
+        "pre_foundation_authority_sha256": (
+            foundation_projection.pre_foundation_authority_sha256
+        ),
+        "foundation_apply_receipt_sha256": (
+            foundation_projection.foundation_apply_receipt_sha256
+        ),
+        "project_ancestry_evidence_sha256": (
+            foundation_projection.project_ancestry_evidence_sha256
+        ),
+        "project_ancestry_chain_sha256": (
+            foundation_projection.project_ancestry_chain_sha256
+        ),
+    }
+    if (
+        probe.get("schema") != _ATTACHED_SA_PROBE_SCHEMA
+        or request.get("schema") != _ATTACHED_SA_REQUEST_SCHEMA
+        or request.get("phase") not in {"inert", "post_iam"}
+        or type(plan) is not foundation.OwnerGateFoundationPlan
+        or plan.spec.release_revision != release_revision
+        or not plan.spec.final_release_bound
+        or _REVISION.fullmatch(release_revision) is None
+        or probe.get("phase") != request.get("phase")
+        or type(collected_at_unix) is not int
+        or collected_at_unix <= 0
+        or probe.get("collected_at_unix") != collected_at_unix
+        or type(completed_at_unix) is not int
+        or type(fresh_through_unix) is not int
+        or completed_at_unix < collected_at_unix
+        or completed_at_unix > fresh_through_unix
+        or fresh_through_unix
+        != collected_at_unix + owner_preflight.HOST_OBSERVATION_FRESHNESS_SECONDS
+        or request.get("observation_binding_sha256")
+        != request_unsigned["observation_binding_sha256"]
+        or request.get("request_sha256")
+        != foundation.sha256_json(request_unsigned)
+        or probe.get("release_revision") != release_revision
+        or probe.get("plan_sha256") != plan.sha256
+        or probe.get("plan_sha256") != request.get("plan_sha256")
+        or probe.get("observation_binding_sha256")
+        != request.get("observation_binding_sha256")
+        or probe.get("attached_request_sha256")
+        != request.get("request_sha256")
+        or probe.get("source_tree_oid") != binding.source_tree_oid
+        or probe.get("package_sha256") != binding.package_sha256
+        or probe.get("package_inventory_sha256")
+        != plan.spec.package_inventory_sha256
+        or any(
+            probe.get(name) != value
+            for name, value in expected_release_lineage.items()
+        )
+        or probe.get("resource_ancestor_chain")
+        != list(foundation_projection.resource_ancestor_chain)
+        or request.get("cloud_install_receipt") != cloud_install_receipt
+        or probe.get("install_receipt_sha256")
+        != cloud_install_receipt.get("receipt_sha256")
+        or any(
+            request.get(name) != value or probe.get(name) != value
+            for name, value in expected_signer_lineage.items()
+        )
+        or _NUMERIC_ID.fullmatch(
+            str(probe.get("runtime_instance_numeric_id", ""))
+        ) is None
+        or probe.get("runtime_service_account_email")
+        != (
+            f"{foundation.SERVICE_ACCOUNT_NAME}@{foundation.PROJECT}."
+            "iam.gserviceaccount.com"
+        )
+        or _NUMERIC_ID.fullmatch(
+            str(probe.get("runtime_service_account_unique_id", ""))
+        ) is None
+        or probe.get("metadata_scopes")
+        != list(foundation.OWNER_GATE_OAUTH_SCOPES)
+        or probe.get("effective_permission_probe")
+        != owner_preflight.expected_effective_permission_probe(
+            request.get("phase") == "post_iam"
+        )
+        or probe.get("target_instance_numeric_id")
+        != foundation.TARGET_INSTANCE_ID
+        or probe.get("target_disk_numeric_id") != foundation.TARGET_DISK_ID
+        or probe.get("numeric_targets_reverified")
+        is not (request.get("phase") == "post_iam")
+        or any(
+            probe.get(name) is not True
+            for name in (
+                "inherited_bindings_evaluated",
+                "conditional_bindings_evaluated",
+                "metadata_token_acquired",
+                "metadata_token_wiped",
+            )
+        )
+        or probe.get("owner_credential_values_read") is not False
+        or not isinstance(attestation, Mapping)
+    ):
+        raise launcher.OwnerLauncherError(error_code)
+    stable = {
+        name: item
+        for name, item in probe.items()
+        if name not in {"completed_at_unix", "report_sha256", "attestation"}
+    }
+    stable["attestation"] = {
+        "schema": attestation["schema"],
+        "public_key_id": attestation["public_key_id"],
+    }
+    return stable
+
+
+def _select_stable_attached_sa_probe(
+    first: Mapping[str, Any],
+    second: Mapping[str, Any],
+    **validation: Any,
+) -> Mapping[str, Any]:
+    first_stable = _validate_attached_sa_probe_stable_projection(
+        first,
+        **validation,
+    )
+    second_stable = _validate_attached_sa_probe_stable_projection(
+        second,
+        **validation,
+    )
+    if _canonical(first_stable) != _canonical(second_stable):
+        raise launcher.OwnerLauncherError("owner_gate_attached_sa_probe_unstable")
+    return (
+        second
+        if second["completed_at_unix"] >= first["completed_at_unix"]
+        else first
+    )
 
 
 def _terminate(
@@ -2475,7 +2712,7 @@ class OwnerGateStage0IapTransport(launcher.OwnerGateIapTransport):
             host_readiness=host_readiness,
         )
         attached_request = self._host_request(
-            schema=("muncho-owner-gate-attached-sa-permission-probe-request.v1"),
+            schema=_ATTACHED_SA_REQUEST_SCHEMA,
             phase=phase,
             plan_sha256=plan.sha256,
             collected_at_unix=collected_at_unix,
@@ -2485,6 +2722,11 @@ class OwnerGateStage0IapTransport(launcher.OwnerGateIapTransport):
             host_receipt=host_receipt,
             host_readiness=host_readiness,
         )
+        initial_host_public_key = _local_signer_public_key(
+            self._release_sha,
+            role="host",
+            expected_key_id=str(plan.spec.host_collector_public_key_id),
+        )
         probe_first = self._run_host_observation_dispatcher(
             operation_name="attached_sa_probe_first",
             frame_value=attached_request,
@@ -2493,12 +2735,25 @@ class OwnerGateStage0IapTransport(launcher.OwnerGateIapTransport):
             operation_name="attached_sa_probe_second",
             frame_value=attached_request,
         )
-        if _canonical(probe_first) != _canonical(probe_second):
-            raise launcher.OwnerLauncherError("owner_gate_attached_sa_probe_unstable")
+        selected_probe = _select_stable_attached_sa_probe(
+            probe_first,
+            probe_second,
+            request=attached_request,
+            release_revision=self._release_sha,
+            plan=plan,
+            binding=binding,
+            foundation_projection=self._foundation,
+            cloud_install_receipt=terminal["cloud_install_receipt"],
+            cloud_receipt=cloud_receipt,
+            cloud_readiness=cloud_readiness,
+            host_receipt=host_receipt,
+            host_readiness=host_readiness,
+            host_public_key=initial_host_public_key,
+        )
         frame_unsigned = {
             "schema": "muncho-owner-gate-host-observation-frame.v1",
             "request": host_request,
-            "attached_sa_probe": probe_first,
+            "attached_sa_probe": selected_probe,
         }
         host_observation = self._run_host_observation_dispatcher(
             operation_name="host_observation",
@@ -2560,7 +2815,7 @@ class OwnerGateStage0IapTransport(launcher.OwnerGateIapTransport):
             or release.get("host_signer_readiness_sha256")
             != host_readiness["readiness_sha256"]
             or release.get("attached_sa_permission_probe_report_sha256")
-            != probe_first.get("report_sha256")
+            != selected_probe.get("report_sha256")
             or host_observation.get("observation_binding_sha256")
             != host_request["observation_binding_sha256"]
             or host_runtime.get("package_sha256") != binding.package_sha256

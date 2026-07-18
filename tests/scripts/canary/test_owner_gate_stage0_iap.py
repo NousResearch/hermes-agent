@@ -23,11 +23,13 @@ from scripts.canary import owner_gate_foundation as foundation
 from scripts.canary import owner_gate_foundation_apply as foundation_apply
 from scripts.canary import owner_gate_foundation_journal as foundation_journal
 from scripts.canary import owner_gate_outer_stage0 as outer
+from scripts.canary import owner_gate_preflight as owner_preflight
 from scripts.canary import owner_gate_stage0 as cloud_stage0
 from scripts.canary import owner_gate_stage0_iap as transport_module
 from scripts.canary import owner_gate_trust as release_trust
 from tests.scripts.canary import test_owner_gate_foundation_apply as apply_fixture
 from tests.scripts.canary import test_owner_gate_pre_foundation as foundation_fixture
+from tests.scripts.canary import test_owner_gate_preflight as preflight_fixture
 
 
 ROOT = Path(__file__).parents[3]
@@ -60,6 +62,137 @@ def _foundation_projection() -> transport_module._FoundationProjection:
         interpreter_sha256="8" * 64,
         owner_reauthentication_receipt_sha256="7" * 64,
     )
+
+
+def _attached_sa_probe_fixture(
+    *,
+    completed_at_unix: int = preflight_fixture.NOW,
+) -> tuple[dict, dict[str, object], Ed25519PrivateKey]:
+    network_key = Ed25519PrivateKey.generate()
+    cloud_key = Ed25519PrivateKey.generate()
+    host_key = Ed25519PrivateKey.generate()
+    plan = preflight_fixture._plan(network_key, cloud_key, host_key)
+    projection = _foundation_projection()
+    binding = transport_module._BoundInertCloudBundle(
+        source_tree_oid=TREE,
+        package_sha256="3" * 64,
+        interpreter_sha256="8" * 64,
+        bootstrap_pip_version="25.1.1",
+        bootstrap_pip_sha256="b" * 64,
+        kit_release_id="c" * 64,
+        trusted_runner_path="/opt/muncho-owner-gate/runner",
+        bundle_path="/opt/muncho-owner-gate/bundle",
+    )
+    install_receipt = {"receipt_sha256": "c" * 64}
+    cloud_receipt = {"receipt_sha256": "d" * 64}
+    cloud_readiness = {"readiness_sha256": "e" * 64}
+    host_receipt = {"receipt_sha256": "f" * 64}
+    host_readiness = {"readiness_sha256": "0" * 64}
+    request = transport_module.OwnerGateStage0IapTransport._host_request(
+        schema=transport_module._ATTACHED_SA_REQUEST_SCHEMA,
+        phase="inert",
+        plan_sha256=plan.sha256,
+        collected_at_unix=preflight_fixture.NOW,
+        cloud_install_receipt=install_receipt,
+        cloud_receipt=cloud_receipt,
+        cloud_readiness=cloud_readiness,
+        host_receipt=host_receipt,
+        host_readiness=host_readiness,
+    )
+    unsigned = {
+        "schema": transport_module._ATTACHED_SA_PROBE_SCHEMA,
+        "phase": "inert",
+        "collected_at_unix": preflight_fixture.NOW,
+        "completed_at_unix": completed_at_unix,
+        "fresh_through_unix": (
+            preflight_fixture.NOW
+            + owner_preflight.HOST_OBSERVATION_FRESHNESS_SECONDS
+        ),
+        "release_revision": REVISION,
+        "plan_sha256": plan.sha256,
+        "observation_binding_sha256": request[
+            "observation_binding_sha256"
+        ],
+        "attached_request_sha256": request["request_sha256"],
+        "source_tree_oid": binding.source_tree_oid,
+        "package_sha256": binding.package_sha256,
+        "package_inventory_sha256": plan.spec.package_inventory_sha256,
+        "pre_foundation_authority_sha256": (
+            projection.pre_foundation_authority_sha256
+        ),
+        "foundation_apply_receipt_sha256": (
+            projection.foundation_apply_receipt_sha256
+        ),
+        "project_ancestry_evidence_sha256": (
+            projection.project_ancestry_evidence_sha256
+        ),
+        "project_ancestry_chain_sha256": (
+            projection.project_ancestry_chain_sha256
+        ),
+        "resource_ancestor_chain": list(
+            projection.resource_ancestor_chain
+        ),
+        "install_receipt_sha256": install_receipt["receipt_sha256"],
+        "cloud_signer_provisioning_receipt_sha256": cloud_receipt[
+            "receipt_sha256"
+        ],
+        "cloud_signer_readiness_sha256": cloud_readiness[
+            "readiness_sha256"
+        ],
+        "host_signer_provisioning_receipt_sha256": host_receipt[
+            "receipt_sha256"
+        ],
+        "host_signer_readiness_sha256": host_readiness[
+            "readiness_sha256"
+        ],
+        "runtime_instance_numeric_id": INSTANCE_ID,
+        "runtime_service_account_email": (
+            f"{foundation.SERVICE_ACCOUNT_NAME}@{foundation.PROJECT}."
+            "iam.gserviceaccount.com"
+        ),
+        "runtime_service_account_unique_id": "123456789012345678901",
+        "metadata_scopes": list(foundation.OWNER_GATE_OAUTH_SCOPES),
+        "effective_permission_probe": (
+            owner_preflight.expected_effective_permission_probe(False)
+        ),
+        "target_instance_numeric_id": foundation.TARGET_INSTANCE_ID,
+        "target_disk_numeric_id": foundation.TARGET_DISK_ID,
+        "numeric_targets_reverified": False,
+        "inherited_bindings_evaluated": True,
+        "conditional_bindings_evaluated": True,
+        "metadata_token_acquired": True,
+        "metadata_token_wiped": True,
+        "owner_credential_values_read": False,
+    }
+    report = {
+        **unsigned,
+        "report_sha256": foundation.sha256_json(unsigned),
+    }
+    signature = host_key.sign(foundation.canonical_json_bytes(report))
+    probe = {
+        **report,
+        "attestation": {
+            "schema": "muncho-owner-gate-observation-attestation.v1",
+            "public_key_id": preflight_fixture._key_id(host_key),
+            "signature_ed25519_b64url": base64.urlsafe_b64encode(signature)
+            .rstrip(b"=")
+            .decode("ascii"),
+        },
+    }
+    validation: dict[str, object] = {
+        "request": request,
+        "release_revision": REVISION,
+        "plan": plan,
+        "binding": binding,
+        "foundation_projection": projection,
+        "cloud_install_receipt": install_receipt,
+        "cloud_receipt": cloud_receipt,
+        "cloud_readiness": cloud_readiness,
+        "host_receipt": host_receipt,
+        "host_readiness": host_readiness,
+        "host_public_key": host_key.public_key(),
+    }
+    return probe, validation, host_key
 
 
 def _decode_foundation_a(
@@ -1046,6 +1179,64 @@ def test_host_request_variants_share_one_exact_observation_binding() -> None:
         "observation_binding_sha256",
         "request_sha256",
     }
+
+
+def test_attached_sa_probe_pair_accepts_advancing_signed_completion_time() -> (
+    None
+):
+    first, validation, host_key = _attached_sa_probe_fixture()
+    second = copy.deepcopy(first)
+    second["completed_at_unix"] = preflight_fixture.NOW + 1
+    unsigned = {
+        name: item
+        for name, item in second.items()
+        if name not in {"report_sha256", "attestation"}
+    }
+    report = {
+        **unsigned,
+        "report_sha256": foundation.sha256_json(unsigned),
+    }
+    signature = host_key.sign(foundation.canonical_json_bytes(report))
+    second = {
+        **report,
+        "attestation": {
+            **second["attestation"],
+            "signature_ed25519_b64url": base64.urlsafe_b64encode(signature)
+            .rstrip(b"=")
+            .decode("ascii"),
+        },
+    }
+
+    assert transport_module._select_stable_attached_sa_probe(
+        first,
+        second,
+        **validation,
+    ) == second
+
+
+@pytest.mark.parametrize("corruption", ("signature", "self_hash"))
+def test_attached_sa_probe_pair_rejects_invalid_second_attestation(
+    corruption: str,
+) -> None:
+    first, validation, _host_key = _attached_sa_probe_fixture()
+    second = copy.deepcopy(first)
+    if corruption == "signature":
+        signature = second["attestation"]["signature_ed25519_b64url"]
+        second["attestation"]["signature_ed25519_b64url"] = (
+            ("A" if signature[0] != "A" else "B") + signature[1:]
+        )
+    else:
+        second["report_sha256"] = "f" * 64
+
+    with pytest.raises(
+        launcher.OwnerLauncherError,
+        match="owner_gate_attached_sa_probe_invalid",
+    ):
+        transport_module._select_stable_attached_sa_probe(
+            first,
+            second,
+            **validation,
+        )
 
 
 def test_cloud_observation_signer_uses_only_fixed_target_executor_command() -> None:

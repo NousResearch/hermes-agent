@@ -368,6 +368,8 @@ def test_executor_signer_replays_exactly_and_never_outputs_private_key(
     replay.mkdir(mode=0o700)
     uid = os.getuid()
     gid = os.getgid()
+    os.chown(key_path, -1, gid)
+    os.chown(replay, -1, gid)
     config = {
         "schema": trusted.CLOUD_CONFIG_SCHEMA,
         "role": "cloud",

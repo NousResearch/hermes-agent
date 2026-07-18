@@ -2787,6 +2787,10 @@ DEFAULT_CONFIG = {
         # only if you run the dispatcher as a separate systemd unit or
         # don't want the gateway to spawn workers.
         "dispatch_in_gateway": True,
+        # A terminal Kanban event is normally notification-only. Set true to
+        # inject a synthetic follow-up turn into the creator session; even then,
+        # the gateway requires a distinct thread/topic and rejects root-chat wake.
+        "wake_creator_session": False,
         # Seconds between dispatcher ticks (idle or not). Lower = snappier
         # pickup of newly-ready tasks; higher = less SQL pressure.
         "dispatch_interval_seconds": 60,

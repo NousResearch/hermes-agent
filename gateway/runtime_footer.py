@@ -9,7 +9,7 @@ Config (``~/.hermes/config.yaml``)::
     display:
       runtime_footer:
         enabled: true                       # off by default
-        fields: [model, tokens, context_pct, cost, profile, session, cwd]
+        fields: [model, tokens, context_pct, cost, profile, session, title, role, thread, cwd]
 
 Per-platform overrides live under ``display.platforms.<platform>.runtime_footer``.
 Users can toggle the global setting with ``/footer on|off`` from both the CLI
@@ -111,6 +111,9 @@ def format_runtime_footer(
     estimated_cost_usd: Optional[float] = None,
     profile: Optional[str] = None,
     session_id: Optional[str] = None,
+    session_title: Optional[str] = None,
+    session_role: Optional[str] = None,
+    thread_id: Optional[str] = None,
     fields: Iterable[str] = _DEFAULT_FIELDS,
 ) -> str:
     """Render the footer line, or return "" if no fields have data.
@@ -145,6 +148,15 @@ def format_runtime_footer(
         elif field == "session":
             if session_id:
                 parts.append(f"session:{session_id[:8]}")
+        elif field == "title":
+            if session_title:
+                compact_title = " ".join(str(session_title).split())
+                parts.append(f"title:{compact_title[:48]}")
+        elif field == "role":
+            if session_role:
+                parts.append(str(session_role))
+        elif field == "thread":
+            parts.append(f"thread:{thread_id if thread_id else 'root'}")
         # Unknown field names are silently ignored.
 
     if not parts:
@@ -164,6 +176,9 @@ def build_footer_line(
     estimated_cost_usd: Optional[float] = None,
     profile: Optional[str] = None,
     session_id: Optional[str] = None,
+    session_title: Optional[str] = None,
+    session_role: Optional[str] = None,
+    thread_id: Optional[str] = None,
 ) -> str:
     """Top-level entry point used by gateway/run.py.
 
@@ -183,5 +198,8 @@ def build_footer_line(
         estimated_cost_usd=estimated_cost_usd,
         profile=profile,
         session_id=session_id,
+        session_title=session_title,
+        session_role=session_role,
+        thread_id=thread_id,
         fields=cfg.get("fields") or _DEFAULT_FIELDS,
     )

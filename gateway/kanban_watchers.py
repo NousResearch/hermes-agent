@@ -155,6 +155,11 @@ class GatewayKanbanWatchersMixin:
                 "kanban notifier: disabled via config kanban.dispatch_in_gateway=false"
             )
             return
+        # Notifications are delivery-only by default. Synthetic creator turns
+        # are conversational side effects and must be explicitly enabled.
+        wake_creator_session = bool(
+            kanban_cfg.get("wake_creator_session", False)
+        )
         from gateway.config import Platform as _Platform
         try:
             from hermes_cli import kanban_db as _kb
@@ -491,7 +496,17 @@ class GatewayKanbanWatchersMixin:
                         task_terminal = task and task.status in {"done", "archived"}
                         _WAKE_KINDS = ("completed", "gave_up", "crashed", "timed_out", "blocked")
                         _wake_kinds = {ev.kind for ev in d["events"] if ev.kind in _WAKE_KINDS}
-                        if _wake_kinds:
+                        if _wake_kinds and wake_creator_session and not sub.get("thread_id"):
+                            # Fail closed even after opt-in: the unthreaded/root
+                            # chat belongs to its foreground session. Workers
+                            # may converse only in an isolated topic/thread.
+                            logger.warning(
+                                "kanban notifier: refusing creator wake for %s "
+                                "on unthreaded %s/%s; configure a distinct "
+                                "subscription thread/topic",
+                                sub["task_id"], platform_str, sub["chat_id"],
+                            )
+                        elif _wake_kinds and wake_creator_session:
                             try:
                                 _session_key = getattr(task, "session_id", None) or ""
                                 if _session_key:

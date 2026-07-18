@@ -32,6 +32,7 @@ class TestBrowserCleanup:
         self.orig_session_last_activity = browser_tool._session_last_activity.copy()
         self.orig_recording_sessions = browser_tool._recording_sessions.copy()
         self.orig_cleanup_done = browser_tool._cleanup_done
+        self.orig_last_active_session_key = browser_tool._last_active_session_key.copy()
 
     def teardown_method(self):
         self.browser_tool._active_sessions.clear()
@@ -41,6 +42,8 @@ class TestBrowserCleanup:
         self.browser_tool._recording_sessions.clear()
         self.browser_tool._recording_sessions.update(self.orig_recording_sessions)
         self.browser_tool._cleanup_done = self.orig_cleanup_done
+        self.browser_tool._last_active_session_key.clear()
+        self.browser_tool._last_active_session_key.update(self.orig_last_active_session_key)
 
     def test_cleanup_browser_clears_tracking_state(self):
         browser_tool = self.browser_tool
@@ -64,6 +67,69 @@ class TestBrowserCleanup:
         assert "task-1" not in browser_tool._session_last_activity
         mock_stop.assert_called_once_with("task-1")
         mock_run.assert_called_once_with("task-1", "close", [], timeout=10)
+
+    def test_headed_cleanup_preserves_local_session(self):
+        browser_tool = self.browser_tool
+        browser_tool._active_sessions["task-1"] = {
+            "session_name": "sess-local",
+            "bb_session_id": None,
+        }
+        browser_tool._session_last_activity["task-1"] = 123.0
+        browser_tool._last_active_session_key["task-1"] = "task-1"
+
+        with patch("tools.browser_tool._cleanup_single_browser_session") as cleanup:
+            browser_tool.cleanup_browser("task-1", preserve_local_headed=True)
+
+        cleanup.assert_not_called()
+        assert "task-1" in browser_tool._active_sessions
+        assert browser_tool._last_active_session_key["task-1"] == "task-1"
+
+    def test_headed_cleanup_still_releases_cloud_session(self):
+        browser_tool = self.browser_tool
+        browser_tool._active_sessions["task-1"] = {
+            "session_name": "sess-cloud",
+            "bb_session_id": "bb-1",
+            "cdp_url": "wss://example.invalid/cdp",
+        }
+
+        with patch("tools.browser_tool._cleanup_single_browser_session") as cleanup:
+            browser_tool.cleanup_browser("task-1", preserve_local_headed=True)
+
+        cleanup.assert_called_once_with("task-1")
+
+    def test_headed_hybrid_cleanup_releases_cloud_and_preserves_local_sidecar(self):
+        browser_tool = self.browser_tool
+        browser_tool._active_sessions["task-1"] = {
+            "session_name": "sess-cloud",
+            "bb_session_id": "bb-1",
+            "cdp_url": "wss://example.invalid/cdp",
+        }
+        browser_tool._active_sessions["task-1::local"] = {
+            "session_name": "sess-local",
+            "bb_session_id": None,
+        }
+        browser_tool._last_active_session_key["task-1"] = "task-1::local"
+
+        with patch("tools.browser_tool._cleanup_single_browser_session") as cleanup:
+            browser_tool.cleanup_browser("task-1", preserve_local_headed=True)
+
+        cleanup.assert_called_once_with("task-1")
+        assert browser_tool._last_active_session_key["task-1"] == "task-1::local"
+
+    def test_headed_cleanup_does_not_preserve_camofox(self):
+        browser_tool = self.browser_tool
+        browser_tool._active_sessions["task-1"] = {
+            "session_name": "sess-camofox",
+            "bb_session_id": None,
+        }
+
+        with (
+            patch("tools.browser_tool._is_camofox_mode", return_value=True),
+            patch("tools.browser_tool._cleanup_single_browser_session") as cleanup,
+        ):
+            browser_tool.cleanup_browser("task-1", preserve_local_headed=True)
+
+        cleanup.assert_called_once_with("task-1")
 
     def test_cleanup_camofox_managed_persistence_skips_close(self):
         """When camofox mode + managed persistence, soft_cleanup fires instead of close."""

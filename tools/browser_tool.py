@@ -901,20 +901,26 @@ def _is_headed_mode() -> bool:
 
     _headed_mode_resolved = True
     _cached_headed_mode = False
+    config_has_headed = False
 
     try:
         from hermes_cli.config import read_raw_config
         cfg = read_raw_config()
-        val = cfg.get("browser", {}).get("headed")
-        if val is not None:
+        browser_cfg = cfg.get("browser", {})
+        if (
+            isinstance(browser_cfg, dict)
+            and "headed" in browser_cfg
+            and browser_cfg["headed"] is not None
+        ):
+            config_has_headed = True
+            val = browser_cfg["headed"]
             _cached_headed_mode = str(val).strip().lower() in ("true", "1", "yes")
     except Exception as e:
         logger.debug("Could not read browser.headed from config: %s", e)
 
-    if not _cached_headed_mode:
-        env_val = os.environ.get("AGENT_BROWSER_HEADED", "").strip()
-        if env_val and env_val.lower() in ("true", "1", "yes"):
-            _cached_headed_mode = True
+    if not config_has_headed:
+        env_val = os.environ.get("AGENT_BROWSER_HEADED", "").strip().lower()
+        _cached_headed_mode = env_val in ("true", "1", "yes")
 
     return _cached_headed_mode
 
@@ -2323,8 +2329,18 @@ def _run_browser_command(
     if timeout is None:
         timeout = _safe_command_timeout()
     args = args or []
+    configured_engine = _engine_override or _get_browser_engine()
+    headed_mode = _is_headed_mode()
+    # Lightpanda has no graphical renderer. Preserve the user's visible-browser
+    # request by selecting Chrome for local commands instead of emitting the
+    # invalid ``--headed --engine lightpanda`` combination.
+    local_engine = (
+        "chrome"
+        if headed_mode and configured_engine == "lightpanda"
+        else configured_engine
+    )
 
-    # Build the command
+    # Find agent-browser
     try:
         browser_cmd = _find_agent_browser()
     except FileNotFoundError as e:
@@ -2342,7 +2358,7 @@ def _run_browser_command(
     if (
         _is_local_mode()
         and not _chromium_installed()
-        and _get_browser_engine() != "lightpanda"
+        and local_engine != "lightpanda"
         and not _maybe_autoinstall_chromium()
     ):
         if _running_in_docker():
@@ -2380,17 +2396,24 @@ def _run_browser_command(
         # IMPORTANT: Do NOT use --session with --cdp. In agent-browser >=0.13,
         # --session creates a local browser instance and silently ignores --cdp.
         backend_args = ["--cdp", session_info["cdp_url"]]
+        engine = configured_engine
     else:
         # Local mode — launch Chromium (headless by default, headed when configured)
         backend_args = ["--session", session_info["session_name"]]
-        if _is_headed_mode():
+        engine = local_engine
+        if headed_mode:
             backend_args.append("--headed")
+            if configured_engine == "lightpanda":
+                logger.info(
+                    "browser: headed mode requires Chrome; overriding Lightpanda "
+                    "for task=%s",
+                    task_id,
+                )
 
     # Lightpanda engine injection (local mode only, agent-browser v0.25.3+).
     # Use the resolved session backend rather than global cloud-provider state:
     # hybrid private-URL routing can create a local sidecar while a cloud
     # provider remains configured for public URLs.
-    engine = _engine_override or _get_browser_engine()
     if engine != "auto" and not _is_camofox_mode() and not session_info.get("cdp_url"):
         backend_args += ["--engine", engine]
 
@@ -4378,12 +4401,21 @@ def _cleanup_old_recordings(max_age_hours=72):
 # Cleanup and Management Functions
 # ============================================================================
 
-def cleanup_browser(task_id: Optional[str] = None) -> None:
+def cleanup_browser(
+    task_id: Optional[str] = None,
+    *,
+    preserve_local_headed: bool = False,
+) -> None:
     """
     Clean up browser session(s) for a task.
 
     Called automatically when a task completes or when inactivity timeout is reached.
     Closes both the agent-browser/Browserbase session and Camofox sessions.
+
+    When ``preserve_local_headed`` is true, local agent-browser sessions are
+    left alive so their visible Chrome windows survive between turns. Cloud/CDP
+    sessions and Camofox sessions are still released; headed mode does not apply
+    to either backend.
 
     When ``task_id`` is a bare task identifier (no ``::local`` suffix), reaps
     BOTH the cloud/primary session AND any hybrid-routing local sidecar that
@@ -4410,18 +4442,30 @@ def cleanup_browser(task_id: Optional[str] = None) -> None:
                 session_keys.append(sidecar_key)
         bare_task_id = task_id
 
-    for session_key in session_keys:
-        _cleanup_single_browser_session(session_key)
+    preserved_keys: set[str] = set()
+    if preserve_local_headed and not _is_camofox_mode():
+        with _cleanup_lock:
+            for session_key in session_keys:
+                session_info = _active_sessions.get(session_key)
+                # The command path treats a session as local exactly when it
+                # has no CDP URL. Unknown/stale entries are not preserved.
+                if session_info and not session_info.get("cdp_url"):
+                    preserved_keys.add(session_key)
 
-    # Drop stale last-active ownership. Cleaning a bare task drops its binding;
-    # cleaning a sidecar drops the binding only if that sidecar was still the
-    # recorded owner. This prevents a later click/snapshot from resurrecting a
-    # cleaned sidecar on about:blank while preserving a primary-session binding.
-    if _is_local_sidecar_key(task_id):
-        if _last_active_session_key.get(bare_task_id) == task_id:
+    for session_key in session_keys:
+        if session_key not in preserved_keys:
+            _cleanup_single_browser_session(session_key)
+
+    # Drop stale last-active ownership unless it still names a preserved local
+    # headed session. Cleaning an explicit sidecar keeps an unrelated primary
+    # binding, matching the normal cleanup contract.
+    bound_key = _last_active_session_key.get(bare_task_id)
+    if bound_key not in preserved_keys:
+        if _is_local_sidecar_key(task_id):
+            if bound_key == task_id:
+                _last_active_session_key.pop(bare_task_id, None)
+        else:
             _last_active_session_key.pop(bare_task_id, None)
-    else:
-        _last_active_session_key.pop(bare_task_id, None)
 
 
 def _cleanup_single_browser_session(task_id: str) -> None:

@@ -57,6 +57,13 @@ class TestIsHeadedMode:
             with patch("hermes_cli.config.read_raw_config", return_value=cfg):
                 assert _is_headed_mode() is False
 
+    def test_config_false_beats_true_legacy_env(self):
+        from tools.browser_tool import _is_headed_mode
+        cfg = {"browser": {"headed": False}}
+        with patch.dict(os.environ, {"AGENT_BROWSER_HEADED": "1"}):
+            with patch("hermes_cli.config.read_raw_config", return_value=cfg):
+                assert _is_headed_mode() is False
+
     def test_env_var_fallback(self):
         from tools.browser_tool import _is_headed_mode
         with patch.dict(os.environ, {"AGENT_BROWSER_HEADED": "1"}):
@@ -101,7 +108,7 @@ class TestCleanupTaskResourcesHeadedSkip:
             cleanup_task_resources(_make_agent(), "task-x")
             mock_cb.assert_called_once_with("task-x")
 
-    def test_headed_skips_browser_cleanup(self):
+    def test_headed_cleanup_preserves_only_local_browser(self):
         from agent.chat_completion_helpers import cleanup_task_resources
         with (
             patch("tools.browser_tool._is_headed_mode", return_value=True),
@@ -113,10 +120,10 @@ class TestCleanupTaskResourcesHeadedSkip:
             ),
         ):
             cleanup_task_resources(_make_agent(), "task-x")
-            mock_cb.assert_not_called()
+            mock_cb.assert_called_once_with("task-x", preserve_local_headed=True)
 
     def test_headed_env_var_fallback_when_import_fails(self):
-        """If browser_tool import blows up, the env var still gates the skip."""
+        """If browser_tool import blows up, the env var still gates preservation."""
         from agent.chat_completion_helpers import cleanup_task_resources
         with (
             patch(
@@ -132,7 +139,25 @@ class TestCleanupTaskResourcesHeadedSkip:
             ),
         ):
             cleanup_task_resources(_make_agent(), "task-x")
-            mock_cb.assert_not_called()
+            mock_cb.assert_called_once_with("task-x", preserve_local_headed=True)
+
+    def test_false_headed_env_fallback_does_not_preserve_browser(self):
+        from agent.chat_completion_helpers import cleanup_task_resources
+        with (
+            patch(
+                "tools.browser_tool._is_headed_mode",
+                side_effect=RuntimeError("boom"),
+            ),
+            patch.dict(os.environ, {"AGENT_BROWSER_HEADED": "false"}),
+            patch("run_agent.cleanup_vm"),
+            patch("run_agent.cleanup_browser") as mock_cb,
+            patch(
+                "agent.chat_completion_helpers.is_persistent_env",
+                return_value=False,
+            ),
+        ):
+            cleanup_task_resources(_make_agent(), "task-x")
+            mock_cb.assert_called_once_with("task-x")
 
     def test_headed_does_not_skip_vm_cleanup(self):
         """Headed mode only affects the browser; VM teardown is untouched."""
@@ -155,7 +180,7 @@ class TestCleanupTaskResourcesHeadedSkip:
 # ---------------------------------------------------------------------------
 
 class TestHeadedFlagInjection:
-    def _run_and_capture(self, bt):
+    def _run_and_capture(self, bt, engine_override="auto"):
         """Run a snapshot command with Popen mocked; return captured argv."""
         captured_cmds = []
         mock_proc = MagicMock()
@@ -182,7 +207,9 @@ class TestHeadedFlagInjection:
              ))), \
              patch("tools.interrupt.is_interrupted", return_value=False), \
              patch("tools.browser_tool._write_owner_pid"):
-            bt._run_browser_command("task1", "snapshot", [], _engine_override="auto")
+            bt._run_browser_command(
+                "task1", "snapshot", [], _engine_override=engine_override
+            )
         return captured_cmds
 
     @patch("tools.browser_tool._get_session_info")
@@ -246,3 +273,24 @@ class TestHeadedFlagInjection:
         assert len(captured) == 1
         assert "--headed" not in captured[0]
         assert "--cdp" in captured[0]
+
+    @patch("tools.browser_tool._get_session_info")
+    @patch("tools.browser_tool._find_agent_browser", return_value="/usr/bin/agent-browser")
+    @patch("tools.browser_tool._is_local_mode", return_value=True)
+    @patch("tools.browser_tool._chromium_installed", return_value=True)
+    @patch("tools.browser_tool._get_cloud_provider", return_value=None)
+    @patch("tools.browser_tool._get_cdp_override", return_value="")
+    @patch("tools.browser_tool._is_camofox_mode", return_value=False)
+    def test_headed_mode_uses_chrome_instead_of_lightpanda(
+        self, _camofox, _cdp, _cloud, _chromium, _local, _find, _session
+    ):
+        import tools.browser_tool as bt
+        bt._cached_headed_mode = True
+        bt._headed_mode_resolved = True
+        _session.return_value = {"session_name": "test-sess"}
+
+        captured = self._run_and_capture(bt, engine_override="lightpanda")
+        assert len(captured) == 1
+        assert "--headed" in captured[0]
+        engine_index = captured[0].index("--engine")
+        assert captured[0][engine_index + 1] == "chrome"

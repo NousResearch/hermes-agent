@@ -154,7 +154,15 @@ export function useComposerSubmit({
         triggerHaptic('submit')
         clearDraft()
         dispatchSubmit(text)
-      } else if (!compacting && !attachments.length && text.trim()) {
+      } else if (turnOrigin === 'notification' && payloadPresent) {
+        // Foreground priority: queue the draft and interrupt the
+        // notification turn so the user's explicit input takes over.
+        const queued = queueCurrentDraft()
+
+        if (queued) {
+          void Promise.resolve(onCancel({ preserveBusyUntilSettled: true }))
+        }
+      } else if (!compacting && !attachments.length && text.trim() && onSteer) {
         // Cursor-style stop-and-correct: interrupt the live turn and redirect
         // it with this text. redirect() preserves the shown reasoning/work; if
         // the turn already ended, steerDraft re-queues so nothing is lost.

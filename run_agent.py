@@ -1748,6 +1748,13 @@ class AIAgent:
         if not is_current_turn_user or message.get("role") != "user":
             return persisted
 
+        # Preflight compaction can re-anchor the override index at a message
+        # whose content was MERGED with the compaction summary.  The merge is
+        # wire-consistent, so never overwrite it — applying the override would
+        # silently drop the compaction summary from the durable transcript.
+        if message.get(COMPRESSED_SUMMARY_METADATA_KEY):
+            return persisted
+
         override = getattr(self, "_persist_user_message_override", None)
         if isinstance(override, list):
             persisted["content"] = override

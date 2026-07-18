@@ -6,8 +6,8 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 import { useMessageStream } from '@/app/session/hooks/use-message-stream'
 import { usePromptActions } from '@/app/session/hooks/use-prompt-actions'
 import type { ClientSessionState } from '@/app/types'
-import type { ComposerAttachment } from '@/store/composer'
 import { createClientSessionState } from '@/lib/chat-runtime'
+import type { ComposerAttachment } from '@/store/composer'
 import { clearQueuedPrompts, getQueuedPrompts } from '@/store/composer-queue'
 import { setAwaitingResponse, setBusy } from '@/store/session'
 import type { RpcEvent, TurnOrigin } from '@/types/hermes'
@@ -309,6 +309,8 @@ function NotificationPreemptionHarness({
     branchCurrentSession: async () => true,
     busyRef,
     createBackendSessionForSend: async () => RUNTIME_SESSION_ID,
+    getRoutedStoredSessionId: () => null,
+    getRuntimeIdForStoredSession: () => null,
     getRouteToken: () => 'notification-preemption',
     handleSkinCommand: () => '',
     openMemoryGraph: () => undefined,

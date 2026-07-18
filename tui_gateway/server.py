@@ -7208,7 +7208,12 @@ def _fallback_session_info(session: dict, *, turn_snapshot: Optional[dict] = Non
     turn_state = turn_snapshot or _turn_state_snapshot_locked(session)
     agent = session.get("agent")
     if agent is not None:
-        return _session_info(agent, session, turn_snapshot=turn_snapshot)
+        info = _session_info(agent, session, turn_snapshot=turn_snapshot)
+        info.setdefault("running", bool(turn_state["running"]))
+        info.setdefault("turn_generation", int(turn_state["turn_generation"]))
+        info.setdefault("turn_origin", turn_state["turn_origin"])
+        info.setdefault("turn_state_revision", int(turn_state["turn_state_revision"]))
+        return info
     cwd = _default_session_cwd()
     return {
         "cwd": cwd,
@@ -10772,13 +10777,13 @@ def _dispatch_notification_turn(
 
     try:
         if outcome == "dispatched":
+            if emit_status:
+                _emit("status.update", sid, {"kind": "process", "text": status_text})
             submit_kwargs: dict = {"origin": "notification"}
             if event is not None and event.get("type") == "async_delegation":
                 submit_kwargs["display_kind"] = "async_delegation_complete"
                 submit_kwargs["display_metadata"] = _async_delegation_display_metadata(event)
             _run_prompt_submit(rid, sid, session, text, **submit_kwargs)
-        if event is not None:
-            complete_event_delivery(event, claim_id or "")
     except Exception:
         if event is not None and claim_id:
             release_event_delivery(event, claim_id)

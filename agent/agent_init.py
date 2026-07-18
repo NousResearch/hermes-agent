@@ -1644,6 +1644,8 @@ def init_agent(
         )
     except Exception:
         pass
+    # Keep configured policy separate from a transient auxiliary safety cap.
+    agent._compression_threshold_percent = compression_threshold
     compression_enabled = str(_compression_cfg.get("enabled", True)).lower() in {"true", "1", "yes"}
     compression_target_ratio = float(_compression_cfg.get("target_ratio", 0.20))
     compression_protect_last = int(_compression_cfg.get("protect_last_n", 20))
@@ -1880,12 +1882,6 @@ def init_agent(
 
     if _selected_engine is not None:
         agent.context_compressor = _selected_engine
-        # External engines own compaction policy: the host compression
-        # threshold (including the Codex gpt-5.5 autoraise above) only
-        # configures the built-in ContextCompressor and never reaches the
-        # plugin, so the autoraise notice would announce a change that does
-        # not apply. Drop it. (#44439)
-        agent._compression_threshold_autoraised = None
         # Resolve context_length for plugin engines — mirrors switch_model() path
         from agent.model_metadata import get_model_context_length
         _plugin_ctx_len = get_model_context_length(
@@ -1904,6 +1900,17 @@ def init_agent(
             provider=agent.provider,
             api_mode=agent.api_mode,
         )
+        from agent.conversation_compression import apply_context_engine_compression_budget
+
+        # Legacy engines keep their policy. Opt-in engines receive the same
+        # floor/reservation-aware budget as ContextCompressor.
+        if not apply_context_engine_compression_budget(
+            agent,
+            _plugin_ctx_len,
+            threshold_percent=compression_threshold,
+            reason="model_init",
+        ):
+            agent._compression_threshold_autoraised = None
         if not agent.quiet_mode:
             _ra().logger.info("Using context engine: %s", _selected_engine.name)
     else:

@@ -94,8 +94,8 @@ def test_auto_corrects_threshold_when_aux_context_below_threshold(mock_get_clien
     assert "threshold:" in messages[0]
     # Warning stored for gateway replay
     assert agent._compression_warning is not None
-    # Threshold on the live compressor was actually lowered to aux_context.
-    assert agent.context_compressor.threshold_tokens == 80_000
+    # The live threshold reserves summary-output space inside the aux window.
+    assert agent.context_compressor.threshold_tokens == 78_000
 
 
 @patch("agent.model_metadata.get_model_context_length", return_value=32_768)
@@ -406,7 +406,7 @@ def test_just_below_threshold_auto_corrects(mock_get_client, mock_ctx_len):
     assert len(messages) == 1
     assert "small-model" in messages[0]
     assert "Auto-lowered" in messages[0]
-    assert agent.context_compressor.threshold_tokens == 99_999
+    assert agent.context_compressor.threshold_tokens == 97_999
 
 
 # ── Two-phase: __init__ + run_conversation replay ───────────────────

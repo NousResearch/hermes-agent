@@ -3245,6 +3245,12 @@ def run_conversation(
                             provider=agent.provider,
                             api_mode=agent.api_mode,
                         )
+                        from agent.conversation_compression import (
+                            apply_context_engine_compression_budget,
+                        )
+                        apply_context_engine_compression_budget(
+                            agent, _reduced_ctx, reason="provider_context_limit"
+                        )
                         # Context probing flags — only set on built-in
                         # compressor (plugin engines manage their own).
                         if hasattr(compressor, "_context_probed"):
@@ -3718,6 +3724,12 @@ def run_conversation(
                             api_key=getattr(agent, "api_key", ""),
                             provider=agent.provider,
                             api_mode=agent.api_mode,
+                        )
+                        from agent.conversation_compression import (
+                            apply_context_engine_compression_budget,
+                        )
+                        apply_context_engine_compression_budget(
+                            agent, new_ctx, reason="provider_context_limit"
                         )
                         # Context probing flags — only set on built-in
                         # compressor (plugin engines manage their own).  This

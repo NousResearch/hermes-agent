@@ -42,6 +42,88 @@ from agent.model_metadata import estimate_request_tokens_rough
 
 logger = logging.getLogger(__name__)
 
+
+def _set_context_engine_compression_budget(
+    compressor: Any,
+    context_capacity: int,
+    trigger_tokens: int,
+    *,
+    reason: str,
+) -> bool:
+    """Dispatch the optional context-engine budget capability safely."""
+    set_compression_budget = getattr(compressor, "set_compression_budget", None)
+    if not callable(set_compression_budget):
+        return False
+    try:
+        set_compression_budget(context_capacity, trigger_tokens, reason=reason)
+    except Exception as exc:
+        logger.warning("Context engine rejected host compression budget: %s", exc)
+        return False
+    return True
+
+
+def _canonical_compression_budget(
+    agent: Any,
+    compressor: Any,
+    context_length: int,
+    threshold_percent: float | None = None,
+) -> tuple[int, int]:
+    """Return the same usable capacity and trigger as ContextCompressor."""
+    from agent.context_compressor import ContextCompressor
+
+    configured_threshold = threshold_percent
+    if configured_threshold is None:
+        configured_threshold = getattr(agent, "_compression_threshold_percent", None)
+    if not isinstance(configured_threshold, (int, float)):
+        configured_threshold = getattr(compressor, "_configured_threshold_percent", None)
+    if not isinstance(configured_threshold, (int, float)):
+        configured_threshold = getattr(compressor, "threshold_percent", None)
+
+    max_tokens = getattr(agent, "max_tokens", None)
+    output_reservation = ContextCompressor._coerce_max_tokens(max_tokens) or 0
+    context_capacity = context_length - output_reservation
+    if context_capacity <= 0:
+        context_capacity = context_length
+    if not isinstance(configured_threshold, (int, float)):
+        return context_capacity, compressor.threshold_tokens
+
+    effective_threshold_percent = ContextCompressor._effective_threshold_percent(
+        context_length, float(configured_threshold)
+    )
+    trigger_tokens = ContextCompressor._compute_threshold_tokens(
+        context_length, effective_threshold_percent, max_tokens
+    )
+    return context_capacity, trigger_tokens
+
+
+def apply_context_engine_compression_budget(
+    agent: Any,
+    context_length: int,
+    *,
+    threshold_percent: float | None = None,
+    reason: str,
+) -> bool:
+    """Apply the host's canonical compression budget to an opt-in engine.
+
+    The auxiliary cap is deliberately temporary: a runtime transition retains
+    it until the live auxiliary model is revalidated, then feasibility can
+    restore the nominal host budget.
+    """
+    compressor = getattr(agent, "context_compressor", None)
+    if compressor is None:
+        return False
+
+    context_capacity, trigger_tokens = _canonical_compression_budget(
+        agent, compressor, context_length, threshold_percent
+    )
+    auxiliary_cap = getattr(agent, "_auxiliary_compression_context_cap", None)
+    if isinstance(auxiliary_cap, int) and auxiliary_cap > 0:
+        context_capacity = min(context_capacity, auxiliary_cap)
+        trigger_tokens = min(trigger_tokens, auxiliary_cap)
+    return _set_context_engine_compression_budget(
+        compressor, context_capacity, trigger_tokens, reason=reason
+    )
+
 # Stable marker the gateway matches on to re-tag the auto-compaction lifecycle
 # status as ``kind="compacting"`` (tui_gateway/server.py::_status_update), so
 # drivers like the desktop app can show an explicit "Summarizing…" indicator
@@ -175,7 +257,7 @@ class _CompressionLockLeaseRefresher:
                 break
 
 
-def check_compression_model_feasibility(agent: Any) -> None:
+def check_compression_model_feasibility(agent: Any) -> bool:
     """Warn at session start if the auxiliary compression model's context
     window is smaller than the main model's compression threshold.
 
@@ -244,7 +326,7 @@ def check_compression_model_feasibility(agent: Any) -> None:
                 "No auxiliary LLM provider for compression — "
                 "summaries will be unavailable."
             )
-            return
+            return True
 
         aux_base_url = str(getattr(client, "base_url", ""))
         # ``client.api_key`` may be a callable (Azure Foundry Entra ID
@@ -287,28 +369,39 @@ def check_compression_model_feasibility(agent: Any) -> None:
                 f"detected value if it is wrong."
             )
 
-        threshold = agent.context_compressor.threshold_tokens
+        compressor = agent.context_compressor
+        main_ctx = compressor.context_length
+        canonical_capacity, threshold = _canonical_compression_budget(
+            agent, compressor, main_ctx
+        )
         if aux_context < threshold:
             # Auto-correct: lower the live session threshold so
             # compression actually works this session.  The hard floor
             # above guarantees aux_context >= MINIMUM_CONTEXT_LENGTH,
             # so the new threshold is always >= 64K.
             #
-            # The compression summariser sends a single user-role
-            # prompt (no system prompt, no tools) to the aux model, so
-            # new_threshold == aux_context is safe: the request is
-            # the raw messages plus a small summarisation instruction.
+            # Reserve the existing compressor's summary-output budget from
+            # the auxiliary window as well. The auxiliary request includes
+            # instructions and must leave room for a summary response; using
+            # its advertised window verbatim would still overflow.
             old_threshold = threshold
-            new_threshold = aux_context
-            agent.context_compressor.threshold_tokens = new_threshold
-            # Keep threshold_percent in sync so future main-model
-            # context_length changes (update_model) re-derive from a
-            # sensible number rather than the original too-high value.
-            main_ctx = agent.context_compressor.context_length
-            if main_ctx:
-                agent.context_compressor.threshold_percent = (
-                    new_threshold / main_ctx
-                )
+            summary_reservation = max(
+                1,
+                min(
+                    int(getattr(compressor, "max_summary_tokens", 2_000) or 2_000),
+                    aux_context - 1,
+                ),
+            )
+            auxiliary_capacity = max(1, aux_context - summary_reservation)
+            new_threshold = min(auxiliary_capacity, threshold)
+            compressor.threshold_tokens = new_threshold
+            agent._auxiliary_compression_context_cap = auxiliary_capacity
+            _set_context_engine_compression_budget(
+                compressor,
+                auxiliary_capacity,
+                new_threshold,
+                reason="auxiliary_context",
+            )
             safe_pct = int((aux_context / main_ctx) * 100) if main_ctx else 50
             # Build human-readable "model (provider)" labels for both
             # the main model and the compression model so users can
@@ -364,6 +457,19 @@ def check_compression_model_feasibility(agent: Any) -> None:
                 old_threshold,
                 new_threshold,
             )
+        else:
+            # A newly resolved auxiliary runtime can safely accept the nominal
+            # request. Release any transition-only cap rather than preserving a
+            # stale lower trigger for the rest of the session.
+            agent._auxiliary_compression_context_cap = None
+            compressor.threshold_tokens = threshold
+            _set_context_engine_compression_budget(
+                compressor,
+                canonical_capacity,
+                threshold,
+                reason="auxiliary_context_restored",
+            )
+        return True
     except ValueError:
         # Hard rejections (aux below minimum context) must propagate
         # so the session refuses to start.
@@ -372,6 +478,20 @@ def check_compression_model_feasibility(agent: Any) -> None:
         logger.debug(
             "Compression feasibility check failed (non-fatal): %s", exc
         )
+        return False
+
+
+def invalidate_compression_feasibility(agent: Any) -> None:
+    """Require the next preflight to resolve the live auxiliary runtime."""
+    agent._compression_feasibility_checked = False
+
+
+def ensure_compression_feasibility_checked(agent: Any) -> None:
+    """Resolve auxiliary feasibility once before a compression decision."""
+    if getattr(agent, "_compression_feasibility_checked", False):
+        return
+    if check_compression_model_feasibility(agent):
+        agent._compression_feasibility_checked = True
 
 
 def replay_compression_warning(agent: Any) -> None:
@@ -526,14 +646,7 @@ def compress_context(
     # The check itself sets ``agent._compression_warning`` so the
     # status-callback replay machinery still emits the warning to the user
     # the first time it would matter.
-    if not getattr(agent, "_compression_feasibility_checked", False):
-        # Mark as checked only after the probe completes. If the check
-        # raises (e.g. a fatal aux-context ValueError that aborts the
-        # session), leaving the flag unset is harmless; a non-fatal
-        # transient failure is swallowed inside the function so the flag
-        # is set normally on the next successful pass.
-        check_compression_model_feasibility(agent)
-        agent._compression_feasibility_checked = True
+    ensure_compression_feasibility_checked(agent)
 
     _pre_msg_count = len(messages)
     # In-place compaction (config: compression.in_place, see #38763). When True,
@@ -1488,7 +1601,10 @@ def try_shrink_image_parts_in_messages(
 __all__ = [
     "COMPACTION_STATUS",
     "COMPACTION_STATUS_MARKER",
+    "apply_context_engine_compression_budget",
     "check_compression_model_feasibility",
+    "ensure_compression_feasibility_checked",
+    "invalidate_compression_feasibility",
     "replay_compression_warning",
     "compress_context",
     "try_shrink_image_parts_in_messages",

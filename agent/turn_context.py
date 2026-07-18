@@ -28,7 +28,10 @@ import uuid
 from dataclasses import dataclass
 from typing import Any, Dict, List, Optional
 
-from agent.conversation_compression import conversation_history_after_compression
+from agent.conversation_compression import (
+    conversation_history_after_compression,
+    ensure_compression_feasibility_checked,
+)
 from agent.iteration_budget import IterationBudget
 from agent.model_metadata import (
     estimate_messages_tokens_rough,
@@ -411,12 +414,24 @@ def build_turn_context(
     # Gate the (expensive) full token estimate behind a cheap pre-check.
     # See ``_should_run_preflight_estimate`` for the OR semantics that fix
     # issue #27405 (a few very large messages slipping past the count gate).
-    if agent.compression_enabled and _should_run_preflight_estimate(
-        messages,
-        agent.context_compressor.protect_first_n,
-        agent.context_compressor.protect_last_n,
-        agent.context_compressor.threshold_tokens,
+    if agent.compression_enabled and (
+        _should_run_preflight_estimate(
+            messages,
+            agent.context_compressor.protect_first_n,
+            agent.context_compressor.protect_last_n,
+            agent.context_compressor.threshold_tokens,
+        )
+        or (
+            not getattr(agent, "_compression_feasibility_checked", False)
+            and _should_run_preflight_estimate(
+                messages,
+                agent.context_compressor.protect_first_n,
+                agent.context_compressor.protect_last_n,
+                max(1, agent.context_compressor.threshold_tokens // 2),
+            )
+        )
     ):
+        ensure_compression_feasibility_checked(agent)
         _preflight_tokens = estimate_request_tokens_rough(
             messages,
             system_prompt=active_system_prompt or "",

@@ -802,6 +802,12 @@ class AIAgent:
                         provider=self.provider,
                         api_mode=self.api_mode,
                     )
+                    from agent.conversation_compression import (
+                        apply_context_engine_compression_budget,
+                    )
+                    apply_context_engine_compression_budget(
+                        self, loaded_ctx, reason="lmstudio_runtime_context"
+                    )
         except Exception as err:
             logger.debug("LM Studio preload skipped: %s", err)
 

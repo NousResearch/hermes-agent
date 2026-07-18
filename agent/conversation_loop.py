@@ -5010,6 +5010,30 @@ def run_conversation(
 
                 agent._execute_tool_calls(assistant_message, messages, effective_task_id, api_call_count)
 
+                try:
+                    from gateway.extensions.deferred_clarify import (
+                        find_deferred_clarify_interaction_id,
+                    )
+                    _tool_call_ids = {
+                        getattr(tc, "id", None)
+                        for tc in assistant_message.tool_calls
+                        if getattr(tc, "id", None)
+                    }
+                    _deferred_clarify_id = find_deferred_clarify_interaction_id(
+                        messages,
+                        _tool_call_ids,
+                    )
+                    if _deferred_clarify_id:
+                        final_response = "NO_REPLY"
+                        _turn_exit_reason = f"deferred_clarify({_deferred_clarify_id})"
+                        try:
+                            agent._deferred_clarify_interaction_id = _deferred_clarify_id
+                        except Exception:
+                            pass
+                        break
+                except Exception:
+                    logger.debug("deferred clarify marker detection failed", exc_info=True)
+
                 if agent._tool_guardrail_halt_decision is not None:
                     decision = agent._tool_guardrail_halt_decision
                     _turn_exit_reason = "guardrail_halt"

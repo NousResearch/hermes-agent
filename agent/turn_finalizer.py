@@ -465,6 +465,9 @@ def finalize_turn(
         ).get("service_tier"),
         "session_id": agent.session_id,
     }
+    _deferred_clarify_interaction_id = getattr(agent, "_deferred_clarify_interaction_id", None)
+    if _deferred_clarify_interaction_id:
+        result["deferred_clarify_interaction_id"] = _deferred_clarify_interaction_id
     if agent._tool_guardrail_halt_decision is not None:
         result["guardrail"] = agent._tool_guardrail_halt_decision.to_metadata()
     # Surface any post-loop cleanup failures so the caller can distinguish a

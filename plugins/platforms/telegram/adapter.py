@@ -5104,6 +5104,8 @@ class TelegramAdapter(BasePlatformAdapter):
                 **self._link_preview_kwargs(),
             }
 
+            durable_clarify = bool(metadata and metadata.get("durable_clarify"))
+            callback_prefix = "cld" if durable_clarify else "cl"
             if choices:
                 # Telegram caps callback_data at 64 bytes; keep "cl:<id>:<idx>"
                 # short.
@@ -5112,13 +5114,13 @@ class TelegramAdapter(BasePlatformAdapter):
                     rows.append([
                         InlineKeyboardButton(
                             str(idx + 1),
-                            callback_data=f"cl:{clarify_id}:{idx}",
+                            callback_data=f"{callback_prefix}:{clarify_id}:{idx}",
                         )
                     ])
                 rows.append([
                     InlineKeyboardButton(
                         "✏️ Other (type answer)",
-                        callback_data=f"cl:{clarify_id}:other",
+                        callback_data=f"{callback_prefix}:{clarify_id}:other",
                     )
                 ])
                 kwargs["reply_markup"] = InlineKeyboardMarkup(rows)
@@ -5135,7 +5137,8 @@ class TelegramAdapter(BasePlatformAdapter):
             )
 
             msg = await self._send_message_with_thread_fallback(**kwargs)
-            self._clarify_state[clarify_id] = session_key
+            if not durable_clarify:
+                self._clarify_state[clarify_id] = session_key
             return SendResult(success=True, message_id=str(msg.message_id))
         except Exception as e:
             logger.warning("[%s] send_clarify failed: %s", self.name, _redact_telegram_error_text(e))
@@ -6020,6 +6023,122 @@ class TelegramAdapter(BasePlatformAdapter):
                         await self._send_message_with_thread_fallback(**send_kwargs)
                 except Exception as exc:
                     logger.error("[%s] slash-confirm callback failed: %s", self.name, exc, exc_info=True)
+            return
+
+        # --- Durable deferred clarify callbacks (cld:interaction_id:idx | cld:interaction_id:other) ---
+        if data.startswith("cld:"):
+            parts = data.split(":", 2)
+            if len(parts) == 3:
+                interaction_id = parts[1]
+                choice_token = parts[2]
+                caller_id = str(getattr(query.from_user, "id", ""))
+                if not self._is_callback_user_authorized(
+                    caller_id,
+                    chat_id=query_chat_id,
+                    chat_type=str(query_chat_type) if query_chat_type is not None else None,
+                    thread_id=str(query_thread_id) if query_thread_id is not None else None,
+                    user_name=query_user_name,
+                ):
+                    await query.answer(text="⛔ You are not authorized to answer this prompt.")
+                    return
+
+                user_display = getattr(query.from_user, "first_name", "User")
+                chat_id_s = str(query_chat_id) if query_chat_id is not None else None
+                thread_id_s = str(query_thread_id) if query_thread_id is not None else None
+
+                if choice_token == "other":
+                    try:
+                        from tools.clarify_interaction import mark_awaiting_text
+                        marked = mark_awaiting_text(
+                            interaction_id,
+                            user_id=caller_id,
+                            chat_id=chat_id_s,
+                            thread_id=thread_id_s,
+                        )
+                    except Exception as exc:
+                        logger.warning("[%s] durable mark_awaiting_text failed: %s", self.name, exc)
+                        marked = None
+                    if not marked or not marked.ok:
+                        await self._notify_clarify_expired(query, user_display)
+                        return
+                    await query.answer(text="✏️ Type your answer in the chat.")
+                    try:
+                        await query.edit_message_text(
+                            text=f"{query.message.text or ''}\n\n<i>Awaiting typed response from {_html.escape(user_display)}…</i>",
+                            parse_mode=ParseMode.HTML,
+                            reply_markup=None,
+                        )
+                    except Exception:
+                        pass
+                    return
+
+                try:
+                    idx = int(choice_token)
+                except (ValueError, TypeError):
+                    await query.answer(text="Invalid choice.")
+                    return
+
+                try:
+                    from gateway.extensions.deferred_clarify import build_recovery_prompt
+                    from gateway.session import SessionSource
+                    from tools.clarify_interaction import resolve_choice
+
+                    resolved = resolve_choice(
+                        interaction_id,
+                        idx,
+                        user_id=caller_id,
+                        chat_id=chat_id_s,
+                        thread_id=thread_id_s,
+                    )
+                except Exception as exc:
+                    logger.error("[%s] durable resolve_choice failed: %s", self.name, exc, exc_info=True)
+                    resolved = None
+
+                if not resolved or not resolved.ok or not resolved.interaction:
+                    await self._notify_clarify_expired(query, user_display)
+                    return
+
+                resolved_text = resolved.answer or ""
+                await query.answer(text=f"✓ {resolved_text[:60]}")
+                try:
+                    await query.edit_message_text(
+                        text=f"{query.message.text or ''}\n\n<b>{_html.escape(user_display)}:</b> {_html.escape(resolved_text)}",
+                        parse_mode=ParseMode.HTML,
+                        reply_markup=None,
+                    )
+                except Exception:
+                    pass
+
+                if self._message_handler:
+                    chat_type = str(query_chat_type or "dm").lower()
+                    if chat_type == "private":
+                        chat_type = "dm"
+                    elif chat_type == "supergroup":
+                        chat_type = "forum" if thread_id_s else "group"
+                    source = SessionSource(
+                        platform=Platform.TELEGRAM,
+                        chat_id=str(query_chat_id or ""),
+                        chat_type=chat_type,
+                        user_id=caller_id,
+                        user_name=query_user_name,
+                        thread_id=thread_id_s,
+                    )
+                    event = MessageEvent(
+                        text=build_recovery_prompt(
+                            question=resolved.interaction.question,
+                            answer=resolved_text,
+                        ),
+                        message_type=MessageType.TEXT,
+                        source=source,
+                        raw_message=query,
+                        message_id=str(getattr(query.message, "message_id", "") or ""),
+                        internal=True,
+                        metadata={"deferred_clarify_interaction_id": interaction_id},
+                    )
+                    response = await self._message_handler(event)
+                    if response:
+                        metadata = {"thread_id": thread_id_s} if thread_id_s else None
+                        await self.send(str(query_chat_id), response, metadata=metadata)
             return
 
         # --- Clarify callbacks (cl:clarify_id:idx | cl:clarify_id:other) ---

@@ -51,6 +51,22 @@ def check_ha_requirements() -> bool:
     return True
 
 
+def _resolve_notify_service(extra: Optional[Dict[str, Any]] = None) -> str:
+    """Resolve and validate a notify service from config or the environment."""
+    value = (extra or {}).get("notify_service") or os.getenv("HASS_NOTIFY_SERVICE", "")
+    service = str(value or "").strip().strip("/")
+    if service.startswith("notify."):
+        service = service.split(".", 1)[1]
+    service = service.strip().strip("/")
+    if service and not _NOTIFY_SERVICE_RE.match(service):
+        logger.warning(
+            "Ignoring invalid Home Assistant notify service: %s",
+            value,
+        )
+        return ""
+    return service
+
+
 class HomeAssistantAdapter(BasePlatformAdapter):
     """
     Home Assistant WebSocket adapter.
@@ -79,10 +95,9 @@ class HomeAssistantAdapter(BasePlatformAdapter):
         extra = config.extra or {}
         token = config.token or os.getenv("HASS_TOKEN", "")
         url = extra.get("url") or os.getenv("HASS_URL", "http://homeassistant.local:8123")
-        notify_service = extra.get("notify_service") or os.getenv("HASS_NOTIFY_SERVICE", "")
         self._hass_url: str = url.rstrip("/")
         self._hass_token: str = token
-        self._notify_service: str = self._normalize_notify_service(notify_service)
+        self._notify_service: str = _resolve_notify_service(extra)
 
         # Event filtering
         self._watch_domains: Set[str] = set(extra.get("watch_domains", []))
@@ -388,21 +403,6 @@ class HomeAssistantAdapter(BasePlatformAdapter):
     # Outbound messaging
     # ------------------------------------------------------------------
 
-    @staticmethod
-    def _normalize_notify_service(value: Any) -> str:
-        """Return a service name suitable for /api/services/notify/<service>."""
-        service = str(value or "").strip().strip("/")
-        if service.startswith("notify."):
-            service = service.split(".", 1)[1]
-        service = service.strip().strip("/")
-        if service and not _NOTIFY_SERVICE_RE.match(service):
-            logger.warning(
-                "Ignoring invalid Home Assistant notify service: %s",
-                value,
-            )
-            return ""
-        return service
-
     async def send(
         self,
         chat_id: str,
@@ -486,8 +486,7 @@ async def _standalone_send(
     media_files: Optional[list] = None,
     force_document: bool = False,
 ) -> Dict[str, Any]:
-    """Send a notification via the HA ``notify.notify`` service without a
-    live gateway adapter.
+    """Send a notification via an HA notify service without a live adapter.
 
     Used by ``tools/send_message_tool._send_via_adapter`` when the gateway
     runner is not in this process (typical for cron jobs running
@@ -498,7 +497,9 @@ async def _standalone_send(
     Reads ``HASS_TOKEN`` from ``pconfig.token`` (set by the gateway config
     loader from env) and falls back to the ``HASS_TOKEN`` env var.  Server
     URL comes from ``pconfig.extra["url"]`` (seeded by the env loader in
-    ``gateway/config.py``) or the ``HASS_URL`` env var.
+    ``gateway/config.py``) or the ``HASS_URL`` env var.  The notify service
+    uses the same config-first, environment-fallback resolution and validation
+    as the live adapter, defaulting to ``notify.notify`` when unset.
 
     ``thread_id``, ``media_files`` and ``force_document`` are accepted for
     signature parity with other standalone senders.  HA notifications have
@@ -518,7 +519,8 @@ async def _standalone_send(
             )
         }
 
-    url = f"{hass_url}/api/services/notify/notify"
+    notify_service = _resolve_notify_service(extra) or "notify"
+    url = f"{hass_url}/api/services/notify/{notify_service}"
     headers = {
         "Authorization": f"Bearer {token}",
         "Content-Type": "application/json",
@@ -586,7 +588,7 @@ def register(ctx) -> None:
         is_connected=_is_connected,
         required_env=["HASS_TOKEN"],
         install_hint="pip install aiohttp",
-        # Out-of-process cron delivery via the HA ``notify.notify`` service.
+        # Out-of-process cron delivery via the configured HA notify service.
         # Without this hook, ``deliver=homeassistant`` cron jobs would fail
         # with "No live adapter" when cron runs separately from the gateway.
         # Mirrors the Discord / Teams / Mattermost pattern.

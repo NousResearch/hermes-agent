@@ -54,6 +54,17 @@ class _FakeGateway:
     def _running_agent_count(self):
         return len(self._running_agents)
 
+    def _active_cron_job_count(self):
+        # stop() reads this alongside _running_agent_count when logging the
+        # drain snapshot (#60432) -- this fake has no cron scheduler, so
+        # there's never in-flight cron work to report.
+        return 0
+
+    def _active_api_run_count(self):
+        # The shutdown log also reports adapter-owned API work (#63529).
+        # This fake has no API server adapter, so it is always idle.
+        return 0
+
     def _update_runtime_status(self, *_a, **_kw):
         pass
 
@@ -68,6 +79,9 @@ class _FakeGateway:
         self._cleanup_agent_resources(agent)
 
     async def _notify_active_sessions_of_shutdown(self):
+        pass
+
+    async def _cancel_secondary_profile_reconnect_tasks(self):
         pass
 
     async def _drain_active_agents(self, timeout):

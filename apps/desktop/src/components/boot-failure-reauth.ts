@@ -26,22 +26,43 @@ const DEFAULT_SIGN_IN_COPY: SignInCopy = {
   withProvider: provider => `Sign in with ${provider}`
 }
 
-// A remote, gated (oauth-bucket), not-currently-connected gateway is a
-// remote-reauth boot failure: the access cookie lapsed (e.g. the remote
-// dashboard restarted) and the local-recovery buttons (Retry/Repair) can't
-// fix it — only re-establishing the remote session can. A connected oauth
-// session, or a token/local gateway, boots for some other reason the
-// local-recovery buttons address, so those return false here.
-export function isRemoteReauthFailure(config: DesktopConnectionConfig | null | undefined): boolean {
-  if (!config) {
-    return false
-  }
+// True when the app is pointed at a remote/cloud backend (either resolves to a
+// remote URL). Any boot failure in this shape is fixable from Settings →
+// Gateway (edit URL / token / sign in) — the local Retry/Repair buttons target
+// the bundled backend and can't help. Drives the escape-hatch emphasis.
+export function isRemoteConfig(config: DesktopConnectionConfig | null | undefined): boolean {
+  return Boolean(config && (config.mode === 'remote' || config.mode === 'cloud') && config.remoteUrl)
+}
+
+// True when a boot error is auth-shaped — the refresh token was rejected or the
+// remote couldn't mint a websocket ticket. The Settings indicator can still read
+// "connected" (a stale RT cookie exists), so the error text is part of the
+// signal; without it a connected-but-expired session drops into the local-only
+// recovery buttons for a problem only reauth can fix.
+export function isRemoteReauthError(error: string | null | undefined): boolean {
+  const text = String(error || '').toLowerCase()
 
   return (
-    config.mode === 'remote' &&
-    config.remoteAuthMode === 'oauth' &&
-    !config.remoteOauthConnected &&
-    Boolean(config.remoteUrl)
+    text.includes('remote gateway session has expired') ||
+    text.includes('gateway sign-in required') ||
+    text.includes('needs oauth login') ||
+    (text.includes('oauth') && (text.includes('not signed in') || text.includes('sign in')))
+  )
+}
+
+// A remote, gated (oauth-bucket) gateway is a remote-reauth boot failure when the
+// session isn't connected OR the boot error is auth-shaped (connected-but-expired
+// — see isRemoteReauthError). Only re-establishing the remote session fixes it;
+// the local Retry/Repair buttons can't. 'cloud' counts as remote (it resolves to
+// a remote oauth backend), so a lapsed cloud session is the same failure.
+export function isRemoteReauthFailure(
+  config: DesktopConnectionConfig | null | undefined,
+  error?: string | null
+): boolean {
+  return (
+    isRemoteConfig(config) &&
+    config!.remoteAuthMode === 'oauth' &&
+    (!config!.remoteOauthConnected || isRemoteReauthError(error))
   )
 }
 

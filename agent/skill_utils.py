@@ -126,10 +126,22 @@ def parse_frontmatter(content: str) -> Tuple[Dict[str, Any], str]:
     Uses yaml with CSafeLoader for full YAML support (nested metadata, lists)
     with a fallback to simple key:value splitting for robustness.
 
+    A single leading UTF-8 BOM (U+FEFF) is stripped before parsing. Windows
+    GUI editors (Notepad, PowerShell ``>``) prepend one when saving a SKILL.md
+    as UTF-8, and ``read_text(encoding="utf-8")`` preserves it (only
+    ``utf-8-sig`` strips it). Left in place, the BOM defeats the ``---`` fence
+    check below and the whole frontmatter is silently discarded — name,
+    description, ``platforms`` gating, env-var setup, and conditional
+    activation all vanish. See CONTRIBUTING.md "File encoding".
+
     Returns:
         (frontmatter_dict, remaining_body)
     """
     frontmatter: Dict[str, Any] = {}
+
+    # Strip only a leading BOM; a BOM mid-content is data, not a marker.
+    if content.startswith("\ufeff"):
+        content = content[1:]
     body = content
 
     if not content.startswith("---"):
@@ -160,27 +172,8 @@ def parse_frontmatter(content: str) -> Tuple[Dict[str, Any], str]:
 # ── Platform matching ─────────────────────────────────────────────────────
 
 
-def skill_matches_platform(frontmatter: Dict[str, Any]) -> bool:
-    """Return True when the skill is compatible with the current OS.
-
-    Skills declare platform requirements via a top-level ``platforms`` list
-    in their YAML frontmatter::
-
-        platforms: [macos]          # macOS only
-        platforms: [macos, linux]   # macOS and Linux
-
-    If the field is absent or empty the skill is compatible with **all**
-    platforms (backward-compatible default).
-
-    Termux note: on Termux/Android, ``sys.platform`` is ``"linux"`` on
-    older Pythons but became ``"android"`` on Python 3.13+. Termux is a
-    Linux userland riding on the Android kernel, so skills tagged
-    ``linux`` are treated as compatible in Termux regardless of which
-    ``sys.platform`` value Python reports. Individual Linux commands
-    inside a skill may still misbehave (no systemd, BusyBox utils, no
-    apt/dnf, etc.) but that is on the skill, not on platform gating.
-    """
-    platforms = frontmatter.get("platforms")
+def skill_matches_platform_list(platforms: Any) -> bool:
+    """Return True when *platforms* is compatible with the current OS."""
     if not platforms:
         return True
     if not isinstance(platforms, list):
@@ -202,6 +195,29 @@ def skill_matches_platform(frontmatter: Dict[str, Any]) -> bool:
         if running_in_termux and mapped in ("termux", "android"):
             return True
     return False
+
+
+def skill_matches_platform(frontmatter: Dict[str, Any]) -> bool:
+    """Return True when the skill is compatible with the current OS.
+
+    Skills declare platform requirements via a top-level ``platforms`` list
+    in their YAML frontmatter::
+
+        platforms: [macos]          # macOS only
+        platforms: [macos, linux]   # macOS and Linux
+
+    If the field is absent or empty the skill is compatible with **all**
+    platforms (backward-compatible default).
+
+    Termux note: on Termux/Android, ``sys.platform`` is ``"linux"`` on
+    older Pythons but became ``"android"`` on Python 3.13+. Termux is a
+    Linux userland riding on the Android kernel, so skills tagged
+    ``linux`` are treated as compatible in Termux regardless of which
+    ``sys.platform`` value Python reports. Individual Linux commands
+    inside a skill may still misbehave (no systemd, BusyBox utils, no
+    apt/dnf, etc.) but that is on the skill, not on platform gating.
+    """
+    return skill_matches_platform_list(frontmatter.get("platforms"))
 
 
 # ── Environment matching ──────────────────────────────────────────────────
@@ -787,8 +803,9 @@ def iter_skill_index_files(skills_dir: Path, filename: str):
     ``SKILL.md`` files, but they are progressive-disclosure data loaded through
     ``skill_view(..., file_path=...)`` rather than active skill roots.
     """
-    matches = []
-    for root, dirs, files in os.walk(skills_dir, followlinks=True):
+    skills_dir_str = str(skills_dir)
+    matches: list[str] = []
+    for root, dirs, files in os.walk(skills_dir_str, followlinks=True):
         has_skill_md = "SKILL.md" in files
         dirs[:] = [
             d
@@ -797,9 +814,9 @@ def iter_skill_index_files(skills_dir: Path, filename: str):
             and not (has_skill_md and d in SKILL_SUPPORT_DIRS)
         ]
         if filename in files:
-            matches.append(Path(root) / filename)
-    for path in sorted(matches, key=lambda p: str(p.relative_to(skills_dir))):
-        yield path
+            matches.append(os.path.join(root, filename))
+    for path in sorted(matches):
+        yield Path(path)
 
 
 # ── Namespace helpers for plugin-provided skills ───────────────────────────

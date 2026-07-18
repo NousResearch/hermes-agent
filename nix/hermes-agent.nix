@@ -41,10 +41,11 @@ let
     extraDependencyGroups:
     callPackage ./python.nix {
       inherit uv2nix pyproject-nix pyproject-build-systems;
+      pythonSrc = hermesNpmLib.pythonSrc;
       dependency-groups = [ "all" ] ++ extraDependencyGroups;
     };
 
-  hermesVenv = mkHermesVenv extraDependencyGroups;
+  hermesVenv = (mkHermesVenv extraDependencyGroups).venv;
 
   hermesNpmLib = callPackage ./lib.nix {
     inherit npm-lockfile-fix nodejs;
@@ -60,7 +61,17 @@ let
 
   bundledSkills = lib.cleanSourceWith {
     src = ../skills;
-    filter = path: _type: !(lib.hasInfix "/index-cache/" path);
+    filter =
+      path: _type: !(lib.hasInfix "/index-cache/" path) && !(lib.hasInfix "/__pycache__/" path);
+  };
+
+  # Optional skills are NOT in the wheel (pythonSrc excludes them, see
+  # lib.nix) — the wrapper exposes them via HERMES_OPTIONAL_SKILLS, the
+  # same mechanism Homebrew packaging uses.
+  bundledOptionalSkills = lib.cleanSourceWith {
+    src = ../optional-skills;
+    filter =
+      path: _type: !(lib.hasInfix "/index-cache/" path) && !(lib.hasInfix "/__pycache__/" path);
   };
 
   # Import bundled plugins (memory, context_engine, platforms/*).  Keeping
@@ -161,28 +172,40 @@ stdenv.mkDerivation (finalAttrs: {
   installPhase = ''
     runHook preInstall
 
+    # Symlinks, not copies: these are all store paths already, and the
+    # wrapper env vars just hold paths.  Symlinking keeps this derivation
+    # near-instant when only the venv changed, with an identical closure.
     mkdir -p $out/share/hermes-agent $out/bin
-    cp -r ${bundledSkills} $out/share/hermes-agent/skills
-    cp -r ${bundledPlugins} $out/share/hermes-agent/plugins
-    cp -r ${bundledLocales} $out/share/hermes-agent/locales
-    cp -r ${hermesWeb} $out/share/hermes-agent/web_dist
-
-    mkdir -p $out/ui-tui
-    cp -r ${hermesTui}/lib/hermes-tui/* $out/ui-tui/
+    ln -s ${bundledSkills} $out/share/hermes-agent/skills
+    ln -s ${bundledOptionalSkills} $out/share/hermes-agent/optional-skills
+    ln -s ${bundledPlugins} $out/share/hermes-agent/plugins
+    ln -s ${bundledLocales} $out/share/hermes-agent/locales
+    ln -s ${hermesWeb} $out/share/hermes-agent/web_dist
+    ln -s ${hermesTui}/lib/hermes-tui $out/ui-tui
 
     ${lib.concatMapStringsSep "\n"
       (name: ''
         makeWrapper ${hermesVenv}/bin/${name} $out/bin/${name} \
           --suffix PATH : "${runtimePath}" \
           --set HERMES_BUNDLED_SKILLS $out/share/hermes-agent/skills \
+          --set HERMES_OPTIONAL_SKILLS $out/share/hermes-agent/optional-skills \
           --set HERMES_BUNDLED_PLUGINS $out/share/hermes-agent/plugins \
           --set HERMES_BUNDLED_LOCALES $out/share/hermes-agent/locales \
           --set HERMES_WEB_DIST $out/share/hermes-agent/web_dist \
           --set HERMES_TUI_DIR $out/ui-tui \
           --set HERMES_PYTHON ${hermesVenv}/bin/python3 \
-          --set HERMES_NODE ${lib.getExe nodejs} \
-          ${lib.optionalString (rev != null) ''--set HERMES_REVISION ${rev} \''}
-          ${lib.optionalString (extraPythonPackages != [ ]) ''--suffix PYTHONPATH : "${pythonPath}"''}
+          --set HERMES_NODE ${lib.getExe nodejs}${
+            # Fold the line continuation INTO the optionalString: a bare
+            # `\` on the line above an empty expansion would dangle onto a
+            # blank line, ending the makeWrapper command early and running
+            # the next flag as its own shell command (`--suffix: command
+            # not found`). Only reproduces when rev == null (dirty trees).
+            lib.optionalString (rev != null) " \\\n          --set HERMES_REVISION ${rev}"
+          }${
+            lib.optionalString (
+              extraPythonPackages != [ ]
+            ) " \\\n          --suffix PYTHONPATH : \"${pythonPath}\""
+          }
       '')
       [
         "hermes"
@@ -200,32 +223,36 @@ stdenv.mkDerivation (finalAttrs: {
     runHook postInstall
   '';
 
-  passthru = {
-    inherit
-      hermesTui
-      hermesWeb
-      hermesNpmLib
-      hermesVenv
-      ;
+  passthru =
+    let
+      devPython = (mkHermesVenv (extraDependencyGroups ++ [ "dev" ])).editableVenv;
+    in
+    {
+      inherit
+        hermesTui
+        hermesWeb
+        hermesNpmLib
+        hermesVenv
+        ;
 
-    # `hermesDesktop` references `finalAttrs.finalPackage` (this whole
-    # derivation, after all overrides are applied) so the desktop wrapper
-    # can prepend its `/bin` to PATH.  The desktop's resolver step 4
-    # ("existing hermes on PATH") then picks up the fully wrapped
-    # `hermes` binary — venv with all deps, bundled skills/plugins,
-    # runtime PATH (ripgrep/git/ffmpeg/etc).  No re-implementation
-    # of the agent resolution in the desktop wrapper.
-    hermesDesktop = callPackage ./desktop.nix {
-      inherit hermesNpmLib electron;
-      hermesAgent = finalAttrs.finalPackage;
+      # `hermesDesktop` references `finalAttrs.finalPackage` (this whole
+      # derivation, after all overrides are applied) so the desktop wrapper
+      # can prepend its `/bin` to PATH.  The desktop's resolver step 4
+      # ("existing hermes on PATH") then picks up the fully wrapped
+      # `hermes` binary — venv with all deps, bundled skills/plugins,
+      # runtime PATH (ripgrep/git/ffmpeg/etc).  No re-implementation
+      # of the agent resolution in the desktop wrapper.
+      hermesDesktop = callPackage ./desktop.nix {
+        inherit hermesNpmLib electron;
+        hermesAgent = finalAttrs.finalPackage;
+      };
+
+      devShellHook = ''
+        export HERMES_PYTHON=${devPython}/bin/python3
+      '';
+
+      devDeps = runtimeDeps ++ [ devPython ];
     };
-
-    devShellHook = ''
-      export HERMES_PYTHON=${hermesVenv}/bin/python3
-    '';
-
-    devDeps = runtimeDeps ++ [ (mkHermesVenv (extraDependencyGroups ++ [ "dev" ])) ];
-  };
 
   meta = with lib; {
     description = "AI agent with advanced tool-calling capabilities";

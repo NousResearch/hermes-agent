@@ -131,6 +131,46 @@ export function useMessageStream({
     [updateSessionState]
   )
 
+  // Turn-complete triggers a full sidebar refresh (recents + cron + messaging
+  // REST fan-out, each scanning profile state.dbs server-side) plus a
+  // cross-window broadcast that makes every other window do the same. Parallel
+  // tiles / multi-window finishing near-simultaneously used to multiply that.
+  // Coalesce completions into one trailing refresh per burst — a ~300ms title
+  // lag is invisible; the redundant aggregator scans are not.
+  const sessionsRefreshTimerRef = useRef<null | number>(null)
+
+  const scheduleSessionsRefresh = useCallback(() => {
+    if (sessionsRefreshTimerRef.current !== null) {
+      return
+    }
+
+    const run = () => {
+      sessionsRefreshTimerRef.current = null
+      void refreshSessions().catch(() => undefined)
+      // Sync freshly-titled rows to other windows (e.g. main, when the turn
+      // ran in the pop-out).
+      broadcastSessionsChanged()
+    }
+
+    if (typeof window === 'undefined') {
+      run()
+
+      return
+    }
+
+    sessionsRefreshTimerRef.current = window.setTimeout(run, 300)
+  }, [refreshSessions])
+
+  useEffect(
+    () => () => {
+      if (sessionsRefreshTimerRef.current !== null && typeof window !== 'undefined') {
+        window.clearTimeout(sessionsRefreshTimerRef.current)
+        sessionsRefreshTimerRef.current = null
+      }
+    },
+    []
+  )
+
   const queuedDeltasRef = useRef<Map<string, QueuedStreamDeltas>>(new Map())
   const flushHandleRef = useRef<number | null>(null)
   const lastFlushAtRef = useRef<number>(0)
@@ -444,10 +484,7 @@ export function useMessageStream({
         }
       })
 
-      void refreshSessions().catch(() => undefined)
-      // Sync the freshly-titled row to other windows (e.g. main, when the turn
-      // ran in the pop-out).
-      broadcastSessionsChanged()
+      scheduleSessionsRefresh()
 
       if (compactedTurnRef.current.delete(sessionId)) {
         shouldHydrate = false
@@ -464,7 +501,7 @@ export function useMessageStream({
         title: translateNow('notifications.native.turnDoneTitle')
       })
     },
-    [hydrateFromStoredSession, refreshSessions, updateSessionState]
+    [hydrateFromStoredSession, scheduleSessionsRefresh, updateSessionState]
   )
 
   const failAssistantMessage = useCallback(
@@ -526,6 +563,7 @@ export function useMessageStream({
     queryClient,
     refreshHermesConfig,
     sessionInterrupted,
+    sessionStateByRuntimeIdRef,
     updateSessionState,
     upsertToolCall
   })

@@ -839,10 +839,7 @@ PLATFORM_HINTS = {
         "— when a sticker is the right response, use yb_send_sticker."
     ),
     "api_server": (
-        "You're responding through an API server. The rendering layer is unknown — "
-        "assume plain text. No markdown formatting (no asterisks, bullets, headers, "
-        "code fences). Treat this like a conversation, not a document. Keep responses "
-        "brief and natural. "
+        "You're responding through an API server. Markdown formatting and emoji is supported."
         "You can deliver files to the user: include MEDIA:/absolute/path/to/file "
         "in your response. The file will be uploaded and made available for download "
         "— use MEDIA: syntax whenever a file you created or modified should be "

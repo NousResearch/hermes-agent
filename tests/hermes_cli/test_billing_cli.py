@@ -52,11 +52,9 @@ def test_billing_overview_non_interactive_renders_text_not_modal(cli, monkeypatc
     monkeypatch.setattr(bv, "build_billing_state", lambda *a, **kw: state)
     cli._show_billing("/billing")
     out = capsys.readouterr().out
-    assert "Usage credits" in out
-    assert "$142.50" in out
-    assert "$180 of $1000 used (default ceiling)" in out
-    # New design: a spend bar with a percentage on the overview.
-    assert "%" in out and ("█" in out or "░" in out)
+    # Balance now leads in the title; dollars, never "credits".
+    assert "Top up · balance $142.50" in out
+    assert "credits" not in out.lower()
     # ZERO sub-commands: no /billing buy|auto-reload|limit advertising.
     assert "/billing buy" not in out
     assert "Actions:" not in out
@@ -115,8 +113,10 @@ def test_billing_sub_arg_ignored_opens_overview(cli, monkeypatch, capsys):
     monkeypatch.setattr(bv, "build_billing_state", lambda *a, **kw: state)
     cli._show_billing("/billing buy")  # arg is ignored
     out = capsys.readouterr().out
-    assert "Usage credits" in out  # overview, NOT the buy screen
-    assert "Buy usage credits" not in out
+    assert "Top up · balance" in out  # overview, NOT the buy screen
+    # The buy screen's preset list isn't shown. (The overview's no-card hint may
+    # legitimately mention the "Add funds" menu item, so key on presets instead.)
+    assert "Presets:" not in out
 
 
 def test_billing_buy_non_interactive_defers_to_portal(cli, monkeypatch, capsys):
@@ -131,6 +131,106 @@ def test_billing_buy_non_interactive_defers_to_portal(cli, monkeypatch, capsys):
     # Reached via the menu in real use; non-interactively it defers to the portal.
     cli._billing_buy_flow(state)
     out = capsys.readouterr().out
-    assert "Buy usage credits" in out
+    assert "Add funds" in out
     assert "$25" in out and "$50" in out and "$100" in out
     assert "interactive CLI" in out  # defers; no charge attempted non-interactively
+
+
+# ── Card visibility + the add-card path (inline w/ NAS card-resolver) ──
+
+
+def _scripted(*responses):
+    it = iter(responses)
+
+    def _modal(self, **kw):
+        return next(it)
+
+    return _modal
+
+
+def test_overview_shows_card_with_provenance(cli, monkeypatch, capsys):
+    state = BillingState(
+        logged_in=True, role="OWNER", balance_usd=Decimal("10"),
+        cli_billing_enabled=True, charge_presets=(Decimal("25"),),
+        card=CardInfo(brand="Visa", last4="4242", resolved_via="subPin"),
+        portal_url="https://portal/billing",
+    )
+    monkeypatch.setattr(bv, "build_billing_state", lambda *a, **kw: state)
+    cli._show_billing("/topup")
+    out = capsys.readouterr().out
+    assert "Card: Visa ····4242 — the card on your subscription" in out
+
+
+def test_overview_shows_no_card_hint(cli, monkeypatch, capsys):
+    state = BillingState(
+        logged_in=True, role="OWNER", balance_usd=Decimal("10"),
+        cli_billing_enabled=True, charge_presets=(Decimal("25"),),
+        card=None, portal_url="https://portal/billing",
+    )
+    monkeypatch.setattr(bv, "build_billing_state", lambda *a, **kw: state)
+    cli._show_billing("/topup")
+    out = capsys.readouterr().out
+    assert "No saved card on file" in out
+    assert "Add funds" in out  # the hint names the path
+
+
+def test_link_card_renders_brand_alone(cli, monkeypatch, capsys):
+    # A Link payment method has no card number (last4 = "") — never "Link ····".
+    state = BillingState(
+        logged_in=True, role="OWNER", balance_usd=Decimal("10"),
+        cli_billing_enabled=True, charge_presets=(Decimal("25"),),
+        card=CardInfo(brand="Link", last4=""), portal_url="https://portal/billing",
+    )
+    monkeypatch.setattr(bv, "build_billing_state", lambda *a, **kw: state)
+    cli._show_billing("/topup")
+    out = capsys.readouterr().out
+    assert "Card: Link" in out
+    assert "Link ····" not in out
+
+
+def test_buy_flow_no_card_guides_then_continues_after_recheck(cli, monkeypatch, capsys):
+    # No card → the guided add-card path; "check again" re-fetches state and,
+    # once the card exists, continues straight into the preset menu.
+    cli._app = object()
+    common = dict(
+        logged_in=True, role="OWNER", cli_billing_enabled=True,
+        charge_presets=(Decimal("25"), Decimal("50")),
+        min_usd=Decimal("5"), max_usd=Decimal("500"),
+        portal_url="https://portal/billing",
+    )
+    nocard = BillingState(card=None, **common)
+    withcard = BillingState(card=CardInfo(brand="Visa", last4="4242", resolved_via="customerDefault"), **common)
+    monkeypatch.setattr(bv, "build_billing_state", lambda *a, **kw: withcard)
+    # add-card modal → "recheck"; preset modal → "cancel" (we only test the routing)
+    monkeypatch.setattr(HermesCLI, "_prompt_text_input_modal", _scripted("recheck", "cancel"), raising=False)
+
+    cli._billing_buy_flow(nocard)
+    out = capsys.readouterr().out
+
+    assert "Add a card first" in out
+    assert "Card found: Visa ····4242 — your default card saved on the portal" in out
+    assert "Cancelled. No funds added." in out  # reached the preset menu, then bailed
+
+
+def test_buy_flow_no_card_back_abandons(cli, monkeypatch, capsys):
+    cli._app = object()
+    nocard = BillingState(
+        logged_in=True, role="OWNER", cli_billing_enabled=True,
+        charge_presets=(Decimal("25"),), card=None,
+        portal_url="https://portal/billing",
+    )
+    calls = {"n": 0}
+
+    def _no_fetch(*a, **kw):
+        calls["n"] += 1
+        return nocard
+
+    monkeypatch.setattr(bv, "build_billing_state", _no_fetch)
+    monkeypatch.setattr(HermesCLI, "_prompt_text_input_modal", _scripted("cancel"), raising=False)
+
+    cli._billing_buy_flow(nocard)
+    out = capsys.readouterr().out
+
+    assert "Add a card first" in out
+    assert "Cancelled. No funds added." in out
+    assert calls["n"] == 0  # backed out before any re-check

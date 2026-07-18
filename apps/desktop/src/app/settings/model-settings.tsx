@@ -238,9 +238,30 @@ export function ModelSettings({ onMainModelChanged }: ModelSettingsProps) {
       setError(prev => (prev ? `${prev}; ${message}` : message))
     }
 
+    let modelInfoSettled = false
+    let modelInfoAvailable = false
+    let auxiliaryMainFallback: { model: string; provider: string } | null = null
+
+    const publishAuxiliaryMainFallback = () => {
+      if (!isCurrent() || !modelInfoSettled || modelInfoAvailable || !auxiliaryMainFallback?.model) {
+        return
+      }
+
+      const fallback = auxiliaryMainFallback
+      setMainModel(prev => prev ?? fallback)
+      setSelectedProvider(prev => prev || fallback.provider)
+      setSelectedModel(prev => prev || fallback.model)
+    }
+
     const modelInfoRequest = getGlobalModelInfo({ timeoutMs: MODEL_SETTINGS_METADATA_TIMEOUT_MS })
       .then(modelInfo => {
-        if (!isCurrent() || !modelInfo.model) {
+        if (!isCurrent()) {
+          return
+        }
+
+        modelInfoAvailable = Boolean(modelInfo.provider || modelInfo.model)
+
+        if (!modelInfoAvailable) {
           return
         }
 
@@ -256,6 +277,9 @@ export function ModelSettings({ onMainModelChanged }: ModelSettingsProps) {
       })
       .catch(reportFailure)
       .finally(() => {
+        modelInfoSettled = true
+        publishAuxiliaryMainFallback()
+
         if (isCurrent()) {
           setLoading(false)
         }
@@ -278,14 +302,11 @@ export function ModelSettings({ onMainModelChanged }: ModelSettingsProps) {
         setAuxiliary(auxiliaryModels)
 
         if (auxiliaryModels.main?.model) {
-          setMainModel(prev =>
-            prev ?? {
-              model: auxiliaryModels.main.model,
-              provider: auxiliaryModels.main.provider
-            }
-          )
-          setSelectedProvider(prev => prev || auxiliaryModels.main.provider)
-          setSelectedModel(prev => prev || auxiliaryModels.main.model)
+          auxiliaryMainFallback = {
+            model: auxiliaryModels.main.model,
+            provider: auxiliaryModels.main.provider
+          }
+          publishAuxiliaryMainFallback()
         }
       })
       .catch(reportFailure)

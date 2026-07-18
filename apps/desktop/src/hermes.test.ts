@@ -10,7 +10,8 @@ import {
   getSessionMessages,
   getStatus,
   listAllProfileSessions,
-  listSessions
+  listSessions,
+  transcribeAudio
 } from './hermes'
 import { refreshActiveProfile } from './store/profile'
 
@@ -122,6 +123,20 @@ describe('Hermes REST session helpers', () => {
     const call = api.mock.calls[0]?.[0] as { path: string; timeoutMs?: number }
     expect(call.path).toBe('/api/status')
     expect(call.timeoutMs).toBeUndefined()
+  })
+
+  it('uses a dedicated timeout for audio transcription cold starts', async () => {
+    await transcribeAudio('data:audio/webm;base64,AA==', 'audio/webm')
+
+    expect(api).toHaveBeenCalledWith({
+      path: '/api/audio/transcribe',
+      method: 'POST',
+      timeoutMs: 180_000,
+      body: {
+        data_url: 'data:audio/webm;base64,AA==',
+        mime_type: 'audio/webm'
+      }
+    })
   })
 
   it('tags cross-profile message reads for Electron routing and backend lookup', async () => {

@@ -121,8 +121,7 @@ describe('reactive pane unhide', () => {
   })
 
   it('reactive unhide does not invoke the right side opener directly', async () => {
-    const tree = await import('@/components/pane-shell/tree/store')
-    const layout = await import('@/store/layout')
+    const { tree, layout } = await setupWithFiles()
 
     // Spy on the opener that `revealTreePane` would call when expanding a
     // collapsed side — the bug is exactly this call firing on reactive unhide.
@@ -132,6 +131,9 @@ describe('reactive pane unhide', () => {
     layout.setFileBrowserOpen(false)
     expect(tree.$collapsedTreeSides.get().has('right')).toBe(true)
 
+    tree.setTreePaneHidden('files', true)
+    expect(tree.$hiddenTreePanes.get().has('files')).toBe(true)
+
     openerSpy.mockClear()
 
     // Reactive unhide fires via the same primitive the workspace wiring uses.
@@ -139,6 +141,7 @@ describe('reactive pane unhide', () => {
 
     // The opener MUST NOT be called — before the fix, the auto-reveal would
     // call `setFileBrowserOpen(true)` via this opener.
+    expect(tree.$hiddenTreePanes.get().has('files')).toBe(false)
     expect(openerSpy).not.toHaveBeenCalled()
   })
 })

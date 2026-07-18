@@ -5212,6 +5212,12 @@ class BasePlatformAdapter(ABC):
                     except Exception as batch_err:
                         logger.warning("[%s] Error batching images: %s", self.name, batch_err, exc_info=True)
 
+                if _non_image_media:
+                    logger.info(
+                        "[%s] Delivering %d non-image MEDIA attachment(s)",
+                        self.name,
+                        len(_non_image_media),
+                    )
                 for media_path, is_voice in _non_image_media:
                     if human_delay > 0:
                         await asyncio.sleep(human_delay)
@@ -5224,6 +5230,12 @@ class BasePlatformAdapter(ABC):
                                 metadata=_final_thread_metadata,
                             )
                         elif ext in _VIDEO_EXTS:
+                            logger.info(
+                                "[%s] Sending video attachment (%s) to %s",
+                                self.name,
+                                ext,
+                                event.source.chat_id,
+                            )
                             media_result = await self.send_video(
                                 chat_id=event.source.chat_id,
                                 video_path=media_path,

@@ -2601,9 +2601,19 @@ class DiscordAdapter(BasePlatformAdapter):
 
         Forum channels (type 15) get a new thread whose starter message
         carries the file — they reject direct POST /messages.
+
+        Uses a path-based ``discord.File`` (same pattern as
+        ``send_multiple_images``) rather than an open file handle. The
+        handle form can race with Discord's multipart encoder after an
+        earlier image batch on the same channel and produce a successful
+        message with zero attachments — a silent drop for video/document
+        MEDIA tags (#66797).
         """
         if not self._client:
             return SendResult(success=False, error="Not connected")
+
+        if not os.path.isfile(file_path):
+            return SendResult(success=False, error=f"File not found: {file_path}")
 
         channel = self._client.get_channel(int(chat_id))
         if not channel:
@@ -2612,15 +2622,45 @@ class DiscordAdapter(BasePlatformAdapter):
             return SendResult(success=False, error=f"Channel {chat_id} not found")
 
         filename = file_name or os.path.basename(file_path)
-        with open(file_path, "rb") as fh:
-            file = discord.File(fh, filename=filename)
-            if self._is_forum_parent(channel):
-                return await self._forum_post_file(
-                    channel,
-                    content=(caption or "").strip(),
-                    file=file,
-                )
-            msg = await channel.send(content=caption if caption else None, file=file)
+        logger.info(
+            "[%s] Sending file attachment %s (%s) to %s",
+            self.name,
+            filename,
+            os.path.splitext(filename)[1].lower() or "no-ext",
+            chat_id,
+        )
+        # Path-based File: discord.py owns open/close for the upload, matching
+        # the working image-batch path. Prefer ``files=[...]`` over deprecated
+        # singular ``file=`` for the same reason.
+        discord_file = discord.File(file_path, filename=filename)
+        if self._is_forum_parent(channel):
+            result = await self._forum_post_file(
+                channel,
+                content=(caption or "").strip(),
+                files=[discord_file],
+            )
+            return result
+        msg = await channel.send(
+            content=caption if caption else None,
+            files=[discord_file],
+        )
+        attachments = getattr(msg, "attachments", None) or []
+        if not attachments:
+            # Discord accepted the message but attached nothing — the failure
+            # mode reported in #66797 (MEDIA video stripped from text, no
+            # attachment, no prior log line). Fail loud so the dispatch loop
+            # surfaces a warning instead of a silent drop.
+            logger.warning(
+                "[%s] Discord returned message %s with no attachments for %s",
+                self.name,
+                getattr(msg, "id", "?"),
+                filename,
+            )
+            return SendResult(
+                success=False,
+                error=f"Discord accepted the message but attached no files ({filename})",
+                message_id=str(getattr(msg, "id", "") or "") or None,
+            )
         return SendResult(success=True, message_id=str(msg.id))
 
     async def send_multiple_images(

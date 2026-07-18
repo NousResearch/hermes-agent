@@ -54,7 +54,9 @@ class _Configuration:
 
     def assert_stable(self) -> None:
         if self.changed:
-            raise RuntimeError("changed")
+            raise reauth.launcher.OwnerLauncherError(
+                "trusted_gcloud_config_changed"
+            )
 
     def environment_values(self) -> dict[str, str]:
         return {
@@ -259,12 +261,13 @@ def test_producer_uses_sealed_prefix_closed_environment_and_no_token(
     )
 
     argv, environment, timeout = runner.interactive_calls[0]
-    assert argv[-6:] == (
+    assert argv[-7:] == (
         "auth",
         "login",
         reauth.OWNER_ACCOUNT,
         "--force",
         "--brief",
+        "--no-activate",
         f"--configuration={reauth.GCLOUD_CONFIGURATION}",
     )
     assert timeout == reauth.INTERACTIVE_TIMEOUT_SECONDS
@@ -287,6 +290,16 @@ def test_producer_uses_sealed_prefix_closed_environment_and_no_token(
     assert "access_token_value" not in repr(checked).casefold()
     assert checked["expires_at_unix"] - checked["issued_at_unix"] == 900
     assert len(runner.capture_calls) == 1
+    probe_argv, _probe_environment, probe_timeout = runner.capture_calls[0]
+    assert probe_argv[-6:] == (
+        "projects",
+        "describe",
+        foundation.PROJECT,
+        f"--account={reauth.OWNER_ACCOUNT}",
+        f"--configuration={reauth.GCLOUD_CONFIGURATION}",
+        "--format=json",
+    )
+    assert probe_timeout == reauth.CAPTURE_TIMEOUT_SECONDS
 
 
 def test_producer_fails_closed_on_runtime_change(tmp_path: Path) -> None:
@@ -305,6 +318,63 @@ def test_producer_fails_closed_on_runtime_change(tmp_path: Path) -> None:
             expected_release_revision=REVISION,
             sealed_runtime_snapshot=lambda: _sealed_identity(executable.prefix),
         )
+
+
+def test_producer_fails_closed_on_configuration_identity_change_after_login(
+    tmp_path: Path,
+) -> None:
+    executable, configuration = _runtime(tmp_path)
+
+    class _ConfigurationMutatingRunner(_Runner):
+        def run_interactive(self, argv, *, env, timeout_seconds) -> int:
+            returncode = super().run_interactive(
+                argv,
+                env=env,
+                timeout_seconds=timeout_seconds,
+            )
+            configuration.changed = True
+            return returncode
+
+    runner = _ConfigurationMutatingRunner()
+    with pytest.raises(
+        reauth.OwnerGateOwnerReauthError,
+        match="owner_gate_owner_reauth_runtime_invalid",
+    ):
+        reauth._produce_owner_reauth_receipt_with_runtime(
+            runner=runner,
+            private_key=PRIVATE_KEY,
+            now_unix=_clock(NOW, NOW + 1),
+            gcloud_executable=executable,
+            gcloud_configuration=configuration,
+            expected_release_revision=REVISION,
+            sealed_runtime_snapshot=lambda: _sealed_identity(executable.prefix),
+        )
+
+    assert runner.capture_calls == []
+
+
+def test_producer_rejects_failed_interactive_login_before_probe(
+    tmp_path: Path,
+) -> None:
+    executable, configuration = _runtime(tmp_path)
+    runner = _Runner()
+    runner.returncode = 1
+
+    with pytest.raises(
+        reauth.OwnerGateOwnerReauthError,
+        match="owner_gate_owner_reauth_interactive_failed",
+    ):
+        reauth._produce_owner_reauth_receipt_with_runtime(
+            runner=runner,
+            private_key=PRIVATE_KEY,
+            now_unix=_clock(NOW, NOW + 1),
+            gcloud_executable=executable,
+            gcloud_configuration=configuration,
+            expected_release_revision=REVISION,
+            sealed_runtime_snapshot=lambda: _sealed_identity(executable.prefix),
+        )
+
+    assert runner.capture_calls == []
 
 
 def test_producer_requires_tty_and_successful_interactive_flow(tmp_path: Path) -> None:

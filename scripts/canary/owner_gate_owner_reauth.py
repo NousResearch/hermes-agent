@@ -428,6 +428,7 @@ def _commands(prefix: Sequence[str]) -> Mapping[str, tuple[str, ...]]:
             OWNER_ACCOUNT,
             "--force",
             "--brief",
+            "--no-activate",
             f"--configuration={GCLOUD_CONFIGURATION}",
         ),
         "authenticated_probe": (
@@ -575,6 +576,27 @@ def _produce_owner_reauth_receipt_with_runtime(
         or completed - started > MAX_INTERACTIVE_DURATION_SECONDS
     ):
         _error("owner_gate_owner_reauth_interactive_failed")
+    pre_probe, pre_probe_prefix, pre_probe_environment = _trusted_snapshot(
+        gcloud_executable,
+        gcloud_configuration,
+    )
+    sealed_pre_probe = _validate_sealed_runtime_identity(
+        sealed_runtime_snapshot(),
+        expected_release_revision=expected_release_revision,
+        prefix=pre_probe_prefix,
+    )
+    pre_probe = {
+        **pre_probe,
+        "release_revision": expected_release_revision,
+        "sealed_runtime_identity_sha256": sealed_pre_probe["identity_sha256"],
+    }
+    if (
+        before != pre_probe
+        or sealed_before != sealed_pre_probe
+        or prefix != pre_probe_prefix
+        or environment != pre_probe_environment
+    ):
+        _error("owner_gate_owner_reauth_runtime_changed")
     probe, probe_raw = _capture_json(
         runner,
         commands["authenticated_probe"],

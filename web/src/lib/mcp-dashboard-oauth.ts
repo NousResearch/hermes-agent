@@ -29,9 +29,12 @@ const ERROR_MESSAGES: Record<McpDashboardOAuthErrorCode, string> = {
 
 /** Stable frontend failures let each Dashboard locale own its presentation. */
 export class McpDashboardOAuthError extends Error {
-  constructor(public readonly code: McpDashboardOAuthErrorCode) {
+  readonly code: McpDashboardOAuthErrorCode;
+
+  constructor(code: McpDashboardOAuthErrorCode) {
     super(ERROR_MESSAGES[code]);
     this.name = "McpDashboardOAuthError";
+    this.code = code;
   }
 }
 

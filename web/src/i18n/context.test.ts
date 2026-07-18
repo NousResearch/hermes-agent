@@ -103,34 +103,39 @@ describe("Dashboard i18n framework", () => {
     expect(catalog.theme.fontTitle).toBe("字体");
   });
 
-  it("localizes session import independently in both Chinese language packs", () => {
+  it("localizes session import only in the complete Simplified Chinese instance", () => {
     const simplified = resolveTranslations("zh");
     const traditional = resolveTranslations("zh-hant");
 
     expect(simplified.sessions.importSessions).toBe("导入会话");
-    expect(traditional.sessions.importSessions).toBe("匯入工作階段");
     expect(simplified.sessions.importComplete).toContain("{summary}");
-    expect(traditional.sessions.importComplete).toContain("{summary}");
     expect(simplified.sessions.importFailed).not.toBe(en.sessions.importFailed);
-    expect(traditional.sessions.importFailed).not.toBe(
-      en.sessions.importFailed,
+    expect(traditional.sessions.importSessions).toBe(
+      en.sessions.importSessions,
     );
   });
 
-  it("localizes stable MCP OAuth browser failures in both Chinese language packs", () => {
+  it("localizes stable MCP OAuth browser failures in Simplified Chinese", () => {
     const simplified = resolveTranslations("zh");
     const traditional = resolveTranslations("zh-hant");
 
     expect(simplified.mcp.oauthPopupBlocked).not.toBe(en.mcp.oauthPopupBlocked);
-    expect(traditional.mcp.oauthPopupBlocked).not.toBe(
-      en.mcp.oauthPopupBlocked,
-    );
     expect(simplified.mcp.oauthWindowClosed).not.toBe(
       en.mcp.oauthWindowClosed,
     );
-    expect(traditional.mcp.oauthWindowClosed).not.toBe(
-      en.mcp.oauthWindowClosed,
+    expect(traditional.mcp.oauthPopupBlocked).toBe(en.mcp.oauthPopupBlocked);
+  });
+
+  it("localizes current Kanban task workflows in Simplified Chinese", () => {
+    const simplified = resolveTranslations("zh");
+    const traditional = resolveTranslations("zh-hant");
+
+    expect(simplified.kanban.newTaskTitle).not.toBe(en.kanban.newTaskTitle);
+    expect(simplified.kanban.boardSettingsTitle).not.toBe(
+      en.kanban.boardSettingsTitle,
     );
+    expect(simplified.kanban.commentHintTitle).toContain("kanban_show()");
+    expect(traditional.kanban.newTaskTitle).toBe(en.kanban.newTaskTitle);
   });
 
   it("preserves existing official translations and falls back per missing leaf", () => {

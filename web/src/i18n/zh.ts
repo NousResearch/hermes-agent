@@ -1915,5 +1915,24 @@ export const zh: TranslationOverlay = {
     workspacePathOptional: "工作区路径（可选，留空则根据负责人推导）",
     logTruncated: "（仅显示最后 100 KB，完整日志位于 ",
     logAt: "）",
+    newTaskTitle: "新建任务 — {column}",
+    taskTitleLabel: "标题",
+    assigneeLabel: "负责人",
+    assigneeLabelHint: "（留空则由调度器选择）",
+    skillsLabel: "技能",
+    skillsLabelHint: "（可选，以英文逗号分隔）",
+    parentLabel: "父任务",
+    parentLabelHint: "（父任务完成前，子任务保持阻塞）",
+    create: "创建",
+    boardSettings: "设置",
+    boardSettingsTitle: "看板设置 — 名称、描述和新任务默认继承的项目目录",
+    boardSettingsTitleFor: "看板设置 — {name}",
+    projectDirectoryOverrideHint:
+      "新任务默认继承此目录作为工作区；仍可在创建任务时单独覆盖。",
+    saving: "正在保存…",
+    commentHint:
+      "评论会在工作进程下次运行或调用 kanban_show() 时送达，无需先阻塞任务。",
+    commentHintTitle:
+      "评论是与任务工作进程沟通的通道，会立即写入任务线程，无需先阻塞任务。运行中的工作进程会在下次调用 kanban_show() 或重新启动时读取线程；只有希望工作进程停止并等待你的输入时，才需要阻塞任务。",
   },
 };

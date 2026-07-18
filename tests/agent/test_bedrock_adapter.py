@@ -1332,26 +1332,44 @@ class TestIsAnthropicBedrockModel:
 
 
 class TestEmptyTextBlockFix:
-    """Test that empty text blocks are replaced with space placeholders."""
+    """Test that empty/whitespace-only text blocks are replaced with a
+    non-whitespace placeholder (not a literal space, which is itself
+    whitespace and gets rejected by the same Bedrock validation rule)."""
 
-    def test_none_content_gets_space(self):
-        from agent.bedrock_adapter import _convert_content_to_converse
+    def test_none_content_gets_placeholder(self):
+        from agent.bedrock_adapter import _convert_content_to_converse, _EMPTY_TEXT_PLACEHOLDER
         blocks = _convert_content_to_converse(None)
-        assert blocks[0]["text"] == " "
+        assert blocks[0]["text"] == _EMPTY_TEXT_PLACEHOLDER
+        assert blocks[0]["text"].strip()
 
-    def test_empty_string_gets_space(self):
-        from agent.bedrock_adapter import _convert_content_to_converse
+    def test_empty_string_gets_placeholder(self):
+        from agent.bedrock_adapter import _convert_content_to_converse, _EMPTY_TEXT_PLACEHOLDER
         blocks = _convert_content_to_converse("")
-        assert blocks[0]["text"] == " "
+        assert blocks[0]["text"] == _EMPTY_TEXT_PLACEHOLDER
+        assert blocks[0]["text"].strip()
 
-    def test_whitespace_only_gets_space(self):
-        from agent.bedrock_adapter import _convert_content_to_converse
+    def test_whitespace_only_gets_placeholder(self):
+        from agent.bedrock_adapter import _convert_content_to_converse, _EMPTY_TEXT_PLACEHOLDER
         blocks = _convert_content_to_converse("   ")
-        assert blocks[0]["text"] == " "
+        assert blocks[0]["text"] == _EMPTY_TEXT_PLACEHOLDER
+        assert blocks[0]["text"].strip()
 
     def test_real_text_preserved(self):
         from agent.bedrock_adapter import _convert_content_to_converse
         blocks = _convert_content_to_converse("Hello")
+        assert blocks[0]["text"] == "Hello"
+
+    def test_whitespace_only_list_string_item_gets_placeholder(self):
+        """Regression: plain string items inside a content list (not
+        {"type": "text"} dicts) must also be routed through _safe_text()."""
+        from agent.bedrock_adapter import _convert_content_to_converse, _EMPTY_TEXT_PLACEHOLDER
+        blocks = _convert_content_to_converse(["   "])
+        assert blocks[0]["text"] == _EMPTY_TEXT_PLACEHOLDER
+        assert blocks[0]["text"].strip()
+
+    def test_real_list_string_item_preserved(self):
+        from agent.bedrock_adapter import _convert_content_to_converse
+        blocks = _convert_content_to_converse(["Hello"])
         assert blocks[0]["text"] == "Hello"
 
 

@@ -530,7 +530,7 @@ def _convert_content_to_converse(content) -> List[Dict]:
         blocks = []
         for part in content:
             if isinstance(part, str):
-                blocks.append({"text": part})
+                blocks.append({"text": _safe_text(part)})
                 continue
             if not isinstance(part, dict):
                 continue

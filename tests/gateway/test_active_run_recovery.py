@@ -8,6 +8,7 @@ import signal
 import subprocess
 import sys
 from dataclasses import replace
+from pathlib import Path
 
 import pytest
 
@@ -135,19 +136,26 @@ class TestActiveRunStore:
 import os
 import signal
 import sys
+from pathlib import Path
 from gateway.recovery import ActiveRunStore
-store = ActiveRunStore(sys.argv[1])
+hermes_home = Path(sys.argv[1])
+os.environ['HERMES_HOME'] = str(hermes_home)
+store = ActiveRunStore(hermes_home / 'sessions')
 store.begin('session-killed', trigger_message_id='message-killed', started_at=42)
 os.kill(os.getpid(), signal.SIGKILL)
 """
+        child_env = dict(os.environ)
+        child_env["HERMES_HOME"] = str(tmp_path)
         child = subprocess.run(
             [sys.executable, "-c", script, str(tmp_path)],
             cwd=os.getcwd(),
+            env=child_env,
             check=False,
         )
         assert child.returncode == -signal.SIGKILL
 
-        store = ActiveRunStore(tmp_path)
+        assert Path(child_env["HERMES_HOME"]) == tmp_path
+        store = ActiveRunStore(tmp_path / "sessions")
         records = store.snapshot()
         assert len(records) == 1
         assert records[0].session_key == "session-killed"

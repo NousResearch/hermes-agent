@@ -1705,7 +1705,7 @@ class ContextCompressor(ContextEngine):
                     logger.info(
                         "Compression deferred (%d/%d) — %d auxiliary "
                         "call(s) in flight (~%d tokens < hard ceiling "
-                        "%d). Will re-check next turn.",
+                        "%d). Will re-check on the next compression check.",
                         self._consecutive_defer_checks,
                         self.DEFER_MAX_CONSECUTIVE_CHECKS,
                         inflight, tokens, ceiling_tokens,

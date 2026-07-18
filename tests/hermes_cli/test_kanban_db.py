@@ -1170,6 +1170,18 @@ def test_complete_records_result(kanban_home):
     assert task.completed_at is not None
 
 
+def test_complete_task_rejects_triage(kanban_home):
+    """complete_task is limited to running/ready/blocked — a triage card is
+    not a *successful* outcome and must not be completable. Archiving (an
+    administrative retirement) is the correct disposition for triage."""
+    with kb.connect() as conn:
+        t = kb.create_task(conn, title="raw idea", assignee="a", triage=True)
+        assert kb.get_task(conn, t).status == "triage"
+        # complete_task refuses to mutate a triage card and reports failure.
+        assert kb.complete_task(conn, t, summary="tried to close") is False
+        assert kb.get_task(conn, t).status == "triage"
+
+
 def test_block_then_unblock(kanban_home):
     with kb.connect() as conn:
         t = kb.create_task(conn, title="x", assignee="a")

@@ -73,6 +73,65 @@ CREATE TABLE IF NOT EXISTS memory_banks (
     fact_count INTEGER DEFAULT 0,
     updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
+
+-- Wiki tables (memory-wiki plugin)
+CREATE TABLE IF NOT EXISTS wiki_pages (
+    page_id        INTEGER PRIMARY KEY AUTOINCREMENT,
+    page_type      TEXT NOT NULL,
+    slug           TEXT UNIQUE NOT NULL,
+    title          TEXT NOT NULL,
+    date           TEXT,
+    quality        INTEGER,
+    content_type   TEXT,
+    topics         TEXT,
+    keywords       TEXT,
+    summary        TEXT,
+    full_content   TEXT,
+    source_session_id TEXT,
+    created_at     TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    updated_at     TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE TABLE IF NOT EXISTS wiki_page_entities (
+    page_id   INTEGER NOT NULL,
+    entity_id INTEGER NOT NULL,
+    PRIMARY KEY (page_id, entity_id),
+    FOREIGN KEY (page_id) REFERENCES wiki_pages(page_id),
+    FOREIGN KEY (entity_id) REFERENCES entities(entity_id)
+);
+
+CREATE VIRTUAL TABLE IF NOT EXISTS wiki_fts
+    USING fts5(title, summary, topics, keywords, content=wiki_pages, content_rowid=page_id);
+
+CREATE TRIGGER IF NOT EXISTS wiki_ai AFTER INSERT ON wiki_pages BEGIN
+    INSERT INTO wiki_fts(rowid, title, summary, topics, keywords)
+    VALUES (new.page_id, new.title, new.summary, new.topics, new.keywords);
+END;
+
+CREATE TRIGGER IF NOT EXISTS wiki_ad AFTER DELETE ON wiki_pages BEGIN
+    INSERT INTO wiki_fts(wiki_fts, rowid, title, summary, topics, keywords)
+    VALUES ('delete', old.page_id, old.title, old.summary, old.topics, old.keywords);
+END;
+
+CREATE TRIGGER IF NOT EXISTS wiki_au AFTER UPDATE ON wiki_pages BEGIN
+    INSERT INTO wiki_fts(wiki_fts, rowid, title, summary, topics, keywords)
+    VALUES ('delete', old.page_id, old.title, old.summary, old.topics, old.keywords);
+    INSERT INTO wiki_fts(rowid, title, summary, topics, keywords)
+    VALUES (new.page_id, new.title, new.summary, new.topics, new.keywords);
+END;
+
+CREATE TABLE IF NOT EXISTS wiki_pending_queue (
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    session_id  TEXT NOT NULL,
+    title       TEXT,
+    source      TEXT,
+    message_count INTEGER,
+    messages_json TEXT NOT NULL,
+    enqueued_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    status      TEXT DEFAULT 'pending'
+);
+
+CREATE INDEX IF NOT EXISTS idx_wiki_pending_status ON wiki_pending_queue(status);
 """
 
 # Trust adjustment constants
@@ -607,6 +666,72 @@ class MemoryStore:
                 self._rebuild_bank(category)
 
             return len(rows)
+
+    # ------------------------------------------------------------------
+    # Wiki pending queue
+    # ------------------------------------------------------------------
+
+    def enqueue_wiki_pending(
+        self,
+        session_id: str,
+        messages: list,
+        title: str = "",
+        source: str = "",
+    ) -> int:
+        """Enqueue a session for wiki processing. Returns queue id."""
+        import json as _json
+        messages_json = _json.dumps(messages, ensure_ascii=False)
+        with self._lock:
+            cur = self._conn.execute(
+                """INSERT INTO wiki_pending_queue (session_id, title, source, message_count, messages_json, status)
+                   VALUES (?, ?, ?, ?, ?, 'pending')""",
+                (session_id, title, source, len(messages), messages_json),
+            )
+            self._conn.commit()
+            return cur.lastrowid  # type: ignore[return-value]
+
+    def dequeue_wiki_pending(self, limit: int = 1) -> list:
+        """Get pending wiki jobs and mark them as processing."""
+        import json as _json
+        with self._lock:
+            # Two-step: select pending IDs, then update (compatible with all SQLite versions)
+            rows = self._conn.execute(
+                """SELECT id, session_id, title, source, message_count, messages_json
+                   FROM wiki_pending_queue WHERE status = 'pending'
+                   ORDER BY enqueued_at ASC LIMIT ?""",
+                (limit,),
+            ).fetchall()
+            if not rows:
+                return []
+            ids = [dict(r)["id"] for r in rows]
+            placeholders = ",".join("?" * len(ids))
+            self._conn.execute(
+                f"UPDATE wiki_pending_queue SET status = 'processing' WHERE id IN ({placeholders})",
+                ids,
+            )
+            self._conn.commit()
+        results = []
+        for row in rows:
+            d = dict(row)
+            d["messages"] = _json.loads(d.pop("messages_json"))
+            results.append(d)
+        return results
+
+    def mark_wiki_done(self, queue_id: int, status: str = "done") -> None:
+        """Mark a pending queue item as done or failed."""
+        with self._lock:
+            self._conn.execute(
+                "UPDATE wiki_pending_queue SET status = ? WHERE id = ?",
+                (status, queue_id),
+            )
+            self._conn.commit()
+
+    def wiki_pending_count(self) -> int:
+        """Count pending wiki jobs."""
+        row = self._conn.execute(
+            "SELECT COUNT(*) FROM wiki_pending_queue WHERE status = 'pending'"
+        ).fetchone()
+        return row[0] if row else 0
 
     # ------------------------------------------------------------------
     # Utilities

@@ -1,5 +1,21 @@
 name: holographic
-version: 0.1.0
-description: "Holographic memory — local SQLite fact store with FTS5 search, trust scoring, and HRR-based compositional retrieval."
+version: 0.2.0
+description: "Holographic memory — local SQLite fact store with FTS5 search, trust scoring, HRR-based retrieval, and built-in wiki page generation."
 hooks:
   - on_session_end
+config:
+  - key: auto_wiki
+    description: "Enable automatic wiki page generation from sessions"
+    default: "true"
+  - key: auto_extract
+    description: "Enable legacy regex-based fact extraction"
+    default: "false"
+  - key: db_path
+    description: "Path to memory_store.db"
+    default: "$HERMES_HOME/memory_store.db"
+  - key: default_trust
+    description: "Default trust score for new facts"
+    default: "0.5"
+  - key: hrr_dim
+    description: "HRR vector dimensions"
+    default: "1024"

@@ -923,11 +923,17 @@ def main():
         with open(args.from_json, encoding="utf-8") as f:
             timings = json.load(f)
     else:
-        token = expect_env("GITHUB_TOKEN")
         repo = expect_env("GITHUB_REPOSITORY")
         run_id = expect_env("GITHUB_RUN_ID")
         head_sha = expect_env("GITHUB_SHA")
         try:
+            # A missing token (e.g. an empty PAT on a fork PR, where repo
+            # secrets are unavailable) is a degraded run, not a hard error:
+            # route it through the same soft-fail path so this advisory job
+            # never reddens the PR.
+            token = os.environ.get("GITHUB_TOKEN")
+            if not token:
+                raise TimingsUnavailable("GITHUB_TOKEN is empty")
             timings = collect_timings(token, repo, run_id, head_sha)
         except TimingsUnavailable as e:
             # Observability job: a missing report must never redden the PR.

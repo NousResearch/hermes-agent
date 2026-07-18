@@ -611,8 +611,13 @@ function ToolEntry({ part }: ToolEntryProps) {
 // auto-scrolling window; fewer than this stays a plain inline stack.
 const TOOL_GROUP_SCROLL_THRESHOLD = 3
 
-export function shouldBoundToolGroup(childCount: number, containsClarify: boolean) {
-  return childCount >= TOOL_GROUP_SCROLL_THRESHOLD && !containsClarify
+// Tools whose body (an interactive form, a full-size image) must never be
+// trapped behind the window's max-height + fade mask. A run holding any of
+// them stays a plain, fully-visible stack no matter how long it is.
+export const UNBOUNDABLE_TOOLS = new Set(['clarify', 'image_generate'])
+
+export function shouldBoundToolGroup(childCount: number, hasUnboundable: boolean) {
+  return childCount >= TOOL_GROUP_SCROLL_THRESHOLD && !hasUnboundable
 }
 
 // Pin-to-bottom + top-fade for the bounded tool window. Pins the newest row on
@@ -654,7 +659,10 @@ function useToolWindow(enabled: boolean) {
       syncFade()
     }
 
-    pin()
+    // No sync pin() here: the observer's guaranteed initial delivery runs it
+    // inside RO timing (layout already clean, still before paint). A sync call
+    // at effect time reads scrollHeight while the commit's layout is dirty —
+    // one forced reflow per tool group, which cascades on a session switch.
     const observer = new ResizeObserver(pin)
     observer.observe(content)
 
@@ -688,15 +696,15 @@ export const ToolGroupSlot: FC<PropsWithChildren<{ endIndex: number; startIndex:
   const messageId = useAuiState(s => s.message.id)
   const messageRunning = useAuiState(selectMessageRunning)
 
-  const containsClarify = useAuiState(s =>
+  const hasUnboundable = useAuiState(s =>
     s.message.parts
       .slice(Math.max(0, startIndex), endIndex + 1)
-      .some(part => part.type === 'tool-call' && part.toolName === 'clarify')
+      .some(part => part.type === 'tool-call' && UNBOUNDABLE_TOOLS.has(part.toolName))
   )
 
   const enterRef = useEnterAnimation(messageRunning, `tool-group:${messageId}:${startIndex}`)
 
-  const bounded = shouldBoundToolGroup(Children.count(children), containsClarify)
+  const bounded = shouldBoundToolGroup(Children.count(children), hasUnboundable)
   const { contentRef, faded, onScroll, scrollRef } = useToolWindow(bounded)
 
   return (

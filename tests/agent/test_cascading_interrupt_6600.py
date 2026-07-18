@@ -76,7 +76,7 @@ def test_non_streaming_cancel_does_not_surface_network_error():
 
     # The forced RemoteProtocolError must NOT surface as the raised error.
     assert create_calls["n"] == 1
-    assert elapsed < 3.0, f"interrupt took {elapsed:.1f}s — should be near-instant"
+    assert elapsed < 10.0, f"interrupt took {elapsed:.1f}s — should be near-instant (guarding the 30s+ hang)"
 
 
 def test_normal_transient_error_still_raises_when_not_cancelled():

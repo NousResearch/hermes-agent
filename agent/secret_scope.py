@@ -226,39 +226,39 @@ def build_profile_secret_scope(hermes_home: Path) -> Dict[str, str]:
     global vars are intentionally NOT copied in — ``get_secret`` reads those
     from ``os.environ`` directly, so the scope holds only profile secrets.
 
-    External secret sources (Bitwarden, 1Password, ...) inject keys into
-    ``os.environ`` and record provenance in ``env_loader._SECRET_SOURCES``.
+    External secret sources (Bitwarden, 1Password, ...) snapshot their applied
+    values by profile home in ``env_loader``.
     Without merging those keys into the scope, they are invisible under an
     active scope (cron / multiplexed gateway), causing provider resolution
     failures for BWS-managed credentials that are NOT in ``.env``.
 
-    We merge ONLY keys that have a recorded external source label — not
-    arbitrary ``os.environ`` entries — so cross-profile isolation is
+    We merge ONLY values captured for this home — not arbitrary ``os.environ``
+    entries — so cross-profile isolation is
     preserved: a key from another profile's shell export has no provenance
     entry and is excluded. ``.env`` values always take precedence over
     external-source values, matching the ``.env``-first resolution order
     in ``get_env_value_prefer_dotenv``.
     """
     secrets = load_env_file(Path(hermes_home) / ".env")
-    _merge_external_secret_sources(secrets)
+    _merge_external_secret_sources(Path(hermes_home), secrets)
     return secrets
 
 
-def _merge_external_secret_sources(secrets: Dict[str, str]) -> None:
+def _merge_external_secret_sources(hermes_home: Path, secrets: Dict[str, str]) -> None:
     """Merge externally-injected secrets (BWS, 1Password, ...) into ``secrets``.
 
-    Only keys tracked in ``env_loader._SECRET_SOURCES`` are eligible — this
-    is the provenance gate that prevents arbitrary process-env leakage.
-    ``.env`` values (already in ``secrets``) are never overwritten.
+    Values are captured at source-application time for the requested home;
+    this prevents a later profile load from replacing a same-named value in
+    process-global ``os.environ``. ``.env`` values already in ``secrets`` are
+    never overwritten.
     """
     try:
-        from hermes_cli.env_loader import _SECRET_SOURCES
+        from hermes_cli.env_loader import get_secret_source_values
     except ImportError:
         return
 
-    for name in _SECRET_SOURCES:
-        if name in secrets:
+    for name, value in get_secret_source_values(hermes_home).items():
+        if name in secrets or _is_global_env(name):
             continue  # .env wins
-        val = os.environ.get(name)
-        if val:
-            secrets[name] = val
+        if value:
+            secrets[name] = value

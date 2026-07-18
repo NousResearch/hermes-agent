@@ -162,7 +162,9 @@ class TestExternalSecretSourceMerge:
 
         from hermes_cli import env_loader
 
-        env_loader._SECRET_SOURCES["OLLAMA_API_KEY"] = "bitwarden"
+        env_loader._SECRET_SOURCE_VALUES_BY_HOME[str(tmp_path.resolve())] = {
+            "OLLAMA_API_KEY": "ollama-bws-key"
+        }
         try:
             scope = ss.build_profile_secret_scope(tmp_path)
             assert scope["OLLAMA_API_KEY"] == "ollama-bws-key"
@@ -174,7 +176,7 @@ class TestExternalSecretSourceMerge:
             finally:
                 ss.reset_secret_scope(token)
         finally:
-            env_loader._SECRET_SOURCES.clear()
+            env_loader.reset_secret_source_cache()
 
     def test_env_value_takes_precedence_over_bws(self, tmp_path, monkeypatch):
         """A key in .env must win over the BWS-injected value."""
@@ -183,12 +185,14 @@ class TestExternalSecretSourceMerge:
 
         from hermes_cli import env_loader
 
-        env_loader._SECRET_SOURCES["OLLAMA_API_KEY"] = "bitwarden"
+        env_loader._SECRET_SOURCE_VALUES_BY_HOME[str(tmp_path.resolve())] = {
+            "OLLAMA_API_KEY": "from-bws"
+        }
         try:
             scope = ss.build_profile_secret_scope(tmp_path)
             assert scope["OLLAMA_API_KEY"] == "from-dotenv"
         finally:
-            env_loader._SECRET_SOURCES.clear()
+            env_loader.reset_secret_source_cache()
 
     def test_disabled_bws_does_not_leak_unrelated_env(self, tmp_path, monkeypatch):
         """When _SECRET_SOURCES is empty, arbitrary os.environ keys are excluded."""
@@ -218,8 +222,10 @@ class TestExternalSecretSourceMerge:
 
         from hermes_cli import env_loader
 
-        env_loader._SECRET_SOURCES.clear()
-        env_loader._SECRET_SOURCES["OLLAMA_API_KEY"] = "bitwarden"
+        env_loader.reset_secret_source_cache()
+        env_loader._SECRET_SOURCE_VALUES_BY_HOME[str(tmp_path.resolve())] = {
+            "OLLAMA_API_KEY": "bws-key"
+        }
         try:
             scope = ss.build_profile_secret_scope(tmp_path)
             assert scope["OLLAMA_API_KEY"] == "bws-key"
@@ -233,4 +239,32 @@ class TestExternalSecretSourceMerge:
             finally:
                 ss.reset_secret_scope(token)
         finally:
-            env_loader._SECRET_SOURCES.clear()
+            env_loader.reset_secret_source_cache()
+
+    def test_same_key_isolated_by_home_snapshot(self, tmp_path, monkeypatch):
+        """Later profile loads cannot replace another home's captured value."""
+        first_home = tmp_path / "first"
+        second_home = tmp_path / "second"
+        first_home.mkdir()
+        second_home.mkdir()
+        monkeypatch.setenv("OLLAMA_API_KEY", "second-profile-value")
+
+        from hermes_cli import env_loader
+
+        env_loader._SECRET_SOURCE_VALUES_BY_HOME[str(first_home.resolve())] = {
+            "OLLAMA_API_KEY": "first-profile-value"
+        }
+        env_loader._SECRET_SOURCE_VALUES_BY_HOME[str(second_home.resolve())] = {
+            "OLLAMA_API_KEY": "second-profile-value"
+        }
+        try:
+            assert (
+                ss.build_profile_secret_scope(first_home)["OLLAMA_API_KEY"]
+                == "first-profile-value"
+            )
+            assert (
+                ss.build_profile_secret_scope(second_home)["OLLAMA_API_KEY"]
+                == "second-profile-value"
+            )
+        finally:
+            env_loader.reset_secret_source_cache()

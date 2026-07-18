@@ -244,6 +244,7 @@ hermes mcp serve \
   --auth-token-env HERMES_MCP_PSK \
   --oauth-compatible \
   --public-base-url https://mcp.example.com \
+  --oauth-redirect-uri https://client.example.com/oauth/callback \
   --allowed-host mcp.example.com \
   --allowed-origin https://mcp.example.com
 ```
@@ -256,7 +257,7 @@ This exposes:
 - Authorization-server metadata: `https://mcp.example.com/.well-known/oauth-authorization-server`
 - Protected-resource metadata: `https://mcp.example.com/.well-known/oauth-protected-resource/mcp`
 
-By default, the OAuth client id is the PSK from `--auth-token-env`, and the client secret is blank. If your client requires separate OAuth credentials, set `--oauth-client-id-env` and/or `--oauth-client-secret-env`. Authorization-code clients may use PKCE `plain` or `S256`; the token endpoint binds the code to the original redirect URI and validates the code verifier before issuing a token. Tokens and authorization codes are opaque and stored in memory, so restart the process to invalidate them.
+By default, OAuth uses the public client id `hermes-mcp` and the PSK from `--auth-token-env` as its confidential client secret. This keeps the PSK out of authorization URLs, browser history, proxy logs, and redirects. If you set a custom client id with `--oauth-client-id-env`, you must also set `--oauth-client-secret-env`; a client id alone can never mint a bearer token. Authorization-code clients may use PKCE `plain` or `S256`; the authorization endpoint accepts loopback HTTP(S) redirect URIs automatically and accepts non-loopback HTTPS redirect URIs only when passed with `--oauth-redirect-uri`. The token endpoint binds each code to the original redirect URI, consumes each code on the first exchange attempt, and validates the code verifier before issuing a token. Tokens and authorization codes are opaque and stored in memory, so restart the process to invalidate them.
 
 This mode is intentionally generic: it works for local stdio clients like Claude Desktop via the default transport, and for remote clients that require an HTTPS MCP URL plus bearer or OAuth-shaped authentication.
 

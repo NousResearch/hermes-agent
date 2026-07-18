@@ -194,7 +194,7 @@ Cron 任务结果可投递到任何受支持的平台。
 
 ### 响应包装
 
-默认情况下（`cron.wrap_response: true`），cron 投递包含标识任务名称和任务内容的来源头部。通用管理尾部需要显式启用：
+默认情况下（`cron.wrap_response: true`），cron 投递包含标识任务名称和任务 ID（`(job_id: <job-id>)`）的来源头部。通用管理尾部需要显式启用：
 
 - `cron.include_management_footer: false`（默认）——投递头部和响应，不附加通用管理提示。
 - `cron.include_management_footer: true`——附加旧版提示，说明 agent 无法在对话中看到已投递的消息。

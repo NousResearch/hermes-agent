@@ -310,6 +310,7 @@ Agent 的最终响应会自动投递，无需在 cron prompt 中调用 `send_mes
 
 ```
 Cronjob Response: Morning feeds
+(job_id: abc123)
 -------------
 
 <agent output here>

@@ -20,3 +20,4 @@ def test_response_wrapping_docs_cover_footer_opt_in_and_raw_output(relative_path
     assert "cron.include_management_footer: false" in text
     assert "cron.include_management_footer: true" in text
     assert "cron.wrap_response: false" in text
+    assert "(job_id:" in text

@@ -261,7 +261,7 @@ For **Telegram topics**, use `telegram:<chat_id>:<thread_id>` (e.g., `telegram:-
 
 ### Response Wrapping
 
-By default (`cron.wrap_response: true`), cron deliveries include a provenance header identifying the cron job name and task. The generic management footer is opt-in:
+By default (`cron.wrap_response: true`), cron deliveries include a provenance header identifying the cron job name and ID (`(job_id: <job-id>)`). The generic management footer is opt-in:
 
 - `cron.include_management_footer: false` (default) — deliver the header and response without the generic management guidance.
 - `cron.include_management_footer: true` — append the legacy note that the agent cannot see the delivered message in conversation.

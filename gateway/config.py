@@ -712,6 +712,47 @@ _PLATFORM_CONNECTED_CHECKERS: dict[Platform, Callable[[PlatformConfig], bool]] =
 
 
 @dataclass
+class EventLoopWatchdogConfig:
+    """Configuration for the supervised gateway event-loop liveness probe."""
+
+    enabled: bool = False
+    interval_seconds: float = 60.0
+    timeout_seconds: float = 30.0
+    failure_threshold: int = 3
+
+    @classmethod
+    def from_dict(cls, data: Dict[str, Any]) -> "EventLoopWatchdogConfig":
+        data = _coerce_dict(data)
+
+        def positive_number(key: str, default: float) -> float:
+            try:
+                value = float(data.get(key, default))
+            except (TypeError, ValueError):
+                return default
+            return value if value > 0 else default
+
+        try:
+            threshold = int(data.get("failure_threshold", 3))
+        except (TypeError, ValueError):
+            threshold = 3
+
+        return cls(
+            enabled=_coerce_bool(data.get("enabled"), False),
+            interval_seconds=positive_number("interval_seconds", 60.0),
+            timeout_seconds=positive_number("timeout_seconds", 30.0),
+            failure_threshold=threshold if threshold > 0 else 3,
+        )
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            "enabled": self.enabled,
+            "interval_seconds": self.interval_seconds,
+            "timeout_seconds": self.timeout_seconds,
+            "failure_threshold": self.failure_threshold,
+        }
+
+
+@dataclass
 class GatewayConfig:
     """
     Main gateway configuration.
@@ -760,6 +801,11 @@ class GatewayConfig:
     group_sessions_per_user: bool = True  # Isolate group/channel sessions per participant when user IDs are available
     thread_sessions_per_user: bool = False  # When False (default), threads are shared across all participants
     max_concurrent_sessions: Optional[int] = None  # Positive int caps simultaneous active chat sessions
+
+    # Opt-in event-loop liveness probe for supervised deployments.
+    event_loop_watchdog: EventLoopWatchdogConfig = field(
+        default_factory=EventLoopWatchdogConfig
+    )
 
     # Multi-profile multiplexing (opt-in; default off preserves one-gateway-per-profile).
     # When True, the default profile's gateway serves inbound messages for every
@@ -888,6 +934,7 @@ class GatewayConfig:
             "group_sessions_per_user": self.group_sessions_per_user,
             "thread_sessions_per_user": self.thread_sessions_per_user,
             "max_concurrent_sessions": self.max_concurrent_sessions,
+            "event_loop_watchdog": self.event_loop_watchdog.to_dict(),
             "multiplex_profiles": self.multiplex_profiles,
             "unauthorized_dm_behavior": self.unauthorized_dm_behavior,
             "streaming": self.streaming.to_dict(),
@@ -1011,6 +1058,11 @@ class GatewayConfig:
             thread_sessions_per_user=_coerce_bool(thread_sessions_per_user, False),
             multiplex_profiles=_coerce_bool(multiplex_profiles, False),
             max_concurrent_sessions=max_concurrent_sessions,
+            event_loop_watchdog=EventLoopWatchdogConfig.from_dict(
+                data.get("event_loop_watchdog")
+                or nested_gateway.get("event_loop_watchdog")
+                or {}
+            ),
             unauthorized_dm_behavior=unauthorized_dm_behavior,
             streaming=StreamingConfig.from_dict(data.get("streaming", {})),
             session_store_max_age_days=session_store_max_age_days,
@@ -1145,6 +1197,8 @@ def load_gateway_config() -> GatewayConfig:
                     gw_data["multiplex_profiles"] = gateway_section["multiplex_profiles"]
                 if "max_concurrent_sessions" in gateway_section:
                     gw_data["max_concurrent_sessions"] = gateway_section["max_concurrent_sessions"]
+                if "event_loop_watchdog" in gateway_section:
+                    gw_data["event_loop_watchdog"] = gateway_section["event_loop_watchdog"]
 
             if "max_concurrent_sessions" in yaml_cfg:
                 gw_data["max_concurrent_sessions"] = yaml_cfg["max_concurrent_sessions"]

@@ -2921,6 +2921,16 @@ DEFAULT_CONFIG = {
     # Gateway settings — control how messaging platforms (Telegram, Discord,
     # Slack, etc.) deliver agent-produced files as native attachments.
     "gateway": {
+        # Optional liveness probe for supervised long-running gateways. When
+        # enabled, a daemon thread exits with the service-restart code after
+        # the asyncio loop fails to dispatch several consecutive probes.
+        "event_loop_watchdog": {
+            "enabled": False,
+            "interval_seconds": 60.0,
+            "timeout_seconds": 30.0,
+            "failure_threshold": 3,
+        },
+
         # Seconds the gateway waits for a single messaging platform to finish
         # connecting during startup (and on reconnect). Discord in particular
         # can blow past the old fixed 30s when an account has many slash

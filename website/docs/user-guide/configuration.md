@@ -1661,6 +1661,27 @@ voice:
 
 Use `/voice on` in the CLI to enable microphone mode, `record_key` to start/stop recording, and `/voice tts` to toggle spoken replies. See [Voice Mode](/user-guide/features/voice-mode) for end-to-end setup and platform-specific behavior.
 
+## Gateway Event-Loop Watchdog
+
+Supervised gateway deployments can opt into an event-loop liveness probe:
+
+```yaml
+gateway:
+  event_loop_watchdog:
+    enabled: false
+    interval_seconds: 60
+    timeout_seconds: 30
+    failure_threshold: 3
+```
+
+When enabled, a daemon thread schedules probes on the gateway asyncio loop. If
+the loop fails to dispatch the configured number of consecutive probes, Hermes
+records a degraded runtime status and exits with the service-restart code so
+the existing supervisor can recover it. The watchdog is disabled by default.
+
+All intervals and thresholds must be positive. Invalid values fall back to the
+defaults shown above.
+
 ## Streaming
 
 Stream tokens to the terminal or messaging platforms as they arrive, instead of waiting for the full response.

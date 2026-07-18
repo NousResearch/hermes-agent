@@ -3,9 +3,10 @@
 Three fixes under test:
 
 1. ``_jobs_lock()`` bounds its cross-process flock: when another process holds
-   ``.jobs.lock`` indefinitely, acquisition times out, logs at ERROR, and falls
-   through to in-process-only locking — instead of blocking the calling thread
-   (and, transitively, the cron ticker heartbeat) forever.
+   an already-private ``.jobs.lock`` indefinitely, acquisition times out, logs
+   at ERROR, and falls through to in-process-only locking — instead of blocking
+   the calling thread (and, transitively, the cron ticker heartbeat) forever.
+   Legacy locks that still need permission hardening fail closed instead.
 
 2. Claim freshness checks are bounded on both sides (``0 <= age < ttl``): a
    ``fire_claim``/``run_claim`` stamped in the FUTURE (clock/TZ skew across a
@@ -65,11 +66,11 @@ def _hold_jobs_flock(path: Path, release: threading.Event, held: threading.Event
 
 
 class TestBoundedJobsLock:
-    def test_lock_acquisition_times_out_and_degrades(self, monkeypatch, caplog):
-        """A foreign holder of .jobs.lock must NOT block _jobs_lock forever."""
-        jobs_mod.ensure_dirs()
+    def test_private_lock_acquisition_times_out_and_degrades(self, monkeypatch, caplog):
+        """A foreign holder of a private lock must not block forever."""
+        with _jobs_lock():
+            pass
         lock_path = jobs_mod._jobs_lock_file()
-        lock_path.touch()
 
         monkeypatch.setattr(jobs_mod, "_JOBS_LOCK_TIMEOUT_SECONDS", 1.0)
 

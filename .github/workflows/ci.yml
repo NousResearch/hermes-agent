@@ -226,7 +226,11 @@ jobs:
 
       - name: Collect timings and generate report
         env:
-          GITHUB_TOKEN: ${{ secrets.AUTOFIX_BOT_PAT }}
+          # Forks get no repo secrets (AUTOFIX_BOT_PAT is empty); fall back to
+          # the run's read-only github.token so this observability job doesn't
+          # crash on a missing GITHUB_TOKEN and redden every fork PR. Mirrors
+          # the detect-changes fallback above.
+          GITHUB_TOKEN: ${{ secrets.AUTOFIX_BOT_PAT || github.token }}
         run: |
           python3 scripts/ci/timings_report.py \
             --baseline ci-timings-baseline.json \

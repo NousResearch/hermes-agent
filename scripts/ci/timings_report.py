@@ -923,11 +923,20 @@ def main():
         with open(args.from_json, encoding="utf-8") as f:
             timings = json.load(f)
     else:
-        token = expect_env("GITHUB_TOKEN")
+        # Fork PRs get no repo secrets, so the workflow's ``AUTOFIX_BOT_PAT``
+        # is empty and ``GITHUB_TOKEN`` can arrive unset. This is an
+        # observability job — degrade gracefully (the handler below) rather
+        # than reddening the PR with a hard "missing env var" crash before the
+        # collect even runs. (The workflow also falls back to ``github.token``;
+        # this keeps the invariant "a missing report never reddens the PR" true
+        # regardless of how the token is wired.)
+        token = os.environ.get("GITHUB_TOKEN") or ""
         repo = expect_env("GITHUB_REPOSITORY")
         run_id = expect_env("GITHUB_RUN_ID")
         head_sha = expect_env("GITHUB_SHA")
         try:
+            if not token:
+                raise TimingsUnavailable("GITHUB_TOKEN not available (fork PR?)")
             timings = collect_timings(token, repo, run_id, head_sha)
         except TimingsUnavailable as e:
             # Observability job: a missing report must never redden the PR.

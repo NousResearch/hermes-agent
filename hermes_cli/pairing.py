@@ -8,6 +8,8 @@ Usage:
     hermes pairing clear-pending     # Clear all expired/pending codes
 """
 
+import re
+
 def pairing_command(args):
     """Handle hermes pairing subcommands."""
     from gateway.pairing import PairingStore
@@ -39,13 +41,20 @@ def _cmd_list(store):
 
     if pending:
         print(f"\n  Pending Pairing Requests ({len(pending)}):")
-        print(f"  {'Platform':<12} {'Code':<10} {'User ID':<20} {'Name':<20} {'Age'}")
-        print(f"  {'--------':<12} {'----':<10} {'-------':<20} {'----':<20} {'---'}")
+        print(f"  {'Platform':<12} {'Request ID':<10} {'User ID':<20} {'Name':<20} {'Age'}")
+        print(f"  {'--------':<12} {'----------':<10} {'-------':<20} {'----':<20} {'---'}")
         for p in pending:
             print(
                 f"  {p['platform']:<12} {p['code']:<10} {p['user_id']:<20} "
                 f"{(p.get('user_name') or ''):<20} {p['age_minutes']}m ago"
             )
+        print(
+            "  Note: 'Request ID' is a hash fingerprint for identifying this"
+        )
+        print(
+            "  request. To approve, use the CODE the bot sent you in chat —")
+        print(
+            "  run `hermes pairing approve <platform> <code>`.\n")
     else:
         print("\n  No pending pairing requests.")
 
@@ -64,8 +73,27 @@ def _cmd_list(store):
 def _cmd_approve(store, platform: str, code: str):
     """Approve a pairing code."""
     platform = platform.lower().strip()
-    code = code.upper().strip()
+    code = code.strip()
 
+    # Guard against the misleading `pairing list` fingerprint: it is the first
+    # 8 hex chars of the code's SHA-256 hash, NOT the approvable code. Reject
+    # hash-prefix input explicitly so operators don't chase a "wrong code"
+    # rabbit hole (the real code comes from the bot's DM).
+    if re.fullmatch(r"[0-9a-fA-F]{8}", code):
+        print(
+            "\n  That looks like the Request ID from `hermes pairing list` — "
+            "it is a"
+        )
+        print(
+            "  hash fingerprint, not the approvable code. Approve with the CODE"
+        )
+        print(
+            "  the bot sent you in Telegram/DM (e.g. `hermes pairing approve "
+            "telegram ABCD1234`).\n"
+        )
+        return
+
+    code = code.upper().strip()
     result = store.approve_code(platform, code)
     if result:
         uid = result["user_id"]

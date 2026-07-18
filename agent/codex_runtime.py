@@ -702,7 +702,7 @@ def run_codex_app_server_turn(
         try:
             session = CodexAppServerSession(
                 cwd=cwd,
-                model=agent.model,
+                model=getattr(agent, "model", None),
                 effort=effort,
                 approval_callback=approval_callback,
                 request_routing=_ServerRequestRouting(

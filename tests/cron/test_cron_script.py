@@ -249,6 +249,36 @@ class TestRunJobScript:
         assert captured["kwargs"]["encoding"] == "utf-8"
         assert captured["kwargs"]["errors"] == "replace"
 
+    def test_windows_shell_script_prefers_git_bash_when_path_finds_wsl(
+        self, cron_env, monkeypatch
+    ):
+        from cron import scheduler as sched_mod
+        from cron.scheduler import _run_job_script
+        from tools.environments import local as local_env
+
+        script = cron_env / "scripts" / "probe.sh"
+        script.write_text('#!/usr/bin/env bash\nprintf "ok\\n"\n')
+
+        wsl_bash = r"C:\Windows\System32\bash.exe"
+        git_bash = r"C:\Program Files\Git\bin\bash.exe"
+        captured = {}
+
+        def fake_run(argv, **kwargs):
+            captured["argv"] = argv
+            return SimpleNamespace(returncode=0, stdout="ok\n", stderr="")
+
+        monkeypatch.setattr(sched_mod.sys, "platform", "win32")
+        monkeypatch.setattr(sched_mod.shutil, "which", lambda command: wsl_bash)
+        monkeypatch.setattr(local_env, "_find_bash", lambda: git_bash)
+        monkeypatch.setattr(sched_mod, "windows_hide_flags", lambda: 0x08000000)
+        monkeypatch.setattr(sched_mod.subprocess, "run", fake_run)
+
+        success, output = _run_job_script("probe.sh")
+
+        assert success is True
+        assert output == "ok"
+        assert captured["argv"] == [git_bash, str(script.resolve())]
+
     def test_non_windows_script_preserves_default_text_decoding(self, cron_env, monkeypatch):
         from cron import scheduler as sched_mod
         from cron.scheduler import _run_job_script

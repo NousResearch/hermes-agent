@@ -1330,6 +1330,20 @@ class HonchoMemoryProvider(MemoryProvider):
 
         Messages exceeding the Honcho API limit (default 25k chars) are
         split into multiple messages with continuation markers.
+
+        **Skips assistant messages by default.** Assistant output is
+        dominated by self-narration, status reports, and tool-call traces.
+        The Honcho deriver's extraction prompt reads assistant output as
+        facts about the `hermes` peer, which inflates the AI Self-
+        Representation with debug breadcrumbs and re-asserting "hermes
+        said X" lines on every turn — the exact pattern that fed the
+        2026-07-18 self-trust loop and that PR #66770's renderer only
+        partially mitigates. Source-side fix is the right layer.
+
+        The user message stream still goes in (legitimate). The assistant
+        stream does not. AI identity / config / system-prompt seeds go
+        through a separate path (`seed_ai_identity` in this same module)
+        and are unaffected.
         """
         if self._cron_skipped:
             return
@@ -1341,15 +1355,13 @@ class HonchoMemoryProvider(MemoryProvider):
 
         msg_limit = self._config.message_max_chars if self._config else 25000
         clean_user_content = sanitize_context(user_content or "").strip()
-        clean_assistant_content = sanitize_context(assistant_content or "").strip()
 
         def _sync():
             try:
                 session = self._manager.get_or_create(self._session_key)
                 for chunk in self._chunk_message(clean_user_content, msg_limit):
                     session.add_message("user", chunk)
-                for chunk in self._chunk_message(clean_assistant_content, msg_limit):
-                    session.add_message("assistant", chunk)
+                # Assistant content intentionally not written. See docstring.
                 self._manager._flush_session(session)
             except Exception as e:
                 logger.debug("Honcho sync_turn failed: %s", e)

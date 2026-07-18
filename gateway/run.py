@@ -14529,8 +14529,17 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 success = await adapter.join_voice_channel(
                     voice_channel, manual_owner=bool(manual), attempt_token=attempt_token
                 )
-            except TypeError:
-                # Older adapter without the manual_owner/attempt_token kwargs.
+            except TypeError as te:
+                # Fall back to the tokenless call ONLY for a genuinely older adapter
+                # that does not accept these kwargs — never for a broad/internal
+                # TypeError, which must propagate (dropping the attempt token or
+                # manual-owner flag would let a stale attempt mutate a live session).
+                msg = str(te)
+                legacy_signature = "unexpected keyword argument" in msg and (
+                    "attempt_token" in msg or "manual_owner" in msg
+                )
+                if not legacy_signature:
+                    raise
                 success = await adapter.join_voice_channel(voice_channel)
         except Exception as e:
             logger.warning("Failed to join voice channel: %s", e)

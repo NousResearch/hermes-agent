@@ -4424,7 +4424,8 @@ class DiscordAdapter(BasePlatformAdapter):
             ``idle_timeout_seconds`` is 0 and the inactivity timer never fires).
 
         The physical disconnect + all map cleanup + the runner rollback are
-        performed TRANSACTIONALLY (shielded) so a cancellation cannot leave a
+        performed TRANSACTIONALLY (``_teardown_voice_session_transactional`` runs
+        the whole unit to completion) so a cancellation cannot leave a
         popped-but-connected client or skip the runner cleanup.
         """
         gid = int(guild_id)
@@ -4447,9 +4448,20 @@ class DiscordAdapter(BasePlatformAdapter):
         self, guild_id: int, text_channel_id: str
     ) -> None:
         """Physical disconnect + full map cleanup + profile-bound runner cleanup,
-        as one unit that completes before any cancellation propagates. Invoked via
-        ``asyncio.shield`` by the owned/orphan and cancellation paths."""
-        await self._leave_voice_channel_locked(int(guild_id))
+        as ONE cancellation-transactional unit: every step completes before a
+        cancellation propagates (the caller need not shield it itself)."""
+        gid = int(guild_id)
+        await self._shield_to_completion(
+            lambda: self._teardown_voice_session_body(gid, text_channel_id)
+        )
+
+    async def _teardown_voice_session_body(
+        self, guild_id: int, text_channel_id: str
+    ) -> None:
+        """Raw teardown body (run to completion by
+        ``_teardown_voice_session_transactional``): physical disconnect + maps,
+        then the profile-bound runner ``_on_voice_disconnect`` cleanup."""
+        await self._leave_voice_channel_body(int(guild_id))
         on_disconnect = getattr(self, "_on_voice_disconnect", None)
         if on_disconnect and text_channel_id:
             try:
@@ -4938,31 +4950,45 @@ class DiscordAdapter(BasePlatformAdapter):
             return
 
         target_channel_id = str(target.voice_channel_id)
-        self._voice_auto_join_targets.pop(int(guild_id), None)
-        # Target left the followed channel — cancel any pending rejoin retry.
-        self._cancel_voice_auto_join_retry(int(guild_id))
+        # Capture the session owner tied to THIS follow BEFORE any await, so we can
+        # tell — under the lock — whether a NEWER auto attempt has since re-committed
+        # (and re-marked the target) on the same channel. A newer owner must be left
+        # strictly intact, along with its target.
+        owner_at_start = self._voice_session_owner.get(int(guild_id))
         cfg = getattr(self, "_voice_auto_join_cfg", {}) or {}
-        if not cfg.get("target_leave_cleanup", True):
-            return
-        # The exact-channel + owner recheck AND the physical disconnect happen in
-        # ONE guild-lock critical section, so a manual /voice-join that races this
-        # cleanup (acquiring the lock first, stamping manual ownership, moving the
-        # session) can never be disconnected: under the lock we observe either a
-        # different connected channel or a MANUAL owner and bail without touching it.
+        # The target-identity/owner recheck, the target/retry drop, AND the physical
+        # disconnect all happen in ONE guild-lock critical section, so a manual join
+        # OR a newer auto commit that races this cleanup (acquiring the lock first,
+        # stamping ownership + re-marking the target) is observed and preserved.
         lock = self._voice_locks.setdefault(int(guild_id), asyncio.Lock())
         async with lock:
+            current_owner = self._voice_session_owner.get(int(guild_id))
+            # A newer/different owner (a newer committed AUTO token, or a MANUAL
+            # takeover) took over while we waited for the lock — never touch its
+            # session or its (re-marked) target.
+            if current_owner is not None and current_owner != owner_at_start:
+                return
+            current_target = self._voice_auto_join_targets.get(int(guild_id))
+            # Only drop the target if it is STILL the exact follow that left; a
+            # newer attempt may have re-marked it (same channel) and it must survive.
+            if (
+                current_target is not None
+                and str(current_target.user_id) == str(user_id)
+                and str(current_target.voice_channel_id) == before_channel_id
+            ):
+                self._voice_auto_join_targets.pop(int(guild_id), None)
+            self._cancel_voice_auto_join_retry(int(guild_id))
+            if not cfg.get("target_leave_cleanup", True):
+                return
             if self.connected_voice_channel_id(int(guild_id)) != target_channel_id:
                 return
-            owner = self._voice_session_owner.get(int(guild_id))
-            if owner is not None and owner.is_manual:
+            if current_owner is not None and current_owner.is_manual:
                 return
             text_ch_id = self._voice_text_channels.get(int(guild_id))
             # Transactional: physical disconnect + map cleanup + the profile-bound
             # runner cleanup complete (holding the lock throughout) before any
             # cancellation can propagate.
-            await self._shield_to_completion(
-                lambda: self._teardown_voice_session_transactional(int(guild_id), text_ch_id)
-            )
+            await self._teardown_voice_session_transactional(int(guild_id), text_ch_id)
 
     async def join_voice_channel(
         self, channel, *, manual_owner: bool = False, attempt_token: Optional[int] = None
@@ -5000,11 +5026,23 @@ class DiscordAdapter(BasePlatformAdapter):
                     self._reset_voice_timeout(guild_id)
                     self._stamp_voice_owner_locked(guild_id, manual_owner, attempt_token)
                     return True
+                # Capture the pre-move channel so a mid-move supersession can be
+                # UNDONE — the physical move is an awaited mutation, and supersession
+                # (via a non-lock-holding leave/register) can land while we await it.
+                pre_move_channel = getattr(existing, "channel", None)
                 await existing.move_to(channel)
                 # Recheck currency after the awaited move before keeping/stamping.
                 if attempt_token is not None and not self._auto_attempt_current_locked(
                     guild_id, attempt_token
                 ):
+                    # Superseded/cancelled mid-move: restore the session to its
+                    # pre-move channel so a stale attempt leaves NO physical move
+                    # mutation behind, then bail without stamping.
+                    if pre_move_channel is not None:
+                        try:
+                            await existing.move_to(pre_move_channel)
+                        except Exception:
+                            pass
                     return False
                 self._reset_voice_timeout(guild_id)
                 self._stamp_voice_owner_locked(guild_id, manual_owner, attempt_token)
@@ -5092,8 +5130,9 @@ class DiscordAdapter(BasePlatformAdapter):
 
     async def _disconnect_voice_client(self, vc) -> None:
         """Disconnect a single voice client defensively (tolerant of the fake
-        clients used in tests). The physical disconnect await lives here so
-        callers can shield exactly this step."""
+        clients used in tests). Isolates the physical-disconnect await; the caller
+        runs it inside a run-to-completion task so a cancellation cannot interrupt
+        it."""
         try:
             if getattr(vc, "is_connected", lambda: False)():
                 try:
@@ -5110,15 +5149,25 @@ class DiscordAdapter(BasePlatformAdapter):
             pass
 
     async def _leave_voice_channel_locked(self, guild_id: int) -> None:
-        """Physical voice teardown body. The caller MUST hold
+        """Cancellation-TRANSACTIONAL physical voice teardown. The caller MUST hold
         ``_voice_locks[guild_id]``.
 
-        Cancellation-safe: all per-guild maps (receiver, mixer, client, timeout,
-        text, source, owner) are cleared SYNCHRONOUSLY first — no await between
-        them — and then the ONLY await, the physical disconnect, is SHIELDED, so a
-        cancellation can never leave a popped-but-still-connected client dangling
-        or a half-cleared set of maps. Tolerant of the fake clients used in tests.
+        The full body — synchronous cleanup of every per-guild map (receiver,
+        mixer, client, timeout, text, source, owner, target) PLUS the awaited
+        physical ``disconnect()`` — runs to COMPLETION before any cancellation
+        propagates. So a cancellation landing exactly during the awaited disconnect
+        can never leave the physical client untracked-but-connected, nor a
+        half-cleared set of maps: the whole unit finishes first, then the
+        cancellation is re-raised.
         """
+        gid = int(guild_id)
+        await self._shield_to_completion(lambda: self._leave_voice_channel_body(gid))
+
+    async def _leave_voice_channel_body(self, guild_id: int) -> None:
+        """Raw physical teardown, run inside a run-to-completion task by
+        ``_leave_voice_channel_locked`` / ``_teardown_voice_session_body``. Clears
+        every per-guild map synchronously, then awaits the physical disconnect.
+        Tolerant of the fake clients used in tests."""
         gid = int(guild_id)
         # -- synchronous map teardown (uninterruptible: no await) --
         receiver = self._voice_receivers.pop(gid, None)
@@ -5142,9 +5191,9 @@ class DiscordAdapter(BasePlatformAdapter):
         targets = getattr(self, "_voice_auto_join_targets", None)
         if isinstance(targets, dict):
             targets.pop(gid, None)
-        # -- the sole await: complete the physical disconnect even under cancel --
+        # -- the physical disconnect (the caller runs this whole body to completion) --
         if vc is not None:
-            await asyncio.shield(self._disconnect_voice_client(vc))
+            await self._disconnect_voice_client(vc)
 
     # Maximum seconds to wait for voice playback before giving up
     PLAYBACK_TIMEOUT = 120
@@ -5305,9 +5354,7 @@ class DiscordAdapter(BasePlatformAdapter):
         # profile-bound runner cleanup) under the guild lock.
         lock = self._voice_locks.setdefault(int(guild_id), asyncio.Lock())
         async with lock:
-            await self._shield_to_completion(
-                lambda: self._teardown_voice_session_transactional(int(guild_id), text_ch_id)
-            )
+            await self._teardown_voice_session_transactional(int(guild_id), text_ch_id)
         self._cancel_voice_auto_join_retry(int(guild_id))
         if text_ch_id and self._client:
             ch = self._client.get_channel(text_ch_id)

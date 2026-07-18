@@ -1136,7 +1136,7 @@ def _validate_resource_identity(
                 "name",
                 "self_link",
                 "numeric_id",
-                "fingerprint",
+                "creation_timestamp",
                 "network_self_link",
                 "direction",
                 "priority",
@@ -1163,7 +1163,8 @@ def _validate_resource_identity(
                 f"projects/{spec.project}/global/firewalls/{name}"
             )
             or _NUMERIC_ID.fullmatch(str(item.get("numeric_id", ""))) is None
-            or not _provider_tag(item.get("fingerprint"))
+            or not isinstance(item.get("creation_timestamp"), str)
+            or _RFC3339_TIMESTAMP.fullmatch(item["creation_timestamp"]) is None
             or item.get("network_self_link") != network
             or item.get("direction") != "INGRESS"
             or item.get("priority") != 700

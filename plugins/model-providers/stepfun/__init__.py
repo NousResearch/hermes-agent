@@ -16,9 +16,9 @@ stepfun = ProviderProfile(
     name="stepfun",
     aliases=("stepfun-ai",),
     display_name="StepFun",
-    description="StepFun standard chat completions (Step 3.x models)",
+    description="StepFun standard chat completions (Step models)",
     signup_url="https://platform.stepfun.com/",
-    default_aux_model="step-3.5-flash",
+    default_aux_model="step-3.7-flash",
     env_vars=("STEPFUN_API_KEY",),
     base_url="https://api.stepfun.ai/v1",
 )
@@ -29,7 +29,7 @@ stepfun_plan = ProviderProfile(
     display_name="StepFun Step Plan",
     description="StepFun Step Plan reasoning API (plan-based billing)",
     signup_url="https://platform.stepfun.com/",
-    default_aux_model="step-3.5-flash",
+    default_aux_model="step-3.7-flash",
     env_vars=("STEPFUN_API_KEY",),
     base_url="https://api.stepfun.ai/step_plan/v1",
 )

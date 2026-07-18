@@ -1080,7 +1080,7 @@ CANONICAL_PROVIDERS: list[ProviderEntry] = [
     ProviderEntry("zai",            "Z.AI / GLM",               "Z.AI / GLM (Zhipu direct API)"),
     ProviderEntry("kimi-coding",    "Kimi / Kimi Coding Plan",  "Kimi Coding Plan (api.kimi.com & Moonshot API)"),
     ProviderEntry("kimi-coding-cn", "Kimi / Moonshot (China)",  "Kimi / Moonshot China (Domestic direct API)"),
-    ProviderEntry("stepfun",        "StepFun",                 "StepFun standard chat completions (Step 3.x models)"),
+    ProviderEntry("stepfun",        "StepFun",                 "StepFun standard chat completions (Step models)"),
     ProviderEntry("stepfun-plan",   "StepFun Step Plan",       "StepFun Step Plan (Agent / coding models via Step Plan API)"),
     ProviderEntry("minimax",        "MiniMax",                  "MiniMax (Global direct API)"),
     ProviderEntry("minimax-oauth",  "MiniMax (OAuth)",          "MiniMax via OAuth browser login (Coding Plan, minimax.io)"),

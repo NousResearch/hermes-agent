@@ -171,7 +171,7 @@ export const PROVIDER_GROUPS: ProviderPrefix[] = [
   {
     prefix: 'STEPFUN_',
     name: 'StepFun',
-    description: 'StepFun Step 3.x — standard chat and Step Plan endpoints',
+    description: 'StepFun Step models — standard chat and Step Plan endpoints',
     docsUrl: 'https://platform.stepfun.com/',
     priority: 18
   },

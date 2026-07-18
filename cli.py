@@ -3545,13 +3545,53 @@ def _visual_row_move_cursor(
     return _pos_at_row_display_col(text, next_start, next_end, dest_col)
 
 
-def _history_forward_preserve_draft_cursor(buf, count: int = 1) -> None:
-    """Step history forward without forcing the cursor to the end of the buffer.
+def _buffer_on_working_draft(buf) -> bool:
+    """True when ``buf`` is on the editable working draft (not a history entry)."""
+    try:
+        return buf.working_index >= len(buf._working_lines) - 1
+    except Exception:
+        return True
 
-    When prompt_toolkit restores the unsubmitted draft, its saved cursor
-    position must be kept so the user returns to where they were editing.
+
+def _remember_draft_history_cursor(
+    slot: dict[str, int | None],
+    cursor: int,
+    *,
+    on_draft: bool,
+    suppress: bool,
+) -> None:
+    """Update the saved draft cursor unless Up/Down history navigation is in progress.
+
+    Climbing Up through soft-wrapped / hard-newline rows moves the live cursor to
+    the top of the draft before ``history_backward`` runs. Those intermediate
+    positions must not overwrite the last real edit location.
+    """
+    if suppress or not on_draft:
+        return
+    slot["pos"] = max(0, int(cursor))
+
+
+def _history_forward_restore_draft_cursor(
+    buf,
+    count: int = 1,
+    draft_cursor: int | None = None,
+) -> None:
+    """Step history forward, restoring ``draft_cursor`` when landing on the draft.
+
+    prompt_toolkit's ``history_forward`` always places the cursor at the end of
+    the first line (``cursor_position = 0`` then ``get_end_of_line_position()``).
+    That is fine while browsing history, but when Down returns to the unsubmitted
+    draft it would erase the user's edit position — so we re-apply a cursor saved
+    from the last edit on the draft (not the position after climbing to row 0).
     """
     buf.history_forward(count=count)
+    if draft_cursor is None or not _buffer_on_working_draft(buf):
+        return
+    buf.cursor_position = min(max(0, int(draft_cursor)), len(buf.text))
+
+
+# Backwards-compatible alias used by older call sites / tests.
+_history_forward_preserve_draft_cursor = _history_forward_restore_draft_cursor
 
 
 def _collect_query_images(query: str | None, image_arg: str | None = None) -> tuple[str, list[Path]]:
@@ -15391,6 +15431,24 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
             buf.cursor_position = next_pos
             return True
 
+        # Saved edit cursor on the working draft; restored when Down returns
+        # from history. prompt_toolkit does not preserve this itself, and
+        # climbing Up through rows must not overwrite it with position 0.
+        draft_history_cursor: dict[str, int | None] = {"pos": None}
+        suppress_draft_cursor_track = {"on": False}
+
+        def _track_draft_cursor(_buffer=None) -> None:
+            buf = input_area.buffer
+            _remember_draft_history_cursor(
+                draft_history_cursor,
+                buf.cursor_position,
+                on_draft=_buffer_on_working_draft(buf),
+                suppress=suppress_draft_cursor_track["on"],
+            )
+
+        input_area.buffer.on_cursor_position_changed += _track_draft_cursor
+        _track_draft_cursor()
+
         @kb.add('up', filter=_normal_input, eager=True)
         def smart_up(event):
             """Move cursor up one visual row within the soft-wrapped input, or
@@ -15398,8 +15456,13 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
             row.  The unsubmitted draft is preserved in prompt_toolkit's
             working_index and is restored when stepping back down past the most
             recent entry."""
-            if not _visual_move(event.app.current_buffer, -1):
-                event.app.current_buffer.history_backward(count=event.arg)
+            buf = event.app.current_buffer
+            suppress_draft_cursor_track["on"] = True
+            try:
+                if not _visual_move(buf, -1):
+                    buf.history_backward(count=event.arg)
+            finally:
+                suppress_draft_cursor_track["on"] = False
 
         @kb.add('down', filter=_normal_input, eager=True)
         def smart_down(event):
@@ -15409,7 +15472,15 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
             automatically restored."""
             buf = event.app.current_buffer
             if not _visual_move(buf, +1):
-                _history_forward_preserve_draft_cursor(buf, count=event.arg)
+                suppress_draft_cursor_track["on"] = True
+                try:
+                    _history_forward_restore_draft_cursor(
+                        buf,
+                        count=event.arg,
+                        draft_cursor=draft_history_cursor["pos"],
+                    )
+                finally:
+                    suppress_draft_cursor_track["on"] = False
 
         @kb.add('right', filter=_normal_input, eager=True)
         def smart_right(event):

@@ -6,16 +6,30 @@ import cli as cli_mod
 
 
 class _FakeBuffer:
-    def __init__(self, text: str = "draft text", cursor: int = 3):
+    def __init__(
+        self,
+        text: str = "history entry",
+        cursor: int = 0,
+        *,
+        working_index: int = 0,
+        working_line_count: int = 2,
+        draft_text: str = "draft text",
+    ):
         self.text = text
         self.cursor_position = cursor
+        self.working_index = working_index
+        self._working_lines = [""] * max(1, working_line_count)
+        self._draft_text = draft_text
         self.forward_calls = 0
 
     def history_forward(self, count: int = 1) -> None:
         self.forward_calls += count
-        # prompt_toolkit restores the working draft + its saved cursor here.
-        self.text = "draft text"
-        self.cursor_position = 3
+        # Mirror prompt_toolkit: jump to end of the first line of the new entry.
+        self.working_index = min(self.working_index + count, len(self._working_lines) - 1)
+        if self.working_index >= len(self._working_lines) - 1:
+            self.text = self._draft_text
+        first_line = self.text.split("\n", 1)[0]
+        self.cursor_position = len(first_line)
 
 
 def test_build_rows_soft_wrap_uses_exclusive_ends_without_overlap():
@@ -88,11 +102,42 @@ def test_visual_move_cjk_targets_matching_display_column():
     assert down == 8
 
 
-def test_history_forward_preserves_draft_cursor():
-    buf = _FakeBuffer(text="history entry", cursor=0)
-    # Simulate returning to the draft: history_forward restores text+cursor,
-    # and our helper must not overwrite the restored cursor to len(text).
-    cli_mod._history_forward_preserve_draft_cursor(buf, count=1)
+def test_history_forward_restores_saved_draft_cursor():
+    # Mid-line draft cursor must survive Up→history→Down→draft.
+    buf = _FakeBuffer(text="history entry", cursor=0, working_index=0, working_line_count=2)
+    cli_mod._history_forward_restore_draft_cursor(buf, count=1, draft_cursor=6)
     assert buf.forward_calls == 1
     assert buf.text == "draft text"
-    assert buf.cursor_position == 3
+    assert buf.cursor_position == 6
+
+
+def test_history_forward_restores_cursor_on_multiline_draft():
+    # prompt_toolkit alone would park at end-of-first-line (0 for a leading blank).
+    buf = _FakeBuffer(
+        text="history entry",
+        cursor=0,
+        working_index=0,
+        working_line_count=2,
+        draft_text="\n\ntrailing",
+    )
+    cli_mod._history_forward_restore_draft_cursor(buf, count=1, draft_cursor=2)
+    assert buf.cursor_position == 2
+
+
+def test_history_forward_leaves_history_entry_cursor_alone():
+    buf = _FakeBuffer(text="old\nentry", cursor=0, working_index=0, working_line_count=3)
+    # Still browsing history (not yet on draft) — do not override pt's placement.
+    cli_mod._history_forward_restore_draft_cursor(buf, count=1, draft_cursor=9)
+    assert buf.working_index == 1
+    assert buf.cursor_position == len("old")  # end of first line after forward
+
+
+def test_remember_draft_cursor_ignores_climb_to_history():
+    slot: dict[str, int | None] = {"pos": 12}
+    # Climbing Up through rows suppresses tracking so position 0 cannot clobber.
+    cli_mod._remember_draft_history_cursor(slot, 0, on_draft=True, suppress=True)
+    assert slot["pos"] == 12
+    cli_mod._remember_draft_history_cursor(slot, 0, on_draft=True, suppress=False)
+    assert slot["pos"] == 0
+    cli_mod._remember_draft_history_cursor(slot, 5, on_draft=False, suppress=False)
+    assert slot["pos"] == 0

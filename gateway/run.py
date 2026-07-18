@@ -1516,11 +1516,11 @@ def _profile_runtime_scope(profile_home: "Path"):
          keys and never the process-global ``os.environ`` (which in a
          multiplexer may hold another profile's values).
 
-    Only used on the multiplexed inbound path. Single-profile gateways never
-    enter this scope, so their behavior is unchanged. Loading the profile's
-    ``.env`` here does NOT mutate ``os.environ`` — ``build_profile_secret_scope``
-    returns an isolated dict — which is what keeps subprocesses (MCP, kanban)
-    from inheriting cross-profile secrets.
+    Used by multiplexed gateways and by a named profile's single-profile
+    startup. The default and custom single-home deployments remain unscoped.
+    Loading the profile's ``.env`` here does NOT mutate ``os.environ`` —
+    ``build_profile_secret_scope`` returns an isolated dict — which is what
+    keeps subprocesses (MCP, kanban) from inheriting cross-profile secrets.
     """
     from hermes_constants import set_hermes_home_override, reset_hermes_home_override
     from agent.secret_scope import (
@@ -1541,8 +1541,10 @@ def _profile_runtime_scope(profile_home: "Path"):
 def load_gateway_config_for_runner() -> "GatewayConfig":
     """Load gateway config for the process-level GatewayRunner.
 
-    When ``gateway.multiplex_profiles`` is off, this is identical to
-    ``load_gateway_config()`` (legacy single-profile path).
+    A named profile always reloads under its own secret scope. This prevents a
+    profile without a ``.env`` from auto-enabling an adapter with credentials
+    inherited through the process environment. The default and custom
+    single-home deployments retain their legacy unscoped behavior.
 
     When multiplexing is on, reload under the default/active profile's
     ``_profile_runtime_scope`` so platform tokens in that profile's ``.env``
@@ -1552,15 +1554,27 @@ def load_gateway_config_for_runner() -> "GatewayConfig":
     ``os.environ``, which often has no ``TELEGRAM_BOT_TOKEN`` once the token
     lives only under ``profiles/<name>/.env`` (#64674).
 
-    Single-profile gateways never set ``multiplex_profiles``, so they keep the
-    unscoped load and are unaffected.
+    A named profile receives the same scoped reload even when multiplexing is
+    off; it must not inherit the default profile's credentials.
     """
     cfg = load_gateway_config()
-    if not getattr(cfg, "multiplex_profiles", False):
-        return cfg
     try:
         home = get_hermes_home()
     except Exception:
+        return cfg
+
+    try:
+        from hermes_cli.profiles import get_active_profile_name
+
+        is_named_profile = get_active_profile_name() not in {"default", "custom"}
+    except Exception:
+        is_named_profile = False
+
+    if is_named_profile:
+        with _profile_runtime_scope(Path(home)):
+            return load_gateway_config()
+
+    if not getattr(cfg, "multiplex_profiles", False):
         return cfg
     try:
         with _profile_runtime_scope(Path(home)):

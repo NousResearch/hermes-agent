@@ -53,6 +53,32 @@ class TestGatewayPidState:
         assert status.get_running_pid() is None
         assert not pid_path.exists()
 
+    def test_get_running_pid_rejects_other_profile_runtime_pid(self, tmp_path, monkeypatch):
+        """A stale default runtime record must not claim a named gateway PID.
+
+        This is the start-path regression: with no active default lock/PID file,
+        ``get_running_pid()`` falls back to gateway_state.json.  That fallback
+        must apply the same profile ownership check used by profile listing;
+        otherwise ``gateway start`` can refuse recovery because another profile
+        happens to be alive.
+        """
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        (tmp_path / "gateway_state.json").write_text(json.dumps({
+            "pid": 30184,
+            "kind": "hermes-gateway",
+            "argv": ["hermes", "gateway", "run"],
+            "gateway_state": "running",
+        }))
+        monkeypatch.setattr(status, "_pid_exists", lambda pid: True)
+        monkeypatch.setattr(status, "_get_process_start_time", lambda pid: None)
+        monkeypatch.setattr(
+            status,
+            "_read_process_cmdline",
+            lambda pid: "hermes --profile research gateway run --replace",
+        )
+
+        assert status.get_running_pid() is None
+
     def test_get_running_pid_cleans_stale_record_from_dead_process(self, tmp_path, monkeypatch):
         # Simulates the aftermath of a crash: the PID file still points at a
         # process that no longer exists. The next gateway startup must be
@@ -546,7 +572,7 @@ class TestGatewayRuntimeStatus:
         for cmdline in (
             "hermes -p coder gateway run --replace",
             "/opt/hermes/.venv/bin/hermes --profile coder gateway run --replace",
-            "hermes_home=/opt/data/profiles/coder hermes gateway run --replace",
+            f"hermes_home={str(coder_home).lower()} hermes gateway run --replace",
         ):
             monkeypatch.setattr(status, "_read_process_cmdline", lambda pid, c=cmdline: c)
             assert (

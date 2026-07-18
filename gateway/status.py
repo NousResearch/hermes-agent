@@ -1451,7 +1451,15 @@ def get_running_pid(
     lock_active = is_gateway_runtime_lock_active(resolved_lock_path)
     if not lock_active:
         if pid_path is None:
-            runtime_pid = get_runtime_status_running_pid()
+            # The runtime-status fallback must validate ownership against the
+            # active profile.  Without this scope, a stale default
+            # gateway_state.json can point at a live named-profile gateway and
+            # make ``gateway start`` report "already running" for the wrong
+            # profile (the PID itself is alive and the command is gateway-like,
+            # so an unscoped check cannot distinguish the two).
+            runtime_pid = get_runtime_status_running_pid(
+                expected_home=Path(_get_runtime_status_path()).parent
+            )
             if runtime_pid is not None:
                 return runtime_pid
         _cleanup_invalid_pid_path(resolved_pid_path, cleanup_stale=cleanup_stale)
@@ -1478,7 +1486,9 @@ def get_running_pid(
 
     _cleanup_invalid_pid_path(resolved_pid_path, cleanup_stale=cleanup_stale)
     if pid_path is None:
-        runtime_pid = get_runtime_status_running_pid()
+        runtime_pid = get_runtime_status_running_pid(
+            expected_home=Path(_get_runtime_status_path()).parent
+        )
         if runtime_pid is not None:
             return runtime_pid
     return None

@@ -835,6 +835,54 @@ def test_cli_create_with_idempotency_key(kanban_home):
     assert tid1 == tid2
 
 
+def test_cli_create_with_review_key(kanban_home):
+    digest = "c" * 64
+    review_key = f"{digest}:{'d' * 64}"
+    tid1 = json.loads(run_slash(
+        f"create 'review one' --review-key {review_key} --json"
+    ))["id"]
+    tid2 = json.loads(run_slash(
+        f"create 'review duplicate' --review-key {review_key} --json"
+    ))["id"]
+    assert tid1 == tid2
+
+
+def test_cli_allow_broad_records_explicit_override(kanban_home):
+    broad = (
+        "Investigate, implement, run full suite, freeze receipts, "
+        "independent review, then controller"
+    )
+    task_id = json.loads(run_slash(
+        f"create 'broad card' --body '{broad}' --allow-broad --json"
+    ))["id"]
+    conn = kb.connect()
+    try:
+        event = next(
+            e for e in kb.list_events(conn, task_id)
+            if e.kind == "granularity_assessed"
+        )
+    finally:
+        conn.close()
+    assert event.payload["policy"] == "allow"
+    assert event.payload["auto_triaged"] is False
+
+
+def test_cli_context_full_forces_recoverable_full_mode(kanban_home, monkeypatch):
+    task_id = json.loads(run_slash("create 'context target' --json"))["id"]
+    original = kb.build_worker_context
+    seen: list[bool | None] = []
+
+    def capture(conn, requested_id, *, compact=None):
+        seen.append(compact)
+        return original(conn, requested_id, compact=compact)
+
+    monkeypatch.setattr(kb, "build_worker_context", capture)
+    out = run_slash(f"context {task_id} --full")
+
+    assert f"Kanban task {task_id}" in out
+    assert seen == [False]
+
+
 # ---------------------------------------------------------------------------
 # CLI stats / watch / log / notify / daemon parity
 # ---------------------------------------------------------------------------

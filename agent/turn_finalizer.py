@@ -103,31 +103,33 @@ def finalize_turn(
         # came from the summary call or an explicitly pending continuation;
         # both exhausted the task budget and must advance the failure circuit.
         #
-        # We route through ``_record_task_failure(outcome="timed_out")``
-        # rather than ``kanban_block`` so this counts toward the dispatcher's
-        # consecutive-failure circuit breaker (#29747 gap 2).
+        # We route through ``record_iteration_budget_exhaustion`` rather than
+        # ``kanban_block`` so the policy can persist one bounded handoff, avoid
+        # duplicate terminal events, and still advance the failure circuit.
         _kanban_task = os.environ.get("HERMES_KANBAN_TASK")
-        if _kanban_task:
+        _kanban_run_raw = os.environ.get("HERMES_KANBAN_RUN_ID")
+        try:
+            _kanban_run_id = int(_kanban_run_raw) if _kanban_run_raw else None
+        except (TypeError, ValueError):
+            _kanban_run_id = None
+        if _kanban_task and _kanban_run_id is not None:
             try:
                 from hermes_cli import kanban_db as _kb
                 _conn = _kb.connect()
                 try:
-                    _kb._record_task_failure(
+                    _kb.record_iteration_budget_exhaustion(
                         _conn,
                         _kanban_task,
+                        expected_run_id=_kanban_run_id,
                         error=(
                             f"Iteration budget exhausted "
                             f"({api_call_count}/{agent.max_iterations}) — "
                             "task could not complete within the allowed "
                             "iterations"
                         ),
-                        outcome="timed_out",
-                        release_claim=True,
-                        end_run=True,
-                        event_payload_extra={
-                            "budget_used": api_call_count,
-                            "budget_max": agent.max_iterations,
-                        },
+                        partial_summary=final_response,
+                        budget_used=api_call_count,
+                        budget_max=agent.max_iterations,
                     )
                     logger.info(
                         "recorded budget-exhausted failure for task %s (%d/%d)",

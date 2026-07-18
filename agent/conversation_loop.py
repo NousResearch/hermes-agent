@@ -27,11 +27,20 @@ import time
 import uuid
 from typing import Any, Dict, List, Optional
 
+from agent.agent_runtime_helpers import (
+    provider_visible_message_copy,
+    provider_visible_messages,
+)
 from agent.codex_responses_adapter import _summarize_user_message_for_log
 from agent.conversation_compression import conversation_history_after_compression
 from agent.display import KawaiiSpinner
 from agent.error_classifier import FailoverReason, classify_api_error
-from agent.iteration_budget import IterationBudget
+from agent.iteration_budget import (
+    _current_turn_user_index,
+    _latest_unseen_tool_result,
+    IterationBudget,
+    kanban_checkpoint_warning,
+)
 from agent.turn_context import build_turn_context
 from agent.turn_retry_state import TurnRetryState
 from agent.memory_manager import build_memory_context_block
@@ -683,6 +692,37 @@ def run_conversation(
     # user-facing result available; it must not be confused with error or
     # recovery text produced by unrelated exit paths.
     _pending_verification_response = None
+    _kanban_task_id = os.environ.get("HERMES_KANBAN_TASK")
+    _kanban_run_raw = os.environ.get("HERMES_KANBAN_RUN_ID")
+    try:
+        _kanban_run_id = int(_kanban_run_raw) if _kanban_run_raw else None
+    except (TypeError, ValueError):
+        _kanban_run_id = None
+    _is_kanban_worker = bool(_kanban_task_id and _kanban_run_id is not None)
+    _budget_checkpoint_emitted = False
+    _budget_checkpoint_text = None
+    _budget_checkpoint_tool_idx = None
+    _budget_checkpoint_tool_call_id = None
+    _budget_checkpoint_seen_tool_call_ids: set[str] = set()
+    _budget_checkpoint_seen_legacy_message_ids: set[int] = set()
+    for _seen_message in messages:
+        if _seen_message.get("role") != "tool":
+            continue
+        _seen_call_id = _seen_message.get("tool_call_id")
+        if _seen_call_id:
+            _budget_checkpoint_seen_tool_call_ids.add(str(_seen_call_id))
+        else:
+            _budget_checkpoint_seen_legacy_message_ids.add(id(_seen_message))
+    _budget_warning_ratio = 0.75
+    if _is_kanban_worker:
+        try:
+            from hermes_cli.config import load_config as _load_config
+
+            _budget_warning_ratio = _load_config().get("kanban", {}).get(
+                "budget_warning_ratio", 0.75
+            )
+        except Exception:
+            _budget_warning_ratio = 0.75
 
     # Per-turn tally of consecutive successful credential-pool token refreshes,
     # keyed by (provider, pool-entry-id). A persistent upstream 401 lets
@@ -731,6 +771,14 @@ def run_conversation(
             if not agent.quiet_mode:
                 agent._safe_print(f"\n⚠️  Iteration budget exhausted ({agent.iteration_budget.used}/{agent.iteration_budget.max_total} iterations used)")
             break
+
+        _new_budget_checkpoint = kanban_checkpoint_warning(
+            used=api_call_count,
+            max_total=agent.max_iterations,
+            ratio=_budget_warning_ratio,
+            is_kanban=_is_kanban_worker,
+            already_emitted=_budget_checkpoint_emitted,
+        )
 
         # Fire step_callback for gateway hooks (agent:step event)
         if agent.step_callback is not None:
@@ -854,9 +902,102 @@ def run_conversation(
                 agent.session_id or "-",
             )
 
+        _turn_boundary_idx = _current_turn_user_index(messages, turn_id)
+        if _turn_boundary_idx is not None:
+            current_turn_user_idx = _turn_boundary_idx
+            agent._persist_user_message_idx = _turn_boundary_idx
+
+        if _new_budget_checkpoint:
+            _checkpoint_candidate = (
+                _latest_unseen_tool_result(
+                    messages,
+                    seen_tool_call_ids=_budget_checkpoint_seen_tool_call_ids,
+                    seen_legacy_message_ids=_budget_checkpoint_seen_legacy_message_ids,
+                    min_index=_turn_boundary_idx + 1,
+                    require_tool_call_id=True,
+                )
+                if _turn_boundary_idx is not None
+                else None
+            )
+            if _checkpoint_candidate is not None:
+                _budget_checkpoint_text = _new_budget_checkpoint
+                _budget_checkpoint_tool_idx = _checkpoint_candidate[0]
+                _budget_checkpoint_tool_call_id = _checkpoint_candidate[1]
+
+        # Later defensive sequence repairs may insert/drop messages after the
+        # checkpoint is selected. Resolve its current position by the stable
+        # tool-call id; use the original index only for legacy tool messages
+        # that do not carry one. Provider tool-call ids are unique within a
+        # request chain, and the reverse scan keeps malformed duplicates from
+        # receiving more than one marker.
+        _budget_checkpoint_request_idx = None
+        if _budget_checkpoint_text and _budget_checkpoint_tool_call_id:
+            for _checkpoint_idx in range(len(messages) - 1, -1, -1):
+                _checkpoint_message = messages[_checkpoint_idx]
+                if (
+                    _checkpoint_message.get("role") == "tool"
+                    and _checkpoint_message.get("tool_call_id")
+                    == _budget_checkpoint_tool_call_id
+                    and _turn_boundary_idx is not None
+                    and _checkpoint_idx > _turn_boundary_idx
+                ):
+                    _budget_checkpoint_request_idx = _checkpoint_idx
+                    break
+        elif (
+            _budget_checkpoint_text
+            and _budget_checkpoint_tool_idx is not None
+            and _budget_checkpoint_tool_idx < len(messages)
+            and _turn_boundary_idx is not None
+            and _budget_checkpoint_tool_idx > _turn_boundary_idx
+            and messages[_budget_checkpoint_tool_idx].get("role") == "tool"
+        ):
+            _budget_checkpoint_request_idx = _budget_checkpoint_tool_idx
+        if (
+            _budget_checkpoint_text
+            and _budget_checkpoint_request_idx is None
+            and _turn_boundary_idx is not None
+        ):
+            # Context compression is the one allowed prefix rewrite and may
+            # remove the originally selected tail before it reaches the API.
+            # Re-anchor only to another still-unseen tool result; if none
+            # exists, omit the marker rather than mutating a cached message.
+            _replacement_checkpoint = _latest_unseen_tool_result(
+                messages,
+                seen_tool_call_ids=_budget_checkpoint_seen_tool_call_ids,
+                seen_legacy_message_ids=_budget_checkpoint_seen_legacy_message_ids,
+                min_index=_turn_boundary_idx + 1,
+                require_tool_call_id=True,
+            )
+            if _replacement_checkpoint is not None:
+                _budget_checkpoint_tool_idx = _replacement_checkpoint[0]
+                _budget_checkpoint_tool_call_id = _replacement_checkpoint[1]
+                _budget_checkpoint_request_idx = _replacement_checkpoint[0]
+
         api_messages = []
+        _budget_checkpoint_attached_to_request = False
         for idx, msg in enumerate(messages):
-            api_msg = msg.copy()
+            api_msg = provider_visible_message_copy(msg)
+
+            if (
+                _budget_checkpoint_text
+                and idx == _budget_checkpoint_request_idx
+                and msg.get("role") == "tool"
+            ):
+                _checkpoint_marker = (
+                    "\n\n<kanban-budget-checkpoint>\n"
+                    + _budget_checkpoint_text
+                    + "\n</kanban-budget-checkpoint>"
+                )
+                _checkpoint_base = api_msg.get("content", "")
+                if isinstance(_checkpoint_base, str):
+                    api_msg["content"] = _checkpoint_base + _checkpoint_marker
+                    _budget_checkpoint_attached_to_request = True
+                elif isinstance(_checkpoint_base, list):
+                    api_msg["content"] = [
+                        *_checkpoint_base,
+                        {"type": "text", "text": _checkpoint_marker},
+                    ]
+                    _budget_checkpoint_attached_to_request = True
 
             # Inject ephemeral context into the current turn's user message.
             # Sources: memory manager prefetch + plugin pre_llm_call hooks
@@ -887,8 +1028,6 @@ def run_conversation(
             # Remove finish_reason - not accepted by strict APIs (e.g. Mistral)
             if "finish_reason" in api_msg:
                 api_msg.pop("finish_reason")
-            # Strip internal thinking-prefill marker
-            api_msg.pop("_thinking_prefill", None)
             # Strip Codex Responses API fields (call_id, response_item_id) for
             # strict providers like Mistral, Fireworks, etc. that reject unknown fields.
             # Uses new dicts so the internal messages list retains the fields
@@ -1400,17 +1539,66 @@ def run_conversation(
                         _use_streaming = False
 
                 def _perform_api_call(next_api_kwargs):
+                    nonlocal _budget_checkpoint_emitted
                     if agent.api_mode == "codex_responses":
                         next_api_kwargs = agent._get_transport().preflight_kwargs(
                             next_api_kwargs,
                             allow_stream=False,
                             is_github_responses=agent._is_copilot_url(),
                         )
+                    if (
+                        _budget_checkpoint_text
+                        and _budget_checkpoint_attached_to_request
+                        and not _budget_checkpoint_emitted
+                    ):
+                        # Commit only at the transport boundary. Earlier
+                        # pressure checks may compact and ``continue`` without
+                        # sending the request; recording before this point
+                        # creates a durable checkpoint event the model never
+                        # received.
+                        _budget_checkpoint_emitted = True
+                        agent._emit_status(_budget_checkpoint_text)
+                        try:
+                            from hermes_cli import kanban_db as _checkpoint_kb
+
+                            _checkpoint_conn = _checkpoint_kb.connect()
+                            try:
+                                _checkpoint_kb.record_iteration_budget_checkpoint(
+                                    _checkpoint_conn,
+                                    _kanban_task_id,
+                                    expected_run_id=_kanban_run_id,
+                                    budget_used=api_call_count,
+                                    budget_max=agent.max_iterations,
+                                )
+                            finally:
+                                _checkpoint_conn.close()
+                        except Exception:
+                            logger.warning(
+                                "Failed to persist pre-exhaustion Kanban checkpoint",
+                                exc_info=True,
+                            )
                     if _use_streaming:
                         return agent._interruptible_streaming_api_call(
                             next_api_kwargs, on_first_delta=_stop_spinner
                         )
                     return agent._interruptible_api_call(next_api_kwargs)
+
+                # From this point the request may reach middleware or the
+                # provider. Mark every included tool result as seen before
+                # execution so a later retry can never rewrite an established
+                # prompt-cache prefix.
+                for _sent_tool_message in messages:
+                    if _sent_tool_message.get("role") != "tool":
+                        continue
+                    _sent_call_id = _sent_tool_message.get("tool_call_id")
+                    if _sent_call_id:
+                        _budget_checkpoint_seen_tool_call_ids.add(
+                            str(_sent_call_id)
+                        )
+                    else:
+                        _budget_checkpoint_seen_legacy_message_ids.add(
+                            id(_sent_tool_message)
+                        )
 
                 from hermes_cli.middleware import run_llm_execution_middleware
 
@@ -3517,7 +3705,9 @@ def run_conversation(
                     agent._buffer_status(f"⚠️  Request payload too large (413) — compression attempt {compression_attempts}/{max_compression_attempts}...")
 
                     original_len = len(messages)
-                    original_tokens = estimate_messages_tokens_rough(messages)
+                    original_tokens = estimate_messages_tokens_rough(
+                        provider_visible_messages(messages)
+                    )
                     messages, active_system_prompt = agent._compress_context(
                         messages, system_message, approx_tokens=approx_tokens,
                         task_id=effective_task_id,
@@ -3526,11 +3716,13 @@ def run_conversation(
                         agent, messages
                     )
 
-                    # Re-estimate tokens after compression.  Same-message-count
-                    # compression (tool-result pruning, in-place summarization)
-                    # can materially reduce request size without reducing the
-                    # message array.  (#39550)
-                    new_tokens = estimate_messages_tokens_rough(messages)
+                    # Re-estimate provider-visible tokens after compression.
+                    # Same-message-count compression (tool-result pruning,
+                    # in-place summarization) can materially reduce request
+                    # size. Private markers cannot: they never reach the wire.
+                    new_tokens = estimate_messages_tokens_rough(
+                        provider_visible_messages(messages)
+                    )
                     approx_tokens = new_tokens  # update for downstream logging
 
                     if len(messages) < original_len or (new_tokens > 0 and new_tokens < original_tokens * 0.95):
@@ -3758,7 +3950,9 @@ def run_conversation(
                     agent._buffer_status(f"🗜️ Context too large (~{approx_tokens:,} tokens) — compressing ({compression_attempts}/{max_compression_attempts})...")
 
                     original_len = len(messages)
-                    original_tokens = estimate_messages_tokens_rough(messages)
+                    original_tokens = estimate_messages_tokens_rough(
+                        provider_visible_messages(messages)
+                    )
                     messages, active_system_prompt = agent._compress_context(
                         messages, system_message, approx_tokens=approx_tokens,
                         task_id=effective_task_id,
@@ -3767,11 +3961,11 @@ def run_conversation(
                         agent, messages
                     )
 
-                    # Re-estimate tokens after compression.  Same-message-count
-                    # compression (tool-result pruning, in-place summarization)
-                    # can materially reduce request size without reducing the
-                    # message array.  (#39550)
-                    new_tokens = estimate_messages_tokens_rough(messages)
+                    # Re-estimate provider-visible tokens after compression.
+                    # Private message metadata is not request-size progress.
+                    new_tokens = estimate_messages_tokens_rough(
+                        provider_visible_messages(messages)
+                    )
                     approx_tokens = new_tokens  # update for downstream logging
 
                     if len(messages) < original_len or (new_tokens > 0 and new_tokens < original_tokens * 0.95) or (new_ctx and new_ctx < old_ctx):
@@ -5086,7 +5280,8 @@ def run_conversation(
                     # estimate misses, which can skip compression
                     # past the configured threshold (#14695).
                     _real_tokens = estimate_request_tokens_rough(
-                        messages, tools=agent.tools or None
+                        provider_visible_messages(messages),
+                        tools=agent.tools or None,
                     )
 
                 if agent.compression_enabled and _compressor.should_compress(_real_tokens):

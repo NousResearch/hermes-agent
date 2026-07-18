@@ -115,6 +115,23 @@ def test_create_task_appears_on_board(client):
     assert "researcher" in data["assignees"]
 
 
+def test_create_task_review_key_deduplicates_exact_postimage(client):
+    digest = "b" * 64
+    review_key = f"{digest}:{'c' * 64}"
+    first = client.post(
+        "/api/plugins/kanban/tasks",
+        json={"title": "Review postimage", "review_key": review_key},
+    )
+    second = client.post(
+        "/api/plugins/kanban/tasks",
+        json={"title": "Duplicate review", "review_key": review_key},
+    )
+
+    assert first.status_code == 200, first.text
+    assert second.status_code == 200, second.text
+    assert second.json()["task"]["id"] == first.json()["task"]["id"]
+
+
 def test_board_list_recommends_persistent_workspace_for_configured_workdir(
     client, tmp_path
 ):

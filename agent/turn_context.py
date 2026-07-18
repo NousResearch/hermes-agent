@@ -28,8 +28,13 @@ import uuid
 from dataclasses import dataclass
 from typing import Any, Dict, List, Optional
 
+from agent.agent_runtime_helpers import provider_visible_messages
 from agent.conversation_compression import conversation_history_after_compression
-from agent.iteration_budget import IterationBudget
+from agent.iteration_budget import (
+    CURRENT_TURN_ID_KEY,
+    _current_turn_user_index,
+    IterationBudget,
+)
 from agent.model_metadata import (
     estimate_messages_tokens_rough,
     estimate_request_tokens_rough,
@@ -86,7 +91,10 @@ def _should_run_preflight_estimate(
     """
     if len(messages) > protect_first_n + protect_last_n + 1:
         return True
-    return estimate_messages_tokens_rough(messages) >= threshold_tokens
+    return (
+        estimate_messages_tokens_rough(provider_visible_messages(messages))
+        >= threshold_tokens
+    )
 
 
 @dataclass
@@ -300,6 +308,7 @@ def build_turn_context(
         user_msg = {"role": "user", "content": user_message}
         if isinstance(pending_cli_message, dict):
             agent._pending_cli_user_message = None
+    user_msg[CURRENT_TURN_ID_KEY] = turn_id
 
     # Hydrate todo store from conversation history.
     if conversation_history and not agent._todo_store.has_items():
@@ -418,7 +427,7 @@ def build_turn_context(
         agent.context_compressor.threshold_tokens,
     ):
         _preflight_tokens = estimate_request_tokens_rough(
-            messages,
+            provider_visible_messages(messages),
             system_prompt=active_system_prompt or "",
             tools=agent.tools or None,
         )
@@ -502,7 +511,7 @@ def build_turn_context(
                 # recognised as progress instead of being misread as
                 # "Cannot compress further". Fixes #39548.
                 _preflight_tokens = estimate_request_tokens_rough(
-                    messages,
+                    provider_visible_messages(messages),
                     system_prompt=active_system_prompt or "",
                     tools=agent.tools or None,
                 )
@@ -609,6 +618,14 @@ def build_turn_context(
             ext_prefetch_cache = agent._memory_manager.prefetch_all(_query) or ""
         except Exception:
             pass
+
+    # Compression rebuilds protected tail messages as fresh dictionaries and
+    # may move the current user turn. Recompute the cursor from its private,
+    # wire-stripped turn marker instead of returning the pre-compression index.
+    resolved_turn_user_idx = _current_turn_user_index(messages, turn_id)
+    if resolved_turn_user_idx is not None:
+        current_turn_user_idx = resolved_turn_user_idx
+        agent._persist_user_message_idx = resolved_turn_user_idx
 
     return TurnContext(
         user_message=user_message,

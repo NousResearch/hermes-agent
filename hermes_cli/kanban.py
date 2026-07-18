@@ -324,8 +324,21 @@ def build_parser(parent_subparsers: argparse._SubParsersAction) -> argparse.Argu
     p_create.add_argument("--triage", action="store_true",
                           help="Park in triage — a specifier will flesh out the spec and promote to todo")
     p_create.add_argument("--idempotency-key", default=None,
-                          help="Dedup key. If a non-archived task with this key exists, "
+                          help="Dedup key. If a non-archived task with the same key exists, "
                                "its id is returned instead of creating a duplicate.")
+    p_create.add_argument(
+        "--review-key",
+        default=None,
+        help="Exact review dedup key, normally "
+             "<postimage-sha256>:<claims-sha256>[:round-N]. A non-archived "
+             "review with the same key is reused.",
+    )
+    p_create.add_argument(
+        "--allow-broad",
+        action="store_true",
+        help="Explicitly bypass kanban.granularity_guard=triage for an "
+             "intentional broad card. The assessment is still recorded.",
+    )
     p_create.add_argument("--max-runtime", default=None,
                           help="Per-task runtime cap. Accepts seconds (300) or "
                                "durations (90s, 30m, 2h, 1d). When exceeded, "
@@ -797,6 +810,24 @@ def build_parser(parent_subparsers: argparse._SubParsersAction) -> argparse.Argu
              "(title + body + parent results + comments).",
     )
     p_ctx.add_argument("task_id")
+    p_ctx.add_argument(
+        "--full",
+        action="store_true",
+        help="Bypass kanban.context_profile=compact and print every bounded "
+             "attempt, parent handoff, and comment available in full mode.",
+    )
+    p_ctx.add_argument(
+        "--run-id",
+        type=int,
+        default=None,
+        help="With --field, read one hash-bound field from this task run.",
+    )
+    p_ctx.add_argument(
+        "--field",
+        choices=("partial_summary_full",),
+        default=None,
+        help="With --run-id, emit the exact referenced value without truncation.",
+    )
 
     # --- specify --- (triage → todo via auxiliary LLM)
     p_specify = sub.add_parser(
@@ -1365,6 +1396,10 @@ def _cmd_create(args: argparse.Namespace) -> int:
             parents=tuple(args.parent or ()),
             triage=bool(getattr(args, "triage", False)),
             idempotency_key=getattr(args, "idempotency_key", None),
+            review_key=getattr(args, "review_key", None),
+            granularity_policy=(
+                "allow" if bool(getattr(args, "allow_broad", False)) else None
+            ),
             max_runtime_seconds=max_runtime,
             skills=getattr(args, "skills", None) or None,
             max_retries=max_retries,
@@ -2641,8 +2676,33 @@ def _cmd_runs(args: argparse.Namespace) -> int:
 
 
 def _cmd_context(args: argparse.Namespace) -> int:
+    run_id = getattr(args, "run_id", None)
+    field = getattr(args, "field", None)
+    if (run_id is None) != (field is None):
+        print("kanban context: --run-id and --field must be passed together", file=sys.stderr)
+        return 2
+    if run_id is not None and bool(getattr(args, "full", False)):
+        print("kanban context: --full cannot be combined with --run-id/--field", file=sys.stderr)
+        return 2
     with kb.connect_closing() as conn:
-        text = kb.build_worker_context(conn, args.task_id)
+        if run_id is not None:
+            try:
+                text = kb.read_run_metadata_field(
+                    conn,
+                    task_id=args.task_id,
+                    run_id=run_id,
+                    field=field,
+                )
+            except ValueError as exc:
+                print(f"kanban context: {exc}", file=sys.stderr)
+                return 2
+            sys.stdout.write(text)
+            return 0
+        text = kb.build_worker_context(
+            conn,
+            args.task_id,
+            compact=False if bool(getattr(args, "full", False)) else None,
+        )
     print(text)
     return 0
 

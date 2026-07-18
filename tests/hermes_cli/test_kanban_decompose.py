@@ -113,6 +113,388 @@ def test_decompose_with_fanout_creates_children(kanban_home):
     assert c1.assignee == "engineer"
 
 
+def test_decomposer_receives_budget_assessment_and_rejects_split_single_task(
+    kanban_home,
+):
+    with kb.connect() as conn:
+        tid = kb.create_task(
+            conn,
+            title="Implement, verify, review, and control a migration",
+            body=(
+                "Implement the change, run the full suite, freeze receipts, "
+                "request an independent review, then run a controller."
+            ),
+            assignee="orchestrator",
+            triage=True,
+        )
+        conn.execute(
+            """INSERT INTO task_runs
+               (task_id, profile, status, started_at, ended_at, outcome,
+                summary, metadata, error)
+               VALUES (?, 'worker', 'gave_up', 1, 2, 'gave_up', ?, ?, NULL)""",
+            (
+                tid,
+                "[partial_unverified]\nCOMPLETED: parser patch\n"
+                "REMAINING: closure and review",
+                '{"changed_files":["parser.py"]}',
+            ),
+        )
+        conn.commit()
+
+    llm_payload = jsonlib.dumps({
+        "fanout": False,
+        "rationale": "single unit for fixture",
+        "title": "Tightened task",
+        "body": "Continue safely.",
+        "assignee": "orchestrator",
+    })
+    patches = _patch_list_profiles(["orchestrator"])
+    for item in patches:
+        item.start()
+    try:
+        with patch(
+            "agent.auxiliary_client.call_llm",
+            return_value=_fake_aux_response(llm_payload),
+        ) as call_llm:
+            outcome = decomp.decompose_task(tid, author="me")
+    finally:
+        for item in patches:
+            item.stop()
+
+    assert not outcome.ok
+    assert "split" in outcome.reason
+    request = call_llm.call_args.kwargs["messages"]
+    system_prompt = request[0]["content"]
+    user_prompt = request[1]["content"]
+    assert "full matrix belongs in the closure" in system_prompt
+    assert "review_key" in system_prompt
+    assert "granularity_assessed" in user_prompt
+    assert '"verdict": "split"' in user_prompt
+    assert "[partial_unverified]" in user_prompt
+    assert "COMPLETED: parser patch" in user_prompt
+    with kb.connect() as conn:
+        assert kb.get_task(conn, tid).status == "triage"
+
+
+def test_decompose_rejects_fanout_above_six_without_mutation(kanban_home):
+    with kb.connect() as conn:
+        tid = kb.create_task(conn, title="bounded fanout", triage=True)
+
+    llm_payload = jsonlib.dumps({
+        "fanout": True,
+        "tasks": [
+            {"title": f"shard {index}", "body": "one unit", "parents": []}
+            for index in range(7)
+        ],
+    })
+    patches = _patch_list_profiles(["orchestrator"])
+    for item in patches:
+        item.start()
+    try:
+        with _patch_aux_client(llm_payload):
+            outcome = decomp.decompose_task(tid, author="me")
+    finally:
+        for item in patches:
+            item.stop()
+
+    assert not outcome.ok
+    assert "at most 6" in outcome.reason
+    with kb.connect() as conn:
+        assert kb.get_task(conn, tid).status == "triage"
+        assert kb.child_ids(conn, tid) == []
+
+
+def test_decompose_rejects_single_child_fanout_that_remains_split(kanban_home):
+    with kb.connect() as conn:
+        tid = kb.create_task(conn, title="broad split", triage=True)
+
+    llm_payload = jsonlib.dumps({
+        "fanout": True,
+        "tasks": [
+            {
+                "kind": "work",
+                "parents": [],
+                "title": "Implement, verify, review, and control",
+                "body": (
+                    "Implement patch.py, run the full suite, freeze receipts, "
+                    "conduct an independent review, and issue a controller verdict."
+                ),
+            },
+        ],
+    })
+    patches = _patch_list_profiles(["orchestrator"])
+    for item in patches:
+        item.start()
+    try:
+        with _patch_aux_client(llm_payload):
+            outcome = decomp.decompose_task(tid, author="me")
+    finally:
+        for item in patches:
+            item.stop()
+
+    assert not outcome.ok
+    assert "2" in outcome.reason or "split" in outcome.reason
+    with kb.connect() as conn:
+        task = kb.get_task(conn, tid)
+        children = kb.child_ids(conn, tid)
+    assert task is not None and task.status == "triage"
+    assert children == []
+
+
+def test_decompose_rejects_split_child_inside_valid_fanout(kanban_home):
+    with kb.connect() as conn:
+        tid = kb.create_task(conn, title="broad split", triage=True)
+
+    llm_payload = jsonlib.dumps({
+        "fanout": True,
+        "tasks": [
+            {
+                "kind": "work",
+                "parents": [],
+                "title": "Implement, verify, review, and control",
+                "body": (
+                    "Implement patch.py, run the full suite, freeze receipts, "
+                    "conduct an independent review, and issue a controller verdict."
+                ),
+            },
+            {
+                "kind": "work",
+                "parents": [],
+                "title": "Prepare notes",
+                "body": "Summarize one atomic set of notes.",
+            },
+        ],
+    })
+    patches = _patch_list_profiles(["orchestrator"])
+    for item in patches:
+        item.start()
+    try:
+        with _patch_aux_client(llm_payload):
+            outcome = decomp.decompose_task(tid, author="me")
+    finally:
+        for item in patches:
+            item.stop()
+
+    assert not outcome.ok
+    assert "remains split" in outcome.reason
+    with kb.connect() as conn:
+        task = kb.get_task(conn, tid)
+        children = kb.child_ids(conn, tid)
+    assert task is not None and task.status == "triage"
+    assert children == []
+
+
+def test_decompose_rejects_controller_semantics_mislabeled_as_work(kanban_home):
+    with kb.connect() as conn:
+        tid = kb.create_task(conn, title="gated work", triage=True)
+
+    llm_payload = jsonlib.dumps({
+        "fanout": True,
+        "tasks": [
+            {
+                "kind": "work",
+                "parents": [],
+                "title": "Issue controller verdict",
+                "body": "Decide GO or NO-GO immediately from the card.",
+            },
+            {
+                "kind": "work",
+                "parents": [],
+                "title": "Prepare notes",
+                "body": "Summarize the scoped implementation notes.",
+            },
+        ],
+    })
+    patches = _patch_list_profiles(["orchestrator"])
+    for item in patches:
+        item.start()
+    try:
+        with _patch_aux_client(llm_payload):
+            outcome = decomp.decompose_task(tid, author="me")
+    finally:
+        for item in patches:
+            item.stop()
+
+    assert not outcome.ok
+    assert "controller" in outcome.reason
+    with kb.connect() as conn:
+        task = kb.get_task(conn, tid)
+        children = kb.child_ids(conn, tid)
+    assert task is not None and task.status == "triage"
+    assert children == []
+
+
+def test_decompose_rejects_activation_semantics_mislabeled_as_work(kanban_home):
+    with kb.connect() as conn:
+        tid = kb.create_task(conn, title="release plan", triage=True)
+
+    llm_payload = jsonlib.dumps({
+        "fanout": True,
+        "tasks": [
+            {
+                "kind": "work",
+                "parents": [],
+                "title": "Roll out the production release",
+                "body": "Make the new build live for all users now.",
+            },
+            {
+                "kind": "work",
+                "parents": [],
+                "title": "Prepare notes",
+                "body": "Summarize one atomic set of notes.",
+            },
+        ],
+    })
+    patches = _patch_list_profiles(["orchestrator"])
+    for item in patches:
+        item.start()
+    try:
+        with _patch_aux_client(llm_payload):
+            outcome = decomp.decompose_task(tid, author="me")
+    finally:
+        for item in patches:
+            item.stop()
+
+    assert not outcome.ok
+    assert "activation" in outcome.reason
+    with kb.connect() as conn:
+        task = kb.get_task(conn, tid)
+        children = kb.child_ids(conn, tid)
+    assert task is not None and task.status == "triage"
+    assert children == []
+
+
+def test_decompose_explicit_activation_kind_blocks_euphemistic_release(kanban_home):
+    with kb.connect() as conn:
+        tid = kb.create_task(conn, title="release plan", triage=True)
+
+    llm_payload = jsonlib.dumps({
+        "fanout": True,
+        "tasks": [
+            {
+                "kind": "activation",
+                "parents": [],
+                "title": "Roll out the production release",
+                "body": "Make the new build live for all users now.",
+            },
+            {
+                "kind": "work",
+                "parents": [],
+                "title": "Prepare rollback notes",
+                "body": "Document the rollback checklist without activating it.",
+            },
+        ],
+    })
+    patches = _patch_list_profiles(["orchestrator"])
+    for item in patches:
+        item.start()
+    try:
+        with _patch_aux_client(llm_payload):
+            outcome = decomp.decompose_task(tid, author="me")
+    finally:
+        for item in patches:
+            item.stop()
+
+    assert outcome.ok, outcome.reason
+    assert outcome.child_ids and len(outcome.child_ids) == 2
+    with kb.connect() as conn:
+        activation = kb.get_task(conn, outcome.child_ids[0])
+    assert activation is not None and activation.status == "blocked"
+    assert activation.block_kind == "needs_input"
+    assert (activation.body or "").startswith("HUMAN_ACTIVATION_GATE:")
+
+
+def test_decompose_reassesses_title_only_legacy_postimage(kanban_home):
+    broad_body = (
+        "Implement the migration, run the full suite, freeze receipts, "
+        "request independent review, and run the controller."
+    )
+    with kb.connect() as conn:
+        tid = kb.create_task(
+            conn,
+            title="Broad legacy task",
+            body=broad_body,
+            assignee="orchestrator",
+            triage=True,
+        )
+        conn.execute(
+            "DELETE FROM task_events WHERE task_id = ? "
+            "AND kind = 'granularity_assessed'",
+            (tid,),
+        )
+        conn.commit()
+
+    llm_payload = jsonlib.dumps({
+        "fanout": False,
+        "rationale": "rename only",
+        "title": "Tightened title",
+        "assignee": "orchestrator",
+    })
+    patches = _patch_list_profiles(["orchestrator"])
+    for item in patches:
+        item.start()
+    try:
+        with _patch_aux_client(llm_payload):
+            outcome = decomp.decompose_task(tid, author="me")
+    finally:
+        for item in patches:
+            item.stop()
+
+    assert not outcome.ok
+    assert "split" in outcome.reason
+    with kb.connect() as conn:
+        kb.recompute_ready(conn)
+        task = kb.get_task(conn, tid)
+    assert task is not None
+    assert task.status == "triage"
+    assert task.title == "Broad legacy task"
+    assert task.body == broad_body
+
+
+def test_decompose_activation_shard_requires_human_unblock(kanban_home):
+    with kb.connect() as conn:
+        tid = kb.create_task(conn, title="release preparation", triage=True)
+
+    llm_payload = jsonlib.dumps({
+        "fanout": True,
+        "tasks": [
+            {
+                "title": "Deploy the release",
+                "body": "Publish and activate the release in production.",
+                "kind": "activation",
+                "parents": [],
+            },
+            {
+                "title": "Prepare rollback notes",
+                "body": "Document rollback steps without activating them.",
+                "parents": [],
+            },
+        ],
+    })
+    patches = _patch_list_profiles(["orchestrator"])
+    for item in patches:
+        item.start()
+    try:
+        with _patch_aux_client(llm_payload):
+            outcome = decomp.decompose_task(tid, author="me")
+    finally:
+        for item in patches:
+            item.stop()
+
+    assert outcome.ok, outcome.reason
+    assert outcome.child_ids and len(outcome.child_ids) == 2
+    with kb.connect() as conn:
+        child = kb.get_task(conn, outcome.child_ids[0])
+        promoted = kb.recompute_ready(conn)
+        after = kb.get_task(conn, outcome.child_ids[0])
+
+    assert child is not None and child.status == "blocked"
+    assert child.block_kind == "needs_input"
+    assert (child.body or "").startswith("HUMAN_ACTIVATION_GATE:")
+    assert promoted == 0
+    assert after is not None and after.status == "blocked"
+
+
 def test_decompose_fanout_false_assigns_default_when_unassigned(kanban_home):
     with kb.connect() as conn:
         tid = kb.create_task(conn, title="just one thing", triage=True)
@@ -261,6 +643,12 @@ def test_decompose_unknown_assignee_falls_back_to_default(kanban_home):
         "rationale": "test",
         "tasks": [
             {"title": "do X", "body": "", "assignee": "made_up", "parents": []},
+            {
+                "title": "do Y",
+                "body": "",
+                "assignee": "fallback",
+                "parents": [],
+            },
         ],
     })
 
@@ -286,11 +674,117 @@ def test_decompose_unknown_assignee_falls_back_to_default(kanban_home):
             p.stop()
 
     assert outcome.ok, outcome.reason
-    assert outcome.child_ids and len(outcome.child_ids) == 1
+    assert outcome.child_ids and len(outcome.child_ids) == 2
     with kb.connect() as conn:
         child = kb.get_task(conn, outcome.child_ids[0])
     # 'made_up' wasn't in roster, so assignee rewritten to 'fallback'
     assert child.assignee == "fallback"
+
+
+def test_decomposer_rejects_direct_review_without_exact_review_key(kanban_home):
+    with kb.connect() as conn:
+        tid = kb.create_task(conn, title="close and review", triage=True)
+
+    llm_payload = jsonlib.dumps({
+        "fanout": True,
+        "rationale": "closure then review",
+        "tasks": [
+            {
+                "title": "Freeze closure postimage",
+                "body": "Run tests and freeze hashes.",
+                "assignee": "engineer",
+                "kind": "closure",
+                "parents": [],
+            },
+            {
+                "title": "Review closure",
+                "body": "Review the immutable postimage.",
+                "assignee": "reviewer",
+                "kind": "review",
+                "parents": [0],
+            },
+        ],
+    })
+    patches = _patch_list_profiles(["orchestrator", "engineer", "reviewer"])
+    for item in patches:
+        item.start()
+    try:
+        with _patch_aux_client(llm_payload):
+            outcome = decomp.decompose_task(tid, author="me")
+    finally:
+        for item in patches:
+            item.stop()
+
+    assert outcome.ok is False
+    assert "review_key" in outcome.reason
+    with kb.connect() as conn:
+        assert kb.get_task(conn, tid).status == "triage"
+
+
+def test_decomposer_persists_keyed_review_and_controller_dependencies(kanban_home):
+    postimage = "a" * 64
+    claims = "b" * 64
+    review_key = f"{postimage}:{claims}"
+    with kb.connect() as conn:
+        tid = kb.create_task(conn, title="close, review, and control", triage=True)
+
+    llm_payload = jsonlib.dumps({
+        "fanout": True,
+        "rationale": "gated lifecycle",
+        "tasks": [
+            {
+                "title": "Freeze closure postimage",
+                "body": "Run the matrix and freeze exact hashes.",
+                "assignee": "engineer",
+                "kind": "closure",
+                "parents": [],
+            },
+            {
+                "title": "Review frozen postimage",
+                "body": "Review only the immutable postimage and claims.",
+                "assignee": "reviewer",
+                "kind": "review",
+                "review_key": review_key,
+                "parents": [0],
+            },
+            {
+                "title": "Issue controller verdict",
+                "body": "Consume the semantic review verdict without self-approval.",
+                "assignee": "controller",
+                "kind": "controller",
+                "parents": [1],
+            },
+        ],
+    })
+    patches = _patch_list_profiles(
+        ["orchestrator", "engineer", "reviewer", "controller"]
+    )
+    for item in patches:
+        item.start()
+    try:
+        with _patch_aux_client(llm_payload):
+            outcome = decomp.decompose_task(tid, author="me")
+    finally:
+        for item in patches:
+            item.stop()
+
+    assert outcome.ok, outcome.reason
+    assert outcome.child_ids and len(outcome.child_ids) == 3
+    closure_id, review_id, controller_id = outcome.child_ids
+    with kb.connect() as conn:
+        review = kb.get_task(conn, review_id)
+        links = {
+            (row["parent_id"], row["child_id"])
+            for row in conn.execute(
+                "SELECT parent_id, child_id FROM task_links"
+            ).fetchall()
+        }
+
+    assert review is not None
+    assert review.idempotency_key == f"review:v1:{review_key}"
+    assert "REVIEW_KEY:" in (review.body or "")
+    assert (closure_id, review_id) in links
+    assert (review_id, controller_id) in links
 
 
 def test_decompose_handles_malformed_llm_json(kanban_home):

@@ -1006,6 +1006,250 @@ def test_create_happy_path(worker_env):
         conn.close()
 
 
+def test_create_review_key_deduplicates_exact_postimage(worker_env):
+    from tools import kanban_tools as kt
+
+    digest = "a" * 64
+    review_key = f"{digest}:{'b' * 64}"
+    first = json.loads(kt._handle_create({
+        "title": "review postimage",
+        "assignee": "reviewer-a",
+        "review_key": review_key,
+    }))
+    second = json.loads(kt._handle_create({
+        "title": "redundant review postimage",
+        "assignee": "reviewer-b",
+        "review_key": review_key,
+    }))
+
+    assert first["ok"] is True
+    assert second["ok"] is True
+    assert second["task_id"] == first["task_id"]
+
+
+def test_create_schema_exposes_review_and_broadness_contracts():
+    from tools.kanban_tools import KANBAN_CREATE_SCHEMA
+
+    props = KANBAN_CREATE_SCHEMA["parameters"]["properties"]
+    assert props["review_key"]["type"] == "string"
+    assert props["allow_broad"]["type"] == "boolean"
+
+
+def test_show_full_context_is_an_explicit_escape_hatch(monkeypatch, worker_env):
+    from hermes_cli import kanban_db as kb
+    from tools import kanban_tools as kt
+
+    original = kb.build_worker_context
+    seen: list[bool | None] = []
+
+    def capture(conn, task_id, *, compact=None):
+        seen.append(compact)
+        return original(conn, task_id, compact=compact)
+
+    monkeypatch.setattr(kb, "build_worker_context", capture)
+    payload = json.loads(kt._handle_show({
+        "task_id": worker_env,
+        "full_context": True,
+    }))
+
+    assert "error" not in payload
+    assert seen == [False]
+    props = kt.KANBAN_SHOW_SCHEMA["parameters"]["properties"]
+    assert props["full_context"]["type"] == "boolean"
+
+
+def test_show_compact_profile_does_not_duplicate_context_payload(monkeypatch, worker_env):
+    from hermes_cli import kanban_db as kb
+    from tools import kanban_tools as kt
+
+    conn = kb.connect()
+    try:
+        conn.execute(
+            "UPDATE tasks SET body = ? WHERE id = ?",
+            ("body-marker-" + ("B" * 5000), worker_env),
+        )
+        for index in range(10):
+            kb.add_comment(
+                conn,
+                worker_env,
+                author="worker",
+                body=f"comment-{index}-" + ("C" * 1500),
+            )
+        conn.execute(
+            """INSERT INTO task_runs
+               (task_id, profile, status, started_at, ended_at, outcome,
+                summary, metadata, error)
+               VALUES (?, 'worker', 'failed', 1, 2, 'crashed', ?, ?, ?)""",
+            (
+                worker_env,
+                "closed-summary-" + ("S" * 4000),
+                '{"blob":"' + ("M" * 4000) + '"}',
+                "closed-error-" + ("E" * 4000),
+            ),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+    def compact_policy(explicit=None):
+        return True if explicit is None else bool(explicit)
+
+    monkeypatch.setattr(kb, "_compact_worker_context_enabled", compact_policy)
+    payload = json.loads(kt._handle_show({"task_id": worker_env}))
+
+    assert payload["context_profile"] == "compact"
+    assert payload["task"]["body"] is None
+    assert payload["task"]["body_in_worker_context"] is True
+    assert all(comment["body"] is None for comment in payload["comments"])
+    assert all(run["summary"] is None for run in payload["runs"])
+    active_run = next(run for run in payload["runs"] if run["ended_at"] is None)
+    closed_run = next(run for run in payload["runs"] if run["ended_at"] is not None)
+    assert active_run["details_in_worker_context"] is False
+    assert closed_run["details_in_worker_context"] is True
+    assert payload["raw_omissions"]["comments"] >= 4
+    assert "body-marker" in payload["worker_context"]
+
+
+def test_show_compact_profile_bounds_complete_json_payload(monkeypatch, worker_env):
+    from hermes_cli import kanban_db as kb
+    from tools import kanban_tools as kt
+
+    conn = kb.connect()
+    try:
+        parent_rows = [
+            (f"p{index:04d}", f"parent-{index}", "done", 1)
+            for index in range(200)
+        ]
+        child_rows = [
+            (f"c{index:04d}", f"child-{index}", "todo", 1)
+            for index in range(200)
+        ]
+        conn.executemany(
+            "INSERT INTO tasks (id, title, status, created_at) VALUES (?, ?, ?, ?)",
+            parent_rows + child_rows,
+        )
+        conn.executemany(
+            "INSERT INTO task_links(parent_id, child_id) VALUES (?, ?)",
+            [(row[0], worker_env) for row in parent_rows]
+            + [(worker_env, row[0]) for row in child_rows],
+        )
+        conn.executemany(
+            """INSERT INTO task_events(task_id, kind, payload, created_at)
+               VALUES (?, 'fixture_event', ?, ?)""",
+            [
+                (worker_env, json.dumps({"blob": "E" * 5000}), index + 10)
+                for index in range(20)
+            ],
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+    monkeypatch.setattr(
+        kb,
+        "_compact_worker_context_enabled",
+        lambda explicit=None: True if explicit is None else bool(explicit),
+    )
+    rendered = kt._handle_show({"task_id": worker_env})
+    payload = json.loads(rendered)
+
+    assert len(rendered.encode("utf-8")) <= 48 * 1024
+    assert payload["parent_count"] == 200
+    assert payload["child_count"] == 200
+    assert payload["raw_omissions"]["parents"] > 0
+    assert payload["raw_omissions"]["children"] > 0
+    assert payload["raw_omissions"]["events"] > 0
+
+
+def test_show_compact_profile_reserves_handoff_under_envelope_starvation(
+    monkeypatch,
+    worker_env,
+):
+    import hashlib
+
+    from hermes_cli import kanban_db as kb
+    from tools import kanban_tools as kt
+
+    source = "FULL_SOURCE:" + ("🧭" * 20_000) + ":SOURCE_TAIL"
+    digest = hashlib.sha256(source.encode("utf-8")).hexdigest()
+    huge = "界" * 30_000
+    conn = kb.connect()
+    try:
+        conn.execute(
+            """UPDATE tasks
+                  SET title = ?, body = ?, created_by = ?, workspace_kind = ?,
+                      workspace_path = ?
+                WHERE id = ?""",
+            (huge, huge, huge, huge, huge, worker_env),
+        )
+        kb.add_comment(conn, worker_env, author=huge, body=huge)
+        kb.add_attachment(
+            conn,
+            worker_env,
+            filename=huge,
+            stored_path="/tmp/" + huge,
+            content_type="application/octet-stream;" + huge,
+            size=1,
+            uploaded_by=huge,
+        )
+        conn.execute(
+            """INSERT INTO task_runs
+               (task_id, profile, status, started_at, ended_at, outcome,
+                summary, metadata, error)
+               VALUES (?, ?, 'gave_up', 2, 3, 'gave_up', ?, ?, NULL)""",
+            (
+                worker_env,
+                huge,
+                "[partial_unverified]\nCOMPLETED: LATEST_HANDOFF_SENTINEL",
+                json.dumps({
+                    "partial_summary_full": source,
+                    "partial_summary_sha256": digest,
+                }),
+            ),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+    monkeypatch.setattr(
+        kb,
+        "_compact_worker_context_enabled",
+        lambda explicit=None: True if explicit is None else bool(explicit),
+    )
+    rendered = kt._handle_show({"task_id": worker_env})
+    payload = json.loads(rendered)
+
+    assert "error" not in payload
+    assert len(rendered.encode("utf-8")) <= 48 * 1024
+    assert "LATEST_HANDOFF_SENTINEL" in payload["worker_context"]
+    assert "CONTEXT_REF:" in payload["worker_context"]
+
+
+def test_compact_renderer_never_replaces_priority_evidence_with_size_error():
+    from tools import kanban_tools as kt
+
+    huge = "界" * 30_000
+    rendered = kt._render_compact_show_payload({
+        "context_profile": "compact",
+        "task": {"id": huge, "status": huge, "title": huge},
+        "comments": [{"author": huge}],
+        "events": [{"payload": huge}],
+        "runs": [{"profile": huge}],
+        "parents": [huge],
+        "children": [huge],
+        "raw_omissions": {},
+        "worker_context": (
+            huge + "\nLATEST_HANDOFF: " + huge + "\nCONTEXT_REF: " + huge
+        ),
+    })
+    payload = json.loads(rendered)
+
+    assert "error" not in payload
+    assert len(rendered.encode("utf-8")) <= 48 * 1024
+    assert "LATEST_HANDOFF" in payload["worker_context"]
+    assert "CONTEXT_REF:" in payload["worker_context"]
+
+
 def test_create_inherits_worker_dir_workspace(monkeypatch, worker_env):
     """A worker scoped to a dir: task that spawns a child without a
     workspace arg inherits the dir, not scratch (so follow-up code-gen

@@ -93,6 +93,27 @@ def test_repair_merges_consecutive_user_messages():
     assert messages[0]["content"] == "first\n\nsecond"
 
 
+def test_repair_preserves_current_turn_identity_when_merging_users():
+    from agent.iteration_budget import CURRENT_TURN_ID_KEY, _current_turn_user_index
+
+    agent = _bare_agent()
+    messages = [
+        {"role": "user", "content": "pending prior input"},
+        {
+            "role": "user",
+            "content": "current input",
+            CURRENT_TURN_ID_KEY: "turn-current",
+        },
+    ]
+
+    repairs = AIAgent._repair_message_sequence(agent, messages)
+
+    assert repairs == 1
+    assert len(messages) == 1
+    assert messages[0][CURRENT_TURN_ID_KEY] == "turn-current"
+    assert _current_turn_user_index(messages, "turn-current") == 0
+
+
 def test_repair_preserves_user_content_when_one_side_empty():
     agent = _bare_agent()
     messages = [
@@ -318,6 +339,36 @@ def test_cursor_clamped_when_compaction_shrinks_below_cursor():
     assert repairs == 1
     assert len(messages) == 1
     assert agent._last_flushed_db_idx == 1
+
+
+def test_cursor_rewinds_when_current_user_merges_into_flushed_user():
+    from agent.agent_runtime_helpers import (
+        REPAIRED_USER_PREFIX_KEY,
+        provider_visible_message_copy,
+    )
+    from agent.iteration_budget import CURRENT_TURN_ID_KEY
+
+    agent = _bare_agent()
+    flushed_user = {"role": "user", "content": "already persisted"}
+    current_user = {
+        "role": "user",
+        "content": "current input",
+        CURRENT_TURN_ID_KEY: "turn-current",
+    }
+    messages = [flushed_user, current_user]
+    agent._last_flushed_db_idx = 1
+
+    repairs = repair_message_sequence_with_cursor(agent, messages)
+
+    assert repairs == 1
+    assert messages == [current_user]
+    assert messages[0]["content"] == "current input"
+    assert messages[0][REPAIRED_USER_PREFIX_KEY] == "already persisted"
+    assert provider_visible_message_copy(messages[0]) == {
+        "role": "user",
+        "content": "already persisted\n\ncurrent input",
+    }
+    assert agent._last_flushed_db_idx == 0
 
 
 def test_cursor_rewinds_when_compaction_happens_before_cursor():

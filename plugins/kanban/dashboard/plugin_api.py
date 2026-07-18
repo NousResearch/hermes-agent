@@ -604,6 +604,8 @@ class CreateTaskBody(BaseModel):
     parents: list[str] = Field(default_factory=list)
     triage: bool = False
     idempotency_key: Optional[str] = None
+    review_key: Optional[str] = None
+    allow_broad: bool = False
     max_runtime_seconds: Optional[int] = None
     skills: Optional[list[str]] = None
     goal_mode: bool = False
@@ -628,6 +630,8 @@ def create_task(payload: CreateTaskBody, board: Optional[str] = Query(None)):
             parents=payload.parents,
             triage=payload.triage,
             idempotency_key=payload.idempotency_key,
+            review_key=payload.review_key,
+            granularity_policy="allow" if payload.allow_broad else None,
             max_runtime_seconds=payload.max_runtime_seconds,
             skills=payload.skills,
             goal_mode=payload.goal_mode,

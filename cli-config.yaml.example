@@ -1126,6 +1126,18 @@ delegation:
   #                                           # Supported: openrouter, nous, zai, kimi-coding, minimax
 
 # =============================================================================
+# Kanban Execution Contract
+# =============================================================================
+# Defaults preserve the existing task lifecycle and full worker context. The
+# opt-in modes reduce repeated work without removing tools, tests, or review
+# gates. See website/docs/user-guide/features/kanban.md for the full contract.
+kanban:
+  granularity_guard: warn       # off | warn | triage | allow
+  context_profile: full         # full | compact (48 KiB aggregate UTF-8 cap)
+  budget_exhaustion_policy: retry  # retry | block | triage_once
+  budget_warning_ratio: 0.75    # One API-only checkpoint in [0.5, 1.0)
+
+# =============================================================================
 # Honcho Integration (Cross-Session User Modeling)
 # =============================================================================
 # AI-native persistent memory via Honcho (https://honcho.dev/).

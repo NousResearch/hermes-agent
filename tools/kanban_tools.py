@@ -28,6 +28,7 @@ through the board.
 """
 from __future__ import annotations
 
+import hashlib
 import json
 import logging
 import os
@@ -47,6 +48,10 @@ logger = logging.getLogger(__name__)
 
 KANBAN_LIST_DEFAULT_LIMIT = 50
 KANBAN_LIST_MAX_LIMIT = 200
+KANBAN_SHOW_COMPACT_MAX_BYTES = 48 * 1024
+KANBAN_SHOW_COMPACT_MAX_LINK_IDS = 8
+KANBAN_SHOW_COMPACT_MAX_EVENTS = 8
+KANBAN_SHOW_COMPACT_MAX_FIELD_BYTES = 1024
 
 
 def _profile_has_kanban_toolset() -> bool:
@@ -103,6 +108,125 @@ def _default_task_id(arg: Optional[str]) -> Optional[str]:
         return arg
     env_tid = os.environ.get("HERMES_KANBAN_TASK")
     return env_tid or None
+
+
+def _render_compact_show_payload(payload: dict) -> str:
+    """Serialize the compact envelope while reserving priority evidence."""
+
+    def _cap_text(value: str, max_bytes: int) -> str:
+        encoded = value.encode("utf-8")
+        if len(encoded) <= max_bytes:
+            return value
+        marker = "…"
+        budget = max(0, max_bytes - len(marker.encode("utf-8")))
+        return encoded[:budget].decode("utf-8", errors="ignore") + marker
+
+    def _bound(value: Any) -> Any:
+        if isinstance(value, str):
+            return _cap_text(value, KANBAN_SHOW_COMPACT_MAX_FIELD_BYTES)
+        if isinstance(value, list):
+            return [_bound(item) for item in value]
+        if isinstance(value, dict):
+            return {key: _bound(item) for key, item in value.items()}
+        return value
+
+    worker_context = str(payload.get("worker_context") or "")
+    bounded_payload = {
+        key: (worker_context if key == "worker_context" else _bound(value))
+        for key, value in payload.items()
+    }
+
+    def _render() -> str:
+        return json.dumps(
+            bounded_payload,
+            ensure_ascii=False,
+            separators=(",", ":"),
+        )
+
+    rendered = _render()
+    if len(rendered.encode("utf-8")) <= KANBAN_SHOW_COMPACT_MAX_BYTES:
+        return rendered
+
+    marker = "\n… [worker context truncated to bound compact kanban_show response]\n"
+    priority_end = 0
+    for priority_marker in ("LATEST_HANDOFF", "CONTEXT_REF:"):
+        index = worker_context.find(priority_marker)
+        if index >= 0:
+            line_end = worker_context.find("\n", index)
+            priority_end = max(
+                priority_end,
+                len(worker_context) if line_end < 0 else line_end + 1,
+            )
+
+    low, high = priority_end, len(worker_context)
+    best = ""
+    while low <= high:
+        mid = (low + high) // 2
+        bounded_payload["worker_context"] = worker_context[:mid] + marker
+        candidate = _render()
+        if len(candidate.encode("utf-8")) <= KANBAN_SHOW_COMPACT_MAX_BYTES:
+            best = candidate
+            low = mid + 1
+        else:
+            high = mid - 1
+    if best:
+        return best
+
+    priority_context = worker_context[:priority_end] + marker
+    for low_priority_key in ("events", "comments", "runs", "parents", "children"):
+        bounded_payload[low_priority_key] = []
+        bounded_payload["worker_context"] = priority_context
+        rendered = _render()
+        if len(rendered.encode("utf-8")) <= KANBAN_SHOW_COMPACT_MAX_BYTES:
+            return rendered
+
+    bounded_task = bounded_payload.get("task")
+    if not isinstance(bounded_task, dict):
+        bounded_task = {}
+    minimal_payload = {
+        "context_profile": "compact",
+        "task": {
+            "id": _cap_text(
+                str(bounded_task.get("id") or ""),
+                KANBAN_SHOW_COMPACT_MAX_FIELD_BYTES,
+            ),
+            "status": _cap_text(
+                str(bounded_task.get("status") or ""),
+                KANBAN_SHOW_COMPACT_MAX_FIELD_BYTES,
+            ),
+        },
+        "raw_omissions": bounded_payload.get("raw_omissions", {}),
+        "worker_context": priority_context,
+    }
+    rendered = json.dumps(
+        minimal_payload,
+        ensure_ascii=False,
+        separators=(",", ":"),
+    )
+    if len(rendered.encode("utf-8")) <= KANBAN_SHOW_COMPACT_MAX_BYTES:
+        return rendered
+
+    reserved_lines = []
+    for priority_marker in ("LATEST_HANDOFF", "CONTEXT_REF:"):
+        matching_line = next(
+            (line for line in worker_context.splitlines() if priority_marker in line),
+            "",
+        )
+        if matching_line:
+            reserved_lines.append(
+                _cap_text(matching_line, KANBAN_SHOW_COMPACT_MAX_FIELD_BYTES * 8)
+            )
+    emergency_payload = {
+        "context_profile": "compact",
+        "task": minimal_payload["task"],
+        "raw_omissions": minimal_payload["raw_omissions"],
+        "worker_context": "\n".join(reserved_lines),
+    }
+    return json.dumps(
+        emergency_payload,
+        ensure_ascii=False,
+        separators=(",", ":"),
+    )
 
 
 def _worker_run_id(task_id: str) -> Optional[int]:
@@ -373,21 +497,54 @@ def _handle_show(args: dict, **kw) -> str:
             "task_id is required (or set HERMES_KANBAN_TASK in the env)"
         )
     board = args.get("board")
+    full_context, bool_error = _parse_bool_arg(args, "full_context")
+    if bool_error:
+        return tool_error(bool_error)
     try:
         kb, conn = _connect(board=board)
         try:
             task = kb.get_task(conn, tid)
             if task is None:
                 return tool_error(f"task {tid} not found")
+            compact_mode = kb._compact_worker_context_enabled(
+                False if full_context else None
+            )
             comments = kb.list_comments(conn, tid)
             events = kb.list_events(conn, tid)
             runs = kb.list_runs(conn, tid)
-            parents = kb.parent_ids(conn, tid)
-            children = kb.child_ids(conn, tid)
+            all_parents = kb.parent_ids(conn, tid)
+            all_children = kb.child_ids(conn, tid)
+
+            def _sample_ids(values):
+                if (
+                    not compact_mode
+                    or len(values) <= KANBAN_SHOW_COMPACT_MAX_LINK_IDS
+                ):
+                    return values
+                half = KANBAN_SHOW_COMPACT_MAX_LINK_IDS // 2
+                return values[:half] + values[-half:]
+
+            parents = _sample_ids(all_parents)
+            children = _sample_ids(all_children)
+
+            max_comments = int(getattr(kb, "_CTX_COMPACT_MAX_COMMENTS", 6))
+            max_attempts = int(getattr(kb, "_CTX_COMPACT_MAX_PRIOR_ATTEMPTS", 1))
+            if compact_mode:
+                shown_comments = comments[-max_comments:]
+                active_runs = [r for r in runs if r.ended_at is None]
+                closed_runs = [r for r in runs if r.ended_at is not None][-max_attempts:]
+                selected = {r.id: r for r in (*closed_runs, *active_runs)}
+                shown_runs = [selected[key] for key in sorted(selected)]
+                shown_events = events[-KANBAN_SHOW_COMPACT_MAX_EVENTS:]
+            else:
+                shown_comments = comments
+                shown_runs = runs
+                shown_events = events[-50:]
 
             def _task_dict(t):
-                return {
-                    "id": t.id, "title": t.title, "body": t.body,
+                value = {
+                    "id": t.id, "title": t.title,
+                    "body": None if compact_mode else t.body,
                     "assignee": t.assignee, "status": t.status,
                     "tenant": t.tenant, "priority": t.priority,
                     "workspace_kind": t.workspace_kind,
@@ -395,41 +552,88 @@ def _handle_show(args: dict, **kw) -> str:
                     "created_by": t.created_by, "created_at": t.created_at,
                     "started_at": t.started_at,
                     "completed_at": t.completed_at,
-                    "result": t.result,
+                    "result": None if compact_mode else t.result,
                     "current_run_id": t.current_run_id,
                     "model_override": t.model_override,
+                    "review_contract": t.review_contract,
+                    "review_postimage_sha256": t.review_postimage_sha256,
+                    "review_claims_sha256": t.review_claims_sha256,
                 }
+                if compact_mode:
+                    value["body_in_worker_context"] = bool(t.body)
+                    value["result_available_in_full_context"] = bool(t.result)
+                return value
 
             def _run_dict(r):
                 return {
                     "id": r.id, "profile": r.profile,
                     "status": r.status, "outcome": r.outcome,
-                    "summary": r.summary, "error": r.error,
-                    "metadata": r.metadata,
+                    "summary": None if compact_mode else r.summary,
+                    "error": None if compact_mode else r.error,
+                    "metadata": None if compact_mode else r.metadata,
+                    "details_in_worker_context": r.ended_at is not None,
                     "started_at": r.started_at, "ended_at": r.ended_at,
                 }
 
-            return json.dumps({
+            def _event_dict(event):
+                value = {
+                    "kind": event.kind,
+                    "created_at": event.created_at,
+                    "run_id": event.run_id,
+                }
+                if compact_mode:
+                    encoded = json.dumps(
+                        event.payload,
+                        ensure_ascii=False,
+                        sort_keys=True,
+                        separators=(",", ":"),
+                    ).encode("utf-8")
+                    value.update({
+                        "payload": None,
+                        "payload_available_in_full_context": event.payload is not None,
+                        "payload_sha256": hashlib.sha256(encoded).hexdigest(),
+                    })
+                else:
+                    value["payload"] = event.payload
+                return value
+
+            payload = {
+                "context_profile": "compact" if compact_mode else "full",
                 "task": _task_dict(task),
                 "parents": parents,
                 "children": children,
+                "parent_count": len(all_parents),
+                "child_count": len(all_children),
                 "comments": [
-                    {"author": c.author, "body": c.body,
+                    {"author": c.author, "body": None if compact_mode else c.body,
+                     "body_in_worker_context": compact_mode,
                      "created_at": c.created_at}
-                    for c in comments
+                    for c in shown_comments
                 ],
-                "events": [
-                    {"kind": e.kind, "payload": e.payload,
-                     "created_at": e.created_at, "run_id": e.run_id}
-                    for e in events[-50:]   # cap; full log via CLI
-                ],
-                "runs": [_run_dict(r) for r in runs],
+                "events": [_event_dict(event) for event in shown_events],
+                "runs": [_run_dict(r) for r in shown_runs],
+                "raw_omissions": {
+                    "comments": len(comments) - len(shown_comments),
+                    "runs": len(runs) - len(shown_runs),
+                    "events": max(0, len(events) - len(shown_events)),
+                    "parents": len(all_parents) - len(parents),
+                    "children": len(all_children) - len(children),
+                    "details_elided_into_worker_context": compact_mode,
+                    "recover_with_full_context": compact_mode,
+                },
                 # Also surface the worker's own context block so the
                 # agent can include it directly if it wants. This is
                 # the same string build_worker_context returns to the
                 # dispatcher at spawn time.
-                "worker_context": kb.build_worker_context(conn, tid),
-            })
+                "worker_context": kb.build_worker_context(
+                    conn,
+                    tid,
+                    compact=compact_mode,
+                ),
+            }
+            if compact_mode:
+                return _render_compact_show_payload(payload)
+            return json.dumps(payload)
         finally:
             conn.close()
     except ValueError as e:
@@ -1097,6 +1301,10 @@ def _handle_create(args: dict, **kw) -> str:
     if bool_error:
         return tool_error(bool_error)
     idempotency_key = args.get("idempotency_key")
+    review_key = args.get("review_key")
+    allow_broad, allow_broad_error = _parse_bool_arg(args, "allow_broad")
+    if allow_broad_error:
+        return tool_error(allow_broad_error)
     max_runtime_seconds = args.get("max_runtime_seconds")
     initial_status = args.get("initial_status") or "running"
     skills = args.get("skills")
@@ -1147,6 +1355,8 @@ def _handle_create(args: dict, **kw) -> str:
                 project_id=project_id,
                 triage=triage,
                 idempotency_key=idempotency_key,
+                review_key=review_key,
+                granularity_policy="allow" if allow_broad else None,
                 max_runtime_seconds=(
                     int(max_runtime_seconds)
                     if max_runtime_seconds is not None else None
@@ -1369,6 +1579,15 @@ KANBAN_SHOW_SCHEMA = {
             "task_id": {
                 "type": "string",
                 "description": _DESC_TASK_ID_DEFAULT,
+            },
+            "full_context": {
+                "type": "boolean",
+                "description": (
+                    "Bypass kanban.context_profile=compact and expose the "
+                    "historical bounded attempts, parent handoffs, and comments. "
+                    "Exact partial_summary_full recovery follows the hash-bound "
+                    "CONTEXT_REF instruction."
+                ),
             },
             "board": _board_schema_prop(),
         },
@@ -1810,6 +2029,23 @@ KANBAN_CREATE_SCHEMA = {
                     "If a non-archived task with this key already "
                     "exists, return that task's id instead of creating "
                     "a duplicate. Useful for retry-safe automation."
+                ),
+            },
+            "review_key": {
+                "type": "string",
+                "description": (
+                    "Exact review dedup key, normally <postimage-sha256>:"
+                    "<claims-sha256>[:round-N]. A non-archived review with "
+                    "the same key is reused instead of spawning a redundant reviewer. "
+                    "Do not combine with idempotency_key."
+                ),
+            },
+            "allow_broad": {
+                "type": "boolean",
+                "description": (
+                    "Explicitly bypass kanban.granularity_guard=triage for an "
+                    "intentional broad card. The deterministic assessment is "
+                    "still recorded. Defaults to false."
                 ),
             },
             "max_runtime_seconds": {

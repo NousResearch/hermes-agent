@@ -26,6 +26,7 @@ import uuid
 from types import SimpleNamespace
 from typing import Any, Dict, Optional
 
+from agent.agent_runtime_helpers import provider_visible_messages
 from hermes_cli.timeouts import get_provider_request_timeout, get_provider_stale_timeout
 from hermes_constants import PARTIAL_STREAM_STUB_ID, FINISH_REASON_LENGTH
 from agent.error_classifier import FailoverReason
@@ -1872,14 +1873,37 @@ def try_activate_fallback(agent, reason: "FailoverReason | None" = None) -> bool
 
 
 
+def _iteration_limit_summary_request(*, is_kanban: bool) -> str:
+    """Return a general summary request or a reusable Kanban handoff contract."""
+    if not is_kanban:
+        return (
+            "You've reached the maximum number of tool-calling iterations allowed. "
+            "Please provide a final response summarizing what you've found and "
+            "accomplished so far, without calling any more tools."
+        )
+    return (
+        "You've reached the maximum number of tool-calling iterations allowed; "
+        "without calling any more tools, return a compact continuation record "
+        "using exactly these headings:\n\n"
+        "PARTIAL_UNVERIFIED_HANDOFF\n"
+        "COMPLETED: verified work actually finished\n"
+        "CHANGED_FILES: exact paths, or none\n"
+        "TESTS: exact commands/results already observed\n"
+        "REMAINING: unfinished work and required reviews\n"
+        "RESUME: the first concrete next action\n"
+        "INVARIANTS: safety boundaries and actions not taken\n\n"
+        "Do not claim PASS, approval, deployment, or completion unless it was "
+        "actually verified before exhaustion. Keep this handoff concise; it will "
+        "be marked partial_unverified and supplied to a continuation worker."
+    )
+
+
 def handle_max_iterations(agent, messages: list, api_call_count: int) -> str:
     """Request a summary when max iterations are reached. Returns the final response text."""
     print(f"⚠️  Reached maximum iterations ({agent.max_iterations}). Requesting summary...")
 
-    summary_request = (
-        "You've reached the maximum number of tool-calling iterations allowed. "
-        "Please provide a final response summarizing what you've found and accomplished so far, "
-        "without calling any more tools."
+    summary_request = _iteration_limit_summary_request(
+        is_kanban=bool(os.environ.get("HERMES_KANBAN_TASK"))
     )
     messages.append({"role": "user", "content": summary_request})
 
@@ -1888,8 +1912,7 @@ def handle_max_iterations(agent, messages: list, api_call_count: int) -> str:
         # (finish_reason, reasoning) that strict APIs like Mistral reject with 422
         _needs_sanitize = agent._should_sanitize_tool_calls()
         api_messages = []
-        for msg in messages:
-            api_msg = msg.copy()
+        for msg, api_msg in zip(messages, provider_visible_messages(messages)):
             agent._copy_reasoning_content_for_api(msg, api_msg)
             for internal_field in ("reasoning", "finish_reason", "_thinking_prefill"):
                 api_msg.pop(internal_field, None)

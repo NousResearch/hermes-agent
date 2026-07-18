@@ -847,7 +847,21 @@ class SimplexAdapter(BasePlatformAdapter):
                 )
                 cmd_str = f"/_send @{chat_id} json {composed}"
 
-            await self._send_ws({"corrId": corr_id, "cmd": cmd_str})
+            # The daemon returns a correlated response for `/_send` (newChatItems
+            # on success, chatCmdError on failure). Use _send_command (not the
+            # fire-and-forget _send_ws) so we await that response and keep the
+            # WebSocket open until the daemon has actually processed the command
+            # — a fire-and-forget send can close the connection before the daemon
+            # handles it, silently dropping the message (esp. on short-lived
+            # connections such as the cron delivery fallback).
+            resp = await self._send_command(cmd_str)
+            if resp is None:
+                logger.warning("SimpleX: send to %s got no daemon response", chat_id)
+                return SendResult(success=False, error="no daemon response")
+            rtype = (resp.get("resp") or {}).get("type")
+            if rtype == "chatCmdError":
+                logger.warning("SimpleX: send to %s failed: %s", chat_id, rtype)
+                return SendResult(success=False, error=str(rtype))
 
         for path in media_paths:
             is_voice = os.path.splitext(path)[1].lower() in _voice_exts

@@ -3589,7 +3589,11 @@ def _configure_vision_provider_model(config: dict, vision_cfg: dict) -> None:
         return
 
     try:
-        providers = list_authenticated_providers(max_models=40)
+        # Interactive picker: include providers whose credential pool is
+        # entirely rate-limited (exhausted) so the user can still route vision
+        # here — rate limits are per-model and this persists a config used
+        # later. Same rationale as the /model picker (#66584).
+        providers = list_authenticated_providers(max_models=40, for_picker=True)
     except Exception as exc:
         _print_warning(f"  Could not detect providers: {exc}")
         providers = []

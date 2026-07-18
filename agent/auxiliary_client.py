@@ -1407,13 +1407,32 @@ class _AnthropicCompletionsAdapter:
 
         usage = None
         if hasattr(response, "usage") and response.usage:
-            prompt_tokens = getattr(response.usage, "input_tokens", 0) or 0
+            input_tokens = getattr(response.usage, "input_tokens", 0) or 0
             completion_tokens = getattr(response.usage, "output_tokens", 0) or 0
-            total_tokens = getattr(response.usage, "total_tokens", 0) or (prompt_tokens + completion_tokens)
+            # Anthropic's input_tokens EXCLUDES cache reads/writes; preserve the
+            # native fields so normalize_usage(api_mode="anthropic_messages")
+            # sees real values. Without them, every MoA advisor / auxiliary call
+            # routed through this adapter normalized to all-zero usage (the
+            # SimpleNamespace only carried the renamed prompt_tokens shape), so
+            # the entire reference fan-out was invisible to cost tracking — the
+            # exact blind spot moa_loop's advisor accounting exists to close.
+            cache_read = getattr(response.usage, "cache_read_input_tokens", 0) or 0
+            cache_write = getattr(response.usage, "cache_creation_input_tokens", 0) or 0
+            # OpenAI convention: prompt_tokens INCLUDES cached tokens (the
+            # details fields separate them), so OpenAI-shape consumers see the
+            # true prompt size and normalize_usage's OpenAI branch — which
+            # subtracts the top-level cache fields we also expose — still
+            # recovers the correct uncached input count.
+            prompt_tokens = input_tokens + cache_read + cache_write
+            total_tokens = prompt_tokens + completion_tokens
             usage = SimpleNamespace(
                 prompt_tokens=prompt_tokens,
                 completion_tokens=completion_tokens,
                 total_tokens=total_tokens,
+                input_tokens=input_tokens,
+                output_tokens=completion_tokens,
+                cache_read_input_tokens=cache_read,
+                cache_creation_input_tokens=cache_write,
             )
 
         choice = SimpleNamespace(
@@ -5408,8 +5427,10 @@ def resolve_provider_client(
             return None, None
 
         try:
-            from openai import OpenAI
-            client = OpenAI(api_key=token, base_url=base_url)
+            # _create_openai_client (not bare OpenAI) so max_retries defaults
+            # to 0 — Hermes's call_llm owns retry/backoff policy (#54465), and
+            # the vertex transient-429 handling relies on seeing the error.
+            client = _create_openai_client(api_key=token, base_url=base_url)
         except Exception as exc:
             logger.warning("resolve_provider_client: cannot create Vertex "
                            "client: %s", exc)

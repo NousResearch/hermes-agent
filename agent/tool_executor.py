@@ -360,6 +360,7 @@ def execute_tool_calls_concurrent(agent, assistant_message, messages: list, effe
 
     # ── Parse args + pre-execution bookkeeping ───────────────────────
     parsed_calls = []  # list of (tool_call, function_name, function_args, middleware_trace, block_result, blocked_by_guardrail)
+    capability_denied_call_ids: set[str] = set()
     for tool_call in tool_calls:
         function_name = tool_call.function.name
 
@@ -379,12 +380,6 @@ def execute_tool_calls_concurrent(agent, assistant_message, messages: list, effe
                 )
             )
             continue
-
-        # Reset nudge counters only for a structurally valid invocation.
-        if function_name == "memory":
-            agent._turns_since_memory = 0
-        elif function_name == "skill_manage":
-            agent._iters_since_skill = 0
 
         # ── Tool Search unwrap ────────────────────────────────────────
         # When the model invokes the tool_call bridge, peel it open so
@@ -420,6 +415,37 @@ def execute_tool_calls_concurrent(agent, assistant_message, messages: list, effe
                         }, ensure_ascii=False)
         except Exception:
             pass
+
+        # Exact capability and live provenance validation must precede every
+        # middleware, plugin hook, guardrail, checkpoint, callback, or counter.
+        # The lower dispatch checks again to close the preflight-to-worker race.
+        if _ts_scope_block is None:
+            try:
+                from gateway.security_context import enforce_agent_tool_dispatch
+
+                enforce_agent_tool_dispatch(agent, function_name)
+            except PermissionError:
+                capability_denied_call_ids.add(
+                    getattr(tool_call, "id", "") or ""
+                )
+                parsed_calls.append((
+                    tool_call,
+                    function_name,
+                    function_args,
+                    [],
+                    json.dumps(
+                        {"error": "tool_denied_by_capability", "tool": function_name},
+                        ensure_ascii=False,
+                    ),
+                    False,
+                ))
+                continue
+
+        # Reset nudge counters only for an authorized invocation.
+        if function_name == "memory":
+            agent._turns_since_memory = 0
+        elif function_name == "skill_manage":
+            agent._iters_since_skill = 0
 
         function_args, middleware_trace = _apply_tool_request_middleware_for_agent(
             agent,
@@ -524,10 +550,22 @@ def execute_tool_calls_concurrent(agent, assistant_message, messages: list, effe
         parsed_calls.append((tool_call, function_name, function_args, middleware_trace, block_result, blocked_by_guardrail))
 
     # ── Logging / callbacks ──────────────────────────────────────────
-    tool_names_str = ", ".join(name for _, name, _, _, _, _ in parsed_calls)
-    if not agent.quiet_mode and getattr(agent, "tool_progress_mode", "all") != "off":
-        print(f"  ⚡ Concurrent: {num_tools} tool calls — {tool_names_str}")
+    authorized_names = [
+        name
+        for _, name, _, _, block_result, _ in parsed_calls
+        if block_result is None
+    ]
+    tool_names_str = ", ".join(authorized_names)
+    runnable_count = len(authorized_names)
+    if (
+        runnable_count
+        and not agent.quiet_mode
+        and getattr(agent, "tool_progress_mode", "all") != "off"
+    ):
+        print(f"  ⚡ Concurrent: {runnable_count} tool calls — {tool_names_str}")
         for i, (tc, name, args, middleware_trace, block_result, blocked_by_guardrail) in enumerate(parsed_calls, 1):
+            if block_result is not None:
+                continue
             display_args = _redact_tool_args_for_display(name, args) or args
             args_str = json.dumps(display_args, ensure_ascii=False)
             if agent.verbose_logging:
@@ -565,10 +603,13 @@ def execute_tool_calls_concurrent(agent, assistant_message, messages: list, effe
         if block_result is not None:
             results[i] = (name, args, block_result, 0.0, True, True, middleware_trace)
 
-    # Touch activity before launching workers so the gateway knows
-    # we're executing tools (not stuck).
-    agent._current_tool = tool_names_str
-    agent._touch_activity(f"executing {num_tools} tools concurrently: {tool_names_str}")
+    # Only executable calls participate in agent activity. Capability-denied
+    # names must not become observable state, including denied-only batches.
+    if runnable_count:
+        agent._current_tool = tool_names_str
+        agent._touch_activity(
+            f"executing {runnable_count} tools concurrently: {tool_names_str}"
+        )
 
     def _run_tool(index, tool_call, function_name, function_args, middleware_trace):
         """Worker function executed in a thread."""
@@ -654,9 +695,14 @@ def execute_tool_calls_concurrent(agent, assistant_message, messages: list, effe
             except Exception:
                 pass
 
-    # Start spinner for CLI mode (skip when TUI handles tool progress)
+    # Start spinner for CLI mode (skip when TUI handles tool progress). A
+    # denied-only batch is an error-reporting path, not active tool work.
     spinner = None
-    if agent._should_emit_quiet_tool_messages() and agent._should_start_quiet_spinner():
+    if (
+        runnable_count
+        and agent._should_emit_quiet_tool_messages()
+        and agent._should_start_quiet_spinner()
+    ):
         face = random.choice(KawaiiSpinner.get_waiting_faces())
         spinner = KawaiiSpinner(f"{face} ⚡ running {num_tools} tools concurrently", spinner_type='dots', print_fn=agent._print_fn)
         spinner.start()
@@ -939,8 +985,9 @@ def execute_tool_calls_concurrent(agent, assistant_message, messages: list, effe
                 response_preview = _preview_str[:agent.log_prefix_chars] + "..." if len(_preview_str) > agent.log_prefix_chars else _preview_str
                 print(f"  ✅ Tool {i+1} completed in {tool_duration:.2f}s - {response_preview}")
 
-        agent._current_tool = None
-        agent._touch_activity(f"tool completed: {name} ({tool_duration:.1f}s)")
+        if (getattr(tc, "id", "") or "") not in capability_denied_call_ids:
+            agent._current_tool = None
+            agent._touch_activity(f"tool completed: {name} ({tool_duration:.1f}s)")
 
         if not blocked and agent.tool_complete_callback:
             try:
@@ -1098,13 +1145,43 @@ def execute_tool_calls_sequential(agent, assistant_message, messages: list, effe
         except Exception:
             pass
 
-        function_args, middleware_trace = _apply_tool_request_middleware_for_agent(
-            agent,
-            function_name=function_name,
-            function_args=function_args,
-            effective_task_id=effective_task_id,
-            tool_call_id=getattr(tool_call, "id", "") or "",
-        )
+        # Authorize the exact post-unwrapping name before middleware, hooks,
+        # checkpoints, callbacks, or any agent-level shortcut can execute.
+        _capability_scope_block: Optional[str] = None
+        try:
+            from gateway.security_context import enforce_agent_tool_dispatch
+            enforce_agent_tool_dispatch(agent, function_name)
+        except PermissionError:
+            _capability_scope_block = "tool_denied_by_capability"
+
+        if _capability_scope_block is not None:
+            # Capability denial is not a tool lifecycle event. Preserve the
+            # model-visible error for the original call id, but do not enter
+            # middleware, hooks, guardrails, checkpointing, callbacks,
+            # activity state, persistence helpers, or dispatch bookkeeping.
+            messages.append(
+                make_tool_result_message(
+                    function_name,
+                    json.dumps(
+                        {"error": _capability_scope_block, "tool": function_name},
+                        ensure_ascii=False,
+                    ),
+                    tool_call.id,
+                    effect_disposition="none",
+                )
+            )
+            continue
+
+        if _ts_scope_block is None:
+            function_args, middleware_trace = _apply_tool_request_middleware_for_agent(
+                agent,
+                function_name=function_name,
+                function_args=function_args,
+                effective_task_id=effective_task_id,
+                tool_call_id=getattr(tool_call, "id", "") or "",
+            )
+        else:
+            middleware_trace = []
 
         # Check plugin hooks for a block directive before executing.
         _block_msg: Optional[str] = None

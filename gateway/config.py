@@ -11,6 +11,8 @@ Handles loading and validating configuration for:
 import logging
 import os
 import json
+import importlib
+import sys
 from pathlib import Path
 from dataclasses import asdict, dataclass, field, is_dataclass
 from typing import Dict, List, Optional, Any, Callable
@@ -772,6 +774,60 @@ _PLATFORM_CONNECTED_CHECKERS: dict[Platform, Callable[[PlatformConfig], bool]] =
 }
 
 
+@dataclass(frozen=True)
+class SecurityContextTrustGrant:
+    """Host-owned allowlist entry for one exact security adapter implementation."""
+
+    platform: str
+    adapter_module: str
+    adapter_class: str
+    plugin_name: str = ""
+
+    @classmethod
+    def from_dict(cls, value: Any) -> Optional["SecurityContextTrustGrant"]:
+        if not isinstance(value, dict):
+            return None
+        fields = {
+            name: str(value.get(name, "") or "").strip()
+            for name in ("platform", "adapter_module", "adapter_class", "plugin_name")
+        }
+        if not all(fields[name] for name in ("platform", "adapter_module", "adapter_class")):
+            return None
+        return cls(**fields)
+
+    def to_dict(self) -> Dict[str, str]:
+        result = {
+            "platform": self.platform,
+            "adapter_module": self.adapter_module,
+            "adapter_class": self.adapter_class,
+        }
+        if self.plugin_name:
+            result["plugin_name"] = self.plugin_name
+        return result
+
+    def matches(self, adapter: Any, entry: Any) -> bool:
+        adapter_type = type(adapter)
+        entry_plugin = str(getattr(entry, "plugin_name", "") or "")
+        try:
+            module = sys.modules.get(self.adapter_module) or importlib.import_module(
+                self.adapter_module
+            )
+            configured_type: Any = module
+            for component in self.adapter_class.split("."):
+                if not component or component == "<locals>":
+                    return False
+                configured_type = getattr(configured_type, component)
+        except (ImportError, AttributeError):
+            return False
+        return bool(
+            self.platform == str(getattr(entry, "name", "") or "")
+            and self.platform
+            == str(getattr(getattr(adapter, "platform", None), "value", "") or "")
+            and configured_type is adapter_type
+            and self.plugin_name == entry_plugin
+        )
+
+
 @dataclass
 class GatewayConfig:
     """
@@ -850,6 +906,10 @@ class GatewayConfig:
     # different profiles. See gateway/profile_routing.py. Each entry is a
     # dict with: name, platform, profile, and optional guild_id/chat_id/thread_id.
     profile_routes: list = field(default_factory=list)
+
+    # Host-owned trust grants for adapters allowed to originate SecurityContext.
+    # Legacy plugin registration flags are intentionally not consulted.
+    security_context_trust_grants: tuple[SecurityContextTrustGrant, ...] = ()
 
     def __post_init__(self) -> None:
         self.systemd_watchdog_seconds = coerce_systemd_watchdog_seconds(
@@ -967,6 +1027,9 @@ class GatewayConfig:
                 asdict(r) if is_dataclass(r) and not isinstance(r, type) else r
                 for r in self.profile_routes
             ],
+            "security_context_trust_grants": [
+                grant.to_dict() for grant in self.security_context_trust_grants
+            ],
         }
     
     @classmethod
@@ -1072,6 +1135,15 @@ class GatewayConfig:
         from gateway.profile_routing import parse_profile_routes
         profile_routes = parse_profile_routes(data.get("profile_routes") or [])
 
+        raw_trust_grants = data.get("security_context_trust_grants", ())
+        if not isinstance(raw_trust_grants, (list, tuple)):
+            raw_trust_grants = ()
+        security_context_trust_grants = tuple(
+            grant
+            for raw in raw_trust_grants
+            if (grant := SecurityContextTrustGrant.from_dict(raw)) is not None
+        )
+
         return cls(
             platforms=platforms,
             default_reset_policy=default_policy,
@@ -1096,6 +1168,7 @@ class GatewayConfig:
             streaming=StreamingConfig.from_dict(data.get("streaming", {})),
             session_store_max_age_days=session_store_max_age_days,
             profile_routes=profile_routes,
+            security_context_trust_grants=security_context_trust_grants,
         )
 
     def get_unauthorized_dm_behavior(self, platform: Optional[Platform] = None) -> str:
@@ -1229,6 +1302,10 @@ def load_gateway_config() -> GatewayConfig:
                 if "systemd_watchdog_seconds" in gateway_section:
                     gw_data["systemd_watchdog_seconds"] = gateway_section[
                         "systemd_watchdog_seconds"
+                    ]
+                if "security_context_trust_grants" in gateway_section:
+                    gw_data["security_context_trust_grants"] = gateway_section[
+                        "security_context_trust_grants"
                     ]
 
             if "max_concurrent_sessions" in yaml_cfg:

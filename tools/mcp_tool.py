@@ -5603,6 +5603,28 @@ def refresh_agent_mcp_tools(
     # this rebuild actually appended (matching agent_init's dedup-aware add).
     staged_engine_names = _reinject_post_build_tools(agent, new_defs, new_names)
 
+    # Capability-scoped agents must never publish the unfiltered registry
+    # snapshot, including late MCP discovery and /reload-mcp rebuilds.
+    _security_context = getattr(agent, "_security_context", None)
+    if _security_context is not None:
+        from gateway.security_context import filter_tool_schemas
+        new_defs = filter_tool_schemas(new_defs, _security_context)
+        # A cached secure agent's executable/schema ceiling is the exact
+        # intersection established when the context was first bound. Dynamic
+        # registry discovery and /reload-mcp may remove names, but must never
+        # add a previously absent name even when the broader envelope permits
+        # it; a fresh authority-scoped agent is required for widening.
+        _security_ceiling = getattr(
+            agent, "_capability_allowed_tools", frozenset()
+        )
+        new_defs = [
+            tool
+            for tool in new_defs
+            if tool.get("function", {}).get("name") in _security_ceiling
+        ]
+        new_names = {t["function"]["name"] for t in new_defs}
+        staged_engine_names.intersection_update(new_names)
+
     # Single atomic read-diff-publish so the returned ``added`` is consistent
     # with what was actually published, even under concurrent callers, and a
     # stale (older-generation) rebuild can't overwrite a newer published one.

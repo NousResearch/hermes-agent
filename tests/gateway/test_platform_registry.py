@@ -5,7 +5,7 @@ import pytest
 from unittest.mock import MagicMock
 
 from gateway.platform_registry import PlatformRegistry, PlatformEntry
-from gateway.config import Platform, GatewayConfig
+from gateway.config import Platform, GatewayConfig, SecurityContextTrustGrant
 
 
 # ── Platform enum dynamic members ─────────────────────────────────────────
@@ -200,6 +200,43 @@ class TestPlatformRegistry:
         reg.register(entry2)
         assert reg.get("dup").label == "Dup v2"
 
+    def test_reregistration_cannot_relabel_existing_adapter_provenance(self):
+        reg = PlatformRegistry()
+        adapter = MagicMock()
+        first = PlatformEntry(
+            name="dup", label="First", adapter_factory=lambda cfg: adapter,
+            check_fn=lambda: True, source="plugin", plugin_name="trusted",
+        )
+        replacement = PlatformEntry(
+            name="dup", label="Replacement", adapter_factory=lambda cfg: adapter,
+            check_fn=lambda: True, source="plugin", plugin_name="trusted",
+        )
+        reg.register(first)
+        assert reg.create_adapter("dup", object()) is adapter
+        assert reg.adapter_matches_entry(adapter, first)
+        reg.register(replacement)
+        assert reg.create_adapter("dup", object()) is adapter
+        assert not reg.adapter_matches_entry(adapter, replacement)
+
+    def test_plugin_context_owns_plugin_identity_even_if_plugin_spoofs_kwarg(self):
+        from hermes_cli.plugins import PluginContext, PluginManifest
+        from gateway.platform_registry import platform_registry as global_registry
+
+        manager = MagicMock()
+        manager._plugin_platform_names = set()
+        ctx = PluginContext(PluginManifest(name="real-plugin"), manager)
+        try:
+            ctx.register_platform(
+                name="identity-test",
+                label="Identity Test",
+                adapter_factory=lambda cfg: MagicMock(),
+                check_fn=lambda: True,
+                plugin_name="spoofed-plugin",
+            )
+            assert global_registry.get("identity-test").plugin_name == "real-plugin"
+        finally:
+            global_registry.unregister("identity-test")
+
 
 # ── GatewayConfig integration ────────────────────────────────────────────
 
@@ -218,6 +255,56 @@ class TestGatewayConfigPluginPlatform:
         platform_values = {p.value for p in cfg.platforms}
         assert "telegram" in platform_values
         assert "irc" in platform_values
+
+    def test_security_context_trust_grants_parse_exact_identity_and_drop_malformed(self):
+        cfg = GatewayConfig.from_dict({
+            "security_context_trust_grants": [
+                {
+                    "platform": "telegram",
+                    "adapter_module": "secure.adapter",
+                    "adapter_class": "TeamsAdapter",
+                    "plugin_name": "secure-plugin",
+                },
+                {"platform": "telegram", "adapter_module": "missing-class"},
+                "not-a-mapping",
+            ]
+        })
+        assert cfg.security_context_trust_grants == (
+            SecurityContextTrustGrant(
+                platform="telegram",
+                adapter_module="secure.adapter",
+                adapter_class="TeamsAdapter",
+                plugin_name="secure-plugin",
+            ),
+        )
+        round_trip = GatewayConfig.from_dict(cfg.to_dict())
+        assert round_trip.security_context_trust_grants == cfg.security_context_trust_grants
+
+    def test_security_context_trust_grants_load_from_host_gateway_yaml(
+        self, tmp_path, monkeypatch
+    ):
+        home = tmp_path / ".hermes"
+        home.mkdir()
+        (home / "config.yaml").write_text(
+            "gateway:\n"
+            "  security_context_trust_grants:\n"
+            "    - platform: telegram\n"
+            "      adapter_module: secure.adapter\n"
+            "      adapter_class: TeamsAdapter\n"
+            "      plugin_name: secure-plugin\n",
+            encoding="utf-8",
+        )
+        monkeypatch.setenv("HERMES_HOME", str(home))
+        from gateway.config import load_gateway_config
+
+        assert load_gateway_config().security_context_trust_grants == (
+            SecurityContextTrustGrant(
+                platform="telegram",
+                adapter_module="secure.adapter",
+                adapter_class="TeamsAdapter",
+                plugin_name="secure-plugin",
+            ),
+        )
 
     def test_get_connected_platforms_includes_registered_plugin(self):
         """Plugin platform with registry entry passes get_connected_platforms."""

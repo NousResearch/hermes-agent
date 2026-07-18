@@ -2279,6 +2279,23 @@ def invoke_tool(agent, function_name: str, function_args: dict, effective_task_i
     if not isinstance(function_args, dict):
         function_args = {}
 
+    # Capability-scoped sessions get an exact-name dispatch check immediately
+    # before any middleware, built-in shortcut or registry call can execute.
+    try:
+        from gateway.security_context import enforce_agent_tool_dispatch
+        enforce_agent_tool_dispatch(agent, function_name)
+    except PermissionError as exc:
+        logger.warning(
+            "Capability-scoped tool dispatch denied: session=%s tool=%s reason=%s",
+            getattr(agent, "session_id", "") or "",
+            function_name,
+            exc,
+        )
+        return json.dumps(
+            {"error": "tool_denied_by_capability", "tool": function_name},
+            ensure_ascii=False,
+        )
+
     _tool_middleware_trace = list(tool_request_middleware_trace or [])
     try:
         from hermes_cli.middleware import apply_tool_request_middleware

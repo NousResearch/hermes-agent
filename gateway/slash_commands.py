@@ -2301,6 +2301,10 @@ class GatewaySlashCommandsMixin:
             source=source,
             raw_message=event.raw_message,
             channel_prompt=event.channel_prompt,
+            security_context=getattr(event, "security_context", None),
+            _adapter_security_capability=getattr(
+                event, "_adapter_security_capability", None
+            ),
         )
         
         # Let the normal message handler process it
@@ -2433,6 +2437,10 @@ class GatewaySlashCommandsMixin:
                     source=event.source,
                     message_id=event.message_id,
                     channel_prompt=event.channel_prompt,
+                    security_context=getattr(event, "security_context", None),
+                    _adapter_security_capability=getattr(
+                        event, "_adapter_security_capability", None
+                    ),
                 )
                 self._enqueue_fifo(_quick_key, kickoff_event, adapter)
             except Exception as exc:

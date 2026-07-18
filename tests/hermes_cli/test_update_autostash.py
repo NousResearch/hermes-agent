@@ -396,6 +396,74 @@ def _setup_update_mocks(monkeypatch, tmp_path):
     monkeypatch.setattr(hermes_main, "_refresh_active_lazy_features", lambda: None)
 
 
+def test_cmd_update_protects_local_commits_before_checkout_or_pull(
+    monkeypatch, tmp_path, capsys
+):
+    """A tailored deployment must fail closed before update can reset its HEAD."""
+    _setup_update_mocks(monkeypatch, tmp_path)
+    calls = []
+
+    def fake_run(cmd, **kwargs):
+        calls.append(cmd)
+        joined = " ".join(str(part) for part in cmd)
+        if "fetch origin main" in joined:
+            return SimpleNamespace(returncode=0, stdout="", stderr="")
+        if "rev-parse --abbrev-ref HEAD" in joined:
+            return SimpleNamespace(returncode=0, stdout="deploy/custom\n", stderr="")
+        if "rev-list --count origin/main..HEAD" in joined:
+            return SimpleNamespace(returncode=0, stdout="3\n", stderr="")
+        return SimpleNamespace(returncode=0, stdout="", stderr="")
+
+    monkeypatch.setattr(hermes_main.subprocess, "run", fake_run)
+    monkeypatch.setattr(
+        hermes_config,
+        "load_config",
+        lambda: {"updates": {"protect_local_commits": True}},
+    )
+
+    with pytest.raises(SystemExit) as exc:
+        hermes_main._cmd_update_impl(SimpleNamespace(yes=True), gateway_mode=False)
+
+    assert exc.value.code == 1
+    assert "protected local commits" in capsys.readouterr().out
+    assert not any(" checkout " in f" {' '.join(cmd)} " for cmd in calls)
+    assert not any(" pull " in f" {' '.join(cmd)} " for cmd in calls)
+    assert not any(" reset " in f" {' '.join(cmd)} " for cmd in calls)
+
+
+@pytest.mark.parametrize(
+    ("returncode", "stdout"),
+    [(1, ""), (0, "not-a-count\n")],
+)
+def test_cmd_update_local_commit_guard_fails_closed_when_proof_is_unavailable(
+    monkeypatch, tmp_path, capsys, returncode, stdout
+):
+    _setup_update_mocks(monkeypatch, tmp_path)
+
+    def fake_run(cmd, **kwargs):
+        joined = " ".join(str(part) for part in cmd)
+        if "fetch origin main" in joined:
+            return SimpleNamespace(returncode=0, stdout="", stderr="")
+        if "rev-parse --abbrev-ref HEAD" in joined:
+            return SimpleNamespace(returncode=0, stdout="main\n", stderr="")
+        if "rev-list --count origin/main..HEAD" in joined:
+            return SimpleNamespace(returncode=returncode, stdout=stdout, stderr="proof failed")
+        return SimpleNamespace(returncode=0, stdout="", stderr="")
+
+    monkeypatch.setattr(hermes_main.subprocess, "run", fake_run)
+    monkeypatch.setattr(
+        hermes_config,
+        "load_config",
+        lambda: {"updates": {"protect_local_commits": True}},
+    )
+
+    with pytest.raises(SystemExit) as exc:
+        hermes_main._cmd_update_impl(SimpleNamespace(yes=True), gateway_mode=False)
+
+    assert exc.value.code == 1
+    assert "could not prove" in capsys.readouterr().out
+
+
 def test_cmd_update_retries_optional_extras_individually_when_all_fails(monkeypatch, tmp_path, capsys):
     """When .[all] fails, update should keep base deps and retry extras individually."""
     _setup_update_mocks(monkeypatch, tmp_path)

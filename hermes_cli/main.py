@@ -9790,18 +9790,23 @@ def _cmd_update_impl(args, gateway_mode: bool):
         or not (sys.stdin.isatty() and sys.stdout.isatty())
     )
     discard_local_changes = False
-    if _non_interactive_update:
-        try:
-            from hermes_cli.config import load_config
+    protect_local_commits = False
+    try:
+        from hermes_cli.config import load_config
 
-            _update_cfg = (load_config() or {}).get("updates", {})
-            if isinstance(_update_cfg, dict):
-                _mode = str(_update_cfg.get("non_interactive_local_changes", "stash")).lower()
+        _update_cfg = (load_config() or {}).get("updates", {})
+        if isinstance(_update_cfg, dict):
+            protect_local_commits = _update_cfg.get("protect_local_commits") is True
+            if _non_interactive_update:
+                _mode = str(
+                    _update_cfg.get("non_interactive_local_changes", "stash")
+                ).lower()
                 discard_local_changes = _mode == "discard"
-        except Exception as exc:
-            # Never let a config read failure change the safe default.
-            logger.debug("Could not read updates.non_interactive_local_changes: %s", exc)
-            discard_local_changes = False
+    except Exception as exc:
+        # Never let a config read failure opt into destructive behavior.
+        logger.debug("Could not read update safety configuration: %s", exc)
+        discard_local_changes = False
+        protect_local_commits = False
 
     print("⚕ Updating Hermes Agent...")
     print()
@@ -9961,6 +9966,42 @@ def _cmd_update_impl(args, gateway_mode: bool):
             check=True,
         )
         current_branch = result.stdout.strip()
+
+        if protect_local_commits:
+            local_commit_result = subprocess.run(
+                git_cmd + ["rev-list", "--count", f"origin/{branch}..HEAD"],
+                cwd=PROJECT_ROOT,
+                capture_output=True,
+                text=True,
+            )
+            try:
+                local_commit_count = (
+                    int(local_commit_result.stdout.strip())
+                    if local_commit_result.returncode == 0
+                    else None
+                )
+            except ValueError:
+                local_commit_count = None
+
+            if local_commit_count is None or local_commit_count > 0:
+                print()
+                print("✗ Update blocked: this checkout contains protected local commits.")
+                if local_commit_count is not None:
+                    print(
+                        f"  {local_commit_count} commit(s) from HEAD are not contained in "
+                        f"origin/{branch}."
+                    )
+                else:
+                    print(
+                        f"  Hermes could not prove that HEAD is contained in origin/{branch}."
+                    )
+                print("  Updating could reset reviewed local deployment changes.")
+                print(
+                    "  Review and publish/integrate those commits first, or explicitly set "
+                    "updates.protect_local_commits to false."
+                )
+                _resume_windows_gateways_after_update(_windows_gateway_resume)
+                sys.exit(1)
 
         # If user is on a different branch than the update target, switch
         # to the target. When the target is "main" this is the historical

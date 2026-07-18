@@ -1645,60 +1645,6 @@ class KanbanDbCorruptError(KanbanDbHealthError):
     """Fatal health error for a corrupt or malformed Kanban database."""
 
 
-def _backup_corrupt_db(path: Path) -> Optional[Path]:
-    """Copy a corrupt DB (and its WAL/SHM sidecars) to a content-addressed backup.
-
-    The backup filename is deterministic in the main DB's sha256, so repeated
-    quarantines of the same corrupt bytes (gateway restarts, dispatcher retries,
-    multi-profile fleets all hitting the same shared DB) reuse one backup
-    instead of amplifying disk usage by N. If the corrupt bytes actually
-    change between attempts — e.g. a partial repair or further damage — the
-    fingerprint changes and a separate backup is preserved.
-
-    Returns the backup path of the main DB file, or ``None`` if the copy
-    itself failed (the caller still raises loudly in that case).
-
-    Writes are confined to the original DB's parent directory. The backup
-    basename is derived purely from ``path.name`` and a content hash, never
-    from caller-supplied directory segments — no traversal is possible.
-    """
-    # Resolve once and pin the parent so subsequent path operations cannot
-    # escape it. ``Path.resolve()`` collapses any ``..`` segments and
-    # symlinks, and we only ever write inside ``parent``.
-    resolved = path.resolve()
-    parent = resolved.parent
-    base_name = resolved.name  # basename only
-    digest = hashlib.sha256()
-    try:
-        with resolved.open("rb") as handle:
-            for chunk in iter(lambda: handle.read(1024 * 1024), b""):
-                digest.update(chunk)
-    except OSError:
-        return None
-    token = digest.hexdigest()[:16]
-    candidate = parent / f"{base_name}.corrupt.{token}.bak"
-    # Defensive: candidate must still be inside parent after construction.
-    if candidate.parent != parent:
-        return None
-    if not candidate.exists():
-        try:
-            shutil.copy2(resolved, candidate)
-        except OSError:
-            return None
-    for suffix in ("-wal", "-shm"):
-        sidecar = parent / (base_name + suffix)
-        if sidecar.parent != parent or not sidecar.exists():
-            continue
-        sidecar_backup = parent / (candidate.name + suffix)
-        if sidecar_backup.parent != parent or sidecar_backup.exists():
-            continue
-        try:
-            shutil.copy2(sidecar, sidecar_backup)
-        except OSError:
-            pass
-    return candidate
-
-
 def _db_health_path(path: Path) -> Path:
     resolved = path.expanduser().resolve()
     return resolved.with_name(resolved.name + ".health.json")
@@ -1747,6 +1693,233 @@ def _read_json_file(path: Path) -> Optional[dict[str, Any]]:
     return value if isinstance(value, dict) else None
 
 
+def _sha256_file(path: Path) -> str:
+    """Return a streaming SHA-256 digest for an evidence file."""
+    digest = hashlib.sha256()
+    with path.open("rb") as handle:
+        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def _atomic_replace_json(path: Path, payload: dict[str, Any]) -> None:
+    """Write a completed manifest last, with an atomic rename boundary."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temp = path.with_name(f".{path.name}.{os.getpid()}.{secrets.token_hex(4)}.tmp")
+    try:
+        with temp.open("x", encoding="utf-8") as handle:
+            json.dump(payload, handle, indent=2, sort_keys=True)
+            handle.write("\n")
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(temp, path)
+    finally:
+        temp.unlink(missing_ok=True)
+
+
+def _manifest_is_complete(
+    manifest: Optional[dict[str, Any]],
+    *,
+    incident_id: str,
+) -> bool:
+    if not manifest or manifest.get("incident_id") != incident_id:
+        return False
+    if manifest.get("completed") is not True:
+        return False
+    files = manifest.get("files")
+    if not isinstance(files, list) or not files:
+        return False
+    for entry in files:
+        if not isinstance(entry, dict):
+            return False
+        try:
+            candidate = Path(str(entry["path"]))
+            if not candidate.is_file() or _sha256_file(candidate) != entry["sha256"]:
+                return False
+        except (KeyError, OSError):
+            return False
+    return True
+
+
+def _sqlite_capture_metadata(path: Path) -> dict[str, Any]:
+    """Best-effort read-only SQLite runtime and WAL metadata."""
+    metadata: dict[str, Any] = {
+        "sqlite_version": sqlite3.sqlite_version,
+        "python_version": sys.version,
+        "journal_mode": None,
+        "synchronous": None,
+        "wal_checkpoint": None,
+        "compile_options": [],
+    }
+    probe: Optional[sqlite3.Connection] = None
+    try:
+        uri = f"file:{path.as_posix()}?mode=ro"
+        probe = sqlite3.connect(uri, uri=True, isolation_level=None)
+        metadata["journal_mode"] = probe.execute("PRAGMA journal_mode").fetchone()[0]
+        metadata["synchronous"] = probe.execute("PRAGMA synchronous").fetchone()[0]
+        metadata["compile_options"] = [
+            str(row[0]) for row in probe.execute("PRAGMA compile_options").fetchall()
+        ]
+        try:
+            row = probe.execute("PRAGMA wal_checkpoint(PASSIVE)").fetchone()
+            metadata["wal_checkpoint"] = list(row) if row is not None else None
+        except sqlite3.Error as exc:
+            metadata["wal_checkpoint"] = {"error": str(exc)}
+    except sqlite3.Error as exc:
+        metadata["probe_error"] = str(exc)
+    finally:
+        if probe is not None:
+            probe.close()
+    return metadata
+
+
+def _open_fd_inventory(path: Path) -> list[dict[str, Any]]:
+    """Return Linux open-FD references to the DB generation, best effort."""
+    proc = Path("/proc")
+    if not proc.is_dir():
+        return []
+    names = {str(path), str(path) + "-wal", str(path) + "-shm"}
+    inventory: list[dict[str, Any]] = []
+    for process_dir in proc.iterdir():
+        if not process_dir.name.isdigit():
+            continue
+        fd_dir = process_dir / "fd"
+        try:
+            descriptors = list(fd_dir.iterdir())
+        except OSError:
+            continue
+        for descriptor in descriptors:
+            try:
+                target = os.readlink(descriptor)
+            except OSError:
+                continue
+            normalized = target.removesuffix(" (deleted)")
+            if normalized in names:
+                inventory.append(
+                    {"pid": int(process_dir.name), "fd": descriptor.name, "target": target}
+                )
+    return inventory
+
+
+def capture_evidence_bundle(
+    db_path: Path,
+    *,
+    incident_id: str,
+    manifest_path: Path,
+    timeout: float = 2.0,
+    health: Optional[dict[str, Any]] = None,
+) -> dict[str, Any]:
+    """Capture one quiesced main/WAL/SHM evidence generation.
+
+    The exclusive maintenance lease is the safety boundary. Registered writers
+    and active :func:`write_txn` calls hold shared admission and therefore make
+    this operation fail without copying a database file. The manifest is
+    atomically published last; repeated callers validate and reuse it.
+    """
+    from hermes_cli.kanban_maintenance import maintenance_lease
+
+    path = db_path.expanduser().resolve()
+    manifest_path = manifest_path.expanduser().resolve()
+    existing = _read_json_file(manifest_path)
+    if _manifest_is_complete(existing, incident_id=incident_id):
+        return existing  # type: ignore[return-value]
+
+    with maintenance_lease(
+        path,
+        action="capture_evidence",
+        timeout=timeout,
+        lease_id=incident_id,
+    ):
+        existing = _read_json_file(manifest_path)
+        if _manifest_is_complete(existing, incident_id=incident_id):
+            return existing  # type: ignore[return-value]
+
+        bundle_dir = manifest_path.with_suffix(manifest_path.suffix + ".bundle")
+        bundle_dir.mkdir(parents=True, exist_ok=True)
+        sqlite_metadata = _sqlite_capture_metadata(path)
+        candidates = (
+            (path, "database"),
+            (Path(str(path) + "-wal"), "wal"),
+            (Path(str(path) + "-shm"), "shm"),
+        )
+        files: list[dict[str, Any]] = []
+        for source, kind in candidates:
+            if not source.is_file():
+                continue
+            if kind == "database" and (health or {}).get("classification") == "corruption":
+                # Preserve the established operator-facing corruption backup
+                # name while the manifest makes clear that WAL/SHM sidecars
+                # are part of the same coherent evidence generation.
+                content_token = _sha256_file(source)[:16]
+                target = path.with_name(
+                    f"{path.name}.corrupt.{content_token}.bak"
+                )
+            else:
+                target = bundle_dir / source.name
+            temp = target.with_name(f".{target.name}.{os.getpid()}.tmp")
+            shutil.copy2(source, temp)
+            os.replace(temp, target)
+            stat = source.stat()
+            files.append(
+                {
+                    "kind": kind,
+                    "source_name": source.name,
+                    "source_path": str(source),
+                    "path": str(target),
+                    "sha256": _sha256_file(target),
+                    "size": target.stat().st_size,
+                    "source_stat": {
+                        "device": int(stat.st_dev),
+                        "inode": int(stat.st_ino),
+                        "size": int(stat.st_size),
+                        "mtime_ns": int(stat.st_mtime_ns),
+                    },
+                }
+            )
+
+        names = {entry["source_name"] for entry in files}
+        journal_mode = str(sqlite_metadata.get("journal_mode") or "").lower()
+        has_wal_pair = {path.name + "-wal", path.name + "-shm"}.issubset(names)
+        restore_safety = (
+            "requires_integrity_validation"
+            if journal_mode != "wal" or has_wal_pair
+            else "main_only_not_recoverable"
+        )
+        database_entry = next(
+            (entry for entry in files if entry["kind"] == "database"), None
+        )
+        if database_entry is None:
+            raise FileNotFoundError(f"Kanban database evidence source is missing: {path}")
+        manifest = {
+            "schema_version": 2,
+            "incident_id": incident_id,
+            "classification": (health or {}).get("classification"),
+            "sqlite_errorcode": (health or {}).get("sqlite_errorcode"),
+            "sqlite_errorname": (health or {}).get("sqlite_errorname"),
+            "reason": (health or {}).get("reason"),
+            "db_path": str(path),
+            "db_identity": _db_file_identity(path),
+            "created_at": int(time.time()),
+            "completed": True,
+            "capture_consistency": "quiesced",
+            "restore_safety": restore_safety,
+            "backup_path": database_entry["path"] if database_entry else None,
+            "journal_mode": journal_mode or None,
+            "synchronous": sqlite_metadata.get("synchronous"),
+            "wal_checkpoint": sqlite_metadata.get("wal_checkpoint"),
+            "sqlite_runtime": {
+                "sqlite_version": sqlite_metadata.get("sqlite_version"),
+                "python_version": sqlite_metadata.get("python_version"),
+                "compile_options": sqlite_metadata.get("compile_options"),
+                "probe_error": sqlite_metadata.get("probe_error"),
+            },
+            "open_fds": _open_fd_inventory(path),
+            "files": files,
+        }
+        _atomic_replace_json(manifest_path, manifest)
+        return manifest
+
+
 def get_db_health(
     db_path: Optional[Path] = None,
     *,
@@ -1780,40 +1953,35 @@ def _incident_manifest(health: dict[str, Any]) -> Optional[dict[str, Any]]:
 
 
 def _ensure_incident_manifest(path: Path, health: dict[str, Any]) -> dict[str, Any]:
-    """Create/reuse the Slice-1 content-addressed evidence manifest."""
+    """Create or reuse one completed, quiesced incident bundle."""
     manifest_path = Path(str(health["manifest_path"]))
     existing = _read_json_file(manifest_path)
-    if existing is not None:
+    if _manifest_is_complete(existing, incident_id=str(health["incident_id"])):
         return existing
-    backup = _backup_corrupt_db(path)
-    files: list[dict[str, Any]] = []
-    if backup is not None:
-        candidates = (backup, Path(str(backup) + "-wal"), Path(str(backup) + "-shm"))
-        for candidate in candidates:
-            if not candidate.exists():
-                continue
-            try:
-                digest = hashlib.sha256(candidate.read_bytes()).hexdigest()
-                size = candidate.stat().st_size
-            except OSError:
-                continue
-            files.append({"path": str(candidate), "sha256": digest, "size": size})
-    manifest = {
-        "schema_version": 1,
-        "incident_id": health["incident_id"],
-        "classification": health["classification"],
-        "sqlite_errorcode": health.get("sqlite_errorcode"),
-        "sqlite_errorname": health.get("sqlite_errorname"),
-        "reason": health.get("reason"),
-        "db_path": str(path),
-        "db_identity": health.get("db_identity"),
-        "created_at": health["created_at"],
-        "capture_consistency": "inconsistent_live_capture",
-        "backup_path": str(backup) if backup is not None else None,
-        "files": files,
-    }
-    _atomic_create_json(manifest_path, manifest)
-    return _read_json_file(manifest_path) or manifest
+    try:
+        return capture_evidence_bundle(
+            path,
+            incident_id=str(health["incident_id"]),
+            manifest_path=manifest_path,
+            health=health,
+        )
+    except Exception as exc:
+        from hermes_cli.kanban_maintenance import MaintenanceLeaseBusyError
+
+        if not isinstance(exc, MaintenanceLeaseBusyError):
+            raise
+        # Trip the circuit immediately but never copy live files. A later
+        # caller retries after writers drain and publishes the one manifest.
+        _log.warning(
+            "kanban evidence capture deferred for incident %s: %s",
+            health["incident_id"],
+            exc,
+        )
+        return {
+            "incident_id": health["incident_id"],
+            "completed": False,
+            "capture_consistency": "not_captured_active_writers",
+        }
 
 
 def _health_error(health: dict[str, Any]) -> KanbanDbHealthError:
@@ -2635,7 +2803,25 @@ def write_txn(conn: sqlite3.Connection):
     shadow the original exception with a spurious rollback error.
     """
     db_path = _connection_db_path(conn)
-    _execute_boundary_with_retry(conn, "BEGIN IMMEDIATE", db_path=db_path)
+    admission = None
+    if db_path is not None:
+        from hermes_cli.kanban_maintenance import acquire_writer_admission
+
+        health = get_db_health(db_path)
+        if health is not None:
+            _ensure_incident_manifest(db_path, health)
+            raise _health_error(health)
+        admission = acquire_writer_admission(
+            db_path,
+            owner="write_txn",
+            timeout=0.0,
+        )
+    try:
+        _execute_boundary_with_retry(conn, "BEGIN IMMEDIATE", db_path=db_path)
+    except Exception:
+        if admission is not None:
+            admission.close()
+        raise
     try:
         yield conn
     except Exception as exc:
@@ -2677,6 +2863,9 @@ def write_txn(conn: sqlite3.Connection):
                     exc.sqlite_errorname = "SQLITE_CORRUPT"
                 raise _trip_db_health(db_path, exc) from exc
             raise
+    finally:
+        if admission is not None:
+            admission.close()
 
 
 # ---------------------------------------------------------------------------

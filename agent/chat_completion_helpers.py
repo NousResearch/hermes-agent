@@ -2483,13 +2483,14 @@ def interruptible_streaming_api_call(agent, api_kwargs: dict, *, on_first_delta=
                 discarded_chunks,
                 discarded_bytes,
             )
-        logger.debug(
-            "Discarded stale stream chunk from attempt %s "
-            "(discarded_chunks=%s discarded_bytes=%s)",
-            stream_attempt_id,
-            discarded_chunks,
-            discarded_bytes,
-        )
+        else:
+            logger.debug(
+                "Discarded stale stream chunk from attempt %s "
+                "(discarded_chunks=%s discarded_bytes=%s)",
+                stream_attempt_id,
+                discarded_chunks,
+                discarded_bytes,
+            )
 
     def _fire_first_delta():
         if not first_delta_fired["done"] and on_first_delta:

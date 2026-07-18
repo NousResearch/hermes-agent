@@ -2934,6 +2934,14 @@ class SessionStore:
                     return entry
         return None
 
+    def lookup_by_session_key(self, session_key: str) -> Optional[SessionEntry]:
+        """Return the active session entry for a routing key, if any."""
+        if not session_key:
+            return None
+        with self._lock:
+            self._ensure_loaded_locked()
+            return self._entries.get(session_key)
+
     def peek_session_id(self, session_key: str) -> Optional[str]:
         """Return the persisted session_id currently bound to a session key.
 

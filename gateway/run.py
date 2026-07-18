@@ -7482,15 +7482,15 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         # an untracked replay.  No journal means there is no run identity or
         # phase to recover safely, so treat the marker as delivery cleanup that
         # completed and clear only the stale routing flag.
-        with self.session_store._lock:  # noqa: SLF001 - startup reconciliation
-            self.session_store._ensure_loaded_locked()  # noqa: SLF001
-            stale_durable_keys = [
-                entry.session_key
-                for entry in self.session_store._entries.values()  # noqa: SLF001
-                if entry.resume_pending
-                and entry.resume_reason in DURABLE_RESUME_REASONS
-                and entry.session_key not in exact_keys
-            ]
+        entries = await self.async_session_store.list_sessions()
+        entries_by_key = {entry.session_key: entry for entry in entries}
+        stale_durable_keys = [
+            entry.session_key
+            for entry in entries
+            if entry.resume_pending
+            and entry.resume_reason in DURABLE_RESUME_REASONS
+            and entry.session_key not in exact_keys
+        ]
         for session_key in stale_durable_keys:
             logger.warning(
                 "Clearing stale durable recovery marker for %s: active-run "
@@ -7528,9 +7528,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             self._recovery_boot_id = boot_id
 
         for original in records:
-            with self.session_store._lock:  # noqa: SLF001 - startup snapshot
-                self.session_store._ensure_loaded_locked()  # noqa: SLF001
-                entry = self.session_store._entries.get(original.session_key)  # noqa: SLF001
+            entry = entries_by_key.get(original.session_key)
             if entry is None or entry.origin is None or entry.suspended:
                 logger.warning(
                     "Discarding orphan active-run record %s: routing entry is "
@@ -7658,16 +7656,14 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             self._recovery_pause_notified = notified
         try:
             current_run = self._get_active_run_store().get(entry.session_key)
-            with self.session_store._lock:  # noqa: SLF001 - guarded read
-                self.session_store._ensure_loaded_locked()  # noqa: SLF001
-                current_entry = self.session_store._entries.get(  # noqa: SLF001
-                    entry.session_key
-                )
-                still_paused = bool(
-                    current_entry
-                    and current_entry.resume_pending
-                    and current_entry.resume_reason == reason
-                )
+            current_entry = await self.async_session_store.lookup_by_session_key(
+                entry.session_key
+            )
+            still_paused = bool(
+                current_entry
+                and current_entry.resume_pending
+                and current_entry.resume_reason == reason
+            )
             if (
                 current_run is None
                 or current_run.run_id != run_id
@@ -11093,14 +11089,14 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         # consumed as update answers instead of being dispatched normally.
         _quick_key = self._session_key_for_source(source)
         try:
-            with self.session_store._lock:  # noqa: SLF001 - guarded read
-                self.session_store._ensure_loaded_locked()  # noqa: SLF001
-                _recovery_entry = self.session_store._entries.get(_quick_key)  # noqa: SLF001
-                _recovery_reason = (
-                    _recovery_entry.resume_reason
-                    if _recovery_entry is not None and _recovery_entry.resume_pending
-                    else None
-                )
+            _recovery_entry = await self.async_session_store.lookup_by_session_key(
+                _quick_key
+            )
+            _recovery_reason = (
+                _recovery_entry.resume_reason
+                if _recovery_entry is not None and _recovery_entry.resume_pending
+                else None
+            )
         except Exception:
             _recovery_reason = None
         if is_internal and _recovery_reason in self._RECOVERY_PAUSE_REASONS:

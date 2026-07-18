@@ -947,6 +947,9 @@ class TestSessionStoreLookupBySessionId:
         assert store.lookup_by_session_id(entry.session_id) is entry
         assert store.lookup_by_session_id("missing") is None
         assert store.lookup_by_session_id("") is None
+        assert store.lookup_by_session_key(entry.session_key) is entry
+        assert store.lookup_by_session_key("missing") is None
+        assert store.lookup_by_session_key("") is None
 
 
 class TestSlackWorkspaceSessionIsolation:

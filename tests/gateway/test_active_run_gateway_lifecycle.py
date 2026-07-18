@@ -81,8 +81,7 @@ async def test_old_exact_run_recovers_even_with_clean_marker_and_idle_policy(
     # The exact journal is authoritative even if a graceful marker exists.
     (tmp_path / ".clean_shutdown").write_text("clean", encoding="utf-8")
 
-    facade = MagicMock(spec=AsyncSessionStore)
-    facade._store = store
+    facade = AsyncSessionStore(store)
     facade.load_transcript = AsyncMock(
         return_value=[
             {
@@ -363,6 +362,9 @@ async def test_trigger_message_redelivery_cannot_resume_safety_pause(tmp_path):
         resume_reason="side_effect_unknown",
     )
     runner.session_store._entries = {session_key: entry}
+    runner._async_session_store = MagicMock()
+    runner._async_session_store._store = runner.session_store
+    runner._async_session_store.lookup_by_session_key = AsyncMock(return_value=entry)
     runner._active_run_store = ActiveRunStore(tmp_path)
     runner._active_run_store.begin(
         session_key,

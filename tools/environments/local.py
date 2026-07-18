@@ -1,6 +1,7 @@
 """Local execution environment — spawn-per-call with session snapshot."""
 
 import logging
+import ntpath
 import os
 import platform
 import re
@@ -48,6 +49,46 @@ def _msys_to_windows_path(cwd: str) -> str:
     return f"{drive}:{tail or chr(92)}"  # chr(92) = backslash, avoid raw-string escape
 
 
+def _resolve_local_initial_cwd(cwd: str) -> str:
+    """Resolve the local backend's initial cwd to an absolute host path.
+
+    ``TERMINAL_CWD`` can be populated from config.yaml before the terminal
+    backend is created.  If that value is relative and happens to match the
+    directory Hermes was already launched from (for example ``hermes-agent``
+    while the process cwd is ``~/.hermes/hermes-agent``), passing it through
+    unchanged makes the wrapper run ``cd hermes-agent`` *inside* the project
+    and fail with a confusing nested-path error.  Anchor relative local cwd
+    values once, up front, so both ``subprocess.Popen(cwd=...)`` and the
+    in-shell ``cd`` use the same absolute directory.
+    """
+    expanded = os.path.expanduser(cwd) if cwd else os.getcwd()
+    if _IS_WINDOWS:
+        expanded = _msys_to_windows_path(expanded)
+        # Use the Windows-aware check explicitly: when _IS_WINDOWS is
+        # patched in tests on a POSIX host, os.path.isabs would reject
+        # ``C:\Users\x`` and mangle it through the relative branch.
+        import ntpath
+        if ntpath.isabs(expanded):
+            return expanded
+    if os.path.isabs(expanded):
+        return expanded
+
+    candidate = os.path.abspath(expanded)
+    current = os.getcwd()
+
+    # Common recovery for config values like ``hermes-agent`` when Hermes was
+    # launched from that directory already.  ``os.path.abspath`` would point at
+    # a nonexistent nested ``./hermes-agent``; use the current directory instead.
+    if not os.path.isdir(candidate):
+        wanted_parts = Path(expanded).parts
+        current_parts = Path(current).parts
+        if wanted_parts and len(wanted_parts) <= len(current_parts):
+            if current_parts[-len(wanted_parts):] == wanted_parts:
+                return current
+
+    return candidate
+
+
 def _windows_to_msys_path(cwd: str) -> str:
     """Translate a native Windows path (``C:\\Users\\x``) to Git Bash /
     MSYS form (``/c/Users/x``) so ``builtin cd`` resolves it reliably.
@@ -66,11 +107,56 @@ def _windows_to_msys_path(cwd: str) -> str:
     return f"/{drive}/{tail}" if tail else f"/{drive}/"
 
 
+def _bash_safe_path(path: str) -> str:
+    """Return *path* in a form safe to embed in a Git Bash script.
+
+    Native ``C:\\Users\\x`` / ``C:/Users/x`` → ``/c/Users/x`` via
+    :func:`_windows_to_msys_path`. Mixed MSYS leftovers
+    (``/c/Users\\Alexander\\Documents``) get backslashes normalized so
+    bash does not eat ``\\U`` and trip the ``Directory \\drivers\\etc``
+    failure class. No-op off Windows and for empty input.
+
+    ``get_temp_dir`` already emits forward-slash ``C:/...`` forms for
+    Python compatibility; those still need the ``/c/...`` rewrite —
+    MSYS argument conversion treats ``C:/...`` as a Windows path and
+    can corrupt the login-shell ``drivers\\etc`` lookup.
+    """
+    if not _IS_WINDOWS or not path:
+        return path
+    path = _windows_to_msys_path(path)
+    if "\\" in path:
+        path = path.replace("\\", "/")
+    return path
+
+
+def _quote_bash_path(path: str) -> str:
+    """Quote *path* for safe interpolation into a Git Bash script on Windows."""
+    import shlex
+
+    return shlex.quote(_bash_safe_path(path))
+
+
+def _cwd_usable(path: str) -> bool:
+    """True when *path* is a directory this process can actually chdir into.
+
+    ``os.path.isdir`` alone is not enough: stat() on ``/root`` succeeds for a
+    non-root user (only ``/`` needs search permission), but
+    ``subprocess.Popen(cwd='/root')`` then dies with ``PermissionError:
+    [Errno 13] Permission denied: '/root'``. Seen in the wild when a
+    root-launched CLI session leaks ``/root`` into shared state that a
+    non-root gateway/cron process later reads (#65583) — every cron job's
+    terminal/file tool then fails on every command, forever. Checking
+    X_OK up front lets the caller fall back instead.
+    """
+    return os.path.isdir(path) and os.access(path, os.X_OK)
+
+
 def _resolve_safe_cwd(cwd: str) -> str:
-    """Return ``cwd`` if it exists as a directory, else the nearest existing
-    ancestor.  Falls back to ``tempfile.gettempdir()`` only if walking up the
-    path can't find any existing directory (effectively never on a healthy
-    filesystem, but cheap belt-and-braces).
+    """Return ``cwd`` if it exists as a directory this process can enter,
+    else the nearest existing accessible ancestor.  Falls back to
+    ``tempfile.gettempdir()`` only if walking up the path can't find any
+    usable directory (effectively never on a healthy filesystem, but cheap
+    belt-and-braces).
 
     On Windows, also normalizes Git Bash / MSYS-style POSIX paths
     (``/c/Users/x``) to native Windows form before the isdir check so a
@@ -79,16 +165,27 @@ def _resolve_safe_cwd(cwd: str) -> str:
 
     Used by ``_run_bash`` to recover when the configured cwd is gone — most
     commonly because a previous tool call deleted its own working directory
-    (issue #17558).  Without this guard, ``subprocess.Popen(..., cwd=...)``
-    raises ``FileNotFoundError`` before bash starts, wedging every subsequent
-    terminal call until the gateway restarts.
+    (issue #17558) — or inaccessible to this user, e.g. ``/root`` leaking
+    from a root-launched CLI session into a non-root gateway's cron jobs
+    (issue #65583).  Without this guard, ``subprocess.Popen(..., cwd=...)``
+    raises ``FileNotFoundError``/``PermissionError`` before bash starts,
+    wedging every subsequent terminal call until the gateway restarts.
     """
     cwd = _msys_to_windows_path(cwd) if _IS_WINDOWS else cwd
-    if cwd and os.path.isdir(cwd):
+    if cwd and _cwd_usable(cwd):
         return cwd
+    if cwd and os.path.isdir(cwd):
+        logger.warning(
+            "Configured terminal cwd %r exists but is not accessible to "
+            "this user (uid=%s) — falling back to the nearest usable "
+            "directory. If this is a gateway/cron process, check for "
+            "root-owned paths leaking into terminal.cwd / TERMINAL_CWD "
+            "(#65583).",
+            cwd, getattr(os, "getuid", lambda: "?")(),
+        )
     parent = os.path.dirname(cwd) if cwd else ""
     while parent:
-        if os.path.isdir(parent):
+        if _cwd_usable(parent):
             return parent
         next_parent = os.path.dirname(parent)
         if next_parent == parent:
@@ -529,14 +626,15 @@ def _find_bash() -> str:
             or "/bin/sh"
         )
 
+    candidates: list[str] = []
+
     custom = os.environ.get("HERMES_GIT_BASH_PATH")
     if custom and os.path.isfile(custom):
-        return custom
+        candidates.append(custom)
 
-    # Prefer our own portable Git install first — this way a broken or
-    # partially-uninstalled system Git can't hijack the bash lookup.  The
-    # install.ps1 installer always drops portable Git here when the user
-    # didn't already have a working system Git.
+    # Prefer our own portable Git install — a broken or partially-uninstalled
+    # system Git (or a stale HERMES_GIT_BASH_PATH pointing at one) must not
+    # brick the terminal.  install.ps1 drops PortableGit here when needed.
     #
     # Layouts (both checked so upgrades between MinGit and PortableGit
     # installs work transparently):
@@ -549,8 +647,8 @@ def _find_bash() -> str:
             os.path.join(_hermes_portable_git, "bin", "bash.exe"),        # PortableGit (primary)
             os.path.join(_hermes_portable_git, "usr", "bin", "bash.exe"), # MinGit fallback
         ):
-            if os.path.isfile(candidate):
-                return candidate
+            if os.path.isfile(candidate) and candidate not in candidates:
+                candidates.append(candidate)
 
     # Check known Git for Windows install locations before PATH lookup.
     # On machines with both WSL and Git for Windows, shutil.which("bash")
@@ -559,20 +657,248 @@ def _find_bash() -> str:
     for candidate in (
         os.path.join(os.environ.get("ProgramFiles", r"C:\Program Files"), "Git", "bin", "bash.exe"),
         os.path.join(os.environ.get("ProgramFiles(x86)", r"C:\Program Files (x86)"), "Git", "bin", "bash.exe"),
-        os.path.join(_local_appdata, "Programs", "Git", "bin", "bash.exe"),
+        os.path.join(_local_appdata, "Programs", "Git", "bin", "bash.exe") if _local_appdata else "",
     ):
-        if candidate and os.path.isfile(candidate):
-            return candidate
+        if candidate and os.path.isfile(candidate) and candidate not in candidates:
+            candidates.append(candidate)
 
     found = shutil.which("bash")
-    if found:
-        return found
+    if found and found not in candidates:
+        candidates.append(found)
+
+    # Prefer the first candidate that can actually start.  A stale
+    # HERMES_GIT_BASH_PATH pointing at a broken Git-for-Windows install
+    # (``Directory \\drivers\\etc does not exist``) must not win over a
+    # healthy portable Git under %LOCALAPPDATA%\\hermes\\git.
+    for candidate in candidates:
+        if _bash_starts(candidate):
+            if candidate != custom and custom and os.path.isfile(custom):
+                logger.warning(
+                    "HERMES_GIT_BASH_PATH=%s fails to start; using %s instead",
+                    custom,
+                    candidate,
+                )
+            return candidate
+
+    if candidates:
+        probe_details = "\n".join(
+            detail
+            for candidate in candidates
+            if (detail := _bash_probe_details_cache.get(candidate))
+        )
+        if _mandatory_aslr_enabled() is True or _looks_like_msys_spawn_failure(
+            probe_details
+        ):
+            raise RuntimeError(_git_bash_aslr_help(candidates[0], probe_details))
+
+        # Last resort for failures unrelated to the known MSYS/ASLR class:
+        # return the first path so the caller still sees the real bash error
+        # instead of the less useful "not found" message.
+        return candidates[0]
 
     raise RuntimeError(
         "Git Bash not found. Hermes Agent requires Git for Windows on Windows.\n"
         "Install it from: https://git-scm.com/download/win\n"
         "Or set HERMES_GIT_BASH_PATH to your bash.exe location."
     )
+
+
+_bash_starts_cache: dict[str, bool] = {}
+_bash_probe_details_cache: dict[str, str] = {}
+_mandatory_aslr_enabled_cache: "bool | None" = None
+
+_BASH_EXTERNAL_PROGRAM_PROBE = "/usr/bin/true; /usr/bin/cat --version >/dev/null"
+
+
+def _looks_like_msys_spawn_failure(details: str) -> bool:
+    """Match Git-for-Windows child-launch failures associated with ASLR."""
+    lowered = details.lower()
+    return any(
+        marker in lowered
+        for marker in (
+            "dofork:",
+            "child_copy:",
+            "0xc0000142",
+            "0xc0000005",
+        )
+    )
+
+
+def _mandatory_aslr_enabled() -> "bool | None":
+    """Return Windows' system-wide ForceRelocateImages state when available."""
+    global _mandatory_aslr_enabled_cache
+    if _mandatory_aslr_enabled_cache is not None:
+        return _mandatory_aslr_enabled_cache
+
+    try:
+        powershell = shutil.which("powershell.exe") or "powershell.exe"
+        result = subprocess.run(
+            [
+                powershell,
+                "-NoProfile",
+                "-NonInteractive",
+                "-Command",
+                "(Get-ProcessMitigation -System).Aslr.ForceRelocateImages.ToString()",
+            ],
+            capture_output=True,
+            text=True,
+            timeout=10,
+            creationflags=windows_hide_flags(),
+        )
+        if result.returncode != 0:
+            return None
+        value = (result.stdout or "").strip().upper()
+        if value == "ON":
+            _mandatory_aslr_enabled_cache = True
+            return True
+        if value in {"OFF", "NOTSET"}:
+            _mandatory_aslr_enabled_cache = False
+            return False
+    except Exception as exc:
+        logger.debug("Could not query Windows Mandatory ASLR state: %s", exc)
+    return None
+
+
+def _git_root_from_bash(bash: str) -> str:
+    """Resolve Git's root from either <root>/bin or <root>/usr/bin bash."""
+    bin_dir = ntpath.dirname(ntpath.normpath(bash))
+    if ntpath.basename(bin_dir).lower() != "bin":
+        return ntpath.dirname(bin_dir)
+    parent = ntpath.dirname(bin_dir)
+    if ntpath.basename(parent).lower() == "usr":
+        return ntpath.dirname(parent)
+    return parent
+
+
+def _git_bash_aslr_help(bash: str, details: str = "") -> str:
+    """Build the targeted per-program Mandatory-ASLR remediation."""
+    git_root = _git_root_from_bash(bash)
+    escaped_root = git_root.replace("'", "''")
+    detail_line = f"\nGit Bash probe output: {details[:500]}" if details else ""
+    return (
+        f"Git Bash at {bash} cannot launch required MSYS child processes while "
+        "Windows Mandatory ASLR (ForceRelocateImages) is enabled, or its output "
+        f"matches that Git-for-Windows failure class.{detail_line}\n"
+        "Reinstalling Git will not change the Windows mitigation policy. Open "
+        "PowerShell as Administrator and run:\n"
+        f"$gitRoot = '{escaped_root}'\n"
+        'Get-Item "$gitRoot\\bin\\bash.exe", "$gitRoot\\usr\\bin\\*.exe" '
+        "-ErrorAction SilentlyContinue | ForEach-Object { "
+        "Set-ProcessMitigation -Name $_.FullName -Disable ForceRelocateImages }\n"
+        "Then restart Hermes. If the override is blocked or later re-applied, "
+        "ask your Windows administrator to allow this per-program exception."
+    )
+
+
+def _bash_starts(bash: str) -> bool:
+    """True if *bash* can launch external MSYS programs.
+
+    Uses ``--noprofile --norc`` so a broken login post-install
+    (``Directory \\drivers\\etc``) does not falsely condemn an otherwise
+    usable bash. The external ``true`` and ``cat`` calls are intentional:
+    a builtin-only ``exit 0`` probe misses Git-for-Windows fork/spawn failures
+    under system-wide Mandatory ASLR. Cached per path for the process lifetime.
+    """
+    cached = _bash_starts_cache.get(bash)
+    if cached is not None:
+        return cached
+
+    try:
+        result = subprocess.run(
+            [bash, "--noprofile", "--norc", "-c", _BASH_EXTERNAL_PROGRAM_PROBE],
+            capture_output=True,
+            text=True,
+            timeout=15,
+            creationflags=windows_hide_flags() if _IS_WINDOWS else 0,
+        )
+        ok = result.returncode == 0
+        if not ok:
+            combined = f"{result.stdout or ''}{result.stderr or ''}"
+            _bash_probe_details_cache[bash] = combined.strip()[:2000]
+            logger.debug("bash probe failed for %s: %s", bash, combined.strip()[:200])
+    except Exception as exc:
+        _bash_probe_details_cache[bash] = str(exc)[:2000]
+        logger.debug("bash probe error for %s: %s", bash, exc)
+        ok = False
+
+    _bash_starts_cache[bash] = ok
+    return ok
+
+
+_git_bash_bin_dirs_cache: "list[str] | None" = None
+
+
+def _git_bash_bin_dirs() -> list[str]:
+    """Git Bash's coreutils/binary dirs, in ``/etc/profile`` precedence order.
+
+    A non-login ``bash -c`` (the fallback used when ``bash -l`` is broken —
+    the classic Windows ``Directory \\drivers\\etc does not exist`` failure)
+    never sources ``/etc/profile``, so it never gets ``…\\usr\\bin`` on PATH.
+    That directory holds every coreutil the file/terminal tools shell out to
+    (``cat``, ``mktemp``, ``mv``, ``wc``, ``head``, ``stat``, ``chmod``,
+    ``mkdir``, ``find`` …).  Without it, ``write_file`` fails with an empty
+    error (the failure text went to a missing binary's stderr) and terminal
+    commands exit 127.  We derive these dirs from the resolved ``bash.exe`` so
+    the fallback shell can find coreutils regardless of the login shell.
+
+    Returns ``[]`` off Windows or when bash can't be located.  Dirs are
+    returned in the order Git Bash's own ``/etc/profile`` prepends them
+    (mingw first, then usr/bin, then bin) and only if they exist on disk.
+    """
+    global _git_bash_bin_dirs_cache
+    if _git_bash_bin_dirs_cache is not None:
+        return _git_bash_bin_dirs_cache
+
+    if not _IS_WINDOWS:
+        _git_bash_bin_dirs_cache = []
+        return _git_bash_bin_dirs_cache
+
+    dirs: list[str] = []
+    try:
+        bash = _find_bash()
+    except Exception:
+        _git_bash_bin_dirs_cache = []
+        return _git_bash_bin_dirs_cache
+
+    bin_dir = os.path.dirname(bash)          # <root>\bin  or  <root>\usr\bin
+    parent = os.path.dirname(bin_dir)
+    # MinGit ships bash under usr\bin; PortableGit/system Git under bin.
+    root = os.path.dirname(parent) if os.path.basename(parent).lower() == "usr" else parent
+
+    # Order mirrors Git-for-Windows /etc/profile so coreutils win over the
+    # same-named Windows System32 tools (find.exe, sort.exe) inside the shell.
+    for candidate in (
+        os.path.join(root, "mingw64", "bin"),
+        os.path.join(root, "mingw32", "bin"),
+        os.path.join(root, "usr", "local", "bin"),
+        os.path.join(root, "usr", "bin"),
+        os.path.join(root, "bin"),
+    ):
+        if os.path.isdir(candidate) and candidate not in dirs:
+            dirs.append(candidate)
+
+    _git_bash_bin_dirs_cache = dirs
+    return dirs
+
+
+def _prepend_git_bash_dirs(existing_path: str) -> str:
+    """Prepend Git Bash's binary dirs to ``existing_path`` if missing.
+
+    No-op off Windows or when the dirs can't be resolved.  First-occurrence
+    wins, so a PATH that already lists a dir keeps its position.  This is what
+    lets the non-login ``bash -c`` fallback find coreutils; in the healthy
+    case the session snapshot re-exports the full login PATH inside the shell,
+    so this only matters when that snapshot is absent.
+    """
+    git_dirs = _git_bash_bin_dirs()
+    if not git_dirs:
+        return existing_path
+    sep = os.pathsep
+    entries = [e for e in existing_path.split(sep) if e] if existing_path else []
+    missing = [d for d in git_dirs if d not in entries]
+    if not missing:
+        return existing_path
+    return sep.join([*missing, *entries])
 
 
 # POSIX-sh-family shells that understand the ``[shell, "-lic", "set +m; …"]``
@@ -821,6 +1147,13 @@ def _make_run_env(env: dict) -> dict:
     path_key = _path_env_key(run_env)
     if path_key is not None:
         new_path = _append_missing_sane_path_entries(run_env.get(path_key, ""))
+        # On Windows, ensure Git Bash's coreutils dirs (…\usr\bin etc.) are on
+        # PATH.  A non-login ``bash -c`` fallback (used when ``bash -l`` is
+        # broken) never sources /etc/profile, so without this cat/mktemp/mv and
+        # friends are missing and every write_file/terminal call fails (empty
+        # error / exit 127).  No-op off Windows and when a login snapshot is
+        # healthy (the snapshot re-exports the full PATH inside the shell).
+        new_path = _prepend_git_bash_dirs(new_path)
         # Ensure the hermes install dir is reachable so plugins can shell out
         # to bare ``hermes`` via the terminal tool even when the gateway was
         # launched without it on PATH (systemd, service managers, cron, etc.).
@@ -936,9 +1269,8 @@ class LocalEnvironment(BaseEnvironment):
     """
 
     def __init__(self, cwd: str = "", timeout: int = 60, env: dict = None):
-        if cwd:
-            cwd = os.path.expanduser(cwd)
-        super().__init__(cwd=cwd or os.getcwd(), timeout=timeout, env=env)
+        cwd = _resolve_local_initial_cwd(cwd)
+        super().__init__(cwd=cwd, timeout=timeout, env=env)
         self.init_session()
 
     def get_temp_dir(self) -> str:
@@ -993,6 +1325,10 @@ class LocalEnvironment(BaseEnvironment):
     def _quote_cwd_for_cd(cwd: str) -> str:
         """Use native paths for Python, but Git Bash-friendly paths for cd."""
         return BaseEnvironment._quote_cwd_for_cd(_windows_to_msys_path(cwd))
+
+    def _quote_shell_path(self, path: str) -> str:
+        """Rewrite native/mixed Windows paths before quoting for Git Bash."""
+        return _quote_bash_path(path)
 
     def _run_bash(self, cmd_string: str, *, login: bool = False,
                   timeout: int = 120,
@@ -1144,31 +1480,14 @@ class LocalEnvironment(BaseEnvironment):
                 pass
 
     def _update_cwd(self, result: dict):
-        """Read CWD from temp file (local-only, no round-trip needed).
+        """Update cwd from the stdout marker emitted by the wrapped command.
 
-        Skip the assignment when the path no longer exists as a directory —
-        ``pwd -P`` on a deleted cwd can leave a stale value in the marker
-        file, and propagating it would re-wedge the next ``Popen``.  The
-        ``_run_bash`` recovery path will resolve a safe fallback if needed.
-
-        On Windows, the value written by Git Bash's ``pwd -P`` is in
-        MSYS form (``/c/Users/x``). Translate it to native Windows form
-        before validating with ``os.path.isdir`` and before storing on
-        ``self.cwd``; otherwise the isdir check rejects every valid
-        result and ``_run_bash`` later prints a misleading "cwd is
-        missing" warning on every command.
+        The base command wrapper already appends ``pwd -P`` to stdout inside a
+        session-specific marker, so the local backend can share the same parser
+        as remote backends instead of re-reading the temp file it just wrote.
+        ``_extract_cwd_from_output`` keeps the local Windows normalization and
+        stale-path rollback semantics intact.
         """
-        try:
-            with open(self._cwd_file, encoding="utf-8") as f:
-                cwd_path = f.read().strip()
-            if _IS_WINDOWS:
-                cwd_path = _msys_to_windows_path(cwd_path)
-            if cwd_path and os.path.isdir(cwd_path):
-                self.cwd = cwd_path
-        except (OSError, FileNotFoundError):
-            pass
-
-        # Still strip the marker from output so it's not visible
         self._extract_cwd_from_output(result)
 
     def _extract_cwd_from_output(self, result: dict):

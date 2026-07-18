@@ -5,6 +5,8 @@ shared slash-command pipeline (`/model` in CLI/gateway/Telegram) historically
 only looked at `providers:`.
 """
 
+import threading
+
 import hermes_cli.providers as providers_mod
 from hermes_cli.model_switch import list_authenticated_providers, switch_model
 from hermes_cli.providers import resolve_provider_full
@@ -111,6 +113,78 @@ def test_list_authenticated_providers_can_probe_only_current_custom_provider(mon
     assert active["is_current"] is True
     assert active["models"] == ["active-a", "active-b"]
     assert offline["models"] == ["configured-offline"]
+
+
+def test_user_and_custom_provider_probes_share_one_parallel_batch(monkeypatch):
+    """Section 3 and Section 4 discovery share one slowest-endpoint bound."""
+    monkeypatch.setattr("agent.models_dev.fetch_models_dev", lambda: {})
+    monkeypatch.setattr(providers_mod, "HERMES_OVERLAYS", {})
+
+    probes_in_flight = threading.Barrier(2)
+
+    def fetch(_api_key, api_url, **_kwargs):
+        probes_in_flight.wait(timeout=1)
+        return [f"live-{api_url.split('//', 1)[1].split('.', 1)[0]}"]
+
+    monkeypatch.setattr("hermes_cli.models.fetch_api_models", fetch)
+
+    providers = list_authenticated_providers(
+        user_providers={
+            "section-three": {
+                "name": "Section Three",
+                "base_url": "http://section-three.test/v1",
+                "api_key": "shared-key",
+            }
+        },
+        custom_providers=[
+            {
+                "name": "Section Four",
+                "base_url": "http://section-four.test/v1",
+                "api_key": "shared-key",
+                "model": "seed-four",
+            }
+        ],
+        probe_custom_providers=True,
+    )
+
+    rows = {row["name"]: row for row in providers if row.get("is_user_defined")}
+    assert rows["Section Three"]["models"] == ["live-section-three"]
+    assert rows["Section Four"]["models"] == ["live-section-four"]
+
+
+def test_user_provider_probe_results_are_isolated_by_routing_headers(monkeypatch):
+    """Section 3 tenants sharing URL/key retain their own discovered catalog."""
+    monkeypatch.setattr("agent.models_dev.fetch_models_dev", lambda: {})
+    monkeypatch.setattr(providers_mod, "HERMES_OVERLAYS", {})
+
+    def fetch(_api_key, _api_url, headers=None):
+        assert headers is not None
+        return [f"model-{headers['X-Tenant']}"]
+
+    monkeypatch.setattr("hermes_cli.models.fetch_api_models", fetch)
+
+    providers = list_authenticated_providers(
+        user_providers={
+            "tenant-a": {
+                "name": "Tenant A",
+                "base_url": "https://proxy.test/v1",
+                "api_key": "shared-key",
+                "extra_headers": {"X-Tenant": "a"},
+            },
+            "tenant-b": {
+                "name": "Tenant B",
+                "base_url": "https://proxy.test/v1",
+                "api_key": "shared-key",
+                "extra_headers": {"X-Tenant": "b"},
+            },
+        },
+        custom_providers=[],
+        probe_custom_providers=True,
+    )
+
+    rows = {row["name"]: row for row in providers if row.get("is_user_defined")}
+    assert rows["Tenant A"]["models"] == ["model-a"]
+    assert rows["Tenant B"]["models"] == ["model-b"]
 
 
 def test_resolve_provider_full_finds_named_custom_provider():

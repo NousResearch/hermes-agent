@@ -10,11 +10,11 @@ single endpoint instead of the sum.
 from __future__ import annotations
 
 import time
-from unittest.mock import patch, MagicMock
+from unittest.mock import patch
 
 import pytest
 
-from hermes_cli.model_switch import _parallel_probe_providers
+from hermes_cli.model_switch import _parallel_probe_providers, _probe_target_key
 
 
 # --------------------------------------------------------------------------- #
@@ -32,11 +32,14 @@ def test_parallel_probe_single_target():
     """A single target is probed and returned."""
     targets = [{"api_key": "sk-test", "api_url": "https://api.test.com/v1"}]
 
-    with patch("hermes_cli.models.fetch_api_models", return_value=["model-a", "model-b"]):
+    with patch(
+        "hermes_cli.models.fetch_api_models", return_value=["model-a", "model-b"]
+    ):
         result = _parallel_probe_providers(targets)
 
-    assert ("https://api.test.com/v1", "sk-test") in result
-    assert result[("https://api.test.com/v1", "sk-test")] == ["model-a", "model-b"]
+    key = _probe_target_key("https://api.test.com/v1", "sk-test")
+    assert key in result
+    assert result[key] == ["model-a", "model-b"]
 
 
 def test_parallel_probe_multiple_targets_run_concurrently():
@@ -64,7 +67,9 @@ def test_parallel_probe_multiple_targets_run_concurrently():
     assert len(result) == 3
     # Total time should be ~1s (parallel), not ~3s (sequential)
     # Allow generous margin for thread overhead
-    assert elapsed < 2.5, f"Parallel probe took {elapsed:.1f}s — expected <2.5s (parallel)"
+    assert elapsed < 2.5, (
+        f"Parallel probe took {elapsed:.1f}s — expected <2.5s (parallel)"
+    )
 
 
 def test_parallel_probe_failed_endpoints_skipped():
@@ -83,9 +88,11 @@ def test_parallel_probe_failed_endpoints_skipped():
         result = _parallel_probe_providers(targets)
 
     # Only the good endpoint is in results
-    assert ("https://good.test.com/v1", "good") in result
-    assert ("https://bad.test.com/v1", "bad") not in result
-    assert result[("https://good.test.com/v1", "good")] == ["good-model"]
+    good_key = _probe_target_key("https://good.test.com/v1", "good")
+    bad_key = _probe_target_key("https://bad.test.com/v1", "bad")
+    assert good_key in result
+    assert bad_key not in result
+    assert result[good_key] == ["good-model"]
 
 
 def test_parallel_probe_none_results_skipped():
@@ -103,8 +110,8 @@ def test_parallel_probe_none_results_skipped():
     with patch("hermes_cli.models.fetch_api_models", side_effect=mixed_fetch):
         result = _parallel_probe_providers(targets)
 
-    assert ("https://api1.test.com/v1", "key1") in result
-    assert ("https://api2.test.com/v1", "key2") not in result
+    assert _probe_target_key("https://api1.test.com/v1", "key1") in result
+    assert _probe_target_key("https://api2.test.com/v1", "key2") not in result
 
 
 def test_parallel_probe_passes_headers():
@@ -125,6 +132,49 @@ def test_parallel_probe_passes_headers():
         "https://api.test.com/v1",
         headers={"X-Custom-Header": "value"},
     )
+
+
+def test_parallel_probe_keeps_header_routed_endpoints_distinct():
+    """The same URL and credential can represent multiple routed tenants."""
+    targets = [
+        {
+            "api_key": "shared-key",
+            "api_url": "https://proxy.test/v1",
+            "headers": {"X-Tenant": "a"},
+        },
+        {
+            "api_key": "shared-key",
+            "api_url": "https://proxy.test/v1",
+            "headers": {"X-Tenant": "b"},
+        },
+    ]
+
+    def tenant_models(
+        _api_key: str,
+        _api_url: str,
+        headers: dict[str, str] | None = None,
+    ) -> list[str]:
+        assert headers is not None
+        return [f"model-{headers['X-Tenant']}"]
+
+    with patch(
+        "hermes_cli.models.fetch_api_models",
+        side_effect=tenant_models,
+    ):
+        result = _parallel_probe_providers(targets)
+
+    tenant_a = _probe_target_key(
+        "https://proxy.test/v1",
+        "shared-key",
+        {"X-Tenant": "a"},
+    )
+    tenant_b = _probe_target_key(
+        "https://proxy.test/v1",
+        "shared-key",
+        {"X-Tenant": "b"},
+    )
+    assert result[tenant_a] == ["model-a"]
+    assert result[tenant_b] == ["model-b"]
 
 
 def test_parallel_probe_no_headers_passes_none():

@@ -1525,15 +1525,24 @@ def prewarm_picker_cache_async() -> Optional["_threading.Thread"]:
     return t
 
 
+def _probe_target_key(
+    api_url: str,
+    api_key: str,
+    headers: dict[str, str] | None = None,
+) -> tuple[str, str, tuple[tuple[str, str], ...]]:
+    """Return the identity of one custom-provider model probe."""
+    return api_url, api_key, tuple(sorted((headers or {}).items()))
+
+
 def _parallel_probe_providers(
     probe_targets: list[dict],
-) -> dict[tuple[str, str], list[str]]:
+) -> dict[tuple[str, str, tuple[tuple[str, str], ...]], list[str]]:
     """Fetch ``/models`` from multiple custom providers concurrently.
 
     Each entry in ``probe_targets`` is a dict with keys:
     ``api_key``, ``api_url``, ``headers`` (optional).
 
-    Returns a mapping of ``(api_url, api_key)`` → ``list[str]`` of model IDs.
+    Returns a mapping of ``(api_url, api_key, headers)`` to model IDs.
     Failed or timed-out probes are simply absent from the result.
 
     This replaces the sequential per-provider ``fetch_api_models()`` calls
@@ -1547,10 +1556,18 @@ def _parallel_probe_providers(
 
     from hermes_cli.models import fetch_api_models
 
-    results: dict[tuple[str, str], list[str]] = {}
+    results: dict[
+        tuple[str, str, tuple[tuple[str, str], ...]], list[str]
+    ] = {}
 
-    def _probe(target: dict) -> tuple[tuple[str, str], list[str] | None]:
-        key = (target["api_url"], target["api_key"])
+    def _probe(
+        target: dict,
+    ) -> tuple[tuple[str, str, tuple[tuple[str, str], ...]], list[str] | None]:
+        key = _probe_target_key(
+            target["api_url"],
+            target["api_key"],
+            target.get("headers"),
+        )
         try:
             models = fetch_api_models(
                 target["api_key"],
@@ -2131,148 +2148,38 @@ def list_authenticated_providers(
         _record_builtin_endpoint(_cp.slug)
 
     # --- 3. User-defined endpoints from config ---
-    # Track (name, base_url) of what section 3 emits so section 4 can skip
-    # any overlapping ``custom_providers:`` entries.  Callers typically pass
-    # both (gateway/CLI invoke ``get_compatible_custom_providers()`` which
-    # merges ``providers:`` into the list) — without this, the same endpoint
-    # produces two picker rows: one bare-slug ("openrouter") from section 3
-    # and one "custom:openrouter" from section 4, both labelled identically.
+    # Prepare rows and probe policy without issuing network calls. Section 4
+    # depends on these shadowing decisions, but its eligible targets must join
+    # the same global probe batch so latency is bounded by the slowest endpoint
+    # across both sections rather than one slowest endpoint per section.
     _section3_emitted_pairs: set = set()
-
-    # --- Pre-probe: collect all custom provider probe targets and fetch
-    # them in parallel so the /model picker doesn't block 5s per endpoint.
-    # See issue #65650.
+    _section3_rows: list[tuple[dict, tuple | None]] = []
     _probe_targets: list[dict] = []
     if user_providers and isinstance(user_providers, dict):
         for ep_name, ep_cfg in user_providers.items():
-            if not isinstance(ep_cfg, dict):
+            if not isinstance(ep_cfg, dict) or ep_name.lower() in seen_slugs:
                 continue
-            if ep_name.lower() in seen_slugs:
-                continue
-            api_url = str(ep_cfg.get("base_url", "") or ep_cfg.get("api", "") or ep_cfg.get("url", "") or "").strip().rstrip("/")
-            if not api_url:
-                continue
-            api_key = str(ep_cfg.get("api_key", "") or "").strip()
-            if not api_key:
-                key_env = str(ep_cfg.get("key_env", "") or "").strip()
-                api_key = os.environ.get(key_env, "").strip() if key_env else ""
-            discover = ep_cfg.get("discover_models", True)
-            if isinstance(discover, str):
-                discover = discover.lower() not in {"false", "no", "0"}
-            models_list = [
-                str(m).strip()
-                for m in _declared_model_ids(ep_cfg.get("models", []))
-                if str(m).strip()
-            ]
-            has_explicit_models = bool(models_list)
-            _ep_is_current_pre = (
-                str(ep_name).strip().lower() == _current_provider_norm
-                or custom_provider_slug(ep_cfg.get("name", "") or ep_name).lower() == _current_provider_norm
-                or (
-                    _current_provider_norm == "custom"
-                    and bool(_current_base_url_norm)
-                    and str(api_url).strip().rstrip("/").lower() == _current_base_url_norm
-                )
-            )
-            if (
-                _can_probe_custom_provider(row_is_current=_ep_is_current_pre)
-                and bool(api_url)
-                and discover
-                and (bool(api_key) or not has_explicit_models)
-            ):
-                _probe_targets.append({
-                    "api_key": api_key,
-                    "api_url": api_url,
-                    "headers": _extra_headers_from_config(ep_cfg) or None,
-                })
 
-    # Also collect Section 4 probe targets for parallel fetch.
-    if custom_providers:
-        for entry in custom_providers:
-            if not isinstance(entry, dict):
-                continue
-            _grp_url = str(entry.get("base_url", "") or entry.get("url", "") or "").strip().rstrip("/")
-            if not _grp_url:
-                continue
-            _grp_key = str(entry.get("api_key", "") or "").strip()
-            if not _grp_key:
-                _grp_key_env = str(entry.get("key_env", "") or "").strip()
-                _grp_key = os.environ.get(_grp_key_env, "").strip() if _grp_key_env else ""
-            _grp_discover = entry.get("discover_models", True)
-            if isinstance(_grp_discover, str):
-                _grp_discover = _grp_discover.lower() not in {"false", "no", "0"}
-            _grp_explicit = bool([
-                str(m).strip()
-                for m in _declared_model_ids(entry.get("models", []))
-                if str(m).strip()
-            ])
-            if (
-                _can_probe_custom_provider(row_is_current=False)
-                and bool(_grp_url)
-                and _grp_discover
-                and (bool(_grp_key) or not _grp_explicit)
-            ):
-                # Avoid duplicates with Section 3 targets
-                if not any(t["api_url"] == _grp_url and t["api_key"] == _grp_key for t in _probe_targets):
-                    _probe_targets.append({
-                        "api_key": _grp_key,
-                        "api_url": _grp_url,
-                        "headers": entry.get("extra_headers") or None,
-                    })
-
-    _probe_results = _parallel_probe_providers(_probe_targets)
-
-    if user_providers and isinstance(user_providers, dict):
-        for ep_name, ep_cfg in user_providers.items():
-            if not isinstance(ep_cfg, dict):
-                continue
-            # Skip if this slug was already emitted (e.g. canonical provider
-            # with the same name) or will be picked up by section 4.
-            if ep_name.lower() in seen_slugs:
-                continue
             display_name = ep_cfg.get("name", "") or ep_name
-            # ``base_url`` is Hermes's canonical write key (matches
-            # custom_providers and _save_custom_provider); ``api`` / ``url``
-            # remain as fallbacks for hand-edited / legacy configs.
             api_url = (
                 ep_cfg.get("base_url", "")
                 or ep_cfg.get("api", "")
                 or ep_cfg.get("url", "")
                 or ""
             )
-            # ``default_model`` is the legacy key; ``model`` matches what
-            # custom_providers entries use, so accept either.
-            default_model = ep_cfg.get("default_model", "") or ep_cfg.get("model", "")
+            if not api_url:
+                continue
 
-            # Build models list from both default_model and full models array
             models_list = []
+            default_model = ep_cfg.get("default_model", "") or ep_cfg.get("model", "")
             if default_model:
                 models_list.append(default_model)
-            # Also include the full models list from config.
-            # Hermes writes ``models:`` as a dict keyed by model id, but older
-            # or hand-edited configs may use strings or ``[{id: ...}]`` rows.
             for model_id in _declared_model_ids(ep_cfg.get("models", [])):
                 if model_id not in models_list:
                     models_list.append(model_id)
+            if not models_list and "api.openai.com" in str(api_url).lower():
+                models_list = list(curated.get("openai") or [])
 
-            # Official OpenAI API rows in providers: often have base_url but no
-            # explicit models: dict — avoid a misleading zero count in /model.
-            if not models_list:
-                url_lower = str(api_url).strip().lower()
-                if "api.openai.com" in url_lower:
-                    fb = curated.get("openai") or []
-                    if fb:
-                        models_list = list(fb)
-
-            # Prefer the endpoint's live /models list when discoverable,
-            # unless the provider explicitly opts out via discover_models: false.
-            # Policy mirrors Section 4's should_probe logic:
-            # - With an api_key: always probe (user opted into the endpoint).
-            # - Without an api_key but with explicit models: skip — the user
-            #   is narrowing a public endpoint to a specific subset.
-            # - Without an api_key AND no explicit models: probe anyway so
-            #   bare-endpoint providers (local llama.cpp / Ollama servers)
-            #   still show their full model catalog.
             api_key = str(ep_cfg.get("api_key", "") or "").strip()
             if not api_key:
                 key_env = str(ep_cfg.get("key_env", "") or "").strip()
@@ -2280,46 +2187,50 @@ def list_authenticated_providers(
             discover = ep_cfg.get("discover_models", True)
             if isinstance(discover, str):
                 discover = discover.lower() not in {"false", "no", "0"}
-            has_explicit_models = bool(models_list)
-            _ep_url_norm = str(api_url).strip().rstrip("/").lower()
-            _ep_slug_norm = str(ep_name).strip().lower()
-            _ep_custom_slug_norm = custom_provider_slug(display_name).lower()
-            _ep_is_current = (
-                _ep_slug_norm == _current_provider_norm
-                or _ep_custom_slug_norm == _current_provider_norm
+
+            ep_url_norm = str(api_url).strip().rstrip("/").lower()
+            ep_is_current = (
+                str(ep_name).strip().lower() == _current_provider_norm
+                or custom_provider_slug(display_name).lower() == _current_provider_norm
                 or (
                     _current_provider_norm == "custom"
                     and bool(_current_base_url_norm)
-                    and _ep_url_norm == _current_base_url_norm
+                    and ep_url_norm == _current_base_url_norm
                 )
             )
-            should_probe = _can_probe_custom_provider(row_is_current=_ep_is_current) and bool(api_url) and discover and (
-                bool(api_key) or not has_explicit_models
+            should_probe = (
+                _can_probe_custom_provider(row_is_current=ep_is_current)
+                and discover
+                and (bool(api_key) or not models_list)
             )
+            probe_key = None
             if should_probe:
-                _probe_key = (api_url, api_key)
-                live_models = _probe_results.get(_probe_key)
-                if live_models:
-                    models_list = live_models
+                headers = _extra_headers_from_config(ep_cfg) or None
+                probe_target = {
+                    "api_key": api_key,
+                    "api_url": api_url,
+                    "headers": headers,
+                }
+                _probe_targets.append(probe_target)
+                probe_key = _probe_target_key(api_url, api_key, headers)
 
-            results.append({
+            row = {
                 "slug": ep_name,
                 "name": display_name,
-                "is_current": _ep_is_current,
+                "is_current": ep_is_current,
                 "is_user_defined": True,
                 "models": models_list,
-                "total_models": len(models_list) if models_list else 0,
+                "total_models": len(models_list),
                 "source": "user-config",
                 "api_url": api_url,
-            })
+            }
+            _section3_rows.append((row, probe_key))
             seen_slugs.add(ep_name.lower())
             seen_slugs.add(custom_provider_slug(display_name).lower())
-            _pair = (
-                str(display_name).strip().lower(),
-                str(api_url).strip().rstrip("/").lower(),
-            )
-            if _pair[0] and _pair[1]:
-                _section3_emitted_pairs.add(_pair)
+            pair = (str(display_name).strip().lower(), ep_url_norm)
+            if pair[0] and pair[1]:
+                _section3_emitted_pairs.add(pair)
+
 
     # --- 3b. Active bare custom endpoint from model config ---
     # A config can still use the direct one-off form:
@@ -2329,41 +2240,39 @@ def list_authenticated_providers(
     # picker to render, but the gateway only passes this current model slice to
     # list_authenticated_providers(). Surface the active endpoint explicitly so
     # /model does not look like it ignored config.yaml.
+    _bare_custom_row: tuple[dict, tuple | None] | None = None
     if (
         _current_provider_norm == "custom"
         and current_base_url
         and "custom" not in seen_slugs
         and not any(
-            isinstance(_cp, dict)
+            isinstance(cp, dict)
             and str(
-                _cp.get("base_url", "")
-                or _cp.get("url", "")
-                or _cp.get("api", "")
+                cp.get("base_url", "")
+                or cp.get("url", "")
+                or cp.get("api", "")
             ).strip().rstrip("/").lower()
             == str(current_base_url).strip().rstrip("/").lower()
-            for _cp in (custom_providers or [])
+            for cp in (custom_providers or [])
         )
     ):
-        _models = [current_model] if current_model else []
+        bare_url = str(current_base_url).strip().rstrip("/")
+        probe_key = None
         if refresh or probe_current_custom_provider:
-            try:
-                from hermes_cli.models import fetch_api_models
-
-                _live_models = fetch_api_models("", str(current_base_url).strip().rstrip("/"))
-                if _live_models:
-                    _models = _live_models
-            except Exception:
-                pass
-        results.append({
+            probe_target = {"api_key": "", "api_url": bare_url, "headers": None}
+            _probe_targets.append(probe_target)
+            probe_key = _probe_target_key(bare_url, "")
+        models = [current_model] if current_model else []
+        _bare_custom_row = ({
             "slug": "custom",
             "name": "Custom endpoint",
             "is_current": True,
             "is_user_defined": True,
-            "models": _models[:max_models] if max_models is not None else _models,
-            "total_models": len(_models),
+            "models": models[:max_models] if max_models is not None else models,
+            "total_models": len(models),
             "source": "model-config",
-            "api_url": str(current_base_url).strip().rstrip("/"),
-        })
+            "api_url": bare_url,
+        }, probe_key)
         seen_slugs.add("custom")
 
     # --- 4. Saved custom providers from config ---
@@ -2375,6 +2284,7 @@ def list_authenticated_providers(
     # "Ollama" row with four models inside instead of four near-duplicates
     # that differ only by suffix. Same-host entries with different ``key_env``
     # or ``api_mode`` remain distinct providers.
+    _section4_rows: list[tuple[dict, str, bool, bool]] = []
     if custom_providers and isinstance(custom_providers, list):
         from collections import OrderedDict
 
@@ -2479,110 +2389,125 @@ def list_authenticated_providers(
                 if model_id not in groups[group_key]["models"]:
                     groups[group_key]["models"].append(model_id)
 
-        _section4_emitted_slugs: set = set()
         _current_base_url_group_count = sum(
             1
             for _grp in groups.values()
             if _current_base_url_norm
             and str(_grp["api_url"]).strip().rstrip("/").lower() == _current_base_url_norm
         )
+
+        # Resolve the exact rows first. Probe eligibility depends on the final
+        # deduplicated slug, current-provider identity, grouped explicit-model
+        # state, and section 1-3 shadowing decisions.
+        _section4_seen_slugs = set(seen_slugs)
+        _section4_emitted_slugs: set[str] = set()
         for grp in groups.values():
             api_url = grp["api_url"]
             api_key = grp.get("api_key", "")
             slug = grp["slug"]
-            # If the slug is already claimed by a built-in / overlay /
-            # user-provider row (sections 1-3), skip this custom group
-            # to avoid shadowing a real provider.
-            if slug.lower() in seen_slugs and slug.lower() not in _section4_emitted_slugs:
+
+            if (
+                slug.lower() in _section4_seen_slugs
+                and slug.lower() not in _section4_emitted_slugs
+            ):
                 continue
-            # If a prior section-4 group already used this slug (two custom
-            # endpoints with the same cleaned name — e.g. two OpenAI-
-            # compatible gateways named identically with different keys),
-            # append a counter so both rows stay visible in the picker.
             if slug.lower() in _section4_emitted_slugs:
                 base_slug = slug
                 n = 2
-                while f"{base_slug}-{n}".lower() in seen_slugs:
+                while f"{base_slug}-{n}".lower() in _section4_seen_slugs:
                     n += 1
                 slug = f"{base_slug}-{n}"
-                grp["slug"] = slug
-            # Skip if section 3 already emitted this endpoint under its
-            # ``providers:`` dict key — matches on (display_name, base_url).
-            # Prevents two picker rows labelled identically when callers
-            # pass both ``user_providers`` and a compatibility-merged
-            # ``custom_providers`` list.
-            _pair_key = (
+
+            pair_key = (
                 str(grp["name"]).strip().lower(),
-                str(grp["api_url"]).strip().rstrip("/").lower(),
+                str(api_url).strip().rstrip("/").lower(),
             )
-            if _pair_key[0] and _pair_key[1] and _pair_key in _section3_emitted_pairs:
+            if pair_key[0] and pair_key[1] and pair_key in _section3_emitted_pairs:
                 continue
-            # Skip if a built-in row (sections 1/2/2b) already represents this
-            # endpoint. Fixes #16970: a user-defined "my-dashscope" pointing at
-            # https://coding-intl.dashscope.aliyuncs.com/v1 duplicates the
-            # built-in alibaba-coding-plan row whenever DASHSCOPE_API_KEY is
-            # set. The built-in row carries the curated model list, correct
-            # auth wiring, and canonical slug — keep it and hide the shadow.
-            _grp_url_norm = _pair_key[1]
-            if _grp_url_norm and _grp_url_norm in _builtin_endpoints:
+
+            grp_url_norm = pair_key[1]
+            if grp_url_norm and grp_url_norm in _builtin_endpoints:
                 continue
-            # Live model discovery from custom provider endpoints (matches
-            # Section 3 behavior for user ``providers:`` entries).
-            # Also probes when no api_key is set (e.g. local llama.cpp /
-            # Ollama servers) — the /models endpoint often works without
-            # auth.  The CLI's _model_flow_named_custom always probes, so
-            # the Telegram/Discord picker should do the same for parity.
-            # Live-discovery policy:
-            # - With an api_key, the user has explicitly opted into the
-            #   endpoint and live /models is the source of truth — replace
-            #   the (possibly partial) ``models:`` subset configured for
-            #   context-length overrides with the full live catalog.
-            #   This is the Bifrost / aggregator-gateway case.
-            # - Without an api_key but with an explicit ``models:`` list,
-            #   the user is narrowing a public endpoint to a specific subset
-            #   (e.g. ollama.com /v1/models returns 35 models but the user
-            #   only wants 4). Preserve the explicit list and skip live
-            #   discovery. The singular ``model:`` field is only the current
-            #   active selection and must not suppress discovery on local
-            #   no-key endpoints.
-            # - Without an api_key AND no explicit models, fall through to
-            #   live discovery so bare-endpoint custom providers (local
-            #   llama.cpp / Ollama servers) still appear populated.
-            # - When discover_models: false is set, skip live discovery and
-            #   keep the explicit ``models:`` list regardless of whether an
-            #   api_key is present. This supports endpoints that expose a
-            #   full aggregator catalog via /models but only serve a subset
-            #   (parity with section 3's user ``providers:`` behaviour).
-            _grp_is_current = slug.lower() == _current_provider_norm or (
+
+            grp_is_current = slug.lower() == _current_provider_norm or (
                 _current_provider_norm == "custom"
                 and bool(_current_base_url_norm)
-                and _grp_url_norm == _current_base_url_norm
+                and grp_url_norm == _current_base_url_norm
                 and _current_base_url_group_count == 1
             )
             should_probe = (
-                _can_probe_custom_provider(row_is_current=_grp_is_current)
+                _can_probe_custom_provider(row_is_current=grp_is_current)
                 and bool(api_url)
                 and (bool(api_key) or not grp.get("has_explicit_models"))
                 and grp.get("discover_models", True)
             )
-            if should_probe:
-                _probe_key = (api_url, api_key)
-                live_models = _probe_results.get(_probe_key)
-                if live_models:
-                    grp["models"] = live_models
-                    grp["total_models"] = len(live_models)
-            results.append({
-                "slug": slug,
-                "name": grp["name"],
-                "is_current": _grp_is_current,
-                "is_user_defined": True,
-                "models": grp["models"],
-                "total_models": len(grp["models"]),
-                "source": "user-config",
-                "api_url": grp["api_url"],
-            })
-            seen_slugs.add(slug.lower())
+            _section4_rows.append((grp, slug, grp_is_current, should_probe))
+            _section4_seen_slugs.add(slug.lower())
             _section4_emitted_slugs.add(slug.lower())
+
+    section4_probe_targets = [
+        {
+            "api_key": grp.get("api_key", ""),
+            "api_url": grp["api_url"],
+            "headers": grp.get("extra_headers") or None,
+        }
+        for grp, _slug, _is_current, should_probe in _section4_rows
+        if should_probe
+    ]
+
+    # Submit one globally deduplicated batch. Equivalent Section 3/4 targets
+    # share a result; routing-header differences remain distinct identities.
+    probe_targets_by_key: dict[tuple, dict] = {}
+    for target in [*_probe_targets, *section4_probe_targets]:
+        target_key = _probe_target_key(
+            target["api_url"],
+            target.get("api_key", ""),
+            target.get("headers"),
+        )
+        probe_targets_by_key.setdefault(target_key, target)
+    probe_results = _parallel_probe_providers(list(probe_targets_by_key.values()))
+
+    for row, probe_key in _section3_rows:
+        live_models = probe_results.get(probe_key) if probe_key is not None else None
+        if live_models:
+            row["models"] = live_models
+            row["total_models"] = len(live_models)
+        results.append(row)
+
+    if _bare_custom_row is not None:
+        row, probe_key = _bare_custom_row
+        live_models = probe_results.get(probe_key) if probe_key is not None else None
+        if live_models:
+            row["models"] = (
+                live_models[:max_models] if max_models is not None else live_models
+            )
+            row["total_models"] = len(live_models)
+        results.append(row)
+
+    for grp, slug, grp_is_current, should_probe in _section4_rows:
+        api_url = grp["api_url"]
+        api_key = grp.get("api_key", "")
+        if should_probe:
+            probe_key = _probe_target_key(
+                api_url,
+                api_key,
+                grp.get("extra_headers") or None,
+            )
+            live_models = probe_results.get(probe_key)
+            if live_models:
+                grp["models"] = live_models
+
+        results.append({
+            "slug": slug,
+            "name": grp["name"],
+            "is_current": grp_is_current,
+            "is_user_defined": True,
+            "models": grp["models"],
+            "total_models": len(grp["models"]),
+            "source": "user-config",
+            "api_url": api_url,
+        })
+        seen_slugs.add(slug.lower())
 
     # Surface a custom / uncurated model the user selected via the CLI.
     # Each row's model list is its curated/live catalog, so a model the user set

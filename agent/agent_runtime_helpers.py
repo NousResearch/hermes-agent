@@ -672,6 +672,39 @@ def strip_think_blocks(agent, content: str) -> str:
     """
     if not content:
         return ""
+    # Coerce non-string content to text before any regex runs.  Providers
+    # that return assistant ``content`` as a list of blocks (Anthropic via
+    # OpenRouter emits ``[{"type":"text",...}, {"type":"thinking",...}]``) or
+    # as a dict flow into this shared helper from several callers — most
+    # notably ``_interim_assistant_visible_text`` reading a *stored* history
+    # message whose content was persisted as a list.  A raw list/dict reaching
+    # ``re.sub`` below raises ``TypeError: expected string or bytes-like
+    # object, got 'list'``, which the outer conversation loop swallows and
+    # retries forever (observed as an infinite "preparing terminal…" loop on
+    # Anthropic models via OpenRouter).  Flatten here so every caller is safe.
+    if not isinstance(content, str):
+        if isinstance(content, list):
+            _parts: list[str] = []
+            for _part in content:
+                if isinstance(_part, str):
+                    _parts.append(_part)
+                elif isinstance(_part, dict):
+                    _ptype = str(_part.get("type") or "").strip().lower()
+                    # Drop reasoning/thinking blocks outright — this function's
+                    # whole job is to strip them, and their text lives under
+                    # different keys ("thinking", "reasoning") per provider.
+                    if _ptype in {"thinking", "reasoning", "redacted_thinking"}:
+                        continue
+                    _text = _part.get("text")
+                    if isinstance(_text, str) and _text:
+                        _parts.append(_text)
+            content = "".join(_parts)
+        elif isinstance(content, dict):
+            content = str(content.get("text") or content.get("content") or "")
+        else:
+            content = str(content)
+        if not content:
+            return ""
     # 1. Closed tag pairs — case-insensitive for all variants so
     #    mixed-case tags (<THINK>, <Thinking>) don't slip through to
     #    the unterminated-tag pass and take trailing content with them.
@@ -837,7 +870,14 @@ def recover_with_credential_pool(
 
     if effective_reason == FailoverReason.billing:
         rotate_status = status_code if status_code is not None else 402
-        next_entry = pool.mark_exhausted_and_rotate(status_code=rotate_status, error_context=error_context)
+        next_entry = pool.mark_exhausted_and_rotate(
+            status_code=rotate_status,
+            error_context=error_context,
+            # Runtime credentials can be resolved by a separate pool instance,
+            # leaving this recovery pool without ``current_id``. Match the key
+            # that actually failed instead of quarantining a different account.
+            api_key_hint=getattr(agent, "api_key", None),
+        )
         if next_entry is not None:
             _ra().logger.info(
                 "Credential %s (billing) — rotated to pool entry %s",
@@ -3134,6 +3174,10 @@ def extract_api_error_context(error: Exception) -> Dict[str, Any]:
         if isinstance(reason, str) and reason.strip():
             context["reason"] = reason.strip()
         message = payload.get("message") or payload.get("error_description")
+        if not message and isinstance(payload.get("error"), str):
+            # xAI uses a top-level string ``error`` beside a structured
+            # ``code`` (for example personal-team-blocked:spending-limit).
+            message = payload.get("error")
         if isinstance(message, str) and message.strip():
             context["message"] = message.strip()
         for key in ("resets_at", "reset_at"):

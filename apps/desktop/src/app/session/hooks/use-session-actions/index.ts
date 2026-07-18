@@ -1,5 +1,5 @@
-import type { MutableRefObject } from 'react'
-import { useCallback, useRef } from 'react'
+import { useStore } from '@nanostores/react'
+import { type MutableRefObject, useCallback, useEffect, useRef } from 'react'
 import type { NavigateFunction } from 'react-router-dom'
 
 import { revealTreePane } from '@/components/pane-shell/tree/store'
@@ -13,6 +13,7 @@ import { clearNotifications, notify, notifyError } from '@/store/notifications'
 import { $activeGatewayProfile, $newChatProfile, ensureGatewayProfile, normalizeProfileKey } from '@/store/profile'
 import { resolveNewSessionCwd, tombstoneSessions, untombstoneSessions } from '@/store/projects'
 import {
+  $activeSessionStoredId,
   $currentCwd,
   $currentFastMode,
   $currentModel,
@@ -176,6 +177,33 @@ export function useSessionActions({
   const { t } = useI18n()
   const copy = t.desktop
   const resumeRequestRef = useRef(0)
+
+  // Follow auto-compression's stored-id rotation. When the active session's
+  // stored id changes (compression ends the SessionDB session and forks a
+  // continuation), re-anchor the URL route + selection to the new id so the
+  // next send doesn't hit a stale stored→runtime mapping and trigger a full
+  // thread reload. replace: true — it's the same conversation, not a new
+  // history entry.
+  const rotatedStoredId = useStore($activeSessionStoredId)
+
+  useEffect(() => {
+    if (!rotatedStoredId || rotatedStoredId === selectedStoredSessionIdRef.current) {
+      return
+    }
+
+    const oldStoredId = selectedStoredSessionIdRef.current
+
+    setSelectedStoredSessionId(rotatedStoredId)
+    selectedStoredSessionIdRef.current = rotatedStoredId
+    navigate(sessionRoute(rotatedStoredId), { replace: true })
+
+    // Clean up the stale stored→runtime mapping so getRuntimeIdForStoredSession
+    // can't resolve the old id to this runtime (it would fail the storedSessionId
+    // check and return null, but leaving the stale key is sloppy).
+    if (oldStoredId) {
+      runtimeIdByStoredSessionIdRef.current.delete(oldStoredId)
+    }
+  }, [rotatedStoredId, navigate, runtimeIdByStoredSessionIdRef, selectedStoredSessionIdRef])
 
   const startFreshSessionDraft = useCallback(
     (options: boolean | FreshSessionDraftOptions = false) => {

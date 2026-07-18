@@ -361,6 +361,44 @@ class TestPeerLookupHelpers:
         user_peer.context.assert_called_once_with(target=session.user_peer_id)
         ai_peer.context.assert_called_once_with(target=session.assistant_peer_id)
 
+    def test_get_prefetch_context_uses_assistant_observer_for_user_when_ai_observe_others(self):
+        """With ai_observe_others enabled, get_prefetch_context must query
+        the user context through the assistant observer, not the user peer."""
+        mgr, session = self._make_cached_manager()
+        mgr._ai_observe_others = True
+
+        assistant_peer = MagicMock()
+
+        def _assistant_context(**kwargs):
+            if kwargs.get("target") == session.user_peer_id:
+                return SimpleNamespace(
+                    representation="User via assistant",
+                    peer_card=["Name: Robert"],
+                )
+            if kwargs.get("target") == session.assistant_peer_id:
+                return SimpleNamespace(
+                    representation="AI self",
+                    peer_card=["Role: Assistant"],
+                )
+            return SimpleNamespace(representation="Unknown", peer_card=[])
+
+        assistant_peer.context.side_effect = _assistant_context
+        mgr._get_or_create_peer = MagicMock(
+            side_effect=[assistant_peer, assistant_peer],
+        )
+
+        result = mgr.get_prefetch_context(session.key)
+
+        assert result == {
+            "representation": "User via assistant",
+            "card": "Name: Robert",
+            "ai_representation": "AI self",
+            "ai_card": "Role: Assistant",
+        }
+        assert assistant_peer.context.call_count == 2
+        assistant_peer.context.assert_any_call(target=session.user_peer_id)
+        assistant_peer.context.assert_any_call(target=session.assistant_peer_id)
+
     def test_get_ai_representation_uses_peer_api(self):
         mgr, session = self._make_cached_manager()
         ai_peer = MagicMock()
@@ -566,6 +604,19 @@ class TestConcludeToolDispatch:
             peer="hermes",
         )
 
+    def test_honcho_search_rejects_whitespace_only_query(self):
+        """Whitespace-only query must not hit Honcho search API."""
+        import json
+        provider = HonchoMemoryProvider()
+        provider._session_initialized = True
+        provider._session_key = "telegram:123"
+        provider._manager = MagicMock()
+
+        result = provider.handle_tool_call("honcho_search", {"query": "  \t\n  "})
+        parsed = json.loads(result)
+        assert parsed == {"error": "Missing required parameter: query"}
+        provider._manager.search_context.assert_not_called()
+
     def test_honcho_reasoning_can_target_explicit_peer_id(self):
         provider = HonchoMemoryProvider()
         provider._session_initialized = True
@@ -586,6 +637,19 @@ class TestConcludeToolDispatch:
             peer="hermes",
             apply_injection_cap=False,
         )
+
+    def test_honcho_reasoning_rejects_whitespace_only_query(self):
+        """Whitespace-only query must not hit Honcho dialectic API."""
+        import json
+        provider = HonchoMemoryProvider()
+        provider._session_initialized = True
+        provider._session_key = "telegram:123"
+        provider._manager = MagicMock()
+
+        result = provider.handle_tool_call("honcho_reasoning", {"query": "   "})
+        parsed = json.loads(result)
+        assert parsed == {"error": "Missing required parameter: query"}
+        provider._manager.dialectic_query.assert_not_called()
 
     def test_honcho_conclude_missing_both_params_returns_error(self):
         """Calling honcho_conclude with neither conclusion nor delete_id returns a tool error."""

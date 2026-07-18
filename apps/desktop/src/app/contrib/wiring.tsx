@@ -75,6 +75,7 @@ import { PersistentTerminal } from '../right-sidebar/terminal/persistent'
 import { CRON_ROUTE, routeSessionId, sessionRoute, SETTINGS_ROUTE, syncWorkspaceIsPage } from '../routes'
 import { SessionPickerOverlay } from '../session-picker-overlay'
 import { SessionSwitcher } from '../session-switcher'
+import { useBackgroundQueueDrain } from '../session/hooks/use-background-queue-drain'
 import { useContextSuggestions } from '../session/hooks/use-context-suggestions'
 import { useCwdActions } from '../session/hooks/use-cwd-actions'
 import { useHermesConfig } from '../session/hooks/use-hermes-config'
@@ -88,7 +89,6 @@ import { useSessionListActions } from '../session/hooks/use-session-list-actions
 import { useSessionStateCache } from '../session/hooks/use-session-state-cache'
 import { useOverlayRouting } from '../shell/hooks/use-overlay-routing'
 import { useWindowControlsOverlayWidth } from '../shell/hooks/use-window-controls-overlay-width'
-import { KeybindPanel } from '../shell/keybind-panel'
 import { titlebarControlsPosition } from '../shell/titlebar'
 import { TitlebarControls } from '../shell/titlebar-controls'
 import { UpdatesOverlay } from '../updates-overlay'
@@ -243,6 +243,15 @@ export function ContribWiring({ children }: { children: ReactNode }) {
   })
 
   const openProviderSettings = useCallback(() => navigate(`${SETTINGS_ROUTE}?tab=providers`), [navigate])
+
+  // Palette "Keyboard shortcuts" entry dispatches a custom event (contributions
+  // don't have router access); listen and navigate to the settings keybinds tab.
+  useEffect(() => {
+    const onOpenKeybinds = () => navigate(`${SETTINGS_ROUTE}?tab=keybinds`)
+    window.addEventListener('hermes:open-keybinds', onOpenKeybinds)
+
+    return () => window.removeEventListener('hermes:open-keybinds', onOpenKeybinds)
+  }, [navigate])
 
   // Post-turn rehydrate from stored history (same behavior as DesktopController,
   // including finished-todos restoration).
@@ -526,6 +535,15 @@ export function ContribWiring({ children }: { children: ReactNode }) {
     startFreshSessionDraft,
     sttEnabled,
     updateSessionState
+  })
+
+  // Runs outside the selected ChatBar so queues belonging to background
+  // sessions continue once those sessions are idle.
+  useBackgroundQueueDrain({
+    enabled: gatewayState === 'open',
+    runtimeIdByStoredSessionIdRef,
+    selectedStoredSessionId,
+    submitText
   })
 
   // Session-tile delegate (resume/submit/interrupt/slash + the session verbs
@@ -943,9 +961,6 @@ export function ContribWiring({ children }: { children: ReactNode }) {
           <StarmapView onClose={closeOverlayToPreviousRoute} />
         </Suspense>
       )}
-
-      {/* The full hotkey map (⌘/ and the titlebar keyboard button). */}
-      <KeybindPanel />
 
       {/* Toasts above everything. */}
       <NotificationStack />

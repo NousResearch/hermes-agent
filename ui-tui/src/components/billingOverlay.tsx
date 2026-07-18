@@ -357,6 +357,7 @@ function BuyScreen({ ctx, onPatch, s, t, tr }: ScreenProps) {
   // sel can go stale when a refresh flips the row set (3 add-card rows ↔ N
   // preset rows) — clamp for render + Enter.
   const cSel = Math.min(sel, rows.length - 1)
+
   const payLine = s.card
     ? tr('billing.payment.card', { card: s.card.display ?? s.card.masked })
     : tr('billing.payment.noSavedCard')
@@ -713,10 +714,12 @@ function AutoReloadScreen({ ctx, onClose, onPatch, s, t, tr }: ScreenProps) {
   const ar = s.auto_reload
   const enabled = Boolean(ar?.enabled)
   const distinctCard = ar?.card.kind === 'distinct' ? ar.card : null
+
   const distinctCardName = distinctCard
     ? [distinctCard.brand, distinctCard.last4 ? `••${distinctCard.last4}` : null].filter(Boolean).join(' ') ||
       tr('billing.autoReload.differentCard')
     : null
+
   const manageCardLabel = tr('billing.autoReload.manageCard')
 
   // Prefill from state (strip the $ from the *_usd raw fields if present).
@@ -727,6 +730,7 @@ function AutoReloadScreen({ ctx, onClose, onPatch, s, t, tr }: ScreenProps) {
   const [error, setError] = useState<null | string>(null)
   // focusRow: 0=threshold field, 1=reloadTo field, 2=Agree, 3=Turn off (if enabled), last=Cancel
   const manageCardRows = distinctCard && s.portal_url ? [{ id: 'manageCard' as const, label: manageCardLabel }] : []
+
   const actionRows = enabled
     ? [
         { id: 'turnOn' as const, label: tr('billing.autoReload.turnOn') },
@@ -739,12 +743,14 @@ function AutoReloadScreen({ ctx, onClose, onPatch, s, t, tr }: ScreenProps) {
         ...manageCardRows,
         { id: 'cancel' as const, label: tr('common.cancel') }
       ]
+
   const actionColors: Record<(typeof actionRows)[number]['id'], string | undefined> = {
     cancel: undefined,
     manageCard: t.color.accent,
     turnOff: t.color.warn,
     turnOn: t.color.ok
   }
+
   const FIELD_ROWS = 2
   const [row, setRow] = useState(0)
 
@@ -888,6 +894,7 @@ function AutoReloadScreen({ ctx, onClose, onPatch, s, t, tr }: ScreenProps) {
   const cardLine = s.card
     ? tr('billing.payment.cardOnFile', { card: s.card.masked })
     : tr('billing.payment.noSavedCard')
+
   const chargeCardName = distinctCardName ?? (s.card ? s.card.masked : tr('billing.payment.yourCard'))
 
   const fieldBox = (label: string, value: string, onChange: (v: string) => void, focused: boolean, key: string) => (

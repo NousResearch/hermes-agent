@@ -146,9 +146,7 @@ export function PetPicker({ gw, onClose, t }: PetPickerProps) {
       {offset > 0 && <Text color={t.color.muted}>{ti('sys.moreAbove', { count: offset })}</Text>}
 
       {view.length === 0 ? (
-        <Text color={t.color.muted}>
-          {query ? ti('pet.noMatch', { query }) : ti('pet.noneAvailable')}
-        </Text>
+        <Text color={t.color.muted}>{query ? ti('pet.noMatch', { query }) : ti('pet.noneAvailable')}</Text>
       ) : (
         items.map((pet, i) => {
           const at = offset + i === idx

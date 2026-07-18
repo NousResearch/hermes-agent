@@ -396,9 +396,7 @@ export function Journey({ gw, onClose, t }: JourneyProps) {
   if (!data.count) {
     return (
       <Shell t={t}>
-        <Text color={t.color.muted}>
-          {ti('journey.empty')}
-        </Text>
+        <Text color={t.color.muted}>{ti('journey.empty')}</Text>
       </Shell>
     )
   }
@@ -457,7 +455,7 @@ export function Journey({ gw, onClose, t }: JourneyProps) {
           <Text bold color={t.color.primary}>
             {ti('journey.title')}
           </Text>
-          <Text color={t.color.muted}>  {ti('journey.subtitle')}</Text>
+          <Text color={t.color.muted}> {ti('journey.subtitle')}</Text>
         </Text>
         <Text wrap="wrap">
           {data.legend.map((item, i) => (

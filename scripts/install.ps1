@@ -2966,6 +2966,23 @@ function Install-Desktop {
     #     =false) because enabling it drags in signtool -> winCodeSign -> the
     #     unfixable symlink crash; the afterPack hook runs rcedit directly.
 
+    # 3c. Grant ALL APPLICATION PACKAGES (S-1-15-2-2) RX on the unpacked app
+    #     directory. Chromium's GPU/renderer sandboxes CHECK-fail with
+    #     0x80000003 when this ACE is missing alongside orphan AppContainer
+    #     SIDs under %LOCALAPPDATA% (electron/electron#51761, hermes-agent#38216).
+    #     Best-effort — never fail an otherwise-good install over ACL repair.
+    try {
+        $appDir = Split-Path -Parent $desktopExe
+        & icacls $appDir /grant "*S-1-15-2-2:(OI)(CI)(RX)" /T /C /Q | Out-Null
+        if ($LASTEXITCODE -eq 0) {
+            Write-Success "Granted AppContainer read access on $appDir"
+        } else {
+            Write-Warn "icacls AppContainer grant returned exit $LASTEXITCODE for $appDir"
+        }
+    } catch {
+        Write-Warn "Could not grant AppContainer ACL: $($_.Exception.Message)"
+    }
+
     # 4. Create Start Menu + Desktop shortcuts pointing DIRECTLY at the packed
     #    Hermes.exe. We deliberately do NOT point them at `hermes desktop`: that
     #    command rebuilds (npm install + electron-builder) on every launch,

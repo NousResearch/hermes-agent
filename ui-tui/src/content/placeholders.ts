@@ -9,5 +9,5 @@ export const PLACEHOLDERS = [
   'Try "refactor the auth module"',
   'Try "/help" for commands',
   'Try "fix the lint errors"',
-  'Try "how does the config loader work?"',
+  'Try "how does the config loader work?"'
 ] as const

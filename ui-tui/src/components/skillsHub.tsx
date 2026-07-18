@@ -232,7 +232,9 @@ export function SkillsHub({ gw, onClose, t }: SkillsHubProps) {
           )
         })}
 
-        {offset + VISIBLE < rows.length && <Text color={t.color.muted}> {ti('sys.moreBelow', { count: String(rows.length - offset - VISIBLE) })}</Text>}
+        {offset + VISIBLE < rows.length && (
+          <Text color={t.color.muted}> {ti('sys.moreBelow', { count: String(rows.length - offset - VISIBLE) })}</Text>
+        )}
         <OverlayHint t={t}>{ti('picker.skillHint')}</OverlayHint>
       </Box>
     )
@@ -271,9 +273,7 @@ export function SkillsHub({ gw, onClose, t }: SkillsHubProps) {
         {offset + VISIBLE < skills.length && (
           <Text color={t.color.muted}> {ti('sys.moreBelow', { count: String(skills.length - offset - VISIBLE) })}</Text>
         )}
-        <OverlayHint t={t}>
-          {skills.length ? ti('skills.listHint') : ti('skills.backCloseHint')}
-        </OverlayHint>
+        <OverlayHint t={t}>{skills.length ? ti('skills.listHint') : ti('skills.backCloseHint')}</OverlayHint>
       </Box>
     )
   }

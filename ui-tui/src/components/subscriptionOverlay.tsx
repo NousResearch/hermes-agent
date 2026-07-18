@@ -662,6 +662,7 @@ function ConfirmScreen({ onClose, onPatch, overlay, t, tr }: ScreenProps) {
 
   const amount = centsDisplay(preview?.amount_due_now_cents)
   const targetName = isCancellation ? null : (preview?.target_tier_name ?? tr('subscription.selectedPlan'))
+
   const blockedReason =
     preview?.reason === 'Retract the cancellation before upgrading.'
       ? tr('subscription.confirm.retractCancellation')
@@ -690,7 +691,9 @@ function ConfirmScreen({ onClose, onPatch, overlay, t, tr }: ScreenProps) {
   const rows: MenuRowSpec[] = primary
     ? [primary, { label: tr('common.back'), run: back }]
     : [{ label: tr('common.back'), run: back }]
+
   const sel = useMenu(rows, back)
+
   // Chip contrasts an immediate charge vs a period-end schedule at a glance.
   const chip =
     effect === 'charge_now'
@@ -780,6 +783,7 @@ function ResultScreen({ onClose, overlay, t, tr }: Omit<ScreenProps, 'onPatch'>)
   const result = overlay.result ?? null
   const recoveryUrl = result?.recoveryUrl ?? null
   const pendingTierId = result?.pendingTierId ?? null
+
   const [applyState, setApplyState] = useState<'applying' | 'confirmed' | 'timed_out'>(
     pendingTierId ? 'applying' : 'confirmed'
   )

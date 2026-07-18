@@ -341,7 +341,8 @@ function SubagentAccordion({
 
   // Suffix packs branch rollup: status · elapsed · per-branch tool/agent/token/cost.
   // Emphasises the numbers the user can't easily eyeball from a flat list.
-  const statusLabel = item.status === 'queued' ? tStatus('queued') : item.status === 'running' ? tStatus('running') : String(item.status)
+  const statusLabel =
+    item.status === 'queued' ? tStatus('queued') : item.status === 'running' ? tStatus('running') : String(item.status)
 
   const rollupBits: string[] = [statusLabel]
 

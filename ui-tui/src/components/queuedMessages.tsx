@@ -51,7 +51,8 @@ export function QueuedMessages({ cols, queueEditIdx, queued, t }: QueuedMessages
 
       {q.showTail && (
         <Text color={t.color.muted} dimColor>
-          {'  '}{ti('queue.more', { count: String(queued.length - q.end) })}
+          {'  '}
+          {ti('queue.more', { count: String(queued.length - q.end) })}
         </Text>
       )}
     </Box>

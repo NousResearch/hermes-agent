@@ -91,11 +91,7 @@ export const coreCommands: SlashCommand[] = [
       const sections: PanelSection[] = (ctx.local.catalog?.categories ?? []).map(cat => ({
         rows: cat.pairs.map(([command, description]) => [
           command,
-          translateSlashDescription(
-            ctx.ui.locale,
-            ctx.local.catalog?.descriptionKeys[command],
-            description
-          )
+          translateSlashDescription(ctx.ui.locale, ctx.local.catalog?.descriptionKeys[command], description)
         ]),
         title: translateSlashCategory(ctx.ui.locale, cat.key, cat.name)
       }))

@@ -68,7 +68,11 @@ export function createSlashHandler(ctx: SlashHandlerContext): (cmd: string) => b
         }
 
         if (matches.length > 1) {
-          sys(translate(ui.locale, 'command.ambiguous', { commands: `${matches.slice(0, 6).join(', ')}${matches.length > 6 ? ', …' : ''}` }))
+          sys(
+            translate(ui.locale, 'command.ambiguous', {
+              commands: `${matches.slice(0, 6).join(', ')}${matches.length > 6 ? ', …' : ''}`
+            })
+          )
 
           return true
         }
@@ -93,7 +97,9 @@ export function createSlashHandler(ctx: SlashHandlerContext): (cmd: string) => b
       if (d.type === 'skill') {
         sys(translate(ui.locale, 'command.loadingSkill', { name: d.name }))
 
-        return d.message?.trim() ? send(d.message) : sys(translate(ui.locale, 'command.skillPayloadMissing', { command: parsed.name }))
+        return d.message?.trim()
+          ? send(d.message)
+          : sys(translate(ui.locale, 'command.skillPayloadMissing', { command: parsed.name }))
       }
 
       if (d.type === 'send') {
@@ -101,7 +107,9 @@ export function createSlashHandler(ctx: SlashHandlerContext): (cmd: string) => b
           sys(d.notice)
         }
 
-        return d.message?.trim() ? send(d.message) : sys(translate(ui.locale, 'command.emptyMessage', { command: parsed.name }))
+        return d.message?.trim()
+          ? send(d.message)
+          : sys(translate(ui.locale, 'command.emptyMessage', { command: parsed.name }))
       }
 
       if (d.type === 'prefill') {

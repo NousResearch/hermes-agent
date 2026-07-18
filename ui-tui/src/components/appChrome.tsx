@@ -24,8 +24,7 @@ const HEART_COLORS = ['#ff5fa2', '#ff4d6d']
 const charDispWidth = (c: string) => {
   const code = c.codePointAt(0) ?? 0
 
-  return (
-    (code >= 0x1100 && code <= 0x115f) ||
+  return (code >= 0x1100 && code <= 0x115f) ||
     (code >= 0x2e80 && code <= 0xa4cf) ||
     (code >= 0xac00 && code <= 0xd7a3) ||
     (code >= 0xf900 && code <= 0xfaff) ||
@@ -33,14 +32,19 @@ const charDispWidth = (c: string) => {
     (code >= 0xfe30 && code <= 0xfe6f) ||
     (code >= 0xff00 && code <= 0xff60) ||
     (code >= 0xffe0 && code <= 0xffe6)
-  ) ? 2 : 1
+    ? 2
+    : 1
 }
 
-export const displayWidth = (s: string) => { let w = 0;
+export const displayWidth = (s: string) => {
+  let w = 0
 
- for (const c of s) {w += charDispWidth(c);}
+  for (const c of s) {
+    w += charDispWidth(c)
+  }
 
- return w }
+  return w
+}
 
 // Keep verb segment width stable so status-bar content to the right doesn't
 // jitter when the ticker rotates between short/long verbs.
@@ -487,7 +491,8 @@ export function StatusRuleView({
     ? '● REC'
     : voiceProcessing
       ? '◉ STT'
-      : i18n.t('voice.idle', { state: voiceEnabled ? i18n.t('voice.on') : i18n.t('voice.off') }) + (voiceTts ? ' [tts]' : '')
+      : i18n.t('voice.idle', { state: voiceEnabled ? i18n.t('voice.on') : i18n.t('voice.off') }) +
+        (voiceTts ? ' [tts]' : '')
 
   // A credits notice replaces the status/verb slot, but only when idle —
   // while busy the FaceTicker always wins (R1 render priority). The notice

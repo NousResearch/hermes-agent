@@ -108,7 +108,6 @@ export const MessageLine = memo(function MessageLine({
     const safeAnsi = hasAnsi(msg.text) ? sanitizeAnsiForRender(msg.text) : msg.text
     const preview = compactPreview(stripped, maxChars) || ti('transcript.emptyToolResult')
 
-
     return (
       <Box alignSelf="flex-start" borderColor={t.color.muted} borderStyle="round" marginLeft={3} paddingX={1}>
         {hasAnsi(msg.text) ? (

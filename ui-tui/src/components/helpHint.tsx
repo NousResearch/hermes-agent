@@ -19,10 +19,7 @@ export function HelpHint({ t }: { t: Theme }) {
   const { t: ti } = useI18n()
   const COMMON_COMMANDS: [string, string][] = COMMON_COMMAND_KEYS.map(([k, key]) => [k, ti(key)])
 
-  const labelW = Math.max(
-    ...COMMON_COMMANDS.map(([k]) => k.length),
-    ...HOTKEY_PREVIEW.map(([k]) => k.length)
-  )
+  const labelW = Math.max(...COMMON_COMMANDS.map(([k]) => k.length), ...HOTKEY_PREVIEW.map(([k]) => k.length))
 
   const pad = (s: string) => s + ' '.repeat(Math.max(0, labelW - s.length + 2))
 
@@ -41,9 +38,7 @@ export function HelpHint({ t }: { t: Theme }) {
           <Text bold color={t.color.primary}>
             {ti('help.quickHelp')}
           </Text>
-          <Text color={t.color.muted}>
-            {ti('help.dismissHint')}
-          </Text>
+          <Text color={t.color.muted}>{ti('help.dismissHint')}</Text>
         </Text>
 
         <Box marginTop={1}>

@@ -8,14 +8,20 @@ export const introMsg = (info: SessionInfo): Msg => ({ info, kind: 'intro', role
 export const imageTokenMeta = (info?: ImageMeta | null, locale: Locale = 'en') => {
   const { width, height, token_estimate: t } = info ?? {}
 
-  return [width && height ? `${width}x${height}` : '', (t ?? 0) > 0 ? `~${fmtK(t!)}${translate(locale, 'image.tok')}` : '']
+  return [
+    width && height ? `${width}x${height}` : '',
+    (t ?? 0) > 0 ? `~${fmtK(t!)}${translate(locale, 'image.tok')}` : ''
+  ]
     .filter(Boolean)
     .join(' · ')
 }
 
 export const attachedImageNotice = (info?: ({ name?: string } & ImageMeta) | null, locale: Locale = 'en') => {
   const meta = imageTokenMeta(info, locale)
-  const label = info?.name ? translate(locale, 'image.attachNoticeName', { name: info.name }) : translate(locale, 'image.attachNotice')
+
+  const label = info?.name
+    ? translate(locale, 'image.attachNoticeName', { name: info.name })
+    : translate(locale, 'image.attachNotice')
 
   return `${label}${meta ? ` · ${meta}` : ''}`
 }

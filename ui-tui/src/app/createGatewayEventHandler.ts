@@ -343,7 +343,9 @@ export function createGatewayEventHandler(ctx: GatewayEventHandlerContext): (ev:
           turnController.pushActivity(String(r.warning), 'warn')
         }
       })
-      .catch((e: unknown) => turnController.pushActivity(ti('gateway.commandCatalogUnavailable', { message: rpcErrorMessage(e) }), 'info'))
+      .catch((e: unknown) =>
+        turnController.pushActivity(ti('gateway.commandCatalogUnavailable', { message: rpcErrorMessage(e) }), 'info')
+      )
 
     // Crash recovery: a respawn triggered by an unexpected gateway death
     // resumes the session that was live, not a brand-new one. One-shot — the
@@ -679,7 +681,10 @@ export function createGatewayEventHandler(ctx: GatewayEventHandlerContext): (ev:
         }
 
         if (ev.payload?.preview) {
-          turnController.pushActivity(ti('gateway.protocolNoise', { preview: String(ev.payload.preview).slice(0, 120) }), 'info')
+          turnController.pushActivity(
+            ti('gateway.protocolNoise', { preview: String(ev.payload.preview).slice(0, 120) }),
+            'info'
+          )
         }
 
         return

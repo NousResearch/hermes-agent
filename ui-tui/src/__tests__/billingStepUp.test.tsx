@@ -107,11 +107,11 @@ describe('BillingOverlay — step-up screen (Enable terminal billing)', () => {
 describe('BillingOverlay — overview (reordered, dollars)', () => {
   it('leads with balance in the title, Add funds first, no "credits"', () => {
     const out = render(overlay('overview'))
-    expect(out).toContain('Top up · balance $12.00')   // balance in the title
-    expect(out).toContain('Add funds')                  // buy action, renamed
+    expect(out).toContain('Top up · balance $12.00') // balance in the title
+    expect(out).toContain('Add funds') // buy action, renamed
     expect(out).toContain('Auto-reload')
     expect(out).toContain('Manage on portal')
-    expect(out.toLowerCase()).not.toContain('credits')  // dollars only
+    expect(out.toLowerCase()).not.toContain('credits') // dollars only
     // No standalone "Enable terminal billing" item — discovered at pay time.
     expect(out).not.toContain('Enable terminal billing')
   })
@@ -126,8 +126,22 @@ describe('BillingOverlay — overview (reordered, dollars)', () => {
           status: 'healthy',
           plan_name: 'Plus',
           has_topup: true,
-          plan_bar: { kind: 'plan', remaining_display: '$14.00', total_display: '$20.00', spent_display: '$6.00', pct_used: 30, fill_fraction: 0.7 },
-          topup_bar: { kind: 'topup', remaining_display: '$12.00', total_display: '$12.00', spent_display: '$0.00', pct_used: null, fill_fraction: 1 }
+          plan_bar: {
+            kind: 'plan',
+            remaining_display: '$14.00',
+            total_display: '$20.00',
+            spent_display: '$6.00',
+            pct_used: 30,
+            fill_fraction: 0.7
+          },
+          topup_bar: {
+            kind: 'topup',
+            remaining_display: '$12.00',
+            total_display: '$12.00',
+            spent_display: '$0.00',
+            pct_used: null,
+            fill_fraction: 1
+          }
         }
       }
     }

@@ -69,7 +69,11 @@ export const TodoPanel = memo(function TodoPanel({
           {incomplete && pending > 0 && (
             <Text color={t.color.muted} dim>
               {' '}
-              · {ti('todo.incomplete')} · {ti('todo.still', { count: String(pending), status: pending === 1 ? ti('todo.pending') : ti('todo.inProgress') })}
+              · {ti('todo.incomplete')} ·{' '}
+              {ti('todo.still', {
+                count: String(pending),
+                status: pending === 1 ? ti('todo.pending') : ti('todo.inProgress')
+              })}
             </Text>
           )}
         </Text>

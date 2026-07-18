@@ -2276,13 +2276,6 @@ def _manage_thinking_signatures(
     """
     _THINKING_TYPES = frozenset(("thinking", "redacted_thinking"))
     _is_third_party = _is_third_party_anthropic_endpoint(base_url)
-    # Kimi / DeepSeek share a contract: strip signed Anthropic blocks
-    # (neither upstream can validate Anthropic signatures), preserve unsigned
-    # ones synthesised from reasoning_content.  See #13848, #16748.
-    _preserve_unsigned_thinking = (
-        _is_kimi_family_endpoint(base_url, model)
-        or _is_deepseek_anthropic_endpoint(base_url)
-    )
 
     last_assistant_idx = None
     for i in range(len(result) - 1, -1, -1):
@@ -2294,8 +2287,12 @@ def _manage_thinking_signatures(
         if m.get("role") != "assistant" or not isinstance(m.get("content"), list):
             continue
 
-        if _preserve_unsigned_thinking:
-            # Kimi / DeepSeek: strip signed, preserve unsigned.
+        if _is_kimi_family_endpoint(base_url, model):
+            # Kimi does not enforce thinking signatures — replay as-is
+            # (shared cleanup below still strips cache markers + the internal flag).
+            pass
+        elif _is_deepseek_anthropic_endpoint(base_url):
+            # DeepSeek: strip signed, preserve unsigned.
             new_content = []
             for b in m["content"]:
                 if not isinstance(b, dict) or b.get("type") not in _THINKING_TYPES:

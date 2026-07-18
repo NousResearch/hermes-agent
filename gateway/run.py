@@ -3528,9 +3528,20 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
 
     _VOICE_MODE_PATH = _hermes_home / "gateway_voice_mode.json"
 
-    def _voice_key(self, platform: Platform, chat_id: str) -> str:
-        """Return a platform-namespaced key for voice mode state."""
-        return f"{platform.value}:{chat_id}"
+    def _voice_key(self, platform: Platform, chat_id: str, profile: Optional[str] = None) -> str:
+        """Return a platform- (and profile-) namespaced key for voice mode state.
+
+        The active/default profile keeps the legacy ``platform:chat_id`` form so
+        existing persisted state is preserved. A secondary (multiplexed) profile
+        is namespaced as ``profile:<name>:platform:chat_id`` so two adapters for
+        the same platform in different profiles never share or overwrite each
+        other's voice-mode state.
+        """
+        name = (str(profile).strip() if profile else "") or None
+        base = f"{platform.value}:{chat_id}"
+        if name and name != "default":
+            return f"profile:{name}:{base}"
+        return base
 
     def _load_voice_modes(self) -> Dict[str, str]:
         try:
@@ -14416,16 +14427,30 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             return "You need to be in a voice channel first."
 
         # Wire callbacks BEFORE join so voice input arriving immediately
-        # after connection is not lost.
+        # after connection is not lost. Bind the OWNING adapter and profile into
+        # each callback so a secondary-profile adapter's voice input, timeout
+        # cleanup, and mode lookups act on ITS session — never the default
+        # profile's adapter or voice-mode namespace.
+        owner_profile = getattr(event.source, "profile", None)
         if hasattr(adapter, "_voice_input_callback"):
-            adapter._voice_input_callback = self._handle_voice_channel_input
+            adapter._voice_input_callback = (
+                lambda guild_id, user_id, transcript, _a=adapter, _p=owner_profile:
+                self._handle_voice_channel_input(
+                    guild_id, user_id, transcript, adapter=_a, profile=_p
+                )
+            )
         if hasattr(adapter, "_on_voice_disconnect"):
-            adapter._on_voice_disconnect = self._handle_voice_timeout_cleanup
+            adapter._on_voice_disconnect = (
+                lambda chat_id, _a=adapter, _p=owner_profile:
+                self._handle_voice_timeout_cleanup(chat_id, adapter=_a, profile=_p)
+            )
         # Let the adapter's inactivity timer see the live voice-reply mode so it
         # doesn't disconnect a deliberately text-only (/voice off) session.
         if hasattr(adapter, "_voice_mode_getter"):
-            adapter._voice_mode_getter = lambda chat_id: self._voice_mode.get(
-                self._voice_key(Platform.DISCORD, str(chat_id)), "off"
+            adapter._voice_mode_getter = (
+                lambda chat_id, _p=owner_profile: self._voice_mode.get(
+                    self._voice_key(Platform.DISCORD, str(chat_id), profile=_p), "off"
+                )
             )
 
         try:
@@ -14445,7 +14470,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             adapter._voice_text_channels[guild_id] = int(event.source.chat_id)
             if hasattr(adapter, "_voice_sources"):
                 adapter._voice_sources[guild_id] = event.source.to_dict()
-            self._voice_mode[self._voice_key(event.source.platform, event.source.chat_id)] = "all"
+            self._voice_mode[self._voice_key(event.source.platform, event.source.chat_id, profile=owner_profile)] = "all"
             self._save_voice_modes()
             self._set_adapter_auto_tts_enabled(adapter, event.source.chat_id, enabled=True)
             return (
@@ -14514,21 +14539,31 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         except Exception as e:
             logger.warning("Error leaving voice channel: %s", e)
         # Always clean up state even if leave raised an exception
-        self._voice_mode[self._voice_key(event.source.platform, event.source.chat_id)] = "off"
+        self._voice_mode[
+            self._voice_key(
+                event.source.platform,
+                event.source.chat_id,
+                profile=getattr(event.source, "profile", None),
+            )
+        ] = "off"
         self._save_voice_modes()
         self._set_adapter_auto_tts_disabled(adapter, event.source.chat_id, disabled=True)
         if hasattr(adapter, "_voice_input_callback"):
             adapter._voice_input_callback = None
         return "Left voice channel."
 
-    def _handle_voice_timeout_cleanup(self, chat_id: str) -> None:
+    def _handle_voice_timeout_cleanup(self, chat_id: str, *, adapter=None, profile=None) -> None:
         """Called by the adapter when a voice channel times out.
 
         Cleans up runner-side voice_mode state that the adapter cannot reach.
+        ``adapter``/``profile`` identify the OWNING adapter so a secondary
+        profile's timeout never clears the default adapter's auto-TTS state or
+        the wrong voice-mode namespace.
         """
-        self._voice_mode[self._voice_key(Platform.DISCORD, chat_id)] = "off"
+        self._voice_mode[self._voice_key(Platform.DISCORD, chat_id, profile=profile)] = "off"
         self._save_voice_modes()
-        adapter = self.adapters.get(Platform.DISCORD)
+        if adapter is None:
+            adapter = self._authorization_adapter(Platform.DISCORD, profile)
         self._set_adapter_auto_tts_disabled(adapter, chat_id, disabled=True)
 
     def _is_duplicate_voice_transcript(self, guild_id: int, user_id: int, transcript: str) -> bool:
@@ -14573,14 +14608,18 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         return False
 
     async def _handle_voice_channel_input(
-        self, guild_id: int, user_id: int, transcript: str
+        self, guild_id: int, user_id: int, transcript: str, *, adapter=None, profile=None
     ):
         """Handle transcribed voice from a user in a voice channel.
 
         Creates a synthetic MessageEvent and processes it through the
         adapter's full message pipeline (session, typing, agent, TTS reply).
+        ``adapter``/``profile`` identify the OWNING adapter so voice input on a
+        secondary profile is processed by ITS adapter and session, never the
+        default profile's.
         """
-        adapter = self.adapters.get(Platform.DISCORD)
+        if adapter is None:
+            adapter = self._authorization_adapter(Platform.DISCORD, profile) or self.adapters.get(Platform.DISCORD)
         if not adapter:
             return
 
@@ -14603,6 +14642,10 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 user_name=str(user_id),
                 chat_type="channel",
             )
+        # Namespace the synthetic voice turn to the owning profile so the session
+        # store, authorization, and reply routing resolve the right adapter.
+        if getattr(source, "profile", None) is None and profile:
+            source.profile = profile
 
         # Check authorization before processing voice input
         if not self._is_user_authorized(source):
@@ -14662,7 +14705,14 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             return False
 
         chat_id = event.source.chat_id
-        voice_mode = self._voice_mode.get(self._voice_key(event.source.platform, chat_id), "off")
+        voice_mode = self._voice_mode.get(
+            self._voice_key(
+                event.source.platform,
+                chat_id,
+                profile=getattr(event.source, "profile", None),
+            ),
+            "off",
+        )
         is_voice_input = (event.message_type == MessageType.VOICE)
 
         should = (

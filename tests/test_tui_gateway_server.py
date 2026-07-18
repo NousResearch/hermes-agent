@@ -1137,7 +1137,10 @@ def test_voice_toggle_tts_branch_also_carries_record_key(monkeypatch):
         ),
     )
     monkeypatch.setenv("HERMES_VOICE", "1")
-    monkeypatch.delenv("HERMES_VOICE_TTS", raising=False)
+    # Own the variable before dispatch mutates it. ``delenv(..., raising=False)``
+    # does not register teardown when the key starts absent, which leaked TTS=1
+    # into later tests and made the fake "partial answer complete" reply audible.
+    monkeypatch.setenv("HERMES_VOICE_TTS", "0")
 
     tts_resp = server.dispatch(
         {"id": "voice-tts", "method": "voice.toggle", "params": {"action": "tts"}}
@@ -8371,7 +8374,8 @@ def test_browser_manage_connect_default_local_retries_after_launch(monkeypatch):
     monkeypatch.setattr(urllib.request, "urlopen", _opener)
     with patch.dict(sys.modules, {"tools.browser_tool": fake}):
         with patch(
-            "hermes_cli.browser_connect.try_launch_chrome_debug", return_value=True
+            "hermes_cli.browser_connect.launch_chrome_debug",
+            return_value=ChromeDebugLaunch(launched=True),
         ):
             resp = server.handle_request(
                 {"id": "1", "method": "browser.manage", "params": {"action": "connect"}}

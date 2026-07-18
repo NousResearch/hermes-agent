@@ -19,6 +19,7 @@ from tools.checkpoint_manager import (
     _ref_name,
     _project_meta_path,
     _touch_project,
+    _dir_file_count,
 )
 from tools.checkpoint_maintenance import (
     clear_all, clear_legacy, maybe_auto_prune_checkpoints, prune_checkpoints, store_status,
@@ -784,6 +785,33 @@ class TestErrorResilience:
         monkeypatch.setattr("shutil.which", lambda *args, **kwargs: None)
         mgr.new_turn()
         assert mgr.ensure_checkpoint(str(work_dir), "test") is False
+
+
+class TestDirFileCount:
+    """The 50k-file breadth guard counts only what a snapshot would stage."""
+
+    def test_checkpoint_guard_ignores_default_excluded_trees(
+        self, mgr, work_dir, monkeypatch
+    ):
+        monkeypatch.setattr("tools.checkpoint_manager._MAX_FILES", 5)
+        build_dir = Path(work_dir) / "build"
+        build_dir.mkdir()
+        for idx in range(10):
+            (build_dir / f"generated-{idx}.o").write_text("generated")
+
+        assert mgr.ensure_checkpoint(work_dir, "before_edit") is True
+
+    def test_checkpoint_guard_counts_retained_files_and_stops_at_limit(
+        self, mgr, work_dir, monkeypatch
+    ):
+        monkeypatch.setattr("tools.checkpoint_manager._MAX_FILES", 5)
+        source_dir = Path(work_dir) / "src"
+        source_dir.mkdir()
+        for idx in range(10):
+            (source_dir / f"module-{idx}.py").write_text("pass\n")
+
+        assert _dir_file_count(work_dir) == 6
+        assert mgr.ensure_checkpoint(work_dir, "before_edit") is False
 
 
 class TestTouchProjectMalformedMeta:

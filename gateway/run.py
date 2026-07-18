@@ -683,6 +683,36 @@ def _float_env(name: str, default: float) -> float:
         return float(default)
 
 
+_GATEWAY_TURN_OVERRIDE_KEYS = ("service_tier", "speed")
+
+
+def _merge_gateway_turn_request_overrides(
+    existing_overrides: Optional[Dict[str, Any]],
+    turn_overrides: Optional[Dict[str, Any]],
+) -> Dict[str, Any]:
+    """Merge per-turn gateway overrides without dropping provider defaults.
+
+    ``AIAgent.__init__`` may add persistent request overrides such as custom
+    provider ``extra_body``.  Gateway turns also need transient overrides for
+    fast/priority mode.  Replacing the whole dict loses the provider defaults;
+    merging blindly leaves stale fast-mode keys after users switch back to
+    normal.  Preserve persistent fields, clear known turn-scoped keys, then
+    apply the current turn's override payload.
+    """
+    merged = dict(existing_overrides or {})
+    for key in _GATEWAY_TURN_OVERRIDE_KEYS:
+        merged.pop(key, None)
+
+    turn = dict(turn_overrides or {})
+    existing_extra = merged.get("extra_body")
+    turn_extra = turn.get("extra_body")
+    if isinstance(existing_extra, dict) and isinstance(turn_extra, dict):
+        turn["extra_body"] = {**existing_extra, **turn_extra}
+
+    merged.update(turn)
+    return merged
+
+
 def _is_fresh_gateway_interruption(
     value: Any,
     *,
@@ -19691,7 +19721,10 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             agent.event_callback = _event_callback_sync
             agent.reasoning_config = reasoning_config
             agent.service_tier = self._service_tier
-            agent.request_overrides = turn_route.get("request_overrides") or {}
+            agent.request_overrides = _merge_gateway_turn_request_overrides(
+                getattr(agent, "request_overrides", None),
+                turn_route.get("request_overrides"),
+            )
 
             _bg_review_release = threading.Event()
             _bg_review_pending: list[str] = []

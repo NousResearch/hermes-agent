@@ -142,6 +142,58 @@ def test_turn_route_skips_priority_processing_for_unsupported_models():
     assert route["request_overrides"] == {}
 
 
+def test_gateway_turn_overrides_preserve_custom_provider_extra_body():
+    existing = {
+        "extra_body": {
+            "enable_thinking": True,
+            "reasoning_effort": "high",
+        }
+    }
+
+    merged = gateway_run._merge_gateway_turn_request_overrides(existing, {})
+
+    assert merged == existing
+
+
+def test_gateway_turn_overrides_merge_fast_extra_body_without_stale_keys():
+    existing = {
+        "speed": "fast",
+        "service_tier": "priority",
+        "extra_body": {
+            "enable_thinking": True,
+            "reasoning_effort": "high",
+        },
+    }
+    turn = {
+        "extra_body": {
+            "speed": "fast",
+            "reasoning_effort": "low",
+        }
+    }
+
+    merged = gateway_run._merge_gateway_turn_request_overrides(existing, turn)
+
+    assert merged == {
+        "extra_body": {
+            "enable_thinking": True,
+            "reasoning_effort": "low",
+            "speed": "fast",
+        }
+    }
+
+
+def test_gateway_turn_overrides_clear_stale_fast_mode_keys():
+    existing = {
+        "speed": "fast",
+        "service_tier": "priority",
+        "top_p": 0.9,
+    }
+
+    merged = gateway_run._merge_gateway_turn_request_overrides(existing, {})
+
+    assert merged == {"top_p": 0.9}
+
+
 @pytest.mark.asyncio
 async def test_handle_fast_command_persists_config(monkeypatch, tmp_path):
     runner = _make_runner()
@@ -163,6 +215,11 @@ async def test_handle_fast_command_persists_config(monkeypatch, tmp_path):
 async def test_run_agent_passes_priority_processing_to_gateway_agent(monkeypatch, tmp_path):
     _install_fake_agent(monkeypatch)
     runner = _make_runner()
+
+    async def _run_direct(func, *args):
+        return func(*args)
+
+    runner._run_in_executor_with_context = _run_direct
 
     (tmp_path / "config.yaml").write_text("agent:\n  service_tier: fast\n", encoding="utf-8")
     monkeypatch.setattr(gateway_run, "_hermes_home", tmp_path)

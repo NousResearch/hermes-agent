@@ -460,6 +460,13 @@ export function useSubmitPrompt(deps: SubmitPromptDeps) {
             requestGateway('prompt.submit', { session_id: sessionId, text }, PROMPT_SUBMIT_REQUEST_TIMEOUT_MS)
           )
         } catch (firstErr) {
+          // A profile/session switch can finish while prompt.submit is in
+          // flight. Its 4007 belongs to the abandoned context; never try to
+          // resume that old durable id through the newly active gateway.
+          if (sessionContextDrifted()) {
+            return abortForSessionSwitch(sessionId)
+          }
+
           const recoverStoredSessionId = targetStoredSessionId ?? selectedStoredSessionIdRef.current
 
           if ((isSessionNotFoundError(firstErr) || isGatewayTimeoutError(firstErr)) && recoverStoredSessionId) {
@@ -468,10 +475,23 @@ export function useSubmitPrompt(deps: SubmitPromptDeps) {
             // backend loop (#55578 symptom d) rejects the submit even though
             // the stored session is fine — resume + retry instead of erroring
             // out and losing the session binding.
-            const resumed = await requestGateway<{ session_id: string }>('session.resume', {
-              session_id: recoverStoredSessionId,
-              source: 'desktop'
-            })
+            let resumed: { session_id: string } | undefined
+
+            try {
+              resumed = await requestGateway<{ session_id: string }>('session.resume', {
+                session_id: recoverStoredSessionId,
+                source: 'desktop'
+              })
+            } catch (resumeErr) {
+              // The switch may have happened after the pre-resume guard while
+              // this RPC was awaiting its response. Treat that as a silent
+              // cancellation; otherwise preserve the original error behavior.
+              if (sessionContextDrifted()) {
+                return abortForSessionSwitch(sessionId)
+              }
+
+              throw resumeErr
+            }
 
             if (sessionContextDrifted()) {
               return abortForSessionSwitch(sessionId)

@@ -4,10 +4,14 @@ import json
 import pytest
 
 from tools.cronjob_tools import (
+    _creation_admission_error,
+    _cron_minute_field_min_gap_seconds,
+    _schedule_interval_seconds,
     _scan_cron_prompt,
     check_cronjob_requirements,
     cronjob,
 )
+from cron.jobs import parse_schedule
 
 
 # =========================================================================
@@ -704,9 +708,11 @@ class TestLocalDeliveryNotice:
         assert "deliver='telegram'" in created["message"]
 
     def test_explicit_origin_no_origin_emits_notice(self):
+        # deliver='origin' with a daily cadence (the sub-hourly-origin gate,
+        # Rule #5 I1, blocks 'every 2m' — see TestOriginSubHourlyAdmission).
         created = json.loads(
             cronjob(
-                action="create", prompt="x", schedule="every 2m", deliver="origin"
+                action="create", prompt="x", schedule="0 9 * * *", deliver="origin"
             )
         )
         assert created["deliver"] == "origin"
@@ -794,3 +800,142 @@ class TestValidateCronBaseUrl:
 
     def test_base_url_without_provider_rejected(self):
         assert self._v(None, "https://x.example/v1") is not None
+
+
+# =========================================================================
+# Rule #5 I1 — deliver=origin sub-hourly session-pollution hard block
+# (create/update-time gate mirroring cron-config-lint; caught the
+# rsd-dropbox-finalize job — origin + every 10m — only after creation, 2026-07-18)
+# =========================================================================
+class TestOriginSubHourlyAdmission:
+    def _err(self, deliver, schedule_str, enabled=True):
+        return _creation_admission_error({
+            "deliver": deliver,
+            "enabled": enabled,
+            "schedule": parse_schedule(schedule_str),
+        })
+
+    # ---- interval helper agrees with the lint's cadence math ----
+    def test_interval_minutes(self):
+        assert _schedule_interval_seconds(parse_schedule("every 10m")) == 600
+
+    def test_interval_hourly(self):
+        assert _schedule_interval_seconds(parse_schedule("every 2h")) == 7200
+
+    def test_cron_stepped_minute(self):
+        assert _schedule_interval_seconds(parse_schedule("*/15 * * * *")) == 900
+
+    def test_cron_fixed_minute_is_hourly(self):
+        assert _schedule_interval_seconds(parse_schedule("0 9 * * *")) == 3600
+
+    # ---- comma/range/step minute forms (the Greptile bypass, PR #397) ----
+    def test_cron_comma_minute_gap(self):
+        # 0,30 * * * * fires twice an hour → 30-minute min gap → sub-hourly.
+        assert _schedule_interval_seconds(parse_schedule("0,30 * * * *")) == 1800
+
+    def test_cron_comma_quarter_hour_gap(self):
+        assert _schedule_interval_seconds(parse_schedule("0,15,30,45 * * * *")) == 900
+
+    def test_cron_range_minute_gap(self):
+        # 0-29 * * * * fires every minute 0..29 → 1-minute min gap.
+        assert _schedule_interval_seconds(parse_schedule("0-29 * * * *")) == 60
+
+    def test_cron_stepped_range_minute_gap(self):
+        # 0-59/10 → 0,10,20,30,40,50 → 10-minute min gap.
+        assert _schedule_interval_seconds(parse_schedule("0-59/10 * * * *")) == 600
+
+    def test_cron_irregular_comma_uses_min_gap(self):
+        # 0,5 * * * * → gaps {5, 55} → min 5m (the tightest gap is what pollutes).
+        assert _schedule_interval_seconds(parse_schedule("0,5 * * * *")) == 300
+
+    def test_cron_start_with_step_form(self):
+        # 0/30 * * * * = start at 0, step 30 to 59 → {0,30} → 30-minute gap.
+        assert _schedule_interval_seconds(parse_schedule("0/30 * * * *")) == 1800
+
+    def test_cron_start_with_step_quarter_hour(self):
+        # 0/15 → {0,15,30,45} → 15-minute gap.
+        assert _schedule_interval_seconds(parse_schedule("0/15 * * * *")) == 900
+
+    def test_cron_start_with_step_offset_base(self):
+        # 5/20 → {5,25,45} → min gap 20m (wrap 5+60-45=20).
+        assert _schedule_interval_seconds(parse_schedule("5/20 * * * *")) == 1200
+
+    def test_once_has_no_interval(self):
+        assert _schedule_interval_seconds(parse_schedule("30m")) is None
+
+    def test_min_gap_matches_croniter_ground_truth(self):
+        # Ground-truth the whole minute-field parser against croniter (the real
+        # cron engine parse_schedule validates with) so no minute form silently
+        # over-reports its cadence and bypasses the gate. Covers */N, comma,
+        # range, stepped range, N/step, offset bases, and boundary cases.
+        croniter = pytest.importorskip("croniter").croniter
+        import datetime
+
+        def truth(minute_field):
+            base = datetime.datetime(2020, 1, 1, 0, 0)
+            it = croniter(f"{minute_field} * * * *", base)
+            fires = []
+            for _ in range(200):
+                t = it.get_next(datetime.datetime)
+                fires.append(t)
+                if t >= base + datetime.timedelta(hours=2):
+                    break
+            gaps = [(fires[i + 1] - fires[i]).total_seconds() for i in range(len(fires) - 1)]
+            return int(min(gaps)) if gaps else None
+
+        forms = [
+            "*", "*/1", "*/5", "*/10", "*/15", "*/30", "0", "30", "0,30",
+            "0,15,30,45", "0,5", "0-29", "0-59/10", "0/30", "0/15", "5/20",
+            "0/60", "1-59/2", "10-20", "0,10,40", "15", "*/7", "0-10/3",
+            "59", "0/59",
+        ]
+        for m in forms:
+            assert _cron_minute_field_min_gap_seconds(m) == truth(m), (
+                f"minute field {m!r}: parser disagrees with croniter"
+            )
+
+    # ---- the block: origin + sub-hourly is refused ----
+    def test_origin_every_10m_blocked(self):
+        # The exact rsd-dropbox-finalize shape.
+        err = self._err("origin", "every 10m")
+        assert err is not None and "session pollution" in err
+
+    def test_origin_stepped_cron_blocked(self):
+        assert self._err("origin", "*/15 * * * *") is not None
+
+    def test_origin_every_minute_cron_blocked(self):
+        assert self._err("origin", "* * * * *") is not None
+
+    def test_origin_comma_minute_blocked(self):
+        # The Greptile bypass: 0,30 * * * * = every 30m, must be blocked.
+        assert self._err("origin", "0,30 * * * *") is not None
+
+    def test_origin_range_minute_blocked(self):
+        assert self._err("origin", "0-29 * * * *") is not None
+
+    def test_origin_stepped_range_minute_blocked(self):
+        assert self._err("origin", "0-59/10 * * * *") is not None
+
+    def test_origin_start_with_step_blocked(self):
+        # The N/step Greptile bypass: 0/30 = every 30m, must be blocked.
+        assert self._err("origin", "0/30 * * * *") is not None
+        assert self._err("origin", "0/15 * * * *") is not None
+
+    # ---- admissible shapes are NOT blocked ----
+    def test_origin_hourly_allowed(self):
+        assert self._err("origin", "every 1h") is None
+
+    def test_origin_daily_allowed(self):
+        assert self._err("origin", "0 9 * * *") is None
+
+    def test_origin_once_allowed(self):
+        assert self._err("origin", "30m") is None  # parses to a one-shot
+
+    def test_non_origin_subhourly_allowed(self):
+        # Same fast cadence but delivering to a channel is fine.
+        assert self._err("discord:123", "every 10m") is None
+        assert self._err("local", "every 5m") is None
+
+    def test_disabled_origin_subhourly_allowed(self):
+        # A paused/disabled job can't pollute; don't block it.
+        assert self._err("origin", "every 10m", enabled=False) is None

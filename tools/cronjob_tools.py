@@ -480,6 +480,119 @@ def _creation_admission_warnings(job: Dict[str, Any]) -> List[str]:
     return warnings
 
 
+# Session-pollution floor for deliver=origin (mirrors cron-config-lint Rule #5
+# I1). A recurring job that delivers into the originating conversation MORE than
+# once an hour spams Ace's live session on every tick — this is never intentional
+# (an ops receipt/heartbeat belongs in #logs, not the session), so unlike the
+# no-cap case in _creation_admission_warnings it is a HARD block at create/update
+# time, not a warning. Caught the rsd-dropbox-finalize job (deliver=origin +
+# every 10m) only AFTER creation via the daily lint, 2026-07-18.
+_ORIGIN_SUBHOURLY_FLOOR_SECONDS = 3600
+
+
+def _cron_minute_field_min_gap_seconds(minute: str) -> Optional[int]:
+    """Smallest gap between consecutive fires (seconds) for a 5-field cron's
+    MINUTE field, assuming the hour/day fields permit firing each hour.
+
+    Expands every form the minute field can take — ``*``, ``*/N``, comma lists
+    (``0,30``), ranges (``0-29``), stepped ranges (``0-59/10``), and the
+    start-with-step form (``N/step`` = start at N, step to 59, e.g. ``0/30`` →
+    ``{0,30}``) — into the concrete set of fire-minutes, then returns the minimum
+    gap between consecutive fires INCLUDING the wrap across the hour boundary (so
+    a job that fires only at :00 has a 3600s gap, but ``0,30`` has 1800s).
+    Returns None if the field can't be parsed. This closes the bypass where
+    non-``*/N`` minute forms fell through to a flat hourly assumption (Greptile,
+    PR #397).
+    """
+    fires: set[int] = set()
+    for token in minute.split(","):
+        token = token.strip()
+        if not token:
+            continue
+        step = 1
+        has_step = "/" in token
+        if has_step:
+            base, _, step_s = token.partition("/")
+            if not step_s.isdigit() or int(step_s) <= 0:
+                return None
+            step = int(step_s)
+        else:
+            base = token
+        if base == "*":
+            lo, hi = 0, 59
+        elif "-" in base:
+            lo_s, _, hi_s = base.partition("-")
+            if not (lo_s.isdigit() and hi_s.isdigit()):
+                return None
+            lo, hi = int(lo_s), int(hi_s)
+        elif base.isdigit():
+            # Cron semantics: a bare number WITH a step (``N/step``) means "start
+            # at N, fire every step up to 59" — so the upper bound is 59, not N.
+            # A bare number WITHOUT a step is a single fire at N.
+            lo = int(base)
+            hi = 59 if has_step else lo
+        else:
+            return None
+        if not (0 <= lo <= 59 and 0 <= hi <= 59 and lo <= hi):
+            return None
+        fires.update(range(lo, hi + 1, step))
+    if not fires:
+        return None
+    mins = sorted(fires)
+    if len(mins) == 1:
+        return 3600  # fires once per hour
+    gaps = [(b - a) for a, b in zip(mins, mins[1:])]
+    gaps.append((mins[0] + 60) - mins[-1])  # wrap across the hour boundary
+    return min(gaps) * 60
+
+
+def _schedule_interval_seconds(schedule: Optional[Dict[str, Any]]) -> Optional[int]:
+    """Best-effort seconds between fires for a PARSED schedule dict; None if
+    unknown / one-shot. Mirrors cron-config-lint.interval_seconds so the
+    create-time gate and the after-the-fact lint agree on cadence."""
+    if not isinstance(schedule, dict):
+        return None
+    kind = schedule.get("kind")
+    if kind == "interval":
+        minutes = schedule.get("minutes")
+        if isinstance(minutes, (int, float)) and minutes > 0:
+            return int(minutes * 60)
+        return None
+    if kind == "cron":
+        expr = schedule.get("expr") or schedule.get("display") or ""
+        parts = expr.split()
+        if len(parts) == 5:
+            return _cron_minute_field_min_gap_seconds(parts[0])
+    return None
+
+
+def _creation_admission_error(job: Dict[str, Any]) -> Optional[str]:
+    """Return a hard-block error string for a cron shape that must be refused at
+    create/update time, or None if the job is admissible.
+
+    Currently a single rule: deliver=origin on a sub-hourly recurring job
+    (Rule #5 I1). Session-pollution every <1h is never a deliberate choice, so
+    this blocks the create rather than warning after the fact.
+    """
+    if (job.get("deliver") or "").strip().lower() != "origin":
+        return None
+    if not job.get("enabled", True):
+        return None
+    schedule = job.get("schedule") or {}
+    if schedule.get("kind") == "once":
+        return None
+    secs = _schedule_interval_seconds(schedule)
+    if secs is not None and secs < _ORIGIN_SUBHOURLY_FLOOR_SECONDS:
+        mins = max(1, secs // 60)
+        return (
+            f"deliver='origin' on a sub-hourly job (every ~{mins}m) would append to "
+            "Ace's live session on every tick (session pollution). Use "
+            "deliver='discord'/'telegram'/a specific channel for an ops receipt/"
+            "heartbeat, or make the cadence hourly-or-slower. (cron Rule #5 I1)"
+        )
+    return None
+
+
 def _repeat_display(job: Dict[str, Any]) -> str:
     times = (job.get("repeat") or {}).get("times")
     completed = (job.get("repeat") or {}).get("completed", 0)
@@ -933,6 +1046,19 @@ def cronjob(
                             success=False,
                         )
 
+            # Reject a session-polluting shape BEFORE persisting it (Rule #5 I1):
+            # deliver=origin on a sub-hourly recurring job. Build a preview from
+            # the same inputs create_job() will use so the gate reads the real
+            # parsed schedule/deliver.
+            _preview_job = {
+                "deliver": _normalize_deliver_param(deliver),
+                "enabled": True,
+                "schedule": parse_schedule(schedule),
+            }
+            _admission_error = _creation_admission_error(_preview_job)
+            if _admission_error:
+                return tool_error(_admission_error, success=False)
+
             job = create_job(
                 prompt=prompt or "",
                 schedule=schedule,
@@ -1165,6 +1291,15 @@ def cronjob(
                     updates["enabled"] = True
             if not updates:
                 return tool_error("No updates provided.", success=False)
+            # Re-validate the session-pollution floor on the EFFECTIVE job (Rule
+            # #5 I1). An update that flips deliver→origin, tightens the cadence,
+            # or re-enables a paused job could introduce the sub-hourly-origin
+            # shape; merge this update over the stored job and refuse it here
+            # rather than letting the daily lint catch it after it fires.
+            _effective_job = {**job, **updates}
+            _admission_error = _creation_admission_error(_effective_job)
+            if _admission_error:
+                return tool_error(_admission_error, success=False)
             updated = update_job(job_id, updates)
             if not updated:
                 return tool_error(f"Failed to update cron job '{job_id}'.", success=False)

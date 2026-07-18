@@ -592,10 +592,18 @@ def _try_resolve_from_custom_pool(
         pool_api_key = getattr(entry, "runtime_api_key", None) or getattr(entry, "access_token", "")
         if not pool_api_key:
             return None
+        # Use the selected entry's own base_url when it carries one, so that
+        # per-credential endpoint rotation (e.g. multiple Cloudflare accounts
+        # with distinct account IDs in the URL path) actually hits the right
+        # endpoint on the FIRST request after pool selection.  Falling back to
+        # the caller-supplied base_url preserves behaviour for entries that
+        # were seeded without a per-credential URL (the pre-#54524 path).
+        entry_base_url = (getattr(entry, "base_url", None) or "").strip().rstrip("/")
+        effective_base_url = entry_base_url or base_url
         return {
             "provider": provider_label,
-            "api_mode": api_mode_override or _detect_api_mode_for_url(base_url) or "chat_completions",
-            "base_url": base_url,
+            "api_mode": api_mode_override or _detect_api_mode_for_url(effective_base_url) or "chat_completions",
+            "base_url": effective_base_url,
             "api_key": pool_api_key,
             "source": f"pool:{pool_key}",
             "credential_pool": pool,

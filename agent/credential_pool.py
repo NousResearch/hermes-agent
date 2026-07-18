@@ -437,11 +437,25 @@ def get_custom_provider_pool_key(base_url: Optional[str], provider_name: Optiona
             if norm_name == normalized_name:
                 return f"{CUSTOM_POOL_PREFIX}{norm_name}"
 
-    # Fall back to base_url matching (original behavior)
+    # Fall back to base_url matching (original behavior).  We check BOTH the
+    # top-level entry base_url AND any nested ``credentials[].base_url`` values
+    # added by #54524, so that an agent whose base_url was switched to a
+    # secondary credential's endpoint (after pool rotation) still resolves
+    # back to the same pool key.  Without this, the recovery guard in
+    # ``recover_with_credential_pool`` fails to recognise the agent as a
+    # member of the pool and skips rotation/refresh (teknium1 review, Jul 2026).
     for norm_name, entry in _iter_custom_providers():
         entry_url = str(entry.get("base_url") or "").strip().rstrip("/")
         if entry_url and entry_url == normalized_url:
             return f"{CUSTOM_POOL_PREFIX}{norm_name}"
+        nested_credentials = entry.get("credentials")
+        if isinstance(nested_credentials, list):
+            for cred in nested_credentials:
+                if not isinstance(cred, dict):
+                    continue
+                cred_url = str(cred.get("base_url") or "").strip().rstrip("/")
+                if cred_url and cred_url == normalized_url:
+                    return f"{CUSTOM_POOL_PREFIX}{norm_name}"
     return None
 
 

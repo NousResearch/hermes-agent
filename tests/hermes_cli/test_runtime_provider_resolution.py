@@ -3287,6 +3287,7 @@ def test_auto_provider_lookalike_cloud_host_does_not_bypass_to_cloud(monkeypatch
 
 
 # ---------------------------------------------------------------------------
+# ---------------------------------------------------------------------------
 # extra_headers support for named custom providers (#3526 salvage)
 # ---------------------------------------------------------------------------
 
@@ -3439,3 +3440,69 @@ def test_resolve_named_custom_runtime_pool_result_includes_extra_headers(monkeyp
     assert resolved["source"] == "pool:lmstudio-pool"
     assert resolved["provider"] == "custom"
     assert resolved["requested_provider"] == "custom:lmstudio"
+
+
+# ---------------------------------------------------------------------------
+# Regression: _try_resolve_from_custom_pool must return the selected entry's
+# base_url, not the caller-supplied primary URL (teknium1 sweeper review,
+# Jul 2026).  When the pool selects a secondary credential with a distinct
+# per-account endpoint (PR #54524), the first request must go to that
+# credential's endpoint, not the primary's.
+# ---------------------------------------------------------------------------
+
+
+def test_try_resolve_from_custom_pool_uses_entry_base_url(tmp_path, monkeypatch):
+    """When the pool selects an entry whose base_url differs from the primary,
+    _try_resolve_from_custom_pool must return the entry's URL."""
+    from types import SimpleNamespace
+    from hermes_cli import runtime_provider as rp
+
+    primary_url = "https://api.cloudflare.com/client/v4/accounts/ACCOUNT_1/ai/v1"
+    entry_url = "https://api.cloudflare.com/client/v4/accounts/ACCOUNT_2/ai/v1"
+
+    fake_entry = SimpleNamespace(
+        runtime_api_key="cf-key-2",
+        access_token="cf-key-2",
+        base_url=entry_url,
+    )
+    fake_pool = SimpleNamespace(
+        has_credentials=lambda: True,
+        select=lambda: fake_entry,
+    )
+
+    monkeypatch.setattr(rp, "get_custom_provider_pool_key", lambda url, provider_name=None: "custom:cloudflare-workers-ai")
+    monkeypatch.setattr(rp, "load_pool", lambda key: fake_pool)
+
+    result = rp._try_resolve_from_custom_pool(primary_url, "custom")
+    assert result is not None, "pool resolution returned None despite a valid entry"
+    assert result["base_url"] == entry_url, (
+        f"expected entry's base_url {entry_url!r}, got {result['base_url']!r}"
+    )
+
+
+def test_try_resolve_from_custom_pool_falls_back_to_caller_url(tmp_path, monkeypatch):
+    """When the selected entry has no base_url (legacy/primary entry), the
+    caller-supplied base_url must be used (backward compatibility)."""
+    from types import SimpleNamespace
+    from hermes_cli import runtime_provider as rp
+
+    primary_url = "https://api.cloudflare.com/client/v4/accounts/ACCOUNT_1/ai/v1"
+
+    fake_entry = SimpleNamespace(
+        runtime_api_key="cf-key-1",
+        access_token="cf-key-1",
+        base_url=None,
+    )
+    fake_pool = SimpleNamespace(
+        has_credentials=lambda: True,
+        select=lambda: fake_entry,
+    )
+
+    monkeypatch.setattr(rp, "get_custom_provider_pool_key", lambda url, provider_name=None: "custom:cloudflare-workers-ai")
+    monkeypatch.setattr(rp, "load_pool", lambda key: fake_pool)
+
+    result = rp._try_resolve_from_custom_pool(primary_url, "custom")
+    assert result is not None
+    assert result["base_url"] == primary_url, (
+        f"expected caller base_url {primary_url!r}, got {result['base_url']!r}"
+    )

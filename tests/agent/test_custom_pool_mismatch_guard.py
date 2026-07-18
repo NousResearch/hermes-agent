@@ -101,3 +101,39 @@ class TestCustomPoolMismatchGuard:
         )
         assert recovered is False
         assert not pool.method_calls
+
+
+# ---------------------------------------------------------------------------
+# Regression: nested credentials[].base_url (PR #54524 follow-up).
+# teknium1 sweeper review (Jul 2026): after rotation switches the agent to a
+# secondary credential's base_url, the recovery guard in
+# recover_with_credential_pool must still recognise the agent as a member of
+# the pool.  get_custom_provider_pool_key now matches nested credential URLs
+# (fix #2), so the guard stays armed for foreign endpoints but admits nested
+# URLs from the same provider.
+# ---------------------------------------------------------------------------
+
+
+class TestNestedCredentialUrlGuard:
+    def test_secondary_credential_url_reaches_recovery(self):
+        """Agent rotated to a nested credential's base_url must still pass the
+        mismatch guard and reach pool recovery (rotation/refresh)."""
+        secondary_url = (
+            "https://api.cloudflare.com/client/v4/accounts/ACCOUNT_2/ai/v1"
+        )
+        agent, pool = _agent("custom", secondary_url, "custom:cloudflare-workers-ai")
+        pool.current.return_value = None
+        with patch(
+            "agent.credential_pool.get_custom_provider_pool_key",
+            return_value="custom:cloudflare-workers-ai",
+        ):
+            recover_with_credential_pool(
+                agent,
+                status_code=429,
+                has_retried_429=False,
+                classified_reason=FailoverReason.rate_limit,
+            )
+        assert pool.current.called, (
+            "guard short-circuited on a nested credential URL: pool never "
+            "touched despite the agent still belonging to the same pool"
+        )

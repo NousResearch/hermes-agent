@@ -250,3 +250,9 @@ class TestPersistBootFingerprint:
         assert source.index("purge_stale_gateway_pycache_before_import()") < source.index(
             "from gateway.run import start_gateway"
         )
+
+    def test_direct_module_execution_fails_closed(self):
+        run_source = Path(__file__).parents[1] / "gateway" / "run.py"
+        source = run_source.read_text(encoding="utf-8")
+
+        assert "Direct module execution is unsupported" in source

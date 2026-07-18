@@ -22361,4 +22361,7 @@ def _exit_after_graceful_shutdown(exit_code: int) -> None:
 
 
 if __name__ == "__main__":
-    main()
+    raise SystemExit(
+        "Direct module execution is unsupported; use `hermes gateway run` so "
+        "the pre-import bootstrap can validate the checkout."
+    )

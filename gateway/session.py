@@ -190,6 +190,17 @@ class SessionSource:
     auto_thread_created: bool = False
     auto_thread_initial_name: Optional[str] = None
 
+    # Per-route toolset override carried from a webhook subscription's route
+    # config (mirrors the cron job's ``enabled_toolsets`` field). When set, the
+    # gateway resolves the agent's toolsets from THIS list instead of the
+    # platform default. None => fall back to platform default (existing behavior
+    # for all non-webhook sources). Empty list [] is distinct from None —
+    # it means "explicitly no extra toolsets," not "unset."
+    # Intentionally included in to_dict/from_dict so a resumed webhook session
+    # keeps its toolset scope (unlike delivered_via_upstream_relay, this is a
+    # routing directive, not a forgeable trust signal).
+    enabled_toolsets: Optional[List[str]] = None
+
     # Internal, wire-INVISIBLE trust signal: True when this event was delivered
     # to the gateway over the per-instance-authenticated relay WebSocket (the
     # Team Gateway connector). The connector authenticates the gateway's socket
@@ -267,6 +278,8 @@ class SessionSource:
             d["auto_thread_created"] = True
         if self.auto_thread_initial_name:
             d["auto_thread_initial_name"] = self.auto_thread_initial_name
+        if self.enabled_toolsets is not None:
+            d["enabled_toolsets"] = list(self.enabled_toolsets)
         return d
 
     @classmethod
@@ -290,6 +303,7 @@ class SessionSource:
             profile=data.get("profile"),
             auto_thread_created=bool(data.get("auto_thread_created", False)),
             auto_thread_initial_name=data.get("auto_thread_initial_name"),
+            enabled_toolsets=data.get("enabled_toolsets"),
         )
     
 

@@ -826,6 +826,13 @@ class WebhookAdapter(BasePlatformAdapter):
         )
         if profile and isinstance(profile, str):
             source.profile = profile
+        # Thread per-route toolset override onto the source so run.py can honor
+        # it at toolset resolution (mirrors cron job enabled_toolsets behavior).
+        # isinstance guard: absent or non-list value leaves source.enabled_toolsets
+        # as None, which falls back to platform default — correct fail-safe.
+        _route_toolsets = route_config.get("enabled_toolsets")
+        if isinstance(_route_toolsets, list):
+            source.enabled_toolsets = _route_toolsets
         event = MessageEvent(
             text=prompt,
             message_type=MessageType.TEXT,

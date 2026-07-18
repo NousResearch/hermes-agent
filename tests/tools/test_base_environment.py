@@ -7,6 +7,21 @@ init_session() failure handling, and the CWD marker contract.
 from unittest.mock import MagicMock
 
 from tools.environments.base import BaseEnvironment, _BoundedOutputCollector
+from tools.environments.local import _find_bash, _quote_bash_path
+
+
+def _test_bash() -> str:
+    """Return the same validated bash executable used by LocalEnvironment."""
+    import os
+    import pytest
+
+    try:
+        bash = _find_bash()
+    except RuntimeError as exc:
+        pytest.skip(str(exc))
+    if os.path.basename(bash).lower() not in {"bash", "bash.exe"}:
+        pytest.skip("bash required")
+    return bash
 
 
 class _TestableEnv(BaseEnvironment):
@@ -251,16 +266,11 @@ class TestAtomicSnapshotConcurrencyBehavioral:
 
     def _run(self, script):
         import subprocess
-        return subprocess.run(["/bin/bash", "-c", script], capture_output=True, text=True)
+        return subprocess.run([_test_bash(), "-c", script], capture_output=True, text=True)
 
     def test_concurrent_writes_never_tear_the_snapshot(self, tmp_path):
-        import shutil
-        if not shutil.which("bash"):
-            import pytest
-            pytest.skip("bash required")
-        import shlex
         snap = str(tmp_path / "hermes-snap-x.sh")
-        _q = shlex.quote
+        _q = _quote_bash_path
         _snap_tmp = _q(snap + ".tmp.") + "$BASHPID"
         # One writer iteration = the exact atomic sequence _wrap_command emits.
         writer = (
@@ -292,13 +302,8 @@ class TestAtomicSnapshotConcurrencyBehavioral:
     def test_failed_export_does_not_destroy_good_snapshot(self, tmp_path):
         """If ``export -p`` fails, the ``&&``-chained mv must NOT clobber the
         existing good snapshot."""
-        import shutil
-        if not shutil.which("bash"):
-            import pytest
-            pytest.skip("bash required")
-        import shlex
         snap = str(tmp_path / "snap.sh")
-        _q = shlex.quote
+        _q = _quote_bash_path
         self._run(f"echo 'export GOOD=1' > {_q(snap)}")  # seed good snapshot
         # Redirect export into an unwritable dir so the export side fails; mv
         # must then NOT run (&&) and not clobber snap.
@@ -318,12 +323,9 @@ class TestSnapshotFileModes:
     def test_snapshot_and_cwd_files_are_0600(self, tmp_path):
         import os
         from pathlib import Path
-        import shutil
         import stat
         import subprocess
-        if not shutil.which("bash"):
-            import pytest
-            pytest.skip("bash required")
+        bash = _test_bash()
 
         class ExecutableEnv(BaseEnvironment):
             def __init__(self, temp_dir):
@@ -333,9 +335,16 @@ class TestSnapshotFileModes:
             def get_temp_dir(self):
                 return self._temp_dir
 
+            @staticmethod
+            def _quote_cwd_for_cd(cwd):
+                return _quote_bash_path(cwd)
+
+            def _quote_shell_path(self, path):
+                return _quote_bash_path(path)
+
             def _run_bash(self, cmd_string, *, login=False, timeout=120, stdin_data=None):
                 proc = subprocess.Popen(
-                    ["/bin/bash", "-lc", cmd_string],
+                    [bash, "-lc", cmd_string],
                     stdout=subprocess.PIPE,
                     stderr=subprocess.STDOUT,
                     stdin=subprocess.DEVNULL,
@@ -354,10 +363,14 @@ class TestSnapshotFileModes:
             env.init_session()
 
             user_file = tmp_path / "user-created.txt"
-            env.execute(f"touch {user_file}")
+            env.execute(f"touch {_quote_bash_path(str(user_file))}")
 
-            assert stat.S_IMODE(user_file.stat().st_mode) == 0o644
-            assert stat.S_IMODE(Path(env._snapshot_path).stat().st_mode) == 0o600
+            assert user_file.exists()
+            snapshot_path = Path(env._snapshot_path)
+            assert snapshot_path.exists()
+            if os.name != "nt":
+                assert stat.S_IMODE(user_file.stat().st_mode) == 0o644
+                assert stat.S_IMODE(snapshot_path.stat().st_mode) == 0o600
             # The cwd temp file is no longer written (cwd travels via the
             # stdout marker for every backend) — nothing to leak on disk.
             assert not Path(env._cwd_file).exists()

@@ -1301,6 +1301,41 @@ def load_gateway_config() -> GatewayConfig:
 
             _merge_platform_map(gateway_platforms)
             _merge_platform_map(yaml_cfg.get("platforms"))
+
+            # Also merge platform configs placed directly under ``gateway.*``
+            # (e.g. ``gateway.api_server``) so subsections are discovered the
+            # same way ``gateway.streaming`` is handled elsewhere.  Iterate
+            # all ``gateway:*`` keys and merge only those that match a known
+            # platform value, skipping reserved keys like ``platforms``.
+            if isinstance(gateway_cfg, dict):
+                _nested_platforms: dict = {}
+                for _k, _v in gateway_cfg.items():
+                    if _k == "platforms":
+                        continue
+                    try:
+                        Platform(_k)
+                    except (ValueError, AttributeError):
+                        continue
+                    if isinstance(_v, dict):
+                        _nested_platforms[_k] = _v
+                if _nested_platforms:
+                    _merge_platform_map(_nested_platforms)
+
+            # Bridge api_server-specific keys (port, key, host, cors_origins,
+            # model_name) into extra so PlatformConfig.from_dict preserves
+            # them — adapting what _apply_env_overrides does for env vars to
+            # the YAML path.  Users writing ``gateway.api_server.port: 8642``
+            # expect these to end up in the platform's extra dict.
+            _api_plat = platforms_data.get("api_server")
+            if isinstance(_api_plat, dict):
+                _api_extra = _api_plat.get("extra")
+                if not isinstance(_api_extra, dict):
+                    _api_extra = {}
+                    _api_plat["extra"] = _api_extra
+                for _bridge_key in ("port", "key", "host", "cors_origins", "model_name"):
+                    if _bridge_key in _api_plat and _bridge_key not in _api_extra:
+                        _api_extra[_bridge_key] = _api_plat.pop(_bridge_key)
+
             if platforms_data:
                 gw_data["platforms"] = platforms_data
             # Iterate built-in platforms plus any registered plugin platforms

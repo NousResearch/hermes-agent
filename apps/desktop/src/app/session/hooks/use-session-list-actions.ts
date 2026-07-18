@@ -104,9 +104,14 @@ export function useSessionListActions({ profileScope }: UseSessionListActionsArg
   // competes with local chats for the recents page budget. One combined fetch
   // seeds every platform; the sidebar splits the rows per source.
   const refreshMessagingSessions = useCallback(async () => {
+    const sessionProfile = sessionProfileForScope(profileScope)
+
+    if (sessionProfileForScope(profileScopeRef.current) !== sessionProfile) {
+      return
+    }
+
     const requestId = refreshMessagingSessionsRequestRef.current + 1
     refreshMessagingSessionsRequestRef.current = requestId
-    const sessionProfile = sessionProfileForScope(profileScope)
 
     setMessagingPlatformTotals({})
 
@@ -143,6 +148,7 @@ export function useSessionListActions({ profileScope }: UseSessionListActionsArg
 
     const inProfileScope = (s: SessionInfo) =>
       sessionProfile === 'all' || normalizeProfileKey(s.profile) === sessionProfile
+
     const inPlatform = (s: SessionInfo) => normalizeSessionSource(s.source) === platform && inProfileScope(s)
     const loaded = $messagingSessions.get().filter(inPlatform).length
 

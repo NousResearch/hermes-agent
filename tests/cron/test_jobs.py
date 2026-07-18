@@ -2046,3 +2046,120 @@ class TestLateEnvRepointScopesStore:
         assert new_file.is_file()
         # ...and the import-time file is byte-identical to the sentinel.
         assert old_file.read_text(encoding="utf-8") == sentinel
+
+
+# =========================================================================
+# UTF-8 BOM on jobs.json (Windows Notepad / PowerShell 5.1)
+# =========================================================================
+
+class TestJobsJsonUtf8Bom:
+    """jobs.json readers must accept a leading UTF-8 BOM.
+
+    Matching the env-class dialect (utf-8-sig): a BOM from Windows editors
+    must not raise JSONDecodeError / RuntimeError on load_jobs().
+    """
+
+    def test_load_jobs_accepts_utf8_bom(self, tmp_cron_dir):
+        """BOM'd jobs.json loads — the pre-fix crash repro."""
+        import json
+        from pathlib import Path
+        from cron.jobs import JOBS_FILE, load_jobs
+
+        payload = {
+            "jobs": [
+                {
+                    "id": "bomjob01",
+                    "name": "bom-test",
+                    "enabled": True,
+                    "prompt": "hello",
+                    "schedule": {"kind": "interval", "minutes": 60, "display": "every 60m"},
+                }
+            ]
+        }
+        JOBS_FILE.parent.mkdir(parents=True, exist_ok=True)
+        JOBS_FILE.write_bytes(
+            b"\xef\xbb\xbf" + json.dumps(payload).encode("utf-8")
+        )
+
+        loaded = load_jobs()
+        assert [j["id"] for j in loaded] == ["bomjob01"]
+        assert loaded[0]["name"] == "bom-test"
+
+    def test_load_jobs_bomless_regression(self, tmp_cron_dir):
+        """BOM-less UTF-8 jobs.json must keep loading after utf-8-sig."""
+        import json
+        from cron.jobs import JOBS_FILE, load_jobs
+
+        payload = {
+            "jobs": [
+                {
+                    "id": "plainjob01",
+                    "name": "plain",
+                    "enabled": True,
+                    "prompt": "hi",
+                    "schedule": {"kind": "interval", "minutes": 30, "display": "every 30m"},
+                }
+            ]
+        }
+        JOBS_FILE.parent.mkdir(parents=True, exist_ok=True)
+        JOBS_FILE.write_text(json.dumps(payload), encoding="utf-8")
+
+        loaded = load_jobs()
+        assert [j["id"] for j in loaded] == ["plainjob01"]
+
+    def test_load_jobs_bom_empty_jobs_list(self, tmp_cron_dir):
+        """Minimal BOM'd store ({"jobs": []}) must not raise."""
+        from cron.jobs import JOBS_FILE, load_jobs
+
+        JOBS_FILE.parent.mkdir(parents=True, exist_ok=True)
+        JOBS_FILE.write_bytes(b'\xef\xbb\xbf{"jobs": []}')
+
+        assert load_jobs() == []
+
+    def test_load_jobs_bom_plus_bare_list_auto_repairs(self, tmp_cron_dir):
+        """BOM + bare list (hand-edited) must load and rewrap to dict envelope."""
+        import json
+        from cron.jobs import JOBS_FILE, load_jobs
+
+        bare = [
+            {
+                "id": "barebom01",
+                "name": "bare",
+                "enabled": True,
+                "prompt": "x",
+                "schedule": {"kind": "interval", "minutes": 60, "display": "every 60m"},
+            }
+        ]
+        JOBS_FILE.parent.mkdir(parents=True, exist_ok=True)
+        JOBS_FILE.write_bytes(b"\xef\xbb\xbf" + json.dumps(bare).encode("utf-8"))
+
+        loaded = load_jobs()
+        assert [j["id"] for j in loaded] == ["barebom01"]
+        # Auto-repair rewrites via save_jobs (plain utf-8) — heals the BOM.
+        on_disk = JOBS_FILE.read_bytes()
+        assert not on_disk.startswith(b"\xef\xbb\xbf"), "save_jobs should rewrite without BOM"
+        rewritten = json.loads(on_disk.decode("utf-8"))
+        assert isinstance(rewritten, dict)
+        assert [j["id"] for j in rewritten["jobs"]] == ["barebom01"]
+
+    def test_load_jobs_bom_plus_control_char_uses_strict_false_arm(self, tmp_cron_dir):
+        """BOM + bare control char in a string value exercises the strict=False arm.
+
+        json.load (strict) rejects unescaped control chars; the retry path must
+        also open with utf-8-sig so the BOM does not re-crash the repair.
+        """
+        from cron.jobs import JOBS_FILE, load_jobs
+
+        # Valid JSON structure but with a raw newline inside a string value
+        # (invalid under strict=True). Leading UTF-8 BOM.
+        raw = (
+            b'\xef\xbb\xbf{"jobs": [{"id": "ctrlbom01", "name": "has\nnewline",'
+            b' "enabled": true, "prompt": "x",'
+            b' "schedule": {"kind": "interval", "minutes": 60, "display": "every 60m"}}]}'
+        )
+        JOBS_FILE.parent.mkdir(parents=True, exist_ok=True)
+        JOBS_FILE.write_bytes(raw)
+
+        loaded = load_jobs()
+        assert [j["id"] for j in loaded] == ["ctrlbom01"]
+        assert "newline" in loaded[0]["name"]

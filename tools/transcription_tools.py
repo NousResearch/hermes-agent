@@ -1896,7 +1896,7 @@ def _extract_transcript_text(transcription: Any) -> str:
         text = str(transcription).strip()
 
     marker = "<asr_text>"
-    if marker in text:
+    if text.lstrip().lower().startswith("language") and marker in text:
         text = text.split(marker, 1)[1].strip()
 
     return text

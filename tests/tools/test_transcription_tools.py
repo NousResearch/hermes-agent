@@ -1539,6 +1539,30 @@ class TestTranscribeAudioElevenLabsDispatch:
         assert mock_elevenlabs.call_args[0][1] == "scribe_v2"
 
 
+# ============================================================================
+# _extract_transcript_text
+# ============================================================================
+
+class TestExtractTranscriptText:
+    def test_strips_qwen3_asr_language_envelope(self):
+        from tools.transcription_tools import _extract_transcript_text
+
+        result = _extract_transcript_text(
+            "language zh\n<audio_language>zh</audio_language>\n<asr_text>你好，世界",
+        )
+
+        assert result == "你好，世界"
+
+    def test_keeps_non_envelope_marker_literal(self):
+        from tools.transcription_tools import _extract_transcript_text
+
+        result = _extract_transcript_text(
+            "The user literally said <asr_text> while reading markup.",
+        )
+
+        assert result == "The user literally said <asr_text> while reading markup."
+
+
 # Shell safety — shlex.split on auto-detected templates
 # ============================================================================
 class TestShellSafety:

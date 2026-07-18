@@ -292,6 +292,7 @@ def _rasterize_svg_to_png(svg_path: Path, out_path: Path) -> bool:
                 _subprocess.run(
                     cmd, check=True, capture_output=True, timeout=30,
                     stdin=_subprocess.DEVNULL,
+                    **({"creationflags": 0x08000000} if sys.platform == "win32" else {}),
                 )
                 if out_path.exists() and out_path.stat().st_size > 0:
                     return True

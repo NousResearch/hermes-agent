@@ -17,6 +17,7 @@ logger = logging.getLogger(__name__)
 
 
 TRUTHY_STRINGS = frozenset({"1", "true", "yes", "on"})
+LATER_USER_MESSAGE_SEPARATOR = "\n\n[Later user message]\n\n"
 
 
 def is_truthy_value(value: Any, default: bool = False) -> bool:
@@ -33,6 +34,15 @@ def is_truthy_value(value: Any, default: bool = False) -> bool:
 def env_var_enabled(name: str, default: str = "") -> bool:
     """Return True when an environment variable is set to a truthy value."""
     return is_truthy_value(os.getenv(name, default), default=False)
+
+
+def merge_later_user_text(existing_text: str, new_text: str) -> str:
+    """Join forced same-turn user text with an explicit later-message boundary."""
+    if not existing_text:
+        return new_text
+    if not new_text:
+        return existing_text
+    return f"{existing_text}{LATER_USER_MESSAGE_SEPARATOR}{new_text}"
 
 
 def _preserve_file_mode(path: Path) -> "int | None":

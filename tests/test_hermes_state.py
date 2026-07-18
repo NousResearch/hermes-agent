@@ -4479,6 +4479,85 @@ class TestCompressionChainProjection:
         assert "_lineage_root_id" not in row
         assert row["end_reason"] == "compression"
 
+    def test_uncompressed_sessions_carry_lineage_root_id(self, db):
+        """Sessions that were never compressed must still carry
+        ``_lineage_root_id`` (resolved to themselves) so the desktop's
+        lineage dedup can group every surfaced row uniformly — not just
+        projected compression tips. Regression for #66664.
+        """
+        db.create_session("soloA", "cli")
+        db.append_message("soloA", "user", "first standalone")
+        db.create_session("soloB", "cli")
+        db.append_message("soloB", "user", "second standalone")
+        db._conn.commit()
+
+        sessions = db.list_sessions_rich(source="cli", limit=20)
+        by_id = {s["id"]: s for s in sessions}
+        assert "soloA" in by_id and "soloB" in by_id
+        # Every uncompressed row resolves to its own lineage root.
+        assert by_id["soloA"]["_lineage_root_id"] == "soloA"
+        assert by_id["soloB"]["_lineage_root_id"] == "soloB"
+
+    def test_lineage_root_id_covers_uncompressed_and_projected(self, db):
+        """A mix of projected compression tips and uncompressed sessions:
+        every surfaced row must carry ``_lineage_root_id`` — tips resolve to
+        the chain root, uncompressed sessions to themselves. Regression for
+        #66664.
+        """
+        import time as _time
+        self._build_compression_chain(db, _time.time() - 3600)
+        db.create_session("solo", "cli")
+        db.append_message("solo", "user", "standalone")
+        db._conn.commit()
+
+        sessions = db.list_sessions_rich(source="cli", limit=20)
+        by_id = {s["id"]: s for s in sessions}
+        # Projected tip resolves to the chain root (existing behaviour).
+        assert by_id["tip1"]["_lineage_root_id"] == "root1"
+        # Uncompressed session resolves to itself (the #66664 fix).
+        assert by_id["solo"]["_lineage_root_id"] == "solo"
+
+    def test_compression_lineage_root_walks_to_oldest_ancestor(self, db):
+        """``_compression_lineage_root`` walks ``parent_session_id`` up while
+        each parent ended with ``compression`` (skipping marked branch/delegate
+        children), returning the oldest chain ancestor. A multi-hop chain
+        resolves to the original root.
+        """
+        import time as _time
+        self._build_compression_chain(db, _time.time() - 3600)
+        # root1 -> mid1 -> tip1 : tip1 resolves all the way back to root1.
+        assert db._compression_lineage_root("tip1") == "root1"
+        assert db._compression_lineage_root("mid1") == "root1"
+        # root1 has no compression parent -> resolves to itself.
+        assert db._compression_lineage_root("root1") == "root1"
+
+    def test_compression_lineage_root_stops_at_marked_branch(self, db):
+        """A branch child (carrying ``_branched_from``) whose parent was later
+        compressed is its own lineage: the marker stops the backward walk so
+        the branch does not collapse into the parent's compression chain.
+        Mirrors the marker-based exclusion ``get_compression_tip`` uses.
+        """
+        import time as _time
+        t0 = _time.time() - 3600
+        db.create_session("proot", "cli")
+        db._conn.execute("UPDATE sessions SET started_at=? WHERE id=?", (t0, "proot"))
+        # proot is later compressed.
+        db._conn.execute(
+            "UPDATE sessions SET ended_at=?, end_reason='compression' WHERE id=?",
+            (t0 + 100, "proot"),
+        )
+        # A marked branch of proot — this surfaces in list_sessions_rich.
+        db.create_session(
+            "br", "cli", parent_session_id="proot",
+            model_config={"_branched_from": "proot"},
+        )
+        db._conn.commit()
+        # The branch resolves to itself, not to proot.
+        assert db._compression_lineage_root("br") == "br"
+        # An uncompressed session with no parent resolves to itself.
+        db.create_session("lonely", "cli")
+        assert db._compression_lineage_root("lonely") == "lonely"
+
 
 # =========================================================================
 # Session source exclusion (--source flag for third-party isolation)

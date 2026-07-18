@@ -3628,6 +3628,47 @@ class SessionDB:
             current = child_id
         return current
 
+    def _compression_lineage_root(self, session_id: str) -> str:
+        """Return the oldest compression-chain ancestor of ``session_id``.
+
+        Walks ``parent_session_id`` upward while each parent ended with
+        ``compression`` and the child is not a marked branch/delegate and not
+        a ``tool``-source child, so every session in one compression chain
+        resolves to the same root. Unlike :meth:`get_compression_tip` — which
+        uses a ``started_at >= ended_at`` timing guard to find the live tip —
+        the backward walk keys on branch/delegate markers: a ``/branch``
+        spawned after its parent was compression-ended would pass the timing
+        guard but must stay its own lineage, so markers are the correct stop
+        signal here. Sessions outside any compression chain resolve to
+        themselves. Used to populate ``_lineage_root_id`` on uncompressed
+        surfaced rows so downstream dedup (desktop lineage grouping) treats
+        every conversation uniformly, not just projected tips. See #66664.
+        """
+        current = session_id
+        seen: set = set()
+        for _ in range(100):
+            if not current or current in seen:
+                return current
+            seen.add(current)
+            with self._lock:
+                row = self._conn.execute(
+                    """
+                    SELECT parent.id AS root_id
+                    FROM sessions child
+                    JOIN sessions parent ON parent.id = child.parent_session_id
+                    WHERE child.id = ?
+                      AND parent.end_reason = 'compression'
+                      AND json_extract(COALESCE(child.model_config, '{}'), '$._branched_from') IS NULL
+                      AND json_extract(COALESCE(child.model_config, '{}'), '$._delegate_from') IS NULL
+                      AND COALESCE(child.source, '') != 'tool'
+                    """,
+                    (current,),
+                ).fetchone()
+            if row is None:
+                return current
+            current = row["root_id"]
+        return current
+
     # Columns excluded from compact_rows projections: only the payload-heavy
     # blob no list consumer renders. Everything else — including gateway
     # routing fields and desktop sidebar fields like git_branch — stays, and
@@ -3965,6 +4006,18 @@ class SessionDB:
                 merged["_lineage_root_id"] = s["id"]
                 projected.append(merged)
             sessions = projected
+
+            # Populate ``_lineage_root_id`` on every remaining surfaced row so
+            # downstream lineage dedup (desktop mergeSessionPage) groups
+            # uncompressed conversations the same way it groups projected
+            # tips. Projected tips already carry it; raw uncompressed rows
+            # resolve to themselves (or their chain root) via the backward
+            # compression-chain walk. Compression-ended roots that did not
+            # project (broken chains with no continuation) stay raw, preserving
+            # the admin/debug contract. See #66664.
+            for s in sessions:
+                if "_lineage_root_id" not in s and s.get("end_reason") != "compression":
+                    s["_lineage_root_id"] = self._compression_lineage_root(s["id"])
 
         return sessions
 

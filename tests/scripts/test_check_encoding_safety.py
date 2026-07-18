@@ -166,3 +166,48 @@ def test_path_looks_user_writable_helpers(checker):
     assert checker._path_looks_user_writable("env_path")
     assert checker._path_looks_user_writable('managed_dir / "config.yaml"')
     assert not checker._path_looks_user_writable('root / "schemas" / "internal_v1.json"')
+
+
+# ── --all file collection ────────────────────────────────────────────────
+
+
+def test_all_includes_repo_root_py_modules(checker, tmp_path, monkeypatch, capsys):
+    """--all must scan non-recursive REPO_ROOT/*.py (e.g. cli.py), not only subdirs."""
+    # Minimal package root so --all's package walk has something to do.
+    pkg = tmp_path / "hermes_cli"
+    pkg.mkdir()
+    (pkg / "pkg_only.py").write_text("# package module, no R1\n", encoding="utf-8")
+
+    # Top-level module with an R1 pattern (user-writable .env + encoding=utf-8).
+    root_mod = tmp_path / "root_mod.py"
+    root_mod.write_text(
+        "from pathlib import Path\n"
+        "env_path = Path.home() / '.env'\n"
+        "with open(env_path, encoding='utf-8') as f:\n"
+        "    f.read()\n",
+        encoding="utf-8",
+    )
+
+    # Nested decoy: must not be double-walked if REPO_ROOT were a recursive root.
+    nested = tmp_path / "other_pkg"
+    nested.mkdir()
+    (nested / "nested_mod.py").write_text(
+        "from pathlib import Path\n"
+        "env_path = Path.home() / '.env'\n"
+        "with open(env_path, encoding='utf-8') as f:\n"
+        "    f.read()\n",
+        encoding="utf-8",
+    )
+
+    monkeypatch.setattr(checker, "REPO_ROOT", tmp_path)
+    rc = checker.main(["--all"])
+    captured = capsys.readouterr()
+    out = captured.out + captured.err
+
+    assert "root_mod.py" in out, f"top-level module missing from --all output:\n{out}"
+    assert "nested_mod.py" not in out, (
+        f"--all must not recurse REPO_ROOT; nested hit leaked:\n{out}"
+    )
+    # R1 on the root module is enough to fail the scan.
+    assert rc == 1
+    assert "[R1]" in out

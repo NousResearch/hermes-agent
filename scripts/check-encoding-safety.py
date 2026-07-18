@@ -1065,6 +1065,9 @@ def main(argv: list[str]) -> int:
             REPO_ROOT / "tui_gateway",
         ]
         roots = [r for r in roots if r.exists()]
+        # Non-recursive top-level modules (cli.py, run_agent.py, …).
+        # Do not add REPO_ROOT as a dir root — that would double-walk packages.
+        roots.extend(sorted(REPO_ROOT.glob("*.py")))
     elif args.diff:
         roots = get_diff_files(args.diff)
     elif args.paths:

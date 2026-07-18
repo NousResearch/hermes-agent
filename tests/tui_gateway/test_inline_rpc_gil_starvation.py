@@ -42,6 +42,10 @@ def server():
         "hermes_state": MagicMock(),
     }):
         import importlib
+        # Force a fresh import so patches from other test modules
+        # (e.g. test_web_server.py) don't leak into this fixture's
+        # server instance.
+        sys.modules.pop("tui_gateway.server", None)
         mod = importlib.import_module("tui_gateway.server")
         yield mod
         mod._sessions.clear()

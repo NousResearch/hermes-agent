@@ -191,6 +191,12 @@ _LONG_HANDLERS = frozenset(
         "complete.path",
         "complete.slash",
         "llm.oneshot",
+        # model.options builds the full picker payload — per-provider credential
+        # pool checks, pricing fetch, Nous tier check, optional custom-provider
+        # probe — measured seconds inline. While it runs on the reader thread,
+        # prompt.submit / session.interrupt sit unread (same class as #21123),
+        # and the Desktop model pill / picker block on it every open.
+        "model.options",
         # Pet RPCs hit the network (manifest fetch / spritesheet download) or do
         # per-frame PNG decode/encode (pet.cells): inline they serialize on the
         # reader thread, so picker previews trickle in one at a time and the

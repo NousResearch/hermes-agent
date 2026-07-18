@@ -3893,6 +3893,29 @@ class TestHandleMaxIterations:
         kwargs = agent.client.chat.completions.create.call_args.kwargs
         assert "reasoning" not in kwargs.get("extra_body", {})
 
+    def test_summary_applies_stepfun_top_level_reasoning_effort(self, agent):
+        """Regression (#36942): the iteration-limit summary path hand-builds
+        kwargs and calls chat.completions.create() directly, bypassing
+        ChatCompletionsTransport. It must still apply the provider profile's
+        build_api_kwargs_extras() so native StepFun summaries carry top-level
+        reasoning_effort, matching the transport path.
+        """
+        import model_tools  # noqa: F401 — triggers provider-profile discovery
+        agent.provider = "stepfun"
+        agent.base_url = "https://api.stepfun.ai/step_plan/v1"
+        agent.model = "step-3.7-flash"
+        agent.reasoning_config = {"enabled": True, "effort": "high"}
+        resp = _mock_response(content="Summary")
+        agent.client.chat.completions.create.return_value = resp
+        agent._cached_system_prompt = "You are helpful."
+        messages = [{"role": "user", "content": "do stuff"}]
+
+        result = agent._handle_max_iterations(messages, 60)
+
+        assert result == "Summary"
+        kwargs = agent.client.chat.completions.create.call_args.kwargs
+        assert kwargs.get("reasoning_effort") == "high"
+
     def test_summary_request_removes_orphan_tool_result(self, agent):
         """Regression: max-iterations summary request must NOT contain
         orphan tool results (tool_call_id with no matching assistant tool_call)."""

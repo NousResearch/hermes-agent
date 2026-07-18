@@ -1832,6 +1832,10 @@ def handle_max_iterations(agent, messages: list, api_call_count: int) -> str:
         api_messages = agent._drop_thinking_only_and_merge_users(api_messages)
 
         summary_extra_body = {}
+        # Top-level api_kwargs the provider profile wants on native (non-transport)
+        # summary calls — e.g. StepFun/Kimi reasoning_effort. Computed once in the
+        # first summary branch and reused by the retry branch below (#36942).
+        _profile_top_level: dict[str, Any] = {}
         try:
             from agent.auxiliary_client import _fixed_temperature_for_model, OMIT_TEMPERATURE as _OMIT_TEMP
         except Exception:
@@ -1904,6 +1908,21 @@ def handle_max_iterations(agent, messages: list, api_call_count: int) -> str:
                         base_url=agent.base_url,
                         reasoning_config=agent.reasoning_config,
                     )
+                    # The transport applies build_api_kwargs_extras() — top-level
+                    # kwargs (e.g. StepFun/Kimi reasoning_effort) plus extra_body
+                    # additions. This hand-built summary path bypasses the
+                    # transport, so mirror it here or native StepFun summaries
+                    # drop the top-level field (#36942).
+                    _pe_extra, _pe_top = provider_profile.build_api_kwargs_extras(
+                        reasoning_config=agent.reasoning_config,
+                        supports_reasoning=agent._supports_reasoning_extra_body(),
+                        model=agent.model,
+                        base_url=agent.base_url,
+                        session_id=getattr(agent, "session_id", None),
+                    )
+                    if _pe_extra:
+                        profile_extra_body = {**profile_extra_body, **_pe_extra}
+                    _profile_top_level.update(_pe_top)
             except Exception:
                 pass
 
@@ -1938,6 +1957,8 @@ def handle_max_iterations(agent, messages: list, api_call_count: int) -> str:
 
             if summary_extra_body:
                 summary_kwargs["extra_body"] = summary_extra_body
+            for _pk, _pv in _profile_top_level.items():
+                summary_kwargs.setdefault(_pk, _pv)
 
             if agent.api_mode == "anthropic_messages":
                 _tsum = agent._get_transport()
@@ -1991,6 +2012,8 @@ def handle_max_iterations(agent, messages: list, api_call_count: int) -> str:
                     summary_kwargs["reasoning_effort"] = _lm_reasoning_effort
                 if summary_extra_body:
                     summary_kwargs["extra_body"] = summary_extra_body
+                for _pk, _pv in _profile_top_level.items():
+                    summary_kwargs.setdefault(_pk, _pv)
 
                 summary_response = agent._ensure_primary_openai_client(reason="iteration_limit_summary_retry").chat.completions.create(**summary_kwargs)
                 _retry_result = agent._get_transport().normalize_response(summary_response)

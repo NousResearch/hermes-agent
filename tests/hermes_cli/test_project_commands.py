@@ -161,6 +161,24 @@ def test_status_reports_evaluator_progress_and_active_checker(board):
     assert result["finalization"]["generation"] == finalization.generation
 
 
+def test_terminal_complete_status_uses_durable_outcome_not_active_generation_validation(board, tmp_path):
+    root, _, _, _, _ = _full_terminal_project(board, tmp_path)
+
+    result = commands.project_status(board, board_id="default", root_task_id=root)
+    shown = commands.project_show(board, board_id="default", root_task_id=root)
+    rendered = commands.render_project_result(result, mode="status")
+
+    assert result["evaluator"]["state"] == "COMPLETE"
+    assert result["evaluator"]["terminal_outcome"] == "COMPLETE"
+    assert result["evaluator"]["required_progress"] == {"completed": 2, "total": 2}
+    assert result["blocker"] is None
+    assert result["next_action"] == "review terminal project history"
+    assert "Evaluator: COMPLETE" in rendered
+    assert "MALFORMED" not in rendered
+    assert "prompt: must not be rendered" not in json.dumps(shown, sort_keys=True)
+    assert "chat:123" not in json.dumps(shown, sort_keys=True)
+
+
 def test_repairable_verdict_and_active_repair_are_rendered(board):
     root, checker, finalization = _project(board)
     repair = kb.create_task(board, title="repair worker")

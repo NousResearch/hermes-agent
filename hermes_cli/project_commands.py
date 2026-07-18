@@ -188,6 +188,58 @@ def _evaluation_dict(evaluation: Any, task_map: Mapping[str, Any]) -> dict[str, 
     }
 
 
+def _terminal_evaluation_dict(
+    finalization: Any,
+    members: Iterable[Any],
+    task_map: Mapping[str, Any],
+) -> dict[str, Any]:
+    """Present a durable terminal generation without reopening active validation."""
+
+    required = sorted(
+        str(_value(member, "task_id"))
+        for member in members
+        if bool(_value(member, "required", False))
+    )
+    successful = [
+        task_id
+        for task_id in required
+        if _value(task_map.get(task_id), "status") in {"done", "archived"}
+    ]
+    blocked = [
+        task_id
+        for task_id in required
+        if _value(task_map.get(task_id), "status") in {"blocked", "triage"}
+    ]
+    failed = [
+        task_id
+        for task_id in required
+        if _value(task_map.get(task_id), "status") in {"failed", "cancelled"}
+    ]
+    unfinished = [task_id for task_id in required if task_id not in successful]
+    outcome = _safe_text(_value(finalization, "terminal_outcome"))
+    blocker = None if outcome == "COMPLETE" else _safe_text(_value(finalization, "blocker_json"))
+    return {
+        "state": outcome,
+        "terminal_outcome": outcome,
+        "required_task_ids": required,
+        "required_progress": {"completed": len(successful), "total": len(required)},
+        "successful_task_ids": successful,
+        "unfinished_task_ids": unfinished,
+        "blocked_task_ids": blocked,
+        "failed_task_ids": failed,
+        "checker_task_id": _safe_text(_value(finalization, "final_checker_task_id")),
+        "checker_verdict": _safe_text(_value(finalization, "checker_verdict")),
+        "repair_generation": int(_value(finalization, "repair_generation", 0) or 0),
+        "repair_budget": int(_value(finalization, "repair_budget", 0) or 0),
+        "repair_eligible": False,
+        "finalization_eligible": False,
+        "blocker": blocker,
+        "failure_reason": None,
+        "evidence_references": [],
+        "running_worker_count": 0,
+    }
+
+
 def _active_details(finalization: Any, members: Iterable[Any], task_map: Mapping[str, Any]) -> dict[str, Any]:
     details: dict[str, Any] = {"repair": None, "checker": None}
     for member in members:
@@ -326,9 +378,24 @@ def project_status(
     finalization = _get_finalization(conn, board_id, root_task_id, generation)
     if finalization is None:
         return _missing(root_task_id)
-    context = _project_context(conn, finalization, evaluation_time=evaluation_time)
-    task_map = context["task_map"]
-    evaluation = context["evaluation"]
+    terminal_outcome = _safe_text(_value(finalization, "terminal_outcome"))
+    if terminal_outcome is None:
+        context = _project_context(conn, finalization, evaluation_time=evaluation_time)
+        task_map = context["task_map"]
+        evaluation = context["evaluation"]
+        evaluator = _evaluation_dict(evaluation, task_map)
+        blocker = _safe_text(evaluation.blocker or evaluation.failure_reason)
+        next_action = _next_action(evaluation)
+    else:
+        task_map = _tasks(conn)
+        members = _members_for(conn, finalization)
+        context = {
+            "identity": _project_identity(finalization),
+            "active": _active_details(finalization, members, task_map),
+        }
+        evaluator = _terminal_evaluation_dict(finalization, members, task_map)
+        blocker = evaluator["blocker"]
+        next_action = "review terminal project history"
     root = task_map.get(root_task_id)
     return {
         "ok": True,
@@ -336,14 +403,14 @@ def project_status(
         "identity": context["identity"],
         "root": _task_summary(root) if root is not None else {"task_id": root_task_id, "title": "", "status": "missing", "assignee": None},
         "finalization": _finalization_dict(finalization),
-        "evaluator": _evaluation_dict(evaluation, task_map),
+        "evaluator": evaluator,
         "active_repair": context["active"]["repair"],
         "active_checker": context["active"]["checker"],
         "artifact_state": {
             "report_recorded": bool(_value(finalization, "final_report_path") and _value(finalization, "final_report_sha256")),
             "manifest_recorded": bool(_value(finalization, "manifest_path") and _value(finalization, "manifest_sha256")),
         },
-        "technical_terminal_outcome": _safe_text(_value(finalization, "terminal_outcome")),
+        "technical_terminal_outcome": terminal_outcome,
         "delivery": project_delivery_status(
             conn,
             board_id=board_id,
@@ -355,8 +422,8 @@ def project_status(
             "state": _safe_text(_value(finalization, "state")),
             "cleaned_at": _value(finalization, "cleaned_at"),
         },
-        "blocker": _safe_text(evaluation.blocker or evaluation.failure_reason),
-        "next_action": _next_action(evaluation),
+        "blocker": blocker,
+        "next_action": next_action,
     }
 
 
@@ -379,11 +446,12 @@ def project_show(
         return status
     finalization = _get_finalization(conn, board_id, root_task_id, status["identity"]["generation"])
     assert finalization is not None
-    context = _project_context(conn, finalization, evaluation_time=evaluation_time)
-    status["evidence_references"] = context["evaluation"].evidence_references
+    task_map = _tasks(conn)
+    members = _members_for(conn, finalization)
+    status["evidence_references"] = status["evaluator"]["evidence_references"]
     status["members"] = [
-        _member_summary(member, context["task_map"])
-        for member in sorted(context["members"], key=lambda item: (str(_value(item, "task_id")), str(_value(item, "membership_kind"))))
+        _member_summary(member, task_map)
+        for member in sorted(members, key=lambda item: (str(_value(item, "task_id")), str(_value(item, "membership_kind"))))
     ]
     return status
 

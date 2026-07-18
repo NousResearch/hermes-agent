@@ -142,18 +142,21 @@ def _get_proxy_for_base_url(base_url: Optional[str]) -> Optional[str]:
     # CIDR-aware bypass: stdlib proxy_bypass_environment() does not honor
     # CIDR notation in no_proxy (e.g. 10.10.10.0/24).  Parse those entries
     # manually so private-subnet exclusions actually work.  See #59465.
-    try:
-        import ipaddress
-        no_proxy_raw = os.environ.get("no_proxy", os.environ.get("NO_PROXY", ""))
-        if no_proxy_raw and "/" in no_proxy_raw:
+    import ipaddress
+    no_proxy_raw = os.environ.get("no_proxy", os.environ.get("NO_PROXY", ""))
+    if no_proxy_raw and "/" in no_proxy_raw:
+        try:
             addr = ipaddress.ip_address(host)
-            for entry in no_proxy_raw.split(","):
-                entry = entry.strip()
-                if "/" in entry:
+        except ValueError:
+            return proxy
+        for entry in no_proxy_raw.split(","):
+            entry = entry.strip()
+            if "/" in entry:
+                try:
                     if addr in ipaddress.ip_network(entry, strict=False):
                         return None
-    except (ValueError, TypeError):
-        pass
+                except (ValueError, TypeError):
+                    continue  # malformed CIDR: skip this entry, try next
 
     return proxy
 

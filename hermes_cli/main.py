@@ -6629,12 +6629,12 @@ def _restore_stashed_changes(
         if response not in {"", "y", "yes"}:
             print("Skipped restoring local changes.")
             print("Your changes are still preserved in git stash.")
-            print(f"Restore manually with: git stash apply {stash_ref}")
+            print(f"Restore manually with: git stash apply --index {stash_ref}")
             return False
 
     print("→ Restoring local changes...")
     restore = subprocess.run(
-        git_cmd + ["stash", "apply", stash_ref],
+        git_cmd + ["stash", "apply", "--index", stash_ref],
         cwd=cwd,
         capture_output=True,
         text=True,
@@ -6675,7 +6675,7 @@ def _restore_stashed_changes(
             capture_output=True,
         )
         print("Working tree reset to clean state.")
-        print(f"Restore your changes later with: git stash apply {stash_ref}")
+        print(f"Restore your changes later with: git stash apply --index {stash_ref}")
         # Don't sys.exit — the code update itself succeeded, only the stash
         # restore had conflicts.  Let cmd_update continue with pip install,
         # skill sync, and gateway restart.
@@ -10123,7 +10123,7 @@ def _cmd_update_impl(args, gateway_mode: bool):
         else:
             auto_stash_ref = _stash_local_changes_if_needed(git_cmd, PROJECT_ROOT)
 
-        def _restore_protected_checkout() -> bool:
+        def _restore_protected_checkout(*, restore_stash: bool = True) -> bool:
             """Restore the exact caller checkout before a protected-mode abort."""
             nonlocal auto_stash_ref
 
@@ -10166,7 +10166,7 @@ def _cmd_update_impl(args, gateway_mode: bool):
                 )
             if restore_checkout.returncode != 0:
                 return False
-            if auto_stash_ref is not None:
+            if restore_stash and auto_stash_ref is not None:
                 if not _restore_stashed_changes(
                     git_cmd,
                     PROJECT_ROOT,
@@ -10415,12 +10415,16 @@ def _cmd_update_impl(args, gateway_mode: bool):
                             text=True,
                             check=False,
                         )
-                    restored = _restore_protected_checkout()
+                    rollback_tree_ok = (
+                        rollback_tree is not None and rollback_tree.returncode == 0
+                    )
+                    restored = _restore_protected_checkout(
+                        restore_stash=rollback_tree_ok
+                    )
                     print()
                     if (
                         rollback_ref.returncode == 0
-                        and rollback_tree is not None
-                        and rollback_tree.returncode == 0
+                        and rollback_tree_ok
                         and restored
                     ):
                         print(

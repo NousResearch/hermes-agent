@@ -116,7 +116,7 @@ def test_restore_stashed_changes_prompts_before_applying(monkeypatch, tmp_path, 
     restored = hermes_main._restore_stashed_changes(["git"], tmp_path, "abc123", prompt_user=True)
 
     assert restored is True
-    assert calls[0][0] == ["git", "stash", "apply", "abc123"]
+    assert calls[0][0] == ["git", "stash", "apply", "--index", "abc123"]
     assert calls[1][0] == ["git", "diff", "--name-only", "--diff-filter=U"]
     assert calls[2][0] == ["git", "stash", "list", "--format=%gd %H"]
     assert calls[3][0] == ["git", "stash", "drop", "stash@{1}"]
@@ -144,7 +144,7 @@ def test_restore_stashed_changes_can_skip_restore_and_keep_stash(monkeypatch, tm
     out = capsys.readouterr().out
     assert "Restore local changes now? [Y/n]" in out
     assert "Your changes are still preserved in git stash." in out
-    assert "git stash apply abc123" in out
+    assert "git stash apply --index abc123" in out
 
 
 def test_restore_stashed_changes_applies_without_prompt_when_disabled(monkeypatch, tmp_path, capsys):
@@ -167,7 +167,7 @@ def test_restore_stashed_changes_applies_without_prompt_when_disabled(monkeypatc
     restored = hermes_main._restore_stashed_changes(["git"], tmp_path, "abc123", prompt_user=False)
 
     assert restored is True
-    assert calls[0][0] == ["git", "stash", "apply", "abc123"]
+    assert calls[0][0] == ["git", "stash", "apply", "--index", "abc123"]
     assert calls[1][0] == ["git", "diff", "--name-only", "--diff-filter=U"]
     assert calls[2][0] == ["git", "stash", "list", "--format=%gd %H"]
     assert calls[3][0] == ["git", "stash", "drop", "stash@{0}"]
@@ -203,7 +203,10 @@ def test_restore_stashed_changes_keeps_going_when_stash_entry_cannot_be_resolved
     restored = hermes_main._restore_stashed_changes(["git"], tmp_path, "abc123", prompt_user=False)
 
     assert restored is True
-    assert calls[0] == (["git", "stash", "apply", "abc123"], {"cwd": tmp_path, "capture_output": True, "text": True})
+    assert calls[0] == (
+        ["git", "stash", "apply", "--index", "abc123"],
+        {"cwd": tmp_path, "capture_output": True, "text": True},
+    )
     assert calls[1] == (["git", "diff", "--name-only", "--diff-filter=U"], {"cwd": tmp_path, "capture_output": True, "text": True})
     assert calls[2] == (["git", "stash", "list", "--format=%gd %H"], {"cwd": tmp_path, "capture_output": True, "text": True, "check": True})
     out = capsys.readouterr().out
@@ -273,7 +276,7 @@ def test_restore_stashed_changes_always_resets_on_conflict(monkeypatch, tmp_path
     assert "hermes_cli/main.py" in out
     assert "stashed changes are preserved" in out
     assert "Working tree reset to clean state" in out
-    assert "git stash apply abc123" in out
+    assert "git stash apply --index abc123" in out
     reset_calls = [c for c, _ in calls if c[1:3] == ["reset", "--hard"]]
     assert len(reset_calls) == 1
 
@@ -841,12 +844,35 @@ def test_cmd_update_protected_pull_abort_restores_branch_and_stash(
     assert not any(" reset --hard " in f" {' '.join(cmd)} " for cmd in calls)
 
 
+@pytest.mark.parametrize(
+    ("reset_returncode", "expected_restores", "expected_message"),
+    [
+        (0, ["stash-sha"], "Protected rollback restored"),
+        (1, [], "stash was preserved"),
+    ],
+)
 def test_cmd_update_protection_uses_cas_before_syntax_rollback_reset(
-    monkeypatch, tmp_path, capsys
+    monkeypatch,
+    tmp_path,
+    capsys,
+    reset_returncode,
+    expected_restores,
+    expected_message,
 ):
     """A bad incoming commit is reset only after an exact compare-and-swap."""
     _setup_update_mocks(monkeypatch, tmp_path)
     calls = []
+    restored_stashes = []
+    monkeypatch.setattr(
+        hermes_main,
+        "_stash_local_changes_if_needed",
+        lambda *args, **kwargs: "stash-sha",
+    )
+    monkeypatch.setattr(
+        hermes_main,
+        "_restore_stashed_changes",
+        lambda *args, **kwargs: restored_stashes.append(args[2]) or True,
+    )
 
     def fake_run(cmd, **kwargs):
         calls.append(cmd)
@@ -861,6 +887,12 @@ def test_cmd_update_protection_uses_cas_before_syntax_rollback_reset(
             return SimpleNamespace(returncode=0, stdout="1\n", stderr="")
         if "pull --ff-only origin main" in joined:
             return SimpleNamespace(returncode=0, stdout="", stderr="")
+        if "reset --hard abc123" in joined:
+            return SimpleNamespace(
+                returncode=reset_returncode,
+                stdout="",
+                stderr="rollback failed" if reset_returncode else "",
+            )
         return SimpleNamespace(returncode=0, stdout="", stderr="")
 
     monkeypatch.setattr(hermes_main.subprocess, "run", fake_run)
@@ -880,7 +912,8 @@ def test_cmd_update_protection_uses_cas_before_syntax_rollback_reset(
         hermes_main._cmd_update_impl(SimpleNamespace(yes=True), gateway_mode=False)
 
     assert exc.value.code == 3
-    assert "Protected rollback restored" in capsys.readouterr().out
+    assert expected_message in capsys.readouterr().out
+    assert restored_stashes == expected_restores
     assert [
         "git",
         "update-ref",

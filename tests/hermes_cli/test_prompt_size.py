@@ -236,6 +236,32 @@ def test_skills_breakdown_parses_namespaced_names():
     assert [e["name"] for e in entries] == ["codex:rescue"]
 
 
+def test_skills_breakdown_attributes_demoted_category_shared_line(isolated_home):
+    """A real posture-demoted category retains every skill in the breakdown."""
+    from agent.prompt_builder import build_skills_system_prompt
+
+    _seed_skill(isolated_home, "alpha-skill", "alpha description")
+    _seed_skill(isolated_home, "beta-skill", "beta description")
+    prompt = build_skills_system_prompt(compact_categories=frozenset({"demo"}))
+    skills_match = _SKILLS_BLOCK_RE.search(prompt)
+    assert skills_match is not None
+    skills_block = skills_match.group(0)
+    shared_line = next(
+        line for line in skills_block.splitlines() if "demo [names only]" in line
+    )
+
+    entries = _compute_skills_breakdown(skills_block)
+    by_name = {entry["name"]: entry for entry in entries}
+    assert set(by_name) == {"alpha-skill", "beta-skill"}
+
+    shared_line_bytes = len(shared_line.encode("utf-8"))
+    assert sum(entry["index_line_bytes"] for entry in entries) == shared_line_bytes
+    for entry in entries:
+        assert entry["index_line_total_bytes"] == shared_line_bytes
+        assert entry["index_line_shared_bytes"] > 0
+        assert entry["index_line_skill_count"] == 2
+
+
 def test_render_includes_per_component_tables(isolated_home):
     """The rendered report gains the two new sorted tables (additive)."""
     _seed_skill(isolated_home, "demo-skill", "a demo skill")

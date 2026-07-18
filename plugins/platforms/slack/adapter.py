@@ -420,6 +420,55 @@ def _apply_slack_proxy(client: Any, proxy_url: Optional[str]) -> None:
         client.proxy = proxy_url
 
 
+# SocketModeClient's own background tasks. Looked up with getattr so a rename
+# inside the SDK degrades to a no-op instead of raising during shutdown.
+_SOCKET_CLIENT_TASK_ATTRS = (
+    "current_session_monitor",
+    "message_processor",
+    "message_receiver",
+)
+
+# Cap on how long teardown waits for cancelled tasks. A task wedged in a network
+# call must not be able to hold up shutdown indefinitely.
+_SOCKET_TASK_CANCEL_TIMEOUT_S = 3.0
+
+
+async def _cancel_socket_tasks(tasks: Any) -> None:
+    """Cancel Socket Mode tasks and wait, with a bound, for them to finish.
+
+    Cancellation is only a request until the task is awaited, so a caller that
+    cancels without awaiting can still race the work it meant to stop.
+    """
+    pending = set()
+    for task in tasks:
+        if task is None or not callable(getattr(task, "cancel", None)):
+            continue
+        if callable(getattr(task, "done", None)) and task.done():
+            continue
+        task.cancel()
+        pending.add(task)
+
+    if not pending:
+        return
+
+    done, still_running = await asyncio.wait(
+        pending, timeout=_SOCKET_TASK_CANCEL_TIMEOUT_S
+    )
+    for task in done:
+        if task.cancelled():
+            continue
+        if task.exception() is not None:  # pragma: no cover - defensive logging
+            logger.debug(
+                "[Slack] Socket Mode task failed while stopping", exc_info=True
+            )
+    if still_running:  # pragma: no cover - defensive logging
+        logger.warning(
+            "[Slack] %d Socket Mode task(s) did not stop within %.1fs",
+            len(still_running),
+            _SOCKET_TASK_CANCEL_TIMEOUT_S,
+        )
+
+
 _SLACK_PROXY_HOSTS = (
     "slack.com",
     "files.slack.com",
@@ -660,11 +709,31 @@ class SlackAdapter(BasePlatformAdapter):
         task.add_done_callback(self._on_socket_mode_task_done)
 
     async def _stop_socket_mode_handler(self) -> None:
-        """Stop Socket Mode handler and task."""
+        """Stop Socket Mode handler and task.
+
+        Order matters. ``close_async()`` closes the SocketModeClient's shared
+        aiohttp session, and ``SocketModeClient.connect()`` is a ``while True``
+        retry loop that never checks the client's ``closed`` flag, so anything
+        inside it when the session goes away retries forever against a session
+        that can never work again ("Session is closed").
+
+        Everything that can reach ``connect()`` therefore has to be stopped
+        first. ``monitor_current_session()`` and ``receive_messages()`` each get
+        there on their own, and ``connect()`` rebinds the client's task
+        attributes on success, so the set of live tasks changes across the
+        awaits inside ``close()``. Cancelling from a snapshot taken partway
+        through that would race a moving target. See
+        slackapi/python-slack-sdk#1913.
+        """
         handler = self._handler
         task = self._socket_mode_task
         self._handler = None
         self._socket_mode_task = None
+
+        client = getattr(handler, "client", None)
+        await _cancel_socket_tasks(
+            [task] + [getattr(client, attr, None) for attr in _SOCKET_CLIENT_TASK_ATTRS]
+        )
 
         if handler is not None:
             try:
@@ -674,17 +743,6 @@ class SlackAdapter(BasePlatformAdapter):
                     "[Slack] Error while closing Socket Mode handler: %s",
                     e,
                     exc_info=True,
-                )
-
-        if task is not None and not task.done():
-            task.cancel()
-            try:
-                await task
-            except asyncio.CancelledError:
-                pass
-            except Exception:  # pragma: no cover - defensive logging
-                logger.debug(
-                    "[Slack] Socket Mode task failed while stopping", exc_info=True
                 )
 
     async def _socket_transport_connected(self) -> Optional[bool]:

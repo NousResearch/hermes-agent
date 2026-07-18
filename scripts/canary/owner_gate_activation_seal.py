@@ -10,7 +10,9 @@ second no-replace output is only a root-readable append-only audit mirror.
 
 All values written into the seal are derived from validated artifacts.  The
 entrypoint accepts no release, evidence, digest, resource, or destination
-argument.
+argument.  Before any mutation it requires the canonical release binding sent
+by the fixed owner launcher on stdin and compares it with its own immutable
+installed release.
 """
 
 from __future__ import annotations
@@ -70,9 +72,11 @@ RECEIPT_FILE_MODE = 0o444
 LOCK_FILE_MODE = 0o600
 MAX_JSON_BYTES = 16 * 1024 * 1024
 MAX_PAYLOAD_BYTES = 128 * 1024 * 1024
+MAX_ACTIVATION_REQUEST_BYTES = 1024
 
 ACTIVATION_RECEIPT_SCHEMA = "muncho-owner-gate-storage-activation-receipt.v1"
 ACTIVATION_RESPONSE_SCHEMA = "muncho-owner-gate-storage-activation-response.v1"
+ACTIVATION_REQUEST_SCHEMA = "muncho-owner-gate-storage-activation-request.v1"
 ACTIVATION_EVIDENCE_VALIDATION_SCHEMA = (
     "muncho-owner-gate-activation-evidence-validation.v1"
 )
@@ -1781,6 +1785,37 @@ def _installed_release() -> Path:
     return release
 
 
+def validate_activation_install_request(
+    raw: bytes,
+    *,
+    expected_release_revision: str,
+) -> Mapping[str, Any]:
+    """Bind the fixed action to the installed release before any mutation."""
+
+    if (
+        _REVISION.fullmatch(expected_release_revision or "") is None
+        or type(raw) is not bytes
+        or not raw
+        or len(raw) > MAX_ACTIVATION_REQUEST_BYTES
+    ):
+        raise OwnerGateActivationSealError(
+            "owner_gate_activation_request_invalid"
+        )
+    value = _decode_canonical(
+        raw,
+        code="owner_gate_activation_request_invalid",
+    )
+    if (
+        set(value) != {"schema", "release_revision"}
+        or value.get("schema") != ACTIVATION_REQUEST_SCHEMA
+        or value.get("release_revision") != expected_release_revision
+    ):
+        raise OwnerGateActivationSealError(
+            "owner_gate_activation_request_invalid"
+        )
+    return value
+
+
 def main(argv: Sequence[str] | None = None) -> int:
     arguments = tuple(argv or ())
     if arguments != ("install",):
@@ -1789,6 +1824,16 @@ def main(argv: Sequence[str] | None = None) -> int:
         )
     release = _installed_release()
     revision = release.name
+    try:
+        request_raw = sys.stdin.buffer.read(MAX_ACTIVATION_REQUEST_BYTES + 1)
+    except OSError:
+        raise OwnerGateActivationSealError(
+            "owner_gate_activation_request_invalid"
+        ) from None
+    validate_activation_install_request(
+        request_raw,
+        expected_release_revision=revision,
+    )
     response = install_activation_seal(
         release=release,
         evidence_root=ACTIVATION_EVIDENCE_BASE / revision,
@@ -1807,12 +1852,14 @@ __all__ = [
     "ACTIVATION_LOCK_PATH",
     "ACTIVATION_RECEIPT_BASE",
     "ACTIVATION_RECEIPT_SCHEMA",
+    "ACTIVATION_REQUEST_SCHEMA",
     "ACTIVATION_RESPONSE_SCHEMA",
     "ACTIVATION_SEAL_PATH",
     "EVIDENCE_NAMES",
     "OwnerGateActivationSealError",
     "install_activation_seal",
     "main",
+    "validate_activation_install_request",
     "validate_activation_evidence_strict",
 ]
 

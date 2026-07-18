@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import base64
 import hashlib
+import io
 import multiprocessing
 import os
 import select
@@ -60,6 +61,80 @@ def _write_exact(path: Path, value: Mapping[str, Any]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_bytes(foundation.canonical_json_bytes(value))
     path.chmod(0o444)
+
+
+def _activation_request(
+    *,
+    release_revision: str = REVISION,
+) -> bytes:
+    return foundation.canonical_json_bytes({
+        "schema": activation.ACTIVATION_REQUEST_SCHEMA,
+        "release_revision": release_revision,
+    })
+
+
+def test_activation_request_binds_release_before_install(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    installed = Path("/opt/muncho-owner-gate/releases") / REVISION
+
+    class Stdin:
+        buffer = io.BytesIO(_activation_request(release_revision="f" * 40))
+
+    monkeypatch.setattr(activation, "_installed_release", lambda: installed)
+    monkeypatch.setattr(activation.sys, "stdin", Stdin())
+    monkeypatch.setattr(
+        activation,
+        "install_activation_seal",
+        lambda **_kwargs: (_ for _ in ()).throw(
+            AssertionError("release mismatch must precede installation")
+        ),
+    )
+
+    with pytest.raises(
+        activation.OwnerGateActivationSealError,
+        match="owner_gate_activation_request_invalid",
+    ):
+        activation.main(("install",))
+
+
+@pytest.mark.parametrize(
+    "raw",
+    (
+        b"",
+        b'{"release_revision":"' + REVISION.encode("ascii") + b'","schema":"wrong"}',
+        _activation_request() + b"\n",
+        b'{"schema": "muncho-owner-gate-storage-activation-request.v1"}',
+        foundation.canonical_json_bytes({
+            "schema": activation.ACTIVATION_REQUEST_SCHEMA,
+            "release_revision": REVISION,
+            "caller_path": "/tmp/escape",
+        }),
+        b"x" * (activation.MAX_ACTIVATION_REQUEST_BYTES + 1),
+    ),
+)
+def test_activation_request_rejects_nonexact_or_caller_selected_input(
+    raw: bytes,
+) -> None:
+    with pytest.raises(
+        activation.OwnerGateActivationSealError,
+        match="owner_gate_activation_request_invalid",
+    ):
+        activation.validate_activation_install_request(
+            raw,
+            expected_release_revision=REVISION,
+        )
+
+
+def test_activation_request_accepts_only_canonical_exact_release() -> None:
+    raw = _activation_request()
+    assert activation.validate_activation_install_request(
+        raw,
+        expected_release_revision=REVISION,
+    ) == {
+        "schema": activation.ACTIVATION_REQUEST_SCHEMA,
+        "release_revision": REVISION,
+    }
 
 
 def _host_for_release(

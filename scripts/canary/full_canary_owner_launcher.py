@@ -284,6 +284,18 @@ OWNER_GATE_SERVICE_ACCOUNT_EMAIL = (
 OWNER_GATE_HOST_IDENTITY_COLLECTION_METHOD = (
     "gcloud-start-iap-tunnel-openssh-noauth-ed25519-v1"
 )
+OWNER_GATE_ACTIVATION_RESPONSE_SCHEMA = (
+    "muncho-owner-gate-storage-activation-response.v1"
+)
+OWNER_GATE_ACTIVATION_REQUEST_SCHEMA = (
+    "muncho-owner-gate-storage-activation-request.v1"
+)
+OWNER_GATE_ACTIVATION_SEAL_PATH = (
+    "/etc/muncho-owner-gate/storage-executor-enabled"
+)
+OWNER_GATE_ACTIVATION_RECEIPT_BASE = (
+    "/var/lib/muncho-owner-gate/activation-receipts"
+)
 # Intentionally unset.  The inert owner-gate bootstrap must first yield the
 # exact numeric instance ID and SSH host key in an externally owner-signed
 # receipt.  A reviewed follow-up pins that receipt digest; until then the
@@ -19299,6 +19311,230 @@ class OwnerGateIapTransport:
             raise OwnerLauncherError("owner_gate_iap_response_invalid")
         return response
 
+    def _activation_argv(
+        self,
+        snapshot: tuple[Any, ...],
+    ) -> tuple[str, ...]:
+        """Return only the reviewed root activation command for the exact VM."""
+
+        (
+            prefix,
+            account,
+            _launcher,
+            known_hosts,
+            private_key,
+            _public_key,
+            host_identity,
+            _server_host_key,
+        ) = snapshot
+        if not isinstance(host_identity, OwnerGateHostIdentitySnapshot):
+            raise OwnerLauncherError(
+                "owner_gate_activation_iap_identity_invalid"
+            )
+        remote_command = shlex.join((
+            "/usr/bin/sudo",
+            "--non-interactive",
+            "--user=root",
+            "--",
+            "/opt/muncho-owner-gate/current/venv/bin/python",
+            "-I",
+            "-B",
+            (
+                "/opt/muncho-owner-gate/current/bin/"
+                "muncho-owner-gate-activate-storage"
+            ),
+            "install",
+        ))
+        ssh_flags = self._sealed_ssh_flags(
+            known_hosts,
+            private_key,
+            host_identity.vm_numeric_id,
+        )
+        expected_ssh_flags = (
+            "--ssh-flag=-F/dev/null",
+            "--ssh-flag=-T",
+            f"--ssh-flag=-i{private_key}",
+            "--ssh-flag=-oBatchMode=yes",
+            "--ssh-flag=-oIdentitiesOnly=yes",
+            "--ssh-flag=-oIdentityAgent=none",
+            "--ssh-flag=-oCertificateFile=none",
+            "--ssh-flag=-oPreferredAuthentications=publickey",
+            "--ssh-flag=-oPubkeyAuthentication=yes",
+            "--ssh-flag=-oPasswordAuthentication=no",
+            "--ssh-flag=-oKbdInteractiveAuthentication=no",
+            "--ssh-flag=-oGSSAPIAuthentication=no",
+            "--ssh-flag=-oHostbasedAuthentication=no",
+            "--ssh-flag=-oPermitLocalCommand=no",
+            "--ssh-flag=-oClearAllForwardings=yes",
+            "--ssh-flag=-oControlMaster=no",
+            "--ssh-flag=-oControlPath=none",
+            "--ssh-flag=-oKnownHostsCommand=none",
+            "--ssh-flag=-oCanonicalizeHostname=no",
+            "--ssh-flag=-oForwardAgent=no",
+            "--ssh-flag=-oEscapeChar=none",
+            "--ssh-flag=-oRequestTTY=no",
+            "--ssh-flag=-oStrictHostKeyChecking=yes",
+            (
+                "--ssh-flag=-oHostKeyAlias="
+                f"compute.{host_identity.vm_numeric_id}"
+            ),
+            f"--ssh-flag=-oUserKnownHostsFile={known_hosts}",
+            "--ssh-flag=-oGlobalKnownHostsFile=none",
+            "--ssh-flag=-oUpdateHostKeys=no",
+            "--ssh-flag=-oVerifyHostKeyDNS=no",
+            "--ssh-flag=-oServerAliveInterval=15",
+            "--ssh-flag=-oServerAliveCountMax=4",
+        )
+        if ssh_flags != expected_ssh_flags:
+            raise OwnerLauncherError(
+                "owner_gate_activation_iap_argv_invalid"
+            )
+        expected = (
+            *prefix,
+            "compute",
+            "ssh",
+            f"{OS_LOGIN_USERNAME}@{self._VM_NAME}",
+            f"--project={PROJECT}",
+            f"--zone={ZONE}",
+            f"--account={account}",
+            "--plain",
+            "--tunnel-through-iap",
+            "--quiet",
+            f"--command={remote_command}",
+            *ssh_flags,
+        )
+        argv = tuple(expected)
+        if (
+            argv != expected
+            or len(argv) != len(prefix) + 10 + len(ssh_flags)
+            or argv[-len(ssh_flags) :] != ssh_flags
+            or argv[len(prefix) + 2]
+            != f"{OS_LOGIN_USERNAME}@{self._VM_NAME}"
+            or argv[len(prefix) + 9] != f"--command={remote_command}"
+        ):
+            raise OwnerLauncherError("owner_gate_activation_iap_argv_invalid")
+        return argv
+
+    def install_activation_seal(self) -> Mapping[str, Any]:
+        """Invoke and validate the one argument-free activation-seal action."""
+
+        before = self._authority_snapshot()
+        argv = self._activation_argv(before)
+        environment = self._environment(before[0])
+        request = _canonical_bytes({
+            "schema": OWNER_GATE_ACTIVATION_REQUEST_SCHEMA,
+            "release_revision": self._release_sha,
+        })
+        try:
+            response = self._bounded_exchange(argv, environment, request)
+        finally:
+            after = self._authority_snapshot()
+            if after != before:
+                raise OwnerLauncherError("owner_gate_iap_authority_changed")
+        if (
+            not response.endswith(b"\n")
+            or b"\n" in response[:-1]
+            or len(response) > self._MAX_RESPONSE_BYTES
+        ):
+            raise OwnerLauncherError(
+                "owner_gate_activation_iap_response_invalid"
+            )
+        try:
+            decoded = _decode_json_object(
+                response[:-1],
+                maximum=self._MAX_RESPONSE_BYTES,
+            )
+        except OwnerLauncherError:
+            raise OwnerLauncherError(
+                "owner_gate_activation_iap_response_invalid"
+            ) from None
+        if _canonical_bytes(decoded) != response[:-1]:
+            raise OwnerLauncherError(
+                "owner_gate_activation_iap_response_invalid"
+            )
+        return validate_owner_gate_activation_response(
+            decoded,
+            expected_release_sha=self._release_sha,
+        )
+
+
+def validate_owner_gate_activation_response(
+    value: Mapping[str, Any],
+    *,
+    expected_release_sha: str,
+) -> Mapping[str, Any]:
+    """Validate the complete canonical result from the fixed root command."""
+
+    fields = {
+        "schema",
+        "release_revision",
+        "disposition",
+        "activation_seal_path",
+        "activation_seal_sha256",
+        "activation_receipt_path",
+        "activation_receipt_sha256",
+        "service_contract_accepted",
+        "cloud_mutation_performed",
+        "response_sha256",
+    }
+    if (
+        _RELEASE_SHA.fullmatch(expected_release_sha or "") is None
+        or not isinstance(value, Mapping)
+        or set(value) != fields
+    ):
+        raise OwnerLauncherError(
+            "owner_gate_activation_iap_response_invalid"
+        )
+    unsigned = {
+        key: item for key, item in value.items() if key != "response_sha256"
+    }
+    expected_receipt_path = (
+        f"{OWNER_GATE_ACTIVATION_RECEIPT_BASE}/{expected_release_sha}.json"
+    )
+    if (
+        value.get("schema") != OWNER_GATE_ACTIVATION_RESPONSE_SCHEMA
+        or value.get("release_revision") != expected_release_sha
+        or value.get("disposition") not in {"installed", "exact_replay"}
+        or value.get("activation_seal_path")
+        != OWNER_GATE_ACTIVATION_SEAL_PATH
+        or value.get("activation_receipt_path") != expected_receipt_path
+        or _SHA256.fullmatch(
+            str(value.get("activation_seal_sha256", ""))
+        )
+        is None
+        or _SHA256.fullmatch(
+            str(value.get("activation_receipt_sha256", ""))
+        )
+        is None
+        or value.get("service_contract_accepted") is not True
+        or value.get("cloud_mutation_performed") is not False
+        or value.get("response_sha256") != _sha256(_canonical_bytes(unsigned))
+    ):
+        raise OwnerLauncherError(
+            "owner_gate_activation_iap_response_invalid"
+        )
+    return dict(value)
+
+
+def install_owner_gate_activation_seal(
+    *,
+    release_sha: str,
+    gcloud_executable: TrustedGcloudExecutable,
+    gcloud_configuration: PinnedGcloudConfiguration,
+    owner_identity: GcloudOwnerAccessToken,
+) -> Mapping[str, Any]:
+    """Use only the release-bound fixed IAP activation transport."""
+
+    if _RELEASE_SHA.fullmatch(release_sha or "") is None:
+        raise OwnerLauncherError("owner_gate_activation_iap_release_invalid")
+    transport = OwnerGateIapTransport(
+        release_sha=release_sha,
+        owner_identity=owner_identity,
+        gcloud_executable=gcloud_executable,
+        gcloud_configuration=gcloud_configuration,
+    )
+    return transport.install_activation_seal()
+
 
 def _require_storage_growth_privileged_boundary(
     *,
@@ -19952,6 +20188,22 @@ def _cli_parser() -> argparse.ArgumentParser:
         help="publish the exact fork revision while every canary service is stopped",
     )
     actions.add_argument(
+        "--preflight-owner-gate-inert-inputs",
+        action="store_true",
+        help=(
+            "validate the fixed clean release checkout and prebuilt offline "
+            "bundle without publishing an input"
+        ),
+    )
+    actions.add_argument(
+        "--prepare-owner-gate-inert-inputs",
+        action="store_true",
+        help=(
+            "atomically prepare the exact release-bound inert observation "
+            "streams and canonical pins"
+        ),
+    )
+    actions.add_argument(
         "--observe-owner-gate-inert",
         action="store_true",
         help=(
@@ -19981,6 +20233,14 @@ def _cli_parser() -> argparse.ArgumentParser:
         help=(
             "author and stage the exact fresh post-IAM evidence bundle without "
             "activation or any Cloud, IAM, Caddy, runtime, or storage mutation"
+        ),
+    )
+    actions.add_argument(
+        "--install-owner-gate-activation-seal",
+        action="store_true",
+        help=(
+            "run only the fixed root activation-seal command on the exact "
+            "release-bound owner-gate VM after staged evidence"
         ),
     )
     actions.add_argument(
@@ -20226,6 +20486,32 @@ def main(argv: Sequence[str] | None = None) -> int:
         )
         require_local_launcher_provenance(release_sha)
         _install_canonical_launcher_bridge(release_sha)
+        if (
+            arguments.preflight_owner_gate_inert_inputs
+            or arguments.prepare_owner_gate_inert_inputs
+        ):
+            if arguments.external_iam_policy_sha256 is not None:
+                raise OwnerLauncherError("owner_gate_inert_input_cli_invalid")
+            from scripts.canary import owner_gate_inert_input_preparer
+
+            action = (
+                owner_gate_inert_input_preparer.
+                preflight_inert_observation_inputs
+                if arguments.preflight_owner_gate_inert_inputs
+                else owner_gate_inert_input_preparer.
+                prepare_inert_observation_inputs
+            )
+            receipt = action(
+                release_revision=release_sha,
+                gcloud_executable=gcloud_executable,
+            )
+            require_trusted_owner_support_activation(
+                gcloud_executable,
+                release_sha=release_sha,
+            )
+            require_local_launcher_provenance(release_sha)
+            _emit_canonical_line(receipt)
+            return 0
         gcloud_configuration = PinnedGcloudConfiguration()
         owner_identity = GcloudOwnerAccessToken(
             gcloud_executable=gcloud_executable,
@@ -20292,6 +20578,21 @@ def main(argv: Sequence[str] | None = None) -> int:
 
             receipt = owner_gate_activation_evidence_author.stage_post_iam_activation_evidence(
                 release_revision=release_sha,
+                gcloud_executable=gcloud_executable,
+                gcloud_configuration=gcloud_configuration,
+                owner_identity=owner_identity,
+            )
+            runtime_and_provenance_guard(release_sha)
+            _emit_canonical_line(receipt)
+            return 0
+
+        if arguments.install_owner_gate_activation_seal:
+            if arguments.external_iam_policy_sha256 is not None:
+                raise OwnerLauncherError(
+                    "owner_gate_activation_iap_cli_invalid"
+                )
+            receipt = install_owner_gate_activation_seal(
+                release_sha=release_sha,
                 gcloud_executable=gcloud_executable,
                 gcloud_configuration=gcloud_configuration,
                 owner_identity=owner_identity,
@@ -20613,6 +20914,10 @@ __all__ = [
     "HttpResponse",
     "LocalLauncherProvenance",
     "OWNER_DISCORD_INPUT_MAGIC",
+    "OWNER_GATE_ACTIVATION_RECEIPT_BASE",
+    "OWNER_GATE_ACTIVATION_REQUEST_SCHEMA",
+    "OWNER_GATE_ACTIVATION_RESPONSE_SCHEMA",
+    "OWNER_GATE_ACTIVATION_SEAL_PATH",
     "OWNER_RECEIPT_SCHEMA",
     "OwnerGateIapTransport",
     "OwnerDiscordTokenReader",
@@ -20698,6 +21003,7 @@ __all__ = [
     "repair_trusted_gcloud_sdk_bytecode",
     "bootstrap_schema_reconciliation_control",
     "activate_trusted_owner_support",
+    "install_owner_gate_activation_seal",
     "harden_owner_secret_process",
     "launch_full_canary",
     "launch_session_bound_full_canary",
@@ -20717,6 +21023,7 @@ __all__ = [
     "validate_fixture_publication_receipt",
     "validate_host_receipt_rotation_plan",
     "validate_host_receipt_rotation_receipt",
+    "validate_owner_gate_activation_response",
     "validate_phase_b_apply_gate",
     "validate_phase_b_apply_receipt",
     "validate_session_bound_approval_request",

@@ -314,7 +314,8 @@ field in this handoff.
 The first combined inert observation is a separate exact action on the
 release-bound full owner launcher. It does not replay the Foundation operation
 and accepts no evidence, key, plan, journal, stream, output, or remote-command
-argument. Package preparation remains separate and must publish exactly these
+argument. Package *authoring* remains separate. The fixed owner-side input
+preparer validates an already-materialized package and publishes exactly these
 owner-owned, mode-`0400`, single-link regular files below an owner-owned
 mode-`0700` release directory:
 
@@ -337,7 +338,59 @@ cryptographically validated successful outer Foundation transaction, then
 loads Foundation B only through
 `load_validated_foundation_apply_chain(foundation_a)`.
 
-After the two streams and pins have been prepared, run:
+The preparer accepts no path. Before it can write anything, these two exact
+owner-only prerequisites must already exist:
+
+```text
+~/.hermes/trusted/owner-gate-release-sources/<release-sha>/
+~/.hermes/trusted/owner-gate-offline-bundles/<release-sha>/
+```
+
+The release source root is mode `0700`, has exact `HEAD=<release-sha>`, has no
+tracked or untracked change, and its Git tree must equal the source tree in the
+sealed release-bound owner-support manifest. The bundle root is the immutable
+mode-`0555` result of the reviewed `owner_gate_package.materialize_bundle`
+builder. Its inventory is closed: every directory is mode `0555`; every file
+has the exact builder mode and is owner-owned and single-link; the signed
+release-trust manifest, its bound Foundation apply receipt digest, direct-IAM
+authority, package manifest, payload/wheel inventory, collector keys, and
+credential-migration envelope must all verify. This action does not download,
+author, repair, or select a bundle.
+
+First run the read-only prerequisite check. It creates neither the input root
+nor a lock or pending directory and reports the exact missing or invalid fixed
+prerequisite:
+
+```bash
+/Users/emillomliev/.local/share/uv/python/\
+cpython-3.11.15-macos-aarch64-none/bin/python3.11 \
+  -I -S -B -X pycache_prefix=/var/empty/muncho-canary \
+  /absolute/clean/hermes-agent/scripts/canary/full_canary_owner_launcher.py \
+  --release-sha <exact-40-character-release-sha> \
+  --preflight-owner-gate-inert-inputs
+```
+
+Then publish the two reviewed exact-tree streams and their canonical
+self-hashed pins with the pathless action:
+
+```bash
+/Users/emillomliev/.local/share/uv/python/\
+cpython-3.11.15-macos-aarch64-none/bin/python3.11 \
+  -I -S -B -X pycache_prefix=/var/empty/muncho-canary \
+  /absolute/clean/hermes-agent/scripts/canary/full_canary_owner_launcher.py \
+  --release-sha <exact-40-character-release-sha> \
+  --prepare-owner-gate-inert-inputs
+```
+
+The preparer fsyncs each file and the private pending directory before one
+atomic no-replace directory rename, then fsyncs the parent and loads the result
+through the same pinned reader used by the observation. A valid final directory
+is an exact replay and is never rebuilt. A crash after the rename is therefore
+recoverable by replay. Any `.pending` directory means publication did not reach
+the atomic boundary and requires manual reconciliation; it is never removed or
+silently resumed.
+
+After the preparation receipt succeeds, run:
 
 ```bash
 /Users/emillomliev/.local/share/uv/python/\
@@ -378,6 +431,45 @@ retained and a new transaction is collected.
 Stdout is only the compact canonical secret-free receipt and digest inventory,
 not the three evidence documents. It never contains an access token, private
 key, generic command, or mutable pair.
+
+### Fixed owner-gate activation-seal install
+
+After `--stage-owner-gate-activation-evidence` has successfully staged and
+validated the complete release-bound evidence set, install the host activation
+seal with the sole fixed action:
+
+```bash
+/Users/emillomliev/.local/share/uv/python/\
+cpython-3.11.15-macos-aarch64-none/bin/python3.11 \
+  -I -S -B -X pycache_prefix=/var/empty/muncho-canary \
+  /absolute/clean/hermes-agent/scripts/canary/full_canary_owner_launcher.py \
+  --release-sha <exact-40-character-release-sha> \
+  --install-owner-gate-activation-seal
+```
+
+There is no host, path, command, seal, receipt, or payload argument. The
+launcher uses only the signed numeric identity and host key for
+`muncho-owner-gate-01`, the pinned owner account, the sealed gcloud runtime,
+IAP, and the complete fixed SSH option tuple. The only permitted remote command
+is:
+
+```text
+/usr/bin/sudo --non-interactive --user=root -- /opt/muncho-owner-gate/current/venv/bin/python -I -B /opt/muncho-owner-gate/current/bin/muncho-owner-gate-activate-storage install
+```
+
+The remote release validates the already-staged evidence before installing or
+exactly replaying `/etc/muncho-owner-gate/storage-executor-enabled` and the
+release-addressed receipt below
+`/var/lib/muncho-owner-gate/activation-receipts/`. Before any mutation, it also
+requires the two-field canonical release request sent on stdin by the fixed
+launcher and rejects it unless that SHA equals its own resolved immutable
+release. The launcher accepts only one canonical newline-terminated
+`muncho-owner-gate-storage-activation-response.v1` result whose release equals
+the requested SHA, disposition is `installed` or `exact_replay`, seal and
+receipt paths and SHA-256 values are exact, the service contract is accepted,
+`cloud_mutation_performed=false`, and `response_sha256` verifies. This is the
+single bounded host activation mutation; it grants no generic SSH or Cloud
+mutation surface.
 
 ## Later host/runtime gates
 

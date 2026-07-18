@@ -1247,6 +1247,14 @@ def test_cloud_transport_commands_are_fixed_to_target_release() -> None:
         REVISION,
         "apply-cutover",
     )
+    caddy_prepare = owner.ProductionCutoverTransport._remote_command(
+        REVISION,
+        "prepare-caddy-cutover",
+    )
+    caddy_commit = owner.ProductionCutoverTransport._remote_command(
+        REVISION,
+        "commit-caddy-cutover",
+    )
     interpreter = (
         "/opt/adventico-ai-platform/hermes-agent-releases/"
         f"hermes-agent-{REVISION[:12]}/.venv/bin/python"
@@ -1256,13 +1264,19 @@ def test_cloud_transport_commands_are_fixed_to_target_release() -> None:
     assert interpreter in stage
     assert interpreter in cron_stage
     assert interpreter in apply
+    assert interpreter in caddy_prepare
+    assert interpreter in caddy_commit
     assert "scripts.canary.production_cutover_initial_collector" in initial
     assert "scripts.canary.production_cutover_public_stager" in stage
     assert "scripts.canary.stage_production_cron_continuity" in cron_stage
     assert "gateway.canonical_writer_production_cutover" in apply
+    assert "scripts.canary.owner_gate_caddy_cutover" in caddy_prepare
+    assert "scripts.canary.owner_gate_caddy_cutover" in caddy_commit
     assert initial[-3:] == ("initial", "--revision", REVISION)
     assert cron_stage[-3:] == ("stage", "--revision", REVISION)
     assert apply[-1] == "apply-cutover"
+    assert caddy_prepare[-1] == "prepare"
+    assert caddy_commit[-1] == "commit"
 
 
 class _TrustedGcloud:

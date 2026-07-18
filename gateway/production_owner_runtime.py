@@ -54,6 +54,7 @@ REQUIRED_MODULES = (
     "ops.muncho.runtime.mechanical_job_rail",
     "ops.muncho.runtime.trusted_cron_collector_rail",
     "scripts.canary.full_canary_owner_launcher",
+    "scripts.canary.owner_gate_caddy_cutover",
     "scripts.canary.package_production_cutover_artifacts",
     "scripts.canary.production_cutover_host_authority",
     "scripts.canary.production_cutover_initial_collector",

@@ -50,7 +50,7 @@ COLLECTOR_SCHEMA = "muncho-production-cutover-authority-inputs.v1"
 INITIAL_COLLECTOR_SCHEMA = "muncho-production-cutover-initial-observations.v1"
 STOPPED_COLLECTOR_SCHEMA = "muncho-production-cutover-stopped-services.v1"
 OWNER_WORKSPACE_SCHEMA = "muncho-production-cutover-owner-workspace.v1"
-WORKFLOW_RECEIPT_SCHEMA = "muncho-production-cutover-owner-workflow.v1"
+WORKFLOW_RECEIPT_SCHEMA = "muncho-production-cutover-owner-workflow.v2"
 PREPARED_WORKSPACE_SCHEMA = (
     "muncho-production-cutover-passkey-workspace.v1"
 )
@@ -274,7 +274,9 @@ class ProductionCutoverTransport(canary_transport.IapStoppedReleaseTransport):
         "capture-final-tail",
         "collect-stopped",
         "phase-b-preflight",
+        "prepare-caddy-cutover",
         "apply-cutover",
+        "commit-caddy-cutover",
         "abort-freeze",
     })
 
@@ -647,6 +649,16 @@ class ProductionCutoverTransport(canary_transport.IapStoppedReleaseTransport):
                 "stage",
                 "--revision",
                 revision,
+            )
+        if action in {"prepare-caddy-cutover", "commit-caddy-cutover"}:
+            return (
+                *prefix,
+                interpreter,
+                "-B",
+                "-I",
+                "-m",
+                "scripts.canary.owner_gate_caddy_cutover",
+                "prepare" if action == "prepare-caddy-cutover" else "commit",
             )
         return (
             *prefix,
@@ -2316,11 +2328,24 @@ def execute_production_cutover_workflow(
             plan=cutover_plan,
         )
         record("phase_b_preflight_accepted", preflight)
+        from scripts.canary import owner_gate_caddy_cutover as caddy_cutover
+
+        caddy_prepare = caddy_cutover.validate_prepare_receipt(
+            transport.invoke(release_revision, "prepare-caddy-cutover"),
+            plan=cutover_plan,
+        )
+        record("caddy_cutover_prepared", caddy_prepare)
         terminal = _validate_terminal_receipt(
             transport.invoke(release_revision, "apply-cutover"),
             plan=cutover_plan,
         )
         record("cutover_terminal_accepted", terminal)
+        caddy_terminal = caddy_cutover.validate_terminal_receipt(
+            transport.invoke(release_revision, "commit-caddy-cutover"),
+            plan=cutover_plan,
+            prepare_receipt=caddy_prepare,
+        )
+        record("caddy_cutover_terminal_accepted", caddy_terminal)
     except BaseException as primary:
         if freeze_staged and not cutover_staged:
             try:
@@ -2349,6 +2374,9 @@ def execute_production_cutover_workflow(
         "freeze_approval_sha256": freeze_approval["approval_sha256"],
         "cutover_plan_sha256": cutover_plan.sha256,
         "terminal_receipt_sha256": terminal["receipt_sha256"],
+        "caddy_prepare_receipt_sha256": caddy_prepare["receipt_sha256"],
+        "caddy_terminal_receipt_sha256": caddy_terminal["receipt_sha256"],
+        "caddy_outcome": caddy_terminal["outcome"],
         "gates": gates,
         "private_key_staged": False,
         "secret_material_recorded": False,

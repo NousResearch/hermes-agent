@@ -32,7 +32,10 @@ def tmp_hermes_home(tmp_path, monkeypatch):
     home = tmp_path / "hermes"
     home.mkdir()
     monkeypatch.setenv("HERMES_HOME", str(home))
-    monkeypatch.delenv("HERMES_MCP_SESSION_ID", raising=False)
+    # `set_current_session_id()` writes HERMES_SESSION_ID process-globally, so a
+    # developer's own live session id would otherwise leak into the suite and make
+    # the canonical-env tests below pass spuriously.
+    monkeypatch.delenv("HERMES_SESSION_ID", raising=False)
     monkeypatch.delenv("HERMES_MCP_STATE_DB", raising=False)
     return home
 
@@ -159,11 +162,16 @@ class TestSessionSearchShim:
         assert out.get("success") is False
         assert "state DB" in out.get("error", "")
 
-    def test_current_session_id_rides_env(self, tmp_hermes_home, monkeypatch):
+    def test_session_id_read_from_canonical_env(self, tmp_hermes_home, monkeypatch):
+        # The shim must read the CANONICAL `HERMES_SESSION_ID` — the variable
+        # Hermes actually produces (`set_current_session_id` -> `_VAR_MAP` ->
+        # `_inject_session_context_env` -> the codex spawn env). Reading a
+        # bespoke name instead means own-lineage exclusion never runs in
+        # production, which is the defect this replaces.
         db_path = tmp_hermes_home / "state.db"
         self._seed_db(db_path)
         monkeypatch.setenv("HERMES_MCP_STATE_DB", str(db_path))
-        monkeypatch.setenv("HERMES_MCP_SESSION_ID", "sess-current-9")
+        monkeypatch.setenv("HERMES_SESSION_ID", "sess-current-9")
 
         captured = {}
         import tools.session_search_tool as sst
@@ -177,6 +185,40 @@ class TestSessionSearchShim:
         monkeypatch.setattr(sst, "session_search", spy)
         dispatch_session_search({"query": "auth"})
         assert captured.get("current_session_id") == "sess-current-9"
+
+    def test_calling_session_excluded_via_production_producer(
+        self, tmp_hermes_home, monkeypatch
+    ):
+        # End-to-end through the REAL producer: `set_current_session_id()` is what
+        # Hermes itself calls. Establishing the precondition that way — rather than
+        # a bare `setenv` of the very name under test — is what makes a
+        # producer/consumer name mismatch fail LOUDLY here instead of passing
+        # silently, which is how the original defect survived review.
+        from gateway.session_context import set_current_session_id
+        from hermes_state import SessionDB
+
+        db_path = tmp_hermes_home / "state.db"
+        db = SessionDB(db_path=db_path)
+        db.create_session("sess-other-1", source="telegram")
+        db.append_message(
+            "sess-other-1", "assistant", "the auth refactor merged on Thursday"
+        )
+        db.create_session("sess-mine-2", source="telegram")
+        db.append_message(
+            "sess-mine-2", "assistant", "the auth refactor notes are mine"
+        )
+        db.close()
+        monkeypatch.setenv("HERMES_MCP_STATE_DB", str(db_path))
+
+        # setenv first purely so monkeypatch restores the environment at teardown
+        # (the producer writes os.environ directly); the value under test is the
+        # one written by the real producer on the very next line.
+        monkeypatch.setenv("HERMES_SESSION_ID", "")
+        set_current_session_id("sess-mine-2")
+
+        out = dispatch_session_search({"query": "auth refactor", "limit": 10})
+        assert "sess-other-1" in out
+        assert "sess-mine-2" not in out
 
     def test_zero_hit_multiterm_query_relaxes_to_or(self, tmp_hermes_home, monkeypatch):
         # FTS5 ANDs terms: models write "topic word word word" queries and get

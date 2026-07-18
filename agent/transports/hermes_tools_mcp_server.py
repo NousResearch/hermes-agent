@@ -43,7 +43,7 @@ Exposed via STATELESS SHIMS (#26567) rather than the generic dispatcher:
                                            threat scan, locking all inherited
   - session_search                       — read-only SessionDB over the state
                                            DB; the calling session's id rides
-                                           HERMES_MCP_SESSION_ID
+                                           the canonical HERMES_SESSION_ID
   The `_AGENT_LOOP_TOOLS` refusal in handle_function_call stays intact for
   every other caller — the shims are dedicated closures, not a widened gate.
 
@@ -114,11 +114,14 @@ def _signature_from_schema(schema: dict | None) -> tuple[inspect.Signature, dict
 #   - terminal / shell / read_file / write_file / patch / search_files /
 #     process — codex's built-ins cover these and approval routes through
 #     codex's own UI.
-#   - delegate_task / memory / session_search / todo — these are
-#     `_AGENT_LOOP_TOOLS` in Hermes (model_tools.py:493). They require
-#     the running AIAgent context to dispatch (mid-loop state), so a
-#     stateless MCP callback can't drive them. Hermes' default runtime
-#     keeps these working; the codex_app_server runtime cannot.
+#   - delegate_task / todo — these are `_AGENT_LOOP_TOOLS` in Hermes
+#     (model_tools.py:606, gate at :1167). They require the running AIAgent
+#     context to dispatch (mid-loop state), so a stateless MCP callback
+#     can't drive them. Hermes' default runtime keeps these working; the
+#     codex_app_server runtime cannot.
+#     (`memory` and `session_search` are `_AGENT_LOOP_TOOLS` too, but they
+#     DO have workable stateless equivalents — they are exposed through the
+#     dedicated shims below, which does not widen that refusal.)
 EXPOSED_TOOLS: tuple[str, ...] = (
     "web_search",
     "web_extract",
@@ -163,28 +166,49 @@ EXPOSED_TOOLS: tuple[str, ...] = (
 #
 # `memory` and `session_search` are `_AGENT_LOOP_TOOLS`: the generic
 # dispatcher refuses them because natively they receive live agent state
-# (the loop's MemoryStore / session-DB handle) from tool_executor. Both
-# have faithful stateless equivalents, so runtimes that own their own agent
-# loop (claude-agent-sdk, codex app-server) can regain them through this
-# server without touching that refusal:
+# (the loop's MemoryStore / session-DB handle) from tool_executor. Both have
+# workable stateless equivalents, so a runtime that owns its own agent loop
+# (codex app-server) can regain them through this server without touching
+# that refusal:
 #
 #   memory         → a fresh `load_on_disk_store()` per call. Char caps,
-#                    config overrides, external-drift guard, threat scan,
-#                    file locking and the consolidation-failure breaker all
-#                    live in MemoryStore/memory_tool and are inherited.
+#                    config overrides, external-drift guard, threat scan and
+#                    file locking live in MemoryStore/memory_tool and are
+#                    inherited. The consolidation-failure breaker is NOT:
+#                    a fresh store per call resets its counter every time, so
+#                    it can never trip here (it is reset natively at the turn
+#                    boundary, and this subprocess has no turns).
 #                    NOTE: a shim write cannot mirror through MemoryProvider
 #                    hooks (no MemoryManager in this subprocess), so when
 #                    `memory.provider` configures an external backend the
 #                    shim FAILS CLOSED — unregistered, and refused at
 #                    dispatch — rather than silently diverging the stores.
+#                    NOTE: with no foreground approver in a stdio subprocess
+#                    the native write-approval gate can return `staged`; the
+#                    call reports success and the write does not land yet.
 #   session_search → `SessionDB(read_only=True)` over the state DB (never a
-#                    writable handle in a model-facing subprocess). The
-#                    calling session's id arrives via HERMES_MCP_SESSION_ID
-#                    so own-lineage exclusion keeps working; the DB path can
-#                    be overridden via HERMES_MCP_STATE_DB (defaults to the
-#                    profile's state.db).
+#                    writable handle in a model-facing subprocess). NOT a
+#                    faithful equivalent: it adds a deterministic zero-hit
+#                    OR-relaxation the native tool does not have (below).
+#                    The calling session's id arrives via the canonical
+#                    HERMES_SESSION_ID (see `_SESSION_ID_ENV`); when that is
+#                    unset, own-lineage exclusion is simply INACTIVE —
+#                    fail-open, results just include the caller, no error.
+#                    The DB path can be pointed elsewhere with
+#                    HERMES_MCP_STATE_DB (defaults to the profile's
+#                    state.db) — an internal mechanism bridge, not a
+#                    user-facing setting.
 
-_SESSION_ID_ENV = "HERMES_MCP_SESSION_ID"
+# The CANONICAL session-context variable — deliberately not a shim-specific name.
+# `set_current_session_id()` writes it (gateway/session_context.py), `_VAR_MAP` carries
+# it, and `_inject_session_context_env()` inside `hermes_subprocess_env()` bridges it
+# into the codex spawn env — the same channel `HERMES_KANBAN_TASK` already rides. A
+# bespoke name has no producer in any launch path, so own-lineage exclusion would
+# silently never run. Hand-rolling a producer for one would also be worse than useless:
+# the cross-session leak guard in `_inject_session_context_env` covers only `_VAR_MAP`
+# keys, so a bespoke var could carry a SIBLING session's id under a concurrent host and
+# exclude the wrong lineage.
+_SESSION_ID_ENV = "HERMES_SESSION_ID"
 _STATE_DB_ENV = "HERMES_MCP_STATE_DB"
 
 

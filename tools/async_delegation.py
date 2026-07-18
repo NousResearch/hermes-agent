@@ -299,7 +299,19 @@ def mark_completion_delivered(delegation_id: str) -> bool:
                WHERE delegation_id=? AND delivery_state!='delivered'""",
             (now, now, delegation_id),
         )
-        return cur.rowcount == 1
+        acked = cur.rowcount == 1
+    if acked:
+        _mark_in_memory_delivered(delegation_id)
+    return acked
+
+
+def _mark_in_memory_delivered(delegation_id: str) -> None:
+    """Update the in-memory record's delivery_state so prune doesn't
+    discard an undelivered result."""
+    with _records_lock:
+        record = _records.get(delegation_id)
+        if record is not None:
+            record["delivery_state"] = "delivered"
 
 
 def claim_completion_delivery(delegation_id: str, claim_id: str) -> bool:
@@ -358,7 +370,10 @@ def complete_completion_delivery(delegation_id: str, claim_id: str) -> bool:
                  AND delivery_claim=?""",
             (now, now, delegation_id, claim_id),
         )
-        return cur.rowcount == 1
+        acked = cur.rowcount == 1
+    if acked:
+        _mark_in_memory_delivered(delegation_id)
+    return acked
 
 
 def complete_event_delivery(evt: Dict[str, Any], claim_id: str) -> None:
@@ -420,19 +435,36 @@ def _new_delegation_id() -> str:
 def _prune_completed_locked() -> None:
     """Drop the oldest completed records beyond the retention cap.
 
+    Mirrors ``_prune_durable_records``: delivered records are capped at
+    ``_MAX_RETAINED_COMPLETED`` (50), while undelivered (pending) records
+    enjoy the separate ``_MAX_DURABLE_PENDING`` (1000) cap so results are
+    never deleted before the parent agent has consumed them.
+
     Caller must hold ``_records_lock``.
     """
-    completed = [
+    # Step 1 — delivered records: cap at _MAX_RETAINED_COMPLETED.
+    delivered = [
         (rid, r)
         for rid, r in _records.items()
-        if r.get("status") != "running"
+        if r.get("status") != "running" and r.get("delivery_state") == "delivered"
     ]
-    if len(completed) <= _MAX_RETAINED_COMPLETED:
-        return
-    # Oldest-first by completion time (fall back to dispatch time).
-    completed.sort(key=lambda kv: kv[1].get("completed_at") or kv[1].get("dispatched_at") or 0)
-    for rid, _ in completed[: len(completed) - _MAX_RETAINED_COMPLETED]:
-        _records.pop(rid, None)
+    if len(delivered) > _MAX_RETAINED_COMPLETED:
+        delivered.sort(key=lambda kv: kv[1].get("completed_at") or kv[1].get("dispatched_at") or 0)
+        for rid, _ in delivered[: len(delivered) - _MAX_RETAINED_COMPLETED]:
+            _records.pop(rid, None)
+
+    # Step 2 — pending (undelivered) records: cap at _MAX_DURABLE_PENDING so a
+    # burst of completions doesn't delete results before the parent reads them.
+    pending = [
+        (rid, r)
+        for rid, r in _records.items()
+        if r.get("status") != "running" and r.get("delivery_state") != "delivered"
+    ]
+    overflow = max(0, len(pending) - _MAX_DURABLE_PENDING)
+    if overflow:
+        pending.sort(key=lambda kv: kv[1].get("completed_at") or kv[1].get("dispatched_at") or 0)
+        for rid, _ in pending[:overflow]:
+            _records.pop(rid, None)
 
 
 def dispatch_async_delegation(
@@ -499,6 +531,7 @@ def dispatch_async_delegation(
         "dispatched_at": dispatched_at,
         "completed_at": None,
         "interrupt_fn": interrupt_fn,
+        "delivery_state": "pending",
     }
     # Capacity check and record insert under ONE lock hold — checking
     # active_count() separately would let two concurrent dispatches (e.g.
@@ -699,6 +732,7 @@ def dispatch_async_delegation_batch(
         "completed_at": None,
         "interrupt_fn": interrupt_fn,
         "is_batch": True,
+        "delivery_state": "pending",
     }
     with _records_lock:
         running = sum(

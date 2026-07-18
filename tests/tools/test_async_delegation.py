@@ -231,16 +231,31 @@ def test_interrupt_all_signals_running_children():
 
 def test_completed_records_pruned_to_cap():
     # Run more than the retention cap quickly; ensure list doesn't grow forever.
-    for i in range(ad._MAX_RETAINED_COMPLETED + 10):
+    # Delivered records are capped at _MAX_RETAINED_COMPLETED (50); pending
+    # (undelivered) records at _MAX_DURABLE_PENDING (1000).
+    N = ad._MAX_RETAINED_COMPLETED + 10  # 60
+    for i in range(N):
         ad.dispatch_async_delegation(
             goal=f"t{i}", context=None, toolsets=None, role="leaf", model="m",
             session_key="", runner=lambda: {"status": "completed", "summary": "ok"},
-            max_async_children=ad._MAX_RETAINED_COMPLETED + 20,
+            max_async_children=N + 20,
         )
     # let workers finish
     deadline = time.monotonic() + 10
     while time.monotonic() < deadline and ad.active_count() > 0:
         time.sleep(0.05)
+
+    # All 60 are pending (undelivered) → none pruned (60 < 1000).
+    all_records = ad.list_async_delegations()
+    assert len(all_records) == N, (
+        f"expected {N} pending records, got {len(all_records)}"
+    )
+
+    # Mark all as delivered in-memory, then prune → should fall to 50.
+    for r in all_records:
+        ad.mark_completion_delivered(r["delegation_id"])
+
+    ad._prune_completed_locked()
     assert len(ad.list_async_delegations()) <= ad._MAX_RETAINED_COMPLETED
 
 

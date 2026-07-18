@@ -1,5 +1,5 @@
 import { getSession } from '@/hermes'
-import { type ChatMessage, chatMessageText } from '@/lib/chat-messages'
+import { assistantTextPart, type ChatMessage, chatMessageText, textPart } from '@/lib/chat-messages'
 import { normalizePersonalityValue } from '@/lib/chat-runtime'
 import { embeddedImageUrls, textWithoutEmbeddedImages } from '@/lib/embedded-images'
 import { reconcileApprovalModeForProfile } from '@/store/approval-mode'
@@ -26,7 +26,7 @@ import {
 // it from here; the canonical definition lives in @/store/session.
 export { sessionMatchesStoredId }
 import { reportBackendContract, reportInstallMethodWarning } from '@/store/updates'
-import type { SessionCreateResponse, SessionInfo, SessionRuntimeInfo } from '@/types/hermes'
+import type { SessionCreateResponse, SessionInfo, SessionResumeResponse, SessionRuntimeInfo } from '@/types/hermes'
 
 import type { ClientSessionState } from '../../../types'
 
@@ -285,6 +285,61 @@ export function preserveLocalPendingTurnMessages(
   }
 
   return preserved.length ? [...nextMessages, ...preserved] : nextMessages
+}
+
+/**
+ * Append the backend-only tail of a live turn to a stored transcript.
+ *
+ * Session history is committed only when a turn finishes. During a reconnect,
+ * `inflight` is therefore the authority for the currently running user/assistant
+ * pair, while `queued` is an accepted next-turn prompt waiting in gateway
+ * memory. Stable ids let repeated activate/resume hydration reconcile instead
+ * of growing duplicate rows.
+ */
+export function appendLiveSessionProjection(
+  messages: ChatMessage[],
+  projection: Pick<SessionResumeResponse, 'inflight' | 'queued' | 'session_id'>
+): ChatMessage[] {
+  const inflightUser = projection.inflight?.user?.trim() ?? ''
+  const inflightAssistant = projection.inflight?.assistant ?? ''
+  const inflightStreaming = Boolean(projection.inflight?.streaming)
+  const queuedUser = projection.queued?.user?.trim() ?? ''
+
+  if (!inflightUser && !inflightAssistant && !inflightStreaming && !queuedUser) {
+    return messages
+  }
+
+  const sessionId = projection.session_id || 'session'
+  const projected: ChatMessage[] = []
+
+  if (inflightUser) {
+    projected.push({
+      id: `user-inflight-${sessionId}`,
+      role: 'user',
+      parts: [textPart(inflightUser)]
+    })
+  }
+
+  // Keep a pending assistant boundary even before the first delta when a
+  // queued user turn follows it. This preserves the two distinct turns.
+  if (inflightAssistant || inflightStreaming || (inflightUser && queuedUser)) {
+    projected.push({
+      id: `assistant-stream-${sessionId}`,
+      role: 'assistant',
+      parts: inflightAssistant ? [assistantTextPart(inflightAssistant)] : [],
+      pending: inflightStreaming
+    })
+  }
+
+  if (queuedUser) {
+    projected.push({
+      id: `user-queued-${sessionId}`,
+      role: 'user',
+      parts: [textPart(queuedUser)]
+    })
+  }
+
+  return projected.length ? [...messages, ...projected] : messages
 }
 
 export interface BranchMessage {

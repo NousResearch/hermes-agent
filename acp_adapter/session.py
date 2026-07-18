@@ -284,12 +284,13 @@ class SessionManager:
 
         # Collect in-memory sessions first.
         with self._lock:
-            seen_ids = set(self._sessions.keys())
+            seen_ids = set()
             results = []
             for s in self._sessions.values():
                 history_len = len(s.history)
                 if history_len <= 0:
                     continue
+                seen_ids.add(s.session_id)
                 if normalized_cwd and _normalize_cwd_for_compare(s.cwd) != normalized_cwd:
                     continue
                 persisted = persisted_rows.get(s.session_id, {})

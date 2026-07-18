@@ -695,7 +695,10 @@ def _build_child_system_prompt(
         "responsibility — session boundaries do not create attribution exemptions.**",
         "",
         "**DECLARATIVE INTENT TRAP**: Every response MUST contain either "
-        "(a) tool calls that make progress, (b) a final verified result, or "
+        "(a) tool calls that make progress — including `process(action='wait')` "
+        "to await delegated reviewers or quality gates; waiting for a required "
+        "process artifact IS progress, not idleness —, "
+        "(b) a final verified result, or "
         "(c) a genuine infrastructure blocker report. There is NO fourth option. "
         "Declaring intent ('I will now X', 'Let me X', 'I'll X') without "
         "executing X in the SAME turn is a failure — you promised action you did "

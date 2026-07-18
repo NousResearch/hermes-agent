@@ -815,8 +815,13 @@ class SimplexAdapter(BasePlatformAdapter):
         because the bracket chat-command syntax (``#[<id>] text``) is
         parsed by the daemon as a display-name lookup, which silently
         drops when the group's display name isn't the literal ID. DMs
-        use the simple ``@<id> text`` form which has always worked in
-        production.
+        use the structured ``/_send @<id> json [...]`` form for the
+        same reason: the bare ``@<id> text`` chat-command form parses
+        ``@<n>`` as a *display-name* lookup, so a numeric ``contactId``
+        (e.g. ``6``) yields ``chatCmdError { contactNotFound }`` and the
+        reply silently drops (see ``test_send_dm``). Addressing by
+        numeric ID via ``/_send`` and escaping via ``json.dumps`` makes
+        the DM text path consistent with every other send path.
 
         The call is fire-and-forget at the WebSocket level: the daemon
         doesn't always return a corrId reply for chat commands, and
@@ -838,7 +843,13 @@ class SimplexAdapter(BasePlatformAdapter):
                 )
                 cmd_str = f"/_send #{chat_id[6:]} json {composed}"
             else:
-                cmd_str = f"@{chat_id} {content}"
+                # Structured form: address DMs by numeric contactId. The
+                # bare "@<id> text" form is parsed as a display-name lookup
+                # and silently drops for numeric contactIds.
+                composed = json.dumps(
+                    [{"msgContent": {"type": "text", "text": content}}]
+                )
+                cmd_str = f"/_send @{chat_id} json {composed}"
 
             await self._send_ws({"corrId": corr_id, "cmd": cmd_str})
 

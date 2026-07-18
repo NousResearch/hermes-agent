@@ -351,6 +351,7 @@ def test_chat_multimodal_note_persists_clean_input_once(tmp_path, monkeypatch):
         agent._memory_write_origin = "assistant_tool"
         agent._stream_context_scrubber = None
         agent._stream_think_scrubber = None
+        agent._stream_toolcall_scrubber = None
         agent._restore_primary_runtime = lambda: None
         agent._cleanup_dead_connections = lambda: False
         agent._emit_status = lambda _message: None

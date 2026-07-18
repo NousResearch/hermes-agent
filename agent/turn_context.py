@@ -336,6 +336,10 @@ def build_turn_context(
     think_scrubber = getattr(agent, "_stream_think_scrubber", None)
     if think_scrubber is not None:
         think_scrubber.reset()
+    # Reset the tool-call fragment scrubber for the same reason.
+    tc_scrubber = getattr(agent, "_stream_toolcall_scrubber", None)
+    if tc_scrubber is not None:
+        tc_scrubber.reset()
 
     # Preserve the original user message (no nudge injection).
     original_user_message = persist_user_message if persist_user_message is not None else user_message

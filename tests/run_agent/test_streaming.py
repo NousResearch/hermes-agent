@@ -1966,3 +1966,231 @@ class TestBedrockIamStreamingFallback:
 
         client.converse.assert_not_called()
         assert getattr(agent, "_disable_streaming", False) is False
+
+
+# ── Test: ToolCall Fragment Scrubber Wiring ─────────────────────────────
+
+
+class TestToolCallFragmentScrubberPathA:
+    """Path A (_fire_stream_delta): scrubber is prose passthrough — never strips."""
+
+    @patch("run_agent.AIAgent._create_request_openai_client")
+    @patch("run_agent.AIAgent._close_request_openai_client")
+    def test_prose_html_passes_through(self, mock_close, mock_create):
+        """HTML-like content in prose context is delivered unchanged."""
+        from run_agent import AIAgent
+
+        chunks = [
+            _make_stream_chunk(content="<ul>"),
+            _make_stream_chunk(content="item</ul>"),
+            _make_stream_chunk(finish_reason="stop"),
+        ]
+        deltas = []
+        mock_client = MagicMock()
+        mock_client.chat.completions.create.return_value = iter(chunks)
+        mock_create.return_value = mock_client
+
+        agent = AIAgent(
+            api_key="test-key",
+            base_url="https://openrouter.ai/api/v1",
+            model="test/model",
+            quiet_mode=True,
+            skip_context_files=True,
+            skip_memory=True,
+            stream_delta_callback=lambda t: deltas.append(t),
+        )
+        agent.api_mode = "chat_completions"
+        agent._interrupt_requested = False
+
+        agent._interruptible_streaming_api_call({})
+
+        joined = "".join(deltas)
+        # HTML must not be corrupted in prose context.
+        assert "<ul>" in joined
+        assert "item</ul>" in joined
+
+    @patch("run_agent.AIAgent._create_request_openai_client")
+    @patch("run_agent.AIAgent._close_request_openai_client")
+    def test_prose_fragment_lookalike_passes_through(self, mock_close, mock_create):
+        """A string like 'ool_call>' in prose context is NOT stripped (passthrough)."""
+        from run_agent import AIAgent
+
+        # Simulate a prose delta that looks like a fragment suffix but arrives
+        # WITHOUT any tool_calls in the stream — must be delivered unchanged.
+        chunks = [
+            _make_stream_chunk(content="ool_call>"),
+            _make_stream_chunk(finish_reason="stop"),
+        ]
+        deltas = []
+        mock_client = MagicMock()
+        mock_client.chat.completions.create.return_value = iter(chunks)
+        mock_create.return_value = mock_client
+
+        agent = AIAgent(
+            api_key="test-key",
+            base_url="https://openrouter.ai/api/v1",
+            model="test/model",
+            quiet_mode=True,
+            skip_context_files=True,
+            skip_memory=True,
+            stream_delta_callback=lambda t: deltas.append(t),
+        )
+        agent.api_mode = "chat_completions"
+        agent._interrupt_requested = False
+
+        agent._interruptible_streaming_api_call({})
+
+        # Scrubber is a pure passthrough in prose context: the text must be delivered.
+        assert "ool_call>" in "".join(deltas)
+
+    @patch("run_agent.AIAgent._create_request_openai_client")
+    @patch("run_agent.AIAgent._close_request_openai_client")
+    def test_normal_prose_passes_through(self, mock_close, mock_create):
+        """Normal text passes through unchanged in prose context."""
+        from run_agent import AIAgent
+
+        chunks = [
+            _make_stream_chunk(content="hello"),
+            _make_stream_chunk(finish_reason="stop"),
+        ]
+        deltas = []
+        mock_client = MagicMock()
+        mock_client.chat.completions.create.return_value = iter(chunks)
+        mock_create.return_value = mock_client
+
+        agent = AIAgent(
+            api_key="test-key",
+            base_url="https://openrouter.ai/api/v1",
+            model="test/model",
+            quiet_mode=True,
+            skip_context_files=True,
+            skip_memory=True,
+            stream_delta_callback=lambda t: deltas.append(t),
+        )
+        agent.api_mode = "chat_completions"
+        agent._interrupt_requested = False
+
+        agent._interruptible_streaming_api_call({})
+
+        assert "hello" in "".join(deltas)
+
+
+class TestToolCallFragmentScrubberPathB:
+    """Path B (suppressed-content bypass): scrubber strips leaked opener fragments."""
+
+    @patch("run_agent.AIAgent._create_request_openai_client")
+    @patch("run_agent.AIAgent._close_request_openai_client")
+    def test_pure_fragment_scrubbed_to_nothing(self, mock_close, mock_create):
+        """A delta that is purely a leaked fragment is not delivered to the callback."""
+        from run_agent import AIAgent
+
+        # Stream: tool call starts, then a pure fragment arrives as suppressed content.
+        chunks = [
+            _make_stream_chunk(tool_calls=[
+                _make_tool_call_delta(index=0, tc_id="call_xyz", name="get_weather")
+            ]),
+            # This content arrives while tool_calls_acc is non-empty → Path B.
+            _make_stream_chunk(content="ool_call>"),
+            _make_stream_chunk(finish_reason="tool_calls"),
+        ]
+        deltas = []
+        mock_client = MagicMock()
+        mock_client.chat.completions.create.return_value = iter(chunks)
+        mock_create.return_value = mock_client
+
+        agent = AIAgent(
+            api_key="test-key",
+            base_url="https://openrouter.ai/api/v1",
+            model="test/model",
+            quiet_mode=True,
+            skip_context_files=True,
+            skip_memory=True,
+            stream_delta_callback=lambda t: deltas.append(t),
+        )
+        agent.api_mode = "chat_completions"
+        agent._interrupt_requested = False
+
+        agent._interruptible_streaming_api_call({})
+
+        # The fragment must be stripped — callback must not have received it.
+        assert "ool_call>" not in "".join(deltas)
+
+    @patch("run_agent.AIAgent._create_request_openai_client")
+    @patch("run_agent.AIAgent._close_request_openai_client")
+    def test_mixed_content_fragment_stripped(self, mock_close, mock_create):
+        """Mixed delta: prose prefix is kept, fragment suffix is stripped."""
+        from run_agent import AIAgent
+
+        chunks = [
+            _make_stream_chunk(tool_calls=[
+                _make_tool_call_delta(index=0, tc_id="call_xyz", name="get_weather")
+            ]),
+            # "hello " is legitimate prose leaked before the fragment.
+            _make_stream_chunk(content="hello ool_call>"),
+            _make_stream_chunk(finish_reason="tool_calls"),
+        ]
+        deltas = []
+        mock_client = MagicMock()
+        mock_client.chat.completions.create.return_value = iter(chunks)
+        mock_create.return_value = mock_client
+
+        agent = AIAgent(
+            api_key="test-key",
+            base_url="https://openrouter.ai/api/v1",
+            model="test/model",
+            quiet_mode=True,
+            skip_context_files=True,
+            skip_memory=True,
+            stream_delta_callback=lambda t: deltas.append(t),
+        )
+        agent.api_mode = "chat_completions"
+        agent._interrupt_requested = False
+
+        agent._interruptible_streaming_api_call({})
+
+        joined = "".join(deltas)
+        # Prose prefix must survive; fragment suffix must be stripped.
+        assert "hello" in joined
+        assert "ool_call>" not in joined
+
+    @patch("run_agent.AIAgent._create_request_openai_client")
+    @patch("run_agent.AIAgent._close_request_openai_client")
+    def test_suppressed_prose_still_delivered_regression(self, mock_close, mock_create):
+        """Regression: ordinary suppressed prose (no fragment) still reaches callback.
+
+        Mirrors test_text_suppressed_when_tool_calls_present — ensures Path B
+        scrubbing does not break normal delivery of non-fragment suppressed text.
+        """
+        from run_agent import AIAgent
+
+        chunks = [
+            _make_stream_chunk(content="thinking..."),
+            _make_stream_chunk(tool_calls=[
+                _make_tool_call_delta(index=0, tc_id="call_abc", name="read_file")
+            ]),
+            _make_stream_chunk(content=" more text"),
+            _make_stream_chunk(finish_reason="tool_calls"),
+        ]
+        deltas = []
+        mock_client = MagicMock()
+        mock_client.chat.completions.create.return_value = iter(chunks)
+        mock_create.return_value = mock_client
+
+        agent = AIAgent(
+            api_key="test-key",
+            base_url="https://openrouter.ai/api/v1",
+            model="test/model",
+            quiet_mode=True,
+            skip_context_files=True,
+            skip_memory=True,
+            stream_delta_callback=lambda t: deltas.append(t),
+        )
+        agent.api_mode = "chat_completions"
+        agent._interrupt_requested = False
+
+        agent._interruptible_streaming_api_call({})
+
+        # Pre-tool text fires on Path A; post-tool text fires on Path B scrubber.
+        # Both must be delivered (scrubber is passthrough for non-fragment content).
+        assert "thinking..." in deltas
+        assert " more text" in "".join(deltas)

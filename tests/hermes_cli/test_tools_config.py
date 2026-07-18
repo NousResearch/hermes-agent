@@ -15,6 +15,7 @@ from hermes_cli.tools_config import (
     _reconfigure_provider,
     _get_platform_tools,
     _platform_toolset_summary,
+    _print_subprocess_failure_detail,
     _reconfigure_tool,
     _run_post_setup,
     _save_platform_tools,
@@ -26,6 +27,30 @@ from hermes_cli.tools_config import (
     _visible_providers,
     tools_command,
 )
+
+
+def test_print_subprocess_failure_detail_reports_exit_code_when_output_empty(monkeypatch):
+    import hermes_cli.tools_config as tools_config
+
+    lines = []
+    monkeypatch.setattr(tools_config, "_print_info", lambda msg: lines.append(msg))
+
+    _print_subprocess_failure_detail(SimpleNamespace(returncode=127, stdout="", stderr=""))
+
+    assert lines == ["      exited with code 127"]
+
+
+def test_print_subprocess_failure_detail_prefers_stderr(monkeypatch):
+    import hermes_cli.tools_config as tools_config
+
+    lines = []
+    monkeypatch.setattr(tools_config, "_print_info", lambda msg: lines.append(msg))
+
+    _print_subprocess_failure_detail(
+        SimpleNamespace(returncode=1, stdout="stdout detail", stderr="stderr detail")
+    )
+
+    assert lines == ["      stderr detail"]
 
 
 def test_agent_disabled_toolsets_suppresses_across_platforms():

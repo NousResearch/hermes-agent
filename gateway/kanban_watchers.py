@@ -24,6 +24,12 @@ from agent.i18n import t
 # "gateway.run") so extracted log records keep their original logger name.
 logger = logging.getLogger("gateway.run")
 
+# A zero agent-drain window intentionally interrupts long-running model work
+# immediately, but SQLite commits need a small, bounded durability window.
+# ``asyncio.to_thread`` cannot cancel a running worker thread, so exiting the
+# process at t=0 can otherwise cut through a Kanban write transaction.
+_KANBAN_DB_SHUTDOWN_DRAIN_SECONDS = 5.0
+
 
 def _resolve_auto_decompose_settings(
     load_config: Callable[[], Any],
@@ -111,6 +117,55 @@ def _release_singleton_lock(handle) -> None:
 
 class GatewayKanbanWatchersMixin:
     """Kanban watcher / notifier / dispatcher loops for GatewayRunner."""
+
+    async def _kanban_db_to_thread(self, func, /, *args, **kwargs):
+        """Run and track one Kanban DB operation outside the event loop.
+
+        ``asyncio.to_thread`` work keeps running after its awaiting coroutine
+        is cancelled. Tracking the actual task lets gateway shutdown stop
+        admitting new board operations and wait for already-started commits
+        instead of exiting while a worker thread is still inside SQLite.
+        """
+        if getattr(self, "_kanban_db_draining", False):
+            raise asyncio.CancelledError
+        operation = asyncio.create_task(asyncio.to_thread(func, *args, **kwargs))
+        active = getattr(self, "_kanban_db_operations", None)
+        if active is None:
+            active = set()
+            self._kanban_db_operations = active
+        active.add(operation)
+        operation.add_done_callback(active.discard)
+        return await asyncio.shield(operation)
+
+    async def _drain_kanban_db_operations(self, timeout: float) -> bool:
+        """Close Kanban DB admission and boundedly drain in-flight operations.
+
+        A configured zero-second *agent* drain still grants already-started
+        SQLite work a short durability window. This does not delay shutdown
+        when no Kanban DB operation is active.
+        """
+        self._kanban_db_draining = True
+        active = set(getattr(self, "_kanban_db_operations", set()))
+        if not active:
+            return True
+        effective_timeout = (
+            timeout if timeout > 0 else _KANBAN_DB_SHUTDOWN_DRAIN_SECONDS
+        )
+        done, pending = await asyncio.wait(active, timeout=effective_timeout)
+        for operation in done:
+            try:
+                operation.result()
+            except (asyncio.CancelledError, Exception):
+                # Watcher call sites own normal error reporting. Shutdown only
+                # needs to ensure the SQLite operation reached a boundary.
+                pass
+        if pending:
+            logger.warning(
+                "kanban shutdown drain timed out with %d DB operation(s) still active",
+                len(pending),
+            )
+            return False
+        return True
 
     async def _kanban_notifier_watcher(self, interval: float = 5.0) -> None:
         """Poll ``kanban_notify_subs`` and deliver terminal events to users.
@@ -297,7 +352,7 @@ class GatewayKanbanWatchersMixin:
                             conn.close()
                     return deliveries
 
-                deliveries = await asyncio.to_thread(_collect)
+                deliveries = await self._kanban_db_to_thread(_collect)
                 for d in deliveries:
                     sub = d["sub"]
                     task = d["task"]
@@ -308,7 +363,7 @@ class GatewayKanbanWatchersMixin:
                     except ValueError:
                         # Unknown platform string; skip and advance cursor so
                         # we don't replay forever.
-                        await asyncio.to_thread(
+                        await self._kanban_db_to_thread(
                             self._kanban_advance, sub, d["cursor"], board_slug,
                         )
                         continue
@@ -328,7 +383,7 @@ class GatewayKanbanWatchersMixin:
                             "kanban notifier: adapter %s disconnected before delivery for %s; rewinding claim",
                             platform_str, sub["task_id"],
                         )
-                        await asyncio.to_thread(
+                        await self._kanban_db_to_thread(
                             self._kanban_rewind,
                             sub,
                             d["cursor"],
@@ -462,10 +517,10 @@ class GatewayKanbanWatchersMixin:
                                     "%s on %s after %d consecutive send failures",
                                     sub["task_id"], platform_str, fails,
                                 )
-                                await asyncio.to_thread(self._kanban_unsub, sub, board_slug)
+                                await self._kanban_db_to_thread(self._kanban_unsub, sub, board_slug)
                                 sub_fail_counts.pop(sub_key, None)
                             else:
-                                await asyncio.to_thread(
+                                await self._kanban_db_to_thread(
                                     self._kanban_rewind,
                                     sub,
                                     d["cursor"],
@@ -480,7 +535,7 @@ class GatewayKanbanWatchersMixin:
                         # All events delivered; advance cursor. The cursor
                         # is the dedup mechanism — it prevents re-delivery
                         # of the same event on subsequent ticks.
-                        await asyncio.to_thread(
+                        await self._kanban_db_to_thread(
                             self._kanban_advance, sub, d["cursor"], board_slug,
                         )
                         # Unsubscribe only when the task has reached a truly
@@ -564,7 +619,7 @@ class GatewayKanbanWatchersMixin:
                                     sub["task_id"], _wk_err, exc_info=True,
                                 )
                         if task_terminal:
-                            await asyncio.to_thread(
+                            await self._kanban_db_to_thread(
                                 self._kanban_unsub, sub, board_slug,
                             )
             except Exception as exc:
@@ -1181,7 +1236,7 @@ class GatewayKanbanWatchersMixin:
             try:
                 # Reap zombie children before per-board work so a board DB
                 # failure cannot block cleanup of unrelated workers.
-                pids = await asyncio.to_thread(_kb.reap_worker_zombies)
+                pids = await self._kanban_db_to_thread(_kb.reap_worker_zombies)
                 if pids:
                     logger.info(
                         "kanban dispatcher: reaped %d zombie worker(s), pids=%s",
@@ -1197,8 +1252,8 @@ class GatewayKanbanWatchersMixin:
                 # takes effect on the next tick, not on gateway restart (#49638).
                 _ad_enabled, _ad_per_tick = _read_auto_decompose_settings()
                 if _ad_enabled:
-                    await asyncio.to_thread(_auto_decompose_tick, _ad_per_tick)
-                results = await asyncio.to_thread(_tick_once)
+                    await self._kanban_db_to_thread(_auto_decompose_tick, _ad_per_tick)
+                results = await self._kanban_db_to_thread(_tick_once)
                 any_spawned = False
                 for slug, res in (results or []):
                     if res is not None and getattr(res, "spawned", None):
@@ -1217,7 +1272,7 @@ class GatewayKanbanWatchersMixin:
                             len(res.auto_blocked) if hasattr(res.auto_blocked, "__len__") else 0,
                         )
                 # Health telemetry (aggregate across boards)
-                ready_pending = await asyncio.to_thread(_ready_nonempty)
+                ready_pending = await self._kanban_db_to_thread(_ready_nonempty)
                 if ready_pending and not any_spawned:
                     bad_ticks += 1
                 else:

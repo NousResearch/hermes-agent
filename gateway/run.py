@@ -3036,6 +3036,8 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         self._async_session_store = AsyncSessionStore(self.session_store)
         self.delivery_router = DeliveryRouter(self.config)
         self._running = False
+        self._kanban_db_draining = False
+        self._kanban_db_operations: set[asyncio.Task] = set()
         self._gateway_loop: Optional[asyncio.AbstractEventLoop] = None
         self._shutdown_event = asyncio.Event()
         self._exit_cleanly = False
@@ -8448,13 +8450,26 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
 
             _cron_at_start = self._active_cron_job_count()
             _api_at_start = self._active_api_run_count()
+            _kanban_db_at_start = len(getattr(self, "_kanban_db_operations", ()))
             _drain_started_at = time.monotonic()
-            active_agents, timed_out = await self._drain_active_agents(timeout)
+            _drain_deadline = asyncio.get_running_loop().time() + timeout
+            _drain_kanban_db = getattr(self, "_drain_kanban_db_operations", None)
+            _kanban_db_drained = (
+                await _drain_kanban_db(timeout) if _drain_kanban_db else True
+            )
+            _remaining_drain = max(
+                0.0, _drain_deadline - asyncio.get_running_loop().time()
+            )
+            active_agents, _agents_timed_out = await self._drain_active_agents(
+                _remaining_drain
+            )
+            timed_out = _agents_timed_out or not _kanban_db_drained
             logger.info(
                 "Shutdown phase: drain done at +%.2fs (drain took %.2fs, "
                 "timed_out=%s, active_at_start=%d, active_now=%d, "
                 "cron_at_start=%d, cron_now=%d, "
-                "api_at_start=%d, api_now=%d)",
+                "api_at_start=%d, api_now=%d, "
+                "kanban_db_at_start=%d, kanban_db_now=%d)",
                 _phase_elapsed(),
                 time.monotonic() - _drain_started_at,
                 timed_out,
@@ -8464,6 +8479,8 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 self._active_cron_job_count(),
                 _api_at_start,
                 self._active_api_run_count(),
+                _kanban_db_at_start,
+                len(getattr(self, "_kanban_db_operations", ())),
             )
 
             if not timed_out:
@@ -8483,12 +8500,14 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             if timed_out:
                 logger.warning(
                     "Gateway drain timed out after %.1fs with %d active agent(s), "
-                    "%d in-flight cron job(s), and %d api_server run(s); "
+                    "%d in-flight cron job(s), %d api_server run(s), and "
+                    "%d kanban DB operation(s); "
                     "interrupting remaining work.",
                     timeout,
                     self._running_agent_count(),
                     self._active_cron_job_count(),
                     self._active_api_run_count(),
+                    len(getattr(self, "_kanban_db_operations", ())),
                 )
                 # Mark forcibly-interrupted sessions as resume_pending BEFORE
                 # interrupting the agents.  This preserves each session's

@@ -3594,7 +3594,7 @@ def _end_run(
     if not row or not row["current_run_id"]:
         return None
     run_id = int(row["current_run_id"])
-    conn.execute(
+    updated = conn.execute(
         """
         UPDATE task_runs
            SET status        = ?,
@@ -3619,8 +3619,20 @@ def _end_run(
             run_id,
         ),
     )
+    if updated.rowcount != 1:
+        # A retry may observe a pointer whose run was already finalized by a
+        # previous attempt. Do not report that run as newly closed: callers
+        # use the return value to attach exactly one terminal event.
+        conn.execute(
+            "UPDATE tasks SET current_run_id = NULL "
+            "WHERE id = ? AND current_run_id = ?",
+            (task_id, run_id),
+        )
+        return None
     conn.execute(
-        "UPDATE tasks SET current_run_id = NULL WHERE id = ?", (task_id,),
+        "UPDATE tasks SET current_run_id = NULL "
+        "WHERE id = ? AND current_run_id = ?",
+        (task_id, run_id),
     )
     return run_id
 
@@ -3630,6 +3642,65 @@ def _current_run_id(conn: sqlite3.Connection, task_id: str) -> Optional[int]:
         "SELECT current_run_id FROM tasks WHERE id = ?", (task_id,),
     ).fetchone()
     return int(row["current_run_id"]) if row and row["current_run_id"] else None
+
+
+def reconcile_orphaned_runs(conn: sqlite3.Connection) -> int:
+    """Close active run rows that cannot still belong to a running task.
+
+    A process can be terminated between related writes when an older caller
+    does not use :func:`write_txn`, or while upgrading a database written by
+    such a caller. Repair both observable leak shapes before the dispatcher
+    considers another claim:
+
+    * a non-running task still points at an active run; and
+    * an active run is not the ``current_run_id`` of any task.
+
+    The repair is atomic and idempotent. Re-running it finds no active rows,
+    and each repaired run receives one ``run_reconciled`` audit event.
+    """
+    now = int(time.time())
+    repaired = 0
+    with write_txn(conn):
+        rows = conn.execute(
+            """
+            SELECT r.id AS run_id, r.task_id
+              FROM task_runs r
+              LEFT JOIN tasks t ON t.current_run_id = r.id
+             WHERE r.ended_at IS NULL
+               AND (t.id IS NULL OR t.status != 'running')
+             ORDER BY r.id
+            """
+        ).fetchall()
+        for row in rows:
+            run_id = int(row["run_id"])
+            task_id = str(row["task_id"])
+            updated = conn.execute(
+                """
+                UPDATE task_runs
+                   SET status = 'reclaimed', outcome = 'reclaimed',
+                       summary = COALESCE(summary, 'orphan run reconciled before dispatch'),
+                       ended_at = ?, claim_lock = NULL,
+                       claim_expires = NULL, worker_pid = NULL
+                 WHERE id = ? AND ended_at IS NULL
+                """,
+                (now, run_id),
+            )
+            if updated.rowcount != 1:
+                continue
+            conn.execute(
+                "UPDATE tasks SET current_run_id = NULL "
+                "WHERE id = ? AND current_run_id = ?",
+                (task_id, run_id),
+            )
+            _append_event(
+                conn,
+                task_id,
+                "run_reconciled",
+                {"run_id": run_id, "outcome": "reclaimed"},
+                run_id=run_id,
+            )
+            repaired += 1
+    return repaired
 
 
 def _synthesize_ended_run(
@@ -7884,6 +7955,9 @@ def _dispatch_once_locked(
     reap_worker_zombies()
 
     result = DispatchResult()
+    # Repair terminal task/run mismatches left by an interrupted older writer
+    # before any reclaim or claim path reasons about in-flight work.
+    reconcile_orphaned_runs(conn)
     result.reclaimed = release_stale_claims(conn)
     result.stale = detect_stale_running(
         conn, stale_timeout_seconds=stale_timeout_seconds,

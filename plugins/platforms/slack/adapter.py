@@ -421,6 +421,9 @@ class SlackAdapter(BasePlatformAdapter):
 
     MAX_MESSAGE_LENGTH = 39000  # Slack API allows 40,000 chars; leave margin
     supports_code_blocks = True  # Slack mrkdwn renders fenced code blocks
+    # Slack's typing indicator is a text status line (assistant.threads
+    # .setStatus), so the gateway feeds it live per-tool phrases.
+    supports_status_text = True
     splits_long_messages = True  # send() chunks via truncate_message(MAX_MESSAGE_LENGTH)
     # Slack blocks typed native slash commands inside threads ("/approve is
     # not supported in threads. Sorry!").  The adapter rewrites a leading
@@ -1600,11 +1603,15 @@ class SlackAdapter(BasePlatformAdapter):
                 "team_id": str(team_id) if team_id else "",
             }
         try:
+            _status = (
+                self._status_text.get(str(chat_id))
+                or getattr(self.config, "typing_status_text", None)
+                or "is thinking..."
+            )
             await self._get_client(chat_id, team_id=team_id).assistant_threads_setStatus(
                 channel_id=chat_id,
                 thread_ts=thread_ts,
-                status=getattr(self.config, "typing_status_text", None)
-                or "is thinking...",
+                status=_status,
             )
         except Exception as e:
             # Silently ignore — may lack assistant:write scope or not be

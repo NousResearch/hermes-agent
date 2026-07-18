@@ -637,7 +637,7 @@ class PlatformConfig:
         # into extra); string passthrough, no coercion.
         _typing_text = data.get("typing_status_text")
         if _typing_text is None:
-            _typing_text = data.get("extra", {}).get("typing_status_text")
+            _typing_text = extra.get("typing_status_text")
 
         channel_overrides: Dict[str, ChannelOverride] = {}
         raw_overrides = data.get("channel_overrides") or {}

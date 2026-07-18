@@ -436,6 +436,34 @@ The same key customizes Google Chat's visible working-state marker message
 note that on Google Chat it is a real posted message that gets patched into the
 reply, not an ephemeral status.
 
+### Live Status (per-tool)
+
+By default the status line updates **live as the agent works**: instead of a
+static `is thinking...`, it shows what the agent is doing right now — `is
+running pytest tests/…`, `is reading docs/api.md…`, `is searching the web for
+slack api limits…`. Between tool calls it reverts to the static text. This
+rides the existing status-refresh cadence, so it makes no additional Slack API
+calls, and it works even with `tool_progress: off` (Slack's default) — unlike
+progress bubbles, the status line is ephemeral and leaves nothing behind in
+the channel.
+
+Control it with `display.live_status` (global or per-platform):
+
+```yaml
+display:
+  platforms:
+    slack:
+      # full = verb + argument ("is running pytest…")   [default]
+      # verb = verb only ("is running…") — hides commands/paths,
+      #        useful in shared or customer-facing channels
+      # off  = static text (typing_status_text or "is thinking...")
+      live_status: full
+```
+
+| Key | Default | Description |
+|-----|---------|-------------|
+| `display.live_status` | `"full"` | Live per-tool status line. `full` shows verb + argument preview; `verb` shows the verb only (keeps file paths and commands out of shared channels); `off` restores the static text. Requires the `assistant:write` scope, same as the static status line. |
+
 ### Session Isolation
 
 ```yaml

@@ -6523,6 +6523,10 @@ class SlackAdapter(BasePlatformAdapter):
 
         Returns ``(content, parent_text)``.
         """
+        # Local import (matches the SessionSource/build_session_key usage
+        # elsewhere in this adapter) so we don't force gateway.session at load.
+        from gateway.session import neutralize_untrusted_inline_text
+
         bot_uid = self._team_bot_user_ids.get(team_id, self._bot_user_id)
         context_parts = []
         parent_text = ""
@@ -6612,7 +6616,23 @@ class SlackAdapter(BasePlatformAdapter):
                 name = await self._resolve_user_name(
                     display_user, chat_id=channel_id, team_id=team_id
                 )
-                context_parts.append(f"{prefix}{trust_tag}{name}: {msg_text}")
+                # ``name`` (resolved display name) and ``msg_text`` are both
+                # attacker-influenceable — any thread participant sets their own
+                # Slack display name and message text. context_parts are joined
+                # with newlines into the block prepended raw into the model turn
+                # (``text = thread_context + text`` at the call site), so an
+                # embedded newline lets a thread message break out of its
+                # ``name: text`` line and pose as a fresh markdown section (a
+                # fake "## SYSTEM" / "## Override" heading) — the same indirect-
+                # prompt-injection vector the sender-name prefix, reply quote,
+                # and relay channel-context already neutralize. Collapse each to
+                # a single inert line; ``max_chars=0`` keeps the body untruncated
+                # (thread context caps the message *count*, not per-message
+                # length). The trusted ``prefix``/``trust_tag`` we add ourselves
+                # stay outside the neutralized fields.
+                safe_name = neutralize_untrusted_inline_text(name)
+                safe_text = neutralize_untrusted_inline_text(msg_text, max_chars=0)
+                context_parts.append(f"{prefix}{trust_tag}{safe_name}: {safe_text}")
 
         content = ""
         if context_parts:

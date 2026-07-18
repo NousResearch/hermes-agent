@@ -192,7 +192,7 @@ def _read_regular(
 
 
 def _runtime_revision() -> str:
-    if os.geteuid() != EXECUTOR_UID:
+    if os.geteuid() != EXECUTOR_UID:  # windows-footgun: ok — Linux-only signer
         _error("owner_gate_cloud_signer_uid_invalid")
     try:
         executable = Path(sys.executable).resolve(strict=True)
@@ -700,7 +700,7 @@ def sign_request(
     """Validate, sign, self-verify, and durably replay one exact request."""
 
     if (
-        os.geteuid() != EXECUTOR_UID
+        os.geteuid() != EXECUTOR_UID  # windows-footgun: ok — Linux-only signer
         or _REVISION.fullmatch(release_revision) is None
         or type(now_unix) is not int
         or now_unix <= 0

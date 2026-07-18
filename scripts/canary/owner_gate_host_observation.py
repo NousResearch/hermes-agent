@@ -1965,10 +1965,10 @@ def _executor_child_payload(
     *, post_iam: bool, collector: MetadataSaProbe | None = None
 ) -> Mapping[str, Any]:
     identity = {
-        "uid": os.getuid(),
-        "euid": os.geteuid(),
-        "gid": os.getgid(),
-        "egid": os.getegid(),
+        "uid": os.getuid(),  # windows-footgun: ok — Linux-only UID-drop child
+        "euid": os.geteuid(),  # windows-footgun: ok — Linux-only UID-drop child
+        "gid": os.getgid(),  # windows-footgun: ok — Linux-only UID-drop child
+        "egid": os.getegid(),  # windows-footgun: ok — Linux-only UID-drop child
         "groups": os.getgroups(),
     }
     if identity != {
@@ -1989,11 +1989,11 @@ def _executor_child_payload(
 def _collect_attached_sa_child(*, post_iam: bool) -> Mapping[str, Any]:
     """Collect metadata/API facts only after a one-way executor UID drop."""
 
-    if os.getuid() != 0 or os.geteuid() != 0:
+    if os.getuid() != 0 or os.geteuid() != 0:  # windows-footgun: ok — Linux-only UID-drop parent
         _error("owner_gate_attached_sa_parent_identity_invalid")
     read_descriptor, write_descriptor = os.pipe()
     try:
-        pid = os.fork()
+        pid = os.fork()  # windows-footgun: ok — Linux-only one-way UID-drop child
     except OSError:
         os.close(read_descriptor)
         os.close(write_descriptor)
@@ -2205,7 +2205,7 @@ def _runtime_revision() -> str:
 
 def attached_sa_main(argv: Sequence[str] | None = None) -> int:
     arguments = tuple(sys.argv[1:] if argv is None else argv)
-    if arguments or os.geteuid() != 0:
+    if arguments or os.geteuid() != 0:  # windows-footgun: ok — Linux-only host entrypoint
         _error("owner_gate_attached_sa_entrypoint_invalid")
     revision = _runtime_revision()
     request = _read_stdin(sys.stdin.buffer)
@@ -2247,7 +2247,7 @@ def _run_host_frame(
 
 def host_observation_main(argv: Sequence[str] | None = None) -> int:
     arguments = tuple(sys.argv[1:] if argv is None else argv)
-    if arguments or os.geteuid() != 0:
+    if arguments or os.geteuid() != 0:  # windows-footgun: ok — Linux-only host entrypoint
         _error("owner_gate_host_observation_entrypoint_invalid")
     revision = _runtime_revision()
     frame = _read_stdin(sys.stdin.buffer)
@@ -2264,7 +2264,7 @@ def observation_dispatcher_main(argv: Sequence[str] | None = None) -> int:
     """Dispatch the existing exact sudo command by canonical frame schema."""
 
     arguments = tuple(sys.argv[1:] if argv is None else argv)
-    if arguments or os.geteuid() != 0:
+    if arguments or os.geteuid() != 0:  # windows-footgun: ok — Linux-only host entrypoint
         _error("owner_gate_host_observation_entrypoint_invalid")
     revision = _runtime_revision()
     frame = _read_stdin(sys.stdin.buffer)

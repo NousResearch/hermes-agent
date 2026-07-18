@@ -1159,7 +1159,7 @@ def collect_production_ingress_observation(
         release_revision=release_revision,
         plan_sha256=plan_sha256,
     )
-    if not sys.platform.startswith("linux") or os.geteuid() != 0:
+    if not sys.platform.startswith("linux") or os.geteuid() != 0:  # windows-footgun: ok — Linux-only production observer
         _error("owner_gate_production_ingress_remote_identity_invalid")
     collected = int(time.time()) if now_unix is None else now_unix
     if type(collected) is not int or collected <= 0:
@@ -1344,7 +1344,7 @@ def _stable_owner_file(path: Path, *, maximum: int) -> bytes:
             or not stat.S_ISREG(opened.st_mode)
             or (before.st_dev, before.st_ino) != (opened.st_dev, opened.st_ino)
             or opened.st_nlink != 1
-            or opened.st_uid not in {0, os.geteuid()}
+            or opened.st_uid not in {0, os.geteuid()}  # windows-footgun: ok — Linux-only production observer
             or opened.st_mode & 0o022
             or not 0 < opened.st_size <= maximum
         ):

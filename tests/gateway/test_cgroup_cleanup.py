@@ -11,6 +11,14 @@ import pytest
 from gateway import cgroup_cleanup
 
 
+@pytest.fixture
+def sigkill(monkeypatch) -> int:
+    """Provide the Linux signal constant while exercising mocked logic on Windows."""
+    value = getattr(signal, "SIGKILL", 9)
+    monkeypatch.setattr(cgroup_cleanup.signal, "SIGKILL", value, raising=False)
+    return value
+
+
 class TestOwnCgroupPath:
     def test_parses_v2_cgroup_path(self, tmp_path, monkeypatch):
         proc_self = tmp_path / "cgroup"
@@ -32,7 +40,7 @@ class TestOwnCgroupPath:
 
 
 class TestReapCgroup:
-    def test_skips_own_pid_and_kills_the_rest(self, tmp_path, monkeypatch):
+    def test_skips_own_pid_and_kills_the_rest(self, tmp_path, monkeypatch, sigkill):
         own = os.getpid()
         cgroup_path = "/test.slice/hermes-gateway.service"
         procs_file = tmp_path / "cgroup.procs"
@@ -51,10 +59,11 @@ class TestReapCgroup:
         count = cgroup_cleanup.reap_cgroup(cgroup_path)
 
         assert count == 2
-        assert (own, signal.SIGKILL) not in killed_pids
-        assert (1001, signal.SIGKILL) in killed_pids
-        assert (1002, signal.SIGKILL) in killed_pids
+        assert (own, sigkill) not in killed_pids
+        assert (1001, sigkill) in killed_pids
+        assert (1002, sigkill) in killed_pids
 
+    @pytest.mark.usefixtures("sigkill")
     def test_tolerates_already_exited_pids(self, tmp_path, monkeypatch):
         cgroup_path = "/test.slice/hermes-gateway.service"
         procs_file = tmp_path / "cgroup.procs"

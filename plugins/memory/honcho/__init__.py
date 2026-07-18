@@ -29,6 +29,55 @@ from tools.registry import tool_error
 logger = logging.getLogger(__name__)
 
 
+# Regex for stripping third-person agent-self-quote phrases that the Honcho
+# deriver would otherwise extract as Explicit Observations on the `hermes`
+# observer peer. When user messages quote prior tool output (e.g. "hermes
+# verified that the live install is clean"), the deriver reads those quotes
+# and turns them into re-asserting "hermes said X" observations — feeding
+# the self-trust loop. Each match is replaced with a single-character
+# placeholder so the user's surrounding prose is preserved.
+# Two patterns: with-conjunction ("hermes X that Y.") and bare
+# ("hermes X Y Z.") — both pollute the AI Self-Representation.
+_AGENT_SELF_QUOTE_PATTERNS: tuple[re.Pattern[str], ...] = (
+    # "hermes <verb> ... [ending in . ! ? \n or end-of-string]"
+    re.compile(
+        r"hermes\s+(?:said|reported|confirmed|identified|provided|outlined|"
+        r"created|saved|noted|asked|required|wants|received|"
+        r"believes|described|added|changed|verifies|verified|"
+        r"wanted|completed|commits|requires|has|is|was|continues|sent|started)\b"
+        # match content but stop at . ! ? \n or end of string so the next
+        # sentence (if any) is preserved verbatim rather than consumed
+        r"[^\n.!?]{0,400}"
+        r"(?:[\n.!?]+|$)",
+        re.IGNORECASE | re.MULTILINE,
+    ),
+    re.compile(r"6631182039\s+has\s+a\s+long-term\s+memory\s+note\s+stating\s+that\s+"
+               r"[^\n.!?]{0,400}(?:[\n.!?]+|$)",
+               re.IGNORECASE | re.MULTILINE),
+    re.compile(r"\bhermes\s+verifies?\s+[^\n.!?]{0,400}(?:[\n.!?]+|$)",
+               re.IGNORECASE | re.MULTILINE),
+    re.compile(r"\bhermes\s+describes?\s+[^\n.!?]{0,400}(?:[\n.!?]+|$)",
+               re.IGNORECASE | re.MULTILINE),
+)
+
+
+def _strip_agent_self_quotes(text: str) -> str:
+    """Replace agent-self-quote phrases with a placeholder character.
+
+    The placeholders are NUL characters so the surrounding text still has
+    correct spacing and word boundaries but the substring cannot be parsed as
+    a meaningful sentence by the deriver's extraction prompt.
+    """
+    if not text:
+        return text
+    for pat in _AGENT_SELF_QUOTE_PATTERNS:
+        text = pat.sub("\x00", text)
+    # Collapse any double-NUL artifacts (where a quote straddled a match boundary)
+    while "\x00\x00" in text:
+        text = text.replace("\x00\x00", "\x00")
+    return text
+
+
 # ---------------------------------------------------------------------------
 # Tool schemas (moved from tools/honcho_tools.py)
 # ---------------------------------------------------------------------------
@@ -1355,6 +1404,16 @@ class HonchoMemoryProvider(MemoryProvider):
 
         msg_limit = self._config.message_max_chars if self._config else 25000
         clean_user_content = sanitize_context(user_content or "").strip()
+        # Strip third-person agent-self-quote phrases that the Honcho deriver
+        # would otherwise extract as Explicit Observations on the `hermes`
+        # observer peer. When the user message quotes prior tool output
+        # (e.g. "hermes verified that..." or "hermes reported that..."), the
+        # deriver reads those quotes and turns them into re-asserting
+        # "hermes said X" observations — feeding the self-trust loop.
+        # Replace each match with a placeholder so positional context isn't
+        # lost, then strip a leading "hermes " if the line now starts with
+        # one (which would itself be a pollution pattern).
+        clean_user_content = _strip_agent_self_quotes(clean_user_content)
 
         def _sync():
             try:

@@ -1487,6 +1487,78 @@ def _current_session_platform_hint() -> str:
         return ""
 
 
+def _skills_prompt_index_settings() -> tuple[str, int]:
+    """Return ``(prompt_index, index_top_k)`` from config.
+
+    ``prompt_index``:
+      - ``names`` (default) — category + skill names only in the system prompt
+      - ``full`` — legacy per-skill ``name: description`` lines
+
+    ``index_top_k``:
+      - ``0`` (default) — no cap on how many skills appear in the index
+      - ``N > 0`` — after filters, keep at most N skills (stable category/name
+        order); the rest remain loadable via ``skills_list`` / ``skill_view``
+    """
+    mode = "names"
+    top_k = 0
+    try:
+        from hermes_cli.config import load_config_readonly
+
+        skills_cfg = load_config_readonly().get("skills") or {}
+        if isinstance(skills_cfg, dict):
+            raw_mode = str(skills_cfg.get("prompt_index", "names") or "names").strip().lower()
+            if raw_mode in ("full", "descriptions", "description"):
+                mode = "full"
+            else:
+                # names | name | compact | anything unknown → names (safe default)
+                mode = "names"
+            raw_k = skills_cfg.get("index_top_k", 0)
+            try:
+                top_k = int(raw_k)
+            except (TypeError, ValueError):
+                top_k = 0
+            if top_k < 0:
+                top_k = 0
+    except Exception as exc:
+        logger.debug("Could not read skills prompt_index settings: %s", exc)
+    return mode, top_k
+
+
+def _apply_skills_index_top_k(
+    skills_by_category: dict[str, list[tuple[str, str]]],
+    top_k: int,
+) -> tuple[dict[str, list[tuple[str, str]]], int, int]:
+    """Optionally cap the index to *top_k* skills (stable category then name order).
+
+    Returns ``(filtered_map, kept_count, total_before)``. When ``top_k <= 0``
+    the map is unchanged.
+    """
+    total = sum(len(v) for v in skills_by_category.values())
+    if top_k <= 0 or total <= top_k:
+        return skills_by_category, total, total
+
+    kept: dict[str, list[tuple[str, str]]] = {}
+    remaining = top_k
+    for category in sorted(skills_by_category.keys()):
+        if remaining <= 0:
+            break
+        # Deduplicate by name within category, stable sort
+        seen: set[str] = set()
+        ordered: list[tuple[str, str]] = []
+        for name, desc in sorted(skills_by_category[category], key=lambda x: x[0]):
+            if name in seen:
+                continue
+            seen.add(name)
+            ordered.append((name, desc))
+        if not ordered:
+            continue
+        take = ordered[:remaining]
+        kept[category] = take
+        remaining -= len(take)
+    kept_count = sum(len(v) for v in kept.values())
+    return kept, kept_count, total
+
+
 def build_skills_system_prompt(
     available_tools: "set[str] | None" = None,
     available_toolsets: "set[str] | None" = None,
@@ -1506,17 +1578,30 @@ def build_skills_system_prompt(
     are read-only — they appear in the index but new skills are always created
     in the local dir.  Local skills take precedence when names collide.
 
+    Index density is controlled by ``skills.prompt_index`` (default ``names``):
+      - ``names`` — names-only index; full skill bodies load lazily via
+        ``skill_view`` (token-cheap default).
+      - ``full`` — legacy name+description lines per skill.
+
+    ``skills.index_top_k`` (default ``0`` = uncapped) optionally limits how
+    many skills appear after filters; overflow stays reachable via
+    ``skills_list`` / ``skill_view``.
+
     ``compact_categories`` (e.g. from the coding posture — see
     agent/coding_context.py) demotes whole categories to a names-only line in
-    the rendered index. Nothing is ever hidden: every skill name stays
-    visible and loadable via ``skill_view`` / ``skills_list``; only the
-    descriptions are dropped, and a footer note explains the demotion.
+    the rendered index when ``prompt_index=full``. Nothing is ever hidden:
+    every skill name stays visible and loadable via ``skill_view`` /
+    ``skills_list``; only the descriptions are dropped, and a footer note
+    explains the demotion. Under ``prompt_index=names`` the whole index is
+    already names-only, so category demotion is a no-op for descriptions.
     """
     skills_dir = get_skills_dir()
     external_dirs = get_all_skills_dirs()[1:]  # skip local (index 0)
 
     if not skills_dir.exists() and not external_dirs:
         return ""
+
+    prompt_index_mode, index_top_k = _skills_prompt_index_settings()
 
     # ── Layer 1: in-process LRU cache ─────────────────────────────────
     # Include the resolved platform so per-platform disabled-skill lists
@@ -1531,6 +1616,8 @@ def build_skills_system_prompt(
         _platform_hint,
         tuple(sorted(disabled)),
         tuple(sorted(compact_categories or ())),
+        prompt_index_mode,
+        index_top_k,
     )
     with _SKILLS_PROMPT_CACHE_LOCK:
         cached = _SKILLS_PROMPT_CACHE.get(cache_key)
@@ -1664,27 +1751,52 @@ def build_skills_system_prompt(
             except Exception as e:
                 logger.debug("Could not read external skill description %s: %s", desc_file, e)
 
-    # Posture-driven category demotion (e.g. non-coding skills while pairing
-    # on code). Demoted categories stay in the index as a single names-only
-    # line — descriptions are dropped to cut noise, but every skill name
-    # remains visible so memory-anchored recall ("load <name>") keeps working.
-    # NEVER remove entries entirely: agent-created skills are the model's
-    # project memory, and models don't reach for skills_list to rediscover
-    # what the index stops showing them. Match on the top-level category
-    # segment so nested categories ("social-media/twitter") are demoted with
-    # their parent.
-    demoted = frozenset(
-        cat for cat in skills_by_category
-        if cat.split("/", 1)[0] in (compact_categories or frozenset())
+    # Optional hard cap (skills.index_top_k) after filters — builds on the
+    # existing config key without inventing a parallel limit mechanism.
+    skills_by_category, kept_count, total_before = _apply_skills_index_top_k(
+        skills_by_category, index_top_k
     )
 
-    hidden_note = ""
-    if demoted:
-        hidden_note = (
-            "\n(Categories marked [names only] are outside the current coding "
-            "context, so their descriptions are omitted — the skills work "
-            "normally and load with skill_view(name) as usual.)"
+    # Names-only mode (default): every category is a compact names line.
+    # Full mode: legacy name+description lines, with optional posture demotion.
+    names_only = prompt_index_mode != "full"
+
+    # Posture-driven category demotion (e.g. non-coding skills while pairing
+    # on code). Only meaningful when prompt_index=full — under names mode the
+    # whole index is already names-only. Demoted categories stay in the index
+    # as a single names-only line — descriptions are dropped to cut noise, but
+    # every skill name remains visible so memory-anchored recall ("load <name>")
+    # keeps working. NEVER remove entries entirely: agent-created skills are
+    # the model's project memory, and models don't reach for skills_list to
+    # rediscover what the index stops showing them. Match on the top-level
+    # category segment so nested categories ("social-media/twitter") are
+    # demoted with their parent.
+    demoted = frozenset()
+    if not names_only:
+        demoted = frozenset(
+            cat for cat in skills_by_category
+            if cat.split("/", 1)[0] in (compact_categories or frozenset())
         )
+
+    footer_notes: list[str] = []
+    if names_only:
+        footer_notes.append(
+            "Skill descriptions are omitted from this index "
+            "(skills.prompt_index=names). Load full instructions with "
+            "skill_view(name); use skills_list to browse descriptions."
+        )
+    if demoted:
+        footer_notes.append(
+            "Categories marked [names only] are outside the current coding "
+            "context, so their descriptions are omitted — the skills work "
+            "normally and load with skill_view(name) as usual."
+        )
+    if index_top_k > 0 and total_before > kept_count:
+        footer_notes.append(
+            f"Index capped at {kept_count} of {total_before} skills "
+            f"(skills.index_top_k={index_top_k}); use skills_list for the rest."
+        )
+    hidden_note = ("\n" + " ".join(f"({n})" for n in footer_notes)) if footer_notes else ""
 
     if not skills_by_category:
         result = ""
@@ -1693,9 +1805,12 @@ def build_skills_system_prompt(
         for category in sorted(skills_by_category.keys()):
             # Deduplicate and sort skills within each category
             seen = set()
-            if category in demoted:
+            if names_only or category in demoted:
                 names = sorted({name for name, _ in skills_by_category[category]})
-                index_lines.append(f"  {category} [names only]: {', '.join(names)}")
+                if names_only:
+                    index_lines.append(f"  {category}: {', '.join(names)}")
+                else:
+                    index_lines.append(f"  {category} [names only]: {', '.join(names)}")
                 continue
             cat_desc = category_descriptions.get(category, "")
             if cat_desc:

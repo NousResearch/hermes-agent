@@ -422,8 +422,11 @@ class TestBuildSkillsSystemPrompt:
         )
         result = build_skills_system_prompt()
         assert "python-debug" in result
-        assert "Debug Python scripts" in result
+        # Default prompt_index=names omits per-skill descriptions.
+        assert "Debug Python scripts" not in result
         assert "available_skills" in result
+        assert "skill_view" in result
+        assert "skills.prompt_index=names" in result
 
     def test_deduplicates_skills(self, monkeypatch, tmp_path):
         monkeypatch.setenv("HERMES_HOME", str(tmp_path))
@@ -433,8 +436,12 @@ class TestBuildSkillsSystemPrompt:
             d.mkdir(parents=True, exist_ok=True)
             (d / "SKILL.md").write_text("---\ndescription: Search stuff\n---\n")
         result = build_skills_system_prompt()
-        # "search" should appear only once per category
-        assert result.count("- search") == 1
+        # Isolate the index block so intro text (e.g. "web_search") cannot
+        # inflate the count.
+        start = result.index("<available_skills>")
+        end = result.index("</available_skills>")
+        block = result[start:end]
+        assert block.count("search") == 1
 
     def test_compact_categories_demoted_to_names_only(self, monkeypatch, tmp_path):
         """Posture-driven demotion keeps every skill NAME visible.
@@ -443,8 +450,10 @@ class TestBuildSkillsSystemPrompt:
         full pruning caused silent capability loss in a real workflow
         (agent-created skills are the model's project memory, and models
         don't rediscover them via skills_list once the index goes quiet).
+        Requires prompt_index=full so non-demoted cats still show descriptions.
         """
         monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        (tmp_path / "config.yaml").write_text("skills:\n  prompt_index: full\n")
         for cat, name in (("social-media", "tweet-stuff"), ("github", "pr-review")):
             d = tmp_path / "skills" / cat / name
             d.mkdir(parents=True)
@@ -468,6 +477,7 @@ class TestBuildSkillsSystemPrompt:
         self, monkeypatch, tmp_path
     ):
         monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        (tmp_path / "config.yaml").write_text("skills:\n  prompt_index: full\n")
         d = tmp_path / "skills" / "social-media" / "twitter" / "thread-writer"
         d.mkdir(parents=True)
         (d / "SKILL.md").write_text(
@@ -516,6 +526,7 @@ class TestBuildSkillsSystemPrompt:
     def test_includes_matching_platform_skills(self, monkeypatch, tmp_path):
         """Skills with platforms: [macos] should appear on macOS."""
         monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        (tmp_path / "config.yaml").write_text("skills:\n  prompt_index: full\n")
         skills_dir = tmp_path / "skills" / "apple"
         mac_skill = skills_dir / "imessage"
         mac_skill.mkdir(parents=True)
@@ -634,6 +645,99 @@ class TestBuildSkillsSystemPrompt:
 
         result = build_skills_system_prompt()
         assert "backend-skill" in result
+
+    def test_names_index_smaller_than_full_and_full_restores_descriptions(
+        self, monkeypatch, tmp_path
+    ):
+        """Default names index is strictly smaller; full restores descriptions."""
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        # Keep descriptions under the 60-char extract_skill_description cap so
+        # the full index actually embeds them (no "..." truncation).
+        desc_prefix = "Token-heavy skill description pad XX"
+        assert len(desc_prefix) < 57
+        for i in range(12):
+            d = tmp_path / "skills" / "demo" / f"skill-{i}"
+            d.mkdir(parents=True)
+            desc = f"{desc_prefix}{i:02d}"
+            (d / "SKILL.md").write_text(
+                f"---\nname: skill-{i}\ndescription: {desc}\n---\n"
+                f"# Body for skill-{i}\n\nFull instructions live here.\n"
+            )
+
+        from agent.prompt_builder import clear_skills_system_prompt_cache
+
+        def _index_block(text: str) -> str:
+            start = text.index("<available_skills>")
+            end = text.index("</available_skills>")
+            return text[start:end]
+
+        clear_skills_system_prompt_cache(clear_snapshot=True)
+        names = build_skills_system_prompt()
+        assert "skill-0" in names
+        assert desc_prefix not in names
+        assert "skills.prompt_index=names" in names
+
+        (tmp_path / "config.yaml").write_text("skills:\n  prompt_index: full\n")
+        clear_skills_system_prompt_cache(clear_snapshot=True)
+        full = build_skills_system_prompt()
+        assert "skill-0" in full
+        assert desc_prefix in full
+        assert f"skill-0: {desc_prefix}00" in full
+
+        names_block = _index_block(names)
+        full_block = _index_block(full)
+        assert len(names_block) < len(full_block)
+        delta_chars = len(full_block) - len(names_block)
+        # 12 skills × ~40-char descriptions → hundreds of chars (~100+ tokens)
+        assert delta_chars > 300
+        approx_tokens = delta_chars / 4
+        assert approx_tokens > 75
+
+    def test_index_top_k_caps_names_index(self, monkeypatch, tmp_path):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        (tmp_path / "config.yaml").write_text(
+            "skills:\n  prompt_index: names\n  index_top_k: 2\n"
+        )
+        for name in ("alpha", "bravo", "charlie"):
+            d = tmp_path / "skills" / "pack" / name
+            d.mkdir(parents=True)
+            (d / "SKILL.md").write_text(
+                f"---\nname: {name}\ndescription: Desc for {name}\n---\n"
+            )
+        result = build_skills_system_prompt()
+        assert "alpha" in result
+        assert "bravo" in result
+        assert "charlie" not in result
+        assert "index_top_k=2" in result
+        assert "skills_list" in result
+
+    def test_skill_view_still_returns_full_body_under_names_index(
+        self, monkeypatch, tmp_path
+    ):
+        """Lazy load path is unchanged: skill_view returns full SKILL.md body."""
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        body = "# Full skill body\n\nDo the thing with step one and step two.\n"
+        skill_dir = tmp_path / "skills" / "demo" / "lazy-skill"
+        skill_dir.mkdir(parents=True)
+        (skill_dir / "SKILL.md").write_text(
+            "---\nname: lazy-skill\ndescription: Lazy load me\n---\n" + body
+        )
+
+        # Names index must not embed the body or description.
+        index = build_skills_system_prompt()
+        assert "lazy-skill" in index
+        assert "Lazy load me" not in index
+        assert "Do the thing with step one" not in index
+
+        # skill_view still returns the full body (progressive disclosure).
+        import json
+        from tools.skills_tool import skill_view
+
+        viewed = json.loads(skill_view("lazy-skill"))
+        assert viewed.get("error") in (None, False) or "error" not in viewed or not viewed.get("error")
+        content = viewed.get("content") or viewed.get("skill_content") or str(viewed)
+        assert "Do the thing with step one" in content
+        assert "Lazy load me" in content or "lazy-skill" in content
 
 
 class TestBuildNousSubscriptionPrompt:

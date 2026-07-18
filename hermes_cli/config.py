@@ -2416,6 +2416,15 @@ DEFAULT_CONFIG = {
     # always goes to ~/.hermes/skills/.
     "skills": {
         "external_dirs": [],   # e.g. ["~/.agents/skills", "/shared/team-skills"]
+        # System-prompt skills index density:
+        #   "names" (default) — category + skill names only; full bodies stay
+        #     lazy via skill_view (saves ~descriptions every turn).
+        #   "full" — restore legacy name+description lines per skill.
+        "prompt_index": "names",
+        # Cap how many skills appear in the system-prompt index (0 = no cap).
+        # Applies after platform/disabled/condition filters. Overflow is still
+        # discoverable via skills_list / skill_view.
+        "index_top_k": 0,
         # Substitute ${HERMES_SKILL_DIR} and ${HERMES_SESSION_ID} in SKILL.md
         # content with the absolute skill directory and the active session id
         # before the agent sees it.  Lets skill authors reference bundled
@@ -2905,17 +2914,25 @@ DEFAULT_CONFIG = {
     # openclaw-tool-search-report PDF in this PR for the rationale.
     "tools": {
         "tool_search": {
-            # "auto" (default) — activate only when deferrable tool schemas
-            #   exceed ``threshold_pct`` of the active model's context length,
-            #   so small toolsets pay no overhead.
+            # "auto" (default) — activate when deferrable tool schemas meet
+            #   the lower of ``auto_threshold`` (absolute tokens) or
+            #   ``threshold_pct`` of the active model's context length, so
+            #   mid-size MCP/plugin surfaces defer while tiny toolsets pay
+            #   no overhead.
             # "on"  — always activate when there is at least one deferrable
             #   tool. Use when you have many MCP servers and want maximum
             #   token reduction unconditionally.
             # "off" — disable entirely. Tools-array assembly is a pass-through.
             "enabled": "auto",
             # Percentage of context length at which "auto" mode kicks in.
-            # 10 matches the Claude Code default. Range 0..100.
+            # Combined with auto_threshold via min(). Range 0..100.
             "threshold_pct": 10,
+            # Absolute deferrable-schema token floor for "auto" mode.
+            # Default 6000 engages mid-size MCP/plugin setups (5–15k tokens)
+            # that used to stay fully expanded under the old 20k bar.
+            # Set 20000 to restore legacy behaviour; 0 disables the absolute
+            # floor (percentage-only when context length is known).
+            "auto_threshold": 6000,
             # When the model calls tool_search without a ``limit`` argument,
             # how many hits to return. Range 1..max_search_limit.
             "search_default_limit": 5,
@@ -5484,14 +5501,17 @@ def check_config_version() -> Tuple[int, int]:
 # Config structure validation
 # =============================================================================
 
-# Fields that are valid at root level of config.yaml
-_KNOWN_ROOT_KEYS = {
-    "_config_version", "model", "providers", "fallback_model",
-    "fallback_providers", "credential_pool_strategies", "toolsets",
-    "agent", "terminal", "display", "compression", "delegation",
-    "auxiliary", "moa", "custom_providers", "context", "memory", "gateway",
-    "sessions", "streaming", "updates", "mcp_servers",
+# Fields that are valid at root level of config.yaml.
+# DEFAULT_CONFIG is the single source of truth for documented roots; keep this
+# set derived so new defaults (skills, security, browser, …) are accepted
+# automatically. A few optional/legacy roots are valid on disk but intentionally
+# absent from DEFAULT_CONFIG (omitted when unused / alternate schema forms).
+_EXTRA_KNOWN_ROOT_KEYS = {
+    "custom_providers",  # legacy list form; modern equivalent is providers: {}
+    "fallback_model",    # optional single dict or chain list; omitted when disabled
+    "mcp_servers",       # MCP server definitions written by setup/tools flows
 }
+_KNOWN_ROOT_KEYS = frozenset(DEFAULT_CONFIG.keys()) | _EXTRA_KNOWN_ROOT_KEYS
 
 # Valid fields inside a custom_providers list entry
 _VALID_CUSTOM_PROVIDER_FIELDS = {
@@ -5646,15 +5666,27 @@ def validate_config_structure(config: Optional[Dict[str, Any]] = None) -> List["
             "    base_url: https://...",
         ))
 
-    # ── Root-level keys that look misplaced ──────────────────────────────
+    # ── Unknown / misplaced root-level keys ──────────────────────────────
+    # Typos like skillz:/secrity: were previously silent (only provider-like
+    # fields were flagged). Warn on any unknown top-level key so config
+    # hygiene surfaces without breaking startup.
     for key in config:
         if key.startswith("_"):
             continue
-        if key not in _KNOWN_ROOT_KEYS and key in _CUSTOM_PROVIDER_LIKE_FIELDS:
+        if key in _KNOWN_ROOT_KEYS:
+            continue
+        if key in _CUSTOM_PROVIDER_LIKE_FIELDS:
             issues.append(ConfigIssue(
                 "warning",
                 f"Root-level key '{key}' looks misplaced — should it be under 'model:' or inside a 'custom_providers' entry?",
                 f"Move '{key}' under the appropriate section",
+            ))
+        else:
+            issues.append(ConfigIssue(
+                "warning",
+                f"Unknown top-level config key '{key}' — it will be ignored",
+                "Check for typos, or remove the key if it is not a supported config root. "
+                "Run 'hermes doctor' for more detail.",
             ))
 
     return issues

@@ -41,10 +41,12 @@ def _td(name: str, description: str = "", properties: Dict[str, Any] | None = No
 
 class TestConfigParsing:
     def test_default_when_missing(self):
-        from tools.tool_search import ToolSearchConfig
+        from tools.tool_search import ToolSearchConfig, DEFAULT_AUTO_THRESHOLD
         cfg = ToolSearchConfig.from_raw(None)
         assert cfg.enabled == "auto"
         assert cfg.threshold_pct == 10.0
+        assert cfg.auto_threshold == DEFAULT_AUTO_THRESHOLD
+        assert cfg.auto_threshold == 6_000
 
     def test_bool_true_maps_to_auto(self):
         from tools.tool_search import ToolSearchConfig
@@ -72,6 +74,15 @@ class TestConfigParsing:
         assert cfg.threshold_pct == 100.0
         cfg = ToolSearchConfig.from_raw({"threshold_pct": -5})
         assert cfg.threshold_pct == 0.0
+
+    def test_auto_threshold_configurable_and_clamped(self):
+        from tools.tool_search import ToolSearchConfig
+        cfg = ToolSearchConfig.from_raw({"auto_threshold": 12_000})
+        assert cfg.auto_threshold == 12_000
+        cfg = ToolSearchConfig.from_raw({"auto_threshold": -10})
+        assert cfg.auto_threshold == 0
+        cfg = ToolSearchConfig.from_raw({"auto_threshold": 9_999_999})
+        assert cfg.auto_threshold == 1_000_000
 
     def test_search_limits_clamped(self):
         from tools.tool_search import ToolSearchConfig
@@ -151,22 +162,88 @@ class TestThresholdGate:
 
     def test_auto_below_threshold_does_not_activate(self):
         from tools.tool_search import ToolSearchConfig, should_activate
-        cfg = ToolSearchConfig.from_raw({"enabled": "auto", "threshold_pct": 10})
-        # 5% of 200K = below 10% threshold
+        # Raise absolute floor so this case is percentage-only: 5% of 200K
+        # stays below the 10% bar.
+        cfg = ToolSearchConfig.from_raw({
+            "enabled": "auto",
+            "threshold_pct": 10,
+            "auto_threshold": 0,
+        })
         assert not should_activate(cfg, deferrable_tokens=10_000, context_length=200_000)
 
     def test_auto_at_or_above_threshold_activates(self):
         from tools.tool_search import ToolSearchConfig, should_activate
-        cfg = ToolSearchConfig.from_raw({"enabled": "auto", "threshold_pct": 10})
+        cfg = ToolSearchConfig.from_raw({
+            "enabled": "auto",
+            "threshold_pct": 10,
+            "auto_threshold": 0,
+        })
         assert should_activate(cfg, deferrable_tokens=20_000, context_length=200_000)
         assert should_activate(cfg, deferrable_tokens=50_000, context_length=200_000)
 
-    def test_auto_without_context_length_uses_20k_cutoff(self):
-        """Fallback cutoff used when the active model is unknown."""
-        from tools.tool_search import ToolSearchConfig, should_activate
+    def test_auto_without_context_length_uses_auto_threshold(self):
+        """Absolute floor used when the active model context is unknown."""
+        from tools.tool_search import (
+            ToolSearchConfig, should_activate, DEFAULT_AUTO_THRESHOLD,
+        )
         cfg = ToolSearchConfig.from_raw({"enabled": "auto"})
+        assert cfg.auto_threshold == DEFAULT_AUTO_THRESHOLD
+        assert not should_activate(
+            cfg, deferrable_tokens=DEFAULT_AUTO_THRESHOLD - 1, context_length=0,
+        )
+        assert should_activate(
+            cfg, deferrable_tokens=DEFAULT_AUTO_THRESHOLD, context_length=0,
+        )
+        # Mid-size MCP surface (~10k tokens) now engages under the default.
+        assert should_activate(cfg, deferrable_tokens=10_000, context_length=0)
+
+    def test_auto_mid_token_count_engages_with_large_context(self):
+        """Default auto_threshold engages mid-size setups on large contexts.
+
+        Previously only threshold_pct (10% of 200k = 20k) applied, so a
+        5–15k MCP surface stayed fully expanded every turn.
+        """
+        from tools.tool_search import ToolSearchConfig, should_activate
+        cfg = ToolSearchConfig.from_raw({"enabled": "auto"})  # defaults
+        assert should_activate(cfg, deferrable_tokens=8_000, context_length=200_000)
+        assert should_activate(cfg, deferrable_tokens=6_000, context_length=200_000)
+        assert not should_activate(cfg, deferrable_tokens=5_000, context_length=200_000)
+
+    def test_auto_threshold_configurable(self):
+        from tools.tool_search import ToolSearchConfig, should_activate
+        cfg = ToolSearchConfig.from_raw({
+            "enabled": "auto",
+            "auto_threshold": 12_000,
+            "threshold_pct": 10,
+        })
+        assert not should_activate(cfg, deferrable_tokens=10_000, context_length=200_000)
+        assert should_activate(cfg, deferrable_tokens=12_000, context_length=200_000)
+
+    def test_auto_disabled_absolute_uses_pct_only(self):
+        """auto_threshold: 0 restores percentage-only auto behaviour."""
+        from tools.tool_search import ToolSearchConfig, should_activate
+        cfg = ToolSearchConfig.from_raw({
+            "enabled": "auto",
+            "auto_threshold": 0,
+            "threshold_pct": 10,
+        })
+        # 10k is below 10% of 200k — must not activate.
+        assert not should_activate(cfg, deferrable_tokens=10_000, context_length=200_000)
+        # Without context and no absolute floor, auto stays off.
+        assert not should_activate(cfg, deferrable_tokens=50_000, context_length=0)
+
+    def test_legacy_auto_threshold_restores_old_bar(self):
+        from tools.tool_search import (
+            ToolSearchConfig, should_activate, LEGACY_AUTO_THRESHOLD,
+        )
+        cfg = ToolSearchConfig.from_raw({
+            "enabled": "auto",
+            "auto_threshold": LEGACY_AUTO_THRESHOLD,
+            "threshold_pct": 10,
+        })
+        assert not should_activate(cfg, deferrable_tokens=10_000, context_length=200_000)
         assert not should_activate(cfg, deferrable_tokens=10_000, context_length=0)
-        assert should_activate(cfg, deferrable_tokens=25_000, context_length=0)
+        assert should_activate(cfg, deferrable_tokens=20_000, context_length=0)
 
     def test_token_estimate_proportional_to_schema_size(self):
         from tools.tool_search import estimate_tokens_from_schemas

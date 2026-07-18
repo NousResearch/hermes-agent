@@ -10,8 +10,10 @@ for the full rationale):
 * Core tools defined in ``toolsets._HERMES_CORE_TOOLS`` are *never* deferred.
   Always-load means always-load. No exceptions.
 * The threshold gate runs every assembly: when deferrable tools would consume
-  less than ``threshold_pct`` of the model's context window (default 10%),
-  tool search is a no-op and the tools array passes through unchanged.
+  less than the effective auto bar — the lower of ``auto_threshold``
+  (default 6k absolute tokens) and ``threshold_pct`` of the model's context
+  window (default 10%) — tool search is a no-op and the tools array passes
+  through unchanged. Set ``auto_threshold: 20000`` for the legacy absolute bar.
 * The catalog is stateless across turns and tools-array assemblies. It is
   rebuilt from the current tool-defs list every time. This is the lesson
   from OpenClaw's cron regression (openclaw/openclaw#84141): a session-keyed
@@ -54,6 +56,17 @@ BRIDGE_TOOL_NAMES = frozenset({TOOL_SEARCH_NAME, TOOL_DESCRIBE_NAME, TOOL_CALL_N
 # underestimating, which is the safer default.
 CHARS_PER_TOKEN = 4.0
 
+# Absolute deferrable-schema token floor for ``enabled: auto``. Mid-size
+# MCP/plugin surfaces (roughly 5–15k schema tokens) used to stay fully
+# expanded every turn because the previous 20k fixed cutoff (and 10% of a
+# 200k context) never fired. 6k engages those setups while tiny toolsets
+# still pass through. Restore the old bar with
+# ``tools.tool_search.auto_threshold: 20000``.
+DEFAULT_AUTO_THRESHOLD = 6_000
+# Historical no-context cutoff; kept for docs/tests and as the value users
+# set to recover pre-change auto behaviour.
+LEGACY_AUTO_THRESHOLD = 20_000
+
 
 # ---------------------------------------------------------------------------
 # Configuration plumbing
@@ -66,6 +79,7 @@ class ToolSearchConfig:
 
     enabled: str  # "auto" | "on" | "off"
     threshold_pct: float  # 0..100 — only used when enabled == "auto"
+    auto_threshold: int  # absolute deferrable-token floor for auto mode
     search_default_limit: int
     max_search_limit: int
 
@@ -81,12 +95,15 @@ class ToolSearchConfig:
         """
         if raw is True:
             return cls(enabled="auto", threshold_pct=10.0,
+                       auto_threshold=DEFAULT_AUTO_THRESHOLD,
                        search_default_limit=5, max_search_limit=20)
         if raw is False:
             return cls(enabled="off", threshold_pct=10.0,
+                       auto_threshold=DEFAULT_AUTO_THRESHOLD,
                        search_default_limit=5, max_search_limit=20)
         if not isinstance(raw, dict):
             return cls(enabled="auto", threshold_pct=10.0,
+                       auto_threshold=DEFAULT_AUTO_THRESHOLD,
                        search_default_limit=5, max_search_limit=20)
 
         enabled_raw = str(raw.get("enabled", "auto")).strip().lower()
@@ -102,6 +119,13 @@ class ToolSearchConfig:
         threshold_pct = _safe_float(raw.get("threshold_pct"), 10.0)
         threshold_pct = max(0.0, min(100.0, threshold_pct))
 
+        # Absolute token floor for auto mode. 0 disables the absolute gate
+        # (percentage-only when context is known; no activation without a
+        # known context length). Cap at a generous upper bound so typos
+        # cannot overflow comparisons.
+        auto_threshold = max(0, min(1_000_000, _safe_int(
+            raw.get("auto_threshold"), DEFAULT_AUTO_THRESHOLD)))
+
         max_search_limit = max(1, min(50, _safe_int(raw.get("max_search_limit"), 20)))
         search_default_limit = max(1, min(max_search_limit,
                                           _safe_int(raw.get("search_default_limit"), 5)))
@@ -109,6 +133,7 @@ class ToolSearchConfig:
         return cls(
             enabled=enabled,
             threshold_pct=threshold_pct,
+            auto_threshold=auto_threshold,
             search_default_limit=search_default_limit,
             max_search_limit=max_search_limit,
         )
@@ -218,9 +243,9 @@ def estimate_tokens_from_schemas(tool_defs: Iterable[Dict[str, Any]]) -> int:
     """Estimate the token cost of a tool-defs list via the chars/4 rule.
 
     Cheap and stable across providers. The number doesn't need to be exact —
-    it gates the activate/skip decision, and a typical 200K context with a
-    10% threshold means the decision flips around 20K tokens of schema.
-    Order-of-magnitude precision is fine.
+    it gates the activate/skip decision. With the default absolute floor of
+    6k tokens (or 10% of context, whichever is lower), order-of-magnitude
+    precision is fine.
     """
     total_chars = 0
     for td in tool_defs:
@@ -229,6 +254,35 @@ def estimate_tokens_from_schemas(tool_defs: Iterable[Dict[str, Any]]) -> int:
         except (TypeError, ValueError):
             total_chars += len(str(td))
     return int(math.ceil(total_chars / CHARS_PER_TOKEN))
+
+
+def effective_auto_threshold(
+    config: ToolSearchConfig,
+    context_length: Optional[int],
+) -> Optional[int]:
+    """Return the deferrable-token bar for ``enabled: auto``, or None if none.
+
+    Auto mode uses the *lower* of:
+
+    * ``auto_threshold`` — absolute floor (default 6k) so mid-size MCP/plugin
+      surfaces engage even on large context windows;
+    * ``threshold_pct`` of ``context_length`` — relative gate when the model
+      context size is known.
+
+    Setting ``auto_threshold`` to ``0`` disables the absolute floor (legacy
+    percentage-only behaviour when context is known). Without a known
+    context and with ``auto_threshold == 0``, there is no bar and auto
+    stays inactive. Restore the pre-6k absolute bar with
+    ``auto_threshold: 20000``.
+    """
+    candidates: List[int] = []
+    if config.auto_threshold > 0:
+        candidates.append(config.auto_threshold)
+    if context_length and context_length > 0:
+        candidates.append(int(context_length * (config.threshold_pct / 100.0)))
+    if not candidates:
+        return None
+    return min(candidates)
 
 
 def should_activate(
@@ -240,8 +294,8 @@ def should_activate(
 
     ``"off"`` skips unconditionally. ``"on"`` activates unconditionally
     (as long as there is at least one deferrable tool — there's no point
-    swapping a no-op). ``"auto"`` activates when the deferrable schemas
-    would consume ``threshold_pct`` of context or more.
+    swapping a no-op). ``"auto"`` activates when deferrable schemas meet
+    the effective auto threshold (see ``effective_auto_threshold``).
     """
     if config.enabled == "off":
         return False
@@ -250,11 +304,9 @@ def should_activate(
     if config.enabled == "on":
         return True
     # auto
-    if not context_length or context_length <= 0:
-        # Without a known context size, fall back to a fixed 20K-token cutoff
-        # — the cliff above which Anthropic and OpenAI both saw quality drops.
-        return deferrable_tokens >= 20_000
-    threshold_tokens = int(context_length * (config.threshold_pct / 100.0))
+    threshold_tokens = effective_auto_threshold(config, context_length)
+    if threshold_tokens is None:
+        return False
     return deferrable_tokens >= threshold_tokens
 
 
@@ -556,18 +608,18 @@ def assemble_tool_defs(
         return AssemblyResult(tool_defs=incoming, activated=False)
 
     deferrable_tokens = estimate_tokens_from_schemas(deferrable)
+    threshold_tokens = effective_auto_threshold(config, context_length) or 0
     if not should_activate(config, deferrable_tokens, context_length):
         return AssemblyResult(
             tool_defs=incoming,
             activated=False,
             deferred_count=len(deferrable),
             deferred_tokens=deferrable_tokens,
-            threshold_tokens=int((context_length or 0) * (config.threshold_pct / 100.0)),
+            threshold_tokens=threshold_tokens,
         )
 
     bridge = bridge_tool_schemas(len(deferrable))
     result = visible + bridge
-    threshold_tokens = int((context_length or 0) * (config.threshold_pct / 100.0))
 
     logger.info(
         "tool_search activated: %d core/visible tools kept, %d deferred (~%d tokens, threshold ~%d)",
@@ -722,7 +774,10 @@ __all__ = [
     "is_deferrable_tool_name",
     "classify_tools",
     "estimate_tokens_from_schemas",
+    "effective_auto_threshold",
     "should_activate",
+    "DEFAULT_AUTO_THRESHOLD",
+    "LEGACY_AUTO_THRESHOLD",
     "build_catalog",
     "search_catalog",
     "bridge_tool_schemas",

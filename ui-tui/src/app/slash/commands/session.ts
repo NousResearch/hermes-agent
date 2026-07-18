@@ -1,3 +1,4 @@
+import { usageBarsText } from '../../../components/overlayPrimitives.js'
 import { attachedImageNotice, introMsg, toTranscriptMessages } from '../../../domain/messages.js'
 import { sessionScopedModelArg, TUI_SESSION_MODEL_FLAG } from '../../../domain/slash.js'
 import type {
@@ -666,33 +667,74 @@ export const sessionCommands: SlashCommand[] = [
           return
         }
 
+        const sys = ctx.transcript.sys
+        const locale = ctx.ui?.locale ?? 'en'
+        const t = (key: TranslationKey, vars?: Record<string, string | number>) => translate(locale, key, vars)
+
         if (r) {
           patchUiState({
             usage: { calls: r.calls ?? 0, input: r.input ?? 0, output: r.output ?? 0, total: r.total ?? 0 }
           })
         }
 
-        // Nous credits block is agent-independent (a portal fetch), so it shows
-        // even with zero API calls or on a resumed session. Render it whenever
-        // present, before the token panel.
-        const creditsLines = r?.credits_lines ?? []
+        // Nous balance block is agent-independent (a portal fetch), so it shows
+        // even with zero API calls or on a resumed session. Prefer the shared
+        // dollar usage model (two-bar view, dollars-only); fall back to the
+        // legacy text lines only when the model is unavailable.
+        const usageModel = r?.usage
+        const barLines = usageBarsText(usageModel, locale)
+        let showedBalance = false
 
-        if (creditsLines.length) {
-          ctx.transcript.panel(translate(ctx.ui.locale, 'credits.panelTitle'), [{ text: creditsLines.join('\n') }])
+        if (usageModel?.available && (barLines.length || usageModel.status === 'free')) {
+          const sections: PanelSection[] = []
+          const plan = usageModel.plan_name ?? (usageModel.status === 'free' ? 'Free' : null)
+
+          if (plan) {
+            sections.push({
+              text: t('usage.planLine', {
+                plan,
+                renewal: usageModel.renews_display ? ` · ${t('usage.renews', { date: usageModel.renews_display })}` : ''
+              })
+            })
+          }
+
+          if (barLines.length) {
+            sections.push({ text: barLines.join('\n') })
+          }
+
+          if (usageModel.status === 'free') {
+            sections.push({ text: t('usage.freeOnly') })
+          } else if (usageModel.status === 'low') {
+            sections.push({
+              text: t('usage.lowBalance', {
+                amount: usageModel.total_spendable_display ?? t('usage.underFive')
+              })
+            })
+          }
+
+          ctx.transcript.panel(t('usage.balanceTitle'), sections)
+          showedBalance = true
+        } else {
+          const creditsLines = r?.credits_lines ?? []
+
+          if (creditsLines.length) {
+            ctx.transcript.panel(t('usage.nousBalanceTitle'), [{ text: creditsLines.join('\n') }])
+            showedBalance = true
+          }
         }
 
         if (!r?.calls) {
-          if (!creditsLines.length) {
-            ctx.transcript.sys(translate(ctx.ui.locale, 'sys.noApiCalls'))
+          if (!showedBalance) {
+            sys(t('sys.noApiCalls'))
           }
+
+          sys(t('usage.cta'))
 
           return
         }
 
-        const f = (v: number | undefined) => (v ?? 0).toLocaleString()
+        const f = (v: number | undefined) => (v ?? 0).toLocaleString(locale)
         const cost = formatUsageCost(r)
-
-        const t = (key: TranslationKey, vars?: Record<string, string | number>) => translate(ctx.ui.locale, key, vars)
 
         const rows: [string, string][] = [
           [t('usage.model'), r.model ?? ''],
@@ -725,6 +767,7 @@ export const sessionCommands: SlashCommand[] = [
         }
 
         ctx.transcript.panel(t('usage.panelTitle'), sections)
+        sys(t('usage.cta'))
       })
     }
   }

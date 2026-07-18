@@ -17,6 +17,7 @@ const buildOverlayState = (): OverlayState => ({
   secret: null,
   sessions: false,
   skillsHub: false,
+  subscription: null,
   sudo: null
 })
 
@@ -38,23 +39,25 @@ export const $isBlocked = computed(
     secret,
     sessions,
     skillsHub,
+    subscription,
     sudo
   }) =>
     Boolean(
       agents ||
-      approval ||
-      billing ||
-      clarify ||
-      confirm ||
-      journey ||
-      modelPicker ||
-      pager ||
-      petPicker ||
-      pluginsHub ||
-      secret ||
-      sessions ||
-      skillsHub ||
-      sudo
+        approval ||
+        billing ||
+        clarify ||
+        confirm ||
+        journey ||
+        modelPicker ||
+        pager ||
+        petPicker ||
+        pluginsHub ||
+        secret ||
+        sessions ||
+        skillsHub ||
+        subscription ||
+        sudo
     )
 )
 

@@ -323,3 +323,89 @@ class TestSupervisedChildIgnoresStickyProfile:
         assert result is not None
         assert result.endswith("coder")
 
+    def test_systemd_gateway_run_does_not_follow_active_profile(
+        self, tmp_path, monkeypatch
+    ):
+        """A systemd-owned default gateway keeps its unit-scoped HERMES_HOME."""
+        hermes_root = tmp_path / ".hermes"
+
+        monkeypatch.setenv("INVOCATION_ID", "test-systemd-invocation")
+        result = _run_apply_profile_override(
+            tmp_path,
+            monkeypatch,
+            hermes_home=str(hermes_root),
+            active_profile="coder",
+            argv=["hermes", "gateway", "run"],
+        )
+
+        assert result == str(hermes_root)
+
+    def test_launchd_gateway_run_does_not_follow_active_profile(
+        self, tmp_path, monkeypatch
+    ):
+        """A launchd-owned default gateway keeps its plist-scoped HERMES_HOME."""
+        hermes_root = tmp_path / ".hermes"
+
+        monkeypatch.setenv("XPC_SERVICE_NAME", "ai.hermes.gateway")
+        result = _run_apply_profile_override(
+            tmp_path,
+            monkeypatch,
+            hermes_home=str(hermes_root),
+            active_profile="coder",
+            argv=["hermes", "gateway", "run", "--replace"],
+        )
+
+        assert result == str(hermes_root)
+
+    def test_windows_detached_gateway_does_not_follow_active_profile(
+        self, tmp_path, monkeypatch
+    ):
+        """A scheduled-task gateway keeps its wrapper-scoped HERMES_HOME."""
+        hermes_root = tmp_path / ".hermes"
+
+        monkeypatch.setenv("HERMES_GATEWAY_DETACHED", "1")
+        result = _run_apply_profile_override(
+            tmp_path,
+            monkeypatch,
+            hermes_home=str(hermes_root),
+            active_profile="coder",
+            argv=["hermes", "gateway", "run"],
+        )
+
+        assert result == str(hermes_root)
+
+    def test_supervisor_marker_does_not_change_management_command_routing(
+        self, tmp_path, monkeypatch
+    ):
+        """Only the gateway runtime, not service management, is pinned."""
+        hermes_root = tmp_path / ".hermes"
+
+        monkeypatch.setenv("INVOCATION_ID", "test-systemd-invocation")
+        result = _run_apply_profile_override(
+            tmp_path,
+            monkeypatch,
+            hermes_home=str(hermes_root),
+            active_profile="coder",
+            argv=["hermes", "gateway", "status"],
+        )
+
+        assert result is not None
+        assert result.endswith("coder")
+
+    def test_unrelated_launchd_job_does_not_pin_gateway_profile(
+        self, tmp_path, monkeypatch
+    ):
+        """Only Hermes gateway LaunchAgents own a fixed gateway identity."""
+        hermes_root = tmp_path / ".hermes"
+
+        monkeypatch.setenv("XPC_SERVICE_NAME", "com.example.wrapper")
+        result = _run_apply_profile_override(
+            tmp_path,
+            monkeypatch,
+            hermes_home=str(hermes_root),
+            active_profile="coder",
+            argv=["hermes", "gateway", "run"],
+        )
+
+        assert result is not None
+        assert result.endswith("coder")

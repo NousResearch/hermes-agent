@@ -100,7 +100,7 @@ def test_build_gateway_argv_uses_base_pythonw_for_uv_venv_launcher(monkeypatch, 
     monkeypatch.setattr(gateway_windows.sys, "platform", "win32")
     monkeypatch.setattr(gateway, "PROJECT_ROOT", project)
     monkeypatch.setattr(gateway, "get_python_path", lambda: str(venv_python))
-    monkeypatch.setattr(gateway, "_profile_arg", lambda hermes_home: "")
+    monkeypatch.setattr(gateway, "_service_profile_arg", lambda hermes_home: "")
     monkeypatch.setattr("hermes_cli.config.get_hermes_home", lambda: str(hermes_home))
 
     argv, cwd, env_overlay = gateway_windows._build_gateway_argv()
@@ -110,6 +110,17 @@ def test_build_gateway_argv_uses_base_pythonw_for_uv_venv_launcher(monkeypatch, 
     assert env_overlay["VIRTUAL_ENV"] == str(project / "venv")
     assert str(project) in env_overlay["PYTHONPATH"].split(gateway_windows.os.pathsep)
     assert str(site_packages) in env_overlay["PYTHONPATH"].split(gateway_windows.os.pathsep)
+
+
+def test_current_profile_cli_args_pin_default_service_identity(monkeypatch):
+    """Elevated Scheduled Task handoffs must not fall back to sticky state."""
+    import hermes_cli.gateway as gateway
+
+    monkeypatch.setattr(
+        gateway, "_service_profile_arg", lambda: "--profile default"
+    )
+
+    assert gateway_windows._current_profile_cli_args() == ["--profile", "default"]
 
 
 class TestStableWindowsGatewayWorkingDir:
@@ -138,7 +149,7 @@ def test_write_task_script_anchors_cmd_cd_at_hermes_home(monkeypatch, tmp_path):
     monkeypatch.setattr(gateway_windows, "_assert_windows", lambda: None)
     monkeypatch.setattr(gateway, "PROJECT_ROOT", project)
     monkeypatch.setattr(gateway, "get_python_path", lambda: str(python_exe))
-    monkeypatch.setattr(gateway, "_profile_arg", lambda hermes_home: "")
+    monkeypatch.setattr(gateway, "_service_profile_arg", lambda hermes_home: "")
     monkeypatch.setattr("hermes_cli.config.get_hermes_home", lambda: str(hermes_home))
     monkeypatch.setattr(gateway_windows, "get_task_script_path", lambda: script_path)
 
@@ -184,7 +195,7 @@ def _arrange_startup_fallback(monkeypatch, tmp_path, running_pids):
     monkeypatch.setattr(gateway_windows, "_report_gateway_start", lambda via: calls.append(("report_start", via)))
     monkeypatch.setattr(gateway_windows, "_print_next_steps", lambda: calls.append(("next_steps", None)))
     monkeypatch.setattr(gateway, "find_gateway_pids", lambda: running_pids)
-    monkeypatch.setattr(gateway, "_profile_arg", lambda: "--profile alice")
+    monkeypatch.setattr(gateway, "_service_profile_arg", lambda: "--profile alice")
     return script_path, calls
 
 
@@ -611,7 +622,7 @@ def test_install_access_denied_declined_elevation_uses_startup_fallback(monkeypa
     )
     monkeypatch.setattr(gateway_windows, "_install_startup_entry", lambda path: calls.append(("install_startup", path)) or path)
     monkeypatch.setattr(gateway, "find_gateway_pids", lambda: [])
-    monkeypatch.setattr(gateway, "_profile_arg", lambda: "--profile alice")
+    monkeypatch.setattr(gateway, "_service_profile_arg", lambda: "--profile alice")
     monkeypatch.setattr(gateway_windows, "_print_next_steps", lambda: calls.append(("next_steps", None)))
 
     gateway_windows.install(force=False)

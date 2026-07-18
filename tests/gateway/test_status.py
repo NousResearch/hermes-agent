@@ -600,6 +600,37 @@ class TestGatewayRuntimeStatus:
             == 139
         )
 
+    def test_runtime_status_running_pid_default_profile_accepts_explicit_selector(
+        self, monkeypatch
+    ):
+        """Managed root gateways pin default explicitly and still count as live."""
+        payload = {
+            "pid": 139,
+            "gateway_state": "running",
+            "kind": "hermes-gateway",
+            "argv": ["hermes", "gateway", "run"],
+            "start_time": 1000,
+        }
+        default_home = Path("/opt/data")
+
+        monkeypatch.setattr(status, "_pid_exists", lambda pid: True)
+        monkeypatch.setattr(status, "_get_process_start_time", lambda pid: 1000)
+        for cmdline in (
+            "hermes --profile default gateway run --replace",
+            "hermes -p default gateway run --replace",
+            "hermes --profile=default gateway run --replace",
+            'hermes --profile="default" gateway run --replace',
+        ):
+            monkeypatch.setattr(
+                status, "_read_process_cmdline", lambda pid, c=cmdline: c
+            )
+            assert (
+                status.get_runtime_status_running_pid(
+                    payload, expected_home=default_home
+                )
+                == 139
+            ), cmdline
+
     def test_runtime_status_running_pid_profile_scope_falls_back_when_cmdline_unreadable(self, monkeypatch):
         """When the live command line is unreadable (Windows/permission), the
         profile scope cannot apply — fall back to the persisted record so the

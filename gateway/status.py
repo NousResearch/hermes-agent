@@ -218,6 +218,41 @@ def _read_process_cmdline(pid: int) -> Optional[str]:
     return None
 
 
+def profile_selectors_from_command_line(command: str | None) -> tuple[str, ...]:
+    """Return normalized ``--profile``/``-p`` values from ``command``.
+
+    Missing values are preserved as empty strings so callers reject malformed
+    selectors instead of accidentally treating them as a bare default-profile
+    command. Hermes accepts selectors anywhere in argv, including ``=`` forms.
+    """
+    if not command:
+        return ()
+
+    try:
+        raw_tokens = shlex.split(command, posix=False)
+    except ValueError:
+        raw_tokens = command.split()
+    tokens = [token.strip("\"'") for token in raw_tokens]
+
+    def _normalize_selector(value: str) -> str:
+        return value.strip("\"'").lower()
+
+    selectors: list[str] = []
+    index = 0
+    while index < len(tokens):
+        token = tokens[index]
+        token_lc = token.lower()
+        if token_lc in ("--profile", "-p"):
+            value = tokens[index + 1] if index + 1 < len(tokens) else ""
+            selectors.append(_normalize_selector(value))
+            index += 2
+            continue
+        if token_lc.startswith("--profile=") or token_lc.startswith("-p="):
+            selectors.append(_normalize_selector(token.split("=", 1)[1]))
+        index += 1
+    return tuple(selectors)
+
+
 def _gateway_command_subcommand(command: str | None) -> str | None:
     """Return the Hermes gateway lifecycle subcommand from a command line.
 
@@ -355,27 +390,25 @@ def _command_line_belongs_to_profile(command: str, profile_home: Path) -> bool:
     gateway.  That recycled PID's command line still ``looks_like_gateway`` —
     so without a profile check the dead profile is reported running.  A named
     profile gateway carries ``-p <name>``/``--profile <name>`` (or, rarely, an
-    explicit ``HERMES_HOME=<path>``) on its argv; the default/root gateway runs
-    bare with no profile flag.
+    explicit ``HERMES_HOME=<path>``) on its argv; the default/root gateway may
+    run bare or carry an explicit ``--profile default`` service selector.
     """
     command_lc = command.lower()
+    selectors = profile_selectors_from_command_line(command)
     profile_name = _profile_name_for_home(profile_home)
     home_lc = str(profile_home).lower()
 
     if profile_name is not None and profile_name != "default":
         profile_lc = profile_name.lower()
-        return (
-            f"--profile {profile_lc}" in command_lc
-            or f"-p {profile_lc}" in command_lc
-            or f"hermes_home={home_lc}" in command_lc
-        )
+        if selectors:
+            return all(selector == profile_lc for selector in selectors)
+        return f"hermes_home={home_lc}" in command_lc
 
-    # Default/root profile: the gateway runs with no profile flag. Accept unless
-    # the command advertises *some other* profile (an explicit -p/--profile) or
-    # a non-matching explicit HERMES_HOME= on the argv. HERMES_HOME is usually
-    # passed via the environment (not visible on the command line), so its mere
-    # absence is not disqualifying — only a conflicting explicit value is.
-    if "--profile " in command_lc or " -p " in command_lc:
+    # Default/root profile: accept legacy bare gateways and managed services
+    # pinned with --profile default/-p default. Reject any other (or malformed)
+    # selector and any conflicting explicit HERMES_HOME= on argv. HERMES_HOME is
+    # usually passed via the environment, so its absence is not disqualifying.
+    if any(selector != "default" for selector in selectors):
         return False
     if "hermes_home=" in command_lc and f"hermes_home={home_lc}" not in command_lc:
         return False

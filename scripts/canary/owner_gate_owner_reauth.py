@@ -476,7 +476,11 @@ def _validate_sealed_runtime_identity(
         or identity.get("command_prefix_sha256")
         != _sha256_json(list(prefix))
         or any(type(identity.get(field)) is not int or identity[field] <= 0 for field in count_fields)
-        or any(_SHA256.fullmatch(str(identity.get(field, ""))) is None for field in sha_fields)
+        or any(
+            type(identity.get(field)) is not str
+            or _SHA256.fullmatch(identity[field]) is None
+            for field in sha_fields
+        )
         or not isinstance(source_tree_oid, str)
         or re.fullmatch(r"[0-9a-f]{40}", source_tree_oid) is None
         or not isinstance(identity.get("python_version"), str)

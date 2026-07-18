@@ -471,6 +471,36 @@ def test_cmd_update_local_commit_guard_fails_closed_when_proof_is_unavailable(
     assert "could not prove" in capsys.readouterr().out
 
 
+def test_cmd_update_protected_fetch_failure_is_terminal(
+    monkeypatch, tmp_path, capsys
+):
+    _setup_update_mocks(monkeypatch, tmp_path)
+    mutations = []
+
+    def fake_run(cmd, **kwargs):
+        joined = " ".join(str(part) for part in cmd)
+        if "fetch origin main" in joined:
+            return SimpleNamespace(returncode=128, stdout="", stderr="fatal: bad repository")
+        if " config " in f" {joined} ":
+            mutations.append(cmd)
+        return SimpleNamespace(returncode=0, stdout="", stderr="")
+
+    monkeypatch.setattr(hermes_main.subprocess, "run", fake_run)
+    monkeypatch.setattr(hermes_main.sys, "platform", "win32")
+    monkeypatch.setattr(
+        hermes_config,
+        "load_config",
+        lambda: {"updates": {"protect_local_commits": True}},
+    )
+
+    with pytest.raises(SystemExit) as exc:
+        hermes_main._cmd_update_impl(SimpleNamespace(yes=True), gateway_mode=False)
+
+    assert exc.value.code == 3
+    assert "Failed to fetch" in capsys.readouterr().out
+    assert mutations == []
+
+
 def test_cmd_update_protects_local_commits_on_target_branch_before_switch(
     monkeypatch, tmp_path, capsys
 ):

@@ -9927,23 +9927,6 @@ def _cmd_update_impl(args, gateway_mode: bool):
             )
             sys.exit(1)
 
-    # On Windows, git can fail with "unable to write loose object file: Invalid argument"
-    # due to filesystem atomicity issues. Set the recommended workaround.
-    if sys.platform == "win32" and git_dir.exists():
-        subprocess.run(
-            [
-                "git",
-                "-c",
-                "windows.appendAtomically=false",
-                "config",
-                "windows.appendAtomically",
-                "false",
-            ],
-            cwd=PROJECT_ROOT,
-            check=False,
-            capture_output=True,
-        )
-
     # Build git command once — reused for fork detection and the update itself.
     git_cmd = ["git"]
     if sys.platform == "win32":
@@ -9998,7 +9981,9 @@ def _cmd_update_impl(args, gateway_mode: bool):
                 print("✗ Failed to fetch updates from origin.")
                 if stderr:
                     print(f"  {stderr.splitlines()[0]}")
-            sys.exit(1)
+            # Under protected mode, any inability to refresh/prove git refs is
+            # a terminal policy rejection, not a retryable generic failure.
+            sys.exit(3 if protect_local_commits else 1)
 
         # Get current branch (returns literal "HEAD" when detached)
         result = subprocess.run(
@@ -10078,6 +10063,17 @@ def _cmd_update_impl(args, gateway_mode: bool):
                 _resume_windows_gateways_after_update(_windows_gateway_resume)
                 # Exit 3 is the staged Desktop updater's terminal policy-rejection code.
                 sys.exit(3)
+
+        # Persist the Windows atomic-append workaround only after the protected
+        # commit proof. The inline ``-c`` on git_cmd is sufficient for fetch and
+        # proof, so a policy rejection need not mutate repository configuration.
+        if sys.platform == "win32":
+            subprocess.run(
+                git_cmd + ["config", "windows.appendAtomically", "false"],
+                cwd=PROJECT_ROOT,
+                check=False,
+                capture_output=True,
+            )
 
         # Discard npm lockfile churn only after the protected-commit proof.
         # npm rewrites tracked package-lock.json files non-deterministically at

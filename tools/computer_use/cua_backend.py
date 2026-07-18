@@ -725,6 +725,16 @@ class _CuaDriverSession:
             # outer context-manager exits AFTER this block, so set to
             # None here is fine: stop() has already flipped _started.
             self._session = None
+            # Reset _started so a session that dies for ANY reason (MCP
+            # connection drop, driver crash, unexpected coro exit) is
+            # re-enterable: the next start()/call sees _started False and
+            # rebuilds the session instead of hanging forever on a dead one
+            # via _require_started(). On the normal stop() path this is a
+            # harmless idempotent no-op (stop() already set it False). A
+            # plain bool write is atomic in CPython, so this is safe from
+            # the bridge-loop thread without taking self._lock (which stop()
+            # may hold while awaiting this coro's future). See #55048 Bug 1.
+            self._started = False
 
     async def _populate_capabilities(self, session: Any) -> None:
         """Surface 4: cache per-tool capability sets + capability_version
@@ -1060,7 +1070,24 @@ class _CuaDriverSession:
                 except OSError:
                     pass
 
+    # Lifecycle handshake calls issued BY start()/stop() themselves — these
+    # must not trigger the auto-restart guard below, or start() would recurse
+    # into start() when the session-start hasn't flipped _started yet.
+    _LIFECYCLE_CALLS = frozenset({"start_session", "end_session"})
+
     def call_tool(self, name: str, args: Dict[str, Any], timeout: float = 30.0) -> Dict[str, Any]:
+        # A prior session may have died (MCP drop / driver crash): its
+        # lifecycle coro reset _started to False in its finally (#55048
+        # Bug 1). Re-enter start() so we rebuild the session instead of
+        # calling _require_started() straight into a "not started" raise or
+        # a None session. start() is idempotent when already started. Skip
+        # this for the start_session/end_session handshake, which start()/
+        # stop() drive directly while _started is still in flux.
+        if not self._started and name not in self._LIFECYCLE_CALLS:
+            logger.warning(
+                "cua-driver session not active on %s; (re)starting before call", name
+            )
+            self.start()
         self._require_started()
         # The cua-driver daemon proxy returns POSIX EAGAIN ("Resource
         # temporarily unavailable") for heavier calls like get_window_state when

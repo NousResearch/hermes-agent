@@ -47,7 +47,12 @@ runs:
       id: classify
       shell: bash
       env:
-        GH_TOKEN: ${{ inputs.github-token }}
+        # Fall back to the built-in read-only token when the caller passes an
+        # empty value. Fork PRs get no repo secrets, so AUTOFIX_BOT_PAT is ""
+        # there, and an input `default:` only applies when the input is omitted,
+        # not when it's passed empty. Without this fallback the compare API
+        # fails on forks and the classifier fails open (every lane forced on).
+        GH_TOKEN: ${{ inputs.github-token || github.token }}
         REPO: ${{ github.repository }}
         EVENT_NAME: ${{ github.event_name }}
         BASE_SHA: ${{ github.event.pull_request.base.sha }}

@@ -7993,6 +7993,10 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         # simply don't use kanban; this loop becomes a no-op.
         self._spawn_supervised(self._kanban_dispatcher_watcher, "kanban_dispatcher_watcher")
 
+        # Project finalization is independently gated and fail-closed by its
+        # canary configuration; startup only registers the bounded watcher.
+        asyncio.create_task(self._kanban_project_finalizer_watcher())
+
         # Start background reconnection watcher for platforms that failed at startup
         if self._failed_platforms:
             logger.info(

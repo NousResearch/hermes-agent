@@ -16,7 +16,7 @@ import os
 import sqlite3
 import time
 from pathlib import Path
-from typing import Any, Callable, Optional
+from typing import Any, Callable, Mapping, Optional
 
 from agent.i18n import t
 
@@ -111,6 +111,79 @@ def _release_singleton_lock(handle) -> None:
 
 class GatewayKanbanWatchersMixin:
     """Kanban watcher / notifier / dispatcher loops for GatewayRunner."""
+
+    async def _kanban_project_finalizer_watcher(self) -> None:
+        """Run the opt-in, canary-scoped project finalizer without provider setup.
+
+        Configuration is read on every tick so disabling the feature takes effect
+        without a gateway restart.  A malformed mapping fails closed.  The
+        lifecycle service receives only the existing DeliveryRouter boundary;
+        it never constructs a platform client or executes cleanup.
+        """
+        try:
+            from hermes_cli.config import load_config as _load_config
+            from hermes_cli import kanban_db as _kb
+            from gateway.delivery import DeliveryTarget
+            from gateway.config import Platform
+            from gateway.project_finalization import ProjectFinalizationService
+        except Exception:
+            logger.warning("project finalizer: required modules unavailable; disabled")
+            return
+
+        gateway_loop = asyncio.get_running_loop()
+        while self._running:
+            try:
+                cfg = _load_config()
+                finalizer_cfg = cfg.get("project_finalizer", {}) if isinstance(cfg, dict) else {}
+                enabled = finalizer_cfg.get("enabled", False) is True
+                raw_scope = finalizer_cfg.get("canary_scope", ())
+                scope = tuple(raw_scope) if isinstance(raw_scope, (list, tuple)) and all(isinstance(item, str) for item in raw_scope) else ()
+                raw_interval = finalizer_cfg.get("interval_seconds", 60)
+                try:
+                    interval = max(1.0, float(raw_interval))
+                except (TypeError, ValueError):
+                    interval = 60.0
+                cleanup_enabled = finalizer_cfg.get("cleanup_enabled", False) is True
+                if enabled and scope:
+                    async def _deliver(platform: str, chat_id: str, thread_id: str | None, content: str) -> Mapping[str, Any]:
+                        target = DeliveryTarget(platform=Platform(platform), chat_id=chat_id, thread_id=thread_id, is_explicit=True)
+
+                        async def _route() -> Mapping[str, Any]:
+                            results = await self.delivery_router.deliver(content, [target], metadata={"source": "project_finalizer"})
+                            receipt = results.get(target.to_string(), {})
+                            if not receipt.get("success"):
+                                return {"rejected": True, "error": receipt.get("error", "delivery rejected")}
+                            provider_result = receipt.get("result")
+                            if isinstance(provider_result, Mapping):
+                                message_id = provider_result.get("message_id") or provider_result.get("id")
+                                if message_id is not None:
+                                    return {"provider_message_id": str(message_id)}
+                            return {}
+
+                        # The lifecycle executes in a worker thread; delivery is
+                        # marshalled back through the gateway's existing event-loop
+                        # owned router rather than constructing a provider there.
+                        return await asyncio.wrap_future(asyncio.run_coroutine_threadsafe(_route(), gateway_loop))
+
+                    for board in _kb.list_boards(include_archived=False):
+                        slug = board.get("slug") or _kb.DEFAULT_BOARD
+                        service = ProjectFinalizationService(
+                            lambda slug=slug: _kb.connect(board=slug),
+                            owner=f"gateway:{id(self)}",
+                            now=lambda: int(time.time()),
+                            deliver=_deliver,
+                            enabled=True,
+                            canary_scope=scope,
+                            cleanup_enabled=cleanup_enabled,
+                        )
+                        # All SQLite/evaluator work is off the gateway loop.  The
+                        # injected delivery closure safely hops back only for the
+                        # existing router call.
+                        await asyncio.to_thread(lambda service=service, slug=slug: asyncio.run(service.tick(board_id=slug)))
+            except Exception:
+                logger.exception("project finalizer: tick failed")
+                interval = 60.0
+            await asyncio.sleep(interval)
 
     async def _kanban_notifier_watcher(self, interval: float = 5.0) -> None:
         """Poll ``kanban_notify_subs`` and deliver terminal events to users.

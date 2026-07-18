@@ -7818,6 +7818,7 @@ def _quote_env_value(value: str) -> str:
         or '"' in value
         or "'" in value
         or value != value.strip()
+        or any(c.isspace() for c in value)
     )
     if not needs_quoting:
         return value

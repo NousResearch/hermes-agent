@@ -164,6 +164,41 @@ def _load_dotenv_with_fallback(path: Path, *, override: bool) -> None:
     _sanitize_loaded_credentials()
 
 
+
+def _detect_and_convert_utf16(path: Path) -> bool:
+    """Detect UTF-16 BOM and re-encode the file as clean UTF-8 in-place.
+
+    Returns ``True`` if the file was detected as UTF-16 and re-encoded,
+    ``False`` otherwise.  This is a no-op for ASCII, UTF-8, and Latin-1 files.
+
+    Uses the ``utf-16`` codec which auto-detects byte order from the BOM
+    and strips it on decode, so the re-encoded UTF-8 output has no BOM
+    character (U+FEFF) prepended to the content.
+    """
+    try:
+        with open(path, "rb") as f:
+            header = f.read(2)
+    except OSError:
+        return False
+
+    if header not in (b"\xff\xfe", b"\xfe\xff"):
+        return False  # not UTF-16
+
+    # File has a UTF-16 BOM: decode with utf-16 (auto-detects byte order
+    # from the BOM and strips the BOM character from the output), then
+    # re-encode as clean UTF-8 (no BOM).
+    try:
+        with open(path, "r", encoding="utf-16", errors="strict") as f:
+            content = f.read()
+    except Exception:
+        return False  # can't decode as UTF-16 — leave it alone
+
+    with open(path, "w", encoding="utf-8", newline="") as f:
+        f.write(content)
+        f.flush()
+        os.fsync(f.fileno())
+    return True
+
 def _sanitize_env_file_if_needed(path: Path) -> None:
     """Pre-sanitize a .env file before python-dotenv reads it.
 
@@ -186,6 +221,13 @@ def _sanitize_env_file_if_needed(path: Path) -> None:
         from hermes_cli.config import _sanitize_env_lines
     except ImportError:
         return  # early bootstrap — config module not available yet
+
+    # Detect and re-encode UTF-16 .env files before we attempt to read
+    # them as UTF-8.  Opening a UTF-16 file with encoding="utf-8-sig"
+    # causes the BOM bytes (\xff\xfe or \xfe\xff) to be decoded as
+    # U+FFFD replacement characters, which then corrupt the first key
+    # name (see #66474).
+    _detect_and_convert_utf16(path)
 
     read_kw = {"encoding": "utf-8-sig", "errors": "replace"}
     try:

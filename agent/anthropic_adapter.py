@@ -240,18 +240,27 @@ def _resolve_anthropic_messages_max_tokens(
     )
 
 
-def _supports_adaptive_thinking(model: str) -> bool:
+def _supports_adaptive_thinking(model: str, base_url: str | None = None) -> bool:
     """Return True for Claude models that use adaptive thinking (4.6+).
 
     Defaults *unknown* Claude models to adaptive (the modern contract) and
     only returns False for the explicit legacy list of older Claude families
     that require manual budget-based thinking. Non-Claude Anthropic-Messages
     models (minimax, qwen3, …) return False so they keep the manual path.
+
+    When the model name is an opaque alias (e.g. ``"auto"`` routed via a
+    third-party Anthropic-compatible proxy) and the endpoint is not a native
+    Anthropic domain, we default to adaptive thinking — the proxy resolves
+    model identity at runtime, and the modern contract is the safer default
+    for Anthropic-compatible backends.
     """
-    if not _is_claude_model(model):
-        return False
-    m = model.lower()
-    return not any(v in m for v in _LEGACY_MANUAL_THINKING_CLAUDE_SUBSTRINGS)
+    if _is_claude_model(model):
+        m = model.lower()
+        return not any(v in m for v in _LEGACY_MANUAL_THINKING_CLAUDE_SUBSTRINGS)
+    # Unknown alias via third-party Anthropic proxy → default to adaptive
+    if base_url and _is_third_party_anthropic_endpoint(base_url):
+        return True
+    return False
 
 
 def _supports_xhigh_effort(model: str) -> bool:
@@ -2649,7 +2658,7 @@ def build_anthropic_kwargs(
         if reasoning_config.get("enabled") is not False and "haiku" not in model.lower():
             effort = str(reasoning_config.get("effort", "medium")).lower()
             budget = THINKING_BUDGET.get(effort, 8000)
-            if _supports_adaptive_thinking(model):
+            if _supports_adaptive_thinking(model, base_url):
                 kwargs["thinking"] = {
                     "type": "adaptive",
                     "display": "summarized",

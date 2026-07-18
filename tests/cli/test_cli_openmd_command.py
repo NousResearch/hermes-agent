@@ -1,8 +1,10 @@
 """Tests for CLI /openmd command."""
 
+import subprocess
 from unittest.mock import MagicMock, patch
 
 from cli import HermesCLI
+from hermes_cli import _subprocess_compat as subprocess_compat
 
 
 def _make_cli() -> HermesCLI:
@@ -27,13 +29,18 @@ def test_openmd_pipes_latest_assistant_message():
     mock_proc = MagicMock()
     mock_proc.stdin = MagicMock()
 
-    with patch("cli.shutil.which", return_value="/usr/bin/openmd"), patch(
+    with patch("shutil.which", return_value="/usr/bin/openmd"), patch(
         "subprocess.Popen", return_value=mock_proc
     ) as mock_popen, patch("cli._cprint"):
         result = cli_obj.process_command("/openmd")
 
     assert result is True
-    mock_popen.assert_called_once_with(["openmd"], stdin=-1, text=True)
+    mock_popen.assert_called_once_with(
+        ["openmd"],
+        stdin=subprocess.PIPE,
+        text=True,
+        creationflags=0,
+    )
     mock_proc.stdin.write.assert_called_once_with("latest")
     mock_proc.stdin.close.assert_called_once()
 
@@ -47,7 +54,7 @@ def test_openmd_with_index_uses_requested_assistant_message():
     mock_proc = MagicMock()
     mock_proc.stdin = MagicMock()
 
-    with patch("cli.shutil.which", return_value="/usr/bin/openmd"), patch(
+    with patch("shutil.which", return_value="/usr/bin/openmd"), patch(
         "subprocess.Popen", return_value=mock_proc
     ), patch("cli._cprint"):
         cli_obj.process_command("/openmd 1")
@@ -66,7 +73,7 @@ def test_openmd_strips_reasoning_blocks_before_piping():
     mock_proc = MagicMock()
     mock_proc.stdin = MagicMock()
 
-    with patch("cli.shutil.which", return_value="/usr/bin/openmd"), patch(
+    with patch("shutil.which", return_value="/usr/bin/openmd"), patch(
         "subprocess.Popen", return_value=mock_proc
     ), patch("cli._cprint"):
         cli_obj.process_command("/openmd")
@@ -88,7 +95,7 @@ def test_openmd_extracts_text_from_multipart_content():
     mock_proc = MagicMock()
     mock_proc.stdin = MagicMock()
 
-    with patch("cli.shutil.which", return_value="/usr/bin/openmd"), patch(
+    with patch("shutil.which", return_value="/usr/bin/openmd"), patch(
         "subprocess.Popen", return_value=mock_proc
     ), patch("cli._cprint"):
         cli_obj.process_command("/openmd")
@@ -100,7 +107,7 @@ def test_openmd_not_installed_does_not_launch():
     cli_obj = _make_cli()
     cli_obj.conversation_history = [{"role": "assistant", "content": "hello"}]
 
-    with patch("cli.shutil.which", return_value=None), patch(
+    with patch("shutil.which", return_value=None), patch(
         "subprocess.Popen"
     ) as mock_popen, patch("cli._cprint") as mock_print:
         cli_obj.process_command("/openmd")
@@ -114,10 +121,34 @@ def test_openmd_invalid_index_does_not_launch():
     cli_obj = _make_cli()
     cli_obj.conversation_history = [{"role": "assistant", "content": "only"}]
 
-    with patch("cli.shutil.which", return_value="/usr/bin/openmd"), patch(
+    with patch("shutil.which", return_value="/usr/bin/openmd"), patch(
         "subprocess.Popen"
     ) as mock_popen, patch("cli._cprint") as mock_print:
         cli_obj.process_command("/openmd 99")
 
     mock_popen.assert_not_called()
     assert any("Invalid response number" in str(call) for call in mock_print.call_args_list)
+
+
+def test_openmd_windows_popen_passes_create_no_window():
+    """On Windows, Popen must pass CREATE_NO_WINDOW to avoid a console flash."""
+    cli_obj = _make_cli()
+    cli_obj.conversation_history = [{"role": "assistant", "content": "hello"}]
+    mock_proc = MagicMock()
+    mock_proc.stdin = MagicMock()
+
+    with patch("shutil.which", return_value=r"C:\Tools\openmd.exe"), patch(
+        "subprocess.Popen", return_value=mock_proc
+    ) as mock_popen, patch.object(
+        subprocess_compat, "IS_WINDOWS", True
+    ), patch("cli._cprint"):
+        expected_flags = subprocess_compat.windows_hide_flags()
+        cli_obj.process_command("/openmd")
+
+    mock_popen.assert_called_once()
+    kwargs = mock_popen.call_args.kwargs
+    assert expected_flags == 0x08000000  # CREATE_NO_WINDOW
+    assert kwargs["creationflags"] == expected_flags
+    assert kwargs["stdin"] is subprocess.PIPE
+    assert kwargs["text"] is True
+    mock_proc.stdin.write.assert_called_once_with("hello")

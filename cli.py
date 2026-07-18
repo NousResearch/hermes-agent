@@ -6432,55 +6432,6 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
 
 
 
-    def _handle_openmd_command(self, cmd_original: str) -> None:
-        """Handle /openmd [number] — render an assistant response in openmd."""
-        import subprocess
-
-        if not shutil.which("openmd"):
-            _cprint(f"  {_DIM}openmd is not installed or not in PATH.{_RST}")
-            _cprint(f"  {_DIM}Install it with: uv tool install openmd{_RST}")
-            return
-
-        parts = cmd_original.split(maxsplit=1)
-        arg = parts[1].strip() if len(parts) > 1 else ""
-
-        assistant = [m for m in self.conversation_history if m.get("role") == "assistant"]
-        if not assistant:
-            _cprint("  Nothing to open yet.")
-            return
-
-        if arg:
-            try:
-                idx = int(arg) - 1
-            except ValueError:
-                _cprint("  Usage: /openmd [number]")
-                return
-            if idx < 0 or idx >= len(assistant):
-                _cprint(f"  Invalid response number. Use 1-{len(assistant)}.")
-                return
-        else:
-            idx = len(assistant) - 1
-            while idx >= 0 and not _assistant_copy_text(assistant[idx].get("content")):
-                idx -= 1
-            if idx < 0:
-                _cprint("  Nothing to open in assistant responses yet.")
-                return
-
-        text = _assistant_copy_text(assistant[idx].get("content"))
-        if not text:
-            _cprint("  Nothing to open in that assistant response.")
-            return
-
-        try:
-            # openmd is non-blocking and detaches its own Qt window.
-            process = subprocess.Popen(["openmd"], stdin=subprocess.PIPE, text=True)
-            assert process.stdin is not None
-            process.stdin.write(text)
-            process.stdin.close()
-            _cprint(f"  Opened assistant response #{idx + 1} in openmd.")
-        except Exception as e:
-            _cprint(f"\033[1;31mFailed to launch openmd: {e}{_RST}")
-
     def _preprocess_images_with_vision(self, text: str, images: list, *, announce: bool = True) -> str:
         """Analyze attached images via the vision tool and return enriched text.
 

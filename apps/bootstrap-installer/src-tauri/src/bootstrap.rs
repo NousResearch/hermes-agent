@@ -395,6 +395,7 @@ async fn run_bootstrap(
         ScriptSource::DevCheckout => "dev checkout",
         ScriptSource::Bundled => "bundled",
         ScriptSource::Cached => "cached",
+        ScriptSource::CachedFallback => "stale cache fallback",
         ScriptSource::Downloaded => "downloaded",
     };
     emit_log(&format!(

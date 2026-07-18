@@ -1,5 +1,7 @@
 """Tests for gateway/hooks.py — event hook system."""
 
+import sys
+
 from unittest.mock import patch
 
 import pytest
@@ -44,6 +46,31 @@ class TestDiscoverAndLoad:
         assert len(reg.loaded_hooks) == 1
         assert reg.loaded_hooks[0]["name"] == "my-hook"
         assert "agent:start" in reg.loaded_hooks[0]["events"]
+
+    def test_same_manifest_name_does_not_collide_in_sys_modules(self, tmp_path):
+        """Two hooks sharing a HOOK.yaml 'name' keep distinct sys.modules entries."""
+        for dir_name, marker in (("hook-a", "A"), ("hook-b", "B")):
+            hook_dir = tmp_path / dir_name
+            hook_dir.mkdir(parents=True)
+            (hook_dir / "HOOK.yaml").write_text(
+                "name: shared-name\n"
+                "description: Test hook\n"
+                'events: ["agent:start"]\n'
+            )
+            (hook_dir / "handler.py").write_text(
+                f"def handle(event_type, context):\n    return {marker!r}\n"
+            )
+
+        reg = HookRegistry()
+        with patch("gateway.hooks.HOOKS_DIR", tmp_path), _patch_no_builtins(reg):
+            reg.discover_and_load()
+
+        assert len(reg.loaded_hooks) == 2
+        mod_a = sys.modules.get("hermes_hook_hook-a")
+        mod_b = sys.modules.get("hermes_hook_hook-b")
+        assert mod_a is not None and mod_b is not None
+        assert mod_a.handle("agent:start", {}) == "A"
+        assert mod_b.handle("agent:start", {}) == "B"
 
     def test_skips_missing_hook_yaml(self, tmp_path):
         hook_dir = tmp_path / "bad-hook"

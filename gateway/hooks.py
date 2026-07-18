@@ -122,7 +122,11 @@ class HookRegistry:
                 # in the handler). Without this, a handler that declares a
                 # Pydantic BaseModel for webhook/event payloads fails at first
                 # dispatch with "TypeAdapter ... is not fully defined".
-                module_name = f"hermes_hook_{hook_name}"
+                #
+                # Key on the directory name (unique on the filesystem), not the
+                # manifest 'name' field: two hooks declaring the same name would
+                # otherwise overwrite each other's entry in sys.modules.
+                module_name = f"hermes_hook_{hook_dir.name}"
                 spec = importlib.util.spec_from_file_location(
                     module_name, handler_path
                 )

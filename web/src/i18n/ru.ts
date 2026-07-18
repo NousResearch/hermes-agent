@@ -318,6 +318,8 @@ export const ru: Translations = {
     disableRuntime: "Отключить",
     enableAfterInstall: "Включить после установки",
     enableRuntime: "Включить",
+    toggleTakesEffectNextSession:
+      "Сохранено — вступит в силу для новых сессий. Перезапустите шлюз, чтобы применить везде.",
     forceReinstall: "Принудительная переустановка (сначала удалить существующую папку)",
     headline:
       "Поиск, установка, включение и обновление плагинов Hermes (аналог `hermes plugins`).",

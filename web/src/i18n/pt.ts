@@ -319,6 +319,8 @@ export const pt: Translations = {
     disableRuntime: "Desativar",
     enableAfterInstall: "Ativar após instalação",
     enableRuntime: "Ativar",
+    toggleTakesEffectNextSession:
+      "Salvo — entra em vigor em novas sessões. Reinicie o gateway para aplicar em todos os lugares.",
     forceReinstall: "Forçar reinstalação (eliminar pasta existente primeiro)",
     headline:
       "Descobrir, instalar, ativar e atualizar plugins Hermes (paridade com `hermes plugins`).",

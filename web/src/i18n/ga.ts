@@ -326,6 +326,8 @@ export const ga: Translations = {
     disableRuntime: "Díchumasaigh",
     enableAfterInstall: "Cumasaigh tar éis suiteála",
     enableRuntime: "Cumasaigh",
+    toggleTakesEffectNextSession:
+      "Sábháilte — i bhfeidhm do sheisiúin nua. Atosaigh an gateway chun é a chur i bhfeidhm i ngach áit.",
     forceReinstall: "Cuir iallach ar athshuiteáil (scrios an fillteán atá ann ar dtús)",
     headline:
       "Faigh, suiteáil, cumasaigh agus nuashonraigh plugins Hermes (paireacht le `hermes plugins`).",

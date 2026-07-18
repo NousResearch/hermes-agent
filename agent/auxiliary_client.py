@@ -3198,6 +3198,45 @@ def _is_transient_transport_error(exc: Exception) -> bool:
     return isinstance(status, int) and (status == 408 or 500 <= status < 600)
 
 
+def _is_transient_concurrency_throttle(exc: Exception) -> bool:
+    """Detect a *transient* 429/RESOURCE_EXHAUSTED worth a same-provider retry.
+
+    Distinct from ``_is_payment_error`` (which owns quota/billing exhaustion):
+    some Vertex shared-capacity preview MaaS endpoints (e.g. the
+    ``deepseek-*-maas`` pool) return RESOURCE_EXHAUSTED "too many concurrent
+    requests" / "please try again later" on a cold-start burst, then serve
+    normally within seconds. That is a concurrency blip, not depleted quota —
+    retrying with backoff recovers it, whereas the payment path would drop the
+    target (and for a pinned auxiliary call like a MoA reference advisor there
+    is no meaningful provider fallback, so the advisor is silently lost for the
+    turn).
+
+    Deliberately narrow: fires only on explicit transient "try again" /
+    "concurrent" language, and NEVER on daily/per-day/quota-exceeded/billing
+    wording, which ``_is_payment_error`` handles by switching provider.
+    """
+    status = getattr(exc, "status_code", None) or getattr(
+        getattr(exc, "response", None), "status_code", None
+    )
+    err_lower = str(exc).lower()
+    if status not in {429, None} and "resource_exhausted" not in err_lower \
+            and "resource exhausted" not in err_lower:
+        return False
+    # Never treat genuine quota/billing exhaustion as a transient blip — that
+    # is depleted-until-reset capacity, not a cold-start concurrency bounce.
+    if any(kw in err_lower for kw in (
+        "quota exceeded", "quota_exceeded", "daily", "per day",
+        "tokens per day", "weekly", "billing", "credits",
+        "insufficient", "out of funds", "payment required",
+    )):
+        return False
+    return any(kw in err_lower for kw in (
+        "too many concurrent", "concurrent request",
+        "please try again later", "try again later",
+        "please retry", "retry later",
+    ))
+
+
 _DEFAULT_TRANSIENT_RETRIES = 2
 # Base for exponential backoff between transient retries (seconds). Overridable
 # so tests can zero it out and not sleep real wall-clock time.
@@ -7103,7 +7142,8 @@ def call_llm(
                 client.chat.completions.create(**kwargs), task,
                 provider=resolved_provider, base_url=_base_info)
         except Exception as transient_err:
-            if not _is_transient_transport_error(transient_err):
+            if not (_is_transient_transport_error(transient_err)
+                    or _is_transient_concurrency_throttle(transient_err)):
                 raise
             # Compression is on the critical preflight path: a user cannot
             # continue or resume an oversized session until it compacts. A
@@ -7135,7 +7175,8 @@ def call_llm(
                     return _validate_llm_response(
                         client.chat.completions.create(**kwargs), task)
                 except Exception as retry_transient:
-                    if not _is_transient_transport_error(retry_transient):
+                    if not (_is_transient_transport_error(retry_transient)
+                            or _is_transient_concurrency_throttle(retry_transient)):
                         raise
                     _last_transient = retry_transient
             # Retries exhausted — fall through to first_err fallback handling.
@@ -7689,7 +7730,8 @@ async def async_call_llm(
                 await client.chat.completions.create(**kwargs), task,
                 provider=resolved_provider, base_url=_client_base)
         except Exception as transient_err:
-            if not _is_transient_transport_error(transient_err):
+            if not (_is_transient_transport_error(transient_err)
+                    or _is_transient_concurrency_throttle(transient_err)):
                 raise
             # See call_llm(): compression is on the critical preflight path,
             # so skip the same-provider retry on a full-budget timeout and
@@ -7701,13 +7743,28 @@ async def async_call_llm(
                     transient_err,
                 )
                 raise
-            logger.info(
-                "Auxiliary %s (async): transient transport error; retrying "
-                "once on the same provider before fallback: %s",
-                task or "call", transient_err,
-            )
-            return _validate_llm_response(
-                await client.chat.completions.create(**kwargs), task)
+            _max_transient_retries = _transient_retry_count()
+            _last_transient = transient_err
+            import asyncio as _asyncio
+            for _attempt in range(1, _max_transient_retries + 1):
+                _backoff = min(_TRANSIENT_RETRY_BACKOFF_BASE * (2.0 ** (_attempt - 1)), 8.0)
+                logger.info(
+                    "Auxiliary %s (async): transient error (attempt %d/%d); "
+                    "retrying same provider after %.1fs before fallback: %s",
+                    task or "call", _attempt, _max_transient_retries, _backoff,
+                    _last_transient,
+                )
+                await _asyncio.sleep(_backoff)
+                try:
+                    return _validate_llm_response(
+                        await client.chat.completions.create(**kwargs), task)
+                except Exception as retry_transient:
+                    if not (_is_transient_transport_error(retry_transient)
+                            or _is_transient_concurrency_throttle(retry_transient)):
+                        raise
+                    _last_transient = retry_transient
+            # Retries exhausted — fall through to first_err fallback handling.
+            raise _last_transient
     except Exception as first_err:
         if "temperature" in kwargs and _is_unsupported_temperature_error(first_err):
             retry_kwargs = dict(kwargs)

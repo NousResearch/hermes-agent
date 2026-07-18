@@ -170,11 +170,15 @@ export const ar = defineLocale({
     muteHaptics: 'كتم الاهتزازات',
     unmuteHaptics: 'تفعيل الاهتزازات',
     openSettings: 'فتح الإعدادات',
-    openKeybinds: 'اختصارات لوحة المفاتيح'
+    openStarmap: 'فتح خريطة الذاكرة',
+    openKeybinds: 'اختصارات لوحة المفاتيح',
+    layoutEditor: 'محرر التخطيط',
+    layoutEditorTitle: 'محرر التخطيط — انقر مع ⌘ لإعادة ضبط التخطيط'
   },
   keybinds: {
     title: 'اختصارات لوحة المفاتيح',
     subtitle: open => `انقر على اختصار لإعادة تعيينه · ${open} يعيد فتح هذه اللوحة.`,
+    search: 'ابحث في الاختصارات...',
     rebind: 'إعادة تعيين',
     reset: 'إعادة إلى الافتراضي',
     resetAll: 'إعادة تعيين الكل',
@@ -200,6 +204,7 @@ export const ar = defineLocale({
       'nav.cron': 'فتح المهام المجدولة',
       'nav.agents': 'فتح الوكلاء',
       'session.new': 'جلسة جديدة',
+      'session.newTab': 'علامة تبويب جلسة جديدة',
       'session.newWindow': 'جلسة جديدة في نافذة',
       'session.next': 'الجلسة التالية',
       'session.prev': 'الجلسة السابقة',
@@ -223,6 +228,8 @@ export const ar = defineLocale({
       'view.toggleReview': 'تبديل لوحة المراجعة',
       'view.showFiles': 'إظهار متصفح الملفات',
       'view.showTerminal': 'إظهار الطرفية',
+      'view.closeTab': 'إغلاق علامة التبويب',
+      'view.reopenTab': 'إعادة فتح علامة التبويب المغلقة',
       'view.terminalSelection': 'إرسال تحديد الطرفية إلى المحرّر',
       'view.closePreviewTab': 'إغلاق علامة تبويب المعاينة',
       'view.flipPanes': 'تبديل جانبي الشريط الجانبي',
@@ -289,7 +296,23 @@ export const ar = defineLocale({
       mcp: 'MCP',
       archivedChats: 'المحادثات المؤرشفة',
       about: 'حول',
-      notifications: 'الإشعارات'
+      notifications: 'الإشعارات',
+      keybinds: 'اختصارات لوحة المفاتيح',
+      plugins: 'الإضافات'
+    },
+    plugins: {
+      title: 'إضافات سطح المكتب',
+      blurb:
+        'امتدادات واجهة تُحمّل داخل هذا التطبيق — إما مضمّنة مع البناء، أو موضوعة في مجلد desktop-plugins (بما فيها التي يكتبها Hermes). تعطيل الإضافة يفرغها مباشرة ويبقى بعد إعادة التشغيل.',
+      count: n => `${n} مثبتة`,
+      openFolder: 'فتح مجلد الإضافات',
+      rescan: 'إعادة الفحص',
+      reveal: 'إظهار في مدير الملفات',
+      enable: 'تفعيل',
+      disable: 'تعطيل',
+      failed: 'فشل',
+      empty: 'لا توجد إضافات سطح مكتب مثبتة بعد.',
+      kinds: { bundled: 'مضمّنة', disk: 'على القرص', runtime: 'وقت التشغيل' }
     },
     notifications: {
       title: 'الإشعارات',
@@ -370,6 +393,8 @@ export const ar = defineLocale({
       toolViewDesc: 'تحكم في كيفية عرض نشاط الأدوات داخل المحادثة.',
       translucencyTitle: 'شفافية النافذة',
       translucencyDesc: 'إظهار سطح المكتب من خلال النافذة بالكامل. متاح على macOS وWindows فقط.',
+      backdropTitle: 'خلفية النافذة',
+      backdropDesc: 'اختيار مقدار مزج خلفية سطح المكتب مع سطح Hermes.',
       embedsTitle: 'التضمينات المضمّنة',
       embedsDesc:
         'تُحمّل المعاينات الغنية من مواقع طرف ثالث (YouTube، X، …). "اسأل" يعرض عنصرا نائبا حتى تسمح لكل واحد؛ "دائما" يحمّلها تلقائيا؛ "إيقاف" يبقي الروابط عادية.',
@@ -853,6 +878,10 @@ export const ar = defineLocale({
       noProviderKeys: 'لا توجد مفاتيح API متاحة للمزودين.',
       searchKeys: 'البحث عن مزوّدين...',
       noKeysMatch: 'لا يوجد مزوّدون يطابقون بحثك.',
+      localEndpoint: {
+        title: 'نقطة نهاية محلية',
+        description: 'استخدم خادما محليا أو نقطة نهاية متوافقة مع OpenAI لهذا المزود.'
+      },
       loading: 'جار تحميل المزودين...'
     },
     sessions: {
@@ -1074,6 +1103,7 @@ export const ar = defineLocale({
     settingsFields: 'حقول الإعدادات',
     mcpServers: 'خوادم MCP',
     archivedChats: 'المحادثات المؤرشفة',
+    commands: 'الأوامر',
     sections: {
       sessions: 'الجلسات',
       system: 'النظام',
@@ -1661,6 +1691,13 @@ export const ar = defineLocale({
       sessionRunning: 'الجلسة تعمل',
       needsInput: 'تحتاج إدخالا',
       waitingForAnswer: 'بانتظار إجابة',
+      backgroundRunning: 'تعمل في الخلفية',
+      finishedUnread: 'اكتملت وفيها جديد',
+      hideTabBar: 'إخفاء شريط التبويبات',
+      openInNewTab: 'فتح في تبويب جديد',
+      openInSplit: 'فتح في تقسيم',
+      ownedByProfile: profile => `مملوكة للملف الشخصي ${profile}`,
+      untitledChat: id => `محادثة ${id}`,
       handoffOrigin: platform => `قادمة من ${platform}`,
       renamed: 'تمت إعادة التسمية',
       renameFailed: 'فشلت إعادة التسمية',
@@ -1948,6 +1985,7 @@ export const ar = defineLocale({
     recommended: 'موصى به',
     connected: 'متصل',
     featuredPitch: 'اشتراك واحد، أكثر من 300 نموذج متقدم — الطريقة الموصى بها لتشغيل Hermes',
+    fireworksPitch: 'نماذج مفتوحة سريعة مع استضافة Fireworks.',
     openRouterPitch: 'مفتاح واحد لمئات النماذج — خيار افتراضي جيد',
     apiKeyOptions: {
       openrouter: {
@@ -2121,6 +2159,7 @@ export const ar = defineLocale({
       noModel: 'لا يوجد نموذج',
       switchModel: 'تبديل النموذج',
       openModelPicker: 'فتح اختيار النموذج',
+      modelPinned: 'النموذج مثبت',
       modelTitle: (provider, model) => `${provider}: ${model}`,
       providerModelTitle: (provider, model) => `${provider}: ${model}`
     }
@@ -2248,6 +2287,51 @@ export const ar = defineLocale({
       openTarget: url => `فتح ${url}`,
       fallbackTitle: 'معاينة'
     }
+  },
+  zones: {
+    showHeader: 'إظهار الرأس',
+    hideHeader: 'إخفاء الرأس',
+    minimize: 'تصغير',
+    restore: 'استعادة',
+    closeRunningTitle: 'إغلاق تبويب يعمل؟',
+    closeRunningBody:
+      'هذه المحادثة ما زالت تعمل (أو تنتظر إدخالك). إغلاق التبويب يخفيها فقط — ستحتفظ الجلسة بتقدمها ويمكن إعادة فتحها من الشريط الجانبي.',
+    closeRunningConfirm: 'إغلاق التبويب',
+    closeOthers: 'إغلاق الأخرى',
+    closeToRight: 'إغلاق ما على اليمين',
+    closeAll: 'إغلاق الكل',
+    split: dir => `تقسيم ${dir}`,
+    move: dir => `نقل ${dir}`,
+    dirUp: 'للأعلى',
+    dirDown: 'للأسفل',
+    dirLeft: 'لليسار',
+    dirRight: 'لليمين',
+    pluginDisabled: pluginId => `الإضافة "${pluginId}" معطلة`,
+    pluginDisabledBody: 'أعد تفعيلها من الإعدادات ← الإضافات لإرجاع اللوحة.',
+    missingPane: paneId => `لوحة مفقودة: ${paneId}`,
+    editTitle: 'التخطيطات',
+    editHint: 'اختر تخطيطا، أو اسحب اللوحات بين المناطق. انقر بزر الفأرة الأيمن على منطقة لتقسيمها.',
+    reset: 'إعادة ضبط',
+    templates: 'القوالب',
+    custom: 'مخصص',
+    newGridLayout: 'تخطيط شبكة جديد',
+    saveCurrentAs: 'حفظ الترتيب الحالي كقالب',
+    nameLayoutPlaceholder: 'سم هذا التخطيط...',
+    deletePreset: name => `حذف ${name}`,
+    zoneEditorTitle: 'محرر المناطق',
+    editorHintPre: 'انقر للتقسيم · ',
+    editorHintPost: ' يعكس الخط · اسحب عبر المناطق للدمج · اسحب الحواف المشتركة لتغيير الحجم',
+    templateColumns: 'أعمدة',
+    templateRows: 'صفوف',
+    templateGrid: 'شبكة',
+    templatePriority: 'أولوية',
+    zoneTag: index => `منطقة ${index}`,
+    mergeZones: count => `دمج ${count} مناطق`,
+    customZoneName: count => `مخصص من ${count} مناطق`,
+    layoutNamePlaceholder: fallback => `اسم التخطيط (${fallback})`,
+    saveApply: 'حفظ وتطبيق',
+    notExpressible: 'هذا الترتيب متشابك — لا يمكن تمثيله كتقسيمات متداخلة بعد',
+    zoneCount: count => `${count} مناطق`
   },
   assistant: {
     thread: {

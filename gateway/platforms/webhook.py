@@ -147,6 +147,12 @@ def check_webhook_requirements() -> bool:
 class WebhookAdapter(BasePlatformAdapter):
     """Generic webhook receiver that triggers agent runs from HTTP POSTs."""
 
+    # No human is present to answer a "session restored — what next?" prompt:
+    # webhook runs are event-triggered.  The startup auto-resume turn must
+    # instruct the model to FINISH the interrupted work instead of emitting an
+    # interactive acknowledgement that abandons the task (#57056).
+    interactive_resume: bool = False
+
     def __init__(self, config: PlatformConfig):
         super().__init__(config, Platform.WEBHOOK)
         # ``host`` may be None (dual-stack default) or a user-pinned string.

@@ -48,13 +48,15 @@ const DIALOG_BANNER_TONES: Record<DialogBannerTone, string> = {
   info: 'bg-[color-mix(in_srgb,var(--ui-chat-bubble-background),white_30%)] text-[color-mix(in_srgb,var(--ui-chat-bubble-background),black_60%)] dark:bg-[color-mix(in_srgb,var(--ui-chat-bubble-background),black_20%)] dark:text-[color-mix(in_srgb,var(--ui-chat-bubble-background),white_60%)]'
 }
 
-// Radix focuses the first focusable element inside Dialog.Content on open —
-// for us that's almost always the close button. Tooltip shows on focus as well
-// as hover, so that autofocus made the "Close" tip appear immediately, with no
-// pointer ever near the button. Dialogs don't have a more meaningful default
-// focus target than "nothing in particular", so just suppress the autofocus
-// instead of moving it somewhere arbitrary.
-function preventCloseButtonAutoFocus(event: Event) {
+// Radix focuses the first focusable element inside Dialog.Content on open. In
+// most dialogs that's a real input and the default autofocus is exactly what
+// we want, so it's opt-in rather than a shared default here. In dialogs with
+// no input (e.g. the updates overlay's idle/error views), the first focusable
+// element ends up being the close button, and since Tip shows on focus as well
+// as hover, that autofocus makes the "Close" tip appear immediately with no
+// pointer ever near the button. Dialogs like that should pass this in
+// explicitly as `onOpenAutoFocus={preventCloseButtonAutoFocus}`.
+export function preventCloseButtonAutoFocus(event: Event) {
   event.preventDefault()
 }
 
@@ -83,9 +85,9 @@ function DialogContent({
 
   const widthClass = fitContent ? 'w-auto max-w-[92vw]' : 'w-full max-w-lg'
 
-  // Callers can still opt into their own autofocus behavior via `onOpenAutoFocus`
-  // — ours only runs as the default when none is supplied.
-  const handleOpenAutoFocus = onOpenAutoFocus ?? preventCloseButtonAutoFocus
+  // No default here — Radix's normal autofocus (first focusable element, often
+  // an input) is what most dialogs want. Dialogs with no input should pass
+  // `onOpenAutoFocus={preventCloseButtonAutoFocus}` explicitly instead.
 
   // `Tip` wraps `DialogPrimitive.Close asChild` (not the other way around) so
   // Radix's `Slot` can forward `Close`'s `onClick` straight through to the
@@ -126,7 +128,7 @@ function DialogContent({
             'gap-0'
           )}
           data-slot="dialog-content"
-          onOpenAutoFocus={handleOpenAutoFocus}
+          onOpenAutoFocus={onOpenAutoFocus}
           {...props}
         >
           {/* Scroll lives on an inner box so this shell keeps a painted bottom radius. */}
@@ -164,7 +166,7 @@ function DialogContent({
           className
         )}
         data-slot="dialog-content"
-        onOpenAutoFocus={handleOpenAutoFocus}
+        onOpenAutoFocus={onOpenAutoFocus}
         {...props}
       >
         {children}

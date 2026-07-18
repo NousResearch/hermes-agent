@@ -173,14 +173,9 @@ def _load_google_modules() -> bool:
 
 from gateway.config import Platform, PlatformConfig
 
-# Trigger registration of the dynamic ``google_chat`` enum member at module
-# import time.  ``_missing_()`` caches the pseudo-member in
-# ``_value2member_map_`` *and* ``_member_map_``, so after this call
-# ``Platform.GOOGLE_CHAT`` resolves via attribute access too.  Without this
-# line, any code (including tests) that references ``Platform.GOOGLE_CHAT``
-# before an adapter instance is constructed would hit ``AttributeError``.
-# Built-ins avoid this because they have explicit enum members; plugin
-# platforms earn the attribute by asking for it once.
+# Register the dynamic ``google_chat`` platform member at module import time.
+# Plugin platforms are addressed by value (``Platform("google_chat")``),
+# unlike built-in platforms which have explicit enum attributes.
 Platform("google_chat")
 from gateway.platforms.helpers import MessageDeduplicator
 from gateway.platforms.base import (
@@ -699,6 +694,17 @@ class GoogleChatAdapter(BasePlatformAdapter):
         self._dedup = MessageDeduplicator()
         self._typing_messages: Dict[str, str] = {}
         self._clarify_state: Dict[str, str] = {}
+        # Sidecar recording the thread each ``_typing_messages[chat_id]``
+        # card was created in. Lets ``send()`` / ``on_processing_complete``
+        # detect a cross-thread mismatch and skip patching a sibling
+        # session's card under concurrent activity in the same space.
+        # Without this check ``messages.patch`` (which cannot change the
+        # thread of an existing message) would silently paste session B's
+        # reply text into session A's typing card, leaving B's reply
+        # stranded in A's thread. Keyed by chat_id only — the slot itself
+        # is still single-slot per chat, so a thread mismatch causes the
+        # second session to fall through to ``_create_message`` instead.
+        self._typing_card_threads: Dict[str, Optional[str]] = {}
         self._shutting_down = False
         self._rate_limit_hits: Dict[str, int] = {}
         # Last-seen inbound thread name per chat_id (space). Google Chat
@@ -1904,9 +1910,18 @@ class GoogleChatAdapter(BasePlatformAdapter):
                 self._last_inbound_thread.pop(space_name, None)
         else:
             session_thread_id = thread_name
-            # Groups always reply in-thread.
-            if thread_name and space_name:
-                self._last_inbound_thread[space_name] = thread_name
+            # Groups always reply in-thread, and ``source.thread_id``
+            # carries ``thread_name`` to the gateway which plumbs it
+            # into outbound metadata via ``_thread_metadata_for_source``.
+            # We deliberately DON'T populate ``_last_inbound_thread`` for
+            # groups: under near-simultaneous mentions in different
+            # threads of the same space, that single-slot dict races and
+            # the slower outbound's ``_resolve_thread_id`` fallback can
+            # route its reply into whichever thread won the cache-write
+            # race. Skipping the cache makes the fallback return None
+            # (top-level reply) instead of the wrong thread, which is
+            # still wrong but visibly broken rather than silently
+            # cross-threaded.
 
         source = self.build_source(
             chat_id=space_name,
@@ -2091,9 +2106,22 @@ class GoogleChatAdapter(BasePlatformAdapter):
                 return SendResult(success=False, error="empty message")
 
             last_result: Optional[SendResult] = None
-            typing_msg_name = self._typing_messages.pop(chat_id, None)
-            # Treat any earlier sentinel as "no real card to patch" — defensive.
-            if typing_msg_name == _TYPING_CONSUMED_SENTINEL:
+            # Peek before popping: under concurrent sessions in the same
+            # space, the slot may hold a SIBLING session's typing card in
+            # a different thread. ``messages.patch`` cannot change a
+            # message's thread, so patching that card would route this
+            # reply into the sibling's thread. Detect the mismatch and
+            # leave the slot for the owning session to finalize.
+            slot = self._typing_messages.get(chat_id)
+            card_thread = self._typing_card_threads.get(chat_id)
+            if (
+                slot is not None
+                and slot != _TYPING_CONSUMED_SENTINEL
+                and card_thread == thread_id
+            ):
+                typing_msg_name = self._typing_messages.pop(chat_id, None)
+                self._typing_card_threads.pop(chat_id, None)
+            else:
                 typing_msg_name = None
             patched_typing = False
 
@@ -2693,6 +2721,7 @@ class GoogleChatAdapter(BasePlatformAdapter):
                     # in the meantime (e.g. send() racing ahead of us).
                     if chat_id not in self._typing_messages:
                         self._typing_messages[chat_id] = result.message_id
+                        self._typing_card_threads[chat_id] = thread_id
                     else:
                         # Slot already populated — likely send() patched
                         # something or another create completed first.
@@ -2784,7 +2813,23 @@ class GoogleChatAdapter(BasePlatformAdapter):
             return
         chat_id = event.source.chat_id
         try:
-            current = self._typing_messages.pop(chat_id, None)
+            # Only reap the slot if its card belongs to THIS session's
+            # thread. Under concurrent same-space activity, the slot may
+            # hold a sibling session's card — popping it here would
+            # leave that sibling's send() unable to patch its own card.
+            current = self._typing_messages.get(chat_id)
+            card_thread = self._typing_card_threads.get(chat_id)
+            our_thread = getattr(event.source, "thread_id", None)
+            slot_is_ours = (
+                current == _TYPING_CONSUMED_SENTINEL
+                or current is None
+                or card_thread == our_thread
+            )
+            if slot_is_ours:
+                current = self._typing_messages.pop(chat_id, None)
+                self._typing_card_threads.pop(chat_id, None)
+            else:
+                current = None
             if current and current != _TYPING_CONSUMED_SENTINEL:
                 # Real message_name still in slot — send() never ran. Patch
                 # with a benign final state instead of deleting (no tombstone).
@@ -2821,7 +2866,8 @@ class GoogleChatAdapter(BasePlatformAdapter):
     # Attachment send paths
     # ------------------------------------------------------------------
     async def _consume_typing_card_with_text(
-        self, chat_id: str, text: str
+        self, chat_id: str, text: str,
+        *, thread_id: Optional[str] = None,
     ) -> Optional[SendResult]:
         """Patch the tracked typing card with ``text`` (no tombstone).
 
@@ -2835,12 +2881,21 @@ class GoogleChatAdapter(BasePlatformAdapter):
         the slot to keep the base class's ``_keep_typing`` loop from
         creating a fresh "Hermes is thinking…" card during any subsequent
         attachment send (which would later be reaped as "(no reply)").
+
+        Thread guard: ``messages.patch`` cannot change a message's
+        thread, so a card created in a sibling session's thread is
+        unusable here — return None and let the caller create a fresh
+        message in the correct thread.
         """
         current = self._typing_messages.get(chat_id)
         if not current or current == _TYPING_CONSUMED_SENTINEL:
             return None
-        # Real msg_id — pop and patch.
+        card_thread = self._typing_card_threads.get(chat_id)
+        if card_thread != thread_id:
+            return None
+        # Real msg_id and threads match — pop and patch.
         self._typing_messages.pop(chat_id, None)
+        self._typing_card_threads.pop(chat_id, None)
         try:
             result = await self._patch_message(current, {"text": text})
             self._typing_messages[chat_id] = _TYPING_CONSUMED_SENTINEL
@@ -2874,7 +2929,9 @@ class GoogleChatAdapter(BasePlatformAdapter):
         text = "\n".join(text_parts)
 
         try:
-            patched = await self._consume_typing_card_with_text(chat_id, text)
+            patched = await self._consume_typing_card_with_text(
+                chat_id, text, thread_id=thread_id,
+            )
             if patched is not None:
                 return patched
             body: Dict[str, Any] = {"text": text}
@@ -3154,9 +3211,13 @@ class GoogleChatAdapter(BasePlatformAdapter):
 
         # Pre-patch the typing card with the caption (or single space) so
         # it retires without a tombstone before the attachment message is
-        # posted.
+        # posted. Threads match guard inside _consume_typing_card_with_text
+        # protects against patching a sibling session's card from the
+        # same chat.
         try:
-            await self._consume_typing_card_with_text(chat_id, caption or " ")
+            await self._consume_typing_card_with_text(
+                chat_id, caption or " ", thread_id=thread_id,
+            )
         except Exception:
             logger.debug(
                 "[GoogleChat] _send_file pre-patch typing-card failed",

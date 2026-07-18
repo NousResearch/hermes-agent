@@ -996,6 +996,15 @@ class WebhookAdapter(BasePlatformAdapter):
         if gl_token:
             return _hmac_str_equal(gl_token, secret)
 
+        # Gitea: X-Gitea-Signature = <hex HMAC-SHA256 of body>
+        # Gitea sends the raw hex digest (no sha256= prefix like GitHub)
+        gitea_sig = request.headers.get("X-Gitea-Signature", "")
+        if gitea_sig:
+            expected = hmac.new(
+                secret.encode(), body, hashlib.sha256
+            ).hexdigest()
+            return _hmac_str_equal(gitea_sig, expected)
+
         # Generic V2: X-Webhook-Signature-V2 = <hex HMAC-SHA256 of "<timestamp>.<body>">
         #             X-Webhook-Timestamp = <unix seconds> (required for V2)
         # Checked independently of (and before) legacy V1 below — a sender

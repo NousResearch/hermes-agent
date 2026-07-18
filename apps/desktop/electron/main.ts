@@ -144,6 +144,17 @@ import {
   getVenvSitePackagesEntries,
   resolveVenvHermesCommand
 } from './windows-hermes-path'
+import {
+  alreadyHasNoSandbox,
+  buildNoSandboxRelaunchArgs,
+  grantAllApplicationPackagesAcl,
+  markerAfterSuccessfulBoot,
+  nextSandboxMarkerAfterLaunchDecision,
+  readSandboxMarker,
+  shouldEnableWindowsNoSandbox,
+  shouldRelaunchForGpuSandboxCrash,
+  writeSandboxMarker
+} from './windows-sandbox-fallback'
 import { installWindowsSystemCaTrust } from './windows-system-ca'
 import { readWindowsUserEnvVar } from './windows-user-env'
 import { isPackagedInstallPath as isPackagedInstallPathUnderRoots } from './workspace-cwd'
@@ -202,6 +213,88 @@ if (IS_WSL && !REMOTE_DISPLAY_REASON && fs.existsSync('/dev/dxg')) {
   app.commandLine.appendSwitch('enable-gpu-rasterization')
   app.commandLine.appendSwitch('enable-zero-copy')
   console.log('[hermes] WSL GPU passthrough (/dev/dxg) detected; enabling GPU acceleration')
+}
+
+// Windows sandbox / GPU breakpoint crash recovery (#38216).
+//
+// Some hosts (AMD RX 6000 drivers, orphan AppContainer SIDs under %LOCALAPPDATA%,
+// missing S-1-15-2-2 ACEs) kill Chromium's sandboxed GPU/renderer children with
+// 0x80000003. After enough GPU deaths the browser process FATAL-exits before the
+// UI is usable. Must run before app `ready` so `--no-sandbox` applies to child
+// processes. The sticky marker recovers Start Menu / shortcut launches that
+// never go through `hermes desktop`.
+let windowsSandboxFallbackActive = false
+let windowsNoSandboxRelaunchAttempted = false
+
+if (IS_WINDOWS) {
+  const windowsUserData = app.getPath('userData')
+  const exeDir = path.dirname(process.execPath)
+
+  // Best-effort ACL repair first — may be enough without disabling the sandbox.
+  for (const target of [exeDir, windowsUserData]) {
+    const acl = grantAllApplicationPackagesAcl(target, { execFileSync })
+
+    if (acl.ok) {
+      console.log(`[hermes] granted ALL APPLICATION PACKAGES RX on ${target}`)
+    } else if (acl.error && acl.error !== 'missing-target-or-exec') {
+      console.warn(`[hermes] AppContainer ACL grant failed on ${target}: ${acl.error}`)
+    }
+  }
+
+  const priorMarker = readSandboxMarker(windowsUserData)
+  const sandboxDecision = shouldEnableWindowsNoSandbox({
+    argv: process.argv,
+    env: process.env,
+    marker: priorMarker
+  })
+
+  windowsSandboxFallbackActive = sandboxDecision.enable
+
+  if (sandboxDecision.enable && sandboxDecision.reason !== 'already-enabled') {
+    app.commandLine.appendSwitch('no-sandbox')
+    process.env.ELECTRON_DISABLE_SANDBOX = '1'
+    console.log(
+      `[hermes] Windows sandbox fallback enabled (${sandboxDecision.reason}); launching with --no-sandbox (#38216)`
+    )
+  }
+
+  writeSandboxMarker(windowsUserData, nextSandboxMarkerAfterLaunchDecision({
+    enabledNoSandbox: windowsSandboxFallbackActive
+  }))
+
+  // Catch the first GPU breakpoint death and relaunch before Chromium's
+  // "GPU process isn't usable" FATAL abort ends the process with no recovery.
+  app.on('child-process-gone', (_event, details) => {
+    if (
+      !shouldRelaunchForGpuSandboxCrash({
+        details,
+        alreadyNoSandbox: windowsSandboxFallbackActive || alreadyHasNoSandbox(process.argv, process.env),
+        relaunchAttempted: windowsNoSandboxRelaunchAttempted
+      })
+    ) {
+      return
+    }
+
+    windowsNoSandboxRelaunchAttempted = true
+    windowsSandboxFallbackActive = true
+
+    try {
+      writeSandboxMarker(app.getPath('userData'), { state: 'fallback' })
+    } catch {
+      void 0
+    }
+
+    console.warn(
+      `[hermes] Windows GPU sandbox crashed (exit=${details?.exitCode}); relaunching once with --no-sandbox (#38216)`
+    )
+
+    try {
+      app.relaunch({ args: buildNoSandboxRelaunchArgs(process.argv.slice(1)) })
+      app.exit(0)
+    } catch (error) {
+      console.error(`[hermes] --no-sandbox relaunch failed: ${error?.message || error}`)
+    }
+  })
 }
 
 ipcMain.handle('hermes:get-remote-display-reason', () => REMOTE_DISPLAY_REASON)
@@ -7325,6 +7418,20 @@ function createWindow() {
     if (mainWindow && !mainWindow.isDestroyed()) {
       mainWindow.show()
     }
+
+    // #38216: clear the mid-boot marker only after a window is actually usable.
+    // Keep sticky `fallback` when we launched with --no-sandbox so the next
+    // Start Menu click does not re-enter the GPU FATAL crash loop.
+    if (IS_WINDOWS) {
+      try {
+        writeSandboxMarker(
+          app.getPath('userData'),
+          markerAfterSuccessfulBoot({ fallbackActive: windowsSandboxFallbackActive })
+        )
+      } catch (error) {
+        rememberLog(`[sandbox] marker update after ready-to-show failed: ${error?.message || error}`)
+      }
+    }
   })
 
   mainWindow.on('will-enter-full-screen', () => sendWindowStateChanged(true))
@@ -9257,6 +9364,16 @@ function configureSpellChecker() {
 }
 
 app.on('before-quit', () => {
+  // Clean quit mid-boot should not trip next-launch --no-sandbox (#38216).
+  // FATAL GPU aborts skip before-quit, leaving the `booting` marker in place.
+  if (IS_WINDOWS && !windowsSandboxFallbackActive) {
+    try {
+      writeSandboxMarker(app.getPath('userData'), markerAfterSuccessfulBoot({ fallbackActive: false }))
+    } catch {
+      void 0
+    }
+  }
+
   // The always-on-top overlay isn't a "real" app window; close it so a stray
   // pet can't keep the process alive or float over a quit app.
   closePetOverlay()

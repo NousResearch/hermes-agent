@@ -202,12 +202,23 @@ class ProjectFinalizationService:
     def _reconcile_checker(self, conn: sqlite3.Connection, current: Any, evaluation: ProjectEvaluation, result: ProjectFinalizationTickResult, now: int) -> ProjectFinalizationTickResult:
         if not self._owns_lock(current, now):
             return result.plus(skipped=1)
-        # A pending authoritative checker already owns this candidate.  Its
+        # A pending authoritative checker already owns this candidate. Its
         # completion/verdict is the only event that may advance finalization;
         # do not mint a new identity merely because evaluator time changed.
+        # A *completed* checker with no current verdict is different: repair
+        # registration clears the old verdict, so the completed authority must
+        # be replaced by one checker bound to the repaired snapshot.
         members = list_project_members(conn, board_id=current.board_id, root_task_id=current.root_task_id, generation=current.generation)
-        if any(member.membership_kind == "checker" and member.task_id == current.final_checker_task_id and member.required for member in members):
-            return result.plus(skipped=1)
+        checker_is_authoritative = any(
+            member.membership_kind == "checker"
+            and member.task_id == current.final_checker_task_id
+            and member.required
+            for member in members
+        )
+        if checker_is_authoritative:
+            checker_task = kb.get_task(conn, current.final_checker_task_id)
+            if checker_task is not None and checker_task.status != "done":
+                return result.plus(skipped=1)
         destination = self._destination(conn, current)
         project = self._identity(current)
         candidate_id = evaluation.snapshot_version

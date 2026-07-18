@@ -122,6 +122,59 @@ def test_repairable_checker_failure_routes_one_durable_repair(board):
     assert receipts == []
 
 
+def test_completed_repair_reconciles_one_fresh_checker_and_reuses_it_on_restart(board):
+    root, initial_checker, _ = _setup(
+        board,
+        complete_checker=True,
+        verdict="FAIL_REPAIRABLE",
+    )
+    service, receipts = _service()
+    kb.set_task_contract(
+        board,
+        root,
+        {
+            "version": 1,
+            "scope": "test completed repair checker reconciliation",
+            "allowed_files": ["gateway/project_finalization.py"],
+            "forbidden_files": [],
+            "base_commit": "1" * 40,
+            "required_evidence": ["repair result"],
+            "required_commands": ["pytest focused lifecycle"],
+            "allow_child_creation": False,
+            "forbidden_git_actions": ["push"],
+            "notification_verified": True,
+        },
+    )
+    assert _run(service).repaired == 1
+    repair_task_id = board.execute(
+        "SELECT task_id FROM project_finalization_members WHERE membership_kind='repair'"
+    ).fetchone()["task_id"]
+    assert kb.claim_task(board, repair_task_id) is not None
+    assert kb.complete_task(board, repair_task_id, result="repair completed")
+
+    reconciled = _run(service)
+    replayed = _run(service)
+
+    project = get_project_finalization(
+        board,
+        board_id="default",
+        root_task_id=root,
+        generation=1,
+    )
+    checker_members = board.execute(
+        "SELECT task_id FROM project_finalization_members "
+        "WHERE membership_kind='checker' AND required=1"
+    ).fetchall()
+    assert reconciled.checkers_reconciled == 1
+    assert replayed.checkers_reconciled == 0
+    assert project.final_checker_task_id != initial_checker
+    assert [row["task_id"] for row in checker_members] == [project.final_checker_task_id]
+    assert board.execute(
+        "SELECT COUNT(*) FROM tasks WHERE title='Check project generation 1'"
+    ).fetchone()[0] == 1
+    assert receipts == []
+
+
 def test_blocked_checker_publishes_terminal_artifacts_and_delivers_once(board):
     root, _, _ = _setup(board, complete_checker=True, verdict="FAIL_TERMINAL")
     service, receipts = _service()

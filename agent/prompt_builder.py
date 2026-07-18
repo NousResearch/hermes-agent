@@ -842,7 +842,11 @@ PLATFORM_HINTS = {
         "You're responding through an API server. The rendering layer is unknown — "
         "assume plain text. No markdown formatting (no asterisks, bullets, headers, "
         "code fences). Treat this like a conversation, not a document. Keep responses "
-        "brief and natural."
+        "brief and natural. "
+        "You can deliver files to the user: include MEDIA:/absolute/path/to/file "
+        "in your response. The file will be uploaded and made available for download "
+        "— use MEDIA: syntax whenever a file you created or modified should be "
+        "delivered to the user."
     ),
     "webui": (
         "You are in the Hermes WebUI, a browser-based chat interface. "

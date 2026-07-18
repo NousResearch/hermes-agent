@@ -3019,6 +3019,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         self._service_tier = self._load_service_tier()
         self._show_reasoning = self._load_show_reasoning()
         self._busy_input_mode = self._load_busy_input_mode()
+        self._busy_input_mode_by_platform = self._load_busy_input_mode_by_platform()
         self._busy_text_mode = self._load_busy_text_mode()
         self._restart_drain_timeout = self._load_restart_drain_timeout()
         self._provider_routing = self._load_provider_routing()
@@ -5144,6 +5145,39 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         return "interrupt"
 
     @staticmethod
+    def _load_busy_input_mode_by_platform() -> dict[str, str]:
+        """Startup snapshot of display.platforms.<platform>.busy_input_mode.
+
+        Loaded once like _load_busy_input_mode(), so changing an override in
+        config requires a gateway restart, matching the global mode's
+        lifecycle. Keeping this off the per-message path preserves the busy
+        handler's invariant that no config is read inside the ack cooldown.
+        Invalid values are dropped here (with a warning from _normalise) so
+        resolution falls back to the global mode.
+        """
+        from gateway.display_config import _normalise
+
+        cfg = _load_gateway_runtime_config()
+        platforms = cfg_get(cfg, "display", "platforms", default=None)
+        overrides: dict[str, str] = {}
+        if isinstance(platforms, dict):
+            for plat, settings in platforms.items():
+                if not isinstance(settings, dict):
+                    continue
+                val = settings.get("busy_input_mode")
+                if val is None:
+                    continue
+                normalised = _normalise("busy_input_mode", val)
+                if normalised is not None:
+                    overrides[str(plat)] = normalised
+        return overrides
+
+    def _effective_busy_input_mode(self, platform: "Platform") -> str:
+        """busy_input_mode for *platform*: per-platform override or global."""
+        overrides = getattr(self, "_busy_input_mode_by_platform", None) or {}
+        return overrides.get(_platform_config_key(platform), self._busy_input_mode)
+
+    @staticmethod
     def _load_busy_text_mode() -> str:
         """Resolve normal busy TEXT follow-up behavior.
 
@@ -5666,7 +5700,10 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
 
         running_agent = self._running_agents.get(session_key)
 
-        effective_mode = self._busy_input_mode
+        # Per-platform busy_input_mode override (display.platforms.<platform>),
+        # resolved from the startup-loaded snapshot so this per-message path
+        # never reads config (the ack-cooldown debounce below relies on that).
+        effective_mode = self._effective_busy_input_mode(event.source.platform)
         busy_text_mode = getattr(self, "_busy_text_mode", "interrupt")
         if (
             event.message_type == MessageType.TEXT
@@ -10059,6 +10096,11 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     merge_pending_message_event(adapter._pending_messages, _quick_key, event)
                 return None
 
+            # Per-platform busy_input_mode override for the priority
+            # running-agent path too, sharing the startup-loaded resolution
+            # with _handle_active_session_busy_message.
+            _effective_busy_mode = self._effective_busy_input_mode(source.platform)
+
             _telegram_followup_grace = float(
                 os.getenv("HERMES_TELEGRAM_FOLLOWUP_GRACE_SECONDS", "3.0")
             )
@@ -10077,7 +10119,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 )
                 adapter = self._adapter_for_source(source)
                 if adapter:
-                    if self._busy_input_mode == "queue":
+                    if _effective_busy_mode == "queue":
                         self._enqueue_fifo(_quick_key, event, adapter)
                     else:
                         merge_pending_message_event(
@@ -10115,11 +10157,11 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     if self._queue_during_drain_enabled()
                     else f"⏳ Gateway is {self._status_action_gerund()} and is not accepting another turn right now."
                 )
-            if self._busy_input_mode == "queue":
+            if _effective_busy_mode == "queue":
                 logger.debug("PRIORITY queue follow-up for session %s", _quick_key)
                 self._queue_or_replace_pending_event(_quick_key, event)
                 return None
-            if self._busy_input_mode == "steer":
+            if _effective_busy_mode == "steer":
                 # Steer mode: inject text into the running agent mid-run via
                 # agent.steer().  Falls back to queue semantics if the payload
                 # is empty, the agent lacks steer(), or steer() rejects.

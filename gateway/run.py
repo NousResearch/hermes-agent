@@ -3719,7 +3719,9 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         if profile == "default":
             profile = None
 
-        async def _callback(*, guild_id, user_id, voice_channel_id, text_channel_id):
+        async def _callback(
+            *, guild_id, user_id, voice_channel_id, text_channel_id, attempt_token=None
+        ):
             return await self._handle_discord_voice_auto_join(
                 adapter=adapter,
                 profile=profile,
@@ -3727,6 +3729,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 user_id=user_id,
                 voice_channel_id=voice_channel_id,
                 text_channel_id=text_channel_id,
+                attempt_token=attempt_token,
             )
 
         adapter._voice_auto_join_callback = _callback
@@ -14228,6 +14231,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         text_channel_id: str,
         adapter=None,
         profile=None,
+        attempt_token=None,
     ) -> bool:
         """Auto-join Discord voice by reusing the manual /voice join path.
 
@@ -14395,8 +14399,10 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             return False
 
         # Join the EXACT resolved channel (single resolution — no second lookup).
+        # Thread the barrier's attempt token so join_voice_channel can refuse to
+        # move/overwrite a manual/newer-owned session on behalf of a stale attempt.
         result = await self._handle_voice_channel_join(
-            event, voice_channel=voice_channel, manual=False
+            event, voice_channel=voice_channel, manual=False, attempt_token=attempt_token
         )
 
         # Verify and record the ACTUAL connected channel, not the event's
@@ -14415,7 +14421,16 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         text_ok = str(
             getattr(adapter, "_voice_text_channels", {}).get(int(guild_id))
         ) == str(text_channel_id)
-        success = bool(connected_channel_id) and text_ok
+        # Only this exact attempt may mark the follow target: if the join was
+        # REJECTED for a stale attempt (a manual/newer owner holds the session),
+        # ownership will not be ours, so we never stamp a target for a session we
+        # do not own. When the adapter can't report ownership (token-less path),
+        # fall back to the connected+text check.
+        owns_session = True
+        owned_check = getattr(adapter, "_voice_session_owned_by_attempt", None)
+        if attempt_token is not None and callable(owned_check):
+            owns_session = bool(owned_check(int(guild_id), attempt_token))
+        success = bool(connected_channel_id) and text_ok and owns_session
         if success and "mark_voice_auto_join_target" in dir(adapter):
             adapter.mark_voice_auto_join_target(
                 int(guild_id),
@@ -14425,12 +14440,13 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 profile=profile_name,
             )
         if not success:
-            logger.debug("Discord voice auto-join did not connect: %s", result)
+            logger.debug("Discord voice auto-join did not connect/own session: %s", result)
         return bool(success)
 
 
     async def _handle_voice_channel_join(
-        self, event: MessageEvent, *, voice_channel=None, manual: bool = True
+        self, event: MessageEvent, *, voice_channel=None, manual: bool = True,
+        attempt_token=None,
     ) -> str:
         """Join the user's current Discord voice channel.
 
@@ -14439,7 +14455,10 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         provided it is used verbatim — the user's live channel is NOT looked up
         again, so the channel that was validated is the channel that is joined.
         ``manual`` marks a hand-issued ``/voice join`` (vs the auto-follow path)
-        so a manual takeover can drop stale auto-follow ownership.
+        so a manual takeover can drop stale auto-follow ownership. ``attempt_token``
+        is the auto-join barrier's exact token, threaded into ``join_voice_channel``
+        so the join is gated on attempt currency + session ownership under the guild
+        lock; a rejected (stale) attempt returns without applying any side effects.
         """
         adapter = self._adapter_for_source(event.source)
         if not hasattr(adapter, "join_voice_channel"):
@@ -14462,6 +14481,22 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         # cleanup, and mode lookups act on ITS session — never the default
         # profile's adapter or voice-mode namespace.
         owner_profile = getattr(event.source, "profile", None)
+        # Snapshot the prior callback wiring so a REJECTED join (a stale auto
+        # attempt refused because a manual/newer owner holds the session) can
+        # restore it — a rejected attempt must apply NO runner-side side effects,
+        # including never rebinding disconnect/mode callbacks over the live owner's.
+        _prev_input_cb = getattr(adapter, "_voice_input_callback", None)
+        _prev_on_disconnect = getattr(adapter, "_on_voice_disconnect", None)
+        _prev_mode_getter = getattr(adapter, "_voice_mode_getter", None)
+
+        def _restore_prior_wiring():
+            if hasattr(adapter, "_voice_input_callback"):
+                adapter._voice_input_callback = _prev_input_cb
+            if hasattr(adapter, "_on_voice_disconnect"):
+                adapter._on_voice_disconnect = _prev_on_disconnect
+            if hasattr(adapter, "_voice_mode_getter"):
+                adapter._voice_mode_getter = _prev_mode_getter
+
         if hasattr(adapter, "_voice_input_callback"):
             adapter._voice_input_callback = (
                 lambda guild_id, user_id, transcript, _a=adapter, _p=owner_profile:
@@ -14487,17 +14522,19 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             # A MANUAL /voice join stamps manual session ownership (atomic under
             # the adapter's guild voice lock) so a stale auto-join barrier that
             # completes later recognizes the hand-established session is not its
-            # own and never disconnects it. The auto-follow path passes manual=False.
+            # own and never disconnects it. The auto-follow path passes manual=False
+            # plus the barrier's attempt_token, so join_voice_channel refuses to
+            # move/overwrite a manual/newer-owned session for a stale attempt.
             try:
                 success = await adapter.join_voice_channel(
-                    voice_channel, manual_owner=bool(manual)
+                    voice_channel, manual_owner=bool(manual), attempt_token=attempt_token
                 )
             except TypeError:
-                # Older adapter without the manual_owner kwarg.
+                # Older adapter without the manual_owner/attempt_token kwargs.
                 success = await adapter.join_voice_channel(voice_channel)
         except Exception as e:
             logger.warning("Failed to join voice channel: %s", e)
-            adapter._voice_input_callback = None
+            _restore_prior_wiring()
             err_lower = str(e).lower()
             if "pynacl" in err_lower or "nacl" in err_lower or "davey" in err_lower:
                 return (
@@ -14522,8 +14559,9 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 f"Joined voice channel **{voice_channel.name}**.\n"
                 f"I'll speak my replies and listen to you. Use /voice leave to disconnect."
             )
-        # Join failed — clear callback
-        adapter._voice_input_callback = None
+        # Join failed or was REJECTED (stale attempt) — restore prior wiring so no
+        # side effect leaks onto the live owner's session.
+        _restore_prior_wiring()
         return "Failed to join voice channel. Check bot permissions (Connect + Speak)."
 
     async def _handle_voice_channel_leave(self, event: MessageEvent) -> str:

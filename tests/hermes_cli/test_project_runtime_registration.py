@@ -153,7 +153,7 @@ def _checker_action(
 
 
 def test_repair_registration_is_atomic_and_restart_idempotent(board):
-    project, token, failed, _, route = _setup_project(board)
+    project, token, failed, placeholder, route = _setup_project(board)
     action = _repair_action(project, failed, route)
 
     created = register_project_repair(board, action, token, now=101)
@@ -171,9 +171,14 @@ def test_repair_registration_is_atomic_and_restart_idempotent(board):
         root_task_id=project.root_task_id,
         generation=project.generation,
     )
-    assert [(member.task_id, member.membership_kind, member.required) for member in members] == [
-        (created.repair_task_id, "repair", True)
-    ]
+    assert {
+        (member.task_id, member.membership_kind, member.required)
+        for member in members
+    } == {
+        (project.root_task_id, "required", True),
+        (placeholder, "checker", True),
+        (created.repair_task_id, "repair", True),
+    }
     aggregate = get_project_finalization(
         board,
         board_id=project.board_id,
@@ -318,7 +323,7 @@ def test_concurrent_repair_registration_returns_one_durable_identity(board):
 
 
 def test_checker_registration_is_atomic_authoritative_and_restart_idempotent(board):
-    project, token, _, _, route = _setup_project(board)
+    project, token, _, placeholder, route = _setup_project(board)
     action = _checker_action(project, route)
 
     created = register_project_checker(board, action, token, now=101)
@@ -345,13 +350,18 @@ def test_checker_registration_is_atomic_authoritative_and_restart_idempotent(boa
         root_task_id=project.root_task_id,
         generation=project.generation,
     )
-    assert [(member.task_id, member.membership_kind, member.required) for member in members] == [
-        (created.checker_task_id, "checker", True)
-    ]
+    assert {
+        (member.task_id, member.membership_kind, member.required)
+        for member in members
+    } == {
+        (project.root_task_id, "required", True),
+        (placeholder, "support", False),
+        (created.checker_task_id, "checker", True),
+    }
 
 
 def test_fresh_checker_replaces_stale_authority_without_deleting_history(board):
-    project, token, _, _, route = _setup_project(board)
+    project, token, _, placeholder, route = _setup_project(board)
     first = register_project_checker(board, _checker_action(project, route), token, now=101)
     assert kb.complete_task(board, first.checker_task_id, result="checked")
     record_checker_verdict(
@@ -388,10 +398,15 @@ def test_fresh_checker_replaces_stale_authority_without_deleting_history(board):
         root_task_id=project.root_task_id,
         generation=project.generation,
     )
-    assert [(member.task_id, member.membership_kind, member.required) for member in members] == [
+    assert {
+        (member.task_id, member.membership_kind, member.required)
+        for member in members
+    } == {
+        (project.root_task_id, "required", True),
+        (placeholder, "support", False),
         (first.checker_task_id, "support", False),
         (fresh.checker_task_id, "checker", True),
-    ]
+    }
     assert board.execute(
         "SELECT COUNT(*) FROM task_events WHERE task_id = ? AND kind = 'project_checker_registered'",
         (first.checker_task_id,),

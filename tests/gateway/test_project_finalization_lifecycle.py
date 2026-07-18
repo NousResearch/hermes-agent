@@ -85,7 +85,7 @@ def test_waiting_checker_required_registers_once_and_reuses_identity(board):
     second = _run(service)
 
     members = board.execute("SELECT task_id FROM project_finalization_members WHERE membership_kind='checker'").fetchall()
-    assert first.checkers_reconciled == 1
+    assert first.checkers_reconciled == 0
     assert second.checkers_reconciled == 0
     assert len(members) == 1
     assert receipts == []

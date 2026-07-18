@@ -856,6 +856,30 @@ def _validate_immutable_persisted_value(
 # Public CRUD + locking + membership (per contract section 13)
 # ---------------------------------------------------------------------------
 
+def _persist_generation_members(
+    conn: sqlite3.Connection,
+    *,
+    board_id: str,
+    root_task_id: str,
+    generation: int,
+    final_checker_task_id: str,
+    created_at: int,
+) -> None:
+    """Persist project-owned root/checker members in the caller's transaction."""
+    for task_id, membership_kind in (
+        (root_task_id, "required"),
+        (final_checker_task_id, "checker"),
+    ):
+        conn.execute(
+            """
+            INSERT OR IGNORE INTO project_finalization_members
+                (board_id, root_task_id, generation, task_id, membership_kind, required, created_at)
+            VALUES (?, ?, ?, ?, ?, 1, ?)
+            """,
+            (board_id, root_task_id, generation, task_id, membership_kind, created_at),
+        )
+
+
 def create_project_finalization(
     conn: sqlite3.Connection,
     *,
@@ -883,6 +907,14 @@ def create_project_finalization(
     with write_txn(conn):
         existing = _get_project_finalization_row(conn, board_id, root_task_id, generation)
         if existing:
+            _persist_generation_members(
+                conn,
+                board_id=board_id,
+                root_task_id=root_task_id,
+                generation=generation,
+                final_checker_task_id=existing["final_checker_task_id"],
+                created_at=now,
+            )
             return _row_to_project_finalization(existing)
 
         conn.execute(
@@ -909,6 +941,14 @@ def create_project_finalization(
                 None, None, None, None, None, None,
                 now, now, None, None, None, None, None, None, 1,
             ),
+        )
+        _persist_generation_members(
+            conn,
+            board_id=board_id,
+            root_task_id=root_task_id,
+            generation=generation,
+            final_checker_task_id=final_checker_task_id,
+            created_at=now,
         )
         row = _get_project_finalization_row(conn, board_id, root_task_id, generation)
         assert row is not None
@@ -981,6 +1021,14 @@ def reopen_project_finalization(
                 None, None, None, None, None, None,
                 now, now, None, None, None, None, None, None, 1,
             ),
+        )
+        _persist_generation_members(
+            conn,
+            board_id=board_id,
+            root_task_id=root_task_id,
+            generation=generation,
+            final_checker_task_id=latest["final_checker_task_id"],
+            created_at=now,
         )
         row = _get_project_finalization_row(conn, board_id, root_task_id, generation)
         assert row is not None

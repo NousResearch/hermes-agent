@@ -340,6 +340,76 @@ def test_create_returns_idempotent_gen1_and_board_root_separation():
         _close_and_unlink(conn, path)
 
 
+def test_create_registers_root_and_final_checker_membership_atomically():
+    conn, path = _make_temp_db()
+    try:
+        ensure_project_finalization_schema(conn)
+
+        create_project_finalization(
+            conn,
+            board_id="boardA",
+            root_task_id="root123",
+            final_checker_task_id="chk_t1",
+        )
+
+        members = list_project_members(
+            conn,
+            board_id="boardA",
+            root_task_id="root123",
+            generation=1,
+        )
+        assert {
+            (member.task_id, member.membership_kind, member.required)
+            for member in members
+        } == {
+            ("root123", "required", True),
+            ("chk_t1", "checker", True),
+        }
+    finally:
+        _close_and_unlink(conn, path)
+
+
+def test_identical_create_retry_heals_missing_owned_members_without_touching_other_members():
+    conn, path = _make_temp_db()
+    try:
+        ensure_project_finalization_schema(conn)
+        create_project_finalization(
+            conn, board_id="boardA", root_task_id="root123", final_checker_task_id="chk_t1"
+        )
+        register_project_member(
+            conn,
+            board_id="boardA",
+            root_task_id="root123",
+            generation=1,
+            task_id="support1",
+            membership_kind="support",
+            required=False,
+        )
+        conn.execute(
+            "DELETE FROM project_finalization_members "
+            "WHERE board_id='boardA' AND root_task_id='root123' AND generation=1 "
+            "AND membership_kind IN ('required', 'checker')"
+        )
+
+        retry = create_project_finalization(
+            conn, board_id="boardA", root_task_id="root123", final_checker_task_id="chk_t1"
+        )
+
+        members = list_project_members(
+            conn, board_id="boardA", root_task_id="root123", generation=retry.generation
+        )
+        assert {
+            (member.task_id, member.membership_kind, member.required)
+            for member in members
+        } == {
+            ("root123", "required", True),
+            ("chk_t1", "checker", True),
+            ("support1", "support", False),
+        }
+    finally:
+        _close_and_unlink(conn, path)
+
+
 def test_validations_reject_bad_values():
     conn, path = _make_temp_db()
     try:
@@ -637,6 +707,8 @@ def test_membership_all_kinds_idempotent_and_separate_from_task_links():
         task_links_before = conn.execute("SELECT parent_id, child_id FROM task_links ORDER BY parent_id, child_id").fetchall()
 
         expected_members = (
+            ("rt", "required", True),
+            ("chk", "checker", True),
             ("required_task", "required", True),
             ("support_task", "support", False),
             ("repair_task", "repair", False),
@@ -752,6 +824,27 @@ def test_reopen_creates_next_generation_and_preserves_completed_generation():
         )
 
         reopened = reopen_project_finalization(conn, board_id="board", root_task_id="root")
+
+        generation_one_members = list_project_members(
+            conn, board_id="board", root_task_id="root", generation=1
+        )
+        generation_two_members = list_project_members(
+            conn, board_id="board", root_task_id="root", generation=2
+        )
+        assert {
+            (member.task_id, member.membership_kind, member.required)
+            for member in generation_one_members
+        } == {
+            ("root", "required", True),
+            ("checker", "checker", True),
+        }
+        assert {
+            (member.task_id, member.membership_kind, member.required)
+            for member in generation_two_members
+        } == {
+            ("root", "required", True),
+            ("checker", "checker", True),
+        }
 
         assert reopened.generation == 2
         assert reopened.state == "open"

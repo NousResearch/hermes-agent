@@ -383,12 +383,13 @@ class TestAlertmanagerGroupKeyDedup:
 
     @pytest.mark.asyncio
     async def test_groupkey_derived_delivery_id_dedups_retries(self):
-        """When the payload has a `groupKey` field, repeated POSTs of the
-        same alert group must collapse to a single delivery_id via
-        sha256(route + groupKey) so the idempotency loop catches the
-        second call as a duplicate. Without this Alertmanager retries
-        (which omit X-GitHub-Delivery / svix-id / X-Request-ID) re-trigger
-        the agent every time."""
+        """When the payload has a `groupKey` field, an immediate identical
+        re-POST must collapse to a single delivery_id (derived from the route
+        name and the normalized payload) so the idempotency loop catches the
+        second call as a duplicate. Without this, Alertmanager deliveries
+        (which omit X-GitHub-Delivery / svix-id / X-Request-ID) re-trigger the
+        agent every time. The near-identical-but-drifting repeat_interval case
+        is covered by test_repeat_interval_endsat_drift_still_dedups."""
         routes = {
             "alertmanager": {
                 "prompt": "Alert: {commonLabels.alertname}",
@@ -560,3 +561,151 @@ class TestAlertmanagerGroupKeyDedup:
             # "alertmanager:". Either way it must NOT be the hash path.
             assert not delivery_id.startswith("alertmanager:")
             assert delivery_id.isdigit()
+
+    @pytest.mark.asyncio
+    async def test_status_transition_same_groupkey_not_deduped(self):
+        """A later notification that shares the groupKey but carries a real
+        state change (here: the `resolved` notification) must NOT be swallowed
+        as a duplicate. Alertmanager reuses one groupKey for a group's whole
+        lifecycle, so a firing->resolved transition still has to reach the
+        agent. Regression guard against keying idempotency on groupKey alone.
+        Covers the status-change axis only; the endsAt-drift axis is covered by
+        test_repeat_interval_endsat_drift_still_dedups."""
+        routes = {
+            "alertmanager": {
+                "prompt": "Alert: {commonLabels.alertname}",
+                "secret": _INSECURE_NO_AUTH,
+                "deliver": "log",
+            }
+        }
+        adapter = _make_adapter(routes)
+        adapter.handle_message = AsyncMock()
+
+        app = _create_app(adapter)
+        firing = json.dumps(ALERTMANAGER_PAYLOAD).encode()
+
+        # Same groupKey, but the group has now resolved: status flips and the
+        # alert gets an endsAt. Deep-copy via a JSON round-trip so the nested
+        # alert dict is not shared with ALERTMANAGER_PAYLOAD.
+        resolved_payload = json.loads(json.dumps(ALERTMANAGER_PAYLOAD))
+        resolved_payload["status"] = "resolved"
+        resolved_payload["alerts"][0]["status"] = "resolved"
+        resolved_payload["alerts"][0]["endsAt"] = "2026-01-01T00:05:00Z"
+        resolved = json.dumps(resolved_payload).encode()
+
+        async with TestClient(TestServer(app)) as cli:
+            first = await cli.post(
+                "/webhooks/alertmanager",
+                data=firing,
+                headers={"Content-Type": "application/json"},
+            )
+            assert first.status == 202
+            id_firing = (await first.json())["delivery_id"]
+
+            second = await cli.post(
+                "/webhooks/alertmanager",
+                data=resolved,
+                headers={"Content-Type": "application/json"},
+            )
+            # Must be processed, not deduped: different content -> different id.
+            assert second.status == 202
+            data2 = await second.json()
+            assert data2["status"] == "accepted"
+            assert data2["delivery_id"] != id_firing
+            assert data2["delivery_id"].startswith("alertmanager:")
+
+    @pytest.mark.asyncio
+    async def test_repeat_interval_endsat_drift_still_dedups(self):
+        """A repeat_interval re-send of an UNCHANGED firing group must still
+        dedup even though its body is not byte-identical: Prometheus refreshes
+        `alerts[].endsAt` on every evaluation cycle for an active alert, so the
+        end time drifts between notifications without any material change.
+        endsAt is normalized out for firing alerts, so the two still collapse to
+        one delivery. Without that normalization this is exactly the
+        're-trigger the agent every notification interval' bug the derivation
+        exists to prevent."""
+        routes = {
+            "alertmanager": {
+                "prompt": "Alert: {commonLabels.alertname}",
+                "secret": _INSECURE_NO_AUTH,
+                "deliver": "log",
+            }
+        }
+        adapter = _make_adapter(routes)
+        adapter.handle_message = AsyncMock()
+
+        app = _create_app(adapter)
+        first_body = json.dumps(ALERTMANAGER_PAYLOAD).encode()
+
+        # Same firing group, later evaluation cycle: only endsAt moved forward.
+        drifted = json.loads(json.dumps(ALERTMANAGER_PAYLOAD))
+        drifted["alerts"][0]["endsAt"] = "2026-01-01T00:10:00Z"
+        drifted_body = json.dumps(drifted).encode()
+
+        async with TestClient(TestServer(app)) as cli:
+            first = await cli.post(
+                "/webhooks/alertmanager",
+                data=first_body,
+                headers={"Content-Type": "application/json"},
+            )
+            assert first.status == 202
+            id1 = (await first.json())["delivery_id"]
+
+            second = await cli.post(
+                "/webhooks/alertmanager",
+                data=drifted_body,
+                headers={"Content-Type": "application/json"},
+            )
+            assert second.status == 200
+            data2 = await second.json()
+            assert data2["status"] == "duplicate"
+            assert data2["delivery_id"] == id1
+
+    @pytest.mark.asyncio
+    async def test_alert_array_order_does_not_affect_dedup(self):
+        """Two notifications with the same alert *set* in a different array
+        order are the same delivery: alerts are ordered by fingerprint before
+        hashing, so upstream ordering differences never cause a spurious
+        non-dedup."""
+        routes = {
+            "alertmanager": {
+                "prompt": "Alert: {commonLabels.alertname}",
+                "secret": _INSECURE_NO_AUTH,
+                "deliver": "log",
+            }
+        }
+        adapter = _make_adapter(routes)
+        adapter.handle_message = AsyncMock()
+
+        app = _create_app(adapter)
+
+        two_alerts = json.loads(json.dumps(ALERTMANAGER_PAYLOAD))
+        first_alert = two_alerts["alerts"][0]
+        second_alert = json.loads(json.dumps(first_alert))
+        second_alert["fingerprint"] = "def456"
+        second_alert["labels"]["service"] = "worker"
+        two_alerts["alerts"] = [first_alert, second_alert]
+        body_ab = json.dumps(two_alerts).encode()
+
+        reordered = json.loads(json.dumps(two_alerts))
+        reordered["alerts"] = [second_alert, first_alert]
+        body_ba = json.dumps(reordered).encode()
+
+        async with TestClient(TestServer(app)) as cli:
+            first = await cli.post(
+                "/webhooks/alertmanager",
+                data=body_ab,
+                headers={"Content-Type": "application/json"},
+            )
+            assert first.status == 202
+            id1 = (await first.json())["delivery_id"]
+
+            second = await cli.post(
+                "/webhooks/alertmanager",
+                data=body_ba,
+                headers={"Content-Type": "application/json"},
+            )
+            assert second.status == 200
+            data2 = await second.json()
+            assert data2["status"] == "duplicate"
+            assert data2["delivery_id"] == id1

@@ -310,7 +310,7 @@ hermes webhook subscribe antenna-matches \
 | Status | Meaning |
 |--------|---------|
 | `200 OK` | Delivered successfully. Body: `{"status": "delivered", "route": "...", "target": "...", "delivery_id": "..."}` |
-| `200 OK` (status=duplicate) | Duplicate `X-GitHub-Delivery` ID within the idempotency TTL (1 hour). Not re-delivered. |
+| `200 OK` (status=duplicate) | Duplicate delivery ID within the idempotency TTL (1 hour). Not re-delivered. |
 | `401 Unauthorized` | HMAC signature invalid or missing. |
 | `400 Bad Request` | Malformed JSON body. |
 | `404 Not Found` | Unknown route name. |
@@ -323,7 +323,7 @@ hermes webhook subscribe antenna-matches \
 - `deliver_only: true` requires `deliver` to be a real target. `deliver: log` (or omitting `deliver`) is rejected at startup — the adapter refuses to start if it finds a misconfigured route.
 - The `skills` field is ignored in direct delivery mode (no agent runs, so there's nothing to inject skills into).
 - Template rendering uses the same `{dot.notation}` syntax as agent mode, including the `{__raw__}` token.
-- Idempotency uses the same `X-GitHub-Delivery` / `X-Request-ID` header — retries with the same ID return `status=duplicate` and do NOT re-deliver.
+- Idempotency uses the delivery ID (the `X-GitHub-Delivery` / `svix-id` / `X-Request-ID` header, an Alertmanager payload-derived hash, or a timestamp fallback) — retries with the same ID return `status=duplicate` and do NOT re-deliver. See [Idempotency](#idempotency) for how the ID is resolved.
 
 ---
 
@@ -412,7 +412,11 @@ Requests exceeding the limit receive a `429 Too Many Requests` response.
 
 ### Idempotency
 
-Delivery IDs (from `X-GitHub-Delivery`, `X-Request-ID`, or a timestamp fallback) are cached for **1 hour**. Duplicate deliveries (e.g. webhook retries) are silently skipped with a `200` response, preventing duplicate agent runs.
+Delivery IDs are cached for **1 hour**; duplicate deliveries (e.g. webhook retries) are silently skipped with a `200` response, preventing duplicate agent runs. The delivery ID is resolved in this order:
+
+1. The `X-GitHub-Delivery`, `svix-id`, or `X-Request-ID` header, when present.
+2. For header-less Alertmanager notifications (a payload carrying a non-empty `groupKey`), a hash of the route name and the normalized JSON payload, formatted as `alertmanager:<sha256[:16]>`. Two volatile-but-immaterial details are normalized out first so that `repeat_interval` re-notifications of an **unchanged firing group** still collapse to a single delivery: the rolling `endsAt` of firing alerts (Prometheus refreshes it every evaluation cycle) is dropped, and the `alerts` array is ordered by fingerprint. A *materially different* notification for the same alert group (an alert joining or leaving the group, or the final `resolved` payload — where `endsAt` is kept because it is the real resolution time) hashes differently and is still delivered, so state changes are never masked.
+3. A millisecond timestamp fallback (unique per request) when neither applies.
 
 ### Body size limits
 

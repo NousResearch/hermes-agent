@@ -97,6 +97,43 @@ def check_webhook_requirements() -> bool:
     return AIOHTTP_AVAILABLE
 
 
+def _alertmanager_dedup_key(payload: Dict[str, Any]) -> str:
+    """Canonical string identifying an Alertmanager notification for dedup.
+
+    Hashing the full payload (rather than the ``groupKey`` alone) is what lets a
+    materially different notification for the same group — a membership change,
+    or the final ``resolved`` payload — bypass the idempotency cache instead of
+    being silently swallowed. But two aspects of the payload are volatile for an
+    *unchanged firing group* and must be normalized out, or ``repeat_interval``
+    re-sends would each look new and re-trigger the agent:
+
+    - ``alerts[*].endsAt`` is dropped for **firing** alerts. Prometheus refreshes
+      the end time of an active alert on every evaluation cycle, so it drifts
+      between notifications with no material change. It is kept for **resolved**
+      alerts, where it is the real resolution time and *should* bust the cache.
+    - the ``alerts`` list is ordered by ``fingerprint``, since array order is not
+      a meaningful part of the notification's identity.
+
+    Shallow copies keep the caller's ``payload`` (reused for rendering and
+    delivery) untouched.
+    """
+    normalized = dict(payload)
+    alerts = normalized.get("alerts")
+    if isinstance(alerts, list):
+        norm_alerts = []
+        for alert in alerts:
+            if isinstance(alert, dict):
+                alert = dict(alert)
+                if alert.get("status") == "firing":
+                    alert.pop("endsAt", None)
+            norm_alerts.append(alert)
+        norm_alerts.sort(
+            key=lambda a: a.get("fingerprint", "") if isinstance(a, dict) else ""
+        )
+        normalized["alerts"] = norm_alerts
+    return json.dumps(normalized, sort_keys=True, separators=(",", ":"))
+
+
 class WebhookAdapter(BasePlatformAdapter):
     """Generic webhook receiver that triggers agent runs from HTTP POSTs."""
 
@@ -483,11 +520,13 @@ class WebhookAdapter(BasePlatformAdapter):
             except Exception as e:
                 logger.warning("[webhook] Skill loading failed: %s", e)
 
-        # Build a unique delivery ID. Header-based IDs win; Alertmanager has
-        # no such header so derive a stable hash from payload.groupKey to
-        # make retries hit the idempotency cache below. Route name is part
-        # of the hash input so two routes happening to receive the same
-        # groupKey value never collide in _seen_deliveries.
+        # Build a unique delivery ID. Header-based IDs win; Alertmanager has no
+        # such header, so for a payload that carries a groupKey we derive a
+        # stable hash of the (normalized) notification content — see
+        # _alertmanager_dedup_key for why it hashes the whole payload rather
+        # than the groupKey alone. The route name is folded in so two routes
+        # receiving the same upstream groupKey never collide in
+        # _seen_deliveries.
         delivery_id = (
             request.headers.get("X-GitHub-Delivery")
             or request.headers.get("svix-id")
@@ -496,11 +535,12 @@ class WebhookAdapter(BasePlatformAdapter):
         if not delivery_id and isinstance(payload, dict):
             group_key = payload.get("groupKey")
             if isinstance(group_key, str) and group_key.strip():
+                canonical = _alertmanager_dedup_key(payload)
+                hash_input = f"{route_name}:{canonical}".encode("utf-8")
                 # 16 hex chars = 64 bits: collision-safe for any realistic
                 # alert-group cardinality at the 1h _idempotency_ttl horizon.
-                _hash_input = f"{route_name}:{group_key.strip()}".encode("utf-8")
                 delivery_id = "alertmanager:" + hashlib.sha256(
-                    _hash_input
+                    hash_input
                 ).hexdigest()[:16]
         if not delivery_id:
             delivery_id = str(int(time.time() * 1000))

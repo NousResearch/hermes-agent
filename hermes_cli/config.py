@@ -8425,7 +8425,25 @@ def set_config_value(key: str, value: str):
                 user_config = fast_safe_load(f) or {}
         except Exception:
             user_config = {}
-    
+
+    _model_backup_key = key.strip().lower()
+    if (
+        _model_backup_key == "model"
+        or _model_backup_key.startswith("model.")
+        or _model_backup_key == "api_base"
+        or _model_backup_key == "custom_providers"
+        or _model_backup_key.startswith("custom_providers.")
+        or _model_backup_key == "providers"
+        or _model_backup_key.startswith("providers.")
+    ):
+        from hermes_cli.model_config_backup import create_model_config_backup
+
+        create_model_config_backup(
+            config_path,
+            user_config if isinstance(user_config, dict) else {},
+            reason=f"config-set:{key}",
+        )
+
     # Handle nested keys (e.g., "tts.provider") including numeric list
     # indices (e.g., "custom_providers.0.api_key").  Delegates to
     # _set_nested which preserves list-typed nodes; before #17876 the

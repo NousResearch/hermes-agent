@@ -78,6 +78,10 @@ def _setup_isolated_home(tmp_path, monkeypatch, model_yaml_value):
     return cfg_path
 
 
+def _model_backups(cfg_path):
+    return sorted(cfg_path.parent.glob(f"{cfg_path.name}.model-backup.*.bak"))
+
+
 @pytest.mark.asyncio
 async def test_model_global_persists_when_config_has_flat_string_model(tmp_path, monkeypatch):
     """Regression: ``model: deepseek-v4-flash`` (flat string) used to crash
@@ -103,6 +107,11 @@ async def test_model_global_persists_when_config_has_flat_string_model(tmp_path,
     assert written["model"]["default"] == "gpt-5.5"
     assert written["model"]["provider"] == "openrouter"
     assert "base_url" not in written["model"]
+    backups = _model_backups(cfg_path)
+    assert len(backups) == 1
+    backup = yaml.safe_load(backups[0].read_text(encoding="utf-8"))
+    assert backup["had_model"] is True
+    assert backup["model"] == "deepseek-v4-flash"
 
 
 @pytest.mark.asyncio
@@ -199,3 +208,53 @@ async def test_model_session_flag_does_not_persist(tmp_path, monkeypatch):
     written = yaml.safe_load(cfg_path.read_text(encoding="utf-8"))
     # Config untouched — the session override is in-memory only.
     assert written["model"]["default"] == "old-model"
+    assert _model_backups(cfg_path) == []
+
+
+@pytest.mark.asyncio
+async def test_model_undo_restores_last_global_model_backup(tmp_path, monkeypatch):
+    cfg_path = _setup_isolated_home(
+        tmp_path,
+        monkeypatch,
+        {"default": "old-model", "provider": "openai-codex"},
+    )
+    original = yaml.safe_load(cfg_path.read_text(encoding="utf-8"))
+    original["custom_providers"] = [
+        {"name": "local-ollama", "base_url": "http://127.0.0.1:11434/v1"}
+    ]
+    original["providers"] = {
+        "local": {
+            "base_url": "http://127.0.0.1:11434/v1",
+            "model": "qwen3",
+        }
+    }
+    cfg_path.write_text(yaml.safe_dump(original, sort_keys=False), encoding="utf-8")
+
+    runner = _make_runner()
+    event = _make_event("/model gpt-5.5 --global")
+    session_key = runner._session_key_for_source(event.source)
+
+    switched = await runner._handle_model_command(event)
+    assert switched is not None
+    assert "gpt-5.5" in switched
+    assert runner._session_model_overrides[session_key]["model"] == "gpt-5.5"
+    assert session_key in runner._pending_model_notes
+
+    broken = yaml.safe_load(cfg_path.read_text(encoding="utf-8"))
+    broken["custom_providers"] = [
+        {"name": "broken-local", "base_url": "https://127.0.0.1:11434/v1"}
+    ]
+    broken["providers"] = {
+        "broken": {"base_url": "https://broken.example/v1", "model": "broken"}
+    }
+    cfg_path.write_text(yaml.safe_dump(broken, sort_keys=False), encoding="utf-8")
+
+    restored_msg = await runner._handle_model_command(_make_event("/model --undo"))
+
+    assert "Restored model configuration" in restored_msg
+    restored = yaml.safe_load(cfg_path.read_text(encoding="utf-8"))
+    assert restored["model"] == {"default": "old-model", "provider": "openai-codex"}
+    assert restored["custom_providers"] == original["custom_providers"]
+    assert restored["providers"] == original["providers"]
+    assert session_key not in runner._session_model_overrides
+    assert session_key not in runner._pending_model_notes

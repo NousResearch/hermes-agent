@@ -17,8 +17,10 @@ import json
 import os
 import logging
 import hashlib
+import ipaddress
 from dataclasses import dataclass, field
 from pathlib import Path
+from urllib.parse import urlparse
 
 from hermes_constants import get_hermes_home
 from hermes_cli.profiles import _get_default_hermes_home
@@ -56,8 +58,9 @@ def resolve_active_host() -> str:
 
     Resolution order:
       1. HERMES_HONCHO_HOST env var (explicit override)
-      2. Active profile name via profiles system -> ``hermes.<profile>``
-      3. Fallback: ``"hermes"`` (default profile)
+      2. Active profile name via profiles system -> ``hermes_<profile>``
+      3. defaultHost from the active config, but only for the default profile
+      4. Fallback: ``"hermes"`` (default profile)
     """
     explicit = os.environ.get("HERMES_HONCHO_HOST", "").strip()
     if explicit:
@@ -66,10 +69,26 @@ def resolve_active_host() -> str:
     try:
         from hermes_cli.profiles import get_active_profile_name
         profile = get_active_profile_name()
-        return profile_host_key(profile)
+        profile_host = profile_host_key(profile)
     except Exception:
-        pass
-    return HOST
+        profile_host = HOST
+
+    # Honcho's generic config can carry a defaultHost (for example "local"),
+    # but applying it before profile resolution makes every named Hermes
+    # profile share that same host.  Keep named profiles isolated; only the
+    # default Hermes profile may opt into the config's default host.
+    if profile_host == HOST:
+        try:
+            path = resolve_config_path()
+            if path.exists():
+                raw = json.loads(path.read_text(encoding="utf-8"))
+                default_host = str(raw.get("defaultHost", "")).strip()
+                if default_host:
+                    return default_host
+        except Exception:
+            pass
+
+    return profile_host
 
 
 def resolve_global_config_path() -> Path:
@@ -224,6 +243,44 @@ def _parse_dialectic_depth_levels(host_val, root_val, depth: int) -> list[str] |
 # the Honcho backend is unreachable, preventing the gateway from
 # delivering the already-generated response.
 _DEFAULT_HTTP_TIMEOUT = 30.0
+
+
+def _is_local_base_url(base_url: str | None) -> bool:
+    """Return True for loopback/LAN/VPN self-hosted Honcho URLs.
+
+    Local Honcho deployments can run without auth, but the SDK requires a
+    non-empty api_key argument.  Treat loopback plus RFC1918/link-local/ULA
+    and carrier-grade-NAT IPs as local so LAN/VPN URLs such as
+    ``http://192.168.2.112:8000`` get the same placeholder-key behavior as
+    localhost.
+    """
+    if not base_url:
+        return False
+
+    try:
+        parsed = urlparse(base_url)
+        host = (parsed.hostname or "").strip().lower()
+    except Exception:
+        host = ""
+
+    if host in {"localhost", "127.0.0.1", "::1"}:
+        return True
+    if not host:
+        return False
+
+    try:
+        ip = ipaddress.ip_address(host)
+    except ValueError:
+        return False
+
+    if ip.is_loopback or ip.is_private or ip.is_link_local:
+        return True
+
+    # Tailscale/other VPN setups often sit in carrier-grade NAT space.
+    if ip.version == 4 and ipaddress.ip_address("100.64.0.0") <= ip <= ipaddress.ip_address("100.127.255.255"):
+        return True
+
+    return False
 
 
 def _resolve_optional_float(*values: Any) -> float | None:
@@ -798,6 +855,79 @@ class HonchoClientConfig:
 
 
 _honcho_client_slot: SingletonSlot = SingletonSlot()
+_cached_timeout: float | None = None
+# Memo for the honcho.json-derived timeout, keyed on the file's mtime_ns so
+# the staleness check on every get_honcho_client() call costs one stat()
+# instead of a JSON parse. mtime -1 = file absent; (None, None) = not yet
+# populated. config.yaml needs no such memo: load_config_readonly() is
+# internally cached on both the user and managed files' signatures, and a
+# bespoke key here would have to duplicate that invalidation logic.
+_honcho_json_timeout_memo: tuple[int | None, float | None] = (None, None)
+
+
+def _config_yaml_timeout() -> float | None:
+    """Read honcho.timeout / honcho.request_timeout via the cached config loader."""
+    try:
+        from hermes_cli.config import load_config_readonly
+
+        honcho_cfg = load_config_readonly().get("honcho", {})
+        if isinstance(honcho_cfg, dict):
+            return _resolve_optional_float(
+                honcho_cfg.get("timeout"),
+                honcho_cfg.get("request_timeout"),
+            )
+        return None
+    except Exception:
+        return None
+
+
+def _honcho_json_timeout() -> float | None:
+    """Read timeout/requestTimeout from honcho.json (host block wins), memoized on mtime."""
+    global _honcho_json_timeout_memo
+    try:
+        path = resolve_config_path()
+        try:
+            mtime_ns: int = path.stat().st_mtime_ns
+        except OSError:
+            mtime_ns = -1
+        if _honcho_json_timeout_memo[0] == mtime_ns:
+            return _honcho_json_timeout_memo[1]
+
+        timeout = None
+        if mtime_ns != -1:
+            raw = json.loads(path.read_text(encoding="utf-8"))
+            host_block = _host_block(raw, resolve_active_host())
+            timeout = _resolve_optional_float(
+                host_block.get("timeout"),
+                host_block.get("requestTimeout"),
+                raw.get("timeout"),
+                raw.get("requestTimeout"),
+            )
+        _honcho_json_timeout_memo = (mtime_ns, timeout)
+        return timeout
+    except Exception:
+        return None
+
+
+def _resolve_timeout_from_sources(config: HonchoClientConfig | None) -> float:
+    """Mirror the build path's timeout resolution so the staleness check agrees with it.
+
+    With an explicit config this matches ``_build`` (config.timeout, then
+    config.yaml, then default).  With no config it matches what
+    ``from_global_config`` + ``_build`` would produce: honcho.json host
+    block/root keys, then HONCHO_TIMEOUT, then config.yaml, then default.
+    Any source skew here makes the check disagree with the built client
+    forever and rebuild it on every call.
+    """
+    if config is not None:
+        timeout = config.timeout
+    else:
+        timeout = _honcho_json_timeout()
+        if timeout is None:
+            timeout = _resolve_optional_float(os.environ.get("HONCHO_TIMEOUT"))
+    if timeout is None:
+        timeout = _config_yaml_timeout()
+    return timeout if timeout is not None else _DEFAULT_HTTP_TIMEOUT
 
 
 def _apply_fresh_oauth_token(config: HonchoClientConfig) -> None:
@@ -843,10 +973,20 @@ def get_honcho_client(config: HonchoClientConfig | None = None) -> Honcho:
     first calls (double-checked locking via ``SingletonSlot``), so racing
     threads can't each construct a client and leak the loser's connection.
     """
+    global _cached_timeout
     cached = _honcho_client_slot.peek()
     if cached is not None:
-        _refresh_cached_oauth(cached, config)
-        return cached
+        # Detect timeout config changes in long-lived processes (gateway,
+        # dashboard).  If the user changed the timeout after the client was
+        # built, rebuild with the new value.
+        new_timeout = _resolve_timeout_from_sources(config)
+        if new_timeout != _cached_timeout:
+            _honcho_client_slot.reset()
+            _cached_timeout = None
+            cached = None
+        else:
+            _refresh_cached_oauth(cached, config)
+            return cached
 
     if config is None:
         config = HonchoClientConfig.from_global_config()
@@ -922,16 +1062,12 @@ def get_honcho_client(config: HonchoClientConfig | None = None) -> Honcho:
         # For local: only use config.api_key if the host block explicitly
         # sets apiKey (meaning the user wants local auth). Otherwise skip
         # the stored key -- it's likely a cloud key that would break local.
-        _is_local = resolved_base_url and (
-            "localhost" in resolved_base_url
-            or "127.0.0.1" in resolved_base_url
-            or "::1" in resolved_base_url
-        )
+        _is_local = _is_local_base_url(resolved_base_url)
         if _is_local:
             # Check if the host block has its own apiKey (explicit local auth).
-            # Auth-skipping is loopback-only: a stored key is likely a cloud key
-            # that would break a no-auth local server, so we substitute the SDK's
-            # required-non-empty placeholder unless the host block opts in.
+            # For local/LAN/VPN self-hosts, a stored root key is likely a cloud
+            # key that would break a no-auth local server, so we substitute the
+            # SDK's required-non-empty placeholder unless the host block opts in.
             _raw = config.raw or {}
             _host_block = (_raw.get("hosts") or {}).get(config.host, {})
             _host_has_key = bool(_host_block.get("apiKey"))
@@ -961,6 +1097,8 @@ def get_honcho_client(config: HonchoClientConfig | None = None) -> Honcho:
         if resolved_timeout is not None:
             kwargs["timeout"] = resolved_timeout
 
+        global _cached_timeout
+        _cached_timeout = resolved_timeout
         return Honcho(**kwargs)
 
     return _honcho_client_slot.get(_build)
@@ -968,4 +1106,7 @@ def get_honcho_client(config: HonchoClientConfig | None = None) -> Honcho:
 
 def reset_honcho_client() -> None:
     """Reset the Honcho client singleton (useful for testing)."""
+    global _cached_timeout, _honcho_json_timeout_memo
     _honcho_client_slot.reset()
+    _cached_timeout = None
+    _honcho_json_timeout_memo = (None, None)

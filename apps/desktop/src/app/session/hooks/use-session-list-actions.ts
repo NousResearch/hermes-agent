@@ -15,9 +15,7 @@ import {
   $messagingSessions,
   $selectedStoredSessionId,
   $sessions,
-  $workingSessionIds,
   CRON_SECTION_LIMIT,
-  getRecentlySettledSessionIds,
   mergeSessionPage,
   MESSAGING_SECTION_LIMIT,
   setCronSessions,
@@ -29,6 +27,7 @@ import {
   setSessionsLoading,
   setSessionsTotal
 } from '@/store/session'
+import { $workingSessionIds, getRecentlySettledSessionIds } from '@/store/session-states'
 
 // The recents list is local-only: cron rows have their own section, and each
 // messaging platform (telegram, discord, …) is fetched separately into its own
@@ -154,7 +153,15 @@ export function useSessionListActions({ profileScope }: UseSessionListActionsArg
   const refreshSessions = useCallback(async () => {
     const requestId = refreshSessionsRequestRef.current + 1
     refreshSessionsRequestRef.current = requestId
-    setSessionsLoading(true)
+    // The loading flag exists to drive the initial skeletons (they only render
+    // while the list is empty). Turn-complete / reconnect refreshes over a
+    // populated list used to flip it true→false anyway, churning every
+    // $sessionsLoading subscriber twice per turn for no visible change.
+    const showLoading = $sessions.get().length === 0
+
+    if (showLoading) {
+      setSessionsLoading(true)
+    }
 
     try {
       const limit = $sessionsLimit.get()
@@ -177,12 +184,27 @@ export function useSessionListActions({ profileScope }: UseSessionListActionsArg
       })
 
       if (refreshSessionsRequestRef.current === requestId) {
-        setSessions(prev => mergeSessionPage(prev, result.sessions, sessionsToKeep()))
+        // Signature-gate the swap (same pattern as cron/messaging): a refresh
+        // that returns content-identical rows must keep the previous array
+        // identity, or every sidebar memo keyed on $sessions recomputes and the
+        // whole list re-renders once per turn/broadcast for nothing.
+        setSessions(prev => {
+          const next = mergeSessionPage(prev, result.sessions, sessionsToKeep())
+
+          return sameCronSignature(prev, next) ? prev : next
+        })
         setSessionsTotal(typeof result.total === 'number' ? result.total : result.sessions.length)
-        setSessionProfileTotals(result.profile_totals ?? {})
+        setSessionProfileTotals(prev => {
+          const next = result.profile_totals ?? {}
+          const prevKeys = Object.keys(prev)
+
+          return prevKeys.length === Object.keys(next).length && prevKeys.every(key => prev[key] === next[key])
+            ? prev
+            : next
+        })
       }
     } finally {
-      if (refreshSessionsRequestRef.current === requestId) {
+      if (showLoading && refreshSessionsRequestRef.current === requestId) {
         setSessionsLoading(false)
       }
     }

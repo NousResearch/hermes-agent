@@ -27,6 +27,7 @@ import {
   buildMcpServerCreate,
   type McpTransport,
 } from "@/lib/mcp-server-create";
+import { completeMcpDashboardOAuth } from "@/lib/mcp-dashboard-oauth";
 
 function isHttpUrl(value: string): boolean {
   return /^https?:\/\//i.test(value.trim());
@@ -183,13 +184,17 @@ export default function McpPage() {
   const handleAuthenticate = async (server: McpServer) => {
     setAuthenticating(server.name);
     try {
-      const result = await api.authMcpServer(server.name);
-      setTestResults((prev) => ({ ...prev, [server.name]: result }));
-      if (result.ok) {
-        showToast(`${server.name}: OAuth authentication complete`, "success");
-      } else {
-        showToast(`${server.name}: ${result.error ?? "OAuth failed"}`, "error");
-      }
+      const result = await completeMcpDashboardOAuth({
+        serverName: server.name,
+        start: api.authMcpServer,
+        status: api.getMcpOAuthFlow,
+        open: window.open.bind(window),
+      });
+      setTestResults((prev) => ({
+        ...prev,
+        [server.name]: { ok: true, tools: result.tools ?? [] },
+      }));
+      showToast(`${server.name}: OAuth authentication complete`, "success");
     } catch (e) {
       showToast(`OAuth error: ${e}`, "error");
     } finally {

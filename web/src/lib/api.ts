@@ -996,9 +996,13 @@ export const api = {
       body: JSON.stringify(body),
     }),
   authMcpServer: (name: string) =>
-    fetchJSON<McpTestResult>(
+    fetchJSON<McpOAuthFlow>(
       `/api/mcp/servers/${encodeURIComponent(name)}/auth`,
       { method: "POST" },
+    ),
+  getMcpOAuthFlow: (flowId: string) =>
+    fetchJSON<McpOAuthFlow>(
+      `/api/mcp/oauth/flows/${encodeURIComponent(flowId)}`,
     ),
   removeMcpServer: (name: string) =>
     fetchJSON<{ ok: boolean }>(`/api/mcp/servers/${encodeURIComponent(name)}`, {
@@ -1463,6 +1467,15 @@ export interface McpTestResult {
   ok: boolean;
   error?: string;
   tools: Array<{ name: string; description: string }>;
+}
+
+export interface McpOAuthFlow {
+  flow_id: string;
+  server_name: string;
+  status: "starting" | "authorization_required" | "approved" | "error";
+  authorization_url: string | null;
+  error: string | null;
+  tools?: Array<{ name: string; description: string }>;
 }
 
 export interface MessagingPlatformEnvVar {

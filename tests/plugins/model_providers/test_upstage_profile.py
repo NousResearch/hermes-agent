@@ -202,3 +202,65 @@ def upstage_profile_singleton():
     import providers
 
     return providers.get_provider_profile("upstage")
+
+
+class TestUpstageFullKwargsIntegration:
+    """End-to-end: the transport's final kwargs honor reasoning off.
+
+    The profile-level tests above exercise ``build_api_kwargs_extras`` in
+    isolation, but the user-visible request contract is finalized when
+    ``ChatCompletionsTransport.build_kwargs`` merges the profile's top-level
+    fields into the API kwargs. These pin the wire contract for both
+    reasoning-off shapes batch_runner emits (--reasoning_disabled →
+    {"effort": "none"}, --reasoning_effort none → {"enabled": True,
+    "effort": "none"}): ``reasoning_effort`` must be absent from the final
+    kwargs. Mirrors TestOllamaCloudFullKwargsIntegration.
+    """
+
+    def test_full_kwargs_with_effort_none_reasoning_disabled_shape(self, upstage_profile):
+        from agent.transports.chat_completions import ChatCompletionsTransport
+
+        kwargs = ChatCompletionsTransport().build_kwargs(
+            model="solar-pro3",
+            messages=[{"role": "user", "content": "ping"}],
+            tools=None,
+            provider_profile=upstage_profile,
+            reasoning_config={"effort": "none"},
+            base_url="https://api.upstage.ai/v1",
+            provider_name="upstage",
+        )
+        assert kwargs["model"] == "solar-pro3"
+        assert "reasoning_effort" not in kwargs
+        # Solar takes reasoning_effort top-level only — never via extra_body.
+        assert "reasoning" not in kwargs.get("extra_body", {})
+
+    def test_full_kwargs_with_effort_none_enabled_true_shape(self, upstage_profile):
+        from agent.transports.chat_completions import ChatCompletionsTransport
+
+        kwargs = ChatCompletionsTransport().build_kwargs(
+            model="solar-pro3",
+            messages=[{"role": "user", "content": "ping"}],
+            tools=None,
+            provider_profile=upstage_profile,
+            reasoning_config={"enabled": True, "effort": "none"},
+            base_url="https://api.upstage.ai/v1",
+            provider_name="upstage",
+        )
+        assert "reasoning_effort" not in kwargs
+        assert "reasoning" not in kwargs.get("extra_body", {})
+
+    def test_full_kwargs_with_high_still_lands(self, upstage_profile):
+        # Positive control: the absence assertions above are only meaningful
+        # if the transport actually wires this profile's reasoning field.
+        from agent.transports.chat_completions import ChatCompletionsTransport
+
+        kwargs = ChatCompletionsTransport().build_kwargs(
+            model="solar-pro3",
+            messages=[{"role": "user", "content": "ping"}],
+            tools=None,
+            provider_profile=upstage_profile,
+            reasoning_config={"enabled": True, "effort": "high"},
+            base_url="https://api.upstage.ai/v1",
+            provider_name="upstage",
+        )
+        assert kwargs["reasoning_effort"] == "high"

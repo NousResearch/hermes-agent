@@ -666,7 +666,7 @@ def test_credential_dir_trees_blocked_on_subdir_descent(forced_files_client):
 
 def test_benign_subdir_file_still_browsable(forced_files_client):
     """Positive control: the directory-component guard must NOT over-block a
-    benign subdir. A normal file under a normal subdir stays listable/readable."""
+    normal file under a normal subdir stays listable/readable."""
     client, root = forced_files_client
     root.mkdir(parents=True, exist_ok=True)
 
@@ -678,3 +678,43 @@ def test_benign_subdir_file_still_browsable(forced_files_client):
     listing = client.get("/api/files", params={"path": str(sub)})
     assert "todo.txt" in [e["name"] for e in listing.json()["entries"]]
     assert client.get("/api/files/read", params={"path": str(p)}).status_code == 200
+
+
+def test_dangling_symlink_does_not_break_directory_listing(forced_files_client):
+    """Regression: a dangling symlink in a directory must not 500 the listing.
+
+    Symlinks whose target is currently unavailable (deleted file, unmounted
+    external drive, or a Nix/Home Manager profile with /nix/store not mounted)
+    should not prevent the rest of the directory from being browsable. The
+    broken link is surfaced as an informative entry rather than crashing the
+    listing or being misreported as a root escape.
+    """
+    client, root = forced_files_client
+    root.mkdir(parents=True, exist_ok=True)
+
+    real = root / "real.txt"
+    real.write_text("still here")
+
+    try:
+        (root / "dangling").symlink_to("/nix/store/nonexistent-broken-link-profile")
+    except OSError:
+        pytest.skip("filesystem does not allow symlinks")
+
+    listing = client.get("/api/files", params={"path": str(root)})
+    assert listing.status_code == 200
+
+    entries = {e["name"]: e for e in listing.json()["entries"]}
+    assert "real.txt" in entries
+    assert entries["real.txt"]["is_directory"] is False
+
+    assert "dangling" in entries
+    dangling = entries["dangling"]
+    assert dangling["is_directory"] is False
+    assert dangling.get("is_broken_symlink") is True
+    assert dangling["mime_type"] == "inode/symlink-broken"
+    assert dangling["size"] is None
+    assert dangling["mtime"] is None
+
+    # Reading or downloading the broken symlink directly is still an error.
+    assert client.get("/api/files/read", params={"path": str(root / "dangling")}).status_code == 404
+    assert client.get("/api/files/download", params={"path": str(root / "dangling")}).status_code == 404

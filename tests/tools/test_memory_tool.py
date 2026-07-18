@@ -308,24 +308,41 @@ class TestMemoryStoreAdd:
         room, the add succeeds silently with no error returned. Verified end-to-end
         on 2026-07-05 by patching tools/memory_tool.py to call
         _auto_consolidate() before returning the overflow error.
+
+        Fixed 2026-07-17 (review feedback): the previous version hardcoded a
+        machine-specific script path (silently took the no-op fallback
+        branch on any other machine, including CI) AND patched
+        get_memory_dir() to return tmp_path directly while
+        _auto_consolidate() looks for the compress script at
+        get_memory_dir().parent / "scripts" / "memory-auto-compress.py" —
+        a path mismatch that meant script.exists() was always False here,
+        so the "success" branch below was never actually reached; this test
+        passed vacuously via its own fallback assertion every single run.
+        Fixed by mirroring the real HERMES_HOME/memories +
+        HERMES_HOME/scripts layout under tmp_path with a portable stub (no
+        machine-specific paths), and asserting the success path directly
+        instead of accepting either outcome — a regression that breaks the
+        real code path (not just this test's setup) is now actually caught.
         """
-        # Set up: point get_memory_dir() at a tmp dir, drop a fake compress
-        # script there, and configure the MemoryStore to find it.
-        monkeypatch.setattr("tools.memory_tool.get_memory_dir", lambda: tmp_path)
-        fake_script = tmp_path / "memory-auto-compress.py"
-        # The actual compress script — copy from the install dir.
-        import shutil
-        real_script = r"C:\Users\bbask\AppData\Local\hermes\scripts\memory-auto-compress.py"
-        if os.path.exists(real_script):
-            shutil.copy(real_script, fake_script)
-        else:
-            # No real script available — write a no-op stub that shrinks the file.
-            fake_script.write_text(
-                "import sys\n"
-                "from pathlib import Path\n"
-                "p = Path(sys.argv[0]).parent / 'memories' / 'MEMORY.md'\n"
-                "if p.exists(): p.write_text('(stub archive stub)\n') \n"
-            )
+        # Mirror the real layout _auto_consolidate() expects:
+        # HERMES_HOME/memories/MEMORY.md and
+        # HERMES_HOME/scripts/memory-auto-compress.py.
+        mem_dir = tmp_path / "memories"
+        mem_dir.mkdir()
+        monkeypatch.setattr("tools.memory_tool.get_memory_dir", lambda: mem_dir)
+        scripts_dir = tmp_path / "scripts"
+        scripts_dir.mkdir()
+        fake_script = scripts_dir / "memory-auto-compress.py"
+        # Portable no-op stub that shrinks the target file — no
+        # machine-specific paths, so this actually exercises the real code
+        # path on any machine, not just the one it happened to be written on.
+        fake_script.write_text(
+            "import sys\n"
+            "from pathlib import Path\n"
+            "p = Path(__file__).resolve().parent.parent / 'memories' / 'MEMORY.md'\n"
+            "if p.exists():\n"
+            "    p.write_text('(stub archive)\\n')\n"
+        )
 
         s = MemoryStore(memory_char_limit=500, user_char_limit=300)
         s.load_from_disk()
@@ -334,26 +351,20 @@ class TestMemoryStoreAdd:
         s.add("memory", "x" * 490)
         assert len(s.memory_entries) == 1
 
-        # This add would push past 500, but auto-consolidate should make room.
+        # This add would push past 500; the stub always shrinks the file
+        # enough to make room, so auto-consolidate must succeed here.
         result = s.add("memory", "important new fact about the system")
-
-        # Two acceptable outcomes:
-        # 1. Auto-consolidate shrank the file enough → success
-        # 2. Auto-consolidate couldn't make room → error with consolidation hints
-        if result["success"]:
-            # Verify the new entry actually landed
-            assert any("important new fact" in e for e in s.memory_entries)
-        else:
-            # Verify the error gives the model what it needs
-            assert "exceed" in result["error"].lower()
-            assert "current_entries" in result
+        assert result["success"] is True, f"expected auto-consolidate to succeed: {result}"
+        assert any("important new fact" in e for e in s.memory_entries)
 
     def test_add_overflow_falls_through_when_no_compress_script(self, tmp_path, monkeypatch):
         """When the compress script is missing, _auto_consolidate is a no-op
         and the original overflow error path runs (back-compat behavior).
         """
         # No script in tmp_path/scripts/ — _auto_consolidate will return False
-        monkeypatch.setattr("tools.memory_tool.get_memory_dir", lambda: tmp_path)
+        mem_dir = tmp_path / "memories"
+        mem_dir.mkdir()
+        monkeypatch.setattr("tools.memory_tool.get_memory_dir", lambda: mem_dir)
 
         s = MemoryStore(memory_char_limit=500, user_char_limit=300)
         s.load_from_disk()

@@ -361,11 +361,19 @@ class MemoryStore:
         try:
             # 5s timeout — auto-consolidation should be fast (just file rewrites).
             # If the script hangs, the user is already in a bad state; fail open.
+            #
+            # env= is load-bearing: get_memory_dir()/get_hermes_home() resolve
+            # a *profile-scoped* home that can differ from whatever HERMES_HOME
+            # happens to be set to (or unset) in this process's own environment.
+            # Without explicitly propagating it, the child script falls back to
+            # its own independent resolution and can target the wrong
+            # profile's memory files on a multi-profile install.
             result = subprocess.run(
                 [sys.executable, str(script)],
                 capture_output=True,
                 timeout=5,
                 check=False,
+                env={**os.environ, "HERMES_HOME": str(get_hermes_home())},
             )
             after_size = path.stat().st_size if path.exists() else before_size
             freed = before_size - after_size

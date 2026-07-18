@@ -30,9 +30,7 @@ import {
   setCurrentBranch,
   setCurrentCwd,
   setCurrentFastMode,
-  setCurrentModel,
   setCurrentPersonality,
-  setCurrentProvider,
   setCurrentReasoningEffort,
   setCurrentServiceTier,
   setCurrentUsage,
@@ -167,13 +165,12 @@ export function useGatewayEventHandler(deps: GatewayEventDeps) {
         }
 
         if (apply) {
-          if (modelChanged) {
-            setCurrentModel(payload!.model || '')
-          }
-
-          if (providerChanged) {
-            setCurrentProvider(payload!.provider || '')
-          }
+          // Do not call setCurrentModel / setCurrentProvider here. Composer
+          // model/provider is sticky UI state (localStorage + manual picks).
+          // Periodic session.info heartbeats often carry the profile default
+          // (or a stale session model) and would silently revert the dropdown.
+          // Active-session model/provider still flows through the session state
+          // cache via updateSessionState → syncRuntimeMetadataToView below.
 
           if (typeof payload?.cwd === 'string') {
             // The active session's agent can relocate itself (new repo/worktree
@@ -232,7 +229,7 @@ export function useGatewayEventHandler(deps: GatewayEventDeps) {
 
         // The running→busy transition must reach EVERY session, not just the
         // active one. The `apply` gate above correctly scopes view-only side
-        // effects (setCurrentModel, setCurrentCwd, etc.) to the focused chat,
+        // effects (setCurrentCwd, etc.) to the focused chat,
         // but the per-session busy state is what drives the sidebar working
         // indicator — a background session's turn start/finish must update
         // its dot without the user opening it. updateSessionState only

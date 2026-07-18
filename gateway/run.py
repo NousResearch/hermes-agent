@@ -53,7 +53,7 @@ from typing import Awaitable, Callable, Dict, Optional, Any, List, Union
 # gateway is a long-running daemon, so its boot cost matters less than
 # preserving the established test-patch surface.
 from agent.account_usage import fetch_account_usage, render_account_usage_lines
-from agent.async_utils import safe_schedule_threadsafe
+from agent.async_utils import consume_detached_task_result, safe_schedule_threadsafe
 from agent.conversation_loop import INTERRUPT_WAITING_FOR_MODEL_PREFIX
 from agent.i18n import t
 from hermes_cli.config import cfg_get
@@ -2950,6 +2950,16 @@ async def _dispose_unused_adapter(adapter: "BasePlatformAdapter | None") -> None
         )
 
 
+# Max seconds between platform reconnect retries (primary watcher and
+# secondary-profile reconnects share this policy — tune in one place).
+_RECONNECT_BACKOFF_CAP = 300
+
+
+def _reconnect_backoff(attempt: int) -> int:
+    """Exponential reconnect backoff: 30s, 60s, 120s, ... capped at 5 min."""
+    return min(30 * (2 ** (attempt - 1)), _RECONNECT_BACKOFF_CAP)
+
+
 class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, GatewaySlashCommandsMixin):
     """
     Main gateway controller.
@@ -3540,14 +3550,6 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 if mode in {"voice_only", "all"} and key.startswith(prefix)
             )
 
-    @staticmethod
-    def _consume_detached_adapter_cleanup_result(task: asyncio.Future[Any]) -> None:
-        """Retrieve a detached cleanup task result without surfacing cancellation."""
-        try:
-            task.exception()
-        except (asyncio.CancelledError, Exception):
-            pass
-
     async def _await_adapter_cleanup_with_timeout(
         self, awaitable: Awaitable[Any], timeout: float
     ) -> bool:
@@ -3567,14 +3569,14 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             done, _pending = await asyncio.wait({task}, timeout=timeout)
         except asyncio.CancelledError:
             task.cancel()
-            task.add_done_callback(self._consume_detached_adapter_cleanup_result)
+            task.add_done_callback(consume_detached_task_result)
             raise
         if task in done:
             await task
             return True
 
         task.cancel()
-        task.add_done_callback(self._consume_detached_adapter_cleanup_result)
+        task.add_done_callback(consume_detached_task_result)
         return False
 
     async def _safe_adapter_disconnect(self, adapter, platform) -> None:
@@ -8309,8 +8311,6 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         automatically — auto-pausing a recovered platform was the cause of
         bots silently staying dead after a transient DNS failure.
         """
-        _BACKOFF_CAP = 300  # 5 minutes max between retries
-
         await asyncio.sleep(10)  # initial delay — let startup finish
         while self._running:
             if not self._failed_platforms:
@@ -8441,7 +8441,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                             error_code=adapter.fatal_error_code,
                             error_message=adapter.fatal_error_message or "failed to reconnect",
                         )
-                        backoff = min(30 * (2 ** (attempt - 1)), _BACKOFF_CAP)
+                        backoff = _reconnect_backoff(attempt)
                         info["attempts"] = attempt
                         info["next_retry"] = time.monotonic() + backoff
                         logger.info(
@@ -8479,7 +8479,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                         error_code=None,
                         error_message=str(e),
                     )
-                    backoff = min(30 * (2 ** (attempt - 1)), _BACKOFF_CAP)
+                    backoff = _reconnect_backoff(attempt)
                     info["attempts"] = attempt
                     info["next_retry"] = time.monotonic() + backoff
                     logger.warning(
@@ -9325,7 +9325,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 if not self._running:
                     return
                 attempts += 1
-                backoff = min(30 * (2 ** (attempts - 1)), 300)
+                backoff = _reconnect_backoff(attempts)
                 logger.info(
                     "Secondary %s reconnect retry in %ds (profile: %s)",
                     platform.value,

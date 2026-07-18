@@ -152,11 +152,11 @@ import {
   grantAllApplicationPackagesAcl,
   markerAfterSuccessfulBoot,
   readSandboxMarker,
+  type SandboxFallbackReason,
   shouldAttemptAclRepair,
   shouldRelaunchForGpuSandboxCrash,
   shouldRelaunchForRendererSandboxCrashLoop,
-  writeSandboxMarker,
-  type SandboxFallbackReason
+  writeSandboxMarker
 } from './windows-sandbox-fallback'
 import { installWindowsSystemCaTrust } from './windows-system-ca'
 import { readWindowsUserEnvVar } from './windows-user-env'
@@ -7509,8 +7509,7 @@ function createWindow() {
           shouldRelaunchForRendererSandboxCrashLoop({
             reason: details?.reason,
             exitCode: details?.exitCode,
-            alreadyNoSandbox:
-              windowsSandboxFallbackActive || alreadyHasNoSandbox(process.argv, process.env),
+            alreadyNoSandbox: windowsSandboxFallbackActive || alreadyHasNoSandbox(process.argv, process.env),
             relaunchAttempted: windowsNoSandboxRelaunchAttempted
           })
         ) {
@@ -7520,17 +7519,12 @@ function createWindow() {
           windowsSandboxFallbackReason = 'renderer-crash-loop'
 
           try {
-            writeSandboxMarker(
-              app.getPath('userData'),
-              fallbackMarker('renderer-crash-loop', app.getVersion())
-            )
+            writeSandboxMarker(app.getPath('userData'), fallbackMarker('renderer-crash-loop', app.getVersion()))
           } catch {
             void 0
           }
 
-          rememberLog(
-            '[renderer] Windows sandbox crash loop detected; relaunching once with --no-sandbox (#38216)'
-          )
+          rememberLog('[renderer] Windows sandbox crash loop detected; relaunching once with --no-sandbox (#38216)')
 
           try {
             app.relaunch({ args: buildNoSandboxRelaunchArgs(process.argv.slice(1)) })

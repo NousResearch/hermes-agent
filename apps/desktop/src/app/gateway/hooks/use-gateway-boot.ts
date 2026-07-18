@@ -284,10 +284,14 @@ export function useGatewayBoot({
           return
         }
 
+        // Same shape as boot(): profile first (session scope depends on it),
+        // then the independent fetches concurrently.
         await adoptPrimaryProfile()
-        await seedDefaultCwd()
-        await callbacksRef.current.refreshHermesConfig().catch(() => undefined)
-        await callbacksRef.current.refreshSessions().catch(() => undefined)
+        await Promise.all([
+          seedDefaultCwd(),
+          callbacksRef.current.refreshHermesConfig().catch(() => undefined),
+          callbacksRef.current.refreshSessions().catch(() => undefined)
+        ])
         completeDesktopBoot()
         bootCompleted = true
       } catch (err) {
@@ -460,6 +464,11 @@ export function useGatewayBoot({
           return
         }
 
+        // Profile adoption must land first: refreshSessions scopes its fetch by
+        // $profileScope ← $activeGatewayProfile. The remaining three fetches
+        // (cwd seed, config, sessions) are independent REST calls — running
+        // them serially added their sum to time-to-populated-sidebar when only
+        // the max is needed.
         await adoptPrimaryProfile()
 
         setDesktopBootStep({
@@ -467,20 +476,17 @@ export function useGatewayBoot({
           message: translateNow('boot.steps.loadingSettings'),
           progress: 97
         })
-        await seedDefaultCwd()
 
-        await callbacksRef.current.refreshHermesConfig()
+        await Promise.all([
+          seedDefaultCwd(),
+          callbacksRef.current.refreshHermesConfig(),
+          callbacksRef.current.refreshSessions()
+        ])
 
         if (cancelled) {
           return
         }
 
-        setDesktopBootStep({
-          phase: 'renderer.sessions',
-          message: translateNow('boot.steps.loadingSessions'),
-          progress: 99
-        })
-        await callbacksRef.current.refreshSessions()
         completeDesktopBoot()
         bootCompleted = true
       } catch (err) {

@@ -35,6 +35,7 @@ from scripts.canary import owner_gate_foundation as foundation
 from scripts.canary import owner_gate_owner_reauth as owner_reauth
 from scripts.canary import owner_gate_package as package
 from scripts.canary import owner_gate_preflight as preflight
+from scripts.canary import owner_gate_production_ingress_contract as production_ingress
 from scripts.canary import owner_gate_trust as trust
 from scripts.canary import passkey_v2_protocol as protocol
 from scripts.canary import passkey_v2_service as service
@@ -74,19 +75,27 @@ ACTIVATION_EVIDENCE_VALIDATION_SCHEMA = (
 RELEASE_LINEAGE_SCHEMA = "muncho-owner-gate-portable-release-lineage.v1"
 
 NETWORK_EVIDENCE_NAME = "network-evidence.json"
+INERT_PRODUCTION_INGRESS_OBSERVATION_NAME = (
+    "inert-production-ingress-observation.json"
+)
 INERT_CLOUD_OBSERVATION_NAME = "inert-cloud-observation.json"
 INERT_HOST_OBSERVATION_NAME = "inert-host-observation.json"
 INERT_PREFLIGHT_NAME = "inert-preflight.json"
 POST_IAM_CLOUD_OBSERVATION_NAME = "post-iam-cloud-observation.json"
 POST_IAM_HOST_OBSERVATION_NAME = "post-iam-host-observation.json"
 POST_IAM_PREFLIGHT_NAME = "post-iam-preflight.json"
+POST_IAM_PRODUCTION_INGRESS_OBSERVATION_NAME = (
+    "post-iam-production-ingress-observation.json"
+)
 ACTIVATION_OWNER_REAUTH_NAME = "activation-owner-reauthentication-receipt.json"
 
 EVIDENCE_NAMES = (
     NETWORK_EVIDENCE_NAME,
+    INERT_PRODUCTION_INGRESS_OBSERVATION_NAME,
     INERT_CLOUD_OBSERVATION_NAME,
     INERT_HOST_OBSERVATION_NAME,
     INERT_PREFLIGHT_NAME,
+    POST_IAM_PRODUCTION_INGRESS_OBSERVATION_NAME,
     POST_IAM_CLOUD_OBSERVATION_NAME,
     POST_IAM_HOST_OBSERVATION_NAME,
     POST_IAM_PREFLIGHT_NAME,
@@ -510,6 +519,11 @@ def _load_release_authority(
     if (
         manifest.get("release_revision") != revision
         or release_trust.get("release_revision") != revision
+        or manifest.get("foundation_source_revision")
+        != release_trust.get("foundation_source_revision")
+        or manifest.get("foundation_source_tree_oid")
+        != release_trust.get("foundation_source_tree_oid")
+        or manifest.get("foundation_source_revision") == revision
         or manifest.get("release_root") != str(release)
         or manifest.get("release_owner") != "root:root"
         or manifest.get("release_directory_mode") != "0555"
@@ -584,7 +598,9 @@ def _load_release_authority(
     try:
         direct = direct_iam.decode_canonical(
             direct_raw,
-            release_revision=revision,
+            release_revision=str(
+                release_trust["foundation_source_revision"]
+            ),
         )
     except direct_iam.DirectIamIdentityAuthorityError:
         raise OwnerGateActivationSealError(
@@ -596,6 +612,10 @@ def _load_release_authority(
         != manifest.get("direct_iam_identity_authority_sha256")
         or direct_digest
         != release_trust.get("direct_iam_identity_authority_sha256")
+        or direct.get("release_revision")
+        != manifest.get("foundation_source_revision")
+        or direct.get("release_revision")
+        != release_trust.get("foundation_source_revision")
         or direct.get("pre_foundation_authority_sha256")
         != manifest.get("pre_foundation_authority_sha256")
         or direct.get("pre_foundation_authority_sha256")
@@ -771,6 +791,10 @@ def _derive_activation(
     try:
         expected_inert = preflight.build_preflight_report(
             plan=authority.plan,
+            production_ingress_observation=values[
+                INERT_PRODUCTION_INGRESS_OBSERVATION_NAME
+            ],
+            release_public_key=authority.release_public_key,
             cloud_observation=values[INERT_CLOUD_OBSERVATION_NAME],
             host_observation=values[INERT_HOST_OBSERVATION_NAME],
             cloud_collector_public_key=authority.collector_keys["cloud"],
@@ -779,6 +803,10 @@ def _derive_activation(
         )
         expected_post = preflight.build_post_iam_preflight_report(
             plan=authority.plan,
+            production_ingress_observation=values[
+                POST_IAM_PRODUCTION_INGRESS_OBSERVATION_NAME
+            ],
+            release_public_key=authority.release_public_key,
             cloud_observation=values[POST_IAM_CLOUD_OBSERVATION_NAME],
             host_observation=values[POST_IAM_HOST_OBSERVATION_NAME],
             cloud_collector_public_key=authority.collector_keys["cloud"],
@@ -796,6 +824,29 @@ def _derive_activation(
         raise OwnerGateActivationSealError(
             "owner_gate_activation_evidence_invalid"
         )
+
+    if enforce_fresh:
+        try:
+            production_ingress.validate_signed_production_ingress_observation(
+                values[INERT_PRODUCTION_INGRESS_OBSERVATION_NAME],
+                phase="inert",
+                release_revision=authority.release_revision,
+                plan_sha256=authority.plan.sha256,
+                release_public_key=authority.release_public_key,
+                now_unix=now_unix,
+            )
+            production_ingress.validate_signed_production_ingress_observation(
+                values[POST_IAM_PRODUCTION_INGRESS_OBSERVATION_NAME],
+                phase="post_iam",
+                release_revision=authority.release_revision,
+                plan_sha256=authority.plan.sha256,
+                release_public_key=authority.release_public_key,
+                now_unix=now_unix,
+            )
+        except production_ingress.ProductionIngressObservationError:
+            raise OwnerGateActivationSealError(
+                "owner_gate_activation_evidence_stale"
+            ) from None
 
     try:
         activation_owner_reauth = owner_reauth.validate_owner_reauth_receipt(
@@ -818,7 +869,7 @@ def _derive_activation(
         or not isinstance(owner_probe, Mapping)
         or type(owner_issued) is not int
         or type(owner_expires) is not int
-        or owner_issued < post_time
+        or owner_issued <= post_time
         or owner_issued > now_unix
         or owner_expires < owner_issued
         or owner_runtime.get("release_revision")
@@ -978,6 +1029,16 @@ def _derive_activation(
         fresh_through_unix=min(
             inert_time + foundation.PREFLIGHT_MAX_AGE_SECONDS,
             post_time + foundation.PREFLIGHT_MAX_AGE_SECONDS,
+            int(
+                values[INERT_PRODUCTION_INGRESS_OBSERVATION_NAME][
+                    "fresh_through_unix"
+                ]
+            ),
+            int(
+                values[POST_IAM_PRODUCTION_INGRESS_OBSERVATION_NAME][
+                    "fresh_through_unix"
+                ]
+            ),
             owner_expires,
         ),
     )

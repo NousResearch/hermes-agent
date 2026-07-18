@@ -274,9 +274,11 @@ _ACTIVATION_RELEASE_LINEAGE_FIELDS = frozenset({
 
 _ACTIVATION_EVIDENCE_NAMES = frozenset({
     "network-evidence.json",
+    "inert-production-ingress-observation.json",
     "inert-cloud-observation.json",
     "inert-host-observation.json",
     "inert-preflight.json",
+    "post-iam-production-ingress-observation.json",
     "post-iam-cloud-observation.json",
     "post-iam-host-observation.json",
     "post-iam-preflight.json",

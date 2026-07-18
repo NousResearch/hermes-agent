@@ -19960,6 +19960,30 @@ def _cli_parser() -> argparse.ArgumentParser:
         ),
     )
     actions.add_argument(
+        "--activate-owner-gate-deferred-mutation-iam",
+        action="store_true",
+        help=(
+            "run fresh owner reauthentication and CAS-install only the exact "
+            "release-bound deferred mutation IAM binding"
+        ),
+    )
+    actions.add_argument(
+        "--remove-owner-gate-deferred-mutation-iam",
+        action="store_true",
+        help=(
+            "CAS-remove only the exact journal-owned deferred mutation IAM "
+            "binding without requiring the activation reauth to remain fresh"
+        ),
+    )
+    actions.add_argument(
+        "--stage-owner-gate-activation-evidence",
+        action="store_true",
+        help=(
+            "author and stage the exact fresh post-IAM evidence bundle without "
+            "activation or any Cloud, IAM, Caddy, runtime, or storage mutation"
+        ),
+    )
+    actions.add_argument(
         "--author-storage-growth",
         action="store_true",
         help=(
@@ -20223,6 +20247,50 @@ def main(argv: Sequence[str] | None = None) -> int:
             from scripts.canary import owner_gate_inert_observation
 
             receipt = owner_gate_inert_observation.collect_inert_observation(
+                release_revision=release_sha,
+                gcloud_executable=gcloud_executable,
+                gcloud_configuration=gcloud_configuration,
+                owner_identity=owner_identity,
+            )
+            runtime_and_provenance_guard(release_sha)
+            _emit_canonical_line(receipt)
+            return 0
+
+        if (
+            arguments.activate_owner_gate_deferred_mutation_iam
+            or arguments.remove_owner_gate_deferred_mutation_iam
+        ):
+            if arguments.external_iam_policy_sha256 is not None:
+                raise OwnerLauncherError(
+                    "owner_gate_deferred_mutation_iam_cli_invalid"
+                )
+            from scripts.canary import owner_gate_deferred_mutation_iam
+
+            action = (
+                owner_gate_deferred_mutation_iam.
+                activate_deferred_mutation_iam
+                if arguments.activate_owner_gate_deferred_mutation_iam
+                else owner_gate_deferred_mutation_iam.
+                remove_deferred_mutation_iam
+            )
+            receipt = action(
+                release_revision=release_sha,
+                gcloud_executable=gcloud_executable,
+                gcloud_configuration=gcloud_configuration,
+                owner_identity=owner_identity,
+            )
+            runtime_and_provenance_guard(release_sha)
+            _emit_canonical_line(receipt)
+            return 0
+
+        if arguments.stage_owner_gate_activation_evidence:
+            if arguments.external_iam_policy_sha256 is not None:
+                raise OwnerLauncherError(
+                    "owner_gate_activation_evidence_author_cli_invalid"
+                )
+            from scripts.canary import owner_gate_activation_evidence_author
+
+            receipt = owner_gate_activation_evidence_author.stage_post_iam_activation_evidence(
                 release_revision=release_sha,
                 gcloud_executable=gcloud_executable,
                 gcloud_configuration=gcloud_configuration,

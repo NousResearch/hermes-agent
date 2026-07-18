@@ -1,15 +1,32 @@
 from __future__ import annotations
 
+import copy
 import hashlib
+import inspect
+from dataclasses import replace
+from types import SimpleNamespace
+from typing import Any, Mapping, cast
 
 import pytest
-from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
+from cryptography.hazmat.primitives.asymmetric.ed25519 import (
+    Ed25519PrivateKey,
+    Ed25519PublicKey,
+)
 
 from scripts.canary import direct_iam_identity_author as direct_iam_author
 from scripts.canary import owner_gate_cloud_observation_author as author
 from scripts.canary import owner_gate_foundation as foundation
 from scripts.canary import owner_gate_preflight as preflight
+from scripts.canary import (
+    owner_gate_production_ingress_observation as production_ingress,
+)
+from scripts.canary import (
+    owner_gate_production_ingress_contract as production_ingress_contract,
+)
 from scripts.canary import owner_gate_project_ancestry as project_ancestry
+from scripts.canary import owner_gate_stage0 as cloud_stage0
+from scripts.canary import owner_gate_stage0_iap as stage0_iap
+from scripts.canary import owner_gate_trust as trust
 from tests.scripts.canary.test_owner_gate_foundation import (
     IMAGE,
     NOW,
@@ -26,10 +43,90 @@ OWNER_GATE_SERVICE_ACCOUNT_ID = "112233445566778899001"
 OWNER_GATE_SUBNET_ID = "2233445566778899001"
 OWNER_GATE_BOOT_DISK_ID = "3344556677889900112"
 OWNER_GATE_FIREWALL_ID = "4455667788990011223"
+FOUNDATION_REVISION = "b" * 40
+FOUNDATION_TREE = "c" * 40
+FINAL_TREE = "d" * 40
+PRODUCTION_INGRESS_OBSERVATION_SHA256 = "9" * 64
 
 
 def _key_id(key: Ed25519PrivateKey) -> str:
     return hashlib.sha256(key.public_key().public_bytes_raw()).hexdigest()
+
+
+def test_public_collection_apis_require_full_ingress_envelope() -> None:
+    for function in (
+        author.collect_and_author,
+        author.collect_and_author_bound_pair,
+    ):
+        parameters = inspect.signature(function).parameters
+        assert "production_ingress_observation" in parameters
+        assert "production_ingress_observation_sha256" not in parameters
+
+
+def _signed_ingress_envelope(
+    monkeypatch: pytest.MonkeyPatch,
+    *,
+    phase: str = "inert",
+    release_revision: str = REVISION,
+    plan_sha256: str,
+) -> tuple[dict[str, object], Ed25519PrivateKey]:
+    release_key = Ed25519PrivateKey.generate()
+    monkeypatch.setattr(
+        trust,
+        "PINNED_RELEASE_TRUST_PUBLIC_KEY_SHA256",
+        _key_id(release_key),
+    )
+    monkeypatch.setattr(
+        production_ingress_contract,
+        "PINNED_RELEASE_TRUST_PUBLIC_KEY_SHA256",
+        _key_id(release_key),
+    )
+    observation = {
+        "completed_at_unix": NOW,
+        "fresh_through_unix": NOW + production_ingress.FRESHNESS_SECONDS,
+        "report_sha256": "e" * 64,
+    }
+    monkeypatch.setattr(
+        production_ingress,
+        "validate_production_ingress_observation",
+        lambda value, **_kwargs: dict(value),
+    )
+    monkeypatch.setattr(
+        production_ingress_contract,
+        "validate_production_ingress_observation",
+        lambda value, **_kwargs: dict(value),
+    )
+    transport = object.__new__(
+        production_ingress.OwnerGateProductionIngressTransport
+    )
+    monkeypatch.setattr(
+        production_ingress.OwnerGateProductionIngressTransport,
+        "observe",
+        lambda _self, **_kwargs: (
+            dict(observation),
+            {
+                "kind": "pinned_owner_gcloud_iap_ssh_read_only",
+                "project": production_ingress.PROJECT,
+                "zone": production_ingress.ZONE,
+                "vm": production_ingress.VM_NAME,
+                "instance_id": production_ingress.INSTANCE_ID,
+                "known_hosts_file_sha256": "1" * 64,
+                "observer_source_sha256": "2" * 64,
+                "instance_authorization_sha256": "3" * 64,
+                "project_authorization_sha256": "4" * 64,
+                "oslogin_authorization_sha256": "5" * 64,
+            },
+        ),
+    )
+    envelope = production_ingress.collect_and_sign_production_ingress_observation(
+        transport,
+        phase=phase,
+        release_revision=release_revision,
+        plan_sha256=plan_sha256,
+        release_private_key=release_key,
+        now_unix=NOW,
+    )
+    return dict(envelope), release_key
 
 
 def _context(
@@ -115,14 +212,98 @@ def _context(
     return plan, ancestry, cloud_key
 
 
+def test_full_signed_ingress_envelope_yields_only_final_envelope_digest(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    plan, _ancestry, _cloud_key = _context()
+    envelope, release_key = _signed_ingress_envelope(
+        monkeypatch,
+        plan_sha256=plan.sha256,
+    )
+
+    assert author._validated_production_ingress_observation_sha256(
+        envelope,
+        phase="inert",
+        release_revision=plan.spec.release_revision,
+        plan_sha256=plan.sha256,
+        release_public_key=release_key.public_key(),
+        now_unix=NOW,
+    ) == envelope["envelope_sha256"]
+    assert envelope["envelope_sha256"] != envelope["observer_report_sha256"]
+
+
+@pytest.mark.parametrize(
+    "corruption",
+    (
+        "malformed",
+        "expired",
+        "phase",
+        "revision",
+        "plan",
+        "key",
+        "digest",
+    ),
+)
+def test_signed_ingress_envelope_boundary_fails_closed(
+    monkeypatch: pytest.MonkeyPatch,
+    corruption: str,
+) -> None:
+    plan, _ancestry, _cloud_key = _context()
+    envelope, release_key = _signed_ingress_envelope(
+        monkeypatch,
+        plan_sha256=plan.sha256,
+    )
+    value: object = envelope
+    phase = "inert"
+    release_revision = plan.spec.release_revision
+    plan_sha256 = plan.sha256
+    public_key = release_key.public_key()
+    now_unix = NOW
+    if corruption == "malformed":
+        value = {"schema": production_ingress.ENVELOPE_SCHEMA}
+    elif corruption == "expired":
+        now_unix = NOW + production_ingress.FRESHNESS_SECONDS + 1
+    elif corruption == "phase":
+        phase = "post_iam"
+    elif corruption == "revision":
+        release_revision = "f" * 40
+    elif corruption == "plan":
+        plan_sha256 = "0" * 64
+    elif corruption == "key":
+        public_key = Ed25519PrivateKey.generate().public_key()
+    else:
+        changed = copy.deepcopy(envelope)
+        changed["envelope_sha256"] = "0" * 64
+        value = changed
+
+    with pytest.raises(
+        author.OwnerGateCloudObservationAuthorError,
+        match="owner_gate_cloud_observation_production_ingress_invalid",
+    ):
+        author._validated_production_ingress_observation_sha256(
+            value,
+            phase=phase,
+            release_revision=release_revision,
+            plan_sha256=plan_sha256,
+            release_public_key=public_key,
+            now_unix=now_unix,
+        )
+
+
 def _verified_probe(phase: str) -> author._VerifiedAttachedSaProbe:
     return author._VerifiedAttachedSaProbe._create(
         phase=phase,
+        release_revision=REVISION,
+        source_tree_oid=FINAL_TREE,
+        package_sha256="3" * 64,
         permission_probe=preflight.expected_effective_permission_probe(
             phase == "post_iam"
         ),
         host_observation_report_sha256="a" * 64,
         host_observation_binding_sha256="d" * 64,
+        production_ingress_observation_sha256=(
+            PRODUCTION_INGRESS_OBSERVATION_SHA256
+        ),
         attached_sa_permission_probe_report_sha256="b" * 64,
         terminal_receipt_sha256="c" * 64,
         cloud_signer_provisioning_receipt_sha256="e" * 64,
@@ -168,11 +349,480 @@ def _identities(
         network_evidence=None,  # type: ignore[arg-type]
         network_collector_public_key=None,  # type: ignore[arg-type]
         inert_plan_sha256="8" * 64,
-        foundation_source_revision=REVISION,
-        foundation_source_tree_oid="9" * 40,
+        foundation_source_revision=FOUNDATION_REVISION,
+        foundation_source_tree_oid=FOUNDATION_TREE,
         pre_foundation_authority_sha256="a" * 64,
         foundation_apply_receipt_sha256="b" * 64,
     )
+
+
+def test_invalid_ingress_envelope_fails_before_host_iap_composite(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    plan, ancestry, _cloud_key = _context()
+    _envelope, release_key = _signed_ingress_envelope(
+        monkeypatch,
+        plan_sha256=plan.sha256,
+    )
+    identities = _identities(plan, ancestry)
+    monkeypatch.setattr(
+        author,
+        "_validated_foundation_identity",
+        lambda _chain: identities,
+    )
+    monkeypatch.setattr(author, "_validated_context", lambda **_kwargs: ())
+    monkeypatch.setattr(
+        author,
+        "_validate_plan_from_exact_streams",
+        lambda **_kwargs: {"package_sha256": "3" * 64},
+    )
+    monkeypatch.setattr(author.time, "time", lambda: NOW)
+    iap_calls: list[bool] = []
+    monkeypatch.setattr(
+        stage0_iap.OwnerGateStage0IapTransport,
+        "collect_owner_gate_host_observation",
+        lambda *_args, **_kwargs: iap_calls.append(True),
+    )
+    chain = SimpleNamespace(
+        foundation_a=SimpleNamespace(
+            release_public_key=release_key.public_key()
+        )
+    )
+
+    with pytest.raises(
+        author.OwnerGateCloudObservationAuthorError,
+        match="owner_gate_cloud_observation_production_ingress_invalid",
+    ):
+        author._collect_and_author_components(
+            plan=plan,
+            foundation_apply_chain=chain,
+            final_network_evidence=object(),  # type: ignore[arg-type]
+            final_network_collector_public_key=object(),  # type: ignore[arg-type]
+            production_ingress_observation={"malformed": True},
+            phase="inert",
+            collected_at_unix=NOW,
+            gcloud_executable=object(),  # type: ignore[arg-type]
+            gcloud_configuration=object(),  # type: ignore[arg-type]
+            owner_identity=object(),  # type: ignore[arg-type]
+            stage0_transport=object(),
+            kit_stream=object(),
+            bundle_stream=object(),
+        )
+    assert iap_calls == []
+
+
+def test_valid_ingress_envelope_digest_is_forwarded_to_host_stage0(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    plan, ancestry, _cloud_key = _context()
+    envelope, release_key = _signed_ingress_envelope(
+        monkeypatch,
+        plan_sha256=plan.sha256,
+    )
+    identities = _identities(plan, ancestry)
+    monkeypatch.setattr(
+        author,
+        "_validated_foundation_identity",
+        lambda _chain: identities,
+    )
+    monkeypatch.setattr(author, "_validated_context", lambda **_kwargs: ())
+    monkeypatch.setattr(
+        author,
+        "_validate_plan_from_exact_streams",
+        lambda **_kwargs: {"package_sha256": "3" * 64},
+    )
+    monkeypatch.setattr(author.time, "time", lambda: NOW)
+
+    gcloud_executable = object.__new__(author.launcher.TrustedGcloudExecutable)
+    gcloud_configuration = object.__new__(
+        author.launcher.PinnedGcloudConfiguration
+    )
+    gcloud_configuration._account = author.OWNER_ACCOUNT
+    owner_identity = object.__new__(author.launcher.GcloudOwnerAccessToken)
+    owner_identity._gcloud_executable = gcloud_executable
+    owner_identity._gcloud_configuration = gcloud_configuration
+    stage0_transport = object.__new__(stage0_iap.OwnerGateStage0IapTransport)
+    stage0_transport._owner_identity = owner_identity
+    stage0_transport._gcloud_executable = gcloud_executable
+    stage0_transport._gcloud_configuration = gcloud_configuration
+    stage0_transport._release_sha = plan.spec.release_revision
+    stage0_transport._host_identity = SimpleNamespace(
+        snapshot=lambda: author.launcher.OwnerGateHostIdentitySnapshot(
+            vm_numeric_id=str(identities.owner_gate_vm["numeric_id"]),
+            host_key_algorithm="ssh-ed25519",
+            host_key_base64="unused",
+            known_hosts_line="unused",
+            receipt_sha256="1" * 64,
+            receipt_file_sha256="2" * 64,
+        )
+    )
+    stage0_transport._foundation = SimpleNamespace(
+        foundation_source_revision=identities.foundation_source_revision,
+        foundation_source_tree_oid=identities.foundation_source_tree_oid,
+        pre_foundation_authority_sha256=(
+            identities.pre_foundation_authority_sha256
+        ),
+        foundation_apply_receipt_sha256=(
+            identities.foundation_apply_receipt_sha256
+        ),
+        project_ancestry_evidence_sha256=(
+            identities.ancestry_evidence.signed_evidence_sha256
+        ),
+        project_ancestry_chain_sha256=(
+            identities.ancestry_evidence.value["stable_chain_sha256"]
+        ),
+        resource_ancestor_chain=tuple(
+            str(item["resource_name"])
+            for item in identities.ancestry_evidence.ordered_chain[1:]
+        ),
+        interpreter_sha256=plan.spec.interpreter_sha256,
+    )
+    sealed_runtime_identity = object()
+    monkeypatch.setattr(
+        author.launcher.TrustedGcloudExecutable,
+        "sealed_runtime_identity",
+        lambda _self, **_kwargs: sealed_runtime_identity,
+    )
+    monkeypatch.setattr(
+        author.launcher.PinnedGcloudConfiguration,
+        "assert_stable",
+        lambda _self: None,
+    )
+    monkeypatch.setattr(
+        author.launcher.GcloudOwnerAccessToken,
+        "bind_approved_subject",
+        lambda _self, _digest: None,
+    )
+    monkeypatch.setattr(
+        author.launcher.GcloudOwnerAccessToken,
+        "require_stable",
+        lambda _self: None,
+    )
+    monkeypatch.setattr(
+        author,
+        "_public_signer_snapshot",
+        lambda *_args, **_kwargs: SimpleNamespace(public_raw=b"0" * 32),
+    )
+    monkeypatch.setattr(
+        author,
+        "_reject_ambient_network_environment",
+        lambda: None,
+    )
+    final_network_evidence = cast(foundation.ProductionNetworkEvidence, object())
+    final_network_collector_public_key = cast(Ed25519PublicKey, object())
+    forwarded: list[dict[str, object]] = []
+
+    def stop_after_capture(_self: object, **kwargs: object) -> None:
+        forwarded.append(kwargs)
+        raise author.launcher.OwnerLauncherError("captured")
+
+    monkeypatch.setattr(
+        stage0_iap.OwnerGateStage0IapTransport,
+        "collect_owner_gate_host_observation",
+        stop_after_capture,
+    )
+    chain = SimpleNamespace(
+        foundation_a=SimpleNamespace(
+            release_public_key=release_key.public_key()
+        )
+    )
+    stable_stream = SimpleNamespace(assert_stable=lambda: None)
+
+    with pytest.raises(
+        author.OwnerGateCloudObservationAuthorError,
+        match="owner_gate_cloud_observation_host_composite_failed",
+    ):
+        author._collect_and_author_components(
+            plan=plan,
+            foundation_apply_chain=chain,
+            final_network_evidence=final_network_evidence,
+            final_network_collector_public_key=final_network_collector_public_key,
+            production_ingress_observation=envelope,
+            phase="inert",
+            collected_at_unix=NOW,
+            gcloud_executable=gcloud_executable,
+            gcloud_configuration=gcloud_configuration,
+            owner_identity=owner_identity,
+            stage0_transport=stage0_transport,
+            kit_stream=stable_stream,
+            bundle_stream=stable_stream,
+        )
+    assert len(forwarded) == 1
+    assert forwarded[0]["final_network_evidence"] is final_network_evidence
+    assert (
+        forwarded[0]["final_network_collector_public_key"]
+        is final_network_collector_public_key
+    )
+    assert (
+        forwarded[0]["production_ingress_observation_sha256"]
+        == envelope["envelope_sha256"]
+    )
+
+
+def _final_release_transition(
+    monkeypatch: pytest.MonkeyPatch,
+) -> tuple[
+    foundation.OwnerGateFoundationPlan,
+    author._FoundationIdentities,
+    foundation.ProductionNetworkEvidence,
+    Ed25519PrivateKey,
+    stage0_iap.OwnerGateStage0IapTransport,
+    stage0_iap.PinnedExactTreeStream,
+    stage0_iap.PinnedExactTreeStream,
+    Mapping[str, object],
+]:
+    _discarded_plan, ancestry, _discarded_cloud_key = _context()
+    bootstrap_key = Ed25519PrivateKey.generate()
+    final_network_key = Ed25519PrivateKey.generate()
+    cloud_key = Ed25519PrivateKey.generate()
+    host_key = Ed25519PrivateKey.generate()
+
+    def network_evidence(
+        key: Ed25519PrivateKey,
+    ) -> foundation.ProductionNetworkEvidence:
+        return foundation.ProductionNetworkEvidence.from_mapping(
+            _signed_network_evidence(key),
+            public_key=key.public_key(),
+            expected_public_key_id=_key_id(key),
+            now_unix=NOW,
+        )
+
+    bootstrap_evidence = network_evidence(bootstrap_key)
+    final_evidence = network_evidence(final_network_key)
+    pre_spec = foundation.OwnerGateSpec(
+        release_revision=FOUNDATION_REVISION,
+        source_tree_oid=FOUNDATION_TREE,
+        boot_image_numeric_id="1234567890123456789",
+        boot_image_self_link=IMAGE,
+        interpreter_sha256="6" * 64,
+        network_collector_public_key_id=_key_id(bootstrap_key),
+        organization_id=ORGANIZATION,
+        ancestry_evidence_sha256=ancestry.signed_evidence_sha256,
+    )
+    pre_plan = foundation.build_plan(
+        spec=pre_spec,
+        network_evidence=bootstrap_evidence,
+        network_collector_public_key=bootstrap_key.public_key(),
+        now_unix=NOW,
+    )
+    lineage = {
+        "pre_foundation_authority_sha256": "a" * 64,
+        "foundation_apply_receipt_sha256": "b" * 64,
+        "project_ancestry_evidence_sha256": (
+            ancestry.signed_evidence_sha256
+        ),
+        "project_ancestry_chain_sha256": ancestry.value[
+            "stable_chain_sha256"
+        ],
+        "resource_ancestor_chain": [
+            str(item["resource_name"])
+            for item in ancestry.ordered_chain[1:]
+        ],
+    }
+    direct_iam_value = {
+        "release_revision": FOUNDATION_REVISION,
+        "pre_foundation_authority_sha256": lineage[
+            "pre_foundation_authority_sha256"
+        ],
+        "foundation_apply_receipt_sha256": lineage[
+            "foundation_apply_receipt_sha256"
+        ],
+        "resource_ancestor_chain": lineage["resource_ancestor_chain"],
+    }
+    direct_iam_raw = foundation.canonical_json_bytes(direct_iam_value)
+    collectors = {
+        "network": _key_id(final_network_key),
+        "cloud": _key_id(cloud_key),
+        "host": _key_id(host_key),
+    }
+    package_unsigned: dict[str, Any] = {
+        name: None
+        for name in cloud_stage0.MANIFEST_FIELDS
+        if name != "package_sha256"
+    }
+    package_unsigned.update({
+        "schema": cloud_stage0.PACKAGE_SCHEMA,
+        "release_revision": REVISION,
+        "source_tree_oid": FINAL_TREE,
+        "foundation_source_revision": FOUNDATION_REVISION,
+        "foundation_source_tree_oid": FOUNDATION_TREE,
+        "release_root": str(cloud_stage0.RELEASE_BASE / REVISION),
+        "interpreter_sha256": "6" * 64,
+        "direct_iam_identity_authority_sha256": hashlib.sha256(
+            direct_iam_raw
+        ).hexdigest(),
+        "collector_public_key_ids": collectors,
+        **lineage,
+    })
+    inventory = {
+        name: package_unsigned[name]
+        for name in cloud_stage0.INVENTORY_FIELDS
+    }
+    package_unsigned["package_inventory_sha256"] = foundation.sha256_json(
+        inventory
+    )
+    package = {
+        **package_unsigned,
+        "package_sha256": foundation.sha256_json(package_unsigned),
+    }
+    final_spec = replace(
+        pre_spec,
+        release_revision=REVISION,
+        source_tree_oid=None,
+        boot_image_numeric_id=None,
+        package_inventory_sha256=str(
+            package["package_inventory_sha256"]
+        ),
+        network_collector_public_key_id=collectors["network"],
+        cloud_collector_public_key_id=collectors["cloud"],
+        host_collector_public_key_id=collectors["host"],
+    )
+    final_plan = foundation.build_plan(
+        spec=final_spec,
+        network_evidence=final_evidence,
+        network_collector_public_key=final_network_key.public_key(),
+        now_unix=NOW,
+    )
+    identities = replace(
+        _identities(final_plan, ancestry),
+        pre_foundation_plan=pre_plan,
+        network_evidence=bootstrap_evidence,
+        network_collector_public_key=bootstrap_key.public_key(),
+        foundation_source_revision=FOUNDATION_REVISION,
+        foundation_source_tree_oid=FOUNDATION_TREE,
+        pre_foundation_authority_sha256=str(
+            lineage["pre_foundation_authority_sha256"]
+        ),
+        foundation_apply_receipt_sha256=str(
+            lineage["foundation_apply_receipt_sha256"]
+        ),
+    )
+    transport = object.__new__(stage0_iap.OwnerGateStage0IapTransport)
+    kit_stream = object.__new__(stage0_iap.PinnedExactTreeStream)
+    bundle_stream = object.__new__(stage0_iap.PinnedExactTreeStream)
+    binding = SimpleNamespace(
+        source_tree_oid=FINAL_TREE,
+        package_sha256=package["package_sha256"],
+    )
+    monkeypatch.setattr(
+        stage0_iap.OwnerGateStage0IapTransport,
+        "_bind_inert_cloud_bundle",
+        lambda *_args, **_kwargs: binding,
+    )
+
+    def member(_self: object, relative: str) -> bytes:
+        if relative == "package-manifest.json":
+            return foundation.canonical_json_bytes(package)
+        if relative == "trust/direct-iam-identity-authority.json":
+            return direct_iam_raw
+        raise AssertionError(relative)
+
+    monkeypatch.setattr(stage0_iap.PinnedExactTreeStream, "member", member)
+
+    def decode_direct(
+        raw: bytes,
+        *,
+        release_revision: str | None = None,
+    ) -> Mapping[str, object]:
+        assert raw == direct_iam_raw
+        if release_revision != FOUNDATION_REVISION:
+            raise author.direct_iam.DirectIamIdentityAuthorityError(
+                "foundation revision mismatch"
+            )
+        return direct_iam_value
+
+    monkeypatch.setattr(
+        author.direct_iam,
+        "decode_canonical",
+        decode_direct,
+    )
+    return (
+        final_plan,
+        identities,
+        final_evidence,
+        final_network_key,
+        transport,
+        kit_stream,
+        bundle_stream,
+        package,
+    )
+
+
+def test_final_release_plan_uses_distinct_final_network_authority(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    (
+        plan,
+        identities,
+        final_evidence,
+        final_network_key,
+        transport,
+        kit_stream,
+        bundle_stream,
+        package,
+    ) = _final_release_transition(monkeypatch)
+
+    checked = author._validate_plan_from_exact_streams(
+        plan=plan,
+        identities=identities,
+        final_network_evidence=final_evidence,
+        final_network_collector_public_key=final_network_key.public_key(),
+        stage0_transport=transport,
+        kit_stream=kit_stream,
+        bundle_stream=bundle_stream,
+    )
+
+    assert checked == package
+    assert plan.spec.release_revision == REVISION
+    assert identities.foundation_source_revision == FOUNDATION_REVISION
+    assert plan.spec.network_collector_public_key_id != (
+        identities.pre_foundation_plan.spec.network_collector_public_key_id
+    )
+    assert plan.network_evidence_sha256 == final_evidence.evidence_sha256
+
+
+@pytest.mark.parametrize("corruption", ("key", "evidence", "plan"))
+def test_final_release_network_or_plan_drift_fails_in_pre_iap_boundary(
+    monkeypatch: pytest.MonkeyPatch,
+    corruption: str,
+) -> None:
+    (
+        plan,
+        identities,
+        final_evidence,
+        final_network_key,
+        transport,
+        kit_stream,
+        bundle_stream,
+        _package,
+    ) = _final_release_transition(monkeypatch)
+    public_key = final_network_key.public_key()
+    if corruption == "key":
+        public_key = Ed25519PrivateKey.generate().public_key()
+    elif corruption == "evidence":
+        other_key = Ed25519PrivateKey.generate()
+        final_evidence = foundation.ProductionNetworkEvidence.from_mapping(
+            _signed_network_evidence(other_key),
+            public_key=other_key.public_key(),
+            expected_public_key_id=_key_id(other_key),
+            now_unix=NOW,
+        )
+    else:
+        plan = replace(plan, network_evidence_sha256="0" * 64)
+
+    with pytest.raises(
+        author.OwnerGateCloudObservationAuthorError,
+        match="owner_gate_cloud_observation_plan_binding_invalid",
+    ):
+        author._validate_plan_from_exact_streams(
+            plan=plan,
+            identities=identities,
+            final_network_evidence=final_evidence,
+            final_network_collector_public_key=public_key,
+            stage0_transport=transport,
+            kit_stream=kit_stream,
+            bundle_stream=bundle_stream,
+        )
 
 
 def _role(
@@ -644,7 +1294,9 @@ def _raw(
             foundation.DIRECT_IAM_ANCESTOR_PERMISSIONS,
         ),
     )
-    project_bindings = [{"role": project_read, "members": [member]}]
+    project_bindings: list[dict[str, Any]] = [
+        {"role": project_read, "members": [member]}
+    ]
     if phase == "post_iam":
         project_bindings.append({
             "role": mutation,
@@ -708,6 +1360,17 @@ def test_realistic_fixed_rest_fixture_authors_validator_compatible_observation(
     assert observation["credential_values_read"] is False
     assert observation["iam"]["mutation_binding_present"] is (phase == "post_iam")
     assert observation["release_binding"]["phase"] == phase
+    assert observation["release_binding"]["release_revision"] == REVISION
+    assert observation["release_binding"]["source_tree_oid"] == FINAL_TREE
+    assert (
+        observation["release_binding"][
+            "production_ingress_observation_sha256"
+        ]
+        == PRODUCTION_INGRESS_OBSERVATION_SHA256
+    )
+    assert observation["release_binding"]["release_revision"] != (
+        _identities(plan, ancestry).foundation_source_revision
+    )
     preflight._validate_cloud_unsigned(
         observation,
         plan_sha256=plan.sha256,
@@ -979,7 +1642,9 @@ def test_peering_inventory_is_bound_into_signed_network_digest() -> None:
     network_key = next(
         key for key in raw if key.endswith(f"/networks/{foundation.NETWORK_NAME}")
     )
-    raw[network_key]["peerings"] = [{"name": "servicenetworking-googleapis-com"}]
+    cast(dict[str, Any], raw[network_key])["peerings"] = [
+        {"name": "servicenetworking-googleapis-com"}
+    ]
     changed = author._unsigned_from_raw(
         plan=plan,
         ancestry_evidence=ancestry,
@@ -1120,7 +1785,7 @@ class _FakeCloudHttp:
                 parent.counts[key] = parent.counts.get(key, 0) + 1
                 value = parent.raw[key]
                 if key == parent.unstable_key and parent.counts[key] >= 2:
-                    value = {**value, "unstable": True}
+                    value = {**cast(Mapping[str, Any], value), "unstable": True}
                 body = foundation.canonical_json_bytes(value)
                 if key != parent.corrupt_key:
                     return _FakeResponse(body)
@@ -1166,7 +1831,7 @@ def test_fixed_http_reader_discovers_all_regions_and_double_reads_every_fact() -
     raw = _raw(plan, ancestry, phase="inert")
     location_key = next(key for key in raw if key.endswith("/locations?pageSize=100"))
     second_region = "us-central1"
-    raw[location_key]["locations"].append({
+    cast(dict[str, Any], raw[location_key])["locations"].append({
         "name": f"projects/{foundation.PROJECT}/locations/{second_region}",
         "locationId": second_region,
     })

@@ -30,9 +30,13 @@ from urllib.parse import urlsplit
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PublicKey
 
 from scripts.canary import direct_iam_identity_author as direct_iam_author
+from scripts.canary import direct_iam_identity_authority as direct_iam
 from scripts.canary import full_canary_owner_launcher as launcher
 from scripts.canary import owner_gate_foundation as foundation
 from scripts.canary import owner_gate_preflight as preflight
+from scripts.canary import (
+    owner_gate_production_ingress_observation as production_ingress,
+)
 from scripts.canary import owner_gate_project_ancestry as project_ancestry
 from scripts.canary import owner_gate_trust_author as release_author
 from scripts.canary import trusted_signer_author as signer_author
@@ -48,6 +52,7 @@ MAX_REQUESTS = 160
 MAX_ITEMS = 10_000
 
 _SHA256 = re.compile(r"^[0-9a-f]{64}$")
+_REVISION = re.compile(r"^[0-9a-f]{40}$")
 _NUMERIC_ID = re.compile(r"^[1-9][0-9]{5,30}$")
 _REGION = re.compile(r"^[a-z]+(?:-[a-z0-9]+)+[0-9]$")
 _RESOURCE_PREFIXES = (
@@ -1141,7 +1146,7 @@ def _iam_projection(
         description=foundation.ANCESTOR_READ_ROLE_DESCRIPTION,
         permissions=foundation.DIRECT_IAM_ANCESTOR_PERMISSIONS,
     )
-    expected_bindings = [
+    expected_bindings: list[dict[str, Any]] = [
         {
             "resource": f"projects/{project}",
             "role": project_read_role,
@@ -1509,9 +1514,13 @@ _VERIFIED_PROBE_MARKER = object()
 @dataclass(frozen=True, init=False)
 class _VerifiedAttachedSaProbe:
     phase: str
+    release_revision: str
+    source_tree_oid: str
+    package_sha256: str
     permission_probe: Mapping[str, Any]
     host_observation_report_sha256: str
     host_observation_binding_sha256: str
+    production_ingress_observation_sha256: str
     attached_sa_permission_probe_report_sha256: str
     terminal_receipt_sha256: str
     cloud_signer_provisioning_receipt_sha256: str
@@ -1528,9 +1537,13 @@ class _VerifiedAttachedSaProbe:
         cls,
         *,
         phase: str,
+        release_revision: str,
+        source_tree_oid: str,
+        package_sha256: str,
         permission_probe: Mapping[str, Any],
         host_observation_report_sha256: str,
         host_observation_binding_sha256: str,
+        production_ingress_observation_sha256: str,
         attached_sa_permission_probe_report_sha256: str,
         terminal_receipt_sha256: str,
         cloud_signer_provisioning_receipt_sha256: str,
@@ -1554,6 +1567,7 @@ def _verified_probe_from_host_handoff(
     identities: _FoundationIdentities,
     package: Mapping[str, Any],
     host_public_key: Ed25519PublicKey,
+    production_ingress_observation_sha256: str,
 ) -> _VerifiedAttachedSaProbe:
     try:
         from scripts.canary import owner_gate_stage0_iap as stage0_iap
@@ -1617,8 +1631,8 @@ def _verified_probe_from_host_handoff(
             "terminal_receipt_sha256",
         }
         or terminal.get("schema") != stage0_iap.INERT_CLOUD_BUNDLE_TERMINAL_SCHEMA
-        or terminal.get("release_sha") != identities.foundation_source_revision
-        or terminal.get("source_tree_oid") != identities.foundation_source_tree_oid
+        or terminal.get("release_sha") != package.get("release_revision")
+        or terminal.get("source_tree_oid") != package.get("source_tree_oid")
         or terminal.get("package_sha256") != package.get("package_sha256")
         or terminal.get("pre_foundation_authority_sha256")
         != identities.pre_foundation_authority_sha256
@@ -1677,8 +1691,8 @@ def _verified_probe_from_host_handoff(
     if (
         not isinstance(release, Mapping)
         or host_observation.get("effective_permission_probe") != expected_probe
-        or release.get("revision") != identities.foundation_source_revision
-        or release.get("source_tree_oid") != identities.foundation_source_tree_oid
+        or release.get("revision") != package.get("release_revision")
+        or release.get("source_tree_oid") != package.get("source_tree_oid")
         or release.get("package_sha256") != package.get("package_sha256")
         or release.get("package_sha256") != terminal.get("package_sha256")
         or release.get("package_inventory_sha256") != plan.spec.package_inventory_sha256
@@ -1695,6 +1709,9 @@ def _verified_probe_from_host_handoff(
             str(host_observation.get("observation_binding_sha256", ""))
         )
         is None
+        or host_observation.get("production_ingress_observation_sha256")
+        != production_ingress_observation_sha256
+        or _SHA256.fullmatch(production_ingress_observation_sha256) is None
         or any(
             _SHA256.fullmatch(str(release.get(name, ""))) is None
             for name in (
@@ -1709,10 +1726,16 @@ def _verified_probe_from_host_handoff(
         _error("owner_gate_cloud_observation_host_handoff_invalid")
     return _VerifiedAttachedSaProbe._create(
         phase=phase,
+        release_revision=str(package["release_revision"]),
+        source_tree_oid=str(package["source_tree_oid"]),
+        package_sha256=str(package["package_sha256"]),
         permission_probe=expected_probe,
         host_observation_report_sha256=str(host_observation["report_sha256"]),
         host_observation_binding_sha256=str(
             host_observation["observation_binding_sha256"]
+        ),
+        production_ingress_observation_sha256=(
+            production_ingress_observation_sha256
         ),
         attached_sa_permission_probe_report_sha256=str(
             release["attached_sa_permission_probe_report_sha256"]
@@ -1751,7 +1774,15 @@ def _build_unsigned(
         type(verified_probe) is not _VerifiedAttachedSaProbe
         or verified_probe._marker is not _VERIFIED_PROBE_MARKER
         or verified_probe.phase != phase
+        or verified_probe.release_revision != plan.spec.release_revision
+        or _REVISION.fullmatch(verified_probe.release_revision) is None
+        or _REVISION.fullmatch(verified_probe.source_tree_oid) is None
         or _SHA256.fullmatch(package_sha256) is None
+        or verified_probe.package_sha256 != package_sha256
+        or _SHA256.fullmatch(
+            verified_probe.production_ingress_observation_sha256
+        )
+        is None
         or _NUMERIC_ID.fullmatch(
             str(foundation_identities.owner_gate_vm.get("numeric_id", ""))
         )
@@ -1936,8 +1967,8 @@ def _build_unsigned(
         "targets": targets,
         "release_binding": {
             "phase": phase,
-            "release_revision": foundation_identities.foundation_source_revision,
-            "source_tree_oid": foundation_identities.foundation_source_tree_oid,
+            "release_revision": verified_probe.release_revision,
+            "source_tree_oid": verified_probe.source_tree_oid,
             "package_sha256": package_sha256,
             "package_inventory_sha256": plan.spec.package_inventory_sha256,
             "pre_foundation_authority_sha256": (
@@ -1959,6 +1990,9 @@ def _build_unsigned(
             ),
             "host_observation_binding_sha256": (
                 verified_probe.host_observation_binding_sha256
+            ),
+            "production_ingress_observation_sha256": (
+                verified_probe.production_ingress_observation_sha256
             ),
             "attached_sa_permission_probe_report_sha256": (
                 verified_probe.attached_sa_permission_probe_report_sha256
@@ -2157,10 +2191,40 @@ def _validated_foundation_identity(
     )
 
 
+def _validated_production_ingress_observation_sha256(
+    value: Any,
+    *,
+    phase: str,
+    release_revision: str,
+    plan_sha256: str,
+    release_public_key: Ed25519PublicKey,
+    now_unix: int,
+) -> str:
+    """Validate the full signed envelope and return only its final digest."""
+
+    try:
+        checked = production_ingress.validate_signed_production_ingress_observation(
+            value,
+            phase=phase,
+            release_revision=release_revision,
+            plan_sha256=plan_sha256,
+            release_public_key=release_public_key,
+            now_unix=now_unix,
+        )
+    except production_ingress.ProductionIngressObservationError as exc:
+        _error("owner_gate_cloud_observation_production_ingress_invalid", exc)
+    digest = checked.get("envelope_sha256")
+    if type(digest) is not str or _SHA256.fullmatch(digest) is None:
+        _error("owner_gate_cloud_observation_production_ingress_invalid")
+    return digest
+
+
 def _validate_plan_from_exact_streams(
     *,
     plan: foundation.OwnerGateFoundationPlan,
     identities: _FoundationIdentities,
+    final_network_evidence: foundation.ProductionNetworkEvidence,
+    final_network_collector_public_key: Ed25519PublicKey,
     stage0_transport: Any,
     kit_stream: Any,
     bundle_stream: Any,
@@ -2182,9 +2246,17 @@ def _validate_plan_from_exact_streams(
         )
         package_raw = bundle_stream.member("package-manifest.json")
         package = _decode_json(package_raw)
+        direct_iam_raw = bundle_stream.member(
+            "trust/direct-iam-identity-authority.json"
+        )
+        direct_iam_authority = direct_iam.decode_canonical(
+            direct_iam_raw,
+            release_revision=identities.foundation_source_revision,
+        )
     except (
         launcher.OwnerLauncherError,
         OwnerGateCloudObservationAuthorError,
+        direct_iam.DirectIamIdentityAuthorityError,
     ) as exc:
         _error("owner_gate_cloud_observation_plan_binding_invalid", exc)
     if (
@@ -2201,14 +2273,36 @@ def _validate_plan_from_exact_streams(
         str(item["resource_name"])
         for item in identities.ancestry_evidence.ordered_chain[1:]
     ]
+    final_network_key_id = (
+        hashlib.sha256(
+            final_network_collector_public_key.public_bytes_raw()
+        ).hexdigest()
+        if isinstance(final_network_collector_public_key, Ed25519PublicKey)
+        else None
+    )
     if (
         package.get("schema") != cloud_stage0.PACKAGE_SCHEMA
         or package.get("package_sha256") != foundation.sha256_json(unsigned_package)
         or package.get("package_inventory_sha256") != foundation.sha256_json(inventory)
-        or package.get("release_revision") != identities.foundation_source_revision
-        or package.get("source_tree_oid") != identities.foundation_source_tree_oid
+        or package.get("release_revision") != plan.spec.release_revision
+        or package.get("release_revision")
+        == identities.foundation_source_revision
+        or package.get("foundation_source_revision")
+        != identities.foundation_source_revision
+        or package.get("foundation_source_tree_oid")
+        != identities.foundation_source_tree_oid
         or package.get("source_tree_oid") != binding.source_tree_oid
         or package.get("package_sha256") != binding.package_sha256
+        or hashlib.sha256(direct_iam_raw).hexdigest()
+        != package.get("direct_iam_identity_authority_sha256")
+        or direct_iam_authority.get("release_revision")
+        != identities.foundation_source_revision
+        or direct_iam_authority.get("pre_foundation_authority_sha256")
+        != package.get("pre_foundation_authority_sha256")
+        or direct_iam_authority.get("foundation_apply_receipt_sha256")
+        != package.get("foundation_apply_receipt_sha256")
+        or direct_iam_authority.get("resource_ancestor_chain")
+        != package.get("resource_ancestor_chain")
         or package.get("pre_foundation_authority_sha256")
         != identities.pre_foundation_authority_sha256
         or package.get("foundation_apply_receipt_sha256")
@@ -2220,15 +2314,23 @@ def _validate_plan_from_exact_streams(
         or package.get("resource_ancestor_chain") != expected_chain
         or not isinstance(collectors, Mapping)
         or set(collectors) != {"network", "cloud", "host"}
-        or collectors.get("network")
-        != identities.pre_foundation_plan.spec.network_collector_public_key_id
         or any(_SHA256.fullmatch(str(item)) is None for item in collectors.values())
+        or len(set(collectors.values())) != 3
+        or identities.pre_foundation_plan.spec.network_collector_public_key_id
+        in set(collectors.values())
+        or type(final_network_evidence)
+        is not foundation.ProductionNetworkEvidence
+        or final_network_key_id != collectors.get("network")
+        or final_network_evidence.collector_public_key_id
+        != collectors.get("network")
         or package.get("interpreter_sha256")
         != identities.pre_foundation_plan.spec.interpreter_sha256
     ):
         _error("owner_gate_cloud_observation_plan_binding_invalid")
     expected_spec = replace(
         identities.pre_foundation_plan.spec,
+        release_revision=str(package["release_revision"]),
+        network_collector_public_key_id=str(collectors["network"]),
         source_tree_oid=None,
         boot_image_numeric_id=None,
         package_inventory_sha256=str(package["package_inventory_sha256"]),
@@ -2238,9 +2340,9 @@ def _validate_plan_from_exact_streams(
     try:
         expected_plan = foundation.build_plan(
             spec=expected_spec,
-            network_evidence=identities.network_evidence,
-            network_collector_public_key=(identities.network_collector_public_key),
-            now_unix=identities.network_evidence.collected_at_unix,
+            network_evidence=final_network_evidence,
+            network_collector_public_key=final_network_collector_public_key,
+            now_unix=final_network_evidence.collected_at_unix,
         )
     except foundation.OwnerGateFoundationError as exc:
         _error("owner_gate_cloud_observation_plan_binding_invalid", exc)
@@ -2362,6 +2464,9 @@ def _collect_and_author_components(
     *,
     plan: foundation.OwnerGateFoundationPlan,
     foundation_apply_chain: Any,
+    final_network_evidence: foundation.ProductionNetworkEvidence,
+    final_network_collector_public_key: Ed25519PublicKey,
+    production_ingress_observation: Mapping[str, Any],
     phase: str,
     collected_at_unix: int | None,
     gcloud_executable: launcher.TrustedGcloudExecutable,
@@ -2384,9 +2489,27 @@ def _collect_and_author_components(
     package = _validate_plan_from_exact_streams(
         plan=plan,
         identities=identities,
+        final_network_evidence=final_network_evidence,
+        final_network_collector_public_key=(
+            final_network_collector_public_key
+        ),
         stage0_transport=stage0_transport,
         kit_stream=kit_stream,
         bundle_stream=bundle_stream,
+    )
+    try:
+        release_public_key = foundation_apply_chain.foundation_a.release_public_key
+    except AttributeError as exc:
+        _error("owner_gate_cloud_observation_production_ingress_invalid", exc)
+    production_ingress_observation_sha256 = (
+        _validated_production_ingress_observation_sha256(
+            production_ingress_observation,
+            phase=phase,
+            release_revision=plan.spec.release_revision,
+            plan_sha256=plan.sha256,
+            release_public_key=release_public_key,
+            now_unix=int(time.time()),
+        )
     )
     from scripts.canary import owner_gate_stage0_iap as stage0_iap
 
@@ -2476,6 +2599,13 @@ def _collect_and_author_components(
                 stage0_transport,
                 phase=phase,
                 plan=plan,
+                final_network_evidence=final_network_evidence,
+                final_network_collector_public_key=(
+                    final_network_collector_public_key
+                ),
+                production_ingress_observation_sha256=(
+                    production_ingress_observation_sha256
+                ),
                 kit_stream=kit_stream,
                 bundle_stream=bundle_stream,
             )
@@ -2489,6 +2619,9 @@ def _collect_and_author_components(
             package=package,
             host_public_key=Ed25519PublicKey.from_public_bytes(
                 host_public_before.public_raw
+            ),
+            production_ingress_observation_sha256=(
+                production_ingress_observation_sha256
             ),
         )
         handoff_snapshot = _canonical({
@@ -2640,6 +2773,9 @@ def collect_and_author(
     *,
     plan: foundation.OwnerGateFoundationPlan,
     foundation_apply_chain: Any,
+    final_network_evidence: foundation.ProductionNetworkEvidence,
+    final_network_collector_public_key: Ed25519PublicKey,
+    production_ingress_observation: Mapping[str, Any],
     phase: str,
     collected_at_unix: int | None,
     gcloud_executable: launcher.TrustedGcloudExecutable,
@@ -2654,6 +2790,11 @@ def collect_and_author(
     cloud_observation, _handoff = _collect_and_author_components(
         plan=plan,
         foundation_apply_chain=foundation_apply_chain,
+        final_network_evidence=final_network_evidence,
+        final_network_collector_public_key=(
+            final_network_collector_public_key
+        ),
+        production_ingress_observation=production_ingress_observation,
         phase=phase,
         collected_at_unix=collected_at_unix,
         gcloud_executable=gcloud_executable,
@@ -2670,6 +2811,9 @@ def collect_and_author_bound_pair(
     *,
     plan: foundation.OwnerGateFoundationPlan,
     foundation_apply_chain: Any,
+    final_network_evidence: foundation.ProductionNetworkEvidence,
+    final_network_collector_public_key: Ed25519PublicKey,
+    production_ingress_observation: Mapping[str, Any],
     phase: str,
     collected_at_unix: int | None,
     gcloud_executable: launcher.TrustedGcloudExecutable,
@@ -2684,6 +2828,11 @@ def collect_and_author_bound_pair(
     cloud_observation, handoff = _collect_and_author_components(
         plan=plan,
         foundation_apply_chain=foundation_apply_chain,
+        final_network_evidence=final_network_evidence,
+        final_network_collector_public_key=(
+            final_network_collector_public_key
+        ),
+        production_ingress_observation=production_ingress_observation,
         phase=phase,
         collected_at_unix=collected_at_unix,
         gcloud_executable=gcloud_executable,

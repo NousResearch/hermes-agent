@@ -934,6 +934,110 @@ def test_stage0_and_runtime_share_one_reviewed_release_trust_anchor() -> None:
     )
 
 
+def test_verify_bundle_decodes_direct_iam_against_signed_foundation_revision(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    root = tmp_path / "bundle"
+    root.mkdir()
+    release_revision = "a" * 40
+    foundation_revision = "f" * 40
+    foundation_tree_oid = "e" * 40
+    direct_raw = b"opaque-direct-iam-authority"
+    migration_raw = bootstrap.foundation.canonical_json_bytes({"fixture": True})
+    collector_raw = {
+        name: Ed25519PrivateKey.generate().public_key().public_bytes_raw()
+        for name in ("network", "cloud", "host")
+    }
+    collector_ids = {
+        name: hashlib.sha256(raw).hexdigest()
+        for name, raw in collector_raw.items()
+    }
+    authority = {
+        "release_revision": release_revision,
+        "foundation_source_revision": foundation_revision,
+        "foundation_source_tree_oid": foundation_tree_oid,
+        "collector_public_key_ids": collector_ids,
+        "credential_migration_envelope_sha256": hashlib.sha256(
+            migration_raw
+        ).hexdigest(),
+        "direct_iam_identity_authority_sha256": hashlib.sha256(
+            direct_raw
+        ).hexdigest(),
+        "pre_foundation_authority_sha256": "1" * 64,
+        "foundation_apply_receipt_sha256": "2" * 64,
+        "resource_ancestor_chain": ["organizations/123456789012"],
+    }
+    manifest = {
+        "release_revision": release_revision,
+        "foundation_source_revision": foundation_revision,
+        "foundation_source_tree_oid": foundation_tree_oid,
+        "payloads": [],
+        "wheels": [],
+        "direct_iam_identity_authority_sha256": authority[
+            "direct_iam_identity_authority_sha256"
+        ],
+        "pre_foundation_authority_sha256": authority[
+            "pre_foundation_authority_sha256"
+        ],
+        "foundation_apply_receipt_sha256": authority[
+            "foundation_apply_receipt_sha256"
+        ],
+        "resource_ancestor_chain": authority["resource_ancestor_chain"],
+    }
+    manifest_raw = bootstrap.foundation.canonical_json_bytes(manifest)
+    by_name = {
+        "package-manifest.json": manifest_raw,
+        "credential.json": migration_raw,
+        "direct-iam-identity-authority.json": direct_raw,
+        **{
+            f"{name}-observation-attestation.pub": raw
+            for name, raw in collector_raw.items()
+        },
+    }
+    monkeypatch.setattr(
+        bootstrap.trust,
+        "load_pinned_release_trust",
+        lambda **_kwargs: authority,
+    )
+    monkeypatch.setattr(
+        bootstrap.package,
+        "validate_authorized_manifest",
+        lambda _manifest, *, authority: _manifest,
+    )
+    monkeypatch.setattr(
+        bootstrap,
+        "_read_regular",
+        lambda path, **_kwargs: by_name[path.name],
+    )
+    monkeypatch.setattr(
+        bootstrap,
+        "validate_migration",
+        lambda value, **_kwargs: value,
+    )
+    decoded_against: list[str | None] = []
+
+    def decode_direct(raw: bytes, *, release_revision: str | None = None):
+        assert raw == direct_raw
+        decoded_against.append(release_revision)
+        return {
+            "release_revision": foundation_revision,
+            "pre_foundation_authority_sha256": "1" * 64,
+            "foundation_apply_receipt_sha256": "2" * 64,
+            "resource_ancestor_chain": ["organizations/123456789012"],
+        }
+
+    monkeypatch.setattr(bootstrap.direct_iam, "decode_canonical", decode_direct)
+
+    verified = bootstrap.verify_bundle(root, expected_uid=os.geteuid())
+
+    assert verified.revision == release_revision
+    assert verified.direct_iam_identity["release_revision"] == (
+        foundation_revision
+    )
+    assert decoded_against == [foundation_revision]
+
+
 def test_install_transaction_crash_replays_only_uncommitted_phase(
     tmp_path: Path,
 ) -> None:
@@ -997,6 +1101,7 @@ def test_install_transaction_crash_replays_only_uncommitted_phase(
     assert calls == []
 
 
+@pytest.mark.live_system_guard_bypass
 @pytest.mark.parametrize(
     "checkpoint",
     (
@@ -1043,6 +1148,7 @@ def test_sigkill_exact_byte_publication_recovers_without_partial_final(
         child.close()
 
 
+@pytest.mark.live_system_guard_bypass
 @pytest.mark.parametrize(
     "checkpoint",
     (
@@ -1116,6 +1222,7 @@ def test_sigkill_receipt_key_pair_publication_reconciles_one_identity(
         child.close()
 
 
+@pytest.mark.live_system_guard_bypass
 def test_sigkill_release_rename_reconciles_exact_pending_intent(
     tmp_path: Path,
 ) -> None:
@@ -1164,6 +1271,7 @@ def test_sigkill_release_rename_reconciles_exact_pending_intent(
         child.close()
 
 
+@pytest.mark.live_system_guard_bypass
 @pytest.mark.parametrize("checkpoint", ("after_intent", "after_effect"))
 def test_sigkill_transaction_replays_persisted_ownership_without_truth_flip(
     tmp_path: Path,
@@ -1661,6 +1769,7 @@ def test_canonical_database_bootstrap_is_exact_and_replay_safe(
     assert first["executor_preflight"] == replay["executor_preflight"]
 
 
+@pytest.mark.live_system_guard_bypass
 @pytest.mark.parametrize(
     "checkpoint",
     (
@@ -1897,6 +2006,7 @@ def test_rollback_strict_load_never_creates_empty_install_transaction(
     ).exists()
 
 
+@pytest.mark.live_system_guard_bypass
 @pytest.mark.parametrize(
     "checkpoint",
     (

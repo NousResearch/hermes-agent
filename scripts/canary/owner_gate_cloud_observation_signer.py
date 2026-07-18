@@ -549,6 +549,9 @@ def _validate_request(
         "terminal_receipt_sha256": terminal["terminal_receipt_sha256"],
         "host_observation_report_sha256": host["report_sha256"],
         "host_observation_binding_sha256": host["observation_binding_sha256"],
+        "production_ingress_observation_sha256": host[
+            "production_ingress_observation_sha256"
+        ],
         "attached_sa_permission_probe_report_sha256": release[
             "attached_sa_permission_probe_report_sha256"
         ],

@@ -21,29 +21,38 @@ import stat
 import threading
 import time
 from contextlib import contextmanager
-from dataclasses import dataclass, replace
+from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Iterator, Mapping
+from typing import Any, Iterator, Mapping, Never
 
-from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PublicKey
+from cryptography.hazmat.primitives.asymmetric.ed25519 import (
+    Ed25519PrivateKey,
+    Ed25519PublicKey,
+)
 
+from scripts.canary import direct_iam_identity_author as direct_iam_author
+from scripts.canary import direct_iam_identity_authority as direct_iam_authority
 from scripts.canary import full_canary_owner_launcher as launcher
 from scripts.canary import owner_gate_author_and_apply as foundation_author
 from scripts.canary import owner_gate_author_journal as author_journal
 from scripts.canary import owner_gate_cloud_observation_author as cloud_author
 from scripts.canary import owner_gate_foundation as foundation
 from scripts.canary import owner_gate_foundation_apply as foundation_apply
+from scripts.canary import owner_gate_network_evidence_author as network_author
+from scripts.canary import owner_gate_package as package_author
 from scripts.canary import owner_gate_preflight as preflight
 from scripts.canary import owner_gate_pre_foundation as pre_foundation
-from scripts.canary import owner_gate_stage0 as cloud_stage0
+from scripts.canary import owner_gate_production_ingress_observation as production_ingress
 from scripts.canary import owner_gate_stage0_iap as stage0_iap
+from scripts.canary import owner_gate_trust as release_trust
 from scripts.canary import owner_gate_trust_author as trust_author
+from scripts.canary import production_cutover_owner_launcher as production_cutover
 from scripts.canary import trusted_signer_author as signer_author
 
 
 INPUT_PINS_SCHEMA = "muncho-owner-gate-inert-observation-input-pins.v1"
-RECEIPT_SCHEMA = "muncho-owner-gate-inert-observation-receipt.v1"
-EVIDENCE_SET_ID_SCHEMA = "muncho-owner-gate-inert-observation-set-id.v1"
+RECEIPT_SCHEMA = "muncho-owner-gate-inert-observation-receipt.v2"
+EVIDENCE_SET_ID_SCHEMA = "muncho-owner-gate-inert-observation-set-id.v2"
 OWNER_HOME = Path(pwd.getpwuid(os.geteuid()).pw_dir)  # windows-footgun: ok
 INPUT_ROOT = OWNER_HOME / ".hermes" / "owner-gate-inert-observation-inputs"
 EVIDENCE_ROOT = OWNER_HOME / ".hermes" / "owner-gate-inert-observation-evidence"
@@ -51,6 +60,10 @@ EVIDENCE_PHASE = "inert"
 PINS_NAME = "stream-pins.json"
 KIT_STREAM_NAME = "outer-stage0.tree-stream"
 BUNDLE_STREAM_NAME = "owner-gate-bundle.tree-stream"
+NETWORK_EVIDENCE_NAME = "network-evidence.json"
+INERT_PRODUCTION_INGRESS_OBSERVATION_NAME = (
+    "inert-production-ingress-observation.json"
+)
 INERT_CLOUD_OBSERVATION_NAME = "inert-cloud-observation.json"
 INERT_HOST_OBSERVATION_NAME = "inert-host-observation.json"
 INERT_PREFLIGHT_NAME = "inert-preflight.json"
@@ -64,6 +77,8 @@ _SHA256 = re.compile(r"^[0-9a-f]{64}$")
 _PROCESS_LOCK = threading.Lock()
 
 _EVIDENCE_NAMES = (
+    NETWORK_EVIDENCE_NAME,
+    INERT_PRODUCTION_INGRESS_OBSERVATION_NAME,
     INERT_CLOUD_OBSERVATION_NAME,
     INERT_HOST_OBSERVATION_NAME,
     INERT_PREFLIGHT_NAME,
@@ -75,6 +90,8 @@ _RECEIPT_FIELDS = frozenset({
     "phase",
     "release_revision",
     "source_tree_oid",
+    "foundation_source_revision",
+    "foundation_source_tree_oid",
     "package_sha256",
     "plan_sha256",
     "pre_foundation_authority_sha256",
@@ -82,6 +99,8 @@ _RECEIPT_FIELDS = frozenset({
     "input_pins_sha256",
     "observed_at_unix",
     "evidence_files",
+    "network_evidence_sha256",
+    "production_ingress_observation_sha256",
     "cloud_observation_sha256",
     "host_observation_sha256",
     "preflight_report_sha256",
@@ -93,7 +112,7 @@ _RECEIPT_FIELDS = frozenset({
 })
 
 
-def _error(code: str, _cause: BaseException | None = None) -> None:
+def _error(code: str, _cause: BaseException | None = None) -> Never:
     raise launcher.OwnerLauncherError(code) from None
 
 
@@ -653,24 +672,130 @@ class _LoadedFoundation:
     raw_artifacts: stage0_iap.RawFoundationChainArtifacts
 
 
-def _load_successful_foundation(release_revision: str) -> _LoadedFoundation:
+@dataclass(frozen=True)
+class _ReleaseBinding:
+    release_revision: str
+    source_tree_oid: str
+    package: Mapping[str, Any]
+    authority: Mapping[str, Any]
+    direct_iam_raw: bytes
+    foundation_source_revision: str
+    foundation_source_tree_oid: str
+    release_public_key: Ed25519PublicKey
+
+
+def _load_release_binding(
+    release_revision: str,
+    bundle_stream: stage0_iap.PinnedExactTreeStream,
+) -> _ReleaseBinding:
+    """Authenticate final release R and derive Foundation F only from it."""
+
+    try:
+        package_raw = bundle_stream.member("package-manifest.json")
+        trust_raw = bundle_stream.member("trust/release-trust.json")
+        trust_public_raw = bundle_stream.member(
+            "trust/release-trust-signing.pub"
+        )
+        direct_iam_raw = bundle_stream.member(
+            "trust/direct-iam-identity-authority.json"
+        )
+        package = _decode_document(
+            package_raw,
+            code="owner_gate_inert_observation_package_invalid",
+        )
+        authority = release_trust.decode_pinned_release_trust(
+            manifest_raw=trust_raw,
+            public_key_raw=trust_public_raw,
+        )
+        release_public_key = Ed25519PublicKey.from_public_bytes(
+            trust_public_raw
+        )
+        package_author.validate_authorized_manifest(
+            package,
+            authority=authority,
+        )
+        foundation_revision = str(
+            authority["foundation_source_revision"]
+        )
+        foundation_tree = str(authority["foundation_source_tree_oid"])
+        direct = direct_iam_authority.decode_canonical(
+            direct_iam_raw,
+            release_revision=foundation_revision,
+        )
+        collectors = authority["collector_public_key_ids"]
+        direct_sha256 = _sha256(direct_iam_raw)
+        if (
+            release_revision == foundation_revision
+            or package.get("release_revision") != release_revision
+            or authority.get("release_revision") != release_revision
+            or package.get("source_tree_oid")
+            != authority.get("source_tree_oid")
+            or package.get("foundation_source_revision")
+            != foundation_revision
+            or package.get("foundation_source_tree_oid") != foundation_tree
+            or direct_sha256
+            != authority.get("direct_iam_identity_authority_sha256")
+            or direct_sha256
+            != package.get("direct_iam_identity_authority_sha256")
+            or direct.get("pre_foundation_authority_sha256")
+            != authority.get("pre_foundation_authority_sha256")
+            or direct.get("foundation_apply_receipt_sha256")
+            != authority.get("foundation_apply_receipt_sha256")
+            or direct.get("resource_ancestor_chain")
+            != authority.get("resource_ancestor_chain")
+            or not isinstance(collectors, Mapping)
+            or set(collectors) != {"network", "cloud", "host"}
+            or any(
+                _SHA256.fullmatch(str(value)) is None
+                for value in collectors.values()
+            )
+        ):
+            _error("owner_gate_inert_observation_release_binding_invalid")
+    except launcher.OwnerLauncherError:
+        raise
+    except (
+        AttributeError,
+        KeyError,
+        TypeError,
+        ValueError,
+        direct_iam_authority.DirectIamIdentityAuthorityError,
+        package_author.OwnerGatePackageError,
+        release_trust.OwnerGateTrustError,
+    ) as exc:
+        _error("owner_gate_inert_observation_release_binding_invalid", exc)
+    bundle_stream.assert_stable()
+    return _ReleaseBinding(
+        release_revision=release_revision,
+        source_tree_oid=str(package["source_tree_oid"]),
+        package=dict(package),
+        authority=dict(authority),
+        direct_iam_raw=direct_iam_raw,
+        foundation_source_revision=foundation_revision,
+        foundation_source_tree_oid=foundation_tree,
+        release_public_key=release_public_key,
+    )
+
+
+def _load_successful_foundation(
+    foundation_revision: str,
+) -> _LoadedFoundation:
     try:
         release_public = pre_foundation.load_pinned_public_key(
             trust_author.KEY_DIRECTORY / trust_author.PUBLIC_KEY_NAME,
             expected_uid=os.geteuid(),  # windows-footgun: ok
         )
         network_public = foundation_author._load_network_public_key(
-            release_revision
+            foundation_revision
         )
         journal = author_journal.OwnerGateAuthorJournal()
-        with journal.release_lease(release_revision):
-            transactions = journal.list_transactions(release_revision)
+        with journal.release_lease(foundation_revision):
+            transactions = journal.list_transactions(foundation_revision)
             successful: list[tuple[str, Mapping[str, Mapping[str, Any]]]] = []
             for transaction_id, artifacts in transactions.items():
                 if "terminal" not in artifacts:
                     _error("owner_gate_inert_observation_foundation_incomplete")
                 receipt = foundation_author._validate_terminal(
-                    release_revision=release_revision,
+                    release_revision=foundation_revision,
                     transaction_id=transaction_id,
                     artifacts=artifacts,
                     release_public=release_public,
@@ -689,10 +814,10 @@ def _load_successful_foundation(release_revision: str) -> _LoadedFoundation:
             chain = foundation_apply.load_validated_foundation_apply_chain(
                 foundation_a
             )
-            transaction_root = journal.root / release_revision / transaction_id
+            transaction_root = journal.root / foundation_revision / transaction_id
             network_public_key_path = (
                 signer_author._public_path(
-                    release_revision,
+                    foundation_revision,
                     "network",
                 )
             )
@@ -733,55 +858,103 @@ def _load_successful_foundation(release_revision: str) -> _LoadedFoundation:
     if (
         type(chain) is not foundation_apply.ValidatedFoundationApplyChain
         or chain._marker is not foundation_apply._CHAIN_MARKER
-        or chain.foundation_source_revision != release_revision
+        or chain.foundation_source_revision != foundation_revision
     ):
         _error("owner_gate_inert_observation_foundation_invalid")
     return _LoadedFoundation(chain=chain, raw_artifacts=raw_artifacts)
 
 
-def _final_plan(
-    chain: foundation_apply.ValidatedFoundationApplyChain,
-    bundle_stream: stage0_iap.PinnedExactTreeStream,
-) -> tuple[foundation.OwnerGateFoundationPlan, Mapping[str, Any]]:
+def _bind_release_to_foundation(
+    binding: _ReleaseBinding,
+    loaded: _LoadedFoundation,
+) -> None:
     try:
-        package_raw = bundle_stream.member("package-manifest.json")
-        package = cloud_author._decode_json(package_raw)
-        unsigned = {
-            key: item for key, item in package.items() if key != "package_sha256"
-        }
-        inventory = {
-            key: package[key] for key in cloud_stage0.INVENTORY_FIELDS
-        }
-        collectors = package.get("collector_public_key_ids")
+        canonical_direct = (
+            direct_iam_author._decode_canonical_authority_for_recovery_chain(
+                binding.direct_iam_raw,
+                foundation_chain=loaded.chain,
+            )
+        )
+        chain = loaded.chain
+        ancestry = chain.foundation_a.ancestry_evidence
+        expected_ancestors = [
+            str(item["resource_name"])
+            for item in ancestry.ordered_chain[1:]
+        ]
+        collectors = binding.authority["collector_public_key_ids"]
+        bootstrap_network_key_id = (
+            chain.foundation_a.plan.spec.network_collector_public_key_id
+        )
         if (
-            set(package) != cloud_stage0.MANIFEST_FIELDS
-            or package.get("schema") != cloud_stage0.PACKAGE_SCHEMA
-            or package.get("release_revision") != chain.foundation_source_revision
-            or package.get("source_tree_oid") != chain.foundation_source_tree_oid
-            or package.get("package_sha256") != foundation.sha256_json(unsigned)
-            or package.get("package_inventory_sha256")
-            != foundation.sha256_json(inventory)
-            or not isinstance(collectors, Mapping)
-            or set(collectors) != {"network", "cloud", "host"}
-            or any(_SHA256.fullmatch(str(item)) is None for item in collectors.values())
+            canonical_direct.raw != binding.direct_iam_raw
+            or canonical_direct.raw_sha256
+            != binding.authority["direct_iam_identity_authority_sha256"]
+            or chain.foundation_source_revision
+            != binding.foundation_source_revision
+            or chain.foundation_source_tree_oid
+            != binding.foundation_source_tree_oid
+            or binding.release_revision == chain.foundation_source_revision
+            or chain.pre_foundation_authority_sha256
+            != binding.authority["pre_foundation_authority_sha256"]
+            or chain.foundation_apply_receipt_sha256
+            != binding.authority["foundation_apply_receipt_sha256"]
+            or ancestry.signed_evidence_sha256
+            != binding.authority["project_ancestry_evidence_sha256"]
+            or ancestry.value["stable_chain_sha256"]
+            != binding.authority["project_ancestry_chain_sha256"]
+            or expected_ancestors
+            != binding.authority["resource_ancestor_chain"]
+            or chain.foundation_a.plan.spec.interpreter_sha256
+            != binding.authority["interpreter_image"]["interpreter_sha256"]
+            or bootstrap_network_key_id in set(collectors.values())
         ):
-            _error("owner_gate_inert_observation_package_invalid")
-        foundation_a = chain.foundation_a
-        spec = replace(
-            foundation_a.plan.spec,
-            source_tree_oid=None,
-            boot_image_numeric_id=None,
-            package_inventory_sha256=str(package["package_inventory_sha256"]),
+            _error("owner_gate_inert_observation_release_binding_invalid")
+    except launcher.OwnerLauncherError:
+        raise
+    except (
+        AttributeError,
+        KeyError,
+        TypeError,
+        ValueError,
+        direct_iam_author.DirectIamIdentityAuthorError,
+        foundation_apply.OwnerGateFoundationApplyError,
+    ) as exc:
+        _error("owner_gate_inert_observation_release_binding_invalid", exc)
+
+
+def _final_plan(
+    binding: _ReleaseBinding,
+    network_evidence: foundation.ProductionNetworkEvidence,
+    network_public_key: Ed25519PublicKey,
+) -> foundation.OwnerGateFoundationPlan:
+    try:
+        collectors = binding.authority["collector_public_key_ids"]
+        ancestors = binding.authority["resource_ancestor_chain"]
+        organization = str(ancestors[-1])
+        if not organization.startswith("organizations/"):
+            raise ValueError
+        spec = foundation.OwnerGateSpec(
+            release_revision=binding.release_revision,
+            boot_image_self_link=str(
+                binding.authority["boot_image_self_link"]
+            ),
+            package_inventory_sha256=str(
+                binding.package["package_inventory_sha256"]
+            ),
+            interpreter_sha256=str(binding.package["interpreter_sha256"]),
+            network_collector_public_key_id=str(collectors["network"]),
+            organization_id=organization.split("/", 1)[1],
+            ancestry_evidence_sha256=str(
+                binding.authority["project_ancestry_evidence_sha256"]
+            ),
             cloud_collector_public_key_id=str(collectors["cloud"]),
             host_collector_public_key_id=str(collectors["host"]),
         )
         plan = foundation.build_plan(
             spec=spec,
-            network_evidence=foundation_a.network_evidence,
-            network_collector_public_key=(
-                foundation_a.network_collector_public_key
-            ),
-            now_unix=foundation_a.network_evidence.collected_at_unix,
+            network_evidence=network_evidence,
+            network_collector_public_key=network_public_key,
+            now_unix=network_evidence.collected_at_unix,
         )
     except launcher.OwnerLauncherError:
         raise
@@ -793,18 +966,102 @@ def _final_plan(
         foundation.OwnerGateFoundationError,
     ) as exc:
         _error("owner_gate_inert_observation_package_invalid", exc)
-    return plan, package
+    return plan
 
 
-def _collector_key(release_revision: str, *, role: str) -> Ed25519PublicKey:
+def _collector_key(
+    release_revision: str,
+    *,
+    role: str,
+    expected_key_id: str,
+) -> Ed25519PublicKey:
     snapshot = cloud_author._public_signer_snapshot(
         release_revision,
         role=role,
     )
     try:
-        return Ed25519PublicKey.from_public_bytes(snapshot.public_raw)
+        public_key = Ed25519PublicKey.from_public_bytes(snapshot.public_raw)
     except ValueError as exc:
         _error("owner_gate_inert_observation_collector_key_invalid", exc)
+    if _sha256(snapshot.public_raw) != expected_key_id:
+        _error("owner_gate_inert_observation_collector_key_invalid")
+    return public_key
+
+
+def _release_private_key(binding: _ReleaseBinding) -> Ed25519PrivateKey:
+    """Load only the fixed fork-pinned owner key and bind it to release R."""
+
+    try:
+        private_key = foundation_author._load_release_private_key()
+    except foundation_author.OwnerGateAuthorAndApplyError as exc:
+        _error("owner_gate_inert_observation_release_key_invalid", exc)
+    if (
+        private_key.public_key().public_bytes_raw()
+        != binding.release_public_key.public_bytes_raw()
+    ):
+        _error("owner_gate_inert_observation_release_key_invalid")
+    return private_key
+
+
+def _validated_final_network_evidence(
+    value: Mapping[str, Any],
+    *,
+    binding: _ReleaseBinding,
+    public_key: Ed25519PublicKey,
+    now_unix: int,
+    code: str = "owner_gate_inert_observation_network_evidence_invalid",
+) -> foundation.ProductionNetworkEvidence:
+    try:
+        evidence = foundation.ProductionNetworkEvidence.from_mapping(
+            value,
+            public_key=public_key,
+            expected_public_key_id=str(
+                binding.authority["collector_public_key_ids"]["network"]
+            ),
+            now_unix=now_unix,
+        )
+    except (
+        AttributeError,
+        KeyError,
+        TypeError,
+        ValueError,
+        foundation.OwnerGateFoundationError,
+    ) as exc:
+        _error(code, exc)
+    return evidence
+
+
+def _collect_final_network_evidence(
+    *,
+    binding: _ReleaseBinding,
+    public_key: Ed25519PublicKey,
+    gcloud_executable: launcher.TrustedGcloudExecutable,
+    gcloud_configuration: launcher.PinnedGcloudConfiguration,
+) -> tuple[Mapping[str, Any], foundation.ProductionNetworkEvidence]:
+    collected_at_unix = int(time.time())
+    if collected_at_unix <= 0:
+        _error("owner_gate_inert_observation_time_invalid")
+    try:
+        value = network_author.collect_and_author(
+            release_revision=binding.release_revision,
+            collected_at_unix=collected_at_unix,
+            gcloud_executable=gcloud_executable,
+            gcloud_configuration=gcloud_configuration,
+        )
+    except network_author.OwnerGateNetworkEvidenceAuthorError as exc:
+        _error("owner_gate_inert_observation_network_evidence_invalid", exc)
+    if not isinstance(value, Mapping) or _decode_document(
+        _canonical(value),
+        code="owner_gate_inert_observation_network_evidence_invalid",
+    ) != value:
+        _error("owner_gate_inert_observation_network_evidence_invalid")
+    evidence = _validated_final_network_evidence(
+        value,
+        binding=binding,
+        public_key=public_key,
+        now_unix=collected_at_unix,
+    )
+    return dict(value), evidence
 
 
 def _evidence_set_sha256(
@@ -824,16 +1081,21 @@ def _evidence_set_sha256(
 
 def _build_receipt(
     *,
-    release_revision: str,
+    binding: _ReleaseBinding,
     inputs: _PinnedObservationInputs,
     loaded: _LoadedFoundation,
-    package: Mapping[str, Any],
+    network_evidence: Mapping[str, Any],
     plan: foundation.OwnerGateFoundationPlan,
+    production_ingress_observation: Mapping[str, Any],
     cloud_observation: Mapping[str, Any],
     host_observation: Mapping[str, Any],
     report: Mapping[str, Any],
 ) -> tuple[Mapping[str, Any], Mapping[str, bytes]]:
     payloads = {
+        NETWORK_EVIDENCE_NAME: _canonical(network_evidence),
+        INERT_PRODUCTION_INGRESS_OBSERVATION_NAME: _canonical(
+            production_ingress_observation
+        ),
         INERT_CLOUD_OBSERVATION_NAME: _canonical(cloud_observation),
         INERT_HOST_OBSERVATION_NAME: _canonical(host_observation),
         INERT_PREFLIGHT_NAME: _canonical(report),
@@ -842,7 +1104,7 @@ def _build_receipt(
         name: _sha256(payloads[name]) for name in _EVIDENCE_NAMES
     }
     evidence_set_sha256 = _evidence_set_sha256(
-        release_revision=release_revision,
+        release_revision=binding.release_revision,
         plan_sha256=plan.sha256,
         evidence_files=evidence_files,
     )
@@ -850,9 +1112,11 @@ def _build_receipt(
         "schema": RECEIPT_SCHEMA,
         "ok": True,
         "phase": EVIDENCE_PHASE,
-        "release_revision": release_revision,
-        "source_tree_oid": loaded.chain.foundation_source_tree_oid,
-        "package_sha256": package["package_sha256"],
+        "release_revision": binding.release_revision,
+        "source_tree_oid": binding.source_tree_oid,
+        "foundation_source_revision": binding.foundation_source_revision,
+        "foundation_source_tree_oid": binding.foundation_source_tree_oid,
+        "package_sha256": binding.package["package_sha256"],
         "plan_sha256": plan.sha256,
         "pre_foundation_authority_sha256": (
             loaded.chain.pre_foundation_authority_sha256
@@ -863,6 +1127,10 @@ def _build_receipt(
         "input_pins_sha256": inputs.pins["pins_sha256"],
         "observed_at_unix": report["observed_at_unix"],
         "evidence_files": evidence_files,
+        "network_evidence_sha256": network_evidence["evidence_sha256"],
+        "production_ingress_observation_sha256": (
+            production_ingress_observation["envelope_sha256"]
+        ),
         "cloud_observation_sha256": cloud_observation["report_sha256"],
         "host_observation_sha256": host_observation["report_sha256"],
         "preflight_report_sha256": report["report_sha256"],
@@ -887,10 +1155,10 @@ def _validate_receipt(
     receipt: Mapping[str, Any],
     receipt_raw: bytes,
     evidence_raw: Mapping[str, bytes],
-    release_revision: str,
+    binding: _ReleaseBinding,
     inputs: _PinnedObservationInputs,
     loaded: _LoadedFoundation,
-    package: Mapping[str, Any],
+    network_evidence: foundation.ProductionNetworkEvidence,
     plan: foundation.OwnerGateFoundationPlan,
 ) -> None:
     unsigned = {
@@ -904,10 +1172,18 @@ def _validate_receipt(
         or receipt.get("schema") != RECEIPT_SCHEMA
         or receipt.get("ok") is not True
         or receipt.get("phase") != EVIDENCE_PHASE
-        or receipt.get("release_revision") != release_revision
-        or receipt.get("source_tree_oid")
+        or receipt.get("release_revision") != binding.release_revision
+        or receipt.get("source_tree_oid") != binding.source_tree_oid
+        or receipt.get("foundation_source_revision")
+        != binding.foundation_source_revision
+        or receipt.get("foundation_source_tree_oid")
+        != binding.foundation_source_tree_oid
+        or receipt.get("foundation_source_revision")
+        != loaded.chain.foundation_source_revision
+        or receipt.get("foundation_source_tree_oid")
         != loaded.chain.foundation_source_tree_oid
-        or receipt.get("package_sha256") != package.get("package_sha256")
+        or receipt.get("package_sha256")
+        != binding.package.get("package_sha256")
         or receipt.get("plan_sha256") != plan.sha256
         or receipt.get("pre_foundation_authority_sha256")
         != loaded.chain.pre_foundation_authority_sha256
@@ -919,6 +1195,12 @@ def _validate_receipt(
         or not isinstance(receipt.get("evidence_files"), Mapping)
         or dict(receipt["evidence_files"]) != evidence_files
         or any(_SHA256.fullmatch(item) is None for item in evidence_files.values())
+        or receipt.get("network_evidence_sha256")
+        != network_evidence.evidence_sha256
+        or _SHA256.fullmatch(
+            str(receipt.get("production_ingress_observation_sha256", ""))
+        )
+        is None
         or _SHA256.fullmatch(str(receipt.get("cloud_observation_sha256", "")))
         is None
         or _SHA256.fullmatch(str(receipt.get("host_observation_sha256", "")))
@@ -933,7 +1215,7 @@ def _validate_receipt(
     ):
         _error("owner_gate_inert_observation_manual_reconciliation_required")
     evidence_set_sha256 = _evidence_set_sha256(
-        release_revision=release_revision,
+        release_revision=binding.release_revision,
         plan_sha256=plan.sha256,
         evidence_files=evidence_files,
     )
@@ -948,11 +1230,10 @@ def _load_evidence_transaction(
     *,
     phase_root: Path,
     transaction_name: str,
-    release_revision: str,
+    binding: _ReleaseBinding,
     inputs: _PinnedObservationInputs,
     loaded: _LoadedFoundation,
-    package: Mapping[str, Any],
-    plan: foundation.OwnerGateFoundationPlan,
+    network_key: Ed25519PublicKey,
     cloud_key: Ed25519PublicKey,
     host_key: Ed25519PublicKey,
     now_unix: int,
@@ -980,8 +1261,30 @@ def _load_evidence_transaction(
                 ),
                 code="owner_gate_inert_observation_manual_reconciliation_required",
             )
+        network_mapping = _decode_document(
+            raw[NETWORK_EVIDENCE_NAME],
+            code="owner_gate_inert_observation_manual_reconciliation_required",
+        )
+        collected_at_unix = network_mapping.get("collected_at_unix")
+        if type(collected_at_unix) is not int or collected_at_unix <= 0:
+            _error("owner_gate_inert_observation_manual_reconciliation_required")
+        network_evidence = _validated_final_network_evidence(
+            network_mapping,
+            binding=binding,
+            public_key=network_key,
+            now_unix=collected_at_unix,
+            code=(
+                "owner_gate_inert_observation_"
+                "manual_reconciliation_required"
+            ),
+        )
+        plan = _final_plan(binding, network_evidence, network_key)
         cloud_observation = _decode_document(
             raw[INERT_CLOUD_OBSERVATION_NAME],
+            code="owner_gate_inert_observation_manual_reconciliation_required",
+        )
+        production_ingress_observation = _decode_document(
+            raw[INERT_PRODUCTION_INGRESS_OBSERVATION_NAME],
             code="owner_gate_inert_observation_manual_reconciliation_required",
         )
         host_observation = _decode_document(
@@ -1001,15 +1304,17 @@ def _load_evidence_transaction(
             receipt=receipt,
             receipt_raw=raw[RECEIPT_NAME],
             evidence_raw={name: raw[name] for name in _EVIDENCE_NAMES},
-            release_revision=release_revision,
+            binding=binding,
             inputs=inputs,
             loaded=loaded,
-            package=package,
+            network_evidence=network_evidence,
             plan=plan,
         )
         observed_at_unix = receipt["observed_at_unix"]
         rebuilt = preflight.build_preflight_report(
             plan=plan,
+            production_ingress_observation=production_ingress_observation,
+            release_public_key=binding.release_public_key,
             cloud_observation=cloud_observation,
             host_observation=host_observation,
             cloud_collector_public_key=cloud_key,
@@ -1020,6 +1325,8 @@ def _load_evidence_transaction(
             rebuilt != stored_report
             or receipt["cloud_observation_sha256"]
             != cloud_observation.get("report_sha256")
+            or receipt["production_ingress_observation_sha256"]
+            != production_ingress_observation.get("envelope_sha256")
             or receipt["host_observation_sha256"]
             != host_observation.get("report_sha256")
             or receipt["preflight_report_sha256"]
@@ -1029,16 +1336,29 @@ def _load_evidence_transaction(
         ):
             _error("owner_gate_inert_observation_manual_reconciliation_required")
         try:
+            network_evidence.validate(now_unix=now_unix)
             preflight.build_preflight_report(
                 plan=plan,
+                production_ingress_observation=(
+                    production_ingress_observation
+                ),
+                release_public_key=binding.release_public_key,
                 cloud_observation=cloud_observation,
                 host_observation=host_observation,
                 cloud_collector_public_key=cloud_key,
                 host_collector_public_key=host_key,
                 now_unix=now_unix,
             )
-        except preflight.OwnerGatePreflightError as exc:
-            if str(exc) == "owner_gate_preflight_stale":
+        except (
+            foundation.OwnerGateFoundationError,
+            preflight.OwnerGatePreflightError,
+        ) as exc:
+            if str(exc) in {
+                "owner_gate_network_evidence_stale",
+                "owner_gate_preflight_stale",
+                "owner_gate_preflight_production_ingress_invalid",
+                "owner_gate_production_ingress_observation_invalid",
+            }:
                 is_fresh = False
             else:
                 raise
@@ -1077,6 +1397,7 @@ def _load_evidence_transaction(
         OSError,
         TypeError,
         ValueError,
+        foundation.OwnerGateFoundationError,
         preflight.OwnerGatePreflightError,
     ) as exc:
         _error("owner_gate_inert_observation_manual_reconciliation_required", exc)
@@ -1085,11 +1406,10 @@ def _load_evidence_transaction(
 def _find_fresh_replay(
     *,
     phase_root: Path,
-    release_revision: str,
+    binding: _ReleaseBinding,
     inputs: _PinnedObservationInputs,
     loaded: _LoadedFoundation,
-    package: Mapping[str, Any],
-    plan: foundation.OwnerGateFoundationPlan,
+    network_key: Ed25519PublicKey,
     cloud_key: Ed25519PublicKey,
     host_key: Ed25519PublicKey,
     now_unix: int,
@@ -1105,11 +1425,10 @@ def _find_fresh_replay(
         receipt, is_fresh = _load_evidence_transaction(
             phase_root=phase_root,
             transaction_name=transaction_name,
-            release_revision=release_revision,
+            binding=binding,
             inputs=inputs,
             loaded=loaded,
-            package=package,
-            plan=plan,
+            network_key=network_key,
             cloud_key=cloud_key,
             host_key=host_key,
             now_unix=now_unix,
@@ -1125,6 +1444,315 @@ def _find_fresh_replay(
     if final_inventory != inventory:
         _error("owner_gate_inert_observation_manual_reconciliation_required")
     return fresh[0] if fresh else None
+
+
+@dataclass(frozen=True)
+class _FrozenInertEvidence:
+    """One already-published inert transaction held under its release lease."""
+
+    phase_root: Path
+    transaction_root: Path
+    transaction_identity: tuple[Any, ...]
+    evidence_identities: Mapping[str, tuple[Any, ...]]
+    evidence_raw: Mapping[str, bytes]
+    evidence: Mapping[str, Mapping[str, Any]]
+    receipt: Mapping[str, Any]
+    inputs: _PinnedObservationInputs
+    binding: _ReleaseBinding
+    loaded: _LoadedFoundation
+    network_key: Ed25519PublicKey
+    cloud_key: Ed25519PublicKey
+    host_key: Ed25519PublicKey
+    network_evidence: foundation.ProductionNetworkEvidence
+    plan: foundation.OwnerGateFoundationPlan
+
+    def assert_stable(self, *, now_unix: int) -> None:
+        """Revalidate freshness plus every frozen input and journal byte."""
+
+        if type(now_unix) is not int or now_unix <= 0:
+            _error("owner_gate_inert_observation_time_invalid")
+        transaction_name = self.transaction_root.name
+        receipt, is_fresh = _load_evidence_transaction(
+            phase_root=self.phase_root,
+            transaction_name=transaction_name,
+            binding=self.binding,
+            inputs=self.inputs,
+            loaded=self.loaded,
+            network_key=self.network_key,
+            cloud_key=self.cloud_key,
+            host_key=self.host_key,
+            now_unix=now_unix,
+        )
+        if (
+            not is_fresh
+            or _canonical(receipt) != _canonical(self.receipt)
+            or set(os.listdir(self.transaction_root)) != _TRANSACTION_NAMES
+            or _require_directory(
+                self.transaction_root,
+                parent=self.phase_root,
+                code="owner_gate_inert_observation_manual_reconciliation_required",
+                mode=0o500,
+            )
+            != self.transaction_identity
+        ):
+            _error("owner_gate_inert_observation_stale")
+        for name in _EVIDENCE_NAMES:
+            identity, raw = _read_pinned_file(
+                self.transaction_root / name,
+                maximum=MAX_EVIDENCE_BYTES,
+                code="owner_gate_inert_observation_manual_reconciliation_required",
+            )
+            if (
+                identity != self.evidence_identities[name]
+                or raw != self.evidence_raw[name]
+            ):
+                _error(
+                    "owner_gate_inert_observation_manual_reconciliation_required"
+                )
+        self.inputs.assert_stable()
+
+
+@contextmanager
+def _fresh_inert_evidence_snapshot(
+    *,
+    release_revision: str,
+    now_unix: int,
+) -> Iterator[_FrozenInertEvidence]:
+    """Load exact fresh inert evidence and keep its exclusive lease held."""
+
+    if type(now_unix) is not int or now_unix <= 0:
+        _error("owner_gate_inert_observation_time_invalid")
+    inputs = _PinnedObservationInputs.load(release_revision)
+    binding = _load_release_binding(release_revision, inputs.bundle_stream)
+    loaded = _load_successful_foundation(binding.foundation_source_revision)
+    _bind_release_to_foundation(binding, loaded)
+    collectors = binding.authority["collector_public_key_ids"]
+    network_key = _collector_key(
+        release_revision,
+        role="network",
+        expected_key_id=str(collectors["network"]),
+    )
+    cloud_key = _collector_key(
+        release_revision,
+        role="cloud",
+        expected_key_id=str(collectors["cloud"]),
+    )
+    host_key = _collector_key(
+        release_revision,
+        role="host",
+        expected_key_id=str(collectors["host"]),
+    )
+    with _evidence_lease(release_revision) as phase_root:
+        receipt = _find_fresh_replay(
+            phase_root=phase_root,
+            binding=binding,
+            inputs=inputs,
+            loaded=loaded,
+            network_key=network_key,
+            cloud_key=cloud_key,
+            host_key=host_key,
+            now_unix=now_unix,
+        )
+        if receipt is None:
+            _error("owner_gate_inert_observation_stale")
+        transaction_root = phase_root / str(receipt["evidence_set_sha256"])
+        transaction_identity = _require_directory(
+            transaction_root,
+            parent=phase_root,
+            code="owner_gate_inert_observation_manual_reconciliation_required",
+            mode=0o500,
+        )
+        evidence_raw: dict[str, bytes] = {}
+        evidence_identities: dict[str, tuple[Any, ...]] = {}
+        evidence: dict[str, Mapping[str, Any]] = {}
+        for name in _EVIDENCE_NAMES:
+            identity, raw = _read_pinned_file(
+                transaction_root / name,
+                maximum=MAX_EVIDENCE_BYTES,
+                code="owner_gate_inert_observation_manual_reconciliation_required",
+            )
+            evidence_identities[name] = identity
+            evidence_raw[name] = raw
+            evidence[name] = _decode_document(
+                raw,
+                code="owner_gate_inert_observation_manual_reconciliation_required",
+            )
+        network_mapping = evidence[NETWORK_EVIDENCE_NAME]
+        network_evidence = _validated_final_network_evidence(
+            network_mapping,
+            binding=binding,
+            public_key=network_key,
+            now_unix=now_unix,
+            code="owner_gate_inert_observation_stale",
+        )
+        plan = _final_plan(binding, network_evidence, network_key)
+        if receipt.get("plan_sha256") != plan.sha256:
+            _error("owner_gate_inert_observation_manual_reconciliation_required")
+        frozen = _FrozenInertEvidence(
+            phase_root=phase_root,
+            transaction_root=transaction_root,
+            transaction_identity=transaction_identity,
+            evidence_identities=evidence_identities,
+            evidence_raw=evidence_raw,
+            evidence=evidence,
+            receipt=receipt,
+            inputs=inputs,
+            binding=binding,
+            loaded=loaded,
+            network_key=network_key,
+            cloud_key=cloud_key,
+            host_key=host_key,
+            network_evidence=network_evidence,
+            plan=plan,
+        )
+        frozen.assert_stable(now_unix=now_unix)
+        yield frozen
+
+
+@contextmanager
+def _historical_inert_evidence_snapshot(
+    *,
+    release_revision: str,
+    evidence_set_sha256: str,
+    now_unix: int,
+) -> Iterator[_FrozenInertEvidence]:
+    """Load one exact historical inert transaction for paired rollback.
+
+    Signatures, R/F lineage, canonical bytes, filesystem identity, and the
+    original at-observation validity are all revalidated.  Only present-time
+    freshness is deliberately not required: a journal-owned exact IAM binding
+    must remain removable after its activation evidence and owner reauth have
+    expired.  This boundary never collects replacement evidence.
+    """
+
+    if (
+        _REVISION.fullmatch(release_revision or "") is None
+        or _SHA256.fullmatch(evidence_set_sha256 or "") is None
+        or type(now_unix) is not int
+        or now_unix <= 0
+    ):
+        _error("owner_gate_inert_observation_historical_invalid")
+    inputs = _PinnedObservationInputs.load(release_revision)
+    binding = _load_release_binding(release_revision, inputs.bundle_stream)
+    loaded = _load_successful_foundation(binding.foundation_source_revision)
+    _bind_release_to_foundation(binding, loaded)
+    collectors = binding.authority["collector_public_key_ids"]
+    network_key = _collector_key(
+        release_revision,
+        role="network",
+        expected_key_id=str(collectors["network"]),
+    )
+    cloud_key = _collector_key(
+        release_revision,
+        role="cloud",
+        expected_key_id=str(collectors["cloud"]),
+    )
+    host_key = _collector_key(
+        release_revision,
+        role="host",
+        expected_key_id=str(collectors["host"]),
+    )
+    with _evidence_lease(release_revision) as phase_root:
+        receipt, _is_fresh = _load_evidence_transaction(
+            phase_root=phase_root,
+            transaction_name=evidence_set_sha256,
+            binding=binding,
+            inputs=inputs,
+            loaded=loaded,
+            network_key=network_key,
+            cloud_key=cloud_key,
+            host_key=host_key,
+            now_unix=now_unix,
+        )
+        transaction_root = phase_root / evidence_set_sha256
+        transaction_identity = _require_directory(
+            transaction_root,
+            parent=phase_root,
+            code="owner_gate_inert_observation_historical_invalid",
+            mode=0o500,
+        )
+        evidence_raw: dict[str, bytes] = {}
+        evidence_identities: dict[str, tuple[Any, ...]] = {}
+        evidence: dict[str, Mapping[str, Any]] = {}
+        for name in _EVIDENCE_NAMES:
+            identity, raw = _read_pinned_file(
+                transaction_root / name,
+                maximum=MAX_EVIDENCE_BYTES,
+                code="owner_gate_inert_observation_historical_invalid",
+            )
+            evidence_identities[name] = identity
+            evidence_raw[name] = raw
+            evidence[name] = _decode_document(
+                raw,
+                code="owner_gate_inert_observation_historical_invalid",
+            )
+        network_mapping = evidence[NETWORK_EVIDENCE_NAME]
+        collected_at_unix = network_mapping.get("collected_at_unix")
+        if type(collected_at_unix) is not int or collected_at_unix <= 0:
+            _error("owner_gate_inert_observation_historical_invalid")
+        network_evidence = _validated_final_network_evidence(
+            network_mapping,
+            binding=binding,
+            public_key=network_key,
+            now_unix=collected_at_unix,
+            code="owner_gate_inert_observation_historical_invalid",
+        )
+        plan = _final_plan(binding, network_evidence, network_key)
+        if receipt.get("plan_sha256") != plan.sha256:
+            _error("owner_gate_inert_observation_historical_invalid")
+        frozen = _FrozenInertEvidence(
+            phase_root=phase_root,
+            transaction_root=transaction_root,
+            transaction_identity=transaction_identity,
+            evidence_identities=evidence_identities,
+            evidence_raw=evidence_raw,
+            evidence=evidence,
+            receipt=receipt,
+            inputs=inputs,
+            binding=binding,
+            loaded=loaded,
+            network_key=network_key,
+            cloud_key=cloud_key,
+            host_key=host_key,
+            network_evidence=network_evidence,
+            plan=plan,
+        )
+        inputs.assert_stable()
+        yield frozen
+        replay, _still_fresh = _load_evidence_transaction(
+            phase_root=phase_root,
+            transaction_name=evidence_set_sha256,
+            binding=binding,
+            inputs=inputs,
+            loaded=loaded,
+            network_key=network_key,
+            cloud_key=cloud_key,
+            host_key=host_key,
+            now_unix=now_unix,
+        )
+        if (
+            _canonical(replay) != _canonical(receipt)
+            or _require_directory(
+                transaction_root,
+                parent=phase_root,
+                code="owner_gate_inert_observation_historical_invalid",
+                mode=0o500,
+            )
+            != transaction_identity
+        ):
+            _error("owner_gate_inert_observation_historical_invalid")
+        for name in _EVIDENCE_NAMES:
+            identity, raw = _read_pinned_file(
+                transaction_root / name,
+                maximum=MAX_EVIDENCE_BYTES,
+                code="owner_gate_inert_observation_historical_invalid",
+            )
+            if (
+                identity != evidence_identities[name]
+                or raw != evidence_raw[name]
+            ):
+                _error("owner_gate_inert_observation_historical_invalid")
+        inputs.assert_stable()
 
 
 def _write_staged_file(path: Path, raw: bytes) -> None:
@@ -1231,21 +1859,37 @@ def _collect_inert_observation(
     owner_identity: launcher.GcloudOwnerAccessToken,
 ) -> Mapping[str, Any]:
     inputs = _PinnedObservationInputs.load(release_revision)
-    loaded = _load_successful_foundation(release_revision)
-    plan, package = _final_plan(loaded.chain, inputs.bundle_stream)
+    binding = _load_release_binding(release_revision, inputs.bundle_stream)
+    loaded = _load_successful_foundation(
+        binding.foundation_source_revision
+    )
+    _bind_release_to_foundation(binding, loaded)
     replay_now_unix = int(time.time())
     if replay_now_unix <= 0:
         _error("owner_gate_inert_observation_time_invalid")
-    cloud_key = _collector_key(release_revision, role="cloud")
-    host_key = _collector_key(release_revision, role="host")
+    collectors = binding.authority["collector_public_key_ids"]
+    network_key = _collector_key(
+        release_revision,
+        role="network",
+        expected_key_id=str(collectors["network"]),
+    )
+    cloud_key = _collector_key(
+        release_revision,
+        role="cloud",
+        expected_key_id=str(collectors["cloud"]),
+    )
+    host_key = _collector_key(
+        release_revision,
+        role="host",
+        expected_key_id=str(collectors["host"]),
+    )
     with _evidence_lease(release_revision) as phase_root:
         replay = _find_fresh_replay(
             phase_root=phase_root,
-            release_revision=release_revision,
+            binding=binding,
             inputs=inputs,
             loaded=loaded,
-            package=package,
-            plan=plan,
+            network_key=network_key,
             cloud_key=cloud_key,
             host_key=host_key,
             now_unix=replay_now_unix,
@@ -1253,6 +1897,30 @@ def _collect_inert_observation(
         if replay is not None:
             inputs.assert_stable()
             return replay
+        network_mapping, network_evidence = _collect_final_network_evidence(
+            binding=binding,
+            public_key=network_key,
+            gcloud_executable=gcloud_executable,
+            gcloud_configuration=gcloud_configuration,
+        )
+        plan = _final_plan(binding, network_evidence, network_key)
+        release_private_key = _release_private_key(binding)
+        production_transport = production_cutover.ProductionCutoverTransport(
+            owner_identity,
+            gcloud_executable=gcloud_executable,
+            gcloud_configuration=gcloud_configuration,
+        )
+        production_ingress_observation = (
+            production_ingress.collect_and_sign_production_ingress_observation(
+                production_ingress.OwnerGateProductionIngressTransport(
+                    production_transport
+                ),
+                phase=EVIDENCE_PHASE,
+                release_revision=release_revision,
+                plan_sha256=plan.sha256,
+                release_private_key=release_private_key,
+            )
+        )
         transport = stage0_iap.OwnerGateStage0IapTransport(
             release_sha=release_revision,
             owner_identity=owner_identity,
@@ -1263,6 +1931,9 @@ def _collect_inert_observation(
         pair = cloud_author.collect_and_author_bound_pair(
             plan=plan,
             foundation_apply_chain=loaded.chain,
+            final_network_evidence=network_evidence,
+            final_network_collector_public_key=network_key,
+            production_ingress_observation=production_ingress_observation,
             phase=EVIDENCE_PHASE,
             collected_at_unix=None,
             gcloud_executable=gcloud_executable,
@@ -1285,6 +1956,10 @@ def _collect_inert_observation(
         try:
             report = preflight.build_preflight_report(
                 plan=plan,
+                production_ingress_observation=(
+                    production_ingress_observation
+                ),
+                release_public_key=binding.release_public_key,
                 cloud_observation=cloud_observation,
                 host_observation=host_observation,
                 cloud_collector_public_key=cloud_key,
@@ -1302,11 +1977,14 @@ def _collect_inert_observation(
         ):
             _error("owner_gate_inert_observation_preflight_invalid")
         receipt, payloads = _build_receipt(
-            release_revision=release_revision,
+            binding=binding,
             inputs=inputs,
             loaded=loaded,
-            package=package,
+            network_evidence=network_mapping,
             plan=plan,
+            production_ingress_observation=(
+                production_ingress_observation
+            ),
             cloud_observation=cloud_observation,
             host_observation=host_observation,
             report=report,
@@ -1318,17 +1996,16 @@ def _collect_inert_observation(
         )
         persisted = _find_fresh_replay(
             phase_root=phase_root,
-            release_revision=release_revision,
+            binding=binding,
             inputs=inputs,
             loaded=loaded,
-            package=package,
-            plan=plan,
+            network_key=network_key,
             cloud_key=cloud_key,
             host_key=host_key,
             now_unix=validation_now_unix,
         )
         inputs.assert_stable()
-        if persisted != receipt:
+        if persisted is None or persisted != receipt:
             _error("owner_gate_inert_observation_manual_reconciliation_required")
         return persisted
 
@@ -1380,7 +2057,9 @@ __all__ = [
     "INERT_CLOUD_OBSERVATION_NAME",
     "INERT_HOST_OBSERVATION_NAME",
     "INERT_PREFLIGHT_NAME",
+    "INERT_PRODUCTION_INGRESS_OBSERVATION_NAME",
     "KIT_STREAM_NAME",
+    "NETWORK_EVIDENCE_NAME",
     "PINS_NAME",
     "RECEIPT_NAME",
     "RECEIPT_SCHEMA",

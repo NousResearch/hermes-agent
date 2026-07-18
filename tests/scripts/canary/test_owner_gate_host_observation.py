@@ -4,7 +4,7 @@ import hashlib
 import os
 from pathlib import Path
 from types import SimpleNamespace
-from typing import Any, Mapping
+from typing import Any, Mapping, cast
 
 import pytest
 from cryptography.hazmat.primitives import serialization
@@ -18,7 +18,10 @@ from scripts.canary import owner_gate_preflight as preflight
 
 
 REVISION = "a" * 40
+FOUNDATION_REVISION = "b" * 40
 NOW = 1_785_000_000
+DIRECT_IAM_RAW = b"direct"
+PRODUCTION_INGRESS_OBSERVATION_SHA256 = "2" * 64
 
 
 def _lineage_request(*, phase: str = "inert") -> dict[str, Any]:
@@ -27,6 +30,9 @@ def _lineage_request(*, phase: str = "inert") -> dict[str, Any]:
         "phase": phase,
         "collected_at_unix": NOW,
         "plan_sha256": "1" * 64,
+        "production_ingress_observation_sha256": (
+            PRODUCTION_INGRESS_OBSERVATION_SHA256
+        ),
         "cloud_install_receipt": {"fixture": "signed-install-receipt"},
         "cloud_signer_provisioning_receipt_sha256": "3" * 64,
         "cloud_signer_readiness_sha256": "4" * 64,
@@ -43,7 +49,9 @@ def _lineage_request(*, phase: str = "inert") -> dict[str, Any]:
 def _package() -> dict[str, Any]:
     return {
         "release_revision": REVISION,
-        "source_tree_oid": "b" * 40,
+        "source_tree_oid": "c" * 40,
+        "foundation_source_revision": FOUNDATION_REVISION,
+        "foundation_source_tree_oid": "d" * 40,
         "package_sha256": "7" * 64,
         "package_inventory_sha256": "8" * 64,
         "pre_foundation_authority_sha256": "9" * 64,
@@ -54,6 +62,29 @@ def _package() -> dict[str, Any]:
             "organizations/123456789012",
             "projects/123456789012",
         ],
+        "direct_iam_identity_authority_sha256": hashlib.sha256(
+            DIRECT_IAM_RAW
+        ).hexdigest(),
+    }
+
+
+def _direct_identity() -> dict[str, Any]:
+    return {
+        "release_revision": FOUNDATION_REVISION,
+        "pre_foundation_authority_sha256": "9" * 64,
+        "foundation_apply_receipt_sha256": "a" * 64,
+        "resource_ancestor_chain": [
+            "organizations/123456789012",
+            "projects/123456789012",
+        ],
+        "owner_gate_vm_numeric_id": _facts()[
+            "runtime_instance_numeric_id"
+        ],
+        "owner_gate_service_account_email": (
+            direct_iam.OWNER_GATE_SERVICE_ACCOUNT_EMAIL
+        ),
+        "metadata_oauth_scopes": list(foundation.OWNER_GATE_OAUTH_SCOPES),
+        "owner_gate_service_account_unique_id": "123456789012345678901",
     }
 
 
@@ -69,6 +100,83 @@ def _facts(*, post_iam: bool = False) -> dict[str, Any]:
         "target_disk_numeric_id": foundation.TARGET_DISK_ID,
         "numeric_targets_reverified": post_iam,
     }
+
+
+def test_embedded_foundation_identity_is_bound_to_final_release_package(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    package_manifest = _package()
+    reads: list[tuple[Path, frozenset[int]]] = []
+    decode_revisions: list[str | None] = []
+
+    def read(path: Path, **kwargs: Any) -> bytes:
+        reads.append((path, kwargs["modes"]))
+        return DIRECT_IAM_RAW
+
+    def decode(
+        raw: bytes,
+        *,
+        release_revision: str | None = None,
+    ) -> dict[str, Any]:
+        assert raw == DIRECT_IAM_RAW
+        decode_revisions.append(release_revision)
+        identity = _direct_identity()
+        if (
+            release_revision is not None
+            and identity["release_revision"] != release_revision
+        ):
+            raise direct_iam.DirectIamIdentityAuthorityError("mismatch")
+        return identity
+
+    monkeypatch.setattr(producer, "_read_regular", read)
+    monkeypatch.setattr(producer.direct_iam, "decode_canonical", decode)
+
+    assert producer._load_direct_iam_identity(package_manifest) == (
+        _direct_identity()
+    )
+    assert reads == [(
+        producer.OWNER_RELEASE_BASE
+        / REVISION
+        / "trust/direct-iam-identity-authority.json",
+        frozenset({0o444}),
+    )]
+    assert decode_revisions == [None, FOUNDATION_REVISION]
+
+
+@pytest.mark.parametrize(
+    "corruption",
+    ("same-release", "foundation-revision", "digest", "lineage"),
+)
+def test_embedded_foundation_identity_rejects_cross_release_drift(
+    monkeypatch: pytest.MonkeyPatch,
+    corruption: str,
+) -> None:
+    package_manifest = _package()
+    identity = _direct_identity()
+    if corruption == "same-release":
+        identity["release_revision"] = REVISION
+    elif corruption == "foundation-revision":
+        package_manifest["foundation_source_revision"] = "e" * 40
+    elif corruption == "digest":
+        package_manifest["direct_iam_identity_authority_sha256"] = "0" * 64
+    else:
+        identity["foundation_apply_receipt_sha256"] = "0" * 64
+    monkeypatch.setattr(
+        producer,
+        "_read_regular",
+        lambda *_args, **_kwargs: DIRECT_IAM_RAW,
+    )
+    monkeypatch.setattr(
+        producer.direct_iam,
+        "decode_canonical",
+        lambda *_args, **_kwargs: identity,
+    )
+
+    with pytest.raises(
+        producer.OwnerGateHostObservationError,
+        match="owner_gate_attached_sa_direct_identity_invalid",
+    ):
+        producer._load_direct_iam_identity(package_manifest)
 
 
 def test_api_parser_accepts_bounded_content_length_and_chunked_json() -> None:
@@ -210,7 +318,7 @@ def test_metadata_get_wipes_owned_body_on_every_nonreturn(
             return "Google"
 
         def readinto(self, view: memoryview) -> int:
-            self.retained = view.obj
+            self.retained = cast(bytearray, view.obj)
             self.calls += 1
             payload = b"secret123"
             view[: min(len(view), len(payload))] = payload[: len(view)]
@@ -329,14 +437,18 @@ def test_executor_child_payload_refuses_to_probe_as_root(
         producer.OwnerGateHostObservationError,
         match="owner_gate_attached_sa_child_identity_invalid",
     ):
-        producer._executor_child_payload(post_iam=False, collector=Collector())
+        producer._executor_child_payload(
+            post_iam=False,
+            collector=cast(producer.MetadataSaProbe, Collector()),
+        )
     assert calls == []
     for name in ("getuid", "geteuid", "getgid", "getegid"):
         monkeypatch.setattr(
             producer.os, name, lambda: preflight.EXECUTOR_UID
         )
     payload = producer._executor_child_payload(
-        post_iam=True, collector=Collector()
+        post_iam=True,
+        collector=cast(producer.MetadataSaProbe, Collector()),
     )
     assert payload["uid"] == preflight.EXECUTOR_UID
     assert payload["groups"] == []
@@ -457,6 +569,39 @@ def test_request_accepts_schema_neutral_binding_but_rejects_terminal_input(
         )
 
 
+@pytest.mark.parametrize("mutation", ("missing", "malformed"))
+def test_request_requires_valid_production_ingress_observation_digest(
+    monkeypatch: pytest.MonkeyPatch,
+    mutation: str,
+) -> None:
+    request = _lineage_request()
+    if mutation == "missing":
+        request.pop("production_ingress_observation_sha256")
+    else:
+        request["production_ingress_observation_sha256"] = "not-a-digest"
+    request["observation_binding_sha256"] = foundation.sha256_json({
+        name: item
+        for name, item in request.items()
+        if name not in {
+            "schema", "observation_binding_sha256", "request_sha256"
+        }
+    })
+    request["request_sha256"] = foundation.sha256_json({
+        name: item for name, item in request.items() if name != "request_sha256"
+    })
+    monkeypatch.setattr(producer, "_load_release_package", lambda _revision: _package())
+    with pytest.raises(
+        producer.OwnerGateHostObservationError,
+        match="owner_gate_host_observation_request_invalid",
+    ):
+        producer._validate_request(
+            request,
+            schema=producer.ATTACHED_SA_REQUEST_SCHEMA,
+            release_revision=REVISION,
+            now_unix=NOW,
+        )
+
+
 def test_attached_sa_probe_is_byte_stable_and_binds_all_lineage(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -466,20 +611,17 @@ def test_attached_sa_probe_is_byte_stable_and_binds_all_lineage(
     key = Ed25519PrivateKey.generate()
     key_id = hashlib.sha256(key.public_key().public_bytes_raw()).hexdigest()
     ordering: list[str] = []
-    direct_identity = {
-        "owner_gate_vm_numeric_id": _facts()["runtime_instance_numeric_id"],
-        "owner_gate_service_account_email": (
-            direct_iam.OWNER_GATE_SERVICE_ACCOUNT_EMAIL
-        ),
-        "metadata_oauth_scopes": list(foundation.OWNER_GATE_OAUTH_SCOPES),
-        "owner_gate_service_account_unique_id": "123456789012345678901",
-    }
+    direct_identity = _direct_identity()
     monkeypatch.setattr(
         producer,
         "_validate_request",
         lambda *_a, **_k: (request, package, install),
     )
-    monkeypatch.setattr(producer, "_read_regular", lambda *_a, **_k: b"direct")
+    monkeypatch.setattr(
+        producer,
+        "_read_regular",
+        lambda *_a, **_k: DIRECT_IAM_RAW,
+    )
     monkeypatch.setattr(
         producer.direct_iam,
         "decode_canonical",
@@ -676,6 +818,12 @@ def test_host_observation_is_byte_stable_and_binds_verified_sidecar(
         },
     )
     monkeypatch.setattr(producer.os.path, "lexists", lambda _path: False)
+    seal_checks: list[bool] = []
+    monkeypatch.setattr(
+        producer,
+        "_require_executor_activation_seal_absent",
+        lambda: seal_checks.append(True),
+    )
     monkeypatch.setattr(
         producer,
         "_host_release_facts",
@@ -712,6 +860,31 @@ def test_host_observation_is_byte_stable_and_binds_verified_sidecar(
     assert first["release"][
         "attached_sa_permission_probe_report_sha256"
     ] == sidecar["report_sha256"]
+    assert (
+        first["production_ingress_observation_sha256"]
+        == PRODUCTION_INGRESS_OBSERVATION_SHA256
+    )
+    assert seal_checks == [True] * 6
+
+
+@pytest.mark.parametrize("kind", ("regular", "broken-symlink"))
+def test_executor_activation_seal_presence_is_never_reported_absent(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    kind: str,
+) -> None:
+    seal = tmp_path / "storage-executor-enabled"
+    if kind == "regular":
+        seal.write_bytes(b"enabled\n")
+    else:
+        seal.symlink_to(tmp_path / "missing-target")
+    monkeypatch.setattr(producer.service, "ACTIVATION_SEAL", seal)
+
+    with pytest.raises(
+        producer.OwnerGateHostObservationError,
+        match="owner_gate_host_executor_activation_seal_present",
+    ):
+        producer._require_executor_activation_seal_absent()
 
 
 def test_late_host_fact_cannot_run_after_signed_completion_stamp(
@@ -900,18 +1073,15 @@ def test_stalled_attached_sa_collection_fails_before_private_signer_load(
         "_validate_request",
         lambda *_args, **_kwargs: (request, package_manifest, install),
     )
-    monkeypatch.setattr(producer, "_read_regular", lambda *_a, **_k: b"direct")
+    monkeypatch.setattr(
+        producer,
+        "_read_regular",
+        lambda *_a, **_k: DIRECT_IAM_RAW,
+    )
     monkeypatch.setattr(
         producer.direct_iam,
         "decode_canonical",
-        lambda *_a, **_k: {
-            "owner_gate_vm_numeric_id": _facts()["runtime_instance_numeric_id"],
-            "owner_gate_service_account_email": (
-                direct_iam.OWNER_GATE_SERVICE_ACCOUNT_EMAIL
-            ),
-            "metadata_oauth_scopes": list(foundation.OWNER_GATE_OAUTH_SCOPES),
-            "owner_gate_service_account_unique_id": "123456789012345678901",
-        },
+        lambda *_a, **_k: _direct_identity(),
     )
     monkeypatch.setattr(
         producer, "_collect_attached_sa_child", lambda **_kwargs: _facts()
@@ -948,18 +1118,15 @@ def test_delayed_signer_readiness_cannot_escape_final_completion_deadline(
         "_validate_request",
         lambda *_args, **_kwargs: (request, package_manifest, install),
     )
-    monkeypatch.setattr(producer, "_read_regular", lambda *_a, **_k: b"direct")
+    monkeypatch.setattr(
+        producer,
+        "_read_regular",
+        lambda *_a, **_k: DIRECT_IAM_RAW,
+    )
     monkeypatch.setattr(
         producer.direct_iam,
         "decode_canonical",
-        lambda *_a, **_k: {
-            "owner_gate_vm_numeric_id": _facts()["runtime_instance_numeric_id"],
-            "owner_gate_service_account_email": (
-                direct_iam.OWNER_GATE_SERVICE_ACCOUNT_EMAIL
-            ),
-            "metadata_oauth_scopes": list(foundation.OWNER_GATE_OAUTH_SCOPES),
-            "owner_gate_service_account_unique_id": "123456789012345678901",
-        },
+        lambda *_a, **_k: _direct_identity(),
     )
     monkeypatch.setattr(
         producer, "_collect_attached_sa_child", lambda **_kwargs: _facts()

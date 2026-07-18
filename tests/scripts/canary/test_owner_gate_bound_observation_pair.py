@@ -1,20 +1,59 @@
 from __future__ import annotations
 
 import copy
+from typing import Any, Mapping, TypedDict, cast
 
 import pytest
-from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
+from cryptography.hazmat.primitives.asymmetric.ed25519 import (
+    Ed25519PrivateKey,
+    Ed25519PublicKey,
+)
 
+from scripts.canary import full_canary_owner_launcher as launcher
 from scripts.canary import owner_gate_cloud_observation_author as author
 from scripts.canary import owner_gate_foundation as foundation
 from scripts.canary import owner_gate_preflight as preflight
+from scripts.canary import owner_gate_production_ingress_contract as ingress
+from scripts.canary import owner_gate_trust as trust
 from tests.scripts.canary.test_owner_gate_foundation import NOW
 from tests.scripts.canary.test_owner_gate_preflight import (
     _attest,
     _cloud,
     _host,
     _plan,
+    _production_ingress_kwargs,
+    RELEASE_KEY_ID,
 )
+
+
+class _CollectArguments(TypedDict):
+    plan: foundation.OwnerGateFoundationPlan
+    foundation_apply_chain: Any
+    final_network_evidence: foundation.ProductionNetworkEvidence
+    final_network_collector_public_key: Ed25519PublicKey
+    production_ingress_observation: Mapping[str, Any]
+    phase: str
+    collected_at_unix: int | None
+    gcloud_executable: launcher.TrustedGcloudExecutable
+    gcloud_configuration: launcher.PinnedGcloudConfiguration
+    owner_identity: launcher.GcloudOwnerAccessToken
+    stage0_transport: Any
+    kit_stream: Any
+    bundle_stream: Any
+
+
+@pytest.fixture(autouse=True)
+def _pin_release_key(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(
+        trust,
+        "PINNED_RELEASE_TRUST_PUBLIC_KEY_SHA256",
+        RELEASE_KEY_ID,
+    )
+    monkeypatch.setattr(
+        ingress,
+        "PINNED_RELEASE_TRUST_PUBLIC_KEY_SHA256",
+        RELEASE_KEY_ID,
+    )
 
 
 def _pair_context():
@@ -54,6 +93,7 @@ def test_factory_pair_is_canonical_single_use_and_preflight_consumable() -> None
         host_observation=observed_host,
         cloud_collector_public_key=cloud_key.public_key(),
         host_collector_public_key=host_key.public_key(),
+        **_production_ingress_kwargs(plan, iam=False),
         now_unix=NOW,
     )
     assert report["cloud_observation_sha256"] == cloud["report_sha256"]
@@ -115,7 +155,7 @@ def test_stale_pair_is_consumed_and_cannot_be_reused() -> None:
     )
     with pytest.raises(
         preflight.OwnerGatePreflightError,
-        match="owner_gate_preflight_stale",
+        match="owner_gate_production_ingress_observation_invalid",
     ):
         preflight.build_preflight_report(
             plan=plan,
@@ -123,6 +163,7 @@ def test_stale_pair_is_consumed_and_cannot_be_reused() -> None:
             host_observation=observed_host,
             cloud_collector_public_key=cloud_key.public_key(),
             host_collector_public_key=host_key.public_key(),
+            **_production_ingress_kwargs(plan, iam=False),
             now_unix=NOW + foundation.PREFLIGHT_MAX_AGE_SECONDS + 1,
         )
     with pytest.raises(
@@ -151,14 +192,26 @@ def test_legacy_cloud_only_return_shape_is_preserved(
         return cloud, Handoff()
 
     monkeypatch.setattr(author, "_collect_and_author_components", components)
-    arguments = {
+    arguments: _CollectArguments = {
         "plan": plan,
         "foundation_apply_chain": object(),
+        "final_network_evidence": cast(
+            foundation.ProductionNetworkEvidence, object()
+        ),
+        "final_network_collector_public_key": cast(Ed25519PublicKey, object()),
+        "production_ingress_observation": cast(
+            Mapping[str, Any],
+            _production_ingress_kwargs(plan, iam=False)[
+                "production_ingress_observation"
+            ],
+        ),
         "phase": "inert",
         "collected_at_unix": NOW,
-        "gcloud_executable": object(),
-        "gcloud_configuration": object(),
-        "owner_identity": object(),
+        "gcloud_executable": cast(launcher.TrustedGcloudExecutable, object()),
+        "gcloud_configuration": cast(
+            launcher.PinnedGcloudConfiguration, object()
+        ),
+        "owner_identity": cast(launcher.GcloudOwnerAccessToken, object()),
         "stage0_transport": object(),
         "kit_stream": object(),
         "bundle_stream": object(),

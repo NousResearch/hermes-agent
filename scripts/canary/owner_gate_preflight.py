@@ -18,12 +18,13 @@ from cryptography.exceptions import InvalidSignature
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PublicKey
 
 from scripts.canary import owner_gate_foundation as foundation
+from scripts.canary import owner_gate_production_ingress_contract as ingress
 
 
 CLOUD_OBSERVATION_SCHEMA = "muncho-owner-gate-cloud-observation.v1"
 HOST_OBSERVATION_SCHEMA = "muncho-owner-gate-host-observation.v2"
-PREFLIGHT_SCHEMA = "muncho-owner-gate-inert-preflight.v1"
-POST_IAM_PREFLIGHT_SCHEMA = "muncho-owner-gate-post-iam-preflight.v1"
+PREFLIGHT_SCHEMA = "muncho-owner-gate-inert-preflight.v2"
+POST_IAM_PREFLIGHT_SCHEMA = "muncho-owner-gate-post-iam-preflight.v2"
 HOST_OBSERVATION_FRESHNESS_SECONDS = 60
 HOST_RELEASE_ENTRYPOINTS = (
     "muncho-owner-gate-intake",
@@ -479,6 +480,7 @@ def _validate_cloud_unsigned(
             "terminal_receipt_sha256",
             "host_observation_report_sha256",
             "host_observation_binding_sha256",
+            "production_ingress_observation_sha256",
             "attached_sa_permission_probe_report_sha256",
             "cloud_signer_provisioning_receipt_sha256",
             "cloud_signer_readiness_sha256",
@@ -499,6 +501,7 @@ def _validate_cloud_unsigned(
         "terminal_receipt_sha256",
         "host_observation_report_sha256",
         "host_observation_binding_sha256",
+        "production_ingress_observation_sha256",
         "attached_sa_permission_probe_report_sha256",
         "cloud_signer_provisioning_receipt_sha256",
         "cloud_signer_readiness_sha256",
@@ -509,6 +512,8 @@ def _validate_cloud_unsigned(
     ancestor_chain = release_binding["resource_ancestor_chain"]
     if (
         release_binding["phase"] != expected_phase
+        or type(release_binding["production_ingress_observation_sha256"])
+        is not str
         or re.fullmatch(r"[0-9a-f]{40}", str(release_binding["release_revision"]))
         is None
         or re.fullmatch(r"[0-9a-f]{40}", str(release_binding["source_tree_oid"]))
@@ -855,6 +860,7 @@ def _validate_host(
     _strict(raw, {
         "schema", "phase", "collected_at_unix", "completed_at_unix",
         "fresh_through_unix", "plan_sha256",
+        "production_ingress_observation_sha256",
         "observation_binding_sha256", "release", "identities",
         "sockets", "units", "filesystem_boundaries", "metadata_firewall",
         "sqlite", "migration", "webauthn", "request_intake", "executor",
@@ -874,6 +880,11 @@ def _validate_host(
         or raw["phase"]
         != ("post_iam" if mutation_binding_present else "inert")
         or raw["plan_sha256"] != plan_sha256
+        or type(raw["production_ingress_observation_sha256"]) is not str
+        or _SHA256.fullmatch(
+            str(raw["production_ingress_observation_sha256"])
+        )
+        is None
         or _SHA256.fullmatch(
             str(raw["observation_binding_sha256"])
         ) is None
@@ -1186,6 +1197,8 @@ def _validate_cross_observation_binding(
         != host_observation["report_sha256"]
         or binding["host_observation_binding_sha256"]
         != host_observation["observation_binding_sha256"]
+        or binding["production_ingress_observation_sha256"]
+        != host_observation["production_ingress_observation_sha256"]
         or any(
             binding[cloud_name] != release[host_name]
             for cloud_name, host_name in shared_release_fields
@@ -1196,13 +1209,74 @@ def _validate_cross_observation_binding(
         raise OwnerGatePreflightError("owner_gate_observation_cross_binding_invalid")
 
 
+def _validate_production_ingress_observation(
+    production_ingress_observation: Mapping[str, Any],
+    *,
+    plan: foundation.OwnerGateFoundationPlan,
+    phase: str,
+    release_public_key: Ed25519PublicKey,
+    cloud_observation: Mapping[str, Any],
+    host_observation: Mapping[str, Any],
+    now_unix: int,
+) -> Mapping[str, Any]:
+    try:
+        envelope = ingress.validate_signed_production_ingress_observation(
+            production_ingress_observation,
+            phase=phase,
+            release_revision=plan.spec.release_revision,
+            plan_sha256=plan.sha256,
+            release_public_key=release_public_key,
+            now_unix=now_unix,
+        )
+    except ingress.ProductionIngressObservationError as exc:
+        raise OwnerGatePreflightError(
+            "owner_gate_production_ingress_observation_invalid"
+        ) from exc
+    envelope_sha256 = envelope["envelope_sha256"]
+    cloud_digest = cloud_observation["release_binding"][
+        "production_ingress_observation_sha256"
+    ]
+    host_digest = host_observation["production_ingress_observation_sha256"]
+    if envelope_sha256 != cloud_digest or envelope_sha256 != host_digest:
+        raise OwnerGatePreflightError(
+            "owner_gate_production_ingress_cross_binding_invalid"
+        )
+    observation = envelope["observation"]
+    old_v1 = observation["old_v1"]
+    caddy = observation["caddy"]
+    facts = {
+        "production_ingress_observation_sha256": envelope_sha256,
+        "old_v1_masked": (
+            old_v1["load_state"] == "masked"
+            and old_v1["active_state"] == "inactive"
+            and old_v1["unit_file_state"] == "masked"
+            and old_v1["fragment_path"] == "/dev/null"
+            and old_v1["permanent_mask_target"] == "/dev/null"
+        ),
+        "caddy_cutover_performed": caddy["private_v2_upstream_active"],
+        "rollback_mode": caddy["rollback_mode"],
+    }
+    if facts != {
+        "production_ingress_observation_sha256": envelope_sha256,
+        "old_v1_masked": True,
+        "caddy_cutover_performed": False,
+        "rollback_mode": "pre_migration_v1_only",
+    }:
+        raise OwnerGatePreflightError(
+            "owner_gate_production_ingress_safety_facts_invalid"
+        )
+    return facts
+
+
 def build_preflight_report(
     *,
     plan: foundation.OwnerGateFoundationPlan,
     cloud_observation: Mapping[str, Any],
     host_observation: Mapping[str, Any],
+    production_ingress_observation: Mapping[str, Any],
     cloud_collector_public_key: Ed25519PublicKey,
     host_collector_public_key: Ed25519PublicKey,
+    release_public_key: Ed25519PublicKey,
     now_unix: int,
 ) -> Mapping[str, Any]:
     if not isinstance(now_unix, int) or isinstance(now_unix, bool) or now_unix <= 0:
@@ -1238,6 +1312,15 @@ def build_preflight_report(
         host_observation,
         mutation_binding_present=False,
     )
+    production_ingress_facts = _validate_production_ingress_observation(
+        production_ingress_observation,
+        plan=plan,
+        phase="inert",
+        release_public_key=release_public_key,
+        cloud_observation=cloud_observation,
+        host_observation=host_observation,
+        now_unix=now_unix,
+    )
     for observed in (cloud_observation, host_observation):
         collected = observed["collected_at_unix"]
         if (
@@ -1256,6 +1339,7 @@ def build_preflight_report(
         "release_revision": plan.spec.release_revision,
         "cloud_observation_sha256": cloud_observation["report_sha256"],
         "host_observation_sha256": host_observation["report_sha256"],
+        **production_ingress_facts,
         "cloud_collector_public_key_id": cloud_key_id,
         "host_collector_public_key_id": host_key_id,
         "receipt_public_key_sha256": host_observation["executor"][
@@ -1284,8 +1368,10 @@ def build_post_iam_preflight_report(
     plan: foundation.OwnerGateFoundationPlan,
     cloud_observation: Mapping[str, Any],
     host_observation: Mapping[str, Any],
+    production_ingress_observation: Mapping[str, Any],
     cloud_collector_public_key: Ed25519PublicKey,
     host_collector_public_key: Ed25519PublicKey,
+    release_public_key: Ed25519PublicKey,
     now_unix: int,
 ) -> Mapping[str, Any]:
     if not isinstance(now_unix, int) or isinstance(now_unix, bool) or now_unix <= 0:
@@ -1321,6 +1407,15 @@ def build_post_iam_preflight_report(
         host_observation,
         mutation_binding_present=True,
     )
+    production_ingress_facts = _validate_production_ingress_observation(
+        production_ingress_observation,
+        plan=plan,
+        phase="post_iam",
+        release_public_key=release_public_key,
+        cloud_observation=cloud_observation,
+        host_observation=host_observation,
+        now_unix=now_unix,
+    )
     for observed in (cloud_observation, host_observation):
         collected = observed["collected_at_unix"]
         if (
@@ -1339,6 +1434,7 @@ def build_post_iam_preflight_report(
         "release_revision": plan.spec.release_revision,
         "cloud_observation_sha256": cloud_observation["report_sha256"],
         "host_observation_sha256": host_observation["report_sha256"],
+        **production_ingress_facts,
         "cloud_collector_public_key_id": cloud_key_id,
         "host_collector_public_key_id": host_key_id,
         "receipt_public_key_sha256": host_observation["executor"][

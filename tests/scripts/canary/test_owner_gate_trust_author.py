@@ -47,6 +47,7 @@ def _isolated_authority_root(
             foundation_apply_receipt_sha256="5" * 64,
             bootstrap_network_collector_public_key_id="9" * 64,
             foundation_source_revision="0" * 40,
+            foundation_source_tree_oid="8" * 40,
             direct_iam_identity_authority_sha256="e" * 64,
             project_ancestry_evidence_sha256="6" * 64,
             project_ancestry_chain_sha256="7" * 64,
@@ -74,6 +75,8 @@ def _unsigned(key_id: str) -> dict[str, object]:
         "fork_repository": trust.FORK_REPOSITORY,
         "release_revision": "a" * 40,
         "source_tree_oid": "b" * 40,
+        "foundation_source_revision": "0" * 40,
+        "foundation_source_tree_oid": "8" * 40,
         "package_inventory_sha256": "c" * 64,
         "boot_image_self_link": (
             f"projects/debian-cloud/global/images/{image_name}"
@@ -133,6 +136,8 @@ def _real_chain_inputs(
     monkeypatch: pytest.MonkeyPatch,
     *,
     direct_overrides: dict[str, object] | None = None,
+    final_release_revision: str = "c" * 40,
+    wall_clock_unix: int = pre_fixture.NOW + 40,
 ) -> tuple[dict[str, Path], author._ValidatedFoundationChain]:
     _directory, private_path, public_path, release_key_id = _initialize(tmp_path)
     release_key = Ed25519PrivateKey.from_private_bytes(private_path.read_bytes())
@@ -246,7 +251,7 @@ def _real_chain_inputs(
     monkeypatch.setattr(
         foundation_apply.time,
         "time",
-        lambda: float(pre_fixture.NOW + 40),
+        lambda: float(wall_clock_unix),
     )
     direct_raw = foundation.canonical_json_bytes({"fixture": "direct-iam"})
     paths["direct_iam_identity_authority_path"].write_bytes(direct_raw)
@@ -319,8 +324,7 @@ def _real_chain_inputs(
     chain = _REAL_VALIDATE_FOUNDATION_CHAIN(
         **paths,
         release_public_key=release_key.public_key(),
-        final_release_revision="c" * 40,
-        now_unix=pre_fixture.NOW + 40,
+        final_release_revision=final_release_revision,
     )
     assert public_path.read_bytes() == release_key.public_key().public_bytes_raw()
     return paths, chain
@@ -487,6 +491,8 @@ def test_sign_manifest_requires_pinned_matching_key_and_postverifies(
 
     assert receipt["manifest_authored"] is True
     assert receipt["release_revision"] == "a" * 40
+    assert receipt["foundation_source_revision"] == "0" * 40
+    assert receipt["foundation_source_tree_oid"] == "8" * 40
     assert receipt["public_key_sha256"] == key_id
     assert receipt["project_ancestry_evidence_sha256"] == "6" * 64
     assert receipt["project_ancestry_chain_sha256"] == "7" * 64
@@ -505,6 +511,8 @@ def test_sign_manifest_requires_pinned_matching_key_and_postverifies(
         expected_uid=os.geteuid(),
     )
     assert verified["release_revision"] == "a" * 40
+    assert verified["foundation_source_revision"] == "0" * 40
+    assert verified["foundation_source_tree_oid"] == "8" * 40
 
 
 def test_real_foundation_chain_accepts_distinct_collector_paths_with_equal_keys(
@@ -523,6 +531,7 @@ def test_real_foundation_chain_accepts_distinct_collector_paths_with_equal_keys(
     assert chain.pre_foundation_authority_sha256
     assert chain.foundation_apply_receipt_sha256
     assert chain.foundation_source_revision == pre_fixture.REVISION
+    assert chain.foundation_source_tree_oid == pre_fixture.TREE_OID
     assert chain.project_ancestry_evidence_sha256
     assert chain.project_ancestry_chain_sha256
     assert chain.resource_ancestor_chain == (
@@ -531,6 +540,29 @@ def test_real_foundation_chain_accepts_distinct_collector_paths_with_equal_keys(
     )
     assert chain.interpreter_sha256 == pre_fixture.INTERPRETER_SHA256
     assert chain.interpreter_version == "3.11.2"
+
+
+def test_real_foundation_chain_accepts_historical_success_after_f_freshness_expires(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    late_wall_clock = (
+        pre_fixture.NOW
+        + foundation.PREFLIGHT_MAX_AGE_SECONDS
+        + 10_000
+    )
+
+    _paths, chain = _real_chain_inputs(
+        tmp_path,
+        monkeypatch,
+        wall_clock_unix=late_wall_clock,
+    )
+
+    assert chain.foundation_source_revision == pre_fixture.REVISION
+    assert chain.foundation_source_tree_oid == pre_fixture.TREE_OID
+    assert "now_unix" not in inspect.signature(
+        _REAL_VALIDATE_FOUNDATION_CHAIN
+    ).parameters
 
 
 def test_real_foundation_chain_rejects_one_path_for_two_collector_authorities(
@@ -553,7 +585,21 @@ def test_real_foundation_chain_rejects_one_path_for_two_collector_authorities(
             **paths,
             release_public_key=release_key.public_key(),
             final_release_revision="c" * 40,
-            now_unix=pre_fixture.NOW + 40,
+        )
+
+
+def test_real_foundation_chain_rejects_foundation_equal_to_final_release(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    with pytest.raises(
+        author.OwnerGateTrustAuthorError,
+        match="owner_gate_trust_author_foundation_chain_invalid",
+    ):
+        _real_chain_inputs(
+            tmp_path,
+            monkeypatch,
+            final_release_revision=pre_fixture.REVISION,
         )
 
 
@@ -602,7 +648,6 @@ def test_real_foundation_chain_rejects_a_success_journal_for_b(
             **paths,
             release_public_key=release_key.public_key(),
             final_release_revision="c" * 40,
-            now_unix=pre_fixture.NOW + 40,
         )
 
 
@@ -638,7 +683,6 @@ def test_real_foundation_chain_rejects_conflicting_failure_terminal(
             **paths,
             release_public_key=release_key.public_key(),
             final_release_revision="c" * 40,
-            now_unix=pre_fixture.NOW + 40,
         )
 
 
@@ -665,7 +709,6 @@ def test_real_foundation_chain_never_recovers_pending_terminal(
             **paths,
             release_public_key=release_key.public_key(),
             final_release_revision="c" * 40,
-            now_unix=pre_fixture.NOW + 40,
         )
     assert pending.read_bytes() == b"{}"
 
@@ -725,6 +768,8 @@ def test_real_foundation_chain_rejects_recreated_security_identity(
         ("pre_foundation_authority_sha256", "6" * 64),
         ("foundation_apply_receipt_sha256", "6" * 64),
         ("direct_iam_identity_authority_sha256", "6" * 64),
+        ("foundation_source_revision", "1" * 40),
+        ("foundation_source_tree_oid", "2" * 40),
     ),
 )
 def test_sign_manifest_rejects_caller_hash_drift_from_validated_raw_chain(

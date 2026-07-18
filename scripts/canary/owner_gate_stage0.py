@@ -27,8 +27,8 @@ from pathlib import Path, PurePosixPath
 from typing import Any, Callable, Mapping, Sequence, cast
 
 
-TRUST_SCHEMA = "muncho-owner-gate-release-trust.v1"
-PACKAGE_SCHEMA = "muncho-owner-gate-offline-package.v1"
+TRUST_SCHEMA = "muncho-owner-gate-release-trust.v2"
+PACKAGE_SCHEMA = "muncho-owner-gate-offline-package.v2"
 RUNTIME_LOCK_SCHEMA = "muncho-owner-gate-runtime-wheel-lock.v1"
 RUNTIME_LOCK_RELATIVE = "ops/muncho/owner-gate/runtime-wheel-lock.json"
 WHEELHOUSE_PLATFORM = "debian_12_x86_64"
@@ -125,6 +125,8 @@ INVENTORY_FIELDS = frozenset({
     "schema",
     "release_revision",
     "source_tree_oid",
+    "foundation_source_revision",
+    "foundation_source_tree_oid",
     "release_root",
     "release_owner",
     "release_directory_mode",
@@ -176,6 +178,8 @@ TRUST_FIELDS = frozenset({
     "fork_repository",
     "release_revision",
     "source_tree_oid",
+    "foundation_source_revision",
+    "foundation_source_tree_oid",
     "package_inventory_sha256",
     "boot_image_self_link",
     "collector_public_key_ids",
@@ -2249,6 +2253,16 @@ def _validate_trust(value: Mapping[str, Any], public_key: bytes) -> Mapping[str,
         or unsigned.get("fork_repository") != FORK_REPOSITORY
         or _REVISION.fullmatch(str(unsigned.get("release_revision", ""))) is None
         or _REVISION.fullmatch(str(unsigned.get("source_tree_oid", ""))) is None
+        or _REVISION.fullmatch(
+            str(unsigned.get("foundation_source_revision", ""))
+        )
+        is None
+        or _REVISION.fullmatch(
+            str(unsigned.get("foundation_source_tree_oid", ""))
+        )
+        is None
+        or unsigned.get("foundation_source_revision")
+        == unsigned.get("release_revision")
         or _SHA256.fullmatch(
             str(unsigned.get("package_inventory_sha256", ""))
         )
@@ -2365,6 +2379,12 @@ def _verify_manifest_and_payloads(
         != hashlib.sha256(public_key).hexdigest()
         or manifest.get("release_revision") != authority["release_revision"]
         or manifest.get("source_tree_oid") != authority["source_tree_oid"]
+        or manifest.get("foundation_source_revision")
+        != authority["foundation_source_revision"]
+        or manifest.get("foundation_source_tree_oid")
+        != authority["foundation_source_tree_oid"]
+        or manifest.get("foundation_source_revision")
+        == manifest.get("release_revision")
         or manifest.get("collector_public_key_ids")
         != authority["collector_public_key_ids"]
         or manifest.get("credential_migration_envelope_sha256")
@@ -2496,6 +2516,10 @@ def _verify_manifest_and_payloads(
     if (
         direct_iam_value.get("schema")
         != "muncho-owner-gate-direct-iam-identity-authority.v1"
+        or direct_iam_value.get("release_revision")
+        != authority["foundation_source_revision"]
+        or direct_iam_value.get("release_revision")
+        != manifest["foundation_source_revision"]
         or direct_iam_value.get("pre_foundation_authority_sha256")
         != authority["pre_foundation_authority_sha256"]
         or direct_iam_value.get("pre_foundation_authority_sha256")

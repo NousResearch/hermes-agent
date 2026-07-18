@@ -4,6 +4,8 @@ import base64
 import copy
 import hashlib
 import os
+from dataclasses import replace
+from typing import Any, Mapping, cast
 
 import pytest
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
@@ -196,11 +198,11 @@ def _request_fixture(
     })
     host = _attest_host(host_body, host_key)
     identities = _identities(plan, ancestry)
-    identities = author._FoundationIdentities(**{
-        **identities.__dict__,
-        "foundation_source_tree_oid": str(package["source_tree_oid"]),
-    })
-    unsigned = author._unsigned_from_raw(
+    identities = replace(
+        identities,
+        foundation_source_tree_oid=str(package["source_tree_oid"]),
+    )
+    unsigned = dict(author._unsigned_from_raw(
         plan=plan,
         ancestry_evidence=ancestry,
         phase=phase,
@@ -209,7 +211,7 @@ def _request_fixture(
         package_sha256=str(package["package_sha256"]),
         foundation_identities=identities,
         verified_probe=probe,
-    )
+    ))
     unsigned["release_binding"] = {
         "phase": phase,
         "release_revision": package["release_revision"],
@@ -224,6 +226,9 @@ def _request_fixture(
         "terminal_receipt_sha256": terminal["terminal_receipt_sha256"],
         "host_observation_report_sha256": host["report_sha256"],
         "host_observation_binding_sha256": host["observation_binding_sha256"],
+        "production_ingress_observation_sha256": host[
+            "production_ingress_observation_sha256"
+        ],
         "attached_sa_permission_probe_report_sha256": release[
             "attached_sa_permission_probe_report_sha256"
         ],
@@ -239,7 +244,7 @@ def _request_fixture(
             probe.permission_probe
         ),
     }
-    request_body = {
+    request_body: dict[str, object] = {
         "schema": signer.REQUEST_SCHEMA,
         "phase": phase,
         "release_revision": package["release_revision"],
@@ -247,7 +252,7 @@ def _request_fixture(
         "terminal_receipt": terminal,
         "host_observation": host,
     }
-    request = {
+    request: dict[str, object] = {
         **request_body,
         "request_sha256": foundation.sha256_json(request_body),
     }
@@ -266,17 +271,24 @@ def test_request_binds_full_unsigned_host_probe_and_terminal() -> None:
     assert checked["request_sha256"] == request["request_sha256"]
     assert (
         unsigned["release_binding"]["host_observation_report_sha256"]
-        == (request["host_observation"]["report_sha256"])
+        == cast(Mapping[str, Any], request["host_observation"])["report_sha256"]
     )
 
 
 @pytest.mark.parametrize(
     "mutation",
-    ["host_signature", "sidecar_report", "effective_probe", "terminal", "release"],
+    [
+        "host_signature",
+        "sidecar_report",
+        "effective_probe",
+        "production_ingress",
+        "terminal",
+        "release",
+    ],
 )
 def test_hostile_binding_substitution_is_rejected(mutation: str) -> None:
     request, package, _cloud_key, host_key = _request_fixture()
-    changed = copy.deepcopy(request)
+    changed = cast(dict[str, Any], copy.deepcopy(request))
     if mutation == "host_signature":
         changed["host_observation"]["effective_permission_probe"]["disk"][
             "granted_permissions"
@@ -289,6 +301,10 @@ def test_hostile_binding_substitution_is_rejected(mutation: str) -> None:
         changed["unsigned_observation"]["service_account"][
             "effective_permission_probe"
         ]["disk"]["granted_permissions"].append("compute.disks.update")
+    elif mutation == "production_ingress":
+        changed["unsigned_observation"]["release_binding"][
+            "production_ingress_observation_sha256"
+        ] = "9" * 64
     elif mutation == "terminal":
         changed["terminal_receipt"]["package_sha256"] = "0" * 64
     else:
@@ -325,7 +341,7 @@ def test_validly_attested_host_still_requires_full_fresh_schema(
     mutation: str,
 ) -> None:
     request, package, _cloud_key, host_key = _request_fixture()
-    changed = copy.deepcopy(request)
+    changed = cast(dict[str, Any], copy.deepcopy(request))
     host_body = {
         name: item
         for name, item in changed["host_observation"].items()

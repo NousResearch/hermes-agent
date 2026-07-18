@@ -29,7 +29,9 @@ from typing import Any, BinaryIO, Callable, Mapping, Protocol, Sequence
 from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PublicKey
 
+from scripts.canary import direct_iam_identity_authority as direct_iam
 from scripts.canary import full_canary_owner_launcher as launcher
+from scripts.canary import owner_gate_activation_evidence_stager as evidence_stager
 from scripts.canary import owner_gate_author_journal as author_journal
 from scripts.canary import owner_gate_foundation as foundation
 from scripts.canary import owner_gate_foundation_apply as foundation_apply
@@ -50,6 +52,7 @@ MAX_STDOUT_BYTES = 1024 * 1024
 MAX_STDERR_BYTES = 64 * 1024
 MAX_CLOUD_RECEIPT_BYTES = 256 * 1024
 MAX_OBSERVATION_FRAME_BYTES = 1024 * 1024
+MAX_ACTIVATION_STAGING_RESPONSE_BYTES = 64 * 1024
 MAX_SEALER_BYTES = 128 * 1024 * 1024
 MAX_STREAM_BYTES = (
     len(outer.TREE_STREAM_MAGIC)
@@ -76,6 +79,7 @@ _ATTACHED_SA_REQUEST_FIELDS = frozenset({
     "phase",
     "collected_at_unix",
     "plan_sha256",
+    "production_ingress_observation_sha256",
     "cloud_install_receipt",
     "cloud_signer_provisioning_receipt_sha256",
     "cloud_signer_readiness_sha256",
@@ -103,6 +107,23 @@ _ATTACHED_SA_PROBE_FIELDS = frozenset({
     "conditional_bindings_evaluated", "metadata_token_acquired",
     "metadata_token_wiped", "owner_credential_values_read",
     "report_sha256", "attestation",
+})
+_ACTIVATION_STAGING_RESPONSE_FIELDS = frozenset({
+    "schema",
+    "release_revision",
+    "bundle_sha256",
+    "receipt_sha256",
+    "activation_evidence_fresh_through_unix",
+    "disposition",
+    "staging_state",
+    "activation_seal_present",
+    "activation_performed",
+    "runtime_started",
+    "cloud_mutation_performed",
+    "storage_mutation_performed",
+    "iam_mutation_performed",
+    "caddy_mutation_performed",
+    "response_sha256",
 })
 
 
@@ -315,41 +336,34 @@ def _load_foundation_projection(
             artifacts.release_public_key_path,
             expected_uid=os.geteuid(),  # windows-footgun: ok — POSIX owner boundary
         )
-        now_unix = int(time.time())
-        if now_unix <= 0:
-            raise launcher.OwnerLauncherError(
-                "owner_gate_stage0_foundation_chain_invalid"
+        chain = (
+            foundation_apply._load_validated_foundation_apply_chain_for_source_recovery(
+                pre_foundation_authority_raw=_read_foundation_artifact(
+                    artifacts.pre_foundation_authority_path,
+                    maximum=foundation_apply.MAX_JSON_BYTES,
+                ),
+                owner_reauthentication_receipt_raw=_read_foundation_artifact(
+                    artifacts.owner_reauthentication_receipt_path,
+                    maximum=foundation_apply.MAX_JSON_BYTES,
+                ),
+                network_evidence_raw=_read_foundation_artifact(
+                    artifacts.network_evidence_path,
+                    maximum=foundation_apply.MAX_JSON_BYTES,
+                ),
+                project_ancestry_evidence_raw=_read_foundation_artifact(
+                    artifacts.project_ancestry_evidence_path,
+                    maximum=foundation_apply.MAX_JSON_BYTES,
+                ),
+                release_public_key=release_public_key,
+                network_collector_public_key=_load_collector_public_key(
+                    artifacts.network_collector_public_key_path
+                ),
+                project_ancestry_collector_public_key=(
+                    _load_collector_public_key(
+                        artifacts.project_ancestry_collector_public_key_path
+                    )
+                ),
             )
-        foundation_a = foundation_apply.decode_validated_foundation_a_chain(
-            pre_foundation_authority_raw=_read_foundation_artifact(
-                artifacts.pre_foundation_authority_path,
-                maximum=foundation_apply.MAX_JSON_BYTES,
-            ),
-            owner_reauthentication_receipt_raw=_read_foundation_artifact(
-                artifacts.owner_reauthentication_receipt_path,
-                maximum=foundation_apply.MAX_JSON_BYTES,
-            ),
-            network_evidence_raw=_read_foundation_artifact(
-                artifacts.network_evidence_path,
-                maximum=foundation_apply.MAX_JSON_BYTES,
-            ),
-            project_ancestry_evidence_raw=_read_foundation_artifact(
-                artifacts.project_ancestry_evidence_path,
-                maximum=foundation_apply.MAX_JSON_BYTES,
-            ),
-            release_public_key=release_public_key,
-            network_collector_public_key=_load_collector_public_key(
-                artifacts.network_collector_public_key_path
-            ),
-            project_ancestry_collector_public_key=(
-                _load_collector_public_key(
-                    artifacts.project_ancestry_collector_public_key_path
-                )
-            ),
-            now_unix=now_unix,
-        )
-        chain = foundation_apply.load_validated_foundation_apply_chain(
-            foundation_a
         )
         authority = chain.foundation_a.authority
         interpreter = authority["interpreter_image"]
@@ -567,6 +581,9 @@ def _validate_attached_sa_probe_stable_projection(
         "phase": request.get("phase"),
         "collected_at_unix": collected_at_unix,
         "plan_sha256": request.get("plan_sha256"),
+        "production_ingress_observation_sha256": request.get(
+            "production_ingress_observation_sha256"
+        ),
         "cloud_install_receipt": request.get("cloud_install_receipt"),
         **expected_signer_lineage,
     }
@@ -595,6 +612,11 @@ def _validate_attached_sa_probe_stable_projection(
         probe.get("schema") != _ATTACHED_SA_PROBE_SCHEMA
         or request.get("schema") != _ATTACHED_SA_REQUEST_SCHEMA
         or request.get("phase") not in {"inert", "post_iam"}
+        or type(request.get("production_ingress_observation_sha256")) is not str
+        or _SHA256.fullmatch(
+            str(request.get("production_ingress_observation_sha256", ""))
+        )
+        is None
         or type(plan) is not foundation.OwnerGateFoundationPlan
         or plan.spec.release_revision != release_revision
         or not plan.spec.final_release_bound
@@ -749,7 +771,7 @@ def _terminate(
 def _bounded_process_exchange(
     argv: Sequence[str],
     environment: Mapping[str, str],
-    input_source: BinaryIO,
+    input_source: BinaryIO | _MutableFrameReader,
     *,
     maximum_input_bytes: int,
     maximum_stdout_bytes: int = MAX_STDOUT_BYTES,
@@ -1565,6 +1587,16 @@ class OwnerGateStage0IapTransport(launcher.OwnerGateIapTransport):
             bootstrap_pip = cloud_stage0._bootstrap_pip_artifact(package)
         except cloud_stage0.OwnerGateStage0Error:
             raise launcher.OwnerLauncherError(error_code) from None
+        direct_iam_raw = bundle_stream.member(
+            "trust/direct-iam-identity-authority.json"
+        )
+        try:
+            direct_iam_authority = direct_iam.decode_canonical(
+                direct_iam_raw,
+                release_revision=self._foundation.foundation_source_revision,
+            )
+        except direct_iam.DirectIamIdentityAuthorityError:
+            raise launcher.OwnerLauncherError(error_code) from None
         source_tree_oid = package.get("source_tree_oid")
         package_sha256 = package.get("package_sha256")
         interpreter_sha256 = package.get("interpreter_sha256")
@@ -1588,15 +1620,26 @@ class OwnerGateStage0IapTransport(launcher.OwnerGateIapTransport):
         if (
             package.get("schema") != cloud_stage0.PACKAGE_SCHEMA
             or package.get("release_revision") != self._release_sha
-            or self._foundation.foundation_source_revision
-            != self._release_sha
-            or self._foundation.foundation_source_tree_oid
-            != source_tree_oid
+            or self._foundation.foundation_source_revision == self._release_sha
+            or package.get("foundation_source_revision")
+            != self._foundation.foundation_source_revision
+            or package.get("foundation_source_tree_oid")
+            != self._foundation.foundation_source_tree_oid
             or _REVISION.fullmatch(str(source_tree_oid or "")) is None
             or kit_manifest.get("source_release_revision")
             != self._release_sha
             or kit_manifest.get("source_tree_oid") != source_tree_oid
             or _SHA256.fullmatch(str(package_sha256 or "")) is None
+            or _sha256(direct_iam_raw)
+            != package.get("direct_iam_identity_authority_sha256")
+            or direct_iam_authority.get("release_revision")
+            != self._foundation.foundation_source_revision
+            or direct_iam_authority.get("pre_foundation_authority_sha256")
+            != package.get("pre_foundation_authority_sha256")
+            or direct_iam_authority.get("foundation_apply_receipt_sha256")
+            != package.get("foundation_apply_receipt_sha256")
+            or direct_iam_authority.get("resource_ancestor_chain")
+            != package.get("resource_ancestor_chain")
             or interpreter_sha256 != self._foundation.interpreter_sha256
             or package.get("release_root")
             != str(cloud_stage0.RELEASE_BASE / self._release_sha)
@@ -1857,7 +1900,7 @@ class OwnerGateStage0IapTransport(launcher.OwnerGateIapTransport):
 
     def _exchange_cloud_observation_signer(
         self,
-        input_source: BinaryIO,
+        input_source: BinaryIO | _MutableFrameReader,
         *,
         maximum_input_bytes: int,
     ) -> Mapping[str, Any]:
@@ -1896,7 +1939,7 @@ class OwnerGateStage0IapTransport(launcher.OwnerGateIapTransport):
     def _exchange_fixed_operation(
         self,
         operation: _FixedOperation,
-        input_source: BinaryIO,
+        input_source: BinaryIO | _MutableFrameReader,
         *,
         maximum_stdout_bytes: int = MAX_STDOUT_BYTES,
     ) -> _ProcessResult:
@@ -1933,7 +1976,7 @@ class OwnerGateStage0IapTransport(launcher.OwnerGateIapTransport):
     def _execute(
         self,
         operation: _FixedOperation,
-        input_source: BinaryIO,
+        input_source: BinaryIO | _MutableFrameReader,
     ) -> bytes:
         result = self._exchange_fixed_operation(operation, input_source)
         if result.stdout != operation.expected_stdout:
@@ -2617,6 +2660,7 @@ class OwnerGateStage0IapTransport(launcher.OwnerGateIapTransport):
         schema: str,
         phase: str,
         plan_sha256: str,
+        production_ingress_observation_sha256: str,
         collected_at_unix: int,
         cloud_install_receipt: Mapping[str, Any],
         cloud_receipt: Mapping[str, Any],
@@ -2627,7 +2671,10 @@ class OwnerGateStage0IapTransport(launcher.OwnerGateIapTransport):
         if schema not in {
             "muncho-owner-gate-host-observation-request.v1",
             "muncho-owner-gate-attached-sa-permission-probe-request.v1",
-        }:
+        } or (
+            type(production_ingress_observation_sha256) is not str
+            or _SHA256.fullmatch(production_ingress_observation_sha256) is None
+        ):
             raise launcher.OwnerLauncherError(
                 "owner_gate_host_observation_request_invalid"
             )
@@ -2635,6 +2682,9 @@ class OwnerGateStage0IapTransport(launcher.OwnerGateIapTransport):
             "phase": phase,
             "collected_at_unix": collected_at_unix,
             "plan_sha256": plan_sha256,
+            "production_ingress_observation_sha256": (
+                production_ingress_observation_sha256
+            ),
             "cloud_install_receipt": dict(cloud_install_receipt),
             "cloud_signer_provisioning_receipt_sha256": cloud_receipt["receipt_sha256"],
             "cloud_signer_readiness_sha256": cloud_readiness["readiness_sha256"],
@@ -2656,6 +2706,9 @@ class OwnerGateStage0IapTransport(launcher.OwnerGateIapTransport):
         *,
         phase: str,
         plan: foundation.OwnerGateFoundationPlan,
+        final_network_evidence: foundation.ProductionNetworkEvidence,
+        final_network_collector_public_key: Ed25519PublicKey,
+        production_ingress_observation_sha256: str,
         kit_stream: PinnedExactTreeStream,
         bundle_stream: PinnedExactTreeStream,
     ) -> OwnerGateHostObservationHandoff:
@@ -2666,6 +2719,14 @@ class OwnerGateStage0IapTransport(launcher.OwnerGateIapTransport):
             or phase not in {"inert", "post_iam"}
             or plan.spec.release_revision != self._release_sha
             or not plan.spec.final_release_bound
+            or type(final_network_evidence)
+            is not foundation.ProductionNetworkEvidence
+            or not isinstance(
+                final_network_collector_public_key,
+                Ed25519PublicKey,
+            )
+            or type(production_ingress_observation_sha256) is not str
+            or _SHA256.fullmatch(production_ingress_observation_sha256) is None
             or _SHA256.fullmatch(str(plan.spec.cloud_collector_public_key_id or ""))
             is None
             or _SHA256.fullmatch(str(plan.spec.host_collector_public_key_id or ""))
@@ -2679,6 +2740,28 @@ class OwnerGateStage0IapTransport(launcher.OwnerGateIapTransport):
             kit_stream=kit_stream,
             bundle_stream=bundle_stream,
         )
+        validation_now_unix = int(time.time())
+        if validation_now_unix <= 0:
+            raise launcher.OwnerLauncherError(
+                "owner_gate_host_observation_time_invalid"
+            )
+        try:
+            expected_plan = foundation.build_plan(
+                spec=plan.spec,
+                network_evidence=final_network_evidence,
+                network_collector_public_key=(
+                    final_network_collector_public_key
+                ),
+                now_unix=validation_now_unix,
+            )
+        except foundation.OwnerGateFoundationError:
+            raise launcher.OwnerLauncherError(
+                "owner_gate_host_observation_input_invalid"
+            ) from None
+        if _canonical(expected_plan.report()) != _canonical(plan.report()):
+            raise launcher.OwnerLauncherError(
+                "owner_gate_host_observation_input_invalid"
+            )
         terminal = OwnerGateStage0IapTransport.transport_and_install_inert_cloud_bundle(
             self,
             kit_stream=kit_stream,
@@ -2704,6 +2787,9 @@ class OwnerGateStage0IapTransport(launcher.OwnerGateIapTransport):
             schema="muncho-owner-gate-host-observation-request.v1",
             phase=phase,
             plan_sha256=plan.sha256,
+            production_ingress_observation_sha256=(
+                production_ingress_observation_sha256
+            ),
             collected_at_unix=collected_at_unix,
             cloud_install_receipt=terminal["cloud_install_receipt"],
             cloud_receipt=cloud_receipt,
@@ -2715,6 +2801,9 @@ class OwnerGateStage0IapTransport(launcher.OwnerGateIapTransport):
             schema=_ATTACHED_SA_REQUEST_SCHEMA,
             phase=phase,
             plan_sha256=plan.sha256,
+            production_ingress_observation_sha256=(
+                production_ingress_observation_sha256
+            ),
             collected_at_unix=collected_at_unix,
             cloud_install_receipt=terminal["cloud_install_receipt"],
             cloud_receipt=cloud_receipt,
@@ -2818,6 +2907,8 @@ class OwnerGateStage0IapTransport(launcher.OwnerGateIapTransport):
             != selected_probe.get("report_sha256")
             or host_observation.get("observation_binding_sha256")
             != host_request["observation_binding_sha256"]
+            or host_observation.get("production_ingress_observation_sha256")
+            != production_ingress_observation_sha256
             or host_runtime.get("package_sha256") != binding.package_sha256
         ):
             raise launcher.OwnerLauncherError(
@@ -2899,6 +2990,8 @@ class OwnerGateStage0IapTransport(launcher.OwnerGateIapTransport):
             != host.get("report_sha256")
             or release_binding.get("host_observation_binding_sha256")
             != host.get("observation_binding_sha256")
+            or release_binding.get("production_ingress_observation_sha256")
+            != host.get("production_ingress_observation_sha256")
             or release_binding.get("attached_sa_permission_probe_report_sha256")
             != host_release.get("attached_sa_permission_probe_report_sha256")
             or release_binding.get("cloud_signer_provisioning_receipt_sha256")
@@ -3133,6 +3226,96 @@ class OwnerGateStage0IapTransport(launcher.OwnerGateIapTransport):
             "service_activation_performed": False,
         }
         return {**unsigned, "receipt_sha256": outer.sha256_json(unsigned)}
+
+    def stage_activation_evidence(
+        self,
+        frame: Mapping[str, Any],
+    ) -> Mapping[str, Any]:
+        """Run only the packaged inert activation-evidence stager as root."""
+
+        error_code = "owner_gate_stage0_activation_evidence_staging_invalid"
+        if not isinstance(frame, Mapping):
+            raise launcher.OwnerLauncherError(error_code)
+        try:
+            checked = evidence_stager.build_staging_frame(
+                release_revision=self._release_sha,
+                evidence=frame.get("evidence", {}),
+            )
+        except (
+            AttributeError,
+            TypeError,
+            ValueError,
+            evidence_stager.OwnerGateActivationEvidenceStagingError,
+        ):
+            raise launcher.OwnerLauncherError(error_code) from None
+        if _canonical(checked) != _canonical(frame):
+            raise launcher.OwnerLauncherError(error_code)
+        raw = _canonical(checked)
+        if not raw or len(raw) > evidence_stager.MAX_FRAME_BYTES:
+            raise launcher.OwnerLauncherError(error_code)
+        release = cloud_stage0.RELEASE_BASE / self._release_sha
+        root_argv = (
+            "/usr/bin/env",
+            "-i",
+            str(release / "venv/bin/python"),
+            "-I",
+            "-B",
+            str(release / "bin/muncho-owner-gate-stage-activation-evidence"),
+        )
+        operation = _FixedOperation(
+            "activation_evidence_stage",
+            root_argv,
+            b"",
+            evidence_stager.MAX_FRAME_BYTES,
+            self._timeout_seconds,
+        )
+        if operation.root_argv != root_argv:
+            raise launcher.OwnerLauncherError(error_code)
+        result = self._exchange_fixed_operation(
+            operation,
+            io.BytesIO(raw),
+            maximum_stdout_bytes=MAX_ACTIVATION_STAGING_RESPONSE_BYTES,
+        )
+        response = _decode_canonical_stdout(
+            result.stdout,
+            error_code=error_code,
+        )
+        unsigned = {
+            key: item
+            for key, item in response.items()
+            if key != "response_sha256"
+        }
+        fresh_through = response.get(
+            "activation_evidence_fresh_through_unix"
+        )
+        now_unix = int(time.time())
+        if (
+            set(response) != _ACTIVATION_STAGING_RESPONSE_FIELDS
+            or response.get("schema") != evidence_stager.RESPONSE_SCHEMA
+            or response.get("release_revision") != self._release_sha
+            or response.get("bundle_sha256") != checked["bundle_sha256"]
+            or _SHA256.fullmatch(str(response.get("receipt_sha256", "")))
+            is None
+            or type(fresh_through) is not int
+            or fresh_through < now_unix
+            or response.get("disposition") not in {"installed", "exact_replay"}
+            or response.get("staging_state") != "complete"
+            or any(
+                response.get(name) is not False
+                for name in (
+                    "activation_seal_present",
+                    "activation_performed",
+                    "runtime_started",
+                    "cloud_mutation_performed",
+                    "storage_mutation_performed",
+                    "iam_mutation_performed",
+                    "caddy_mutation_performed",
+                )
+            )
+            or response.get("response_sha256") != outer.sha256_json(unsigned)
+        ):
+            raise launcher.OwnerLauncherError(error_code)
+        return dict(response)
 
     def transport_and_install_inert_cloud_bundle(
         self,

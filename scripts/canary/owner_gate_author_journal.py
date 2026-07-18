@@ -66,10 +66,28 @@ class OwnerGateAuthorJournal:
         _root: Path = DEFAULT_ROOT,
         _owner_uid: int = OWNER_UID,
         _owner_gid: int = OWNER_GID,
+        _artifacts: frozenset[str] = ARTIFACTS,
+        _maximum_bytes: int = _MAX_BYTES,
     ) -> None:
+        if (
+            not isinstance(_artifacts, frozenset)
+            or not _artifacts
+            or any(
+                not isinstance(name, str)
+                or re.fullmatch(r"[a-z][a-z0-9-]{0,63}", name) is None
+                for name in _artifacts
+            )
+            or type(_maximum_bytes) is not int
+            or not 1 <= _maximum_bytes <= 256 * 1024 * 1024
+        ):
+            raise OwnerGateAuthorJournalError(
+                "owner_gate_author_journal_configuration_invalid"
+            )
         self._root = _root
         self._owner_uid = _owner_uid
         self._owner_gid = _owner_gid
+        self._artifacts = _artifacts
+        self._maximum_bytes = _maximum_bytes
         self._lease: tuple[str, int, Path, tuple[int, int]] | None = None
 
     @property
@@ -256,8 +274,8 @@ class OwnerGateAuthorJournal:
             ) from None
         names = [self._entry_name(entry) for entry in entries]
         if (
-            len(entries) > 2 * len(ARTIFACTS)
-            or any(name not in ARTIFACTS for name in names)
+            len(entries) > 2 * len(self._artifacts)
+            or any(name not in self._artifacts for name in names)
         ):
             raise OwnerGateAuthorJournalError(
                 "owner_gate_author_journal_inventory_invalid"
@@ -277,7 +295,7 @@ class OwnerGateAuthorJournal:
             or before.st_gid != self._owner_gid
             or stat.S_IMODE(before.st_mode) != _FILE_MODE
             or before.st_nlink not in ({1, 2} if linked else {1})
-            or not 0 < before.st_size <= _MAX_BYTES
+            or not 0 < before.st_size <= self._maximum_bytes
         ):
             raise OwnerGateAuthorJournalError(
                 "owner_gate_author_journal_artifact_invalid"
@@ -299,7 +317,7 @@ class OwnerGateAuthorJournal:
                 raise OwnerGateAuthorJournalError(
                     "owner_gate_author_journal_artifact_changed"
                 )
-            raw = os.read(descriptor, _MAX_BYTES + 1)
+            raw = os.read(descriptor, self._maximum_bytes + 1)
             if len(raw) != before.st_size or os.read(descriptor, 1):
                 raise OwnerGateAuthorJournalError(
                     "owner_gate_author_journal_artifact_changed"
@@ -404,7 +422,7 @@ class OwnerGateAuthorJournal:
             or before.st_gid != self._owner_gid
             or stat.S_IMODE(before.st_mode) != _FILE_MODE
             or before.st_nlink != 1
-            or not 0 <= before.st_size <= _MAX_BYTES
+            or not 0 <= before.st_size <= self._maximum_bytes
         ):
             return False
         descriptor: int | None = None
@@ -490,12 +508,12 @@ class OwnerGateAuthorJournal:
         name: str,
         value: Mapping[str, Any],
     ) -> dict[str, Any]:
-        if name not in ARTIFACTS:
+        if name not in self._artifacts:
             raise OwnerGateAuthorJournalError(
                 "owner_gate_author_journal_artifact_name_invalid"
             )
         raw = canonical_bytes(value)
-        if not raw or len(raw) > _MAX_BYTES:
+        if not raw or len(raw) > self._maximum_bytes:
             raise OwnerGateAuthorJournalError(
                 "owner_gate_author_journal_artifact_too_large"
             )

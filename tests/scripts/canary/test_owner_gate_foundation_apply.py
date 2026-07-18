@@ -1347,6 +1347,7 @@ def _kill_after_rollback_posts_worker(
     )
 
 
+@pytest.mark.live_system_guard_bypass
 @pytest.mark.parametrize("failed_index", [1, 3])
 def test_sigkill_after_rollback_post_never_resumes_forward_success(
     tmp_path: Path,

@@ -16,7 +16,6 @@ import json
 import os
 import pwd
 import stat
-import time
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Mapping, Sequence
@@ -61,6 +60,7 @@ class _ValidatedFoundationChain:
     foundation_apply_receipt_sha256: str
     bootstrap_network_collector_public_key_id: str
     foundation_source_revision: str
+    foundation_source_tree_oid: str
     direct_iam_identity_authority_sha256: str
     project_ancestry_evidence_sha256: str
     project_ancestry_chain_sha256: str
@@ -83,6 +83,7 @@ class _ValidatedFoundationChain:
         foundation_apply_receipt_sha256: str,
         bootstrap_network_collector_public_key_id: str,
         foundation_source_revision: str,
+        foundation_source_tree_oid: str,
         direct_iam_identity_authority_sha256: str,
         project_ancestry_evidence_sha256: str,
         project_ancestry_chain_sha256: str,
@@ -103,6 +104,7 @@ class _ValidatedFoundationChain:
                 bootstrap_network_collector_public_key_id
             ),
             "foundation_source_revision": foundation_source_revision,
+            "foundation_source_tree_oid": foundation_source_tree_oid,
             "direct_iam_identity_authority_sha256": (
                 direct_iam_identity_authority_sha256
             ),
@@ -815,7 +817,6 @@ def _validate_foundation_chain_files(
     direct_iam_identity_authority_path: Path,
     release_public_key: Ed25519PublicKey,
     final_release_revision: str,
-    now_unix: int,
 ) -> _ValidatedFoundationChain:
     """Validate the canonical signed A lifecycle before authoring B trust."""
 
@@ -871,19 +872,18 @@ def _validate_foundation_chain_files(
         loaded_ancestry_key = Ed25519PublicKey.from_public_bytes(
             ancestry_key_raw
         )
-        foundation_a = foundation_apply.decode_validated_foundation_a_chain(
-            pre_foundation_authority_raw=authority_raw,
-            owner_reauthentication_receipt_raw=reauth_raw,
-            network_evidence_raw=network_evidence_raw,
-            project_ancestry_evidence_raw=project_ancestry_raw,
-            release_public_key=release_public_key,
-            network_collector_public_key=loaded_network_key,
-            project_ancestry_collector_public_key=loaded_ancestry_key,
-            now_unix=now_unix,
+        apply_chain = (
+            foundation_apply._load_validated_foundation_apply_chain_for_source_recovery(
+                pre_foundation_authority_raw=authority_raw,
+                owner_reauthentication_receipt_raw=reauth_raw,
+                network_evidence_raw=network_evidence_raw,
+                project_ancestry_evidence_raw=project_ancestry_raw,
+                release_public_key=release_public_key,
+                network_collector_public_key=loaded_network_key,
+                project_ancestry_collector_public_key=loaded_ancestry_key,
+            )
         )
-        apply_chain = foundation_apply.load_validated_foundation_apply_chain(
-            foundation_a
-        )
+        foundation_a = apply_chain.foundation_a
         reauthentication = foundation_a.owner_reauthentication_receipt
         authority = foundation_a.authority
         ancestry = foundation_a.ancestry_evidence
@@ -913,7 +913,11 @@ def _validate_foundation_chain_files(
         for node in ancestry.ordered_chain[1:]
     )
     if (
-        authority["foundation_source_revision"] == final_release_revision
+        apply_chain.foundation_source_revision == final_release_revision
+        or authority["foundation_source_revision"]
+        != apply_chain.foundation_source_revision
+        or authority["foundation_source_tree_oid"]
+        != apply_chain.foundation_source_tree_oid
         or authority["ancestry_evidence_sha256"]
         != ancestry.signed_evidence_sha256
         or authority["ancestry_chain_sha256"]
@@ -949,7 +953,8 @@ def _validate_foundation_chain_files(
         bootstrap_network_collector_public_key_id=authority[
             "network_collector_public_key_id"
         ],
-        foundation_source_revision=authority["foundation_source_revision"],
+        foundation_source_revision=apply_chain.foundation_source_revision,
+        foundation_source_tree_oid=apply_chain.foundation_source_tree_oid,
         direct_iam_identity_authority_sha256=hashlib.sha256(
             direct_iam_raw
         ).hexdigest(),
@@ -1032,7 +1037,6 @@ def sign_manifest(
         direct_iam_identity_authority_path=direct_iam_identity_authority_path,
         release_public_key=Ed25519PublicKey.from_public_bytes(public_raw),
         final_release_revision=unsigned["release_revision"],
-        now_unix=int(time.time()) if now_unix is None else now_unix,
     )
     if (
         type(chain) is not _ValidatedFoundationChain
@@ -1046,6 +1050,11 @@ def sign_manifest(
         type(now_unix) is bool
         or (now_unix is not None and (type(now_unix) is not int or now_unix <= 0))
         or chain.final_release_revision != unsigned["release_revision"]
+        or chain.foundation_source_revision
+        != unsigned["foundation_source_revision"]
+        or chain.foundation_source_tree_oid
+        != unsigned["foundation_source_tree_oid"]
+        or chain.foundation_source_revision == chain.final_release_revision
         or unsigned["pre_foundation_authority_sha256"]
         != chain.pre_foundation_authority_sha256
         or unsigned["foundation_apply_receipt_sha256"]
@@ -1115,6 +1124,12 @@ def sign_manifest(
         "manifest_authored": True,
         "release_revision": verified["release_revision"],
         "source_tree_oid": verified["source_tree_oid"],
+        "foundation_source_revision": verified[
+            "foundation_source_revision"
+        ],
+        "foundation_source_tree_oid": verified[
+            "foundation_source_tree_oid"
+        ],
         "manifest_path": str(output_path),
         "manifest_sha256": hashlib.sha256(raw).hexdigest(),
         "public_key_sha256": key_id,

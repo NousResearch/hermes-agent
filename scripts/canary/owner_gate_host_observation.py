@@ -35,7 +35,7 @@ import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
-from typing import Any, BinaryIO, Mapping, Sequence
+from typing import Any, BinaryIO, Mapping, NoReturn, Sequence
 
 from cryptography.exceptions import InvalidSignature
 from cryptography.hazmat.primitives import hashes
@@ -173,8 +173,13 @@ class OwnerGateHostObservationError(RuntimeError):
     """Stable, secret-free host observation failure."""
 
 
-def _error(code: str, _exc: BaseException | None = None) -> None:
+def _error(code: str, _exc: BaseException | None = None) -> NoReturn:
     raise OwnerGateHostObservationError(code) from None
+
+
+def _require_executor_activation_seal_absent() -> None:
+    if os.path.lexists(service.ACTIVATION_SEAL):
+        _error("owner_gate_host_executor_activation_seal_present")
 
 
 def _canonical(value: Any) -> bytes:
@@ -522,7 +527,12 @@ def _load_release_package(release_revision: str) -> Mapping[str, Any]:
     return package
 
 
-def _load_direct_iam_identity(release_revision: str) -> Mapping[str, Any]:
+def _load_direct_iam_identity(
+    package: Mapping[str, Any],
+) -> Mapping[str, Any]:
+    release_revision = str(package.get("release_revision", ""))
+    if _REVISION.fullmatch(release_revision) is None:
+        _error("owner_gate_attached_sa_direct_identity_invalid")
     raw = _read_regular(
         OWNER_RELEASE_BASE
         / release_revision
@@ -530,11 +540,34 @@ def _load_direct_iam_identity(release_revision: str) -> Mapping[str, Any]:
         modes=frozenset({0o444}),
     )
     try:
-        return direct_iam.decode_canonical(
-            raw, release_revision=release_revision
+        unbound = direct_iam.decode_canonical(raw)
+        foundation_revision = str(unbound.get("release_revision", ""))
+        authority = direct_iam.decode_canonical(
+            raw,
+            release_revision=foundation_revision,
         )
     except direct_iam.DirectIamIdentityAuthorityError:
         _error("owner_gate_attached_sa_direct_identity_invalid")
+    if (
+        _REVISION.fullmatch(foundation_revision) is None
+        or foundation_revision == release_revision
+        or foundation_revision
+        != package.get("foundation_source_revision")
+        or _REVISION.fullmatch(
+            str(package.get("foundation_source_tree_oid", ""))
+        )
+        is None
+        or hashlib.sha256(raw).hexdigest()
+        != package.get("direct_iam_identity_authority_sha256")
+        or authority.get("pre_foundation_authority_sha256")
+        != package.get("pre_foundation_authority_sha256")
+        or authority.get("foundation_apply_receipt_sha256")
+        != package.get("foundation_apply_receipt_sha256")
+        or authority.get("resource_ancestor_chain")
+        != package.get("resource_ancestor_chain")
+    ):
+        _error("owner_gate_attached_sa_direct_identity_invalid")
+    return authority
 
 
 def _validate_request(
@@ -546,6 +579,7 @@ def _validate_request(
 ) -> tuple[Mapping[str, Any], Mapping[str, Any], Mapping[str, Any]]:
     fields = {
         "schema", "phase", "collected_at_unix", "plan_sha256",
+        "production_ingress_observation_sha256",
         "cloud_install_receipt", *_SIGNER_LINEAGE_FIELDS,
         "observation_binding_sha256", "request_sha256",
     }
@@ -568,6 +602,11 @@ def _validate_request(
         <= request["collected_at_unix"]
         <= now_unix + 5
         or _SHA256.fullmatch(str(request.get("plan_sha256", ""))) is None
+        or type(request.get("production_ingress_observation_sha256")) is not str
+        or _SHA256.fullmatch(
+            str(request.get("production_ingress_observation_sha256", ""))
+        )
+        is None
         or any(
             _SHA256.fullmatch(str(request.get(name, ""))) is None
             for name in _SIGNER_LINEAGE_FIELDS
@@ -1517,6 +1556,7 @@ def build_host_observation(
         release_revision=release_revision,
         now_unix=observed,
     )
+    _require_executor_activation_seal_absent()
     private_key, public_key, key_id, host_readiness = _load_host_signer(
         release_revision
     )
@@ -1537,7 +1577,7 @@ def build_host_observation(
         != cloud_readiness.get("readiness_sha256")
     ):
         _error("owner_gate_signer_lineage_invalid")
-    direct_identity = _load_direct_iam_identity(release_revision)
+    direct_identity = _load_direct_iam_identity(package)
     checked_probe = _validate_attached_probe(
         attached_sa_probe,
         request=request,
@@ -1564,6 +1604,7 @@ def build_host_observation(
     firewall_facts = _firewall_facts(
         collected_at_unix=request["collected_at_unix"]
     )
+    _require_executor_activation_seal_absent()
     completed_at_unix, fresh_through_unix = _completion_facts(
         request,
         observed_at_entry=observed,
@@ -1577,6 +1618,9 @@ def build_host_observation(
         "completed_at_unix": completed_at_unix,
         "fresh_through_unix": fresh_through_unix,
         "plan_sha256": request["plan_sha256"],
+        "production_ingress_observation_sha256": request[
+            "production_ingress_observation_sha256"
+        ],
         "observation_binding_sha256": request[
             "observation_binding_sha256"
         ],
@@ -1639,6 +1683,7 @@ def build_host_observation(
         ],
         "secret_material_recorded": False,
     }
+    _require_executor_activation_seal_absent()
     return _attest(unsigned, private_key=private_key, public_key_id=key_id)
 
 
@@ -2053,7 +2098,7 @@ def build_attached_sa_permission_probe(
         release_revision=release_revision,
         now_unix=observed,
     )
-    direct = _load_direct_iam_identity(release_revision)
+    direct = _load_direct_iam_identity(package)
     post_iam = request["phase"] == "post_iam"
     facts = (
         collector.collect(post_iam=post_iam)

@@ -31,6 +31,8 @@ def _release_trust(public_key: bytes) -> dict:
         "fork_repository": stage0.FORK_REPOSITORY,
         "release_revision": "a" * 40,
         "source_tree_oid": "b" * 40,
+        "foundation_source_revision": "0" * 40,
+        "foundation_source_tree_oid": "8" * 40,
         "package_inventory_sha256": "c" * 64,
         "boot_image_self_link": (
             f"projects/debian-cloud/global/images/{image_name}"
@@ -72,6 +74,8 @@ def test_stage0_trust_requires_complete_foundation_and_ancestry_chain() -> None:
     checked = stage0._validate_trust(_release_trust(public_key), public_key)
 
     assert checked["pre_foundation_authority_sha256"] == "4" * 64
+    assert checked["foundation_source_revision"] == "0" * 40
+    assert checked["foundation_source_tree_oid"] == "8" * 40
     assert checked["foundation_apply_receipt_sha256"] == "5" * 64
     assert checked["project_ancestry_evidence_sha256"] == "6" * 64
     assert checked["project_ancestry_chain_sha256"] == "7" * 64
@@ -83,6 +87,8 @@ def test_stage0_trust_requires_complete_foundation_and_ancestry_chain() -> None:
         "foundation_apply_receipt_sha256",
         "project_ancestry_evidence_sha256",
         "project_ancestry_chain_sha256",
+        "foundation_source_revision",
+        "foundation_source_tree_oid",
     ):
         drifted = _release_trust(public_key)
         drifted[field] = "not-a-digest"
@@ -99,6 +105,16 @@ def test_stage0_trust_requires_complete_foundation_and_ancestry_chain() -> None:
         match="owner_gate_stage0_trust_invalid",
     ):
         stage0._validate_trust(drifted, public_key)
+
+    same_revision = _release_trust(public_key)
+    same_revision["foundation_source_revision"] = same_revision[
+        "release_revision"
+    ]
+    with pytest.raises(
+        stage0.OwnerGateStage0Error,
+        match="owner_gate_stage0_trust_invalid",
+    ):
+        stage0._validate_trust(same_revision, public_key)
 
 
 def _python_pair(tmp_path: Path) -> tuple[Path, Path]:

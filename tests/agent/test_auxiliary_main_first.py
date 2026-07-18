@@ -13,6 +13,7 @@ runs when the main provider has no working client.
 
 from __future__ import annotations
 
+from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
 
@@ -278,6 +279,70 @@ class TestResolveAutoMainFirst:
         # Runtime override wins
         assert mock_resolve.call_args.args[0] == "anthropic"
         assert mock_resolve.call_args.args[1] == "runtime-model"
+
+    def test_title_generation_inherits_effective_main_headers(self, monkeypatch):
+        """Auto title generation must reuse the main client's scoped headers."""
+        monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+        monkeypatch.delenv("OPENAI_BASE_URL", raising=False)
+
+        response = SimpleNamespace(
+            choices=[SimpleNamespace(message=SimpleNamespace(content="Short title"))]
+        )
+        mock_client = MagicMock()
+        mock_client.chat.completions.create.return_value = response
+
+        with patch(
+            "agent.auxiliary_client._resolve_task_provider_model",
+            return_value=("auto", None, None, None, None),
+        ), patch(
+            "agent.auxiliary_client.OpenAI", return_value=mock_client
+        ) as mock_openai:
+            from agent.auxiliary_client import call_llm, shutdown_cached_clients
+
+            shutdown_cached_clients()
+            result = call_llm(
+                task="title_generation",
+                messages=[{"role": "user", "content": "Generate a title"}],
+                main_runtime={
+                    "provider": "custom",
+                    "model": "title-model",
+                    "base_url": "https://proxy.example.com/v1",
+                    "api_key": "proxy-key",
+                    "api_mode": "chat_completions",
+                    "default_headers": {
+                        "CF-Access-Client-Id": "client-id",
+                        "CF-Access-Client-Secret": "client-secret",
+                    },
+                },
+            )
+
+        assert result is response
+        assert mock_openai.call_args.kwargs["default_headers"] == {
+            "CF-Access-Client-Id": "client-id",
+            "CF-Access-Client-Secret": "client-secret",
+        }
+
+    def test_explicit_custom_aux_endpoint_does_not_borrow_main_headers(self):
+        """Provider-scoped headers must not leak to a different custom endpoint."""
+        with patch("agent.auxiliary_client.OpenAI", return_value=MagicMock()) as mock_openai:
+            from agent.auxiliary_client import resolve_provider_client
+
+            resolve_provider_client(
+                "custom",
+                model="aux-model",
+                explicit_base_url="https://other.example.com/v1",
+                explicit_api_key="other-key",
+                main_runtime={
+                    "provider": "custom:main-proxy",
+                    "model": "main-model",
+                    "base_url": "https://main.example.com/v1",
+                    "api_key": "main-key",
+                    "default_headers": {"CF-Access-Client-Secret": "main-secret"},
+                },
+            )
+
+        headers = mock_openai.call_args.kwargs.get("default_headers") or {}
+        assert "CF-Access-Client-Secret" not in headers
 
     def test_resolve_provider_auto_returns_runtime_model_not_stale_config_default(self):
         """Blank auto aux requests must not pair a stale config model with live fallback provider."""

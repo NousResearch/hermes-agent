@@ -1191,9 +1191,9 @@ class AIAgent:
             detail = detail[:217].rstrip() + "..."
         self._emit_warning(f"⚠ Auxiliary {task} failed: {detail}")
 
-    def _current_main_runtime(self) -> Dict[str, str]:
+    def _current_main_runtime(self) -> Dict[str, Any]:
         """Return the live main runtime for session-scoped auxiliary routing."""
-        return {
+        runtime: Dict[str, Any] = {
             "model": getattr(self, "model", "") or "",
             "provider": getattr(self, "provider", "") or "",
             "base_url": getattr(self, "base_url", "") or "",
@@ -1201,6 +1201,12 @@ class AIAgent:
             "api_mode": getattr(self, "api_mode", "") or "",
             "auth_mode": getattr(self, "auth_mode", "") or "",
         }
+        default_headers = dict(
+            getattr(self, "_client_kwargs", {}).get("default_headers") or {}
+        )
+        if default_headers:
+            runtime["default_headers"] = default_headers
+        return runtime
 
     def _check_compression_model_feasibility(self) -> None:
         """Forwarder — see ``agent.conversation_compression.check_compression_model_feasibility``."""

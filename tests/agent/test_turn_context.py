@@ -293,6 +293,23 @@ def test_runtime_main_sync_happens_after_restore():
     )]
 
 
+def test_runtime_main_sync_includes_effective_default_headers():
+    agent = _FakeAgent()
+    agent._client_kwargs = {
+        "default_headers": {"CF-Access-Client-Secret": "scoped-secret"}
+    }
+    calls = []
+    with patch(
+        "agent.auxiliary_client.set_runtime_main",
+        side_effect=lambda *args, **kwargs: calls.append((args, kwargs)),
+    ):
+        _build(agent)
+
+    assert calls[0][1]["default_headers"] == {
+        "CF-Access-Client-Secret": "scoped-secret"
+    }
+
+
 def test_memory_nudge_fires_at_interval():
     agent = _FakeAgent()
     agent._memory_nudge_interval = 1
@@ -436,6 +453,7 @@ def test_preflight_still_runs_for_other_session_with_same_db(tmp_path):
     agent._compress_context.assert_called()
 
 
+
 def test_expired_cooldown_allows_preflight(tmp_path):
     agent = _make_agent_with_cooldown(
         tmp_path / "state.db",
@@ -450,4 +468,3 @@ def test_expired_cooldown_allows_preflight(tmp_path):
     assert isinstance(ctx, TurnContext)
     agent._emit_status.assert_called_once()
     agent._compress_context.assert_called()
-

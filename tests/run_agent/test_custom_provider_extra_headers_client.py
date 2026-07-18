@@ -43,6 +43,7 @@ def test_custom_provider_extra_headers_applied_at_construction(mock_openai):
     headers = agent._client_kwargs["default_headers"]
     assert headers["CF-Access-Client-Id"] == "xxxx.access"
     assert headers["X-Client-Name"] == "hermes-agent"
+    assert agent._current_main_runtime()["default_headers"] == headers
 
 
 @patch("run_agent.OpenAI")

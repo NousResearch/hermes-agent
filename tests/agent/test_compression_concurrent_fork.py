@@ -252,7 +252,10 @@ def test_lock_refresh_keeps_owner_live_past_initial_ttl(tmp_path: Path, monkeypa
     db.create_session(parent_sid, source="discord")
 
     agent_a = _build_agent_with_db(db, parent_sid)
-    agent_a._compression_lock_ttl_seconds = 1.0
+    # 3s TTL / 0.25s refresh: ~12 refresh opportunities per lease. A 1s TTL
+    # left one missed scheduling quantum between "refreshed" and "expired"
+    # on a loaded runner.
+    agent_a._compression_lock_ttl_seconds = 3.0
     agent_a._compression_lock_refresh_interval = 0.25
     compression_started = threading.Event()
     release_compression = threading.Event()
@@ -276,9 +279,9 @@ def test_lock_refresh_keeps_owner_live_past_initial_ttl(tmp_path: Path, monkeypa
     try:
         assert compression_started.wait(timeout=10), "compression never acquired its lock"
         assert db.get_compression_lock_holder(parent_sid) is not None
-        time.sleep(1.2)
+        time.sleep(3.5)
         assert db.try_acquire_compression_lock(
-            parent_sid, "refresh_probe", ttl_seconds=1.0
+            parent_sid, "refresh_probe", ttl_seconds=3.0
         ) is False, "live owner lease expired and was reclaimable before compression finished"
     finally:
         release_compression.set()

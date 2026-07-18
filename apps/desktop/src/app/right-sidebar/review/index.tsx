@@ -84,7 +84,9 @@ export function ReviewPane() {
       {(loading || isRepo) && (
         <RightSidebarSectionHeader data-suppress-pane-reveal-side="">
           <div className="flex min-w-0 flex-1">
-            <SidebarPanelLabel>{c.review}</SidebarPanelLabel>
+            {/* Pure self-naming label — redundant under a zone tab that already
+                says "review", so the zone header hides it (styles.css). */}
+            <SidebarPanelLabel data-pane-self-label="">{c.review}</SidebarPanelLabel>
           </div>
           <Tip label={treeMode === 'tree' ? c.viewAsList : c.viewAsTree}>
             <Button

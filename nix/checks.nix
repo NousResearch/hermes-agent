@@ -127,13 +127,24 @@ json.dump(sorted(leaf_paths(DEFAULT_CONFIG)), sys.stdout, indent=2)
           test -d ${hermes-agent}/share/hermes-agent/skills || (echo "FAIL: skills directory missing"; exit 1)
           echo "PASS: skills directory exists"
 
-          SKILL_COUNT=$(find ${hermes-agent}/share/hermes-agent/skills -name "SKILL.md" | wc -l)
+          # -L: skills/ is a symlink to the filtered source store path
+          SKILL_COUNT=$(find -L ${hermes-agent}/share/hermes-agent/skills -name "SKILL.md" | wc -l)
           test "$SKILL_COUNT" -gt 0 || (echo "FAIL: no SKILL.md files found in skills directory"; exit 1)
           echo "PASS: $SKILL_COUNT bundled skills found"
 
           grep -q "HERMES_BUNDLED_SKILLS" ${hermes-agent}/bin/hermes || \
             (echo "FAIL: HERMES_BUNDLED_SKILLS not in wrapper"; exit 1)
           echo "PASS: HERMES_BUNDLED_SKILLS set in wrapper"
+
+          # Optional skills ship via the wrapper too (pythonSrc excludes
+          # them from the wheel, so the env var is the only path in nix).
+          test -d ${hermes-agent}/share/hermes-agent/optional-skills || \
+            (echo "FAIL: optional-skills directory missing"; exit 1)
+          OPT_COUNT=$(find -L ${hermes-agent}/share/hermes-agent/optional-skills -name "SKILL.md" | wc -l)
+          test "$OPT_COUNT" -gt 0 || (echo "FAIL: no SKILL.md files in optional-skills"; exit 1)
+          grep -q "HERMES_OPTIONAL_SKILLS" ${hermes-agent}/bin/hermes || \
+            (echo "FAIL: HERMES_OPTIONAL_SKILLS not in wrapper"; exit 1)
+          echo "PASS: $OPT_COUNT optional skills found, HERMES_OPTIONAL_SKILLS set in wrapper"
 
           echo "=== All bundled skills checks passed ==="
           mkdir -p $out
@@ -169,7 +180,8 @@ json.dump(sorted(leaf_paths(DEFAULT_CONFIG)), sys.stdout, indent=2)
           test -d ${hermes-agent}/share/hermes-agent/locales || (echo "FAIL: locales directory missing"; exit 1)
           echo "PASS: locales directory exists"
 
-          LOC_COUNT=$(find ${hermes-agent}/share/hermes-agent/locales -name "*.yaml" | wc -l)
+          # -L: locales/ is a symlink to the source store path
+          LOC_COUNT=$(find -L ${hermes-agent}/share/hermes-agent/locales -name "*.yaml" | wc -l)
           test "$LOC_COUNT" -ge 16 || (echo "FAIL: expected >=16 catalogs, found $LOC_COUNT"; exit 1)
           echo "PASS: $LOC_COUNT locale catalogs found"
 

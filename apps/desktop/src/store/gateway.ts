@@ -181,6 +181,27 @@ function createSecondary(profile: string): Secondary {
   return entry
 }
 
+// Open `profile`'s socket WITHOUT making it active — the hover-intent pre-warm
+// (store/profile). Runs the same spawn + connect chain as a real switch, so by
+// click time ensureGatewayForProfile finds an open socket and just activates
+// it. No scheduleReconnect on failure: a hover is speculative, so a dead
+// backend must not start a background retry loop — the real switch owns retry
+// and error UX. An already-open (or primary) profile is a no-op.
+export async function openGatewayForProfile(profile: string): Promise<void> {
+  const key = normKey(profile)
+
+  if (key === primaryProfile) {
+    return
+  }
+
+  const entry = secondaries.get(key) ?? createSecondary(key)
+  entry.wantOpen = true
+
+  if (!isOpen(entry.gateway)) {
+    await openSecondary(entry)
+  }
+}
+
 // Make `profile` the active gateway, lazily opening its socket if needed. The
 // primary is a no-op fast path. Background sockets are never closed here.
 export async function ensureGatewayForProfile(profile: string): Promise<void> {

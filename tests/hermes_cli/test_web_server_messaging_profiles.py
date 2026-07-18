@@ -11,6 +11,10 @@ import pytest
 import yaml
 
 
+_VALID_WORKER_BOT_TOKEN = "123456789:ABCDEFGHIJKLMNOPQRSTUVWXYZ_1234"
+_VALID_BODY_BOT_TOKEN = "987654321:ZYXWVUTSRQPONMLKJIHGFEDCBA_4321"
+
+
 @pytest.fixture
 def isolated_profiles(tmp_path, monkeypatch, _isolate_hermes_home):
     """Isolated default home + one named profile, each with its own .env."""
@@ -142,7 +146,7 @@ class TestProfileScopedMessagingWrites:
             params={"profile": "worker_alpha"},
             json={
                 "enabled": True,
-                "env": {"TELEGRAM_BOT_TOKEN": "worker-token"},
+                "env": {"TELEGRAM_BOT_TOKEN": _VALID_WORKER_BOT_TOKEN},
             },
         )
         assert resp.status_code == 200
@@ -150,13 +154,13 @@ class TestProfileScopedMessagingWrites:
         worker_env = (
             isolated_profiles["worker_alpha"] / ".env"
         ).read_text(encoding="utf-8")
-        assert "TELEGRAM_BOT_TOKEN=worker-token" in worker_env
+        assert f"TELEGRAM_BOT_TOKEN={_VALID_WORKER_BOT_TOKEN}" in worker_env
 
         # The dashboard's own .env must stay untouched — this was the bug.
         root_env = (isolated_profiles["default"] / ".env").read_text(
             encoding="utf-8"
         )
-        assert "worker-token" not in root_env
+        assert _VALID_WORKER_BOT_TOKEN not in root_env
         assert "TELEGRAM_BOT_TOKEN=root-token" in root_env
 
         # Enablement lands in the target profile's config.yaml.
@@ -173,7 +177,7 @@ class TestProfileScopedMessagingWrites:
         resp = client.put(
             "/api/messaging/platforms/telegram",
             json={
-                "env": {"TELEGRAM_BOT_TOKEN": "body-token"},
+                "env": {"TELEGRAM_BOT_TOKEN": _VALID_BODY_BOT_TOKEN},
                 "profile": "worker_alpha",
             },
         )
@@ -181,7 +185,7 @@ class TestProfileScopedMessagingWrites:
         worker_env = (
             isolated_profiles["worker_alpha"] / ".env"
         ).read_text(encoding="utf-8")
-        assert "TELEGRAM_BOT_TOKEN=body-token" in worker_env
+        assert f"TELEGRAM_BOT_TOKEN={_VALID_BODY_BOT_TOKEN}" in worker_env
 
     def test_scoped_read_after_scoped_write_round_trips(
         self, client, isolated_profiles
@@ -189,7 +193,10 @@ class TestProfileScopedMessagingWrites:
         client.put(
             "/api/messaging/platforms/telegram",
             params={"profile": "worker_alpha"},
-            json={"enabled": True, "env": {"TELEGRAM_BOT_TOKEN": "worker-token"}},
+            json={
+                "enabled": True,
+                "env": {"TELEGRAM_BOT_TOKEN": _VALID_WORKER_BOT_TOKEN},
+            },
         )
         resp = client.get(
             "/api/messaging/platforms", params={"profile": "worker_alpha"}
@@ -205,7 +212,7 @@ class TestProfileScopedMessagingWrites:
         client.put(
             "/api/messaging/platforms/telegram",
             params={"profile": "worker_alpha"},
-            json={"env": {"TELEGRAM_BOT_TOKEN": "worker-token"}},
+            json={"env": {"TELEGRAM_BOT_TOKEN": _VALID_WORKER_BOT_TOKEN}},
         )
         resp = client.put(
             "/api/messaging/platforms/telegram",
@@ -216,8 +223,154 @@ class TestProfileScopedMessagingWrites:
         worker_env = (
             isolated_profiles["worker_alpha"] / ".env"
         ).read_text(encoding="utf-8")
-        assert "worker-token" not in worker_env
+        assert _VALID_WORKER_BOT_TOKEN not in worker_env
         root_env = (isolated_profiles["default"] / ".env").read_text(
             encoding="utf-8"
         )
         assert "TELEGRAM_BOT_TOKEN=root-token" in root_env
+
+
+def _enable_multiplex(default_home):
+    (default_home / "config.yaml").write_text(
+        yaml.safe_dump({"gateway": {"multiplex_profiles": True}}),
+        encoding="utf-8",
+    )
+
+
+class TestMultiplexPortBindingGuard:
+    """Enabling a port-binding channel on a secondary multiplexed profile
+    must be rejected BEFORE anything is persisted.
+
+    The gateway fail-fasts with ``MultiplexConfigError`` when a secondary
+    profile enables a port-binding platform under
+    ``gateway.multiplex_profiles`` — but the dashboard used to persist that
+    exact config, so the next gateway start died for EVERY profile (#62791).
+    """
+
+    @pytest.fixture(autouse=True)
+    def _no_multiplex_env_override(self, monkeypatch):
+        # The operator env override must not leak into these tests: the
+        # multiplex flag under test comes from the default profile's config.
+        monkeypatch.delenv("GATEWAY_MULTIPLEX_PROFILES", raising=False)
+
+    def test_rejects_every_port_binding_platform_on_secondary(
+        self, client, isolated_profiles
+    ):
+        from gateway.config import PORT_BINDING_PLATFORM_VALUES
+
+        _enable_multiplex(isolated_profiles["default"])
+        assert PORT_BINDING_PLATFORM_VALUES  # guard set must not be empty
+        for platform_id in sorted(PORT_BINDING_PLATFORM_VALUES):
+            resp = client.put(
+                f"/api/messaging/platforms/{platform_id}",
+                params={"profile": "worker_alpha"},
+                json={"enabled": True},
+            )
+            assert resp.status_code == 409, platform_id
+            assert "default profile" in resp.json()["detail"]
+
+    def test_body_profile_target_is_also_guarded(self, client, isolated_profiles):
+        _enable_multiplex(isolated_profiles["default"])
+        resp = client.put(
+            "/api/messaging/platforms/api_server",
+            json={"enabled": True, "profile": "worker_alpha"},
+        )
+        assert resp.status_code == 409
+
+    def test_rejected_request_leaves_env_and_config_untouched(
+        self, client, isolated_profiles
+    ):
+        _enable_multiplex(isolated_profiles["default"])
+        worker_home = isolated_profiles["worker_alpha"]
+        env_before = (worker_home / ".env").read_text(encoding="utf-8")
+        cfg_before = (worker_home / "config.yaml").read_text(encoding="utf-8")
+
+        catalog = client.get(
+            "/api/messaging/platforms", params={"profile": "worker_alpha"}
+        ).json()
+        api_server = next(p for p in catalog["platforms"] if p["id"] == "api_server")
+        env = {f["key"]: "rejected-value" for f in api_server["env_vars"][:1]}
+
+        resp = client.put(
+            "/api/messaging/platforms/api_server",
+            params={"profile": "worker_alpha"},
+            json={"enabled": True, "env": env},
+        )
+
+        assert resp.status_code == 409
+        assert (worker_home / ".env").read_text(encoding="utf-8") == env_before
+        assert (worker_home / "config.yaml").read_text(encoding="utf-8") == cfg_before
+
+    def test_default_profile_still_allowed_with_multiplex_on(
+        self, client, isolated_profiles
+    ):
+        _enable_multiplex(isolated_profiles["default"])
+        resp = client.put(
+            "/api/messaging/platforms/api_server",
+            params={"profile": "default"},
+            json={"enabled": True},
+        )
+        assert resp.status_code == 200
+        cfg = yaml.safe_load(
+            (isolated_profiles["default"] / "config.yaml").read_text()
+        )
+        assert cfg["platforms"]["api_server"]["enabled"] is True
+
+    def test_secondary_allowed_when_multiplex_off(self, client, isolated_profiles):
+        # Fixture default config is {} — multiplexing disabled.
+        resp = client.put(
+            "/api/messaging/platforms/api_server",
+            params={"profile": "worker_alpha"},
+            json={"enabled": True},
+        )
+        assert resp.status_code == 200
+        cfg = yaml.safe_load(
+            (isolated_profiles["worker_alpha"] / "config.yaml").read_text()
+        )
+        assert cfg["platforms"]["api_server"]["enabled"] is True
+
+    def test_secondary_can_disable_and_clear_invalid_config(
+        self, client, isolated_profiles
+    ):
+        _enable_multiplex(isolated_profiles["default"])
+        worker_home = isolated_profiles["worker_alpha"]
+        (worker_home / "config.yaml").write_text(
+            yaml.safe_dump({"platforms": {"api_server": {"enabled": True}}}),
+            encoding="utf-8",
+        )
+
+        resp = client.put(
+            "/api/messaging/platforms/api_server",
+            params={"profile": "worker_alpha"},
+            json={"enabled": False},
+        )
+        assert resp.status_code == 200
+        cfg = yaml.safe_load((worker_home / "config.yaml").read_text())
+        assert cfg["platforms"]["api_server"]["enabled"] is False
+
+        catalog = client.get(
+            "/api/messaging/platforms", params={"profile": "worker_alpha"}
+        ).json()
+        api_server = next(p for p in catalog["platforms"] if p["id"] == "api_server")
+        if api_server["env_vars"]:
+            resp = client.put(
+                "/api/messaging/platforms/api_server",
+                params={"profile": "worker_alpha"},
+                json={"clear_env": [api_server["env_vars"][0]["key"]]},
+            )
+            assert resp.status_code == 200
+
+    def test_non_port_binding_platform_unaffected_on_secondary(
+        self, client, isolated_profiles
+    ):
+        _enable_multiplex(isolated_profiles["default"])
+        resp = client.put(
+            "/api/messaging/platforms/telegram",
+            params={"profile": "worker_alpha"},
+            json={"enabled": True, "env": {"TELEGRAM_BOT_TOKEN": _VALID_WORKER_BOT_TOKEN}},
+        )
+        assert resp.status_code == 200
+        cfg = yaml.safe_load(
+            (isolated_profiles["worker_alpha"] / "config.yaml").read_text()
+        )
+        assert cfg["platforms"]["telegram"]["enabled"] is True

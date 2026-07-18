@@ -522,6 +522,13 @@
   pointer-events: none;
 }
 
+/* A pane's self-naming label ("REVIEW" atop the review pane) is redundant
+   when its zone header is showing a tab with the same name — hide it there.
+   Headerless zones (and the pane used outside the tree) keep the label. */
+[data-tree-group][data-zone-header] [data-pane-self-label] {
+  display: none;
+}
+
 :root:not([style*='--theme-asset-bg:']) .theme-default-filler {
   display: block;
 }

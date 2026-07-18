@@ -425,6 +425,12 @@ class TestNousProfile:
             "provider": preferences,
         }
 
+    def test_tags_include_conversation_when_session_id(self):
+        from agent.portal_tags import conversation_tag
+        p = get_provider_profile("nous")
+        body = p.build_extra_body(session_id="sess-99")
+        assert conversation_tag("sess-99") in body["tags"]
+
     def test_auth_type(self):
         p = get_provider_profile("nous")
         assert p.auth_type == "oauth_device_code"

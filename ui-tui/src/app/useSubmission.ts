@@ -31,17 +31,8 @@ const spliceMatches = (text: string, matches: RegExpMatchArray[], results: strin
   matches.reduceRight((acc, m, i) => acc.slice(0, m.index!) + results[i] + acc.slice(m.index! + m[0].length), text)
 
 export function useSubmission(opts: UseSubmissionOptions) {
-  const {
-    appendMessage,
-    composerActions,
-    composerRefs,
-    composerState,
-    gw,
-    setLastUserMsg,
-    slashRef,
-    submitRef,
-    sys
-  } = opts
+  const { appendMessage, composerActions, composerRefs, composerState, gw, setLastUserMsg, slashRef, submitRef, sys } =
+    opts
 
   const lastEmptyAt = useRef(0)
   const typingIdleTimer = useRef<ReturnType<typeof setTimeout> | null>(null)

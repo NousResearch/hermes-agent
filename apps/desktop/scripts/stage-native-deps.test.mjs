@@ -2,6 +2,7 @@ import assert from 'node:assert/strict'
 import fs, { existsSync } from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
+import { pathToFileURL } from 'node:url'
 import { test } from 'vitest'
 
 import {
@@ -41,6 +42,19 @@ function makeFakeNodePty(srcRoot, { prebuildPlatform, prebuildArch } = {}) {
     const prebuildDir = join(srcRoot, 'prebuilds', `${prebuildPlatform}-${prebuildArch}`)
     makeFakeNode(join(prebuildDir, 'pty.node'), prebuildPlatform)
   }
+}
+
+function makeFakeUnixTerminal(srcRoot) {
+  fs.writeFileSync(
+    join(srcRoot, 'lib', 'unixTerminal.js'),
+    [
+      "exports.resolveHelper = function (helperPath) {",
+      "  helperPath = helperPath.replace('app.asar', 'app.asar.unpacked');",
+      "  helperPath = helperPath.replace('node_modules.asar', 'node_modules.asar.unpacked');",
+      '  return helperPath;',
+      '};'
+    ].join('\n')
+  )
 }
 
 // ─── classifyNativeBinary tests ─────────────────────────────────────
@@ -261,6 +275,66 @@ test('host-target: host build/Release IS staged for a matching target', () => {
     fs.rmSync(tmp, { recursive: true, force: true })
   }
 })
+
+test.skipIf(process.platform === 'win32')(
+  'host-target: staged node-pty resolves an already-unpacked helper and preserves executable helpers',
+  async () => {
+    const tmp = fs.mkdtempSync(join(os.tmpdir(), 'hermes-stage-'))
+    try {
+      const srcRoot = join(tmp, 'node-pty')
+      const destRoot = join(tmp, 'dest')
+      const prebuildDir = join(srcRoot, 'prebuilds', `${process.platform}-${process.arch}`)
+      const buildReleaseDir = join(srcRoot, 'build', 'Release')
+
+      makeFakeNodePty(srcRoot, {
+        prebuildPlatform: process.platform,
+        prebuildArch: process.arch
+      })
+      makeFakeUnixTerminal(srcRoot)
+      makeFakeNode(join(buildReleaseDir, 'pty.node'), process.platform)
+      fs.writeFileSync(join(prebuildDir, 'spawn-helper'), 'prebuild helper')
+      fs.writeFileSync(join(buildReleaseDir, 'spawn-helper'), 'build helper')
+      fs.chmodSync(join(prebuildDir, 'spawn-helper'), 0o644)
+      fs.chmodSync(join(buildReleaseDir, 'spawn-helper'), 0o644)
+
+      stageNodePtyInto(srcRoot, destRoot, { platform: process.platform, arch: process.arch })
+
+      const stagedUnixTerminalUrl = pathToFileURL(join(destRoot, 'lib', 'unixTerminal.js'))
+      stagedUnixTerminalUrl.searchParams.set('t', String(Date.now()))
+      const stagedUnixTerminal = await import(stagedUnixTerminalUrl.href)
+      const unpackedHelper = join(
+        tmp,
+        'Hermes.app',
+        'Contents',
+        'Resources',
+        'app.asar.unpacked',
+        'dist',
+        'node_modules',
+        'node-pty',
+        'prebuilds',
+        `${process.platform}-${process.arch}`,
+        'spawn-helper'
+      )
+      const nodeModulesUnpackedHelper = unpackedHelper.replace(
+        `${path.sep}node_modules${path.sep}`,
+        `${path.sep}node_modules.asar.unpacked${path.sep}`
+      )
+
+      assert.equal(stagedUnixTerminal.resolveHelper(unpackedHelper), unpackedHelper)
+      assert.equal(
+        stagedUnixTerminal.resolveHelper(nodeModulesUnpackedHelper),
+        nodeModulesUnpackedHelper
+      )
+      assert.equal(
+        fs.statSync(join(destRoot, 'prebuilds', `${process.platform}-${process.arch}`, 'spawn-helper')).mode & 0o777,
+        0o755
+      )
+      assert.equal(fs.statSync(join(destRoot, 'build', 'Release', 'spawn-helper')).mode & 0o777, 0o755)
+    } finally {
+      fs.rmSync(tmp, { recursive: true, force: true })
+    }
+  }
+)
 
 test('validation rejects a staged binary with the wrong platform magic', () => {
   const tmp = fs.mkdtempSync(join(os.tmpdir(), 'hermes-stage-'))

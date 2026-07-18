@@ -132,6 +132,35 @@ moa:
 
 Leave it unset (or `0`/blank) to keep the prior uncapped behavior.
 
+### Per-slot reasoning effort
+
+Reference and aggregator slots may also set `reasoning_effort`. Use this when
+you want the same model to contribute at different depths, or when the
+aggregator should think harder than the advisory references. Valid values match
+Hermes' normal reasoning controls: `none`, `minimal`, `low`, `medium`, `high`,
+`xhigh`, `max`, and `ultra`.
+
+```yaml
+moa:
+  presets:
+    deep_review:
+      reference_models:
+        - provider: openai-codex
+          model: gpt-5.6-sol
+          reasoning_effort: low
+        - provider: openai-codex
+          model: gpt-5.6-sol
+          reasoning_effort: xhigh
+        - provider: xai-oauth
+          model: grok-4.5
+      aggregator:
+        provider: openai-codex
+        model: gpt-5.6-sol
+        reasoning_effort: high
+```
+
+Omit `reasoning_effort` to use the provider/Hermes default for that slot.
+
 ## Terminal preset management
 
 ```bash

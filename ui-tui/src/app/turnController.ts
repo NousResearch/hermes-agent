@@ -707,8 +707,7 @@ class TurnController {
     // committed entry rather than merging into streaming reasoning.
     this.closeReasoningSegment()
 
-    const header =
-      index && count ? `◇ Reference ${index}/${count} — ${label}` : `◇ Reference — ${label}`
+    const header = index && count ? `◇ Reference ${index}/${count} — ${label}` : `◇ Reference — ${label}`
 
     const body = text.trim()
     const thinking = body ? `${header}\n${body}` : header

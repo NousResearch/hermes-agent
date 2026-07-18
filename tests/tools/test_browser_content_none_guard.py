@@ -39,13 +39,16 @@ class TestExtractRelevantContentNoneGuard:
         assert len(result) > 0
 
     def test_normal_content_returned(self):
-        """Normal string content should pass through."""
+        """Normal string content should pass through (plus the stored-full-snapshot pointer)."""
         with patch("tools.browser_tool.call_llm", return_value=_make_response("Extracted content here")), \
              patch("tools.browser_tool._get_extraction_model", return_value="test-model"):
             from tools.browser_tool import _extract_relevant_content
             result = _extract_relevant_content("snapshot text", "task")
 
-        assert result == "Extracted content here"
+        # The summary itself passes through unchanged; a pointer to the stored
+        # full snapshot is appended (see _store_full_snapshot).
+        assert result.startswith("Extracted content here")
+        assert "Full snapshot saved to" in result
 
     def test_empty_string_content_falls_back(self):
         """Empty string content should also fall back to truncated."""

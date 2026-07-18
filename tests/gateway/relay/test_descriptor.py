@@ -46,6 +46,38 @@ def test_from_json_ignores_unknown_keys():
     assert restored == d
 
 
+def test_from_json_normalizes_zero_max_message_length_to_default():
+    """A connector may advertise max_message_length 0 ("no limit"). from_json
+    must normalize it to the documented 4096 default so the receiver never
+    carries a degenerate chunking bound into truncate_message()."""
+    raw = (
+        '{"contract_version": 1, "platform": "x", "label": "X", '
+        '"max_message_length": 0, "supports_draft_streaming": false, '
+        '"supports_edit": false, "supports_threads": false, '
+        '"markdown_dialect": "plain", "len_unit": "chars"}'
+    )
+    d = CapabilityDescriptor.from_json(raw)
+    assert d.max_message_length == 4096
+
+
+def test_from_json_normalizes_negative_max_message_length_to_default():
+    """A buggy/hostile connector sending a negative bound is normalized too."""
+    raw = (
+        '{"contract_version": 1, "platform": "x", "label": "X", '
+        '"max_message_length": -5, "supports_draft_streaming": false, '
+        '"supports_edit": false, "supports_threads": false, '
+        '"markdown_dialect": "plain", "len_unit": "chars"}'
+    )
+    d = CapabilityDescriptor.from_json(raw)
+    assert d.max_message_length == 4096
+
+
+def test_from_json_keeps_a_real_positive_bound():
+    """A normal positive bound is passed through unchanged."""
+    d = CapabilityDescriptor.from_json(_telegram_descriptor(max_message_length=2000).to_json())
+    assert d.max_message_length == 2000
+
+
 def test_from_json_fills_optional_defaults():
     """Optional fields (emoji/platform_hint/pii_safe) fall back to defaults."""
     minimal = (

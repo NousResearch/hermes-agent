@@ -916,13 +916,32 @@ class TestMattermostRequirements:
         monkeypatch.delenv("MATTERMOST_TOKEN", raising=False)
         monkeypatch.delenv("MATTERMOST_URL", raising=False)
         from plugins.platforms.mattermost.adapter import check_mattermost_requirements
-        assert check_mattermost_requirements() is False
+        assert check_mattermost_requirements() is True
 
     def test_check_requirements_without_url(self, monkeypatch):
         monkeypatch.setenv("MATTERMOST_TOKEN", "test-token")
         monkeypatch.delenv("MATTERMOST_URL", raising=False)
         from plugins.platforms.mattermost.adapter import check_mattermost_requirements
-        assert check_mattermost_requirements() is False
+        assert check_mattermost_requirements() is True
+
+    def test_validate_config_accepts_platform_values(self, monkeypatch):
+        monkeypatch.delenv("MATTERMOST_TOKEN", raising=False)
+        monkeypatch.delenv("MATTERMOST_URL", raising=False)
+        from plugins.platforms.mattermost.adapter import validate_mattermost_config
+
+        config = PlatformConfig(
+            enabled=True,
+            token="cfg-token",
+            extra={"url": "https://mm.example.com"},
+        )
+        assert validate_mattermost_config(config) is True
+
+    def test_validate_config_rejects_missing_url(self, monkeypatch):
+        monkeypatch.delenv("MATTERMOST_URL", raising=False)
+        from plugins.platforms.mattermost.adapter import validate_mattermost_config
+
+        config = PlatformConfig(enabled=True, token="cfg-token", extra={})
+        assert validate_mattermost_config(config) is False
 
 
 # ---------------------------------------------------------------------------

@@ -102,6 +102,138 @@ def test_codex_stream_wire_error_event_surfaces_stream_error_event(provider_mess
     assert excinfo.value.body["error"]["message"] == provider_message
 
 
+# ---------------------------------------------------------------------------
+# Nested error envelope on ``type=error`` SSE frames (opencode#36130 port)
+#
+# The Responses spec carries error details at the top level of the frame,
+# but the official OpenAI SDK and several OpenAI-compatible proxies wrap
+# them in an HTTP-style nested envelope:
+#   {"type": "error", "error": {"code": ..., "message": ..., "param": ...}}
+# Before the fix, _raise_stream_error only read top-level fields, so these
+# frames collapsed to the generic "stream emitted error event" placeholder
+# and the error classifier never saw the provider's real code/message.
+# ---------------------------------------------------------------------------
+
+
+def test_codex_stream_wire_error_event_nested_envelope_dict():
+    """Details nested under ``error`` (dict shape) are surfaced."""
+    from run_agent import _StreamErrorEvent
+
+    agent = _make_codex_agent()
+
+    class _ErrorCreateStream:
+        def __iter__(self_inner):
+            yield {
+                "type": "error",
+                "sequence_number": 2,
+                "error": {
+                    "type": "invalid_request_error",
+                    "code": "context_length_exceeded",
+                    "message": "prompt too long",
+                    "param": "input",
+                },
+            }
+
+        def close(self_inner):
+            pass
+
+    mock_client = MagicMock()
+    mock_client.responses.create.return_value = _ErrorCreateStream()
+
+    with pytest.raises(_StreamErrorEvent) as excinfo:
+        agent._run_codex_stream({}, client=mock_client)
+
+    assert "prompt too long" in str(excinfo.value)
+    assert excinfo.value.code == "context_length_exceeded"
+    assert excinfo.value.param == "input"
+    assert excinfo.value.body["error"]["message"] == "prompt too long"
+
+
+def test_codex_stream_wire_error_event_nested_envelope_attr_style():
+    """Details nested under ``error`` (SDK attr-object shape) are surfaced."""
+    from run_agent import _StreamErrorEvent
+
+    agent = _make_codex_agent()
+
+    class _ErrorCreateStream:
+        def __iter__(self_inner):
+            yield SimpleNamespace(
+                type="error",
+                message=None,
+                code=None,
+                param=None,
+                error=SimpleNamespace(
+                    type="rate_limit_error",
+                    code="rate_limit_exceeded",
+                    message="Slow down",
+                    param=None,
+                ),
+            )
+
+        def close(self_inner):
+            pass
+
+    mock_client = MagicMock()
+    mock_client.responses.create.return_value = _ErrorCreateStream()
+
+    with pytest.raises(_StreamErrorEvent) as excinfo:
+        agent._run_codex_stream({}, client=mock_client)
+
+    assert "Slow down" in str(excinfo.value)
+    assert excinfo.value.code == "rate_limit_exceeded"
+
+
+def test_codex_stream_wire_error_event_top_level_wins_over_envelope():
+    """Top-level fields keep precedence when both shapes are present."""
+    from run_agent import _StreamErrorEvent
+
+    agent = _make_codex_agent()
+
+    class _ErrorCreateStream:
+        def __iter__(self_inner):
+            yield {
+                "type": "error",
+                "message": "top-level message",
+                "code": "top_level_code",
+                "error": {"message": "nested message", "code": "nested_code"},
+            }
+
+        def close(self_inner):
+            pass
+
+    mock_client = MagicMock()
+    mock_client.responses.create.return_value = _ErrorCreateStream()
+
+    with pytest.raises(_StreamErrorEvent) as excinfo:
+        agent._run_codex_stream({}, client=mock_client)
+
+    assert "top-level message" in str(excinfo.value)
+    assert excinfo.value.code == "top_level_code"
+
+
+def test_codex_stream_wire_error_event_null_fields_fall_back_to_placeholder():
+    """Spec-compliant frames with null fields keep the stable placeholder."""
+    from run_agent import _StreamErrorEvent
+
+    agent = _make_codex_agent()
+
+    class _ErrorCreateStream:
+        def __iter__(self_inner):
+            yield {"type": "error", "code": None, "message": None, "param": None, "error": None}
+
+        def close(self_inner):
+            pass
+
+    mock_client = MagicMock()
+    mock_client.responses.create.return_value = _ErrorCreateStream()
+
+    with pytest.raises(_StreamErrorEvent) as excinfo:
+        agent._run_codex_stream({}, client=mock_client)
+
+    assert "stream emitted error event" in str(excinfo.value)
+    assert excinfo.value.code is None
+
+
 def test_codex_stream_retries_remote_protocol_error_once():
     """Transport errors (``httpx.RemoteProtocolError``) trigger a single retry.
 
@@ -601,6 +733,69 @@ def test_recover_with_credential_pool_skips_refresh_on_entitlement_403():
 
     assert recovered is False, "Entitlement 403 must surface, not silently recover"
     assert refresh_calls["n"] == 0, "try_refresh_current must NOT be called on entitlement 403"
+
+
+def test_recover_with_credential_pool_rotates_on_xai_spending_limit_403():
+    """xAI's explicit spending-limit 403 must rotate, not hit the entitlement guard."""
+    from agent.error_classifier import FailoverReason, classify_api_error
+
+    agent = _make_codex_agent()
+    next_entry = MagicMock(id="healthy-account")
+    refresh_calls = {"n": 0}
+
+    class _SpendingLimitError(Exception):
+        status_code = 403
+        body = {
+            "code": "personal-team-blocked:spending-limit",
+            "error": (
+                "You have run out of credits or need a Grok subscription. "
+                "Add credits at Grok or upgrade at Grok."
+            ),
+        }
+
+    class _FakePool:
+        provider = "xai-oauth"
+
+        def try_refresh_current(self):
+            refresh_calls["n"] += 1
+            return MagicMock(id="should_not_be_called")
+
+        def mark_exhausted_and_rotate(
+            self,
+            *,
+            status_code,
+            error_context=None,
+            api_key_hint=None,
+        ):
+            assert status_code == 403
+            assert api_key_hint == "test-key"
+            assert error_context == {
+                "reason": "personal-team-blocked:spending-limit",
+                "message": (
+                    "You have run out of credits or need a Grok subscription. "
+                    "Add credits at Grok or upgrade at Grok."
+                ),
+            }
+            return next_entry
+
+    error = _SpendingLimitError("Error code: 403")
+    classified = classify_api_error(error, provider="xai-oauth", model="grok-4.5")
+    error_context = agent._extract_api_error_context(error)
+    setattr(agent, "_credential_pool", _FakePool())
+    agent._swap_credential = MagicMock()
+
+    recovered, retried_429 = agent._recover_with_credential_pool(
+        status_code=error.status_code,
+        has_retried_429=False,
+        classified_reason=classified.reason,
+        error_context=error_context,
+    )
+
+    assert classified.reason == FailoverReason.billing
+    assert recovered is True
+    assert retried_429 is False
+    assert refresh_calls["n"] == 0
+    agent._swap_credential.assert_called_once_with(next_entry)
 
 
 def test_recover_with_credential_pool_skips_refresh_on_bare_403_for_xai_oauth():

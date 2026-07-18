@@ -43,6 +43,7 @@ jobs:
     name: Scan PR for critical supply chain risks
     if: inputs.scan
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     steps:
       - name: Checkout
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
@@ -52,7 +53,7 @@ jobs:
       - name: Scan diff for critical patterns
         id: scan
         env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_TOKEN: ${{ secrets.AUTOFIX_BOT_PAT }}
         run: |
           set -euo pipefail
 
@@ -141,7 +142,7 @@ jobs:
       - name: Post critical finding comment
         if: steps.scan.outputs.found == 'true'
         env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_TOKEN: ${{ secrets.AUTOFIX_BOT_PAT }}
         run: |
           BODY="## 🚨 CRITICAL Supply Chain Risk Detected
 
@@ -164,6 +165,7 @@ jobs:
     name: Check PyPI dependency upper bounds
     if: inputs.deps
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     steps:
       - name: Checkout
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
@@ -201,7 +203,7 @@ jobs:
       - name: Post unbounded dep warning
         if: steps.bounds.outputs.found == 'true'
         env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_TOKEN: ${{ secrets.AUTOFIX_BOT_PAT }}
         run: |
           BODY="## ⚠️ Unbounded PyPI Dependency Detected
 
@@ -229,6 +231,7 @@ jobs:
     name: MCP catalog security review
     if: inputs.mcp_catalog
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     steps:
       - name: Checkout
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
@@ -237,7 +240,11 @@ jobs:
 
       - name: Require explicit MCP catalog review label
         env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # Read-only label lookup. Use the built-in GITHUB_TOKEN (present and
+          # read-only on forks) so the gate works on fork PRs; fall back to it
+          # when AUTOFIX_BOT_PAT is empty. `|| true` degrades an API blip to
+          # "label absent" rather than hard-failing the step.
+          GH_TOKEN: ${{ secrets.AUTOFIX_BOT_PAT || github.token }}
         run: |
           set -euo pipefail
           PR="${{ github.event.pull_request.number }}"

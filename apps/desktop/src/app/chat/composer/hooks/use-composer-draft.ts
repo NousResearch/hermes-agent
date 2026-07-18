@@ -2,7 +2,7 @@ import { useAui, useAuiState, useComposerRuntime } from '@assistant-ui/react'
 import { type RefObject, useCallback, useEffect, useRef, useState } from 'react'
 
 import { SLASH_COMMAND_RE } from '@/lib/chat-runtime'
-import { $composerAttachments, type ComposerAttachment, stashSessionDraft, takeSessionDraft } from '@/store/composer'
+import { type ComposerAttachment, stashSessionDraft, takeSessionDraft } from '@/store/composer'
 import { isBrowsingHistory } from '@/store/composer-input-history'
 
 import {
@@ -21,6 +21,7 @@ import {
 } from '../focus'
 import { type InlineRefInput, insertInlineRefsIntoEditor } from '../inline-refs'
 import { composerPlainText, placeCaretEnd, renderComposerContents } from '../rich-editor'
+import { useComposerScope } from '../scope'
 import type { ChatBarProps } from '../types'
 
 interface UseComposerDraftArgs {
@@ -50,6 +51,8 @@ export function useComposerDraft({
 }: UseComposerDraftArgs) {
   const aui = useAui()
   const composerRuntime = useComposerRuntime()
+  // Which composer this is on the focus bus + which attachment set it owns.
+  const { attachments: attachmentScope, target } = useComposerScope()
 
   // Coarse edges only — these flip rarely (empty↔non-empty, the `?` help sigil,
   // steerable-vs-slash), so typing within a line costs no render.
@@ -98,8 +101,8 @@ export function useComposerDraft({
 
   const focusInput = useCallback(() => {
     focusComposerInput(editorRef.current)
-    markActiveComposer('main')
-  }, [])
+    markActiveComposer(target)
+  }, [target])
 
   const requestMainFocus = useCallback(() => {
     setFocusRequestId(id => id + 1)
@@ -155,14 +158,14 @@ export function useComposerDraft({
       return undefined
     }
 
-    const offFocus = onComposerFocusRequest(target => {
-      if (target === 'main') {
+    const offFocus = onComposerFocusRequest(requested => {
+      if (requested === target) {
         setFocusRequestId(id => id + 1)
       }
     })
 
-    const offInsert = onComposerInsertRequest(({ mode, target, text }) => {
-      if (target === 'main') {
+    const offInsert = onComposerInsertRequest(({ mode, target: requested, text }) => {
+      if (requested === target) {
         appendExternalText(text, mode)
       }
     })
@@ -171,13 +174,13 @@ export function useComposerDraft({
       offFocus()
       offInsert()
     }
-  }, [appendExternalText, inputDisabled])
+  }, [appendExternalText, inputDisabled, target])
 
-  const stashAt = (scope: string | null, text = draftRef.current, attachments = $composerAttachments.get()) =>
+  const stashAt = (scope: string | null, text = draftRef.current, attachments = attachmentScope.$attachments.get()) =>
     stashSessionDraft(scope, text, attachments)
 
   const loadIntoComposer = (text: string, attachments: ComposerAttachment[]) => {
-    $composerAttachments.set(cloneAttachments(attachments))
+    attachmentScope.$attachments.set(cloneAttachments(attachments))
     paintDraft(text, false)
   }
 
@@ -296,12 +299,12 @@ export function useComposerDraft({
   insertInlineRefsRef.current = insertInlineRefs
 
   useEffect(() => {
-    return onComposerInsertRefsRequest(({ refs, target }) => {
-      if (target === 'main') {
+    return onComposerInsertRefsRequest(({ refs, target: requested }) => {
+      if (requested === target) {
         insertInlineRefsRef.current(refs)
       }
     })
-  }, [])
+  }, [target])
 
   // Per-thread draft swap — the composer's only session coupling. Lifecycle
   // never clears composer state; this effect alone stashes on leave, restores

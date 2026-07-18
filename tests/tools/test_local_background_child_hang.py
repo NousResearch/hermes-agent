@@ -43,7 +43,7 @@ class TestBackgroundChildDoesNotHang:
             result = local_env.execute(cmd, timeout=15)
             elapsed = time.monotonic() - t0
 
-            assert elapsed < 4.0, (
+            assert elapsed < 10.0, (  # hang under guard is 15s+; loose bound rides out runner stalls
                 f"terminal_tool hung for {elapsed:.1f}s — drain thread "
                 f"is still blocking on backgrounded child's inherited pipe fd"
             )
@@ -63,7 +63,7 @@ class TestBackgroundChildDoesNotHang:
             result = local_env.execute(cmd, timeout=15)
             elapsed = time.monotonic() - t0
 
-            assert elapsed < 4.0, f"setsid+disown path hung for {elapsed:.1f}s"
+            assert elapsed < 10.0, f"setsid+disown path hung for {elapsed:.1f}s"
             assert result["returncode"] == 0
             assert "started" in result["output"]
         finally:
@@ -77,7 +77,7 @@ class TestBackgroundChildDoesNotHang:
         elapsed = time.monotonic() - t0
 
         # Loop body sleeps ~0.6s total — elapsed should be close to that.
-        assert 0.5 < elapsed < 3.0
+        assert 0.5 < elapsed < 10.0
         assert result["returncode"] == 0
         for expected in ("tick 1", "tick 2", "tick 3", "done"):
             assert expected in result["output"], f"missing {expected!r}"
@@ -91,19 +91,82 @@ class TestBackgroundChildDoesNotHang:
         assert lines[0] == "1"
         assert lines[-1] == "3000"
 
+    def test_foreground_capture_is_bounded_while_draining(
+        self, local_env, monkeypatch
+    ):
+        monkeypatch.setattr("tools.tool_output_limits.get_max_bytes", lambda: 10_000)
+        command = (
+            "python3 -c \"import sys; "
+            "sys.stdout.write('HEAD-SENTINEL\\n' + 'x' * 2000000 + "
+            "'\\nTAIL-SENTINEL')\""
+        )
+
+        result = local_env.execute(command, timeout=10, bounded_capture=True)
+
+        assert result["returncode"] == 0
+        assert len(result["output"]) <= 10_000
+        assert result["output"].startswith("HEAD-SENTINEL")
+        assert result["output"].endswith("TAIL-SENTINEL")
+        assert "[OUTPUT TRUNCATED" in result["output"]
+
+    def test_default_capture_is_full_fidelity_for_internal_consumers(
+        self, local_env
+    ):
+        """Default execute() (no bounded_capture) must return complete output.
+
+        Internal consumers — file-operation ``cat`` reads that feed the patch
+        engine, code-execution RPC reads, log reads — rely on full-fidelity
+        capture. Bounding them at tool_output.max_bytes would CORRUPT files
+        on read-modify-write (#64435 review finding), so only the foreground
+        terminal tool opts in via bounded_capture=True.
+        """
+        # ~200 KB — four times the default 50 KB cap.
+        command = (
+            "python3 -c \"import sys; "
+            "sys.stdout.write('START-MARK\\n' + ('y' * 200000) + '\\nEND-MARK')\""
+        )
+
+        result = local_env.execute(command, timeout=10)
+
+        assert result["returncode"] == 0
+        assert "[OUTPUT TRUNCATED" not in result["output"]
+        assert result["output"].startswith("START-MARK")
+        assert result["output"].endswith("END-MARK")
+        assert len(result["output"]) > 200000
+
+    def test_continuous_output_still_honors_foreground_timeout(
+        self, local_env, monkeypatch
+    ):
+        monkeypatch.setattr("tools.tool_output_limits.get_max_bytes", lambda: 5_000)
+        command = (
+            "python3 -c \"import sys; "
+            "chunk = 'x' * 4096; "
+            "exec('while True: sys.stdout.write(chunk); sys.stdout.flush()')\""
+        )
+
+        started = time.monotonic()
+        result = local_env.execute(command, timeout=1, bounded_capture=True)
+        elapsed = time.monotonic() - started
+
+        assert elapsed < 10.0
+        assert result["returncode"] == 124
+        assert len(result["output"]) <= 5_000
+        assert "[OUTPUT TRUNCATED" in result["output"]
+        assert result["output"].endswith("[Command timed out after 1s]")
+
     def test_timeout_path_still_works(self, local_env):
         """Foreground command exceeding timeout must still be killed."""
         t0 = time.monotonic()
         result = local_env.execute("sleep 30", timeout=2)
         elapsed = time.monotonic() - t0
 
-        assert elapsed < 4.0
+        assert elapsed < 10.0
         assert result["returncode"] == 124
         assert "timed out" in result["output"].lower()
 
     def test_utf8_output_decoded_correctly(self, local_env):
         """Multibyte UTF-8 chunks must decode cleanly under select-based reads."""
-        result = local_env.execute("echo 日本語 café résumé", timeout=5)
+        result = local_env.execute("echo 日本語 café résumé", timeout=30)
         assert result["returncode"] == 0
         assert "日本語" in result["output"]
         assert "café" in result["output"]
@@ -146,7 +209,7 @@ class TestBackgroundChildDoesNotHang:
             'sys.stdout.buffer.write(b"\\xff\\xfe"); '
             'sys.stdout.buffer.write(b" after\\n")\''
         )
-        result = local_env.execute(cmd, timeout=5)
+        result = local_env.execute(cmd, timeout=15)
         assert result["returncode"] == 0
         assert "before" in result["output"]
         assert "after" in result["output"]

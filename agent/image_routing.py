@@ -267,10 +267,12 @@ def _resolve_inference_base_url(
 ) -> str:
     """Best-effort base URL for the active inference provider."""
     try:
-        from agent.auxiliary_client import _RUNTIME_MAIN_BASE_URL
+        from agent.auxiliary_client import _runtime_main_value
 
-        runtime = str(_RUNTIME_MAIN_BASE_URL or "").strip()
-        if runtime:
+        runtime = str(_runtime_main_value("base_url") or "").strip()
+        runtime_provider = str(_runtime_main_value("provider") or "").strip().lower()
+        requested_provider = str(provider or "").strip().lower()
+        if runtime and (not requested_provider or requested_provider == runtime_provider):
             return runtime
     except Exception:
         pass

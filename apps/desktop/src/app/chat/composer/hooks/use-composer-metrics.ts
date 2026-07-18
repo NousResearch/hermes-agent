@@ -6,7 +6,7 @@ import { useResizeObserver } from '@/hooks/use-resize-observer'
 import { $composerPoppedOut } from '@/store/composer-popout'
 import { isSecondaryWindow } from '@/store/windows'
 
-import { COMPOSER_SINGLE_LINE_MAX_PX, COMPOSER_STACK_BREAKPOINT_PX } from '../composer-utils'
+import { COMPOSER_COMPACT_PILL_PX, COMPOSER_SINGLE_LINE_MAX_PX, COMPOSER_STACK_BREAKPOINT_PX } from '../composer-utils'
 
 interface UseComposerMetricsArgs {
   composerRef: RefObject<HTMLFormElement | null>
@@ -24,10 +24,13 @@ interface UseComposerMetricsArgs {
  * Returns `stacked` (the only value the render needs).
  */
 export function useComposerMetrics({ composerRef, composerSurfaceRef, editorRef, poppedOut }: UseComposerMetricsArgs): {
+  compactPill: boolean
   stacked: boolean
 } {
   const [expanded, setExpanded] = useState(false)
   const [tight, setTight] = useState(false)
+  // Wider than `tight`: the pill goes icon-only before the row has to stack.
+  const [compactPill, setCompactPill] = useState(false)
   const narrow = useMediaQuery('(max-width: 30rem)')
 
   // Edge signals, not the live text: these only re-render when emptiness / the
@@ -72,6 +75,7 @@ export function useComposerMetrics({ composerRef, composerSurfaceRef, editorRef,
   const lastBucketedHeightRef = useRef(0)
   const lastBucketedSurfaceHeightRef = useRef(0)
   const lastTightRef = useRef<boolean | null>(null)
+  const lastCompactPillRef = useRef<boolean | null>(null)
 
   const syncComposerMetrics = useCallback(() => {
     const composer = composerRef.current
@@ -104,6 +108,13 @@ export function useComposerMetrics({ composerRef, composerSurfaceRef, editorRef,
       if (nextTight !== lastTightRef.current) {
         lastTightRef.current = nextTight
         setTight(nextTight)
+      }
+
+      const nextCompactPill = width < COMPOSER_COMPACT_PILL_PX
+
+      if (nextCompactPill !== lastCompactPillRef.current) {
+        lastCompactPillRef.current = nextCompactPill
+        setCompactPill(nextCompactPill)
       }
     }
 
@@ -156,5 +167,7 @@ export function useComposerMetrics({ composerRef, composerSurfaceRef, editorRef,
     }
   }, [])
 
-  return { stacked: expanded || narrow || tight }
+  // Pill compacts on real width (tile/pane), OR when stacked for any reason
+  // (viewport-narrow / wrapped) so the controls row never over-runs.
+  return { compactPill: compactPill || narrow || tight, stacked: expanded || narrow || tight }
 }

@@ -35,6 +35,7 @@ import { ChatSessionList } from "@/components/ChatSessionList";
 import { usePageHeader } from "@/contexts/usePageHeader";
 import { useI18n } from "@/i18n";
 import { api } from "@/lib/api";
+import { latchChatActivation } from "@/lib/chat-activation";
 import { normalizeSessionTitle } from "@/lib/chat-title";
 import {
   PTY_CONNECTING_TIMEOUT_MS,
@@ -160,6 +161,17 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
   // the moment `isActive` flips back to true (display:none → display:flex
   // collapses the host's box, so ResizeObserver never fires on return).
   const syncMetricsRef = useRef<(() => void) | null>(null);
+  // Sticky activation latch: the PTY-connect effect below must not open
+  // `/api/pty` until the chat tab has actually been active at least once.
+  // The dashboard mounts ChatPage persistently (hidden) on every route, so
+  // without this gate merely loading /sessions, /system, etc. would spawn the
+  // TUI/agent bootstrap (`Installing TUI dependencies…`). Latching keeps the
+  // PTY alive across later tab switches (the persistence UX) — once true it
+  // stays true.
+  const [hasActivated, setHasActivated] = useState(isActive);
+  useEffect(() => {
+    setHasActivated((prev) => latchChatActivation(prev, isActive));
+  }, [isActive]);
   const [searchParams, setSearchParams] = useSearchParams();
   // Lazy-init: the missing-token check happens at construction so the effect
   // body doesn't have to setState (React 19's set-state-in-effect rule).
@@ -447,6 +459,12 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
   };
 
   useEffect(() => {
+    // Don't spawn the chat PTY (and the TUI/agent bootstrap it triggers)
+    // until the chat tab has been activated. Prevents the persistently
+    // mounted, hidden ChatPage from opening `/api/pty` on every dashboard
+    // page. Sticky, so switching away from /chat keeps the PTY alive.
+    if (!hasActivated) return;
+
     const host = hostRef.current;
     if (!host) return;
 
@@ -1165,7 +1183,14 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
         reconnectTimerRef.current = null;
       }
     };
-  }, [channel, clearReconnectTimer, resumeParam, scopedProfile, reconnectNonce]);
+  }, [
+    hasActivated,
+    channel,
+    clearReconnectTimer,
+    resumeParam,
+    scopedProfile,
+    reconnectNonce,
+  ]);
 
   // When the user returns to the chat tab (isActive: false → true), the
   // terminal host just transitioned from display:none to display:flex.

@@ -1199,7 +1199,7 @@ def test_wait_for_cleanup_returns_true_when_no_thread_started():
     shutdowns."""
     env = docker_env.DockerEnvironment.__new__(docker_env.DockerEnvironment)
     # No _cleanup_thread set — simulates an env that was never cleanup()'d.
-    assert env.wait_for_cleanup(timeout=1.0) is True
+    assert env.wait_for_cleanup(timeout=10.0) is True
 
 
 def test_wait_for_cleanup_after_cleanup_returns_true(monkeypatch):

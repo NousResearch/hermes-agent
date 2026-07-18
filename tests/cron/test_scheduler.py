@@ -2002,6 +2002,61 @@ class TestRunJobConfigEnvVarExpansion:
             "config.yaml ${VAR} in fallback_providers was not expanded."
         )
 
+    def test_auth_fallback_switches_provider_and_model_together(self, tmp_path):
+        """Codex auth failure must produce OpenRouter+GLM, never OpenRouter+GPT."""
+        from hermes_cli.auth import AuthError
+
+        (tmp_path / "config.yaml").write_text(
+            "model:\n"
+            "  default: gpt-5.6-sol\n"
+            "  provider: openai-codex\n"
+            "fallback_providers:\n"
+            "  - provider: anthropic\n"
+            "  - provider: openrouter\n"
+            "    model: z-ai/glm-5.2\n",
+            encoding="utf-8",
+        )
+        job = {
+            "id": "auth-fallback",
+            "name": "auth fallback",
+            "prompt": "hi",
+            "provider_snapshot": "openai-codex",
+            "model_snapshot": "gpt-5.6-sol",
+        }
+        fake_db = MagicMock()
+        requested = []
+
+        def resolve_runtime(**kwargs):
+            requested.append(kwargs.get("requested"))
+            if kwargs.get("requested") in (None, "openai-codex"):
+                # Cron must retain the configured primary provider for drift
+                # comparison even when older/custom AuthError sites omit it.
+                raise AuthError("No Codex credentials stored")
+            assert kwargs["requested"] == "openrouter"
+            assert kwargs["target_model"] == "z-ai/glm-5.2"
+            return {**self._RUNTIME, "provider": "openrouter"}
+
+        with patch("cron.scheduler._hermes_home", tmp_path), \
+             patch("cron.scheduler._resolve_origin", return_value=None), \
+             patch("hermes_cli.env_loader.load_hermes_dotenv"), \
+             patch("hermes_cli.env_loader.reset_secret_source_cache"), \
+             patch("hermes_state.SessionDB", return_value=fake_db), \
+             patch("hermes_cli.runtime_provider.resolve_runtime_provider",
+                   side_effect=resolve_runtime), \
+             patch("tools.mcp_tool.discover_mcp_tools", return_value=[]), \
+             patch("run_agent.AIAgent") as mock_agent_cls:
+            mock_agent = MagicMock()
+            mock_agent.run_conversation.return_value = {"final_response": "ok"}
+            mock_agent_cls.return_value = mock_agent
+            success, _, _, error = run_job(job)
+
+        assert success is True
+        assert error is None
+        assert requested == [None, "openrouter"]
+        kwargs = mock_agent_cls.call_args.kwargs
+        assert kwargs["provider"] == "openrouter"
+        assert kwargs["model"] == "z-ai/glm-5.2"
+
     def test_fallback_chain_merges_providers_and_legacy_model(self, tmp_path, monkeypatch):
         """Cron uses get_fallback_chain so legacy fallback_model is not dropped."""
         (tmp_path / "config.yaml").write_text(
@@ -4887,3 +4942,43 @@ class TestMultiTargetDeliveryContinuesOnFailure:
         assert "a@example.com" in result
         assert "b@example.com" in result
         assert mock_pool.submit.call_count == 2
+
+
+class TestSetCronSessionTitle:
+    """Robust cron session titling: #50535/#50536/#50537."""
+
+    def test_sets_title_when_no_collision(self):
+        from cron.scheduler import _set_cron_session_title
+        db = MagicMock()
+        db.set_session_title.return_value = True
+        out = _set_cron_session_title(db, "sess-1", "Nightly Synthesis")
+        assert out == "Nightly Synthesis"
+        db.set_session_title.assert_called_once_with("sess-1", "Nightly Synthesis")
+
+    def test_dedupes_on_duplicate_title(self):
+        # First write collides (ValueError); helper falls back to lineage #N.
+        from cron.scheduler import _set_cron_session_title
+        db = MagicMock()
+        db.set_session_title.side_effect = [ValueError("in use"), True]
+        db.get_next_title_in_lineage.return_value = "Nightly Synthesis #2"
+        out = _set_cron_session_title(db, "sess-1", "Nightly Synthesis")
+        assert out == "Nightly Synthesis #2"
+        db.get_next_title_in_lineage.assert_called_once_with("Nightly Synthesis")
+
+    def test_reraises_when_no_lineage_support(self):
+        from cron.scheduler import _set_cron_session_title
+        db = MagicMock(spec=["set_session_title"])
+        db.set_session_title.side_effect = ValueError("in use")
+        with pytest.raises(ValueError):
+            _set_cron_session_title(db, "sess-1", "Dup")
+
+    def test_returns_none_for_blank_base(self):
+        from cron.scheduler import _set_cron_session_title
+        db = MagicMock()
+        assert _set_cron_session_title(db, "sess-1", "   ") is None
+        db.set_session_title.assert_not_called()
+
+    def test_returns_none_without_db_or_session(self):
+        from cron.scheduler import _set_cron_session_title
+        assert _set_cron_session_title(None, "sess-1", "X") is None
+        assert _set_cron_session_title(MagicMock(), "", "X") is None

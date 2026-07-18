@@ -52,9 +52,29 @@ Multi-pass `.chat()` reasoning about the user, appended after base context.
 
 Both layers are joined, then truncated to fit `contextTokens` budget via `_truncate_to_budget` (tokens × 4 chars, word-boundary safe).
 
+### Latest-Message Query Rewrite (opt-in)
+
+When `queryRewrite: true`, dialectic pass 0 first uses the shared
+`memory_query_rewrite` auxiliary task to turn the latest message into one
+concise memory-retrieval question. The rewritten question is used for the
+dialectic request; base-context retrieval still uses the raw message as its
+search query. If rewriting times out or returns an invalid result, the plugin
+falls back to the existing cold/warm prompt below. With the flag on, the
+generic dialectic prewarm is skipped so it cannot shadow the first user
+message.
+
+**Off by default** — the rewrite adds one auxiliary-model call per dialectic
+cycle (not per pass). Select a fast, inexpensive model under `hermes model`
+-> auxiliary models -> **Memory query rewrite**; its request timeout is
+`auxiliary.memory_query_rewrite.timeout` in config.yaml (default 8s). The
+task and module (`plugins/memory/query_rewrite.py`) are provider-agnostic —
+any memory provider can reuse them. `dialecticCadence` still controls how
+often the cycle runs.
+
 ### Cold Start vs Warm Session Prompts
 
-Dialectic pass 0 automatically selects its prompt based on session state:
+When latest-message rewriting is unavailable, dialectic pass 0 automatically
+selects its fallback prompt based on session state:
 
 - **Cold** (no base context cached): "Who is this person? What are their preferences, goals, and working style? Focus on facts that would help an AI assistant be immediately useful."
 - **Warm** (base context exists): "Given what's been discussed in this session so far, what context about this user is most relevant to the current conversation? Prioritize active context over biographical facts."
@@ -106,10 +126,10 @@ Five bidirectional tools. All accept an optional `peer` parameter (`"user"` or `
 | Tool | LLM call? | Description |
 |------|-----------|-------------|
 | `honcho_profile` | No | Peer card — key facts snapshot |
-| `honcho_search` | No | Semantic search over stored context (800 tok default, 2000 max) |
+| `honcho_search` | No | Cross-session message search (hybrid semantic + keyword, ranked excerpts; 800 tok default, 2000 max) |
 | `honcho_context` | No | Full session context: summary, representation, card, messages |
 | `honcho_reasoning` | Yes | LLM-synthesized answer via dialectic `.chat()` |
-| `honcho_conclude` | No | Write a persistent fact/conclusion about the user |
+| `honcho_conclude` | No | Write, list/search, or delete persistent conclusions (list surfaces the ids delete needs) |
 
 Tool visibility depends on `recallMode`: hidden in `context` mode, always present in `tools` and `hybrid`.
 
@@ -264,7 +284,7 @@ Host key is derived from the active Hermes profile: `hermes` (default) or `herme
 | `dialecticDepthLevels` | array | — | Optional array of reasoning level strings per pass. Overrides proportional defaults. Example: `["minimal", "low", "medium"]` |
 | `dialecticReasoningLevel` | string | `"low"` | Base reasoning level for `.chat()`: `"minimal"`, `"low"`, `"medium"`, `"high"`, `"max"` |
 | `dialecticDynamic` | bool | `true` | When `true`, model can override reasoning level per-call via `honcho_reasoning` tool. When `false`, always uses `dialecticReasoningLevel` |
-| `dialecticMaxChars` | int | `600` | Max chars of dialectic result injected into system prompt |
+| `dialecticMaxChars` | int | `600` | Max chars of the auto-injected dialectic supplement. Applies only to auto-injection — explicit `honcho_reasoning` tool results return in full |
 | `dialecticMaxInputChars` | int | `10000` | Max chars for dialectic query input to `.chat()`. Honcho cloud limit: 10k |
 | `reasoningHeuristic` | bool | `true` | Query-adaptive: auto-scale the auto-injected dialectic's level up by query length (+1 at ≥120 chars, +2 at ≥400), clamped at `reasoningLevelCap`. `false` pins every auto call to `dialecticReasoningLevel` |
 | `reasoningLevelCap` | string | `"high"` | Ceiling for `reasoningHeuristic` scaling: `"minimal"`, `"low"`, `"medium"`, `"high"`, `"max"` |
@@ -282,7 +302,10 @@ Host key is derived from the active Hermes profile: `hermes` (default) or `herme
 |-----|------|---------|-------------|
 | `contextCadence` | int | `1` | Minimum turns between base context refreshes (session summary + representation + card) |
 | `dialecticCadence` | int | `1` | Minimum turns between dialectic `.chat()` firings |
-| `injectionFrequency` | string | `"every-turn"` | `"every-turn"` or `"first-turn"` (inject context on the first user message only, skip from turn 2 onward) |
+| `injectionFrequency` | string | `"every-turn"` | `"every-turn"` or `"first-turn"` (inject base context on the first user message only; the dialectic supplement keeps its own cadence) |
+| `queryRewrite` | bool | `false` | Rewrite the latest message into a retrieval query before dialectic (one extra auxiliary LLM call per cycle) |
+| `firstTurnBaseWait` | float | `3.0` | Max seconds turn 1 waits for base context / session init. `0` disables the wait (fully async; context surfaces on later turns). Turns 2+ never wait on a stalled init |
+| `firstTurnDialecticWait` | float | `2.0` | Max seconds turn 1 waits for a dialectic result. `0` disables |
 
 ### Observation (Granular)
 

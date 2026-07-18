@@ -80,6 +80,22 @@ def _fake_switch_result():
     )
 
 
+def _stub_picker_dependencies(monkeypatch):
+    monkeypatch.setattr("agent.models_dev.fetch_models_dev", lambda: {})
+    monkeypatch.setattr(
+        "hermes_cli.model_switch.list_picker_providers",
+        lambda **kw: [{"slug": "openrouter", "name": "OpenRouter", "models": ["gpt-5.5"]}],
+    )
+    monkeypatch.setattr(
+        "hermes_cli.model_switch.switch_model",
+        lambda **kw: _fake_switch_result(),
+    )
+    monkeypatch.setattr(
+        "hermes_cli.model_switch.resolve_display_context_length",
+        lambda *a, **k: 272000,
+    )
+
+
 def _setup_isolated_home(tmp_path, monkeypatch, model_yaml_value):
     """Write a config.yaml with the given ``model:`` value and stub heavy bits."""
     import gateway.run as gateway_run
@@ -93,35 +109,41 @@ def _setup_isolated_home(tmp_path, monkeypatch, model_yaml_value):
     )
 
     monkeypatch.setattr(gateway_run, "_hermes_home", hermes_home)
-    monkeypatch.setattr("agent.models_dev.fetch_models_dev", lambda: {})
-    # The picker-setup path calls list_picker_providers, which otherwise hits
-    # the network (OpenRouter model catalog). Stub it to a minimal list — these
-    # tests capture and fire the on_model_selected callback and don't assert on
-    # picker contents. The handler imports it as a local alias at call time, so
-    # patching the source-module attribute takes effect.
-    monkeypatch.setattr(
-        "hermes_cli.model_switch.list_picker_providers",
-        lambda **kw: [{"slug": "openrouter", "name": "OpenRouter", "models": ["gpt-5.5"]}],
-    )
-    # switch_model is imported as a local alias inside the handler
-    # (`from hermes_cli.model_switch import switch_model as _switch_model`),
-    # so patching the source-module attribute takes effect at call time.
-    monkeypatch.setattr(
-        "hermes_cli.model_switch.switch_model",
-        lambda **kw: _fake_switch_result(),
-    )
-    # The confirmation builder resolves context length for display, which
-    # otherwise makes real outbound HTTP calls (Ollama /api/show + the
-    # OpenRouter models catalog). Stub it — these tests don't assert on the
-    # displayed context, and the closure imports it lazily from this module.
-    monkeypatch.setattr(
-        "hermes_cli.model_switch.resolve_display_context_length",
-        lambda *a, **k: 272000,
-    )
+    _stub_picker_dependencies(monkeypatch)
     # save_config writes to ``get_hermes_home() / config.yaml`` — point it here.
     monkeypatch.setattr("hermes_constants.get_hermes_home", lambda: hermes_home)
     monkeypatch.setattr("hermes_cli.config.get_hermes_home", lambda: hermes_home)
     return cfg_path
+
+
+def _make_named_runner(monkeypatch, default_adapter, named_adapter, named_home):
+    runner = _make_runner(default_adapter)
+    monkeypatch.setattr(
+        runner, "config", types.SimpleNamespace(multiplex_profiles=True), raising=False
+    )
+    monkeypatch.setattr(
+        runner,
+        "_profile_adapters",
+        {"named": {Platform.TELEGRAM: named_adapter}},
+        raising=False,
+    )
+    monkeypatch.setattr(
+        runner, "_resolve_profile_home_for_source", lambda source: named_home
+    )
+    return runner
+
+
+def _named_event(args):
+    return MessageEvent(
+        text=f"/model {args}".rstrip(),
+        message_type=MessageType.TEXT,
+        source=SessionSource(
+            platform=Platform.TELEGRAM,
+            chat_id="named-chat",
+            chat_type="dm",
+            profile="named",
+        ),
+    )
 
 
 async def _drive_picker(runner, event):
@@ -201,3 +223,103 @@ async def test_picker_tap_session_flag_does_not_persist(tmp_path, monkeypatch):
     written = yaml.safe_load(cfg_path.read_text(encoding="utf-8"))
     assert written["model"]["default"] == "old-model"
     assert written["model"]["provider"] == "openai-codex"
+
+
+@pytest.mark.asyncio
+async def test_multiplex_picker_keeps_profile_adapter_and_callback_scope(
+    tmp_path, monkeypatch
+):
+    """A named profile must present and execute its picker under one identity."""
+    from agent.secret_scope import get_secret, set_multiplex_active
+
+    default_adapter = _FakePickerAdapter()
+    named_adapter = _FakePickerAdapter()
+    named_home = tmp_path / "profiles" / "named"
+    named_home.mkdir(parents=True)
+    (named_home / ".env").write_text("PROFILE_MODEL_KEY=named-secret\n", encoding="utf-8")
+    runner = _make_named_runner(monkeypatch, default_adapter, named_adapter, named_home)
+    _setup_isolated_home(
+        tmp_path,
+        monkeypatch,
+        {"default": "old-model", "provider": "openai-codex"},
+    )
+    resolved = []
+
+    def _profile_switch(**kwargs):
+        resolved.append(get_secret("PROFILE_MODEL_KEY"))
+        return _fake_switch_result()
+
+    monkeypatch.setattr("hermes_cli.model_switch.switch_model", _profile_switch)
+    event = _named_event("--session")
+
+    set_multiplex_active(True)
+    try:
+        sent = await runner._handle_model_command(event)
+
+        assert sent is None
+        assert default_adapter.captured_callback is None
+        assert named_adapter.captured_callback is not None
+        assert resolved == []
+
+        confirmation = await named_adapter.captured_callback(
+            "named-chat", "gpt-5.5", "openrouter"
+        )
+    finally:
+        set_multiplex_active(False)
+
+    assert "gpt-5.5" in confirmation
+    assert resolved == ["named-secret"]
+
+
+@pytest.mark.asyncio
+async def test_multiplex_picker_global_persists_only_named_profile(
+    tmp_path, monkeypatch
+):
+    """A named picker must not seed its global write from the default profile."""
+    import gateway.run as gateway_run
+    from agent.secret_scope import set_multiplex_active
+
+    default_home = tmp_path / "default"
+    named_home = tmp_path / "profiles" / "named"
+    default_home.mkdir(parents=True)
+    named_home.mkdir(parents=True)
+    default_cfg = {
+        "marker": "default",
+        "model": {"default": "default-old", "provider": "openai-codex"},
+    }
+    named_cfg = {
+        "marker": "named",
+        "model": {"default": "named-old", "provider": "openai-codex"},
+    }
+    (default_home / "config.yaml").write_text(
+        yaml.safe_dump(default_cfg, sort_keys=False), encoding="utf-8"
+    )
+    (named_home / "config.yaml").write_text(
+        yaml.safe_dump(named_cfg, sort_keys=False), encoding="utf-8"
+    )
+
+    default_adapter = _FakePickerAdapter()
+    named_adapter = _FakePickerAdapter()
+    runner = _make_named_runner(monkeypatch, default_adapter, named_adapter, named_home)
+    monkeypatch.setattr(gateway_run, "_hermes_home", default_home)
+    _stub_picker_dependencies(monkeypatch)
+    event = _named_event("--global")
+
+    set_multiplex_active(True)
+    try:
+        with gateway_run._profile_runtime_scope(named_home):
+            sent = await runner._handle_model_command(event)
+        assert sent is None
+        assert named_adapter.captured_callback is not None
+        confirmation = await named_adapter.captured_callback(
+            "named-chat", "gpt-5.5", "openrouter"
+        )
+    finally:
+        set_multiplex_active(False)
+
+    assert "gpt-5.5" in confirmation
+    assert yaml.safe_load((default_home / "config.yaml").read_text()) == default_cfg
+    written = yaml.safe_load((named_home / "config.yaml").read_text())
+    assert written["marker"] == "named"
+    assert written["model"]["default"] == "gpt-5.5"
+    assert written["model"]["provider"] == "openrouter"

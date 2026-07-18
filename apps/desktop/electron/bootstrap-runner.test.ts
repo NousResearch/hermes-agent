@@ -87,16 +87,7 @@ test('fresh bootstrap args include the packaged commit pin', () => {
       activeRoot: '/tmp/hermes-agent',
       hermesHome: '/tmp/hermes'
     }),
-    [
-      '--dir',
-      '/tmp/hermes-agent',
-      '--hermes-home',
-      '/tmp/hermes',
-      '--branch',
-      'main',
-      '--commit',
-      installStamp.commit
-    ]
+    ['--dir', '/tmp/hermes-agent', '--hermes-home', '/tmp/hermes', '--branch', 'main', '--commit', installStamp.commit]
   )
 })
 

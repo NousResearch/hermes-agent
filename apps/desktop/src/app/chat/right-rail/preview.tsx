@@ -10,6 +10,7 @@ import {
   ContextMenuSeparator,
   ContextMenuTrigger
 } from '@/components/ui/context-menu'
+import { PANE_TAB_STRIP_LINE, PaneTab, PaneTabLabel } from '@/components/ui/pane-tab'
 import { Tip } from '@/components/ui/tooltip'
 import { translateNow, useI18n } from '@/i18n'
 import { formatCombo } from '@/lib/keybinds/combo'
@@ -37,14 +38,6 @@ import { PreviewPane } from './preview-pane'
 
 export const PREVIEW_RAIL_MIN_WIDTH = '18rem'
 export const PREVIEW_RAIL_MAX_WIDTH = '38rem'
-
-const INTRINSIC = `clamp(${PREVIEW_RAIL_MIN_WIDTH}, 36vw, 32rem)`
-
-// Track for <Pane id="preview">. Folds the intrinsic clamp with a min-floor
-// against --chat-min-width so the chat surface never gets squeezed below it.
-// Subtracts the project browser width so preview yields rather than crushing
-// the chat when both right-side panes are open.
-export const PREVIEW_RAIL_PANE_WIDTH = `min(${INTRINSIC}, max(0rem, calc(100vw - var(--pane-chat-sidebar-width) - var(--pane-file-browser-width, 0rem) - var(--chat-min-width))))`
 
 interface ChatPreviewRailProps {
   onRestartServer?: (url: string, context?: string) => Promise<string>
@@ -110,7 +103,12 @@ export function ChatPreviewRail({ onRestartServer, setTitlebarToolGroup }: ChatP
       // titlebar-height so it opens below the band. 0px elsewhere → unchanged.
       style={{ paddingTop: 'var(--right-rail-top-inset, 0px)' }}
     >
-      <div className="group/rail-tabs flex h-(--titlebar-height) shrink-0 border-b border-(--ui-stroke-tertiary) bg-(--ui-sidebar-surface-background)">
+      <div
+        className={cn(
+          'group/rail-tabs flex h-(--titlebar-height) shrink-0 bg-(--ui-sidebar-surface-background)',
+          PANE_TAB_STRIP_LINE
+        )}
+      >
         <div
           className="flex min-w-0 flex-1 overflow-x-auto overflow-y-hidden overscroll-x-contain [-ms-overflow-style:none] [scrollbar-width:none] [&::-webkit-scrollbar]:hidden"
           role="tablist"
@@ -124,67 +122,20 @@ export function ChatPreviewRail({ onRestartServer, setTitlebarToolGroup }: ChatP
             return (
               <ContextMenu key={tab.id}>
                 <ContextMenuTrigger asChild>
-                  <div
-                    className={cn(
-                      'group/tab relative flex h-full min-w-0 max-w-48 shrink-0 items-center text-[0.6875rem] font-medium [-webkit-app-region:no-drag] last:border-r last:border-(--ui-stroke-quaternary)',
-                      active
-                        ? 'bg-(--ui-editor-surface-background) text-foreground [--tab-bg:var(--ui-editor-surface-background)]'
-                        : 'border-r border-(--ui-stroke-quaternary) text-(--ui-text-tertiary) [--tab-bg:var(--ui-sidebar-surface-background)] hover:bg-(--chrome-action-hover) hover:text-foreground'
-                    )}
-                    // Middle-click closes the tab, matching browser/IDE muscle
-                    // memory. `onMouseDown` swallows the middle-button press so
-                    // Chromium doesn't switch into autoscroll mode.
-                    onAuxClick={event => {
-                      if (event.button !== 1) {
-                        return
-                      }
-
-                      event.preventDefault()
-                      closeRightRailTab(tab.id)
-                    }}
-                    onMouseDown={event => {
-                      if (event.button === 1) {
-                        event.preventDefault()
-                      }
-                    }}
-                  >
-                    {active && (
-                      <span aria-hidden="true" className="absolute inset-x-0 top-0 h-px bg-(--ui-stroke-primary)" />
-                    )}
+                  <PaneTab active={active} dirty={dirty} onClose={() => closeRightRailTab(tab.id)}>
                     <Tip label={tab.target.path || tab.target.url || tab.label}>
-                      <button
+                      <PaneTabLabel
                         aria-selected={active}
-                        className="flex h-full min-w-0 max-w-full items-center overflow-hidden pl-3 pr-2 text-left outline-none"
+                        as="button"
+                        className="normal-case tracking-normal"
                         onClick={() => selectRightRailTab(tab.id)}
                         role="tab"
                         type="button"
                       >
-                        <span className="block min-w-0 truncate">{tab.label}</span>
-                      </button>
+                        {tab.label}
+                      </PaneTabLabel>
                     </Tip>
-                    <span
-                      aria-hidden="true"
-                      className="pointer-events-none absolute inset-y-0 right-0 w-9 bg-[linear-gradient(to_right,transparent,var(--tab-bg)_55%)] opacity-0 transition-opacity group-hover/tab:opacity-100 group-focus-within/tab:opacity-100"
-                    />
-                    {dirty && (
-                      <span
-                        aria-hidden="true"
-                        className="pointer-events-none absolute right-1.5 top-1/2 grid size-4 -translate-y-1/2 place-items-center opacity-100 transition-opacity group-hover/tab:opacity-0 group-focus-within/tab:opacity-0"
-                      >
-                        {/* Amber (our warn color); a tab-bg ring + soft drop keeps it
-                            legible where it overlaps the filename. */}
-                        <span className="size-2 rounded-full bg-amber-500 shadow-[0_0_0_2px_var(--tab-bg),0_1px_2px_rgba(0,0,0,0.45)] dark:bg-amber-400" />
-                      </span>
-                    )}
-                    <button
-                      aria-label={t.preview.closeTab(tab.label)}
-                      className="pointer-events-none absolute right-1.5 top-1/2 grid size-4 -translate-y-1/2 place-items-center rounded-sm text-(--ui-text-tertiary) opacity-0 transition-[background-color,color,opacity] hover:bg-(--ui-bg-secondary) hover:text-foreground focus-visible:pointer-events-auto focus-visible:opacity-100 group-hover/tab:pointer-events-auto group-hover/tab:opacity-100 group-focus-within/tab:pointer-events-auto group-focus-within/tab:opacity-100"
-                      onClick={() => closeRightRailTab(tab.id)}
-                      type="button"
-                    >
-                      <Codicon name="close" size="0.75rem" />
-                    </button>
-                  </div>
+                  </PaneTab>
                 </ContextMenuTrigger>
                 <ContextMenuContent>
                   <ContextMenuItem onSelect={() => closeRightRailTab(tab.id)}>

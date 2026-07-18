@@ -257,7 +257,9 @@ class SmsAdapter(BasePlatformAdapter):
             hashlib.sha1,
         )
         computed = base64.b64encode(mac.digest()).decode("utf-8")
-        return hmac.compare_digest(computed, signature)
+        # Compare as bytes: compare_digest raises TypeError on a str with
+        # non-ASCII characters, and the signature is a raw request header.
+        return hmac.compare_digest(computed.encode(), signature.encode())
 
     @staticmethod
     def _port_variant_url(url: str) -> str | None:

@@ -12,7 +12,7 @@ import sys
 import time
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Callable, Mapping, Protocol
+from typing import Any, Callable, Mapping, NoReturn, Protocol
 
 
 _DIRECT_ENTRYPOINT_RELATIVE = Path(
@@ -154,7 +154,7 @@ class OwnerGateAuthorAndApplyError(RuntimeError):
     """Stable, secret-free author-and-apply failure."""
 
 
-def _error(code: str, _cause: BaseException | None = None) -> None:
+def _error(code: str, _cause: BaseException | None = None) -> NoReturn:
     raise OwnerGateAuthorAndApplyError(code) from None
 
 
@@ -293,14 +293,17 @@ class _ProductionCapabilities:
         self,
         private_key: Ed25519PrivateKey,
     ) -> Mapping[str, Any]:
-        return owner_reauth.produce_owner_reauth_receipt(
-            runner=owner_reauth.SubprocessOwnerReauthRunner(),
-            private_key=private_key,
-            now_unix=self.now_unix,
-            gcloud_executable=self.executable,
-            gcloud_configuration=self.configuration,
-            expected_release_revision=self.release_revision,
-        )
+        try:
+            return owner_reauth.produce_owner_reauth_receipt(
+                runner=owner_reauth.SubprocessOwnerReauthRunner(),
+                private_key=private_key,
+                now_unix=self.now_unix,
+                gcloud_executable=self.executable,
+                gcloud_configuration=self.configuration,
+                expected_release_revision=self.release_revision,
+            )
+        except owner_reauth.OwnerGateOwnerReauthError as exc:
+            _error("owner_gate_author_owner_reauthentication_failed", exc)
 
     def interpreter_evidence(self, collected_at_unix: int) -> Mapping[str, Any]:
         return interpreter_provenance.collect_interpreter_provenance(

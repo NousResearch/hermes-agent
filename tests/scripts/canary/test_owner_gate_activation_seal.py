@@ -110,7 +110,10 @@ def _activation_owner_reauth_receipt(
             "command_prefix_sha256": "2" * 64,
             "python_executable_sha256": "3" * 64,
             "gcloud_module_sha256": "4" * 64,
-            "sdk_root": "/opt/google-cloud-sdk",
+            "sdk_root": (
+                "/opt/google-cloud-sdk-"
+                f"{owner_reauth.launcher._GCLOUD_SDK_VERSION}"
+            ),
             "sdk_python_config_identity_sha256": "5" * 64,
             "closed_environment_sha256": "6" * 64,
             "configuration": owner_reauth.GCLOUD_CONFIGURATION,

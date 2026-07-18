@@ -4,6 +4,8 @@ import subprocess
 from pathlib import Path
 from types import SimpleNamespace
 
+import pytest
+
 
 _CREATE_NO_WINDOW = 0x08000000
 
@@ -33,6 +35,19 @@ def _spawns(captured, *needles):
         for cmd, kwargs in captured
         if cmd and all(n in cmd for n in needles)
     ]
+
+
+def _is_probe(cmd) -> bool:
+    """True only for the `git -C <cwd> status --short` spawn under test.
+
+    Patching ``coding_context.subprocess.Popen`` is process-wide (it is the
+    shared ``subprocess`` module), so the import-time update-check daemon
+    thread started by an earlier test can route its own ``git ... origin``
+    call through these mocks. Gating every record/side-effect on this predicate
+    keeps a stray daemon spawn from polluting the assertions — the same reason
+    the other tests in this file funnel through ``_spawns``.
+    """
+    return bool(cmd) and cmd[:2] == ["git", "-C"] and cmd[-2:] == ["status", "--short"]
 
 
 def test_tui_gateway_git_probe_hides_git_windows(monkeypatch):
@@ -97,13 +112,14 @@ def test_tui_gateway_fuzzy_file_listing_hides_git_windows(monkeypatch):
 def test_coding_context_git_hides_git_windows(monkeypatch):
     from agent import coding_context
 
-    captured = []
+    spawns = []
 
     class _FakePopen:
         """Fast-path stand-in: git returns within the budget."""
 
         def __init__(self, cmd, **kwargs):
-            captured.append((cmd, kwargs))
+            if _is_probe(cmd):
+                spawns.append((cmd, kwargs))
             self.returncode = 0
 
         def communicate(self, timeout=None):
@@ -117,58 +133,130 @@ def test_coding_context_git_hides_git_windows(monkeypatch):
     monkeypatch.setattr(coding_context.subprocess, "Popen", _FakePopen)
 
     assert coding_context._git(Path("C:/repo"), "status", "--short") == "clean"
-    cmd, kwargs = captured[0]
+    assert len(spawns) == 1, spawns
+    cmd, kwargs = spawns[0]
     assert cmd[:2] == ["git", "-C"]
+    assert cmd[2] == str(Path("C:/repo"))
     assert cmd[3:] == ["status", "--short"]
-    # The window-hiding flag and the detached stdin must survive the run()->Popen
-    # rewrite — this is exactly what the previous subprocess.run patch stopped
-    # intercepting once _git switched to Popen.
+    # The full spawn contract must survive the run()->Popen rewrite — this is
+    # exactly what the previous subprocess.run patch stopped intercepting once
+    # _git switched to Popen.
     assert kwargs["creationflags"] == _CREATE_NO_WINDOW
     assert kwargs["stdin"] == subprocess.DEVNULL
+    assert kwargs["stdout"] == subprocess.PIPE
+    assert kwargs["stderr"] == subprocess.PIPE
+    assert kwargs["text"] is True
+
+
+def test_coding_context_git_no_hide_flags_off_windows(monkeypatch):
+    """Off Windows, the creationflags kwarg must NOT be passed at all — guards
+    the ``{...} if IS_WINDOWS else {}`` branch against a regression that always
+    threads the Windows-only flag."""
+    from agent import coding_context
+
+    spawns = []
+
+    class _FakePopen:
+        def __init__(self, cmd, **kwargs):
+            if _is_probe(cmd):
+                spawns.append((cmd, kwargs))
+            self.returncode = 0
+
+        def communicate(self, timeout=None):
+            return ("clean\n", "")
+
+        def kill(self):  # pragma: no cover
+            pass
+
+    monkeypatch.setattr(coding_context, "IS_WINDOWS", False)
+    monkeypatch.setattr(coding_context.subprocess, "Popen", _FakePopen)
+
+    assert coding_context._git(Path("/repo"), "status", "--short") == "clean"
+    assert len(spawns) == 1, spawns
+    assert "creationflags" not in spawns[0][1]
+
+
+def test_coding_context_git_nonzero_returncode_returns_empty(monkeypatch):
+    """git finishes within budget but exits non-zero → "" (stdout must never
+    leak as a probe result)."""
+    from agent import coding_context
+
+    class _FailPopen:
+        def __init__(self, cmd, **kwargs):
+            self.returncode = 1 if _is_probe(cmd) else 0
+
+        def communicate(self, timeout=None):
+            return ("garbage-should-not-leak\n", "fatal: not a repo")
+
+        def kill(self):  # pragma: no cover
+            pass
+
+    monkeypatch.setattr(coding_context, "IS_WINDOWS", False)
+    monkeypatch.setattr(coding_context.subprocess, "Popen", _FailPopen)
+
+    assert coding_context._git(Path("/repo"), "status", "--short") == ""
 
 
 def test_coding_context_git_timeout_kills_and_returns_empty(monkeypatch):
     """A hung git is killed, cleaned up with a *bounded* second communicate,
-    and the probe returns "" — never run()'s unbounded post-kill join."""
+    and the probe returns "" — never run()'s unbounded post-kill join. The
+    single event log also pins the order: wait → kill → bounded wait."""
     from agent import coding_context
 
-    kills = []
-    communicate_timeouts = []
+    events = []
 
     class _HangingPopen:
         def __init__(self, cmd, **kwargs):
+            self._probe = _is_probe(cmd)
             self.returncode = None
 
         def communicate(self, timeout=None):
-            communicate_timeouts.append(timeout)
-            if len(communicate_timeouts) == 1:
+            if not self._probe:
+                return ("", "")  # unrelated (daemon) spawn: stay benign
+            events.append(f"comm:{timeout}")
+            if timeout == coding_context._GIT_TIMEOUT:
                 raise subprocess.TimeoutExpired(cmd="git", timeout=timeout)
             return ("", "")  # bounded post-kill drain succeeds
 
         def kill(self):
-            kills.append(True)
+            if self._probe:
+                events.append("kill")
 
     monkeypatch.setattr(coding_context, "IS_WINDOWS", False)
     monkeypatch.setattr(coding_context.subprocess, "Popen", _HangingPopen)
 
     assert coding_context._git(Path("/repo"), "status", "--short") == ""
-    assert kills == [True]
-    # First wait is the probe budget; the cleanup wait is bounded (1s), not
-    # the indefinite join subprocess.run() would perform.
-    assert communicate_timeouts == [coding_context._GIT_TIMEOUT, 1]
+    # Bounded cleanup wait is 1s, not the indefinite join subprocess.run()
+    # would perform; kill strictly between the two waits.
+    assert events == [f"comm:{coding_context._GIT_TIMEOUT}", "kill", "comm:1"]
 
 
-def test_coding_context_git_timeout_cleanup_also_hangs_is_swallowed(monkeypatch):
-    """If even the bounded cleanup times out, _git abandons the pipes and still
-    honours the empty-string failure contract instead of propagating."""
+@pytest.mark.parametrize(
+    "cleanup_exc",
+    [
+        subprocess.TimeoutExpired(cmd="git", timeout=1),
+        OSError("pipe closed"),
+        ValueError("I/O operation on closed file"),
+    ],
+)
+def test_coding_context_git_timeout_cleanup_failure_is_swallowed(monkeypatch, cleanup_exc):
+    """If the bounded cleanup itself raises (still hung, or pipes already torn
+    down), _git swallows it and honours the empty-string failure contract."""
     from agent import coding_context
 
     class _StuckPopen:
         def __init__(self, cmd, **kwargs):
+            self._probe = _is_probe(cmd)
             self.returncode = None
+            self._calls = 0
 
         def communicate(self, timeout=None):
-            raise subprocess.TimeoutExpired(cmd="git", timeout=timeout)
+            if not self._probe:
+                return ("", "")
+            self._calls += 1
+            if self._calls == 1:
+                raise subprocess.TimeoutExpired(cmd="git", timeout=timeout)
+            raise cleanup_exc
 
         def kill(self):
             pass

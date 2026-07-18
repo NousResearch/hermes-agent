@@ -71,3 +71,28 @@ class TestDeliverablePipelineIntegration:
         files, cleaned = BasePlatformAdapter.extract_local_files(text)
         assert files == []
         assert "/tmp/never-written-xyz.html" in cleaned
+
+
+class TestStreamingDisplayNormalization:
+    """Audit fix 18.07.2026: streamed display text must never show raw tags.
+
+    The streaming path renders text BEFORE _deliver_media_from_response runs,
+    so strip_media_directives_for_display (the shared display cleaner used by
+    GatewayStreamConsumer) must normalize [[artifact:...]] as well.
+    """
+
+    def test_display_cleaner_normalizes_artifact_tag(self):
+        out = BasePlatformAdapter.strip_media_directives_for_display(
+            "Hier dein Report: [[artifact:/tmp/report.html|Q3 Report]]"
+        )
+        assert "[[artifact:" not in out
+        assert "/tmp/report.html" in out
+
+    def test_display_cleaner_leaves_code_fenced_tag(self):
+        text = "Beispiel:\n```\n[[artifact:/tmp/x.html|T]]\n```"
+        out = BasePlatformAdapter.strip_media_directives_for_display(text)
+        assert "[[artifact:/tmp/x.html|T]]" in out
+
+    def test_display_cleaner_without_tag_unchanged(self):
+        s = "normaler Text ohne Tags"
+        assert BasePlatformAdapter.strip_media_directives_for_display(s) == s

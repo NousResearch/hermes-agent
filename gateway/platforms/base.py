@@ -3774,6 +3774,12 @@ class BasePlatformAdapter(ABC):
         ``validate_media_delivery_path`` accepts the path so undeliverable
         paths stay visible for debugging.
         """
+        # [[artifact:...]] must never reach a messaging user as raw markup —
+        # the streaming path displays text BEFORE _deliver_media_from_response
+        # runs, so normalize here too (the attachment itself is delivered by
+        # the post-stream media pass; audit finding 18.07.2026).
+        if "[[artifact:" in text:
+            text = BasePlatformAdapter.normalize_artifact_tags(text)
         if (
             "MEDIA:" not in text
             and "[[audio_as_voice]]" not in text

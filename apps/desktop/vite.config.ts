@@ -25,6 +25,16 @@ const fsAllow = [
   )
 ]
 
+export const DESKTOP_SOURCE_EXTENSIONS = [
+  '.mts',
+  '.ts',
+  '.tsx',
+  '.mjs',
+  '.js',
+  '.jsx',
+  '.json'
+]
+
 export default defineConfig({
   base: './',
   plugins: [react(), tailwindcss()],
@@ -56,6 +66,9 @@ export default defineConfig({
     }
   },
   resolve: {
+    // Generated JavaScript must never shadow the tracked TypeScript source.
+    // Stale source-tree output can survive an update in managed checkouts.
+    extensions: DESKTOP_SOURCE_EXTENSIONS,
     alias: {
       '@': path.resolve(__dirname, './src'),
       '@hermes/plugin-sdk': path.resolve(__dirname, './src/sdk/index.ts'),

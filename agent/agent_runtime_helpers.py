@@ -639,7 +639,7 @@ def repair_message_sequence_with_cursor(agent, messages: List[Dict]) -> int:
 
 
 
-def strip_think_blocks(agent, content: str) -> str:
+def strip_think_blocks(agent, content) -> str:
     """Remove reasoning/thinking blocks from content, returning only visible text.
 
     Handles four cases:
@@ -669,7 +669,22 @@ def strip_think_blocks(agent, content: str) -> str:
     boundary-gated (only strips when the tag sits at start-of-line or
     after punctuation and carries a ``name="..."`` attribute) so prose
     mentions like "Use <function> in JavaScript" are preserved.
+
+    ``content`` may be a plain string or a multimodal content-part list
+    (``[{type: text}, {type: image_url}, ...]``). Common list shapes:
+    user turns with attached images, and tool results that include
+    vision payloads. Callers such as interim-text extraction pass
+    ``messages[-1]`` without role/shape checks, so this entry point
+    must flatten before any ``re.sub``.
     """
+    # Multimodal user/tool content arrives as a list of parts.
+    # Flatten first — re.sub requires str/bytes and previously crashed
+    # with TypeError, spinning the outer conversation loop (e.g. Telegram
+    # photo + caption on the turn that returns tool_calls).
+    if not isinstance(content, str):
+        from agent.message_content import flatten_message_text
+
+        content = flatten_message_text(content)
     if not content:
         return ""
     # Coerce non-string content to text before any regex runs.  Providers

@@ -482,6 +482,30 @@ class TestStripThinkBlocks:
     def test_no_blocks_unchanged(self, agent):
         assert agent._strip_think_blocks("hello world") == "hello world"
 
+    def test_multimodal_content_list_flattens_and_strips(self, agent):
+        """Vision/tool payloads use content-part lists; must not TypeError."""
+        content = [
+            {"type": "text", "text": "<think>hidden</think>cover ok"},
+            {"type": "image_url", "image_url": {"url": "data:image/jpeg;base64,xx"}},
+            {"type": "text", "text": " second"},
+        ]
+        result = agent._strip_think_blocks(content)
+        assert "hidden" not in result
+        assert "cover ok" in result
+        assert "second" in result
+        assert "image" not in result.lower()
+
+    def test_interim_visible_text_accepts_tool_list_content(self, agent):
+        """conversation_loop passes messages[-1] (often tool+vision list)."""
+        msg = {
+            "role": "tool",
+            "content": [
+                {"type": "text", "text": "done"},
+                {"type": "image_url", "image_url": {"url": "https://example.com/x.jpg"}},
+            ],
+        }
+        assert agent._interim_assistant_visible_text(msg) == "done"
+
     def test_single_block_removed(self, agent):
         result = agent._strip_think_blocks("<think>reasoning</think> answer")
         assert "reasoning" not in result

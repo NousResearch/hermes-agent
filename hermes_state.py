@@ -580,17 +580,21 @@ def _db_opens_cleanly(db_path: Path) -> Optional[str]:
         conn.execute("SELECT COUNT(*) FROM sessions").fetchone()
 
         # FTS5 read probe: run a representative MATCH query against the
-        # messages_fts* virtual tables. The FTS *write* probe above catches
+        # messages_fts* virtual tables. The FTS *write* probe below catches
         # the corruption class where base tables read fine but writes fail
         # through the triggers (#50502). It does NOT catch partial FTS5
         # index corruption — bad shadow-table segments where reads still
         # parse but MATCH / snippet / rank queries error out with
-        # "database disk image is malformed". session_search, /resume title
-        # resolution, and any feature relying on FTS5 discovery then break
-        # silently because the official repair tool's check-only path
-        # reports the DB as healthy. #66724.
-        try:
-            for fts_table in ("messages_fts", "messages_fts_trigram"):
+        # "database disk image is malformed" (a `sqlite3.DatabaseError`,
+        # not `OperationalError`). session_search, /resume title resolution,
+        # and any feature relying on FTS5 discovery then break silently
+        # because the official repair tool's check-only path reports the
+        # DB as healthy. #66724.
+        # Catch the full sqlite3 exception hierarchy (not just
+        # OperationalError) so the malformed-shadow-table class is reported
+        # rather than letting it crash the caller.
+        for fts_table in ("messages_fts", "messages_fts_trigram"):
+            try:
                 # No-op queries against the actual FTS5 APIs the search
                 # tools use. The trigram table is included because it backs
                 # the title-resolution path; either corruption mode would
@@ -600,13 +604,18 @@ def _db_opens_cleanly(db_path: Path) -> Optional[str]:
                 conn.execute(
                     f"SELECT 1 FROM {fts_table} WHERE {fts_table} MATCH '' LIMIT 1"
                 ).fetchone()
-        except sqlite3.OperationalError as exc:
-            msg = str(exc).lower()
-            if "no such table" in msg or "no such column" in msg:
-                # FTS5 not built yet (brand new file mid-init) — not the
-                # corruption class we probe.
-                pass
-            else:
+            except sqlite3.OperationalError as exc:
+                msg = str(exc).lower()
+                if "no such table" in msg or "no such column" in msg:
+                    # FTS5 not built yet (brand new file mid-init) — not the
+                    # corruption class we probe.
+                    continue
+                return f"fts5 read probe failed on {fts_table}: {exc}"
+            except sqlite3.DatabaseError as exc:
+                # This is the corruption class #66724 actually wants caught:
+                # partial shadow-table damage where MATCH / snippet / rank
+                # queries raise DatabaseError("database disk image is malformed")
+                # while reads of the FTS5 table itself parse fine.
                 return f"fts5 read probe failed on {fts_table}: {exc}"
 
         # FTS write probe: drive a row through the messages_fts* triggers in a

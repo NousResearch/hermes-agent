@@ -1,6 +1,6 @@
 import { useStore } from '@nanostores/react'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
-import { createContext, useContext, useEffect, useMemo, useState } from 'react'
+import { createContext, useContext, useMemo, useState } from 'react'
 
 import { Codicon } from '@/components/ui/codicon'
 import {
@@ -37,7 +37,7 @@ import {
   modelVisibilityKey,
   setModelVisibilityOpen
 } from '@/store/model-visibility'
-import { $collapsedProviders, pruneStaleCollapsed, toggleCollapsedProvider } from '@/store/provider-collapse'
+import { $collapsedProviders, toggleCollapsedProvider } from '@/store/provider-collapse'
 import {
   $activeSessionId,
   $currentFastMode,
@@ -120,14 +120,6 @@ export function ModelMenuPanel({ gateway, onSelectModel, requestGateway }: Model
     () => providers?.filter(provider => provider.slug.toLowerCase() !== 'moa') ?? [],
     [providers]
   )
-
-  // Drop stale collapsed provider slugs when the provider list changes
-  // (e.g. after Refresh Models, plugin install/uninstall).
-  useEffect(() => {
-    if (pickerProviders.length > 0) {
-      pruneStaleCollapsed(pickerProviders.map(p => p.slug))
-    }
-  }, [pickerProviders])
 
   const effectiveVisibleModels = useMemo(
     () => effectiveVisibleKeys(visibleModels, pickerProviders),

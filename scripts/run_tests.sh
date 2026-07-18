@@ -105,6 +105,14 @@ echo "▶ launching test runner"
 exec env -i \
   PATH="$PATH" \
   HOME="$HOME" \
+  ${USERPROFILE:+USERPROFILE="$USERPROFILE"} \
+  ${HOMEDRIVE:+HOMEDRIVE="$HOMEDRIVE"} \
+  ${HOMEPATH:+HOMEPATH="$HOMEPATH"} \
+  ${SYSTEMROOT:+SYSTEMROOT="$SYSTEMROOT"} \
+  `# Windows: pathlib.expanduser resolves USERPROFILE (never HOME), and` \
+  `# WinSock/ssl need SYSTEMROOT — without these, any module calling` \
+  `# expanduser at import time fails collection under the hermetic env.` \
+  `# All four are :+-guarded, so POSIX passes nothing extra.` \
   TZ=UTC \
   LANG=C.UTF-8 \
   LC_ALL=C.UTF-8 \

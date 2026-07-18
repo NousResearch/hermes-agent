@@ -539,10 +539,13 @@ class TestExtractImageRefs:
     def test_finds_home_relative_path(self, tmp_path: Path, monkeypatch):
         # Simulate ~/foo.png by pointing HOME at tmp_path and creating the file
         monkeypatch.setenv("HOME", str(tmp_path))
+        monkeypatch.setenv("USERPROFILE", str(tmp_path))
+        monkeypatch.delenv("HOMEDRIVE", raising=False)
+        monkeypatch.delenv("HOMEPATH", raising=False)
         img = tmp_path / "foo.png"
         img.write_bytes(_png_bytes())
         paths, urls = extract_image_refs("see ~/foo.png please")
-        assert paths == [str(img)]
+        assert [Path(path) for path in paths] == [img]
         assert urls == []
 
     def test_skips_nonexistent_paths(self, tmp_path: Path):

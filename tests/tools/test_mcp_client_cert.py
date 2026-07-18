@@ -15,6 +15,7 @@ Covers:
 from __future__ import annotations
 
 import asyncio
+from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -85,11 +86,14 @@ class TestResolveClientCert:
         from tools.mcp_tool import _resolve_client_cert
 
         monkeypatch.setenv("HOME", str(tmp_path))
+        monkeypatch.setenv("USERPROFILE", str(tmp_path))
+        monkeypatch.delenv("HOMEDRIVE", raising=False)
+        monkeypatch.delenv("HOMEPATH", raising=False)
         pem = tmp_path / "client.pem"
         pem.write_text("dummy")
 
         result = _resolve_client_cert("srv", {"client_cert": "~/client.pem"})
-        assert result == str(pem)
+        assert Path(result) == pem
 
     def test_missing_file_raises(self, tmp_path):
         from tools.mcp_tool import _resolve_client_cert

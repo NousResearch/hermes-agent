@@ -16,6 +16,7 @@ param(
     [switch]$NoVenv,
     [switch]$SkipSetup,
     [string]$Branch = "main",
+    [string]$PythonVersion = "3.11",
     # -Commit and -Tag are higher-precedence variants of -Branch for users
     # who need reproducible installs (desktop installer pinning, CI, release
     # bundles).  When set, the repository stage clones $Branch (faster than
@@ -138,7 +139,6 @@ foreach ($tmpVar in @('TEMP', 'TMP')) {
 
 $RepoUrlSsh = "git@github.com:NousResearch/hermes-agent.git"
 $RepoUrlHttps = "https://github.com/NousResearch/hermes-agent.git"
-$PythonVersion = "3.11"
 # Minor versions the installer accepts when the requested $PythonVersion isn't
 # available, in preference order.  uv discovers both uv-managed and system
 # interpreters, so this list also matches a pre-existing system Python.  Single
@@ -443,7 +443,7 @@ function Get-PowerShellHostExe {
 }
 
 function Install-Uv {
-    # Hermes owns its own uv at $HermesHome\bin\uv.exe.  Always install there —
+    # Hermes owns its own uv at $HermesHome\bin\uv.exe.  Always install there --
     # no PATH probing, no conda guards, no multi-location resolution chains.
     # The runtime update path (hermes_cli/managed_uv.py) looks in the same
     # place, so install.ps1 and `hermes update` stay in sync.
@@ -528,7 +528,7 @@ function Ensure-NodeExeOnPath {
 # prior process is not visible here.  Later stages (Test-Python,
 # Install-Venv, Install-Dependencies, Install-PlatformSdks) call this
 # at the top to populate $script:UvCmd from the managed location.
-# Throws if uv is not findable — the caller's stage then surfaces a
+# Throws if uv is not findable -- the caller's stage then surfaces a
 # clean error via the stage-driver's try/catch.
 function Resolve-UvCmd {
     # Already resolved (default invocation path: Install-Uv ran earlier
@@ -544,7 +544,7 @@ function Resolve-UvCmd {
         # Stale; fall through to re-discover.
     }
 
-    # Check the managed location first — this is where Install-Uv puts it.
+    # Check the managed location first -- this is where Install-Uv puts it.
     $managedUv = Join-Path $HermesHome "bin\uv.exe"
     if (Test-Path $managedUv) {
         $script:UvCmd = $managedUv
@@ -1516,7 +1516,7 @@ function Install-Repository {
                     if ($LASTEXITCODE -ne 0) { throw "git checkout $Branch failed (exit $LASTEXITCODE)" }
                     # Managed installs should follow origin/$Branch exactly. If
                     # the checkout has diverged (or has local-only commits),
-                    # ff-only pull cannot succeed — mirror ``hermes update`` and
+                    # ff-only pull cannot succeed -- mirror ``hermes update`` and
                     # reset to the fetched remote so bootstrap/install can recover.
                     git -c windows.appendAtomically=false pull --ff-only origin $Branch
                     if ($LASTEXITCODE -ne 0) {
@@ -1573,11 +1573,11 @@ function Install-Repository {
                                 Write-Host ""
                                 Write-Host "Conflicted files:"
                                 foreach ($file in $conflictedFiles) {
-                                    Write-Host "  • $file"
+                                    Write-Host "  * $file"
                                 }
                             }
                             Write-Host ""
-                            Write-Info "Your stashed changes are preserved — nothing is lost."
+                            Write-Info "Your stashed changes are preserved -- nothing is lost."
                             Write-Info "  Stash ref: $autostashRef"
                             git -c windows.appendAtomically=false reset --hard HEAD 2>$null | Out-Null
                             Write-Info "Working tree reset to clean state."
@@ -1779,6 +1779,7 @@ function Install-Venv {
     # exits. Populated only with tasks that were ENABLED before we touched
     # them, so a task the user deliberately disabled is never re-armed.
     $gatewayTasksDisabled = @()
+    $gatewayWrappersQuarantined = @()
     try {
     if (Test-Path "venv") {
         Write-Info "Virtual environment already exists, recreating..."
@@ -1798,23 +1799,80 @@ function Install-Venv {
             # /End stops a running task instance; /Change /DISABLE stops it
             # from re-firing mid-install. (The Startup-folder .vbs fallback is
             # NOT touched: it only fires at logon, so it cannot respawn a
-            # gateway mid-install.) Re-enabled in the finally below — including
-            # on failure — but only for tasks that were enabled to begin with.
+            # gateway mid-install.) Re-enabled in the finally below -- including
+            # on failure -- but only for tasks that were enabled to begin with.
             # Best-effort: a missing task just errors quietly.
             try {
-                schtasks /Query /FO CSV 2>$null | ConvertFrom-Csv | Where-Object { $_.TaskName -like '*Hermes_Gateway*' } | ForEach-Object {
-                    $tn = $_.TaskName
-                    if ($_.Status -eq 'Disabled') {
-                        Write-Info "  gateway autostart task $tn is already disabled; leaving it that way"
+                # Use the ScheduledTasks objects instead of parsing schtasks'
+                # localized CSV headers. TaskName/TaskPath and Settings.Enabled
+                # are stable on non-English Windows installations.
+                Get-ScheduledTask -TaskName 'Hermes_Gateway*' -ErrorAction SilentlyContinue | ForEach-Object {
+                    $task = $_
+                    $taskLabel = "$($task.TaskPath)$($task.TaskName)"
+                    if (-not $task.Settings.Enabled -or $task.State -eq 'Disabled') {
+                        Write-Info "  gateway autostart task $taskLabel is already disabled; leaving it that way"
                         return
                     }
-                    schtasks /End /TN $tn 2>$null | Out-Null
-                    schtasks /Change /TN $tn /DISABLE 2>$null | Out-Null
-                    $gatewayTasksDisabled += $tn
-                    Write-Info "  disabled gateway autostart task $tn for the duration of the install"
+                    Stop-ScheduledTask -TaskName $task.TaskName -TaskPath $task.TaskPath -ErrorAction SilentlyContinue
+                    try {
+                        Disable-ScheduledTask -TaskName $task.TaskName -TaskPath $task.TaskPath -ErrorAction Stop | Out-Null
+                        $gatewayTasksDisabled += @{
+                            TaskName = $task.TaskName
+                            TaskPath = $task.TaskPath
+                        }
+                        Write-Info "  disabled gateway autostart task $taskLabel for the duration of the install"
+                    } catch {
+                        # Non-admin users can query/run their own Hermes tasks
+                        # but some machines deny changing task definitions.
+                        # In that case atomically move only verified Hermes
+                        # gateway-service wrappers out of the task's path. The
+                        # still-enabled task can fire, but it has nothing to
+                        # execute until finally restores the wrapper.
+                        $servicePrefix = [System.IO.Path]::GetFullPath((Join-Path $HermesHome "gateway-service")).TrimEnd('\') + '\'
+                        $taskActions = @($task.Actions)
+                        if ($taskActions.Count -eq 0) {
+                            throw "task $taskLabel has no executable action to quarantine"
+                        }
+                        foreach ($action in $taskActions) {
+                            $expandedAction = [Environment]::ExpandEnvironmentVariables([string]$action.Execute).Trim('"')
+                            $actionLeaf = [System.IO.Path]::GetFileName($expandedAction)
+                            $wrapperPath = $null
+                            if ($actionLeaf -ieq 'wscript.exe') {
+                                # Current Hermes tasks invoke the console-less
+                                # VBS launcher through wscript.exe. Extract only
+                                # an explicitly quoted .vbs argument; never move
+                                # wscript.exe itself.
+                                $arguments = [Environment]::ExpandEnvironmentVariables([string]$action.Arguments)
+                                $vbsMatch = [regex]::Match($arguments, '"([^"]+\.vbs)"', [System.Text.RegularExpressions.RegexOptions]::IgnoreCase)
+                                if (-not $vbsMatch.Success) {
+                                    throw "task $taskLabel uses wscript.exe without a quoted Hermes VBS launcher"
+                                }
+                                $wrapperPath = [System.IO.Path]::GetFullPath($vbsMatch.Groups[1].Value)
+                            } else {
+                                # Legacy tasks execute the generated CMD wrapper
+                                # directly. Preserve this upgrade path.
+                                $wrapperPath = [System.IO.Path]::GetFullPath($expandedAction)
+                            }
+                            $wrapperLeaf = [System.IO.Path]::GetFileName($wrapperPath)
+                            if (
+                                -not $wrapperPath.StartsWith($servicePrefix, [System.StringComparison]::OrdinalIgnoreCase) -or
+                                $wrapperLeaf -notmatch '^Hermes_Gateway.*\.(cmd|vbs)$' -or
+                                -not (Test-Path -LiteralPath $wrapperPath)
+                            ) {
+                                throw "refusing to quarantine unverified task wrapper for $taskLabel`: $wrapperPath"
+                            }
+                            $quarantinePath = "$wrapperPath.hermes-update-disabled-$myPid"
+                            Move-Item -LiteralPath $wrapperPath -Destination $quarantinePath -ErrorAction Stop
+                            $gatewayWrappersQuarantined += @{
+                                Original = $wrapperPath
+                                Quarantine = $quarantinePath
+                            }
+                            Write-Warn "  task definition could not be disabled; quarantined verified wrapper $wrapperPath"
+                        }
+                    }
                 }
             } catch {
-                Write-Warn "Could not enumerate gateway scheduled tasks: $($_.Exception.Message)"
+                throw "Could not safely contain gateway scheduled tasks: $($_.Exception.Message)"
             }
             # The launcher CLI (hermes.exe) plus its child tree.
             & taskkill /F /T /IM hermes.exe /FI "PID ne $myPid" 2>$null | Out-Null
@@ -1840,24 +1898,202 @@ function Install-Venv {
             # the window between one kill pass and the delete. Each pass re-
             # enumerates; three consecutive clean passes (or the attempt cap)
             # ends the loop.
+            $installPrefix = [System.IO.Path]::GetFullPath($InstallDir).TrimEnd('\') + '\'
             $venvPrefix = [System.IO.Path]::GetFullPath((Join-Path $InstallDir "venv")).TrimEnd('\') + '\'
+            $externalRuntimeNames = @('python.exe', 'pythonw.exe', 'uv.exe')
+            function ConvertTo-ProcessCreationUtc {
+                param($Value)
+                if ($null -eq $Value) { return $null }
+                if ($Value -is [DateTime]) { return $Value.ToUniversalTime() }
+                try {
+                    return [System.Management.ManagementDateTimeConverter]::ToDateTime([string]$Value).ToUniversalTime()
+                } catch {
+                    return $null
+                }
+            }
             $cleanPasses = 0
             for ($sweep = 0; $sweep -lt 10 -and $cleanPasses -lt 3; $sweep++) {
                 $found = 0
                 try {
-                    Get-CimInstance Win32_Process -ErrorAction Stop |
-                        Where-Object { $_.ProcessId -ne $myPid -and $_.ExecutablePath -and $_.ExecutablePath.StartsWith($venvPrefix, [System.StringComparison]::OrdinalIgnoreCase) } |
-                        ForEach-Object {
-                            $found++
-                            Write-Info "  stopping PID $($_.ProcessId) ($($_.Name)) running from venv"
-                            Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue
+                    $processSnapshot = @(Get-CimInstance Win32_Process -ErrorAction Stop | Where-Object {
+                        $_.ProcessId -ne $myPid
+                    })
+                    $holderPids = New-Object 'System.Collections.Generic.HashSet[int]'
+                    $holderReasons = @{}
+                    $holderIdentities = @{}
+
+                    # First identify process seeds with direct, checkout-specific
+                    # evidence. Do not kill yet: the complete snapshot is needed
+                    # to discover uv trampoline descendants transitively.
+                    $processSnapshot | ForEach-Object {
+                        $proc = $_
+                        $reason = $null
+                        $exePath = $proc.ExecutablePath
+
+                        # Directly resident processes are always in scope.
+                        if ($exePath -and $exePath.StartsWith($venvPrefix, [System.StringComparison]::OrdinalIgnoreCase)) {
+                            $reason = "executable is inside the Hermes venv"
+                        } elseif ($exePath -and $exePath.StartsWith($installPrefix, [System.StringComparison]::OrdinalIgnoreCase)) {
+                            $reason = "executable is inside the Hermes checkout"
+                        } elseif ($externalRuntimeNames -contains $proc.Name.ToLowerInvariant()) {
+                            # uv can launch the base interpreter outside venv.
+                            # Require checkout-specific evidence before touching
+                            # any external python/uv process.
+                            $commandLine = $proc.CommandLine
+                            if ($commandLine -and (
+                                $commandLine.IndexOf($venvPrefix.TrimEnd('\'), [System.StringComparison]::OrdinalIgnoreCase) -ge 0 -or
+                                $commandLine.IndexOf($installPrefix.TrimEnd('\'), [System.StringComparison]::OrdinalIgnoreCase) -ge 0
+                            )) {
+                                $reason = "command line references the Hermes checkout or venv"
+                            } else {
+                                try {
+                                    $loadedHermesModule = Get-Process -Id $proc.ProcessId -ErrorAction Stop |
+                                        Select-Object -ExpandProperty Modules |
+                                        Where-Object {
+                                            $_.FileName -and (
+                                                $_.FileName.StartsWith($venvPrefix, [System.StringComparison]::OrdinalIgnoreCase) -or
+                                                $_.FileName.StartsWith($installPrefix, [System.StringComparison]::OrdinalIgnoreCase)
+                                            )
+                                        } |
+                                        Select-Object -First 1
+                                    if ($loadedHermesModule) {
+                                        $reason = "loaded module $($loadedHermesModule.FileName) belongs to Hermes"
+                                    }
+                                } catch {
+                                    # An unreadable external runtime is not
+                                    # enough evidence to terminate it.
+                                }
+                            }
                         }
+
+                        if ($reason) {
+                            $candidatePid = [int]$proc.ProcessId
+                            $creationUtc = ConvertTo-ProcessCreationUtc $proc.CreationDate
+                            [void]$holderPids.Add($candidatePid)
+                            $holderReasons[$candidatePid] = $reason
+                            $holderIdentities[$candidatePid] = @{
+                                CreationTicks = $(if ($creationUtc) { $creationUtc.Ticks } else { $null })
+                                ParentProcessId = [int]$proc.ParentProcessId
+                                ParentCreationTicks = $null
+                                Name = [string]$proc.Name
+                            }
+                        }
+                    }
+
+                    # A uv shim may live inside venv while its real python child
+                    # is the base interpreter outside venv with a path-free
+                    # command line. ParentProcessId is strong evidence here:
+                    # recursively include every descendant of a proven seed.
+                    $changed = $true
+                    while ($changed) {
+                        $changed = $false
+                        foreach ($proc in $processSnapshot) {
+                            $candidatePid = [int]$proc.ProcessId
+                            $parentPid = [int]$proc.ParentProcessId
+                            $candidateName = ([string]$proc.Name).ToLowerInvariant()
+                            if (
+                                -not $holderPids.Contains($candidatePid) -and
+                                $holderPids.Contains($parentPid) -and
+                                $externalRuntimeNames -contains $candidateName
+                            ) {
+                                $parentIdentity = $holderIdentities[$parentPid]
+                                $candidateCreationUtc = ConvertTo-ProcessCreationUtc $proc.CreationDate
+                                if (
+                                    $null -eq $parentIdentity.CreationTicks -or
+                                    $null -eq $candidateCreationUtc
+                                ) {
+                                    throw "Cannot safely classify PID $candidatePid as a Hermes descendant because process creation time is unavailable"
+                                }
+                                if ([int64]$parentIdentity.CreationTicks -gt [int64]$candidateCreationUtc.Ticks) {
+                                    Write-Warn "  parent PID $parentPid was created after child PID $candidatePid; treating the parent PID as reused"
+                                    continue
+                                }
+                                [void]$holderPids.Add($candidatePid)
+                                $holderReasons[$candidatePid] = "descendant of Hermes holder PID $parentPid"
+                                $holderIdentities[$candidatePid] = @{
+                                    CreationTicks = $candidateCreationUtc.Ticks
+                                    ParentProcessId = $parentPid
+                                    ParentCreationTicks = $parentIdentity.CreationTicks
+                                    Name = [string]$proc.Name
+                                }
+                                $changed = $true
+                            }
+                        }
+                    }
+
+                    # Stop descendants before their proven parent seeds. The
+                    # parent identity is part of a descendant's safety check;
+                    # killing the parent first would make that check fail
+                    # closed even though the child is still the holder we need
+                    # to release.
+                    $terminationOrder = @($processSnapshot | Sort-Object -Property @{
+                        Expression = {
+                            $identity = $holderIdentities[[int]$_.ProcessId]
+                            if ($null -ne $identity -and $null -ne $identity.ParentCreationTicks) { 0 } else { 1 }
+                        }
+                    })
+                    foreach ($proc in $terminationOrder) {
+                        $candidatePid = [int]$proc.ProcessId
+                        if ($holderPids.Contains($candidatePid)) {
+                            # Re-query immediately before termination. PIDs are
+                            # reusable; CreationDate + parent + image identity
+                            # must still match the snapshot that established the
+                            # Hermes relationship.
+                            $current = Get-CimInstance Win32_Process -Filter "ProcessId = $candidatePid" -ErrorAction Stop |
+                                Select-Object -First 1
+                            $identity = $holderIdentities[$candidatePid]
+                            $currentCreationUtc = if ($current) {
+                                ConvertTo-ProcessCreationUtc $current.CreationDate
+                            } else {
+                                $null
+                            }
+                            if (
+                                $current -and (
+                                    $null -eq $identity.CreationTicks -or
+                                    $null -eq $currentCreationUtc
+                                )
+                            ) {
+                                throw "Cannot safely revalidate PID $candidatePid because process creation time is unavailable"
+                            }
+                            if (
+                                $current -and
+                                [int]$current.ProcessId -eq $candidatePid -and
+                                [int64]$currentCreationUtc.Ticks -eq [int64]$identity.CreationTicks -and
+                                [int]$current.ParentProcessId -eq $identity.ParentProcessId -and
+                                [string]$current.Name -eq $identity.Name
+                            ) {
+                                $parentStillMatches = $true
+                                if ($null -ne $identity.ParentCreationTicks) {
+                                    $currentParent = Get-CimInstance Win32_Process -Filter "ProcessId = $($identity.ParentProcessId)" -ErrorAction Stop |
+                                        Select-Object -First 1
+                                    $currentParentCreationUtc = if ($currentParent) {
+                                        ConvertTo-ProcessCreationUtc $currentParent.CreationDate
+                                    } else {
+                                        $null
+                                    }
+                                    $parentStillMatches = $currentParent -and $currentParentCreationUtc -and
+                                        [int64]$currentParentCreationUtc.Ticks -eq [int64]$identity.ParentCreationTicks
+                                }
+                                if ($parentStillMatches) {
+                                    $found++
+                                    Write-Info "  stopping PID $candidatePid ($($proc.Name)): $($holderReasons[$candidatePid])"
+                                    Stop-Process -Id $candidatePid -Force -ErrorAction SilentlyContinue
+                                } else {
+                                    Write-Warn "  parent PID $($identity.ParentProcessId) changed identity during holder sweep; skipping PID $candidatePid"
+                                }
+                            } else {
+                                Write-Warn "  PID $candidatePid changed identity during holder sweep; skipping termination"
+                            }
+                        }
+                    }
                 } catch {
-                    Write-Warn "Could not enumerate venv processes: $($_.Exception.Message)"
-                    break
+                    throw "Could not safely enumerate Hermes venv holders: $($_.Exception.Message)"
                 }
                 if ($found -eq 0) { $cleanPasses++ } else { $cleanPasses = 0 }
                 Start-Sleep -Milliseconds 400
+            }
+            if ($cleanPasses -lt 3) {
+                throw "Hermes venv holder sweep did not reach three consecutive clean passes; refusing to remove the environment"
             }
         }
         # Rename-then-delete: on Windows a directory RENAME succeeds even while
@@ -1893,7 +2129,7 @@ function Install-Venv {
     }
 
     # Clean up parked venvs from previous installs whose handles have since
-    # been released. Best-effort — a still-held tree just stays for next time.
+    # been released. Best-effort -- a still-held tree just stays for next time.
     Get-ChildItem -Directory -Filter "venv.stale.*" -ErrorAction SilentlyContinue | ForEach-Object {
         Remove-Item -Recurse -Force $_.FullName -ErrorAction SilentlyContinue
     }
@@ -1925,18 +2161,36 @@ function Install-Venv {
     }
     } finally {
         Pop-Location
+        # Restore wrapper paths before re-enabling any task definitions. These
+        # are same-volume renames, so the task never observes a partial script.
+        foreach ($wrapper in $gatewayWrappersQuarantined) {
+            if (Test-Path -LiteralPath $wrapper.Quarantine) {
+                Move-Item -LiteralPath $wrapper.Quarantine -Destination $wrapper.Original -ErrorAction SilentlyContinue
+            }
+        }
+        if ($gatewayWrappersQuarantined.Count -gt 0) {
+            $unrestored = @($gatewayWrappersQuarantined | Where-Object {
+                -not (Test-Path -LiteralPath $_.Original)
+            })
+            if ($unrestored.Count -gt 0) {
+                Write-Warn "One or more gateway wrappers could not be restored; restore *.hermes-update-disabled-$myPid files under $HermesHome\gateway-service"
+            } else {
+                Write-Info "Restored quarantined gateway task wrapper(s)"
+            }
+        }
         # Re-arm the gateway autostart tasks disabled during the venv teardown
-        # — in a finally so a failed teardown/creation can never strand the
+        # -- in a finally so a failed teardown/creation can never strand the
         # user's gateway autostart in the disabled state. Same function scope,
         # so the list survives even under the stage-per-process bootstrap.
-        # Deliberately NOT started here — dependencies aren't installed yet;
+        # Deliberately NOT started here -- dependencies aren't installed yet;
         # the task fires normally on next logon and `hermes update` / the
         # gateway resume path handles the immediate restart.
         if ($gatewayTasksDisabled -and $gatewayTasksDisabled.Count -gt 0) {
-            foreach ($tn in $gatewayTasksDisabled) {
-                schtasks /Change /TN $tn /ENABLE 2>$null | Out-Null
+            foreach ($task in $gatewayTasksDisabled) {
+                Enable-ScheduledTask -TaskName $task.TaskName -TaskPath $task.TaskPath -ErrorAction SilentlyContinue | Out-Null
             }
-            Write-Info "Re-enabled gateway autostart task(s): $($gatewayTasksDisabled -join ', ')"
+            $restoredTaskNames = @($gatewayTasksDisabled | ForEach-Object { "$($_.TaskPath)$($_.TaskName)" })
+            Write-Info "Re-enabled gateway autostart task(s): $($restoredTaskNames -join ', ')"
         }
     }
 
@@ -2247,7 +2501,7 @@ function Set-PathVariable {
 function Write-BootstrapMarker {
     # Writes $InstallDir\.hermes-bootstrap-complete which tells the Hermes
     # desktop app (apps/desktop/electron/main.ts) "install.ps1 ran
-    # successfully — DON'T trigger the legacy first-launch bootstrap
+    # successfully -- DON'T trigger the legacy first-launch bootstrap
     # runner."
     #
     # Schema mirrors what main.ts's writeBootstrapMarker() / isBootstrap
@@ -2268,7 +2522,7 @@ function Write-BootstrapMarker {
     # Resolve the pinned commit: explicit -Commit wins, otherwise read
     # the checkout's HEAD via git. If git can't run, leave commit empty
     # and the marker will fail desktop validation (pinnedCommit.length
-    # >= 7) — better to be invalid than wrong.
+    # >= 7) -- better to be invalid than wrong.
     $pinnedCommit = $Commit
     if (-not $pinnedCommit) {
         # PS 5.1 doesn't support the ?. null-conditional operator, so
@@ -2283,7 +2537,7 @@ function Write-BootstrapMarker {
                     $pinnedCommit = $resolved.Trim()
                 }
             } catch {
-                # Ignore — pinnedCommit stays empty, marker stays invalid,
+                # Ignore -- pinnedCommit stays empty, marker stays invalid,
                 # desktop falls through to its legacy bootstrap path.
             } finally {
                 Pop-Location
@@ -2302,7 +2556,7 @@ function Write-BootstrapMarker {
         pinnedCommit  = $pinnedCommit
         pinnedBranch  = $pinnedBranch
         completedAt   = (Get-Date).ToUniversalTime().ToString("yyyy-MM-ddTHH:mm:ss.fffZ")
-        # desktopVersion field intentionally omitted — only the desktop
+        # desktopVersion field intentionally omitted -- only the desktop
         # app knows its own version, and the marker validator doesn't
         # require it. The desktop fills it in if/when it writes its
         # own marker (e.g. after a future in-app upgrade).
@@ -2311,7 +2565,7 @@ function Write-BootstrapMarker {
 
     # Write WITHOUT a UTF-8 BOM. PowerShell 5.1's `Set-Content -Encoding UTF8`
     # always emits a BOM, and Node's plain JSON.parse rejects the BOM as an
-    # unexpected character — so a BOM'd marker would silently fail the
+    # unexpected character -- so a BOM'd marker would silently fail the
     # desktop's readJson(), make isBootstrapComplete() return null, and the
     # desktop would re-run the legacy bootstrap runner anyway. Defeats the
     # whole point. Use the .NET API directly for BOM-less UTF-8.
@@ -2411,7 +2665,7 @@ function Install-NodeDeps {
         # Cross-process driver mode (Hermes-Setup.exe runs each -Stage NAME
         # in a fresh powershell.exe) means $script:HasNode set by Stage-Node
         # in the previous process isn't visible here. Re-probe rather than
-        # trust the stale global — Stage-Node already ran successfully or
+        # trust the stale global -- Stage-Node already ran successfully or
         # the bootstrap would've aborted, so npm is reachable.
         if (-not (Get-Command npm -ErrorAction SilentlyContinue)) {
             Write-Info "Skipping Node.js dependencies (Node not installed)"
@@ -2688,7 +2942,7 @@ function Clear-ElectronBuildCache {
 # Last-resort Electron mirror after GitHub download fails (#47266).
 $script:DesktopElectronFallbackMirror = "https://npmmirror.com/mirrors/electron/"
 
-# Electron package dir — workspace-local nest first, then root hoist.
+# Electron package dir -- workspace-local nest first, then root hoist.
 function Get-ElectronDir {
     param([string]$InstallDir)
     $desktopLocal = Join-Path $InstallDir 'apps\desktop\node_modules\electron'
@@ -2769,7 +3023,7 @@ function Install-Desktop {
     #
     # The Tauri bootstrap installer's launch_hermes_desktop command
     # resolves apps/desktop/release/win-unpacked/Hermes.exe directly,
-    # so an "unpacked" build (electron-builder --dir) is enough — we
+    # so an "unpacked" build (electron-builder --dir) is enough -- we
     # don't need to produce an NSIS/MSI artifact here.
 
     # Always re-resolve Node here. Stages run in separate PowerShell processes,
@@ -2823,7 +3077,7 @@ function Install-Desktop {
         #
         # The streaming sink in bootstrap.rs's run_install_script
         # captures every stdout/stderr line as it's emitted, so we don't
-        # need a side TEMP log file — the installer's bootstrap log
+        # need a side TEMP log file -- the installer's bootstrap log
         # IS the artifact a support engineer reads.
         #
         # Prefer `npm ci`: it wipes node_modules and reinstalls from the
@@ -2878,7 +3132,7 @@ function Install-Desktop {
     # NOT signing the output. Combined with signAndEditExecutable=false in
     # apps/desktop/package.json's build.win block, electron-builder never
     # invokes signtool and therefore never fetches/extracts winCodeSign
-    # (whose macOS symlinks crash 7-Zip on non-admin Windows — a dead end we
+    # (whose macOS symlinks crash 7-Zip on non-admin Windows -- a dead end we
     # are NOT trying to work around). The Hermes icon + product name are
     # stamped onto Hermes.exe by our own rcedit step (Set-DesktopExeIdentity)
     # AFTER this build, completely decoupled from electron-builder signing.
@@ -2949,7 +3203,7 @@ function Install-Desktop {
         Pop-Location
         throw
     } finally {
-        # Restore env to whatever the caller had — don't leak our
+        # Restore env to whatever the caller had -- don't leak our
         # signing-off override into anything install.ps1 invokes later
         # (Stage-PlatformSdks, etc.).
         $env:CSC_IDENTITY_AUTO_DISCOVERY = $prevCSCAuto
@@ -2980,7 +3234,7 @@ function Install-Desktop {
 
     # 3b. The Hermes icon + identity are stamped onto Hermes.exe by the
     #     electron-builder `afterPack` hook (apps/desktop/scripts/after-pack.mjs)
-    #     during `npm run pack` above — for every build, so the installer's
+    #     during `npm run pack` above -- for every build, so the installer's
     #     --update rebuild stays branded too. No separate stamp step needed here.
     #     electron-builder's own rcedit step stays disabled (signAndEditExecutable
     #     =false) because enabling it drags in signtool -> winCodeSign -> the
@@ -2990,7 +3244,7 @@ function Install-Desktop {
     #     directory. Chromium's GPU/renderer sandboxes CHECK-fail with
     #     0x80000003 when this ACE is missing alongside orphan AppContainer
     #     SIDs under %LOCALAPPDATA% (electron/electron#51761, hermes-agent#38216).
-    #     Best-effort — never fail an otherwise-good install over ACL repair.
+    #     Best-effort -- never fail an otherwise-good install over ACL repair.
     try {
         $appDir = Split-Path -Parent $desktopExe
         & icacls $appDir /grant "*S-1-15-2-2:(OI)(CI)(RX)" /T /C /Q | Out-Null
@@ -3006,7 +3260,7 @@ function Install-Desktop {
     # 4. Create Start Menu + Desktop shortcuts pointing DIRECTLY at the packed
     #    Hermes.exe. We deliberately do NOT point them at `hermes desktop`: that
     #    command rebuilds (npm install + electron-builder) on every launch,
-    #    which would cost minutes each time. The packed exe is the consumer —
+    #    which would cost minutes each time. The packed exe is the consumer --
     #    launching it directly is instant, and updates flow through the
     #    installer's --update path (which rebuilds once, then relaunches).
     New-DesktopShortcuts -TargetExe $desktopExe
@@ -3062,11 +3316,11 @@ function New-DesktopShortcuts {
         # cached bitmap. Critical on the --update path: the exe was re-stamped
         # with the Hermes icon, but without this the shortcut can keep drawing
         # the old Electron icon until the user manually refreshes / reboots.
-        # Best-effort and silent — never fail the install over a cosmetic cache.
+        # Best-effort and silent -- never fail the install over a cosmetic cache.
         try {
             & ie4uinit.exe -show 2>$null
         } catch {
-            # ie4uinit may be absent/renamed on some SKUs — ignore.
+            # ie4uinit may be absent/renamed on some SKUs -- ignore.
         }
     } catch {
         Write-Warn "Skipping shortcut creation: $($_.Exception.Message)"
@@ -3446,6 +3700,8 @@ $InstallStages += @(
     # caller (GUI / CI) handles the equivalent UX themselves.
     @{ Name = "configure";        Title = "Configuring API keys and models";      Category = "post-install"; NeedsUserInput = $true;  Worker = "Stage-Configure" }
     @{ Name = "gateway";          Title = "Starting messaging gateway";           Category = "post-install"; NeedsUserInput = $true;  Worker = "Stage-Gateway" }
+    # Must remain last: reaching this stage proves every prior stage succeeded.
+    @{ Name = "bootstrap-cache";  Title = "Refreshing installer cache policy";    Category = "post-install"; NeedsUserInput = $false; Worker = "Stage-BootstrapCache" }
 )
 
 # Stage workers -- thin wrappers that delegate to the existing Install-* /
@@ -3490,6 +3746,7 @@ function Stage-PlatformSdks     { Resolve-UvCmd; Install-PlatformSdks }
 function Stage-BootstrapMarker  { Write-BootstrapMarker }
 function Stage-Configure        { Invoke-SetupWizard }
 function Stage-Gateway          { Start-GatewayIfConfigured }
+function Stage-BootstrapCache   { Remove-MutableBootstrapScriptCache }
 
 function Get-InstallStage {
     param([string]$Name)
@@ -3626,6 +3883,35 @@ function Invoke-PostInstallMode {
     Write-Info "Running post-install setup..."
     Invoke-EnsureMode -Deps "node,browser"
     Write-Info "Post-install complete"
+}
+
+function Remove-MutableBootstrapScriptCache {
+    # Commit-pinned scripts are immutable and intentionally retained forever.
+    # A branch/tag cache is only a network fallback. Delete it after every
+    # successful staged run so even an older signed bootstrapper that still
+    # treats "cache exists" as authoritative is forced to fetch on next run.
+    if ($Commit -and $Commit -match '^[0-9a-fA-F]{7,40}$') {
+        Write-Info "Keeping immutable commit-pinned bootstrap script cache"
+        return
+    }
+    if (-not $Branch) {
+        return
+    }
+
+    $safeRef = [regex]::Replace($Branch, '[^A-Za-z0-9._-]', '_')
+    $cachePath = Join-Path $HermesHome "bootstrap-cache\install-$safeRef.ps1"
+    if (-not (Test-Path -LiteralPath $cachePath)) {
+        return
+    }
+
+    try {
+        Remove-Item -LiteralPath $cachePath -Force -ErrorAction Stop
+        Write-Info "Evicted mutable bootstrap script cache: $cachePath"
+    } catch {
+        # The installation itself is already complete. A sharing violation here
+        # must be visible, but must not roll back a healthy install.
+        Write-Warn "Could not evict mutable bootstrap script cache $cachePath`: $($_.Exception.Message)"
+    }
 }
 
 function Main {

@@ -672,6 +672,12 @@ def strip_think_blocks(agent, content: str) -> str:
     """
     if not content:
         return ""
+    if isinstance(content, list):
+        from agent.message_content import flatten_message_text
+
+        content = flatten_message_text(content)
+    elif not isinstance(content, str):
+        content = str(content)
     # 1. Closed tag pairs — case-insensitive for all variants so
     #    mixed-case tags (<THINK>, <Thinking>) don't slip through to
     #    the unterminated-tag pass and take trailing content with them.

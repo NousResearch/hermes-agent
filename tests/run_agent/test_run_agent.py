@@ -445,6 +445,10 @@ class TestStripThinkBlocks:
     def test_none_returns_empty(self, agent):
         assert agent._strip_think_blocks(None) == ""
 
+    def test_list_content_flattens_safely(self, agent):
+        multimodal = [{"type": "text", "text": "<think>secret</think>hello"}, {"type": "image_url", "image_url": {"url": "http://x"}}]
+        assert agent._strip_think_blocks(multimodal) == "hello"
+
     def test_no_blocks_unchanged(self, agent):
         assert agent._strip_think_blocks("hello world") == "hello world"
 

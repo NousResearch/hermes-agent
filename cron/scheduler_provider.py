@@ -100,16 +100,29 @@ class CronScheduler(ABC):
         Returns True if THIS caller claimed and ran the job, False if the claim
         was lost (another machine/retry won it) or the job no longer exists.
         """
-        from cron.jobs import claim_job_for_fire, get_job
+        from cron.jobs import (
+            claim_job_for_fire_with_receipt,
+            get_job,
+            restore_job_dispatch_state,
+        )
         from cron.executions import create_execution
         from cron.scheduler import run_one_job
 
-        if not claim_job_for_fire(job_id):
+        receipt = claim_job_for_fire_with_receipt(job_id)
+        if receipt is None:
             return False  # another machine already claimed this fire
         job = get_job(job_id)
         if job is None:
             return False  # job removed (e.g. repeat-N exhausted) between arm and fire
-        job["execution_id"] = create_execution(job_id, source=self.name)["id"]
+        try:
+            job["execution_id"] = create_execution(job_id, source=self.name)["id"]
+        except Exception as ledger_err:
+            if not restore_job_dispatch_state(receipt):
+                raise RuntimeError(
+                    f"ledger creation failed and external fire state for job {job_id} "
+                    "could not be authenticated and restored"
+                ) from ledger_err
+            raise
         return run_one_job(job, adapters=adapters, loop=loop)
 
     def reconcile(self) -> None:

@@ -1,12 +1,20 @@
 import { useQueryClient } from '@tanstack/react-query'
 import { useCallback, useRef, useState } from 'react'
 
+import { refusalPolicy } from '@hermes/shared/billing-policy'
+import {
+  driveChargeSettlement,
+  SETTLEMENT_POLL_CAP_MS,
+  SETTLEMENT_POLL_INTERVAL_MS
+} from '@hermes/shared/charge-settlement'
+
 import type { BillingApi, BillingRefusal } from './api'
 import { useBillingApi } from './api'
 import { resolveRefusal } from './errors'
+import type { BillingChargeStatusResponse } from './types'
 
-export const CHARGE_POLL_INTERVAL_MS = 2000
-export const CHARGE_POLL_CAP_MS = 5 * 60 * 1000
+export const CHARGE_POLL_INTERVAL_MS = SETTLEMENT_POLL_INTERVAL_MS
+export const CHARGE_POLL_CAP_MS = SETTLEMENT_POLL_CAP_MS
 
 export type ChargeFlowPhase = 'charging' | 'done' | 'idle' | 'polling'
 
@@ -46,8 +54,6 @@ interface PendingChargeIntent {
 
 const defaultSleep = (ms: number): Promise<void> => new Promise(resolve => setTimeout(resolve, ms))
 
-const revocationKinds = new Set(['insufficient_scope', 'remote_spending_revoked', 'session_revoked'])
-
 const retryableSendKinds = new Set([
   'endpoint_unavailable',
   'rate_limited',
@@ -63,26 +69,51 @@ export async function pollChargeSettlement(
 ): Promise<ChargeFlowOutcome> {
   const sleep = opts.sleep ?? defaultSleep
   const now = opts.now ?? Date.now
-  const start = now()
-  const timedOut = () => now() - start >= CHARGE_POLL_CAP_MS
+  const observed: { refusal?: BillingRefusal; status?: BillingChargeStatusResponse } = {}
 
-  for (;;) {
-    const result = await api.chargeStatus(chargeId)
+  const settlement = await driveChargeSettlement({
+    fetchStatus: async () => {
+      const result = await api.chargeStatus(chargeId)
 
-    if (!result.ok) {
-      if (result.refusal.kind === 'rate_limited' || result.refusal.kind === 'temporarily_unavailable') {
-        if (timedOut()) {
-          return timeoutOutcome(opts.portalUrl)
-        }
+      if (result.ok) {
+        observed.refusal = undefined
+        observed.status = result.data
 
-        await sleep(Math.min((result.refusal.retryAfter ?? 5) * 1000, 30_000))
-
-        continue
+        return result.data
       }
 
-      if (revocationKinds.has(result.refusal.kind)) {
-        const resolved = resolveRefusal(result.refusal)
-        const portalUrl = resolved.action.type === 'portal' ? resolved.action.url : result.refusal.portalUrl
+      observed.refusal = result.refusal
+      observed.status = statusFromRefusal(result.refusal)
+
+      return observed.status
+    },
+    isCancelled: () => false,
+    now,
+    sleep
+  })
+
+  switch (settlement.kind) {
+    case 'settled':
+      return {
+        amountUsd: settlement.status.amount_usd,
+        kind: 'success',
+        message: settlement.status.amount_usd ? `$${settlement.status.amount_usd} added.` : 'Credits added.'
+      }
+
+    case 'failed':
+      return {
+        action: { type: 'retry' },
+        kind: 'failure',
+        message: renderChargeFailed(settlement.status.reason),
+        retryFreshKey: true,
+        title: 'Charge failed'
+      }
+
+    case 'ambiguous': {
+      if (settlement.status && refusalPolicy(settlement.error).ambiguousMidPoll) {
+        const refusal = observed.refusal ?? refusalFromStatus(settlement.error, settlement.status)
+        const resolved = resolveRefusal(refusal)
+        const portalUrl = resolved.action.type === 'portal' ? resolved.action.url : refusal.portalUrl
 
         return {
           kind: 'ambiguous',
@@ -94,36 +125,52 @@ export async function pollChargeSettlement(
 
       return {
         kind: 'failure',
-        message: result.refusal.message || 'Could not check the charge.',
+        message: observed.refusal?.message || 'Could not check the charge.',
         retryFreshKey: true,
         title: 'Could not check charge'
       }
     }
 
-    if (result.data.status === 'settled') {
+    case 'refused':
       return {
-        amountUsd: result.data.amount_usd,
-        kind: 'success',
-        message: result.data.amount_usd ? `$${result.data.amount_usd} added.` : 'Credits added.'
-      }
-    }
-
-    if (result.data.status === 'failed') {
-      return {
-        action: { type: 'retry' },
         kind: 'failure',
-        message: renderChargeFailed(result.data.reason),
+        message: observed.refusal?.message || settlement.status.message || 'Could not check the charge.',
         retryFreshKey: true,
-        title: 'Charge failed'
+        title: 'Could not check charge'
       }
-    }
 
-    if (timedOut()) {
-      return timeoutOutcome(result.data.portal_url ?? opts.portalUrl)
-    }
-
-    await sleep(CHARGE_POLL_INTERVAL_MS)
+    case 'cancelled':
+    case 'timed_out':
+      return timeoutOutcome(observed.status?.ok ? (observed.status.portal_url ?? opts.portalUrl) : opts.portalUrl)
   }
+}
+
+function statusFromRefusal(refusal: BillingRefusal): BillingChargeStatusResponse {
+  const raw = isRecord(refusal.raw) ? refusal.raw : {}
+
+  return {
+    ...raw,
+    error: refusal.kind,
+    message: refusal.message,
+    ok: false,
+    ...(refusal.payload !== undefined ? { payload: refusal.payload } : {}),
+    ...(refusal.portalUrl !== undefined ? { portal_url: refusal.portalUrl } : {}),
+    ...(refusal.retryAfter !== undefined ? { retry_after: refusal.retryAfter } : {})
+  } as BillingChargeStatusResponse
+}
+
+function refusalFromStatus(error: string, status: BillingChargeStatusResponse): BillingRefusal {
+  return {
+    kind: error,
+    message: status.message || error,
+    payload: status.payload,
+    portalUrl: status.portal_url ?? undefined,
+    retryAfter: status.retry_after ?? undefined
+  }
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null
 }
 
 export function useChargeFlow() {

@@ -122,6 +122,22 @@ describe('pollChargeSettlement', () => {
     expect(clock.waits).toEqual([7000])
   })
 
+  it('backs off when Stripe is unavailable and keeps polling', async () => {
+    const clock = controlledClock()
+
+    const api = {
+      chargeStatus: vi
+        .fn()
+        .mockResolvedValueOnce(refusal('stripe_unavailable', { retryAfter: 3 }))
+        .mockResolvedValueOnce(status({ amount_usd: '50', status: 'settled' }))
+    }
+
+    const outcome = await pollChargeSettlement(api, 'ch_123', clock)
+
+    expect(outcome).toMatchObject({ amountUsd: '50', kind: 'success' })
+    expect(clock.waits).toEqual([3000])
+  })
+
   it('caps pending polling at 5 minutes as an ambiguous outcome', async () => {
     const clock = controlledClock()
 

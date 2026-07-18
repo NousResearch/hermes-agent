@@ -1,8 +1,6 @@
 import { describe, expect, it } from 'vitest'
 
 import type {
-  BillingChargeResponse,
-  BillingRpcResponse,
   BillingStateResponse,
   SubscriptionStateResponse
 } from './types'
@@ -109,32 +107,7 @@ const loggedOutSubscriptionState = {
   portal_url: 'https://portal.nousresearch.com/login',
   role: null,
   tiers: []
-} satisfies BillingRpcResponse<SubscriptionStateResponse>
-
-const insufficientScopeRefusal = {
-  error: {
-    actor: 'terminal',
-    code: 'billing_scope_missing',
-    kind: 'insufficient_scope',
-    message: 'This terminal is not allowed to manage billing.',
-    payload: {
-      isDefaultCeiling: true,
-      remainingUsd: '0'
-    },
-    portal_url: 'https://portal.nousresearch.com/billing',
-    recovery: 'step_up',
-    retry_after: null
-  },
-  ok: false
-} satisfies BillingRpcResponse<BillingChargeResponse>
-
-const describeCharge = (res: BillingRpcResponse<BillingChargeResponse>): string => {
-  if (!res.ok) {
-    return res.error.kind
-  }
-
-  return res.charge_id ?? 'submitted'
-}
+} satisfies SubscriptionStateResponse
 
 describe('desktop billing wire types', () => {
   it('pins realistic billing and subscription RPC payload shapes', () => {
@@ -143,9 +116,5 @@ describe('desktop billing wire types', () => {
     expect(deployedTodayBillingState.cli_billing_enabled).toBe(false)
     expect(deployedTodayBillingState.card?.last4).toBe('4444')
     expect(loggedOutSubscriptionState.logged_in).toBe(false)
-  })
-
-  it('narrows refusal envelopes by ok', () => {
-    expect(describeCharge(insufficientScopeRefusal)).toBe('insufficient_scope')
   })
 })

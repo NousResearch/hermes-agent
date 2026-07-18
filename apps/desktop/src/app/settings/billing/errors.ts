@@ -43,7 +43,7 @@ export const resolveRefusal = (refusal: BillingRefusal): BillingRefusalPresentat
 
       return {
         action: portalAction(refusal.portalUrl),
-        message: `${who} Reconnect to restore — run /portal to re-authorize this terminal.`,
+        message: `${who} Reconnect from Settings → Gateway to re-authorize this device.`,
         title: 'Terminal billing was turned off'
       }
     }
@@ -51,7 +51,7 @@ export const resolveRefusal = (refusal: BillingRefusal): BillingRefusalPresentat
     case 'session_revoked':
       return {
         action: portalAction(refusal.portalUrl),
-        message: 'Your session was logged out. Run /portal to log in again.',
+        message: 'Your session was logged out. Sign in again from Settings → Gateway.',
         title: 'Session logged out'
       }
 
@@ -121,13 +121,6 @@ export const resolveRefusal = (refusal: BillingRefusal): BillingRefusalPresentat
         action: { type: 'retry' },
         message: stripeRetryMessage(refusal),
         title: 'Stripe is having trouble'
-      }
-
-    case 'processing_error':
-      return {
-        action: { type: 'retry' },
-        message: 'Something went wrong processing that request. Try again.',
-        title: 'Processing error'
       }
 
     case 'upgrade_cap_exceeded':

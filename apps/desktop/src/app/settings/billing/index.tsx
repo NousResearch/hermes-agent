@@ -120,7 +120,7 @@ function AccountRow({ billing, row }: { billing?: BillingStateResponse; row: Bil
   }
 
   if (row.id === 'auto_reload' && billing?.auto_reload) {
-    return <AutoReloadRow autoReload={billing.auto_reload} row={row} />
+    return <AutoReloadRow autoReload={billing.auto_reload} bounds={billing} row={row} />
   }
 
   return (
@@ -140,7 +140,15 @@ function AccountRow({ billing, row }: { billing?: BillingStateResponse; row: Bil
   )
 }
 
-function AutoReloadRow({ autoReload, row }: { autoReload: BillingAutoReload; row: BillingAccountRowView }) {
+function AutoReloadRow({
+  autoReload,
+  bounds,
+  row
+}: {
+  autoReload: BillingAutoReload
+  bounds: Pick<BillingStateResponse, 'max_usd' | 'min_usd'>
+  row: BillingAccountRowView
+}) {
   const api = useBillingApi()
   const queryClient = useQueryClient()
   const [confirmDisable, setConfirmDisable] = useState(false)
@@ -158,10 +166,10 @@ function AutoReloadRow({ autoReload, row }: { autoReload: BillingAutoReload; row
     initialAutoReloadAmount(autoReload.threshold_usd, autoReload.threshold_display)
   )
 
-  const validation = validateAutoReloadInputs(threshold, reloadTo, autoReload)
+  const validation = validateAutoReloadInputs(threshold, reloadTo, bounds)
   const busy = saving
-  const maxBound = autoReload.bounds?.max_usd ?? autoReload.bounds?.maxUsd ?? undefined
-  const minBound = autoReload.bounds?.min_usd ?? autoReload.bounds?.minUsd ?? undefined
+  const maxBound = bounds.max_usd ?? undefined
+  const minBound = bounds.min_usd ?? undefined
 
   const resetFeedback = () => {
     setConfirmDisable(false)
@@ -879,15 +887,15 @@ function initialAutoReloadAmount(...candidates: Array<null | string | undefined>
 function validateAutoReloadInputs(
   thresholdRaw: string,
   reloadToRaw: string,
-  autoReload: Pick<BillingAutoReload, 'bounds'>
+  bounds: Pick<BillingStateResponse, 'max_usd' | 'min_usd'>
 ): { error?: string; values?: { reloadTo: string; threshold: string } } {
-  const threshold = validateBillingAmount('Threshold', thresholdRaw, autoReload)
+  const threshold = validateBillingAmount('Threshold', thresholdRaw, bounds)
 
   if (threshold.error || threshold.amount == null) {
     return { error: threshold.error }
   }
 
-  const reloadTo = validateBillingAmount('Reload-to', reloadToRaw, autoReload)
+  const reloadTo = validateBillingAmount('Reload-to', reloadToRaw, bounds)
 
   if (reloadTo.error || reloadTo.amount == null) {
     return { error: reloadTo.error }
@@ -908,7 +916,7 @@ function validateAutoReloadInputs(
 function validateBillingAmount(
   label: string,
   raw: string,
-  autoReload: Pick<BillingAutoReload, 'bounds'>
+  bounds: Pick<BillingStateResponse, 'max_usd' | 'min_usd'>
 ): { amount?: number; error?: string } {
   const cleaned = raw.trim().replace(/^\$/, '').trim()
 
@@ -922,13 +930,13 @@ function validateBillingAmount(
     return { error: `${label}: amount must be greater than $0.` }
   }
 
-  const min = parseAmount(autoReload.bounds?.min_usd ?? autoReload.bounds?.minUsd)
+  const min = parseAmount(bounds.min_usd)
 
   if (min != null && amount < min) {
     return { error: `${label}: minimum is ${formatMoney(min)}.` }
   }
 
-  const max = parseAmount(autoReload.bounds?.max_usd ?? autoReload.bounds?.maxUsd)
+  const max = parseAmount(bounds.max_usd)
 
   if (max != null && amount > max) {
     return { error: `${label}: maximum is ${formatMoney(max)}.` }

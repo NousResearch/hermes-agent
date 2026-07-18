@@ -1,20 +1,29 @@
 import { describe, expect, it } from 'vitest'
 
-import type { BillingErrorKind, BillingRefusal } from './api'
+import type { KnownBillingRefusalCode } from '@hermes/shared/billing'
+
+import type { BillingRefusal } from './api'
 import { resolveRefusal } from './errors'
 
-const expectedActions: Partial<
-  Record<BillingErrorKind | 'transport' | 'timeout', 'portal' | 'retry' | 'step_up' | 'none'>
+const expectedActions: Record<
+  KnownBillingRefusalCode | 'timeout' | 'transport',
+  'none' | 'portal' | 'retry' | 'step_up'
 > = {
+  auto_top_up_disabled_failures: 'none',
   cli_billing_disabled: 'portal',
   consent_required: 'portal',
   endpoint_unavailable: 'retry',
   idempotency_conflict: 'none',
+  idempotency_key_required: 'none',
   insufficient_scope: 'step_up',
+  internal_error: 'none',
+  invalid_charge_id: 'none',
+  invalid_request: 'none',
   monthly_cap_exceeded: 'portal',
+  network_error: 'none',
   no_payment_method: 'portal',
   org_access_denied: 'none',
-  processing_error: 'retry',
+  preview_rejected: 'none',
   rate_limited: 'retry',
   remote_spending_disabled: 'portal',
   remote_spending_revoked: 'portal',
@@ -24,7 +33,8 @@ const expectedActions: Partial<
   temporarily_unavailable: 'retry',
   timeout: 'retry',
   transport: 'retry',
-  upgrade_cap_exceeded: 'none'
+  upgrade_cap_exceeded: 'none',
+  validation_failed: 'none'
 }
 
 describe('resolveRefusal', () => {

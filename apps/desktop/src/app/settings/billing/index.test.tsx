@@ -127,7 +127,7 @@ describe('BillingSettings', () => {
 
     fireEvent.click(await screen.findByRole('button', { name: 'Manage' }))
     fireEvent.change(screen.getByRole('spinbutton', { name: 'Auto-refill threshold' }), {
-      target: { value: '7.50' }
+      target: { value: '15' }
     })
     fireEvent.change(screen.getByRole('spinbutton', { name: 'Auto-refill reload-to amount' }), {
       target: { value: '20' }
@@ -138,11 +138,27 @@ describe('BillingSettings', () => {
       expect(apiMocks.updateAutoReload).toHaveBeenCalledWith({
         enabled: true,
         reload_to_usd: '20',
-        threshold_usd: '7.5'
+        threshold_usd: '15'
       })
     )
     await waitFor(() => expect(invalidate).toHaveBeenCalledWith({ queryKey: ['billing', 'state'] }))
     expect(await screen.findByText('Auto-refill updated.')).toBeTruthy()
+  })
+
+  it('rejects auto-refill amounts outside the billing bounds', async () => {
+    renderBilling()
+
+    fireEvent.click(await screen.findByRole('button', { name: 'Manage' }))
+    fireEvent.change(screen.getByRole('spinbutton', { name: 'Auto-refill threshold' }), {
+      target: { value: '7.50' }
+    })
+
+    expect(screen.getByText('Threshold: minimum is $10.')).toBeTruthy()
+    expect(screen.getByRole('button', { name: 'Save' }).hasAttribute('disabled')).toBe(true)
+
+    fireEvent.click(screen.getByRole('button', { name: 'Save' }))
+
+    expect(apiMocks.updateAutoReload).not.toHaveBeenCalled()
   })
 
   it('requires inline confirmation before disabling auto-refill', async () => {
@@ -173,6 +189,12 @@ describe('BillingSettings', () => {
     })
 
     fireEvent.click(await screen.findByRole('button', { name: 'Manage' }))
+    fireEvent.change(screen.getByRole('spinbutton', { name: 'Auto-refill threshold' }), {
+      target: { value: '15' }
+    })
+    fireEvent.change(screen.getByRole('spinbutton', { name: 'Auto-refill reload-to amount' }), {
+      target: { value: '20' }
+    })
     fireEvent.click(screen.getByRole('button', { name: 'Save' }))
 
     expect(await screen.findByText('Terminal billing needs approval:')).toBeTruthy()

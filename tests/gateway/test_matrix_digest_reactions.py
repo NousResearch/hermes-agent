@@ -70,6 +70,8 @@ def _make_adapter(allowed_user_ids=None):
     adapter._approval_prompts_by_event = {}
     adapter._approval_prompt_by_session = {}
     adapter._model_picker_prompts_by_event = {}
+    adapter._choice_picker_prompts_by_event = {}
+    adapter._digest_detail_prompts_by_event = {}
     adapter._approval_require_sender = True
     adapter.send = AsyncMock(return_value=SimpleNamespace(success=True, message_id="$selection"))
     adapter._send_reaction = AsyncMock(return_value="$reaction")

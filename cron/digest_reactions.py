@@ -13,6 +13,7 @@ import json
 import os
 import tempfile
 import time
+from contextlib import contextmanager
 from pathlib import Path
 from typing import Any, Iterable
 
@@ -21,6 +22,8 @@ from hermes_constants import get_hermes_home
 _DETAIL_EMOJI = "🧾"
 _DETAIL_TTL_SECONDS = 7 * 24 * 60 * 60
 _MAX_DETAIL_CHARS = 3500
+_REGISTRY_LOCK_TIMEOUT_SECONDS = 10.0
+_REGISTRY_LOCK_POLL_SECONDS = 0.01
 _KEYCAPS = (
     "1️⃣",
     "2️⃣",
@@ -41,6 +44,63 @@ def _registry_path() -> Path:
 
 def _cron_output_root() -> Path:
     return get_hermes_home() / "cron" / "output"
+
+
+def _registry_lock_path() -> Path:
+    return _registry_path().with_suffix(".lock")
+
+
+@contextmanager
+def _registry_transaction_lock():
+    """Serialize registry read-modify-write transactions across processes."""
+    path = _registry_lock_path()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    handle = path.open("a+b")
+    try:
+        try:
+            path.chmod(0o600)
+        except OSError:
+            pass
+        deadline = time.monotonic() + _REGISTRY_LOCK_TIMEOUT_SECONDS
+        acquired = False
+        if os.name == "nt":
+            import msvcrt
+
+            handle.seek(0, os.SEEK_END)
+            if handle.tell() == 0:
+                handle.write(b"\0")
+                handle.flush()
+            while not acquired:
+                try:
+                    handle.seek(0)
+                    msvcrt.locking(handle.fileno(), msvcrt.LK_NBLCK, 1)
+                    acquired = True
+                except OSError:
+                    if time.monotonic() >= deadline:
+                        raise TimeoutError("timed out acquiring Matrix digest registry lock")
+                    time.sleep(_REGISTRY_LOCK_POLL_SECONDS)
+        else:
+            import fcntl
+
+            while not acquired:
+                try:
+                    fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+                    acquired = True
+                except (BlockingIOError, OSError):
+                    if time.monotonic() >= deadline:
+                        raise TimeoutError("timed out acquiring Matrix digest registry lock")
+                    time.sleep(_REGISTRY_LOCK_POLL_SECONDS)
+        try:
+            yield
+        finally:
+            if acquired:
+                if os.name == "nt":
+                    handle.seek(0)
+                    msvcrt.locking(handle.fileno(), msvcrt.LK_UNLCK, 1)
+                else:
+                    fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
+    finally:
+        handle.close()
 
 
 def _load_registry() -> dict[str, dict[str, Any]]:
@@ -156,8 +216,7 @@ def register_digest_delivery(
 
     now_ts = float(time.time() if now is None else now)
     names = source_names or {}
-    data = _load_registry()
-    data[_record_key(room_id, event_id)] = {
+    record = {
         "room_id": room_id,
         "event_id": event_id,
         "created_at": now_ts,
@@ -174,13 +233,16 @@ def register_digest_delivery(
             for job_id in sources[: len(_KEYCAPS)]
         ],
     }
-    # Opportunistic pruning keeps the state file bounded without a background job.
-    pruned = {
-        key: record
-        for key, record in data.items()
-        if float(record.get("expires_at") or 0) >= now_ts
-    }
-    _save_registry(pruned)
+    with _registry_transaction_lock():
+        data = _load_registry()
+        data[_record_key(room_id, event_id)] = record
+        # Opportunistic pruning keeps the state file bounded without a background job.
+        pruned = {
+            key: existing
+            for key, existing in data.items()
+            if float(existing.get("expires_at") or 0) >= now_ts
+        }
+        _save_registry(pruned)
 
 
 def resolve_digest_delivery(
@@ -191,16 +253,17 @@ def resolve_digest_delivery(
 ) -> dict[str, Any] | None:
     """Return a digest-detail record for a Matrix event, or None if unavailable."""
     now_ts = float(time.time() if now is None else now)
-    data = _load_registry()
     key = _record_key(str(room_id or ""), str(event_id or ""))
-    record = data.get(key)
-    if not record:
-        return None
-    if float(record.get("expires_at") or 0) < now_ts:
-        data.pop(key, None)
-        _save_registry(data)
-        return None
-    return record
+    with _registry_transaction_lock():
+        data = _load_registry()
+        record = data.get(key)
+        if not record:
+            return None
+        if float(record.get("expires_at") or 0) < now_ts:
+            data.pop(key, None)
+            _save_registry(data)
+            return None
+        return record
 
 
 def detail_reaction_emoji() -> str:

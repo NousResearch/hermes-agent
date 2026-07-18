@@ -1,4 +1,8 @@
 import json
+import os
+import subprocess
+import sys
+import time
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -159,3 +163,82 @@ def test_scheduler_does_not_register_non_digest_matrix_delivery(tmp_path, monkey
     )
 
     assert not _registry_path().exists()
+
+
+def test_concurrent_digest_registrations_preserve_both_processes(tmp_path):
+    """The shared registry must serialize its full read-modify-write transaction."""
+    worker = r'''
+import os
+import sys
+import time
+from pathlib import Path
+
+home = Path(sys.argv[1])
+name = sys.argv[2]
+os.environ["HERMES_HOME"] = str(home)
+
+from cron import digest_reactions as registry
+
+real_save = registry._save_registry
+
+
+def slow_save(data):
+    time.sleep(0.02)
+    real_save(data)
+
+
+registry._save_registry = slow_save
+(home / f"ready-{name}").touch()
+go = home / "go"
+deadline = time.monotonic() + 10
+while not go.exists():
+    if time.monotonic() >= deadline:
+        raise TimeoutError("concurrency test start barrier timed out")
+    time.sleep(0.005)
+
+for index in range(8):
+    registry.register_digest_delivery(
+        room_id="!room:example.org",
+        event_id=f"${name}-{index}",
+        digest_job={"id": f"digest-{name}", "name": f"Digest {name}"},
+        source_job_ids=[f"source-{name}"],
+        now=1000.0 + index,
+    )
+'''
+    env = os.environ.copy()
+    env["PYTHONPATH"] = str(Path(__file__).resolve().parents[2])
+    processes = [
+        subprocess.Popen(
+            [sys.executable, "-c", worker, str(tmp_path), name],
+            env=env,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+        )
+        for name in ("a", "b")
+    ]
+    deadline = time.monotonic() + 10
+    while not all((tmp_path / f"ready-{name}").exists() for name in ("a", "b")):
+        if time.monotonic() >= deadline:
+            for process in processes:
+                process.kill()
+            raise AssertionError("workers did not reach the start barrier")
+        time.sleep(0.005)
+    (tmp_path / "go").touch()
+
+    failures = []
+    for process in processes:
+        stdout, stderr = process.communicate(timeout=20)
+        if process.returncode:
+            failures.append((process.returncode, stdout, stderr))
+    assert failures == []
+
+    registry = json.loads(
+        (tmp_path / "state" / "matrix-digest-reactions.json").read_text(encoding="utf-8")
+    )
+    expected = {
+        f"!room:example.org\0${name}-{index}"
+        for name in ("a", "b")
+        for index in range(8)
+    }
+    assert set(registry) == expected

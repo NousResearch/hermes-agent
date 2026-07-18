@@ -10,6 +10,7 @@ import os
 import re
 import stat
 import sys
+from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
 
@@ -36,8 +37,8 @@ from plugins.memory.hindsight import (
 
 
 @pytest.fixture(autouse=True)
-def _clean_env(monkeypatch):
-    """Ensure no stale env vars leak between tests."""
+def _clean_env(tmp_path, monkeypatch):
+    """Ensure no stale env vars or Windows home state leak between tests."""
     for key in (
         "HINDSIGHT_API_KEY", "HINDSIGHT_API_URL", "HINDSIGHT_BANK_ID",
         "HINDSIGHT_BUDGET", "HINDSIGHT_MODE", "HINDSIGHT_TIMEOUT",
@@ -47,6 +48,12 @@ def _clean_env(monkeypatch):
         "HINDSIGHT_RETAIN_USER_PREFIX", "HINDSIGHT_RETAIN_ASSISTANT_PREFIX",
     ):
         monkeypatch.delenv(key, raising=False)
+
+    # On Windows pathlib.Path.home() resolves USERPROFILE/HOMEDRIVE+HOMEPATH,
+    # not the POSIX HOME alias that these tests historically monkeypatched.
+    # Patch the actual API and keep all legacy profile writes in tmp_path.
+    isolated_home = tmp_path / "user-home"
+    monkeypatch.setattr(Path, "home", classmethod(lambda cls: isolated_home))
 
 
 def _make_mock_client():

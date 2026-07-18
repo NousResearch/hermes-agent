@@ -77,6 +77,20 @@ fi
 # ── Run in hermetic env ──────────────────────────────────────────────────────
 # env -i: start with empty environment, opt-in only what we need.
 # No credential var can leak — you'd have to explicitly add it here.
+#
+# On Windows, Python's pathlib.Path.home() does not use the POSIX HOME alias;
+# it resolves USERPROFILE or HOMEDRIVE+HOMEPATH. Preserve only those non-secret
+# home-resolution variables so env -i remains hermetic without creating a
+# literal '~' path or breaking Windows tests.
+WINDOWS_HOME_ENV=()
+if [[ -n "${USERPROFILE:-}" || -n "${HOMEDRIVE:-}${HOMEPATH:-}" ]]; then
+  for name in USERPROFILE HOMEDRIVE HOMEPATH; do
+    if [[ -n "${!name:-}" ]]; then
+      WINDOWS_HOME_ENV+=("$name=${!name}")
+    fi
+  done
+fi
+
 echo "▶ running per-file parallel test suite via run_tests_parallel.py"
 echo "  (TZ=UTC LANG=C.UTF-8 PYTHONHASHSEED=0; clean env)"
 
@@ -94,6 +108,7 @@ echo "▶ launching test runner"
 exec env -i \
   PATH="$PATH" \
   HOME="$HOME" \
+  "${WINDOWS_HOME_ENV[@]}" \
   TZ=UTC \
   LANG=C.UTF-8 \
   LC_ALL=C.UTF-8 \

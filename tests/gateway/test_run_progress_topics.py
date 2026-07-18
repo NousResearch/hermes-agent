@@ -3,6 +3,7 @@
 import asyncio
 import importlib
 import sys
+import threading
 import time
 import types
 from types import SimpleNamespace
@@ -12,7 +13,7 @@ import pytest
 import gateway.platforms.base as base_platform
 from gateway.config import Platform, PlatformConfig, StreamingConfig
 from gateway.platforms.base import BasePlatformAdapter, MessageEvent, MessageType, SendResult
-from gateway.session import SessionSource
+from gateway.session import SessionSource, build_session_key
 
 
 class ProgressCaptureAdapter(BasePlatformAdapter):
@@ -112,6 +113,54 @@ class MetadataEditProgressCaptureAdapter(ProgressCaptureAdapter):
                 "metadata": metadata,
             }
         )
+        return SendResult(success=True, message_id=message_id)
+
+
+class ReconnectTransformCaptureAdapter(MetadataEditProgressCaptureAdapter):
+    """Capture a streamed preview, then model a disconnected edit target."""
+
+    def __init__(self, *, preview_sent: threading.Event, platform=Platform.DISCORD):
+        super().__init__(platform=platform)
+        self.preview_sent = preview_sent
+        self.connected = True
+        self.edit_results = []
+
+    async def disconnect(self) -> None:
+        self.connected = False
+
+    async def send(self, chat_id, content, reply_to=None, metadata=None) -> SendResult:
+        if not self.connected:
+            return SendResult(success=False, error="Not connected")
+        result = await super().send(
+            chat_id,
+            content,
+            reply_to=reply_to,
+            metadata=metadata,
+        )
+        self.preview_sent.set()
+        return result
+
+    async def edit_message(
+        self,
+        chat_id,
+        message_id,
+        content,
+        *,
+        finalize: bool = False,
+        metadata=None,
+    ) -> SendResult:
+        error = None if self.connected else "Not connected"
+        self.edit_results.append((content, self.connected, error))
+        self.edits.append(
+            {
+                "chat_id": chat_id,
+                "message_id": message_id,
+                "content": content,
+                "metadata": metadata,
+            }
+        )
+        if error:
+            return SendResult(success=False, error=error)
         return SendResult(success=True, message_id=message_id)
 
 
@@ -1039,6 +1088,30 @@ class TransformedStreamAgent:
         }
 
 
+class BlockingTransformedStreamAgent:
+    """Hold the turn open after preview delivery so the adapter can be replaced."""
+
+    preview_sent: threading.Event
+    release_agent: threading.Event
+
+    def __init__(self, **kwargs):
+        self.stream_delta_callback = kwargs.get("stream_delta_callback")
+        self.tools = []
+
+    def run_conversation(self, message, conversation_history=None, task_id=None):
+        assert self.stream_delta_callback is not None
+        self.stream_delta_callback("original answer")
+        assert type(self).preview_sent.wait(5), "stream preview never reached old adapter"
+        assert type(self).release_agent.wait(5), "test did not release transformed final"
+        return {
+            "final_response": "original answer\n\n[plugin appended this]",
+            "response_previewed": True,
+            "response_transformed": True,
+            "messages": [],
+            "api_calls": 1,
+        }
+
+
 @pytest.mark.asyncio
 async def test_transformed_response_edits_streamed_message_in_place(monkeypatch, tmp_path):
     """When a transform_llm_output hook modifies the response after streaming,
@@ -1066,10 +1139,101 @@ async def test_transformed_response_edits_streamed_message_in_place(monkeypatch,
     assert result.get("already_sent") is True
     # The transformed final text reached the user — appended portion is present
     # in an edit_message call (not just in the streamed sends).
-    edited_texts = [e["content"] for e in adapter.edits]
-    assert any("[plugin appended this]" in text for text in edited_texts), (
-        f"expected transformed text in adapter.edits, got: {edited_texts!r}"
+    transformed_edits = [
+        edit for edit in adapter.edits if "[plugin appended this]" in edit["content"]
+    ]
+    assert transformed_edits, (
+        f"expected transformed text in adapter.edits, got: {adapter.edits!r}"
     )
+    assert transformed_edits[-1]["metadata"] == {"thread_id": "$thread"}
+
+
+@pytest.mark.asyncio
+async def test_transformed_stream_failed_old_edit_falls_back_to_replacement_adapter(
+    monkeypatch, tmp_path
+):
+    preview_sent = threading.Event()
+    release_agent = threading.Event()
+    BlockingTransformedStreamAgent.preview_sent = preview_sent
+    BlockingTransformedStreamAgent.release_agent = release_agent
+
+    fake_dotenv = types.ModuleType("dotenv")
+    setattr(fake_dotenv, "load_dotenv", lambda *args, **kwargs: None)
+    monkeypatch.setitem(sys.modules, "dotenv", fake_dotenv)
+    fake_run_agent = types.ModuleType("run_agent")
+    setattr(fake_run_agent, "AIAgent", BlockingTransformedStreamAgent)
+    monkeypatch.setitem(sys.modules, "run_agent", fake_run_agent)
+
+    old_adapter = ReconnectTransformCaptureAdapter(preview_sent=preview_sent)
+    replacement = ReconnectTransformCaptureAdapter(preview_sent=threading.Event())
+    runner = _make_runner(old_adapter)
+    runner.config.streaming = StreamingConfig.from_dict(
+        {"enabled": True, "edit_interval": 0.01, "buffer_threshold": 1}
+    )
+    old_adapter.gateway_runner = runner
+    replacement.gateway_runner = runner
+
+    gateway_run = importlib.import_module("gateway.run")
+    monkeypatch.setattr(gateway_run, "_hermes_home", tmp_path)
+    monkeypatch.setattr(
+        gateway_run,
+        "_resolve_runtime_agent_kwargs",
+        lambda: {"api_key": "***"},
+    )
+
+    agent_results = []
+
+    async def handler(event):
+        result = await runner._run_agent(
+            message=event.text,
+            context_prompt="",
+            history=[],
+            source=event.source,
+            session_id="sess-transformed-reconnect",
+            session_key="agent:main:discord:dm:channel-1",
+        )
+        agent_results.append(result)
+        return None if result.get("already_sent") else result["final_response"]
+
+    old_adapter.set_message_handler(handler)
+    event = MessageEvent(
+        text="long-running request",
+        source=SessionSource(
+            platform=Platform.DISCORD,
+            chat_id="channel-1",
+            chat_type="dm",
+            user_id="user-1",
+            thread_id="thread-1",
+        ),
+        message_id="inbound-1",
+    )
+    task = asyncio.create_task(
+        old_adapter._process_message_background(
+            event,
+            build_session_key(event.source),
+        )
+    )
+
+    try:
+        assert await asyncio.to_thread(preview_sent.wait, 5)
+        await old_adapter.disconnect()
+        runner.adapters[Platform.DISCORD] = replacement
+        release_agent.set()
+        await asyncio.wait_for(task, timeout=5)
+    finally:
+        release_agent.set()
+        if not task.done():
+            task.cancel()
+            await asyncio.gather(task, return_exceptions=True)
+
+    transformed = "original answer\n\n[plugin appended this]"
+    assert (transformed, False, "Not connected") in old_adapter.edit_results
+    transformed_edits = [
+        edit for edit in old_adapter.edits if edit["content"] == transformed
+    ]
+    assert transformed_edits[-1]["metadata"] == {"thread_id": "thread-1"}
+    assert agent_results[-1].get("already_sent") is not True
+    assert [call["content"] for call in replacement.sent] == [transformed]
 
 
 @pytest.mark.asyncio

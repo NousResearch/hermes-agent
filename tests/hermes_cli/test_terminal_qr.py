@@ -110,3 +110,73 @@ class TestDashboardQrGate:
         out = capsys.readouterr().out
         assert "Scan to open on your phone → https://hermes.example.com" in out
         assert any(ch in out for ch in ("█", "▀", "▄"))
+
+    def test_configured_public_url_overrides_loopback_bind(self, capsys, monkeypatch):
+        from hermes_cli import web_server
+        from hermes_cli.dashboard_auth import prefix
+
+        rendered = []
+        monkeypatch.setattr(
+            prefix,
+            "resolve_public_url",
+            lambda: "https://configured.example.com/dashboard",
+        )
+        monkeypatch.setattr(
+            terminal_qr,
+            "render_qr_to_terminal",
+            lambda url: rendered.append(url) or True,
+        )
+
+        web_server._print_connect_qr("127.0.0.1", 9119, "")
+
+        out = capsys.readouterr().out
+        assert "Scan to open on your phone → https://configured.example.com/dashboard" in out
+        assert "phone cannot" not in out
+        assert rendered == ["https://configured.example.com/dashboard"]
+
+    def test_invalid_explicit_url_falls_back_to_config(self, capsys, monkeypatch):
+        from hermes_cli import web_server
+        from hermes_cli.dashboard_auth import prefix
+
+        rendered = []
+        monkeypatch.setattr(
+            prefix,
+            "resolve_public_url",
+            lambda: "https://configured.example.com",
+        )
+        monkeypatch.setattr(
+            terminal_qr,
+            "render_qr_to_terminal",
+            lambda url: rendered.append(url) or True,
+        )
+
+        web_server._print_connect_qr("127.0.0.1", 9119, "file:///tmp/dashboard")
+
+        assert "https://configured.example.com" in capsys.readouterr().out
+        assert rendered == ["https://configured.example.com"]
+
+    def test_missing_qrcode_prints_guidance_without_installing(
+        self, capsys, monkeypatch
+    ):
+        from hermes_cli import web_server
+
+        monkeypatch.setattr(
+            terminal_qr,
+            "ensure_qrcode_installed",
+            lambda: pytest.fail("dashboard startup must not install qrcode"),
+        )
+        monkeypatch.setattr(
+            terminal_qr,
+            "render_qr_to_terminal",
+            lambda _url: False,
+        )
+
+        web_server._print_connect_qr(
+            "127.0.0.1",
+            9119,
+            "https://hermes.example.com",
+        )
+
+        out = capsys.readouterr().out
+        assert "Scan to open on your phone → https://hermes.example.com" in out
+        assert "pip install qrcode" in out

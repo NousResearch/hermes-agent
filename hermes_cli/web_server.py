@@ -17835,13 +17835,17 @@ def _print_connect_qr(host: str, port: int, public_url: str) -> None:
     gate, so the scanned page lands on the sign-in screen.
     """
     from hermes_cli.terminal_qr import (
-        ensure_qrcode_installed,
         render_qr_to_terminal,
         resolve_advertised_url,
     )
+    from hermes_cli.dashboard_auth.prefix import (
+        _normalise_public_url,
+        resolve_public_url,
+    )
 
-    url = resolve_advertised_url(host, port, public_url)
-    if not public_url and host in ("127.0.0.1", "localhost", "::1"):
+    resolved_public_url = _normalise_public_url(public_url) or resolve_public_url()
+    url = resolve_advertised_url(host, port, resolved_public_url)
+    if not resolved_public_url and host in ("127.0.0.1", "localhost", "::1"):
         print(
             "  --qr: the server is bound to loopback, which a phone cannot "
             "reach.\n"
@@ -17851,7 +17855,7 @@ def _print_connect_qr(host: str, port: int, public_url: str) -> None:
         )
         return
     print(f"  Scan to open on your phone → {url}", flush=True)
-    if not (ensure_qrcode_installed() and render_qr_to_terminal(url)):
+    if not render_qr_to_terminal(url):
         print("  (QR unavailable — install the optional dependency: pip install qrcode)", flush=True)
 
 

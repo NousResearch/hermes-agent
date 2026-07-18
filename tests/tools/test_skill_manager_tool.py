@@ -963,6 +963,9 @@ class TestExternalSkillMutations:
                 with patch(
                     "tools.skill_usage.get_record",
                     side_effect=lambda n: {"pinned": False},
+                ), patch(
+                    "tools.skill_usage.load_usage",
+                    return_value={"my-skill": {"created_by": "agent"}},
                 ):
                     raw = skill_manage(
                         action="patch",
@@ -1010,6 +1013,89 @@ class TestExternalSkillMutations:
         result = json.loads(raw)
         assert result["success"] is False
         assert "manually authored" in result["error"].lower()
+
+    @pytest.mark.parametrize(
+        ("action", "kwargs"),
+        [
+            ("patch", {"old_string": "Do the thing.", "new_string": "Changed."}),
+            ("edit", {"content": VALID_SKILL_CONTENT_2}),
+            ("delete", {}),
+            (
+                "write_file",
+                {"file_path": "references/new.md", "file_content": "new"},
+            ),
+            ("remove_file", {"file_path": "references/existing.md"}),
+        ],
+    )
+    def test_background_review_fails_closed_without_agent_ownership_record(
+        self, tmp_path, action, kwargs
+    ):
+        """Every autonomous mutation requires positive agent ownership proof."""
+        from tools.skill_provenance import (
+            BACKGROUND_REVIEW,
+            reset_current_write_origin,
+            set_current_write_origin,
+        )
+
+        with _skill_dir(tmp_path):
+            _create_skill("manual-skill", VALID_SKILL_CONTENT)
+            support = tmp_path / "manual-skill" / "references" / "existing.md"
+            support.parent.mkdir(parents=True)
+            support.write_text("keep", encoding="utf-8")
+            before = {
+                path.relative_to(tmp_path): path.read_bytes()
+                for path in tmp_path.rglob("*")
+                if path.is_file()
+            }
+
+            token = set_current_write_origin(BACKGROUND_REVIEW)
+            try:
+                with patch("tools.skill_usage.load_usage", return_value={}):
+                    raw = skill_manage(action=action, name="manual-skill", **kwargs)
+            finally:
+                reset_current_write_origin(token)
+
+            after = {
+                path.relative_to(tmp_path): path.read_bytes()
+                for path in tmp_path.rglob("*")
+                if path.is_file()
+            }
+
+        result = json.loads(raw)
+        assert result["success"] is False
+        assert "ownership" in result["error"].lower()
+        assert before == after
+
+    def test_background_review_fails_closed_when_ownership_lookup_errors(self, tmp_path):
+        from tools.skill_provenance import (
+            BACKGROUND_REVIEW,
+            reset_current_write_origin,
+            set_current_write_origin,
+        )
+
+        with _skill_dir(tmp_path):
+            _create_skill("manual-skill", VALID_SKILL_CONTENT)
+            token = set_current_write_origin(BACKGROUND_REVIEW)
+            try:
+                with patch(
+                    "tools.skill_usage.load_usage",
+                    side_effect=ValueError("corrupt usage data"),
+                ):
+                    raw = skill_manage(
+                        action="patch",
+                        name="manual-skill",
+                        old_string="Do the thing.",
+                        new_string="Changed.",
+                    )
+            finally:
+                reset_current_write_origin(token)
+
+        result = json.loads(raw)
+        assert result["success"] is False
+        assert "ownership" in result["error"].lower()
+        assert "Do the thing." in (
+            tmp_path / "manual-skill" / "SKILL.md"
+        ).read_text(encoding="utf-8")
 
     def test_background_review_allows_agent_created_skill(self, tmp_path):
         """Agent-created skills (created_by='agent') are NOT blocked by the
@@ -1273,6 +1359,15 @@ def _skill_content(name: str) -> str:
         "Step 1: Do the thing.\n"
     )
 
+def _create_curator_skill(name: str, content: str):
+    """Create a skill and record the agent ownership a real curator create has."""
+    from tools.skill_usage import mark_agent_created
+
+    result = _create_skill(name, content)
+    assert result["success"] is True, result
+    mark_agent_created(name)
+    return result
+
 
 class TestCuratorConsolidationDeleteGuard:
     """The curator's LLM consolidation pass must fail CLOSED on unverified
@@ -1287,7 +1382,7 @@ class TestCuratorConsolidationDeleteGuard:
 
     def test_bare_prune_during_curator_pass_refused(self, tmp_path, monkeypatch):
         with _curator_pass(tmp_path, monkeypatch=monkeypatch) as skills_root:
-            _create_skill("active-skill", VALID_SKILL_CONTENT)
+            _create_curator_skill("active-skill", VALID_SKILL_CONTENT)
             result = _delete_skill("active-skill", absorbed_into="")
         assert result["success"] is False
         assert result.get("_fail_closed") is True
@@ -1296,7 +1391,7 @@ class TestCuratorConsolidationDeleteGuard:
 
     def test_omitted_absorbed_into_during_curator_pass_refused(self, tmp_path, monkeypatch):
         with _curator_pass(tmp_path, monkeypatch=monkeypatch) as skills_root:
-            _create_skill("active-skill", VALID_SKILL_CONTENT)
+            _create_curator_skill("active-skill", VALID_SKILL_CONTENT)
             result = _delete_skill("active-skill")  # absorbed_into omitted
         assert result["success"] is False
         assert result.get("_fail_closed") is True
@@ -1304,7 +1399,7 @@ class TestCuratorConsolidationDeleteGuard:
 
     def test_whitespace_absorbed_into_during_curator_pass_refused(self, tmp_path, monkeypatch):
         with _curator_pass(tmp_path, monkeypatch=monkeypatch) as skills_root:
-            _create_skill("active-skill", VALID_SKILL_CONTENT)
+            _create_curator_skill("active-skill", VALID_SKILL_CONTENT)
             result = _delete_skill("active-skill", absorbed_into="   ")
         assert result["success"] is False
         assert result.get("_fail_closed") is True
@@ -1312,8 +1407,8 @@ class TestCuratorConsolidationDeleteGuard:
 
     def test_verified_consolidation_archives_recoverably(self, tmp_path, monkeypatch):
         with _curator_pass(tmp_path, monkeypatch=monkeypatch) as skills_root:
-            _create_skill("umbrella", _skill_content("umbrella"))
-            _create_skill("narrow", _skill_content("narrow"))
+            _create_curator_skill("umbrella", _skill_content("umbrella"))
+            _create_curator_skill("narrow", _skill_content("narrow"))
             result = _delete_skill("narrow", absorbed_into="umbrella")
         assert result["success"] is True, result
         assert result.get("_archived") is True
@@ -1328,7 +1423,7 @@ class TestCuratorConsolidationDeleteGuard:
         # The pre-existing target-existence check fires before the recoverable
         # archive — a hallucinated umbrella is refused and the skill stays put.
         with _curator_pass(tmp_path, monkeypatch=monkeypatch) as skills_root:
-            _create_skill("narrow", VALID_SKILL_CONTENT)
+            _create_curator_skill("narrow", VALID_SKILL_CONTENT)
             result = _delete_skill("narrow", absorbed_into="ghost-umbrella")
         assert result["success"] is False
         assert "does not exist" in result["error"]
@@ -1367,7 +1462,7 @@ class TestCuratorConsolidationDeleteGuard:
 
         _reset_background_review_read_marks()
         with _curator_pass(tmp_path, monkeypatch=monkeypatch):
-            _create_skill("reviewed", _skill_content("reviewed"))
+            _create_curator_skill("reviewed", _skill_content("reviewed"))
 
             blocked = json.loads(skill_manage(
                 action="patch",
@@ -1397,7 +1492,7 @@ class TestCuratorConsolidationDeleteGuard:
 
         _reset_background_review_read_marks()
         with _curator_pass(tmp_path, monkeypatch=monkeypatch):
-            _create_skill("reviewed", _skill_content("reviewed"))
+            _create_curator_skill("reviewed", _skill_content("reviewed"))
             ref = tmp_path / ".hermes" / "skills" / "reviewed" / "references"
             ref.mkdir()
             (ref / "workflow.md").write_text("old workflow\n", encoding="utf-8")

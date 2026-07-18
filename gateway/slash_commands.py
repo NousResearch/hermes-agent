@@ -98,9 +98,9 @@ def _model_switch_skew_guard(runner: Optional[_RestartableRunner] = None) -> Opt
     # via_service=False) match neither path and can leave the gateway
     # stopped instead of restarted.
     if runner is not None:
-        _under_service = bool(os.environ.get("INVOCATION_ID")) or os.environ.get(
-            "XPC_SERVICE_NAME", "0"
-        ) not in ("", "0")
+        from gateway.restart import is_gateway_supervisor_process
+
+        _under_service = is_gateway_supervisor_process()
         _in_container = os.path.exists("/.dockerenv") or os.path.exists("/run/.containerenv")
         restarted = runner.request_restart(
             detached=not (_under_service or _in_container),

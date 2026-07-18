@@ -4852,6 +4852,9 @@ def run_gateway(verbose: int = 0, quiet: bool = False, replace: bool = False, fo
         except Exception:
             pass  # best-effort; don't block gateway startup
 
+    from hermes_cli.gateway_bootstrap import purge_stale_gateway_pycache_before_import
+
+    purge_stale_gateway_pycache_before_import()
     from gateway.run import start_gateway
 
     print("┌─────────────────────────────────────────────────────────┐")

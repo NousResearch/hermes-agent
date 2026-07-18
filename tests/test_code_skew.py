@@ -162,6 +162,12 @@ class TestBootstrapBytecodePurge:
         slash_commands._model_switch_skew_guard(runner=FakeRunner())
         assert calls == [(True, False)], f"detached path expected, got {calls}"
 
+        # Simulate an externally supervised gateway → service path.
+        calls.clear()
+        monkeypatch.setenv("HERMES_GATEWAY_EXTERNAL_SUPERVISOR", "true")
+        slash_commands._model_switch_skew_guard(runner=FakeRunner())
+        assert calls == [(False, True)], f"service path expected, got {calls}"
+
 
 class TestPurgeStalePycache:
     """Tests for purge_stale_pycache — purging __pycache__ when the checkout
@@ -236,3 +242,11 @@ class TestPersistBootFingerprint:
         monkeypatch.setattr(code_skew, "_fingerprint_file", lambda: fp_file)
         code_skew._persist_boot_fingerprint(None)
         assert not fp_file.exists()
+
+    def test_canonical_gateway_launcher_bootstraps_before_import(self):
+        launcher = Path(__file__).parents[1] / "hermes_cli" / "gateway.py"
+        source = launcher.read_text(encoding="utf-8")
+
+        assert source.index("purge_stale_gateway_pycache_before_import()") < source.index(
+            "from gateway.run import start_gateway"
+        )

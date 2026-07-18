@@ -549,6 +549,25 @@ prompt_caching:
 #                           # extra_body:
 #                           #   chat_template_kwargs:
 #                           #     enable_thinking: false
+#
+#   # Auto-generated short session titles after the first exchange.
+#   # Each active Discord/Telegram channel can spawn a background title
+#   # call.  Cap concurrency to keep retries during provider incidents
+#   # from amplifying the request burst.  Leave unset for legacy behavior
+#   # (unlimited).
+#   title_generation:
+#     provider: "auto"
+#     model: ""
+#     # max_concurrency: 2    # Optional: cap simultaneous title calls
+#
+#   # Context compression — summarizes long sessions to shrink the prompt.
+#   # Heavy and often hits the slowest provider chain.  Setting a small
+#   # cap prevents many sessions from compressing simultaneously during
+#   # provider degradation.  Leave unset for legacy behavior (unlimited).
+#   compression:
+#     provider: "auto"
+#     model: ""
+#     # max_concurrency: 2    # Optional: cap simultaneous compression calls
 
 # =============================================================================
 # Persistent Memory

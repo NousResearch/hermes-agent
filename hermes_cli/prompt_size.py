@@ -26,6 +26,9 @@ _SKILLS_BLOCK_RE = re.compile(r"<available_skills>.*?</available_skills>", re.DO
 # leading spaces, so the four-space + ``- `` prefix isolates skill lines.
 _SKILL_LINE_PREFIX = "    - "
 
+# Posture-demoted categories render all visible skill names on one shared line.
+_NAMES_ONLY_LINE_RE = re.compile(r"^  .+ \[names only\]: (?P<names>.+)$")
+
 # Cap the human-readable "Skills by size" table; ``--json`` always has them all.
 _SKILLS_TABLE_LIMIT = 20
 
@@ -114,8 +117,11 @@ def _compute_skills_breakdown(skills_block: str) -> List[Dict[str, Any]]:
 
     Two honest, distinct numbers per skill:
 
-    * ``index_line_bytes`` — the skill's actual rendered line in the always-on
-      index (the fixed per-call cost of *listing* the skill).
+    * ``index_line_bytes`` — the skill's attributed bytes in the always-on
+      index (the fixed per-call cost of *listing* the skill). For a compact
+      ``[names only]`` line, each name keeps its own bytes and receives an
+      even share of the category prefix and separators. The attributed bytes
+      therefore sum exactly to the shared rendered line.
     * ``skill_md_bytes`` — the on-disk size of the skill's ``SKILL.md`` (the
       real token cost paid only when the model loads it via ``skill_view``).
       ``None`` when the name can't be mapped to a file (e.g. a plugin skill
@@ -126,16 +132,15 @@ def _compute_skills_breakdown(skills_block: str) -> List[Dict[str, Any]]:
     """
     name_to_path = _skill_md_paths_by_name()
     entries: List[Dict[str, Any]] = []
-    for line in skills_block.splitlines():
-        if not line.startswith(_SKILL_LINE_PREFIX):
-            continue
-        rest = line[len(_SKILL_LINE_PREFIX):]
-        # ``name: desc`` — the first ``": "`` separates name from description.
-        # Namespaced names (``codex:rescue``) have no space after their colon,
-        # so partitioning on ``": "`` keeps the full name intact.
-        name = rest.partition(": ")[0].strip()
-        if not name:
-            continue
+
+    def append_entry(
+        name: str,
+        *,
+        attributed_bytes: int,
+        total_bytes: int,
+        shared_bytes: int,
+        skill_count: int,
+    ) -> None:
         path = name_to_path.get(name)
         md_bytes: Optional[int] = None
         if path is not None:
@@ -145,10 +150,56 @@ def _compute_skills_breakdown(skills_block: str) -> List[Dict[str, Any]]:
                 md_bytes = None
         entries.append({
             "name": name,
-            "index_line_bytes": _bytes(line),
+            "index_line_bytes": attributed_bytes,
+            "index_line_total_bytes": total_bytes,
+            "index_line_shared_bytes": shared_bytes,
+            "index_line_skill_count": skill_count,
             "skill_md_bytes": md_bytes,
             "path": str(path) if path is not None else "",
         })
+
+    for line in skills_block.splitlines():
+        compact_match = _NAMES_ONLY_LINE_RE.match(line)
+        if compact_match is not None:
+            names = [
+                name.strip()
+                for name in compact_match.group("names").split(",")
+                if name.strip()
+            ]
+            if not names:
+                continue
+            total_bytes = _bytes(line)
+            name_bytes = [_bytes(name) for name in names]
+            shared_total = total_bytes - sum(name_bytes)
+            shared_base, shared_remainder = divmod(shared_total, len(names))
+            for index, name in enumerate(names):
+                shared_bytes = shared_base + (1 if index < shared_remainder else 0)
+                append_entry(
+                    name,
+                    attributed_bytes=name_bytes[index] + shared_bytes,
+                    total_bytes=total_bytes,
+                    shared_bytes=shared_bytes,
+                    skill_count=len(names),
+                )
+            continue
+
+        if not line.startswith(_SKILL_LINE_PREFIX):
+            continue
+        rest = line[len(_SKILL_LINE_PREFIX):]
+        # ``name: desc`` — the first ``": "`` separates name from description.
+        # Namespaced names (``codex:rescue``) have no space after their colon,
+        # so partitioning on ``": "`` keeps the full name intact.
+        name = rest.partition(": ")[0].strip()
+        if not name:
+            continue
+        line_bytes = _bytes(line)
+        append_entry(
+            name,
+            attributed_bytes=line_bytes,
+            total_bytes=line_bytes,
+            shared_bytes=0,
+            skill_count=1,
+        )
     entries.sort(key=lambda e: (-(e["skill_md_bytes"] or 0), e["name"]))
     return entries
 
@@ -288,10 +339,10 @@ def render_breakdown(data: Dict[str, Any]) -> str:
     if skills:
         lines.append("")
         lines.append(
-            "  Skills by size (SKILL.md on-disk = read cost; index line = "
-            "always-on cost, largest first):"
+            "  Skills by size (SKILL.md on-disk = read cost; index cost = "
+            "attributed always-on bytes, largest first):"
         )
-        lines.append(f"    {'skill':<28} {'SKILL.md':>10}  {'index line':>10}")
+        lines.append(f"    {'skill':<28} {'SKILL.md':>10}  {'index cost':>10}")
         shown = skills[:_SKILLS_TABLE_LIMIT]
         for sk in shown:
             md = sk["skill_md_bytes"]

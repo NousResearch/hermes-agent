@@ -108,6 +108,7 @@ _HERMES_PROVIDER_PREFIXES_NOT_VENDOR_SLUGS: frozenset[str] = frozenset({
     "minimax-cn",
     "qwen-oauth",
     "alibaba",
+    "arcee",
     "vertex",
     "azure-foundry",
     "bedrock",

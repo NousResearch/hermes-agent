@@ -289,6 +289,7 @@ class TestHermesProviderPrefixNotMistakenForAggregatorVendor:
         ("xai/grok-4.3", "openrouter", "x-ai/grok-4.3"),
         ("copilot/claude-sonnet-4.6", "openrouter", "anthropic/claude-sonnet-4.6"),
         ("gemini/gemini-3-pro", "openrouter", "google/gemini-3-pro"),
+        ("arcee/trinity-large", "openrouter", "arcee-ai/trinity-large"),
         # Works identically for the other aggregator providers.
         ("openai-codex/gpt-5.6-sol", "nous", "openai/gpt-5.6-sol"),
         ("openai-codex/gpt-5.6-sol", "kilocode", "openai/gpt-5.6-sol"),

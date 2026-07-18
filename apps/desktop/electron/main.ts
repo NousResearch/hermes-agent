@@ -130,6 +130,7 @@ import {
 import { isOfficialSshRemote, OFFICIAL_REPO_HTTPS_URL } from './update-remote'
 import { spawnUpdaterProcess } from './updater-process'
 import { fetchMarketplaceThemes, searchMarketplaceThemes } from './vscode-marketplace'
+import { windowTitleBarStyle } from './window-frame-options'
 import {
   computeWindowOptions,
   debounce,
@@ -7247,7 +7248,7 @@ function spawnSecondaryWindow({
     minWidth: SESSION_WINDOW_MIN_WIDTH,
     minHeight: SESSION_WINDOW_MIN_HEIGHT,
     title: 'Hermes',
-    titleBarStyle: 'hidden',
+    titleBarStyle: windowTitleBarStyle(IS_WSL),
     titleBarOverlay: getTitleBarOverlayOptions(),
     trafficLightPosition: IS_MAC ? WINDOW_BUTTON_POSITION : undefined,
     vibrancy: IS_MAC ? 'sidebar' : undefined,
@@ -7458,7 +7459,7 @@ function createWindow() {
     // inside the same band. On Windows/Linux, titleBarOverlay tells Electron
     // to paint native min/max/close in the top-right of the renderer; on
     // macOS it just reserves a content inset alongside the traffic lights.
-    titleBarStyle: 'hidden',
+    titleBarStyle: windowTitleBarStyle(IS_WSL),
     titleBarOverlay: getTitleBarOverlayOptions(),
     trafficLightPosition: IS_MAC ? WINDOW_BUTTON_POSITION : undefined,
     vibrancy: IS_MAC ? 'sidebar' : undefined,

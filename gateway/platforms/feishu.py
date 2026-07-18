@@ -60,7 +60,6 @@ import os
 import re
 import threading
 import time
-from playwright.sync_api import sync_playwright
 import uuid
 from collections import OrderedDict
 from dataclasses import dataclass, field
@@ -755,6 +754,14 @@ def _render_table_to_png(headers: List[str], rows: List[List[str]]) -> bytes:
 
     Returns the raw PNG bytes suitable for upload to the Feishu image store.
     """
+    try:
+        from playwright.sync_api import sync_playwright
+    except ImportError:
+        raise ImportError(
+            "Playwright is required for table rendering. "
+            "Install it with: pip install playwright && playwright install chromium"
+        )
+
     scale = _compute_scale_factor(headers, rows)
 
     th_cells = "".join(f"<th>{_esc(h)}</th>" for h in headers)

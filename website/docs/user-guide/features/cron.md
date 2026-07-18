@@ -293,18 +293,24 @@ This applies only to cron deliveries. `TELEGRAM_HOME_CHANNEL_THREAD_ID` (used el
 
 ### Response wrapping
 
-By default, delivered cron output is wrapped with a header and footer so the recipient knows it came from a scheduled task:
+By default (`cron.wrap_response: true`), delivered cron output includes a provenance header so the recipient knows it came from a scheduled task. The default `cron.include_management_footer: false` does not append the generic management footer:
 
 ```
 Cronjob Response: Morning feeds
 -------------
 
 <agent output here>
-
-Note: The agent cannot see this message, and therefore cannot respond to it.
 ```
 
-To deliver the raw agent output without the wrapper, set `cron.wrap_response` to `false`:
+To retain the legacy management guidance below the response, opt in with `cron.include_management_footer: true`:
+
+```yaml
+# ~/.hermes/config.yaml
+cron:
+  include_management_footer: true
+```
+
+This setting controls only the footer; the provenance header remains while response wrapping is enabled. To deliver raw agent output with neither header nor footer, set `cron.wrap_response: false`:
 
 ```yaml
 # ~/.hermes/config.yaml

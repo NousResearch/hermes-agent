@@ -261,9 +261,11 @@ For **Telegram topics**, use `telegram:<chat_id>:<thread_id>` (e.g., `telegram:-
 
 ### Response Wrapping
 
-By default (`cron.wrap_response: true`), cron deliveries are wrapped with:
-- A header identifying the cron job name and task
-- A footer noting the agent cannot see the delivered message in conversation
+By default (`cron.wrap_response: true`), cron deliveries include a provenance header identifying the cron job name and task. The generic management footer is opt-in:
+
+- `cron.include_management_footer: false` (default) — deliver the header and response without the generic management guidance.
+- `cron.include_management_footer: true` — append the legacy note that the agent cannot see the delivered message in conversation.
+- `cron.wrap_response: false` — deliver raw output with neither header nor footer, regardless of the footer setting.
 
 The `[SILENT]` prefix in a cron response suppresses delivery entirely — useful for jobs that only need to write to files or perform side effects.
 

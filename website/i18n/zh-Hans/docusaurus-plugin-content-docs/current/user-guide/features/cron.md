@@ -306,18 +306,24 @@ Agent 的最终响应会自动投递，无需在 cron prompt 中调用 `send_mes
 
 ### 响应包装
 
-默认情况下，投递的 cron 输出会带有页眉和页脚，以便接收方知道这来自定时任务：
+默认情况下（`cron.wrap_response: true`），投递的 cron 输出会包含来源头部，让接收方知道消息来自定时任务。默认设置 `cron.include_management_footer: false` 不会附加通用管理尾部：
 
 ```
 Cronjob Response: Morning feeds
 -------------
 
 <agent output here>
-
-Note: The agent cannot see this message, and therefore cannot respond to it.
 ```
 
-若要投递不带包装的原始 agent 输出，将 `cron.wrap_response` 设为 `false`：
+若要保留旧版响应下方的管理提示，请通过 `cron.include_management_footer: true` 显式启用：
+
+```yaml
+# ~/.hermes/config.yaml
+cron:
+  include_management_footer: true
+```
+
+此设置只控制尾部；启用响应包装时，来源头部仍会保留。若要投递既无头部也无尾部的原始 agent 输出，请设置 `cron.wrap_response: false`：
 
 ```yaml
 # ~/.hermes/config.yaml

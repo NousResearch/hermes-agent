@@ -117,6 +117,22 @@ describe("Dashboard i18n framework", () => {
     );
   });
 
+  it("localizes stable MCP OAuth browser failures in both Chinese language packs", () => {
+    const simplified = resolveTranslations("zh");
+    const traditional = resolveTranslations("zh-hant");
+
+    expect(simplified.mcp.oauthPopupBlocked).not.toBe(en.mcp.oauthPopupBlocked);
+    expect(traditional.mcp.oauthPopupBlocked).not.toBe(
+      en.mcp.oauthPopupBlocked,
+    );
+    expect(simplified.mcp.oauthWindowClosed).not.toBe(
+      en.mcp.oauthWindowClosed,
+    );
+    expect(traditional.mcp.oauthWindowClosed).not.toBe(
+      en.mcp.oauthWindowClosed,
+    );
+  });
+
   it("preserves existing official translations and falls back per missing leaf", () => {
     const catalog = resolveTranslations("de");
 

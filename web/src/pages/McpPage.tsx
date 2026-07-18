@@ -29,6 +29,10 @@ import {
   McpServerCreateError,
   type McpTransport,
 } from "@/lib/mcp-server-create";
+import {
+  completeMcpDashboardOAuth,
+  McpDashboardOAuthError,
+} from "@/lib/mcp-dashboard-oauth";
 
 function isHttpUrl(value: string): boolean {
   return /^https?:\/\//i.test(value.trim());
@@ -210,24 +214,30 @@ export default function McpPage() {
   const handleAuthenticate = async (server: McpServer) => {
     setAuthenticating(server.name);
     try {
-      const result = await api.authMcpServer(server.name);
-      setTestResults((prev) => ({ ...prev, [server.name]: result }));
-      if (result.ok) {
-        showToast(
-          format(t.mcp.oauthComplete, { name: server.name }),
-          "success",
-        );
-      } else {
-        showToast(
-          format(t.mcp.oauthFailed, {
-            name: server.name,
-            error: result.error ?? t.mcp.failed,
-          }),
-          "error",
-        );
-      }
+      const result = await completeMcpDashboardOAuth({
+        serverName: server.name,
+        start: api.authMcpServer,
+        status: api.getMcpOAuthFlow,
+        open: window.open.bind(window),
+      });
+      setTestResults((prev) => ({
+        ...prev,
+        [server.name]: { ok: true, tools: result.tools ?? [] },
+      }));
+      showToast(format(t.mcp.oauthComplete, { name: server.name }), "success");
     } catch (e) {
-      showToast(format(t.mcp.oauthError, { error: String(e) }), "error");
+      const localizedErrors = {
+        "popup-blocked": t.mcp.oauthPopupBlocked,
+        "start-failed": t.mcp.oauthStartFailed,
+        "authorization-url-missing": t.mcp.oauthAuthorizationUrlMissing,
+        "authorization-failed": t.mcp.oauthAuthorizationFailed,
+        "authorization-window-closed": t.mcp.oauthWindowClosed,
+      } as const;
+      const detail =
+        e instanceof McpDashboardOAuthError
+          ? localizedErrors[e.code]
+          : String(e);
+      showToast(format(t.mcp.oauthError, { error: detail }), "error");
     } finally {
       setAuthenticating(null);
     }

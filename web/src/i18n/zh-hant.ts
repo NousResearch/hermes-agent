@@ -495,6 +495,17 @@ export const zhHant: TranslationOverlay = {
     expiresIn: "{time}後過期",
   },
 
+  mcp: {
+    oauthComplete: "{name}：OAuth 驗證已完成",
+    oauthError: "OAuth 錯誤：{error}",
+    oauthPopupBlocked:
+      "OAuth 彈出視窗已被瀏覽器封鎖，請允許此面板開啟彈出視窗後重試",
+    oauthStartFailed: "OAuth 無法啟動",
+    oauthAuthorizationUrlMissing: "OAuth 伺服器未提供授權 URL",
+    oauthAuthorizationFailed: "OAuth 授權失敗",
+    oauthWindowClosed: "OAuth 授權視窗已在完成前關閉",
+  },
+
   language: {
     switchTo: "切換語言",
   },

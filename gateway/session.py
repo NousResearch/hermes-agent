@@ -1043,6 +1043,21 @@ class SessionStore:
             self._db = SessionDB()
         except Exception as e:
             print(f"[gateway] Warning: SQLite session store unavailable, falling back to JSONL: {e}")
+
+    def _has_active_processes_safe(self, session_key: str, *, context: str) -> bool:
+        """Return whether a session has active work, failing closed on registry errors."""
+        if self._has_active_processes_fn is None:
+            return False
+        try:
+            return bool(self._has_active_processes_fn(session_key))
+        except Exception as exc:
+            logger.warning(
+                "has_active_processes_fn raised during %s for %s; keeping session alive: %s",
+                context,
+                session_key,
+                exc,
+            )
+            return True
     
     def _ensure_loaded(self) -> None:
         """Load sessions index from disk if not already loaded."""
@@ -1178,12 +1193,14 @@ class SessionStore:
                 # end_reason not None -> session ended — prune
                 if row is not None and row.get("end_reason") is not None:
                     recovered_entry = None
+                    recovery_lookup_failed = False
                     if entry.origin is not None:
                         try:
                             recovered_entry = self._recover_session_from_db(
                                 session_key=key,
                                 source=entry.origin,
                                 now=_now(),
+                                raise_on_lookup_error=True,
                             )
                         except Exception as exc:
                             logger.debug(
@@ -1193,6 +1210,10 @@ class SessionStore:
                                 entry.session_id,
                                 exc,
                             )
+                            recovery_lookup_failed = True
+
+                    if recovery_lookup_failed:
+                        continue
 
                     # If the stale entry points at a compression-ended parent but
                     # a newer live child session exists for the exact same gateway
@@ -1416,6 +1437,7 @@ class SessionStore:
         session_key: str,
         source: SessionSource,
         now: datetime,
+        raise_on_lookup_error: bool = False,
     ) -> Optional[SessionEntry]:
         """Rebuild a missing session-key mapping from durable state.db data."""
         if not self._db:
@@ -1434,6 +1456,8 @@ class SessionStore:
             )
         except Exception as exc:
             logger.debug("Gateway session DB recovery failed for %s: %s", session_key, exc)
+            if raise_on_lookup_error:
+                raise
             return None
         if not recovered:
             return None
@@ -1582,6 +1606,22 @@ class SessionStore:
                         "Session DB expiry_finalized write failed for %s: %s",
                         entry.session_id, exc,
                     )
+            try:
+                # Expiry finalization is a real conversation boundary. Without
+                # a durable ``session_reset`` end_reason, later agent cleanup can
+                # close the row as ``agent_close``; stale-route recovery treats
+                # that as resumable and resurrects the expired full history.
+                #
+                # promote_to_session_reset is conditional: it only promotes
+                # live rows or rows ended with ``agent_close``.  Explicit
+                # boundaries (compression, session_reset, new_command, etc.)
+                # are preserved — the first writer wins.
+                self._db.promote_to_session_reset(entry.session_id)
+            except Exception as exc:
+                logger.debug(
+                    "Session DB promote_to_session_reset failed for %s: %s",
+                    entry.session_id, exc,
+                )
     
     def _is_session_expired(self, entry: SessionEntry) -> bool:
         """Check if a session has expired based on its reset policy.
@@ -1590,13 +1630,12 @@ class SessionStore:
         Used by the background expiry watcher to proactively flush memories.
         Sessions with active background processes are never considered expired.
         """
-        if self._has_active_processes_fn:
-            if self._has_active_processes_fn(entry.session_key):
-                logger.debug(
-                    "Session %s not expired — active background processes",
-                    entry.session_key,
-                )
-                return False
+        if self._has_active_processes_safe(entry.session_key, context="expiry"):
+            logger.debug(
+                "Session %s not expired — active background processes",
+                entry.session_key,
+            )
+            return False
 
         policy = self.config.get_reset_policy(
             platform=entry.platform,
@@ -1691,14 +1730,13 @@ class SessionStore:
         
         Sessions with active background processes are never reset.
         """
-        if self._has_active_processes_fn:
-            session_key = self._generate_session_key(source)
-            if self._has_active_processes_fn(session_key):
-                logger.debug(
-                    "Session reset skipped for %s — active background processes",
-                    session_key,
-                )
-                return None
+        session_key = self._generate_session_key(source)
+        if self._has_active_processes_safe(session_key, context="reset"):
+            logger.debug(
+                "Session reset skipped for %s — active background processes",
+                session_key,
+            )
+            return None
 
         policy = self.config.get_reset_policy(
             platform=source.platform,
@@ -1895,13 +1933,24 @@ class SessionStore:
             elif _entry_for_checks.resume_pending:
                 _reset_reason = self._should_reset(_entry_for_checks, source)
                 if not _reset_reason:
-                    _fw = auto_continue_freshness_window()
-                    _ref_time = (
-                        _entry_for_checks.last_resume_marked_at
-                        or _entry_for_checks.updated_at
+                    # Freshness-gate stale resume_pending zombies (#46934) —
+                    # but honor an explicit ``session_reset.mode: none``: the
+                    # user opted out of ALL automatic resets, so an expired
+                    # resume marker must fall through to a normal resume of
+                    # the preserved transcript, never a silent fresh session
+                    # (#61052).
+                    _policy = self.config.get_reset_policy(
+                        platform=source.platform,
+                        session_type=source.chat_type,
                     )
-                    if _fw > 0 and (now - _ref_time).total_seconds() > _fw:
-                        _reset_reason = "resume_pending_expired"
+                    if _policy.mode != "none":
+                        _fw = auto_continue_freshness_window()
+                        _ref_time = (
+                            _entry_for_checks.last_resume_marked_at
+                            or _entry_for_checks.updated_at
+                        )
+                        if _fw > 0 and (now - _ref_time).total_seconds() > _fw:
+                            _reset_reason = "resume_pending_expired"
             else:
                 _reset_reason = self._should_reset(_entry_for_checks, source)
 
@@ -1938,6 +1987,14 @@ class SessionStore:
                         session_key, entry.session_id,
                     )
                     self._entries.pop(session_key, None)
+                    # If an expiry watcher (daily/idle reset) already finalized
+                    # this session, honour the reset decision instead of silently
+                    # reopening it via recovery.
+                    if _reset_reason:
+                        was_auto_reset = True
+                        auto_reset_reason = _reset_reason
+                        reset_had_activity = entry.last_prompt_tokens > 0
+                        db_end_session_id = entry.session_id
                     entry = None
                     _needs_recover = True
                 elif entry.session_id != _stale_session_id:
@@ -2023,8 +2080,21 @@ class SessionStore:
 
         # SQLite operations outside the lock (unchanged).
         if self._db and db_end_session_id:
+            # Use the specific reset reason so state.db is auditable (e.g.
+            # "resume_pending_expired" is distinguishable from a normal
+            # "session_reset" caused by idle/daily expiry).
+            _db_end_reason = auto_reset_reason if auto_reset_reason else "session_reset"
             try:
-                self._db.end_session(db_end_session_id, "session_reset")
+                # promote_to_session_reset, not end_session: the row may
+                # already be ended with a recoverable accidental reason
+                # (agent_close / ws_orphan_reap), which first-reason-wins
+                # end_session would preserve — leaving the reset session
+                # resurrectable by stale-route recovery (#61220, #61993).
+                _promote = getattr(self._db, "promote_to_session_reset", None)
+                if callable(_promote):
+                    _promote(db_end_session_id, _db_end_reason)
+                else:
+                    self._db.end_session(db_end_session_id, _db_end_reason)
             except Exception as e:
                 logger.debug("Session DB operation failed: %s", e)
 
@@ -2193,19 +2263,8 @@ class SessionStore:
                 # The callback is keyed by session_key (see process_registry.
                 # has_active_for_session); passing session_id here used to
                 # never match, so active sessions got pruned anyway.
-                if self._has_active_processes_fn is not None:
-                    try:
-                        if self._has_active_processes_fn(entry.session_key):
-                            continue
-                    except Exception as exc:
-                        logger.debug(
-                            "has_active_processes_fn raised during prune for %s: %s",
-                            entry.session_key, exc,
-                        )
-                        # Fail safe: if we can't tell whether a background
-                        # process is attached, keep the entry rather than
-                        # risk orphaning live work.
-                        continue
+                if self._has_active_processes_safe(entry.session_key, context="prune"):
+                    continue
                 if entry.updated_at < cutoff:
                     removed_keys.append(key)
             for key in removed_keys:
@@ -2301,7 +2360,15 @@ class SessionStore:
 
         if self._db and db_end_session_id:
             try:
-                self._db.end_session(db_end_session_id, "session_reset")
+                # Promote (not plain end_session): an accidental
+                # agent_close/ws_orphan_reap end must not survive an explicit
+                # user reset, or recovery resurrects the reset session
+                # (#61993 — the user's /new was silently undone).
+                _promote = getattr(self._db, "promote_to_session_reset", None)
+                if callable(_promote):
+                    _promote(db_end_session_id, "session_reset")
+                else:
+                    self._db.end_session(db_end_session_id, "session_reset")
             except Exception as e:
                 logger.debug("Session DB operation failed: %s", e)
 
@@ -2362,7 +2429,15 @@ class SessionStore:
 
         if self._db and db_end_session_id:
             try:
-                self._db.end_session(db_end_session_id, "session_switch")
+                # Promote (not plain end_session): a stale agent_close /
+                # ws_orphan_reap end on the outgoing session must be upgraded
+                # to the explicit switch boundary, or recovery can resurrect
+                # it over the user's /resume choice (#61220 bug class).
+                _promote = getattr(self._db, "promote_to_session_reset", None)
+                if callable(_promote):
+                    _promote(db_end_session_id, "session_switch")
+                else:
+                    self._db.end_session(db_end_session_id, "session_switch")
             except Exception as e:
                 logger.debug("Session DB end_session failed: %s", e)
 

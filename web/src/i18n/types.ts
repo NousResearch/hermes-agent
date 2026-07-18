@@ -1162,6 +1162,11 @@ export interface Translations {
     oauthComplete: string;
     oauthFailed: string;
     oauthError: string;
+    oauthPopupBlocked: string;
+    oauthStartFailed: string;
+    oauthAuthorizationUrlMissing: string;
+    oauthAuthorizationFailed: string;
+    oauthWindowClosed: string;
     authenticateWithOAuth: string;
     bearerAuth: string;
     adding: string;

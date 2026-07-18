@@ -1252,6 +1252,14 @@ export const en: Translations = {
     oauthComplete: "{name}: OAuth authentication complete",
     oauthFailed: "{name}: {error}",
     oauthError: "OAuth error: {error}",
+    oauthPopupBlocked:
+      "OAuth popup was blocked — allow popups for this dashboard and retry",
+    oauthStartFailed: "OAuth failed to start",
+    oauthAuthorizationUrlMissing:
+      "OAuth server did not provide an authorization URL",
+    oauthAuthorizationFailed: "OAuth authorization failed",
+    oauthWindowClosed:
+      "OAuth authorization window was closed before completion",
     authenticateWithOAuth: "Authenticate with OAuth",
     bearerAuth: "bearer",
     adding: "Adding…",

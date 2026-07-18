@@ -34,6 +34,15 @@ describe("schemaZhLabel", () => {
     expect(schemaZhDescription("agent.max_turns")).toBe("");
   });
 
+  it("localizes the Codex commentary setting added by the runtime", () => {
+    expect(schemaZhLabel("display.show_commentary")).toBe(
+      "显示 → 显示进度解说",
+    );
+    expect(schemaZhDescription("display.show_commentary")).toContain(
+      "Codex 模型",
+    );
+  });
+
   it("provides concise labels for nested editors", () => {
     expect(schemaZhLeafLabel("gateway.api_server.max_concurrent_runs")).toBe(
       "最大并发运行次数",

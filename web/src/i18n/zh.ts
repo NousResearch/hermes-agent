@@ -1215,6 +1215,12 @@ export const zh: TranslationOverlay = {
     oauthComplete: "{name}：OAuth 认证已完成",
     oauthFailed: "{name}：{error}",
     oauthError: "OAuth 错误：{error}",
+    oauthPopupBlocked:
+      "OAuth 弹窗被浏览器拦截，请允许此面板打开弹窗后重试",
+    oauthStartFailed: "OAuth 无法启动",
+    oauthAuthorizationUrlMissing: "OAuth 服务器未提供授权 URL",
+    oauthAuthorizationFailed: "OAuth 授权失败",
+    oauthWindowClosed: "OAuth 授权窗口在完成前已关闭",
     authenticateWithOAuth: "使用 OAuth 认证",
     bearerAuth: "Bearer 令牌",
     adding: "正在添加…",

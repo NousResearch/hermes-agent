@@ -5,6 +5,7 @@ import {
   type FC,
   memo,
   type ReactNode,
+  startTransition,
   useCallback,
   useEffect,
   useLayoutEffect,
@@ -28,7 +29,7 @@ import { MessageRenderBoundary } from '../message-render-boundary'
 
 type ThreadMessageComponents = ComponentProps<typeof ThreadPrimitive.MessageByIndex>['components']
 
-type MessageGroup = { id: string; weight: number } & (
+export type MessageGroup = { id: string; weight: number } & (
   | { index: number; kind: 'standalone' }
   | { indices: number[]; kind: 'turn' }
 )
@@ -58,7 +59,7 @@ interface ThreadMessageListProps {
 // Group each user message with the assistant turn(s) that follow it so the
 // human bubble can `position: sticky` against the scroller across its whole
 // turn (see StickyHumanMessageContainer in thread.tsx).
-function buildGroups(signature: string): MessageGroup[] {
+export function buildGroups(signature: string): MessageGroup[] {
   if (!signature) {
     return []
   }
@@ -94,6 +95,24 @@ function buildGroups(signature: string): MessageGroup[] {
   return groups
 }
 
+// Walk turns newest-first, summing their part weights until the budget is met;
+// everything before the first kept turn is hidden. Returns the index of that
+// first visible group.
+export function firstVisibleGroupIndex(groups: readonly MessageGroup[], budget: number): number {
+  let firstVisible = groups.length
+
+  for (let i = groups.length - 1, weight = 0; i >= 0; i--) {
+    weight += groups[i].weight
+    firstVisible = i
+
+    if (weight >= budget) {
+      break
+    }
+  }
+
+  return firstVisible
+}
+
 const ThreadMessageListInner: FC<ThreadMessageListProps> = ({
   clampToComposer,
   components,
@@ -121,22 +140,59 @@ const ThreadMessageListInner: FC<ThreadMessageListProps> = ({
     resize: 'instant'
   })
 
-  const [renderBudget, setRenderBudget] = useState(RENDER_BUDGET)
+  const [renderBudget, setRenderBudget] = useState(FIRST_PAINT_BUDGET)
 
-  // Walk turns newest-first, summing their part weights until the budget is met;
-  // everything before that first kept turn is hidden.
-  let firstVisible = groups.length
+  // Cut the budget during RENDER, not in the post-commit layout effect. An
+  // effect-time cut is too late: React would first build the whole tree with
+  // the full budget (up to 300 parts of markdown + syntax highlighting),
+  // commit it, and only then re-render at the small budget. The render-phase
+  // state adjustment restarts this component immediately — before any child
+  // renders — so the heavy commit never happens.
+  //
+  // Two triggers, because the transcript swap arrives differently per path:
+  // a WARM switch publishes sessionKey + messages in one commit (the key
+  // branch), while a COLD switch changes sessionKey with an empty transcript
+  // and the prefetched messages land hundreds of ms later under the SAME key
+  // (the empty→non-empty branch).
+  const hasGroups = groups.length > 0
+  const [budgetSessionKey, setBudgetSessionKey] = useState(sessionKey)
+  const [hadGroups, setHadGroups] = useState(hasGroups)
 
-  for (let i = groups.length - 1, weight = 0; i >= 0; i--) {
-    weight += groups[i].weight
-    firstVisible = i
+  if (budgetSessionKey !== sessionKey) {
+    setBudgetSessionKey(sessionKey)
+    setHadGroups(hasGroups)
+    setRenderBudget(FIRST_PAINT_BUDGET)
+  } else if (hadGroups !== hasGroups) {
+    setHadGroups(hasGroups)
 
-    if (weight >= renderBudget) {
-      break
+    if (hasGroups) {
+      setRenderBudget(FIRST_PAINT_BUDGET)
     }
   }
 
-  const hiddenCount = firstVisible
+  // Backfill from FIRST_PAINT_BUDGET to the full budget after the small
+  // commit painted — as a TRANSITION, so the heavy markdown + syntax
+  // highlight render of the older turns is interruptible instead of one long
+  // synchronous commit that freezes input right after the switch. Route
+  // changes stay urgent (main.tsx disables router transitions); it's exactly
+  // this backfill that belongs at background priority. "Show earlier" pages
+  // (budget > RENDER_BUDGET) never re-enter here.
+  useEffect(() => {
+    if (renderBudget >= RENDER_BUDGET) {
+      return
+    }
+
+    const rafId = requestAnimationFrame(() => {
+      // Functional max, not a plain set: an urgent "Show earlier" click can
+      // land between scheduling and committing this transition, and a plain
+      // set would rebase over it and shrink the budget back down.
+      startTransition(() => setRenderBudget(budget => Math.max(budget, RENDER_BUDGET)))
+    })
+
+    return () => cancelAnimationFrame(rafId)
+  }, [renderBudget])
+
+  const hiddenCount = firstVisibleGroupIndex(groups, renderBudget)
   const visibleGroups = hiddenCount > 0 ? groups.slice(hiddenCount) : groups
   const restoreFromBottomRef = useRef<number | null>(null)
   // Secondary windows (new-session scratch, subagent watch, cmd-click pop-out)
@@ -192,12 +248,6 @@ const ThreadMessageListInner: FC<ThreadMessageListProps> = ({
   // Instead: quiet it, glue to the true bottom until the height holds steady,
   // then hand back locked. Live streaming afterward uses the normal resize follow.
   useLayoutEffect(() => {
-    // Start with a small first-paint budget (enough for the bottom turn(s) the
-    // user sees after scroll-to-bottom), then defer the full budget bump to a
-    // requestAnimationFrame so the heavy markdown render happens after the
-    // initial commit.
-    setRenderBudget(FIRST_PAINT_BUDGET)
-
     const el = scrollRef.current
 
     if (!el) {
@@ -238,17 +288,7 @@ const ThreadMessageListInner: FC<ThreadMessageListProps> = ({
 
     let rafId = requestAnimationFrame(settle)
 
-    // After the settle loop starts, bump the render budget to the full value
-    // in a subsequent rAF so the full transcript becomes available after the
-    // first paint.
-    let budgetRafId = requestAnimationFrame(() => {
-      setRenderBudget(RENDER_BUDGET)
-    })
-
-    return () => {
-      cancelAnimationFrame(rafId)
-      cancelAnimationFrame(budgetRafId)
-    }
+    return () => cancelAnimationFrame(rafId)
   }, [scrollRef, scrollToBottom, sessionKey, stopScroll])
 
   // Prepend an older page while preserving the on-screen position. The user is

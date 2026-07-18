@@ -148,6 +148,7 @@ export const SCHEMA_ZH_LABEL: Record<string, string> = {
   "display.runtime_footer.enabled": "显示 → 运行时页脚 → 启用",
   "display.runtime_footer.fields": "显示 → 运行时页脚 → 字段",
   "display.show_cost": "显示 → 显示费用",
+  "display.show_commentary": "显示 → 显示进度解说",
   "display.show_reasoning": "显示 → 显示推理",
   "display.skin": "显示 → 皮肤",
   "display.streaming": "显示 → 流式输出",
@@ -307,6 +308,8 @@ const SCHEMA_ZH_DESCRIPTION: Record<string, string> = {
   "dashboard.theme": "管理面板使用的视觉主题。",
   "display.resume_display": "恢复会话时显示历史记录的方式。",
   "display.busy_input_mode": "Agent 运行时收到新输入后的处理方式。",
+  "display.show_commentary":
+    "是否显示 Codex 模型在处理中产生的进度解说；关闭后，这些内容仅在启用推理显示时可见。",
   "approvals.mode": "危险命令的审批方式。",
   "context.engine": "管理会话上下文所使用的引擎。",
   "human_delay.mode": "模拟真人输入延迟的方式。",

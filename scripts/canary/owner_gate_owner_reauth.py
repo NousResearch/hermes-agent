@@ -51,7 +51,10 @@ _SHA256 = re.compile(r"^[0-9a-f]{64}$")
 _GIT_OID = re.compile(r"^[0-9a-f]{40}$")
 _NUMERIC_ID = re.compile(r"^[1-9][0-9]{5,30}$")
 _B64URL = re.compile(r"^[A-Za-z0-9_-]{86}$")
-_SDK_ROOT = re.compile(r"^/[^\x00\r\n]{1,1023}/google-cloud-sdk$")
+_SDK_ROOT = re.compile(
+    rf"^/[^\x00\r\n]{{1,1023}}/google-cloud-sdk-"
+    rf"{re.escape(launcher._GCLOUD_SDK_VERSION)}$"
+)
 _BODY_FIELDS = frozenset({
     "schema",
     "purpose",

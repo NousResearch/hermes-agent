@@ -161,6 +161,28 @@ def _patch_author(
     return calls
 
 
+def test_production_capabilities_translate_owner_reauthentication_failure(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    capabilities = object.__new__(author._ProductionCapabilities)
+    capabilities.release_revision = RELEASE
+    capabilities.executable = object()
+    capabilities.configuration = object()
+
+    def fail(**_kwargs: Any) -> Mapping[str, Any]:
+        raise owner_reauth.OwnerGateOwnerReauthError(
+            "owner_gate_owner_reauth_runtime_invalid"
+        )
+
+    monkeypatch.setattr(owner_reauth, "produce_owner_reauth_receipt", fail)
+
+    with pytest.raises(
+        author.OwnerGateAuthorAndApplyError,
+        match="owner_gate_author_owner_reauthentication_failed",
+    ):
+        capabilities.owner_reauthentication(Ed25519PrivateKey.generate())
+
+
 def test_success_is_append_only_and_replays_without_second_apply(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

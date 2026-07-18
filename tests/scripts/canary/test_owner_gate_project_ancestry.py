@@ -69,7 +69,10 @@ def _owner_reauth_receipt(*, expires_at_unix: int = NOW + 600) -> dict:
             "command_prefix_sha256": "1" * 64,
             "python_executable_sha256": "2" * 64,
             "gcloud_module_sha256": "3" * 64,
-            "sdk_root": "/sealed/google-cloud-sdk",
+            "sdk_root": (
+                "/sealed/google-cloud-sdk-"
+                f"{reauth.launcher._GCLOUD_SDK_VERSION}"
+            ),
             "sdk_python_config_identity_sha256": "4" * 64,
             "closed_environment_sha256": "5" * 64,
             "configuration": reauth.GCLOUD_CONFIGURATION,

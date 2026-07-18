@@ -140,9 +140,11 @@ class WhatsAppBehaviorMixin:
         if not value:
             return ""
         normalized = str(value).strip()
-        if ":" in normalized and "@" in normalized:
-            normalized = normalized.replace(":", "@", 1)
-        return normalized
+        # Baileys socket identities may include a device component, e.g.
+        # ``number:42@s.whatsapp.net``. Quotes name the same account without
+        # it, so canonicalize both to ``number@s.whatsapp.net`` before the
+        # reply-to-bot identity comparison.
+        return re.sub(r":[^@]+(?=@)", "", normalized, count=1)
 
     @staticmethod
     def _is_broadcast_chat(chat_id: str) -> bool:

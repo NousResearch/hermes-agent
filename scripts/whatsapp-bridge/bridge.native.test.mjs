@@ -19,9 +19,31 @@ import {
   appendMediaFailureNote,
   extractBridgeEvent,
   mediaPayloadForFile,
+  normalizeWhatsAppId,
   pollCreationMessageFromPayload,
   pollUpdateForAggregation,
 } from './bridge_helpers.js';
+
+// -- WhatsApp identity canonicalization -----------------------------------
+{
+  assert.equal(
+    normalizeWhatsAppId('15559998888:42@s.whatsapp.net'),
+    '15559998888@s.whatsapp.net',
+  );
+  assert.equal(
+    normalizeWhatsAppId('15559998888@s.whatsapp.net'),
+    '15559998888@s.whatsapp.net',
+  );
+  assert.equal(
+    normalizeWhatsAppId('267383306489914:9@lid'),
+    '267383306489914@lid',
+  );
+  assert.equal(
+    normalizeWhatsAppId('120363001234567890@g.us'),
+    '120363001234567890@g.us',
+  );
+  console.log('  ✓ device-suffixed JIDs match quote metadata account JIDs');
+}
 
 // -- quoted outbound text -------------------------------------------------
 {

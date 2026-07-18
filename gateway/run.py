@@ -2844,6 +2844,73 @@ def _is_gateway_hidden_reasoning_incomplete_turn(agent_result: dict) -> bool:
     return not final_response or final_response == error_text
 
 
+def _max_iteration_recovery_prompt(
+    agent_result: dict,
+    *,
+    pending_event: object = None,
+    pending: object = None,
+    recovery_depth: int = 0,
+    max_attempts: int = 1,
+    recovery_max_turns: int = 30,
+) -> str | None:
+    """Build one bounded continuation turn for a tool-call ceiling stop.
+
+    A queued human message always wins.  ``recovery_depth`` is shared with the
+    existing in-band follow-up recursion, which naturally prevents an infinite
+    recovery loop.  The prefix deliberately matches ``_AUTO_CONTINUE_NOTE_PREFIX``
+    so this synthetic instruction is stripped from future transcript replay.
+    """
+    if not isinstance(agent_result, dict) or pending_event is not None or pending:
+        return None
+    try:
+        attempts = max(0, min(3, int(max_attempts)))
+    except (TypeError, ValueError):
+        attempts = 1
+    if attempts == 0 or recovery_depth >= attempts:
+        return None
+
+    reason = str(agent_result.get("turn_exit_reason") or "").strip().lower()
+    diagnostic = "\n".join(
+        str(agent_result.get(field) or "")
+        for field in ("error", "final_response")
+    ).lower()
+    hit_ceiling = agent_result.get("completed") is not True and (
+        reason == "max_iterations"
+        or reason.startswith("max_iterations_reached(")
+        or (
+            agent_result.get("completed") is False
+            and any(
+                marker in diagnostic
+                for marker in (
+                    "reached maximum iterations",
+                    "maximum number of tool-calling iterations allowed",
+                    "tool-call ceiling",
+                )
+            )
+        )
+    )
+    if not hit_ceiling:
+        return None
+
+    try:
+        recovery_budget = max(1, min(90, int(recovery_max_turns)))
+    except (TypeError, ValueError):
+        recovery_budget = 30
+
+    return (
+        "[System note: Your previous turn hit the Hermes tool-call ceiling. "
+        "This is an automatic bounded recovery turn, not a new user request. "
+        "Continue the original task from durable progress rather than restarting: "
+        "inspect the transcript, todo state, files, and real system state; identify "
+        "only the unmet acceptance gates; finish them; and verify the result before "
+        "replying. Do not repeat non-idempotent external actions or claim success "
+        "from process exit alone. You have at most "
+        f"{recovery_budget} recovery iterations: converge rather than explore. "
+        "If the task is already complete, verify that and "
+        "return the final result. This is the final automatic recovery attempt.]"
+    )
+
+
 def _should_clear_resume_pending_after_turn(agent_result: dict) -> bool:
     """Return True only when a gateway turn really completed successfully.
 
@@ -18077,6 +18144,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         moa_config: Optional[dict] = None,
         persist_user_message: Optional[Any] = None,
         persist_user_timestamp: Optional[float] = None,
+        _max_iterations_override: Optional[int] = None,
     ) -> Dict[str, Any]:
         """Profile-scoping wrapper around the agent run.
 
@@ -18095,6 +18163,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 channel_prompt=channel_prompt, moa_config=moa_config,
                 persist_user_message=persist_user_message,
                 persist_user_timestamp=persist_user_timestamp,
+                _max_iterations_override=_max_iterations_override,
             )
 
         profile_home = self._resolve_profile_home_for_source(source)
@@ -18106,6 +18175,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 channel_prompt=channel_prompt, moa_config=moa_config,
                 persist_user_message=persist_user_message,
                 persist_user_timestamp=persist_user_timestamp,
+                _max_iterations_override=_max_iterations_override,
             )
 
     def _profile_name_for_source(self, source: SessionSource) -> Optional[str]:
@@ -18227,6 +18297,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         moa_config: Optional[dict] = None,
         persist_user_message: Optional[Any] = None,
         persist_user_timestamp: Optional[float] = None,
+        _max_iterations_override: Optional[int] = None,
     ) -> Dict[str, Any]:
         """
         Run the agent with the given message and context.
@@ -19274,6 +19345,14 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 combined_ephemeral = (combined_ephemeral + "\n\n" + cfg_channel_prompt).strip()
 
             max_iterations = _current_max_iterations()
+            if _max_iterations_override is not None:
+                try:
+                    max_iterations = max(
+                        1,
+                        min(max_iterations, int(_max_iterations_override)),
+                    )
+                except (TypeError, ValueError):
+                    pass
 
             try:
                 model, runtime_kwargs = self._resolve_session_agent_runtime(
@@ -21091,6 +21170,49 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     pending = _leftover_steer
                     logger.debug("Delivering leftover /steer as next turn: '%s...'", pending[:40])
 
+            # A max-iteration stop is recoverable, not a semantic completion.
+            # Reuse the existing in-band queued-turn machinery for one bounded
+            # continuation. Human queued messages and /steer always win, and the
+            # recursion depth prevents this from becoming an infinite loop.
+            _auto_iteration_recovery = False
+            _auto_iteration_recovery_max_turns = None
+            if result and not pending and not pending_event and not self._draining:
+                _agent_recovery_cfg = user_config.get("agent") or {}
+                _recovery_attempts = (
+                    _agent_recovery_cfg.get("max_iteration_recovery_attempts", 1)
+                    if isinstance(_agent_recovery_cfg, dict)
+                    else 1
+                )
+                _recovery_max_turns = (
+                    _agent_recovery_cfg.get("max_iteration_recovery_max_turns", 30)
+                    if isinstance(_agent_recovery_cfg, dict)
+                    else 30
+                )
+                _recovery_prompt = _max_iteration_recovery_prompt(
+                    result,
+                    pending_event=pending_event,
+                    pending=pending,
+                    recovery_depth=_interrupt_depth,
+                    max_attempts=_recovery_attempts,
+                    recovery_max_turns=_recovery_max_turns,
+                )
+                if _recovery_prompt:
+                    pending = _recovery_prompt
+                    _auto_iteration_recovery = True
+                    try:
+                        _auto_iteration_recovery_max_turns = max(
+                            1,
+                            min(_current_max_iterations(), int(_recovery_max_turns)),
+                        )
+                    except (TypeError, ValueError):
+                        _auto_iteration_recovery_max_turns = 30
+                    logger.warning(
+                        "Tool-call ceiling reached for session %s — starting bounded automatic recovery %d/%s",
+                        session_key or "?",
+                        _interrupt_depth + 1,
+                        _recovery_attempts,
+                    )
+
             # Safety net: if the pending text is a slash command (e.g. "/stop",
             # "/new"), discard it — commands should never be passed to the agent
             # as user input.  The primary fix is in base.py (commands bypass the
@@ -21146,7 +21268,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                         adapter.queue_message(session_key, pending)
                     return result_holder[0] or {"final_response": response, "messages": history}
 
-                was_interrupted = result.get("interrupted")
+                was_interrupted = bool(isinstance(result, dict) and result.get("interrupted")) or _auto_iteration_recovery
                 if not was_interrupted:
                     # Queued message after normal completion — deliver the first
                     # response before processing the queued follow-up.
@@ -21284,18 +21406,52 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 # what the follow-up's guard will consult.  Fail-safe in helper.
                 await self._refresh_agent_cache_message_count(session_key, session_id)
 
-                followup_result = await self._run_agent(
-                    message=next_message,
-                    context_prompt=context_prompt,
-                    history=updated_history,
-                    source=next_source,
-                    session_id=session_id,
-                    session_key=next_session_key,
-                    run_generation=run_generation,
-                    _interrupt_depth=_interrupt_depth + 1,
-                    event_message_id=next_message_id,
-                    channel_prompt=next_channel_prompt,
-                )
+                try:
+                    followup_result = await self._run_agent(
+                        message=next_message,
+                        context_prompt=context_prompt,
+                        history=updated_history,
+                        source=next_source,
+                        session_id=session_id,
+                        session_key=next_session_key,
+                        run_generation=run_generation,
+                        _interrupt_depth=_interrupt_depth + 1,
+                        event_message_id=next_message_id,
+                        channel_prompt=next_channel_prompt,
+                        _max_iterations_override=_auto_iteration_recovery_max_turns,
+                    )
+                except Exception as recovery_exc:
+                    if not _auto_iteration_recovery:
+                        raise
+                    partial_result = dict(result) if isinstance(result, dict) else {}
+                    first_summary = str(partial_result.get("final_response") or "").strip()
+                    partial_result.update(
+                        {
+                            "completed": False,
+                            "failed": True,
+                            "error": f"Automatic ceiling recovery failed: {recovery_exc}",
+                            "final_response": (
+                                "Automatic continuation failed. Partial result from the first attempt:\n\n"
+                                + (first_summary or "No first-attempt summary was available.")
+                            ),
+                        }
+                    )
+                    return partial_result
+                if _auto_iteration_recovery and isinstance(followup_result, dict):
+                    if followup_result.get("completed") is not True:
+                        first_summary = str(
+                            result.get("final_response") if isinstance(result, dict) else ""
+                        ).strip()
+                        recovery_summary = str(
+                            followup_result.get("final_response") or ""
+                        ).strip()
+                        followup_result["final_response"] = (
+                            "Automatic continuation did not reach verified completion.\n\n"
+                            "First-attempt checkpoint:\n"
+                            f"{first_summary or '(none)'}\n\n"
+                            "Recovery checkpoint:\n"
+                            f"{recovery_summary or '(none)'}"
+                        )
                 return _preserve_queued_followup_history_offset(result, followup_result)
         finally:
             # Stop progress sender, interrupt monitor, and notification task

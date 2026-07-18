@@ -4655,7 +4655,15 @@ function sendClosePreviewRequested() {
 // Tell the renderer the machine just woke. Sleep silently drops the
 // renderer's WebSocket to the local backend; the renderer reconnects on this
 // signal so the chat composer doesn't stay stuck on "Starting Hermes...".
+// Guard against macOS firing app.on('activate') on lid-open wake.
+// powerMonitor.on('resume') fires first; we set this timestamp so the
+// activate handler can skip focusWindow and avoid stealing the foreground
+// from the app the user was using before sleep.
+let _sleepResumeAt = 0
+
 function sendPowerResume() {
+  _sleepResumeAt = Date.now()
+
   if (!mainWindow || mainWindow.isDestroyed()) {
     return
   }
@@ -9443,12 +9451,12 @@ app.whenReady().then(() => {
   }
 
   app.on('activate', () => {
-    // Recreate the primary window if it's gone. Guard on mainWindow directly
-    // (not just total window count) so a dock click still restores the main
-    // window when only secondary session windows remain open.
+    // macOS fires activate on lid-open wake too, not just dock clicks.
+    // Skip focusWindow right after sleep-resume so we don't steal the
+    // foreground from whatever the user was doing before sleep.
     if (!mainWindow || mainWindow.isDestroyed()) {
       createWindow()
-    } else {
+    } else if (Date.now() - _sleepResumeAt > 2000) {
       focusWindow(mainWindow)
     }
   })

@@ -1,0 +1,13 @@
+name: knowledge-graph
+version: "1.0"
+kind: memory
+description: Entity-relationship knowledge graph for agent memory.
+  Builds and traverses entity relationship maps.
+  Stores (entity, relation, entity) triples with metadata.
+  Supports path queries, dependency tracing, and graph reasoning.
+author: Hermes / adapted from Ruflo knowledge-graph (ruvnet/ruflo, MIT)
+hermes:
+  tools:
+    - knowledge_graph_upsert
+    - knowledge_graph_query
+    - knowledge_graph_path

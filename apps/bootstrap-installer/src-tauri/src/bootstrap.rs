@@ -277,10 +277,13 @@ async fn launch_windows_desktop_via_task(
     }
     let _ = std::fs::remove_file(&ack_path);
 
+    // Keep /TR comfortably below schtasks.exe's 261-character limit. The
+    // desktop derives the request-bound ACK path from HERMES_HOME + request_id,
+    // so repeating the full ACK path here is unnecessary and can make an
+    // otherwise normal Windows install impossible to relaunch.
     let action = format!(
-        "\"{}\" --hermes-update-relaunch-ack=\"{}\" --hermes-update-relaunch-request={}",
+        "\"{}\" --hermes-update-relaunch-request={}",
         exe_path.display(),
-        ack_path.display(),
         request_id
     );
     let create_args = vec![

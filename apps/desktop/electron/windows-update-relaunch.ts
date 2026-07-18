@@ -10,12 +10,14 @@ export function parseUpdateRelaunchAckRequest(argv: string[], hermesHome: string
   const rawAck = argv.find(arg => arg.startsWith(ACK_ARG))?.slice(ACK_ARG.length).trim()
   const requestId = argv.find(arg => arg.startsWith(REQUEST_ARG))?.slice(REQUEST_ARG.length).trim()
 
-  if (!rawAck || !requestId || !/^[a-f0-9]{32}$/i.test(requestId)) {
+  if (!requestId || !/^[a-f0-9]{32}$/i.test(requestId)) {
     return null
   }
 
-  const ackPath = path.resolve(rawAck)
   const logsRoot = path.resolve(hermesHome, 'logs')
+  const ackPath = rawAck
+    ? path.resolve(rawAck)
+    : path.resolve(logsRoot, `desktop-relaunch-${requestId}.json`)
   const relativeAckPath = path.relative(logsRoot, ackPath)
 
   if (

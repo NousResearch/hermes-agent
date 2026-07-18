@@ -200,3 +200,67 @@ def test_filter_facts_splits_and_audits():
 
 def test_op_reference_never_dropped():
     assert scrub.is_secret("credential at op://Engineering/Universal Homelab Password/password") is False
+
+
+# ---- Natural-language credential disclosure (the 2026-07-07 prune-leak class) ---------------
+# The scrubber originally only caught secrets with a `:` / `=` right after the label. Human
+# sentences like "password is 'Zxcv...'" or "password djt!K9x" sailed through and 22 such rows
+# were found live in the store. These regression vectors assemble the value from fragments so no
+# scannable literal sits in source bytes, while still exercising the NL detector.
+# Re-landed from fork PR #214 (author: Kyzcreig) with the Greptile review fixes folded in.
+_NLP_ZXCV = "Zxcv" + "zxcv" + "1!" + "147896321"
+_NLP_HOTSPOT = "hello" + "kitty" + "99!"
+_NLP_GEN = "wuppf" + "xqxqq7Z"
+_NLP_USENET = "djt!" + "K9xmQ2vv"
+_NLP_PASSPHRASE = "FALCON-9-" + "ORION-2287"
+
+NL_CRED_CORPUS = [
+    ("login password quoted", f"Nick's Ubuntu login password is '{_NLP_ZXCV}', which differs from RDP"),
+    ("rdp password quoted", f"RDP configuration: user 'nexus-command', password '{_NLP_ZXCV}' current"),
+    ("hotspot password quoted", f"iPhone hotspot SSID is \"Ace's iPhone\" with password \"{_NLP_HOTSPOT}\""),
+    ("generated password quoted", f"generated a temporary password \"{_NLP_GEN}\" for the dashboard"),
+    ("sudo password bare", f"User stated the sudo password {_NLP_ZXCV} and asked to confirm"),
+    ("login password bare colon", f"the Ubuntu login password for nexus-command: {_NLP_ZXCV}."),
+    ("usenet password bare", f"Newshosting credentials: username 66pcl49wv3, password {_NLP_USENET}, server"),
+    ("passphrase quoted", f"passphrase recovered as '{_NLP_PASSPHRASE}'; kill-switch exists"),
+    # Greptile #214 P1 (scrub:182 superseded + follow-up): multi-word AND 2-word passphrases
+    ("multiword passphrase", "the vault passphrase is 'correct horse battery staple' per the note"),
+    ("two-word passphrase", 'the vault passphrase is "open sesame" per the old note'),
+    # Greptile #214 P2 (scrub:198): pure-digit PIN after a connector, incl. phrased resets
+    ("numeric pin bare", "the router admin password is 84719263 as printed on the label"),
+    ("numeric pin reset-to", "the router password has been reset to 84719263 by the technician"),
+    # Greptile #393: bare "reset" right after the cred word must not negate "reset to"
+    ("numeric pin bare reset-to", "the router password reset to 84719263 after the outage"),
+    # Greptile #214 P2 (scrub:167): value beyond the old 60-char window (qualifier phrase)
+    ("distant qualified value",
+     f"the password for the backup router's admin console on the secondary VLAN is {_NLP_ZXCV}"),
+]
+
+
+@pytest.mark.parametrize("label,text", NL_CRED_CORPUS)
+def test_scrubber_catches_nl_credentials(label, text):
+    assert scrub.is_secret(text) is True, f"{label}: NL credential leaked through scrubber"
+
+
+def test_scrubber_nl_credentials_no_false_positives():
+    # Benign sentences that mention a credential WORD but expose no value — must stay clean so we
+    # don't nuke durable facts (these are real store rows that must survive).
+    clean = [
+        "Assistant rotated the Bright Data Web Unlocker API key in 1Password, old key revoked.",
+        "The Semantic Scholar API key is still empty in ~/.config; a free key must be minted.",
+        "Assistant confirms that the password does not work for root, nexus-command, ace, or nick.",
+        "SSH is configured for key authentication using the private key ~/.ssh/id_ed25519.",
+        "Assistant advises attaching a local password to the existing Plex-owned account.",
+        "the passkey wall was bypassed and we reached the password step at https://example.com/login",
+        "Assistant offered to change the RDP password upon user confirmation.",
+        "User keeps the sudo password in 1Password under op://Engineering/nexus/password.",
+        # Greptile #214 P1: quoted product names near a cred word must NOT be scrubbed
+        'the password manager is "Bitwarden" and syncs across devices',
+        "User's preferred password app is \"1Password\" on all machines",
+        "the password field on the login form is currently disabled",
+        # Greptile #393: "password reset" as a FLOW term (no value) stays clean
+        "the password reset flow emails a link that expires in 15 minutes",
+        "User's Plex server listens on port 32400 for the local network",
+    ]
+    for f in clean:
+        assert scrub.is_secret(f) is False, f"false positive on: {f}"

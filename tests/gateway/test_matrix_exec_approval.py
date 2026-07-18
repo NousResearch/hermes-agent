@@ -25,6 +25,11 @@ class TestMatrixExecApprovalReactions:
         )
 
         assert result.success is True
+        send_call = adapter.send.await_args
+        assert send_call is not None
+        sent_text = send_call.args[1]
+        assert "❌ = deny" in sent_text
+        assert "❎ = deny" not in sent_text
         assert adapter._approval_prompt_by_session["sess-1"] == "$evt1"
         assert adapter._approval_prompts_by_event["$evt1"].session_key == "sess-1"
         assert adapter._send_reaction.await_count == 3

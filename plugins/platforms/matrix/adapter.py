@@ -2047,7 +2047,7 @@ class MatrixAdapter(BasePlatformAdapter):
             f"{scope_choices}Reply `!approve` to execute once, or `!deny` to cancel.\n\n"
             "You can also click the reaction to approve:\n"
             "✅ = approve\n"
-            "❎ = deny"
+            "❌ = deny"
         )
 
         result = await self.send(chat_id, text, metadata=metadata)

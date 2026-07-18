@@ -531,6 +531,7 @@ hermes skills list --source hub                   # List hub-installed skills
 hermes skills check                               # Check installed hub skills for upstream updates
 hermes skills update                              # Reinstall hub skills with upstream changes when needed
 hermes skills audit                               # Re-scan all hub skills for security
+hermes skills audit-size --min-chars 25000        # Find large active SKILL.md files without loading them
 hermes skills uninstall k8s                       # Remove a hub skill
 hermes skills reset google-workspace              # Un-stick a bundled skill from "user-modified" (see below)
 hermes skills reset google-workspace --restore    # Also restore the bundled version, deleting your local edits
@@ -538,6 +539,12 @@ hermes skills publish skills/my-skill --to github --repo owner/repo
 hermes skills snapshot export setup.json          # Export skill config
 hermes skills tap add myorg/skills-repo           # Add a custom GitHub source
 ```
+
+`hermes skills audit-size` scans the effective local-first skill set and reports
+character, byte, line, and description sizes along with source provenance and
+the presence of `references/` or `scripts/` directories. Use `--source` to
+filter by `hub`, `builtin`, `local`, or `external`, `--limit 0` to show all
+rows, and `--json` for machine-readable output.
 
 ### Supported hub sources
 

@@ -11,6 +11,7 @@ handler are thin wrappers that parse args and delegate.
 """
 
 import json
+import os
 import re
 import shutil
 from pathlib import Path
@@ -1037,20 +1038,50 @@ def _skill_size_level(chars: int) -> str:
 def _skill_size_source(
     *,
     name: str,
-    scan_dir: Path,
+    skill_dir: Path,
     local_skills_dir: Path,
-    hub_installed: Dict[str, Any],
+    hub_install_paths: set[str],
     builtin_names: set[str],
 ) -> str:
-    if name in hub_installed:
+    try:
+        resolved_skill_dir = skill_dir.resolve()
+    except OSError:
+        resolved_skill_dir = skill_dir.absolute()
+
+    if os.path.normcase(str(resolved_skill_dir)) in hub_install_paths:
         return "hub"
+    try:
+        resolved_skill_dir.relative_to(local_skills_dir.resolve())
+    except (OSError, ValueError):
+        return "external"
     if name in builtin_names:
         return "builtin"
+    return "local"
+
+
+def _hub_install_paths(
+    local_skills_dir: Path,
+    hub_installed: list[dict[str, Any]],
+) -> set[str]:
+    """Return safe resolved install directories recorded by the hub lock."""
     try:
-        scan_dir.resolve().relative_to(local_skills_dir.resolve())
-        return "local"
-    except Exception:
-        return "external"
+        local_root = local_skills_dir.resolve()
+    except OSError:
+        local_root = local_skills_dir.absolute()
+
+    paths: set[str] = set()
+    for entry in hub_installed:
+        install_path = entry.get("install_path")
+        if not isinstance(install_path, str) or not install_path.strip():
+            continue
+        candidate = local_skills_dir / Path(install_path)
+        try:
+            resolved = candidate.resolve()
+            resolved.relative_to(local_root)
+        except (OSError, ValueError):
+            continue
+        paths.add(os.path.normcase(str(resolved)))
+    return paths
 
 
 def _skill_category_for_path(skill_md: Path, scan_dir: Path) -> str:
@@ -1082,20 +1113,24 @@ def collect_skill_size_audit(
 
     ensure_hub_dirs()
     local_skills_dir = get_skills_dir()
-    hub_installed = {e["name"]: e for e in HubLockFile().list_installed()}
+    hub_paths = _hub_install_paths(
+        local_skills_dir,
+        HubLockFile().list_installed(),
+    )
     builtin_names = set(_read_manifest())
 
     entries: list[dict[str, Any]] = []
     seen_paths: set[str] = set()
+    seen_names: set[str] = set()
 
     for scan_dir in get_all_skills_dirs():
         if not scan_dir.exists():
             continue
         for skill_md in iter_skill_index_files(scan_dir, "SKILL.md"):
             try:
-                key = str(skill_md.resolve())
+                key = os.path.normcase(str(skill_md.resolve()))
             except Exception:
-                key = str(skill_md)
+                key = os.path.normcase(str(skill_md))
             if key in seen_paths:
                 continue
             seen_paths.add(key)
@@ -1116,15 +1151,19 @@ def collect_skill_size_audit(
 
             name = str(frontmatter.get("name") or skill_md.parent.name)
             description = str(frontmatter.get("description") or "")
+            if name in seen_names:
+                continue
+            seen_names.add(name)
+
             chars = len(content)
             if chars < min_chars:
                 continue
 
             source = _skill_size_source(
                 name=name,
-                scan_dir=scan_dir,
+                skill_dir=skill_md.parent,
                 local_skills_dir=local_skills_dir,
-                hub_installed=hub_installed,
+                hub_install_paths=hub_paths,
                 builtin_names=builtin_names,
             )
             if source_filter != "all" and source != source_filter:
@@ -1146,7 +1185,7 @@ def collect_skill_size_audit(
                     "source": source,
                     "chars": chars,
                     "bytes": byte_count,
-                    "lines": content.count("\n") + (1 if content else 0),
+                    "lines": len(content.splitlines()),
                     "description_chars": len(description),
                     "level": _skill_size_level(chars),
                     "has_references": references_dir.is_dir(),

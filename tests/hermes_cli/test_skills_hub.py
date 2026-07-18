@@ -81,7 +81,15 @@ def _capture(source_filter: str = "all") -> str:
     return sink.getvalue()
 
 
-def _write_skill(root, relative, *, name=None, description="short", body="body"):
+def _write_skill(
+    root,
+    relative,
+    *,
+    name=None,
+    description="short",
+    body="body",
+    terminal_newline=False,
+):
     skill_dir = root / relative
     skill_dir.mkdir(parents=True, exist_ok=True)
     skill_name = name or skill_dir.name
@@ -92,6 +100,8 @@ def _write_skill(root, relative, *, name=None, description="short", body="body")
         "---\n"
         f"{body}"
     )
+    if terminal_newline:
+        content += "\n"
     (skill_dir / "SKILL.md").write_text(content, encoding="utf-8")
     return skill_dir / "SKILL.md"
 
@@ -269,7 +279,13 @@ def test_collect_skill_size_audit_reports_size_levels_without_loading_skill_view
         monkeypatch,
         tmp_path,
         hub_env,
-        hub_entries=[{"name": "hub-large", "source": "github"}],
+        hub_entries=[
+            {
+                "name": "hub-large",
+                "source": "github",
+                "install_path": "ops/hub-large",
+            }
+        ],
         builtin_manifest={"builtin-warn": "abc123"},
     )
     _write_skill(skills_dir, "ops/hub-large", name="hub-large", body="x" * SKILL_SIZE_LARGE_CHARS)
@@ -298,6 +314,65 @@ def test_collect_skill_size_audit_reports_size_levels_without_loading_skill_view
     assert by_name["local-small"]["level"] == "ok"
     assert data["totals"]["large_or_larger"] == 1
     assert data["totals"]["warn_or_larger"] == 2
+
+
+def test_collect_skill_size_audit_counts_terminal_newline_once(
+    monkeypatch, tmp_path, hub_env
+):
+    skills_dir = _isolate_size_audit(monkeypatch, tmp_path, hub_env)
+    _write_skill(skills_dir, "newline", terminal_newline=True)
+
+    data = collect_skill_size_audit()
+
+    assert data["skills"][0]["lines"] == 5
+
+
+def test_collect_skill_size_audit_uses_active_source_and_suppresses_collisions(
+    monkeypatch, tmp_path, hub_env
+):
+    import agent.skill_utils as skill_utils
+
+    skills_dir = _isolate_size_audit(
+        monkeypatch,
+        tmp_path,
+        hub_env,
+        hub_entries=[
+            {
+                "name": "shared",
+                "source": "github",
+                "install_path": "hub/shared",
+            }
+        ],
+        builtin_manifest={"external-builtin-name": "abc123"},
+    )
+    external_dir = tmp_path / "external-skills"
+    local_path = _write_skill(skills_dir, "local/shared", name="shared")
+    _write_skill(external_dir, "shared", name="shared", body="x" * 200)
+    external_path = _write_skill(
+        external_dir,
+        "external-builtin-name",
+        name="external-builtin-name",
+    )
+    monkeypatch.setattr(
+        skill_utils,
+        "get_all_skills_dirs",
+        lambda: [skills_dir, external_dir],
+    )
+
+    data = collect_skill_size_audit()
+
+    by_name = {entry["name"]: entry for entry in data["skills"]}
+    assert set(by_name) == {"shared", "external-builtin-name"}
+    assert by_name["shared"]["source"] == "local"
+    assert by_name["shared"]["path"] == str(local_path)
+    assert by_name["external-builtin-name"]["source"] == "external"
+    assert by_name["external-builtin-name"]["path"] == str(external_path)
+    assert collect_skill_size_audit(source_filter="hub")["skills"] == []
+    external_only = collect_skill_size_audit(source_filter="external")
+    assert [entry["name"] for entry in external_only["skills"]] == [
+        "external-builtin-name"
+    ]
+    assert collect_skill_size_audit(min_chars=100)["skills"] == []
 
 
 def test_do_audit_size_json_honors_filters_and_limit(monkeypatch, tmp_path, hub_env):

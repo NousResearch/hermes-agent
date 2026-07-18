@@ -14188,9 +14188,28 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             )
             return False
 
-        chat_name = getattr(text_channel, "name", str(text_channel_id))
         guild = getattr(text_channel, "guild", None)
-        if guild is not None and getattr(guild, "name", None):
+        # Reject a linked text channel that lives in a different guild than the
+        # voice event. Auto-join wires the voice session to this text channel;
+        # if it belonged to another server we would leak the session across a
+        # guild boundary and post into a channel the voice event never touched.
+        text_guild_id = getattr(guild, "id", None)
+        try:
+            same_guild = text_guild_id is not None and int(text_guild_id) == int(guild_id)
+        except (TypeError, ValueError):
+            same_guild = False
+        if not same_guild:
+            logger.warning(
+                "Discord voice auto-join blocked: linked text channel %s is in guild %s, "
+                "not the voice event guild %s",
+                text_channel_id,
+                text_guild_id,
+                guild_id,
+            )
+            return False
+
+        chat_name = getattr(text_channel, "name", str(text_channel_id))
+        if getattr(guild, "name", None):
             chat_name = f"{guild.name} / #{chat_name}"
         parent_id = str(getattr(text_channel, "parent_id", "") or "")
         channel_prompt = None
@@ -14227,6 +14246,42 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             raw_message=SimpleNamespace(guild_id=int(guild_id), guild=guild),
             channel_prompt=channel_prompt,
         )
+
+        # Revalidate the user's CURRENT voice channel against the configured
+        # allowlist immediately before joining. The allowlist was checked when
+        # the voice-state event fired, but the manual join path re-resolves the
+        # user's live channel; re-checking here closes a channel-move race where
+        # the user hops to a non-allowlisted channel before the join lands, which
+        # would otherwise put the bot in a channel outside policy.
+        auto_join_cfg = getattr(adapter, "_voice_auto_join_cfg", None)
+        allowed_channels_raw = (
+            auto_join_cfg.get("allowed_voice_channel_ids")
+            if isinstance(auto_join_cfg, dict)
+            else None
+        )
+        allowed_channels = {
+            str(c)
+            for c in (
+                allowed_channels_raw
+                if isinstance(allowed_channels_raw, (set, frozenset, list, tuple))
+                else ()
+            )
+        }
+        try:
+            current_voice_channel = await adapter.get_user_voice_channel(
+                int(guild_id), str(user_id)
+            )
+        except Exception:
+            current_voice_channel = None
+        current_voice_channel_id = str(getattr(current_voice_channel, "id", "") or "")
+        if not allowed_channels or current_voice_channel_id not in allowed_channels:
+            logger.warning(
+                "Discord voice auto-join blocked: user %s current voice channel %s is not "
+                "in the configured allowlist",
+                user_id,
+                current_voice_channel_id or "<none>",
+            )
+            return False
 
         result = await self._handle_voice_channel_join(event)
         success = (

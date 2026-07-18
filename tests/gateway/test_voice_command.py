@@ -1275,6 +1275,7 @@ class TestDiscordVoiceAutoJoin:
         adapter._voice_mode_getter = None
         adapter._auto_tts_enabled_chats = set()
         adapter._auto_tts_disabled_chats = set()
+        adapter._voice_auto_join_cfg = {"allowed_voice_channel_ids": {"222"}}
         adapter.mark_voice_auto_join_target = MagicMock()
         runner.adapters[Platform.DISCORD] = adapter
 
@@ -1295,6 +1296,69 @@ class TestDiscordVoiceAutoJoin:
             voice_channel_id="222",
             text_channel_id="333",
         )
+
+    @pytest.mark.asyncio
+    async def test_runner_auto_join_rejects_cross_guild_text_channel(self, tmp_path):
+        """A linked text channel in a different guild than the voice event is rejected."""
+        from gateway.config import Platform
+
+        runner = _make_runner(tmp_path)
+        # Text channel resolves into a DIFFERENT guild than the voice event (111).
+        other_guild = SimpleNamespace(id=222222, name="Other Server")
+        text_channel = SimpleNamespace(id=333, name="voice-chat", guild=other_guild, parent_id=None)
+        voice_channel = SimpleNamespace(id=222, name="General", guild=other_guild)
+        adapter = MagicMock()
+        adapter._client = MagicMock()
+        adapter._client.get_channel = MagicMock(return_value=text_channel)
+        adapter.get_user_voice_channel = AsyncMock(return_value=voice_channel)
+        adapter.join_voice_channel = AsyncMock(return_value=True)
+        adapter.is_in_voice_channel = MagicMock(return_value=True)
+        adapter._voice_auto_join_cfg = {"allowed_voice_channel_ids": {"222"}}
+        adapter.mark_voice_auto_join_target = MagicMock()
+        runner.adapters[Platform.DISCORD] = adapter
+
+        success = await runner._handle_discord_voice_auto_join(
+            guild_id=111,
+            user_id="42",
+            voice_channel_id="222",
+            text_channel_id="333",
+        )
+
+        assert success is False
+        adapter.join_voice_channel.assert_not_awaited()
+        adapter.mark_voice_auto_join_target.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_runner_auto_join_revalidates_current_channel_against_allowlist(self, tmp_path):
+        """A channel-move race — the user's live channel left the allowlist — is blocked."""
+        from gateway.config import Platform
+
+        runner = _make_runner(tmp_path)
+        guild = SimpleNamespace(id=111, name="Guild")
+        text_channel = SimpleNamespace(id=333, name="voice-chat", guild=guild, parent_id=None)
+        # The user has moved to a channel that is NOT in the allowlist since the
+        # voice-state event that triggered auto-join fired.
+        moved_channel = SimpleNamespace(id=999, name="Private", guild=guild)
+        adapter = MagicMock()
+        adapter._client = MagicMock()
+        adapter._client.get_channel = MagicMock(return_value=text_channel)
+        adapter.get_user_voice_channel = AsyncMock(return_value=moved_channel)
+        adapter.join_voice_channel = AsyncMock(return_value=True)
+        adapter.is_in_voice_channel = MagicMock(return_value=True)
+        adapter._voice_auto_join_cfg = {"allowed_voice_channel_ids": {"222"}}
+        adapter.mark_voice_auto_join_target = MagicMock()
+        runner.adapters[Platform.DISCORD] = adapter
+
+        success = await runner._handle_discord_voice_auto_join(
+            guild_id=111,
+            user_id="42",
+            voice_channel_id="222",
+            text_channel_id="333",
+        )
+
+        assert success is False
+        adapter.join_voice_channel.assert_not_awaited()
+        adapter.mark_voice_auto_join_target.assert_not_called()
 
 
 # =====================================================================

@@ -645,3 +645,95 @@ describe('reconnect-seam zombie optimistic rows (severed message.complete stamp)
     expect(committed.messages.map(row => row.id)).toEqual(['700'])
   })
 })
+
+describe('role-aware tail-first stamping (stale zombie + fresh turn, live 2026-07-15)', () => {
+  function textMessage2(id: string, role: ChatMessage['role'], text: string, pending = false): ChatMessage {
+    return { id, role, pending, parts: [{ type: 'text', text }] }
+  }
+
+  it('does NOT stamp a stale assistant zombie with the USER id (the mis-stamp that defeated the sweep)', () => {
+    // Transcript: [stale assistant zombie from a severed earlier turn,
+    // fresh user row, fresh completed assistant row]. Frame carries the fresh
+    // turn's [user_id, assistant_id]. The old top-down role-blind walk gave
+    // user_id -> zombie and assistant_id -> fresh user row: the zombie wore a
+    // committed id (unsweepable) and painted as a permanent duplicate.
+    const stale = textMessage2('assistant-stream-100', 'assistant', 'old severed reply')
+    const freshUser = textMessage2('user-200-abc', 'user', 'hi')
+    const freshAssistant = textMessage2('assistant-201', 'assistant', 'hello!')
+
+    const stamped = stampOptimisticTranscriptRows([stale, freshUser, freshAssistant], ['500', '501'])
+
+    // fresh rows get the ids; the stale zombie keeps its optimistic id
+    expect(stamped.messages.map(row => row.id)).toEqual(['assistant-stream-100', '500', '501'])
+    expect(stamped.messages[1].role).toBe('user')
+    expect(stamped.messages[2].role).toBe('assistant')
+  })
+
+  it('stale zombie left optimistic is then swept by the poll (end-to-end: no double paint)', () => {
+    const stale = textMessage2('assistant-stream-100', 'assistant', 'old severed reply')
+    const freshUser = textMessage2('user-200-abc', 'user', 'hi')
+    const freshAssistant = textMessage2('assistant-201', 'assistant', 'hello!')
+
+    const stamped = stampOptimisticTranscriptRows([stale, freshUser, freshAssistant], ['500', '501'])
+    // poll returns the stale turn's committed rows + the fresh ones
+    const result = appendFetchedMessages(stamped.messages, [
+      { id: 400, role: 'assistant', content: 'old severed reply' },
+      { id: 500, role: 'user', content: 'hi' },
+      { id: 501, role: 'assistant', content: 'hello!' }
+    ])
+
+    const texts = result.messages.map(row => row.parts.map(p => (p as { text?: string }).text ?? '').join(''))
+    expect(texts.filter(t => t === 'old severed reply')).toHaveLength(1)
+    expect(result.messages.map(row => row.id).sort()).toEqual(['400', '500', '501'])
+  })
+
+  it('normal send path unchanged: [user, assistant] stamps its own rows in order', () => {
+    const stamped = stampOptimisticTranscriptRows(
+      [textMessage2('user-1-x', 'user', 'q'), { ...textMessage2('assistant-2', 'assistant', 'a'), pending: false }],
+      ['100', '101']
+    )
+    expect(stamped.messages.map(row => row.id)).toEqual(['100', '101'])
+  })
+
+  it('lone id prefers the assistant streamed row over an older user leftover', () => {
+    const leftoverUser = textMessage2('user-9-z', 'user', 'unsent leftover')
+    const freshAssistant = textMessage2('assistant-10', 'assistant', 'reply')
+    const stamped = stampOptimisticTranscriptRows([leftoverUser, freshAssistant], ['700'])
+
+    expect(stamped.messages.map(row => row.id)).toEqual(['user-9-z', '700'])
+  })
+})
+
+describe('Greptile #364 edge frames', () => {
+  function tm(id: string, role: ChatMessage['role'], text: string, pending = false): ChatMessage {
+    return { id, role, pending, parts: [{ type: 'text', text }] }
+  }
+
+  it('no user-role stampable row: user id is deliberately NOT cross-role stamped', () => {
+    // User row already committed; only the streamed assistant row + a stale
+    // assistant zombie remain. The user id must NOT land on either assistant
+    // row (cross-role mis-stamp); the assistant id lands on the FRESH tail row.
+    const zombie = tm('assistant-stream-old', 'assistant', 'stale')
+    const freshAssistant = tm('assistant-2', 'assistant', 'reply')
+    const stamped = stampOptimisticTranscriptRows([zombie, freshAssistant], ['500', '501'])
+
+    expect(stamped.messages.map(row => row.id)).toEqual(['assistant-stream-old', '501'])
+    expect(stamped.stampedIds.has('500')).toBe(false) // user id dropped, poll reconciles
+  })
+
+  it('3+ ids (array + scalar fields both populated): positional pair stays role-aware, extras unstamped', () => {
+    const user = tm('user-1-a', 'user', 'q')
+    const assistant = tm('assistant-2', 'assistant', 'a')
+    const stamped = stampOptimisticTranscriptRows([user, assistant], ['500', '501', '502'])
+
+    // Greptile #398: the first two ids keep the [user_id, assistant_id]
+    // positional convention — 500 lands on the USER row, 501 on the assistant
+    // row (an assistant-preferring walk over all ids reversed them). The third
+    // id has no unclaimed row left and is left for the poll.
+    expect(stamped.messages.map(row => row.id)).toEqual(['500', '501'])
+    expect(stamped.messages[0].role).toBe('user')
+    expect(stamped.messages[1].role).toBe('assistant')
+    expect(stamped.stampedIds.size).toBe(2)
+    expect(stamped.stampedIds.has('502')).toBe(false)
+  })
+})

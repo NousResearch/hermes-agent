@@ -359,30 +359,96 @@ export function stampOptimisticTranscriptRows(messages: readonly ChatMessage[], 
     }
   }
 
+  // Stampable = any non-committed-id row: optimistic id (`user-`/`assistant-`
+  // prefix) OR still-pending. The streamed assistant row is finalized by
+  // completeAssistantMessage() (pending:false, id `assistant-<ts>`) BEFORE
+  // markTurnComplete() runs this stamp — so a `pending`-only predicate would
+  // skip it (#352).
+  const stampable: number[] = []
+  messages.forEach((message, index) => {
+    if (Number.isInteger(Number(message.id))) {
+      return
+    }
+    const isOptimisticId = message.id.startsWith('user-') || message.id.startsWith('assistant-')
+    if (isOptimisticId || message.pending) {
+      stampable.push(index)
+    }
+  })
+
+  // ROLE-AWARE, TAIL-FIRST assignment. The frame's contract is
+  // [user_id, assistant_id] for the turn that JUST finished — but the list can
+  // also hold STALE optimistic rows from an earlier turn whose completion
+  // frame was severed by a backend restart (this session's live incident,
+  // 2026-07-15). The old top-down, role-blind walk stamped the USER id onto
+  // that stale ASSISTANT zombie and the ASSISTANT id onto the real user row —
+  // the zombie then wore a committed id (invisible to the #361 sweep) and
+  // painted its stale text as a permanent duplicate, while the current turn's
+  // rows stayed un-stamped. Assign each id to the LAST unclaimed stampable row
+  // of the matching role instead (a lone id keeps last-row-any-role), so stale
+  // zombies stay optimistic — and therefore sweepable.
+  const assignment = new Map<number, string>()
+  const claimed = new Set<number>()
+  const claim = (id: string, wantRole: 'user' | 'assistant' | null): boolean => {
+    for (let j = stampable.length - 1; j >= 0; j--) {
+      const index = stampable[j]
+      if (claimed.has(index)) {
+        continue
+      }
+      if (wantRole && messages[index].role !== wantRole) {
+        continue
+      }
+      assignment.set(index, id)
+      claimed.add(index)
+      return true
+    }
+    return false
+  }
+  if (committedIds.length === 2) {
+    // [user_id, assistant_id] positional contract. A failed role-scoped claim
+    // deliberately DROPS the id (Greptile #364 flagged the silent discard —
+    // it is intentional, not a bug): if no user-role stampable row exists,
+    // the user row already committed, so the poll reconciles it by id with
+    // no optimistic twin to duplicate. Falling back to any-role here would
+    // stamp the USER id onto an assistant row — with a stale assistant
+    // zombie present, that re-creates the exact cross-role mis-stamp this
+    // function exists to prevent (zombie wears a committed id, unsweepable).
+    // Unstamped-but-committed is safe; cross-role-stamped is not.
+    claim(committedIds[0], 'user')
+    claim(committedIds[1], 'assistant')
+  } else if (committedIds.length > 2) {
+    // 3+ ids (array + scalar fields both populated — Greptile #364). The first
+    // two ids still follow the [user_id, assistant_id] positional convention,
+    // so claim them role-aware exactly like the 2-id case (Greptile #398:
+    // assistant-preferring EVERY id here put committedIds[0] — the user's id —
+    // onto an assistant row, a cross-role reversal). Only the EXTRAS beyond the
+    // positional pair fall to assistant-then-any; ids beyond the stampable rows
+    // are simply not stamped (the poll reconciles them).
+    claim(committedIds[0], 'user')
+    claim(committedIds[1], 'assistant')
+    for (const id of committedIds.slice(2)) {
+      if (!claim(id, 'assistant')) {
+        claim(id, null)
+      }
+    }
+  } else {
+    // Lone id: the positional contract can't disambiguate a single survivor.
+    // Prefer the streamed assistant row (the dup-prone one — the poll always
+    // re-fetches the final text bubble), fall back to any unclaimed row.
+    for (const id of committedIds) {
+      if (!claim(id, 'assistant')) {
+        claim(id, null)
+      }
+    }
+  }
+
   const stampedIds = new Set<string>()
-  let nextIdIndex = 0
+  const next = messages.map((message, index) => {
+    const id = assignment.get(index)
 
-  const next = messages.map(message => {
-    if (Number.isInteger(Number(message.id)) || nextIdIndex >= committedIds.length) {
+    if (id === undefined) {
       return message
     }
 
-    // An optimistic row still needs stamping whether or not it is still
-    // `pending`. The streamed assistant row is finalized by
-    // completeAssistantMessage() (pending:false, id `assistant-<ts>`) BEFORE
-    // markTurnComplete() runs this stamp — so a `pending`-only predicate skips
-    // it, it keeps its optimistic id, and the post-completion poll re-appends
-    // the committed integer row as a DUPLICATE. Recognize any non-committed
-    // optimistic id (`user-`/`assistant-` prefix) OR a still-pending row.
-    const isOptimisticId =
-      message.id.startsWith('user-') || message.id.startsWith('assistant-')
-
-    if (!isOptimisticId && !message.pending) {
-      return message
-    }
-
-    const id = committedIds[nextIdIndex]
-    nextIdIndex += 1
     stampedIds.add(id)
 
     return { ...message, id, pending: false }

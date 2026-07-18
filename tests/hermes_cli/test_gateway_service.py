@@ -3572,6 +3572,9 @@ class TestServiceWorkingDirIsStable:
         # The old conditional dict form must NOT appear
         assert "SuccessfulExit" not in plist
         assert "<key>KeepAlive</key>\n    <dict>" not in plist
+        # ThrottleInterval prevents a tight crash/restart loop when Telegram
+        # is unreachable (#64839)
+        assert "<key>ThrottleInterval</key>\n    <integer>30</integer>" in plist
 
 
 class TestLaunchctlBootstrapEioRetry:

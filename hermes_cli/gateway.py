@@ -3983,6 +3983,9 @@ def generate_launchd_plist() -> str:
     <key>KeepAlive</key>
     <true/>
     
+    <key>ThrottleInterval</key>
+    <integer>30</integer>
+    
     <key>StandardOutPath</key>
     <string>{log_dir}/gateway.log</string>
     

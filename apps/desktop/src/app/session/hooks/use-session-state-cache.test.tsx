@@ -318,4 +318,22 @@ describe('useSessionStateCache — cross-thread error isolation', () => {
 
     expect($messages.get().some(message => message.error === 'OpenRouter 403')).toBe(true)
   })
+
+  it('only returns a runtime whose cached state owns the requested stored session', () => {
+    let cache!: Cache
+    render(<Harness activeSessionId={null} onReady={value => (cache = value)} selectedStoredSessionId={null} />)
+
+    act(() => {
+      cache.ensureSessionState('runtime-A', 'stored-A')
+      cache.ensureSessionState('runtime-B', 'stored-B')
+    })
+
+    expect(cache.getRuntimeIdForStoredSession('stored-A')).toBe('runtime-A')
+    expect(cache.getRuntimeIdForStoredSession('missing')).toBeNull()
+
+    // Simulate a recycled/cross-wired map entry. The reverse state ownership
+    // check must reject it instead of allowing a submit into stored-B.
+    cache.runtimeIdByStoredSessionIdRef.current.set('stored-A', 'runtime-B')
+    expect(cache.getRuntimeIdForStoredSession('stored-A')).toBeNull()
+  })
 })

@@ -1791,7 +1791,7 @@ requires-dist = [
     { name = "hermes-agent", extras = ["web"], marker = "extra == 'termux-all'" },
     { name = "hermes-agent", extras = ["youtube"], marker = "extra == 'all'" },
     { name = "hindsight-client", marker = "extra == 'hindsight'", specifier = "==0.6.1" },
-    { name = "honcho-ai", marker = "extra == 'honcho'", specifier = "==2.0.1" },
+    { name = "honcho-ai", marker = "extra == 'honcho'", specifier = "==2.2.0" },
     { name = "httpx", extras = ["socks"], specifier = "==0.28.1" },
     { name = "jinja2", specifier = "==3.1.6" },
     { name = "lark-oapi", marker = "extra == 'feishu'", specifier = "==1.6.8" },
@@ -1804,7 +1804,7 @@ requires-dist = [
     { name = "microsoft-teams-apps", marker = "extra == 'teams'", specifier = "==2.0.13.4" },
     { name = "mistralai", marker = "extra == 'mistral'", specifier = "==2.4.8" },
     { name = "modal", marker = "extra == 'modal'", specifier = "==1.3.4" },
-    { name = "nemo-relay", marker = "extra == 'nemo-relay'", specifier = "==0.3" },
+    { name = "nemo-relay", marker = "extra == 'nemo-relay'", specifier = ">=0.5,<1.0" },
     { name = "numpy", marker = "extra == 'voice'", specifier = "==2.4.3" },
     { name = "openai", specifier = "==2.24.0" },
     { name = "packaging", specifier = "==26.0" },
@@ -1834,10 +1834,10 @@ requires-dist = [
     { name = "ruff", marker = "extra == 'dev'", specifier = "==0.15.10" },
     { name = "setuptools", marker = "extra == 'dev'", specifier = "==81.0.0" },
     { name = "simple-term-menu", marker = "extra == 'cli'", specifier = "==1.6.6" },
-    { name = "slack-bolt", marker = "extra == 'messaging'", specifier = "==1.27.0" },
-    { name = "slack-bolt", marker = "extra == 'slack'", specifier = "==1.27.0" },
-    { name = "slack-sdk", marker = "extra == 'messaging'", specifier = "==3.40.1" },
-    { name = "slack-sdk", marker = "extra == 'slack'", specifier = "==3.40.1" },
+    { name = "slack-bolt", marker = "extra == 'messaging'", specifier = "==1.29.0" },
+    { name = "slack-bolt", marker = "extra == 'slack'", specifier = "==1.29.0" },
+    { name = "slack-sdk", marker = "extra == 'messaging'", specifier = "==3.43.0" },
+    { name = "slack-sdk", marker = "extra == 'slack'", specifier = "==3.43.0" },
     { name = "sounddevice", marker = "extra == 'voice'", specifier = "==0.5.5" },
     { name = "starlette", marker = "extra == 'computer-use'", specifier = "==1.0.1" },
     { name = "starlette", marker = "extra == 'dev'", specifier = "==1.0.1" },
@@ -1898,16 +1898,16 @@ wheels = [
 
 [[package]]
 name = "honcho-ai"
-version = "2.0.1"
+version = "2.2.0"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "httpx" },
     { name = "pydantic" },
     { name = "typing-extensions", marker = "python_full_version < '3.12'" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/93/30/d30ba159404050d53b4b1b1c4477f9591f43af18758be1fb7dab6afbfe7d/honcho_ai-2.0.1.tar.gz", hash = "sha256:6fdeebf9454e62bc523d57888e50359e67baafdb21f68621f9c14e08dc00623a", size = 46732, upload-time = "2026-02-09T21:03:26.99Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/f2/1d/322649dbc8e9b21726a3a3e9b6a4975f2d122ca4b2450612f9ff2a9023b6/honcho_ai-2.2.0.tar.gz", hash = "sha256:16e16825afac51f2fdd59670dd4a6e44d04a3fa2c8eb466b1767dcc96706b7a0", size = 49979, upload-time = "2026-07-02T17:04:33.13Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/e2/de/83fda0c057cfa11d6b5ed532623184591aa7dcff4a067934ba6811026229/honcho_ai-2.0.1-py3-none-any.whl", hash = "sha256:94887e61d59f353e1e1e20b395858040780f5d67ca1e9d450538646544e4e42f", size = 56780, upload-time = "2026-02-09T21:03:25.992Z" },
+    { url = "https://files.pythonhosted.org/packages/d0/c6/66af5f7ba3d75796f4523eac1e069fbdc759c3f0b8adab9fb7ae04e15784/honcho_ai-2.2.0-py3-none-any.whl", hash = "sha256:32f098a4c8bcfe4288f0994ddab0bc52a68dc87069d0f2ce2c8758ee2a1761f2", size = 60305, upload-time = "2026-07-02T17:04:33.967Z" },
 ]
 
 [[package]]
@@ -2608,14 +2608,14 @@ wheels = [
 
 [[package]]
 name = "nemo-relay"
-version = "0.3.0"
+version = "0.5.0"
 source = { registry = "https://pypi.org/simple" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/15/55/3b65643db2df02fb3838b3d251442e05b7306cbbc77e69884ae78743546f/nemo_relay-0.3.0-cp311-abi3-macosx_11_0_arm64.whl", hash = "sha256:a6e44abe38bf6dda8f6a8b149cd9069a548186f24263ae8469d5a37cefc95209", size = 5282297, upload-time = "2026-05-29T22:32:36.315Z" },
-    { url = "https://files.pythonhosted.org/packages/c7/ef/e2f4bc02f99f38706fdde0cdda6b6d8fddea9e6975da1b66377c35958b85/nemo_relay-0.3.0-cp311-abi3-manylinux_2_17_aarch64.manylinux2014_aarch64.whl", hash = "sha256:99ba247121cd0d17b9c5e2a95beb42512243430773b93435848b8b4b9f9ca61f", size = 4722431, upload-time = "2026-05-29T22:32:38.088Z" },
-    { url = "https://files.pythonhosted.org/packages/12/18/bedb5d57f206e2859cef11f12f568974a529acf382436523a37e095b2cc7/nemo_relay-0.3.0-cp311-abi3-manylinux_2_17_x86_64.manylinux2014_x86_64.whl", hash = "sha256:20bb1e4ed87f179befc4db3af2e35f08be711378b322f3672222d80294f57be7", size = 5002734, upload-time = "2026-05-29T22:32:40.191Z" },
-    { url = "https://files.pythonhosted.org/packages/26/ec/4b2e758a0a25397f2e97be889a11b7787d108658e0b60ddff5048b25adb8/nemo_relay-0.3.0-cp311-abi3-win_amd64.whl", hash = "sha256:e659c2772b35c0ea4897a91f6bf86b551ed403f6f41d0b60fd8151f5c78b83d0", size = 4947785, upload-time = "2026-05-29T22:32:41.784Z" },
-    { url = "https://files.pythonhosted.org/packages/2b/91/45a3397559679d846ae023a82527c43b14631786b3a7c95e69c05e8bb553/nemo_relay-0.3.0-cp311-abi3-win_arm64.whl", hash = "sha256:9655514adb518e19caf7b3f6a08bbe82c1b24759c0a8021c3df949fd265bcef6", size = 4662147, upload-time = "2026-05-29T22:32:43.554Z" },
+    { url = "https://files.pythonhosted.org/packages/aa/fc/6892859ffbfb60f8cc09a4181c8d407b574d49490e35cd563e7f0a61bf54/nemo_relay-0.5.0-cp311-abi3-macosx_11_0_arm64.whl", hash = "sha256:203409e0f392fc4f40f52277347ed75ba9969b2af28ddb3b6ae53f789185a0ed", size = 7769721, upload-time = "2026-07-08T18:43:57.745Z" },
+    { url = "https://files.pythonhosted.org/packages/dd/13/25c4fcf6fb979af07c9562238819183588a910c2ae09767603500d6948c2/nemo_relay-0.5.0-cp311-abi3-manylinux_2_17_aarch64.manylinux2014_aarch64.whl", hash = "sha256:de61ad0644c5e8c300de814f6884c5de7ae51db14694f5057f938b4da54bfaaf", size = 7037083, upload-time = "2026-07-08T18:44:00.135Z" },
+    { url = "https://files.pythonhosted.org/packages/49/97/bd4c77e975d50f7d09f8bfcb74d7e704e05a8b2205f555bf557f84edc5fe/nemo_relay-0.5.0-cp311-abi3-manylinux_2_17_x86_64.manylinux2014_x86_64.whl", hash = "sha256:cb323569f104506f4f1a0e2104b22d74c9a0bbf3280ec4d58ad3d768de76fb15", size = 7430817, upload-time = "2026-07-08T18:44:02.165Z" },
+    { url = "https://files.pythonhosted.org/packages/da/8b/5681f3430e6d25bf7419dbe576da14599e1cfadc083edb74e691a0c3a980/nemo_relay-0.5.0-cp311-abi3-win_amd64.whl", hash = "sha256:da1bd1e1dec79b7bda3984dd8c59b32ba97abf96c37e85cd1f38d208a29f42b9", size = 7359048, upload-time = "2026-07-08T18:44:04.169Z" },
+    { url = "https://files.pythonhosted.org/packages/4e/f2/65c3ef0435e671c829063d4872897f9054f369f0aeacab12c5aefe486705/nemo_relay-0.5.0-cp311-abi3-win_arm64.whl", hash = "sha256:87462585f17b40ce82c54347acef5ace96ee11de3015f234e0b902f23b3793fb", size = 6934235, upload-time = "2026-07-08T18:44:06.078Z" },
 ]
 
 [[package]]
@@ -3889,23 +3889,23 @@ wheels = [
 
 [[package]]
 name = "slack-bolt"
-version = "1.27.0"
+version = "1.29.0"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "slack-sdk" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/4c/28/50ed0b86e48b48e6ddcc71de93b91c8ac14a55d1249e4bff0586494a2f90/slack_bolt-1.27.0.tar.gz", hash = "sha256:3db91d64e277e176a565c574ae82748aa8554f19e41a4fceadca4d65374ce1e0", size = 129101, upload-time = "2025-11-13T20:17:46.878Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/3c/2c/7434f5d8c52eafb1e702012e9f291b013bd05985a5b32bde568b2279a28a/slack_bolt-1.29.0.tar.gz", hash = "sha256:b6271ba0a9b71e319c86b40632e6cb6240aacd0433773615b76b890b9a574762", size = 131151, upload-time = "2026-06-30T20:24:44.11Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/01/a8/1acb355759747ba4da5f45c1a33d641994b9e04b914908c9434f18bd97e8/slack_bolt-1.27.0-py2.py3-none-any.whl", hash = "sha256:c43c94bf34740f2adeb9b55566c83f1e73fed6ba2878bd346cdfd6fd8ad22360", size = 230428, upload-time = "2025-11-13T20:17:45.465Z" },
+    { url = "https://files.pythonhosted.org/packages/2f/cc/e5f78a80a1775a4cbb2cc41e8ef433602d5e755ff0d829bd43145015740a/slack_bolt-1.29.0-py2.py3-none-any.whl", hash = "sha256:1835b66b778158f3af0da77603aa18d7dfd82fd9b9a985e25c752f95050ab826", size = 235345, upload-time = "2026-06-30T20:24:42.558Z" },
 ]
 
 [[package]]
 name = "slack-sdk"
-version = "3.40.1"
+version = "3.43.0"
 source = { registry = "https://pypi.org/simple" }
-sdist = { url = "https://files.pythonhosted.org/packages/3a/18/784859b33a3f9c8cdaa1eda4115eb9fe72a0a37304718887d12991eeb2fd/slack_sdk-3.40.1.tar.gz", hash = "sha256:a215333bc251bc90abf5f5110899497bf61a3b5184b6d9ee35d73ebf09ec3fd0", size = 250379, upload-time = "2026-02-18T22:11:01.819Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/13/75/a4964eb771a0c74d79ee7a3bee6fb5d9718909dd1b675e80d62a6a0ad90a/slack_sdk-3.43.0.tar.gz", hash = "sha256:0553152e46c4259eb69f7464cdadc35ba4802ca10f9f5a849c92cf03d6c2ba07", size = 252769, upload-time = "2026-06-30T18:04:41.59Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/6e/e1/bb81f93c9f403e3b573c429dd4838ec9b44e4ef35f3b0759eb49557ab6e3/slack_sdk-3.40.1-py2.py3-none-any.whl", hash = "sha256:cd8902252979aa248092b0d77f3a9ea3cc605bc5d53663ad728e892e26e14a65", size = 313687, upload-time = "2026-02-18T22:11:00.027Z" },
+    { url = "https://files.pythonhosted.org/packages/e4/55/42141b8338d46323d5b3c6095201b044c670c20f898643b322ea9b1543a1/slack_sdk-3.43.0-py2.py3-none-any.whl", hash = "sha256:4b6557c65577fc172f685af218b811f9f3b4909e24cddd839ada09565f10c585", size = 315866, upload-time = "2026-06-30T18:04:39.636Z" },
 ]
 
 [[package]]

@@ -17,18 +17,10 @@ import { ThemeProvider } from './themes/context'
 
 installClipboardShim()
 
-// Dev-only: install __PERF_DRIVE__ + __PERF_PROBE__ on window so the
-// scripts/ harnesses can drive a synthetic stream + record render cost.
-// Tree-shaken out of production builds. (Uses MODE rather than DEV because
-// our Vite setup currently bundles with PROD=true even in `vite dev`; see
-// scripts/dev-no-hmr.mjs for the surrounding workarounds.)
 if (import.meta.env.MODE !== 'production') {
   import('./app/chat/perf-probe')
 }
 
-// The pet overlay rides this same bundle (`?win=overlay`) but mounts a tiny,
-// transparent, gateway-less surface instead of the full app. Branch before any
-// app-shell work so the overlay window stays cheap.
 if (new URLSearchParams(window.location.search).get('win') === 'overlay') {
   void import('./app/pet-overlay/overlay-root').then(({ mountPetOverlay }) => mountPetOverlay())
 } else {
@@ -39,7 +31,16 @@ if (new URLSearchParams(window.location.search).get('win') === 'overlay') {
           <I18nProvider>
             <ThemeProvider>
               <HapticsProvider>
-                <HashRouter>
+                {/* useTransitions={false}: react-router v7's HashRouter wraps every
+                    route state update in React.startTransition() by default. In
+                    React 19's concurrent renderer, transitions are non-urgent — React
+                    can yield mid-render and resume later. When the app is under load
+                    (streaming token deltas, gateway events, store updates), those
+                    higher-priority updates keep interrupting the transition, starving
+                    the route change commit. The session sidebar highlight + main pane
+                    both freeze for seconds despite the main thread being free.
+                    Disabling transitions makes navigate() commit at default priority. */}
+                <HashRouter useTransitions={false}>
                   <App />
                 </HashRouter>
               </HapticsProvider>

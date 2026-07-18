@@ -3035,6 +3035,19 @@ This compaction should PRIORITISE preserving all information related to the focu
             if available_tail > 1 else 0
         )
         soft_ceiling = int(token_budget * 1.5)
+        # Pathological-tail escape hatch: a tail of very few but enormous
+        # messages (e.g. giant tool results) can dwarf even the soft ceiling
+        # while still under the message-count floor, leaving an incompressible
+        # tail that pins the request over the context window forever. Once the
+        # tail already protects the absolute minimum (3 messages) AND the most
+        # recent user message is safely inside it, let this hard ceiling override
+        # the count floor so the tail stops growing — auto-forget under
+        # pathology (see issue #21916). ``_ensure_last_user_message_in_tail`` /
+        # ``_ensure_last_assistant_message_in_tail`` still run afterwards and can
+        # only grow the tail, so the last user/assistant turn is never lost.
+        hard_ceiling = int(token_budget * 3)
+        last_user_idx = self._find_last_user_message_idx(messages, head_end)
+        _hard_ceiling_break = False
         accumulated = 0
         cut_idx = n  # start from beyond the end
 
@@ -3043,6 +3056,24 @@ This compaction should PRIORITISE preserving all information related to the focu
             msg_tokens = _estimate_msg_budget_tokens(msg)
             # Stop once we exceed the soft ceiling (unless we haven't hit min_tail yet)
             if accumulated + msg_tokens > soft_ceiling and (n - i) >= min_tail:
+                break
+            # Hard-ceiling override: the count floor yields to the token ceiling
+            # once the tail is already viable — it holds >= 3 messages and the
+            # most recent user message is already captured (``last_user_idx`` at
+            # or beyond the current ``cut_idx``). Prevents a few-but-huge tail
+            # from growing to ``min_tail`` giant messages. Gated on the NEXT
+            # message being individually oversized (> soft ceiling) so this only
+            # engages on the genuine few-but-huge pathology, never on a long run
+            # of small turns under a tiny budget (which must still honour the
+            # message-count floor — see issue #9413).
+            if (
+                msg_tokens > soft_ceiling
+                and accumulated + msg_tokens > hard_ceiling
+                and (n - cut_idx) >= 3
+                and last_user_idx >= 0
+                and last_user_idx >= cut_idx
+            ):
+                _hard_ceiling_break = True
                 break
             accumulated += msg_tokens
             cut_idx = i
@@ -3076,8 +3107,12 @@ This compaction should PRIORITISE preserving all information related to the focu
             # transcript), fall through — the existing fallback logic below
             # will still force a minimal cut after head_end.
 
-        # Ensure we protect at least min_tail messages
-        fallback_cut = n - min_tail
+        # Ensure we protect at least min_tail messages — unless the hard-ceiling
+        # override fired, in which case the floor drops to the absolute minimum
+        # of 3 so a pathological few-but-huge tail is allowed to shrink below the
+        # count floor (min() must not silently re-expand it back to min_tail).
+        _tail_floor = 3 if _hard_ceiling_break else min_tail
+        fallback_cut = n - _tail_floor
         cut_idx = min(cut_idx, fallback_cut)
 
         # If the token budget would protect everything (small conversations),

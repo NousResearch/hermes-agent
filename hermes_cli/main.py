@@ -1608,6 +1608,340 @@ def _tui_need_rebuild(root: Path) -> bool:
     return False
 
 
+def _tui_workspace_writable(tui_dir: Path) -> bool:
+    """Return True when npm can safely write to the TUI workspace root.
+
+    The dashboard chat path may run under a hardened systemd unit where the
+    checkout lives below a read-only ``/usr``.  Permission bits alone are not
+    enough to detect that (root can look writable while the mount is read-only),
+    so use an actual create/unlink probe in the npm workspace root.
+    """
+    ws_root = _workspace_root(tui_dir)
+    probe = ws_root / f".hermes-tui-write-test-{os.getpid()}"
+    try:
+        fd = os.open(str(probe), os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
+        os.close(fd)
+        probe.unlink(missing_ok=True)
+        return True
+    except OSError:
+        try:
+            probe.unlink(missing_ok=True)
+        except OSError:
+            pass
+        return False
+
+
+def _tui_cached_bundle_dir() -> Path:
+    from hermes_constants import get_hermes_home
+
+    return get_hermes_home() / "cache" / "tui-bundle"
+
+
+def _tui_cached_build_dir() -> Path:
+    from hermes_constants import get_hermes_home
+
+    return get_hermes_home() / "cache" / "tui-bundle-build"
+
+
+def _tui_cached_generations_dir(cache_root: Path, *, create: bool = False) -> Optional[Path]:
+    """Return a trusted generations directory, rejecting parent symlink escapes."""
+    generations = cache_root / "generations"
+    if generations.is_symlink():
+        return None
+    if create:
+        generations.mkdir(parents=True, exist_ok=True)
+    try:
+        trusted_root = cache_root.resolve()
+        resolved = generations.resolve()
+        resolved.relative_to(trusted_root)
+    except (OSError, ValueError):
+        return None
+    return resolved
+
+
+def _tui_cached_active_bundle_dir(cache_root: Path) -> Path:
+    """Resolve the atomically selected immutable bundle generation."""
+    selector = cache_root / "current"
+    try:
+        generation_name = selector.read_text(encoding="utf-8").strip()
+    except OSError:
+        return cache_root  # Backward-compatible legacy single-directory cache.
+    if not generation_name or Path(generation_name).name != generation_name:
+        return cache_root
+    generations = _tui_cached_generations_dir(cache_root)
+    if generations is None:
+        return cache_root
+    candidate = (generations / generation_name).resolve()
+    try:
+        candidate.relative_to(generations)
+    except ValueError:
+        return cache_root
+    return candidate if candidate.is_dir() else cache_root
+
+
+def _publish_tui_cached_generation(cache_root: Path, staged: Path, stamp: str) -> Path:
+    """Publish *staged* immutably, then atomically select it for new launches."""
+    generations = _tui_cached_generations_dir(cache_root, create=True)
+    if generations is None:
+        raise RuntimeError("refusing unsafe TUI cache generations directory")
+    generation = generations / f"{stamp[:16]}-{os.getpid()}-{_time.time_ns()}"
+    staged.replace(generation)
+
+    selector_tmp = cache_root / f".current.{os.getpid()}.{_time.time_ns()}.tmp"
+    try:
+        with selector_tmp.open("w", encoding="utf-8") as handle:
+            handle.write(f"{generation.name}\n")
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(selector_tmp, cache_root / "current")
+    finally:
+        selector_tmp.unlink(missing_ok=True)
+    return generation
+
+
+def _cleanup_tui_cached_generations(cache_root: Path, active: Path) -> None:
+    """Best-effort cleanup, separate from publish, after a seven-day grace period."""
+    generations = _tui_cached_generations_dir(cache_root)
+    if generations is None or not generations.is_dir():
+        return
+    cutoff = _time.time() - 7 * 24 * 60 * 60
+    try:
+        candidates = list(generations.iterdir())
+    except OSError:
+        return
+    for candidate in candidates:
+        if candidate == active or candidate.name.startswith(".tmp-"):
+            continue
+        try:
+            if candidate.stat().st_mtime >= cutoff:
+                continue
+        except OSError:
+            continue
+        shutil.rmtree(candidate, ignore_errors=True)
+
+
+def _tui_bundle_stamp(root: Path) -> str:
+    """Content stamp for the self-contained TUI bundle cache."""
+    h = hashlib.sha256()
+    ws_root = _workspace_root(root)
+    for path in sorted(_iter_tui_build_inputs(root), key=lambda p: p.as_posix()):
+        try:
+            rel = path.relative_to(root).as_posix()
+            data = path.read_bytes()
+        except OSError:
+            continue
+        h.update(rel.encode("utf-8", "surrogateescape"))
+        h.update(b"\0")
+        h.update(data)
+        h.update(b"\0")
+    for path in (ws_root / "package.json", ws_root / "package-lock.json"):
+        if path.is_file():
+            try:
+                rel = path.relative_to(ws_root).as_posix()
+                data = path.read_bytes()
+            except OSError:
+                continue
+            h.update(f"workspace:{rel}".encode("utf-8"))
+            h.update(b"\0")
+            h.update(data)
+            h.update(b"\0")
+    return h.hexdigest()
+
+
+def _tui_cached_bundle_current(tui_dir: Path, cache_dir: Path) -> bool:
+    entry = cache_dir / "dist" / "entry.js"
+    stamp = cache_dir / ".hermes-tui-bundle-stamp"
+    if not entry.is_file() or not stamp.is_file():
+        return False
+    try:
+        return stamp.read_text(encoding="utf-8").strip() == _tui_bundle_stamp(tui_dir)
+    except OSError:
+        return False
+
+
+def _ensure_tui_cached_bundle(
+    tui_dir: Path,
+    *,
+    node: str,
+    npm: Optional[str] = None,
+) -> Path:
+    """Build a self-contained TUI bundle under ``$HERMES_HOME/cache``.
+
+    This is the fallback for immutable/read-only checkouts. It copies the repo
+    root package manifest + lockfile and the tracked ui-tui workspace into a
+    writable cache build directory, installs the ui-tui workspace from that
+    locked root, runs the existing build script, then atomically publishes only
+    ``package.json`` + ``dist/`` as the runtime bundle.
+    """
+    cache_root = _tui_cached_bundle_dir()
+    cache_dir = _tui_cached_active_bundle_dir(cache_root)
+    if _tui_cached_bundle_current(tui_dir, cache_dir):
+        return cache_dir
+
+    npm = npm or shutil.which("npm")
+    if not npm:
+        print("npm not found — install Node.js/npm to build the dashboard TUI cache.")
+        sys.exit(1)
+
+    cache_root.mkdir(parents=True, exist_ok=True)
+    lock_dir = cache_root.with_name(f"{cache_root.name}.lock")
+    lock_deadline = _time.monotonic() + 180.0
+    lock_acquired = False
+    while not lock_acquired:
+        try:
+            lock_dir.mkdir(mode=0o700)
+            (lock_dir / "owner").write_text(
+                f"pid={os.getpid()}\nstarted={_time.time()}\n", encoding="utf-8"
+            )
+            lock_acquired = True
+        except FileExistsError:
+            try:
+                stale = _time.time() - lock_dir.stat().st_mtime > 1200
+            except OSError:
+                stale = False
+            if stale:
+                shutil.rmtree(lock_dir, ignore_errors=True)
+                continue
+            if _time.monotonic() >= lock_deadline:
+                print("Timed out waiting for another TUI cache build to finish.")
+                sys.exit(1)
+            _time.sleep(0.25)
+
+    try:
+        cache_dir = _tui_cached_active_bundle_dir(cache_root)
+        if _tui_cached_bundle_current(tui_dir, cache_dir):
+            return cache_dir
+
+        source_root = _workspace_root(tui_dir)
+        build_dir = _tui_cached_build_dir()
+        tmp_build = build_dir.with_name(f"{build_dir.name}.{os.getpid()}.tmp")
+        generations = _tui_cached_generations_dir(cache_root, create=True)
+        if generations is None:
+            raise RuntimeError("refusing unsafe TUI cache generations directory")
+        tmp_cache = generations / f".tmp-{os.getpid()}-{_time.time_ns()}"
+        stamp = _tui_bundle_stamp(tui_dir)
+
+        if not os.environ.get("HERMES_QUIET"):
+            print(f"Building TUI bundle cache in {cache_root}…")
+
+        try:
+            if tmp_build.exists():
+                shutil.rmtree(tmp_build)
+            tmp_build.mkdir(parents=True, exist_ok=True)
+            for rel in ("package.json", "package-lock.json"):
+                src = source_root / rel
+                if src.is_file():
+                    shutil.copy2(src, tmp_build / rel)
+            if (build_dir / "node_modules").is_dir():
+                shutil.copytree(
+                    build_dir / "node_modules",
+                    tmp_build / "node_modules",
+                    symlinks=True,
+                )
+            shutil.copytree(
+                tui_dir,
+                tmp_build / "ui-tui",
+                ignore=shutil.ignore_patterns("node_modules", "dist"),
+            )
+            if build_dir.exists():
+                shutil.rmtree(build_dir)
+            tmp_build.replace(build_dir)
+
+            install_result = subprocess.run(
+                [
+                    npm,
+                    "install",
+                    "--workspace",
+                    "ui-tui",
+                    "--silent",
+                    "--no-fund",
+                    "--no-audit",
+                    "--progress=false",
+                ],
+                cwd=str(build_dir),
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+                encoding="utf-8",
+                errors="replace",
+                env={**os.environ, "CI": "1"},
+            )
+            if install_result.returncode != 0:
+                combined = f"{install_result.stdout or ''}\n{install_result.stderr or ''}".strip()
+                preview = "\n".join(combined.splitlines()[-30:])
+                print("TUI cache npm install failed.")
+                if preview:
+                    print(preview)
+                sys.exit(1)
+
+            build_result = subprocess.run(
+                [npm, "run", "build", "--workspace", "ui-tui"],
+                cwd=str(build_dir),
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+                encoding="utf-8",
+                errors="replace",
+            )
+            if build_result.returncode != 0:
+                combined = f"{build_result.stdout or ''}{build_result.stderr or ''}".strip()
+                preview = "\n".join(combined.splitlines()[-30:])
+                print("TUI cache build failed.")
+                if preview:
+                    print(preview)
+                sys.exit(1)
+
+            entry = build_dir / "ui-tui" / "dist" / "entry.js"
+            check_result = subprocess.run(
+                [node, "--check", str(entry)],
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+                encoding="utf-8",
+                errors="replace",
+            )
+            if check_result.returncode != 0:
+                print("TUI cache build produced invalid JavaScript.")
+                preview = "\n".join((check_result.stderr or check_result.stdout or "").splitlines()[-30:])
+                if preview:
+                    print(preview)
+                sys.exit(1)
+
+            tmp_cache.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(build_dir / "ui-tui" / "package.json", tmp_cache / "package.json")
+            shutil.copytree(build_dir / "ui-tui" / "dist", tmp_cache / "dist")
+            (tmp_cache / ".hermes-tui-bundle-stamp").write_text(stamp, encoding="utf-8")
+            cache_dir = _publish_tui_cached_generation(cache_root, tmp_cache, stamp)
+            _cleanup_tui_cached_generations(cache_root, cache_dir)
+        finally:
+            if tmp_build.exists():
+                shutil.rmtree(tmp_build, ignore_errors=True)
+            if tmp_cache.exists():
+                shutil.rmtree(tmp_cache, ignore_errors=True)
+    finally:
+        if lock_acquired:
+            shutil.rmtree(lock_dir, ignore_errors=True)
+
+    return cache_dir
+
+
+def _refresh_tui_cached_bundle_after_update(tui_dir: Path) -> None:
+    """Best-effort post-update refresh for installs that already use the cache."""
+    cache_root = _tui_cached_bundle_dir()
+    cache_dir = _tui_cached_active_bundle_dir(cache_root)
+    if not cache_dir.exists() and _tui_workspace_writable(tui_dir):
+        return
+    try:
+        node = shutil.which("node")
+        npm = shutil.which("npm")
+        if node and npm:
+            _ensure_tui_cached_bundle(tui_dir, node=node, npm=npm)
+    except SystemExit:
+        print("  ⚠ TUI bundle cache refresh failed (non-fatal; it will retry on next TUI launch)")
+    except Exception as exc:
+        logger.debug("TUI bundle cache refresh failed: %s", exc)
+
+
 def _ensure_tui_node() -> None:
     """Make sure `node` + `npm` are on PATH for the TUI.
 
@@ -1782,6 +2116,16 @@ def _make_tui_argv(tui_dir: Path, tui_dev: bool) -> tuple[list[str], Path]:
         if bundled is not None:
             node = _node_bin("node")
             return [node, "--expose-gc", str(bundled)], bundled.parent
+
+        # 1c. Immutable checkout (hardened systemd, read-only /usr, Nix-like
+        # layouts without a bundled wheel asset): build/use a self-contained
+        # bundle in writable HERMES_HOME cache instead of attempting npm writes
+        # in the install tree.
+        if not _tui_workspace_writable(tui_dir):
+            node = _node_bin("node")
+            npm = shutil.which("npm")
+            p = _ensure_tui_cached_bundle(tui_dir, node=node, npm=npm)
+            return [node, "--expose-gc", str(p / "dist" / "entry.js")], p
 
     # 2. Normal flow: npm install if needed, always esbuild, then node dist/entry.js.
     #    --dev flow: npm install if needed, then tsx src/entry.tsx.
@@ -10300,6 +10644,7 @@ def _cmd_update_impl(args, gateway_mode: bool):
         _refresh_active_lazy_features()
 
         node_failures = _update_node_dependencies()
+        _refresh_tui_cached_bundle_after_update(PROJECT_ROOT / "ui-tui")
         _build_web_ui(PROJECT_ROOT / "web")
 
         # Rebuild the desktop app if the source tree changed since the last

@@ -276,6 +276,7 @@ async def test_session_chat_accepts_multimodal_message(auth_adapter, session_db)
 
     _, kwargs = mock_run.call_args
     assert kwargs["user_message"] == expected_user_message
+    assert kwargs["gateway_session_key"] == session_id
 
 
 @pytest.mark.asyncio
@@ -309,6 +310,33 @@ async def test_session_chat_stream_accepts_multimodal_message(adapter, session_d
 
     assert "event: assistant.completed" in body
     assert captured_kwargs["user_message"] == expected_user_message
+    assert captured_kwargs["gateway_session_key"] == session_id
+
+
+@pytest.mark.asyncio
+async def test_session_chat_stream_prefers_explicit_memory_scope(auth_adapter, session_db):
+    session_id = session_db.create_session("explicit-scope-stream", "api_server")
+    captured_kwargs = {}
+
+    async def fake_run(**kwargs):
+        captured_kwargs.update(kwargs)
+        return {"final_response": "done", "session_id": session_id}, {"total_tokens": 1}
+
+    app = _create_session_app(auth_adapter)
+    with patch.object(auth_adapter, "_run_agent", side_effect=fake_run):
+        async with TestClient(TestServer(app)) as cli:
+            resp = await cli.post(
+                f"/api/sessions/{session_id}/chat/stream",
+                json={"message": "hello"},
+                headers={
+                    "Authorization": "Bearer sk-test",
+                    "X-Hermes-Session-Key": "account-wide-scope",
+                },
+            )
+            assert resp.status == 200
+            await resp.text()
+
+    assert captured_kwargs["gateway_session_key"] == "account-wide-scope"
 
 
 @pytest.mark.asyncio

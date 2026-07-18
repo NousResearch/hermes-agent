@@ -389,6 +389,13 @@ X-Hermes-Session-Key: agent:main:webui:dm:user-42
 
 Rules: max 256 chars, control characters (`\r`, `\n`, `\x00`) are rejected, and the value is echoed back on responses (JSON + SSE). `/v1/capabilities` advertises support via `"session_key_header": "X-Hermes-Session-Key"`. Without the key, Honcho's `per-session` strategy produces a different scope per `session_id` — exactly the behavior Hermes had before.
 
+The persisted session endpoints (`/api/sessions/{session_id}/chat` and
+`/api/sessions/{session_id}/chat/stream`) use their existing server-backed
+session ID as a transcript-local memory scope when this header is omitted.
+This keeps external memory providers active for first-party TUI and desktop
+sessions. Supplying `X-Hermes-Session-Key` still takes precedence when memory
+should span multiple transcripts or survive a `/new` boundary.
+
 ## System Prompt Handling
 
 When a frontend sends a `system` message (Chat Completions) or `instructions` field (Responses API), hermes-agent **layers it on top** of its core system prompt. Your agent keeps all its tools, memory, and skills — the frontend's system prompt adds extra instructions.

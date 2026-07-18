@@ -2392,7 +2392,10 @@ class APIServerAdapter(BasePlatformAdapter):
             conversation_history=history,
             ephemeral_system_prompt=system_prompt,
             session_id=session_id,
-            gateway_session_key=gateway_session_key,
+            # Persisted session IDs are stable, server-backed transcript
+            # scopes. Use one when the client did not provide a broader
+            # cross-transcript memory scope explicitly.
+            gateway_session_key=gateway_session_key or session_id,
         )
         effective_session_id = result.get("session_id") if isinstance(result, dict) else session_id
         final_response = _resolve_media_to_data_urls(result.get("final_response", "") if isinstance(result, dict) else "")
@@ -2481,7 +2484,7 @@ class APIServerAdapter(BasePlatformAdapter):
                     session_id=session_id,
                     stream_delta_callback=_delta,
                     tool_progress_callback=_tool_progress,
-                    gateway_session_key=gateway_session_key,
+                    gateway_session_key=gateway_session_key or session_id,
                 )
                 final_response = _resolve_media_to_data_urls(result.get("final_response", "") if isinstance(result, dict) else "")
                 effective_session_id = result.get("session_id", session_id) if isinstance(result, dict) else session_id

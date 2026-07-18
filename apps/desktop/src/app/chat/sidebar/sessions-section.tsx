@@ -52,7 +52,7 @@ function SidebarSectionHeader({
   const labelBody = (
     <>
       {icon}
-      <SidebarPanelLabel>{label}</SidebarPanelLabel>
+      <SidebarPanelLabel className={cn(!icon && 'pl-3')}>{label}</SidebarPanelLabel>
       {meta && <SidebarCount>{meta}</SidebarCount>}
     </>
   )

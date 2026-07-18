@@ -2158,6 +2158,29 @@ def _failure(
     return FoundationApplyFailed(receipt)
 
 
+def _preflight_failure_is_proven_nonmutating(
+    *,
+    journal: foundation_journal.FoundationApplyJournal,
+    transaction_id: str,
+    failed_step_name: str,
+    step_receipts: Sequence[Mapping[str, Any]],
+    created_steps: Sequence[foundation.PlanStep],
+) -> bool:
+    """Admit a clean failure only before any step artifact can exist."""
+
+    if (
+        failed_step_name != "preflight_live_ancestry"
+        or step_receipts
+        or created_steps
+    ):
+        return False
+    try:
+        artifacts = journal.list(transaction_id)
+    except (OSError, RuntimeError, PermissionError):
+        return False
+    return frozenset(artifacts) == {"manifest"}
+
+
 def _apply_with_provider(
     *,
     chain: ValidatedFoundationAChain,
@@ -2769,7 +2792,13 @@ def _apply_with_leased_provider(
             failure_code=str(exc),
             step_receipts=step_receipts,
             created_steps=created_steps,
-            inherently_unknown=True,
+            inherently_unknown=not _preflight_failure_is_proven_nonmutating(
+                journal=journal,
+                transaction_id=transaction_id,
+                failed_step_name=current_step,
+                step_receipts=step_receipts,
+                created_steps=created_steps,
+            ),
             now_unix=now_unix,
         ) from None
     except Exception as exc:
@@ -2785,7 +2814,13 @@ def _apply_with_leased_provider(
             failure_code="owner_gate_foundation_provider_unknown",
             step_receipts=step_receipts,
             created_steps=created_steps,
-            inherently_unknown=True,
+            inherently_unknown=not _preflight_failure_is_proven_nonmutating(
+                journal=journal,
+                transaction_id=transaction_id,
+                failed_step_name=current_step,
+                step_receipts=step_receipts,
+                created_steps=created_steps,
+            ),
             now_unix=now_unix,
         ) from None
 

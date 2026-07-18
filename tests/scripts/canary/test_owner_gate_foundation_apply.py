@@ -280,6 +280,13 @@ class _FakeProvider:
         )
 
 
+class _PreflightRuntimeFailureProvider(_FakeProvider):
+    def assert_stable(self) -> None:
+        raise apply.OwnerGateFoundationApplyError(
+            "owner_gate_foundation_provider_runtime_changed"
+        )
+
+
 def test_iam_cas_add_and_remove_use_real_policy_etag(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -608,6 +615,168 @@ def test_provider_inventory_rejects_duplicate_exact_scope_matches(
     )
     step = next(item for item in chain.plan.foundation_steps if item.name == step_name)
     assert provider.inspect_resource(step, plan=chain.plan).state == "drift"
+
+
+def test_manifest_only_preflight_failure_intent_crash_replays_cleanly(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    chain = _chain()
+    store = _journal_for_test(tmp_path / "journal")
+    provider = _PreflightRuntimeFailureProvider(chain)
+
+    def crash_before_failure_receipt(
+        *_args: Any,
+        **_kwargs: Any,
+    ) -> Mapping[str, Any]:
+        raise SystemExit("simulated_process_death_after_failure_intent")
+
+    with monkeypatch.context() as context:
+        context.setattr(
+            apply,
+            "_sign_failure_receipt",
+            crash_before_failure_receipt,
+        )
+        with pytest.raises(SystemExit):
+            apply._apply_with_provider(
+                chain=chain,
+                private_key=helpers.RELEASE_KEY,
+                provider=provider,
+                journal=store,
+                now_unix=lambda: helpers.NOW + 2,
+            )
+
+    transaction_id = apply._transaction_id(chain)
+    assert frozenset(store.list(transaction_id)) == {
+        "failure-intent",
+        "manifest",
+    }
+    intent = apply._read_transition(
+        journal=store,
+        chain=chain,
+        transaction_id=transaction_id,
+        name="failure-intent",
+        phase="failure_intent",
+    )
+    assert intent is not None
+    assert intent["failed_step_name"] == "preflight_live_ancestry"
+    assert intent["inherently_unknown"] is False
+
+    successor = _FakeProvider(chain)
+    with pytest.raises(apply.FoundationApplyFailed) as caught:
+        apply._apply_with_provider(
+            chain=chain,
+            private_key=helpers.RELEASE_KEY,
+            provider=successor,
+            journal=store,
+            now_unix=lambda: helpers.NOW + 2,
+        )
+    assert successor.execute_calls == []
+    assert successor.rollback_calls == []
+    assert caught.value.receipt["terminal_state"] == "rolled_back_clean"
+    assert caught.value.receipt["partial_unknown_state"] is False
+    assert caught.value.receipt["completed_step_receipts"] == []
+    assert caught.value.receipt["rollback_step_receipts"] == []
+
+
+@pytest.mark.parametrize(
+    ("crash_after", "expected_artifacts"),
+    [
+        ("precondition", {"manifest", "s0-pre"}),
+        ("intent", {"manifest", "s0-intent", "s0-pre"}),
+    ],
+)
+def test_preflight_failure_with_step_artifact_remains_unknown(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    crash_after: str,
+    expected_artifacts: set[str],
+) -> None:
+    chain = _chain()
+    store = _journal_for_test(tmp_path / f"journal-{crash_after}")
+    target = chain.plan.foundation_steps[0]
+    crashing = _FakeProvider(
+        chain,
+        crash_step=target.name if crash_after == "intent" else None,
+    )
+
+    if crash_after == "precondition":
+        original_publish = apply._publish_transition
+
+        def publish_then_crash(**kwargs: Any) -> Mapping[str, Any]:
+            published = original_publish(**kwargs)
+            if kwargs["name"] == "s0-pre":
+                raise SystemExit(
+                    "simulated_process_death_after_precondition"
+                )
+            return published
+
+        with monkeypatch.context() as context:
+            context.setattr(apply, "_publish_transition", publish_then_crash)
+            with pytest.raises(SystemExit):
+                apply._apply_with_provider(
+                    chain=chain,
+                    private_key=helpers.RELEASE_KEY,
+                    provider=crashing,
+                    journal=store,
+                    now_unix=lambda: helpers.NOW + 2,
+                )
+    else:
+        with pytest.raises(SystemExit):
+            apply._apply_with_provider(
+                chain=chain,
+                private_key=helpers.RELEASE_KEY,
+                provider=crashing,
+                journal=store,
+                now_unix=lambda: helpers.NOW + 2,
+            )
+
+    transaction_id = apply._transaction_id(chain)
+    assert frozenset(store.list(transaction_id)) == expected_artifacts
+    successor = _PreflightRuntimeFailureProvider(chain)
+    with pytest.raises(apply.FoundationApplyFailed) as caught:
+        apply._apply_with_provider(
+            chain=chain,
+            private_key=helpers.RELEASE_KEY,
+            provider=successor,
+            journal=store,
+            now_unix=lambda: helpers.NOW + 2,
+        )
+    assert successor.execute_calls == []
+    assert successor.rollback_calls == []
+    assert caught.value.receipt["terminal_state"] == (
+        "manual_reconciliation_required"
+    )
+    assert caught.value.receipt["partial_unknown_state"] is True
+
+
+def test_known_mutation_failure_still_rolls_back_cleanly(
+    tmp_path: Path,
+) -> None:
+    chain = _chain()
+    failed = chain.plan.foundation_steps[1]
+    created = chain.plan.foundation_steps[0]
+    provider = _FakeProvider(
+        chain,
+        fail_step=failed.name,
+        failure_state="failed",
+    )
+    with pytest.raises(apply.FoundationApplyFailed) as caught:
+        apply._apply_with_provider(
+            chain=chain,
+            private_key=helpers.RELEASE_KEY,
+            provider=provider,
+            journal=_journal_for_test(tmp_path / "journal"),
+            now_unix=lambda: helpers.NOW + 2,
+        )
+    assert provider.execute_calls == [created.name, failed.name]
+    assert provider.rollback_calls == [created.name]
+    assert caught.value.receipt["terminal_state"] == "rolled_back_clean"
+    assert caught.value.receipt["partial_unknown_state"] is False
+    assert [
+        item["disposition"]
+        for item in caught.value.receipt["rollback_step_receipts"]
+    ] == ["rolled_back"]
 
 
 def test_unknown_current_operation_dispatches_zero_rollbacks(tmp_path: Path) -> None:

@@ -197,7 +197,7 @@ export function ContribWiring({ children }: { children: ReactNode }) {
     setMessages
   })
 
-  const { connectionRef, gatewayRef, requestGateway } = useGatewayRequest()
+  const { connectionRef, gatewayRef, requestGateway, requestGatewayForProfile } = useGatewayRequest()
 
   const {
     loadMoreMessagingForPlatform,
@@ -530,6 +530,7 @@ export function ContribWiring({ children }: { children: ReactNode }) {
     openMemoryGraph: openStarmap,
     refreshSessions,
     requestGateway,
+    requestGatewayForProfile,
     resumeStoredSession: resumeSession,
     selectedStoredSessionIdRef,
     startFreshSessionDraft,
@@ -539,8 +540,17 @@ export function ContribWiring({ children }: { children: ReactNode }) {
 
   // Runs outside the selected ChatBar so queues belonging to background
   // sessions continue once those sessions are idle.
+  const getProfileForStoredSession = useCallback((storedSessionId: string): null | string => {
+    const stored = [...$sessions.get(), ...$messagingSessions.get()].find(session =>
+      sessionMatchesStoredId(session, storedSessionId)
+    )
+
+    return stored?.profile ?? null
+  }, [])
+
   useBackgroundQueueDrain({
     enabled: gatewayState === 'open',
+    getProfileForStoredSession,
     runtimeIdByStoredSessionIdRef,
     selectedStoredSessionId,
     submitText

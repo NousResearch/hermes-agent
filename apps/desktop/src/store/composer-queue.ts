@@ -6,6 +6,7 @@ export interface QueuedPromptEntry {
   id: string
   text: string
   attachments: ComposerAttachment[]
+  profile?: string
   queuedAt: number
 }
 
@@ -80,7 +81,7 @@ export const getQueuedPrompts = (key: string | null | undefined): QueuedPromptEn
 
 export const enqueueQueuedPrompt = (
   key: string | null | undefined,
-  payload: { text: string; attachments: ComposerAttachment[] }
+  payload: { text: string; attachments: ComposerAttachment[]; profile?: string | null }
 ): null | QueuedPromptEntry => {
   const sid = sidOf(key)
 
@@ -92,6 +93,7 @@ export const enqueueQueuedPrompt = (
     id: nextId(),
     text: payload.text,
     attachments: cloneAttachments(payload.attachments),
+    ...(payload.profile?.trim() ? { profile: payload.profile.trim() } : {}),
     queuedAt: Date.now()
   }
 

@@ -276,6 +276,11 @@ export function ChatView({
   const messagesEmpty = useStore(view.$messagesEmpty)
   const lastVisibleIsUser = useStore(view.$lastVisibleIsUser)
   const selectedSessionId = useStore(view.$storedId)
+
+  const queueProfile = selectedSessionId
+    ? ($sessions.get().find(session => sessionMatchesStoredId(session, selectedSessionId))?.profile ?? null)
+    : null
+
   const resumeExhaustedSessionId = useStore($resumeExhaustedSessionId)
   // A tile IS its session — no route involved, never "mismatched".
   const routedSessionId = isPrimary ? routeSessionId(location.pathname) : selectedSessionId
@@ -524,6 +529,7 @@ export function ChatView({
               onSteer={onSteer}
               onSubmit={onSubmit}
               onTranscribeAudio={onTranscribeAudio}
+              queueProfile={queueProfile}
               queueSessionKey={selectedSessionId}
               sessionId={activeSessionId}
               state={chatBarState}

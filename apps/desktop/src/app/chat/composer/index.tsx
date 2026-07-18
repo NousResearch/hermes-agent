@@ -68,6 +68,7 @@ export function ChatBar({
   focusKey,
   gateway,
   maxRecordingSeconds = 120,
+  queueProfile,
   queueSessionKey,
   sessionId,
   state,
@@ -203,6 +204,7 @@ export function ChatBar({
     onCancel,
     onSubmit,
     queueEditRef,
+    queueProfile,
     queueSessionKey,
     sessionId
   })

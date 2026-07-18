@@ -51,6 +51,19 @@ describe('composer queue store', () => {
     expect(getQueuedPrompts(SESSION_KEY)[0]?.attachments[0]).not.toBe(source[0])
   })
 
+  it('persists the owning profile with queued prompts', () => {
+    enqueueQueuedPrompt(SESSION_KEY, { attachments: [], profile: ' work ', text: 'profiled' })
+
+    expect(getQueuedPrompts(SESSION_KEY)[0]?.profile).toBe('work')
+
+    const raw = JSON.parse(String(window.localStorage.getItem(QUEUE_STORAGE_KEY))) as Record<
+      string,
+      { profile?: string }[]
+    >
+
+    expect(raw[SESSION_KEY]?.[0]?.profile).toBe('work')
+  })
+
   it('updates and removes queued entries by id', () => {
     const first = enqueueQueuedPrompt(SESSION_KEY, { attachments: [], text: 'draft one' })
     const second = enqueueQueuedPrompt(SESSION_KEY, { attachments: [], text: 'draft two' })

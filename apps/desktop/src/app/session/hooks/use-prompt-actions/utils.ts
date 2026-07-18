@@ -226,6 +226,10 @@ export function visibleUserIndexAtOrdinal(messages: readonly ChatMessage[], targ
 export interface SubmitTextOptions {
   attachments?: ComposerAttachment[]
   fromQueue?: boolean
+  /** Owning profile for an offscreen queued session. When present, every RPC
+   *  in the submit pipeline uses that profile's background gateway without
+   *  activating it in the foreground. */
+  profile?: string | null
   /** Runtime session id to submit into. Queue drains pass this so a
    *  backgrounded/source session cannot be replaced by the current foreground
    *  session between enqueue and drain. */

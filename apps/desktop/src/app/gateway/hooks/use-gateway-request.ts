@@ -3,7 +3,7 @@ import { useStore } from '@nanostores/react'
 import { useCallback, useEffect, useRef } from 'react'
 
 import type { HermesGateway } from '@/hermes'
-import { $gateway, ensureActiveGatewayOpen, isActivePrimary } from '@/store/gateway'
+import { $gateway, ensureActiveGatewayOpen, ensureGatewayOpenForProfile, isActivePrimary } from '@/store/gateway'
 import { $activeGatewayProfile } from '@/store/profile'
 import { $gatewayState, setConnection } from '@/store/session'
 
@@ -134,5 +134,18 @@ export function useGatewayRequest() {
     [ensureGatewayOpen]
   )
 
-  return { connectionRef, gatewayRef, requestGateway }
+  const requestGatewayForProfile = useCallback(
+    async <T>(profile: string, method: string, params: Record<string, unknown> = {}, timeoutMs?: number) => {
+      const gateway = await ensureGatewayOpenForProfile(profile)
+
+      if (!gateway) {
+        throw new Error(`Hermes gateway unavailable for profile: ${profile}`)
+      }
+
+      return gateway.request<T>(method, params, timeoutMs)
+    },
+    []
+  )
+
+  return { connectionRef, gatewayRef, requestGateway, requestGatewayForProfile }
 }

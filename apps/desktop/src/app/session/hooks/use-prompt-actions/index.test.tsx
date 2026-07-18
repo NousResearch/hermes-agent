@@ -77,6 +77,7 @@ function Harness({
   openMemoryGraph,
   refreshSessions,
   requestGateway,
+  requestGatewayForProfile,
   resumeStoredSession,
   seedMessages,
   selectedStoredSessionIdRef: selectedStoredSessionIdRefProp,
@@ -99,6 +100,12 @@ function Harness({
   openMemoryGraph?: () => void
   refreshSessions: () => Promise<void>
   requestGateway: <T>(method: string, params?: Record<string, unknown>) => Promise<T>
+  requestGatewayForProfile?: <T>(
+    profile: string,
+    method: string,
+    params?: Record<string, unknown>,
+    timeoutMs?: number
+  ) => Promise<T>
   resumeStoredSession?: (storedSessionId: string) => Promise<void> | void
   seedMessages?: unknown[]
   selectedStoredSessionIdRef?: MutableRefObject<string | null>
@@ -138,6 +145,7 @@ function Harness({
     openMemoryGraph: openMemoryGraph ?? (() => undefined),
     refreshSessions,
     requestGateway,
+    requestGatewayForProfile: requestGatewayForProfile ?? ((_, method, params) => requestGateway(method, params)),
     resumeStoredSession: resumeStoredSession ?? (() => undefined),
     selectedStoredSessionIdRef,
     startFreshSessionDraft: () => undefined,
@@ -599,6 +607,71 @@ describe('usePromptActions submit / queue drain semantics', () => {
     ).toBe(true)
     // Offscreen queue drains must not flip the foreground composer into Thinking.
     expect($busy.get()).toBe(false)
+  })
+
+  it('a background queue drain with no runtime id resumes its stored session instead of using the foreground runtime', async () => {
+    $busy.set(false)
+
+    const calls: { method: string; params?: Record<string, unknown>; profile: string }[] = []
+    const recoveredBackgroundRuntimeId = 'rt-background-recovered'
+    const backgroundStoredSessionId = 'stored-background'
+    const backgroundProfile = 'background-profile'
+    const foregroundStoredSessionId = 'stored-foreground'
+    const resumeStoredSession = vi.fn()
+
+    const requestGateway = vi.fn(async () => {
+      throw new Error('foreground gateway must not serve a background-profile queue')
+    })
+
+    const requestGatewayForProfile = vi.fn(
+      async (profile: string, method: string, params?: Record<string, unknown>) => {
+        calls.push({ method, params, profile })
+
+        if (method === 'session.resume') {
+          return { session_id: recoveredBackgroundRuntimeId } as never
+        }
+
+        return {} as never
+      }
+    )
+
+    let handle: HarnessHandle | null = null
+    await actRender(
+      <Harness
+        getRoutedStoredSessionId={() => foregroundStoredSessionId}
+        getRuntimeIdForStoredSession={() => null}
+        onReady={h => (handle = h)}
+        refreshSessions={async () => undefined}
+        requestGateway={requestGateway}
+        requestGatewayForProfile={requestGatewayForProfile}
+        resumeStoredSession={resumeStoredSession}
+        storedSessionId={foregroundStoredSessionId}
+      />
+    )
+
+    const accepted = await handle!.submitText('resume queued background session', {
+      fromQueue: true,
+      profile: backgroundProfile,
+      sessionId: null,
+      storedSessionId: backgroundStoredSessionId
+    })
+
+    expect(accepted).toBe(true)
+    expect(calls).toEqual([
+      {
+        method: 'session.resume',
+        params: { session_id: backgroundStoredSessionId, source: 'desktop' },
+        profile: backgroundProfile
+      },
+      {
+        method: 'prompt.submit',
+        params: { session_id: recoveredBackgroundRuntimeId, text: 'resume queued background session' },
+        profile: backgroundProfile
+      }
+    ])
+    expect(requestGateway).not.toHaveBeenCalled()
+    expect(resumeStoredSession).not.toHaveBeenCalled()
+    expect(handle!.activeSessionIdRef.current).toBe(RUNTIME_SESSION_ID)
   })
 
   it('a rejected fromQueue drain returns false (entry stays queued) and a later retry sends it', async () => {

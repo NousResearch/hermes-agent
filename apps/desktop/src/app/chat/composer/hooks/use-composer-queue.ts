@@ -34,6 +34,7 @@ interface UseComposerQueueArgs {
   onCancel: ChatBarProps['onCancel']
   onSubmit: ChatBarProps['onSubmit']
   queueEditRef: RefObject<QueueEditState | null>
+  queueProfile?: string | null
   queueSessionKey: ChatBarProps['queueSessionKey']
   sessionId: string | null | undefined
 }
@@ -58,6 +59,7 @@ export function useComposerQueue({
   onCancel,
   onSubmit,
   queueEditRef,
+  queueProfile,
   queueSessionKey,
   sessionId
 }: UseComposerQueueArgs) {
@@ -171,7 +173,7 @@ export function useComposerQueue({
       return false
     }
 
-    if (!enqueueQueuedPrompt(activeQueueSessionKey, { text, attachments })) {
+    if (!enqueueQueuedPrompt(activeQueueSessionKey, { text, attachments, profile: queueProfile })) {
       return false
     }
 
@@ -180,7 +182,7 @@ export function useComposerQueue({
     triggerHaptic('selection')
 
     return true
-  }, [activeQueueSessionKey, attachments, clearDraft, draftRef, scope.attachments])
+  }, [activeQueueSessionKey, attachments, clearDraft, draftRef, queueProfile, scope.attachments])
 
   // All queue drain paths share one lock + send-then-remove sequence.
   // `pickEntry` lets each caller choose head, by-id, or skip-edited.
@@ -205,6 +207,7 @@ export function useComposerQueue({
           onSubmit(entry.text, {
             attachments: entry.attachments,
             fromQueue: true,
+            ...(entry.profile ? { profile: entry.profile } : {}),
             sessionId: drainRuntimeSessionId,
             storedSessionId: drainQueueSessionKey
           })

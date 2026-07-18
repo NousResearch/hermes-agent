@@ -39,12 +39,18 @@ interface SubmitPromptDeps {
   getRuntimeIdForStoredSession: (storedSessionId: string) => null | string
   getRouteToken: () => string
   requestGateway: GatewayRequest
+  requestGatewayForProfile: <T>(
+    profile: string,
+    method: string,
+    params?: Record<string, unknown>,
+    timeoutMs?: number
+  ) => Promise<T>
   resumeStoredSession: (storedSessionId: string) => Promise<void> | void
   selectedStoredSessionIdRef: MutableRefObject<string | null>
   syncAttachmentsForSubmit: (
     sessionId: string,
     attachments: ComposerAttachment[],
-    options?: { updateComposerAttachments?: boolean }
+    options?: { profile?: string | null; requestGateway?: GatewayRequest; updateComposerAttachments?: boolean }
   ) => Promise<ComposerAttachment[]>
   updateSessionState: (
     sessionId: string,
@@ -84,6 +90,7 @@ export function useSubmitPrompt(deps: SubmitPromptDeps) {
     getRuntimeIdForStoredSession,
     getRouteToken,
     requestGateway,
+    requestGatewayForProfile,
     resumeStoredSession,
     selectedStoredSessionIdRef,
     syncAttachmentsForSubmit,
@@ -145,11 +152,23 @@ export function useSubmitPrompt(deps: SubmitPromptDeps) {
       // must never inherit the currently selected session after the user moves
       // to another chat.
       const targetStoredSessionId = options?.storedSessionId ?? selectedStoredSessionIdRef.current
+      const targetProfile = options?.profile?.trim() || null
+
+      const targetRequestGateway: GatewayRequest = targetProfile
+        ? (method, params, timeoutMs) => requestGatewayForProfile(targetProfile, method, params, timeoutMs)
+        : requestGateway
 
       const targetStartedInCurrentView =
         !targetStoredSessionId || targetStoredSessionId === selectedStoredSessionIdRef.current
 
-      let sessionId: null | string = options?.sessionId ?? activeSessionIdRef.current
+      // An explicit null is authoritative: background drains use it to mean
+      // "no runtime mapping — resume storedSessionId". Only an omitted runtime
+      // target may inherit or recover the foreground session.
+      const inheritsForegroundRuntime = options?.sessionId === undefined
+
+      let sessionId: null | string = inheritsForegroundRuntime
+        ? activeSessionIdRef.current
+        : (options?.sessionId ?? null)
 
       // Pin the foreground session context for the whole async submit pipeline.
       // Without this, a fast session switch during session.resume / file.attach
@@ -295,8 +314,9 @@ export function useSubmitPrompt(deps: SubmitPromptDeps) {
       // A route whose selected/runtime binding is incomplete or cross-wired
       // outranks a stale render-time runtime id (often from the previous
       // profile): force the full routed resume path below. An explicit queued
-      // runtime id (background drain) is authoritative and is left untouched.
-      if (!options?.sessionId && routedSessionNeedsResume) {
+      // runtime target — including null, which means resume its stored id — is
+      // authoritative and is left untouched.
+      if (inheritsForegroundRuntime && routedSessionNeedsResume) {
         sessionId = null
       }
 
@@ -306,7 +326,7 @@ export function useSubmitPrompt(deps: SubmitPromptDeps) {
         scope.setMessages(current => [...current, buildUserMessage()])
       }
 
-      if (!sessionId && routedStoredSessionId && routedSessionNeedsResume) {
+      if (inheritsForegroundRuntime && !sessionId && routedStoredSessionId && routedSessionNeedsResume) {
         // The URL still names a durable conversation, but a profile
         // swap/reconnect left its volatile session binding incomplete or
         // cross-wired. Run the full profile-aware resume path. Creating here
@@ -346,7 +366,7 @@ export function useSubmitPrompt(deps: SubmitPromptDeps) {
         // background queue drain only has the durable id). Continue that target
         // conversation; only a genuine new-chat draft may create a new session.
         try {
-          const resumed = await requestGateway<{ session_id: string }>('session.resume', {
+          const resumed = await targetRequestGateway<{ session_id: string }>('session.resume', {
             session_id: targetStoredSessionId,
             source: 'desktop'
           })
@@ -436,6 +456,8 @@ export function useSubmitPrompt(deps: SubmitPromptDeps) {
 
       try {
         const syncedAttachments = await syncAttachmentsForSubmit(sessionId, attachments, {
+          profile: targetProfile,
+          requestGateway: targetRequestGateway,
           updateComposerAttachments: usingComposerAttachments
         })
 
@@ -457,7 +479,7 @@ export function useSubmitPrompt(deps: SubmitPromptDeps) {
 
         try {
           await withSessionBusyRetry(() =>
-            requestGateway('prompt.submit', { session_id: sessionId, text }, PROMPT_SUBMIT_REQUEST_TIMEOUT_MS)
+            targetRequestGateway('prompt.submit', { session_id: sessionId, text }, PROMPT_SUBMIT_REQUEST_TIMEOUT_MS)
           )
         } catch (firstErr) {
           const recoverStoredSessionId = targetStoredSessionId ?? selectedStoredSessionIdRef.current
@@ -468,7 +490,7 @@ export function useSubmitPrompt(deps: SubmitPromptDeps) {
             // backend loop (#55578 symptom d) rejects the submit even though
             // the stored session is fine — resume + retry instead of erroring
             // out and losing the session binding.
-            const resumed = await requestGateway<{ session_id: string }>('session.resume', {
+            const resumed = await targetRequestGateway<{ session_id: string }>('session.resume', {
               session_id: recoverStoredSessionId,
               source: 'desktop'
             })
@@ -485,7 +507,11 @@ export function useSubmitPrompt(deps: SubmitPromptDeps) {
               }
 
               await withSessionBusyRetry(() =>
-                requestGateway('prompt.submit', { session_id: recoveredId, text }, PROMPT_SUBMIT_REQUEST_TIMEOUT_MS)
+                targetRequestGateway(
+                  'prompt.submit',
+                  { session_id: recoveredId, text },
+                  PROMPT_SUBMIT_REQUEST_TIMEOUT_MS
+                )
               )
             } else {
               submitErr = firstErr
@@ -564,6 +590,7 @@ export function useSubmitPrompt(deps: SubmitPromptDeps) {
       getRuntimeIdForStoredSession,
       getRouteToken,
       requestGateway,
+      requestGatewayForProfile,
       resumeStoredSession,
       scope,
       selectedStoredSessionIdRef,

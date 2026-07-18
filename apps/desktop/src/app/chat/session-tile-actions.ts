@@ -41,7 +41,7 @@ import {
   runRewindSubmit
 } from '../session/hooks/use-prompt-actions/rewind'
 import { useSubmitPrompt } from '../session/hooks/use-prompt-actions/submit'
-import { type SubmitTextOptions } from '../session/hooks/use-prompt-actions/utils'
+import { type GatewayRequest, type SubmitTextOptions } from '../session/hooks/use-prompt-actions/utils'
 
 import type { ComposerScope } from './composer/scope'
 
@@ -54,7 +54,7 @@ interface SessionTileActionsArgs {
 export function useSessionTileActions({ runtimeId, scope, storedSessionId }: SessionTileActionsArgs) {
   const { t } = useI18n()
   const copy = t.desktop
-  const { requestGateway } = useGatewayRequest()
+  const { requestGateway, requestGatewayForProfile } = useGatewayRequest()
 
   const runtimeIdRef = useRef(runtimeId)
   runtimeIdRef.current = runtimeId
@@ -95,9 +95,15 @@ export function useSessionTileActions({ runtimeId, scope, storedSessionId }: Ses
     async (
       sessionId: string,
       attachments: ComposerAttachment[],
-      options: { updateComposerAttachments?: boolean } = {}
+      options: { profile?: string | null; requestGateway?: GatewayRequest; updateComposerAttachments?: boolean } = {}
     ): Promise<ComposerAttachment[]> => {
-      const remote = $connection.get()?.mode === 'remote'
+      const attachmentGateway = options.requestGateway ?? requestGateway
+
+      const profileConnection = options.profile
+        ? await window.hermesDesktop?.getConnection(options.profile).catch(() => null)
+        : null
+
+      const remote = (profileConnection ?? $connection.get())?.mode === 'remote'
       const synced: ComposerAttachment[] = []
 
       for (const attachment of attachments) {
@@ -108,7 +114,11 @@ export function useSessionTileActions({ runtimeId, scope, storedSessionId }: Ses
         }
 
         if (attachment.kind === 'image' || attachment.kind === 'file') {
-          const next = await uploadComposerAttachment(attachment, { remote, requestGateway, sessionId })
+          const next = await uploadComposerAttachment(attachment, {
+            remote,
+            requestGateway: attachmentGateway,
+            sessionId
+          })
 
           if (options.updateComposerAttachments ?? true) {
             scope.attachments.update(next)
@@ -140,6 +150,7 @@ export function useSessionTileActions({ runtimeId, scope, storedSessionId }: Ses
     // token is a stable constant (the guard never trips for a tile).
     getRouteToken: () => runtimeId,
     requestGateway,
+    requestGatewayForProfile,
     // Tile ids are always bound before this hook mounts, so routed recovery is
     // unreachable here; keep the shared submit contract explicit.
     resumeStoredSession: () => undefined,

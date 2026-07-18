@@ -202,6 +202,23 @@ export async function openGatewayForProfile(profile: string): Promise<void> {
   }
 }
 
+// Resolve a profile's live gateway WITHOUT making it the foreground gateway.
+// Background queue drains use this so an offscreen profile can resume/submit
+// work without changing the active profile, composer state, or route.
+export async function ensureGatewayOpenForProfile(profile: string): Promise<HermesGateway | null> {
+  const key = normKey(profile)
+
+  if (key === primaryProfile) {
+    return isOpen(primaryGateway) ? primaryGateway : null
+  }
+
+  await openGatewayForProfile(key)
+
+  const gateway = secondaries.get(key)?.gateway ?? null
+
+  return isOpen(gateway) ? gateway : null
+}
+
 // Make `profile` the active gateway, lazily opening its socket if needed. The
 // primary is a no-op fast path. Background sockets are never closed here.
 export async function ensureGatewayForProfile(profile: string): Promise<void> {

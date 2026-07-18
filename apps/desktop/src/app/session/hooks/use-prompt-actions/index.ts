@@ -179,6 +179,12 @@ interface PromptActionsOptions {
   openMemoryGraph: () => void
   refreshSessions: () => Promise<void>
   requestGateway: <T>(method: string, params?: Record<string, unknown>, timeoutMs?: number) => Promise<T>
+  requestGatewayForProfile: <T>(
+    profile: string,
+    method: string,
+    params?: Record<string, unknown>,
+    timeoutMs?: number
+  ) => Promise<T>
   resumeStoredSession: (storedSessionId: string) => Promise<void> | void
   selectedStoredSessionIdRef: MutableRefObject<string | null>
   startFreshSessionDraft: () => void
@@ -210,6 +216,7 @@ export function usePromptActions({
   openMemoryGraph,
   refreshSessions,
   requestGateway,
+  requestGatewayForProfile,
   resumeStoredSession,
   selectedStoredSessionIdRef,
   startFreshSessionDraft,
@@ -259,10 +266,16 @@ export function usePromptActions({
     async (
       sessionId: string,
       attachments: ComposerAttachment[],
-      options: { updateComposerAttachments?: boolean } = {}
+      options: { profile?: string | null; requestGateway?: GatewayRequest; updateComposerAttachments?: boolean } = {}
     ): Promise<ComposerAttachment[]> => {
+      const attachmentGateway = options.requestGateway ?? requestGateway
       const updateComposerAttachments = options.updateComposerAttachments ?? true
-      const remote = $connection.get()?.mode === 'remote'
+
+      const profileConnection = options.profile
+        ? await window.hermesDesktop?.getConnection(options.profile).catch(() => null)
+        : null
+
+      const remote = (profileConnection ?? $connection.get())?.mode === 'remote'
       const synced: ComposerAttachment[] = []
 
       for (const original of attachments) {
@@ -290,7 +303,11 @@ export function usePromptActions({
         }
 
         if (attachment.kind === 'image' || attachment.kind === 'file') {
-          const nextAttachment = await uploadComposerAttachment(attachment, { remote, requestGateway, sessionId })
+          const nextAttachment = await uploadComposerAttachment(attachment, {
+            remote,
+            requestGateway: attachmentGateway,
+            sessionId
+          })
 
           // Update-only: never resurrect a chip the user removed mid-upload.
           if (updateComposerAttachments) {
@@ -377,6 +394,7 @@ export function usePromptActions({
     getRuntimeIdForStoredSession,
     getRouteToken,
     requestGateway,
+    requestGatewayForProfile,
     resumeStoredSession,
     selectedStoredSessionIdRef,
     syncAttachmentsForSubmit,

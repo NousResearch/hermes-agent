@@ -11,17 +11,20 @@ import type { SubmitTextOptions } from './use-prompt-actions/utils'
 
 function Harness({
   enabled = true,
+  getProfileForStoredSession,
   runtimeMap,
   selectedStoredSessionId = 'stored-session-b',
   submitText
 }: {
   enabled?: boolean
+  getProfileForStoredSession?: (storedSessionId: string) => null | string
   runtimeMap: MutableRefObject<Map<string, string>>
   selectedStoredSessionId?: string | null
   submitText: (text: string, options?: SubmitTextOptions) => Promise<boolean> | boolean
 }) {
   useBackgroundQueueDrain({
     enabled,
+    getProfileForStoredSession,
     runtimeIdByStoredSessionIdRef: runtimeMap,
     selectedStoredSessionId,
     submitText
@@ -100,14 +103,25 @@ describe('useBackgroundQueueDrain', () => {
     const runtimeMap = { current: new Map<string, string>() }
     const submitText = vi.fn(async () => true)
 
-    enqueueQueuedPrompt('stored-session-a', { text: 'resume then send', attachments: [] })
+    enqueueQueuedPrompt('stored-session-a', {
+      text: 'resume then send',
+      attachments: [],
+      profile: 'persisted-background-profile'
+    })
 
-    render(<Harness runtimeMap={runtimeMap} submitText={submitText} />)
+    render(
+      <Harness
+        getProfileForStoredSession={() => 'stale-fallback-profile'}
+        runtimeMap={runtimeMap}
+        submitText={submitText}
+      />
+    )
 
     await waitFor(() => {
       expect(submitText).toHaveBeenCalledWith('resume then send', {
         attachments: [],
         fromQueue: true,
+        profile: 'persisted-background-profile',
         sessionId: null,
         storedSessionId: 'stored-session-a'
       })

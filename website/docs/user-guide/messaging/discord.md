@@ -341,6 +341,7 @@ discord:
   no_thread_channels: []          # Channel IDs where bot responds without threading
   history_backfill: true          # Prepend recent channel scrollback on mention (default: true)
   history_backfill_limit: 50      # Max messages to scan backwards (default: 50)
+  history_full_thread: false      # Walk the full thread past prior bot replies (default: false)
   channel_prompts: {}             # Per-channel ephemeral system prompts
   allow_mentions:                 # What the bot is allowed to ping (safe defaults)
     everyone: false               # @everyone / @here pings (default: false)
@@ -509,6 +510,25 @@ discord:
   history_backfill: true
   history_backfill_limit: 50
 ```
+
+#### `discord.history_full_thread`
+
+**Type:** boolean — **Default:** `false`
+
+Opt-in override that walks the **entire thread** instead of stopping at the bot's most recent self-message. The default partition behaviour is what you want most of the time: only the messages since the bot's last reply are surfaced, which keeps the context window tight and matches the conversation transcript. Enable `history_full_thread` when you want the bot to see the full thread context — for example, when resuming a long investigation in a thread where the bot has already replied multiple times.
+
+```yaml
+discord:
+  history_full_thread: true
+```
+
+Trade-offs:
+
+- **Token cost scales linearly with the active window.** Messages that are already in the session transcript are duplicated in the prompt, so a long-running thread with `history_full_thread: true` will pay more per turn. Pair this flag with `history_backfill_limit` to cap the walk — e.g. `history_backfill_limit: 100` keeps the cold-start scan bounded even when full-thread mode is on.
+- **Hot-path cache bypass.** When `history_full_thread` is on, the in-memory `_last_self_message_id` cache is intentionally skipped so the scan reaches back past prior bot replies. The cache is what normally narrows the Discord API window on the hot path; full-thread mode trades that optimisation for visibility.
+- **Default is safe.** Without this flag the existing partition behaviour is preserved exactly. Set it explicitly when you want the wider window.
+
+Env-var override for ops toggles without a config edit: `DISCORD_HISTORY_FULL_THREAD=true`. The env var takes precedence over the YAML key, matching the convention used by the other `discord.*` settings.
 
 #### `group_sessions_per_user`
 

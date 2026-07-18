@@ -893,6 +893,7 @@ platform_toolsets:
 #   reactions: true                  # Show processing reactions (default: true)
 #   history_backfill: true           # Recover missed channel messages on mention (default: true)
 #   history_backfill_limit: 50       # Max messages to scan backwards (default: 50)
+#   history_full_thread: false       # Walk full thread past prior bot replies (default: false)
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Available toolsets (use these names in platform_toolsets or the toolsets list)

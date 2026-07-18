@@ -115,13 +115,14 @@ def adapter(monkeypatch):
         "DISCORD_IGNORED_CHANNELS",
         "DISCORD_HISTORY_BACKFILL",
         "DISCORD_HISTORY_BACKFILL_LIMIT",
+        "DISCORD_HISTORY_FULL_THREAD",
         "DISCORD_ALLOW_BOTS",
     ):
         monkeypatch.delenv(_var, raising=False)
 
     config = PlatformConfig(enabled=True, token="fake-token")
     adapter = DiscordAdapter(config)
-    adapter._client = SimpleNamespace(user=SimpleNamespace(id=999))
+    adapter._client = SimpleNamespace(user=SimpleNamespace(id=999, display_name="Hermes", name="hermes"))
     adapter._text_batch_delay_seconds = 0  # disable batching for tests
     adapter.handle_message = AsyncMock()
     return adapter
@@ -1485,4 +1486,270 @@ async def test_discord_non_reply_free_channel_skips_backfill(adapter, monkeypatc
     await adapter._handle_message(message)
 
     adapter._fetch_channel_context.assert_not_awaited()
+
+
+# ---------------------------------------------------------------------------
+# history_full_thread mode (feature: discord-full-thread-history)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_fetch_channel_context_full_thread_walks_past_self_messages(adapter, monkeypatch):
+    """history_full_thread=True skips the self-message partition and returns
+    the entire thread up to history_backfill_limit.
+
+    Without the flag, the scan would stop at the bot's most recent reply
+    (msg_id=2) and only surface msg_id=3 — here we assert it walks through
+    both prior bot replies and includes all human messages around them.
+    """
+    monkeypatch.setenv("DISCORD_ALLOW_BOTS", "all")
+    adapter.config.extra["history_backfill_limit"] = 10
+    adapter.config.extra["history_full_thread"] = True
+
+    bot_user = adapter._client.user
+    human_a = SimpleNamespace(id=56, display_name="Alice", name="Alice", bot=False)
+    human_b = SimpleNamespace(id=57, display_name="Bob", name="Bob", bot=False)
+
+    channel = FakeHistoryChannel(
+        [
+            # Newest first — this is what channel.history() yields with
+            # oldest_first=False.
+            make_history_message(author=human_a, content="question after latest reply", msg_id=6),
+            make_history_message(author=bot_user, content="second bot reply", msg_id=5),
+            make_history_message(author=human_b, content="middle human note", msg_id=4),
+            make_history_message(author=bot_user, content="first bot reply", msg_id=3),
+            make_history_message(author=human_a, content="initial question", msg_id=2),
+            make_history_message(author=human_b, content="earliest note", msg_id=1),
+        ],
+        channel_id=123,
+    )
+
+    result = await adapter._fetch_channel_context(channel, before=make_message(channel=channel, content="trigger"))
+
+    # Both bot messages must appear (not partition), all four humans must appear,
+    # and the output must be chronologically ordered.
+    assert result == (
+        "[Recent channel messages]\n"
+        "[Bob] earliest note\n"
+        "[Alice] initial question\n"
+        "[Hermes] first bot reply\n"
+        "[Bob] middle human note\n"
+        "[Hermes] second bot reply\n"
+        "[Alice] question after latest reply"
+    )
+
+
+@pytest.mark.asyncio
+async def test_fetch_channel_context_full_thread_default_is_partition_mode(adapter, monkeypatch):
+    """Default behaviour (no flag set) MUST stop at the bot's last message —
+    the feature must be opt-in, not silent-on-by-default.
+
+    Regression guard: a future refactor that flips the default would break
+    every existing user's context window and prompt-cache layout.
+    """
+    monkeypatch.setenv("DISCORD_ALLOW_BOTS", "all")
+    monkeypatch.delenv("DISCORD_HISTORY_FULL_THREAD", raising=False)
+    adapter.config.extra["history_backfill_limit"] = 10
+    # Explicitly do NOT set history_full_thread — neither config nor env.
+
+    bot_user = adapter._client.user
+    human = SimpleNamespace(id=56, display_name="Alice", name="Alice", bot=False)
+
+    channel = FakeHistoryChannel(
+        [
+            make_history_message(author=human, content="after", msg_id=4),
+            make_history_message(author=bot_user, content="our prior response", msg_id=3),
+            make_history_message(author=human, content="before partition", msg_id=2),
+            make_history_message(author=bot_user, content="earlier bot", msg_id=1),
+        ],
+        channel_id=123,
+    )
+
+    result = await adapter._fetch_channel_context(channel, before=make_message(channel=channel, content="trigger"))
+
+    # Same as test_fetch_channel_context_stops_at_self_message... — partition
+    # still works. The "before partition" and "earlier bot" messages are
+    # excluded because msg_id=3 is our last reply.
+    assert result == "[Recent channel messages]\n[Alice] after"
+
+
+@pytest.mark.asyncio
+async def test_fetch_channel_context_full_thread_env_var_overrides_default(adapter, monkeypatch):
+    """DISCORD_HISTORY_FULL_THREAD=1 enables the feature without config edit.
+
+    Useful for runtime toggles and ops verification without restarting with
+    a new config.yaml.
+    """
+    monkeypatch.setenv("DISCORD_ALLOW_BOTS", "all")
+    monkeypatch.setenv("DISCORD_HISTORY_FULL_THREAD", "1")
+    adapter.config.extra["history_backfill_limit"] = 10
+
+    bot_user = adapter._client.user
+    human = SimpleNamespace(id=56, display_name="Alice", name="Alice", bot=False)
+
+    channel = FakeHistoryChannel(
+        [
+            make_history_message(author=human, content="after", msg_id=3),
+            make_history_message(author=bot_user, content="prior reply", msg_id=2),
+            make_history_message(author=human, content="before", msg_id=1),
+        ],
+        channel_id=123,
+    )
+
+    result = await adapter._fetch_channel_context(channel, before=make_message(channel=channel, content="trigger"))
+
+    assert result == (
+        "[Recent channel messages]\n"
+        "[Alice] before\n"
+        "[Hermes] prior reply\n"
+        "[Alice] after"
+    )
+
+
+@pytest.mark.asyncio
+async def test_fetch_channel_context_full_thread_respects_limit(adapter, monkeypatch):
+    """history_full_thread mode honours history_backfill_limit — no infinite walk."""
+    monkeypatch.setenv("DISCORD_ALLOW_BOTS", "all")
+    adapter.config.extra["history_backfill_limit"] = 2
+    adapter.config.extra["history_full_thread"] = True
+
+    bot_user = adapter._client.user
+    human = SimpleNamespace(id=56, display_name="Alice", name="Alice", bot=False)
+
+    channel = FakeHistoryChannel(
+        [
+            make_history_message(author=human, content="msg-5", msg_id=5),
+            make_history_message(author=bot_user, content="msg-4", msg_id=4),
+            make_history_message(author=human, content="msg-3", msg_id=3),
+            make_history_message(author=bot_user, content="msg-2", msg_id=2),
+            make_history_message(author=human, content="msg-1", msg_id=1),
+        ],
+        channel_id=123,
+    )
+
+    result = await adapter._fetch_channel_context(channel, before=make_message(channel=channel, content="trigger"))
+
+    # FakeHistoryChannel honours `limit` — only 2 messages survive.  In
+    # newest-first order those are msg-5 and msg-4, which after reversing
+    # are [msg-4, msg-5].
+    assert result == "[Recent channel messages]\n[Hermes] msg-4\n[Alice] msg-5"
+
+
+@pytest.mark.asyncio
+async def test_fetch_channel_context_full_thread_ignores_last_self_cache(adapter, monkeypatch):
+    """Regression: full_thread mode MUST bypass the _last_self_message_id cache.
+
+    The hot-path cache narrows the window by passing after=_last_self_message_id
+    into channel.history() — which on the usual send path means everything
+    before the bot's prior reply is excluded.  When the user opts into
+    full_thread mode, that cache boundary is the wrong behaviour: they want
+    the entire thread, not the slice since the bot's last turn.  A future
+    refactor that re-enables the cache in full_thread mode would silently
+    break the feature for every production deployment.
+
+    Seeds _last_self_message_id with a real value and asserts channel.history()
+    is called with after=None while full_thread is on.  Without the fix in
+    `_fetch_channel_context`, recorded_after would be a discord.Object(id=100).
+    """
+    monkeypatch.setenv("DISCORD_ALLOW_BOTS", "all")
+    adapter.config.extra["history_backfill_limit"] = 50
+    adapter.config.extra["history_full_thread"] = True
+
+    human = SimpleNamespace(id=56, display_name="Alice", name="Alice", bot=False)
+
+    recorded_after = {}
+
+    class CacheTrackingChannel(FakeHistoryChannel):
+        def history(self, *, limit, before, after=None, oldest_first=None):
+            recorded_after["value"] = after
+            return super().history(
+                limit=limit,
+                before=before,
+                after=after,
+                oldest_first=oldest_first,
+            )
+
+    channel = CacheTrackingChannel(
+        [
+            make_history_message(author=human, content="msg after bot reply", msg_id=200),
+            make_history_message(author=adapter._client.user, content="our prior reply", msg_id=150),
+            make_history_message(author=human, content="msg before bot reply", msg_id=120),
+        ],
+        channel_id=888,
+    )
+
+    # Seed the cache with a real-looking prior self-message ID.  In a real
+    # deployment this gets written by the send() path on every successful
+    # bot reply — it is the normal hot-path state, not a contrived fixture.
+    adapter._last_self_message_id["888"] = "150"
+
+    trigger = make_message(channel=channel, content="trigger")
+    trigger.id = 300
+
+    result = await adapter._fetch_channel_context(channel, before=trigger)
+
+    # The cache boundary must be skipped — channel.history() was called
+    # without `after=`, so the cold-start scan ran and surfaced the message
+    # from before the bot's prior reply.
+    assert recorded_after["value"] is None, (
+        f"full_thread mode must bypass the _last_self_message_id cache; "
+        f"got after={recorded_after['value']!r}"
+    )
+    assert "[Alice] msg before bot reply" in result, (
+        "full_thread mode should surface messages before the bot's prior reply"
+    )
+    assert "[Hermes] our prior reply" in result
+    assert "[Alice] msg after bot reply" in result
+
+
+@pytest.mark.asyncio
+async def test_fetch_channel_context_partition_mode_still_uses_cache(adapter, monkeypatch):
+    """Counterpart regression: default (partition) mode MUST still use the cache.
+
+    Teknium1's review notes both halves of the contract — full_thread bypasses
+    the cache, partition mode keeps using it.  A future refactor that disables
+    the cache globally would burn an extra Discord API round-trip on every
+    trigger in every existing deployment.  Asserting the negative path keeps
+    the optimisation intact.
+    """
+    monkeypatch.setenv("DISCORD_ALLOW_BOTS", "all")
+    adapter.config.extra["history_backfill_limit"] = 50
+    # history_full_thread is NOT set — default partition mode applies.
+
+    human = SimpleNamespace(id=56, display_name="Alice", name="Alice", bot=False)
+
+    recorded_after = {}
+
+    class CacheTrackingChannel(FakeHistoryChannel):
+        def history(self, *, limit, before, after=None, oldest_first=None):
+            recorded_after["value"] = after
+            return super().history(
+                limit=limit,
+                before=before,
+                after=after,
+                oldest_first=oldest_first,
+            )
+
+    channel = CacheTrackingChannel(
+        [make_history_message(author=human, content="hello", msg_id=200)],
+        channel_id=999,
+    )
+
+    adapter._last_self_message_id["999"] = "100"
+
+    trigger = make_message(channel=channel, content="trigger")
+    trigger.id = 300
+
+    await adapter._fetch_channel_context(channel, before=trigger)
+
+    # Partition mode still narrows the fetch with after=_last_self_message_id.
+    # In this test env discord.Object is mocked, so we cannot inspect .id
+    # against the literal — only assert that the cache was applied (after is
+    # non-None).  The complementary half (full_thread = None) is covered by
+    # test_fetch_channel_context_full_thread_ignores_last_self_cache.
+    assert recorded_after["value"] is not None, (
+        "partition mode must seed after= from _last_self_message_id; "
+        f"got after={recorded_after['value']!r}"
+    )
+
 

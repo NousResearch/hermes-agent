@@ -1040,6 +1040,74 @@ class TestLoadGatewayConfig:
         assert os.getenv("DISCORD_HISTORY_BACKFILL") == "true"
         assert os.getenv("DISCORD_HISTORY_BACKFILL_LIMIT") == "17"
 
+    def test_bridges_discord_history_full_thread_from_config_yaml(self, tmp_path, monkeypatch):
+        """Regression: discord.history_full_thread in config.yaml must seed
+        DISCORD_HISTORY_FULL_THREAD so the adapter sees the user opt-in.
+
+        Without this bridge the YAML key documented at
+        website/docs/user-guide/messaging/discord.md is a dead letter — the
+        adapter only reads os.getenv("DISCORD_HISTORY_FULL_THREAD").  Teknium1
+        flagged this on PR #51414; without coverage the bridge could silently
+        regress and the documented feature would no-op.
+        """
+        hermes_home = tmp_path / ".hermes"
+        hermes_home.mkdir()
+        config_path = hermes_home / "config.yaml"
+        config_path.write_text(
+            "discord:\n"
+            "  history_full_thread: true\n",
+            encoding="utf-8",
+        )
+
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+        monkeypatch.delenv("DISCORD_HISTORY_FULL_THREAD", raising=False)
+
+        load_gateway_config()
+
+        assert os.getenv("DISCORD_HISTORY_FULL_THREAD") == "true"
+
+    def test_history_full_thread_yaml_bridge_respects_existing_env_var(self, tmp_path, monkeypatch):
+        """Env-var precedence: a pre-set DISCORD_HISTORY_FULL_THREAD wins over
+        the YAML key.  Mirrors the contract used for the other discord.* keys.
+        """
+        hermes_home = tmp_path / ".hermes"
+        hermes_home.mkdir()
+        config_path = hermes_home / "config.yaml"
+        config_path.write_text(
+            "discord:\n"
+            "  history_full_thread: true\n",
+            encoding="utf-8",
+        )
+
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+        monkeypatch.setenv("DISCORD_HISTORY_FULL_THREAD", "false")
+
+        load_gateway_config()
+
+        # Env var pre-set by the operator wins — YAML did not overwrite it.
+        assert os.getenv("DISCORD_HISTORY_FULL_THREAD") == "false"
+
+    def test_history_full_thread_yaml_bridge_accepts_false_value(self, tmp_path, monkeypatch):
+        """Explicit YAML `false` is propagated (not silently dropped) so users
+        who set it explicitly get the documented behaviour instead of relying
+        on absence.
+        """
+        hermes_home = tmp_path / ".hermes"
+        hermes_home.mkdir()
+        config_path = hermes_home / "config.yaml"
+        config_path.write_text(
+            "discord:\n"
+            "  history_full_thread: false\n",
+            encoding="utf-8",
+        )
+
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+        monkeypatch.delenv("DISCORD_HISTORY_FULL_THREAD", raising=False)
+
+        load_gateway_config()
+
+        assert os.getenv("DISCORD_HISTORY_FULL_THREAD") == "false"
+
     def test_bridges_telegram_channel_prompts_from_config_yaml(self, tmp_path, monkeypatch):
         hermes_home = tmp_path / ".hermes"
         hermes_home.mkdir()

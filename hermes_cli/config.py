@@ -2531,6 +2531,7 @@ DEFAULT_CONFIG = {
         "bots_require_inline_mention": False,  # Multi-bot rooms: if True, another bot must type @thisbot in its message to trigger a reply; a Discord reply/quote alone won't. Prevents two bots auto-replying to each other forever. Does not affect humans.
         "history_backfill": True,         # If True, prepend recent channel scrollback when bot is triggered (recovers messages missed while require_mention gated them out)
         "history_backfill_limit": 50,     # Max number of recent messages to scan when assembling the backfill block
+        "history_full_thread": False,     # If True, walk the entire thread instead of stopping at the bot's most recent self-message (default: False — preserves existing partition behaviour)
         "reactions": True,             # Add 👀/✅/❌ reactions to messages during processing
         # Discord Gateway transport health. These settings inspect the active
         # WebSocket's ready/open/heartbeat state; they never use Discord REST as

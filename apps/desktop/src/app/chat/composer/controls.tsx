@@ -206,7 +206,6 @@ function ConversationPill({
             triggerHaptic('submit')
             onStopTurn()
           }}
-          title={c.stopListening}
           type="button"
           variant="ghost"
         >
@@ -239,7 +238,6 @@ function ConversationPill({
           triggerHaptic('close')
           onEnd()
         }}
-        title={c.endConversation}
         type="button"
       >
         <ConversationIndicator level={level} listening={listening} speaking={speaking} />

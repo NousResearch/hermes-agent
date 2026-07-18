@@ -253,6 +253,32 @@ hermes kanban create "nightly ops review" \
     --json
 ```
 
+### Route prefixed chat messages into triage
+
+A messaging platform can opt into deterministic Kanban capture without sending
+the message through the agent loop. Configure the platform's `extra` block and
+choose explicit prefixes; matching messages become `triage` tasks and receive a
+short acknowledgement in the originating chat.
+
+```yaml
+# config.yaml
+platforms:
+  telegram:
+    extra:
+      kanban_chat_triage:
+        enabled: true
+        trigger_prefixes: ["todo:", "kanban:"]
+        fallback_board: inbox
+        create_missing_boards: false
+```
+
+This is disabled by default. Prefer explicit prefixes over `capture_all: true`,
+which diverts every ordinary text message on that platform away from the agent.
+With `create_missing_boards: false`, create the fallback board first. Source,
+classification, reply context, attachment metadata, and routing events are
+force-redacted before persistence; duplicate platform message IDs reuse the
+original task.
+
 ### Bulk CLI verbs
 
 All the lifecycle verbs accept multiple ids so you can clean up a batch

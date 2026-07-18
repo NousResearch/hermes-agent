@@ -28,6 +28,7 @@ def fresh_home(tmp_path, monkeypatch):
         monkeypatch.delenv(var, raising=False)
     try:
         import hermes_constants
+
         hermes_constants._cached_default_hermes_root = None  # type: ignore[attr-defined]
     except Exception:
         pass
@@ -43,7 +44,10 @@ def _config(**overrides):
         "board_create_policy": "explicit_project_only",
         "ack_template": "Queued for triage: board={board_slug} task={task_id}",
         "boards": {
-            "hermes-agent": {"aliases": ["hermes", "hermes agent"], "default_category": "engineering"},
+            "hermes-agent": {
+                "aliases": ["hermes", "hermes agent"],
+                "default_category": "engineering",
+            },
             "inbox": {"aliases": ["inbox", "general"], "default_category": "general"},
         },
         "categories": {
@@ -93,7 +97,10 @@ def test_reuses_existing_board_by_alias_and_creates_triage_task(fresh_home):
 
     assert result["board_id"] == "hermes-agent"
     assert result["created_board"] is False
-    assert result["ack"] == f"Queued for triage: board=hermes-agent task={result['task_id']}"
+    assert (
+        result["ack"]
+        == f"Queued for triage: board=hermes-agent task={result['task_id']}"
+    )
     with kb.connect(board="hermes-agent") as conn:
         task = kb.get_task(conn, result["task_id"])
     assert task is not None
@@ -119,7 +126,11 @@ def test_missing_explicit_project_board_is_created(fresh_home):
             "title": "Build landing page backlog",
         },
         source=_source(),
-        config=_config(categories={"website": {"board": "barista-labs-website", "assignee": "paul"}}),
+        config=_config(
+            categories={
+                "website": {"board": "barista-labs-website", "assignee": "paul"}
+            }
+        ),
     )
 
     assert result["board_id"] == "new-launch-site"
@@ -176,17 +187,100 @@ def test_duplicate_source_message_returns_original_task(fresh_home):
 
     assert second["task_id"] == first["task_id"]
     with kb.connect(board="hermes-agent") as conn:
-        rows = conn.execute("SELECT id FROM tasks WHERE idempotency_key IS NOT NULL").fetchall()
-        routing_events = [e for e in kb.list_events(conn, first["task_id"]) if e.kind == "chat_routing"]
+        rows = conn.execute(
+            "SELECT id FROM tasks WHERE idempotency_key IS NOT NULL"
+        ).fetchall()
+        routing_events = [
+            e
+            for e in kb.list_events(conn, first["task_id"])
+            if e.kind == "chat_routing"
+        ]
     assert [row["id"] for row in rows] == [first["task_id"]]
     assert len(routing_events) == 1
+
+
+def test_missing_message_id_idempotency_uses_content_hash(fresh_home):
+    kb.create_board("inbox")
+    source = _source(message_id=None)
+
+    first = route_chat_triage_task(
+        message_text="todo: first missing id message",
+        classification={
+            "intent": "task_request",
+            "category": "general",
+            "confidence": 0.9,
+        },
+        source=source,
+        config=_config(),
+    )
+    second = route_chat_triage_task(
+        message_text="todo: second missing id message",
+        classification={
+            "intent": "task_request",
+            "category": "general",
+            "confidence": 0.9,
+        },
+        source=source,
+        config=_config(),
+    )
+    retry = route_chat_triage_task(
+        message_text="todo: first missing id message",
+        classification={
+            "intent": "task_request",
+            "category": "general",
+            "confidence": 0.9,
+        },
+        source=source,
+        config=_config(),
+    )
+
+    assert first["task_id"] != second["task_id"]
+    assert retry["task_id"] == first["task_id"]
+
+
+def test_persisted_chat_triage_structures_are_force_redacted(fresh_home, monkeypatch):
+    monkeypatch.setenv("HERMES_REDACT_SECRETS", "false")
+    kb.create_board("inbox")
+    secret = "sk-abcdefghijklmnopqrstuvwxyz1234567890"
+
+    result = route_chat_triage_task(
+        message_text=f"todo: rotate leaked key {secret}",
+        classification={
+            "intent": "task_request",
+            "category": "general",
+            "title": f"rotate {secret}",
+            "assignee": f"owner-{secret}",
+            "project_hint": "inbox",
+            "confidence": 0.9,
+            "links": [f"https://example.test/?token={secret}"],
+            "acceptance_criteria": [f"remove {secret}"],
+        },
+        source={**_source("secret-1"), "user_display": f"Sean {secret}"},
+        context={"thread_summary": f"context {secret}"},
+        config=_config(),
+    )
+
+    with kb.connect(board="inbox") as conn:
+        task = kb.get_task(conn, result["task_id"])
+    payload = _routing_event("inbox", result["task_id"])
+    persisted = json.dumps(
+        {"task": task.__dict__, "event": payload},
+        ensure_ascii=False,
+        default=str,
+    )
+    assert secret not in persisted
+    assert "redacted" in persisted.lower()
 
 
 def test_missing_fallback_board_without_create_permission_is_actionable(fresh_home):
     with pytest.raises(ChatTriageError) as exc:
         route_chat_triage_task(
             message_text="track this",
-            classification={"intent": "task_request", "category": "general", "confidence": 0.9},
+            classification={
+                "intent": "task_request",
+                "category": "general",
+                "confidence": 0.9,
+            },
             source=_source(),
             config=_config(create_missing_boards=False),
         )

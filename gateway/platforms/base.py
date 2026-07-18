@@ -1894,6 +1894,122 @@ def coerce_plaintext_gateway_command(event: "MessageEvent") -> None:
         return
 
 
+def _truthy_config_value(value: Any, default: bool = False) -> bool:
+    if value is None:
+        return default
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, (int, float)):
+        return bool(value)
+    if isinstance(value, str):
+        normalized = value.strip().lower()
+        if normalized in {"1", "true", "yes", "on", "enabled"}:
+            return True
+        if normalized in {"0", "false", "no", "off", "disabled"}:
+            return False
+    return bool(value)
+
+
+def _kanban_chat_triage_config(extra: dict | None) -> dict | None:
+    raw = (extra or {}).get("kanban_chat_triage")
+    if raw is True:
+        return {"enabled": True}
+    if not isinstance(raw, dict):
+        return None
+    if not _truthy_config_value(raw.get("enabled"), False):
+        return None
+    return dict(raw)
+
+
+def _kanban_chat_triage_text(event: "MessageEvent", cfg: dict) -> str | None:
+    if (
+        event.source is None
+        or event.internal
+        or event.message_type != MessageType.TEXT
+        or event.is_command()
+    ):
+        return None
+    text = str(event.text or "").strip()
+    if not text:
+        return None
+    if _truthy_config_value(cfg.get("capture_all"), False):
+        return text
+    prefixes = cfg.get("trigger_prefixes", ("kanban:", "todo:"))
+    if isinstance(prefixes, str):
+        prefixes = [prefixes]
+    if not isinstance(prefixes, (list, tuple, set)):
+        return None
+    lowered = text.casefold()
+    for prefix in prefixes:
+        prefix_text = str(prefix or "").strip()
+        if prefix_text and lowered.startswith(prefix_text.casefold()):
+            return text[len(prefix_text):].strip() or text
+    return None
+
+
+def _kanban_chat_triage_source(event: "MessageEvent") -> dict:
+    source = event.source.to_dict() if event.source is not None else {}
+    if event.message_id and not source.get("message_id"):
+        source["message_id"] = str(event.message_id)
+    if event.reply_to_message_id:
+        source["reply_to_message_id"] = str(event.reply_to_message_id)
+    if event.platform_update_id is not None:
+        source["platform_update_id"] = event.platform_update_id
+    return source
+
+
+def _kanban_chat_triage_classification(
+    text: str,
+    event: "MessageEvent",
+    cfg: dict,
+) -> dict:
+    configured = cfg.get("classification") if isinstance(cfg.get("classification"), dict) else {}
+    classification = dict(configured)
+    classification.setdefault("intent", str(cfg.get("intent") or "task_request"))
+    classification.setdefault("category", str(cfg.get("category") or "general"))
+    classification.setdefault("confidence", 1.0)
+    if cfg.get("project_hint") and not classification.get("project_hint"):
+        classification["project_hint"] = str(cfg["project_hint"])
+    if cfg.get("assignee") and not classification.get("assignee"):
+        classification["assignee"] = str(cfg["assignee"])
+    if event.media_urls:
+        classification.setdefault(
+            "attachments",
+            [
+                {
+                    "type": event.media_types[idx] if idx < len(event.media_types) else "",
+                    "url": url,
+                }
+                for idx, url in enumerate(event.media_urls)
+            ],
+        )
+    if not classification.get("title"):
+        title = re.split(r"[.!?\n]", text, maxsplit=1)[0].strip()
+        if title:
+            classification["title"] = title
+    return classification
+
+
+def _kanban_chat_triage_context(event: "MessageEvent") -> dict:
+    context: dict[str, Any] = {}
+    if event.reply_to_text:
+        context["reply_to_text"] = event.reply_to_text
+    if event.reply_to_author_id:
+        context["reply_to_author_id"] = event.reply_to_author_id
+    if event.reply_to_author_name:
+        context["reply_to_author_name"] = event.reply_to_author_name
+    if event.channel_context:
+        context["channel_context"] = event.channel_context
+    metadata = {
+        k: v
+        for k, v in (event.metadata or {}).items()
+        if str(k).startswith("kanban_chat_triage_")
+    }
+    if metadata:
+        context["metadata"] = metadata
+    return context
+
+
 @dataclass
 class SendResult:
     """Result of sending a message."""
@@ -4673,6 +4789,53 @@ class BasePlatformAdapter(ABC):
 
         await self._drain_pending_after_session_command(session_key, command_guard)
 
+    async def _maybe_route_kanban_chat_triage(self, event: MessageEvent) -> bool:
+        cfg = _kanban_chat_triage_config(getattr(self.config, "extra", None))
+        if not cfg:
+            return False
+        triage_text = _kanban_chat_triage_text(event, cfg)
+        if triage_text is None:
+            return False
+
+        thread_meta = _thread_metadata_for_source(event.source, _reply_anchor_for_event(event))
+        try:
+            from hermes_cli.kanban_chat_triage import route_chat_triage_task
+
+            result = await asyncio.to_thread(
+                route_chat_triage_task,
+                message_text=triage_text,
+                classification=_kanban_chat_triage_classification(
+                    triage_text,
+                    event,
+                    cfg,
+                ),
+                source=_kanban_chat_triage_source(event),
+                context=_kanban_chat_triage_context(event),
+                config=cfg,
+                board_override=cfg.get("board"),
+                created_by=f"gateway:{_platform_name(self.platform)}",
+            )
+            ack = str(result.get("ack") or "").strip()
+        except Exception as exc:
+            from hermes_cli.kanban_chat_triage import redact_chat_triage_text
+
+            ack = "Kanban triage failed: " + redact_chat_triage_text(str(exc))
+            logger.warning(
+                "[%s] Kanban chat triage failed: %s",
+                self.name,
+                ack,
+            )
+
+        if not _truthy_config_value(cfg.get("ack"), True):
+            return True
+        await self._send_with_retry(
+            chat_id=event.source.chat_id,
+            content=ack or "Queued for Kanban triage.",
+            reply_to=_reply_anchor_for_event(event),
+            metadata=_mark_notify_metadata(thread_meta),
+        )
+        return True
+
     async def handle_message(self, event: MessageEvent) -> None:
         """
         Process an incoming message.
@@ -4691,6 +4854,9 @@ class BasePlatformAdapter(ABC):
         # downstream delivery all agree on the same lane.
         # Offloaded: the sync hook must not block the loop.
         await asyncio.to_thread(self._apply_topic_recovery, event)
+
+        if await self._maybe_route_kanban_chat_triage(event):
+            return
 
         session_key = build_session_key(
             event.source,

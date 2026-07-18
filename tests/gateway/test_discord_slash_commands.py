@@ -7,6 +7,7 @@ import sys
 import pytest
 
 from gateway.config import PlatformConfig
+from gateway.session import SessionSource
 
 
 def _ensure_discord_mock():
@@ -75,7 +76,10 @@ def _ensure_discord_mock():
 
 _ensure_discord_mock()
 
-from plugins.platforms.discord.adapter import DiscordAdapter  # noqa: E402
+from plugins.platforms.discord.adapter import (  # noqa: E402
+    DiscordAdapter,
+    _discord_thread_title_looks_generic,
+)
 
 
 class FakeTree:
@@ -841,6 +845,38 @@ async def test_auto_thread_source_carries_initial_name_for_semantic_rename(adapt
     source = captured_events[0].source
     assert source.auto_thread_created is True
     assert source.auto_thread_initial_name == "raw user prompt"
+
+
+def test_existing_thread_generic_title_classifier():
+    assert _discord_thread_title_looks_generic("nova thread") is True
+    assert _discord_thread_title_looks_generic("Investigate recurring Discord title failures…") is True
+    assert _discord_thread_title_looks_generic("Falha recorrente do parity guard") is False
+
+
+@pytest.mark.asyncio
+async def test_opted_in_existing_generic_thread_uses_durable_semantic_rename_lane(adapter, monkeypatch):
+    monkeypatch.setenv("DISCORD_REQUIRE_MENTION", "false")
+    adapter.config.extra["auto_rename_threads"] = {"enabled": True}
+    captured_events = []
+
+    async def capture_handle(event):
+        captured_events.append(event)
+
+    adapter.handle_message = capture_handle
+    msg = _fake_message(
+        _FakeThreadChannel(name="nova thread"),
+        content="Investigate recurring parity guard failures",
+    )
+
+    await adapter._handle_message(msg)
+
+    source = captured_events[0].source
+    assert source.auto_thread_created is False
+    assert source.auto_thread_rename_allowed is True
+    assert source.auto_thread_initial_name == "nova thread"
+    restored = SessionSource.from_dict(source.to_dict())
+    assert restored.auto_thread_rename_allowed is True
+    assert restored.auto_thread_initial_name == "nova thread"
 
 
 @pytest.mark.asyncio

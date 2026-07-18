@@ -47,6 +47,14 @@ _DISCORD_COMMAND_SYNC_STATE_FILENAME = "discord_command_sync_state.json"
 _DISCORD_NONCONVERSATIONAL_STATE_FILENAME = "discord_nonconversational_messages.json"
 _DISCORD_COMMAND_SYNC_MUTATION_INTERVAL_SECONDS = 4.5
 _DISCORD_COMMAND_SYNC_MAX_RATE_LIMIT_SLEEP_SECONDS = 30.0
+_DISCORD_GENERIC_THREAD_TITLES = frozenset({
+    "thread", "new thread", "nova thread", "untitled", "sem titulo", "sem título",
+    "discussion", "discussao", "discussão", "topic", "topico", "tópico",
+})
+_DISCORD_GENERIC_THREAD_PREFIXES = (
+    "new thread", "nova thread", "thread-", "thread ", "untitled", "sem titulo", "sem título",
+)
+_DISCORD_THREAD_TRAILING_TRUNCATION_RE = re.compile(r"(?:\.{2,}|…|⋯|‥)\s*$")
 # Discord enforces a hard cap of 100 global application (slash) commands per
 # app. Registering more makes the ENTIRE sync fail with error 30032
 # ("Maximum number of application commands reached"), which silently breaks
@@ -272,6 +280,20 @@ def _clean_discord_id(entry: str) -> str:
     if entry.lower().startswith("user:"):
         entry = entry[5:]
     return entry.strip()
+
+
+def _discord_thread_title_looks_generic(name: str) -> bool:
+    """Return whether an opted-in existing thread is safe to retitle."""
+    raw = str(name or "").strip()
+    lowered = re.sub(r"\s+", " ", raw).lower()
+    return (
+        not lowered
+        or lowered in _DISCORD_GENERIC_THREAD_TITLES
+        or any(lowered.startswith(prefix) for prefix in _DISCORD_GENERIC_THREAD_PREFIXES)
+        or bool(re.search(r"https?://\S+", raw, re.IGNORECASE))
+        or bool(_DISCORD_THREAD_TRAILING_TRUNCATION_RE.search(raw))
+        or utf16_len(raw) >= 80
+    )
 
 
 def check_discord_requirements() -> bool:
@@ -901,6 +923,12 @@ class DiscordAdapter(BasePlatformAdapter):
         # Mirrors the Telegram #58563 fix. Entries are dropped on finalize.
         self._last_overflow_preview: Dict[tuple, str] = {}
         self._warned_fail_closed_default = False
+
+    def _auto_rename_existing_threads_enabled(self) -> bool:
+        raw = self.config.extra.get("auto_rename_threads") if isinstance(self.config.extra, dict) else None
+        if isinstance(raw, dict):
+            return bool(raw.get("enabled", False))
+        return bool(raw)
 
     def _handle_bot_task_done(self, task: asyncio.Task) -> None:
         """Surface post-startup discord.py task exits to the gateway supervisor.
@@ -6393,6 +6421,17 @@ class DiscordAdapter(BasePlatformAdapter):
         # so forum descriptions (e.g. project instructions) appear in the session context.
         chat_topic = self._get_effective_topic(message.channel, is_thread=is_thread)
 
+        # Opted-in pre-existing generic threads reuse the durable semantic-title
+        # path used by Hermes-created threads. The exact name observed at ingress
+        # is persisted and rename_thread() applies only if it still matches.
+        existing_thread_name = str(getattr(effective_channel, "name", "") or "")
+        auto_thread_rename_allowed = (
+            is_thread
+            and auto_threaded_channel is None
+            and self._auto_rename_existing_threads_enabled()
+            and _discord_thread_title_looks_generic(existing_thread_name)
+        )
+
         # Build source
         guild = getattr(message, "guild", None)
         source = self.build_source(
@@ -6409,10 +6448,13 @@ class DiscordAdapter(BasePlatformAdapter):
             message_id=str(message.id),
             role_authorized=role_authorized,
             auto_thread_created=auto_threaded_channel is not None,
+            auto_thread_rename_allowed=auto_thread_rename_allowed,
             auto_thread_initial_name=(
                 getattr(auto_threaded_channel, "_hermes_auto_thread_initial_name", None)
                 or self._derive_auto_thread_name(message.content or "")
-            ) if auto_threaded_channel is not None else None,
+            ) if auto_threaded_channel is not None else (
+                existing_thread_name if auto_thread_rename_allowed else None
+            ),
         )
 
         # Build media URLs -- download image attachments to local cache so the

@@ -41,3 +41,13 @@ class TestStreamingConfigNested:
         })
         assert cfg.streaming.enabled is True
         assert cfg.streaming.transport == "edit"
+
+
+def test_discord_auto_rename_threads_bridges_into_platform_extra():
+    from gateway.config import Platform
+
+    cfg = _load_with_yaml_dict({
+        "discord": {"enabled": True, "auto_rename_threads": {"enabled": True}},
+    })
+
+    assert cfg.platforms[Platform.DISCORD].extra["auto_rename_threads"] == {"enabled": True}

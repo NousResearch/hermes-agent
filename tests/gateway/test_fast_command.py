@@ -11,7 +11,7 @@ import yaml
 
 import gateway.run as gateway_run
 from gateway.config import Platform
-from gateway.platforms.base import MessageEvent
+from gateway.platforms.base import MessageEvent, utf16_len
 from gateway.session import SessionSource
 
 
@@ -97,6 +97,19 @@ def _make_discord_auto_thread_source() -> SessionSource:
         parent_chat_id="100",
         auto_thread_created=True,
         auto_thread_initial_name="raw user prompt",
+    )
+
+
+def _make_discord_existing_thread_rename_source() -> SessionSource:
+    return SessionSource(
+        platform=Platform.DISCORD,
+        chat_id="999",
+        chat_type="thread",
+        user_id="user-1",
+        thread_id="999",
+        parent_chat_id="100",
+        auto_thread_rename_allowed=True,
+        auto_thread_initial_name="nova thread",
     )
 
 
@@ -208,8 +221,13 @@ async def test_run_agent_passes_priority_processing_to_gateway_agent(monkeypatch
     assert _CapturingAgent.last_init["request_overrides"] == {"service_tier": "priority"}
 
 
+@pytest.mark.parametrize(
+    "source",
+    [_make_discord_auto_thread_source(), _make_discord_existing_thread_rename_source()],
+    ids=["hermes-created", "opted-in-generic-existing"],
+)
 @pytest.mark.asyncio
-async def test_run_agent_passes_discord_auto_thread_title_callback(monkeypatch, tmp_path):
+async def test_run_agent_passes_discord_thread_title_callback(monkeypatch, tmp_path, source):
     _install_fake_agent(monkeypatch)
     runner = _make_runner()
     runner._session_db = SimpleNamespace(_db=MagicMock())  # type: ignore[assignment]
@@ -234,23 +252,66 @@ async def test_run_agent_passes_discord_auto_thread_title_callback(monkeypatch, 
     import hermes_cli.tools_config as tools_config
     monkeypatch.setattr(tools_config, "_get_platform_tools", lambda user_config, platform_key: {"core"})
 
+    inbound_message = "Investigate recurring parity guard failures"
     with patch("agent.title_generator.maybe_auto_title") as mock_title:
         await runner._run_agent(
-            message="raw user prompt",
+            message=inbound_message,
             context_prompt="",
             history=[],
-            source=_make_discord_auto_thread_source(),
+            source=source,
             session_id="session-1",
             session_key="agent:main:discord:thread:999",
         )
 
     mock_title.assert_called_once()
+    assert mock_title.call_args.args[2] == inbound_message
     callback = mock_title.call_args.kwargs["title_callback"]
     with patch.object(runner, "_schedule_discord_semantic_thread_rename") as mock_schedule:
         callback("Semantic Session Title")
     mock_schedule.assert_called_once()
     assert mock_schedule.call_args.args[1] == "session-1"
     assert mock_schedule.call_args.args[2] == "Semantic Session Title"
+
+
+@pytest.mark.asyncio
+async def test_existing_thread_reuses_durable_session_title(monkeypatch, tmp_path):
+    _install_fake_agent(monkeypatch)
+    runner = _make_runner()
+    title_db = MagicMock()
+    title_db.get_session_title.return_value = "Existing semantic title"
+    runner._session_db = SimpleNamespace(_db=title_db)  # type: ignore[assignment]
+
+    monkeypatch.setattr(gateway_run, "_hermes_home", tmp_path)
+    monkeypatch.setattr(gateway_run, "_env_path", tmp_path / ".env")
+    monkeypatch.setattr(gateway_run, "load_dotenv", lambda *args, **kwargs: None)
+    monkeypatch.setattr(gateway_run, "_load_gateway_config", lambda: {})
+    monkeypatch.setattr(gateway_run, "_load_gateway_runtime_config", lambda: {})
+    monkeypatch.setattr(gateway_run, "_resolve_gateway_model", lambda config=None: "gpt-5.4")
+    monkeypatch.setattr(
+        gateway_run,
+        "_resolve_runtime_agent_kwargs",
+        lambda: {
+            "provider": "openrouter",
+            "api_mode": "chat_completions",
+            "base_url": "https://openrouter.ai/api/v1",
+            "api_key": "***",
+        },
+    )
+    import hermes_cli.tools_config as tools_config
+    monkeypatch.setattr(tools_config, "_get_platform_tools", lambda user_config, platform_key: {"core"})
+
+    with patch.object(runner, "_schedule_discord_semantic_thread_rename") as mock_schedule:
+        await runner._run_agent(
+            message="Investigate recurring parity guard failures",
+            context_prompt="",
+            history=[],
+            source=_make_discord_existing_thread_rename_source(),
+            session_id="session-1",
+            session_key="agent:main:discord:thread:999",
+        )
+
+    mock_schedule.assert_called_once()
+    assert mock_schedule.call_args.args[2] == "Existing semantic title"
 
 
 def test_session_source_preserves_discord_auto_thread_metadata():
@@ -260,3 +321,22 @@ def test_session_source_preserves_discord_auto_thread_metadata():
 
     assert restored.auto_thread_created is True
     assert restored.auto_thread_initial_name == "raw user prompt"
+
+
+def test_existing_thread_rename_source_uses_semantic_title_lane():
+    runner = _make_runner()
+    source = _make_discord_existing_thread_rename_source()
+
+    assert runner._is_discord_auto_thread_lane(source) is True
+    restored = SessionSource.from_dict(source.to_dict())
+    assert restored.auto_thread_rename_allowed is True
+    assert restored.auto_thread_initial_name == "nova thread"
+
+
+def test_discord_thread_title_truncation_is_utf16_safe():
+    runner = _make_runner()
+
+    title = runner._sanitize_discord_thread_title("😀" * 50)
+
+    assert utf16_len(title) <= 80
+    assert title.endswith("...")

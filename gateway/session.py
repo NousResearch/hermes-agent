@@ -182,12 +182,11 @@ class SessionSource:
     # namespacing and the per-turn config/credential scope.
     profile: Optional[str] = None
 
-    # Discord auto-thread metadata.  Newly auto-created Discord threads start
-    # with a fast placeholder title from the raw message, then the gateway can
-    # rename them after the first agent turn using the generated session title.
-    # Keep this explicit so pre-existing or human-renamed threads are not
-    # mistaken for safe rename targets.
+    # Discord semantic-rename provenance. Newly auto-created threads and opted-in
+    # pre-existing generic threads store the exact observed name so a later
+    # semantic rename can refuse to overwrite a human change.
     auto_thread_created: bool = False
+    auto_thread_rename_allowed: bool = False
     auto_thread_initial_name: Optional[str] = None
 
     # Internal, wire-INVISIBLE trust signal: True when this event was delivered
@@ -265,6 +264,8 @@ class SessionSource:
             d["profile"] = self.profile
         if self.auto_thread_created:
             d["auto_thread_created"] = True
+        if self.auto_thread_rename_allowed:
+            d["auto_thread_rename_allowed"] = True
         if self.auto_thread_initial_name:
             d["auto_thread_initial_name"] = self.auto_thread_initial_name
         return d
@@ -289,6 +290,7 @@ class SessionSource:
             message_id=data.get("message_id"),
             profile=data.get("profile"),
             auto_thread_created=bool(data.get("auto_thread_created", False)),
+            auto_thread_rename_allowed=bool(data.get("auto_thread_rename_allowed", False)),
             auto_thread_initial_name=data.get("auto_thread_initial_name"),
         )
     

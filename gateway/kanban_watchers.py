@@ -12,8 +12,8 @@ from __future__ import annotations
 
 import asyncio
 import logging
-import re
 import os
+import re
 import sqlite3
 import time
 from pathlib import Path
@@ -78,6 +78,8 @@ def _resolve_auto_decompose_board_allowlist(
     if not isinstance(kcfg, dict) or "auto_decompose_allowed_boards" not in kcfg:
         return None
     raw = kcfg.get("auto_decompose_allowed_boards")
+    if raw is None:
+        return None
     if not isinstance(raw, list):
         return frozenset()
     allowed: set[str] = set()

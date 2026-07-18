@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import pytest
 
+from hermes_cli.config import DEFAULT_CONFIG
 from gateway.kanban_watchers import (
     _auto_decompose_board_allowed,
     _resolve_auto_decompose_board_allowlist,
@@ -89,6 +90,11 @@ def test_live_toggle_takes_effect_between_calls():
 
 def test_board_allowlist_is_unrestricted_when_key_absent():
     assert _resolve_auto_decompose_board_allowlist(lambda: {"kanban": {}}) is None
+    assert _auto_decompose_board_allowed("household-control-plane-pilot", None)
+
+
+def test_default_config_keeps_auto_decompose_unrestricted():
+    assert _resolve_auto_decompose_board_allowlist(lambda: DEFAULT_CONFIG) is None
     assert _auto_decompose_board_allowed("household-control-plane-pilot", None)
 
 

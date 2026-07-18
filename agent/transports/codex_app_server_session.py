@@ -187,6 +187,17 @@ class _ServerRequestRouting:
 
     auto_approve_exec: bool = False
     auto_approve_apply_patch: bool = False
+    auto_accept_mcp_elicitation_servers: frozenset[str] = frozenset()
+
+
+def _is_safe_confirmation_elicitation(params: dict) -> bool:
+    """Return True only when no user-provided form fields are requested."""
+    if params.get("mode") != "form":
+        return False
+    schema = params.get("requestedSchema")
+    if not isinstance(schema, dict):
+        return False
+    return schema.get("properties") == {} and schema.get("required") in (None, [])
 
 
 class CodexAppServerSession:
@@ -849,12 +860,15 @@ class CodexAppServerSession:
             # behalf of an MCP server (e.g. tool-call confirmation,
             # OAuth, form data). For our own hermes-tools callback we
             # auto-accept — the user already approved Hermes' tools
-            # by enabling the runtime, and we never expose anything
-            # codex's built-in shell can't already do. For other MCP
-            # servers we decline so the user explicitly opts in via
-            # codex's own auth flow.
+            # For explicitly configured third-party servers, only an empty
+            # confirmation form is accepted; URL and data-entry elicitations
+            # remain fail-closed.
             server_name = params.get("serverName") or ""
-            if server_name == "hermes-tools":
+            configured_safe_confirmation = (
+                server_name in self._routing.auto_accept_mcp_elicitation_servers
+                and _is_safe_confirmation_elicitation(params)
+            )
+            if server_name == "hermes-tools" or configured_safe_confirmation:
                 self._client.respond(
                     rid,
                     {"action": "accept", "content": None, "_meta": None},

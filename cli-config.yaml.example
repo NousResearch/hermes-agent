@@ -46,7 +46,18 @@ model:
   # api_key: "your-key-here"  # Uncomment to set here instead of .env
   base_url: "https://openrouter.ai/api/v1"
 
-  # Azure Foundry keyless auth example:
+  # Codex-native runtime (optional)
+  # openai_runtime: "codex_app_server"
+  #
+  # MCP elicitation auto-accept is disabled for third-party servers by default.
+  # Only empty confirmation forms from names listed in the top-level `codex`
+  # block are auto-accepted; OAuth URLs and forms requesting fields still
+  # require explicit user handling.
+  #
+  # Add this at the top level (not under `model`):
+  # codex:
+  #   mcp_elicitation:
+  #     auto_accept_servers: ["obsidian", "deep_research"]
   # provider: "azure-foundry"
   # base_url: "https://<resource>.openai.azure.com/openai/v1"
   # auth_mode: "entra_id"      # DefaultAzureCredential: az login, managed identity, workload identity, etc.

@@ -18,6 +18,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 import run_agent
+from agent.codex_runtime import _configured_mcp_elicitation_servers
 from agent.transports.codex_app_server_session import CodexAppServerSession, TurnResult
 
 
@@ -72,7 +73,40 @@ class TestApiModeAccepted:
         assert agent.api_mode == "codex_app_server"
 
 
+class TestConfiguredMcpElicitationServers:
+    def test_reads_explicit_codex_policy_and_filters_invalid_entries(self):
+        config = {
+            "codex": {
+                "mcp_elicitation": {
+                    "auto_accept_servers": ["obsidian", "", 42, " deep_research "],
+                }
+            }
+        }
+        assert _configured_mcp_elicitation_servers(config) == frozenset(
+            {"obsidian", "deep_research"}
+        )
+
+    @pytest.mark.parametrize("raw", ["obsidian", {"obsidian": True}, 7, None])
+    def test_malformed_policy_fails_closed(self, raw):
+        config = {
+            "codex": {"mcp_elicitation": {"auto_accept_servers": raw}}
+        }
+        assert _configured_mcp_elicitation_servers(config) == frozenset()
+
+
 class TestRunConversationCodexPath:
+    def test_codex_app_server_policy_is_passed_to_session(self, fake_session, monkeypatch):
+        monkeypatch.setattr(
+            "agent.codex_runtime._configured_mcp_elicitation_servers",
+            lambda: frozenset({"obsidian"}),
+        )
+        agent = _make_codex_agent()
+        with patch.object(agent, "_spawn_background_review", return_value=None):
+            agent.run_conversation("hello")
+        assert agent._codex_session._routing.auto_accept_mcp_elicitation_servers == frozenset(
+            {"obsidian"}
+        )
+
     def test_run_conversation_returns_codex_shape(self, fake_session):
         agent = _make_codex_agent()
         # No background review fork during tests

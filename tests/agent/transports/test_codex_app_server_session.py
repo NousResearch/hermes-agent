@@ -739,6 +739,67 @@ class TestServerRequestRouting:
         s.run_turn("hi", turn_timeout=1.0)
         assert ("elic-2", {"action": "decline", "content": None, "_meta": None}) in client.responses
 
+    def test_configured_mcp_confirmation_auto_accepts(self):
+        client = FakeClient()
+        client.queue_server_request(
+            "mcpServer/elicitation/request", request_id="elic-safe",
+            threadId="t", turnId="tu1", serverName="obsidian",
+            mode="form", message="confirm",
+            requestedSchema={"type": "object", "properties": {}},
+        )
+        client.queue_notification(
+            "turn/completed", threadId="t",
+            turn={"id": "tu1", "status": "completed", "error": None},
+        )
+        routing = _ServerRequestRouting(
+            auto_accept_mcp_elicitation_servers=frozenset({"obsidian"})
+        )
+        make_session(client, request_routing=routing).run_turn("hi", turn_timeout=1.0)
+        assert ("elic-safe", {
+            "action": "accept", "content": None, "_meta": None
+        }) in client.responses
+
+    @pytest.mark.parametrize(
+        "params",
+        [
+            {
+                "serverName": "obsidian",
+                "mode": "url",
+                "url": "https://example.com/oauth",
+            },
+            {
+                "serverName": "obsidian",
+                "mode": "form",
+                "requestedSchema": {
+                    "type": "object",
+                    "properties": {"secret": {"type": "string"}},
+                },
+            },
+            {
+                "serverName": "not-configured",
+                "mode": "form",
+                "requestedSchema": {"type": "object", "properties": {}},
+            },
+        ],
+    )
+    def test_mcp_auto_accept_policy_declines_unsafe_or_unknown_requests(self, params):
+        client = FakeClient()
+        client.queue_server_request(
+            "mcpServer/elicitation/request", request_id="elic-decline",
+            threadId="t", turnId="tu1", **params,
+        )
+        client.queue_notification(
+            "turn/completed", threadId="t",
+            turn={"id": "tu1", "status": "completed", "error": None},
+        )
+        routing = _ServerRequestRouting(
+            auto_accept_mcp_elicitation_servers=frozenset({"obsidian"})
+        )
+        make_session(client, request_routing=routing).run_turn("hi", turn_timeout=1.0)
+        assert ("elic-decline", {
+            "action": "decline", "content": None, "_meta": None
+        }) in client.responses
+
     def test_routing_auto_approve_bypass(self):
         client = FakeClient()
         client.queue_server_request("item/commandExecution/requestApproval", request_id="r1",

@@ -91,9 +91,12 @@ class TestCodexItemToToolName:
             {"type": "mcpToolCall", "server": "hermes-tools", "tool": "browser_navigate"}
         ) == "browser_navigate"
 
-    def test_web_search_builtin_maps_to_web_search(self):
-        """Codex's built-in webSearch tool gets a bubble too (#26541)."""
-        assert _codex_item_to_tool_name({"type": "webSearch"}) == "web_search"
+    def test_web_search_builtin_has_codex_provenance(self):
+        """Codex's built-in search is distinct from Hermes web_search."""
+        assert (
+            _codex_item_to_tool_name({"type": "webSearch"})
+            == "codex_web_search"
+        )
 
     def test_unknown_type_returns_type_string(self):
         assert _codex_item_to_tool_name(
@@ -398,12 +401,18 @@ class TestToolProgressDispatch:
             "type": "webSearch",
             "id": "ws-1",
             "query": "hermes agent docs",
+            "status": "completed",
         }))
         calls = agent.tool_progress_callback.call_args_list
         assert [c.args[0] for c in calls] == ["tool.started", "tool.completed"]
-        assert calls[0].args[1] == "web_search"
+        assert calls[0].args[1] == "codex_web_search"
         assert calls[0].args[2] == "hermes agent docs"
         assert calls[0].args[3] == {"query": "hermes agent docs"}
+        assert json.loads(calls[1].kwargs["result"]) == {
+            "provider": "codex",
+            "status": "completed",
+        }
+        assert calls[1].kwargs["is_error"] is False
 
     def test_duration_falls_back_to_wall_time_when_codex_missing_ms(self):
         agent = _make_stub_agent()

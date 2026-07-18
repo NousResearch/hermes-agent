@@ -2126,10 +2126,11 @@ def cleanup_task_resources(agent, task_id: str) -> None:
     torn down per-turn as before to prevent resource leakage (the original
     intent of this hook for the Morph backend, see commit fbd3a2fd).
 
-    Skips ``cleanup_browser`` in headed mode so the browser window stays
-    visible between turns. The inactivity reaper in
-    ``browser_tool._cleanup_inactive_browser_sessions`` still handles
-    idle sessions.
+    In headed mode, asks browser cleanup to preserve only local visible Chrome
+    sessions. Cloud/CDP and Camofox sessions are still released per turn so
+    remote paid resources cannot leak. The inactivity reaper in
+    ``browser_tool._cleanup_inactive_browser_sessions`` handles preserved local
+    sessions.
     """
     try:
         if is_persistent_env(task_id):
@@ -2149,12 +2150,16 @@ def cleanup_task_resources(agent, task_id: str) -> None:
             from tools.browser_tool import _is_headed_mode
             headed = _is_headed_mode()
         except Exception:
-            headed = bool(os.environ.get("AGENT_BROWSER_HEADED"))
+            headed = (
+                os.environ.get("AGENT_BROWSER_HEADED", "").strip().lower()
+                in {"true", "1", "yes"}
+            )
         if headed:
+            _ra().cleanup_browser(task_id, preserve_local_headed=True)
             if agent.verbose_logging:
                 logging.debug(
-                    f"Skipping per-turn cleanup_browser for headed session {task_id}; "
-                    f"idle reaper will handle it."
+                    f"Preserved local headed browser session for {task_id}; "
+                    f"cloud/CDP sessions were cleaned."
                 )
         else:
             _ra().cleanup_browser(task_id)

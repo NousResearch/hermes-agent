@@ -77,7 +77,10 @@ describe('DialogContent close button', () => {
   it('shows the tooltip on focus (Radix opens on focus as well as hover; jsdom cannot reliably simulate real pointer hover)', async () => {
     render(
       <Dialog open>
-        <DialogContent>
+        {/* No input here, so without this opt-out Radix's real autofocus would
+            land on the close button on mount and race with the manual
+            fireEvent.focus below (same reason updates-overlay.tsx opts out). */}
+        <DialogContent onOpenAutoFocus={preventCloseButtonAutoFocus}>
           <DialogTitle>Test dialog</DialogTitle>
         </DialogContent>
       </Dialog>

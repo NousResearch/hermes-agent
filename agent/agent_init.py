@@ -1027,8 +1027,9 @@ def init_agent(
                         or getattr(_routed_client, "_acp_args", None)
                         or []
                     )
-                    if agent.acp_cwd:
-                        client_kwargs["acp_cwd"] = agent.acp_cwd
+                    routed_acp_cwd = getattr(_routed_client, "_acp_cwd", None)
+                    if agent.acp_cwd or routed_acp_cwd:
+                        client_kwargs["acp_cwd"] = agent.acp_cwd or routed_acp_cwd
                 # Preserve provider-specific headers the router set.  The
                 # OpenAI SDK stores caller-provided default_headers in
                 # _custom_headers; older/mocked clients may expose

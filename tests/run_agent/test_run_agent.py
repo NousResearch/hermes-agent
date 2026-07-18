@@ -7064,6 +7064,7 @@ def test_aiagent_routed_copilot_acp_forwards_acp_cwd():
         routed_client.base_url = "acp://copilot"
         routed_client._acp_command = "ssh"
         routed_client._acp_args = ["remote", "copilot", "--acp", "--stdio"]
+        routed_client._acp_cwd = "/runtime/project"
         mock_resolve.return_value = (routed_client, "claude-sonnet-4")
         acp_client = MagicMock()
         mock_acp_client.return_value = acp_client
@@ -7071,7 +7072,6 @@ def test_aiagent_routed_copilot_acp_forwards_acp_cwd():
         agent = AIAgent(
             model="claude-sonnet-4",
             provider="copilot-acp",
-            acp_cwd="/tmp",
             quiet_mode=True,
             skip_context_files=True,
             skip_memory=True,
@@ -7089,7 +7089,7 @@ def test_aiagent_routed_copilot_acp_forwards_acp_cwd():
         "--acp",
         "--stdio",
     ]
-    assert mock_acp_client.call_args.kwargs["acp_cwd"] == "/tmp"
+    assert mock_acp_client.call_args.kwargs["acp_cwd"] == "/runtime/project"
 
 
 def test_quiet_spinner_allowed_with_explicit_print_fn(agent):

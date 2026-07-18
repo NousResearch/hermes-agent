@@ -47,6 +47,10 @@ def _make_mock_parent(depth=0):
     parent.api_mode = "chat_completions"
     parent.model = "anthropic/claude-sonnet-4"
     parent.platform = "cli"
+    parent.acp_cwd = None
+    parent.session_cwd = None
+    parent.terminal_cwd = None
+    parent.cwd = None
     parent.providers_allowed = None
     parent.providers_ignored = None
     parent.providers_order = None
@@ -80,12 +84,13 @@ class TestDelegateRequirements(unittest.TestCase):
         # config-authoritative via delegation.max_iterations so users get
         # predictable budgets.
         self.assertNotIn("max_iterations", props)
-        # ACP subprocess transport is operator-controlled via config.yaml, not
-        # model-controlled via delegate_task arguments.
         self.assertNotIn("acp_command", props)
         self.assertNotIn("acp_args", props)
-        self.assertNotIn("acp_command", props["tasks"]["items"]["properties"])
-        self.assertNotIn("acp_args", props["tasks"]["items"]["properties"])
+        self.assertNotIn("acp_cwd", props)
+        task_props = props["tasks"]["items"]["properties"]
+        self.assertNotIn("acp_command", task_props)
+        self.assertNotIn("acp_args", task_props)
+        self.assertNotIn("acp_cwd", task_props)
         self.assertNotIn("maxItems", props["tasks"])  # removed — limit is now runtime-configurable
 
     def test_schema_description_advertises_runtime_limits(self):
@@ -412,6 +417,30 @@ class TestDelegateTask(unittest.TestCase):
             self.assertEqual(kwargs["api_key"], parent.api_key)
             self.assertEqual(kwargs["provider"], parent.provider)
             self.assertEqual(kwargs["api_mode"], parent.api_mode)
+
+    def test_child_inherits_parent_session_cwd_for_acp_runtime(self):
+        parent = _make_mock_parent(depth=0)
+        parent.session_cwd = "/remote/project"
+
+        with patch("run_agent.AIAgent") as MockAgent:
+            mock_child = MagicMock()
+            MockAgent.return_value = mock_child
+
+            _build_child_agent(
+                task_index=0,
+                goal="ACP cwd",
+                context=None,
+                toolsets=None,
+                model=None,
+                max_iterations=10,
+                parent_agent=parent,
+                task_count=1,
+                override_acp_command="ssh",
+                override_acp_args=["remote", "copilot", "--acp", "--stdio"],
+            )
+
+            _, kwargs = MockAgent.call_args
+            self.assertEqual(kwargs["acp_cwd"], "/remote/project")
 
     def test_child_inherits_parent_print_fn(self):
         parent = _make_mock_parent(depth=0)
@@ -1728,43 +1757,6 @@ class TestDelegationProviderIntegration(unittest.TestCase):
 
     @patch("tools.delegate_tool._load_config")
     @patch("tools.delegate_tool._resolve_delegation_credentials")
-    def test_delegation_acp_cwd_override_reaches_child_agent(self, mock_creds, mock_cfg):
-        """Top-level and per-task ACP cwd overrides must reach child agents."""
-        mock_cfg.return_value = {"max_iterations": 45}
-        mock_creds.return_value = {
-            "provider": None,
-            "base_url": None,
-            "api_key": None,
-            "api_mode": None,
-            "model": None,
-        }
-        parent = _make_mock_parent(depth=0)
-
-        with patch("tools.delegate_tool._build_child_agent") as mock_build, \
-             patch("tools.delegate_tool._run_single_child") as mock_run:
-            mock_child = MagicMock()
-            mock_build.return_value = mock_child
-            mock_run.return_value = {
-                "task_index": 0, "status": "completed",
-                "summary": "Done", "api_calls": 1, "duration_seconds": 1.0
-            }
-
-            delegate_task(
-                acp_command="ssh",
-                acp_args=["remote", "copilot", "--acp", "--stdio"],
-                acp_cwd="/remote/default",
-                tasks=[
-                    {"goal": "Task A"},
-                    {"goal": "Task B", "acp_cwd": "/remote/task-b"},
-                ],
-                parent_agent=parent,
-            )
-
-            self.assertEqual(mock_build.call_args_list[0].kwargs["override_acp_cwd"], "/remote/default")
-            self.assertEqual(mock_build.call_args_list[1].kwargs["override_acp_cwd"], "/remote/task-b")
-
-    @patch("tools.delegate_tool._load_config")
-    @patch("tools.delegate_tool._resolve_delegation_credentials")
     def test_model_only_no_provider_inherits_parent_credentials(self, mock_creds, mock_cfg):
         """Setting only model (no provider) changes model but keeps parent credentials."""
         mock_cfg.return_value = {
@@ -2333,8 +2325,8 @@ class TestDelegationReasoningEffort(unittest.TestCase):
 class TestDispatchDelegateTask(unittest.TestCase):
     """Tests for the _dispatch_delegate_task helper and full param forwarding."""
 
-    def test_model_acp_args_not_forwarded(self):
-        """The live model dispatch path strips hidden ACP transport args."""
+    def test_model_acp_transport_fields_not_forwarded(self):
+        """The live model dispatch path strips hidden ACP transport/cwd args."""
         import run_agent
 
         captured = {}
@@ -2351,11 +2343,13 @@ class TestDispatchDelegateTask(unittest.TestCase):
                     "goal": "test",
                     "acp_command": "claude",
                     "acp_args": ["--acp", "--stdio"],
+                    "acp_cwd": "/remote/project",
                     "tasks": [
                         {
                             "goal": "nested",
                             "acp_command": "codex",
                             "acp_args": ["--acp"],
+                            "acp_cwd": "/other/project",
                         },
                     ],
                 },
@@ -2363,9 +2357,11 @@ class TestDispatchDelegateTask(unittest.TestCase):
 
         self.assertNotIn("acp_command", captured)
         self.assertNotIn("acp_args", captured)
+        self.assertNotIn("acp_cwd", captured)
         self.assertEqual(captured["goal"], "test")
         self.assertNotIn("acp_command", captured["tasks"][0])
         self.assertNotIn("acp_args", captured["tasks"][0])
+        self.assertNotIn("acp_cwd", captured["tasks"][0])
 
 class TestDelegateEventEnum(unittest.TestCase):
     """Tests for DelegateEvent enum and back-compat aliases."""
@@ -2719,15 +2715,14 @@ class TestOrchestratorRoleSchema(unittest.TestCase):
         self.assertIn("role", task_props)
         self.assertEqual(task_props["role"]["enum"], ["leaf", "orchestrator"])
 
-    def test_schema_omits_acp_transport_fields(self):
+    def test_acp_transport_fields_are_not_model_facing(self):
+        # ACP transport/cwd are operator/runtime state, not model-call args.
         from tools.delegate_tool import DELEGATE_TASK_SCHEMA
         props = DELEGATE_TASK_SCHEMA["parameters"]["properties"]
-
         task_props = props["tasks"]["items"]["properties"]
-        self.assertNotIn("acp_command", props)
-        self.assertNotIn("acp_args", props)
-        self.assertNotIn("acp_command", task_props)
-        self.assertNotIn("acp_args", task_props)
+        for field in ("acp_command", "acp_args", "acp_cwd"):
+            self.assertNotIn(field, props)
+            self.assertNotIn(field, task_props)
 
 
 # Sentinel used to distinguish "role kwarg omitted" from "role=None".

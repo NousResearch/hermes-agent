@@ -724,6 +724,30 @@ class TestRuntimeProviderResolution:
         assert result["command"] == "/usr/local/bin/copilot"
         assert result["args"] == ["--acp", "--stdio", "--debug"]
 
+    def test_runtime_copilot_acp_preserves_trusted_cwd(self, monkeypatch):
+        def fake_credentials(provider):
+            assert provider == "copilot-acp"
+            return {
+                "api_key": "copilot-acp",
+                "base_url": "acp://copilot",
+                "command": "ssh",
+                "args": ["remote", "copilot", "--acp", "--stdio"],
+                "cwd": "/remote/project",
+                "source": "process",
+            }
+
+        monkeypatch.setattr(
+            "hermes_cli.runtime_provider.resolve_external_process_provider_credentials",
+            fake_credentials,
+        )
+
+        from hermes_cli.runtime_provider import resolve_runtime_provider
+
+        result = resolve_runtime_provider(requested="copilot-acp")
+
+        assert result["provider"] == "copilot-acp"
+        assert result["cwd"] == "/remote/project"
+
 
 # =============================================================================
 # _has_any_provider_configured tests

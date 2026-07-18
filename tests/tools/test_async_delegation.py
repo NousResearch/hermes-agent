@@ -675,12 +675,23 @@ def test_run_agent_dispatch_forces_background():
                 "acp_command": "ssh",
                 "acp_args": ["remote", "copilot", "--acp", "--stdio"],
                 "acp_cwd": "/remote/project",
+                "tasks": [
+                    {
+                        "goal": "nested",
+                        "acp_command": "ssh",
+                        "acp_args": ["remote"],
+                        "acp_cwd": "/remote/nested",
+                    }
+                ],
             },
         )
         assert captured["background"] is True
-        assert captured["acp_command"] == "ssh"
-        assert captured["acp_args"] == ["remote", "copilot", "--acp", "--stdio"]
-        assert captured["acp_cwd"] == "/remote/project"
+        assert "acp_command" not in captured
+        assert "acp_args" not in captured
+        assert "acp_cwd" not in captured
+        assert "acp_command" not in captured["tasks"][0]
+        assert "acp_args" not in captured["tasks"][0]
+        assert "acp_cwd" not in captured["tasks"][0]
 
         run_agent.AIAgent._dispatch_delegate_task(
             agent, {"tasks": [{"goal": "a"}, {"goal": "b"}]}
@@ -882,4 +893,3 @@ def test_gateway_cli_origin_event_left_unrouted():
     evt = _make_async_evt(session_key="")
     runner._enrich_async_delegation_routing(evt)
     assert "platform" not in evt
-

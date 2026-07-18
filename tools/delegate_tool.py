@@ -764,6 +764,27 @@ def _resolve_workspace_hint(parent_agent) -> Optional[str]:
     return None
 
 
+def _resolve_inherited_acp_cwd(parent_agent) -> Optional[str]:
+    """Trusted parent/session cwd for ACP child sessions.
+
+    Unlike prompt workspace hints, ACP cwd may be a remote path that does not
+    exist on the local host (for example an SSH-backed Copilot ACP runtime), so
+    preserve non-empty runtime state literally.
+    """
+    candidates = [
+        getattr(parent_agent, "acp_cwd", None),
+        getattr(parent_agent, "session_cwd", None),
+        getattr(parent_agent, "terminal_cwd", None),
+        getattr(parent_agent, "cwd", None),
+        os.getenv("TERMINAL_CWD"),
+    ]
+    for candidate in candidates:
+        text = str(candidate or "").strip()
+        if text and text not in {".", "auto", "cwd"}:
+            return text
+    return None
+
+
 def _strip_blocked_tools(toolsets: List[str]) -> List[str]:
     """Remove toolsets that contain only blocked tools.
 
@@ -1061,6 +1082,7 @@ def _build_child_agent(
     # ACP transport overrides from trusted delegation config.
     override_acp_command: Optional[str] = None,
     override_acp_args: Optional[List[str]] = None,
+    # ACP session cwd override from trusted runtime/provider config only.
     override_acp_cwd: Optional[str] = None,
     # Per-call role controlling whether the child can further delegate.
     # 'leaf' (default) cannot; 'orchestrator' retains the delegation
@@ -1238,7 +1260,7 @@ def _build_child_agent(
         if override_acp_args is not None
         else (getattr(parent_agent, "acp_args", []) or [])
     )
-    effective_acp_cwd = override_acp_cwd or getattr(parent_agent, "acp_cwd", None)
+    effective_acp_cwd = override_acp_cwd or _resolve_inherited_acp_cwd(parent_agent)
 
     # When override_provider is set (e.g. delegation.provider: minimax-cn),
     # the subagent must use direct API calls — not the parent's ACP transport.
@@ -3510,7 +3532,7 @@ def _model_background_value(args: dict, parent_agent=None) -> bool:
     return not is_subagent
 
 
-_MODEL_HIDDEN_TASK_FIELDS = {"acp_command", "acp_args"}
+_MODEL_HIDDEN_TASK_FIELDS = {"acp_command", "acp_args", "acp_cwd"}
 
 
 def _strip_model_hidden_task_fields(tasks: Any) -> Any:

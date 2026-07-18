@@ -31,6 +31,20 @@ from gateway.whatsapp_identity import (
 class GatewayAuthorizationMixin:
     """User/chat authorization methods for ``GatewayRunner``."""
 
+    @staticmethod
+    def _is_slack_one_to_one_dm(source: SessionSource) -> bool:
+        """Return True for Slack 1:1 IMs, but not MPIM/group-DM channels."""
+        if source.platform != Platform.SLACK:
+            return False
+        chat_type = str(source.chat_type or "").strip().lower()
+        if chat_type == "im":
+            return True
+        if chat_type != "dm":
+            return False
+        # Slack 1:1 IM channel IDs start with D. MPIM/group-DM IDs start with G,
+        # but the adapter still uses chat_type="dm" for session continuity.
+        return str(source.chat_id or "").startswith("D")
+
     def _authorization_adapter(
         self,
         platform: Optional[Platform],
@@ -382,6 +396,9 @@ class GatewayAuthorizationMixin:
             Platform.QQBOT: "QQ_ALLOWED_USERS",
             Platform.YUANBAO: "YUANBAO_ALLOWED_USERS",
         }
+        platform_dm_user_env_map = {
+            Platform.SLACK: "SLACK_DM_ALLOWED_USERS",
+        }
         platform_group_user_env_map = {
             Platform.TELEGRAM: "TELEGRAM_GROUP_ALLOWED_USERS",
         }
@@ -418,6 +435,8 @@ class GatewayAuthorizationMixin:
                 if entry:
                     if entry.allowed_users_env:
                         platform_env_map[source.platform] = entry.allowed_users_env
+                    if getattr(entry, "dm_allowed_users_env", ""):
+                        platform_dm_user_env_map[source.platform] = entry.dm_allowed_users_env
                     if entry.allow_all_env:
                         platform_allow_all_map[source.platform] = entry.allow_all_env
             except Exception:
@@ -457,12 +476,24 @@ class GatewayAuthorizationMixin:
 
         # Check platform-specific and global allowlists
         platform_allowlist = os.getenv(platform_env_map.get(source.platform, ""), "").strip()
+        dm_user_allowlist = ""
+        if self._is_slack_one_to_one_dm(source):
+            dm_user_allowlist = os.getenv(
+                platform_dm_user_env_map.get(source.platform, ""),
+                "",
+            ).strip()
+            if dm_user_allowlist:
+                # A non-empty Slack DM allowlist is deliberately stricter than
+                # SLACK_ALLOWED_USERS / GATEWAY_ALLOWED_USERS. It gates only
+                # 1:1 IMs; channels, threads, and MPIMs keep the platform-wide
+                # allowlist behavior below.
+                platform_allowlist = dm_user_allowlist
         group_user_allowlist = ""
         group_chat_allowlist = ""
         if source.chat_type in {"group", "forum"}:
             group_user_allowlist = os.getenv(platform_group_user_env_map.get(source.platform, ""), "").strip()
             group_chat_allowlist = os.getenv(platform_group_chat_env_map.get(source.platform, ""), "").strip()
-        global_allowlist = os.getenv("GATEWAY_ALLOWED_USERS", "").strip()
+        global_allowlist = "" if dm_user_allowlist else os.getenv("GATEWAY_ALLOWED_USERS", "").strip()
 
         if not platform_allowlist and not group_user_allowlist and not group_chat_allowlist and not global_allowlist:
             # No env allowlist configured. Adapters that own their own
@@ -699,6 +730,8 @@ class GatewayAuthorizationMixin:
                 Platform.QQBOT: ("QQ_GROUP_ALLOWED_USERS",),
             }
             if os.getenv(platform_env_map.get(platform, ""), "").strip():
+                return "ignore"
+            if platform == Platform.SLACK and os.getenv("SLACK_DM_ALLOWED_USERS", "").strip():
                 return "ignore"
             for env_key in platform_group_env_map.get(platform, ()):
                 if os.getenv(env_key, "").strip():

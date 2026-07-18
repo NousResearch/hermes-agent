@@ -2344,6 +2344,7 @@ DEFAULT_CONFIG = {
         "require_mention": True,       # Require @mention to respond in channels
         "free_response_channels": "",  # Comma-separated channel IDs where bot responds without mention
         "allowed_channels": "",        # If set, bot ONLY responds in these channel IDs (whitelist)
+        "dm_allowed_users": "",        # If set, stricter Slack 1:1-DM user allowlist
         "channel_prompts": {},         # Per-channel ephemeral system prompts
     },
 
@@ -4052,6 +4053,14 @@ OPTIONAL_ENV_VARS = {
         "description": "Comma-separated Slack member IDs allowed to use Hermes, e.g. U01ABC2DEF3. Without this, Slack may connect but deny messages by default.",
         "prompt": "Allowed Slack member IDs",
         "help": "In Slack, open your profile, choose More or the three-dot menu, then Copy member ID. Add multiple IDs comma-separated.",
+        "url": "https://api.slack.com/apps",
+        "password": False,
+        "category": "messaging",
+    },
+    "SLACK_DM_ALLOWED_USERS": {
+        "description": "Comma-separated Slack member IDs allowed to use Hermes in 1:1 DMs. When set, this is stricter than SLACK_ALLOWED_USERS for DMs only; channels and threads still use SLACK_ALLOWED_USERS.",
+        "prompt": "Allowed Slack DM member IDs",
+        "help": "Use Slack member IDs (e.g. U01ABC2DEF3). Leave unset to let 1:1 DMs fall back to SLACK_ALLOWED_USERS.",
         "url": "https://api.slack.com/apps",
         "password": False,
         "category": "messaging",

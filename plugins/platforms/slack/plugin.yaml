@@ -25,6 +25,10 @@ optional_env:
     description: "Comma-separated Slack member IDs allowed to talk to the bot"
     prompt: "Allowed users (comma-separated)"
     password: false
+  - name: SLACK_DM_ALLOWED_USERS
+    description: "Comma-separated Slack member IDs allowed to talk to the bot in 1:1 DMs"
+    prompt: "Allowed 1:1 DM users (comma-separated)"
+    password: false
   - name: SLACK_ALLOW_ALL_USERS
     description: "Allow any Slack user to trigger the bot (dev only)"
     prompt: "Allow all users? (true/false)"

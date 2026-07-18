@@ -86,6 +86,9 @@ class PlatformEntry:
     # ── Auth env var names (for _is_user_authorized integration) ──
     # E.g. "IRC_ALLOWED_USERS" — checked for comma-separated user IDs.
     allowed_users_env: str = ""
+    # Optional 1:1-DM-scoped allowlist env var. Most platforms leave this
+    # empty; Slack uses it to restrict direct IMs more tightly than channels.
+    dm_allowed_users_env: str = ""
     # E.g. "IRC_ALLOW_ALL_USERS" — if truthy, all users authorized.
     allow_all_env: str = ""
 

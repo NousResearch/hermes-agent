@@ -4516,6 +4516,11 @@ def _apply_yaml_config(yaml_cfg: dict, slack_cfg: dict) -> dict | None:
         if isinstance(ac, list):
             ac = ",".join(str(v) for v in ac)
         os.environ["SLACK_ALLOWED_CHANNELS"] = str(ac)
+    dm_allowed = slack_cfg.get("dm_allowed_users")
+    if dm_allowed is not None and not os.getenv("SLACK_DM_ALLOWED_USERS"):
+        if isinstance(dm_allowed, list):
+            dm_allowed = ",".join(str(v) for v in dm_allowed)
+        os.environ["SLACK_DM_ALLOWED_USERS"] = str(dm_allowed)
     return None  # all settings flow through env; nothing to merge into extras
 
 
@@ -4558,6 +4563,7 @@ def register(ctx) -> None:
         apply_yaml_config_fn=_apply_yaml_config,
         # Auth env vars for _is_user_authorized() integration
         allowed_users_env="SLACK_ALLOWED_USERS",
+        dm_allowed_users_env="SLACK_DM_ALLOWED_USERS",
         allow_all_env="SLACK_ALLOW_ALL_USERS",
         # Cron home-channel delivery
         cron_deliver_env_var="SLACK_HOME_CHANNEL",

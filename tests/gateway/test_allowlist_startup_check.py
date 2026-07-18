@@ -9,7 +9,7 @@ def _would_warn():
     _any_allowlist = any(
         os.getenv(v)
         for v in ("TELEGRAM_ALLOWED_USERS", "DISCORD_ALLOWED_USERS",
-                   "WHATSAPP_ALLOWED_USERS", "SLACK_ALLOWED_USERS",
+                   "WHATSAPP_ALLOWED_USERS", "SLACK_ALLOWED_USERS", "SLACK_DM_ALLOWED_USERS",
                    "SIGNAL_ALLOWED_USERS", "SIGNAL_GROUP_ALLOWED_USERS",
                    "EMAIL_ALLOWED_USERS",
                    "SMS_ALLOWED_USERS", "MATTERMOST_ALLOWED_USERS",
@@ -35,6 +35,10 @@ class TestAllowlistStartupCheck:
 
     def test_signal_group_allowed_users_suppresses_warning(self):
         with patch.dict(os.environ, {"SIGNAL_GROUP_ALLOWED_USERS": "user1"}, clear=True):
+            assert _would_warn() is False
+
+    def test_slack_dm_allowed_users_suppresses_warning(self):
+        with patch.dict(os.environ, {"SLACK_DM_ALLOWED_USERS": "U123"}, clear=True):
             assert _would_warn() is False
 
     def test_telegram_allow_all_users_suppresses_warning(self):

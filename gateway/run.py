@@ -6699,7 +6699,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         _builtin_allowed_vars = (
             "TELEGRAM_ALLOWED_USERS", "DISCORD_ALLOWED_USERS",
             "WHATSAPP_ALLOWED_USERS", "WHATSAPP_CLOUD_ALLOWED_USERS",
-            "SLACK_ALLOWED_USERS",
+            "SLACK_ALLOWED_USERS", "SLACK_DM_ALLOWED_USERS",
             "SIGNAL_ALLOWED_USERS", "SIGNAL_GROUP_ALLOWED_USERS",
             "TELEGRAM_GROUP_ALLOWED_USERS",
             "TELEGRAM_GROUP_ALLOWED_CHATS",
@@ -6738,8 +6738,10 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         try:
             from gateway.platform_registry import platform_registry
             _plugin_allowed_vars = tuple(
-                e.allowed_users_env for e in platform_registry.plugin_entries()
-                if e.allowed_users_env
+                env_key
+                for e in platform_registry.plugin_entries()
+                for env_key in (e.allowed_users_env, getattr(e, "dm_allowed_users_env", ""))
+                if env_key
             )
             _plugin_allow_all_vars = tuple(
                 e.allow_all_env for e in platform_registry.plugin_entries()

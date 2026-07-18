@@ -48,6 +48,7 @@ from hermes_cli.config import (
     get_config_path,
     read_raw_config,
     require_readable_config_before_write,
+    _refuse_write_if_unparsable,
 )
 from hermes_constants import OPENROUTER_BASE_URL, secure_parent_dir
 from agent.credential_persistence import sanitize_borrowed_credential_payload
@@ -6660,6 +6661,8 @@ def _update_config_for_provider(
     config_path = get_config_path()
     config_path.parent.mkdir(parents=True, exist_ok=True)
     require_readable_config_before_write(config_path)
+    if _refuse_write_if_unparsable(config_path, label="set provider config"):
+        return config_path
 
     config = read_raw_config()
 

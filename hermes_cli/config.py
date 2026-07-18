@@ -7014,6 +7014,51 @@ def require_readable_config_before_write(config_path: Optional[Path] = None) -> 
         ) from exc
 
 
+def _refuse_write_if_unparsable(config_path: Path, label: str = "write config") -> bool:
+    """Return True if a config write must be refused because the existing file is
+    present, non-empty, and either fails to parse OR is not a YAML mapping.
+
+    Both conditions would let ``read_raw_config()`` silently collapse the file
+    to ``{}`` — a parse exception returns ``{}`` (line ~6982), and a ``[]``/scalar
+    root is coerced to ``{}`` at the same spot — causing ``save_config`` /
+    ``set_config_value`` to wipe every non-default section on the next write. A
+    genuinely valid empty ``{}`` config parses cleanly and is allowed through.
+
+    *label* customises the refusal log line so each caller (save_config,
+    set_config_value, the auth provider writer) can be matched by its own test.
+
+    This is the single shared chokepoint for the parse-guard bug class: used by
+    ``save_config``, ``set_config_value``, and the auth provider writer so the
+    guard cannot be skipped by routing the write through a different entry point.
+    """
+    try:
+        _existing_size = config_path.stat().st_size
+    except OSError:
+        _existing_size = 0
+    if _existing_size == 0:
+        return False  # new or empty file — nothing to clobber; allow write
+    try:
+        with open(config_path, encoding="utf-8") as _guard_f:
+            _parsed = fast_safe_load(_guard_f)
+    except Exception as _exc:
+        logger.warning(
+            "Refusing to %s: %s is non-empty (%d bytes) but failed to "
+            "parse (%s). Writing now would wipe all non-default sections. Fix the "
+            "YAML or retry.",
+            label, config_path, _existing_size, _exc,
+        )
+        return True
+    if not isinstance(_parsed, dict):
+        logger.warning(
+            "Refusing to %s: %s is non-empty (%d bytes) but its root is a "
+            "%s, not a mapping. Writing now would overwrite it with a mapping and "
+            "lose the existing content. Fix the YAML or retry.",
+            label, config_path, _existing_size, type(_parsed).__name__,
+        )
+        return True
+    return False
+
+
 def atomic_config_write(config_path: Path, data: Any, **kwargs: Any) -> None:
     """Fail-closed atomic write for ``config.yaml``.
 
@@ -7465,6 +7510,13 @@ def save_config(
         ensure_hermes_home()
         config_path = get_config_path()
         require_readable_config_before_write(config_path)
+        # ---- Parse guard: refuse write if existing file is unparseable ----
+        # Shared chokepoint for the config-write safety class. A valid empty {}
+        # config passes through; a parse failure OR a non-mapping root (list/
+        # scalar) is refused because read_raw_config() would otherwise collapse
+        # it to {} and wipe every non-default section.
+        if _refuse_write_if_unparsable(config_path, label="save config"):
+            return
         # Compute explicit user paths BEFORE any normalisation --------
         # _normalize_max_turns_config may inject agent.max_turns from
         # DEFAULT_CONFIG; using the raw dict preserves which paths the
@@ -8454,6 +8506,9 @@ def set_config_value(key: str, value: str):
     # dumping all default values back to the file
     config_path = get_config_path()
     require_readable_config_before_write(config_path)
+    # ---- Parse guard (shared chokepoint, same as save_config) ----
+    if _refuse_write_if_unparsable(config_path, label="set config value"):
+        return
     user_config = {}
     if config_path.exists():
         try:

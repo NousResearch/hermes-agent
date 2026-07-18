@@ -30,7 +30,10 @@ import { DEFAULT_THEME } from '../theme.js'
 const t = DEFAULT_THEME
 
 /** Mount a SubscriptionOverlay via renderSync + PassThrough. */
-function mount(overlay: SubscriptionOverlayState, onPatch: (next: Partial<SubscriptionOverlayState>) => void = () => {}) {
+function mount(
+  overlay: SubscriptionOverlayState,
+  onPatch: (next: Partial<SubscriptionOverlayState>) => void = () => {}
+) {
   const stdout = new PassThrough()
   const stdin = new PassThrough()
   const stderr = new PassThrough()
@@ -46,15 +49,13 @@ function mount(overlay: SubscriptionOverlayState, onPatch: (next: Partial<Subscr
 
   inputHarness.handler = undefined
   const element = React.createElement(SubscriptionOverlay, { onClose: () => {}, onPatch, overlay, t })
-  const instance = renderSync(
-    element,
-    {
-      patchConsole: false,
-      stderr: stderr as NodeJS.WriteStream,
-      stdin: stdin as NodeJS.ReadStream,
-      stdout: stdout as NodeJS.WriteStream
-    }
-  )
+
+  const instance = renderSync(element, {
+    patchConsole: false,
+    stderr: stderr as NodeJS.WriteStream,
+    stdin: stdin as NodeJS.ReadStream,
+    stdout: stdout as NodeJS.WriteStream
+  })
 
   return {
     cleanup: () => {
@@ -76,9 +77,33 @@ function render(overlay: SubscriptionOverlayState): string {
 }
 
 const TIERS = [
-  { tier_id: 'free', name: 'Free', tier_order: 0, dollars_per_month_display: '$0', monthly_credits: '0', is_current: false, is_enabled: true },
-  { tier_id: 'plus', name: 'Plus', tier_order: 1, dollars_per_month_display: '$20', monthly_credits: '1000', is_current: true, is_enabled: true },
-  { tier_id: 'ultra', name: 'Ultra', tier_order: 2, dollars_per_month_display: '$40', monthly_credits: '3000', is_current: false, is_enabled: true }
+  {
+    tier_id: 'free',
+    name: 'Free',
+    tier_order: 0,
+    dollars_per_month_display: '$0',
+    monthly_credits: '0',
+    is_current: false,
+    is_enabled: true
+  },
+  {
+    tier_id: 'plus',
+    name: 'Plus',
+    tier_order: 1,
+    dollars_per_month_display: '$20',
+    monthly_credits: '1000',
+    is_current: true,
+    is_enabled: true
+  },
+  {
+    tier_id: 'ultra',
+    name: 'Ultra',
+    tier_order: 2,
+    dollars_per_month_display: '$40',
+    monthly_credits: '3000',
+    is_current: false,
+    is_enabled: true
+  }
 ]
 
 const state = (overrides: Partial<SubscriptionStateResponse> = {}): SubscriptionStateResponse => ({
@@ -128,7 +153,15 @@ describe('SubscriptionOverlay — overview', () => {
     const out = render(
       overlay(
         state({
-          current: { tier_id: 'pro', tier_name: 'Pro', monthly_credits: '1000', credits_remaining: '700', cycle_ends_at: '2026-07-01', pending_downgrade_tier_name: null, pending_downgrade_at: null },
+          current: {
+            tier_id: 'pro',
+            tier_name: 'Pro',
+            monthly_credits: '1000',
+            credits_remaining: '700',
+            cycle_ends_at: '2026-07-01',
+            pending_downgrade_tier_name: null,
+            pending_downgrade_at: null
+          },
           usage: {
             available: true,
             status: 'healthy',
@@ -136,8 +169,22 @@ describe('SubscriptionOverlay — overview', () => {
             renews_display: 'Jul 1, 2026',
             total_spendable_display: '$26.00',
             has_topup: true,
-            plan_bar: { kind: 'plan', remaining_display: '$14.00', total_display: '$20.00', spent_display: '$6.00', pct_used: 30, fill_fraction: 0.7 },
-            topup_bar: { kind: 'topup', remaining_display: '$12.00', total_display: '$12.00', spent_display: '$0.00', pct_used: null, fill_fraction: 1 }
+            plan_bar: {
+              kind: 'plan',
+              remaining_display: '$14.00',
+              total_display: '$20.00',
+              spent_display: '$6.00',
+              pct_used: 30,
+              fill_fraction: 0.7
+            },
+            topup_bar: {
+              kind: 'topup',
+              remaining_display: '$12.00',
+              total_display: '$12.00',
+              spent_display: '$0.00',
+              pct_used: null,
+              fill_fraction: 1
+            }
           }
         })
       )
@@ -155,8 +202,29 @@ describe('SubscriptionOverlay — overview', () => {
     const out = render(
       overlay(
         state({
-          current: { tier_id: 'pro', tier_name: 'Pro', monthly_credits: '1000', credits_remaining: '170', cycle_ends_at: '2026-07-01', pending_downgrade_tier_name: null, pending_downgrade_at: null },
-          usage: { available: true, status: 'low', plan_name: 'Pro', total_spendable_display: '$3.40', plan_bar: { kind: 'plan', remaining_display: '$3.40', total_display: '$20.00', spent_display: '$16.60', pct_used: 83, fill_fraction: 0.17 } }
+          current: {
+            tier_id: 'pro',
+            tier_name: 'Pro',
+            monthly_credits: '1000',
+            credits_remaining: '170',
+            cycle_ends_at: '2026-07-01',
+            pending_downgrade_tier_name: null,
+            pending_downgrade_at: null
+          },
+          usage: {
+            available: true,
+            status: 'low',
+            plan_name: 'Pro',
+            total_spendable_display: '$3.40',
+            plan_bar: {
+              kind: 'plan',
+              remaining_display: '$3.40',
+              total_display: '$20.00',
+              spent_display: '$16.60',
+              pct_used: 83,
+              fill_fraction: 0.17
+            }
+          }
         })
       )
     )
@@ -172,7 +240,15 @@ describe('SubscriptionOverlay — overview', () => {
           is_admin: false,
           can_change_plan: false,
           role: 'MEMBER',
-          current: { tier_id: 'pro', tier_name: 'Pro', monthly_credits: '1000', credits_remaining: '500', cycle_ends_at: '2026-07-01', pending_downgrade_tier_name: null, pending_downgrade_at: null },
+          current: {
+            tier_id: 'pro',
+            tier_name: 'Pro',
+            monthly_credits: '1000',
+            credits_remaining: '500',
+            cycle_ends_at: '2026-07-01',
+            pending_downgrade_tier_name: null,
+            pending_downgrade_at: null
+          },
           usage: { available: true, status: 'healthy', plan_name: 'Pro' }
         })
       )
@@ -186,7 +262,16 @@ describe('SubscriptionOverlay — overview', () => {
     const out = render(
       overlay(
         state({
-          current: { tier_id: 'pro', tier_name: 'Pro', monthly_credits: '1000', credits_remaining: '500', cycle_ends_at: '2026-07-01', pending_downgrade_tier_name: 'Free', pending_downgrade_at: '2026-07-15', pending_downgrade_display: 'Jul 15, 2026' },
+          current: {
+            tier_id: 'pro',
+            tier_name: 'Pro',
+            monthly_credits: '1000',
+            credits_remaining: '500',
+            cycle_ends_at: '2026-07-01',
+            pending_downgrade_tier_name: 'Free',
+            pending_downgrade_at: '2026-07-15',
+            pending_downgrade_display: 'Jul 15, 2026'
+          },
           usage: { available: true, status: 'healthy', plan_name: 'Pro' }
         })
       )
@@ -296,7 +381,13 @@ describe('SubscriptionOverlay — confirm', () => {
         pending: {
           kind: 'upgrade',
           targetTierId: 'ultra',
-          preview: { ok: true, effect: 'charge_now', target_tier_name: 'Ultra', amount_due_now_cents: 1234, monthly_credits_delta: '2000' }
+          preview: {
+            ok: true,
+            effect: 'charge_now',
+            target_tier_name: 'Ultra',
+            amount_due_now_cents: 1234,
+            monthly_credits_delta: '2000'
+          }
         }
       })
     )
@@ -311,7 +402,13 @@ describe('SubscriptionOverlay — confirm', () => {
         pending: {
           kind: 'tier_change',
           targetTierId: 'plus',
-          preview: { ok: true, effect: 'scheduled', target_tier_name: 'Plus', effective_at: '2026-08-01T00:00:00Z', amount_due_now_cents: null }
+          preview: {
+            ok: true,
+            effect: 'scheduled',
+            target_tier_name: 'Plus',
+            effective_at: '2026-08-01T00:00:00Z',
+            amount_due_now_cents: null
+          }
         }
       })
     )
@@ -322,7 +419,9 @@ describe('SubscriptionOverlay — confirm', () => {
   })
 
   it('cancellation: shows cancel-at-period-end copy', () => {
-    const out = render(at('confirm', subscriber(), { pending: { kind: 'cancellation', targetTierId: null, preview: null } }))
+    const out = render(
+      at('confirm', subscriber(), { pending: { kind: 'cancellation', targetTierId: null, preview: null } })
+    )
 
     expect(out).toContain('Confirm cancellation')
     expect(out).toContain('will not renew')
@@ -331,7 +430,11 @@ describe('SubscriptionOverlay — confirm', () => {
   it('blocked: shows the reason + Manage on portal', () => {
     const out = render(
       at('confirm', subscriber(), {
-        pending: { kind: 'tier_change', targetTierId: 'ultra', preview: { ok: true, effect: 'blocked', reason: 'Retract the cancellation before upgrading.' } }
+        pending: {
+          kind: 'tier_change',
+          targetTierId: 'ultra',
+          preview: { ok: true, effect: 'blocked', reason: 'Retract the cancellation before upgrading.' }
+        }
       })
     )
 
@@ -352,7 +455,11 @@ describe('SubscriptionOverlay — result', () => {
   it('error with recovery: shows the message + Open the portal', () => {
     const out = render(
       at('result', subscriber(), {
-        result: { ok: false, message: 'This upgrade needs extra verification (3DS).', recoveryUrl: 'https://portal.example/x' }
+        result: {
+          ok: false,
+          message: 'This upgrade needs extra verification (3DS).',
+          recoveryUrl: 'https://portal.example/x'
+        }
       })
     )
 
@@ -366,6 +473,7 @@ describe('SubscriptionOverlay — upgrade response mapping', () => {
   const applyUpgrade = async (response: unknown) => {
     const onPatch = vi.fn()
     const upgrade = vi.fn(() => Promise.resolve(response))
+
     const mounted = mount(
       at('confirm', subscriber(), {
         ctx: { ...ctx, upgrade } as SubscriptionOverlayState['ctx'],
@@ -433,17 +541,22 @@ describe('SubscriptionOverlay — upgrade response mapping', () => {
     vi.useFakeTimers()
 
     try {
-      const refreshState = vi.fn(() => Promise.resolve(subscriber({
-        current: {
-          tier_id: 'ultra',
-          tier_name: 'Ultra',
-          monthly_credits: '3000',
-          credits_remaining: '3000',
-          cycle_ends_at: '2026-08-01',
-          pending_downgrade_tier_name: null,
-          pending_downgrade_at: null
-        }
-      })))
+      const refreshState = vi.fn(() =>
+        Promise.resolve(
+          subscriber({
+            current: {
+              tier_id: 'ultra',
+              tier_name: 'Ultra',
+              monthly_credits: '3000',
+              credits_remaining: '3000',
+              cycle_ends_at: '2026-08-01',
+              pending_downgrade_tier_name: null,
+              pending_downgrade_at: null
+            }
+          })
+        )
+      )
+
       const result = { message: 'Upgraded to Ultra.', ok: true, pendingTierId: 'ultra' }
       const mounted = mount(at('result', subscriber(), { ctx: { ...ctx, refreshState }, result }))
 

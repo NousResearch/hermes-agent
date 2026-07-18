@@ -44,20 +44,20 @@ export const $isBlocked = computed(
   }) =>
     Boolean(
       agents ||
-        approval ||
-        billing ||
-        clarify ||
-        confirm ||
-        journey ||
-        modelPicker ||
-        pager ||
-        petPicker ||
-        pluginsHub ||
-        secret ||
-        sessions ||
-        skillsHub ||
-        subscription ||
-        sudo
+      approval ||
+      billing ||
+      clarify ||
+      confirm ||
+      journey ||
+      modelPicker ||
+      pager ||
+      petPicker ||
+      pluginsHub ||
+      secret ||
+      sessions ||
+      skillsHub ||
+      subscription ||
+      sudo
     )
 )
 

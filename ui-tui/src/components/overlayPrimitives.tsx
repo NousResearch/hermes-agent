@@ -17,11 +17,7 @@ export interface MenuRowSpec {
  * the key fully handled and skip the default escape/arrow/enter/number
  * handling for that keypress (e.g. a screen with a text-input sub-mode).
  */
-export function useMenu(
-  rows: MenuRowSpec[],
-  onEscape: () => void,
-  onKey?: (ch: string, key: Key) => boolean
-): number {
+export function useMenu(rows: MenuRowSpec[], onEscape: () => void, onKey?: (ch: string, key: Key) => boolean): number {
   const [sel, setSel] = useState(0)
 
   useInput((ch, key) => {

@@ -287,6 +287,138 @@ class _PreflightRuntimeFailureProvider(_FakeProvider):
         )
 
 
+class _DelayedVisibilityProvider(_FakeProvider):
+    def __init__(
+        self,
+        chain: apply.ValidatedFoundationAChain,
+        *,
+        hidden_reads: int,
+    ) -> None:
+        super().__init__(chain)
+        self.hidden_reads = hidden_reads
+
+    def inspect_resource(
+        self,
+        step: gate.PlanStep,
+        *,
+        plan: gate.OwnerGateFoundationPlan,
+    ) -> apply.ResourceObservation:
+        if (
+            step.name == self.plan.foundation_steps[0].name
+            and self.states[step.name] == "exact"
+            and self.hidden_reads > 0
+        ):
+            self.hidden_reads -= 1
+            return apply.ResourceObservation(
+                "absent",
+                _digest(f"delayed:{step.name}:{self.hidden_reads}"),
+            )
+        return super().inspect_resource(step, plan=plan)
+
+
+class _DriftingPostconditionProvider(_FakeProvider):
+    def __init__(self, chain: apply.ValidatedFoundationAChain) -> None:
+        super().__init__(chain)
+        self.returned_drift = False
+
+    def inspect_resource(
+        self,
+        step: gate.PlanStep,
+        *,
+        plan: gate.OwnerGateFoundationPlan,
+    ) -> apply.ResourceObservation:
+        if (
+            step.name == self.plan.foundation_steps[0].name
+            and self.states[step.name] == "exact"
+            and not self.returned_drift
+        ):
+            self.returned_drift = True
+            return apply.ResourceObservation(
+                "drift",
+                _digest(f"drift:{step.name}"),
+            )
+        return super().inspect_resource(step, plan=plan)
+
+
+def test_completed_create_waits_for_exact_provider_visibility(
+    tmp_path: Path,
+) -> None:
+    chain = _chain()
+    provider = _DelayedVisibilityProvider(chain, hidden_reads=3)
+    waits: list[float] = []
+
+    receipt = apply._apply_with_provider(
+        chain=chain,
+        private_key=helpers.RELEASE_KEY,
+        provider=provider,
+        journal=_journal_for_test(tmp_path / "journal"),
+        now_unix=lambda: helpers.NOW + 2,
+        postcondition_wait=waits.append,
+    )
+
+    assert len(receipt["applied_steps"]) == len(
+        chain.plan.foundation_steps
+    )
+    assert waits == [apply._POSTCONDITION_VISIBILITY_DELAY_SECONDS] * 3
+    assert provider.execute_calls == [
+        step.name for step in chain.plan.foundation_steps
+    ]
+
+
+def test_completed_create_visibility_wait_is_finite_and_fail_closed(
+    tmp_path: Path,
+) -> None:
+    chain = _chain()
+    provider = _DelayedVisibilityProvider(
+        chain,
+        hidden_reads=apply._POSTCONDITION_VISIBILITY_ATTEMPTS + 1,
+    )
+    waits: list[float] = []
+
+    with pytest.raises(apply.FoundationApplyFailed) as caught:
+        apply._apply_with_provider(
+            chain=chain,
+            private_key=helpers.RELEASE_KEY,
+            provider=provider,
+            journal=_journal_for_test(tmp_path / "journal"),
+            now_unix=lambda: helpers.NOW + 2,
+            postcondition_wait=waits.append,
+        )
+
+    assert caught.value.receipt["failure_code"] == (
+        "owner_gate_foundation_postcondition_not_exact"
+    )
+    assert caught.value.receipt["terminal_state"] == (
+        "manual_reconciliation_required"
+    )
+    assert waits == [apply._POSTCONDITION_VISIBILITY_DELAY_SECONDS] * (
+        apply._POSTCONDITION_VISIBILITY_ATTEMPTS - 1
+    )
+
+
+def test_completed_create_never_retries_postcondition_drift(
+    tmp_path: Path,
+) -> None:
+    chain = _chain()
+    provider = _DriftingPostconditionProvider(chain)
+    waits: list[float] = []
+
+    with pytest.raises(apply.FoundationApplyFailed) as caught:
+        apply._apply_with_provider(
+            chain=chain,
+            private_key=helpers.RELEASE_KEY,
+            provider=provider,
+            journal=_journal_for_test(tmp_path / "journal"),
+            now_unix=lambda: helpers.NOW + 2,
+            postcondition_wait=waits.append,
+        )
+
+    assert caught.value.receipt["failure_code"] == (
+        "owner_gate_foundation_postcondition_not_exact"
+    )
+    assert waits == []
+
+
 def test_iam_cas_add_and_remove_use_real_policy_etag(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

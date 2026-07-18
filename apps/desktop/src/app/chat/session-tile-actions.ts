@@ -130,15 +130,19 @@ export function useSessionTileActions({ runtimeId, scope, storedSessionId }: Ses
   // The REAL submit pipeline with tile seams: session always exists, and the
   // scope's writers replace the global view/attachment writes.
   const submitPromptText = useSubmitPrompt({
-    activeSessionId: runtimeId,
     activeSessionIdRef: runtimeIdRef,
     busyRef,
     copy,
     createBackendSessionForSend: async () => runtimeIdRef.current,
+    getRoutedStoredSessionId: () => storedIdRef.current,
+    getRuntimeIdForStoredSession: storedId => (storedId === storedIdRef.current ? runtimeIdRef.current : null),
     // A tile IS its session — no route to abandon, so the create-abort guard's
     // token is a stable constant (the guard never trips for a tile).
     getRouteToken: () => runtimeId,
     requestGateway,
+    // Tile ids are always bound before this hook mounts, so routed recovery is
+    // unreachable here; keep the shared submit contract explicit.
+    resumeStoredSession: () => undefined,
     selectedStoredSessionIdRef: storedIdRef,
     syncAttachmentsForSubmit,
     updateSessionState: (sessionId, updater) => sessionTileDelegate()!.updateSession(sessionId, updater),
@@ -176,7 +180,11 @@ export function useSessionTileActions({ runtimeId, scope, storedSessionId }: Ses
         ...state,
         messages: [
           ...state.messages,
-          { id: `system-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`, role: 'system', parts: [textPart(text)] }
+          {
+            id: `system-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+            role: 'system',
+            parts: [textPart(text)]
+          }
         ]
       }))
     },
@@ -354,6 +362,15 @@ export function useSessionTileActions({ runtimeId, scope, storedSessionId }: Ses
       steerPrompt,
       submitText
     }),
-    [cancelRun, dismissError, editMessage, handleThreadMessagesChange, reloadFromMessage, restoreToMessage, steerPrompt, submitText]
+    [
+      cancelRun,
+      dismissError,
+      editMessage,
+      handleThreadMessagesChange,
+      reloadFromMessage,
+      restoreToMessage,
+      steerPrompt,
+      submitText
+    ]
   )
 }

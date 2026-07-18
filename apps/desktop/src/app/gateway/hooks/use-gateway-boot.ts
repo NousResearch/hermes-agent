@@ -28,18 +28,16 @@ import { notify, notifyError } from '@/store/notifications'
 import { $activeGatewayProfile, normalizeProfileKey, touchActiveGatewayBackend } from '@/store/profile'
 import {
   $activeSessionId,
-  $attentionSessionIds,
   $connection,
   $currentCwd,
   $sessions,
-  $workingSessionIds,
   ensureDefaultWorkspaceCwd,
   setConnection,
   setCurrentBranch,
   setCurrentCwd,
   setSessionsLoading
 } from '@/store/session'
-import { resetTileRuntimeBindings } from '@/store/session-states'
+import { $attentionSessionIds, $workingSessionIds, resetTileRuntimeBindings } from '@/store/session-states'
 import type { RpcEvent } from '@/types/hermes'
 
 // After this many consecutive failed reconnects (≈45s with the 1→15s backoff)
@@ -362,7 +360,10 @@ export function useGatewayBoot({
     })
 
     const sourceProfile = normalizeProfileKey($activeGatewayProfile.get())
-    const offEvent = gateway.onEvent(event => callbacksRef.current.handleGatewayEvent({ ...event, profile: sourceProfile }))
+
+    const offEvent = gateway.onEvent(event =>
+      callbacksRef.current.handleGatewayEvent({ ...event, profile: sourceProfile })
+    )
 
     // Wake signals: power resume (macOS/Windows), network coming back, and the
     // window regaining focus/visibility. Each nudges an immediate reconnect.

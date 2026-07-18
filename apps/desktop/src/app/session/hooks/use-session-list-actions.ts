@@ -15,9 +15,7 @@ import {
   $messagingSessions,
   $selectedStoredSessionId,
   $sessions,
-  $workingSessionIds,
   CRON_SECTION_LIMIT,
-  getRecentlySettledSessionIds,
   mergeSessionPage,
   MESSAGING_SECTION_LIMIT,
   setCronSessions,
@@ -29,6 +27,7 @@ import {
   setSessionsLoading,
   setSessionsTotal
 } from '@/store/session'
+import { $workingSessionIds, getRecentlySettledSessionIds } from '@/store/session-states'
 
 // The recents list is local-only: cron rows have their own section, and each
 // messaging platform (telegram, discord, …) is fetched separately into its own

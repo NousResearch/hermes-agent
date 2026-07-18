@@ -1,4 +1,4 @@
-import { escapeCurrencyDollars, normalizeMathDelimiters } from '@assistant-ui/react-streamdown'
+import { normalizeMathDelimiters } from '@assistant-ui/react-streamdown'
 
 import { isLikelyProseFence, sanitizeLanguageTag } from '@/lib/markdown-code'
 import { stripPreviewTargets } from '@/lib/preview-targets'
@@ -10,6 +10,9 @@ const FENCE_LINE_RE = /^([ \t]*)(`{3,}|~{3,})([^\n]*)$/
 const EMPTY_FENCE_BLOCK_RE = /(^|\n)[ \t]*(?:`{3,}|~{3,})[^\n]*\n[ \t]*(?:`{3,}|~{3,})[ \t]*(?=\n|$)/g
 const CODE_FENCE_SPLIT_RE = /((?:```|~~~)[\s\S]*?(?:```|~~~))/g
 const INLINE_CODE_SPLIT_RE = /(`[^`\n]+`)/g
+const LATEX_DISPLAY_OPEN_LINE_RE = /^([ \t]*(?:>[ \t]*)*(?:(?:[-+*]|\d+[.)])[ \t]+)?[ \t]*)\\{1,2}\[[ \t]*\r?$/
+const LATEX_DISPLAY_CLOSE_LINE_RE = /^([ \t]*(?:>[ \t]*)*(?:(?:[-+*]|\d+[.)])[ \t]+)?[ \t]*)\\{1,2}\][ \t]*\r?$/
+const CUSTOM_DISPLAY_MATH_LINE_RE = /^([ \t]*(?:>[ \t]*)*(?:(?:[-+*]|\d+[.)])[ \t]+)?[ \t]*)\[\/math\][ \t]*\r?$/
 // Bare-URL autolink matcher. The character classes EXCLUDE `*` so a URL that
 // abuts markdown emphasis with no separating space (e.g. `**label: https://x**`,
 // a very common LLM pattern) doesn't swallow the trailing `**` into the href.
@@ -151,6 +154,165 @@ function normalizeVisibleProse(text: string): string {
           )
     )
     .join('')
+}
+
+function isEscapedAt(text: string, index: number): boolean {
+  let slashCount = 0
+
+  for (let cursor = index - 1; cursor >= 0 && text[cursor] === '\\'; cursor -= 1) {
+    slashCount += 1
+  }
+
+  return slashCount % 2 === 1
+}
+
+function findClosingSingleDollar(text: string, openingIndex: number): number {
+  for (let cursor = openingIndex + 1; cursor < text.length && text[cursor] !== '\n'; cursor += 1) {
+    if (text[cursor] !== '$' || isEscapedAt(text, cursor)) {
+      continue
+    }
+
+    // A `$$` run belongs to display math, not to this inline candidate.
+    if (text[cursor - 1] === '$' || text[cursor + 1] === '$') {
+      continue
+    }
+
+    return cursor
+  }
+
+  return -1
+}
+
+function isLikelyNumericInlineMath(body: string, followingCharacter: string): boolean {
+  const value = body.trim()
+
+  if (!/^\d/u.test(value)) {
+    return false
+  }
+
+  // Currency ranges and prose fragments can sit between two price openers,
+  // e.g. `$5-$10` or `$5, then $10`. They are not balanced math spans.
+  if (/[+\-*/=<>^_,;:(]$/u.test(value)) {
+    return false
+  }
+
+  if (/https?:\/\//iu.test(value)) {
+    return false
+  }
+
+  // A dollar immediately followed by a letter/number is more likely the next
+  // opener in prose such as `$5 and $10` or `$5 and $x$`. Preserve it only
+  // when the candidate body itself carries an unambiguous math signal.
+  if (/^\p{N}/u.test(followingCharacter)) {
+    return false
+  }
+
+  if (/^[\p{L}\\]/u.test(followingCharacter)) {
+    return /\\[A-Za-z]+|[+*/=<>^_{}]/u.test(value)
+  }
+
+  return true
+}
+
+function opensCompleteInlineMath(text: string, openingIndex: number): boolean {
+  const closingIndex = findClosingSingleDollar(text, openingIndex)
+
+  if (closingIndex === -1) {
+    return false
+  }
+
+  const body = text.slice(openingIndex + 1, closingIndex)
+
+  return /^[\p{L}\p{N}\\{([|+\-=_^]/u.test(body)
+}
+
+/**
+ * Escape price openers without corrupting balanced numeric inline math.
+ *
+ * The upstream helper deliberately treats every `$` followed by a digit as
+ * currency. That turns `$4\in A$` into `\$4\in A$`; remark-math then pairs
+ * the orphan closing dollar with a later formula and renders the intervening
+ * prose as math. We retain the price behavior for `$5 and $10` and `$5-$10`,
+ * but preserve balanced, same-line numeric math spans.
+ */
+function escapeCurrencyDollarsPreservingMath(text: string): string {
+  let out = ''
+  let copiedThrough = 0
+
+  for (let cursor = 0; cursor < text.length; cursor += 1) {
+    if (
+      text[cursor] !== '$' ||
+      !/\d/u.test(text[cursor + 1] || '') ||
+      text[cursor - 1] === '$' ||
+      isEscapedAt(text, cursor)
+    ) {
+      continue
+    }
+
+    const closingIndex = findClosingSingleDollar(text, cursor)
+
+    if (
+      closingIndex !== -1 &&
+      !opensCompleteInlineMath(text, closingIndex) &&
+      isLikelyNumericInlineMath(text.slice(cursor + 1, closingIndex), text[closingIndex + 1] || '')
+    ) {
+      cursor = closingIndex
+
+      continue
+    }
+
+    out += `${text.slice(copiedThrough, cursor)}\\$`
+    copiedThrough = cursor + 1
+  }
+
+  return out + text.slice(copiedThrough)
+}
+
+function normalizeDisplayMathForMarkdown(text: string): string {
+  const lines = text.split('\n')
+
+  for (let index = 0; index < lines.length; index += 1) {
+    const latexMatch = lines[index].match(LATEX_DISPLAY_OPEN_LINE_RE)
+    const customMatch = lines[index].match(CUSTOM_DISPLAY_MATH_LINE_RE)
+    const openingMatch = latexMatch || customMatch
+
+    if (!openingMatch) {
+      continue
+    }
+
+    const prefix = openingMatch[1] || ''
+    const closingPattern = latexMatch ? LATEX_DISPLAY_CLOSE_LINE_RE : CUSTOM_DISPLAY_MATH_LINE_RE
+
+    for (let closingIndex = index + 1; closingIndex < lines.length; closingIndex += 1) {
+      const closingMatch = lines[closingIndex].match(closingPattern)
+
+      if (!closingMatch) {
+        continue
+      }
+
+      const openingCarriageReturn = lines[index].endsWith('\r') ? '\r' : ''
+      const closingCarriageReturn = lines[closingIndex].endsWith('\r') ? '\r' : ''
+      const closingPrefix = closingMatch[1] || ''
+
+      lines[index] = `${prefix}$$${openingCarriageReturn}`
+      lines[closingIndex] = `${closingPrefix}$$${closingCarriageReturn}`
+      index = closingIndex
+
+      break
+    }
+  }
+
+  return lines.join('\n')
+}
+
+function normalizeProseMath(text: string): string {
+  // remark-math requires multiline display delimiters on their own lines.
+  // Normalize those locally before the dependency handles inline forms;
+  // its compact `$$body$$` rewrite makes the first equation line metadata
+  // and leaks the trailing `$$` into KaTeX's error fallback.
+  const normalized = normalizeMathDelimiters(normalizeDisplayMathForMarkdown(text))
+
+  return escapeCurrencyDollarsPreservingMath(normalized)
 }
 
 function extend(out: string[], lines: string[]) {
@@ -346,9 +508,7 @@ export function preprocessMarkdown(text: string): string {
 
       // Run only on prose segments so `$5` literals and `\(` inside code
       // blocks stay intact.
-      const transformed = normalizeVisibleProse(
-        stripPreviewTargets(normalizeMathDelimiters(escapeCurrencyDollars(part)))
-      )
+      const transformed = normalizeVisibleProse(stripPreviewTargets(normalizeProseMath(part)))
 
       return leading + transformed + trailing
     })

@@ -30,6 +30,7 @@ from hermes_cli.providers import (
     custom_provider_slug,
     determine_api_mode,
     get_label,
+    host_mandated_api_mode,
     is_aggregator,
     resolve_provider_full,
 )
@@ -1255,6 +1256,21 @@ def switch_model(
             if not api_key:
                 api_key = "no-key-required"
 
+    # --- Resolve api_mode from the final (provider, base_url) before validation ---
+    # Two cases this closes, both surfaced when the switched model's reasoning
+    # is actually applied (post the reasoning-unification refactor):
+    #   1. api_mode empty (e.g. alias cleared it above) → fill from the endpoint.
+    #   2. api_mode carried a STALE value from the previous session state
+    #      (e.g. a same-provider /model switch to gpt-5.x on api.openai.com that
+    #      kept the prior openrouter/chat_completions mode). A host that mandates
+    #      one wire protocol must override the stale value — otherwise the request
+    #      goes out on chat_completions and OpenAI 400s on tools+reasoning_effort.
+    _mandated_mode = host_mandated_api_mode(base_url)
+    if _mandated_mode is not None:
+        api_mode = _mandated_mode
+    elif not api_mode:
+        api_mode = determine_api_mode(target_provider, base_url)
+
     # --- Normalize model name for target provider ---
     new_model = normalize_model_for_provider(new_model, target_provider)
 
@@ -1480,6 +1496,7 @@ def list_authenticated_providers(
     refresh: bool = False,
     probe_custom_providers: bool = True,
     probe_current_custom_provider: bool = False,
+    for_picker: bool = False,
 ) -> List[dict]:
     """Detect which providers have credentials and list their curated models.
 
@@ -1827,6 +1844,20 @@ def list_authenticated_providers(
             try:
                 if _credential_pool_is_usable(hermes_slug):
                     has_creds = True
+                elif for_picker:
+                    # For the interactive /model picker, also show providers
+                    # whose credential pool has entries but all are temporarily
+                    # rate-limited.  Rate limits are per-model for many
+                    # providers (e.g. Google Gemini) — switching to a different
+                    # model under the same provider may work even when all keys
+                    # are in cooldown.
+                    try:
+                        from agent.credential_pool import load_pool
+                        _pool = load_pool(hermes_slug)
+                        if _pool.has_credentials():
+                            has_creds = True
+                    except Exception:
+                        pass
             except Exception as exc:
                 logger.debug("Credential pool check failed for %s: %s", hermes_slug, exc)
         # Fallback: check external credential files directly.
@@ -2472,6 +2503,7 @@ def list_picker_providers(
         custom_providers=custom_providers,
         max_models=max_models,
         current_model=current_model,
+        for_picker=True,
     )
     if include_moa:
         providers = _prepend_moa_picker_provider(providers, current_provider=current_provider)

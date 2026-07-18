@@ -66,7 +66,7 @@ function useSubtreeOverrides(paneIds: readonly string[]): TrackContext['override
   return useSyncExternalStore(cb => $paneStates.listen(cb), snapshot, snapshot)
 }
 
-export function TreeSplit({ node, root }: { node: SplitNode; root?: boolean }) {
+export function TreeSplit({ node, root, rootRow }: { node: SplitNode; root?: boolean; rootRow?: boolean }) {
   const containerRef = useRef<HTMLDivElement>(null)
   const panes = useContributions('panes')
   const hiddenPanes = useStore($hiddenTreePanes)
@@ -79,6 +79,21 @@ export function TreeSplit({ node, root }: { node: SplitNode; root?: boolean }) {
   const collapsedSides = useStore($collapsedTreeSides)
   const horizontal = node.orientation === 'row'
   const axis = node.orientation
+
+  // When the root is a column (Terminal deck, Quad), the root ROW — the one
+  // the side-collapse system operates on — is a row child containing main.
+  // Propagate `rootRow` to that child so its `semanticSides` fires.
+  const childRootRow = (child: LayoutNode): boolean => {
+    if (!root || horizontal) {
+      return false
+    }
+
+    if (child.type !== 'split' || child.orientation !== 'row') {
+      return false
+    }
+
+    return allPaneIds(child).some(id => paneChrome(paneFor(id)).placement === 'main')
+  }
 
   // A pane leaves the grid when its contribution isn't registered (yet) — a
   // runtime plugin's pane collapses until the plugin loads, then appears; no
@@ -129,8 +144,7 @@ export function TreeSplit({ node, root }: { node: SplitNode; root?: boolean }) {
     // zone). Same largest-tenant basis as the track size — never per-tab.
     const all = shownIds.map(id => (paneFor(id)?.data ?? {}) as PaneSizing)
 
-    const cap = (pick: (s: PaneSizing) => string | undefined) =>
-      all.every(pick) ? cssMax(all.map(pick)) : undefined
+    const cap = (pick: (s: PaneSizing) => string | undefined) => (all.every(pick) ? cssMax(all.map(pick)) : undefined)
 
     return {
       minWidth: cssMax(all.map(s => s.minWidth)),
@@ -353,7 +367,9 @@ export function TreeSplit({ node, root }: { node: SplitNode; root?: boolean }) {
   // ⌘B owns the sessions column and ⌘J the other side columns — by pane
   // placement, NOT position, so a ⌘\ flip moves the columns without
   // rewiring the toggles (main parity). In edit mode sides stay visible.
-  const semanticSides = root && horizontal && collapsedSides.size > 0 && !editMode
+  // `rootRow` covers both a row root (Default, Focus) and a row nested inside
+  // a column root (Terminal deck, Quad) — wherever the side columns live.
+  const semanticSides = rootRow && horizontal && collapsedSides.size > 0 && !editMode
 
   const sideGone = (i: number) => {
     if (!semanticSides) {
@@ -440,9 +456,7 @@ export function TreeSplit({ node, root }: { node: SplitNode; root?: boolean }) {
                       // gracefully on tight windows, floored by min-width);
                       // everything else splits the leftover by weight. In an
                       // all-fixed run the last track grows into the leftover.
-                      flex: track
-                        ? `${i === absorberIndex ? 1 : 0} 1 ${track}`
-                        : `${grow(i)} ${grow(i)} 0px`,
+                      flex: track ? `${i === absorberIndex ? 1 : 0} 1 ${track}` : `${grow(i)} ${grow(i)} 0px`,
                       // Pane-declared clamps apply along THIS split's axis only
                       // (a rail's width clamp shouldn't constrain its height).
                       // The absorber drops its max clamp — it exists to fill
@@ -463,7 +477,12 @@ export function TreeSplit({ node, root }: { node: SplitNode; root?: boolean }) {
               />
             )}
             {!narrowCollapsed && (
-              <TreeNode node={child} parentAxis={axis} railSide={horizontal ? railSideFor(i) : undefined} />
+              <TreeNode
+                node={child}
+                parentAxis={axis}
+                railSide={horizontal ? railSideFor(i) : undefined}
+                rootRow={rootRow || childRootRow(child)}
+              />
             )}
           </div>
         )

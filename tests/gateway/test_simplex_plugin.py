@@ -218,16 +218,15 @@ async def test_send_dm():
     cfg = PlatformConfig(enabled=True, extra={"ws_url": "ws://localhost:5225"})
     adapter = SimplexAdapter(cfg)
 
-    mock_ws = AsyncMock()
-    adapter._ws = mock_ws
+    ok_resp = {"resp": {"type": "newChatItems"}}
+    adapter._send_command = AsyncMock(return_value=ok_resp)
 
     result = await adapter.send("42", "Hello, SimpleX!")
-    mock_ws.send.assert_called_once()
-    payload = json.loads(mock_ws.send.call_args[0][0])
-    assert payload["cmd"].startswith("/_send @42 json ")
-    composed = json.loads(payload["cmd"].split(" json ", 1)[1])
+    adapter._send_command.assert_called_once()
+    payload = adapter._send_command.call_args[0][0]
+    assert payload.startswith("/_send @42 json ")
+    composed = json.loads(payload.split(" json ", 1)[1])
     assert composed == [{"msgContent": {"type": "text", "text": "Hello, SimpleX!"}}]
-    assert payload["corrId"].startswith(_CORR_PREFIX)
     assert result.success is True
 
 
@@ -245,13 +244,13 @@ async def test_send_group():
     cfg = PlatformConfig(enabled=True, extra={"ws_url": "ws://localhost:5225"})
     adapter = SimplexAdapter(cfg)
 
-    mock_ws = AsyncMock()
-    adapter._ws = mock_ws
+    ok_resp = {"resp": {"type": "newChatItems"}}
+    adapter._send_command = AsyncMock(return_value=ok_resp)
 
     result = await adapter.send("group:grp-99", "Hello, group!")
-    payload = json.loads(mock_ws.send.call_args[0][0])
-    assert payload["cmd"].startswith("/_send #grp-99 json ")
-    msg_content = json.loads(payload["cmd"].split(" json ", 1)[1])[0][
+    payload = adapter._send_command.call_args[0][0]
+    assert payload.startswith("/_send #grp-99 json ")
+    msg_content = json.loads(payload.split(" json ", 1)[1])[0][
         "msgContent"
     ]
     assert msg_content == {"type": "text", "text": "Hello, group!"}
@@ -263,9 +262,11 @@ async def test_send_when_ws_not_connected_does_not_crash():
     from gateway.config import PlatformConfig
     cfg = PlatformConfig(enabled=True, extra={"ws_url": "ws://localhost:5225"})
     adapter = SimplexAdapter(cfg)
-    # No _ws assigned — _send_ws should drop quietly
+    # No _ws assigned — _send_command can't reach the daemon and returns
+    # None, so send() now surfaces the failure (no silent success).
+    adapter._send_command = AsyncMock(return_value=None)
     result = await adapter.send("contact-42", "hi")
-    assert result.success is True  # send() always returns success — fire-and-forget
+    assert result.success is False
 
 
 # ---------------------------------------------------------------------------

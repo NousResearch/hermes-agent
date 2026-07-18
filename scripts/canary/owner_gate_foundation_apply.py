@@ -1752,27 +1752,35 @@ def _observe_completed_postcondition(
     chain: ValidatedFoundationAChain,
     step: foundation.PlanStep,
     operation: OperationObservation,
+    expected_state: str,
     now_unix: Callable[[], int],
     wait: Callable[[float], None],
 ) -> ResourceObservation:
-    """Bound only provider visibility lag after a confirmed create call.
+    """Bound only provider visibility lag after a confirmed operation.
 
-    Drift is never retried.  Only an absent or unstable read after a provider
-    reported ``completed`` may be observed again, and every retry rechecks the
-    sealed runtime and owner-reauthentication lifetime.
+    Drift is never retried.  After a provider reported ``completed``, only the
+    inverse stable state or an unstable read may be observed again.  Every
+    retry rechecks the sealed runtime and owner-reauthentication lifetime.
     """
 
+    if expected_state not in {"exact", "absent"}:
+        _error("owner_gate_foundation_postcondition_state_invalid")
     if operation.state != "completed":
         post = provider.inspect_resource(step, plan=chain.plan)
         post.validate()
         return post
+    transient_states = (
+        {"absent", "unknown"}
+        if expected_state == "exact"
+        else {"exact", "unknown"}
+    )
     for attempt in range(_POSTCONDITION_VISIBILITY_ATTEMPTS):
         provider.assert_stable()
         _fresh_reauth(chain, now_unix=now_unix())
         post = provider.inspect_resource(step, plan=chain.plan)
         post.validate()
         if (
-            post.state not in {"absent", "unknown"}
+            post.state not in transient_states
             or attempt + 1 == _POSTCONDITION_VISIBILITY_ATTEMPTS
         ):
             return post
@@ -1819,6 +1827,7 @@ def _rollback_created(
     transaction_id: str,
     created_steps: Sequence[foundation.PlanStep],
     now_unix: Callable[[], int],
+    postcondition_wait: Callable[[float], None],
 ) -> tuple[list[Mapping[str, Any]], bool]:
     receipts: list[Mapping[str, Any]] = []
     partial_unknown = False
@@ -1986,8 +1995,15 @@ def _rollback_created(
                         )
                     before_precondition = dict(raw_precondition)
                 operation = _operation_from_transition(operation_body)
-                post = provider.inspect_resource(step, plan=chain.plan)
-                post.validate()
+                post = _observe_completed_postcondition(
+                    provider=provider,
+                    chain=chain,
+                    step=step,
+                    operation=operation,
+                    expected_state="absent",
+                    now_unix=now_unix,
+                    wait=postcondition_wait,
+                )
                 disposition = (
                     "rolled_back"
                     if (
@@ -2075,6 +2091,7 @@ def _failure(
     created_steps: Sequence[foundation.PlanStep],
     inherently_unknown: bool,
     now_unix: Callable[[], int],
+    postcondition_wait: Callable[[float], None],
 ) -> FoundationApplyFailed:
     existing = _read_transition(
         journal=journal,
@@ -2145,6 +2162,7 @@ def _failure(
             transaction_id=transaction_id,
             created_steps=created_steps,
             now_unix=now_unix,
+            postcondition_wait=postcondition_wait,
         )
     partial = inherently_unknown or rollback_unknown
     body = {
@@ -2409,6 +2427,7 @@ def _apply_with_leased_provider(
             created_steps=created_steps_from_intent,
             inherently_unknown=inherently_unknown,
             now_unix=now_unix,
+            postcondition_wait=postcondition_wait,
         )
     if success is not None and isinstance(success.get("receipt"), Mapping):
         provider.assert_stable()
@@ -2567,6 +2586,7 @@ def _apply_with_leased_provider(
                         created_steps=created_steps,
                         inherently_unknown=True,
                         now_unix=now_unix,
+                        postcondition_wait=postcondition_wait,
                     )
                 if before.state == "exact":
                     body = _transition_body(
@@ -2648,6 +2668,7 @@ def _apply_with_leased_provider(
                     created_steps=created_steps,
                     inherently_unknown=True,
                     now_unix=now_unix,
+                    postcondition_wait=postcondition_wait,
                 )
             if operation_body is None:
                 if pre_body is None:
@@ -2722,6 +2743,7 @@ def _apply_with_leased_provider(
                 chain=chain,
                 step=step,
                 operation=operation,
+                expected_state="exact",
                 now_unix=now_unix,
                 wait=postcondition_wait,
             )
@@ -2760,6 +2782,7 @@ def _apply_with_leased_provider(
                         or step.name.startswith("bind_narrow_")
                     ),
                     now_unix=now_unix,
+                    postcondition_wait=postcondition_wait,
                 )
             post_body = _transition_body(
                 chain=chain,
@@ -2850,6 +2873,7 @@ def _apply_with_leased_provider(
                 created_steps=created_steps,
             ),
             now_unix=now_unix,
+            postcondition_wait=postcondition_wait,
         ) from None
     except Exception as exc:
         raise _failure(
@@ -2872,6 +2896,7 @@ def _apply_with_leased_provider(
                 created_steps=created_steps,
             ),
             now_unix=now_unix,
+            postcondition_wait=postcondition_wait,
         ) from None
 
 

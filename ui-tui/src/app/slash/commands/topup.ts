@@ -13,6 +13,7 @@ import type { SlashCommand, SlashRunCtx } from '../types.js'
 // Poll cadence (plan §5, frozen): 2s interval, 5-minute cap.
 const POLL_INTERVAL_MS = 2000
 const POLL_CAP_MS = 5 * 60 * 1000
+
 const UNCONFIRMED_CHARGE_MESSAGE =
   '🟡 Your last charge’s outcome is unconfirmed — check your balance/history before retrying.'
 

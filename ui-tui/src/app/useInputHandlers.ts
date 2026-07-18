@@ -330,6 +330,7 @@ export function useInputHandlers(ctx: InputHandlerContext): InputHandlerResult {
       // through to the wheel / PageUp / Shift+arrow handlers below.
       const promptOverlay =
         overlay.approval || overlay.billing || overlay.clarify || overlay.confirm || overlay.subscription
+
       const fallThroughForScroll = promptOverlay && shouldFallThroughForScroll(key)
 
       if (promptOverlay && !fallThroughForScroll) {

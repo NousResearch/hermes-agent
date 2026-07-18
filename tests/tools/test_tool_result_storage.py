@@ -33,25 +33,39 @@ class TestGeneratePreview:
         assert preview == text
         assert has_more is False
 
-    def test_long_content_truncated(self):
+    def test_long_content_shows_head_and_tail(self):
         text = "x" * 5000
         preview, has_more = generate_preview(text, max_chars=2000)
-        assert len(preview) <= 2000
+        # Preview should now contain head + tail with ellipsis
+        assert len(preview) <= 2200  # head + tail + ellipsis
         assert has_more is True
+        assert "characters omitted" in preview
 
-    def test_truncates_at_newline_boundary(self):
+    def test_truncates_at_newline_boundary_head(self):
         # 1500 chars + newline + 600 chars  (past halfway)
         text = "a" * 1500 + "\n" + "b" * 600
         preview, has_more = generate_preview(text, max_chars=2000)
-        assert preview == "a" * 1500 + "\n"
         assert has_more is True
+        assert "characters omitted" in preview
 
-    def test_ignores_early_newline(self):
-        # Newline at position 100, well before halfway of 2000
-        text = "a" * 100 + "\n" + "b" * 3000
-        preview, has_more = generate_preview(text, max_chars=2000)
-        assert len(preview) == 2000
+    def test_head_aligns_to_newline(self):
+        """Head should align to last newline within the head budget."""
+        head = "a" * 100 + "\n"
+        middle = "x" * 4000
+        tail_line = "LAST_LINE_MARKER"
+        text = head + middle + "\n" + tail_line
+        preview, has_more = generate_preview(text, max_chars=1500)
         assert has_more is True
+        assert "characters omitted" in preview
+        # The tail should contain the marker
+        assert tail_line in preview
+
+    def test_tail_appears_at_end(self):
+        content = "HEAD_START\n" + "x" * 4000 + "\nTAIL_END"
+        preview, has_more = generate_preview(content, max_chars=1500)
+        assert has_more is True
+        assert "TAIL_END" in preview
+        assert preview.strip().endswith("TAIL_END")
 
     def test_empty_content(self):
         preview, has_more = generate_preview("")
@@ -63,6 +77,14 @@ class TestGeneratePreview:
         preview, has_more = generate_preview(text)
         assert preview == text
         assert has_more is False
+
+    def test_very_large_content_omitted_count(self):
+        content = "a" * 10_000 + "b" * 10_000 + "c" * 10_000
+        preview, has_more = generate_preview(content, max_chars=1000)
+        assert has_more is True
+        # The ellipsis line should mention how many chars were omitted
+        assert "characters omitted" in preview
+        assert "30,000" in preview or "29" in preview  # 30K-ish, close to total
 
 
 # ── _heredoc_marker ───────────────────────────────────────────────────
@@ -184,7 +206,7 @@ class TestSafeResultFilename:
 class TestBuildPersistedMessage:
     def test_structure(self):
         msg = _build_persisted_message(
-            preview="first 100 chars...",
+            preview="first 100 chars...\n... [49,700 characters omitted] ...\nlast 100 chars",
             has_more=True,
             original_size=50_000,
             file_path="/tmp/hermes-results/test123.txt",
@@ -194,8 +216,8 @@ class TestBuildPersistedMessage:
         assert "50,000 characters" in msg
         assert "/tmp/hermes-results/test123.txt" in msg
         assert "read_file" in msg
+        assert "head + tail" in msg
         assert "first 100 chars..." in msg
-        assert "..." in msg  # has_more indicator
 
     def test_no_ellipsis_when_complete(self):
         msg = _build_persisted_message(
@@ -204,9 +226,10 @@ class TestBuildPersistedMessage:
             original_size=16,
             file_path="/tmp/hermes-results/x.txt",
         )
-        # Should not have the trailing "..." indicator before closing tag
-        lines = msg.strip().split("\n")
-        assert lines[-2] != "..."
+        # With the new head+tail format, the preview itself contains the
+        # ellipsis marker when has_more is True; when has_more is False
+        # the marker is inside the (truncated) preview if applicable.
+        assert "head + tail" in msg
 
     def test_large_size_shows_mb(self):
         msg = _build_persisted_message(

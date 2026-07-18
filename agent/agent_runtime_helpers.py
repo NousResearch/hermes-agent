@@ -16,6 +16,7 @@ Methods covered:
 * ``restore_primary_runtime`` — un-do fallback activation
 * ``extract_reasoning`` — pull reasoning fields out of API responses
 * ``dump_api_request_debug`` — write request body for post-mortem
+* ``dump_api_response_debug`` — write response body for post-mortem
 * ``anthropic_prompt_cache_policy`` — compute cache_control breakpoints
 * ``create_openai_client`` — build the per-agent OpenAI SDK client
 """
@@ -1604,6 +1605,171 @@ def dump_api_request_debug(
             logger.warning(f"Failed to dump API request debug payload: {dump_error}")
         return None
 
+
+def dump_api_response_debug(
+    agent,
+    *,
+    response: Optional[Any] = None,
+    status: Optional[int] = None,
+    headers: Optional[Dict[str, str]] = None,
+    reason: str,
+    error: Optional[Exception] = None,
+) -> Optional[Path]:
+    """
+    Dump a debug-friendly response record for the active inference API.
+
+    Mirrors ``dump_api_request_debug`` but captures the provider's response
+    (success or error) instead of the request body.  Uses the same trigger
+    gate (``HERMES_DUMP_REQUESTS``), destination directory, filename
+    convention (``response_dump_<sid>_<ts>.json``), secret-redaction path,
+    and atomic write semantics.
+
+    The structured payload includes: timestamp, session_id, reason,
+    model/provider/base_url, HTTP status, redacted headers, usage, and the
+    normalized response body (choices, content, finish_reason, etc.).
+    """
+    try:
+        agent_model = getattr(agent, "model", None)
+        agent_provider = getattr(agent, "provider", None)
+        agent_base_url = getattr(agent, "base_url", None)
+        agent_api_mode = getattr(agent, "api_mode", None)
+        agent_session_id = getattr(agent, "session_id", None)
+        agent_logs_dir = getattr(agent, "logs_dir", None)
+
+        if agent_logs_dir is None:
+            return None
+
+        # Build the response payload, mirroring the request-dump structure.
+        dump_payload: Dict[str, Any] = {
+            "timestamp": datetime.now().isoformat(),
+            "session_id": agent_session_id,
+            "reason": reason,
+            "model": agent_model,
+            "provider": agent_provider,
+            "base_url": agent_base_url,
+            "api_mode": agent_api_mode,
+            "response": {},
+        }
+
+        if status is not None:
+            dump_payload["status"] = status
+
+        if headers is not None:
+            dump_payload["headers"] = {
+                k: v for k, v in headers.items()
+                if k.lower() not in ("authorization", "x-api-key", "api-key")
+            }
+
+        # Normalize the SDK response object into a serializable dict.
+        if response is not None:
+            resp_dict: Dict[str, Any] = {}
+
+            # Standard OpenAI / Chat completions shape
+            resp_id = getattr(response, "id", None)
+            if resp_id is not None:
+                resp_dict["id"] = resp_id
+
+            resp_created = getattr(response, "created", None)
+            if resp_created is not None:
+                resp_dict["created"] = resp_created
+
+            resp_model = getattr(response, "model", None)
+            if resp_model is not None:
+                resp_dict["model"] = resp_model
+
+            # finish_reason from the first choice, if available
+            resp_choices = getattr(response, "choices", None)
+            if resp_choices is not None:
+                try:
+                    finish_reasons = []
+                    for c in resp_choices:
+                        fr = getattr(c, "finish_reason", None)
+                        if fr is not None:
+                            finish_reasons.append(fr)
+                    if finish_reasons:
+                        resp_dict["finish_reason"] = finish_reasons
+                except Exception:
+                    pass
+
+            # usage
+            resp_usage = getattr(response, "usage", None)
+            if resp_usage is not None:
+                try:
+                    # Duck-type: convert to dict whether it's an object or dict
+                    if hasattr(resp_usage, "__dict__"):
+                        resp_dict["usage"] = vars(resp_usage)
+                    elif isinstance(resp_usage, dict):
+                        resp_dict["usage"] = resp_usage
+                    else:
+                        resp_dict["usage"] = str(resp_usage)
+                except Exception:
+                    resp_dict["usage"] = str(resp_usage)
+
+            # Anthropic Messages API shape
+            resp_content = getattr(response, "content", None)
+            if resp_content is not None:
+                resp_dict["content"] = str(resp_content)
+
+            # Codex Responses API shape
+            resp_output = getattr(response, "output", None)
+            if resp_output is not None:
+                resp_dict["output"] = str(resp_output)
+            resp_output_text = getattr(response, "output_text", None)
+            if resp_output_text is not None:
+                resp_dict["output_text"] = resp_output_text
+            resp_status = getattr(response, "status", None)
+            if resp_status is not None:
+                resp_dict["status"] = resp_status
+
+            # Store the entire object repr fallback for anything exotic
+            resp_dict["object_type"] = type(response).__name__
+
+            dump_payload["response"] = resp_dict
+
+        if error is not None:
+            error_info: Dict[str, Any] = {
+                "type": type(error).__name__,
+                "message": str(error),
+            }
+            for attr_name in ("status_code", "request_id", "code", "param", "type"):
+                attr_value = getattr(error, attr_name, None)
+                if attr_value is not None:
+                    error_info[attr_name] = attr_value
+
+            body_attr = getattr(error, "body", None)
+            if body_attr is not None:
+                error_info["body"] = body_attr
+
+            response_obj = getattr(error, "response", None)
+            if response_obj is not None:
+                try:
+                    error_info["response_status"] = getattr(response_obj, "status_code", None)
+                    error_info["response_text"] = response_obj.text
+                except Exception as e:
+                    _ra().logger.debug("Could not extract error response details: %s", e)
+
+            dump_payload["error"] = error_info
+
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S_%f")
+        safe_sid = _ra()._safe_session_filename_component(agent_session_id or "")
+        dump_file = agent_logs_dir / f"response_dump_{safe_sid}_{timestamp}.json"
+
+        # Same redaction + atomic write as the request dumper.
+        from agent.redact import redact_sensitive_text
+        _serialized = json.dumps(dump_payload, ensure_ascii=False, indent=2, default=str)
+        _redacted_payload = json.loads(redact_sensitive_text(_serialized, force=True))
+        atomic_json_write(dump_file, _redacted_payload, default=str)
+
+        agent._vprint(f"{agent.log_prefix}🧾 Response debug dump written to: {dump_file}")
+
+        if env_var_enabled("HERMES_DUMP_REQUEST_STDOUT"):
+            print(json.dumps(_redacted_payload, ensure_ascii=False, indent=2, default=str))
+
+        return dump_file
+    except Exception as dump_error:
+        if getattr(agent, "verbose_logging", False):
+            logger.warning(f"Failed to dump API response debug payload: {dump_error}")
+        return None
 
 
 def anthropic_prompt_cache_policy(
@@ -3375,6 +3541,7 @@ __all__ = [
     "restore_primary_runtime",
     "extract_reasoning",
     "dump_api_request_debug",
+    "dump_api_response_debug",
     "anthropic_prompt_cache_policy",
     "create_openai_client",
     "switch_model",

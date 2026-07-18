@@ -5652,7 +5652,61 @@ def run_conversation(
                 # session resume (avoids consecutive user messages).
                 messages.append({"role": "assistant", "content": final_response})
                 break
-    
+
+    # ── Post-turn self-triggered compaction ───────────────────────────
+    # Proactively compact the message list after a complete turn when
+    # the token count exceeds soft_limit_ratio of the model's context
+    # window. This keeps context lean between user turns, reducing the
+    # pressure on the pre-API compression check (which fires at
+    # compression.threshold, default 0.50) and reducing the chance of
+    # hitting the hard limit mid-turn.
+    #
+    # Only fires when:
+    #   - self_triggered_enabled is True (compression config)
+    #   - There are enough messages (min_messages_before_compact)
+    #   - The rough token estimate exceeds soft_limit_ratio of the
+    #     model's context length
+    #   - compression is globally enabled
+    #   - The compressor has a should_compress check that passes
+    #     (respects cooldown, anti-thrashing, etc.)
+    try:
+        _self_compact = _should_self_trigger_compaction(agent, messages)
+        if _self_compact:
+            _pre_compact_len = len(messages)
+            _pre_compact_tokens = estimate_messages_tokens_rough(messages)
+            _logger = logger
+            _logger.info(
+                "Self-triggered compaction: ~%s tokens across %d messages "
+                "(session=%s)",
+                f"{_pre_compact_tokens:,}", _pre_compact_len,
+                agent.session_id or "-",
+            )
+            agent._emit_status(
+                f"🔄 Self-triggered compaction: ~{_pre_compact_tokens:,} tokens "
+                f"across {_pre_compact_len} messages — compacting for next turn."
+            )
+            messages, _ = agent._compress_context(
+                messages, active_system_prompt,
+                approx_tokens=_pre_compact_tokens,
+                task_id=effective_task_id,
+            )
+            conversation_history = conversation_history_after_compression(
+                agent, messages
+            )
+            _post_compact_tokens = estimate_messages_tokens_rough(messages)
+            _logger.info(
+                "Self-triggered compaction complete: %d→%d messages, "
+                "~%s→~%s tokens (session=%s)",
+                _pre_compact_len, len(messages),
+                f"{_pre_compact_tokens:,}", f"{_post_compact_tokens:,}",
+                agent.session_id or "-",
+            )
+    except Exception:
+        logger.warning(
+            "Self-triggered compaction failed (non-fatal)",
+            exc_info=True,
+        )
+
     # Post-loop turn finalization extracted to agent/turn_finalizer.finalize_turn
     # (god-file decomposition Phase 1 step 4). Behavior-neutral: the assembled
     # result dict is returned exactly as before.

@@ -1486,6 +1486,27 @@ DEFAULT_CONFIG = {
                                       # session_search and recoverable, not deleted.
                                       # Default False during rollout; will flip on
                                       # after live validation.
+        "self_triggered_enabled": True,   # When True, proactively compact context after
+                                          # each complete turn when the token count
+                                          # exceeds soft_limit_ratio of the context window.
+                                          # This keeps context manageable between turns
+                                          # rather than waiting for the pre-API threshold
+                                          # check (compression.threshold) at the next turn's
+                                          # first API call. Disable to rely entirely on
+                                          # the intra-turn pre-API check.
+        "soft_limit_ratio": 0.80,         # Fraction of the model's context window that
+                                          # triggers a self-triggered compaction after a
+                                          # turn completes. Higher values delay the
+                                          # proactive compaction; lower values keep the
+                                          # context leaner between turns. Only active
+                                          # when self_triggered_enabled is True.
+                                          # Must be between 0.0 and 1.0.
+        "min_messages_before_compact": 20,# Minimum number of messages before
+                                          # self-triggered compaction runs. Prevents
+                                          # compaction on very short conversations
+                                          # where the overhead isn't justified.
+                                          # Only active when self_triggered_enabled
+                                          # is True.
     },
 
     # Kanban subsystem (orchestrator workers + dispatcher-driven child tasks).

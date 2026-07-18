@@ -28,6 +28,7 @@
  */
 
 import { getStatus } from '@/hermes'
+import { translateNow } from '@/i18n'
 import { installPluginSdk, sdkImportMap } from '@/sdk/runtime'
 import { notifyError } from '@/store/notifications'
 
@@ -164,7 +165,7 @@ export async function loadRuntimePlugin(
     return plugin.id
   } catch (error) {
     console.error(`[plugins] runtime load failed (${origin})`, error)
-    notifyError(error, `Plugin "${origin}" failed to load`)
+    notifyError(error, translateNow('settings.plugins.loadFailed', origin))
     publishPlugin({
       id: origin,
       name: origin,

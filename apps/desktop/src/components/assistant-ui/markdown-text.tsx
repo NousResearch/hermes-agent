@@ -15,6 +15,7 @@ import { ExpandableBlock } from '@/components/chat/expandable-block'
 import { PreviewAttachment } from '@/components/chat/preview-attachment'
 import { chunkByLines, SyntaxHighlighter } from '@/components/chat/shiki-highlighter'
 import { ZoomableImage } from '@/components/chat/zoomable-image'
+import { useI18n } from '@/i18n'
 import { normalizeExternalUrl, openExternalLink, PrettyLink } from '@/lib/external-link'
 import { createMemoizedMathPlugin } from '@/lib/katex-memo'
 import { preprocessMarkdown } from '@/lib/markdown-preprocess'
@@ -136,14 +137,13 @@ function useOpenMediaFile(path: string) {
 }
 
 function OpenMediaFailedNote({ name }: { name: string }) {
-  return (
-    <span className="mt-1 block text-xs text-muted-foreground">
-      Couldn&apos;t fetch {name} from the gateway (missing, unreadable, or too large).
-    </span>
-  )
+  const copy = useI18n().t.assistant.markdown
+
+  return <span className="mt-1 block text-xs text-muted-foreground">{copy.fetchFailed(name)}</span>
 }
 
-function OpenMediaButton({ kind, path }: { kind: 'audio' | 'video'; path: string }) {
+function OpenMediaButton({ path }: { path: string }) {
+  const copy = useI18n().t.assistant.markdown
   const { open, openFailed } = useOpenMediaFile(path)
 
   return (
@@ -153,7 +153,7 @@ function OpenMediaButton({ kind, path }: { kind: 'audio' | 'video'; path: string
         onClick={open}
         type="button"
       >
-        Open {kind} file
+        {copy.openFile(mediaName(path))}
       </button>
       {openFailed && <OpenMediaFailedNote name={mediaName(path)} />}
     </span>
@@ -161,6 +161,7 @@ function OpenMediaButton({ kind, path }: { kind: 'audio' | 'video'; path: string
 }
 
 function MediaAttachment({ path }: { path: string }) {
+  const copy = useI18n().t.assistant.markdown
   const [src, setSrc] = useState('')
   const [failed, setFailed] = useState(false)
   const { open, openFailed } = useOpenMediaFile(path)
@@ -222,7 +223,7 @@ function MediaAttachment({ path }: { path: string }) {
       <span className="my-3 block max-w-md rounded-xl border border-border bg-muted/35 p-3">
         <span className="mb-2 block truncate text-xs font-medium text-muted-foreground">{name}</span>
         <audio className="block w-full" controls onError={() => setFailed(true)} preload="metadata" src={src} />
-        {failed && <OpenMediaButton kind="audio" path={path} />}
+        {failed && <OpenMediaButton path={path} />}
       </span>
     )
   }
@@ -237,7 +238,7 @@ function MediaAttachment({ path }: { path: string }) {
           onError={() => setFailed(true)}
           src={src}
         />
-        {failed && <OpenMediaButton kind="video" path={path} />}
+        {failed && <OpenMediaButton path={path} />}
       </span>
     )
   }
@@ -252,7 +253,7 @@ function MediaAttachment({ path }: { path: string }) {
           open()
         }}
       >
-        {failed ? `Open ${name}` : `Loading ${name}...`}
+        {failed ? copy.openFile(name) : copy.loadingFile(name)}
       </a>
       {openFailed && <OpenMediaFailedNote name={name} />}
     </span>

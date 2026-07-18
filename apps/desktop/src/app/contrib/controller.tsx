@@ -1,6 +1,6 @@
 import { useStore } from '@nanostores/react'
 import { computed } from 'nanostores'
-import type { CSSProperties, ReactElement, PointerEvent as ReactPointerEvent } from 'react'
+import { type CSSProperties, type ReactElement, type PointerEvent as ReactPointerEvent, useEffect } from 'react'
 
 import { PREVIEW_RAIL_MAX_WIDTH, PREVIEW_RAIL_MIN_WIDTH } from '@/app/chat/right-rail'
 import { PALETTE_AREA, type PaletteContribution } from '@/app/command-palette/contrib'
@@ -32,6 +32,7 @@ import { discoverBundledPlugins } from '@/contrib/plugins'
 import { Slot } from '@/contrib/react/slot'
 import { registry } from '@/contrib/registry'
 import { discoverRuntimePlugins } from '@/contrib/runtime-loader'
+import { translateNow, TRANSLATIONS, type Translations, useI18n } from '@/i18n'
 import { sessionTitle as storedSessionTitle } from '@/lib/chat-runtime'
 import { LayoutDashboard } from '@/lib/icons'
 import { type KeybindContribution, KEYBINDS_AREA } from '@/lib/keybinds/actions'
@@ -145,7 +146,7 @@ registry.registerMany([
     id: 'workspace',
     area: 'panes',
     // Live-retitled to the loaded session by syncWorkspaceTitle below.
-    title: 'New session',
+    title: TRANSLATIONS.en.desktop.newSession,
     data: {
       placement: 'main',
       minWidth: '22vw',
@@ -238,70 +239,73 @@ registry.registerMany([
 // auto-discovered by discoverBundledPlugins() below.
 // ---------------------------------------------------------------------------
 
-registry.registerMany([
-  // Titlebar center stays empty on purpose: session title lives in tabs +
-  // sidebar; place/cwd lives in the sidebar project tree. Center is drag
-  // chrome (plugins can still contribute to titleBar.center if needed).
-  // Layout edit mode registers through the SAME declarative surfaces plugins
-  // use: a rebindable keybind (collision-checked in the panel) + a ⌘K row
-  // whose hotkey hint tracks the live binding.
-  {
-    id: 'layout.editMode',
-    area: KEYBINDS_AREA,
-    data: {
+const registerLocalizedCoreCommands = (copy: Translations) =>
+  registry.registerMany([
+    // Titlebar center stays empty on purpose: session title lives in tabs +
+    // sidebar; place/cwd lives in the sidebar project tree. Center is drag
+    // chrome (plugins can still contribute to titleBar.center if needed).
+    // Layout edit mode registers through the SAME declarative surfaces plugins
+    // use: a rebindable keybind (collision-checked in the panel) + a ⌘K row
+    // whose hotkey hint tracks the live binding.
+    {
       id: 'layout.editMode',
-      label: 'Toggle layout edit mode',
-      defaults: ['mod+shift+\\'],
-      run: toggleLayoutEditMode
-    } satisfies KeybindContribution
-  },
-  {
-    id: 'layout.editMode',
-    area: PALETTE_AREA,
-    data: {
+      area: KEYBINDS_AREA,
+      data: {
+        id: 'layout.editMode',
+        label: copy.zones.toggleEditMode,
+        defaults: ['mod+shift+\\'],
+        run: toggleLayoutEditMode
+      } satisfies KeybindContribution
+    },
+    {
       id: 'layout.editMode',
-      label: 'Toggle layout edit mode',
-      action: 'layout.editMode',
-      icon: LayoutDashboard,
-      keywords: ['layout', 'zones', 'panes', 'edit', 'rearrange'],
-      run: toggleLayoutEditMode
-    } satisfies PaletteContribution
-  },
-  // The agent's write -> see loop: rescan <hermes home>/desktop-plugins
-  // without relaunching (same-id reloads dispose the previous incarnation).
-  {
-    id: 'plugins.reload',
-    area: PALETTE_AREA,
-    data: {
+      area: PALETTE_AREA,
+      data: {
+        id: 'layout.editMode',
+        label: copy.zones.toggleEditMode,
+        action: 'layout.editMode',
+        icon: LayoutDashboard,
+        keywords: ['layout', 'zones', 'panes', 'edit', 'rearrange'],
+        run: toggleLayoutEditMode
+      } satisfies PaletteContribution
+    },
+    // The agent's write -> see loop: rescan <hermes home>/desktop-plugins
+    // without relaunching (same-id reloads dispose the previous incarnation).
+    {
       id: 'plugins.reload',
-      label: 'Reload desktop plugins',
-      keywords: ['plugins', 'reload', 'refresh', 'desktop'],
-      run: () => void discoverRuntimePlugins()
-    } satisfies PaletteContribution
-  },
-  {
-    id: 'layout.reset',
-    area: PALETTE_AREA,
-    data: {
+      area: PALETTE_AREA,
+      data: {
+        id: 'plugins.reload',
+        label: copy.zones.reloadDesktopPlugins,
+        keywords: ['plugins', 'reload', 'refresh', 'desktop'],
+        run: () => void discoverRuntimePlugins()
+      } satisfies PaletteContribution
+    },
+    {
       id: 'layout.reset',
-      label: 'Reset layout',
-      icon: LayoutDashboard,
-      keywords: ['layout', 'reset', 'default', 'panes'],
-      run: resetLayoutTree
-    } satisfies PaletteContribution
-  },
-  // The keybind panel's non-titlebar door (the keyboard icon is gone).
-  {
-    id: 'keybinds.panel',
-    area: PALETTE_AREA,
-    data: {
+      area: PALETTE_AREA,
+      data: {
+        id: 'layout.reset',
+        label: copy.zones.resetLayout,
+        icon: LayoutDashboard,
+        keywords: ['layout', 'reset', 'default', 'panes'],
+        run: resetLayoutTree
+      } satisfies PaletteContribution
+    },
+    // The keybind panel's non-titlebar door (the keyboard icon is gone).
+    {
       id: 'keybinds.panel',
-      label: 'Keyboard shortcuts',
-      keywords: ['keybinds', 'shortcuts', 'hotkeys', 'keyboard'],
-      run: () => window.dispatchEvent(new CustomEvent('hermes:open-keybinds'))
-    } satisfies PaletteContribution
-  }
-])
+      area: PALETTE_AREA,
+      data: {
+        id: 'keybinds.panel',
+        label: copy.keybinds.title,
+        keywords: ['keybinds', 'shortcuts', 'hotkeys', 'keyboard'],
+        run: () => window.dispatchEvent(new CustomEvent('hermes:open-keybinds'))
+      } satisfies PaletteContribution
+    }
+  ])
+
+registerLocalizedCoreCommands(TRANSLATIONS.en)
 
 // ---------------------------------------------------------------------------
 // Layout presets — CHAT (main) always dominates.
@@ -367,12 +371,21 @@ const QUAD_TREE = split(
   [3, 1]
 )
 
-registry.registerMany([
-  { id: 'default', area: 'layouts', title: 'Default', order: 0, data: DEFAULT_TREE },
-  { id: 'focus', area: 'layouts', title: 'Focus', order: 10, data: FOCUS_TREE },
-  { id: 'terminal-deck', area: 'layouts', title: 'Terminal deck', order: 20, data: TERMINAL_TREE },
-  { id: 'quad', area: 'layouts', title: 'Quad', order: 30, data: QUAD_TREE }
-])
+const registerLocalizedLayouts = (copy: Translations) =>
+  registry.registerMany([
+    { id: 'default', area: 'layouts', title: copy.zones.layoutPresets.default, order: 0, data: DEFAULT_TREE },
+    { id: 'focus', area: 'layouts', title: copy.zones.layoutPresets.focus, order: 10, data: FOCUS_TREE },
+    {
+      id: 'terminal-deck',
+      area: 'layouts',
+      title: copy.zones.layoutPresets.terminalDeck,
+      order: 20,
+      data: TERMINAL_TREE
+    },
+    { id: 'quad', area: 'layouts', title: copy.zones.layoutPresets.quad, order: 30, data: QUAD_TREE }
+  ])
+
+registerLocalizedLayouts(TRANSLATIONS.en)
 
 declareDefaultTree(DEFAULT_TREE)
 
@@ -401,7 +414,7 @@ const syncWorkspaceTitle = () => {
   registry.register({
     id: 'workspace',
     area: 'panes',
-    title: stored ? storedSessionTitle(stored) : 'New session',
+    title: stored ? storedSessionTitle(stored) : translateNow('desktop.newSession'),
     data: {
       // Pages aren't tab-able: the main zone's bar stands down while one shows.
       headerVeto: $workspaceIsPage.get(),
@@ -552,16 +565,20 @@ bindPaneCollapse(
   () => $logsOpen.set(false),
   () => $logsOpen.set(true)
 )
-registry.register({
-  id: 'logs.toggle',
-  area: PALETTE_AREA,
-  data: {
+
+const registerLocalizedLogsCommand = (copy: Translations) =>
+  registry.register({
     id: 'logs.toggle',
-    label: 'Toggle logs',
-    keywords: ['logs', 'agent log', 'tail', 'debug'],
-    run: () => $logsOpen.set(!$logsOpen.get())
-  } satisfies PaletteContribution
-})
+    area: PALETTE_AREA,
+    data: {
+      id: 'logs.toggle',
+      label: copy.zones.toggleLogs,
+      keywords: ['logs', 'agent log', 'tail', 'debug'],
+      run: () => $logsOpen.set(!$logsOpen.get())
+    } satisfies PaletteContribution
+  })
+
+registerLocalizedLogsCommand(TRANSLATIONS.en)
 
 // Sessions/files Close = collapse their SIDE (⌘B/⌘J truthful, titlebar button
 // flips back) — but only while the pane actually lives in that root side
@@ -592,6 +609,14 @@ $filePreviewTarget.listen(target => target && revealPreview())
 
 export function ContribController() {
   const sidebarOpen = useStore($sidebarOpen)
+  const { t } = useI18n()
+
+  useEffect(() => {
+    registerLocalizedCoreCommands(t)
+    registerLocalizedLayouts(t)
+    registerLocalizedLogsCommand(t)
+    syncWorkspaceTitle()
+  }, [t])
 
   return (
     <SidebarProvider

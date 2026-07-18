@@ -56,16 +56,16 @@ export const Thread: FC<{
 
   const confirmRestore = useCallback(() => {
     if (!restoreConfirmTarget || !onRestoreToMessage) {
-      throw new Error('Restore is unavailable for this message.')
+      throw new Error(copy.restoreUnavailable)
     }
 
     const { messageId, text, userOrdinal } = restoreConfirmTarget
 
     closeRestoreConfirm()
     void Promise.resolve(onRestoreToMessage(messageId, { text, userOrdinal })).catch((error: unknown) => {
-      notifyError(error, 'Restore failed')
+      notifyError(error, copy.restoreFailed)
     })
-  }, [closeRestoreConfirm, onRestoreToMessage, restoreConfirmTarget])
+  }, [closeRestoreConfirm, copy.restoreFailed, copy.restoreUnavailable, onRestoreToMessage, restoreConfirmTarget])
 
   const requestRestoreConfirm = useCallback((messageId: string, target: RestoreMessageTarget) => {
     setRestoreConfirmTarget({ messageId, ...target })

@@ -326,7 +326,7 @@ export function ModelMenuPanel({ gateway, onSelectModel, requestGateway }: Model
 
       {moaPresets.length > 0 ? (
         <>
-          <DropdownMenuLabel className={dropdownMenuSectionLabel}>MoA presets</DropdownMenuLabel>
+          <DropdownMenuLabel className={dropdownMenuSectionLabel}>{t.settings.model.moaPresets}</DropdownMenuLabel>
           {moaPresets.map(preset => {
             const isCurrentMoa = optionsProvider === 'moa' && optionsModel === preset
 

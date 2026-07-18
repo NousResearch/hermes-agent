@@ -51,6 +51,7 @@ async function resolveImageSrc(path: string): Promise<string> {
 export const GeneratedImage: FC<{ aspectRatio?: string; result?: unknown }> = ({ aspectRatio, result }) => {
   const { t } = useI18n()
   const copy = t.desktop
+  const imageAlt = t.assistant.tool.titles.image_generate.done
   const image = result === undefined ? null : generatedImageFromResult(result)
   const pending = result === undefined
 
@@ -140,7 +141,7 @@ export const GeneratedImage: FC<{ aspectRatio?: string; result?: unknown }> = ({
             type="button"
           >
             <img
-              alt="Generated image"
+              alt={imageAlt}
               className={cn(
                 'absolute inset-0 size-full object-contain opacity-0 transition-opacity duration-500 ease-out',
                 loaded && 'opacity-100'
@@ -166,7 +167,7 @@ export const GeneratedImage: FC<{ aspectRatio?: string; result?: unknown }> = ({
       </span>
       {src && (
         <ImageLightbox
-          alt="Generated image"
+          alt={imageAlt}
           copy={copy}
           onClick={download}
           onOpenChange={setLightboxOpen}

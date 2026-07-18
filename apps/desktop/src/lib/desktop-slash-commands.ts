@@ -1,3 +1,5 @@
+import { translateNow } from '@/i18n'
+
 export interface CommandsCatalogSection {
   name: string
   pairs: [string, string][]
@@ -357,7 +359,11 @@ export function desktopSlashUnavailableMessage(command: string): string | null {
 }
 
 export function desktopSlashDescription(command: string, fallback = ''): string {
-  return SPEC_BY_NAME.get(canonicalDesktopSlashCommand(command))?.description || fallback
+  const canonical = canonicalDesktopSlashCommand(command)
+  const key = `composer.commandDescs.${canonical}`
+  const translated = translateNow(key)
+
+  return translated === key ? SPEC_BY_NAME.get(canonical)?.description || fallback : translated
 }
 
 /**
@@ -380,17 +386,17 @@ export function desktopSkinSlashCompletions(
     {
       text: '/skin list',
       display: '/skin list',
-      meta: 'Show available desktop themes'
+      meta: translateNow('desktop.skin.showAvailable')
     },
     {
       text: '/skin next',
       display: '/skin next',
-      meta: 'Cycle to the next desktop theme'
+      meta: translateNow('desktop.skin.cycleNext')
     },
     ...themes.map(theme => ({
       text: `/skin ${theme.name}`,
       display: `/skin ${theme.name}`,
-      meta: `${theme.label}${theme.name === activeThemeName ? ' (current)' : ''} - ${theme.description}`
+      meta: `${theme.label}${theme.name === activeThemeName ? ` (${translateNow('desktop.skin.current')})` : ''} - ${theme.description}`
     }))
   ]
 

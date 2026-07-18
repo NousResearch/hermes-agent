@@ -1,5 +1,6 @@
 import { atom, computed } from 'nanostores'
 
+import { translateNow } from '@/i18n'
 import { readKey, writeKey } from '@/lib/storage'
 import { $currentCwd } from '@/store/session'
 
@@ -160,7 +161,10 @@ const newId = () =>
  *  tie to session/project state); pass an explicit cwd to override. Returns the id. */
 export function createTerminal(cwd: string = $currentCwd.get()): string {
   const id = newId()
-  $terminals.set([...$terminals.get(), { id, title: 'Terminal', auto: true, cwd, kind: 'user' }])
+  $terminals.set([
+    ...$terminals.get(),
+    { id, title: translateNow('rightSidebar.terminal'), auto: true, cwd, kind: 'user' }
+  ])
   $activeTerminalId.set(id)
 
   return id

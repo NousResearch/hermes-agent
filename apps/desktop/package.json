@@ -39,6 +39,7 @@
     "test:desktop:existing": "node scripts/test-desktop.mjs existing",
     "test:desktop:fresh": "node scripts/test-desktop.mjs fresh",
     "typecheck": "tsc -p . --noEmit && tsc -p tsconfig.electron.json --noEmit",
+    "i18n:check": "node scripts/check-i18n-literals.mjs",
     "lint": "eslint src/ electron/",
     "lint:fix": "eslint src/ electron/ --fix",
     "fmt": "prettier --write 'src/**/*.{ts,tsx}' 'electron/**/*.ts' 'vite.config.ts'",
@@ -47,7 +48,7 @@
     "test:desktop:platforms": "vitest run --project electron",
     "test": "vitest run",
     "preview": "node scripts/assert-root-install.mjs && vite preview --host 127.0.0.1 --port 4174",
-    "check": "npm run typecheck && npm run test && npm run test:desktop:all && npm run build"
+    "check": "npm run i18n:check && npm run typecheck && npm run test && npm run test:desktop:all && npm run build"
   },
   "dependencies": {
     "@assistant-ui/react": "^0.14.23",

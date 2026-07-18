@@ -10,6 +10,7 @@
  * header is a small regex.
  */
 
+import { translateNow } from '@/i18n'
 import { capitalize } from '@/lib/text'
 
 export type CommitGroupId = 'new' | 'fixed' | 'faster' | 'improved' | 'other'
@@ -37,12 +38,12 @@ interface BuildOptions {
   maxTotal?: number
 }
 
-const GROUP_META: Record<CommitGroupId, { label: string; order: number }> = {
-  new: { label: "What's new", order: 0 },
-  fixed: { label: 'Fixed', order: 1 },
-  faster: { label: 'Faster', order: 2 },
-  improved: { label: 'Improved', order: 3 },
-  other: { label: 'Other improvements', order: 4 }
+const GROUP_ORDER: Record<CommitGroupId, number> = {
+  new: 0,
+  fixed: 1,
+  faster: 2,
+  improved: 3,
+  other: 4
 }
 
 const TYPE_TO_GROUP: Record<string, CommitGroupId> = {
@@ -76,9 +77,11 @@ const HIDDEN_TYPES = new Set([
   'wip'
 ])
 
-const FALLBACK_GROUP: CommitGroup = { id: 'other', items: ['Improvements and fixes'], label: 'In this update' }
-
 const CONVENTIONAL_HEADER = /^(?<type>[a-zA-Z][a-zA-Z0-9_-]*)(?:\((?<scope>[^)]+)\))?(?<bang>!)?:\s+(?<subject>.+)$/
+
+function groupLabel(id: CommitGroupId): string {
+  return translateNow(`updates.changelog.groups.${id}`)
+}
 
 /** Parse a single commit header line per Conventional Commits 1.0. */
 export function parseCommitHeader(raw: string): ParsedCommit {
@@ -166,13 +169,19 @@ export function buildCommitChangelog(
   }
 
   const result = Array.from(groups.entries())
-    .map(([id, items]) => ({ id, items, label: GROUP_META[id].label, order: GROUP_META[id].order }))
+    .map(([id, items]) => ({ id, items, label: groupLabel(id), order: GROUP_ORDER[id] }))
     .sort((a, b) => a.order - b.order)
     .slice(0, maxGroups)
     .map(({ id, items, label }): CommitGroup => ({ id, items, label }))
 
   if (result.length === 0) {
-    return [FALLBACK_GROUP]
+    return [
+      {
+        id: 'other',
+        items: [translateNow('updates.changelog.fallbackItem')],
+        label: translateNow('updates.changelog.fallbackGroup')
+      }
+    ]
   }
 
   return result

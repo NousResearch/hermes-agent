@@ -39,7 +39,9 @@ export const en: Translations = {
     send: 'Send',
     set: 'Set',
     skip: 'Skip',
+    stop: 'Stop',
     update: 'Update',
+    view: 'View',
     tryHint: term => `Try “${term}”`,
     on: 'On',
     off: 'Off'
@@ -336,6 +338,9 @@ export const en: Translations = {
       enable: 'Enable',
       disable: 'Disable',
       failed: 'failed',
+      openFolderFailed: 'Could not open the plugins folder',
+      resolveFolderFailed: 'Could not resolve the plugins folder',
+      loadFailed: origin => `Plugin "${origin}" failed to load`,
       empty: 'No desktop plugins installed yet.',
       kinds: { bundled: 'bundled', disk: 'on disk', runtime: 'runtime' }
     },
@@ -386,6 +391,33 @@ export const en: Translations = {
       memory: 'Memory & Context',
       voice: 'Voice',
       advanced: 'Advanced'
+    },
+    providerDescriptions: {
+      'Nous Portal': 'Hosted Hermes and Nous-trained models',
+      'Fireworks AI': 'OpenAI-compatible direct model API',
+      OpenRouter: 'Aggregator for hundreds of frontier models',
+      Anthropic: 'Claude API access (Sonnet, Opus, Haiku)',
+      xAI: 'Grok models (use OAuth for SuperGrok or Premium+)',
+      Gemini: 'Google AI Studio (Gemini 1.5, 2.0, and 2.5)',
+      DeepSeek: 'Direct DeepSeek API (V3.x, R1)',
+      'DashScope (Qwen)': 'Alibaba Cloud DashScope — Qwen and multi-vendor models',
+      'GLM / Z.AI': 'Zhipu GLM-4.6 and Z.AI hosted endpoints',
+      'Kimi / Moonshot': 'Moonshot Kimi K2 and coding endpoints',
+      'Kimi (China)': 'Moonshot China endpoint',
+      MiniMax: 'MiniMax-M2 and Hailuo international endpoints',
+      'MiniMax (China)': 'MiniMax mainland China endpoint',
+      'Hugging Face': 'Inference Providers — 20+ open models via router.huggingface.co',
+      'OpenCode Zen': 'Pay-as-you-go access to curated coding models',
+      'OpenCode Go': '$10/month subscription for open coding models',
+      'NVIDIA NIM': 'Use build.nvidia.com or your own local NIM endpoint',
+      'Ollama Cloud': 'Cloud-hosted open models from ollama.com',
+      'LM Studio': 'Local LM Studio server (OpenAI-compatible)',
+      StepFun: 'StepFun Step Plan coding models',
+      'Xiaomi MiMo': 'MiMo-V2.5 and Xiaomi proprietary models',
+      'Arcee AI': 'Arcee-hosted small and medium models',
+      'GMI Cloud': 'GMI Cloud GPU and model serving',
+      'Azure Foundry': 'Azure AI Foundry custom endpoints (OpenAI or Anthropic-compatible)',
+      'AWS Bedrock': 'Authenticate via an AWS profile and region'
     },
     searchPlaceholder: {
       about: 'About Hermes Desktop',
@@ -439,6 +471,17 @@ export const en: Translations = {
       installed: name => `Installed “${name}”.`,
       removeTheme: 'Remove theme',
       importedBadge: 'Imported',
+      marketplaceSource: 'From the VS Code Marketplace',
+      searchThemesPlaceholder: 'Search your themes or the VS Code Marketplace…',
+      noInstalledThemesMatch: query => `No installed themes match "${query}".`,
+      builtInThemes: {
+        nous: { label: 'Nous', description: 'Glass neutrals with Nous blue accents' },
+        midnight: { label: 'Midnight', description: 'Deep blue-violet with cool accents' },
+        ember: { label: 'Ember', description: 'Warm crimson and bronze — forge vibes' },
+        mono: { label: 'Mono', description: 'Clean grayscale — minimal and focused' },
+        cyberpunk: { label: 'Cyberpunk', description: 'Neon green on black — matrix terminal' },
+        slate: { label: 'Slate', description: 'Cool slate blue — focused developer theme' }
+      },
       pet: {
         title: 'Pet',
         intro:
@@ -732,6 +775,26 @@ export const en: Translations = {
       fallbackAdd: 'Add fallback',
       fallbackEmpty: 'No fallback models — the default model is used unless it fails.',
       notInCatalog: "isn't in this provider's model list — calls may fall back to a backup.",
+      pasteApiKey: key => `Paste ${key}`,
+      activating: 'Activating...',
+      activate: 'Activate',
+      setupProvider: provider => `Set up ${provider}`,
+      moaTitle: 'Mixture of Agents',
+      moaDescription:
+        'Configure named presets that appear as models under the Mixture of Agents provider. The aggregator is the acting model.',
+      moaPreset: 'Preset',
+      moaSetDefault: 'Set default',
+      moaNewPreset: 'new preset',
+      moaAddPreset: 'Add preset',
+      moaDefault: 'Default',
+      moaReference: index => `Reference ${index}`,
+      moaAddReference: 'Add reference model',
+      moaAggregator: 'Aggregator',
+      moaPresets: 'MoA presets',
+      staleAuxWarningPrefix: (count, names) =>
+        `${count} auxiliary task${count === 1 ? '' : 's'} (${names}) still run on `,
+      staleAuxWarningSuffix: ', not your main model.',
+      otherProviders: 'other providers',
       tasks: {
         vision: { label: 'Vision', hint: 'Image analysis' },
         web_extract: { label: 'Web extract', hint: 'Page summarization' },
@@ -741,6 +804,86 @@ export const en: Translations = {
         mcp: { label: 'MCP', hint: 'MCP tool routing' },
         title_generation: { label: 'Title gen', hint: 'Session titles' },
         curator: { label: 'Curator', hint: 'Skill-usage review' }
+      }
+    },
+    computerUse: {
+      linuxNote: 'Drives your desktop via the X11/XWayland accessibility stack — no permission prompt.',
+      windowsNote: 'First run may trigger a Windows SmartScreen prompt for the cua-driver UIAccess worker — allow it.',
+      granted: 'Granted',
+      notGranted: 'Not granted',
+      unknown: 'Unknown',
+      statusLoadFailed: 'Could not read Computer Use status',
+      permissionRequestFailed: 'Could not request permissions',
+      approveTitle: 'Approve in System Settings',
+      approveMessage: 'macOS will show a permission dialog attributed to CuaDriver. Approve it, then return here.',
+      checking: 'Checking Computer Use status…',
+      unsupported: platform => `Computer Use isn't supported on this platform (${platform}).`,
+      installDriver: 'Install the cua-driver backend below to drive this machine.',
+      thenGrant: ' Then grant Accessibility and Screen Recording here.',
+      identityHint:
+        "Grants attach to CuaDriver's own identity (com.trycua.driver), not Hermes — so the dialog is attributed to the process that drives your Mac.",
+      recheck: 'Recheck',
+      accessibility: 'Accessibility',
+      accessibilityHint: 'Lets cua-driver post clicks, keystrokes, and read the accessibility tree.',
+      screenRecording: 'Screen Recording',
+      screenRecordingHint: 'Lets cua-driver capture screenshots of app windows.',
+      driverHealth: 'Driver health',
+      ready: 'Ready',
+      notReady: 'Not ready',
+      readyHint: 'Computer Use is ready. Ask the agent to capture an app and click around.',
+      waitingApproval: 'Waiting for approval…',
+      grantPermissions: 'Grant permissions'
+    },
+    memoryProvider: {
+      keepCurrent: 'Leave blank to keep current value',
+      loadFailed: 'Memory provider settings failed to load',
+      savedTitle: provider => `${provider} saved`,
+      savedMessage: 'Memory provider configuration updated.',
+      saveFailed: provider => `Failed to save ${provider} settings`,
+      loading: 'Loading memory provider settings...',
+      settings: provider => `${provider} settings`,
+      fieldSet: field => `${field} set`,
+      fieldNotSet: field => `${field} not set`,
+      startFailedDetail: 'Could not start the connection.',
+      startFailedTitle: 'Failed to start connection',
+      timedOut: 'Timed out — try again.',
+      connectionFailed: 'Connection failed.',
+      connectViaOauth: 'Connect via OAuth',
+      reconnect: 'Reconnect',
+      connect: 'Connect',
+      apiKeySet: 'API key set',
+      oauthSet: 'OAuth set',
+      waitingConsent: 'Waiting for browser consent…'
+    },
+    uninstall: {
+      dangerZone: 'Danger zone',
+      checking: "Checking what's installed…",
+      confirmTitle: 'Confirm uninstall',
+      consequence: value => `This removes ${value}. This can't be undone.`,
+      appPath: path => `App: ${path}`,
+      uninstalling: 'Uninstalling…',
+      confirm: 'Yes, uninstall',
+      title: 'Uninstall Hermes',
+      description:
+        'Choose how much to remove. The app closes to finish the job; reopen the installer any time to come back.',
+      couldNotStart: 'Uninstall could not start.',
+      options: {
+        gui: {
+          title: 'Uninstall Chat GUI only',
+          description: 'Remove this desktop app. The Hermes agent, your config, and chats all stay.',
+          consequence: 'the desktop Chat GUI (this app and its data)'
+        },
+        lite: {
+          title: 'Uninstall GUI + agent, keep my data',
+          description:
+            'Remove the app and the Hermes agent, but keep config, chats, and secrets for a future reinstall.',
+          consequence: 'the Chat GUI and the Hermes agent (config, chats, and secrets are kept)'
+        },
+        full: {
+          title: 'Uninstall everything',
+          description: 'Remove the app, the agent, and all user data — config, chats, scheduled jobs, secrets, logs.',
+          consequence: 'EVERYTHING — the Chat GUI, the Hermes agent, and all of your config, chats, secrets, and logs'
+        }
       }
     },
     providers: {
@@ -971,7 +1114,18 @@ export const en: Translations = {
     importEmpty: 'Paste a map code to load it.',
     importSuccess: nodes => `Loaded a map with ${nodes} ${nodes === 1 ? 'node' : 'nodes'}.`,
     importedBadge: 'imported map',
-    resetToMine: 'Back to my map'
+    resetToMine: 'Back to my map',
+    skill: 'Skill',
+    editNode: noun => `Edit ${noun}…`,
+    editTitle: label => `Edit ${label}`,
+    archiveSkill: 'Archive skill',
+    deleteMemory: 'Delete memory',
+    deleteTitle: label => `Delete ${label}?`,
+    deleteMemoryDescription: 'This memory is removed permanently.',
+    legendAge: 'core = oldest · outer = newer',
+    pauseTimeline: 'Pause timeline',
+    playTimeline: 'Play timeline',
+    timelineScrubber: 'Timeline scrubber'
   },
   agents: {
     close: 'Close agents',
@@ -1061,7 +1215,15 @@ export const en: Translations = {
       referenceImageTooLarge: 'Reference image is too large. Use one under 16 MB.',
       referenceImageInvalid: 'Could not read that reference image. Try a PNG, JPG, WebP, or GIF.',
       adopt: 'Adopt',
-      startOver: 'Start over'
+      startOver: 'Start over',
+      unavailableTitle: 'Pet generation needs an image provider',
+      unavailableBody: 'Configure an image generation provider before creating a pet.',
+      unavailableHint: 'Open Settings → API Keys, add a supported provider key, then try again.',
+      setupImageGeneration: 'Set up image generation',
+      getKeyFrom: 'Grab a key from',
+      reference: 'Reference',
+      removeReference: 'Remove reference',
+      addReference: 'Add a reference'
     },
     installTheme: {
       title: 'Install theme…',
@@ -1731,13 +1893,44 @@ export const en: Translations = {
     hotkeys: 'Hotkeys',
     helpFooter: 'opens the full panel · backspace dismisses',
     commandDescs: {
+      '/new': 'Start a new desktop chat',
+      '/branch': 'Branch the latest message into a new chat',
+      '/yolo': 'Toggle YOLO — auto-approve dangerous commands',
+      '/handoff': 'Hand off this session to a messaging platform',
+      '/profile': 'Switch the active Hermes profile',
+      '/skin': 'Switch desktop theme or cycle to the next one',
+      '/title': 'Rename the current session',
       '/help': 'full list of commands + hotkeys',
+      '/browser': 'Manage the local browser connection',
+      '/journey': 'Open the memory graph — skills and memories over time',
+      '/model': 'Switch the model for this session',
       '/clear': 'start a new session',
       '/resume': 'resume a prior session',
+      '/agents': 'Show active desktop sessions and running tasks',
+      '/background': 'Run a prompt in the background',
+      '/compress': 'Compress this conversation context',
+      '/debug': 'Create a debug report',
+      '/goal': 'Manage the standing goal for this session',
+      '/personality': 'Switch personality for this session',
+      '/pet': 'Toggle or adopt a petdex mascot',
+      '/hatch': 'Generate a new pet',
+      '/queue': 'Queue a prompt for the next turn',
+      '/retry': 'Retry the last user message',
+      '/rollback': 'List or restore filesystem checkpoints',
+      '/save': 'Save the current transcript to JSON',
+      '/status': 'Show current session status',
+      '/steer': 'Steer the current run after the next tool call',
+      '/stop': 'Stop running background processes',
+      '/tools': 'List or toggle tools available to the agent',
+      '/undo': 'Remove the last user/assistant exchange',
+      '/usage': 'Show token usage for this session',
+      '/version': 'Show Hermes Agent version',
       '/details': 'control transcript detail level',
       '/copy': 'copy selection or last assistant message',
       '/quit': 'exit hermes'
     },
+    browseAllSessions: 'Browse all sessions…',
+    slashGroups: { commands: 'Commands', options: 'Options', sessions: 'Sessions', skills: 'Skills', themes: 'Themes' },
     hotkeyDescs: {
       'composer.mention': 'reference files, folders, urls, git',
       'composer.slash': 'slash command palette',
@@ -1778,6 +1971,7 @@ export const en: Translations = {
     themeTryPre: 'Try ',
     themeTryPost: '.',
     attachLabel: 'Attach',
+    addContext: 'Add context',
     files: 'Files…',
     folder: 'Folder…',
     images: 'Images…',
@@ -1914,6 +2108,17 @@ export const en: Translations = {
     errorTitle: 'Update didn’t finish',
     errorBody: 'No worries — nothing was lost. You can try again now.',
     notNow: 'Not now',
+    changelog: {
+      groups: {
+        new: "What's new",
+        fixed: 'Fixed',
+        faster: 'Faster',
+        improved: 'Improved',
+        other: 'Other improvements'
+      },
+      fallbackGroup: 'In this update',
+      fallbackItem: 'Improvements and fixes'
+    },
     applyStatus: {
       preparing: 'Updating backend…',
       pulling: 'Backend updating…',
@@ -2037,7 +2242,32 @@ export const en: Translations = {
     price: (input, output) => `${input} in / ${output} out per Mtok`,
     change: 'Change',
     startChatting: 'Begin',
-    docs: provider => `${provider} docs`
+    docs: provider => `${provider} docs`,
+    readyTitle: 'Hermes is ready',
+    providerConnected: provider => `${provider} connected.`,
+    gatewayToolsTitle: 'Tool Gateway enabled',
+    gatewayToolsMessage: tools =>
+      `${new Intl.ListFormat('en').format(tools)} now run through your Nous subscription — no separate API keys needed.`,
+    gatewayToolLabels: {
+      browser: 'browser automation',
+      image_gen: 'image generation',
+      tts: 'text-to-speech',
+      video_gen: 'video generation',
+      web: 'web search and extract'
+    },
+    runtimeNotReadyTitle: 'Runtime not ready',
+    runtimeNotReadyMessage:
+      'Hermes Desktop could not verify the running backend on startup. Some features may be unavailable until the gateway is reachable.',
+    enterValueFirst: 'Enter a value first.',
+    enterEndpointFirst: 'Enter the endpoint URL first.',
+    saveProviderFailed: provider => `Could not save ${provider}`,
+    endpointUnreachable: url => `Could not reach ${url}.`,
+    endpointNoModels: url =>
+      `Connected to ${url}, but it advertised no models at /v1/models. Start a model on that endpoint and try again.`,
+    endpointSavedUnreachable: url => `Saved, but Hermes still cannot reach ${url}.`,
+    localEndpoint: 'Local / custom endpoint',
+    saveLocalEndpointFailed: 'Could not save local endpoint',
+    changeModelFailed: 'Could not change model'
   },
 
   modelPicker: {
@@ -2359,7 +2589,12 @@ export const en: Translations = {
     layoutNamePlaceholder: fallback => `Layout name (${fallback})`,
     saveApply: 'Save & apply',
     notExpressible: 'this arrangement interlocks (pinwheel) — not expressible as nested splits yet',
-    zoneCount: count => `${count} zones`
+    zoneCount: count => `${count} zones`,
+    toggleEditMode: 'Toggle layout edit mode',
+    reloadDesktopPlugins: 'Reload desktop plugins',
+    resetLayout: 'Reset layout',
+    toggleLogs: 'Toggle logs',
+    layoutPresets: { default: 'Default', focus: 'Focus', terminalDeck: 'Terminal deck', quad: 'Quad' }
   },
 
   assistant: {
@@ -2372,6 +2607,11 @@ export const en: Translations = {
           ? 'Will resume when the background task finishes'
           : `Will resume when ${count} background tasks finish`,
       thinking: 'Thinking',
+      summarizing: 'Summarizing thread',
+      hermesThinking: 'Hermes is thinking',
+      steered: 'steered',
+      output: 'output',
+      conversationTimeline: 'Conversation timeline',
       today: time => `Today, ${time}`,
       yesterday: time => `Yesterday, ${time}`,
       copy: 'Copy',
@@ -2394,6 +2634,8 @@ export const en: Translations = {
       restoreBody:
         'Everything after this prompt is removed from the conversation, and the prompt runs again from here.',
       restoreConfirm: 'Restore & rerun',
+      restoreUnavailable: 'Restore is unavailable for this message.',
+      restoreFailed: 'Restore failed',
       restoreNext: 'Restore next checkpoint',
       goForward: 'Go forward',
       sendEdited: 'Send edited message',
@@ -2448,6 +2690,10 @@ export const en: Translations = {
       statusError: 'Error',
       statusRecovered: 'Recovered',
       statusDone: 'Done',
+      searchResults: 'Search results',
+      stdout: 'stdout',
+      stderr: 'stderr',
+      payload: 'Tool payload',
       actions: {
         read: 'Read',
         reading: 'Reading',
@@ -2509,6 +2755,21 @@ export const en: Translations = {
         web_search: { done: 'Searched web', pending: 'Searching web', pendingAction: 'Searching' },
         write_file: { done: 'Edited file', pending: 'Editing file', pendingAction: 'Editing' }
       }
+    },
+    embeds: {
+      failedToLoad: label => `Failed to load ${label} embed`,
+      openDiagram: 'Open diagram',
+      load: label => `Load ${label}`,
+      alwaysAllow: label => `Always allow ${label}`,
+      youtubeTitle: 'YouTube embed',
+      spotifyTitle: 'Spotify embed',
+      alertLabels: { caution: 'Caution', important: 'Important', note: 'Note', tip: 'Tip', warning: 'Warning' },
+      holdToZoom: 'Hold ⌘/Ctrl to zoom'
+    },
+    markdown: {
+      fetchFailed: name => `Couldn't fetch ${name} from the gateway (missing, unreadable, or too large).`,
+      openFile: name => `Open ${name}`,
+      loadingFile: name => `Loading ${name}...`
     }
   },
 
@@ -2547,6 +2808,26 @@ export const en: Translations = {
     setProfileFailed: 'Failed to set profile',
     sttDisabled: 'Speech-to-text is disabled in settings.',
     stopFailed: 'Stop failed',
+    newSession: 'New session',
+    addContext: 'Add context',
+    activity: {
+      sessionTask: 'Session task',
+      agentTaskRunning: 'Agent task running',
+      previewRestart: 'Preview restart',
+      running: 'Running',
+      completed: 'Completed',
+      failed: code => `Failed (${code})`
+    },
+    skin: {
+      unavailable: 'No desktop themes are available.',
+      switched: theme => `Desktop theme switched to ${theme}.`,
+      listTitle: 'Desktop themes:',
+      listHint: 'Use /skin <name>, or /skin to cycle.',
+      unknown: (theme, available) => `Unknown desktop theme: ${theme}\nAvailable: ${available}`,
+      showAvailable: 'Show available desktop themes',
+      cycleNext: 'Cycle to the next desktop theme',
+      current: 'current'
+    },
     regenerateFailed: 'Regenerate failed',
     editFailed: 'Edit failed',
     resumeFailed: 'Resume failed',
@@ -2586,6 +2867,17 @@ export const en: Translations = {
     clipboard: 'Clipboard',
     noClipboardImage: 'No image found in clipboard',
     clipboardPasteFailed: 'Clipboard paste failed',
+    routeMissing: path => `No page at ${path}`,
+    sessionOpenFailed: "Couldn't open this session",
+    session: 'Session',
+    profiles: 'Profiles',
+    logs: 'Logs',
+    preview: 'Preview',
+    logUnavailable: 'Log unavailable',
+    selectFileHint: 'Click a file to inspect it.',
+    openInHermes: 'Open in Hermes',
+    messagePlaceholder: 'Message…',
+    noRecentGatewayLogs: 'No recent gateway log lines',
     dropFiles: 'Drop files',
     handoff: {
       pickPlatform: 'Choose a destination',
@@ -2601,10 +2893,16 @@ export const en: Translations = {
     boundaryTitle: 'Something broke in the interface',
     boundaryDesc: 'The view hit an unexpected error. Your chats and settings are safe.',
     reloadWindow: 'Reload window',
-    openLogs: 'Open logs'
+    openLogs: 'Open logs',
+    contributionFailed: id => `“${id}” failed to render`
   },
 
   ui: {
+    moreActions: 'More actions',
+    openFullView: 'Open full view',
+    zoomOut: 'Zoom out',
+    resetZoom: 'Reset zoom',
+    zoomIn: 'Zoom in',
     search: {
       clear: 'Clear search'
     },

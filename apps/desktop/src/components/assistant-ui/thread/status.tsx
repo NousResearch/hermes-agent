@@ -30,12 +30,11 @@ const StatusRow: FC<{ children: ReactNode; label: string } & React.ComponentProp
   </div>
 )
 
-// Fixed label while auto-compaction runs — decoupled from backend status text.
-const COMPACTION_LABEL = 'Summarizing thread'
+const CompactionHint: FC = () => {
+  const copy = useI18n().t.assistant.thread
 
-const CompactionHint: FC = () => (
-  <span className="shimmer min-w-0 truncate text-muted-foreground/55">{COMPACTION_LABEL}</span>
-)
+  return <span className="shimmer min-w-0 truncate text-muted-foreground/55">{copy.summarizing}</span>
+}
 
 function useActiveTurnTimerKey(): string | undefined {
   const activeSessionId = useStore($activeSessionId)
@@ -74,7 +73,7 @@ export const ResponseLoadingIndicator: FC = () => {
   return (
     <StatusRow
       data-slot="aui_response-loading"
-      label={compacting ? COMPACTION_LABEL : t.assistant.thread.loadingResponse}
+      label={compacting ? t.assistant.thread.summarizing : t.assistant.thread.loadingResponse}
     >
       <span aria-hidden="true" className="dither inline-block size-3 rounded-[2px] text-midground/80 animate-pulse" />
       {compacting && <CompactionHint />}
@@ -127,6 +126,8 @@ const STREAM_STALL_S = 2
 // so that per-token updates re-render only this leaf, not the whole
 // AssistantMessage subtree.
 export const StreamStallIndicator: FC = () => {
+  const copy = useI18n().t.assistant.thread
+
   const activity = useAuiState(s => {
     let textLength = 0
 
@@ -167,7 +168,7 @@ export const StreamStallIndicator: FC = () => {
     <StatusRow
       className="mt-1.5"
       data-slot="aui_stream-stall"
-      label={compacting ? COMPACTION_LABEL : 'Hermes is thinking'}
+      label={compacting ? copy.summarizing : copy.hermesThinking}
     >
       <span aria-hidden="true" className="dither inline-block size-3 rounded-[2px] text-midground/80 animate-pulse" />
       {compacting && <CompactionHint />}

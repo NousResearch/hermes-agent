@@ -5,6 +5,7 @@ import { DisclosureCaret } from '@/components/ui/disclosure-caret'
 import { Input } from '@/components/ui/input'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import { getMemoryProviderConfig, saveMemoryProviderConfig } from '@/hermes'
+import { useI18n } from '@/i18n'
 import { Check, Loader2, Save } from '@/lib/icons'
 import { notify, notifyError } from '@/store/notifications'
 import type { MemoryProviderConfig, MemoryProviderField } from '@/types/hermes'
@@ -27,6 +28,8 @@ function FieldControl({
   value: string
   onChange: (value: string) => void
 }) {
+  const { t } = useI18n()
+
   if (field.kind === 'select') {
     const selected = field.options.find(option => option.value === value)
 
@@ -57,14 +60,14 @@ function FieldControl({
         <Input
           className="min-w-64 flex-1 font-mono"
           onChange={event => onChange(event.target.value)}
-          placeholder={field.is_set ? 'Leave blank to keep current value' : field.placeholder}
+          placeholder={field.is_set ? t.settings.memoryProvider.keepCurrent : field.placeholder}
           type="password"
           value={value}
         />
         {field.is_set && (
           <Pill tone="primary">
             <Check className="size-3" />
-            Set
+            {t.common.set}
           </Pill>
         )}
       </div>
@@ -82,6 +85,8 @@ function FieldControl({
 }
 
 export function ProviderConfigPanel({ provider }: { provider: string }) {
+  const { t } = useI18n()
+  const copy = t.settings.memoryProvider
   const [config, setConfig] = useState<MemoryProviderConfig | null>(null)
   const [values, setValues] = useState<Record<string, string>>({})
   const [expanded, setExpanded] = useState(true)
@@ -93,10 +98,10 @@ export function ProviderConfigPanel({ provider }: { provider: string }) {
       setConfig(next)
       setValues(seedValues(next))
     } catch (err) {
-      notifyError(err, 'Memory provider settings failed to load')
+      notifyError(err, copy.loadFailed)
       setConfig(null)
     }
-  }, [provider])
+  }, [copy.loadFailed, provider])
 
   useEffect(() => {
     setConfig(null)
@@ -112,14 +117,14 @@ export function ProviderConfigPanel({ provider }: { provider: string }) {
 
     try {
       await saveMemoryProviderConfig(provider, values)
-      notify({ kind: 'success', title: `${config.label} saved`, message: 'Memory provider configuration updated.' })
+      notify({ kind: 'success', title: copy.savedTitle(config.label), message: copy.savedMessage })
       await refresh()
     } catch (err) {
-      notifyError(err, `Failed to save ${config.label} settings`)
+      notifyError(err, copy.saveFailed(config.label))
     } finally {
       setSaving(false)
     }
-  }, [config, provider, refresh, values])
+  }, [config, copy, provider, refresh, values])
 
   // Providers without a declared config surface (e.g. builtin) render nothing.
   if (config && config.fields.length === 0) {
@@ -127,7 +132,7 @@ export function ProviderConfigPanel({ provider }: { provider: string }) {
   }
 
   if (!config) {
-    return <LoadingState label="Loading memory provider settings..." />
+    return <LoadingState label={copy.loading} />
   }
 
   const secretFields = config.fields.filter(field => field.kind === 'secret')
@@ -143,10 +148,10 @@ export function ProviderConfigPanel({ provider }: { provider: string }) {
         <span className="flex min-w-0 items-center gap-2">
           <DisclosureCaret open={expanded} />
           <span className="text-[length:var(--conversation-text-font-size)] font-medium text-foreground">
-            {config.label} settings
+            {copy.settings(config.label)}
           </span>
           {secretFields.map(field => (
-            <Pill key={field.key}>{field.is_set ? `${field.label} set` : `${field.label} not set`}</Pill>
+            <Pill key={field.key}>{field.is_set ? copy.fieldSet(field.label) : copy.fieldNotSet(field.label)}</Pill>
           ))}
         </span>
       </button>
@@ -170,7 +175,7 @@ export function ProviderConfigPanel({ provider }: { provider: string }) {
           <div className="flex justify-end">
             <Button disabled={saving} onClick={() => void save()} size="sm">
               {saving ? <Loader2 className="size-3.5 animate-spin" /> : <Save />}
-              Save
+              {t.common.save}
             </Button>
           </div>
         </div>

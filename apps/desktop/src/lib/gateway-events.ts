@@ -1,4 +1,5 @@
 import type { StatusbarMenuItem } from '@/app/shell/statusbar-controls'
+import { translateNow } from '@/i18n'
 
 const LOG_TAIL = 5
 
@@ -143,7 +144,7 @@ export function buildGatewayLogItems(lines: readonly string[]): readonly Statusb
         className: 'text-muted-foreground',
         disabled: true,
         id: 'gateway-log-empty',
-        label: 'No recent gateway log lines'
+        label: translateNow('desktop.noRecentGatewayLogs')
       }
     ]
   }

@@ -39,7 +39,9 @@ export const ja = defineLocale({
     send: '送信',
     set: '設定',
     skip: 'スキップ',
+    stop: '停止',
     update: '更新',
+    view: '表示',
     tryHint: term => `「${term}」を試す`,
     on: 'オン',
     off: 'オフ'
@@ -225,6 +227,22 @@ export const ja = defineLocale({
       about: '情報',
       notifications: '通知'
     },
+    plugins: {
+      title: 'デスクトッププラグイン',
+      blurb: 'このアプリに読み込まれる UI 拡張です。無効化すると即時アンロードされ、再起動後も設定が保持されます。',
+      count: n => `${n} 件インストール済み`,
+      openFolder: 'プラグインフォルダーを開く',
+      rescan: '再スキャン',
+      reveal: 'ファイルマネージャーで表示',
+      enable: '有効化',
+      disable: '無効化',
+      failed: '失敗',
+      openFolderFailed: 'プラグインフォルダーを開けませんでした',
+      resolveFolderFailed: 'プラグインフォルダーを特定できませんでした',
+      loadFailed: origin => `プラグイン「${origin}」を読み込めませんでした`,
+      empty: 'デスクトッププラグインはまだありません。',
+      kinds: { bundled: '内蔵', disk: 'ディスク', runtime: 'ランタイム' }
+    },
     notifications: {
       title: '通知',
       intro: 'アプリ内トーストとは別の、ネイティブのデスクトップ通知です。設定は端末ごとに保存されます。',
@@ -272,6 +290,33 @@ export const ja = defineLocale({
       memory: 'メモリとコンテキスト',
       voice: '音声',
       advanced: '詳細'
+    },
+    providerDescriptions: {
+      'Nous Portal': 'ホストされた Hermes および Nous 学習済みモデル',
+      'Fireworks AI': 'OpenAI 互換のモデル直結 API',
+      OpenRouter: '数百の最先端モデルを集約',
+      Anthropic: 'Claude API アクセス（Sonnet、Opus、Haiku）',
+      xAI: 'Grok モデル（SuperGrok または Premium+ は OAuth を推奨）',
+      Gemini: 'Google AI Studio（Gemini 1.5、2.0、2.5）',
+      DeepSeek: 'DeepSeek API へ直接接続（V3.x、R1）',
+      'DashScope (Qwen)': 'Alibaba Cloud DashScope の Qwen および複数ベンダーモデル',
+      'GLM / Z.AI': 'Zhipu GLM-4.6 および Z.AI のホスト型エンドポイント',
+      'Kimi / Moonshot': 'Moonshot Kimi K2 およびコーディング用エンドポイント',
+      'Kimi (China)': 'Moonshot 中国向けエンドポイント',
+      MiniMax: 'MiniMax-M2 および Hailuo の国際向けエンドポイント',
+      'MiniMax (China)': 'MiniMax 中国本土向けエンドポイント',
+      'Hugging Face': 'router.huggingface.co 経由で 20 以上のオープンモデルを利用',
+      'OpenCode Zen': '厳選されたコーディングモデルを従量課金で利用',
+      'OpenCode Go': '月額 10 ドルのオープンコーディングモデル契約',
+      'NVIDIA NIM': 'build.nvidia.com または独自のローカル NIM エンドポイントを使用',
+      'Ollama Cloud': 'ollama.com がホストするオープンモデル',
+      'LM Studio': 'ローカル LM Studio サーバー（OpenAI 互換）',
+      StepFun: 'StepFun Step Plan コーディングモデル',
+      'Xiaomi MiMo': 'MiMo-V2.5 および Xiaomi 独自モデル',
+      'Arcee AI': 'Arcee がホストする小型・中型モデル',
+      'GMI Cloud': 'GMI Cloud の GPU およびモデル提供サービス',
+      'Azure Foundry': 'Azure AI Foundry カスタムエンドポイント（OpenAI または Anthropic 互換）',
+      'AWS Bedrock': 'AWS プロファイルとリージョンで認証'
     },
     searchPlaceholder: {
       about: 'Hermes Desktop について',
@@ -326,6 +371,17 @@ export const ja = defineLocale({
       installed: name => `「${name}」をインストールしました。`,
       removeTheme: 'テーマを削除',
       importedBadge: 'インポート済み',
+      marketplaceSource: 'VS Code Marketplace から',
+      searchThemesPlaceholder: 'インストール済みテーマまたは VS Code Marketplace を検索…',
+      noInstalledThemesMatch: query => `「${query}」に一致するインストール済みテーマはありません。`,
+      builtInThemes: {
+        nous: { label: 'Nous', description: 'ガラス調のニュートラルカラーと Nous ブルーのアクセント' },
+        midnight: { label: 'ミッドナイト', description: '深い青紫にクールなアクセント' },
+        ember: { label: 'エンバー', description: '暖かな深紅とブロンズの鍛冶場のような配色' },
+        mono: { label: 'モノ', description: 'すっきりしたグレースケールで、ミニマルかつ集中しやすい配色' },
+        cyberpunk: { label: 'サイバーパンク', description: '黒地にネオングリーンのマトリックス端末風' },
+        slate: { label: 'スレート', description: '開発作業に集中できるクールなスレートブルー' }
+      },
       pet: {
         title: 'ペット',
         intro:
@@ -771,6 +827,25 @@ export const ja = defineLocale({
       change: '変更',
       autoUseMain: '自動 · メインモデルを使用',
       providerDefault: '(プロバイダーのデフォルト)',
+      pasteApiKey: key => `${key} を貼り付け`,
+      activating: '有効化中…',
+      activate: '有効化',
+      setupProvider: provider => `${provider} を設定`,
+      moaTitle: 'Mixture of Agents',
+      moaDescription:
+        'Mixture of Agents プロバイダーのモデルとして表示する名前付きプリセットを設定します。集約モデルが最終回答を担当します。',
+      moaPreset: 'プリセット',
+      moaSetDefault: 'デフォルトに設定',
+      moaNewPreset: '新しいプリセット',
+      moaAddPreset: 'プリセットを追加',
+      moaDefault: 'デフォルト',
+      moaReference: index => `参照モデル ${index}`,
+      moaAddReference: '参照モデルを追加',
+      moaAggregator: '集約モデル',
+      moaPresets: 'MoA プリセット',
+      staleAuxWarningPrefix: (count, names) => `${count} 件の補助タスク（${names}）は `,
+      staleAuxWarningSuffix: ' で実行され、メインモデルは使用しません。',
+      otherProviders: 'その他のプロバイダー',
       tasks: {
         vision: { label: 'ビジョン', hint: '画像分析' },
         web_extract: { label: 'ウェブ抽出', hint: 'ページの要約' },
@@ -780,6 +855,84 @@ export const ja = defineLocale({
         mcp: { label: 'MCP', hint: 'MCP ツールルーティング' },
         title_generation: { label: 'タイトル生成', hint: 'セッションタイトル' },
         curator: { label: 'キュレーター', hint: 'スキル使用レビュー' }
+      }
+    },
+    computerUse: {
+      linuxNote: 'X11/XWayland のアクセシビリティスタック経由でデスクトップを操作します。権限確認はありません。',
+      windowsNote:
+        '初回実行時に Windows SmartScreen が cua-driver UIAccess ワーカーを確認する場合があります。許可してください。',
+      granted: '許可済み',
+      notGranted: '未許可',
+      unknown: '不明',
+      statusLoadFailed: 'Computer Use の状態を取得できませんでした',
+      permissionRequestFailed: '権限を要求できませんでした',
+      approveTitle: 'システム設定で許可してください',
+      approveMessage: 'macOS に CuaDriver の権限ダイアログが表示されます。許可してからここに戻ってください。',
+      checking: 'Computer Use の状態を確認中…',
+      unsupported: platform => `このプラットフォームでは Computer Use を利用できません（${platform}）。`,
+      installDriver: 'このマシンを操作するには、下で cua-driver バックエンドをインストールしてください。',
+      thenGrant: ' その後、アクセシビリティと画面収録を許可してください。',
+      identityHint: '権限は Hermes ではなく CuaDriver 自身（com.trycua.driver）に付与されます。',
+      recheck: '再確認',
+      accessibility: 'アクセシビリティ',
+      accessibilityHint: 'cua-driver にクリック、キー入力、アクセシビリティツリーの読み取りを許可します。',
+      screenRecording: '画面収録',
+      screenRecordingHint: 'cua-driver にアプリウィンドウのスクリーンショット取得を許可します。',
+      driverHealth: 'ドライバー状態',
+      ready: '準備完了',
+      notReady: '未準備',
+      readyHint: 'Computer Use の準備ができました。エージェントにアプリの取得やクリックを依頼できます。',
+      waitingApproval: '許可待ち…',
+      grantPermissions: '権限を付与'
+    },
+    memoryProvider: {
+      keepCurrent: '現在の値を保持するには空欄のままにします',
+      loadFailed: 'メモリプロバイダー設定を読み込めませんでした',
+      savedTitle: provider => `${provider} を保存しました`,
+      savedMessage: 'メモリプロバイダー設定を更新しました。',
+      saveFailed: provider => `${provider} の設定を保存できませんでした`,
+      loading: 'メモリプロバイダー設定を読み込み中…',
+      settings: provider => `${provider} の設定`,
+      fieldSet: field => `${field} は設定済み`,
+      fieldNotSet: field => `${field} は未設定`,
+      startFailedDetail: '接続を開始できませんでした。',
+      startFailedTitle: '接続の開始に失敗しました',
+      timedOut: 'タイムアウトしました。再試行してください。',
+      connectionFailed: '接続に失敗しました。',
+      connectViaOauth: 'OAuth で接続',
+      reconnect: '再接続',
+      connect: '接続',
+      apiKeySet: 'API キー設定済み',
+      oauthSet: 'OAuth 設定済み',
+      waitingConsent: 'ブラウザーの許可を待っています…'
+    },
+    uninstall: {
+      dangerZone: '危険な操作',
+      checking: 'インストール済み項目を確認中…',
+      confirmTitle: 'アンインストールの確認',
+      consequence: value => `${value}を削除します。この操作は元に戻せません。`,
+      appPath: path => `アプリ: ${path}`,
+      uninstalling: 'アンインストール中…',
+      confirm: 'アンインストールする',
+      title: 'Hermes をアンインストール',
+      description: '削除する範囲を選択します。完了のためアプリが終了しますが、いつでもインストーラーから戻せます。',
+      couldNotStart: 'アンインストールを開始できませんでした。',
+      options: {
+        gui: {
+          title: 'チャット GUI のみ削除',
+          description: 'デスクトップアプリだけを削除し、Hermes エージェント、設定、チャットは残します。',
+          consequence: 'デスクトップのチャット GUI（このアプリとそのデータ）'
+        },
+        lite: {
+          title: 'GUI とエージェントを削除し、データは保持',
+          description: 'アプリと Hermes エージェントを削除し、設定、チャット、シークレットは残します。',
+          consequence: 'チャット GUI と Hermes エージェント（設定、チャット、シークレットは保持）'
+        },
+        full: {
+          title: 'すべてアンインストール',
+          description: 'アプリ、エージェント、設定、チャット、ジョブ、シークレット、ログをすべて削除します。',
+          consequence: 'すべて——チャット GUI、Hermes エージェント、設定、チャット、シークレット、ログ'
+        }
       }
     },
     providers: {
@@ -934,7 +1087,18 @@ export const ja = defineLocale({
     loadFailed: 'メモリグラフを読み込めませんでした',
     loading: '読み込み中…',
     emptyTitle: 'まだ学習はありません',
-    emptyDesc: 'Hermes がスキルやメモリを蓄積すると、ここに表示されます。'
+    emptyDesc: 'Hermes がスキルやメモリを蓄積すると、ここに表示されます。',
+    skill: 'スキル',
+    editNode: noun => `${noun}を編集…`,
+    editTitle: label => `${label} を編集`,
+    archiveSkill: 'スキルをアーカイブ',
+    deleteMemory: 'メモリを削除',
+    deleteTitle: label => `${label} を削除しますか？`,
+    deleteMemoryDescription: 'このメモリは完全に削除されます。',
+    legendAge: '中心 = 古い · 外側 = 新しい',
+    pauseTimeline: 'タイムラインを一時停止',
+    playTimeline: 'タイムラインを再生',
+    timelineScrubber: 'タイムラインスライダー'
   },
   agents: {
     close: 'エージェントを閉じる',
@@ -1022,7 +1186,15 @@ export const ja = defineLocale({
       referenceImageTooLarge: '参照画像が大きすぎます。16 MB 未満の画像を使ってください。',
       referenceImageInvalid: '参照画像を読み込めませんでした。PNG/JPG/WebP/GIF を試してください。',
       adopt: '迎え入れる',
-      startOver: 'やり直す'
+      startOver: 'やり直す',
+      unavailableTitle: 'ペット生成には画像プロバイダーが必要です',
+      unavailableBody: 'ペットを作成する前に画像生成プロバイダーを設定してください。',
+      unavailableHint: '「設定 → API キー」で対応プロバイダーのキーを追加してから再試行してください。',
+      setupImageGeneration: '画像生成を設定',
+      getKeyFrom: 'キーを取得：',
+      reference: '参照画像',
+      removeReference: '参照画像を削除',
+      addReference: '参照画像を追加'
     },
     installTheme: {
       title: 'テーマをインストール…',
@@ -1647,12 +1819,49 @@ export const ja = defineLocale({
     hotkeys: 'ホットキー',
     helpFooter: 'フルパネルを開く · Backspace で閉じる',
     commandDescs: {
+      '/new': '新しいデスクトップチャットを開始',
+      '/branch': '最新メッセージから新しいチャットを分岐',
+      '/yolo': 'YOLO を切り替え',
+      '/handoff': 'このセッションをメッセージプラットフォームへ引き継ぐ',
+      '/profile': 'アクティブな Hermes プロファイルを切り替え',
+      '/skin': 'デスクトップテーマを切り替え',
+      '/title': '現在のセッション名を変更',
       '/help': 'コマンドとホットキーの全リスト',
+      '/browser': 'ローカルブラウザー接続を管理',
+      '/journey': 'メモリグラフを開く',
+      '/model': 'このセッションのモデルを切り替え',
       '/clear': '新しいセッションを開始',
       '/resume': '以前のセッションを再開',
+      '/agents': 'アクティブなセッションとタスクを表示',
+      '/background': 'プロンプトをバックグラウンドで実行',
+      '/compress': '会話コンテキストを圧縮',
+      '/debug': 'デバッグレポートを作成',
+      '/goal': 'このセッションの継続目標を管理',
+      '/personality': 'このセッションの人格を切り替え',
+      '/pet': 'petdex マスコットを切り替え',
+      '/hatch': '新しいペットを生成',
+      '/queue': '次のターンにプロンプトをキュー',
+      '/retry': '最後のユーザーメッセージを再試行',
+      '/rollback': 'チェックポイントを一覧または復元',
+      '/save': '現在の会話を JSON に保存',
+      '/status': '現在のセッション状態を表示',
+      '/steer': '現在の実行を誘導',
+      '/stop': 'バックグラウンドプロセスを停止',
+      '/tools': 'エージェントが使えるツールを切り替え',
+      '/undo': '最後のやり取りを削除',
+      '/usage': 'このセッションのトークン使用量を表示',
+      '/version': 'Hermes Agent のバージョンを表示',
       '/details': 'トランスクリプトの詳細レベルを制御',
       '/copy': '選択または最後のアシスタントメッセージをコピー',
       '/quit': 'hermes を終了'
+    },
+    browseAllSessions: 'すべてのセッションを表示…',
+    slashGroups: {
+      commands: 'コマンド',
+      options: 'オプション',
+      sessions: 'セッション',
+      skills: 'スキル',
+      themes: 'テーマ'
     },
     hotkeyDescs: {
       'composer.mention': 'ファイル、フォルダー、URL、Git を参照',
@@ -1695,6 +1904,7 @@ export const ja = defineLocale({
     themeTryPre: '試してみる: ',
     themeTryPost: '。',
     attachLabel: '添付',
+    addContext: 'コンテキストを追加',
     files: 'ファイル…',
     folder: 'フォルダー…',
     images: '画像…',
@@ -1832,6 +2042,11 @@ export const ja = defineLocale({
     errorTitle: '更新が完了しませんでした',
     errorBody: 'ご安心ください。何も失われていません。今すぐ再試行できます。',
     notNow: '今は後で',
+    changelog: {
+      groups: { new: '新機能', fixed: '修正', faster: '高速化', improved: '改善', other: 'その他の改善' },
+      fallbackGroup: '今回のアップデート',
+      fallbackItem: '改善と不具合修正'
+    },
     applyStatus: {
       preparing: 'バックエンドを更新しています…',
       pulling: 'バックエンドを更新中…',
@@ -1956,7 +2171,32 @@ export const ja = defineLocale({
     price: (input, output) => `${input} 入力 / ${output} 出力 per Mtok`,
     change: '変更',
     startChatting: '始める',
-    docs: provider => `${provider} ドキュメント`
+    docs: provider => `${provider} ドキュメント`,
+    readyTitle: 'Hermes の準備ができました',
+    providerConnected: provider => `${provider} に接続しました。`,
+    gatewayToolsTitle: 'ツールゲートウェイを有効化しました',
+    gatewayToolsMessage: tools =>
+      `${new Intl.ListFormat('ja').format(tools)}は Nous サブスクリプション経由で実行されます。個別の API キーは不要です。`,
+    gatewayToolLabels: {
+      browser: 'ブラウザー自動化',
+      image_gen: '画像生成',
+      tts: 'テキスト読み上げ',
+      video_gen: '動画生成',
+      web: 'ウェブ検索と抽出'
+    },
+    runtimeNotReadyTitle: 'ランタイムの準備ができていません',
+    runtimeNotReadyMessage:
+      '起動時にバックエンドを確認できませんでした。ゲートウェイに接続できるまで一部機能を利用できない場合があります。',
+    enterValueFirst: '先に値を入力してください。',
+    enterEndpointFirst: '先にエンドポイント URL を入力してください。',
+    saveProviderFailed: provider => `${provider} を保存できませんでした`,
+    endpointUnreachable: url => `${url} に接続できませんでした。`,
+    endpointNoModels: url =>
+      `${url} に接続しましたが、/v1/models にモデルがありません。モデルを起動して再試行してください。`,
+    endpointSavedUnreachable: url => `保存しましたが、Hermes はまだ ${url} に接続できません。`,
+    localEndpoint: 'ローカル/カスタムエンドポイント',
+    saveLocalEndpointFailed: 'ローカルエンドポイントを保存できませんでした',
+    changeModelFailed: 'モデルを変更できませんでした'
   },
 
   modelPicker: {
@@ -2275,7 +2515,12 @@ export const ja = defineLocale({
     layoutNamePlaceholder: fallback => `レイアウト名（${fallback}）`,
     saveApply: '保存して適用',
     notExpressible: 'この配置は互いに噛み合っています（風車型）— 入れ子の分割では表現できません',
-    zoneCount: count => `${count} ゾーン`
+    zoneCount: count => `${count} ゾーン`,
+    toggleEditMode: 'レイアウト編集モードを切り替え',
+    reloadDesktopPlugins: 'デスクトッププラグインを再読み込み',
+    resetLayout: 'レイアウトをリセット',
+    toggleLogs: 'ログの表示を切り替え',
+    layoutPresets: { default: 'デフォルト', focus: 'フォーカス', terminalDeck: 'ターミナルデッキ', quad: '4 分割' }
   },
 
   assistant: {
@@ -2288,6 +2533,11 @@ export const ja = defineLocale({
           ? 'バックグラウンドタスクの完了後に再開します'
           : `${count} 件のバックグラウンドタスクの完了後に再開します`,
       thinking: '考え中',
+      summarizing: 'スレッドを要約中',
+      hermesThinking: 'Hermes が考えています',
+      steered: '誘導済み',
+      output: '出力',
+      conversationTimeline: '会話タイムライン',
       today: time => `今日 ${time}`,
       yesterday: time => `昨日 ${time}`,
       copy: 'コピー',
@@ -2307,6 +2557,8 @@ export const ja = defineLocale({
       restoreTitle: 'このチェックポイントに復元しますか？',
       restoreBody: 'このプロンプト以降のメッセージは会話から削除され、ここからプロンプトが再実行されます。',
       restoreConfirm: '復元して再実行',
+      restoreUnavailable: 'このメッセージは復元できません。',
+      restoreFailed: '復元に失敗しました',
       restoreNext: '次のチェックポイントに戻す',
       goForward: '進む',
       sendEdited: '編集済みメッセージを送信',
@@ -2361,6 +2613,10 @@ export const ja = defineLocale({
       statusError: 'エラー',
       statusRecovered: '回復しました',
       statusDone: '完了',
+      searchResults: '検索結果',
+      stdout: '標準出力',
+      stderr: '標準エラー',
+      payload: 'ツールの生データ',
       actions: {
         read: '読み取り完了',
         reading: '読み取り中',
@@ -2438,6 +2694,22 @@ export const ja = defineLocale({
         web_search: { done: 'Web を検索しました', pending: 'Web を検索中', pendingAction: '検索中' },
         write_file: { done: 'ファイルを編集しました', pending: 'ファイルを編集中', pendingAction: '編集中' }
       }
+    },
+    embeds: {
+      failedToLoad: label => `${label} の埋め込みを読み込めませんでした`,
+      openDiagram: '図を開く',
+      load: label => `${label} を読み込む`,
+      alwaysAllow: label => `${label} を常に許可`,
+      youtubeTitle: 'YouTube 埋め込み',
+      spotifyTitle: 'Spotify 埋め込み',
+      alertLabels: { caution: '注意', important: '重要', note: '注記', tip: 'ヒント', warning: '警告' },
+      holdToZoom: '⌘/Ctrl を押しながらズーム'
+    },
+    markdown: {
+      fetchFailed: name =>
+        `ゲートウェイから ${name} を取得できませんでした（存在しない、読み取れない、または大きすぎます）。`,
+      openFile: name => `${name} を開く`,
+      loadingFile: name => `${name} を読み込み中…`
     }
   },
 
@@ -2477,6 +2749,26 @@ export const ja = defineLocale({
     setProfileFailed: 'プロファイルの設定に失敗しました',
     sttDisabled: '音声認識は設定で無効になっています。',
     stopFailed: '停止に失敗しました',
+    newSession: '新しいセッション',
+    addContext: 'コンテキストを追加',
+    activity: {
+      sessionTask: 'セッションタスク',
+      agentTaskRunning: 'エージェントタスクを実行中',
+      previewRestart: 'プレビューを再起動',
+      running: '実行中',
+      completed: '完了',
+      failed: code => `失敗（${code}）`
+    },
+    skin: {
+      unavailable: '利用できるデスクトップテーマがありません。',
+      switched: theme => `デスクトップテーマを ${theme} に切り替えました。`,
+      listTitle: 'デスクトップテーマ：',
+      listHint: '/skin <名前> を使うか、/skin で順番に切り替えます。',
+      unknown: (theme, available) => `不明なデスクトップテーマ：${theme}\n利用可能：${available}`,
+      showAvailable: '利用可能なデスクトップテーマを表示',
+      cycleNext: '次のデスクトップテーマに切り替え',
+      current: '現在'
+    },
     regenerateFailed: '再生成に失敗しました',
     editFailed: '編集に失敗しました',
     resumeFailed: '再開に失敗しました',
@@ -2517,6 +2809,17 @@ export const ja = defineLocale({
     clipboard: 'クリップボード',
     noClipboardImage: 'クリップボードに画像が見つかりません',
     clipboardPasteFailed: 'クリップボードからの貼り付けに失敗しました',
+    routeMissing: path => `${path} に対応するページがありません`,
+    sessionOpenFailed: 'このセッションを開けませんでした',
+    session: 'セッション',
+    profiles: 'プロファイル',
+    logs: 'ログ',
+    preview: 'プレビュー',
+    logUnavailable: 'ログを利用できません',
+    selectFileHint: 'ファイルをクリックして確認します。',
+    openInHermes: 'Hermes で開く',
+    messagePlaceholder: 'メッセージ…',
+    noRecentGatewayLogs: '最近のゲートウェイログはありません',
     dropFiles: 'ファイルをドロップ',
     handoff: {
       pickPlatform: '送信先を選択',
@@ -2532,10 +2835,16 @@ export const ja = defineLocale({
     boundaryTitle: 'インターフェイスで問題が発生しました',
     boundaryDesc: 'ビューで予期しないエラーが発生しました。チャットと設定は安全です。',
     reloadWindow: 'ウィンドウを再読み込み',
-    openLogs: 'ログを開く'
+    openLogs: 'ログを開く',
+    contributionFailed: id => `「${id}」の表示に失敗しました`
   },
 
   ui: {
+    moreActions: 'その他の操作',
+    openFullView: '全体表示を開く',
+    zoomOut: '縮小',
+    resetZoom: 'ズームをリセット',
+    zoomIn: '拡大',
     search: {
       clear: '検索をクリア'
     },

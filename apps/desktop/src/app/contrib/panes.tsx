@@ -25,6 +25,7 @@ import { ContribBoundary } from '@/contrib/react/boundary'
 import { useContributions } from '@/contrib/react/use-contributions'
 import { registry } from '@/contrib/registry'
 import { getLogs } from '@/hermes'
+import { useI18n } from '@/i18n'
 import { normalizeOrLocalPreviewTarget } from '@/lib/local-preview'
 import { cn } from '@/lib/utils'
 import { $filePreviewTarget, $previewTarget, setCurrentSessionPreviewTarget } from '@/store/preview'
@@ -36,6 +37,8 @@ import { $currentCwd } from '@/store/session'
 // ---------------------------------------------------------------------------
 
 export function LogsPane() {
+  const { t } = useI18n()
+
   const { data, error } = useQuery({
     queryKey: ['contrib-logs-tail'],
     queryFn: () => getLogs({ lines: 300 }),
@@ -43,13 +46,17 @@ export function LogsPane() {
   })
 
   if (error) {
-    return <div className="p-3 text-xs text-(--ui-text-quaternary)">log unavailable: {String(error)}</div>
+    return (
+      <div className="p-3 text-xs text-(--ui-text-quaternary)">
+        {t.desktop.logUnavailable}: {String(error)}
+      </div>
+    )
   }
 
   if (!data) {
     return (
       <div className="grid h-full place-items-center">
-        <DecodeText className="text-(--ui-text-quaternary)" cursor prefix={1} text="LOGS" />
+        <DecodeText className="text-(--ui-text-quaternary)" cursor prefix={1} text={t.desktop.logs} />
       </div>
     )
   }
@@ -72,6 +79,7 @@ export function LogsPane() {
 export const $restartPreviewServer = atom<((url: string, context?: string) => Promise<string>) | null>(null)
 
 export function PreviewRailPane() {
+  const { t } = useI18n()
   const previewTarget = useStore($previewTarget)
   const fileTarget = useStore($filePreviewTarget)
   const restartPreviewServer = useStore($restartPreviewServer)
@@ -80,8 +88,8 @@ export function PreviewRailPane() {
     return (
       <div className="grid h-full place-items-center px-4 text-center">
         <div className="flex flex-col items-center gap-1.5">
-          <DecodeText className="text-(--ui-text-quaternary)" prefix={1} text="PREVIEW" />
-          <span className="text-[0.68rem] text-(--ui-text-quaternary)">click a file in the files pane</span>
+          <DecodeText className="text-(--ui-text-quaternary)" prefix={1} text={t.desktop.preview} />
+          <span className="text-[0.68rem] text-(--ui-text-quaternary)">{t.desktop.selectFileHint}</span>
         </div>
       </div>
     )

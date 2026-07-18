@@ -1,5 +1,6 @@
 import { atom } from 'nanostores'
 
+import { translateNow } from '@/i18n'
 import { persistBoolean, persistString, storedBoolean, storedString } from '@/lib/storage'
 import { capitalize } from '@/lib/text'
 import { $gateway } from '@/store/gateway'
@@ -225,7 +226,7 @@ function notifyPetGenDone(title: string, message: string, kind: 'error' | 'succe
     return
   }
 
-  notify({ kind, title, message, action: { label: 'View', onClick: openPetGenerate } })
+  notify({ kind, title, message, action: { label: translateNow('common.view'), onClick: openPetGenerate } })
   // Pet generation isn't tied to a chat session — mark it global so the OS
   // notification fires whenever the user is away, even with no active session
   // (the common case: generating from the command center with no conversation).

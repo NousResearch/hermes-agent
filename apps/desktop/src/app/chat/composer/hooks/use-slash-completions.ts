@@ -2,6 +2,7 @@ import type { Unstable_TriggerAdapter, Unstable_TriggerItem } from '@assistant-u
 import { useCallback } from 'react'
 
 import type { HermesGateway } from '@/hermes'
+import { useI18n } from '@/i18n'
 import { sessionTitle } from '@/lib/chat-runtime'
 import {
   type CommandsCatalogLike,
@@ -14,6 +15,7 @@ import {
 } from '@/lib/desktop-slash-commands'
 import { normalize } from '@/lib/text'
 import { $sessions } from '@/store/session'
+import { localizeTheme } from '@/themes/localize'
 
 import type { CompletionEntry, CompletionPayload } from './use-live-completion-adapter'
 import { useLiveCompletionAdapter } from './use-live-completion-adapter'
@@ -62,6 +64,8 @@ export function useSlashCompletions(options: {
   loading: boolean
 } {
   const { gateway, skinThemes, activeSkin } = options
+  const { t } = useI18n()
+  const groups = t.composer.slashGroups
   const enabled = Boolean(gateway)
 
   const fetcher = useCallback(
@@ -79,11 +83,13 @@ export function useSlashCompletions(options: {
       const skinArg = /^\/skin\s+(.*)$/is.exec(text)
 
       if (skinArg && skinThemes) {
-        const items = desktopSkinSlashCompletions(skinThemes, activeSkin ?? '', skinArg[1] ?? '').map(entry => ({
+        const localizedThemes = skinThemes.map(theme => localizeTheme(theme, t.settings.appearance.builtInThemes))
+
+        const items = desktopSkinSlashCompletions(localizedThemes, activeSkin ?? '', skinArg[1] ?? '').map(entry => ({
           text: entry.text,
           display: entry.display,
           meta: entry.meta,
-          group: 'Themes'
+          group: groups.themes
         }))
 
         return { items, query }
@@ -114,7 +120,7 @@ export function useSlashCompletions(options: {
           text: `/resume ${session.id}`,
           display: sessionTitle(session),
           meta: (session.preview ?? '').trim(),
-          group: 'Sessions'
+          group: groups.sessions
         }))
 
         // Trailing "more" affordance (Cursor-style): picking it opens the full
@@ -122,9 +128,9 @@ export function useSlashCompletions(options: {
         // submitting it (Enter) still opens the overlay if the action is skipped.
         items.push({
           text: '/resume',
-          display: 'Browse all sessions…',
+          display: t.composer.browseAllSessions,
           meta: '',
-          group: 'Sessions',
+          group: groups.sessions,
           action: 'session-picker'
         })
 
@@ -179,7 +185,11 @@ export function useSlashCompletions(options: {
             ...item,
             // Arg suggestions (e.g. `/handoff <platform>`) live under one
             // header; otherwise split skills out from built-in commands.
-            group: isArgCompletion ? 'Options' : isDesktopSlashExtensionCommand(item.text) ? 'Skills' : 'Commands',
+            group: isArgCompletion
+              ? groups.options
+              : isDesktopSlashExtensionCommand(item.text)
+                ? groups.skills
+                : groups.commands,
             // Arg items carry their own meta (the personality/toolset/platform
             // blurb). Only command rows get the registry description — looking
             // one up for `/personality none` would clobber it with the parent
@@ -189,7 +199,7 @@ export function useSlashCompletions(options: {
 
         // Keep each group contiguous so headers render once: Commands before
         // Skills (stable within a group, preserving backend relevance order).
-        const groupOrder = ['Commands', 'Skills', 'Options']
+        const groupOrder = [groups.commands, groups.skills, groups.options]
 
         const items = isArgCompletion
           ? decorated
@@ -200,7 +210,7 @@ export function useSlashCompletions(options: {
         return { items: [], query }
       }
     },
-    [gateway, skinThemes, activeSkin]
+    [activeSkin, gateway, groups, skinThemes, t]
   )
 
   const toItem = useCallback((entry: CompletionEntry, index: number): Unstable_TriggerItem => {

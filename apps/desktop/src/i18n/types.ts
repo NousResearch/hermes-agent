@@ -84,7 +84,9 @@ export interface Translations {
     send: string
     set: string
     skip: string
+    stop: string
     update: string
+    view: string
     tryHint: (term: string) => string
     on: string
     off: string
@@ -293,6 +295,9 @@ export interface Translations {
       enable: string
       disable: string
       failed: string
+      openFolderFailed: string
+      resolveFolderFailed: string
+      loadFailed: (origin: string) => string
       empty: string
       kinds: { bundled: string; disk: string; runtime: string }
     }
@@ -316,6 +321,7 @@ export interface Translations {
       completionSoundPreview: string
     }
     sections: Record<string, string>
+    providerDescriptions: Record<string, string>
     searchPlaceholder: Record<'about' | 'config' | 'gateway' | 'keys' | 'mcp' | 'sessions', string>
     modeOptions: Record<'light' | 'dark' | 'system', ModeOptionCopy>
     appearance: {
@@ -353,6 +359,13 @@ export interface Translations {
       installed: (name: string) => string
       removeTheme: string
       importedBadge: string
+      marketplaceSource: string
+      searchThemesPlaceholder: string
+      noInstalledThemesMatch: (query: string) => string
+      builtInThemes: Record<
+        'nous' | 'midnight' | 'ember' | 'mono' | 'cyberpunk' | 'slate',
+        { label: string; description: string }
+      >
       pet: {
         title: string
         intro: string
@@ -634,7 +647,86 @@ export interface Translations {
       fallbackAdd: string
       fallbackEmpty: string
       notInCatalog: string
+      pasteApiKey: (key: string) => string
+      activating: string
+      activate: string
+      setupProvider: (provider: string) => string
+      moaTitle: string
+      moaDescription: string
+      moaPreset: string
+      moaSetDefault: string
+      moaNewPreset: string
+      moaAddPreset: string
+      moaDefault: string
+      moaReference: (index: number) => string
+      moaAddReference: string
+      moaAggregator: string
+      moaPresets: string
+      staleAuxWarningPrefix: (count: number, names: string) => string
+      staleAuxWarningSuffix: string
+      otherProviders: string
       tasks: Record<string, AuxTaskCopy>
+    }
+    computerUse: {
+      linuxNote: string
+      windowsNote: string
+      granted: string
+      notGranted: string
+      unknown: string
+      statusLoadFailed: string
+      permissionRequestFailed: string
+      approveTitle: string
+      approveMessage: string
+      checking: string
+      unsupported: (platform: string) => string
+      installDriver: string
+      thenGrant: string
+      identityHint: string
+      recheck: string
+      accessibility: string
+      accessibilityHint: string
+      screenRecording: string
+      screenRecordingHint: string
+      driverHealth: string
+      ready: string
+      notReady: string
+      readyHint: string
+      waitingApproval: string
+      grantPermissions: string
+    }
+    memoryProvider: {
+      keepCurrent: string
+      loadFailed: string
+      savedTitle: (provider: string) => string
+      savedMessage: string
+      saveFailed: (provider: string) => string
+      loading: string
+      settings: (provider: string) => string
+      fieldSet: (field: string) => string
+      fieldNotSet: (field: string) => string
+      startFailedDetail: string
+      startFailedTitle: string
+      timedOut: string
+      connectionFailed: string
+      connectViaOauth: string
+      reconnect: string
+      connect: string
+      apiKeySet: string
+      oauthSet: string
+      waitingConsent: string
+    }
+    uninstall: {
+      dangerZone: string
+      checking: string
+      confirmTitle: string
+      consequence: (value: string) => string
+      appPath: (path: string) => string
+      uninstalling: string
+      confirm: string
+      title: string
+      description: string
+      couldNotStart: string
+      options: Record<'full' | 'gui' | 'lite', { title: string; description: string; consequence: string }>
     }
     providers: {
       connectAccount: string
@@ -850,6 +942,17 @@ export interface Translations {
     importSuccess: (nodes: number) => string
     importedBadge: string
     resetToMine: string
+    skill: string
+    editNode: (noun: string) => string
+    editTitle: (label: string) => string
+    archiveSkill: string
+    deleteMemory: string
+    deleteTitle: (label: string) => string
+    deleteMemoryDescription: string
+    legendAge: string
+    pauseTimeline: string
+    playTimeline: string
+    timelineScrubber: string
   }
   agents: {
     close: string
@@ -939,6 +1042,14 @@ export interface Translations {
       referenceImageInvalid: string
       adopt: string
       startOver: string
+      unavailableTitle: string
+      unavailableBody: string
+      unavailableHint: string
+      setupImageGeneration: string
+      getKeyFrom: string
+      reference: string
+      removeReference: string
+      addReference: string
     }
     installTheme: {
       title: string
@@ -1438,6 +1549,8 @@ export interface Translations {
     hotkeys: string
     helpFooter: string
     commandDescs: Record<string, string>
+    browseAllSessions: string
+    slashGroups: Record<'commands' | 'options' | 'sessions' | 'skills' | 'themes', string>
     hotkeyDescs: Record<string, string>
     attachUrlTitle: string
     attachUrlDesc: string
@@ -1469,6 +1582,7 @@ export interface Translations {
     themeTryPre: string
     themeTryPost: string
     attachLabel: string
+    addContext: string
     files: string
     folder: string
     images: string
@@ -1574,6 +1688,11 @@ export interface Translations {
     errorTitle: string
     errorBody: string
     notNow: string
+    changelog: {
+      groups: Record<'new' | 'fixed' | 'faster' | 'improved' | 'other', string>
+      fallbackGroup: string
+      fallbackItem: string
+    }
     applyStatus: {
       preparing: string
       pulling: string
@@ -1667,6 +1786,22 @@ export interface Translations {
     change: string
     startChatting: string
     docs: (provider: string) => string
+    readyTitle: string
+    providerConnected: (provider: string) => string
+    gatewayToolsTitle: string
+    gatewayToolsMessage: (tools: string[]) => string
+    gatewayToolLabels: Record<string, string>
+    runtimeNotReadyTitle: string
+    runtimeNotReadyMessage: string
+    enterValueFirst: string
+    enterEndpointFirst: string
+    saveProviderFailed: (provider: string) => string
+    endpointUnreachable: (url: string) => string
+    endpointNoModels: (url: string) => string
+    endpointSavedUnreachable: (url: string) => string
+    localEndpoint: string
+    saveLocalEndpointFailed: string
+    changeModelFailed: string
   }
 
   modelPicker: {
@@ -1985,6 +2120,11 @@ export interface Translations {
     saveApply: string
     notExpressible: string
     zoneCount: (count: number) => string
+    toggleEditMode: string
+    reloadDesktopPlugins: string
+    resetLayout: string
+    toggleLogs: string
+    layoutPresets: Record<'default' | 'focus' | 'terminalDeck' | 'quad', string>
   }
 
   assistant: {
@@ -1994,6 +2134,11 @@ export interface Translations {
       loadingResponse: string
       resumeWhenBackgroundDone: (count: number) => string
       thinking: string
+      summarizing: string
+      hermesThinking: string
+      steered: string
+      output: string
+      conversationTimeline: string
       today: (time: string) => string
       yesterday: (time: string) => string
       copy: string
@@ -2015,6 +2160,8 @@ export interface Translations {
       restoreTitle: string
       restoreBody: string
       restoreConfirm: string
+      restoreUnavailable: string
+      restoreFailed: string
       restoreNext: string
       goForward: string
       sendEdited: string
@@ -2068,6 +2215,10 @@ export interface Translations {
       statusError: string
       statusRecovered: string
       statusDone: string
+      searchResults: string
+      stdout: string
+      stderr: string
+      payload: string
       actions: {
         read: string
         reading: string
@@ -2094,6 +2245,21 @@ export interface Translations {
         runningTool: (action: string) => string
       }
       titles: Record<ToolTitleKey, ToolTitleCopy>
+    }
+    embeds: {
+      failedToLoad: (label: string) => string
+      openDiagram: string
+      load: (label: string) => string
+      alwaysAllow: (label: string) => string
+      youtubeTitle: string
+      spotifyTitle: string
+      alertLabels: Record<'caution' | 'important' | 'note' | 'tip' | 'warning', string>
+      holdToZoom: string
+    }
+    markdown: {
+      fetchFailed: (name: string) => string
+      openFile: (name: string) => string
+      loadingFile: (name: string) => string
     }
   }
 
@@ -2131,6 +2297,26 @@ export interface Translations {
     setProfileFailed: string
     sttDisabled: string
     stopFailed: string
+    newSession: string
+    addContext: string
+    activity: {
+      sessionTask: string
+      agentTaskRunning: string
+      previewRestart: string
+      running: string
+      completed: string
+      failed: (code: number | string) => string
+    }
+    skin: {
+      unavailable: string
+      switched: (theme: string) => string
+      listTitle: string
+      listHint: string
+      unknown: (theme: string, available: string) => string
+      showAvailable: string
+      cycleNext: string
+      current: string
+    }
     regenerateFailed: string
     editFailed: string
     resumeFailed: string
@@ -2169,6 +2355,17 @@ export interface Translations {
     clipboard: string
     noClipboardImage: string
     clipboardPasteFailed: string
+    routeMissing: (path: string) => string
+    sessionOpenFailed: string
+    session: string
+    profiles: string
+    logs: string
+    preview: string
+    logUnavailable: string
+    selectFileHint: string
+    openInHermes: string
+    messagePlaceholder: string
+    noRecentGatewayLogs: string
     dropFiles: string
     handoff: {
       pickPlatform: string
@@ -2185,9 +2382,15 @@ export interface Translations {
     boundaryDesc: string
     reloadWindow: string
     openLogs: string
+    contributionFailed: (id: string) => string
   }
 
   ui: {
+    moreActions: string
+    openFullView: string
+    zoomOut: string
+    resetZoom: string
+    zoomIn: string
     search: {
       clear: string
     }

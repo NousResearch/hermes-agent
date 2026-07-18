@@ -353,7 +353,7 @@ export async function stopBackgroundProcess(sid: string, id: string): Promise<vo
     await $gateway.get()?.request('process.kill', { process_id: id, session_id: sid })
     dismissBackgroundProcess(sid, id)
   } catch (err) {
-    notifyError(err, 'Could not stop the process')
+    notifyError(err, translateNow('desktop.stopFailed'))
   }
 }
 

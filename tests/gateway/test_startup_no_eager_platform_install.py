@@ -98,3 +98,25 @@ def test_failed_install_does_not_enable_configured_platform(isolated_registry):
 
     check_fn.assert_called_once()
     assert not config.platforms.get(Platform.DISCORD, PlatformConfig()).enabled
+
+
+def test_env_var_bridged_platform_does_not_re_run_check_fn(isolated_registry):
+    # Regression for #66127: a platform already enabled by _enable_from_env()
+    # (e.g. Matrix via MATRIX_HOMESERVER + MATRIX_ACCESS_TOKEN) must NOT re-run
+    # its check_fn here — check_fn is the lazy SDK installer and re-running
+    # it on every load_gateway_config() pip-installed mautrix/aiosqlite/
+    # asyncpg/aiohttp-socks on every /api/status poll.
+    check_fn = MagicMock(return_value=True)
+    _register_fake_platform(
+        "matrix", check_fn=check_fn, is_connected=lambda cfg: True
+    )
+
+    config = GatewayConfig()
+    config.platforms[Platform.MATRIX] = PlatformConfig(
+        enabled=True, extra={"token": "redacted"}
+    )
+
+    _apply_env_overrides(config)
+
+    check_fn.assert_not_called()
+    assert config.platforms[Platform.MATRIX].enabled is True

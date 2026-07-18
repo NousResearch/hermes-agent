@@ -2316,12 +2316,19 @@ def _apply_env_overrides(config: GatewayConfig) -> None:
             # awaits this synchronously) — even when the user configured none
             # of them.  That blocked startup until every install finished and
             # caused the desktop app to time out and boot-loop (stuck at 94%).
-            try:
-                if not entry.check_fn():
+            # Skip ``check_fn`` for platforms already enabled by the env-var
+            # bridge at _enable_from_env() — Matrix, Slack, Teams, etc. set
+            # ``enabled=True`` there, then re-running their ``check_fn`` here
+            # triggers a synchronous pip install on every ``/api/status`` poll.
+            # The lazy install still runs at start_gateway() when the adapter
+            # is instantiated. (#66127)
+            if not (existing_cfg is not None and existing_cfg.enabled):
+                try:
+                    if not entry.check_fn():
+                        continue
+                except Exception as e:
+                    logger.debug("check_fn for %s raised: %s", entry.name, e)
                     continue
-            except Exception as e:
-                logger.debug("check_fn for %s raised: %s", entry.name, e)
-                continue
             if platform not in config.platforms:
                 config.platforms[platform] = PlatformConfig()
             config.platforms[platform].enabled = True

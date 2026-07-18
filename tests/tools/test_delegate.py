@@ -200,6 +200,96 @@ class TestStripBlockedTools(unittest.TestCase):
                     f"but was not stripped",
                 )
 
+    def test_mixed_composite_is_subtracted_at_child_assembly(self):
+        """A mixed platform bundle must not re-expose blocked leaf tools.
+
+        ``hermes-cli`` contains both allowed tools and every sensitive
+        delegate tool, so it cannot be dropped wholesale. Child construction
+        must instead pass exact one-tool deny toolsets to AIAgent, where
+        model_tools applies them after resolving the composite.
+        """
+        import model_tools
+
+        parent = _make_mock_parent()
+        parent.enabled_toolsets = ["hermes-cli"]
+        parent.disabled_toolsets = ["browser"]
+
+        with patch("run_agent.AIAgent") as MockAgent:
+            MockAgent.return_value = MagicMock()
+            _build_child_agent(
+                task_index=0,
+                goal="Inspect safely",
+                context=None,
+                toolsets=None,
+                model=None,
+                max_iterations=10,
+                parent_agent=parent,
+                task_count=1,
+                role="leaf",
+            )
+
+        _, kwargs = MockAgent.call_args
+        disabled = kwargs["disabled_toolsets"]
+        self.assertIn("browser", disabled)
+        for toolset_name in (
+            "clarify",
+            "cronjob",
+            "delegation",
+            "code_execution",
+            "memory",
+        ):
+            self.assertIn(toolset_name, disabled)
+
+        definitions = model_tools.get_tool_definitions(
+            enabled_toolsets=kwargs["enabled_toolsets"],
+            disabled_toolsets=disabled,
+            quiet_mode=True,
+            skip_tool_search_assembly=True,
+        )
+        names = {item["function"]["name"] for item in definitions}
+        self.assertTrue(names & {"terminal", "read_file", "web_search"})
+        self.assertTrue(DELEGATE_BLOCKED_TOOLS.isdisjoint(names))
+
+    def test_orchestrator_composite_regains_only_delegate_task(self):
+        import model_tools
+
+        parent = _make_mock_parent()
+        parent.enabled_toolsets = ["hermes-cli"]
+        parent.disabled_toolsets = ["delegation", "browser"]
+
+        with (
+            patch("run_agent.AIAgent") as MockAgent,
+            patch("tools.delegate_tool._get_orchestrator_enabled", return_value=True),
+            patch("tools.delegate_tool._get_max_spawn_depth", return_value=2),
+        ):
+            MockAgent.return_value = MagicMock()
+            _build_child_agent(
+                task_index=0,
+                goal="Coordinate safely",
+                context=None,
+                toolsets=None,
+                model=None,
+                max_iterations=10,
+                parent_agent=parent,
+                task_count=1,
+                role="orchestrator",
+            )
+
+        _, kwargs = MockAgent.call_args
+        disabled = kwargs["disabled_toolsets"]
+        self.assertNotIn("delegation", disabled)
+        definitions = model_tools.get_tool_definitions(
+            enabled_toolsets=kwargs["enabled_toolsets"],
+            disabled_toolsets=disabled,
+            quiet_mode=True,
+            skip_tool_search_assembly=True,
+        )
+        names = {item["function"]["name"] for item in definitions}
+        self.assertIn("delegate_task", names)
+        self.assertTrue(
+            (DELEGATE_BLOCKED_TOOLS - {"delegate_task"}).isdisjoint(names)
+        )
+
 
 class TestDelegateTask(unittest.TestCase):
     def test_no_parent_agent(self):

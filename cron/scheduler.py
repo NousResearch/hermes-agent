@@ -221,6 +221,12 @@ def _suppress_transient_cron_failure_alert(job: dict, error: str | None,
     if schedule_kind not in {"cron", "interval"}:
         return False  # one-shot / unknown: always alert on failure
 
+    # Script-only watchdogs must always page when they fail. Their timeout or
+    # exit-error text can contain transient markers, but the watchdog contract
+    # requires alerting regardless of suppression settings.
+    if job.get("no_agent"):
+        return False
+
     if not _is_transient_cron_failure(error):
         return False  # real defect: alert
 

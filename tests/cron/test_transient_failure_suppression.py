@@ -157,3 +157,18 @@ def test_run_one_job_delivers_real_defect(monkeypatch):
     s.run_one_job(_job("interval", "ok"))
 
     assert "deliver" in [c[0] for c in calls]
+
+
+def test_no_agent_watchdog_timeout_always_delivers(monkeypatch):
+    monkeypatch.setattr(s, "load_config", lambda: _CFG_DEFAULT)
+    calls = _patch_pipeline(monkeypatch, success=False, error="script timed out after 3600s")
+
+    s.run_one_job(_job("interval", "ok", no_agent=True, script="watchdog.sh"))
+
+    assert "deliver" in [c[0] for c in calls]
+
+
+def test_schema_exposes_alert_on_transient_failure():
+    from tools.cronjob_tools import CRONJOB_SCHEMA
+
+    assert "alert_on_transient_failure" in CRONJOB_SCHEMA["parameters"]["properties"]

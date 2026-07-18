@@ -413,7 +413,7 @@ Check if nginx is running. If everything is healthy, respond with only [SILENT].
 Otherwise, report the issue.
 ```
 
-Failed jobs always deliver regardless of the `[SILENT]` marker — only successful runs can be silenced. For quiet monitoring jobs, prompt the agent to reply with only `[SILENT]` when there is nothing to report.
+Failed jobs normally deliver regardless of the `[SILENT]` marker — only successful runs can be silenced. For recurring LLM jobs, a first transient infrastructure failure after a successful run may be suppressed and the output is still saved; a second consecutive failure escalates and delivers. Set `alert_on_transient_failure: true` to always deliver those first transient failures. Script-only (`no_agent`) watchdog failures, including script timeouts and non-zero exits, always deliver so a broken watchdog cannot fail silently. For quiet monitoring jobs, prompt the agent to reply with only `[SILENT]` when there is nothing to report.
 
 ## Script timeout
 

@@ -29,6 +29,7 @@ from tests.gateway.test_canonical_writer_production_cutover import (
     Services,
     Snapshots,
     _approval,
+    _database_recovery_receipt,
     _freeze,
     _isolated_canary_goal_prerequisite,
     _mechanical_package,
@@ -242,6 +243,9 @@ def test_owner_key_stays_local_while_freeze_publication_is_staged(
         isolated_canary_goal_prerequisite=(
             _isolated_canary_goal_prerequisite()
         ),
+        database_recovery_receipt=_database_recovery_receipt(
+            rechecked_at_unix=now
+        ),
         truth_mode="start_new_truth_epoch",
         now_unix=now,
     )
@@ -275,6 +279,9 @@ def test_approved_sequence_runs_freeze_tail_then_cutover_plan_without_new_semant
         owner_runtime_attestation=_runtime_attestation(),
         isolated_canary_goal_prerequisite=(
             _isolated_canary_goal_prerequisite()
+        ),
+        database_recovery_receipt=_database_recovery_receipt(
+            rechecked_at_unix=now
         ),
         truth_mode="start_new_truth_epoch",
         now_unix=now,
@@ -327,6 +334,9 @@ def test_stager_rejects_tampered_publication_without_creating_files(
         isolated_canary_goal_prerequisite=(
             _isolated_canary_goal_prerequisite()
         ),
+        database_recovery_receipt=_database_recovery_receipt(
+            rechecked_at_unix=now
+        ),
         truth_mode="start_new_truth_epoch",
         now_unix=now,
     )
@@ -358,6 +368,9 @@ def test_stager_rolls_back_only_new_files_after_partial_publication_failure(
         owner_runtime_attestation=_runtime_attestation(),
         isolated_canary_goal_prerequisite=(
             _isolated_canary_goal_prerequisite()
+        ),
+        database_recovery_receipt=_database_recovery_receipt(
+            rechecked_at_unix=now
         ),
         truth_mode="start_new_truth_epoch",
         now_unix=now,

@@ -92,8 +92,8 @@ from gateway.operational_edge_readiness import (
 from ops.muncho.runtime import mechanical_job_rail
 
 
-FREEZE_PLAN_SCHEMA = "muncho-production-legacy-freeze-plan.v2"
-CUTOVER_PLAN_SCHEMA = "muncho-production-legacy-cutover-plan.v2"
+FREEZE_PLAN_SCHEMA = "muncho-production-legacy-freeze-plan.v3"
+CUTOVER_PLAN_SCHEMA = "muncho-production-legacy-cutover-plan.v3"
 APPROVAL_SCHEMA = "muncho-production-legacy-cutover-approval.v1"
 SNAPSHOT_SCHEMA = "muncho-production-legacy-snapshot.v1"
 SERVICE_SCHEMA = "muncho-production-service-observation.v1"
@@ -120,6 +120,23 @@ PROJECT = "adventico-ai-platform"
 ZONE = "europe-west3-a"
 VM_NAME = "ai-platform-runtime-01"
 DATABASE = "ai_platform_brain"
+PRODUCTION_SQL_INSTANCE = "ai-platform-postgres"
+PRODUCTION_SQL_REGION = "europe-west3"
+DATABASE_RECOVERY_SCRATCH_NETWORK = (
+    "projects/adventico-ai-platform/global/networks/muncho-canary-vpc"
+)
+DATABASE_RECOVERY_RECEIPT_SCHEMA = (
+    "muncho-production-database-recovery-receipt.v1"
+)
+DATABASE_RECOVERY_PROBE_RECEIPT_SCHEMA = (
+    "muncho-production-database-recovery-probe-receipt.v1"
+)
+DATABASE_RECOVERY_PROBE_CONTRACT = {
+    "database": DATABASE,
+    "transaction_mode": "read_only",
+    "schema_probe": "pg_catalog_schema_identity_v1",
+    "content_probe": "canonical_event_log_envelope_identity_v1",
+}
 GATEWAY_UNIT = "hermes-cloud-gateway.service"
 WRITER_UNIT = "muncho-canonical-writer.service"
 CONNECTOR_UNIT = "muncho-discord-connector.service"
@@ -966,11 +983,220 @@ def _artifact(value: Any, label: str, revision: str) -> dict[str, Any]:
     return raw
 
 
+_DATABASE_RECOVERY_FIELDS = frozenset({
+    "schema",
+    "release_revision",
+    "source",
+    "backup",
+    "scratch",
+    "probe_receipt",
+    "backup_rechecked_at_unix",
+    "journal_prefix_sha256",
+    "secret_material_recorded",
+    "secret_digest_recorded",
+    "receipt_sha256",
+})
+_DATABASE_RECOVERY_SOURCE_FIELDS = frozenset({
+    "project",
+    "instance",
+    "region",
+    "database",
+    "private_network",
+    "database_version",
+    "configuration_sha256",
+    "readback_sha256",
+})
+_DATABASE_RECOVERY_BACKUP_FIELDS = frozenset({
+    "backup_id",
+    "operation_id",
+    "status",
+    "type",
+    "source_instance",
+    "completed_at_unix",
+    "retained",
+    "readback_sha256",
+})
+_DATABASE_RECOVERY_SCRATCH_FIELDS = frozenset({
+    "project",
+    "instance",
+    "region",
+    "network",
+    "create_operation_id",
+    "restore_operation_id",
+    "delete_operation_id",
+    "restored_backup_id",
+    "private_only",
+    "backup_enabled",
+    "deletion_protection_enabled",
+    "deleted",
+    "readback_sha256",
+    "deleted_at_unix",
+})
+_DATABASE_RECOVERY_PROBE_FIELDS = frozenset({
+    "schema",
+    "release_revision",
+    "scratch_instance",
+    "database",
+    "probe_contract_sha256",
+    "transaction_read_only",
+    "schema_sha256",
+    "content_sha256",
+    "canonical_event_row_count",
+    "probed_at_unix",
+    "secret_material_recorded",
+    "secret_digest_recorded",
+    "receipt_sha256",
+})
+_CLOUD_SQL_OPERATION_ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,254}$")
+_CLOUD_SQL_BACKUP_ID = re.compile(r"^[1-9][0-9]{0,19}$")
+_CLOUD_SQL_PRIVATE_NETWORK = re.compile(
+    rf"^projects/{re.escape(PROJECT)}/global/networks/"
+    r"[a-z](?:[-a-z0-9]{0,61}[a-z0-9])?$"
+)
+
+
+def database_recovery_scratch_instance(revision: str) -> str:
+    if not isinstance(revision, str) or _REVISION.fullmatch(revision) is None:
+        raise ValueError("database recovery release revision is invalid")
+    return f"muncho-recovery-{revision[:20]}"
+
+
+def _validate_database_recovery_receipt(
+    value: Any,
+    *,
+    revision: str,
+    now_unix: int | None = None,
+    max_recheck_age_seconds: int | None = None,
+) -> dict[str, Any]:
+    raw = _hashed(
+        value,
+        _DATABASE_RECOVERY_FIELDS,
+        "receipt_sha256",
+        "database recovery receipt",
+    )
+    source = _exact(
+        raw["source"],
+        _DATABASE_RECOVERY_SOURCE_FIELDS,
+        "database recovery source",
+    )
+    backup = _exact(
+        raw["backup"],
+        _DATABASE_RECOVERY_BACKUP_FIELDS,
+        "database recovery backup",
+    )
+    scratch = _exact(
+        raw["scratch"],
+        _DATABASE_RECOVERY_SCRATCH_FIELDS,
+        "database recovery scratch",
+    )
+    probe = _hashed(
+        raw["probe_receipt"],
+        _DATABASE_RECOVERY_PROBE_FIELDS,
+        "receipt_sha256",
+        "database recovery probe receipt",
+    )
+    operation_fields = (
+        backup["operation_id"],
+        scratch["create_operation_id"],
+        scratch["restore_operation_id"],
+        scratch["delete_operation_id"],
+    )
+    timestamp_fields = (
+        backup["completed_at_unix"],
+        probe["probed_at_unix"],
+        scratch["deleted_at_unix"],
+        raw["backup_rechecked_at_unix"],
+    )
+    if (
+        raw["schema"] != DATABASE_RECOVERY_RECEIPT_SCHEMA
+        or raw["release_revision"] != revision
+        or source["project"] != PROJECT
+        or source["instance"] != PRODUCTION_SQL_INSTANCE
+        or source["region"] != PRODUCTION_SQL_REGION
+        or source["database"] != DATABASE
+        or not isinstance(source["private_network"], str)
+        or _CLOUD_SQL_PRIVATE_NETWORK.fullmatch(source["private_network"])
+        is None
+        or not isinstance(source["database_version"], str)
+        or not source["database_version"].startswith("POSTGRES_")
+        or backup["source_instance"] != PRODUCTION_SQL_INSTANCE
+        or backup["status"] != "SUCCESSFUL"
+        or backup["type"] != "ON_DEMAND"
+        or backup["retained"] is not True
+        or _CLOUD_SQL_BACKUP_ID.fullmatch(str(backup["backup_id"])) is None
+        or any(
+            not isinstance(operation, str)
+            or _CLOUD_SQL_OPERATION_ID.fullmatch(operation) is None
+            for operation in operation_fields
+        )
+        or scratch["project"] != PROJECT
+        or scratch["instance"] != database_recovery_scratch_instance(revision)
+        or scratch["region"] != PRODUCTION_SQL_REGION
+        or scratch["network"] != DATABASE_RECOVERY_SCRATCH_NETWORK
+        or scratch["restored_backup_id"] != backup["backup_id"]
+        or scratch["private_only"] is not True
+        or scratch["backup_enabled"] is not False
+        or scratch["deletion_protection_enabled"] is not False
+        or scratch["deleted"] is not True
+        or probe["schema"] != DATABASE_RECOVERY_PROBE_RECEIPT_SCHEMA
+        or probe["release_revision"] != revision
+        or probe["scratch_instance"] != scratch["instance"]
+        or probe["database"] != DATABASE
+        or probe["probe_contract_sha256"]
+        != _sha256_json(DATABASE_RECOVERY_PROBE_CONTRACT)
+        or probe["transaction_read_only"] is not True
+        or type(probe["canonical_event_row_count"]) is not int
+        or probe["canonical_event_row_count"] < 0
+        or any(type(timestamp) is not int or timestamp <= 0 for timestamp in timestamp_fields)
+        or not (
+            backup["completed_at_unix"]
+            <= probe["probed_at_unix"]
+            <= scratch["deleted_at_unix"]
+            <= raw["backup_rechecked_at_unix"]
+        )
+        or raw["secret_material_recorded"] is not False
+        or raw["secret_digest_recorded"] is not False
+        or probe["secret_material_recorded"] is not False
+        or probe["secret_digest_recorded"] is not False
+        or any(
+            _SHA256.fullmatch(str(digest)) is None
+            for digest in (
+                source["configuration_sha256"],
+                source["readback_sha256"],
+                backup["readback_sha256"],
+                scratch["readback_sha256"],
+                probe["schema_sha256"],
+                probe["content_sha256"],
+                raw["journal_prefix_sha256"],
+            )
+        )
+    ):
+        raise ValueError("database recovery receipt is invalid")
+    if max_recheck_age_seconds is not None:
+        if (
+            type(now_unix) is not int
+            or type(max_recheck_age_seconds) is not int
+            or not 1 <= max_recheck_age_seconds <= 900
+            or not 0
+            <= now_unix - raw["backup_rechecked_at_unix"]
+            <= max_recheck_age_seconds
+        ):
+            raise ValueError("database recovery backup recheck is stale")
+    return {
+        **raw,
+        "source": copy.deepcopy(dict(source)),
+        "backup": copy.deepcopy(dict(backup)),
+        "scratch": copy.deepcopy(dict(scratch)),
+        "probe_receipt": copy.deepcopy(dict(probe)),
+    }
+
+
 _FREEZE_FIELDS = frozenset({
     "schema", "release_revision", "target", "owner_subject_sha256",
     "owner_public_key_ed25519_hex", "owner_key_id", "gateway_before",
     "writer_before", "connector_before", "initial_snapshot",
-    "owner_runtime_attestation", "observe_artifact", "cutover_authority", "states",
+    "owner_runtime_attestation", "observe_artifact", "cutover_authority",
+    "database_recovery_receipt_sha256", "states",
     "secret_material_recorded", "plan_sha256",
 })
 
@@ -992,13 +1218,14 @@ _CUTOVER_AUTHORITY_FIELDS = frozenset({
     "mechanical_job_host_facts",
     "mechanical_job_package",
     "isolated_canary_goal_prerequisite",
+    "database_recovery_receipt",
     "legacy_truth_decision",
     "final_tail_bounds",
     "rollback_contract",
     "secret_material_recorded",
     "authority_sha256",
 })
-_CUTOVER_AUTHORITY_SCHEMA = "muncho-production-cutover-authority.v3"
+_CUTOVER_AUTHORITY_SCHEMA = "muncho-production-cutover-authority.v4"
 
 
 def _validate_cutover_authority(
@@ -1066,6 +1293,10 @@ def _validate_cutover_authority(
         raw["isolated_canary_goal_prerequisite"],
         revision=revision,
     )
+    recovery = _validate_database_recovery_receipt(
+        raw["database_recovery_receipt"],
+        revision=revision,
+    )
     _validate_host_transition(
         raw["host_transition"],
         gateway_pre=gateway_pre,
@@ -1122,6 +1353,7 @@ def _validate_cutover_authority(
         "mechanical_job_host_facts": copy.deepcopy(dict(host_facts)),
         "mechanical_job_package": copy.deepcopy(dict(mechanical_package)),
         "isolated_canary_goal_prerequisite": copy.deepcopy(dict(canary_goal)),
+        "database_recovery_receipt": copy.deepcopy(dict(recovery)),
         "legacy_truth_decision": copy.deepcopy(dict(decision)),
     }
 
@@ -1143,6 +1375,7 @@ def build_cutover_authority(
     mechanical_job_host_facts: Mapping[str, Any],
     mechanical_job_package: Mapping[str, Any],
     isolated_canary_goal_prerequisite: Mapping[str, Any],
+    database_recovery_receipt: Mapping[str, Any],
     legacy_truth_decision: Mapping[str, Any],
     max_appended_rows: int,
     max_capture_delay_seconds: int,
@@ -1165,6 +1398,9 @@ def build_cutover_authority(
         "mechanical_job_package": copy.deepcopy(dict(mechanical_job_package)),
         "isolated_canary_goal_prerequisite": copy.deepcopy(
             dict(isolated_canary_goal_prerequisite)
+        ),
+        "database_recovery_receipt": copy.deepcopy(
+            dict(database_recovery_receipt)
         ),
         "legacy_truth_decision": copy.deepcopy(dict(legacy_truth_decision)),
         "final_tail_bounds": {
@@ -1244,6 +1480,11 @@ class FreezePlan:
         observe = _artifact(raw["observe_artifact"], "observe artifact", revision)
         if observe != authority["artifacts"]["observe"]:
             raise ValueError("freeze observe artifact is not authority-bound")
+        if (
+            raw["database_recovery_receipt_sha256"]
+            != authority["database_recovery_receipt"]["receipt_sha256"]
+        ):
+            raise ValueError("freeze database recovery receipt is not authority-bound")
         if raw["states"] != ["authority", "gateway_stopped", "final_tail_captured"] or raw["secret_material_recorded"] is not False:
             raise ValueError("freeze plan contract is invalid")
         return cls(raw)
@@ -1302,6 +1543,9 @@ def build_freeze_plan(
         ),
         "observe_artifact": copy.deepcopy(dict(authority["artifacts"]["observe"])),
         "cutover_authority": copy.deepcopy(dict(authority)),
+        "database_recovery_receipt_sha256": authority[
+            "database_recovery_receipt"
+        ]["receipt_sha256"],
         "states": ["authority", "gateway_stopped", "final_tail_captured"],
         "secret_material_recorded": False,
     }
@@ -2416,6 +2660,7 @@ _CUTOVER_FIELDS = frozenset({
     "mechanical_job_host_facts",
     "mechanical_job_package",
     "legacy_truth_decision",
+    "database_recovery_receipt_sha256",
     "owner_runtime_attestation",
     "secret_material_recorded", "plan_sha256",
 })
@@ -2465,6 +2710,8 @@ class CutoverPlan:
             or raw["owner_key_id"] != freeze.value["owner_key_id"]
             or raw["owner_runtime_attestation"]
             != freeze.value["owner_runtime_attestation"]
+            or raw["database_recovery_receipt_sha256"]
+            != freeze.value["database_recovery_receipt_sha256"]
         ):
             raise ValueError("cutover freeze authority binding is invalid")
         tail = FinalTailReceipt.from_mapping(raw["final_tail_receipt"], plan=freeze)
@@ -2645,6 +2892,9 @@ def build_cutover_plan(
         "legacy_truth_decision": copy.deepcopy(
             dict(authority["legacy_truth_decision"])
         ),
+        "database_recovery_receipt_sha256": freeze_plan.value[
+            "database_recovery_receipt_sha256"
+        ],
         "owner_runtime_attestation": copy.deepcopy(
             dict(freeze_plan.value["owner_runtime_attestation"])
         ),

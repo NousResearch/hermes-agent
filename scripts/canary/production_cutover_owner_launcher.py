@@ -38,6 +38,7 @@ from ops.muncho.runtime import mechanical_job_rail, trusted_cron_collector_rail
 from scripts.canary import full_canary_owner_launcher as canary_transport
 from scripts.canary import package_production_cutover_artifacts as package
 from scripts.canary import production_cutover_host_authority as host_authority
+from scripts.canary import production_database_recovery_gate as database_recovery
 from scripts.canary.production_cutover_public_stager import build_publication
 
 
@@ -1080,6 +1081,7 @@ def author_freeze(
     private_key: Ed25519PrivateKey,
     owner_runtime_attestation: Mapping[str, Any],
     isolated_canary_goal_prerequisite: Mapping[str, Any],
+    database_recovery_receipt: Mapping[str, Any],
     truth_mode: str,
     accepted_event_receipts: list[Mapping[str, Any]] | None = None,
     now_unix: int | None = None,
@@ -1090,6 +1092,16 @@ def author_freeze(
         release_revision=release_revision,
         now_unix=current,
     )
+    try:
+        recovery_receipt = database_recovery.validate_receipt_for_freeze(
+            database_recovery_receipt,
+            release_revision=release_revision,
+            now_unix=current,
+        )
+    except database_recovery.ProductionDatabaseRecoveryError as exc:
+        raise OwnerCutoverError(
+            "owner_cutover_database_recovery_invalid"
+        ) from exc
     if truth_mode not in {"start_new_truth_epoch", "reseed_accepted_events"}:
         raise OwnerCutoverError("owner_cutover_truth_mode_invalid")
     if _SHA256.fullmatch(owner_subject_sha256) is None:
@@ -1132,6 +1144,7 @@ def author_freeze(
         isolated_canary_goal_prerequisite=(
             isolated_canary_goal_prerequisite
         ),
+        database_recovery_receipt=recovery_receipt,
         legacy_truth_decision=decision,
         max_appended_rows=10_000,
         max_capture_delay_seconds=900,
@@ -1590,15 +1603,19 @@ def execute_production_cutover_workflow(
     truth_mode: str,
     accepted_event_receipts: list[Mapping[str, Any]] | None = None,
     transport_factory: Any = ProductionCutoverTransport,
+    database_recovery_gate_runner: Any = database_recovery.run_for_owner,
     now_unix: int | None = None,
     clock: Callable[[], float] = time.time,
 ) -> Mapping[str, Any]:
     """Execute the fixed production cutover state machine.
 
-    The only remote calls before the owner signs the FreezePlan are the two
-    read-only collectors.  Staging the signed freeze publication is the first
-    mutation.  Any failure after that point and before a cutover plan is
-    confirmed staged invokes the exact ``abort-freeze`` recovery action.
+    Before the owner signs the FreezePlan, the workflow collects the two
+    read-only authorities and completes the fixed database-recovery gate.  The
+    gate's only mutations are a retained on-demand backup and a release-bound
+    scratch instance that is deleted after a durable read-only probe.  Staging
+    the signed freeze publication is still the first production-host mutation.
+    Any failure after that point and before a cutover plan is confirmed staged
+    invokes the exact ``abort-freeze`` recovery action.
     """
 
     if not callable(clock):
@@ -1613,6 +1630,7 @@ def execute_production_cutover_workflow(
         or not isinstance(host_authority_plan, Mapping)
         or set(host_authority_plan) != _HOST_AUTHORITY_PLAN_FIELDS
         or not callable(transport_factory)
+        or not callable(database_recovery_gate_runner)
     ):
         raise OwnerCutoverError("owner_cutover_workflow_input_invalid")
     runtime_attestation = _active_owner_runtime_attestation(
@@ -1680,6 +1698,21 @@ def execute_production_cutover_workflow(
         now_unix=gate_now(),
     )
     record("full_authority_composed", full_authority)
+    try:
+        recovery_receipt = database_recovery.validate_receipt_for_freeze(
+            database_recovery_gate_runner(
+                release_revision,
+                owner_identity,
+                owner_subject_sha256,
+            ),
+            release_revision=release_revision,
+            now_unix=gate_now(),
+        )
+    except database_recovery.ProductionDatabaseRecoveryError as exc:
+        raise OwnerCutoverError(
+            "owner_cutover_database_recovery_failed"
+        ) from exc
+    record("database_recovery_validated", recovery_receipt)
     freeze, freeze_approval, freeze_publication = author_freeze(
         collector_receipt=full_authority,
         release_revision=release_revision,
@@ -1689,6 +1722,7 @@ def execute_production_cutover_workflow(
         isolated_canary_goal_prerequisite=(
             isolated_canary_goal_prerequisite
         ),
+        database_recovery_receipt=recovery_receipt,
         truth_mode=truth_mode,
         accepted_event_receipts=accepted_event_receipts,
         now_unix=gate_now(),
@@ -1991,6 +2025,9 @@ def main(argv: Sequence[str] | None = None) -> int:
         "--isolated-canary-goal-prerequisite", type=Path, required=True
     )
     freeze.add_argument(
+        "--database-recovery-receipt", type=Path, required=True
+    )
+    freeze.add_argument(
         "--truth-mode",
         choices=("start_new_truth_epoch", "reseed_accepted_events"),
         required=True,
@@ -2245,6 +2282,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                 if (
                     not arguments.collector_receipt.is_absolute()
                     or not arguments.isolated_canary_goal_prerequisite.is_absolute()
+                    or not arguments.database_recovery_receipt.is_absolute()
                 ):
                     raise OwnerCutoverError("owner_cutover_public_input_invalid")
                 accepted = None
@@ -2273,6 +2311,9 @@ def main(argv: Sequence[str] | None = None) -> int:
                     owner_runtime_attestation=runtime_attestation,
                     isolated_canary_goal_prerequisite=_read_public_json(
                         arguments.isolated_canary_goal_prerequisite
+                    ),
+                    database_recovery_receipt=_read_public_json(
+                        arguments.database_recovery_receipt
                     ),
                     truth_mode=arguments.truth_mode,
                     accepted_event_receipts=accepted,

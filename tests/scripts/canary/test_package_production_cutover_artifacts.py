@@ -25,6 +25,7 @@ from gateway.operational_edge_catalog import asset_catalog
 from scripts.canary import package_production_cutover_artifacts as package
 from tests.gateway.test_canonical_writer_production_cutover import (
     _cron_authority,
+    _database_recovery_receipt,
     _runtime_attestation,
 )
 from tests.gateway.test_production_capability_prerequisites import _topology
@@ -1070,7 +1071,7 @@ def _cutover_plan(
         "evidence_sha256": _sha_json(isolated_canary_unsigned),
     }
     authority_unsigned = {
-        "schema": "muncho-production-cutover-authority.v3",
+        "schema": "muncho-production-cutover-authority.v4",
         "release_revision": REVISION,
         "artifacts": artifacts,
         "gateway_target_identity": stable(gateway_target_observation),
@@ -1083,6 +1084,7 @@ def _cutover_plan(
         "mechanical_job_host_facts": host_facts,
         "mechanical_job_package": mechanical_package,
         "isolated_canary_goal_prerequisite": isolated_canary,
+        "database_recovery_receipt": _database_recovery_receipt(),
         "legacy_truth_decision": legacy_truth_decision,
         "final_tail_bounds": {
             "max_appended_rows": 10_000,
@@ -1096,7 +1098,7 @@ def _cutover_plan(
         "authority_sha256": _sha_json(authority_unsigned),
     }
     freeze_unsigned = {
-        "schema": "muncho-production-legacy-freeze-plan.v2",
+        "schema": "muncho-production-legacy-freeze-plan.v3",
         "release_revision": REVISION,
         "target": target,
         "owner_subject_sha256": "e" * 64,
@@ -1109,6 +1111,9 @@ def _cutover_plan(
         "owner_runtime_attestation": _runtime_attestation(),
         "observe_artifact": artifacts["observe"],
         "cutover_authority": authority,
+        "database_recovery_receipt_sha256": authority[
+            "database_recovery_receipt"
+        ]["receipt_sha256"],
         "states": ["authority", "gateway_stopped", "final_tail_captured"],
         "secret_material_recorded": False,
     }
@@ -1130,7 +1135,7 @@ def _cutover_plan(
     }
     tail = {**tail_unsigned, "receipt_sha256": _sha_json(tail_unsigned)}
     unsigned = {
-        "schema": "muncho-production-legacy-cutover-plan.v2",
+        "schema": "muncho-production-legacy-cutover-plan.v3",
         "release_revision": REVISION,
         "target": target,
         "owner_subject_sha256": "e" * 64,
@@ -1155,6 +1160,9 @@ def _cutover_plan(
         "mechanical_job_host_facts": authority["mechanical_job_host_facts"],
         "mechanical_job_package": authority["mechanical_job_package"],
         "legacy_truth_decision": legacy_truth_decision,
+        "database_recovery_receipt_sha256": freeze[
+            "database_recovery_receipt_sha256"
+        ],
         "owner_runtime_attestation": freeze["owner_runtime_attestation"],
         "rollback_contract": rollback,
         "states": [

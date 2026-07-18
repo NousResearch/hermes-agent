@@ -62,6 +62,82 @@ def _isolated_canary_goal_prerequisite(
     return copy.deepcopy(_cached_isolated_canary_goal_prerequisite(revision))
 
 
+def _database_recovery_receipt(
+    revision: str = REVISION,
+    *,
+    rechecked_at_unix: int = NOW,
+) -> Mapping[str, Any]:
+    scratch = cutover.database_recovery_scratch_instance(revision)
+    probe_unsigned = {
+        "schema": cutover.DATABASE_RECOVERY_PROBE_RECEIPT_SCHEMA,
+        "release_revision": revision,
+        "scratch_instance": scratch,
+        "database": cutover.DATABASE,
+        "probe_contract_sha256": cutover._sha256_json(
+            cutover.DATABASE_RECOVERY_PROBE_CONTRACT
+        ),
+        "transaction_read_only": True,
+        "schema_sha256": "1" * 64,
+        "content_sha256": "2" * 64,
+        "canonical_event_row_count": 14_073,
+        "probed_at_unix": rechecked_at_unix - 20,
+        "secret_material_recorded": False,
+        "secret_digest_recorded": False,
+    }
+    probe = {
+        **probe_unsigned,
+        "receipt_sha256": cutover._sha256_json(probe_unsigned),
+    }
+    unsigned = {
+        "schema": cutover.DATABASE_RECOVERY_RECEIPT_SCHEMA,
+        "release_revision": revision,
+        "source": {
+            "project": cutover.PROJECT,
+            "instance": cutover.PRODUCTION_SQL_INSTANCE,
+            "region": cutover.PRODUCTION_SQL_REGION,
+            "database": cutover.DATABASE,
+            "private_network": (
+                f"projects/{cutover.PROJECT}/global/networks/production-vpc"
+            ),
+            "database_version": "POSTGRES_18",
+            "configuration_sha256": "3" * 64,
+            "readback_sha256": "4" * 64,
+        },
+        "backup": {
+            "backup_id": "123456789",
+            "operation_id": "backup-operation",
+            "status": "SUCCESSFUL",
+            "type": "ON_DEMAND",
+            "source_instance": cutover.PRODUCTION_SQL_INSTANCE,
+            "completed_at_unix": rechecked_at_unix - 30,
+            "retained": True,
+            "readback_sha256": "5" * 64,
+        },
+        "scratch": {
+            "project": cutover.PROJECT,
+            "instance": scratch,
+            "region": cutover.PRODUCTION_SQL_REGION,
+            "network": cutover.DATABASE_RECOVERY_SCRATCH_NETWORK,
+            "create_operation_id": "create-operation",
+            "restore_operation_id": "restore-operation",
+            "delete_operation_id": "delete-operation",
+            "restored_backup_id": "123456789",
+            "private_only": True,
+            "backup_enabled": False,
+            "deletion_protection_enabled": False,
+            "deleted": True,
+            "readback_sha256": "6" * 64,
+            "deleted_at_unix": rechecked_at_unix - 10,
+        },
+        "probe_receipt": probe,
+        "backup_rechecked_at_unix": rechecked_at_unix,
+        "journal_prefix_sha256": "7" * 64,
+        "secret_material_recorded": False,
+        "secret_digest_recorded": False,
+    }
+    return {**unsigned, "receipt_sha256": cutover._sha256_json(unsigned)}
+
+
 def test_isolation_equivalence_normalizes_only_reviewed_channel_fields() -> None:
     plan = _cutover_plan(Ed25519PrivateKey.generate(), Services())
     evidence = plan.value["freeze_plan"]["cutover_authority"][
@@ -802,6 +878,7 @@ def _freeze(private: Ed25519PrivateKey, services: Services, initial_rows: int = 
         isolated_canary_goal_prerequisite=(
             _isolated_canary_goal_prerequisite()
         ),
+        database_recovery_receipt=_database_recovery_receipt(),
         legacy_truth_decision=legacy_truth_decision,
         max_appended_rows=10_000,
         max_capture_delay_seconds=900,
@@ -2130,6 +2207,62 @@ def test_freeze_stops_exact_gateway_and_captures_final_append_only_tail() -> Non
         cutover.FreezeDependencies(services, Snapshots(receipt.snapshot), journal, nullcontext),
         now_unix=NOW,
     ).sha256 == receipt.sha256
+
+
+def test_database_recovery_receipt_is_structurally_bound_through_both_plans() -> None:
+    private = Ed25519PrivateKey.generate()
+    services = Services()
+    freeze = _freeze(private, services)
+    plan = _cutover_plan(private, Services())
+
+    recovery = freeze.value["cutover_authority"][
+        "database_recovery_receipt"
+    ]
+    assert freeze.value["schema"] == (
+        "muncho-production-legacy-freeze-plan.v3"
+    )
+    assert freeze.value["cutover_authority"]["schema"] == (
+        "muncho-production-cutover-authority.v4"
+    )
+    assert freeze.value["database_recovery_receipt_sha256"] == recovery[
+        "receipt_sha256"
+    ]
+    assert plan.value["schema"] == (
+        "muncho-production-legacy-cutover-plan.v3"
+    )
+    assert plan.value["database_recovery_receipt_sha256"] == plan.value[
+        "freeze_plan"
+    ]["database_recovery_receipt_sha256"]
+
+
+def test_freeze_rejects_rehashed_recovery_receipt_substitution() -> None:
+    raw = _freeze(Ed25519PrivateKey.generate(), Services()).to_mapping()
+    authority = raw["cutover_authority"]
+    recovery = authority["database_recovery_receipt"]
+    probe = recovery["probe_receipt"]
+    probe["content_sha256"] = "f" * 64
+    probe["receipt_sha256"] = cutover._sha256_json({
+        name: item for name, item in probe.items() if name != "receipt_sha256"
+    })
+    recovery["receipt_sha256"] = cutover._sha256_json({
+        name: item
+        for name, item in recovery.items()
+        if name != "receipt_sha256"
+    })
+    authority["authority_sha256"] = cutover._sha256_json({
+        name: item
+        for name, item in authority.items()
+        if name != "authority_sha256"
+    })
+    raw["plan_sha256"] = cutover._sha256_json({
+        name: item for name, item in raw.items() if name != "plan_sha256"
+    })
+
+    with pytest.raises(
+        ValueError,
+        match="freeze database recovery receipt is not authority-bound",
+    ):
+        cutover.FreezePlan.from_mapping(raw)
 
 
 def test_freeze_authority_rejects_nonexecutable_blanket_cron_disposition() -> None:

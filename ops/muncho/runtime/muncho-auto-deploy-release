@@ -255,7 +255,7 @@ from pathlib import Path
 
 SCHEMA = "muncho-legacy-auto-deploy-topology.v1"
 PINNED_HEADER = "# Exact SHA-bound Cloud Muncho production gateway; do not edit."
-PLAN_SCHEMA = "muncho-production-legacy-cutover-plan.v2"
+PLAN_SCHEMA = "muncho-production-legacy-cutover-plan.v3"
 CONFIG_PATH = "/opt/adventico-ai-platform/hermes-home/config.yaml"
 STARTUP_FLAG = "--require-production-model-sovereignty"
 REVISION = re.compile(r"^[0-9a-f]{40}$")

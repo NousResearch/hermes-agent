@@ -1096,6 +1096,133 @@ def _validate_cron_continuity_authority(
         raise ArtifactError("artifact_plan_invalid")
 
 
+def _validate_database_recovery_receipt(
+    value: Any, *, revision: str
+) -> bool:
+    raw = _hashed(
+        value,
+        {
+            "schema", "release_revision", "source", "backup", "scratch",
+            "probe_receipt", "backup_rechecked_at_unix",
+            "journal_prefix_sha256", "secret_material_recorded",
+            "secret_digest_recorded", "receipt_sha256",
+        },
+        "receipt_sha256",
+        "artifact_plan_invalid",
+    )
+    source = _exact(
+        raw.get("source"),
+        {
+            "project", "instance", "region", "database", "private_network",
+            "database_version", "configuration_sha256", "readback_sha256",
+        },
+        "artifact_plan_invalid",
+    )
+    backup = _exact(
+        raw.get("backup"),
+        {
+            "backup_id", "operation_id", "status", "type",
+            "source_instance", "completed_at_unix", "retained",
+            "readback_sha256",
+        },
+        "artifact_plan_invalid",
+    )
+    scratch = _exact(
+        raw.get("scratch"),
+        {
+            "project", "instance", "region", "network",
+            "create_operation_id", "restore_operation_id",
+            "delete_operation_id", "restored_backup_id", "private_only",
+            "backup_enabled", "deletion_protection_enabled", "deleted",
+            "readback_sha256", "deleted_at_unix",
+        },
+        "artifact_plan_invalid",
+    )
+    probe = _hashed(
+        raw.get("probe_receipt"),
+        {
+            "schema", "release_revision", "scratch_instance", "database",
+            "probe_contract_sha256", "transaction_read_only", "schema_sha256",
+            "content_sha256", "canonical_event_row_count", "probed_at_unix",
+            "secret_material_recorded", "secret_digest_recorded",
+            "receipt_sha256",
+        },
+        "receipt_sha256",
+        "artifact_plan_invalid",
+    )
+    scratch_name = f"muncho-recovery-{revision[:20]}"
+    timestamps = (
+        backup.get("completed_at_unix"), probe.get("probed_at_unix"),
+        scratch.get("deleted_at_unix"), raw.get("backup_rechecked_at_unix"),
+    )
+    operation = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,254}$")
+    return bool(
+        raw.get("schema") == "muncho-production-database-recovery-receipt.v1"
+        and raw.get("release_revision") == revision
+        and source.get("project") == "adventico-ai-platform"
+        and source.get("instance") == "ai-platform-postgres"
+        and source.get("region") == "europe-west3"
+        and source.get("database") == DATABASE
+        and isinstance(source.get("private_network"), str)
+        and re.fullmatch(
+            r"projects/adventico-ai-platform/global/networks/"
+            r"[a-z](?:[-a-z0-9]{0,61}[a-z0-9])?",
+            source["private_network"],
+        ) is not None
+        and isinstance(source.get("database_version"), str)
+        and source["database_version"].startswith("POSTGRES_")
+        and backup.get("source_instance") == "ai-platform-postgres"
+        and backup.get("status") == "SUCCESSFUL"
+        and backup.get("type") == "ON_DEMAND"
+        and backup.get("retained") is True
+        and re.fullmatch(r"[1-9][0-9]{0,19}", str(backup.get("backup_id")))
+        is not None
+        and all(
+            isinstance(item, str) and operation.fullmatch(item) is not None
+            for item in (
+                backup.get("operation_id"), scratch.get("create_operation_id"),
+                scratch.get("restore_operation_id"),
+                scratch.get("delete_operation_id"),
+            )
+        )
+        and scratch.get("project") == "adventico-ai-platform"
+        and scratch.get("instance") == scratch_name
+        and scratch.get("region") == "europe-west3"
+        and scratch.get("network")
+        == "projects/adventico-ai-platform/global/networks/muncho-canary-vpc"
+        and scratch.get("restored_backup_id") == backup.get("backup_id")
+        and scratch.get("private_only") is True
+        and scratch.get("backup_enabled") is False
+        and scratch.get("deletion_protection_enabled") is False
+        and scratch.get("deleted") is True
+        and probe.get("schema")
+        == "muncho-production-database-recovery-probe-receipt.v1"
+        and probe.get("release_revision") == revision
+        and probe.get("scratch_instance") == scratch_name
+        and probe.get("database") == DATABASE
+        and probe.get("probe_contract_sha256")
+        == "60472b84789b0811f1e2326f2757c98f6d7286e229035ab2a907d0b03d9578f6"
+        and probe.get("transaction_read_only") is True
+        and type(probe.get("canonical_event_row_count")) is int
+        and probe["canonical_event_row_count"] >= 0
+        and all(type(item) is int and item > 0 for item in timestamps)
+        and timestamps[0] <= timestamps[1] <= timestamps[2] <= timestamps[3]
+        and raw.get("secret_material_recorded") is False
+        and raw.get("secret_digest_recorded") is False
+        and probe.get("secret_material_recorded") is False
+        and probe.get("secret_digest_recorded") is False
+        and all(
+            SHA256.fullmatch(str(item)) is not None
+            for item in (
+                source.get("configuration_sha256"), source.get("readback_sha256"),
+                backup.get("readback_sha256"), scratch.get("readback_sha256"),
+                probe.get("probe_contract_sha256"), probe.get("schema_sha256"),
+                probe.get("content_sha256"), raw.get("journal_prefix_sha256"),
+            )
+        )
+    )
+
+
 def _plan_digest(raw: Mapping[str, Any]) -> str:
     digest = raw.get("plan_sha256")
     if not isinstance(digest, str) or SHA256.fullmatch(digest) is None:
@@ -1112,7 +1239,8 @@ def _plan_digest(raw: Mapping[str, Any]) -> str:
         "schema", "release_revision", "target", "owner_subject_sha256",
         "owner_public_key_ed25519_hex", "owner_key_id", "gateway_before",
         "writer_before", "connector_before", "initial_snapshot",
-        "owner_runtime_attestation", "observe_artifact", "cutover_authority", "states",
+        "owner_runtime_attestation", "observe_artifact", "cutover_authority",
+        "database_recovery_receipt_sha256", "states",
         "secret_material_recorded", "plan_sha256",
     }
     cutover_fields = {
@@ -1125,7 +1253,8 @@ def _plan_digest(raw: Mapping[str, Any]) -> str:
         "connector_target_identity", "host_transition", "rollback_contract",
         "capability_topology", "cron_inventory", "cron_continuity_plan",
         "mechanical_job_host_facts", "mechanical_job_package",
-        "legacy_truth_decision", "owner_runtime_attestation",
+        "legacy_truth_decision", "database_recovery_receipt_sha256",
+        "owner_runtime_attestation",
         "states", "secret_material_recorded", "plan_sha256",
     }
     runtime_attestation = _hashed(
@@ -1159,7 +1288,7 @@ def _plan_digest(raw: Mapping[str, Any]) -> str:
         or runtime_attestation.get("secret_digest_recorded") is not False
     ):
         raise ArtifactError("artifact_plan_invalid")
-    if schema == "muncho-production-legacy-freeze-plan.v2":
+    if schema == "muncho-production-legacy-freeze-plan.v3":
         if set(raw) != freeze_fields or raw.get("states") != [
             "authority", "gateway_stopped", "final_tail_captured"
         ]:
@@ -1175,6 +1304,7 @@ def _plan_digest(raw: Mapping[str, Any]) -> str:
                 "cron_continuity_plan", "mechanical_job_host_facts",
                 "mechanical_job_package",
                 "isolated_canary_goal_prerequisite",
+                "database_recovery_receipt",
                 "legacy_truth_decision",
                 "final_tail_bounds",
                 "rollback_contract", "secret_material_recorded",
@@ -1193,7 +1323,7 @@ def _plan_digest(raw: Mapping[str, Any]) -> str:
         )
         _validate_cron_continuity_authority(authority, revision=revision)
         if (
-            authority.get("schema") != "muncho-production-cutover-authority.v3"
+            authority.get("schema") != "muncho-production-cutover-authority.v4"
             or authority.get("release_revision") != revision
             or authority.get("secret_material_recorded") is not False
             or not isinstance(artifacts, Mapping)
@@ -1292,6 +1422,12 @@ def _plan_digest(raw: Mapping[str, Any]) -> str:
                 ].items()
                 if key != "evidence_sha256"
             })
+            or not isinstance(authority.get("database_recovery_receipt"), Mapping)
+            or raw.get("database_recovery_receipt_sha256")
+            != authority["database_recovery_receipt"].get("receipt_sha256")
+            or not _validate_database_recovery_receipt(
+                authority["database_recovery_receipt"], revision=revision
+            )
             or not isinstance(bounds, Mapping)
             or set(bounds) != {
                 "max_appended_rows", "max_capture_delay_seconds"
@@ -1319,7 +1455,7 @@ def _plan_digest(raw: Mapping[str, Any]) -> str:
             or rollback.get("restart_legacy_gateway") is not True
         ):
             raise ArtifactError("artifact_plan_invalid")
-    elif schema == "muncho-production-legacy-cutover-plan.v2":
+    elif schema == "muncho-production-legacy-cutover-plan.v3":
         if set(raw) != cutover_fields or raw.get("states") != [
             "authority", "host_applied", "prerequisites_started",
             "capability_prerequisites_validated", "final_tail_reobserved",
@@ -1346,6 +1482,8 @@ def _plan_digest(raw: Mapping[str, Any]) -> str:
             or raw.get("owner_key_id") != freeze.get("owner_key_id")
             or raw.get("owner_runtime_attestation")
             != freeze.get("owner_runtime_attestation")
+            or raw.get("database_recovery_receipt_sha256")
+            != freeze.get("database_recovery_receipt_sha256")
             or not isinstance(authority, Mapping)
             or not isinstance(artifacts, Mapping)
             or not isinstance(rollback, Mapping)
@@ -1716,7 +1854,7 @@ def _validate_request(value: Mapping[str, Any]) -> tuple[str, dict[str, Any], Ma
         raise ArtifactError("artifact_request_invalid")
     plan = dict(raw["plan"])
     _plan_digest(plan)
-    if plan.get("schema") == "muncho-production-legacy-cutover-plan.v2":
+    if plan.get("schema") == "muncho-production-legacy-cutover-plan.v3":
         _host_manifest(plan)
     _binding(plan, action)
     apply_receipt = raw["apply_receipt"]

@@ -21,11 +21,13 @@ from scripts.canary import package_production_cutover_artifacts as package
 from scripts.canary import production_cutover_host_authority as host_authority
 from scripts.canary import production_cutover_initial_collector as initial_collector
 from scripts.canary import production_cutover_owner_launcher as owner
+from scripts.canary import production_database_recovery_gate as database_recovery
 from tests.gateway.test_canonical_writer_production_cutover import (
     MemoryJournal,
     NOW,
     Services,
     Snapshots,
+    _database_recovery_receipt,
     _db_receipt,
     _freeze,
     _isolated_canary_goal_prerequisite,
@@ -690,6 +692,10 @@ def _workflow_inputs() -> tuple[Services, dict, dict, dict]:
     return services, initial, host, plan
 
 
+def _recovery_gate_runner(*_args: object) -> dict:
+    return dict(_database_recovery_receipt(rechecked_at_unix=NOW))
+
+
 def test_workflow_order_is_fixed_and_first_mutation_has_signed_freeze(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -716,6 +722,7 @@ def test_workflow_order_is_fixed_and_first_mutation_has_signed_freeze(
         ),
         truth_mode="start_new_truth_epoch",
         transport_factory=lambda _identity: transport,
+        database_recovery_gate_runner=_recovery_gate_runner,
         now_unix=NOW,
     )
 
@@ -735,6 +742,7 @@ def test_workflow_order_is_fixed_and_first_mutation_has_signed_freeze(
         "initial_read_only_collected",
         "host_authority_read_only_collected",
         "full_authority_composed",
+        "database_recovery_validated",
         "freeze_owner_signed",
         "freeze_authority_staged",
         "final_tail_captured",
@@ -782,11 +790,51 @@ def test_workflow_samples_fresh_time_at_each_long_running_gate(
         ),
         truth_mode="start_new_truth_epoch",
         transport_factory=lambda _identity: transport,
+        database_recovery_gate_runner=lambda *_args: (
+            _database_recovery_receipt(rechecked_at_unix=tick["value"])
+        ),
         clock=advancing_clock,
     )
 
     assert receipt["schema"] == owner.WORKFLOW_RECEIPT_SCHEMA
     assert tick["value"] >= NOW + 45 * 7
+
+
+def test_workflow_blocks_before_freeze_authoring_when_recovery_gate_fails(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        "gateway.canonical_writer_production_cutover.time.time",
+        lambda: NOW,
+    )
+    services, initial, host, plan = _workflow_inputs()
+    transport = _WorkflowTransport(initial, host, services)
+
+    def blocked(*_args: object) -> dict:
+        raise database_recovery.ProductionDatabaseRecoveryError(
+            "production_database_recovery_probe_transport_unavailable"
+        )
+
+    with pytest.raises(
+        owner.OwnerCutoverError,
+        match="owner_cutover_database_recovery_failed",
+    ):
+        owner.execute_production_cutover_workflow(
+            release_revision=REVISION,
+            owner_identity=object(),
+            owner_subject_sha256="a" * 64,
+            private_key=Ed25519PrivateKey.generate(),
+            host_authority_plan=plan,
+            isolated_canary_goal_prerequisite=(
+                _isolated_canary_goal_prerequisite()
+            ),
+            truth_mode="start_new_truth_epoch",
+            transport_factory=lambda _identity: transport,
+            database_recovery_gate_runner=blocked,
+            now_unix=NOW,
+        )
+
+    assert transport.calls == ["collect-initial", "collect-authority"]
 
 
 def test_workflow_stages_exact_packaged_cron_before_cutover_plan(
@@ -861,6 +909,7 @@ def test_workflow_stages_exact_packaged_cron_before_cutover_plan(
         ),
         truth_mode="start_new_truth_epoch",
         transport_factory=lambda _identity: transport,
+        database_recovery_gate_runner=_recovery_gate_runner,
         now_unix=NOW,
     )
 
@@ -884,6 +933,9 @@ def test_publication_stage_receipt_rejects_swapped_path_or_digest() -> None:
         owner_runtime_attestation=_runtime_attestation(),
         isolated_canary_goal_prerequisite=(
             _isolated_canary_goal_prerequisite()
+        ),
+        database_recovery_receipt=_database_recovery_receipt(
+            rechecked_at_unix=NOW
         ),
         truth_mode="start_new_truth_epoch",
         now_unix=NOW,
@@ -966,6 +1018,9 @@ def test_packaged_cron_stage_receipt_binds_all_forty_five_files(
         mechanical_job_package=old_authority["mechanical_job_package"],
         isolated_canary_goal_prerequisite=old_authority[
             "isolated_canary_goal_prerequisite"
+        ],
+        database_recovery_receipt=old_authority[
+            "database_recovery_receipt"
         ],
         legacy_truth_decision=old_authority["legacy_truth_decision"],
         max_appended_rows=old_authority["final_tail_bounds"][
@@ -1056,6 +1111,7 @@ def test_failure_after_signed_freeze_invokes_abort_before_any_apply(
             ),
             truth_mode="start_new_truth_epoch",
             transport_factory=lambda _identity: transport,
+            database_recovery_gate_runner=_recovery_gate_runner,
             now_unix=NOW,
         )
 
@@ -1124,6 +1180,7 @@ def test_cutover_and_abort_base_failures_are_both_preserved(
             ),
             truth_mode="start_new_truth_epoch",
             transport_factory=lambda _identity: transport,
+            database_recovery_gate_runner=_recovery_gate_runner,
             now_unix=NOW,
         )
 
@@ -1169,6 +1226,7 @@ def test_cron_stage_mismatch_aborts_freeze_before_cutover_plan(
             ),
             truth_mode="start_new_truth_epoch",
             transport_factory=lambda _identity: transport,
+            database_recovery_gate_runner=_recovery_gate_runner,
             now_unix=NOW,
         )
 

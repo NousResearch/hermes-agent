@@ -490,10 +490,15 @@ class TestKillPortProcess:
              patch("plugins.platforms.whatsapp.adapter.subprocess.run", side_effect=run_side_effect) as mock_run:
             _kill_port_process(3000)
 
-        # netstat called
-        assert any(
-            call.args[0][0] == "netstat" for call in mock_run.call_args_list
+        netstat_call = next(
+            call for call in mock_run.call_args_list
+            if call.args[0][0] == "netstat"
         )
+        assert netstat_call.args[0] == ["netstat", "-ano", "-p", "TCP"]
+        assert netstat_call.kwargs["capture_output"] is True
+        assert netstat_call.kwargs["text"] is True
+        assert netstat_call.kwargs["errors"] == "replace"
+        assert netstat_call.kwargs["timeout"] == 5
         # taskkill called with correct PID
         assert any(
             call.args[0] == ["taskkill", "/PID", "12345", "/F"]
@@ -591,6 +596,7 @@ class TestHttpSessionLifecycle:
             ["taskkill", "/PID", "12345", "/T"],
             capture_output=True,
             text=True,
+            errors="replace",
             timeout=10,
         )
         mock_proc.terminate.assert_not_called()

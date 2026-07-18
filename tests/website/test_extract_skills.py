@@ -114,3 +114,40 @@ def test_guess_category_empty_tags(mod):
 def test_guess_category_skips_first_junk_tag_for_later_known_tag(mod):
     # First tag is junk, second is curated — we should still find the curated one.
     assert mod._guess_category(["Some Brand", "security"]) == "security"
+
+
+# --------------------------------------------------------------------------
+# _consolidate_small_categories
+# --------------------------------------------------------------------------
+
+def test_consolidate_small_categories_keeps_fixed_category_but_not_its_siblings(mod):
+    skills = [
+        {"name": "fixed", "category": "security", "categoryLabel": "Vendor Security", "fixedCategory": True},
+        {"name": "plain-1", "category": "security", "categoryLabel": ""},
+        {"name": "plain-2", "category": "security", "categoryLabel": ""},
+        {"name": "plain-3", "category": "security", "categoryLabel": ""},
+    ]
+
+    out = mod._consolidate_small_categories(skills)
+
+    assert out[0]["category"] == "security"
+    assert out[0]["categoryLabel"] == "Vendor Security"
+    assert [s["category"] for s in out[1:]] == ["other", "other", "other"]
+
+
+def test_consolidate_small_categories_keeps_curated_smart_home_small_category(mod):
+    skills = [
+        {"name": "tescmd", "category": "smart-home", "categoryLabel": ""},
+        {"name": "odd", "category": "one-off-tag", "categoryLabel": ""},
+    ]
+
+    out = mod._consolidate_small_categories(skills)
+
+    assert out[0]["category"] == "smart-home"
+    assert out[0]["categoryLabel"] == "Smart Home"
+    assert out[1]["category"] == "other"
+    assert out[1]["categoryLabel"] == "Other"
+
+
+def test_curated_small_category_exemption_is_explicitly_limited(mod):
+    assert mod.CURATED_SMALL_CATEGORIES == {"smart-home"}

@@ -7176,6 +7176,26 @@ def test_session_list_returns_clean_error_when_state_db_is_unavailable(monkeypat
     assert "state.db unavailable: locking protocol" in resp["error"]["message"]
 
 
+def test_session_list_preserves_lineage_root_id(monkeypatch):
+    class _DB:
+        def list_sessions_rich(self, **_kwargs):
+            return [
+                {
+                    "id": "tip-1",
+                    "_lineage_root_id": "root-1",
+                    "source": "desktop",
+                }
+            ]
+
+    monkeypatch.setattr(server, "_get_db", lambda: _DB())
+
+    resp = server.handle_request(
+        {"id": "1", "method": "session.list", "params": {}}
+    )
+
+    assert resp["result"]["sessions"][0]["_lineage_root_id"] == "root-1"
+
+
 # --------------------------------------------------------------------------
 # session.delete — TUI resume picker `d` key
 # --------------------------------------------------------------------------

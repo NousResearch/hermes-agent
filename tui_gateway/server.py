@@ -5694,6 +5694,7 @@ def _(rid, params: dict) -> dict:
                 "sessions": [
                     {
                         "id": s["id"],
+                        "_lineage_root_id": s.get("_lineage_root_id"),
                         "title": s.get("title") or "",
                         "preview": s.get("preview") or "",
                         "started_at": s.get("started_at") or 0,

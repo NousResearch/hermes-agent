@@ -4828,7 +4828,25 @@ class AIAgent:
         if visible:
             return visible
         content = assistant_msg.get("content")
-        return self._strip_think_blocks(content or "").strip()
+        if _is_multimodal_tool_result(content):
+            content = _multimodal_text_summary(content)
+        elif isinstance(content, list):
+            text_parts: List[str] = []
+            for part in content:
+                if isinstance(part, str):
+                    text_parts.append(part)
+                    continue
+                if not isinstance(part, dict):
+                    continue
+                if part.get("type") not in {"text", "input_text", "output_text"}:
+                    continue
+                text = part.get("text")
+                if isinstance(text, str):
+                    text_parts.append(text)
+            content = "\n".join(text_parts)
+        if not isinstance(content, str):
+            return ""
+        return self._strip_think_blocks(content).strip()
 
     def _interim_text_was_delivered(self, text: str) -> bool:
         normalized = self._normalize_interim_visible_text(text)

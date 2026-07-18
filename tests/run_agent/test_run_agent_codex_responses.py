@@ -769,6 +769,19 @@ def test_consume_codex_stream_keeps_final_answer_phase_deltas(monkeypatch):
     assert response.output_text == "visible answer"
 
 
+def test_interim_visible_text_handles_multimodal_content_parts(monkeypatch):
+    agent = _build_agent(monkeypatch)
+    message = {
+        "role": "tool",
+        "content": [
+            {"type": "text", "text": "Image loaded for analysis."},
+            {"type": "image_url", "image_url": {"url": "data:image/jpeg;base64,abc"}},
+        ],
+    }
+
+    assert agent._interim_assistant_visible_text(message) == "Image loaded for analysis."
+
+
 def test_run_codex_stream_delivers_redacted_commentary_once(monkeypatch):
     from agent.codex_responses_adapter import _normalize_codex_response
 

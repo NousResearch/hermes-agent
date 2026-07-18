@@ -5602,6 +5602,21 @@ def _inflight_snapshot(session: dict) -> dict | None:
     }
 
 
+def _queued_prompt_snapshot(session: dict) -> dict | None:
+    """Return the accepted next-turn prompt without its transport handle.
+
+    A busy ``prompt.submit`` lives only in ``session["queued_prompt"]`` until
+    the current turn winds down. Desktop may reconnect or restart during that
+    window, so the live-session projection must carry the user-visible text;
+    otherwise the accepted prompt disappears until it finally drains.
+    """
+    queued = session.get("queued_prompt")
+    if not isinstance(queued, dict):
+        return None
+    user = _inflight_text(queued.get("text"))
+    return {"user": user} if user else None
+
+
 # ── Methods: session ─────────────────────────────────────────────────
 
 
@@ -6438,8 +6453,12 @@ def _session_live_item(sid: str, session: dict, current_sid: str = "") -> dict:
     history = list(session.get("history") or [])
     status = _session_live_status(sid, session)
     inflight = _inflight_snapshot(session)
+    queued = _queued_prompt_snapshot(session)
     preview = _message_preview(history)
-    if inflight:
+    if queued:
+        preview = queued.get("user") or preview
+        preview = " ".join(str(preview).split())[:160]
+    elif inflight:
         preview = inflight.get("assistant") or inflight.get("user") or preview
         preview = " ".join(str(preview).split())[:160]
     now = time.time()
@@ -6508,6 +6527,7 @@ def _live_session_payload(
             session.get("history") or []
         )
         inflight = _inflight_snapshot(session)
+        queued = _queued_prompt_snapshot(session)
         running = bool(session.get("running"))
     payload = {
         "info": _fallback_session_info(session),
@@ -6521,6 +6541,8 @@ def _live_session_payload(
     }
     if inflight:
         payload["inflight"] = inflight
+    if queued:
+        payload["queued"] = queued
     return payload
 
 

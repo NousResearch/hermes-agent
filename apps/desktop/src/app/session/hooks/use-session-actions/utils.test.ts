@@ -6,11 +6,13 @@ import { $activeGatewayProfile } from '@/store/profile'
 import type { SessionInfo } from '@/types/hermes'
 
 import {
+  appendLiveSessionProjection,
   applyRuntimeInfo,
   chatMessageArraysEquivalent,
   chatMessagesEquivalent,
   chatPartsEquivalent,
   isSessionGoneError,
+  preserveLocalPendingTurnMessages,
   reconcileResumeMessages,
   sessionMatchesStoredId,
   sessionShouldHaveTranscript,
@@ -287,5 +289,74 @@ describe('reconcileResumeMessages', () => {
 
     const [out] = reconcileResumeMessages(next, previous)
     expect(out.parts.some(p => p.type === 'reasoning')).toBe(true)
+  })
+})
+
+describe('preserveLocalPendingTurnMessages', () => {
+  it('keeps an optimistic user turn and pending assistant when the server projection is behind', () => {
+    const next = [msg('1-user', 'user', 'first'), msg('2-assistant', 'assistant', 'first answer')]
+
+    const previous = [
+      ...next,
+      msg('user-optimistic', 'user', 'new question'),
+      msg('assistant-stream-1', 'assistant', 'partial answer', { pending: true })
+    ]
+
+    expect(preserveLocalPendingTurnMessages(next, previous).map(message => message.id)).toEqual([
+      '1-user',
+      '2-assistant',
+      'user-optimistic',
+      'assistant-stream-1'
+    ])
+  })
+
+  it('drops the local copies once the same role ordinals are authoritative', () => {
+    const previous = [
+      msg('1-user', 'user', 'first'),
+      msg('2-assistant', 'assistant', 'first answer'),
+      msg('user-optimistic', 'user', 'new question'),
+      msg('assistant-stream-1', 'assistant', 'partial answer', { pending: true })
+    ]
+
+    const next = [
+      msg('1-user-stored', 'user', 'first'),
+      msg('2-assistant-stored', 'assistant', 'first answer'),
+      msg('3-user-stored', 'user', 'new question'),
+      msg('4-assistant-stored', 'assistant', 'complete answer')
+    ]
+
+    expect(preserveLocalPendingTurnMessages(next, previous)).toBe(next)
+  })
+})
+
+describe('appendLiveSessionProjection', () => {
+  it('restores the running turn and accepted queued prompt after a renderer restart', () => {
+    const stored = [msg('stored-user', 'user', 'earlier'), msg('stored-assistant', 'assistant', 'earlier answer')]
+
+    const restored = appendLiveSessionProjection(stored, {
+      session_id: 'runtime-1',
+      inflight: {
+        user: 'current prompt',
+        assistant: 'partial answer',
+        streaming: true
+      },
+      queued: { user: 'newest prompt' }
+    })
+
+    expect(restored.map(message => message.role)).toEqual(['user', 'assistant', 'user', 'assistant', 'user'])
+    expect(restored.map(message => message.parts.map(part => ('text' in part ? part.text : '')).join(''))).toEqual([
+      'earlier',
+      'earlier answer',
+      'current prompt',
+      'partial answer',
+      'newest prompt'
+    ])
+    expect(restored[3]).toMatchObject({ id: 'assistant-stream-runtime-1', pending: true })
+  })
+
+  it('preserves the original array when no live projection exists', () => {
+    const stored = [msg('stored-user', 'user', 'earlier')]
+
+    expect(appendLiveSessionProjection(stored, { session_id: 'runtime-1' })).toBe(stored)
   })
 })

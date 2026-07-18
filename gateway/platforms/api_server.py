@@ -4633,8 +4633,8 @@ class APIServerAdapter(BasePlatformAdapter):
            ``extract_local_files`` with their safety filters).
         2. Uploads each file to the remote server via
            ``_upload_file_to_server``.
-        3. Replaces local path references in the cleaned text with
-           ``[filename](file_id)`` markdown links.
+        3. Appends ``[filename](url)`` markdown links for each uploaded
+           file to the cleaned text.
         4. Returns ``(cleaned_text, uploaded_file_items)``.
 
         When ``API_UPLOAD_FILES_URL`` is **not** configured, falls back to
@@ -4688,13 +4688,8 @@ class APIServerAdapter(BasePlatformAdapter):
                 for _opt in ("expires_at", "status", "status_details"):
                     if _opt in uploaded:
                         file_obj[_opt] = uploaded[_opt]
-                # Replace file path references in cleaned text with a
-                # markdown link so clients can discover the uploaded file.
-                # When API_UPLOAD_FILES_DOWNLOAD_URL is configured the link
-                # target is a direct download URL; otherwise a ``file:``
-                # reference scheme is used.  The download URL is also
-                # stored on the file object for downstream url_citation
-                # annotation building.
+                # Build the download URL (or file: reference) and store it
+                # on the file object for downstream annotation building.
                 if self._upload_files_download_url:
                     download_url = self._upload_files_download_url.replace(
                         "{file_id}", file_id
@@ -4702,8 +4697,18 @@ class APIServerAdapter(BasePlatformAdapter):
                 else:
                     download_url = f"file:{file_id}"
                 file_obj["download_url"] = download_url
-                cleaned = cleaned.replace(file_path, f"[{file_name}]({download_url})")
                 uploaded_items.append(file_obj)
+
+        # 3b. Append markdown links for successfully uploaded files to the
+        # cleaned text.  We append rather than replace because extract_media /
+        # extract_local_files already removed the original MEDIA: tags and
+        # bare paths from the text — there is nothing left to replace.
+        if uploaded_items:
+            ref_lines = "\n".join(
+                f"[{item['filename']}]({item['download_url']})"
+                for item in uploaded_items
+            )
+            cleaned = f"{cleaned}\n\n{ref_lines}" if cleaned else ref_lines
 
         # 4. Any remaining MEDIA: tags that weren't uploaded (e.g. upload
         #    failed) should still be inlined for images where possible.

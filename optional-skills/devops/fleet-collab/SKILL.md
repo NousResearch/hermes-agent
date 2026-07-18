@@ -1,6 +1,6 @@
 ---
 name: fleet-collab
-description: "Multi-machine collaboration over Tailscale via shared board."
+description: Multi-machine collaboration over Tailscale using shared kanban board and SSH remote dispatch.
 version: 1.0.0
 author: JannLeo
 license: MIT
@@ -97,6 +97,38 @@ Copy `scripts/fleet_dispatch.sh` to the **hub only**.
 - **SSH arg quoting**: `fleet_create.sh` uses a tempfile + scp to move args to the hub, avoiding shell-quote nesting that breaks `ssh ... "cmd $*"`.
 - **Don't use the SSH terminal backend** (`terminal.backend: ssh`) for these worker profiles: it force-syncs the hub's `~/.hermes/skills` (42 dirs) to the remote on every spawn — slow and overwrites the remote's own config. This skill's `fleet_dispatch.sh` SSHes into the remote's *own* hermes instead, no file sync.
 - **macOS node via Tailscale SSH**: Tailscale SSH may require browser-based device approval; password SSH won't work until approved. Complete the approval first.
+- **Worker "spoke and stopped" protocol violation**: some models (e.g. MiniMax) finish a task without calling `kanban_complete`/`kanban_block`, triggering `protocol violation` and auto-block after `failure_limit` (default 2) consecutive crashes. Mitigations: raise `kanban.failure_limit` in config, or use a stronger worker model. The orchestrator (below) can recover by re-decomposing.
+
+## Recursive Decomposition (Orchestrator SOUL)
+
+The built-in `auto_decompose` is a **one-shot** aux-LLM call that splits a triage task into ≤6 children. For large goals (multiple feature areas, multi-file work), a single child can still be too big — the worker burns its turn budget, gets blocked, and the loop stalls.
+
+**Teach the orchestrator profile to recursively decompose.** Add this to the orchestrator profile's `SOUL.md` (or `personalities.<name>` in config.yaml):
+
+```
+When you wake up after children complete, inspect each child's result with kanban_show:
+- done + real progress → accept, move on.
+- blocked OR summary indicates too-large/turn-exhausted → re-decompose.
+
+To re-decompose a too-large blocked task:
+1. kanban_archive the blocked child.
+2. Create 2-4 smaller child tasks via kanban_create --parent <root_id>, each with a
+   single-file-or-single-feature body spec.
+3. Always set --parent so the root stays gated until all children complete.
+
+Sizing heuristic for manual fan-out:
+- Small (1 turn, ~5 min): "implement X in file Y" → single task
+- Medium (2-3 turns, ~15 min): "add endpoint + tests + verify" → single task
+- Large (multi-file, >30 min): DO NOT send as one task — split into medium tasks
+  with --parent linking in dependency order.
+
+Anti-patterns:
+- One huge task with 5+ feature areas → worker will fail.
+- Blocking the root when children fail → re-decompose instead.
+- Forgetting --parent → children run ungated, root never wakes.
+```
+
+This turns the orchestrator from a passive "wait for children" role into an active loop driver that keeps the board moving even when the one-shot decomposer under-splits.
 
 ## Verification
 

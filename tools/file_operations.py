@@ -2109,12 +2109,17 @@ class ShellFileOperations(FileOperations):
         )
 
     def _search_files_rg(self, pattern: str, path: str, limit: int, offset: int) -> SearchResult:
-        """Search for files by name using ripgrep's --files mode.
+        """Search for files by name using ripgrep's --files mode, plus directories.
 
         rg --files respects .gitignore and excludes hidden directories by
         default, and uses parallel directory traversal for ~200x speedup
         over find on wide trees.  Results are sorted by modification time
         (most recently edited first) when rg >= 13.0 supports --sortr.
+
+        Since rg --files cannot return empty directories (it only lists files),
+        we supplement with a ``find -type d`` call and merge the two lists.
+        The merged result preserves mtime ordering: files first (from rg),
+        then directories (from find), each group sorted by mtime.
         """
         # rg --files -g uses glob patterns; wrap bare names so they match
         # at any depth (equivalent to find -name).
@@ -2145,11 +2150,68 @@ class ShellFileOperations(FileOperations):
             stdout, limit_reason = _search_stdout_and_limit(result)
             all_files = [f for f in stdout.strip().split('\n') if f]
 
-        page = all_files[offset:offset + limit]
+        # ── Directory enumeration ───────────────────────────────────────
+        # rg --files never emits directory paths, so empty directories are
+        # invisible.  Supplement with find -type d when available, merging
+        # into a single result list with the same dedup and hidden-path
+        # filtering that the find fallback path applies.
+        all_dirs: list[str] = []
+        if self._has_command('find'):
+            search_root = Path(path)
+            has_hidden = any(
+                part not in {".", ".."} and part.startswith(".")
+                for part in search_root.parts
+            )
+            hidden_exclude = "-not -path '*/.*'" if not has_hidden else ""
+            hidden_filter = f" {hidden_exclude}" if hidden_exclude else ""
+
+            cmd_dirs = (
+                f"find {self._escape_shell_arg(path)}{hidden_filter} "
+                f"-type d -name {self._escape_shell_arg(pattern)} "
+                f"-printf '%T@ %p\\\\n' 2>/dev/null | sort -rn"
+            )
+            result_dirs = self._exec(cmd_dirs, timeout=60)
+            dir_stdout, _ = _search_stdout_and_limit(result_dirs)
+
+            seen = set(all_files)  # dedup: skip if already a file result
+            for line in dir_stdout.strip().split('\n'):
+                if not line:
+                    continue
+                parts = line.split(' ', 1)
+                dir_path = (
+                    parts[1]
+                    if len(parts) == 2 and parts[0].replace('.', '').isdigit()
+                    else line
+                )
+                if dir_path in seen:
+                    continue
+                seen.add(dir_path)
+                all_dirs.append(dir_path)
+
+            # Hidden-descendant filtering for explicit hidden roots.
+            if has_hidden:
+                normalized_root = search_root.resolve()
+                filtered: list[str] = []
+                for d in all_dirs:
+                    try:
+                        rel = Path(d).resolve().relative_to(normalized_root).parts
+                    except ValueError:
+                        rel = Path(d).parts
+                    if any(p not in {".", ".."} and p.startswith(".") for p in rel):
+                        continue
+                    filtered.append(d)
+                all_dirs = filtered
+
+        # ── Merge and paginate ──────────────────────────────────────────
+        # Files first (mtime-sorted from rg), then directories (mtime-sorted
+        # from find).  This matches the find fallback behaviour of interleaving
+        # both types by mtime while keeping the fast rg path for files.
+        all_entries = all_files + all_dirs
+        page = all_entries[offset:offset + limit]
 
         return SearchResult(
             files=page,
-            total_count=len(all_files),
+            total_count=len(all_entries),
             truncated=len(all_files) >= fetch_limit or bool(limit_reason),
             limit_reason=limit_reason,
         )

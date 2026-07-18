@@ -464,6 +464,93 @@ def test_cmd_update_local_commit_guard_fails_closed_when_proof_is_unavailable(
     assert "could not prove" in capsys.readouterr().out
 
 
+def test_cmd_update_protects_local_commits_on_target_branch_before_switch(
+    monkeypatch, tmp_path, capsys
+):
+    """A clean current HEAD must not hide divergent commits on the target ref."""
+    _setup_update_mocks(monkeypatch, tmp_path)
+    calls = []
+
+    def fake_run(cmd, **kwargs):
+        calls.append(cmd)
+        joined = " ".join(str(part) for part in cmd)
+        if "fetch origin main" in joined:
+            return SimpleNamespace(returncode=0, stdout="", stderr="")
+        if "rev-parse --abbrev-ref HEAD" in joined:
+            return SimpleNamespace(returncode=0, stdout="deploy/custom\n", stderr="")
+        if "show-ref --verify --quiet refs/heads/main" in joined:
+            return SimpleNamespace(returncode=0, stdout="", stderr="")
+        if "rev-list --count origin/main..HEAD" in joined:
+            return SimpleNamespace(returncode=0, stdout="0\n", stderr="")
+        if "rev-list --count origin/main..refs/heads/main" in joined:
+            return SimpleNamespace(returncode=0, stdout="2\n", stderr="")
+        return SimpleNamespace(returncode=0, stdout="", stderr="")
+
+    monkeypatch.setattr(hermes_main.subprocess, "run", fake_run)
+    monkeypatch.setattr(
+        hermes_config,
+        "load_config",
+        lambda: {"updates": {"protect_local_commits": True}},
+    )
+
+    with pytest.raises(SystemExit) as exc:
+        hermes_main._cmd_update_impl(SimpleNamespace(yes=True), gateway_mode=False)
+
+    assert exc.value.code == 1
+    assert "2 commit(s)" in capsys.readouterr().out
+    assert not any(" checkout " in f" {' '.join(cmd)} " for cmd in calls)
+    assert not any(" reset " in f" {' '.join(cmd)} " for cmd in calls)
+
+
+@pytest.mark.parametrize("value", ["true", 1, [], {}])
+def test_cmd_update_rejects_invalid_local_commit_protection_value(
+    monkeypatch, tmp_path, capsys, value
+):
+    _setup_update_mocks(monkeypatch, tmp_path)
+    monkeypatch.setattr(
+        hermes_config,
+        "load_config",
+        lambda: {"updates": {"protect_local_commits": value}},
+    )
+
+    with pytest.raises(SystemExit) as exc:
+        hermes_main._cmd_update_impl(SimpleNamespace(yes=True), gateway_mode=False)
+
+    assert exc.value.code == 1
+    assert "safety configuration is invalid" in capsys.readouterr().out
+
+
+def test_cmd_update_protection_disables_windows_zip_fallback(
+    monkeypatch, tmp_path, capsys
+):
+    _setup_update_mocks(monkeypatch, tmp_path)
+    zip_calls = []
+
+    def fake_run(cmd, **kwargs):
+        joined = " ".join(str(part) for part in cmd)
+        if "fetch origin main" in joined:
+            return SimpleNamespace(returncode=0, stdout="", stderr="")
+        if "rev-parse --abbrev-ref HEAD" in joined:
+            raise CalledProcessError(1, cmd)
+        return SimpleNamespace(returncode=0, stdout="", stderr="")
+
+    monkeypatch.setattr(hermes_main.subprocess, "run", fake_run)
+    monkeypatch.setattr(hermes_main.sys, "platform", "win32")
+    monkeypatch.setattr(hermes_main, "_update_via_zip", lambda args: zip_calls.append(args))
+    monkeypatch.setattr(
+        hermes_config,
+        "load_config",
+        lambda: {"updates": {"protect_local_commits": True}},
+    )
+
+    with pytest.raises(SystemExit) as exc:
+        hermes_main._cmd_update_impl(SimpleNamespace(yes=True), gateway_mode=False)
+
+    assert exc.value.code == 1
+    assert zip_calls == []
+    assert "ZIP fallback is disabled" in capsys.readouterr().out
+
+
 def test_cmd_update_retries_optional_extras_individually_when_all_fails(monkeypatch, tmp_path, capsys):
     """When .[all] fails, update should keep base deps and retry extras individually."""
     _setup_update_mocks(monkeypatch, tmp_path)

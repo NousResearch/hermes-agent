@@ -9791,22 +9791,64 @@ def _cmd_update_impl(args, gateway_mode: bool):
     )
     discard_local_changes = False
     protect_local_commits = False
+    update_safety_config_error = None
     try:
-        from hermes_cli.config import load_config
+        from hermes_cli.config import fast_safe_load, get_config_path, load_config
 
         _update_cfg = (load_config() or {}).get("updates", {})
         if isinstance(_update_cfg, dict):
-            protect_local_commits = _update_cfg.get("protect_local_commits") is True
+            _protect_value = _update_cfg.get("protect_local_commits", False)
+            if not isinstance(_protect_value, bool):
+                update_safety_config_error = (
+                    "updates.protect_local_commits must be true or false, not "
+                    f"{type(_protect_value).__name__}"
+                )
+            else:
+                protect_local_commits = _protect_value
             if _non_interactive_update:
                 _mode = str(
                     _update_cfg.get("non_interactive_local_changes", "stash")
                 ).lower()
                 discard_local_changes = _mode == "discard"
+        else:
+            update_safety_config_error = "the updates section must be a mapping"
+
+        # ``load_config`` deliberately falls back to defaults in a fresh process
+        # when YAML is malformed. That is appropriate for ordinary settings but
+        # not for a guard whose job is to prevent destructive resets. Parse the
+        # user file strictly enough to distinguish "unset" from "unreadable" and
+        # reject a mistyped raw value even if a merged/default value looks safe.
+        _config_path = get_config_path()
+        if _config_path.exists():
+            try:
+                with open(_config_path, encoding="utf-8") as _config_file:
+                    _raw_config = fast_safe_load(_config_file) or {}
+                if not isinstance(_raw_config, dict):
+                    raise ValueError("config root must be a mapping")
+                _raw_updates = _raw_config.get("updates", {})
+                if not isinstance(_raw_updates, dict):
+                    raise ValueError("updates section must be a mapping")
+                if "protect_local_commits" in _raw_updates and not isinstance(
+                    _raw_updates["protect_local_commits"], bool
+                ):
+                    raise ValueError(
+                        "updates.protect_local_commits must be true or false"
+                    )
+            except Exception as exc:
+                update_safety_config_error = str(exc)
     except Exception as exc:
-        # Never let a config read failure opt into destructive behavior.
+        # A safety-policy read failure must not silently enable destructive
+        # checkout/reset behavior.
         logger.debug("Could not read update safety configuration: %s", exc)
         discard_local_changes = False
         protect_local_commits = False
+        update_safety_config_error = str(exc)
+
+    if update_safety_config_error:
+        print("✗ Update blocked: update safety configuration is invalid or unreadable.")
+        print(f"  {update_safety_config_error}")
+        print("  Fix config.yaml before retrying the update.")
+        sys.exit(1)
 
     print("⚕ Updating Hermes Agent...")
     print()
@@ -9968,20 +10010,52 @@ def _cmd_update_impl(args, gateway_mode: bool):
         current_branch = result.stdout.strip()
 
         if protect_local_commits:
-            local_commit_result = subprocess.run(
-                git_cmd + ["rev-list", "--count", f"origin/{branch}..HEAD"],
-                cwd=PROJECT_ROOT,
-                capture_output=True,
-                text=True,
-            )
-            try:
-                local_commit_count = (
-                    int(local_commit_result.stdout.strip())
-                    if local_commit_result.returncode == 0
-                    else None
+            protected_revisions = [("HEAD", "HEAD")]
+            local_commit_count = 0
+
+            # Starting from a different branch/detached HEAD can otherwise hide
+            # local commits on the target branch: HEAD may be contained in the
+            # remote while checkout + reset would still discard the target ref.
+            if current_branch != branch:
+                target_ref_result = subprocess.run(
+                    git_cmd
+                    + ["show-ref", "--verify", "--quiet", f"refs/heads/{branch}"],
+                    cwd=PROJECT_ROOT,
+                    capture_output=True,
+                    text=True,
                 )
-            except ValueError:
-                local_commit_count = None
+                if target_ref_result.returncode == 0:
+                    protected_revisions.append(
+                        (f"local branch {branch}", f"refs/heads/{branch}")
+                    )
+                elif target_ref_result.returncode != 1:
+                    local_commit_count = None
+
+            if local_commit_count is not None:
+                for _label, _revision in protected_revisions:
+                    local_commit_result = subprocess.run(
+                        git_cmd
+                        + [
+                            "rev-list",
+                            "--count",
+                            f"origin/{branch}..{_revision}",
+                        ],
+                        cwd=PROJECT_ROOT,
+                        capture_output=True,
+                        text=True,
+                    )
+                    try:
+                        _count = (
+                            int(local_commit_result.stdout.strip())
+                            if local_commit_result.returncode == 0
+                            else None
+                        )
+                    except ValueError:
+                        _count = None
+                    if _count is None:
+                        local_commit_count = None
+                        break
+                    local_commit_count += _count
 
             if local_commit_count is None or local_commit_count > 0:
                 print()
@@ -11449,13 +11523,18 @@ def _cmd_update_impl(args, gateway_mode: bool):
         print("  hermes model              # Select provider and model")
 
     except subprocess.CalledProcessError as e:
-        if sys.platform == "win32":
+        if sys.platform == "win32" and not protect_local_commits:
             print(f"⚠ Git update failed: {e}")
             print("→ Falling back to ZIP download...")
             print()
             _update_via_zip(args)
         else:
-            print(f"✗ Update failed: {e}")
+            if sys.platform == "win32" and protect_local_commits:
+                print("✗ Protected update failed before local commits could be preserved.")
+                print("  ZIP fallback is disabled while updates.protect_local_commits is true.")
+                _resume_windows_gateways_after_update(_windows_gateway_resume)
+            else:
+                print(f"✗ Update failed: {e}")
             sys.exit(1)
 
 

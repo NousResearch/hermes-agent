@@ -5004,8 +5004,12 @@ def resolve_provider_client(
         if custom_entry is None:
             custom_entry = _get_named_custom_provider(provider)
         if custom_entry:
-            custom_base = (custom_entry.get("base_url") or "").strip()
-            custom_key = (custom_entry.get("api_key") or "").strip()
+            custom_base = (
+                explicit_base_url or custom_entry.get("base_url") or ""
+            ).strip()
+            custom_key = (
+                explicit_api_key or custom_entry.get("api_key") or ""
+            ).strip()
             custom_key_env = (custom_entry.get("key_env") or custom_entry.get("api_key_env") or "").strip()
             if not custom_key and custom_key_env:
                 custom_key = os.getenv(custom_key_env, "").strip()
@@ -5489,7 +5493,34 @@ def _main_model_supports_vision(provider: str, model: Optional[str]) -> bool:
     return bool(supports)
 
 
+def _is_registered_named_custom_provider(provider: Optional[str]) -> bool:
+    normalized = str(provider or "").strip().lower()
+    if normalized in {"", "auto", "custom"}:
+        return False
+    try:
+        from hermes_cli.runtime_provider import has_named_custom_provider
+    except ImportError:
+        return False
+    return has_named_custom_provider(normalized)
+
+
 def _normalize_vision_provider(provider: Optional[str]) -> str:
+    raw_provider = str(provider or "").strip().lower()
+    # An explicit named custom provider must win over a built-in alias. Keep
+    # the raw identifier so resolve_provider_client() can find the configured
+    # entry and preserve its transport. Non-colliding custom names retain the
+    # established custom:<name> -> <name> normalization.
+    alias_candidate = (
+        raw_provider.split(":", 1)[1].strip()
+        if raw_provider.startswith("custom:")
+        else raw_provider
+    )
+    if (
+        alias_candidate
+        and _PROVIDER_ALIASES.get(alias_candidate, alias_candidate) != alias_candidate
+        and _is_registered_named_custom_provider(raw_provider)
+    ):
+        return raw_provider
     return _normalize_aux_provider(provider)
 
 
@@ -6284,7 +6315,11 @@ def _resolve_task_provider_model(
 
     def _preserve_provider_with_base_url(prov: Optional[str]) -> bool:
         normalized = str(prov or "").strip().lower()
-        if normalized in {"", "auto", "custom"} or normalized.startswith("custom:"):
+        if normalized in {"", "auto", "custom"}:
+            return False
+        if _is_registered_named_custom_provider(normalized):
+            return True
+        if normalized.startswith("custom:"):
             return False
         try:
             from hermes_cli.providers import get_provider
@@ -6331,8 +6366,15 @@ def _resolve_task_provider_model(
     if task:
         # Config.yaml is the primary source for per-task overrides.
         if cfg_base_url and cfg_api_key:
-            # Both base_url and api_key explicitly set → custom endpoint.
-            return "custom", resolved_model, cfg_base_url, cfg_api_key, resolved_api_mode
+            # Both endpoint fields are explicit, but retain a registered
+            # provider identity so its transport and request shaping still
+            # apply. Unknown/bare custom endpoints remain anonymous.
+            endpoint_provider = (
+                str(cfg_provider)
+                if _is_registered_named_custom_provider(cfg_provider)
+                else "custom"
+            )
+            return endpoint_provider, resolved_model, cfg_base_url, cfg_api_key, resolved_api_mode
         if cfg_base_url and cfg_provider and cfg_provider != "auto":
             # base_url set without api_key but with a known provider — use
             # the provider so it can resolve credentials from env vars

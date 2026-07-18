@@ -1,6 +1,7 @@
 import { type CSSProperties, useState } from 'react'
 
 import { type Locale, useI18n } from '@/i18n'
+import { capitalize, normalize } from '@/lib/text'
 
 import introCopyJsonl from './intro-copy.jsonl?raw'
 import introCopyZhJsonl from './intro-copy.zh.jsonl?raw'
@@ -45,14 +46,14 @@ const FALLBACK_COPY: IntroCopy[] = [
 ]
 
 function normalizeKey(value?: string): string {
-  return (value || '').trim().toLowerCase()
+  return normalize(value)
 }
 
 function titleize(value: string): string {
   return value
     .split(/[-_\s]+/)
     .filter(Boolean)
-    .map(part => part.charAt(0).toUpperCase() + part.slice(1))
+    .map(capitalize)
     .join(' ')
 }
 
@@ -104,13 +105,25 @@ function parseIntroCopy(raw: string): Record<string, IntroCopy[]> {
   return byPersonality
 }
 
-const INTRO_COPY_BY_LOCALE: Partial<Record<Locale, Record<string, IntroCopy[]>>> = {
+type IntroAssetLocale = 'en' | 'zh'
+
+const INTRO_COPY_BY_LOCALE: Record<IntroAssetLocale, Record<string, IntroCopy[]>> = {
   en: parseIntroCopy(introCopyJsonl),
   zh: parseIntroCopy(introCopyZhJsonl)
 }
 
+// Intro copy is a generated personality corpus rather than ordinary UI labels.
+// Until dedicated corpora are reviewed, Traditional Chinese uses the Simplified
+// Chinese corpus and Japanese uses the original English corpus.
+const INTRO_ASSET_LOCALE: Record<Locale, IntroAssetLocale> = {
+  en: 'en',
+  ja: 'en',
+  zh: 'zh',
+  'zh-hant': 'zh'
+}
+
 function copyByPersonality(locale: Locale): Record<string, IntroCopy[]> {
-  return INTRO_COPY_BY_LOCALE[locale] ?? INTRO_COPY_BY_LOCALE.en ?? {}
+  return INTRO_COPY_BY_LOCALE[INTRO_ASSET_LOCALE[locale]]
 }
 
 function neutralCopy(locale: Locale): IntroCopy[] {

@@ -233,6 +233,27 @@ def test_docker_env_is_bridged_everywhere():
     assert "TERMINAL_DOCKER_ENV" in _terminal_tool_env_var_names()
 
 
+def test_docker_extra_args_is_bridged_everywhere():
+    """Regression pin for docker_extra_args config key being silently ignored.
+
+    ``terminal.docker_extra_args`` in config.yaml passes extra flags verbatim
+    to ``docker run`` (e.g. ``--gpus=all``, ``--shm-size=16g``).  The key was
+    present in DEFAULT_CONFIG, TERMINAL_CONFIG_ENV_MAP (so ``hermes config
+    set`` bridged it), terminal_tool._get_env_config (reads
+    TERMINAL_DOCKER_EXTRA_ARGS), and DockerEnvironment (applies extra_args) --
+    but it was MISSING from cli.py's env_mappings and gateway/run.py's
+    _terminal_env_map.  So a user who hand-edited config.yaml had their GPU /
+    shm-size flags silently dropped on the CLI and gateway/desktop paths,
+    while ``image``/``volumes`` (which were in those maps) bridged fine --
+    producing the "Hermes partially reads the Docker config" symptom.  Guard
+    all four bridging points so this cannot regress.
+    """
+    assert "docker_extra_args" in _cli_env_map_keys()
+    assert "docker_extra_args" in _gateway_env_map_keys()
+    assert "docker_extra_args" in _save_config_env_sync_keys()
+    assert "TERMINAL_DOCKER_EXTRA_ARGS" in _terminal_tool_env_var_names()
+
+
 def test_docker_persist_across_processes_is_bridged_everywhere():
     """Regression pin for the cross-process container reuse toggle.
 

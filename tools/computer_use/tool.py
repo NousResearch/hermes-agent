@@ -1,9 +1,15 @@
 """Entry point for the `computer_use` tool.
 
-Universal (any-model) macOS desktop control via cua-driver's background
-computer-use primitive. Replaces #4562's Anthropic-native `computer_20251124`
-approach — the schema here is standard OpenAI function-calling so every
-tool-capable model can drive it.
+Universal (any-model) desktop control across macOS, Windows, and Linux via
+cua-driver's background computer-use primitive. Replaces #4562's
+Anthropic-native `computer_20251124` approach — the schema here is standard
+OpenAI function-calling so every tool-capable model can drive it.
+
+Linux is the most recent runtime (X11 + Wayland, via cua-driver-rs's
+AT-SPI tree path); it is enabled here alongside macOS and Windows. When a
+host's display server or accessibility stack isn't reachable, cua-driver's
+`health_report` (surfaced by `hermes computer-use doctor`) reports the
+exact blocked check rather than the toolset silently failing.
 
 Return contract
 ---------------
@@ -87,9 +93,19 @@ _BLOCKED_KEY_COMBOS = {
     frozenset({"cmd", "ctrl", "q"}),             # lock screen
     frozenset({"cmd", "shift", "q"}),            # log out
     frozenset({"cmd", "option", "shift", "q"}),  # force log out
+    # Windows secure/session shortcuts. The Windows driver accepts Win-key
+    # combos, and Alt is canonicalized to option below, so block the
+    # destructive variants before any backend sees them.
+    frozenset({"win", "l"}),
+    frozenset({"ctrl", "option", "delete"}),
+    frozenset({"ctrl", "option", "del"}),
+    frozenset({"option", "f4"}),
 }
 
-_KEY_ALIASES = {"command": "cmd", "control": "ctrl", "alt": "option", "⌘": "cmd", "⌥": "option"}
+_KEY_ALIASES = {
+    "command": "cmd", "control": "ctrl", "alt": "option", "⌘": "cmd", "⌥": "option",
+    "windows": "win", "super": "win", "meta": "win",
+}
 
 
 def _canon_key_combo(keys: str) -> frozenset:
@@ -140,7 +156,15 @@ def _get_backend() -> ComputerUseBackend:
                 _backend = _NoopBackend()
             else:
                 raise RuntimeError(f"Unknown HERMES_COMPUTER_USE_BACKEND={backend_name!r}")
-            _backend.start()
+            try:
+                _backend.start()
+            except Exception:
+                # Don't cache a backend whose start() failed (e.g. a lazy
+                # dependency install was declined / failed). The next call
+                # retries cleanly instead of returning a half-initialised
+                # backend.
+                _backend = None
+                raise
         return _backend
 
 
@@ -169,8 +193,17 @@ class _NoopBackend(ComputerUseBackend):  # pragma: no cover
     def stop(self) -> None: self._started = False
     def is_available(self) -> bool: return True
 
-    def capture(self, mode: str = "som", app: Optional[str] = None) -> CaptureResult:
-        self.calls.append(("capture", {"mode": mode, "app": app}))
+    def capture(
+        self,
+        mode: str = "som",
+        app: Optional[str] = None,
+        pid: Optional[int] = None,
+        window_id: Optional[int] = None,
+    ) -> CaptureResult:
+        self.calls.append((
+            "capture",
+            {"mode": mode, "app": app, "pid": pid, "window_id": window_id},
+        ))
         return CaptureResult(mode=mode, width=1024, height=768, png_b64=None,
                              elements=[], app=app or "", window_title="")
 
@@ -196,6 +229,10 @@ class _NoopBackend(ComputerUseBackend):  # pragma: no cover
 
     def list_apps(self) -> List[Dict[str, Any]]:
         self.calls.append(("list_apps", {}))
+        return []
+
+    def list_windows(self) -> List[Dict[str, Any]]:
+        self.calls.append(("list_windows", {}))
         return []
 
     def focus_app(self, app: str, raise_window: bool = False) -> ActionResult:
@@ -253,7 +290,8 @@ def handle_computer_use(args: Dict[str, Any], **kwargs) -> Any:
     except Exception as e:
         return json.dumps({
             "error": f"computer_use backend unavailable: {e}",
-            "hint": "Run `hermes tools` and enable Computer Use to install cua-driver.",
+            "hint": "If the cua-driver binary is missing, run `hermes computer-use install`. "
+                    "If a Python dependency is missing, the error above shows the exact install command.",
         })
 
     try:
@@ -322,7 +360,13 @@ def _dispatch(backend: ComputerUseBackend, action: str, args: Dict[str, Any]) ->
         mode = str(args.get("mode", "som"))
         if mode not in {"som", "vision", "ax"}:
             return json.dumps({"error": f"bad mode {mode!r}; use som|vision|ax"})
-        cap = backend.capture(mode=mode, app=args.get("app"))
+        capture_kwargs: Dict[str, Any] = {"mode": mode, "app": args.get("app")}
+        if args.get("pid") is not None or args.get("window_id") is not None:
+            capture_kwargs.update({
+                "pid": args.get("pid"),
+                "window_id": args.get("window_id"),
+            })
+        cap = backend.capture(**capture_kwargs)
         return _capture_response(cap, max_elements=_coerce_max_elements(args.get("max_elements")))
 
     if action == "wait":
@@ -333,6 +377,10 @@ def _dispatch(backend: ComputerUseBackend, action: str, args: Dict[str, Any]) ->
     if action == "list_apps":
         apps = backend.list_apps()
         return json.dumps({"apps": apps, "count": len(apps)})
+
+    if action == "list_windows":
+        windows = backend.list_windows()
+        return json.dumps({"windows": windows, "count": len(windows)})
 
     if action == "focus_app":
         app = args.get("app")
@@ -562,16 +610,47 @@ def _capture_response(cap: CaptureResult, max_elements: int = _DEFAULT_MAX_ELEME
             routed = _route_capture_through_aux_vision(cap, summary)
             if routed is not None:
                 return routed
-            # Aux routing was requested but failed (no vision client, aux
-            # call raised, etc.). Fall through to the multimodal envelope —
-            # better to surface a tool-result error from the main model
-            # than to silently drop the screenshot entirely.
+            # Aux routing was requested but failed (vision node down, aux call
+            # raised, empty analysis, etc.). Routing being requested means the
+            # main model may not be able to consume images; falling through to
+            # the multimodal envelope can break the capture with a provider
+            # error. Degrade to the AX/SOM text payload instead so element
+            # indices remain usable while vision is unavailable.
+            summary_lines.append(
+                "  (vision unavailable: the auxiliary vision model could not "
+                "be reached; screenshot omitted. Element-index actions still "
+                "work — drive via the element list above.)"
+            )
+            if truncated_elements:
+                summary_lines.append(
+                    f"  (response truncated to {len(visible_elements)} of "
+                    f"{total_elements} elements; raise max_elements or pass "
+                    "app= to narrow)"
+                )
+            payload = {
+                "mode": cap.mode,
+                "width": response_width,
+                "height": response_height,
+                "app": cap.app,
+                "window_title": cap.window_title,
+                "elements": [_element_to_dict(e) for e in visible_elements],
+                "total_elements": total_elements,
+                "summary": "\n".join(summary_lines),
+                "vision_unavailable": True,
+            }
+            if truncated_elements:
+                payload["truncated_elements"] = truncated_elements
+            return json.dumps(payload)
 
-        # Detect actual image format from base64 magic bytes so the MIME type
-        # matches what the data contains (cua-driver may return JPEG or PNG).
-        # JPEG: base64 starts with /9j/   PNG: starts with iVBOR
-        _b64_prefix = cap.png_b64[:8]
-        _mime = "image/jpeg" if _b64_prefix.startswith("/9j/") else "image/png"
+        # Prefer the explicit MIME type cua-driver attaches to its image
+        # parts (Surface 7 of NousResearch/hermes-agent#47072 — trycua/cua#1961
+        # made `mimeType` part of every MCP image-part response). Fall back
+        # to base64-prefix sniffing for older cua-driver builds that didn't
+        # carry the field. JPEG base64 starts with /9j/; PNG with iVBOR.
+        _mime = cap.image_mime_type
+        if not _mime:
+            _b64_prefix = cap.png_b64[:8]
+            _mime = "image/jpeg" if _b64_prefix.startswith("/9j/") else "image/png"
         # The multimodal response carries the screenshot, not the AX
         # elements array, so a "response truncated to N of M elements"
         # note would be inaccurate — skip it on this branch.
@@ -612,6 +691,33 @@ def _capture_response(cap: CaptureResult, max_elements: int = _DEFAULT_MAX_ELEME
 # ---------------------------------------------------------------------------
 # auxiliary.vision routing for captured screenshots (#24015)
 # ---------------------------------------------------------------------------
+
+# Longest image side handed to the aux vision model. Full-resolution desktop
+# captures tokenize heavily and can overflow small local-model context windows;
+# ~1456px keeps SOM badges legible while cutting per-capture vision latency.
+_MAX_VISION_DIM = 1456
+
+
+def _shrink_capture_for_vision(raw: bytes, ext: str,
+                               max_dim: int = _MAX_VISION_DIM) -> bytes:
+    """Downscale encoded image bytes so the longest side is <= max_dim.
+
+    Returns the original bytes unchanged when the image already fits or when
+    Pillow is unavailable/fails — no worse than the pre-shrink behavior.
+    """
+    try:
+        from io import BytesIO
+        from PIL import Image
+        img = Image.open(BytesIO(raw))
+        if max(img.size) <= max_dim:
+            return raw
+        img.thumbnail((max_dim, max_dim))
+        out = BytesIO()
+        img.save(out, format="JPEG" if ext == ".jpg" else "PNG")
+        return out.getvalue()
+    except Exception as exc:
+        logger.debug("computer_use: vision downscale skipped: %s", exc)
+        return raw
 
 def _should_route_through_aux_vision() -> bool:
     """Return True when ``_capture_response`` should hand the PNG to aux vision.
@@ -686,14 +792,20 @@ def _route_capture_through_aux_vision(
 
         # Pick an extension that matches the on-disk bytes so vision_analyze's
         # MIME sniffing returns the right content-type.
-        ext = ".jpg" if cap.png_b64[:8].startswith("/9j/") else ".png"
+        # Surface 7: prefer the explicit MIME type cua-driver supplied.
+        _mime_for_ext = cap.image_mime_type or ""
+        if _mime_for_ext == "image/jpeg" or (not _mime_for_ext and cap.png_b64[:8].startswith("/9j/")):
+            ext = ".jpg"
+        else:
+            ext = ".png"
         cache_dir = get_hermes_dir("cache/vision", "temp_vision_images")
         cache_dir.mkdir(parents=True, exist_ok=True)
         temp_image_path = cache_dir / f"computer_use_{_uuid.uuid4().hex}{ext}"
+        raw = _shrink_capture_for_vision(raw, ext)
         temp_image_path.write_bytes(raw)
 
         prompt = (
-            "Describe what is visible in this macOS application screenshot in "
+            "Describe what is visible in this desktop application screenshot in "
             "concise but specific terms. Mention the app name and window "
             "title if visible, the overall layout, any labelled buttons, "
             "menus or text fields, and any prominent text content the user "
@@ -708,7 +820,7 @@ def _route_capture_through_aux_vision(
     except Exception as exc:
         logger.warning(
             "computer_use: auxiliary.vision pre-analysis failed (%s); "
-            "falling back to native multimodal envelope",
+            "returning to caller without aux analysis",
             exc,
         )
         return None
@@ -755,11 +867,16 @@ def _maybe_follow_capture(
     if not res.ok:
         return _text_response(res)
     try:
-        # Preserve the app context established by the preceding capture/focus_app so
-        # that capture_after=True re-captures the same app rather than the frontmost
-        # window (which may have changed if the action caused a focus shift).
-        last_app = getattr(backend, "_last_app", None)
-        cap = backend.capture(mode="som", app=last_app)
+        # Preserve the exact selected window when possible. Linux may expose a
+        # generic app name for several unrelated windows, so app-only recapture
+        # can silently switch targets after a successful action.
+        target = getattr(backend, "_last_target", None) or {}
+        pid = target.get("pid")
+        window_id = target.get("window_id")
+        if pid is not None and window_id is not None:
+            cap = backend.capture(mode="som", pid=pid, window_id=window_id)
+        else:
+            cap = backend.capture(mode="som", app=getattr(backend, "_last_app", None))
     except Exception as e:
         logger.warning("follow-up capture failed: %s", e)
         return _text_response(res)
@@ -810,9 +927,14 @@ def _element_to_dict(e: UIElement) -> Dict[str, Any]:
 def check_computer_use_requirements() -> bool:
     """Return True iff computer_use can run on this host.
 
-    Conditions: macOS + cua-driver binary installed (or override via env).
+    Conditions: macOS, Windows, or Linux + cua-driver binary installed (or
+    override via env). cua-driver runs on all three; the Linux path is
+    headed/X11 today (Wayland via XWayland), pure-Wayland progress tracked
+    upstream. Linux users see specific blocked checks via
+    `hermes computer-use doctor` if their session is incomplete (e.g. no
+    DISPLAY set).
     """
-    if sys.platform != "darwin":
+    if sys.platform not in ("darwin", "win32", "linux"):
         return False
     from tools.computer_use.cua_backend import cua_driver_binary_available
     return cua_driver_binary_available()

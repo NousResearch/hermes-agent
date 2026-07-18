@@ -1,7 +1,8 @@
-import type { ComponentProps, ReactNode } from 'react'
+import { type ComponentProps, type ReactNode, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from '@/components/ui/dropdown-menu'
+import { Tip, TipKeybindLabel, Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@/components/ui/tooltip'
 import { cn } from '@/lib/utils'
 
 // Shared chrome styling for interactive statusbar items (button / link / menu
@@ -24,6 +25,10 @@ export interface StatusbarMenuItem {
 
 export interface StatusbarItem {
   id: string
+  /** Escape hatch: render an arbitrary node into the bar (own state, tooltip,
+   *  events). When set, it OWNS the slot — label/variant/onSelect are ignored.
+   *  This is how a plugin drops a full stateful React component into the bar. */
+  render?: () => ReactNode
   label?: ReactNode
   detail?: ReactNode
   icon?: ReactNode
@@ -33,9 +38,12 @@ export interface StatusbarItem {
   href?: string
   menuAlign?: 'center' | 'end' | 'start'
   menuClassName?: string
-  menuContent?: ReactNode
+  // A render fn receives a `close()` to dismiss the popover from inside the content.
+  menuContent?: ((close: () => void) => ReactNode) | ReactNode
   menuItems?: readonly StatusbarMenuItem[]
   onSelect?: (modifiers: StatusbarSelectModifiers) => void
+  /** Keybind action id — when set, the tooltip shows the label + keybind hint. */
+  actionId?: string
   title?: string
   to?: string
   variant?: 'action' | 'link' | 'menu' | 'text'
@@ -62,6 +70,7 @@ export function StatusbarControls({ className, leftItems = [], items = [], ...pr
         'flex h-5 shrink-0 items-stretch justify-between gap-2 border-t border-(--ui-stroke-tertiary) bg-(--ui-sidebar-surface-background) px-1 py-0 text-(--ui-text-tertiary) [-webkit-app-region:no-drag]',
         className
       )}
+      data-slot="statusbar"
       {...props}
     >
       {/* `overflow-x-clip` (not `overflow-x-auto`) so a wide status item — for
@@ -87,6 +96,15 @@ export function StatusbarControls({ className, leftItems = [], items = [], ...pr
 }
 
 function StatusbarItemView({ item, navigate }: { item: StatusbarItem; navigate: ReturnType<typeof useNavigate> }) {
+  const [menuOpen, setMenuOpen] = useState(false)
+
+  // Render escape hatch: the contribution owns its own chrome/state/tooltip.
+  if (item.render) {
+    return <>{item.render()}</>
+  }
+
+  const tooltipLabel = item.actionId ? <TipKeybindLabel actionId={item.actionId} text={item.title} /> : item.title
+
   const content = (
     <>
       {item.icon}
@@ -95,14 +113,32 @@ function StatusbarItemView({ item, navigate }: { item: StatusbarItem; navigate: 
     </>
   )
 
-  if (item.variant === 'menu' && (item.menuContent || (item.menuItems && item.menuItems.length > 0))) {
+  if (item.variant === 'menu' && (item.menuContent || !!item.menuItems?.length)) {
+    // The `Tip` helper can't wrap a menu: its TooltipTrigger needs a DOM child,
+    // but DropdownMenu's Root renders no element, so the hover listeners never
+    // land on the button and the tooltip silently never shows. Compose the two
+    // trigger Slots directly onto the same <button> instead (both asChild), the
+    // way profile-switcher.tsx stacks Popover/ContextMenu/Tooltip triggers.
+    const trigger = (
+      <DropdownMenuTrigger asChild>
+        <button className={cn(STATUSBAR_ACTION_CLASS, item.className)} disabled={item.disabled} type="button">
+          {content}
+        </button>
+      </DropdownMenuTrigger>
+    )
+
     return (
-      <DropdownMenu>
-        <DropdownMenuTrigger asChild>
-          <button className={cn(STATUSBAR_ACTION_CLASS, item.className)} disabled={item.disabled} type="button">
-            {content}
-          </button>
-        </DropdownMenuTrigger>
+      <DropdownMenu onOpenChange={setMenuOpen} open={menuOpen}>
+        {item.title ? (
+          <TooltipProvider delayDuration={0}>
+            <Tooltip>
+              <TooltipTrigger asChild>{trigger}</TooltipTrigger>
+              <TooltipContent>{tooltipLabel}</TooltipContent>
+            </Tooltip>
+          </TooltipProvider>
+        ) : (
+          trigger
+        )}
         <DropdownMenuContent
           align={item.menuAlign ?? 'start'}
           className={cn('w-56', item.menuContent && 'p-0', item.menuClassName)}
@@ -110,7 +146,9 @@ function StatusbarItemView({ item, navigate }: { item: StatusbarItem; navigate: 
           sideOffset={8}
         >
           {item.menuContent
-            ? item.menuContent
+            ? typeof item.menuContent === 'function'
+              ? item.menuContent(() => setMenuOpen(false))
+              : item.menuContent
             : (item.menuItems ?? [])
                 .filter(menuItem => !menuItem.hidden)
                 .map(menuItem => (
@@ -151,39 +189,45 @@ function StatusbarItemView({ item, navigate }: { item: StatusbarItem; navigate: 
 
   if (item.variant === 'text' && !item.onSelect && !item.to && !item.href) {
     return (
-      <div
-        className={cn(
-          'inline-flex h-full items-center gap-1 px-1.5 text-[0.6875rem] text-(--ui-text-tertiary)',
-          item.className
-        )}
-      >
-        {content}
-      </div>
+      <Tip label={tooltipLabel}>
+        <div
+          className={cn(
+            'inline-flex h-full items-center gap-1 px-1.5 text-[0.6875rem] text-(--ui-text-tertiary)',
+            item.className
+          )}
+        >
+          {content}
+        </div>
+      </Tip>
     )
   }
 
   if (item.href || item.variant === 'link') {
     return (
-      <a className={cn(STATUSBAR_ACTION_CLASS, item.className)} href={item.href} rel="noreferrer" target="_blank">
-        {content}
-      </a>
+      <Tip label={tooltipLabel}>
+        <a className={cn(STATUSBAR_ACTION_CLASS, item.className)} href={item.href} rel="noreferrer" target="_blank">
+          {content}
+        </a>
+      </Tip>
     )
   }
 
   return (
-    <button
-      className={cn(STATUSBAR_ACTION_CLASS, item.className)}
-      disabled={item.disabled}
-      onClick={event => {
-        if (item.to) {
-          navigate(item.to)
-        }
+    <Tip label={tooltipLabel}>
+      <button
+        className={cn(STATUSBAR_ACTION_CLASS, item.className)}
+        disabled={item.disabled}
+        onClick={event => {
+          if (item.to) {
+            navigate(item.to)
+          }
 
-        item.onSelect?.({ shiftKey: event.shiftKey })
-      }}
-      type="button"
-    >
-      {content}
-    </button>
+          item.onSelect?.({ shiftKey: event.shiftKey })
+        }}
+        type="button"
+      >
+        {content}
+      </button>
+    </Tip>
   )
 }

@@ -65,6 +65,98 @@ class TestMcpEndpoints:
         srv = self.client.get("/api/mcp/servers").json()["servers"][0]
         assert srv["env"]["API_KEY"] != "sk-secret-1234567890"
 
+    def test_http_bearer_auth_separates_secret_from_config(
+        self, _isolate_hermes_home
+    ):
+        from hermes_constants import get_hermes_home
+
+        secret = "dashboard-secret-value"
+        response = self.client.post(
+            "/api/mcp/servers",
+            json={
+                "name": "Bearer Server",
+                "url": "https://example.com/mcp",
+                "auth": "header",
+                "bearer_token": f"Bearer {secret}",
+            },
+        )
+
+        assert response.status_code == 200
+        assert response.json()["auth"] == "header"
+        assert "bearer_token" not in response.json()
+
+        hermes_home = get_hermes_home()
+        config_text = (hermes_home / "config.yaml").read_text()
+        env_text = (hermes_home / ".env").read_text()
+        assert secret not in config_text
+        assert "Bearer ${MCP_BEARER_SERVER_API_KEY}" in config_text
+        assert f"MCP_BEARER_SERVER_API_KEY={secret}" in env_text
+
+    def test_http_oauth_mode_is_persisted_for_existing_auth_flow(self):
+        response = self.client.post(
+            "/api/mcp/servers",
+            json={
+                "name": "oauth-server",
+                "url": "https://example.com/mcp",
+                "auth": "oauth",
+            },
+        )
+
+        assert response.status_code == 200
+        assert response.json()["auth"] == "oauth"
+
+        from hermes_cli.mcp_config import _get_mcp_servers
+
+        assert _get_mcp_servers()["oauth-server"]["auth"] == "oauth"
+
+    @pytest.mark.parametrize(
+        ("payload", "error"),
+        [
+            (
+                {"name": "bad", "url": "https://x/mcp", "env": {"KEY": "value"}},
+                "only supported for stdio",
+            ),
+            (
+                {"name": "bad", "url": "https://x/mcp", "args": ["ignored"]},
+                "only supported for stdio",
+            ),
+            (
+                {"name": "bad", "command": "npx", "auth": "oauth"},
+                "not supported for stdio",
+            ),
+            (
+                {"name": "bad", "url": "https://x/mcp", "auth": "header"},
+                "Bearer token is required",
+            ),
+            (
+                {
+                    "name": "bad",
+                    "url": "https://x/mcp",
+                    "auth": "header",
+                    "bearer_token": "Bearer   ",
+                },
+                "Bearer token is required",
+            ),
+            (
+                {"name": "bad", "url": "https://x/mcp", "bearer_token": "secret"},
+                "requires header authentication",
+            ),
+            (
+                {"name": "bad", "url": "https://x/mcp", "command": "npx"},
+                "exactly one",
+            ),
+            (
+                {"name": "bad", "url": "https://x/mcp", "auth": "unknown"},
+                "Unsupported auth mode",
+            ),
+        ],
+    )
+    def test_transport_auth_contract_is_enforced(self, payload, error):
+        response = self.client.post("/api/mcp/servers", json=payload)
+
+        assert response.status_code == 400
+        assert error in response.json()["detail"]
+
     def test_duplicate_rejected(self):
         self.client.post("/api/mcp/servers", json={"name": "dup", "url": "u"})
         r = self.client.post("/api/mcp/servers", json={"name": "dup", "url": "u"})
@@ -94,9 +186,31 @@ class TestMcpEndpoints:
         body = r.json()
         assert "entries" in body and "diagnostics" in body
         # The shipped optional-mcps/ catalog has at least one entry; each must
-        # carry the install/enabled status fields the UI relies on.
+        # carry the install/enabled status fields plus the inspection detail
+        # the dashboard renders (transport target, install source, guidance) so
+        # users can vet an entry before installing.
         for e in body["entries"]:
-            assert {"name", "transport", "installed", "enabled", "needs_install"} <= set(e)
+            assert {
+                "name",
+                "transport",
+                "auth_type",
+                "installed",
+                "enabled",
+                "needs_install",
+                "command",
+                "args",
+                "url",
+                "install_url",
+                "install_ref",
+                "bootstrap",
+                "default_enabled",
+                "post_install",
+            } <= set(e)
+            # http entries expose a url; stdio entries expose a command.
+            if e["transport"] == "http":
+                assert e["url"]
+            elif e["transport"] == "stdio":
+                assert e["command"]
 
     def test_catalog_install_unknown_404(self):
         r = self.client.post("/api/mcp/catalog/install", json={"name": "no-such-mcp-xyz"})
@@ -201,6 +315,30 @@ class TestWebhookEndpoints:
         r = self.client.post("/api/webhooks", json={"name": "gh", "deliver": "log"})
         assert r.status_code == 400
 
+    def test_create_webhook_persists_script(self):
+        from hermes_cli.config import load_config, save_config
+
+        cfg = load_config()
+        cfg.setdefault("platforms", {})["webhook"] = {
+            "enabled": True,
+            "extra": {"host": "0.0.0.0", "port": 8644},
+        }
+        save_config(cfg)
+
+        r = self.client.post(
+            "/api/webhooks",
+            json={
+                "name": "todoist",
+                "deliver": "log",
+                "script": "todoist_filter.py",
+            },
+        )
+        assert r.status_code == 200
+        assert r.json()["script"] == "todoist_filter.py"
+
+        subs = self.client.get("/api/webhooks").json()["subscriptions"]
+        assert subs[0]["script"] == "todoist_filter.py"
+
     def test_enable_platform_starts_gateway_restart(self, monkeypatch):
         import hermes_cli.web_server as ws
         from hermes_cli.config import load_config
@@ -291,6 +429,60 @@ class TestOpsEndpoints:
     @pytest.fixture(autouse=True)
     def _setup(self, _isolate_hermes_home):
         self.client, _ = _client()
+
+    def test_backup_output_uses_output_flag(self, monkeypatch):
+        import hermes_cli.web_server as ws
+
+        captured = {}
+
+        class FakeProc:
+            pid = 12345
+
+        def fake_spawn_action(subcommand, name):
+            captured["subcommand"] = subcommand
+            captured["name"] = name
+            return FakeProc()
+
+        monkeypatch.setattr(ws, "_spawn_hermes_action", fake_spawn_action)
+
+        r = self.client.post(
+            "/api/ops/backup",
+            json={"output": "  /tmp/hermes-test.zip  "},
+        )
+
+        assert r.status_code == 200
+        assert captured == {
+            "subcommand": ["backup", "-o", "/tmp/hermes-test.zip"],
+            "name": "backup",
+        }
+
+    def test_backup_blank_output_uses_default_archive(self, monkeypatch):
+        from pathlib import Path
+
+        import hermes_cli.web_server as ws
+        from hermes_cli.config import get_hermes_home
+
+        captured = {}
+
+        class FakeProc:
+            pid = 12345
+
+        def fake_spawn_action(subcommand, name):
+            captured["subcommand"] = subcommand
+            captured["name"] = name
+            return FakeProc()
+
+        monkeypatch.setattr(ws, "_spawn_hermes_action", fake_spawn_action)
+
+        r = self.client.post("/api/ops/backup", json={"output": "   "})
+
+        assert r.status_code == 200
+        archive = Path(r.json()["archive"])
+        assert captured == {
+            "subcommand": ["backup", "-o", str(archive)],
+            "name": "backup",
+        }
+        assert archive.parent == get_hermes_home() / "backups"
 
     def test_hooks_list_reads_config(self):
         from hermes_cli.config import load_config, save_config
@@ -429,6 +621,36 @@ class TestSessionManagementEndpoints:
         assert self.client.post(
             "/api/sessions/prune", json={"older_than_days": 0}
         ).status_code == 400
+
+    def test_prune_attr_filter_suppresses_default_cutoff(self):
+        # An attribute filter without an explicit older_than_days matches all
+        # ages (mirrors the CLI: any filter disables the implicit 90-day
+        # default). dry_run so nothing is deleted; the seeded session is
+        # recent + ended, so it would be invisible under a 90-day cutoff.
+        from hermes_state import SessionDB
+
+        db = SessionDB()
+        db.create_session(session_id="sess-recent-ended", source="cli")
+        db.end_session("sess-recent-ended", "completed")
+        db.close()
+
+        r = self.client.post(
+            "/api/sessions/prune",
+            json={"source": "cli", "dry_run": True},
+        )
+        assert r.status_code == 200
+        body = r.json()
+        assert body["matched"] >= 1
+        assert "oldest_started_at" in body and "newest_started_at" in body
+
+    def test_prune_explicit_older_than_kept_with_attr_filter(self):
+        # Explicit older_than_days is honored even alongside attribute filters.
+        r = self.client.post(
+            "/api/sessions/prune",
+            json={"source": "cli", "older_than_days": 9999, "dry_run": True},
+        )
+        assert r.status_code == 200
+        assert r.json()["matched"] == 0
 
 
 class TestSkillsHubSearchEndpoint:
@@ -772,6 +994,25 @@ class TestUpdateCheckEndpoint:
         assert body["message"]
         assert body["behind"] is None
 
+    def test_managed_runtime_dashboard_is_not_applyable(self, monkeypatch):
+        import hermes_cli.web_server as ws
+
+        monkeypatch.setattr(ws, "_dashboard_local_update_managed_externally", lambda: True)
+        monkeypatch.setattr(
+            ws,
+            "detect_install_method",
+            lambda *a, **k: pytest.fail(
+                "managed runtime update check should not probe install method"
+            ),
+        )
+
+        body = self.client.get("/api/hermes/update/check").json()
+        assert body["install_method"] == "managed-runtime"
+        assert body["can_apply"] is False
+        assert body["update_available"] is False
+        assert body["behind"] is None
+        assert "managed outside this dashboard" in body["message"]
+
     def test_check_failure_is_soft(self, monkeypatch):
         import hermes_cli.web_server as ws
         import hermes_cli.banner as banner
@@ -1042,3 +1283,35 @@ class TestToolsConfigEndpoints:
                 kwargs["json"] = payload
             r = fn(path, **kwargs)
             assert r.status_code == 401, f"{method} {path} not gated"
+
+
+# ---------------------------------------------------------------------------
+# _spawn_hermes_action env scrubbing (#52470)
+# ---------------------------------------------------------------------------
+
+def test_spawn_hermes_action_scrubs_gateway_loop_guard_env(monkeypatch, tmp_path):
+    """The dashboard runs inside the gateway, so os.environ has
+    _HERMES_GATEWAY=1. Spawned actions (e.g. `gateway restart`) must NOT inherit
+    it, or the in-process restart-loop guard rejects the restart and it silently
+    fails (#52470).
+    """
+    import hermes_cli.web_server as ws
+
+    monkeypatch.setenv("_HERMES_GATEWAY", "1")
+    monkeypatch.setattr(ws, "_ACTION_LOG_DIR", tmp_path)
+
+    captured = {}
+
+    class _FakeProc:
+        pid = 1234
+
+    def _fake_popen(cmd, **kwargs):
+        captured["env"] = kwargs.get("env")
+        return _FakeProc()
+
+    monkeypatch.setattr(ws.subprocess, "Popen", _fake_popen)
+
+    ws._spawn_hermes_action(["gateway", "restart"], "gateway-restart")
+
+    assert "_HERMES_GATEWAY" not in captured["env"]
+    assert captured["env"]["HERMES_NONINTERACTIVE"] == "1"

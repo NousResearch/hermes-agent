@@ -20,10 +20,6 @@ from hermes_cli import web_server
 from hermes_cli.dashboard_auth import clear_providers, register_provider
 from tests.hermes_cli.conftest_dashboard_auth import StubAuthProvider
 
-# These tests mutate ``web_server.app.state.auth_required`` so they share
-# the same xdist group as the other dashboard-auth gated_app tests.
-pytestmark = pytest.mark.xdist_group("dashboard_auth_app_state")
-
 
 @pytest.fixture
 def gated_client():
@@ -96,3 +92,40 @@ def test_status_preserves_existing_fields(loopback_client):
     }
     missing = expected_keys - set(body.keys())
     assert not missing, f"/api/status dropped fields: {missing}"
+
+
+# Host-local detail (absolute paths, PID, internal gateway URL) is deployment
+# recon a liveness probe never needs. ``/api/status`` bypasses dashboard auth
+# (it is in ``PUBLIC_API_PATHS``), so on a network-exposed bind it must not
+# leak that detail to anonymous callers.
+_HOST_DETAIL_FIELDS = frozenset({
+    "hermes_home", "config_path", "env_path", "gateway_pid",
+    "gateway_health_url",
+})
+
+
+def test_status_withholds_host_detail_in_gated_mode(gated_client):
+    """On a gated (non-loopback) bind, the public ``/api/status`` probe must
+    expose only the liveness + auth-gate shape — never absolute host paths,
+    the gateway PID, or the internal gateway health URL. The endpoint
+    bypasses dashboard auth, so anyone who can reach the host hits it cold."""
+    r = gated_client.get("/api/status")
+    assert r.status_code == 200
+    body = r.json()
+    # Liveness / auth-gate shape stays public.
+    for key in ("version", "gateway_state", "auth_required", "auth_providers"):
+        assert key in body, f"liveness field {key!r} must stay public"
+    # Deployment recon must be withheld from the anonymous public probe.
+    leaked = _HOST_DETAIL_FIELDS & set(body.keys())
+    assert not leaked, f"/api/status leaked host detail under the gate: {leaked}"
+
+
+def test_status_includes_host_detail_in_loopback_mode(loopback_client):
+    """Counterpart to the gated case: a loopback bind is local-only, so the
+    full payload (including host paths and PID) is still served — preserving
+    the StatusPage / ``hermes status`` experience for local operators."""
+    r = loopback_client.get("/api/status")
+    assert r.status_code == 200
+    body = r.json()
+    missing = _HOST_DETAIL_FIELDS - set(body.keys())
+    assert not missing, f"loopback /api/status should keep host detail: {missing}"

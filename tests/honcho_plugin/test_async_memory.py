@@ -10,7 +10,7 @@ Covers:
 """
 
 import json
-import time
+import threading
 from unittest.mock import MagicMock, patch
 
 
@@ -155,15 +155,31 @@ class TestResolveSessionNameTitle:
         result = cfg.resolve_session_name("/some/dir", session_id=None)
         assert result == "dir"
 
-    def test_title_beats_session_id(self):
+    def test_per_session_id_beats_title(self):
+        # per-session: the run's session_id is authoritative; an (auto-)generated
+        # title must NOT remap a live conversation onto a second Honcho session.
         cfg = HonchoClientConfig(session_strategy="per-session")
+        result = cfg.resolve_session_name("/some/dir", session_title="my-title", session_id="20260309_175514_9797dd")
+        assert result == "20260309_175514_9797dd"
+
+    def test_per_session_id_beats_manual_map(self):
+        # per-session: session_id also wins over a stale cwd map entry (e.g. the
+        # desktop launching from a mapped home dir).
+        cfg = HonchoClientConfig(session_strategy="per-session", sessions={"/some/dir": "pinned"})
+        result = cfg.resolve_session_name("/some/dir", session_id="20260309_175514_9797dd")
+        assert result == "20260309_175514_9797dd"
+
+    def test_title_still_applies_for_non_per_session(self):
+        # Outside per-session, /title still names the Honcho session.
+        cfg = HonchoClientConfig(session_strategy="per-directory")
         result = cfg.resolve_session_name("/some/dir", session_title="my-title", session_id="20260309_175514_9797dd")
         assert result == "my-title"
 
-    def test_manual_beats_session_id(self):
-        cfg = HonchoClientConfig(session_strategy="per-session", sessions={"/some/dir": "pinned"})
-        result = cfg.resolve_session_name("/some/dir", session_id="20260309_175514_9797dd")
-        assert result == "pinned"
+    def test_gateway_key_beats_per_session_id(self):
+        # Gateways keep per-chat isolation even in per-session.
+        cfg = HonchoClientConfig(session_strategy="per-session")
+        result = cfg.resolve_session_name("/some/dir", gateway_session_key="agent:main:telegram:dm:42", session_id="20260309_175514_9797dd")
+        assert result == "agent-main-telegram-dm-42"
 
     def test_global_strategy_returns_workspace(self):
         cfg = HonchoClientConfig(session_strategy="global", workspace_id="my-workspace")
@@ -296,17 +312,16 @@ class TestAsyncWriterThread:
         sess.add_message("user", "async msg")
 
         flushed = []
+        flushed_event = threading.Event()
 
-        def capture(s):
-            flushed.append(s)
+        def capture(session):
+            flushed.append(session)
+            flushed_event.set()
             return True
 
         mgr._flush_session = capture
         mgr._async_queue.put(sess)
-        # Give the daemon thread time to process
-        deadline = time.time() + 2.0
-        while not flushed and time.time() < deadline:
-            time.sleep(0.05)
+        assert flushed_event.wait(timeout=10), "async writer never flushed"
 
         mgr.shutdown()
         assert len(flushed) == 1
@@ -316,7 +331,7 @@ class TestAsyncWriterThread:
         mgr = _make_manager(write_frequency="async")
         thread = mgr._async_thread
         mgr.shutdown()
-        thread.join(timeout=3)
+        thread.join(timeout=10)
         assert not thread.is_alive()
 
 
@@ -331,20 +346,20 @@ class TestAsyncWriterRetry:
         sess.add_message("user", "msg")
 
         call_count = [0]
+        retry_done = threading.Event()
 
-        def flaky_flush(s):
+        def flaky_flush(session):
             call_count[0] += 1
             if call_count[0] == 1:
                 raise ConnectionError("network blip")
-            # second call succeeds silently
+            retry_done.set()
+            return True
 
         mgr._flush_session = flaky_flush
 
         with patch("time.sleep"):  # skip the 2s sleep in retry
             mgr._async_queue.put(sess)
-            deadline = time.time() + 3.0
-            while call_count[0] < 2 and time.time() < deadline:
-                time.sleep(0.05)
+            assert retry_done.wait(timeout=10), "async writer never retried"
 
         mgr.shutdown()
         assert call_count[0] == 2
@@ -355,18 +370,19 @@ class TestAsyncWriterRetry:
         sess.add_message("user", "msg")
 
         call_count = [0]
+        retry_done = threading.Event()
 
-        def always_fail(s):
+        def always_fail(session):
             call_count[0] += 1
+            if call_count[0] >= 2:
+                retry_done.set()
             raise RuntimeError("always broken")
 
         mgr._flush_session = always_fail
 
         with patch("time.sleep"):
             mgr._async_queue.put(sess)
-            deadline = time.time() + 3.0
-            while call_count[0] < 2 and time.time() < deadline:
-                time.sleep(0.05)
+            assert retry_done.wait(timeout=10), "async writer never retried"
 
         mgr.shutdown()
         # Should have tried exactly twice (initial + one retry) and not crashed
@@ -379,18 +395,19 @@ class TestAsyncWriterRetry:
         sess.add_message("user", "msg")
 
         call_count = [0]
+        retry_done = threading.Event()
 
-        def fail_then_succeed(_session):
+        def fail_then_succeed(session):
             call_count[0] += 1
+            if call_count[0] >= 2:
+                retry_done.set()
             return call_count[0] > 1
 
         mgr._flush_session = fail_then_succeed
 
         with patch("time.sleep"):
             mgr._async_queue.put(sess)
-            deadline = time.time() + 3.0
-            while call_count[0] < 2 and time.time() < deadline:
-                time.sleep(0.05)
+            assert retry_done.wait(timeout=10), "async writer never retried"
 
         mgr.shutdown()
         assert call_count[0] == 2

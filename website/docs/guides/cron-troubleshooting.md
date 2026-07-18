@@ -76,9 +76,9 @@ If delivery fails, the job still runs — it just won't send anywhere. Check `he
 
 ### Check 2: Check `[SILENT]` usage
 
-If your cron job produces no output or the agent responds with `[SILENT]`, delivery is suppressed. This is intentional for monitoring jobs — but make sure your prompt isn't accidentally suppressing everything.
+If your cron job produces no output, delivery is suppressed. If the agent response includes the cron quiet marker `[SILENT]`, delivery is also suppressed. This is intentional for monitoring jobs — but make sure your prompt is not accidentally suppressing everything.
 
-A prompt that says "respond with [SILENT] if nothing changed" will silently swallow non-empty responses too. Check your conditional logic.
+Use prompts like "respond with only [SILENT] if nothing changed." Avoid asking the agent to include `[SILENT]` inside a longer explanation, because cron treats that marker as a suppression signal.
 
 ### Check 3: Platform token permissions
 
@@ -111,7 +111,7 @@ Skills must be installed before they can be attached to cron jobs. If a skill is
 
 ### Check 2: Check skill name vs. skill folder name
 
-Skill names are case-sensitive and must match the installed skill's folder name. If your job specifies `ai-funding-daily-report` but the skill folder is `ai-funding-daily-report`, confirm the exact name from `hermes skills list`.
+Skill names are case-sensitive and must match the installed skill's folder name. If your job specifies `ai-funding-report` but the skill folder is `ai-funding-daily-report`, confirm the exact name from `hermes skills list`.
 
 ### Check 3: Skills that require interactive tools
 
@@ -154,7 +154,7 @@ hermes cron edit <job_id> --script ~/.hermes/scripts/your-script.py
 The skill must be installed on the machine running the scheduler. If you move between machines, skills don't automatically sync — reinstall them with `hermes skills install <skill-name>`.
 
 **Job runs but delivers nothing**
-Likely a delivery target issue (see Delivery Failures above) or a silently suppressed response (`[SILENT]`).
+Likely a delivery target issue (see Delivery Failures above), no output, or a response containing the cron quiet marker `[SILENT]`.
 
 **Job hangs or times out**
 The scheduler uses an inactivity-based timeout (default 600s, configurable via `HERMES_CRON_TIMEOUT` env var, `0` for unlimited). The agent can run as long as it's actively calling tools — the timer only fires after sustained inactivity. Long-running jobs should use scripts to handle data collection and deliver only the result.

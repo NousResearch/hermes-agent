@@ -1,8 +1,9 @@
 'use client'
 
 import { useStore } from '@nanostores/react'
-import { type FormEvent, useCallback, useEffect, useState } from 'react'
+import { type FormEvent, useCallback, useEffect, useMemo, useState } from 'react'
 
+import { PendingApprovalFallback } from '@/components/assistant-ui/tool/approval'
 import { Button } from '@/components/ui/button'
 import {
   Dialog,
@@ -14,30 +15,31 @@ import {
 } from '@/components/ui/dialog'
 import { Input } from '@/components/ui/input'
 import { useI18n } from '@/i18n'
+import { isMissingPendingPromptRequest } from '@/lib/gateway-rpc'
 import { triggerHaptic } from '@/lib/haptics'
 import { KeyRound, Loader2, Lock } from '@/lib/icons'
 import { $gateway } from '@/store/gateway'
 import { notifyError } from '@/store/notifications'
-import { $secretRequest, $sudoRequest, clearSecretRequest, clearSudoRequest } from '@/store/prompts'
+import { clearSecretRequest, clearSudoRequest, sessionSecretRequest, sessionSudoRequest } from '@/store/prompts'
 
 // Renders the modal mid-turn prompts the gateway raises and waits on: sudo
-// password and skill secret capture. (Dangerous-command / execute_code approval
-// is rendered INLINE on the pending tool row instead — see
-// components/assistant-ui/tool-approval.tsx — so it reads like an inline "Run"
-// affordance rather than a blocking modal.) Each Python-side caller blocks the
-// agent thread until the matching `*.respond` RPC lands; without a renderer the
-// agent stalls until its timeout and the tool is BLOCKED (the bug this fixes —
-// desktop handled clarify.request but not these). Any close path (Esc, backdrop
+// password and skill secret capture. Dangerous-command / execute_code approval
+// prefers the pending tool row, but also has a chat-level fallback when no row
+// is mounted (remote gateway sessions can raise the request before the matching
+// tool call is visible). Each Python-side caller blocks the agent thread until
+// the matching `*.respond` RPC lands; without a renderer the agent stalls until
+// its timeout and the tool is BLOCKED. Any close path (Esc, backdrop
 // click) funnels through Radix's single `onOpenChange(false)` and maps to a
 // refusal, so silence is never mistaken for consent, matching the TUI. We
 // deliberately do NOT add onEscapeKeyDown / onInteractOutside handlers — they'd
 // fire a second `*.respond` alongside onOpenChange (double-send) or block the
 // backdrop-dismiss path.
 
-function SudoDialog() {
+function SudoDialog({ sessionId }: { sessionId: string | null }) {
   const { t } = useI18n()
   const copy = t.prompts
-  const request = useStore($sudoRequest)
+  const $request = useMemo(() => sessionSudoRequest(sessionId), [sessionId])
+  const request = useStore($request)
   const gateway = useStore($gateway)
   const [password, setPassword] = useState('')
   const [submitting, setSubmitting] = useState(false)
@@ -69,6 +71,12 @@ function SudoDialog() {
         triggerHaptic('submit')
         clearSudoRequest(request.sessionId, request.requestId)
       } catch (error) {
+        if (isMissingPendingPromptRequest(error, 'password')) {
+          clearSudoRequest(request.sessionId, request.requestId)
+
+          return
+        }
+
         notifyError(error, copy.sudoSendFailed)
         setSubmitting(false)
       }
@@ -130,10 +138,11 @@ function SudoDialog() {
   )
 }
 
-function SecretDialog() {
+function SecretDialog({ sessionId }: { sessionId: string | null }) {
   const { t } = useI18n()
   const copy = t.prompts
-  const request = useStore($secretRequest)
+  const $request = useMemo(() => sessionSecretRequest(sessionId), [sessionId])
+  const request = useStore($request)
   const gateway = useStore($gateway)
   const [value, setValue] = useState('')
   const [submitting, setSubmitting] = useState(false)
@@ -165,6 +174,12 @@ function SecretDialog() {
         triggerHaptic('submit')
         clearSecretRequest(request.sessionId, request.requestId)
       } catch (error) {
+        if (isMissingPendingPromptRequest(error, 'value')) {
+          clearSecretRequest(request.sessionId, request.requestId)
+
+          return
+        }
+
         notifyError(error, copy.secretSendFailed)
         setSubmitting(false)
       }
@@ -224,11 +239,15 @@ function SecretDialog() {
   )
 }
 
-export function PromptOverlays() {
+/** Mid-turn prompt surfaces for ONE session. Mounted by both the primary chat
+ *  and each tile with its own session id, so a background/tiled session's
+ *  blocking prompt renders instead of silently stalling. */
+export function PromptOverlays({ sessionId }: { sessionId: string | null }) {
   return (
     <>
-      <SudoDialog />
-      <SecretDialog />
+      <PendingApprovalFallback />
+      <SudoDialog sessionId={sessionId} />
+      <SecretDialog sessionId={sessionId} />
     </>
   )
 }

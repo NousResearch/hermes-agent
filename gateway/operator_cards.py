@@ -191,7 +191,11 @@ class OperatorCard:
             raise OperatorCardValidationError("kind must be operator_card")
         if "version" not in payload:
             raise OperatorCardValidationError("missing required field: version")
-        if isinstance(payload["version"], bool) or payload["version"] != 1:
+        # Require the exact integer 1 — reject bools, floats (``1.0``), and
+        # numeric strings.  ``1.0 == 1`` in Python, so an equality-only check
+        # would silently admit a float version the contract does not define.
+        version = payload["version"]
+        if isinstance(version, bool) or type(version) is not int or version != 1:
             raise OperatorCardValidationError("version must be 1")
 
         card_type = _bounded_string(payload, "card_type", max_length=32)

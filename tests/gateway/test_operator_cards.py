@@ -74,6 +74,9 @@ def test_every_severity_has_a_mobile_readable_label(severity, label):
     [
         ({"kind": "message"}, "kind"),
         ({"version": 2}, "version"),
+        ({"version": 1.0}, "version"),
+        ({"version": True}, "version"),
+        ({"version": "1"}, "version"),
         ({"card_type": "unknown"}, "card_type"),
         ({"severity": "warning"}, "severity"),
         ({"title": ""}, "title"),
@@ -116,14 +119,23 @@ def test_plaintext_renderer_is_bounded_without_splitting_the_status_header():
     assert rendered.endswith("…")
 
 
-def test_constant_sets_match_the_values_accepted_by_the_parser():
-    assert CARD_TYPES == {
-        "approval",
-        "task_run",
-        "digest",
-        "deal",
-        "capture",
-        "ops_alert",
-        "thread_header",
-    }
-    assert SEVERITIES == {"done", "info", "needs_review", "blocked", "critical"}
+@pytest.mark.parametrize("card_type", sorted(CARD_TYPES))
+def test_every_declared_card_type_is_accepted_by_the_parser(card_type):
+    # Invariant: the accept-list constant and the parser agree — each declared
+    # card_type round-trips instead of being frozen against a literal set.
+    assert OperatorCard.from_mapping(_payload(card_type=card_type)).card_type == card_type
+
+
+@pytest.mark.parametrize("severity", sorted(SEVERITIES))
+def test_every_declared_severity_is_accepted_by_the_parser(severity):
+    assert OperatorCard.from_mapping(_payload(severity=severity)).severity == severity
+
+
+def test_parser_rejects_values_outside_the_declared_sets():
+    assert "totally-made-up" not in CARD_TYPES
+    with pytest.raises(OperatorCardValidationError, match="card_type"):
+        OperatorCard.from_mapping(_payload(card_type="totally-made-up"))
+
+    assert "totally-made-up" not in SEVERITIES
+    with pytest.raises(OperatorCardValidationError, match="severity"):
+        OperatorCard.from_mapping(_payload(severity="totally-made-up"))

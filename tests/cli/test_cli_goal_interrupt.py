@@ -218,3 +218,16 @@ class TestInterruptFlagLifecycle:
             "runs — otherwise a prior turn's interrupt state leaks into the "
             "next turn's goal hook decision."
         )
+
+    def test_chat_observes_ctrl_c_interrupt_without_queue_message(self, hermes_home):
+        """Ctrl+C sets agent._interrupt_requested without queueing replacement text."""
+        from cli import HermesCLI
+        import inspect
+
+        src = inspect.getsource(HermesCLI.chat)
+
+        assert "interrupt_requested_without_message = False" in src
+        assert 'getattr(self.agent, "_interrupt_requested", False)' in src
+        assert "interrupt_requested = interrupt_msg is not None or interrupt_requested_without_message" in src
+        assert "if interrupt_requested and result is None" in src
+        assert '"interrupted": True' in src

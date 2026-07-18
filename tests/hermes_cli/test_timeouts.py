@@ -43,6 +43,25 @@ def test_provider_timeout_used_when_no_model_override(monkeypatch, tmp_path):
     assert get_provider_request_timeout("ollama-local", "qwen3:32b") == 300.0
 
 
+def test_custom_provider_timeout_used(monkeypatch, tmp_path):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    _write_config(
+        tmp_path,
+        """\
+        custom_providers:
+          - name: taro
+            base_url: http://10.10.20.211:8080/v1
+            request_timeout_seconds: 240
+            models:
+              dflash:
+                timeout_seconds: 45
+        """,
+    )
+
+    assert get_provider_request_timeout("taro", "dflash") == 45.0
+    assert get_provider_request_timeout("taro", "qwen3.6-27b") == 240.0
+
+
 def test_model_stale_timeout_override_wins(monkeypatch, tmp_path):
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
     _write_config(
@@ -72,6 +91,25 @@ def test_provider_stale_timeout_used_when_no_model_override(monkeypatch, tmp_pat
     )
 
     assert get_provider_stale_timeout("openai-codex", "gpt-5.4") == 900.0
+
+
+def test_custom_provider_stale_timeout_used(monkeypatch, tmp_path):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    _write_config(
+        tmp_path,
+        """\
+        custom_providers:
+          - name: taro
+            base_url: http://10.10.20.211:8080/v1
+            stale_timeout_seconds: 180
+            models:
+              dflash:
+                stale_timeout_seconds: 60
+        """,
+    )
+
+    assert get_provider_stale_timeout("taro", "dflash") == 60.0
+    assert get_provider_stale_timeout("taro", "qwen3.6-27b") == 180.0
 
 
 def test_missing_timeout_returns_none(monkeypatch, tmp_path):

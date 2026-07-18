@@ -19,6 +19,54 @@ import urllib.request
 HF_API = "https://huggingface.co/api/datasets"
 USER_AGENT = "Mozilla/5.0"
 
+# HuggingFace tags a dataset's size bucket as e.g. ``"size_categories:10K<n<100K"``.
+# The size_categories family is curated by HF and stable. We map the user-facing
+# `--size` flag values to those tag prefixes and filter results client-side
+# because the search endpoint doesn't accept a size_categories parameter.
+_SIZE_BUCKETS = {
+    "small":  {"size_categories:n<1K", "size_categories:1K<n<10K"},
+    "medium": {"size_categories:10K<n<100K"},
+    "large":  {
+        "size_categories:100K<n<1M",
+        "size_categories:1M<n<10M",
+        "size_categories:10M<n<100M",
+        "size_categories:100M<n<1B",
+        "size_categories:1B<n<10B",
+        "size_categories:n>10B",
+    },
+}
+
+
+def _filter_by_size(results: list, size: str) -> list:
+    """Client-side filter applying a size bucket to a search result list.
+
+    HuggingFace's search endpoint returns each dataset's size bucket as a
+    tag of the form ``size_categories:<range>``. We restrict to whatever
+    buckets the chosen ``--size`` value names. Datasets with NO size tag are
+    excluded while a size filter is active (they surface when ``--size`` is
+    omitted), matching the documented Pitfalls behaviour.
+
+    Args:
+        results: list of dataset dicts (the JSON from the search endpoint).
+        size:    one of "small"|"medium"|"large".
+
+    Returns:
+        The subset of results whose tag list contains at least one of
+        the canonical ``size_categories:<bucket>`` tags for the bucket.
+        Datasets that publish no size tag are excluded (treated as
+        "unknown" — not matched).
+    """
+    allowed = _SIZE_BUCKETS[size]
+    kept = []
+    for ds in results:
+        tags = ds.get("tags") or []
+        # Datasets that publish no size_categories tag are excluded when a
+        # size filter is set (documented in SKILL.md Pitfalls). Drop --size to
+        # surface them.
+        if any(t in allowed for t in tags):
+            kept.append(ds)
+    return kept
+
 
 def api_request(url: str) -> dict:
     req = urllib.request.Request(url, headers={"User-Agent": USER_AGENT})
@@ -58,6 +106,11 @@ def cmd_search(args):
         params["language"] = args.lang
 
     results = search_datasets(params)
+    # Size filter is client-side because the HF search endpoint doesn't
+    # accept size_categories as a query param (per teknium1 review on
+    # PR #45710 — see SKILL.md Size Filter section for rationale).
+    if args.size:
+        results = _filter_by_size(results, args.size)
     output = {"query": args.query, "total": len(results), "results": results}
     print(json.dumps(output, indent=2, ensure_ascii=False))
 
@@ -123,6 +176,11 @@ def main():
             help="Task category (e.g. image-classification, text-classification)",
         )
         p.add_argument("--modality", help="Data modality (e.g. image, text, audio)")
+        p.add_argument(
+            "--size",
+            choices=["small", "medium", "large"],
+            help="Size bucket (parsed from the dataset's `size_categories` tag)",
+        )
         p.add_argument("--lang", help="Language code (e.g. en, tr)")
         p.add_argument("--limit", type=int, default=10)
         args = p.parse_args(sys.argv[2:])

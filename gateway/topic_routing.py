@@ -89,7 +89,9 @@ class RouteOrigin:
 
     bot_id: str
     owner_chat_id: str
-    thread_id: int
+    # ``None`` is reserved for an explicitly configured strict private-chat
+    # route. Topic routes always carry a positive integer.
+    thread_id: Optional[int]
     update_id: int
     message_id: int
 

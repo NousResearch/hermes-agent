@@ -48,6 +48,10 @@ __all__ = [
     "register_topic_hook_factory",
     "clear_topic_hook_factories",
     "create_topic_hook",
+    "ConversationPluginHook",
+    "ConversationHookRegistry",
+    "register_conversation_hook_factory",
+    "create_conversation_hook",
 ]
 
 # Stable value-free reason codes.
@@ -348,3 +352,12 @@ class TopicHookRegistry:
             logger.warning("[topic-hooks] %s", REASON_HOOK_ERROR)
             return HookDecision.DENY
         return decision
+
+
+# The hook protocol was introduced for forum topics, but its security boundary
+# is an authenticated exact route, not a Telegram thread.  New integrations use
+# the conversation names; the topic names remain stable compatibility aliases.
+ConversationPluginHook = TopicPluginHook
+ConversationHookRegistry = TopicHookRegistry
+register_conversation_hook_factory = register_topic_hook_factory
+create_conversation_hook = create_topic_hook

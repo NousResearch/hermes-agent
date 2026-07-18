@@ -149,6 +149,39 @@ add `sol-food` to `plugins.enabled`) and verify it appears enabled before config
 hook. Installation without this enable step intentionally fails startup with no registered
 factory instead of silently routing under the wrong behavior.
 
+## Dedicated private Telegram bots
+
+For a product that uses separate private bot chats rather than forum topics, run one Hermes
+gateway process per bot with a different `HERMES_HOME`, token, config, PID/lock files, and
+launchd label. Each process may enable exactly one strict `private_chat_routing` route:
+
+```yaml
+platforms:
+  telegram:
+    extra:
+      private_chat_routing:
+        mode: strict
+        chat_id: "123456789"
+        user_id: "123456789"
+        profile: atlas
+        expected_bot_id: "900001"
+        expected_bot_username: atlas_private_bot
+        hooks:
+          - {profile: atlas, plugin: atlas-food}
+```
+
+The route accepts only an unthreaded `private` chat whose chat id and sender id match the
+sealed owner. Startup calls Telegram `getMe` and requires the exact sealed bot id and
+lowercase username, preventing swapped ATLAS/METIS tokens. Missing threads, group/channel
+updates, foreign users, foreign chats, unknown callbacks, and cross-chat outbound sends fail
+before session, media, or tool work. Private sends never invent `message_thread_id`.
+
+The two process homes are intentionally not clones: copy only reviewed source/config and an
+explicit environment allowlist. Do not copy the root Hermes secrets file or another bot's
+sessions, plugin state, credentials, PID/lock files, or delivery state. A second process using
+the same Telegram token is rejected by the existing token-scoped gateway lock, while distinct
+tokens may run concurrently.
+
 ## How it works at runtime
 
 1. An inbound message arrives at a platform adapter.

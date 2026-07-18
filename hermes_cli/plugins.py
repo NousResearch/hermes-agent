@@ -1191,6 +1191,26 @@ class PluginContext:
             profile,
         )
 
+    def register_conversation_hook_factory(
+        self, profile: str, factory: Callable
+    ) -> None:
+        """Register a lazy hook for any authenticated exact conversation route.
+
+        This is the preferred spelling for private-chat integrations.  It uses
+        the same inert factory registry as topic hooks, so discovery never
+        opens credentials or state.
+        """
+
+        from gateway.topic_hooks import register_conversation_hook_factory
+
+        plugin_id = self.manifest.key or self.manifest.name
+        register_conversation_hook_factory(profile, factory, owner=plugin_id)
+        logger.debug(
+            "Plugin %s registered conversation hook factory: %s",
+            self.manifest.name,
+            profile,
+        )
+
     # -- middleware registration -------------------------------------------
 
     def register_middleware(self, kind: str, callback: Callable) -> None:

@@ -6193,6 +6193,8 @@ class AIAgent:
             reset_conversation_context,
             set_conversation_context,
         )
+        from agent.subagent_lifecycle import bind_subagent_parent
+
         # Publish the conversation id for ambient Nous Portal tagging. Every
         # LLM call made inside this turn — main loop, compression, vision,
         # web_extract, session_search, MoA slots, background-review forks
@@ -6212,7 +6214,7 @@ class AIAgent:
         # replaces the value with the live runtime after fallback restoration.
         # Keep the scope local instead of storing ContextVar tokens on the agent,
         # which may be observed from another thread.
-        with scoped_runtime_main({}):
+        with bind_subagent_parent(self), scoped_runtime_main({}):
             try:
                 return run_conversation(
                     self,

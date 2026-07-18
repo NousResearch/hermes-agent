@@ -187,6 +187,32 @@ def _sanitize_env_file_if_needed(path: Path) -> None:
     except ImportError:
         return  # early bootstrap — config module not available yet
 
+    # Detect and convert UTF-16 encoded .env files (e.g. Windows Notepad
+    # "Unicode" save) to UTF-8 so downstream readers don't mangle the
+    # content.  Must run before the UTF-8-sig read below.
+    try:
+        raw = path.read_bytes()
+        if raw[:2] in (b"\xff\xfe", b"\xfe\xff"):  # UTF-16 LE / BE BOM
+            import tempfile
+            decoded = raw.decode("utf-16")
+            fd, tmp = tempfile.mkstemp(
+                dir=str(path.parent), suffix=".tmp", prefix=".env_"
+            )
+            try:
+                with os.fdopen(fd, "w", encoding="utf-8") as tf:
+                    tf.write(decoded)
+                    tf.flush()
+                    os.fsync(tf.fileno())
+                atomic_replace(tmp, path)
+            except BaseException:
+                try:
+                    os.unlink(tmp)
+                except OSError:
+                    pass
+                raise
+    except Exception:
+        pass  # best-effort — fall through to normal read
+
     read_kw = {"encoding": "utf-8-sig", "errors": "replace"}
     try:
         with open(path, **read_kw) as f:

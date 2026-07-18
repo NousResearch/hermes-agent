@@ -3610,13 +3610,20 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         else:
             enabled_chats.discard(chat_id)
 
-    def _sync_voice_mode_state_to_adapter(self, adapter) -> None:
+    def _sync_voice_mode_state_to_adapter(
+        self, adapter, *, profile_name=None, profile_home=None
+    ) -> None:
         """Restore persisted /voice state into a live platform adapter.
 
         Populates three fields from config + ``self._voice_mode``:
-          - ``_auto_tts_default``: global default from ``voice.auto_tts``
+          - ``_auto_tts_default``: default from the OWNING profile's ``voice.auto_tts``
           - ``_auto_tts_enabled_chats``: chats with mode ``voice_only``/``all``
           - ``_auto_tts_disabled_chats``: chats with mode ``off``
+
+        Profile-aware: for a secondary profile only the ``profile:<name>:<platform>:``
+        keys are consulted (and stripped), and ``voice.auto_tts`` is read from the
+        owning profile's config, so two adapters for the same platform in
+        different profiles never leak each other's mode state.
         """
         platform = getattr(adapter, "platform", None)
         if not isinstance(platform, Platform):
@@ -3627,20 +3634,32 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         if not isinstance(disabled_chats, set) and not isinstance(enabled_chats, set):
             return
 
-        # Push the global voice.auto_tts default (config.yaml) onto the adapter.
+        # Push the owning profile's voice.auto_tts default onto the adapter.
         # Lazy import to avoid adding a module-level dep from gateway → hermes_cli.
+        def _read_auto_tts_default() -> bool:
+            try:
+                from hermes_cli.config import load_config as _load_full_config
+                _full_cfg = _load_full_config()
+                return bool((_full_cfg.get("voice") or {}).get("auto_tts", False))
+            except Exception:
+                return False
+
         try:
-            from hermes_cli.config import load_config as _load_full_config
-            _full_cfg = _load_full_config()
-            _auto_tts_default = bool(
-                (_full_cfg.get("voice") or {}).get("auto_tts", False)
-            )
+            if profile_home is not None:
+                with _profile_runtime_scope(profile_home):
+                    _auto_tts_default = _read_auto_tts_default()
+            else:
+                _auto_tts_default = _read_auto_tts_default()
         except Exception:
             _auto_tts_default = False
         if hasattr(adapter, "_auto_tts_default"):
             adapter._auto_tts_default = _auto_tts_default
 
-        prefix = f"{platform.value}:"
+        # ``_voice_key(platform, "", profile)`` yields the exact namespace prefix:
+        # ``platform:`` for the default profile, ``profile:<name>:platform:`` for a
+        # secondary. Only keys under this profile's namespace are consulted, so a
+        # default sync ignores secondary keys and vice versa.
+        prefix = self._voice_key(platform, "", profile=profile_name)
         if isinstance(disabled_chats, set):
             disabled_chats.clear()
             disabled_chats.update(
@@ -9458,6 +9477,9 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     success = await self._connect_adapter_with_timeout(adapter, platform)
                 if success:
                     profile_map[platform] = adapter
+                    self._sync_voice_mode_state_to_adapter(
+                        adapter, profile_name=profile_name, profile_home=profile_home
+                    )
                     self._sync_voice_auto_join_state_to_adapter(
                         adapter, profile_name=profile_name
                     )
@@ -9527,7 +9549,9 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                         profile_map = self._profile_adapters.setdefault(profile_name, {})
                         if platform not in profile_map:
                             profile_map[platform] = adapter
-                            self._sync_voice_mode_state_to_adapter(adapter)
+                            self._sync_voice_mode_state_to_adapter(
+                                adapter, profile_name=profile_name, profile_home=profile_home
+                            )
                             self._sync_voice_auto_join_state_to_adapter(
                                 adapter, profile_name=profile_name
                             )
@@ -14371,7 +14395,9 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             return False
 
         # Join the EXACT resolved channel (single resolution — no second lookup).
-        result = await self._handle_voice_channel_join(event, voice_channel=voice_channel)
+        result = await self._handle_voice_channel_join(
+            event, voice_channel=voice_channel, manual=False
+        )
 
         # Verify and record the ACTUAL connected channel, not the event's
         # (possibly stale) channel id.
@@ -14403,13 +14429,17 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         return bool(success)
 
 
-    async def _handle_voice_channel_join(self, event: MessageEvent, *, voice_channel=None) -> str:
+    async def _handle_voice_channel_join(
+        self, event: MessageEvent, *, voice_channel=None, manual: bool = True
+    ) -> str:
         """Join the user's current Discord voice channel.
 
         ``voice_channel`` may be a channel already resolved by the caller (the
         auto-join path resolves it once and validates it against policy). When
         provided it is used verbatim — the user's live channel is NOT looked up
         again, so the channel that was validated is the channel that is joined.
+        ``manual`` marks a hand-issued ``/voice join`` (vs the auto-follow path)
+        so a manual takeover can drop stale auto-follow ownership.
         """
         adapter = self._adapter_for_source(event.source)
         if not hasattr(adapter, "join_voice_channel"):
@@ -14473,6 +14503,11 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             self._voice_mode[self._voice_key(event.source.platform, event.source.chat_id, profile=owner_profile)] = "all"
             self._save_voice_modes()
             self._set_adapter_auto_tts_enabled(adapter, event.source.chat_id, enabled=True)
+            # A MANUAL join is a takeover: drop any auto-follow ownership so a
+            # later target leave/rejoin can never disconnect or hijack this
+            # hand-established session.
+            if manual and hasattr(adapter, "clear_voice_auto_join_ownership"):
+                adapter.clear_voice_auto_join_ownership(guild_id)
             return (
                 f"Joined voice channel **{voice_channel.name}**.\n"
                 f"I'll speak my replies and listen to you. Use /voice leave to disconnect."
@@ -14534,6 +14569,12 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     channel_id=str(voice_channel_id) if voice_channel_id is not None else None,
                 )
 
+        # Atomic manual takeover: having recorded suppression above, drop all
+        # auto-follow ownership (target, pending, retry) so a later target
+        # leave/rejoin can never disconnect the session the user just left.
+        if hasattr(adapter, "clear_voice_auto_join_ownership"):
+            adapter.clear_voice_auto_join_ownership(guild_id)
+
         try:
             await adapter.leave_voice_channel(guild_id)
         except Exception as e:
@@ -14566,13 +14607,19 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             adapter = self._authorization_adapter(Platform.DISCORD, profile)
         self._set_adapter_auto_tts_disabled(adapter, chat_id, disabled=True)
 
-    def _is_duplicate_voice_transcript(self, guild_id: int, user_id: int, transcript: str) -> bool:
+    def _is_duplicate_voice_transcript(
+        self, guild_id: int, user_id: int, transcript: str, *, profile=None
+    ) -> bool:
         """Suppress repeated STT outputs for the same recent utterance.
 
         Voice capture can occasionally emit the same utterance twice a few
         seconds apart, which creates a second queued agent run and overlapping
-        spoken replies. Dedup exact and near-exact repeats per guild/user over a
-        short window while allowing genuinely new turns through.
+        spoken replies. Dedup exact and near-exact repeats per profile/guild/user
+        over a short window while allowing genuinely new turns through.
+
+        The dedupe key includes the normalized owning profile so two profiles
+        sharing a guild/user (each its own bot session) never cross-suppress each
+        other's identical utterance.
         """
         from difflib import SequenceMatcher
 
@@ -14583,7 +14630,8 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
 
         now = time.monotonic()
         window_seconds = 12.0
-        key = (guild_id, user_id)
+        profile_key = (str(profile).strip() if profile else "") or "default"
+        key = (profile_key, guild_id, user_id)
         recent_store = getattr(self, "_recent_voice_transcripts", None)
         if not isinstance(recent_store, dict):
             recent_store = {}
@@ -14619,7 +14667,10 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         default profile's.
         """
         if adapter is None:
-            adapter = self._authorization_adapter(Platform.DISCORD, profile) or self.adapters.get(Platform.DISCORD)
+            # Resolve strictly by the owning profile — NO fallback to the default
+            # adapter. A secondary-profile voice callback must never be serviced
+            # by the default bot (wrong session, wrong credentials).
+            adapter = self._authorization_adapter(Platform.DISCORD, profile)
         if not adapter:
             return
 
@@ -14652,7 +14703,9 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             logger.debug("Unauthorized voice input from user %d, ignoring", user_id)
             return
 
-        if self._is_duplicate_voice_transcript(guild_id, user_id, transcript):
+        if self._is_duplicate_voice_transcript(
+            guild_id, user_id, transcript, profile=profile
+        ):
             logger.info(
                 "Suppressing duplicate voice transcript for guild=%s user=%s: %s",
                 guild_id,

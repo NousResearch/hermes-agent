@@ -65,7 +65,7 @@ def run_one(scenario: Dict[str, Any], mode: str, rep: int, out_dir: Path) -> Dic
     n_registered = base.register_fake_tools()
 
     Path("/tmp/livetest").mkdir(exist_ok=True)
-    (Path("/tmp/livetest/notes.txt")).write_text("Hello from the test fixture.\n")
+    (Path("/tmp/livetest/notes.txt")).write_text("Hello from the test fixture.\n", encoding="utf-8")
 
     from tools.registry import registry
     original_dispatch = registry.dispatch

@@ -3171,7 +3171,13 @@ class TestDiscordVoiceAutoJoin:
         async def _modern_join(channel, *, manual_owner=False, attempt_token=None):
             calls["n"] += 1
             calls["last_kwargs"] = {"manual_owner": manual_owner, "attempt_token": attempt_token}
-            raise TypeError("some internal boom unrelated to kwargs")
+            # Raise the EXACT text an unknown-kwarg TypeError produces. Because the
+            # gateway inspects the signature (which DOES accept the kwargs) and never
+            # parses TypeError text, this is a single GATED call that fails — it must
+            # NOT be misread as "legacy" and retried tokenless.
+            raise TypeError(
+                "join_voice_channel() got an unexpected keyword argument 'attempt_token'"
+            )
 
         adapter.join_voice_channel = _modern_join
         adapter._voice_input_callback = None
@@ -3234,21 +3240,34 @@ class TestDiscordVoiceAutoJoin:
         adapter._voice_clients[111] = vc
         adapter._voice_text_channels[111] = 333
         adapter._voice_sources[111] = {"chat_id": "333"}
-        # A retry task must be finally-cleaned even under cancellation.
-        adapter._voice_auto_join_retry_tasks[111] = MagicMock()
         instrumented = _InstrumentedLock()
         adapter._voice_locks[111] = instrumented
+        # A retry task must be finally-cleaned under the guild lock even when the
+        # public leave is cancelled during the physical disconnect.
+        retry_cancel_lock_state = []
+        retry_task = MagicMock()
+        retry_task.cancel.side_effect = lambda: retry_cancel_lock_state.append(
+            instrumented.locked()
+        )
+        adapter._voice_auto_join_retry_tasks[111] = retry_task
 
         leave_task = asyncio.ensure_future(adapter.leave_voice_channel(111))
         await disconnect_started.wait()             # inside vc.disconnect(), lock held
 
         # A contender tries to take the guild lock; the instrumented lock signals
         # when it is actually BLOCKED (explicit event, no sleep-zero guess) — proof
-        # the teardown still holds the lock.
+        # the teardown still holds the lock. When the contender FINALLY acquires the
+        # lock it records whether the retry was already cleared: because retry
+        # cancellation runs in a finally INSIDE the async-with (lock still held), the
+        # contender must never observe a stale retry task.
         got_lock = asyncio.Event()
+        retry_state_when_locked = {}
 
         async def _contender():
             async with instrumented:
+                retry_state_when_locked["cleared"] = (
+                    111 not in adapter._voice_auto_join_retry_tasks
+                )
                 got_lock.set()
 
         contender = asyncio.ensure_future(_contender())
@@ -3265,9 +3284,13 @@ class TestDiscordVoiceAutoJoin:
         assert 111 not in adapter._voice_text_channels
         assert 111 not in adapter._voice_sources
         assert 111 not in adapter._voice_auto_join_retry_tasks   # retry finally-cleaned
+        assert retry_cancel_lock_state == [True]                 # cleaned under lock
         # Only now can the contender acquire the lock.
         await asyncio.wait_for(contender, timeout=1)
         assert got_lock.is_set()
+        # The retry was already cleared AT THE MOMENT the contender took the lock —
+        # i.e. cancellation happened while the guild lock was still held.
+        assert retry_state_when_locked["cleared"] is True
 
     @pytest.mark.asyncio
     async def test_mid_move_rollback_failure_runs_full_profile_bound_teardown(self, tmp_path):

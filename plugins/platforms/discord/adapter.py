@@ -5203,15 +5203,18 @@ class DiscordAdapter(BasePlatformAdapter):
 
     async def _public_leave_body(self, guild_id: int) -> None:
         gid = int(guild_id)
-        try:
-            async with self._voice_locks.setdefault(gid, asyncio.Lock()):
+        async with self._voice_locks.setdefault(gid, asyncio.Lock()):
+            try:
                 text_ch_id = self._voice_text_channels.get(gid)
                 # Full profile-bound teardown: physical disconnect + maps + the
                 # bound runner cleanup, all under the held lock.
                 await self._teardown_voice_session_body(gid, text_ch_id)
-        finally:
-            # Retry state is cleaned even if teardown raised or is cancelling.
-            self._cancel_voice_auto_join_retry(gid)
+            finally:
+                # Cancel the pending-retry WHILE THE GUILD LOCK IS STILL HELD (and
+                # even if teardown raised or is cancelling), so a concurrent join
+                # that is waiting for the lock can never observe a stale retry task
+                # for a session that is already torn down.
+                self._cancel_voice_auto_join_retry(gid)
 
     async def _disconnect_voice_client(self, vc) -> None:
         """Disconnect a single voice client defensively (tolerant of the fake

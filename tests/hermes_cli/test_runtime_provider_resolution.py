@@ -1000,6 +1000,47 @@ def test_named_custom_provider_uses_providers_dict_when_list_missing(monkeypatch
     assert resolved["model"] == "gpt-5-mini"
 
 
+def test_named_custom_provider_uses_providers_dict_when_legacy_list_is_corrupted(monkeypatch):
+    """A malformed legacy custom_providers value must not block providers dict resolution."""
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
+    monkeypatch.setattr(
+        rp,
+        "load_config",
+        lambda: {
+            "custom_providers": '[{"name":"Broken Legacy"}]',
+            "providers": {
+                "openai-direct-primary": {
+                    "api": "https://api.openai.com/v1",
+                    "api_key": "dir-key",
+                    "default_model": "gpt-5-mini",
+                    "name": "OpenAI Direct (Primary)",
+                    "transport": "codex_responses",
+                }
+            },
+        },
+    )
+    monkeypatch.setattr(
+        rp,
+        "resolve_provider",
+        lambda *a, **k: (_ for _ in ()).throw(
+            AssertionError(
+                "resolve_provider should not be called for named custom providers"
+            )
+        ),
+    )
+
+    resolved = rp.resolve_runtime_provider(requested="openai-direct-primary")
+
+    assert resolved["provider"] == "custom"
+    assert resolved["api_mode"] == "codex_responses"
+    assert resolved["base_url"] == "https://api.openai.com/v1"
+    assert resolved["api_key"] == "dir-key"
+    assert resolved["requested_provider"] == "openai-direct-primary"
+    assert resolved["source"] == "custom_provider:OpenAI Direct (Primary)"
+    assert resolved["model"] == "gpt-5-mini"
+
+
 def test_named_custom_provider_uses_key_env_from_providers_dict(monkeypatch):
     """providers dict entries with key_env should resolve API key from env var."""
     monkeypatch.delenv("OPENAI_API_KEY", raising=False)

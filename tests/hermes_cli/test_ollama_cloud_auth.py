@@ -93,7 +93,7 @@ class TestDirectAliases:
         )
 
         from hermes_cli.model_switch import _load_direct_aliases
-        aliases = _load_direct_aliases()
+        aliases, _ok = _load_direct_aliases()
 
         assert "mymodel" in aliases
         assert aliases["mymodel"].model == "custom-model:latest"
@@ -109,6 +109,7 @@ class TestDirectAliases:
             "glm": DirectAlias("glm-4.7", "custom", "https://ollama.com/v1"),
         }
         monkeypatch.setattr(ms, "DIRECT_ALIASES", test_aliases)
+        monkeypatch.setattr(ms, "_load_direct_aliases", lambda: (dict(test_aliases), True))
 
         result = resolve_alias("glm", "openrouter")
         assert result is not None
@@ -126,6 +127,7 @@ class TestDirectAliases:
             "kimi": DirectAlias("kimi-k2.5", "custom", "https://ollama.com/v1"),
         }
         monkeypatch.setattr(ms, "DIRECT_ALIASES", test_aliases)
+        monkeypatch.setattr(ms, "_load_direct_aliases", lambda: (dict(test_aliases), True))
 
         # Typing full model name should resolve through the alias
         result = resolve_alias("kimi-k2.5", "openrouter")
@@ -144,6 +146,7 @@ class TestDirectAliases:
             "glm": DirectAlias("GLM-4.7", "custom", "https://ollama.com/v1"),
         }
         monkeypatch.setattr(ms, "DIRECT_ALIASES", test_aliases)
+        monkeypatch.setattr(ms, "_load_direct_aliases", lambda: (dict(test_aliases), True))
 
         result = resolve_alias("glm-4.7", "openrouter")
         assert result is not None
@@ -231,7 +234,7 @@ class TestLoadDirectAliasesEdgeCases:
         )
 
         from hermes_cli.model_switch import _load_direct_aliases
-        aliases = _load_direct_aliases()
+        aliases, _ok = _load_direct_aliases()
         assert isinstance(aliases, dict)
 
     def test_model_aliases_not_a_dict(self, monkeypatch):
@@ -243,7 +246,7 @@ class TestLoadDirectAliasesEdgeCases:
         )
 
         from hermes_cli.model_switch import _load_direct_aliases
-        aliases = _load_direct_aliases()
+        aliases, _ok = _load_direct_aliases()
         assert isinstance(aliases, dict)
 
     def test_model_aliases_none_value(self, monkeypatch):
@@ -255,7 +258,7 @@ class TestLoadDirectAliasesEdgeCases:
         )
 
         from hermes_cli.model_switch import _load_direct_aliases
-        aliases = _load_direct_aliases()
+        aliases, _ok = _load_direct_aliases()
         assert isinstance(aliases, dict)
 
     def test_malformed_entry_without_model_key(self, monkeypatch):
@@ -278,7 +281,7 @@ class TestLoadDirectAliasesEdgeCases:
         )
 
         from hermes_cli.model_switch import _load_direct_aliases
-        aliases = _load_direct_aliases()
+        aliases, _ok = _load_direct_aliases()
         assert "bad_entry" not in aliases
         assert "good_entry" in aliases
 
@@ -298,7 +301,7 @@ class TestLoadDirectAliasesEdgeCases:
         )
 
         from hermes_cli.model_switch import _load_direct_aliases
-        aliases = _load_direct_aliases()
+        aliases, _ok = _load_direct_aliases()
         assert "string_entry" not in aliases
         assert "none_entry" not in aliases
         assert "list_entry" not in aliases
@@ -312,7 +315,7 @@ class TestLoadDirectAliasesEdgeCases:
         )
 
         from hermes_cli.model_switch import _load_direct_aliases
-        aliases = _load_direct_aliases()
+        aliases, _ok = _load_direct_aliases()
         assert isinstance(aliases, dict)
 
     def test_alias_name_normalized_lowercase(self, monkeypatch):
@@ -331,7 +334,7 @@ class TestLoadDirectAliasesEdgeCases:
         )
 
         from hermes_cli.model_switch import _load_direct_aliases
-        aliases = _load_direct_aliases()
+        aliases, _ok = _load_direct_aliases()
         assert "mymodel" in aliases
         assert "  MyModel  " not in aliases
 
@@ -349,7 +352,7 @@ class TestLoadDirectAliasesEdgeCases:
         )
 
         from hermes_cli.model_switch import _load_direct_aliases
-        aliases = _load_direct_aliases()
+        aliases, _ok = _load_direct_aliases()
         assert "empty" not in aliases
         assert "good" in aliases
 
@@ -378,8 +381,9 @@ class TestEnsureDirectAliases:
         ms._ensure_direct_aliases()
         assert "test" in ms.DIRECT_ALIASES
 
-    def test_ensure_no_reload_when_populated(self, monkeypatch):
-        """_ensure_direct_aliases does not reload if already populated."""
+    def test_ensure_reloads_when_populated(self, monkeypatch):
+        """_ensure_direct_aliases refreshes on every call (hot-reload), so a
+        config change is reflected even when the dict is already populated."""
         import hermes_cli.model_switch as ms
         from hermes_cli.model_switch import DirectAlias
 
@@ -387,15 +391,19 @@ class TestEnsureDirectAliases:
         monkeypatch.setattr(ms, "DIRECT_ALIASES", existing)
 
         call_count = [0]
-        original_load = ms._load_direct_aliases
         def counting_load():
             call_count[0] += 1
-            return original_load()
+            merged = dict(ms._BUILTIN_DIRECT_ALIASES)
+            merged["fresh"] = DirectAlias("fresh-model", "custom", "")
+            return merged, True
         monkeypatch.setattr(ms, "_load_direct_aliases", counting_load)
 
         ms._ensure_direct_aliases()
-        assert call_count[0] == 0
-        assert "pre" in ms.DIRECT_ALIASES
+        # Hot-reload: it DID reload, and the new alias is present.
+        assert call_count[0] == 1
+        assert "fresh" in ms.DIRECT_ALIASES
+        # 'pre' was not in the fresh config, so it is pruned.
+        assert "pre" not in ms.DIRECT_ALIASES
 
 
 # ---------------------------------------------------------------------------
@@ -422,6 +430,7 @@ class TestResolveAliasEdgeCases:
             "myalias": DirectAlias("my-model", "custom", "https://example.com"),
         }
         monkeypatch.setattr(ms, "DIRECT_ALIASES", test_aliases)
+        monkeypatch.setattr(ms, "_load_direct_aliases", lambda: (dict(test_aliases), True))
 
         result = ms.resolve_alias("  myalias  ", "openrouter")
         assert result is not None
@@ -444,6 +453,7 @@ class TestSwitchModelDirectAliasOverride:
             "qwen": DirectAlias("qwen3.5:397b", "custom", "https://ollama.com/v1"),
         }
         monkeypatch.setattr(ms, "DIRECT_ALIASES", test_aliases)
+        monkeypatch.setattr(ms, "_load_direct_aliases", lambda: (dict(test_aliases), True))
 
         monkeypatch.setattr(ms, "resolve_alias",
             lambda raw, prov: ("custom", "qwen3.5:397b", "qwen"))
@@ -472,6 +482,7 @@ class TestSwitchModelDirectAliasOverride:
             "local": DirectAlias("local-model", "custom", "http://localhost:11434/v1"),
         }
         monkeypatch.setattr(ms, "DIRECT_ALIASES", test_aliases)
+        monkeypatch.setattr(ms, "_load_direct_aliases", lambda: (dict(test_aliases), True))
         monkeypatch.setattr(ms, "resolve_alias",
             lambda raw, prov: ("custom", "local-model", "local"))
         monkeypatch.setattr(

@@ -71,7 +71,11 @@ def _assert_conflict_was_recovered(repo: Path, output: str) -> None:
     assert "Restore your changes later with: git stash apply stash@{0}" in output
     assert _git(repo, "status", "--porcelain").stdout.strip() == ""
     assert _git(repo, "stash", "list").stdout.strip(), "stash must be preserved"
-    assert (repo / "tracked.txt").read_text(encoding="utf-8") == "upstream edit\n"
+    content = (repo / "tracked.txt").read_text(encoding="utf-8")
+    assert content == "upstream edit\n", content
+    # No conflict markers must be left in tracked source — they would crash
+    # the backend on import (SyntaxError on the <<<<<<< line).
+    assert "<<<<<<<" not in content and ">>>>>>>" not in content
 
 
 @pytest.mark.live_system_guard_bypass
@@ -130,3 +134,62 @@ def test_install_ps1_repository_stage_recovers_from_autostash_conflict(
 
     assert result.returncode == 0, result.stderr
     _assert_conflict_was_recovered(managed, result.stdout)
+
+
+@pytest.mark.live_system_guard_bypass
+@pytest.mark.skipif(
+    shutil.which("git") is None or shutil.which("bash") is None,
+    reason="needs git and bash",
+)
+def test_install_sh_repository_stage_clean_apply_drops_stash(
+    tmp_path: Path,
+) -> None:
+    """Happy path: a non-conflicting restore must still apply and drop the stash.
+
+    The conflict-recovery fix must not regress the normal path — when stash apply
+    succeeds cleanly, the stash should be dropped and local changes restored.
+    """
+    seed = tmp_path / "seed"
+    seed.mkdir()
+    _git(seed, "init")
+    (seed / "tracked.txt").write_text("base\n", encoding="utf-8")
+    _git(seed, "add", "tracked.txt")
+    _git(seed, "commit", "-m", "base")
+    _git(seed, "branch", "-M", "main")
+
+    remote = tmp_path / "origin.git"
+    _git(tmp_path, "init", "--bare", str(remote))
+    _git(seed, "remote", "add", "origin", str(remote))
+    _git(seed, "push", "-u", "origin", "main")
+
+    managed = tmp_path / "hermes-agent"
+    _git(tmp_path, "clone", "--branch", "main", str(remote), str(managed))
+
+    # Local edit on a file upstream will NOT touch — no conflict on apply.
+    (managed / "local-only.txt").write_text("local edit\n", encoding="utf-8")
+
+    upstream = tmp_path / "upstream"
+    _git(tmp_path, "clone", "--branch", "main", str(remote), str(upstream))
+    (upstream / "tracked.txt").write_text("upstream edit\n", encoding="utf-8")
+    _git(upstream, "commit", "-am", "upstream")
+    _git(upstream, "push", "origin", "main")
+
+    env = os.environ | {
+        "HERMES_HOME": str(tmp_path / "hermes-home"),
+        "HERMES_INSTALL_DIR": str(managed),
+    }
+    result = subprocess.run(
+        ["bash", str(INSTALL_SH), "--stage", "repository", "--non-interactive"],
+        cwd=tmp_path,
+        env=env,
+        capture_output=True,
+        text=True,
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert "Local changes were restored on top of the updated codebase." in result.stdout
+    # Stash must be dropped on a clean apply — not preserved.
+    assert _git(managed, "stash", "list").stdout.strip() == "", "stash must be dropped on clean apply"
+    # Local changes must be present in the working tree.
+    assert (managed / "local-only.txt").read_text(encoding="utf-8") == "local edit\n"
+    assert (managed / "tracked.txt").read_text(encoding="utf-8") == "upstream edit\n"

@@ -539,6 +539,57 @@ def test_cmd_update_protects_local_commits_on_target_branch_before_switch(
     assert not any(" reset " in f" {' '.join(cmd)} " for cmd in calls)
 
 
+def test_cmd_update_rechecks_target_after_branch_switch_race(
+    monkeypatch, tmp_path, capsys
+):
+    _setup_update_mocks(monkeypatch, tmp_path)
+    calls = []
+    head_proofs = 0
+    discarded = []
+    monkeypatch.setattr(
+        hermes_main,
+        "_discard_lockfile_churn",
+        lambda *args: discarded.append(args),
+    )
+
+    def fake_run(cmd, **kwargs):
+        nonlocal head_proofs
+        calls.append(cmd)
+        joined = " ".join(str(part) for part in cmd)
+        if "fetch origin main" in joined:
+            return SimpleNamespace(returncode=0, stdout="", stderr="")
+        if "rev-parse --abbrev-ref HEAD" in joined:
+            return SimpleNamespace(returncode=0, stdout="deploy/custom\n", stderr="")
+        if "show-ref --verify --quiet refs/heads/main" in joined:
+            return SimpleNamespace(returncode=0, stdout="", stderr="")
+        if "rev-list --count origin/main..refs/heads/main" in joined:
+            return SimpleNamespace(returncode=0, stdout="0\n", stderr="")
+        if "rev-list --count origin/main..HEAD" in joined:
+            head_proofs += 1
+            value = "0\n" if head_proofs == 1 else "2\n"
+            return SimpleNamespace(returncode=0, stdout=value, stderr="")
+        return SimpleNamespace(returncode=0, stdout="", stderr="")
+
+    monkeypatch.setattr(hermes_main.subprocess, "run", fake_run)
+    monkeypatch.setattr(
+        hermes_config,
+        "load_config",
+        lambda: {"updates": {"protect_local_commits": True}},
+    )
+
+    with pytest.raises(SystemExit) as exc:
+        hermes_main._cmd_update_impl(SimpleNamespace(yes=True), gateway_mode=False)
+
+    assert exc.value.code == 3
+    assert "target branch changed" in capsys.readouterr().out
+    assert head_proofs == 2
+    assert ["git", "checkout", "main"] in calls
+    assert ["git", "checkout", "deploy/custom"] in calls
+    assert discarded == []
+    assert not any(" pull " in f" {' '.join(cmd)} " for cmd in calls)
+    assert not any(" reset --hard " in f" {' '.join(cmd)} " for cmd in calls)
+
+
 @pytest.mark.parametrize("value", ["true", 1, [], {}])
 def test_cmd_update_rejects_invalid_local_commit_protection_value(
     monkeypatch, tmp_path, capsys, value

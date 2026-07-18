@@ -10064,23 +10064,6 @@ def _cmd_update_impl(args, gateway_mode: bool):
                 # Exit 3 is the staged Desktop updater's terminal policy-rejection code.
                 sys.exit(3)
 
-        # Persist the Windows atomic-append workaround only after the protected
-        # commit proof. The inline ``-c`` on git_cmd is sufficient for fetch and
-        # proof, so a policy rejection need not mutate repository configuration.
-        if sys.platform == "win32":
-            subprocess.run(
-                git_cmd + ["config", "windows.appendAtomically", "false"],
-                cwd=PROJECT_ROOT,
-                check=False,
-                capture_output=True,
-            )
-
-        # Discard npm lockfile churn only after the protected-commit proof.
-        # npm rewrites tracked package-lock.json files non-deterministically at
-        # install/build time, but a blocked tailored deployment must not mutate
-        # even this generated file before reporting the policy rejection.
-        _discard_lockfile_churn(git_cmd, PROJECT_ROOT)
-
         # If user is on a different branch than the update target, switch
         # to the target. When the target is "main" this is the historical
         # "always update against main" behavior; for any other target it's
@@ -10134,6 +10117,61 @@ def _cmd_update_impl(args, gateway_mode: bool):
                     sys.exit(1)
         else:
             auto_stash_ref = _stash_local_changes_if_needed(git_cmd, PROJECT_ROOT)
+
+        if protect_local_commits:
+            # Re-prove the checked-out target immediately after branch
+            # transition. A different process may have advanced the target ref
+            # after the initial preflight; protected mode must detect that before
+            # generated-file cleanup, pull, or any reset-capable path. Restore the
+            # caller's branch/stash before returning the terminal policy result.
+            target_recheck = subprocess.run(
+                git_cmd + ["rev-list", "--count", f"origin/{branch}..HEAD"],
+                cwd=PROJECT_ROOT,
+                capture_output=True,
+                text=True,
+            )
+            try:
+                target_local_count = (
+                    int(target_recheck.stdout.strip())
+                    if target_recheck.returncode == 0
+                    else None
+                )
+            except ValueError:
+                target_local_count = None
+            if target_local_count is None or target_local_count > 0:
+                if current_branch not in {branch, "HEAD"}:
+                    subprocess.run(
+                        git_cmd + ["checkout", current_branch],
+                        cwd=PROJECT_ROOT,
+                        capture_output=True,
+                        text=True,
+                        check=False,
+                    )
+                if auto_stash_ref is not None:
+                    _restore_stashed_changes(
+                        git_cmd,
+                        PROJECT_ROOT,
+                        auto_stash_ref,
+                        prompt_user=False,
+                        input_fn=gw_input_fn,
+                    )
+                print("✗ Update blocked: target branch changed during protected preflight.")
+                print(f"  Refusing to update or reset branch '{branch}'.")
+                _resume_windows_gateways_after_update(_windows_gateway_resume)
+                sys.exit(3)
+
+        # Persist the Windows atomic-append workaround only after both protected
+        # proofs. The inline ``-c`` on git_cmd is sufficient for those reads.
+        if sys.platform == "win32":
+            subprocess.run(
+                git_cmd + ["config", "windows.appendAtomically", "false"],
+                cwd=PROJECT_ROOT,
+                check=False,
+                capture_output=True,
+            )
+
+        # Discard npm lockfile churn only after both protected-commit proofs.
+        _discard_lockfile_churn(git_cmd, PROJECT_ROOT)
 
         prompt_for_restore = (
             auto_stash_ref is not None

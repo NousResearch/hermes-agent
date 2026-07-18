@@ -1,0 +1,53 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://hermes-agent.nousresearch.com/schemas/truth-ledger/source-envelope-v1.schema.json",
+  "title": "Truth Ledger Source Envelope v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_name",
+    "schema_version",
+    "captured_at",
+    "profile",
+    "session_id",
+    "turn_id",
+    "origin",
+    "input",
+    "output"
+  ],
+  "properties": {
+    "schema_name": {"const": "truth-ledger.source-envelope.v1"},
+    "schema_version": {"const": 1},
+    "captured_at": {"type": "string", "format": "date-time"},
+    "profile": {"type": "string", "minLength": 1, "maxLength": 128},
+    "session_id": {"type": "string", "minLength": 1, "maxLength": 256},
+    "turn_id": {"type": "string", "minLength": 1, "maxLength": 256},
+    "origin": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["platform", "conversation_id", "thread_id", "speaker_id"],
+      "properties": {
+        "platform": {"type": "string", "minLength": 1, "maxLength": 64},
+        "conversation_id": {"type": ["string", "null"], "maxLength": 256},
+        "thread_id": {"type": ["string", "null"], "maxLength": 256},
+        "speaker_id": {"type": ["string", "null"], "maxLength": 256}
+      }
+    },
+    "input": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["user_message"],
+      "properties": {
+        "user_message": {"type": "string", "minLength": 1, "maxLength": 65536}
+      }
+    },
+    "output": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["assistant_response"],
+      "properties": {
+        "assistant_response": {"type": "string", "minLength": 1, "maxLength": 65536}
+      }
+    }
+  }
+}

@@ -1,0 +1,36 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://hermes-agent.nousresearch.com/schemas/truth-ledger/current-projection-v1.schema.json",
+  "title": "Truth Ledger Current Projection v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_name",
+    "schema_version",
+    "logical_key",
+    "state",
+    "fact_id",
+    "value",
+    "updated_at"
+  ],
+  "properties": {
+    "schema_name": {"const": "truth-ledger.current-projection.v1"},
+    "schema_version": {"const": 1},
+    "logical_key": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["scope", "subject", "key"],
+      "properties": {
+        "scope": {"enum": ["user", "agent", "project", "world"]},
+        "subject": {"type": "string", "minLength": 1, "maxLength": 512},
+        "key": {"type": "string", "minLength": 1, "maxLength": 512}
+      }
+    },
+    "state": {"enum": ["active", "superseded", "retracted"]},
+    "fact_id": {"type": "string", "pattern": "^fact_[A-Za-z0-9_-]+$", "maxLength": 128},
+    "value": {
+      "type": ["null", "string", "number", "integer", "boolean", "object", "array"]
+    },
+    "updated_at": {"type": "string", "format": "date-time"}
+  }
+}

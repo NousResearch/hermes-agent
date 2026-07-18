@@ -1,0 +1,65 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://hermes-agent.nousresearch.com/schemas/truth-ledger/fact-candidates-v1.schema.json",
+  "title": "Truth Ledger Fact Candidates v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_name", "facts"],
+  "properties": {
+    "schema_name": {"const": "truth-ledger.fact-candidates.v1"},
+    "facts": {
+      "type": "array",
+      "maxItems": 128,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["schema_version", "operation", "fact", "evidence", "confidence"],
+        "properties": {
+          "schema_version": {"const": 1},
+          "operation": {"enum": ["assert", "confirm", "supersede", "retract"]},
+          "fact": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["scope", "kind", "subject", "key", "value"],
+            "properties": {
+              "scope": {"enum": ["user", "agent", "project", "world"]},
+              "kind": {
+                "enum": [
+                  "preference",
+                  "identity",
+                  "decision",
+                  "constraint",
+                  "environment",
+                  "workflow",
+                  "project",
+                  "relationship",
+                  "deadline",
+                  "correction",
+                  "lesson",
+                  "commitment"
+                ]
+              },
+              "subject": {"type": "string", "minLength": 1, "maxLength": 512},
+              "key": {"type": "string", "minLength": 1, "maxLength": 512},
+              "value": {}
+            }
+          },
+          "evidence": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["type", "speaker_id", "session_id", "turn_id", "conversation_id", "thread_id"],
+            "properties": {
+              "type": {"enum": ["user_stated", "tool_verified", "joint_decision", "assistant_inferred"]},
+              "speaker_id": {"type": ["string", "null"], "maxLength": 256},
+              "session_id": {"type": "string", "minLength": 1, "maxLength": 256},
+              "turn_id": {"type": ["string", "null"], "maxLength": 256},
+              "conversation_id": {"type": ["string", "null"], "maxLength": 256},
+              "thread_id": {"type": ["string", "null"], "maxLength": 256}
+            }
+          },
+          "confidence": {"type": "number", "minimum": 0, "maximum": 1}
+        }
+      }
+    }
+  }
+}

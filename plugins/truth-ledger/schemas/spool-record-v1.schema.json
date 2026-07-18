@@ -1,0 +1,38 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://hermes-agent.nousresearch.com/schemas/truth-ledger/spool-record-v1.schema.json",
+  "title": "Truth Ledger Spool Record v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_name",
+    "schema_version",
+    "envelope_id",
+    "state",
+    "captured_at",
+    "attempt_count",
+    "idempotency_key",
+    "source_ref",
+    "payload_path"
+  ],
+  "properties": {
+    "schema_name": {"const": "truth-ledger.spool-record.v1"},
+    "schema_version": {"const": 1},
+    "envelope_id": {"type": "string", "pattern": "^env_[A-Za-z0-9_-]+$", "maxLength": 128},
+    "state": {"enum": ["pending", "processing", "dead_lettered"]},
+    "captured_at": {"type": "string", "format": "date-time"},
+    "attempt_count": {"type": "integer", "minimum": 0, "maximum": 100},
+    "idempotency_key": {"type": "string", "minLength": 1, "maxLength": 512},
+    "source_ref": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["profile", "session_id", "turn_id"],
+      "properties": {
+        "profile": {"type": "string", "minLength": 1, "maxLength": 128},
+        "session_id": {"type": "string", "minLength": 1, "maxLength": 256},
+        "turn_id": {"type": ["string", "null"], "maxLength": 256}
+      }
+    },
+    "payload_path": {"type": "string", "minLength": 1, "maxLength": 4096}
+  }
+}

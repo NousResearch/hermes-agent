@@ -1,0 +1,96 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://hermes-agent.nousresearch.com/schemas/truth-ledger/ledger-event-v1.schema.json",
+  "title": "Truth Ledger Event v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "event_id",
+    "occurred_at",
+    "operation",
+    "fact_id",
+    "supersedes",
+    "fact",
+    "evidence",
+    "extraction"
+  ],
+  "properties": {
+    "schema_version": {"const": 1},
+    "event_id": {"type": "string", "pattern": "^evt_[A-Za-z0-9_-]+$", "maxLength": 128},
+    "occurred_at": {"type": "string", "format": "date-time"},
+    "operation": {"enum": ["assert", "confirm", "supersede", "retract"]},
+    "fact_id": {"type": "string", "pattern": "^fact_[A-Za-z0-9_-]+$", "maxLength": 128},
+    "supersedes": {"type": ["string", "null"], "pattern": "^fact_[A-Za-z0-9_-]+$", "maxLength": 128},
+    "fact": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["scope", "kind", "subject", "key", "value"],
+      "properties": {
+        "scope": {"enum": ["user", "agent", "project", "world"]},
+        "kind": {
+          "enum": [
+            "preference",
+            "identity",
+            "decision",
+            "constraint",
+            "environment",
+            "workflow",
+            "project",
+            "relationship",
+            "deadline",
+            "correction",
+            "lesson",
+            "commitment"
+          ]
+        },
+        "subject": {"type": "string", "minLength": 1, "maxLength": 512},
+        "key": {"type": "string", "minLength": 1, "maxLength": 512},
+        "value": {}
+      }
+    },
+    "evidence": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "type",
+        "profile",
+        "platform",
+        "session_id",
+        "turn_id",
+        "task_id",
+        "speaker_id",
+        "conversation_id",
+        "thread_id"
+      ],
+      "properties": {
+        "type": {"enum": ["user_stated", "tool_verified", "joint_decision", "assistant_inferred"]},
+        "profile": {"type": "string", "minLength": 1, "maxLength": 128},
+        "platform": {"type": "string", "minLength": 1, "maxLength": 64},
+        "session_id": {"type": "string", "minLength": 1, "maxLength": 256},
+        "turn_id": {"type": ["string", "null"], "maxLength": 256},
+        "task_id": {"type": ["string", "null"], "maxLength": 256},
+        "speaker_id": {"type": ["string", "null"], "maxLength": 256},
+        "conversation_id": {"type": ["string", "null"], "maxLength": 256},
+        "thread_id": {"type": ["string", "null"], "maxLength": 256}
+      }
+    },
+    "extraction": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["schema_name", "provider", "model", "prompt_version"],
+      "properties": {
+        "schema_name": {"const": "truth-ledger.fact-candidates.v1"},
+        "provider": {"type": "string", "minLength": 1, "maxLength": 128},
+        "model": {"type": "string", "minLength": 1, "maxLength": 256},
+        "prompt_version": {"const": 1}
+      }
+    }
+  },
+  "allOf": [
+    {
+      "if": {"properties": {"operation": {"const": "supersede"}}, "required": ["operation"]},
+      "then": {"properties": {"supersedes": {"type": "string", "pattern": "^fact_[A-Za-z0-9_-]+$", "maxLength": 128}}, "required": ["supersedes"]}
+    }
+  ]
+}

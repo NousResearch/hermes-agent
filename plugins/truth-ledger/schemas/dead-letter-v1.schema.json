@@ -1,0 +1,44 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://hermes-agent.nousresearch.com/schemas/truth-ledger/dead-letter-v1.schema.json",
+  "title": "Truth Ledger Dead Letter v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_name",
+    "schema_version",
+    "occurred_at",
+    "reason_code",
+    "source_ref",
+    "attempt_count",
+    "last_error"
+  ],
+  "properties": {
+    "schema_name": {"const": "truth-ledger.dead-letter.v1"},
+    "schema_version": {"const": 1},
+    "occurred_at": {"type": "string", "format": "date-time"},
+    "reason_code": {
+      "enum": [
+        "schema_mismatch",
+        "queue_overflow",
+        "queue_hard_cap",
+        "validation_failed",
+        "extraction_failed",
+        "identity_missing",
+        "sensitive_content"
+      ]
+    },
+    "source_ref": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["profile", "session_id", "turn_id"],
+      "properties": {
+        "profile": {"type": "string", "minLength": 1, "maxLength": 128},
+        "session_id": {"type": "string", "minLength": 1, "maxLength": 256},
+        "turn_id": {"type": ["string", "null"], "maxLength": 256}
+      }
+    },
+    "attempt_count": {"type": "integer", "minimum": 0, "maximum": 100},
+    "last_error": {"type": "string", "minLength": 1, "maxLength": 1024}
+  }
+}

@@ -1157,11 +1157,17 @@ def write_json(obj: dict) -> bool:
     return (current_transport() or _stdio_transport).write(obj)
 
 
-def _emit(event: str, sid: str, payload: dict | None = None):
+def _emit(event: str, sid: str, payload: dict | None = None) -> Any:
     params = {"type": event, "session_id": sid}
     if payload is not None:
         params["payload"] = payload
-    write_json({"jsonrpc": "2.0", "method": "event", "params": params})
+    return write_json({"jsonrpc": "2.0", "method": "event", "params": params})
+
+
+def _emit_notification(event: str, sid: str, payload: dict | None = None) -> None:
+    """Emit a claim-backed notification, failing when its transport rejects it."""
+    if _emit(event, sid, payload) is False:
+        raise RuntimeError("notification transport write failed")
 
 
 _compute_host_supervisor = None
@@ -1205,7 +1211,14 @@ def _get_compute_host_supervisor(cfg: dict | None = None):
         return _compute_host_supervisor
 
 
-def _compute_host_turn_frame(rid: str, sid: str, session: dict, text: Any) -> dict:
+def _compute_host_turn_frame(
+    rid: str,
+    sid: str,
+    session: dict,
+    text: Any,
+    *,
+    turn_id: str = "",
+) -> dict:
     with session["history_lock"]:
         history = list(session.get("history", []))
         history_version = int(session.get("history_version", 0))
@@ -1218,6 +1231,7 @@ def _compute_host_turn_frame(rid: str, sid: str, session: dict, text: Any) -> di
         "text": text,
         "history": history,
         "history_version": history_version,
+        "user_turn_id": str(turn_id or ""),
         "cols": int(session.get("cols", 80) or 80),
         "cwd": _session_cwd(session),
         "profile_home": session.get("profile_home") or "",
@@ -1296,9 +1310,16 @@ def _on_compute_host_turn_done(rid: str, sid: str, session: dict, frame: dict) -
     _drain_queued_prompt(rid, sid, session)
 
 
-def _submit_prompt_to_compute_host(rid: str, sid: str, session: dict, text: Any) -> dict:
+def _submit_prompt_to_compute_host(
+    rid: str,
+    sid: str,
+    session: dict,
+    text: Any,
+    *,
+    turn_id: str = "",
+) -> dict:
     cfg = _load_dashboard_process_isolation_config()
-    frame = _compute_host_turn_frame(rid, sid, session, text)
+    frame = _compute_host_turn_frame(rid, sid, session, text, turn_id=turn_id)
 
     def _complete(done: dict) -> None:
         # submit_turn reports a synchronous pipe failure through the callback
@@ -2245,6 +2266,7 @@ def _set_session_context(
     cwd: str | None = None,
     *,
     ui_session_id: str = "",
+    turn_id: str = "",
 ) -> list:
     try:
         from gateway.session_context import set_session_vars
@@ -2260,12 +2282,18 @@ def _set_session_context(
                 if sess.get("session_key") == session_key:
                     source = _session_source(sess)
                     break
-        return set_session_vars(
+        tokens = set_session_vars(
             session_key=session_key,
             source=source,
             cwd=resolved,
             ui_session_id=ui_session_id,
         )
+        if turn_id:
+            import importlib
+
+            context_module = importlib.import_module("gateway.session_context")
+            tokens.append(getattr(context_module, "set_current_turn_id")(turn_id))
+        return tokens
     except Exception:
         return []
 
@@ -5008,6 +5036,7 @@ def _init_session(
             "history": history,
             "history_lock": threading.Lock(),
             "history_version": 0,
+            "user_turn_id": "",
             "inflight_turn": None,
             "created_at": now,
             "last_active": now,
@@ -5404,6 +5433,13 @@ def _start_inflight_turn(session: dict, text: Any) -> None:
     }
 
 
+def _begin_user_turn(session: dict) -> str:
+    """Rotate the opaque identity only for an actual user-submitted turn."""
+    turn_id = uuid.uuid4().hex
+    session["user_turn_id"] = turn_id
+    return turn_id
+
+
 def _append_inflight_delta(session: dict, delta: Any) -> None:
     text = "" if delta is None else str(delta)
     if not text:
@@ -5475,7 +5511,9 @@ def _handle_busy_submit(rid, sid: str, session: dict, text: Any, transport: Any)
             _get_compute_host_supervisor().interrupt(sid)
         except Exception:
             pass
+    turn_id = _begin_user_turn(session)
     _enqueue_prompt(session, text, transport)
+    session["queued_prompt"]["turn_id"] = turn_id
     session["last_active"] = time.time()
     return _ok(rid, {"status": "queued"})
 
@@ -5493,11 +5531,15 @@ def _drain_queued_prompt(rid, sid: str, session: dict) -> bool:
             return False
         session["queued_prompt"] = None
         session["running"] = True
+        queued_turn_id = str(queued.get("turn_id") or "")
+        session["user_turn_id"] = queued_turn_id
         if queued.get("transport") is not None:
             session["transport"] = queued["transport"]
     try:
         if _session_uses_compute_host(session):
-            resp = _submit_prompt_to_compute_host(rid, sid, session, queued["text"])
+            resp = _submit_prompt_to_compute_host(
+                rid, sid, session, queued["text"], turn_id=queued_turn_id
+            )
             if resp.get("error"):
                 message = str(((resp.get("error") or {}).get("message")) or "queued prompt failed")
                 with session["history_lock"]:
@@ -5505,7 +5547,9 @@ def _drain_queued_prompt(rid, sid: str, session: dict) -> bool:
                     _clear_inflight_turn(session)
                 _emit("error", sid, {"message": message})
         else:
-            _run_prompt_submit(rid, sid, session, queued["text"])
+            _run_prompt_submit(
+                rid, sid, session, queued["text"], turn_id=queued_turn_id
+            )
     except Exception as exc:
         print(
             f"[tui_gateway] queued prompt dispatch failed: "
@@ -9200,12 +9244,15 @@ def _(rid, params: dict) -> dict:
                 except Exception as exc:
                     print(f"[tui_gateway] prompt.submit: replace_messages failed: {exc}", file=sys.stderr)
         session["running"] = True
+        turn_id = _begin_user_turn(session)
         session["_turn_cancel_requested"] = False
         session["last_active"] = time.time()
         _start_inflight_turn(session, text)
 
     if turn_isolation:
-        isolated_response = _submit_prompt_to_compute_host(rid, sid, session, text)
+        isolated_response = _submit_prompt_to_compute_host(
+            rid, sid, session, text, turn_id=turn_id
+        )
         if not isolated_response.get("error"):
             return isolated_response
         logger.warning(
@@ -9242,7 +9289,7 @@ def _(rid, params: dict) -> dict:
                 session["running"] = False
                 _clear_inflight_turn(session)
                 return
-        _run_prompt_submit(rid, sid, session, text)
+        _run_prompt_submit(rid, sid, session, text, turn_id=turn_id)
 
     run_thread = threading.Thread(target=run_after_agent_ready, daemon=True)
     # Keep a handle so session.interrupt can tell a live turn from a stuck
@@ -9420,6 +9467,43 @@ def _notification_event_dedup_key(evt: dict) -> tuple:
     return (evt_sid, evt_type)
 
 
+def _notification_event_should_chain_agent(evt: dict, session: dict | None = None) -> bool:
+    """Allow only a delegation owned by the current real user turn to chain."""
+    if evt.get("type") != "async_delegation" or session is None:
+        return False
+    dispatch_turn_id = str(evt.get("dispatch_turn_id") or "")
+    current_turn_id = str(session.get("user_turn_id") or "")
+    return bool(dispatch_turn_id and current_turn_id and dispatch_turn_id == current_turn_id)
+
+
+def _deliver_status_only_notification(
+    evt: dict,
+    sid: str,
+    text: str,
+    consumer: str,
+    *,
+    emit_status: bool = True,
+) -> bool:
+    """Atomically surface and acknowledge a notification without an agent turn."""
+    from tools.async_delegation import (
+        claim_event_delivery, complete_event_delivery, release_event_delivery,
+    )
+
+    claim = claim_event_delivery(evt, consumer)
+    if claim is None:
+        return False
+    try:
+        if emit_status:
+            _emit_notification(
+                "status.update", sid, {"kind": "process", "text": text}
+            )
+        complete_event_delivery(evt, claim)
+    except Exception:
+        release_event_delivery(evt, claim)
+        raise
+    return True
+
+
 def _notification_poller_loop(
     stop_event: threading.Event, sid: str, session: dict
 ) -> None:
@@ -9482,26 +9566,49 @@ def _notification_poller_loop(
         if not text:
             continue
 
+        _should_chain = _notification_event_should_chain_agent(evt, session)
+
         # Only emit the same notification identity to TUI once — re-queued
         # completions get re-emitted every 0.5s otherwise when session is busy,
         # while distinct watch_match events from the same process must remain
         # visible independently.
         _dedup_key = _notification_event_dedup_key(evt)
+        if not _should_chain:
+            _needs_status = _dedup_key not in _emitted
+            try:
+                _delivered = _deliver_status_only_notification(
+                    evt,
+                    sid,
+                    text,
+                    "tui-poller-status",
+                    emit_status=_needs_status,
+                )
+            except Exception as exc:
+                logger.warning("status-only notification delivery failed: %s", exc)
+                process_registry.completion_queue.put(evt)
+                continue
+            if _delivered and _needs_status:
+                _emitted.add(_dedup_key)
+            continue
+
         if _dedup_key not in _emitted:
-            _emit("status.update", sid, {"kind": "process", "text": text})
+            try:
+                _emit_notification(
+                    "status.update", sid, {"kind": "process", "text": text}
+                )
+            except Exception as exc:
+                logger.warning("notification status delivery failed: %s", exc)
+                process_registry.completion_queue.put(evt)
+                time.sleep(0.25)
+                continue
             _emitted.add(_dedup_key)
 
-        _requeued = False
         with session["history_lock"]:
-            if session.get("running"):
-                process_registry.completion_queue.put(evt)
-                _requeued = True
-            else:
-                session["running"] = True
-        if _requeued:
+            _busy = bool(session.get("running"))
+        if _busy:
+            process_registry.completion_queue.put(evt)
             # Back off before re-polling: the re-queued event keeps the queue
-            # non-empty, so without a sleep this loop spins at full speed
-            # (100% CPU, GIL churn) for as long as the session stays busy.
+            # non-empty, so without a sleep this loop spins at full speed.
             time.sleep(0.25)
             continue
 
@@ -9509,15 +9616,41 @@ def _notification_poller_loop(
         from tools.async_delegation import (
             claim_event_delivery, complete_event_delivery, release_event_delivery,
         )
-        _claim = claim_event_delivery(evt, "tui-poller")
+        try:
+            _claim = claim_event_delivery(evt, "tui-poller")
+        except Exception as exc:
+            logger.warning("notification delivery claim failed: %s", exc)
+            process_registry.completion_queue.put(evt)
+            continue
         if _claim is None:
             continue
+
+        with session["history_lock"]:
+            _busy_after_claim = bool(session.get("running"))
+            if not _busy_after_claim:
+                session["running"] = True
+        if _busy_after_claim:
+            release_event_delivery(evt, _claim)
+            process_registry.completion_queue.put(evt)
+            time.sleep(0.25)
+            continue
+        _turn_dispatched = False
         try:
-            _emit("message.start", sid)
-            _run_prompt_submit(rid, sid, session, text)
+            _emit_notification("message.start", sid)
+            _run_prompt_submit(
+                rid,
+                sid,
+                session,
+                text,
+                turn_id=str(evt.get("dispatch_turn_id") or ""),
+            )
+            _turn_dispatched = True
             complete_event_delivery(evt, _claim)
         except Exception as exc:
-            release_event_delivery(evt, _claim)
+            if not _turn_dispatched:
+                release_event_delivery(evt, _claim)
+                process_registry.completion_queue.put(evt)
+                time.sleep(0.25)
             print(
                 f"[tui_gateway] notification poller dispatch failed: "
                 f"{type(exc).__name__}: {exc}",
@@ -9562,30 +9695,80 @@ def _notification_poller_loop(
         if not text:
             continue
 
+        _should_chain = _notification_event_should_chain_agent(evt, session)
         _dedup_key = _notification_event_dedup_key(evt)
+        if not _should_chain:
+            _needs_status = _dedup_key not in _emitted
+            try:
+                _delivered = _deliver_status_only_notification(
+                    evt,
+                    sid,
+                    text,
+                    "tui-poller-status",
+                    emit_status=_needs_status,
+                )
+            except Exception as exc:
+                logger.warning("status-only notification delivery failed: %s", exc)
+                deferred.append(evt)
+                continue
+            if _delivered and _needs_status:
+                _emitted.add(_dedup_key)
+            continue
+
         if _dedup_key not in _emitted:
-            _emit("status.update", sid, {"kind": "process", "text": text})
+            try:
+                _emit_notification(
+                    "status.update", sid, {"kind": "process", "text": text}
+                )
+            except Exception as exc:
+                logger.warning("notification status delivery failed: %s", exc)
+                deferred.append(evt)
+                continue
             _emitted.add(_dedup_key)
 
         with session["history_lock"]:
-            if session.get("running"):
-                process_registry.completion_queue.put(evt)
-                break
-            session["running"] = True
+            _busy = bool(session.get("running"))
+        if _busy:
+            deferred.append(evt)
+            break
 
         rid = f"__notif__{int(time.time() * 1000)}"
         from tools.async_delegation import (
             claim_event_delivery, complete_event_delivery, release_event_delivery,
         )
-        _claim = claim_event_delivery(evt, "tui-poller")
+        try:
+            _claim = claim_event_delivery(evt, "tui-poller")
+        except Exception as exc:
+            logger.warning("notification delivery claim failed: %s", exc)
+            deferred.append(evt)
+            continue
         if _claim is None:
             continue
+
+        with session["history_lock"]:
+            _busy_after_claim = bool(session.get("running"))
+            if not _busy_after_claim:
+                session["running"] = True
+        if _busy_after_claim:
+            release_event_delivery(evt, _claim)
+            deferred.append(evt)
+            break
+        _turn_dispatched = False
         try:
-            _emit("message.start", sid)
-            _run_prompt_submit(rid, sid, session, text)
+            _emit_notification("message.start", sid)
+            _run_prompt_submit(
+                rid,
+                sid,
+                session,
+                text,
+                turn_id=str(evt.get("dispatch_turn_id") or ""),
+            )
+            _turn_dispatched = True
             complete_event_delivery(evt, _claim)
         except Exception as exc:
-            release_event_delivery(evt, _claim)
+            if not _turn_dispatched:
+                release_event_delivery(evt, _claim)
+                deferred.append(evt)
             print(
                 f"[tui_gateway] notification poller dispatch failed: "
                 f"{type(exc).__name__}: {exc}",
@@ -9657,7 +9840,15 @@ def _start_notification_poller(sid: str, session: dict) -> threading.Event:
     return stop
 
 
-def _run_prompt_submit(rid, sid: str, session: dict, text: Any) -> None:
+def _run_prompt_submit(
+    rid,
+    sid: str,
+    session: dict,
+    text: Any,
+    *,
+    turn_id: str = "",
+) -> None:
+    turn_id = str(turn_id or "")
     with session["history_lock"]:
         history = list(session["history"])
         history_version = int(session.get("history_version", 0))
@@ -9688,6 +9879,7 @@ def _run_prompt_submit(rid, sid: str, session: dict, text: Any) -> None:
             session_tokens = _set_session_context(
                 session["session_key"],
                 ui_session_id=sid,
+                turn_id=turn_id,
             )
             _profile_home_str = session.get("profile_home")
             if _profile_home_str:
@@ -10122,7 +10314,9 @@ def _run_prompt_submit(rid, sid: str, session: dict, text: Any) -> None:
                 session["running"] = True
             try:
                 _emit("message.start", sid)
-                _run_prompt_submit(rid, sid, session, goal_followup)
+                _run_prompt_submit(
+                    rid, sid, session, goal_followup, turn_id=turn_id
+                )
             except Exception as _cont_exc:
                 print(
                     f"[tui_gateway] goal continuation dispatch failed: "
@@ -10154,24 +10348,73 @@ def _run_prompt_submit(rid, sid: str, session: dict, text: Any) -> None:
                 skip_poll_observed=False,
             )
             for index, (_evt, synth) in enumerate(drained):
-                with session["history_lock"]:
-                    if session.get("running"):
-                        for pending_evt, _pending_synth in drained[index:]:
-                            process_registry.completion_queue.put(pending_evt)
-                        break
-                    session["running"] = True
                 from tools.async_delegation import (
                     claim_event_delivery, complete_event_delivery, release_event_delivery,
                 )
-                _claim = claim_event_delivery(_evt, "tui-post-turn")
+
+                _should_chain = _notification_event_should_chain_agent(_evt, session)
+                if not _should_chain:
+                    try:
+                        _deliver_status_only_notification(
+                            _evt,
+                            sid,
+                            synth,
+                            "tui-post-turn-status",
+                        )
+                    except Exception:
+                        for pending_evt, _pending_synth in drained[index:]:
+                            process_registry.completion_queue.put(pending_evt)
+                        raise
+                    continue
+
+                try:
+                    _emit_notification(
+                        "status.update", sid, {"kind": "process", "text": synth}
+                    )
+                except Exception:
+                    for pending_evt, _pending_synth in drained[index:]:
+                        process_registry.completion_queue.put(pending_evt)
+                    raise
+                with session["history_lock"]:
+                    _busy = bool(session.get("running"))
+                if _busy:
+                    for pending_evt, _pending_synth in drained[index:]:
+                        process_registry.completion_queue.put(pending_evt)
+                    break
+                try:
+                    _claim = claim_event_delivery(_evt, "tui-post-turn")
+                except Exception:
+                    for pending_evt, _pending_synth in drained[index:]:
+                        process_registry.completion_queue.put(pending_evt)
+                    raise
                 if _claim is None:
                     continue
+                with session["history_lock"]:
+                    _busy_after_claim = bool(session.get("running"))
+                    if not _busy_after_claim:
+                        session["running"] = True
+                if _busy_after_claim:
+                    release_event_delivery(_evt, _claim)
+                    for pending_evt, _pending_synth in drained[index:]:
+                        process_registry.completion_queue.put(pending_evt)
+                    break
+                _turn_dispatched = False
                 try:
-                    _emit("message.start", sid)
-                    _run_prompt_submit(rid, sid, session, synth)
+                    _emit_notification("message.start", sid)
+                    _run_prompt_submit(
+                        rid,
+                        sid,
+                        session,
+                        synth,
+                        turn_id=str(_evt.get("dispatch_turn_id") or ""),
+                    )
+                    _turn_dispatched = True
                     complete_event_delivery(_evt, _claim)
                 except Exception as _n_exc:
-                    release_event_delivery(_evt, _claim)
+                    if not _turn_dispatched:
+                        release_event_delivery(_evt, _claim)
+                        for pending_evt, _pending_synth in drained[index:]:
+                            process_registry.completion_queue.put(pending_evt)
                     print(
                         f"[tui_gateway] completion notification dispatch failed: "
                         f"{type(_n_exc).__name__}: {_n_exc}",
@@ -10179,6 +10422,8 @@ def _run_prompt_submit(rid, sid: str, session: dict, text: Any) -> None:
                     )
                     with session["history_lock"]:
                         session["running"] = False
+                    if not _turn_dispatched:
+                        break
         except Exception as _drain_exc:
             print(
                 f"[tui_gateway] completion queue drain failed: "

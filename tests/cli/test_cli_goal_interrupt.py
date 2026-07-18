@@ -176,8 +176,27 @@ class TestHealthyTurnStillRuns:
         # Continuation prompt must be queued.
         assert not cli._pending_input.empty()
         queued = cli._pending_input.get_nowait()
-        assert "Continuing toward your standing goal" in queued
+        assert "Continuing toward your standing goal" in queued.text
         assert mgr.state.status == "active"
+
+    def test_synthetic_pending_input_does_not_preempt_goal_judge(self, hermes_home):
+        sid = f"sid-synthetic-{uuid.uuid4().hex}"
+        cli, _mgr = _make_cli_with_goal(sid)
+        cli._last_turn_interrupted = False
+        cli._user_turn_id = "turn-current"
+        cli.conversation_history = [
+            {"role": "user", "content": "go"},
+            {"role": "assistant", "content": "more remains"},
+        ]
+        cli._queue_synthetic_input("delegation result", "turn-current")
+
+        with patch(
+            "hermes_cli.goals.judge_goal",
+            return_value=("continue", "keep going", False, None),
+        ):
+            cli._maybe_continue_goal_after_turn()
+
+        assert cli._pending_input.qsize() == 2
 
     def test_clean_response_marks_done_when_judge_says_done(self, hermes_home):
         sid = f"sid-done-{uuid.uuid4().hex}"

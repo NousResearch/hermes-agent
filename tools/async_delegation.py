@@ -363,7 +363,10 @@ def complete_completion_delivery(delegation_id: str, claim_id: str) -> bool:
 
 def complete_event_delivery(evt: Dict[str, Any], claim_id: str) -> None:
     if claim_id and evt.get("type") == "async_delegation":
-        complete_completion_delivery(str(evt.get("delegation_id") or ""), claim_id)
+        if not complete_completion_delivery(
+            str(evt.get("delegation_id") or ""), claim_id
+        ):
+            raise RuntimeError("delegation delivery acknowledgement was rejected")
 
 
 def release_event_delivery(evt: Dict[str, Any], claim_id: str) -> None:
@@ -415,6 +418,16 @@ def active_count() -> int:
 
 def _new_delegation_id() -> str:
     return f"deleg_{uuid.uuid4().hex[:8]}"
+
+
+def _current_dispatch_turn_id() -> str:
+    """Return the opaque real-user-turn identity bound by the parent surface."""
+    try:
+        from gateway.session_context import get_session_env
+
+        return get_session_env("HERMES_SESSION_TURN_ID", "") or ""
+    except Exception:
+        return ""
 
 
 def _prune_completed_locked() -> None:
@@ -497,6 +510,7 @@ def dispatch_async_delegation(
         "parent_session_id": parent_session_id,
         "status": "running",
         "dispatched_at": dispatched_at,
+        "dispatch_turn_id": _current_dispatch_turn_id(),
         "completed_at": None,
         "interrupt_fn": interrupt_fn,
     }
@@ -628,6 +642,7 @@ def _push_completion_event(
             "duration_seconds", round(completed_at - dispatched_at, 2)
         ),
         "dispatched_at": dispatched_at,
+        "dispatch_turn_id": record.get("dispatch_turn_id"),
         "completed_at": completed_at,
         "exit_reason": result.get("exit_reason"),
     }
@@ -696,6 +711,7 @@ def dispatch_async_delegation_batch(
         "parent_session_id": parent_session_id,
         "status": "running",
         "dispatched_at": dispatched_at,
+        "dispatch_turn_id": _current_dispatch_turn_id(),
         "completed_at": None,
         "interrupt_fn": interrupt_fn,
         "is_batch": True,
@@ -808,6 +824,7 @@ def _finalize_batch(
         "error": combined.get("error"),
         "total_duration_seconds": combined.get("total_duration_seconds"),
         "dispatched_at": dispatched_at,
+        "dispatch_turn_id": event_record.get("dispatch_turn_id"),
         "completed_at": completed_at,
     }
     _persist_completion(evt, combined)

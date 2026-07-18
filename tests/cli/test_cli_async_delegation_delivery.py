@@ -10,11 +10,13 @@ def test_cli_completion_drain_uses_visible_session_identity(monkeypatch):
     cli = HermesCLI.__new__(HermesCLI)
     cli.session_id = "visible-session"
     cli._pending_input = queue.Queue()
+    cli._user_turn_id = "turn-current"
 
     event = {
         "type": "async_delegation",
         "delegation_id": "deleg_visible",
         "session_key": "visible-session",
+        "dispatch_turn_id": "turn-current",
     }
     calls = []
 
@@ -42,7 +44,8 @@ def test_cli_completion_drain_uses_visible_session_identity(monkeypatch):
     cli._drain_process_notifications("cli-idle")
 
     assert calls == [("visible-session", True)]
-    assert cli._pending_input.get_nowait() == "completion payload"
+    queued = cli._pending_input.get_nowait()
+    assert queued.text == "completion payload"
     assert claimed == [(event, "cli-idle")]
     assert completed == [(event, "claim-token")]
 

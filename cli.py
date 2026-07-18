@@ -3699,6 +3699,17 @@ def save_config_value(key_path: str, value: any) -> bool:
 # HermesCLI Class
 # ============================================================================
 
+
+class _QueuedSyntheticInput:
+    """Pending agent-generated input that must not rotate user-turn ownership."""
+
+    __slots__ = ("text", "expected_turn_id")
+
+    def __init__(self, text: str, expected_turn_id: str = ""):
+        self.text = text
+        self.expected_turn_id = str(expected_turn_id or "")
+
+
 class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
     """
     Interactive CLI for the Hermes Agent.
@@ -3768,6 +3779,7 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
             self.busy_input_mode = "steer"
         else:
             self.busy_input_mode = "interrupt"
+        self._user_turn_id = ""
 
         # self.verbose ONLY controls global DEBUG logging (root logger level).
         # display.tool_progress="verbose" controls tool-call rendering (full args,
@@ -9185,6 +9197,27 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
 
 
 
+    def _unwrap_queued_input(self, item):
+        """Return pending text and whether it represents a real user turn."""
+        if isinstance(item, _QueuedSyntheticInput):
+            current_turn_id = str(getattr(self, "_user_turn_id", "") or "")
+            if item.expected_turn_id and item.expected_turn_id != current_turn_id:
+                _cprint(f"\n{_DIM}⚙️  {item.text}{_RST}")
+                return "", False
+            return item.text, False
+        return item, True
+
+    def _queue_synthetic_input(self, text: str, expected_turn_id: str = "") -> None:
+        self._pending_input.put(_QueuedSyntheticInput(text, expected_turn_id))
+
+    def _should_chain_async_notification(self, event: dict) -> bool:
+        """Require a delegation to prove ownership of the current user turn."""
+        if event.get("type") != "async_delegation":
+            return False
+        dispatch_turn_id = str(event.get("dispatch_turn_id") or "")
+        current_turn_id = str(getattr(self, "_user_turn_id", "") or "")
+        return bool(dispatch_turn_id and current_turn_id and dispatch_turn_id == current_turn_id)
+
     def _owns_process_notification(self, event: dict) -> bool:
         """Return whether this CLI session provably owns a delegation event.
 
@@ -9210,17 +9243,17 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
         return str(resolved_key) == current_key
 
     def _drain_process_notifications(self, consumer: str) -> None:
-        """Queue background notifications owned by this visible CLI session.
+        """Route owned notifications without forging process-status user turns.
 
-        ``process_registry`` restores durable delegation completions into every
-        process using the same Hermes profile.  Always pass this CLI's stable
-        session identity when draining so another window cannot claim and mark
-        delivered a completion that belongs to this one.
+        Process completion/watch events and stale delegation results are printed
+        as terminal status. Only a delegation that still owns the current real
+        user turn enters the typed follow-up queue.
         """
         from tools.process_registry import process_registry
         from tools.async_delegation import (
             claim_event_delivery,
             complete_event_delivery,
+            release_event_delivery,
         )
 
         session_key = getattr(self, "session_id", "") or ""
@@ -9228,11 +9261,30 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
             session_key=session_key,
             owns_event=self._owns_process_notification,
         ):
-            claim = claim_event_delivery(event, consumer)
+            try:
+                claim = claim_event_delivery(event, consumer)
+            except Exception as exc:
+                process_registry.completion_queue.put(event)
+                logging.warning("notification delivery claim failed: %s", exc)
+                continue
             if claim is None:
                 continue
-            self._pending_input.put(synthetic_message)
-            complete_event_delivery(event, claim)
+            chained = False
+            try:
+                if self._should_chain_async_notification(event):
+                    self._queue_synthetic_input(
+                        synthetic_message,
+                        str(event.get("dispatch_turn_id") or ""),
+                    )
+                    chained = True
+                else:
+                    _cprint(f"\n{_DIM}⚙️  {synthetic_message}{_RST}")
+                complete_event_delivery(event, claim)
+            except Exception as exc:
+                if not chained:
+                    release_event_delivery(event, claim)
+                    process_registry.completion_queue.put(event)
+                logging.warning("notification delivery failed: %s", exc)
 
     def _drain_interrupt_queue_to_pending_input(self) -> None:
         """Move stray messages from ``_interrupt_queue`` into ``_pending_input``.
@@ -9301,6 +9353,8 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
                     # Queue.queue is the underlying deque — direct peek
                     # without disturbing FIFO order.
                     for entry in list(pending.queue):
+                        if isinstance(entry, _QueuedSyntheticInput):
+                            continue
                         # Bundled payloads are (text, images) tuples;
                         # unpack for inspection.
                         if isinstance(entry, tuple) and entry:
@@ -9381,7 +9435,10 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
             prompt = decision.get("continuation_prompt")
             if prompt:
                 try:
-                    self._pending_input.put(prompt)
+                    self._queue_synthetic_input(
+                        prompt,
+                        str(getattr(self, "_user_turn_id", "") or ""),
+                    )
                 except Exception as exc:
                     logging.debug("goal continuation enqueue failed: %s", exc)
 
@@ -11751,6 +11808,8 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
                     "2-3 sentences max. No code blocks or markdown.] "
                 )
 
+            _run_turn_id = str(getattr(self, "_user_turn_id", "") or "")
+
             def run_agent():
                 nonlocal result
                 # Set callbacks inside the agent thread so thread-local storage
@@ -11781,6 +11840,14 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
                 except Exception:
                     reset_current_session_key = None  # type: ignore[assignment]
                     _approval_session_token = None
+                try:
+                    import importlib
+
+                    _turn_context = importlib.import_module("gateway.session_context")
+                    _turn_token = getattr(_turn_context, "set_current_turn_id")(_run_turn_id)
+                except Exception:
+                    _turn_context = None
+                    _turn_token = None
                 agent_message = _voice_prefix + message if _voice_prefix else message
                 # Prepend pending notes via _prepend_note_to_message, which
                 # handles both plain-string and multimodal content-parts list
@@ -11858,6 +11925,11 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
                     if _approval_session_token is not None and reset_current_session_key is not None:
                         try:
                             reset_current_session_key(_approval_session_token)
+                        except Exception:
+                            pass
+                    if _turn_token is not None and _turn_context is not None:
+                        try:
+                            getattr(_turn_context, "reset_current_turn_id")(_turn_token)
                         except Exception:
                             pass
 
@@ -14709,9 +14781,9 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
                                 pass
                         continue
                     
+                    user_input, is_user_turn = self._unwrap_queued_input(user_input)
                     if not user_input:
                         continue
-
                     # The user has typed and submitted something, so any
                     # post-resize transient suppression should end here.
                     self._status_bar_suppressed_after_resize = False
@@ -14796,6 +14868,8 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
                         _cprint(f"  {_DIM}📎 {n} image{'s' if n > 1 else ''} attached{_RST}")
 
                     # Regular chat - run agent
+                    if is_user_turn:
+                        self._user_turn_id = uuid.uuid4().hex
                     self._agent_running = True
                     self._pet_turn_error = False
                     self._pet_reasoning = False

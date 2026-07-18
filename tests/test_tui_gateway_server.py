@@ -296,7 +296,9 @@ def test_prompt_submit_fails_open_inline_when_compute_host_dispatch_breaks(monke
     monkeypatch.setattr(
         server,
         "_run_prompt_submit",
-        lambda rid, sid, _session, text: inline_calls.append((rid, sid, text)),
+        lambda rid, sid, _session, text, **_kwargs: inline_calls.append(
+            (rid, sid, text)
+        ),
     )
     monkeypatch.setattr(server.threading, "Thread", _ImmediateThread)
 
@@ -2692,7 +2694,7 @@ class _StopAfterOneNotificationPoll:
         return self._checks > 1
 
 
-def test_notification_poller_live_loop_requeues_foreign_completion_for_owner(
+def test_notification_poller_live_loop_requeues_foreign_completion_for_owner_status(
     monkeypatch,
 ):
     """A foreign live-loop dequeue is handed back to its proven owner."""
@@ -2745,8 +2747,10 @@ def test_notification_poller_live_loop_requeues_foreign_completion_for_owner(
             _StopAfterOneNotificationPoll(), "sid-a-live-handoff", session_a
         )
 
-        assert len(delivered["a"]) == 1
-        assert "proc-live-handoff completed normally" in delivered["a"][0]
+        assert delivered["a"] == []
+        status_calls = [call for call in emitted if call[0] == "status.update"]
+        assert len(status_calls) == 1
+        assert "proc-live-handoff completed normally" in status_calls[0][2]["text"]
         assert delivered["b"] == []
         assert isolated_queue.empty()
     finally:
@@ -2914,7 +2918,7 @@ def test_notification_poller_drops_orphaned_events(monkeypatch, routing):
         ({"session_key": "old-parent-key"}, "session-a"),
     ],
 )
-def test_notification_poller_delivers_owned_events(
+def test_notification_poller_surfaces_owned_process_events_without_agent_turn(
     monkeypatch, routing, resolved_key
 ):
     """Direct, UI-origin, and compression-lineage owners are delivered."""
@@ -2961,8 +2965,8 @@ def test_notification_poller_delivers_owned_events(
         status_calls = [a for a in emitted if a[0] == "status.update"]
         assert len(status_calls) == 1
         assert status_calls[0][2]["kind"] == "process"
-        assert len(delivered) == 1
-        assert "proc_mine" in delivered[0]
+        assert delivered == []
+        assert "proc_mine" in status_calls[0][2]["text"]
     finally:
         server._sessions.pop("sid_a", None)
         while not process_registry.completion_queue.empty():
@@ -3063,7 +3067,7 @@ def test_run_prompt_submit_requeues_foreign_completion(
         process_registry._completion_consumed.discard(event["session_id"])
 
 
-def test_run_prompt_submit_delivers_completion_observed_by_poll(monkeypatch, tmp_path):
+def test_run_prompt_submit_surfaces_completion_observed_by_poll(monkeypatch, tmp_path):
     import queue as _queue_mod
 
     from tools.process_registry import process_registry
@@ -3093,9 +3097,7 @@ def test_run_prompt_submit_delivers_completion_observed_by_poll(monkeypatch, tmp
     try:
         server._run_prompt_submit("rid-a", "sid_a", session, "session-a-turn")
 
-        assert turns[0] == "session-a-turn"
-        assert len(turns) == 2
-        assert "proc_polled" in turns[1]
+        assert turns == ["session-a-turn"]
         assert isolated_queue.empty()
     finally:
         server._sessions.pop("sid_a", None)
@@ -3103,7 +3105,7 @@ def test_run_prompt_submit_delivers_completion_observed_by_poll(monkeypatch, tmp
         process_registry._poll_observed.discard(event["session_id"])
 
 
-def test_run_prompt_submit_requeues_all_unstarted_notifications_with_real_threading(
+def test_run_prompt_submit_surfaces_all_process_notifications_without_nested_turns(
     monkeypatch, tmp_path
 ):
     import queue as _queue_mod
@@ -3161,29 +3163,11 @@ def test_run_prompt_submit_requeues_all_unstarted_notifications_with_real_thread
     try:
         server._run_prompt_submit("rid-a", "sid_a", session, "session-a-turn")
 
-        assert nested_started.wait(timeout=5)
+        assert not nested_started.wait(timeout=0.1)
         threads[0].join(timeout=5)
         assert not threads[0].is_alive()
-        # Membership, not order: the completion_queue is process-global, and
-        # notification pollers leaked by earlier session.init tests in this
-        # file legitimately steal-and-requeue foreign-session events (see
-        # _notification_poller_loop's belongs-elsewhere branch), rotating the
-        # queue. The requeue contract is that batch_2 and batch_3 both remain
-        # queued (never consumed) while batch_1's turn is in flight — so drain
-        # with a deadline (an event may be transiently held by a poller
-        # mid-cycle) and assert exactly {batch_2, batch_3} come back.
-        queued: dict = {}
-        deadline = time.time() + 5.0
-        while time.time() < deadline and set(queued) != {
-            "proc_batch_2",
-            "proc_batch_3",
-        }:
-            try:
-                evt = isolated_queue.get(timeout=0.1)
-            except _queue_mod.Empty:
-                continue
-            queued[evt["session_id"]] = evt
-        assert set(queued) == {"proc_batch_2", "proc_batch_3"}
+        assert turns == ["session-a-turn"]
+        assert isolated_queue.empty()
     finally:
         release_nested.set()
         for thread in threads:
@@ -3196,7 +3180,7 @@ def test_run_prompt_submit_requeues_all_unstarted_notifications_with_real_thread
             process_registry._poll_observed.discard(event["session_id"])
 
 
-def test_run_prompt_submit_delivers_completion_owned_through_compression_lineage(
+def test_run_prompt_submit_surfaces_completion_owned_through_compression_lineage(
     monkeypatch, tmp_path
 ):
     import queue as _queue_mod
@@ -3241,9 +3225,7 @@ def test_run_prompt_submit_delivers_completion_owned_through_compression_lineage
     try:
         server._run_prompt_submit("rid-b", "sid_b", session, "session-b-turn")
 
-        assert turns[0] == "session-b-turn"
-        assert len(turns) == 2
-        assert "proc_precompression" in turns[1]
+        assert turns == ["session-b-turn"]
         assert ownership_checks == ["proc_precompression"]
         assert isolated_queue.empty()
     finally:
@@ -3251,7 +3233,7 @@ def test_run_prompt_submit_delivers_completion_owned_through_compression_lineage
         process_registry._completion_consumed.discard(event["session_id"])
 
 
-def test_run_prompt_submit_prefers_origin_ui_session_id(monkeypatch, tmp_path):
+def test_run_prompt_submit_status_prefers_origin_ui_session_id(monkeypatch, tmp_path):
     import queue as _queue_mod
 
     from tools.process_registry import process_registry
@@ -3290,9 +3272,7 @@ def test_run_prompt_submit_prefers_origin_ui_session_id(monkeypatch, tmp_path):
     try:
         server._run_prompt_submit("rid-b", "sid_b", session, "session-b-turn")
 
-        assert turns[0] == "session-b-turn"
-        assert len(turns) == 2
-        assert "proc_origin_owned" in turns[1]
+        assert turns == ["session-b-turn"]
         assert ownership_checks == ["proc_origin_owned"]
         assert isolated_queue.empty()
     finally:
@@ -9087,7 +9067,7 @@ def test_config_show_displays_nested_max_turns(monkeypatch):
 
 
 def test_notification_poller_delivers_completion(monkeypatch):
-    """Poller picks up completion events and triggers agent turns."""
+    """Poller surfaces process completions without triggering agent turns."""
     import queue as _queue_mod
 
     from tools.process_registry import process_registry
@@ -9149,9 +9129,7 @@ def test_notification_poller_delivers_completion(monkeypatch):
         assert len(status_calls) >= 1
         assert status_calls[0][2]["kind"] == "process"
 
-        # Should have triggered an agent turn
-        assert len(turns) == 1
-        assert "[IMPORTANT: Background process proc_poller_test completed normally" in turns[0]
+        assert turns == []
     finally:
         server._sessions.pop("sid_poll", None)
         while not process_registry.completion_queue.empty():
@@ -9214,7 +9192,7 @@ def test_notification_poller_skips_consumed(monkeypatch):
 
 
 def test_notification_poller_requeues_when_busy(monkeypatch):
-    """When the agent is busy, the poller requeues the event."""
+    """When busy, the poller requeues a fresh delegation follow-up."""
     import queue as _queue_mod
 
     from tools.process_registry import process_registry
@@ -9222,6 +9200,8 @@ def test_notification_poller_requeues_when_busy(monkeypatch):
     emitted = []
 
     sess = _session(running=True)  # agent is busy
+    sess["session_key"] = "owner-key"
+    sess["user_turn_id"] = "turn-current"
     server._sessions["sid_busy"] = sess
     monkeypatch.setattr(server, "_emit", lambda *a, **kw: emitted.append(a))
 
@@ -9235,11 +9215,12 @@ def test_notification_poller_requeues_when_busy(monkeypatch):
     process_registry._completion_consumed.discard("proc_busy_test")
 
     evt = {
-        "type": "completion",
-        "session_id": "proc_busy_test",
-        "command": "make build",
-        "exit_code": 0,
-        "output": "ok",
+        "type": "async_delegation",
+        "delegation_id": "deleg_busy_test",
+        "summary": "ok",
+        "status": "completed",
+        "dispatch_turn_id": "turn-current",
+        "session_key": sess["session_key"],
     }
     isolated_queue.put(evt)
 
@@ -9256,7 +9237,7 @@ def test_notification_poller_requeues_when_busy(monkeypatch):
         # Event was requeued (agent was busy, no turn triggered)
         assert not isolated_queue.empty()
         requeued = isolated_queue.get_nowait()
-        assert requeued["session_id"] == "proc_busy_test"
+        assert requeued["delegation_id"] == "deleg_busy_test"
     finally:
         server._sessions.pop("sid_busy", None)
         while not process_registry.completion_queue.empty():
@@ -9387,7 +9368,7 @@ def test_notification_poller_emits_distinct_watch_matches_once(monkeypatch):
         status_text = "\n".join(call[2]["text"] for call in status_calls)
         assert "READY on port 8000" in status_text
         assert "READY on port 9000" in status_text
-        assert len(turns) == 3
+        assert turns == []
     finally:
         server._sessions.pop("sid_watch_dedup", None)
         while not process_registry.completion_queue.empty():
@@ -9414,6 +9395,352 @@ def test_notification_event_dedup_key_keeps_completions_one_shot():
     assert server._notification_event_dedup_key(first) == server._notification_event_dedup_key(
         replay
     )
+
+
+def test_notification_generation_allows_multiple_results_from_same_user_turn():
+    session = {"user_turn_id": "turn-current"}
+
+    first = {"type": "async_delegation", "dispatch_turn_id": "turn-current"}
+    second = {"type": "async_delegation", "dispatch_turn_id": "turn-current"}
+
+    assert server._notification_event_should_chain_agent(first, session) is True
+    assert server._notification_event_should_chain_agent(second, session) is True
+
+
+def test_tui_session_context_binds_user_turn_identity():
+    from gateway.session_context import get_session_env
+
+    tokens = getattr(server, "_set_session_context")(
+        "session-key", turn_id="turn-owner"
+    )
+    try:
+        assert get_session_env("HERMES_SESSION_TURN_ID") == "turn-owner"
+    finally:
+        server._clear_session_context(tokens)
+
+
+def test_run_prompt_uses_explicit_immutable_turn_identity(monkeypatch):
+    observed = []
+
+    class _Agent:
+        def run_conversation(self, messages=None, **kwargs):
+            from gateway.session_context import get_session_env
+
+            observed.append(get_session_env("HERMES_SESSION_TURN_ID"))
+            return list(messages or [])
+
+    session = _session(agent=_Agent())
+    session["user_turn_id"] = "turn-newer"
+    server._sessions["sid-immutable"] = session
+    monkeypatch.setattr(server.threading, "Thread", _ImmediateThread)
+    monkeypatch.setattr(server, "_emit", lambda *args, **kwargs: None)
+    monkeypatch.setattr(server, "make_stream_renderer", lambda *args: lambda *a, **k: None)
+
+    try:
+        getattr(server, "_run_prompt_submit")(
+            "rid", "sid-immutable", session, "original", turn_id="turn-original"
+        )
+        assert observed == ["turn-original"]
+    finally:
+        server._sessions.pop("sid-immutable", None)
+
+
+def test_busy_submit_captures_queued_turn_identity(monkeypatch):
+    session = _session(running=True)
+    monkeypatch.setattr(server, "_load_busy_input_mode", lambda: "queue")
+
+    result = server._handle_busy_submit(
+        "rid", "sid", session, "next topic", transport=None
+    )
+
+    assert result["result"]["status"] == "queued"
+    assert session["queued_prompt"]["turn_id"] == session["user_turn_id"]
+
+
+def test_status_only_notification_releases_claim_when_emit_fails(monkeypatch):
+    event = {"type": "async_delegation", "delegation_id": "deleg_emit_failure"}
+    monkeypatch.setattr(
+        server,
+        "_emit",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(RuntimeError("transport down")),
+    )
+
+    with patch("tools.async_delegation.claim_event_delivery", return_value="claim"):
+        with patch("tools.async_delegation.complete_event_delivery") as complete:
+            with patch("tools.async_delegation.release_event_delivery") as release:
+                with pytest.raises(RuntimeError, match="transport down"):
+                    server._deliver_status_only_notification(
+                        event, "sid", "result", "test-status"
+                    )
+
+    complete.assert_not_called()
+    release.assert_called_once_with(event, "claim")
+
+
+def test_status_only_notification_treats_false_transport_write_as_failure(monkeypatch):
+    event = {"type": "async_delegation", "delegation_id": "deleg_write_false"}
+    monkeypatch.setattr(server, "write_json", lambda *_args, **_kwargs: False)
+
+    with patch("tools.async_delegation.claim_event_delivery", return_value="claim"):
+        with patch("tools.async_delegation.complete_event_delivery") as complete:
+            with patch("tools.async_delegation.release_event_delivery") as release:
+                with pytest.raises(RuntimeError, match="transport write failed"):
+                    server._deliver_status_only_notification(
+                        event, "sid", "result", "test-status"
+                    )
+
+    complete.assert_not_called()
+    release.assert_called_once_with(event, "claim")
+
+
+def test_shutdown_poller_requeues_fresh_delegation_when_dispatch_fails(monkeypatch):
+    import queue as _queue_mod
+
+    from tools.process_registry import process_registry
+
+    event = {
+        "type": "async_delegation",
+        "delegation_id": "deleg_dispatch_failure",
+        "session_key": "owner-key",
+        "dispatch_turn_id": "turn-current",
+    }
+    session = _session(running=False)
+    session["session_key"] = "owner-key"
+    session["user_turn_id"] = "turn-current"
+    isolated_queue: _queue_mod.Queue = _queue_mod.Queue()
+    isolated_queue.put(event)
+    monkeypatch.setattr(process_registry, "completion_queue", isolated_queue)
+    monkeypatch.setattr(server, "_emit", lambda *_args, **_kwargs: True)
+    monkeypatch.setattr(
+        server,
+        "_run_prompt_submit",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(RuntimeError("dispatch failed")),
+    )
+
+    stop = threading.Event()
+    stop.set()
+    with patch("tools.async_delegation.claim_event_delivery", return_value="claim"):
+        with patch("tools.async_delegation.release_event_delivery") as release:
+            server._notification_poller_loop(stop, "sid", session)
+
+    assert isolated_queue.get_nowait() == event
+    release.assert_called_once_with(event, "claim")
+
+
+def test_notification_poller_requeues_status_after_emit_failure(monkeypatch):
+    import queue as _queue_mod
+
+    from tools.process_registry import process_registry
+
+    session = _session()
+    session["session_key"] = "owner-key"
+    event = {
+        "type": "completion",
+        "session_id": "proc-retry",
+        "session_key": "owner-key",
+        "command": "build",
+        "exit_code": 0,
+    }
+    isolated_queue: _queue_mod.Queue = _queue_mod.Queue()
+    isolated_queue.put(event)
+    monkeypatch.setattr(process_registry, "completion_queue", isolated_queue)
+    stop = threading.Event()
+    attempts = []
+
+    def _deliver(*args, **kwargs):
+        attempts.append(args[0])
+        if len(attempts) == 1:
+            stop.set()
+            raise RuntimeError("emit failed")
+        return True
+
+    monkeypatch.setattr(server, "_deliver_status_only_notification", _deliver)
+
+    server._notification_poller_loop(stop, "sid", session)
+
+    assert attempts == [event, event]
+
+
+def test_notification_poller_claim_miss_does_not_leave_session_busy(monkeypatch):
+    import queue as _queue_mod
+
+    from tools.process_registry import process_registry
+
+    session = _session()
+    session["session_key"] = "owner-key"
+    session["user_turn_id"] = "turn-current"
+    event = {
+        "type": "async_delegation",
+        "delegation_id": "deleg-claimed-elsewhere",
+        "session_key": "owner-key",
+        "origin_ui_session_id": "sid",
+        "dispatch_turn_id": "turn-current",
+        "summary": "delegation",
+        "status": "completed",
+    }
+    isolated_queue: _queue_mod.Queue = _queue_mod.Queue()
+    isolated_queue.put(event)
+    monkeypatch.setattr(process_registry, "completion_queue", isolated_queue)
+    stop = threading.Event()
+    stop.set()
+
+    monkeypatch.setattr("tools.async_delegation.claim_event_delivery", lambda *args: None)
+
+    server._notification_poller_loop(stop, "sid", session)
+
+    assert session["running"] is False
+
+
+def test_notification_poller_acknowledges_stale_delegation_as_status(monkeypatch):
+    import queue as _queue_mod
+
+    from tools.process_registry import process_registry
+
+    emitted = []
+    turns = []
+    event = {
+        "type": "async_delegation",
+        "delegation_id": "deleg_stale",
+        "session_key": "owner-key",
+        "summary": "old result",
+        "status": "completed",
+        "dispatch_turn_id": "turn-old",
+    }
+    session = _session(running=False)
+    session["session_key"] = "owner-key"
+    session["user_turn_id"] = "turn-current"
+    server._sessions["sid_stale"] = session
+
+    isolated_queue: _queue_mod.Queue = _queue_mod.Queue()
+    isolated_queue.put(event)
+    monkeypatch.setattr(process_registry, "completion_queue", isolated_queue)
+    monkeypatch.setattr(server, "_emit", lambda *args: emitted.append(args))
+    monkeypatch.setattr(
+        server,
+        "_run_prompt_submit",
+        lambda *args, **kwargs: turns.append((args, kwargs)),
+    )
+
+    stop = threading.Event()
+    stop.set()
+    try:
+        with patch("tools.async_delegation.claim_event_delivery", return_value="claim"):
+            with patch("tools.async_delegation.complete_event_delivery") as complete:
+                server._notification_poller_loop(stop, "sid_stale", session)
+
+        assert turns == []
+        assert [call for call in emitted if call[0] == "status.update"]
+        complete.assert_called_once_with(event, "claim")
+    finally:
+        server._sessions.pop("sid_stale", None)
+
+
+def test_notification_poller_chains_fresh_delegation(monkeypatch):
+    import queue as _queue_mod
+
+    from tools.process_registry import process_registry
+
+    turns = []
+    event = {
+        "type": "async_delegation",
+        "delegation_id": "deleg_fresh",
+        "session_key": "owner-key",
+        "summary": "fresh result",
+        "status": "completed",
+        "dispatch_turn_id": "turn-current",
+    }
+    session = _session(running=False)
+    session["session_key"] = "owner-key"
+    session["user_turn_id"] = "turn-current"
+    server._sessions["sid_fresh"] = session
+
+    isolated_queue: _queue_mod.Queue = _queue_mod.Queue()
+    isolated_queue.put(event)
+    monkeypatch.setattr(process_registry, "completion_queue", isolated_queue)
+    monkeypatch.setattr(server, "_emit", lambda *args: None)
+    monkeypatch.setattr(
+        server,
+        "_run_prompt_submit",
+        lambda _rid, _sid, _session, text, **_kwargs: turns.append(text),
+    )
+
+    stop = threading.Event()
+    stop.set()
+    try:
+        with patch("tools.async_delegation.claim_event_delivery", return_value="claim"):
+            with patch("tools.async_delegation.complete_event_delivery") as complete:
+                server._notification_poller_loop(stop, "sid_fresh", session)
+
+        assert len(turns) == 1
+        assert "fresh result" in turns[0]
+        complete.assert_called_once_with(event, "claim")
+    finally:
+        server._sessions.pop("sid_fresh", None)
+
+
+def test_post_turn_drain_keeps_process_notification_out_of_agent_history(monkeypatch):
+    import queue as _queue_mod
+
+    from tools.process_registry import process_registry
+
+    turns = []
+    emitted = []
+
+    class _Agent:
+        session_id = "owner-key"
+
+        def clear_interrupt(self):
+            pass
+
+        def run_conversation(self, prompt, conversation_history=None, stream_callback=None):
+            turns.append(prompt)
+            return {
+                "final_response": "ok",
+                "messages": [
+                    {"role": "user", "content": prompt},
+                    {"role": "assistant", "content": "ok"},
+                ],
+            }
+
+    class _ImmediateThread:
+        def __init__(self, target=None, daemon=None):
+            self._target = target
+
+        def start(self):
+            self._target()
+
+        def is_alive(self):
+            return False
+
+    session = _session(agent=_Agent(), running=True)
+    session["session_key"] = "owner-key"
+    session["user_turn_id"] = "turn-current"
+    server._sessions["sid_post_turn"] = session
+    isolated_queue: _queue_mod.Queue = _queue_mod.Queue()
+    isolated_queue.put(
+        {
+            "type": "completion",
+            "session_id": "proc_post_turn",
+            "session_key": "owner-key",
+            "command": "pytest",
+            "exit_code": 0,
+            "output": "42 passed",
+        }
+    )
+    monkeypatch.setattr(process_registry, "completion_queue", isolated_queue)
+    monkeypatch.setattr(server.threading, "Thread", _ImmediateThread)
+    monkeypatch.setattr(server, "_emit", lambda *args, **kwargs: emitted.append(args))
+    monkeypatch.setattr(server, "make_stream_renderer", lambda _cols: None)
+    monkeypatch.setattr(server, "render_message", lambda *_args, **_kwargs: None)
+
+    try:
+        server._run_prompt_submit("rid", "sid_post_turn", session, "real user prompt")
+
+        assert turns == ["real user prompt"]
+        status = [call for call in emitted if call[0] == "status.update"]
+        assert status and "proc_post_turn" in status[0][2]["text"]
+    finally:
+        server._sessions.pop("sid_post_turn", None)
 
 
 # --- image.attach_bytes / pdf.attach (remote-client byte upload) -------------

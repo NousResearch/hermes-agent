@@ -18,6 +18,27 @@ import pytest
 from hermes_cli import kanban_db as kb
 
 
+@pytest.fixture(autouse=True)
+def _clear_pr_state_caches():
+    """Keep process-wide PR resolver state isolated between tests."""
+    caches = [
+        getattr(kb, name, None)
+        for name in (
+            "_PR_TERMINAL_STATE_CACHE",
+            "_PR_NONTERMINAL_STATE_CACHES",
+            "_PR_QUERY_CYCLE_SKIPS",
+            "_PR_BOARD_CACHE_LAST_SEEN",
+        )
+    ]
+    for cache in caches:
+        if cache is not None:
+            cache.clear()
+    yield
+    for cache in caches:
+        if cache is not None:
+            cache.clear()
+
+
 @pytest.fixture
 def kanban_home(tmp_path, monkeypatch):
     """Isolated HERMES_HOME with an empty kanban DB."""
@@ -2160,6 +2181,83 @@ def test_pr_state_resolver_caches_and_caps_queries(monkeypatch):
     assert calls == [("Owner/Repo", 1), ("Owner/Repo", 2)]
 
 
+def test_pr_state_resolver_only_persists_terminal_states_across_ticks(monkeypatch):
+    calls = []
+    states = {1: "MERGED", 2: "CLOSED", 3: "OPEN", 4: None}
+
+    def fake_query(repo, number):
+        calls.append((repo, number))
+        return states[number]
+
+    monkeypatch.setattr(kb, "_query_github_pr_state", fake_query)
+    terminal_cache = {}
+    first_tick = kb._PrStateResolver(terminal_cache=terminal_cache)
+
+    for number in states:
+        assert first_tick.resolve("Owner/Repo", number) == states[number]
+
+    assert terminal_cache == {
+        ("owner/repo", 1): "MERGED",
+        ("owner/repo", 2): "CLOSED",
+    }
+
+    second_tick = kb._PrStateResolver(terminal_cache=terminal_cache)
+    for number in states:
+        assert second_tick.resolve("Owner/Repo", number) == states[number]
+
+    assert calls == [
+        ("Owner/Repo", 1),
+        ("Owner/Repo", 2),
+        ("Owner/Repo", 3),
+        ("Owner/Repo", 4),
+        ("Owner/Repo", 3),
+        ("Owner/Repo", 4),
+    ]
+
+
+def test_pr_state_resolver_bounds_shared_terminal_cache(monkeypatch):
+    monkeypatch.setattr(kb, "_query_github_pr_state", lambda _repo, _number: "MERGED")
+    terminal_cache = {}
+    resolver = kb._PrStateResolver(
+        terminal_cache=terminal_cache,
+        terminal_cache_limit=2,
+    )
+
+    assert resolver.resolve("Owner/Repo", 1) == "MERGED"
+    assert resolver.resolve("Owner/Repo", 2) == "MERGED"
+    assert resolver.resolve("Owner/Repo", 1) == "MERGED"
+    assert resolver.resolve("Owner/Repo", 3) == "MERGED"
+
+    assert terminal_cache == {
+        ("owner/repo", 1): "MERGED",
+        ("owner/repo", 3): "MERGED",
+    }
+
+
+def test_pr_state_resolver_default_terminal_cache_is_isolated(monkeypatch):
+    calls = []
+
+    def fake_query(repo, number):
+        calls.append((repo, number))
+        return "MERGED"
+
+    monkeypatch.setattr(kb, "_query_github_pr_state", fake_query)
+
+    assert kb._PrStateResolver().resolve("Owner/Repo", 1) == "MERGED"
+    assert kb._PrStateResolver().resolve("Owner/Repo", 1) == "MERGED"
+    assert calls == [("Owner/Repo", 1), ("Owner/Repo", 1)]
+
+
+def test_pr_state_resolver_logs_query_budget_exhaustion(caplog):
+    resolver = kb._PrStateResolver(max_queries=0)
+
+    with caplog.at_level("DEBUG", logger=kb.__name__):
+        assert resolver.resolve("Owner/Repo", 99) is None
+
+    assert "PR-state query budget exhausted" in caplog.text
+    assert "owner/repo#99" in caplog.text
+
+
 @pytest.mark.parametrize("failed_state", ["OPEN", None])
 def test_respawn_guard_requires_all_recent_prs_closed(
     kanban_home, monkeypatch, failed_state
@@ -2241,11 +2339,247 @@ def test_dispatch_pr_query_budget_is_shared_across_tick(
                 conn, task_id, "worker", f"https://github.com/o/r/pull/{number}",
             )
             task_ids.append(task_id)
-        result = kb.dispatch_once(conn, dry_run=True)
+        first_tick = kb.dispatch_once(conn, dry_run=True)
+        second_tick = kb.dispatch_once(conn, dry_run=True)
 
-    assert len(calls) == kb._RESPAWN_GUARD_PR_QUERY_LIMIT
-    assert [item[0] for item in result.spawned] == task_ids[:5]
-    assert result.respawn_guarded == [(task_ids[5], "active_pr")]
+    assert [item[0] for item in first_tick.spawned] == task_ids[:5]
+    assert first_tick.respawn_guarded == [(task_ids[5], "active_pr")]
+    assert [item[0] for item in second_tick.spawned] == task_ids
+    assert second_tick.respawn_guarded == []
+    assert calls == [("o/r", number) for number in range(1, 7)]
+
+
+def test_dispatch_pr_query_budget_rotates_past_persistent_open_prefix(
+    kanban_home, all_assignees_spawnable, monkeypatch
+):
+    calls = []
+
+    def state(repo, number):
+        calls.append((repo, number))
+        return "MERGED" if number == 11 else "OPEN"
+
+    monkeypatch.setattr(kb, "_query_github_pr_state", state)
+    with kb.connect() as conn:
+        task_ids = []
+        for number in range(1, 12):
+            task_id = kb.create_task(conn, title=f"task {number}", assignee="alice")
+            kb.add_comment(
+                conn, task_id, "worker", f"https://github.com/o/r/pull/{number}",
+            )
+            task_ids.append(task_id)
+
+        first_tick = kb.dispatch_once(conn, dry_run=True)
+        second_tick = kb.dispatch_once(conn, dry_run=True)
+        third_tick = kb.dispatch_once(conn, dry_run=True)
+        fourth_tick = kb.dispatch_once(conn, dry_run=True)
+
+    assert first_tick.spawned == []
+    assert second_tick.spawned == []
+    assert [item[0] for item in third_tick.spawned] == [task_ids[10]]
+    assert [item[0] for item in fourth_tick.spawned] == [task_ids[10]]
+    assert calls == (
+        [("o/r", number) for number in range(1, 12)]
+        + [("o/r", number) for number in range(1, 6)]
+    )
+
+
+def test_dispatch_idle_tick_preserves_pr_query_cycle(
+    kanban_home, all_assignees_spawnable, monkeypatch
+):
+    calls = []
+
+    def opened(repo, number):
+        calls.append((repo, number))
+        return "OPEN"
+
+    monkeypatch.setattr(kb, "_query_github_pr_state", opened)
+    with kb.connect() as conn:
+        task_ids = []
+        for number in range(1, 12):
+            task_id = kb.create_task(conn, title=f"task {number}", assignee="alice")
+            kb.add_comment(
+                conn, task_id, "worker", f"https://github.com/o/r/pull/{number}",
+            )
+            task_ids.append(task_id)
+
+        kb.dispatch_once(conn, dry_run=True)
+        conn.execute("UPDATE tasks SET status = 'running'")
+        kb.dispatch_once(conn, dry_run=True)
+        conn.execute("UPDATE tasks SET status = 'ready'")
+        kb.dispatch_once(conn, dry_run=True)
+
+    assert calls == [("o/r", number) for number in range(1, 11)]
+
+
+def test_pr_state_resolver_idle_tick_does_not_invalidate_persistent_cache():
+    key: tuple[str, int] = ("o/r", 1)
+    nonterminal_cache: dict[tuple[str, int], str | None] = {key: "OPEN"}
+    cycle_skip: set[tuple[str, int]] = {key}
+
+    resolver = kb._PrStateResolver(
+        nonterminal_cache=nonterminal_cache,
+        cycle_skip=cycle_skip,
+    )
+    resolver.finish_tick(scan_complete=True)
+
+    assert nonterminal_cache == {key: "OPEN"}
+    assert cycle_skip == {key}
+
+
+def test_pr_state_resolver_real_scan_retains_unseen_persistent_entries(monkeypatch):
+    seen_key = ("o/r", 1)
+    unseen_key = ("o/r", 2)
+    nonterminal_cache = {seen_key: "OPEN", unseen_key: "OPEN"}
+    cycle_skip = {seen_key, unseen_key}
+    monkeypatch.setattr(kb, "_query_github_pr_state", lambda _repo, _number: "OPEN")
+
+    resolver = kb._PrStateResolver(
+        nonterminal_cache=nonterminal_cache,
+        cycle_skip=cycle_skip,
+    )
+    assert resolver.resolve(*seen_key) == "OPEN"
+    resolver.finish_tick(scan_complete=True)
+
+    assert nonterminal_cache == {seen_key: "OPEN", unseen_key: "OPEN"}
+
+
+def test_pr_state_resolver_bounds_nonterminal_cache(monkeypatch):
+    monkeypatch.setattr(kb, "_query_github_pr_state", lambda _repo, _number: "OPEN")
+    nonterminal_cache = {}
+    cycle_skip = set()
+    resolver = kb._PrStateResolver(
+        nonterminal_cache=nonterminal_cache,
+        nonterminal_cache_limit=2,
+        cycle_skip=cycle_skip,
+    )
+
+    for number in range(1, 4):
+        assert resolver.resolve("o/r", number) == "OPEN"
+
+    assert nonterminal_cache == {("o/r", 2): "OPEN", ("o/r", 3): "OPEN"}
+
+
+def test_dispatch_evicts_board_pr_state_not_seen_within_retention(monkeypatch):
+    now = 1_000_000.0
+    monkeypatch.setattr(kb.time, "time", lambda: now)
+    stale_key = "/tmp/stale/kanban.db"
+    fresh_key = "/tmp/fresh/kanban.db"
+
+    kb._pr_state_caches_for_board(stale_key)
+    now += kb._RESPAWN_GUARD_PR_BOARD_CACHE_RETENTION_SECONDS + 1
+    kb._pr_state_caches_for_board(fresh_key)
+
+    assert stale_key not in kb._PR_NONTERMINAL_STATE_CACHES
+    assert stale_key not in kb._PR_QUERY_CYCLE_SKIPS
+    assert stale_key not in kb._PR_BOARD_CACHE_LAST_SEEN
+    assert fresh_key in kb._PR_BOARD_CACHE_LAST_SEEN
+
+
+def test_dispatch_does_not_restore_expired_spilled_board_state(tmp_path, monkeypatch):
+    now = 1_000_000.0
+    monkeypatch.setattr(kb.time, "time", lambda: now)
+    cache_key = str(tmp_path / "kanban.db")
+    swap_path = kb._pr_state_swap_path(cache_key)
+    swap_path.write_text(
+        '{"nonterminal":[["o/r",1,"OPEN"]],"cycle_skip":[["o/r",1]]}',
+        encoding="utf-8",
+    )
+    os.utime(
+        swap_path,
+        (now - kb._RESPAWN_GUARD_PR_BOARD_CACHE_RETENTION_SECONDS - 1,) * 2,
+    )
+
+    nonterminal_cache, cycle_skip = kb._pr_state_caches_for_board(cache_key)
+
+    assert nonterminal_cache == {}
+    assert cycle_skip == set()
+    assert not swap_path.exists()
+
+
+def test_dispatch_bounds_pr_state_caches_across_many_boards(kanban_home):
+    cache_limit = kb._RESPAWN_GUARD_PR_BOARD_CACHE_LIMIT
+
+    with kb.connect() as conn:
+        for index in range(cache_limit):
+            kb.dispatch_once(conn, board=f"ephemeral-{index}", dry_run=True)
+        kb.dispatch_once(conn, board="ephemeral-0", dry_run=True)
+        kb.dispatch_once(conn, board=f"ephemeral-{cache_limit}", dry_run=True)
+
+    first_board_key = str(kb.kanban_db_path("ephemeral-0"))
+    second_board_key = str(kb.kanban_db_path("ephemeral-1"))
+    last_board_key = str(kb.kanban_db_path(f"ephemeral-{cache_limit}"))
+    assert len(kb._PR_NONTERMINAL_STATE_CACHES) == cache_limit
+    assert len(kb._PR_QUERY_CYCLE_SKIPS) == cache_limit
+    assert first_board_key in kb._PR_NONTERMINAL_STATE_CACHES
+    assert first_board_key in kb._PR_QUERY_CYCLE_SKIPS
+    assert second_board_key not in kb._PR_NONTERMINAL_STATE_CACHES
+    assert second_board_key not in kb._PR_QUERY_CYCLE_SKIPS
+    assert last_board_key in kb._PR_NONTERMINAL_STATE_CACHES
+    assert last_board_key in kb._PR_QUERY_CYCLE_SKIPS
+
+
+def test_dispatch_board_cache_eviction_preserves_pr_query_cycle(
+    kanban_home, all_assignees_spawnable, monkeypatch
+):
+    calls = []
+
+    def state(repo, number):
+        calls.append((repo, number))
+        return "MERGED" if number == 6 else "OPEN"
+
+    monkeypatch.setattr(kb, "_query_github_pr_state", state)
+    board = "active-under-cache-pressure"
+    with kb.connect(board=board) as conn:
+        task_ids = []
+        for number in range(1, 7):
+            task_id = kb.create_task(conn, title=f"task {number}", assignee="alice")
+            kb.add_comment(
+                conn, task_id, "worker", f"https://github.com/o/r/pull/{number}",
+            )
+            task_ids.append(task_id)
+        first_tick = kb.dispatch_once(conn, board=board, dry_run=True)
+
+    assert first_tick.spawned == []
+    assert calls == [("o/r", number) for number in range(1, 6)]
+
+    with kb.connect() as conn:
+        for index in range(kb._RESPAWN_GUARD_PR_BOARD_CACHE_LIMIT):
+            kb.dispatch_once(conn, board=f"pressure-{index}", dry_run=True)
+
+    board_key = str(kb.kanban_db_path(board))
+    assert board_key not in kb._PR_NONTERMINAL_STATE_CACHES
+    assert board_key not in kb._PR_QUERY_CYCLE_SKIPS
+
+    with kb.connect(board=board) as conn:
+        second_tick = kb.dispatch_once(conn, board=board, dry_run=True)
+
+    assert [item[0] for item in second_tick.spawned] == [task_ids[5]]
+    assert calls == [("o/r", number) for number in range(1, 7)]
+
+
+def test_remove_board_deletes_spilled_pr_query_state(
+    kanban_home, all_assignees_spawnable, monkeypatch
+):
+    monkeypatch.setattr(kb, "_query_github_pr_state", lambda repo, number: "OPEN")
+    board = "retired-after-cache-spill"
+    with kb.connect(board=board) as conn:
+        task_id = kb.create_task(conn, title="task", assignee="alice")
+        kb.add_comment(
+            conn, task_id, "worker", "https://github.com/o/r/pull/1",
+        )
+        kb.dispatch_once(conn, board=board, dry_run=True)
+
+    with kb.connect() as conn:
+        for index in range(kb._RESPAWN_GUARD_PR_BOARD_CACHE_LIMIT):
+            kb.dispatch_once(conn, board=f"retire-pressure-{index}", dry_run=True)
+
+    cache_key = str(kb.kanban_db_path(board))
+    swap_name = kb._pr_state_swap_path(cache_key).name
+    assert kb._pr_state_swap_path(cache_key).exists()
+
+    result = kb.remove_board(board, archive=True)
+
+    assert not (Path(result["new_path"]) / swap_name).exists()
 
 
 def test_dispatch_pr_query_cache_is_shared_across_tasks(

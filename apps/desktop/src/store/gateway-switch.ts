@@ -3,8 +3,8 @@ import { atom } from 'nanostores'
 import { queryClient } from '@/lib/query-client'
 import { resetSessionsLimit } from '@/store/layout'
 import {
+  $unreadFinishedSessionIds,
   setActiveSessionId,
-  setAttentionSessionIds,
   setCronSessions,
   setFreshDraftReady,
   setMessages,
@@ -15,16 +15,14 @@ import {
   setSessionProfileTotals,
   setSessions,
   setSessionsLoading,
-  setSessionsTotal,
-  setWorkingSessionIds
+  setSessionsTotal
 } from '@/store/session'
+import { clearAllSessionStates } from '@/store/session-states'
 
 // True while a soft gateway-mode apply is mid-flight (wipe → re-dial). Lets the
 // boot hook suppress the backend-exit toast and keeps the cold-boot CONNECTING
 // overlay from resurrecting when startHermes re-emits boot progress.
 export const $gatewaySwitching = atom(false)
-
-const PREVIEW_HOLD_MS = 1400
 
 /**
  * Clear gateway-bound session UI so sidebar skeletons retrigger.
@@ -46,8 +44,11 @@ export function wipeSessionListsForGatewaySwitch(): void {
   setMessagingSessions([])
   setMessagingPlatformTotals({})
   setMessagingTruncated(false)
-  setWorkingSessionIds([])
-  setAttentionSessionIds([])
+  // Clearing $sessionStates automatically clears $workingSessionIds and
+  // $attentionSessionIds (they're computed from it). $unreadFinishedSessionIds
+  // is separate (transient, not computable) so wipe it explicitly.
+  clearAllSessionStates()
+  $unreadFinishedSessionIds.set([])
   setSessionsLoading(true)
   resetSessionsLimit()
 
@@ -57,27 +58,4 @@ export function wipeSessionListsForGatewaySwitch(): void {
   setFreshDraftReady(true)
 
   void queryClient.invalidateQueries()
-}
-
-/**
- * Dev review beat: wipe → skeletons for PREVIEW_HOLD_MS → clear loading.
- * Does not tear down a real backend. Fired from the Settings button (Electron
- * has no easy `?query=` entry).
- */
-export async function previewGatewaySwitch(holdMs = PREVIEW_HOLD_MS): Promise<void> {
-  if ($gatewaySwitching.get()) {
-    return
-  }
-
-  $gatewaySwitching.set(true)
-  wipeSessionListsForGatewaySwitch()
-
-  try {
-    await new Promise<void>(resolve => {
-      window.setTimeout(resolve, holdMs)
-    })
-  } finally {
-    setSessionsLoading(false)
-    $gatewaySwitching.set(false)
-  }
 }

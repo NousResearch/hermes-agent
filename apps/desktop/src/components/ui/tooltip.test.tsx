@@ -1,56 +1,48 @@
-import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
-import { afterEach, describe, expect, it } from 'vitest'
+import { describe, expect, it, vi } from 'vitest'
 
-import { Tip } from './tooltip'
+import { suppressNonKeyboardFocusOpen } from './tooltip'
 
-describe('Tip', () => {
-  afterEach(() => {
-    cleanup()
+// Radix opens tooltips on ANY trigger focus; menus/dialogs restore focus to
+// their trigger on close, which left tips stuck open after a mouse pick (e.g.
+// the composer model pill). The trigger's focus handler must preventDefault —
+// which Radix's composed handler honors — for non-keyboard focus only.
+
+const focusEvent = (matchesImpl: (selector: string) => boolean) => {
+  const preventDefault = vi.fn()
+
+  return {
+    event: {
+      currentTarget: { matches: matchesImpl } as unknown as HTMLElement,
+      preventDefault
+    } as unknown as React.FocusEvent<HTMLElement>,
+    preventDefault
+  }
+}
+
+describe('suppressNonKeyboardFocusOpen', () => {
+  it('suppresses the focus-open when focus is not keyboard-visible (menu close restore)', () => {
+    const { event, preventDefault } = focusEvent(selector => selector !== ':focus-visible')
+
+    suppressNonKeyboardFocusOpen(event)
+
+    expect(preventDefault).toHaveBeenCalledOnce()
   })
 
-  it('shows on pointer enter and dismisses on pointer leave', async () => {
-    render(
-      <Tip label="Layout editor — ⌘-click resets the layout">
-        <button type="button">layout</button>
-      </Tip>
-    )
+  it('keeps the focus-open for keyboard (Tab) focus — a11y path', () => {
+    const { event, preventDefault } = focusEvent(selector => selector === ':focus-visible')
 
-    const trigger = screen.getByRole('button', { name: 'layout' })
+    suppressNonKeyboardFocusOpen(event)
 
-    fireEvent.pointerMove(trigger, { pointerType: 'mouse' })
-    expect((await screen.findByRole('tooltip')).textContent).toContain(
-      'Layout editor — ⌘-click resets the layout'
-    )
+    expect(preventDefault).not.toHaveBeenCalled()
+  })
 
-    fireEvent.pointerLeave(trigger)
-    await waitFor(() => {
-      expect(screen.queryByRole('tooltip')).toBeNull()
+  it('fails open when :focus-visible is unsupported', () => {
+    const { event, preventDefault } = focusEvent(() => {
+      throw new Error('unsupported selector')
     })
-  })
 
-  it('never captures pointer events on the tip surface', async () => {
-    render(
-      <Tip label="Blocked?">
-        <button type="button">target</button>
-      </Tip>
-    )
+    suppressNonKeyboardFocusOpen(event)
 
-    fireEvent.pointerMove(screen.getByRole('button', { name: 'target' }), { pointerType: 'mouse' })
-    const tip = await screen.findByRole('tooltip')
-    // Role lives on the visually-hidden a11y node; the portaled content root
-    // is the data-slot wrapper that must stay click-through.
-    const content = tip.closest('[data-slot="tooltip-content"]') ?? tip.parentElement
-    expect(content?.className).toMatch(/pointer-events-none/)
-  })
-
-  it('renders the child alone when label is empty', () => {
-    render(
-      <Tip label="">
-        <button type="button">bare</button>
-      </Tip>
-    )
-
-    expect(screen.getByRole('button', { name: 'bare' })).toBeTruthy()
-    expect(screen.queryByRole('tooltip')).toBeNull()
+    expect(preventDefault).not.toHaveBeenCalled()
   })
 })

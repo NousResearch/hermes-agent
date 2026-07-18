@@ -30,6 +30,7 @@ from hermes_cli.providers import (
     custom_provider_slug,
     determine_api_mode,
     get_label,
+    host_mandated_api_mode,
     is_aggregator,
     resolve_provider_full,
 )
@@ -1255,6 +1256,21 @@ def switch_model(
             if not api_key:
                 api_key = "no-key-required"
 
+    # --- Resolve api_mode from the final (provider, base_url) before validation ---
+    # Two cases this closes, both surfaced when the switched model's reasoning
+    # is actually applied (post the reasoning-unification refactor):
+    #   1. api_mode empty (e.g. alias cleared it above) → fill from the endpoint.
+    #   2. api_mode carried a STALE value from the previous session state
+    #      (e.g. a same-provider /model switch to gpt-5.x on api.openai.com that
+    #      kept the prior openrouter/chat_completions mode). A host that mandates
+    #      one wire protocol must override the stale value — otherwise the request
+    #      goes out on chat_completions and OpenAI 400s on tools+reasoning_effort.
+    _mandated_mode = host_mandated_api_mode(base_url)
+    if _mandated_mode is not None:
+        api_mode = _mandated_mode
+    elif not api_mode:
+        api_mode = determine_api_mode(target_provider, base_url)
+
     # --- Normalize model name for target provider ---
     new_model = normalize_model_for_provider(new_model, target_provider)
 
@@ -1394,6 +1410,25 @@ import threading as _threading  # noqa: E402
 _picker_prewarm_done = _threading.Event()
 
 
+def _credential_pool_is_usable(provider: str, *, raw_pool_present: bool = False) -> bool:
+    """Return whether *provider* has a credential that can be selected now.
+
+    ``auth.json`` historically allowed opaque token-style pool values that do
+    not deserialize into ``PooledCredential`` entries. Preserve visibility for
+    those legacy values, but when a real pool exists its availability state is
+    authoritative: an all-exhausted/dead pool is not authenticated.
+    """
+    try:
+        from agent.credential_pool import load_pool
+
+        pool = load_pool(provider)
+        if pool.has_credentials():
+            return pool.has_available()
+    except Exception:
+        pass
+    return raw_pool_present
+
+
 def _extra_headers_from_config(entry: Any) -> dict[str, str]:
     if not isinstance(entry, dict):
         return {}
@@ -1461,6 +1496,7 @@ def list_authenticated_providers(
     refresh: bool = False,
     probe_custom_providers: bool = True,
     probe_current_custom_provider: bool = False,
+    for_picker: bool = False,
 ) -> List[dict]:
     """Detect which providers have credentials and list their curated models.
 
@@ -1683,6 +1719,12 @@ def list_authenticated_providers(
         # section 2 (HERMES_OVERLAYS) with proper auth store checking.
         if pconfig and pconfig.auth_type != "api_key":
             continue
+        # models.dev catalogs include providers Hermes may not route yet.
+        # Gate on runtime capability rather than registry membership: special
+        # providers and plugin aliases can be routable without a registry row.
+        from hermes_cli.auth import is_runtime_provider_routable
+        if not is_runtime_provider_routable(hermes_id):
+            continue
         if pconfig and pconfig.api_key_env_vars:
             env_vars = list(pconfig.api_key_env_vars)
         else:
@@ -1696,8 +1738,13 @@ def list_authenticated_providers(
             try:
                 from hermes_cli.auth import _load_auth_store
                 store = _load_auth_store()
-                if store and store.get("credential_pool", {}).get(hermes_id):
-                    has_creds = True
+                raw_pool_present = bool(
+                    store and store.get("credential_pool", {}).get(hermes_id)
+                )
+                if raw_pool_present:
+                    has_creds = _credential_pool_is_usable(
+                        hermes_id, raw_pool_present=True
+                    )
             except Exception:
                 pass
         if not has_creds:
@@ -1712,6 +1759,15 @@ def list_authenticated_providers(
             model_ids = curated.get(hermes_id, [])
             if hermes_id in _MODELS_DEV_PREFERRED:
                 model_ids = _merge_with_models_dev(hermes_id, model_ids)
+        # A providers.<built-in>.models block extends the provider's discovered
+        # catalog. Section 3 cannot emit it later because this built-in row owns
+        # the slug, so merge declarations here before applying max_models.
+        configured_models: list[str] = []
+        if isinstance(user_providers, dict):
+            configured = user_providers.get(hermes_id)
+            if isinstance(configured, dict):
+                configured_models = _declared_model_ids(configured.get("models"))
+        model_ids = list(dict.fromkeys([*configured_models, *model_ids]))
         total = len(model_ids)
         if hermes_id in _UNCAPPED_PICKER_PROVIDERS:
             top = model_ids  # Aggregator: show full catalog regardless of max_models
@@ -1786,10 +1842,22 @@ def list_authenticated_providers(
         # imports on demand but aren't in the raw auth.json yet.
         if not has_creds:
             try:
-                from agent.credential_pool import load_pool
-                pool = load_pool(hermes_slug)
-                if pool.has_credentials():
+                if _credential_pool_is_usable(hermes_slug):
                     has_creds = True
+                elif for_picker:
+                    # For the interactive /model picker, also show providers
+                    # whose credential pool has entries but all are temporarily
+                    # rate-limited.  Rate limits are per-model for many
+                    # providers (e.g. Google Gemini) — switching to a different
+                    # model under the same provider may work even when all keys
+                    # are in cooldown.
+                    try:
+                        from agent.credential_pool import load_pool
+                        _pool = load_pool(hermes_slug)
+                        if _pool.has_credentials():
+                            has_creds = True
+                    except Exception:
+                        pass
             except Exception as exc:
                 logger.debug("Credential pool check failed for %s: %s", hermes_slug, exc)
         # Fallback: check external credential files directly.
@@ -1927,9 +1995,7 @@ def list_authenticated_providers(
                 pass
         if not _cp_has_creds:
             try:
-                from agent.credential_pool import load_pool
-                _cp_pool = load_pool(_cp.slug)
-                if _cp_pool.has_credentials():
+                if _credential_pool_is_usable(_cp.slug):
                     _cp_has_creds = True
             except Exception:
                 pass
@@ -2437,6 +2503,7 @@ def list_picker_providers(
         custom_providers=custom_providers,
         max_models=max_models,
         current_model=current_model,
+        for_picker=True,
     )
     if include_moa:
         providers = _prepend_moa_picker_provider(providers, current_provider=current_provider)

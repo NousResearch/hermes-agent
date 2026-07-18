@@ -480,6 +480,17 @@ def finalize_turn(
     # to an external memory system).
     if final_response and not interrupted:
         try:
+            _delegate_depth = int(getattr(agent, "_delegate_depth", 0) or 0)
+            _speaker_id = getattr(agent, "_user_id", None)
+            _conversation_id = (
+                getattr(agent, "_gateway_session_key", None)
+                or getattr(agent, "_chat_id", None)
+                or None
+            )
+            _chat_id = getattr(agent, "_chat_id", None)
+            _thread_id = getattr(agent, "_thread_id", None)
+            _chat_type = getattr(agent, "_chat_type", None)
+            _kanban_task_id = os.environ.get("HERMES_KANBAN_TASK") or None
             from hermes_cli.plugins import invoke_hook as _invoke_hook
             _invoke_hook(
                 "post_llm_call",
@@ -491,6 +502,19 @@ def finalize_turn(
                 conversation_history=list(messages),
                 model=agent.model,
                 platform=getattr(agent, "platform", None) or "",
+                completed=completed,
+                failed=failed,
+                interrupted=interrupted,
+                turn_exit_reason=_turn_exit_reason,
+                delegate_depth=_delegate_depth,
+                is_subagent=_delegate_depth > 0,
+                parent_session_id=getattr(agent, "_parent_session_id", None),
+                kanban_task_id=_kanban_task_id,
+                speaker_id=_speaker_id,
+                conversation_id=_conversation_id,
+                chat_id=_chat_id,
+                thread_id=_thread_id,
+                chat_type=_chat_type,
             )
         except Exception as exc:
             logger.warning("post_llm_call hook failed: %s", exc)

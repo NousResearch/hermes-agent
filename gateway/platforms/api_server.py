@@ -2730,9 +2730,11 @@ class APIServerAdapter(BasePlatformAdapter):
                 status=400,
             )
         before = None
+        before_kind = "v2"
         if before_raw is not None:
-            match = re.fullmatch(r"v1:(\d{1,20})", before_raw)
-            before = int(match.group(1)) if match else -1
+            match = re.fullmatch(r"(v1|v2):(\d{1,20})", before_raw)
+            before_kind = match.group(1) if match else ""
+            before = int(match.group(2)) if match else -1
             if before < 0:
                 return web.json_response(
                     _openai_error(
@@ -2748,6 +2750,7 @@ class APIServerAdapter(BasePlatformAdapter):
                 physical_id,
                 limit=limit,
                 before=before,
+                before_kind=before_kind,
                 include_ancestors=True,
             )
 
@@ -2828,18 +2831,13 @@ class APIServerAdapter(BasePlatformAdapter):
             db = self._ensure_session_db()
             if db is None:
                 raise RuntimeError("state DB unavailable")
-            lineage = db.get_compression_lineage(session_id)
+            lock_key = db.get_compression_lineage_root(session_id)
         except Exception as exc:
             raise _SessionContinuityUnavailable(
                 f"Session continuity state is unavailable: {exc}"
             ) from exc
-        if (
-            isinstance(lineage, list)
-            and lineage
-            and isinstance(lineage[0], str)
-            and lineage[0]
-        ):
-            lock_key = lineage[0]
+        if not isinstance(lock_key, str) or not lock_key:
+            lock_key = session_id
         lock = self._session_turn_locks.get(lock_key)
         if lock is None:
             # Request handlers share one event loop, and there is no await

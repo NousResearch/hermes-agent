@@ -5137,31 +5137,132 @@ class SessionDB:
         *,
         limit: int,
         before: Optional[int] = None,
+        before_kind: str = "v2",
         include_ancestors: bool = False,
     ) -> Dict[str, Any]:
-        """Return one newest-first cursor page of the durable display transcript.
+        """Return a keyset page without materializing the whole transcript.
 
-        ``data`` remains chronological within the page. ``before`` is an
-        absolute boundary in the append-only display projection. The opaque
-        cursor therefore stays stable when newer rows are appended while the
-        user is scrolling through older history.
+        Modern rows use the global AUTOINCREMENT message id as an opaque stable
+        cursor. Legacy pre-marker compaction snapshots require the bounded
+        overlap projector so old databases retain their exact visible history.
         """
-        messages = [
-            message
-            for message in self.get_messages_for_display(
-                session_id,
-                include_ancestors=include_ancestors,
-                max_rows=20_000,
+        from agent.context_compressor import ContextCompressor
+
+        lineage = (
+            self._compression_lineage_root_to_tip(session_id)
+            if include_ancestors
+            else [session_id]
+        )
+        lineage_json = json.dumps(lineage)
+
+        # Pre-marker compaction snapshots copied head/tail messages without a
+        # context_snapshot bit. Keep the compatibility projector only for those
+        # rows; all newly written transcripts take the bounded keyset path.
+        with self._lock:
+            possible_legacy = self._conn.execute(
+                """
+                SELECT content
+                FROM messages
+                WHERE session_id IN (SELECT value FROM json_each(?))
+                  AND COALESCE(context_snapshot, 0) = 0
+                  AND role = 'user'
+                  AND (content LIKE '%SUMMARY%' OR content LIKE '%COMPACTION%')
+                ORDER BY id DESC
+                LIMIT 20
+                """,
+                (lineage_json,),
+            ).fetchall()
+        has_legacy_snapshot = any(
+            ContextCompressor._is_context_summary_content(
+                self._decode_content(row["content"])
             )
-            if message.get("role") in {"user", "assistant"}
-        ]
-        end = len(messages) if before is None else min(before, len(messages))
-        start = max(0, end - limit)
-        page = messages[start:end]
-        has_more = start > 0
-        next_cursor = f"v1:{start}" if has_more else None
+            for row in possible_legacy
+        )
+        if has_legacy_snapshot or before_kind == "v1":
+            messages = [
+                message
+                for message in self.get_messages_for_display(
+                    session_id,
+                    include_ancestors=include_ancestors,
+                    max_rows=20_000,
+                )
+                if message.get("role") in {"user", "assistant"}
+            ]
+            end = len(messages) if before is None else min(before, len(messages))
+            start = max(0, end - limit)
+            page = messages[start:end]
+            has_more = start > 0
+            return {
+                "data": page,
+                "has_more": has_more,
+                "next_cursor": f"v1:{start}" if has_more else None,
+            }
+
+        scan_budget = min(4_000, max(512, (limit + 1) * 8))
+        batch_size = min(1_000, max(64, (limit + 1) * 2))
+        boundary = before
+        scanned = 0
+        exhausted = False
+        visible_desc: List[Dict[str, Any]] = []
+        last_scanned_id: Optional[int] = None
+
+        while scanned < scan_budget and len(visible_desc) < limit + 1:
+            query_limit = min(batch_size, scan_budget - scanned)
+            params: List[Any] = [lineage_json]
+            boundary_clause = ""
+            if boundary is not None:
+                boundary_clause = " AND id < ?"
+                params.append(boundary)
+            params.append(query_limit)
+            with self._lock:
+                rows = self._conn.execute(
+                    """
+                    SELECT *
+                    FROM messages
+                    WHERE session_id IN (SELECT value FROM json_each(?))
+                      AND (active = 1 OR compacted = 1)
+                      AND COALESCE(context_snapshot, 0) = 0
+                      AND role IN ('user', 'assistant')
+                    """ + boundary_clause + " ORDER BY id DESC LIMIT ?",
+                    params,
+                ).fetchall()
+            if not rows:
+                exhausted = True
+                break
+            scanned += len(rows)
+            last_scanned_id = int(rows[-1]["id"])
+            boundary = last_scanned_id
+            for raw in rows:
+                message = dict(raw)
+                message["content"] = self._decode_content(message.get("content"))
+                if ContextCompressor._is_context_summary_content(
+                    message.get("content")
+                ):
+                    continue
+                if message.get("tool_calls"):
+                    try:
+                        message["tool_calls"] = json.loads(message["tool_calls"])
+                    except (json.JSONDecodeError, TypeError):
+                        message["tool_calls"] = []
+                visible_desc.append(message)
+                if len(visible_desc) >= limit + 1:
+                    break
+            if len(rows) < query_limit:
+                exhausted = True
+                break
+
+        page_desc = visible_desc[:limit]
+        has_more = len(visible_desc) > limit or not exhausted
+        if not has_more:
+            next_cursor = None
+        elif len(visible_desc) > limit and page_desc:
+            next_cursor = f"v2:{int(page_desc[-1]['id'])}"
+        elif last_scanned_id is not None:
+            next_cursor = f"v2:{last_scanned_id}"
+        else:
+            next_cursor = None
         return {
-            "data": page,
+            "data": list(reversed(page_desc)),
             "has_more": has_more,
             "next_cursor": next_cursor,
         }

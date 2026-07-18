@@ -188,6 +188,40 @@ class TestInPlaceCompaction:
             )
             db.close()
 
+    def test_in_place_archive_failure_restores_uncompressed_live_state(self):
+        from hermes_state import SessionDB
+        from agent.conversation_compression import compress_context
+
+        with tempfile.TemporaryDirectory() as tmp:
+            db = SessionDB(db_path=Path(tmp) / "t.db")
+            _seed(db, "ip_archive_failure", "ip-archive-failure")
+            agent = _make_agent(db, "ip_archive_failure", in_place=True)
+            original = [{"role": "user", "content": f"m{i}"} for i in range(8)]
+            existing_prompt = agent._build_system_prompt("sys")
+            agent._cached_system_prompt = existing_prompt
+            events = []
+            agent.event_callback = lambda *args: events.append(args)
+            agent._flush_messages_to_session_db = lambda *args, **kwargs: True
+
+            def fail_archive(*args, **kwargs):
+                raise RuntimeError("archive failed")
+
+            db.archive_and_compact = fail_archive
+            result, prompt = compress_context(
+                agent, original, approx_tokens=100_000, system_message="sys"
+            )
+
+            assert result is original
+            assert prompt == existing_prompt
+            assert agent._cached_system_prompt == existing_prompt
+            assert agent._last_compaction_in_place is False
+            assert events == []
+            assert all(
+                not row.get("context_snapshot")
+                for row in db.get_messages("ip_archive_failure", include_inactive=True)
+            )
+            db.close()
+
     def test_compaction_marks_snapshot_copies_without_mutating_real_messages(self):
         from hermes_state import SessionDB
         from agent.conversation_compression import compress_context

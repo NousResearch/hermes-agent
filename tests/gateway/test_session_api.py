@@ -2,6 +2,7 @@
 
 import asyncio
 import json
+import re
 import sqlite3
 import threading
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -935,6 +936,24 @@ async def test_session_messages_do_not_silently_truncate_deep_compression_lineag
     assert payload["data"][0]["content"] == "message 000"
 
 
+def test_session_turn_lock_ignores_delegate_siblings(adapter, session_db):
+    root_id = session_db.create_session("lock-root", "api_server")
+    session_db.end_session(root_id, "compression")
+    session_db.create_session(
+        "lock-delegate",
+        "tool",
+        parent_session_id=root_id,
+        model_config={"_delegate_from": root_id},
+    )
+    tip_id = session_db.create_session(
+        "lock-tip",
+        "api_server",
+        parent_session_id=root_id,
+    )
+
+    assert adapter._session_turn_lock(root_id) is adapter._session_turn_lock(tip_id)
+
+
 @pytest.mark.asyncio
 async def test_paginated_history_projection_runs_off_event_loop(
     adapter, session_db, monkeypatch
@@ -956,6 +975,35 @@ async def test_paginated_history_projection_runs_off_event_loop(
 
     assert response.status == 200
     assert observed["thread"] != event_loop_thread
+
+
+@pytest.mark.asyncio
+async def test_paginated_history_pushes_limit_into_sql(adapter, session_db):
+    session_id = session_db.create_session("keyset-history", "api_server")
+    for index in range(250):
+        session_db.append_message(session_id, "user", f"message {index}")
+
+    statements = []
+    session_db._conn.set_trace_callback(statements.append)
+    try:
+        app = _create_session_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            response = await cli.get(
+                f"/api/sessions/{session_id}/messages?limit=1"
+            )
+            payload = await response.json()
+    finally:
+        session_db._conn.set_trace_callback(None)
+
+    limits = [
+        int(match.group(1))
+        for statement in statements
+        for match in re.finditer(r"\bLIMIT\s+(\d+)", statement, re.IGNORECASE)
+    ]
+    assert response.status == 200
+    assert payload["next_cursor"].startswith("v2:")
+    assert len(payload["data"]) == 1
+    assert limits and max(limits) <= 64
 
 
 @pytest.mark.asyncio
@@ -1786,7 +1834,7 @@ def test_session_turn_lock_fails_closed_when_lineage_lookup_fails(
 
     with patch.object(
         session_db,
-        "get_compression_lineage",
+        "get_compression_lineage_root",
         side_effect=RuntimeError("state DB unavailable"),
     ):
         with pytest.raises(RuntimeError, match="state DB unavailable"):

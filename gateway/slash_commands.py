@@ -1454,6 +1454,7 @@ class GatewaySlashCommandsMixin:
         Supports:
           /model                              — interactive picker (Telegram/Discord) or text list
           /model <name>                       — switch model (persists by default)
+          /model <name> --once                — switch for the next turn only
           /model <name> --session             — switch for this session only
           /model <name> --global              — switch and persist (explicit)
           /model <name> --provider <provider> — switch provider + model
@@ -1462,7 +1463,7 @@ class GatewaySlashCommandsMixin:
         from gateway.run import _hermes_home, _load_gateway_config
         import yaml
         from hermes_cli.model_switch import (
-            switch_model as _switch_model, parse_model_flags,
+            switch_model as _switch_model, parse_model_flags_detailed,
             resolve_persist_behavior,
             list_authenticated_providers,
             list_picker_providers,
@@ -1477,15 +1478,23 @@ class GatewaySlashCommandsMixin:
                 self, "_resolve_profile_home_for_source"
             )(source)
 
-        # Parse --provider, --global, --session, and --refresh flags
-        (
-            model_input,
-            explicit_provider,
+        # Parse --provider, --global, --session, --once, and --refresh flags
+        parsed_flags = parse_model_flags_detailed(raw_args)
+        model_input = parsed_flags.model_input
+        explicit_provider = parsed_flags.explicit_provider
+        is_global_flag = parsed_flags.is_global
+        force_refresh = parsed_flags.force_refresh
+        is_session = parsed_flags.is_session
+        one_turn = parsed_flags.is_once
+        if is_global_flag and one_turn:
+            return "❌ /model --once cannot be combined with --global"
+        if one_turn and not model_input and not explicit_provider:
+            return "❌ /model --once requires a model or provider."
+        persist_global = resolve_persist_behavior(
             is_global_flag,
-            force_refresh,
             is_session,
-        ) = parse_model_flags(raw_args)
-        persist_global = resolve_persist_behavior(is_global_flag, is_session)
+            is_once=one_turn,
+        )
 
         # --refresh: bust the disk cache so the picker shows live data.
         if force_refresh:
@@ -1528,6 +1537,9 @@ class GatewaySlashCommandsMixin:
         source = await asyncio.to_thread(self._normalize_source_for_session_key, source)
         session_key = self._session_key_for_source(source)
         override = self._session_model_overrides.get(session_key, {})
+        restore_snapshot = (
+            self._snapshot_session_model_override(session_key) if one_turn else None
+        )
         if override:
             current_model = override.get("model", current_model)
             current_provider = override.get("provider", current_provider)
@@ -1948,6 +1960,7 @@ class GatewaySlashCommandsMixin:
             self._pending_model_notes[session_key] = (
                 f"[Note: model was just switched from {current_model} to {result.new_model} "
                 f"via {result.provider_label or result.target_provider}. "
+                f"{'This override applies to the next turn only. ' if one_turn else ''}"
                 f"Adjust your self-identification accordingly.]"
             )
 
@@ -1959,6 +1972,14 @@ class GatewaySlashCommandsMixin:
                 "base_url": result.base_url,
                 "api_mode": result.api_mode,
             }
+            if one_turn:
+                if not hasattr(self, "_pending_one_turn_model_restores"):
+                    self._pending_one_turn_model_restores = {}
+                self._pending_one_turn_model_restores[session_key] = (
+                    restore_snapshot or {"had_override": False, "override": None}
+                )
+            elif hasattr(self, "_pending_one_turn_model_restores"):
+                self._pending_one_turn_model_restores.pop(session_key, None)
 
             # Write-through the non-secret parts (model/provider/base_url) to
             # the session store so the override survives a gateway restart.
@@ -2070,6 +2091,8 @@ class GatewaySlashCommandsMixin:
 
             if persist_global:
                 lines.append(t("gateway.model.saved_global"))
+            elif one_turn:
+                lines.append("    (next turn only — restores after one response)")
             else:
                 lines.append(t("gateway.model.session_only_hint"))
 

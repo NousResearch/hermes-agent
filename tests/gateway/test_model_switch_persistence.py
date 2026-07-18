@@ -49,6 +49,7 @@ def _make_runner():
     runner._voice_mode = {}
     runner.hooks = SimpleNamespace(emit=AsyncMock(), loaded_hooks=False)
     runner._session_model_overrides = {}
+    runner._pending_one_turn_model_restores = {}
     runner._pending_model_notes = {}
     runner._background_tasks = set()
     runner._running_agents = {}
@@ -242,3 +243,43 @@ class TestIsIntentionalModelSwitch:
         }
 
         assert runner._is_intentional_model_switch(sk, "gpt-5.4") is False
+
+
+class TestOneTurnModelOverrideRestore:
+    """Verify gateway one-turn overrides restore previous session state."""
+
+    def test_restores_previous_override(self):
+        runner = _make_runner()
+        sk = build_session_key(_make_source())
+        previous = {
+            "model": "old/model",
+            "provider": "openrouter",
+            "api_key": "old-key",
+            "base_url": "https://openrouter.ai/api/v1",
+            "api_mode": "chat_completions",
+        }
+        runner._session_model_overrides[sk] = previous
+
+        snapshot = runner._snapshot_session_model_override(sk)
+        runner._session_model_overrides[sk] = {
+            "model": "temp/model",
+            "provider": "anthropic",
+        }
+
+        runner._restore_session_model_override(sk, snapshot)
+
+        assert runner._session_model_overrides[sk] == previous
+
+    def test_restores_absent_override_by_clearing(self):
+        runner = _make_runner()
+        sk = build_session_key(_make_source())
+
+        snapshot = runner._snapshot_session_model_override(sk)
+        runner._session_model_overrides[sk] = {
+            "model": "temp/model",
+            "provider": "anthropic",
+        }
+
+        runner._restore_session_model_override(sk, snapshot)
+
+        assert sk not in runner._session_model_overrides

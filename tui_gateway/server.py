@@ -3133,6 +3133,42 @@ def _persist_model_switch(result) -> None:
         save_config_value("model.base_url", None)
 
 
+def _snapshot_agent_model_runtime(agent) -> dict:
+    """Capture the current agent model runtime for a one-turn restore."""
+    return {
+        "model": getattr(agent, "model", ""),
+        "provider": getattr(agent, "provider", ""),
+        "api_key": getattr(agent, "api_key", ""),
+        "base_url": getattr(agent, "base_url", ""),
+        "api_mode": getattr(agent, "api_mode", ""),
+        "primary_runtime": copy.deepcopy(getattr(agent, "_primary_runtime", None)),
+    }
+
+
+def _restore_agent_model_runtime(agent, snapshot: dict | None) -> None:
+    """Restore an agent model runtime captured before a one-turn override."""
+    if not snapshot or agent is None:
+        return
+    primary = snapshot.get("primary_runtime")
+    if primary and hasattr(agent, "_restore_primary_runtime"):
+        try:
+            agent._primary_runtime = copy.deepcopy(primary)
+            agent._fallback_activated = True
+            agent._rate_limited_until = 0
+            if agent._restore_primary_runtime():
+                return
+        except Exception:
+            logger.debug("TUI one-turn model restore via primary runtime failed", exc_info=True)
+    if hasattr(agent, "switch_model"):
+        agent.switch_model(
+            new_model=snapshot.get("model", ""),
+            new_provider=snapshot.get("provider", ""),
+            api_key=snapshot.get("api_key", ""),
+            base_url=snapshot.get("base_url", ""),
+            api_mode=snapshot.get("api_mode", ""),
+        )
+
+
 def _apply_model_switch(
     sid: str,
     session: dict,
@@ -3140,34 +3176,44 @@ def _apply_model_switch(
     *,
     confirm_expensive_model: bool = False,
     pin_session_override: bool = True,
-    parsed_flags: tuple[str, str, bool, bool, bool] | None = None,
+    parsed_flags: Any | None = None,
     persist_override: bool | None = None,
 ) -> dict:
     from hermes_cli.model_switch import (
-        parse_model_flags,
+        parse_model_flags_detailed,
         resolve_persist_behavior,
         switch_model,
     )
     from hermes_cli.runtime_provider import resolve_runtime_provider
 
     if parsed_flags is None:
-        parsed_flags = parse_model_flags(raw_input)
-    (
-        model_input,
-        explicit_provider,
-        is_global_flag,
-        _force_refresh,
-        is_session,
-    ) = parsed_flags
+        parsed_flags = parse_model_flags_detailed(raw_input)
+    if hasattr(parsed_flags, "model_input"):
+        model_input = parsed_flags.model_input
+        explicit_provider = parsed_flags.explicit_provider
+        is_global_flag = parsed_flags.is_global
+        is_session = parsed_flags.is_session
+        one_turn = parsed_flags.is_once
+    else:
+        model_input, explicit_provider, is_global_flag, _force_refresh, is_session = parsed_flags
+        one_turn = False
+    if is_global_flag and one_turn:
+        raise ValueError("/model --once cannot be combined with --global")
     persist_global = (
         persist_override
         if persist_override is not None
-        else resolve_persist_behavior(is_global_flag, is_session)
+        else resolve_persist_behavior(
+            is_global_flag,
+            is_session,
+            is_once=one_turn,
+        )
     )
     if not model_input:
         raise ValueError("model value required")
 
     agent = session.get("agent")
+    if one_turn and not agent:
+        raise ValueError("/model --once requires a live session")
     if agent:
         current_provider = getattr(agent, "provider", "") or ""
         current_model = getattr(agent, "model", "") or ""
@@ -3197,6 +3243,7 @@ def _apply_model_switch(
     # endpoints (e.g. "ollama-launch") and validate against saved model lists.
     user_provs = None
     custom_provs = None
+    cfg = None
     try:
         from hermes_cli.config import get_compatible_custom_providers, load_config
 
@@ -3219,6 +3266,8 @@ def _apply_model_switch(
     )
     if not result.success:
         raise ValueError(result.error_message or "model switch failed")
+
+    restore_snapshot = _snapshot_agent_model_runtime(agent) if (one_turn and agent) else None
 
     if agent:
         try:
@@ -3292,6 +3341,10 @@ def _apply_model_switch(
             session, model=result.new_model, provider=result.target_provider
         )
         _emit("session.info", sid, _session_info(agent, session))
+        if one_turn:
+            session["one_turn_model_restore"] = restore_snapshot
+        else:
+            session.pop("one_turn_model_restore", None)
 
     # Record the switch as a PER-SESSION override so a later rebuild of THIS
     # session (e.g. /new via _reset_session_agent, or resume) re-derives the
@@ -3306,7 +3359,7 @@ def _apply_model_switch(
     # contamination bug). agent.switch_model() above already mutated the right
     # agent in place; the override dict makes that choice survive a rebuild
     # without touching shared process state.
-    if pin_session_override and isinstance(session, dict):
+    if pin_session_override and isinstance(session, dict) and not one_turn:
         session["model_override"] = {
             "model": result.new_model,
             "provider": result.target_provider,
@@ -3320,6 +3373,7 @@ def _apply_model_switch(
         "value": result.new_model,
         "warning": result.warning_message or "",
         "confirm_required": False,
+        "scope": "once" if one_turn else ("global" if persist_global else "session"),
     }
 
 
@@ -9781,6 +9835,7 @@ def _run_prompt_submit(rid, sid: str, session: dict, text: Any) -> None:
         session_tokens = []
         home_token = None  # per-turn HERMES_HOME override for a resumed remote profile
         goal_followup = None  # set by the post-turn goal hook below
+        one_turn_restore = session.pop("one_turn_model_restore", None)
         try:
             from tools.approval import (
                 reset_current_session_key,
@@ -10190,6 +10245,14 @@ def _run_prompt_submit(rid, sid: str, session: dict, text: Any) -> None:
             )
             _emit("error", sid, {"message": str(e)})
         finally:
+            if one_turn_restore:
+                try:
+                    _restore_agent_model_runtime(agent, one_turn_restore)
+                    _restart_slash_worker(sid, session)
+                    _persist_live_session_runtime(session)
+                    _persist_live_session_system_prompt(session)
+                except Exception:
+                    logger.debug("TUI one-turn model restore failed", exc_info=True)
             try:
                 if approval_token is not None:
                     reset_current_session_key(approval_token)
@@ -11154,10 +11217,10 @@ def _(rid, params: dict) -> dict:
                         4009,
                         "session busy — /interrupt the current turn before switching models",
                     )
-                from hermes_cli.model_switch import parse_model_flags
+                from hermes_cli.model_switch import parse_model_flags_detailed
 
-                parsed_flags = parse_model_flags(value)
-                _model_input, explicit_provider, _persist_global, _force_refresh, _is_session = parsed_flags
+                parsed_flags = parse_model_flags_detailed(value)
+                explicit_provider = parsed_flags.explicit_provider
                 if session.get("agent") is None and not explicit_provider.strip():
                     session_id = params.get("session_id", "")
                     _start_agent_build(session_id, session)
@@ -11192,6 +11255,7 @@ def _(rid, params: dict) -> dict:
                     "warning": result["warning"],
                     "confirm_required": result.get("confirm_required", False),
                     "confirm_message": result.get("confirm_message", ""),
+                    "scope": result.get("scope", "session"),
                 },
             )
         except Exception as e:

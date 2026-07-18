@@ -195,6 +195,10 @@ export function useInputHandlers(ctx: InputHandlerContext): InputHandlerResult {
       return patchOverlayState({ billing: null })
     }
 
+    if (overlay.subscription) {
+      return patchOverlayState({ subscription: null })
+    }
+
     if (overlay.skillsHub) {
       return patchOverlayState({ skillsHub: false })
     }
@@ -324,7 +328,8 @@ export function useInputHandlers(ctx: InputHandlerContext): InputHandlerResult {
       // answering felt like the prompt had locked the entire UI.  Explicitly
       // skip the prompt-overlay early-return for scroll keys so they fall
       // through to the wheel / PageUp / Shift+arrow handlers below.
-      const promptOverlay = overlay.approval || overlay.billing || overlay.clarify || overlay.confirm
+      const promptOverlay =
+        overlay.approval || overlay.billing || overlay.clarify || overlay.confirm || overlay.subscription
       const fallThroughForScroll = promptOverlay && shouldFallThroughForScroll(key)
 
       if (promptOverlay && !fallThroughForScroll) {

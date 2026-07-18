@@ -743,7 +743,7 @@ def get_container_exec_info() -> Optional[dict]:
 # =============================================================================
 
 # Re-export from hermes_constants — canonical definition lives there.
-from hermes_constants import get_hermes_home  # noqa: F811,E402
+from hermes_constants import get_hermes_home, get_process_hermes_home  # noqa: F811,E402
 from utils import atomic_replace, fast_safe_load
 
 def get_config_path() -> Path:
@@ -913,14 +913,32 @@ def _ensure_default_soul_md(home: Path) -> None:
     _secure_file(soul_path)
 
 
+# Home paths whose directory skeleton has been created this process — see
+# ensure_hermes_home(). Only successful passes are recorded, so a raised
+# managed-mode/missing-profile error keeps re-checking on later loads.
+_HERMES_HOME_ENSURED: set = set()
+
+
 def ensure_hermes_home():
     """Ensure ~/.hermes directory structure exists with secure permissions.
 
     In managed mode (NixOS), dirs are created by the activation script with
     setgid + group-writable (2770). We skip mkdir and set umask(0o007) so
     any files created (e.g. SOUL.md) are group-writable (0660).
+
+    Memoized per home path: this runs on EVERY ``load_config()`` (inside the
+    config lock), and the ~14 mkdir/chmod syscalls per call made repeated
+    config loads the dominant cost of hot read paths like ``model.options``.
+    After the first successful pass for a given ``HERMES_HOME`` we only re-run
+    the full walk if the home directory itself has vanished (a deleted home is
+    recreated on the next load, as before). Profile switches change
+    ``get_hermes_home()`` and therefore re-run for the new path.
     """
     home = get_hermes_home()
+    key = str(home)
+
+    if key in _HERMES_HOME_ENSURED and home.is_dir():
+        return
     # Named profiles must be created explicitly (e.g. ``hermes profile create``).
     # If a stale process keeps running after the profile was renamed/deleted,
     # silently mkdir-ing the old HERMES_HOME would resurrect an empty skeleton
@@ -947,6 +965,8 @@ def ensure_hermes_home():
             d.mkdir(parents=True, exist_ok=True)
             _secure_dir(d)
         _ensure_default_soul_md(home)
+
+    _HERMES_HOME_ENSURED.add(key)
 
 
 def _ensure_hermes_home_managed(home: Path):

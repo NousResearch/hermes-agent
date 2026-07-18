@@ -775,6 +775,10 @@ export const zhHant = defineLocale({
       noProviderKeys: '沒有可用的提供方 API 金鑰。',
       searchKeys: '搜尋提供方…',
       noKeysMatch: '沒有符合的提供方。',
+      localEndpoint: {
+        title: '本地 / 自訂端點',
+        description: '將 Hermes 指向任意 OpenAI 相容端點（Zyphra、vLLM、llama.cpp、Ollama 等）。'
+      },
       loading: '正在載入提供方...'
     },
     sessions: {
@@ -1527,6 +1531,7 @@ export const zhHant = defineLocale({
       finishedUnread: '已完成 — 未讀',
       backgroundRunning: '背景任務執行中',
       handoffOrigin: platform => `從 ${platform} 轉接`,
+      ownedByProfile: profile => `設定檔：${profile}`,
       renamed: '已重新命名',
       renameFailed: '重新命名失敗',
       renameTitle: '重新命名工作階段',
@@ -1834,6 +1839,7 @@ export const zhHant = defineLocale({
     recommended: '建議',
     connected: '已連線',
     featuredPitch: '一個訂閱，300+ 前沿模型 — 執行 Hermes 的建議方式',
+    fireworksPitch: '直接模型 API — Fireworks 託管的前沿模型',
     openRouterPitch: '一個金鑰，數百個模型 — 穩定的預設選擇',
     apiKeyOptions: {
       fireworks: { short: '直接模型 API', description: '直接存取 Fireworks AI 託管的模型。' },
@@ -2027,6 +2033,7 @@ export const zhHant = defineLocale({
       noModel: '無模型',
       switchModel: '切換模型',
       openModelPicker: '開啟模型選擇器',
+      modelPinned: '已由你固定；新對話將使用此模型而非「設定」中的預設模型',
       modelTitle: (provider, model) => `模型 · ${provider}：${model}`,
       providerModelTitle: (provider, model) => `${provider} · ${model}`
     }

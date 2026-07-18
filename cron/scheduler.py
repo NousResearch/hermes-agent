@@ -278,6 +278,7 @@ _LEGACY_HOME_TARGET_ENV_VARS = {
 }
 
 from cron.jobs import get_due_jobs, mark_job_run, save_job_output, advance_next_run, claim_dispatch, heartbeat_run_claim
+from cron.executions import create_execution, finish_execution, mark_execution_running
 
 # Sentinel: when a cron agent has nothing new to report, it can start its
 # response with this marker to suppress delivery.  Output is still saved
@@ -2051,6 +2052,64 @@ def _get_script_timeout() -> int:
     return _DEFAULT_SCRIPT_TIMEOUT
 
 
+def _read_windows_pyvenv_cfg(venv_dir: Path) -> dict[str, str]:
+    cfg_path = venv_dir / "pyvenv.cfg"
+    try:
+        lines = cfg_path.read_text(encoding="utf-8").splitlines()
+    except OSError:
+        return {}
+
+    parsed: dict[str, str] = {}
+    for raw in lines:
+        if "=" not in raw:
+            continue
+        key, value = raw.split("=", 1)
+        parsed[key.strip().lower()] = value.strip()
+    return parsed
+
+
+def _windows_cron_python_invocation(python_exe: str) -> tuple[str, dict[str, str]]:
+    """Return an output-capable hidden Python invocation for Windows scripts.
+
+    Cron scripts capture stdout/stderr, so using ``pythonw.exe`` directly can
+    lose script output.  uv-created venv ``python.exe`` launchers are also a
+    problem: even with CREATE_NO_WINDOW, the launcher can re-exec the base
+    console interpreter and flash a visible window.  For uv venvs, bypass the
+    launcher and run the base ``python.exe`` directly with the venv paths
+    overlaid in the environment.
+    """
+    if sys.platform != "win32":
+        return python_exe, {}
+
+    interpreter = Path(python_exe)
+    venv_dir = interpreter.parent.parent
+    env_overlay: dict[str, str] = {}
+
+    if interpreter.name.lower() == "pythonw.exe":
+        sibling = interpreter.with_name("python.exe")
+        if sibling.exists():
+            interpreter = sibling
+
+    cfg = _read_windows_pyvenv_cfg(venv_dir)
+    home = cfg.get("home", "")
+    site_packages = venv_dir / "Lib" / "site-packages"
+    if "uv" in cfg and home:
+        base_python = Path(home) / "python.exe"
+        if base_python.exists() and site_packages.exists():
+            interpreter = base_python
+            env_overlay["VIRTUAL_ENV"] = str(venv_dir)
+            pythonpath_entries = [
+                str(Path(__file__).resolve().parents[1]),
+                str(site_packages),
+            ]
+            existing_pythonpath = os.environ.get("PYTHONPATH", "")
+            if existing_pythonpath:
+                pythonpath_entries.append(existing_pythonpath)
+            env_overlay["PYTHONPATH"] = os.pathsep.join(pythonpath_entries)
+
+    return str(interpreter), env_overlay
+
+
 def _run_job_script(script_path: str) -> tuple[bool, str]:
     """Execute a cron job's data-collection script and capture its output.
 
@@ -2128,22 +2187,32 @@ def _run_job_script(script_path: str) -> tuple[bool, str]:
                 f"Cannot run .sh/.bash script {path.name!r}: bash not found on PATH. "
                 "On Windows, install Git for Windows (which ships Git Bash) "
                 "or rewrite the script as Python (.py)."
-            )
+        )
         argv = [_bash, str(path)]
+        env_overlay: dict[str, str] = {}
     else:
-        argv = [sys.executable, str(path)]
+        python_exe, env_overlay = _windows_cron_python_invocation(sys.executable)
+        argv = [python_exe, str(path)]
 
     try:
         from tools.environments.local import _sanitize_subprocess_env
 
-        popen_kwargs = {"creationflags": windows_hide_flags()} if sys.platform == "win32" else {}
+        popen_kwargs = {}
+        if sys.platform == "win32":
+            popen_kwargs = {
+                "creationflags": windows_hide_flags(),
+                "encoding": "utf-8",
+                "errors": "replace",
+            }
+        env = _sanitize_subprocess_env(os.environ.copy())
+        env.update(env_overlay)
         result = subprocess.run(
             argv,
             capture_output=True,
             text=True,
             timeout=script_timeout,
             cwd=str(path.parent),
-            env=_sanitize_subprocess_env(os.environ.copy()),
+            env=env,
             **popen_kwargs,
         )
         stdout = (result.stdout or "").strip()
@@ -2879,6 +2948,20 @@ def run_job(
         platform="",
         chat_id="",
         chat_name="",
+        # A cron job cannot receive a completion after its turn ends. We clear the
+        # HERMES_SESSION_* routing keys just below, so an async delegation's
+        # completion event carries session_key="" — _enrich_async_delegation_routing
+        # cannot resolve it and _inject_watch_notification drops it ("no routing
+        # metadata"). And by the time a child finishes, run_job has already shipped
+        # the job's final response via _deliver_result; there is no turn left to
+        # re-enter. (Worse, get_current_session_key() can fall back to the ambient
+        # os.environ HERMES_SESSION_KEY, which risks routing a cron subagent's output
+        # into an unrelated user chat.)
+        #
+        # Declaring the channel stateless routes delegate_task to its existing
+        # inline/synchronous path, so results return within the job's own turn.
+        # See declare_stateless_channel(). Upstream: #53027, #63142.
+        async_delivery=False,
     )
     _cron_delivery_vars = (
         "HERMES_CRON_AUTO_DELIVER_PLATFORM",
@@ -3635,6 +3718,9 @@ def run_one_job(job: dict, *, adapters=None, loop=None, verbose: bool = False) -
     Returns True if the job was processed (even if the job itself failed —
     failure is recorded via ``mark_job_run``), False only if processing raised.
     """
+    execution_id = job.get("execution_id")
+    if not execution_id:
+        execution_id = create_execution(job["id"], source="direct")["id"]
     try:
         # Pre-run dispatch claim (issue #38758): atomically commit a finite
         # one-shot's dispatch BEFORE its side effect runs, so a tick that dies
@@ -3648,7 +3734,16 @@ def run_one_job(job: dict, *, adapters=None, loop=None, verbose: bool = False) -
                 "Job '%s': one-shot dispatch limit reached — skipping",
                 job.get("name", job["id"]),
             )
+            finish_execution(
+                execution_id,
+                success=False,
+                error="Dispatch claim rejected; execution was not started.",
+            )
             return True  # not an error — already handled/removed
+
+        # The attempt is claimed durably before executor/provider dispatch and
+        # becomes running only immediately before the actual run.
+        mark_execution_running(execution_id)
 
         # Run the job under the profile's secret scope. get_secret() fails
         # closed outside a scope once profile isolation is in play (multiple
@@ -3756,12 +3851,14 @@ def run_one_job(job: dict, *, adapters=None, loop=None, verbose: bool = False) -
 
         if not _consume_interrupted_flag(job["id"]):
             mark_job_run(job["id"], success, error, delivery_error=delivery_error)
+        finish_execution(execution_id, success=success, error=error)
         return True
 
     except Exception as e:
         logger.error("Error processing job %s: %s", job['id'], e)
         if not _consume_interrupted_flag(job["id"]):
             mark_job_run(job["id"], False, str(e))
+        finish_execution(execution_id, success=False, error=str(e))
         return False
 
 
@@ -3916,9 +4013,13 @@ def tick(
                     logger.info("Job '%s' already running — skipping", job.get("name", job_id))
                     return None
                 _running_job_ids.add(job_id)
+            # Record the attempt before executor dispatch. Recovery classifies
+            # abandoned records as unknown; it never automatically retries them.
+            execution = create_execution(job_id, source="builtin")
+            dispatched_job = dict(job, execution_id=execution["id"])
             _ctx = contextvars.copy_context()
 
-            def _run_and_release(j=job, ctx=_ctx):
+            def _run_and_release(j=dispatched_job, ctx=_ctx):
                 try:
                     return ctx.run(_process_job, j)
                 finally:
@@ -3927,18 +4028,28 @@ def tick(
 
             try:
                 return pool.submit(_run_and_release)
-            except RuntimeError as submit_err:
+            except Exception as submit_err:
+                with _running_lock:
+                    _running_job_ids.discard(job_id)
+                finish_execution(
+                    execution["id"],
+                    success=False,
+                    error=f"Executor dispatch failed: {submit_err}",
+                )
                 # Interpreter began finalizing between the guard above and the
                 # submit — release the in-flight claim we just took and skip.
-                if _interpreter_shutting_down(submit_err):
-                    with _running_lock:
-                        _running_job_ids.discard(job_id)
+                if isinstance(submit_err, RuntimeError) and _interpreter_shutting_down(submit_err):
                     logger.warning(
                         "Job '%s' not dispatched — interpreter is shutting down",
                         job.get("name", job_id),
                     )
                     return None
-                raise
+                logger.error(
+                    "Job '%s' not dispatched: %s",
+                    job.get("name", job_id),
+                    submit_err,
+                )
+                return None
 
         # Sequential pass for env-mutating (workdir) jobs.
         # Queued to a persistent single-thread pool so they run one at a time

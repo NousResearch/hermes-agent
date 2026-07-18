@@ -12,7 +12,7 @@ import {
   shouldAutoDrain
 } from '@/store/composer-queue'
 import { notify } from '@/store/notifications'
-import { $workingSessionIds } from '@/store/session'
+import { $workingSessionIds } from '@/store/session-states'
 
 import type { SubmitTextOptions } from './use-prompt-actions/utils'
 

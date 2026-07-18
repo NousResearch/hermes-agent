@@ -3327,6 +3327,31 @@ class TelegramAdapter(BasePlatformAdapter):
             if self._post_connect_task is asyncio.current_task():
                 self._post_connect_task = None
 
+    def _register_update_handlers(self, app) -> None:
+        """Register the production Telegram update dispatch table."""
+        app.add_handler(TelegramMessageHandler(
+            filters.TEXT & ~filters.COMMAND,
+            self._handle_text_message,
+        ))
+        app.add_handler(TelegramMessageHandler(
+            filters.COMMAND,
+            self._handle_command,
+        ))
+        app.add_handler(TelegramMessageHandler(
+            filters.LOCATION | getattr(filters, "VENUE", filters.LOCATION),
+            self._handle_location_message,
+        ))
+        app.add_handler(TelegramMessageHandler(
+            filters.PHOTO
+            | filters.VIDEO
+            | filters.AUDIO
+            | filters.VOICE
+            | filters.Document.ALL
+            | filters.Sticker.ALL,
+            self._handle_media_message,
+        ))
+        app.add_handler(CallbackQueryHandler(self._handle_callback_query))
+
     async def connect(self, *, is_reconnect: bool = False) -> bool:
         """Connect to Telegram via polling or webhook.
 
@@ -3524,25 +3549,7 @@ class TelegramAdapter(BasePlatformAdapter):
             self._app = builder.build()
             self._bot = self._app.bot
             
-            # Register handlers
-            self._app.add_handler(TelegramMessageHandler(
-                filters.TEXT & ~filters.COMMAND,
-                self._handle_text_message
-            ))
-            self._app.add_handler(TelegramMessageHandler(
-                filters.COMMAND,
-                self._handle_command
-            ))
-            self._app.add_handler(TelegramMessageHandler(
-                filters.LOCATION | getattr(filters, "VENUE", filters.LOCATION),
-                self._handle_location_message
-            ))
-            self._app.add_handler(TelegramMessageHandler(
-                filters.PHOTO | filters.VIDEO | filters.AUDIO | filters.VOICE | filters.Document.ALL | filters.Sticker.ALL,
-                self._handle_media_message
-            ))
-            # Handle inline keyboard button callbacks (update prompts)
-            self._app.add_handler(CallbackQueryHandler(self._handle_callback_query))
+            self._register_update_handlers(self._app)
             
             # Start polling — retry initialize() for transient TLS resets.
             # Each attempt is capped by _init_timeout so a single unreachable
@@ -8432,7 +8439,7 @@ class TelegramAdapter(BasePlatformAdapter):
         chat_id = str(getattr(getattr(message, "chat", None), "id", ""))
         return not allowed_chats or chat_id in allowed_chats
 
-    def _build_background_location_prompt(self, message: Message) -> Optional[str]:
+    def _build_background_location_context(self, message: Message) -> Optional[str]:
         """Build sanitized, sender-scoped location context for one model turn."""
         if not getattr(self, "_background_locations_enabled", False):
             return None
@@ -8475,17 +8482,19 @@ class TelegramAdapter(BasePlatformAdapter):
             lines.append(f"Horizontal accuracy: {accuracy} metres")
         return "\n".join(lines)
 
-    def _attach_background_location_prompt(
+    def _attach_background_location_context(
         self, event: MessageEvent, message: Message
     ) -> MessageEvent:
-        """Append location to the ephemeral prompt, never transcript content."""
-        prompt = self._build_background_location_prompt(message)
-        if not prompt:
+        """Attach location as API-only user context, never system content."""
+        location_context = self._build_background_location_context(message)
+        if not location_context:
             return event
-        if event.channel_prompt:
-            event.channel_prompt = f"{event.channel_prompt}\n\n{prompt}"
+        if event.ephemeral_user_context:
+            event.ephemeral_user_context = (
+                f"{event.ephemeral_user_context}\n\n{location_context}"
+            )
         else:
-            event.channel_prompt = prompt
+            event.ephemeral_user_context = location_context
         return event
 
     async def _handle_text_message(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -8519,7 +8528,7 @@ class TelegramAdapter(BasePlatformAdapter):
         event.text = self._clean_bot_trigger_text(event.text)
         await self._cache_replied_media(msg, event)
         event = self._apply_telegram_group_observe_attribution(event)
-        event = self._attach_background_location_prompt(event, msg)
+        event = self._attach_background_location_context(event, msg)
         self._enqueue_text_event(event)
 
     async def _handle_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -8542,7 +8551,7 @@ class TelegramAdapter(BasePlatformAdapter):
         event.text = self._clean_bot_trigger_text(event.text)
         await self._cache_replied_media(msg, event)
         event = self._apply_telegram_group_observe_attribution(event)
-        event = self._attach_background_location_prompt(event, msg)
+        event = self._attach_background_location_context(event, msg)
         await self.handle_message(event)
 
     async def _handle_location_message(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:

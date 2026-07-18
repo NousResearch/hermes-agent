@@ -1821,6 +1821,13 @@ class MessageEvent:
 
     # Timestamps
     timestamp: datetime = field(default_factory=datetime.now)
+
+    # Per-turn user-side context for volatile platform data.  Appended last to
+    # preserve the positional constructor order of the existing event fields.
+    # The gateway injects it into the current API user message while persisting
+    # only the original event text, so it cannot alter the cached system prefix
+    # or leak into later transcript replay.
+    ephemeral_user_context: Optional[str] = None
     
     def is_command(self) -> bool:
         """Check if this is a command message (e.g., /new, /reset)."""

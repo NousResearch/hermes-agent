@@ -129,9 +129,10 @@ With this option enabled:
   timestamps, optional accuracy/heading/proximity/live-period metadata, and
   sanitized venue title/address metadata when present;
 - a later text message or command from the same sender receives the latest
-  location as ephemeral per-turn system context, so questions such as "Where
-  am I?" or "What's nearby?" can use it without persisting the injected
-  location in the Hermes conversation transcript.
+  location as ephemeral user-side context for that turn, so questions such as
+  "Where am I?" or "What's nearby?" can use it without changing the cached
+  system prompt or persisting the injected location in the Hermes conversation
+  transcript.
 
 Records are scoped to the Telegram sender and chat. They are not currently
 available to turns from Discord or other platforms because Hermes does not have
@@ -146,12 +147,12 @@ not clear the active process and a later update can recreate the cached state.
 
 This option intentionally sends the latest coordinates with each later accepted
 text message or command from that sender, including turns unrelated to
-location. Hermes does not persist that ephemeral prompt in its conversation
-transcript, but the coordinates are sent to your configured model provider and
-an agent response may repeat them. Hermes snapshots or other backups may also
-retain the state file, including its Telegram identifiers and any sanitized
-venue metadata, after you delete the live copy. Enable this only when that
-privacy tradeoff matches your deployment and retention policy.
+location. Hermes does not persist that ephemeral user context in its
+conversation transcript, but the coordinates are sent to your configured model
+provider and an agent response may repeat them. Hermes snapshots or other
+backups may also retain the state file, including its Telegram identifiers and
+any sanitized venue metadata, after you delete the live copy. Enable this only
+when that privacy tradeoff matches your deployment and retention policy.
 
 ## Step 3: Privacy Mode (Critical for Groups)
 

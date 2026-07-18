@@ -36,6 +36,7 @@ from agent.redact import redact_sensitive_text
 from agent.transports.codex_app_server import (
     CodexAppServerClient,
     CodexAppServerError,
+    resolve_codex_home,
 )
 from agent.transports.codex_event_projector import CodexEventProjector
 
@@ -212,7 +213,7 @@ class CodexAppServerSession:
     ) -> None:
         self._cwd = cwd or os.getcwd()
         self._codex_bin = codex_bin
-        self._codex_home = codex_home
+        self._codex_home = resolve_codex_home(codex_home)
         self._permission_profile = (
             permission_profile or _HERMES_TO_CODEX_PERMISSION_PROFILE.get(
                 os.environ.get("HERMES_TERMINAL_SECURITY_MODE", "auto"),
@@ -226,6 +227,7 @@ class CodexAppServerSession:
 
         self._client: Optional[CodexAppServerClient] = None
         self._thread_id: Optional[str] = None
+        self._initialize_result: dict[str, Any] = {}
         self._interrupt_event = threading.Event()
         # Pending file-change items, keyed by item id. Populated on
         # item/started for fileChange items; consumed by the approval
@@ -247,11 +249,20 @@ class CodexAppServerSession:
             self._client = self._client_factory(
                 codex_bin=self._codex_bin, codex_home=self._codex_home
             )
-        self._client.initialize(
+        self._initialize_result = self._client.initialize(
             client_name="hermes",
             client_title="Hermes Agent",
             client_version=_get_hermes_version(),
         )
+        reported_home = str(self._initialize_result.get("codexHome") or "").strip()
+        if reported_home:
+            reported_home = os.path.abspath(os.path.expanduser(reported_home))
+            if reported_home != self._codex_home:
+                logger.warning(
+                    "codex app-server home mismatch: configured=%s reported=%s",
+                    self._codex_home,
+                    reported_home,
+                )
         # Permission selection is intentionally NOT sent on thread/start.
         # Two reasons (live-tested against codex 0.130.0):
         #   1. `thread/start.permissions` is gated behind the experimentalApi
@@ -290,12 +301,27 @@ class CodexAppServerSession:
             )
         self._thread_id = thread_id
         logger.info(
-            "codex app-server thread started: id=%s profile=%s cwd=%s",
+            "codex app-server thread started: id=%s codex_home=%s "
+            "profile=%s cwd=%s",
             self._thread_id[:8],
+            self._codex_home,
             self._permission_profile,
             self._cwd,
         )
         return self._thread_id
+
+    def startup_diagnostics(self) -> dict[str, Any]:
+        """Return bounded, non-secret launch and handshake provenance."""
+        return {
+            "binary": self._codex_bin,
+            "configured_codex_home": self._codex_home,
+            "reported_codex_home": self._initialize_result.get("codexHome"),
+            "user_agent": self._initialize_result.get("userAgent"),
+            "platform_family": self._initialize_result.get("platformFamily"),
+            "platform_os": self._initialize_result.get("platformOs"),
+            "cwd": self._cwd,
+            "thread_id": self._thread_id,
+        }
 
     def close(self) -> None:
         if self._closed:

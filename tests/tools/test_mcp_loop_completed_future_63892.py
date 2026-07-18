@@ -27,10 +27,16 @@ import asyncio
 import concurrent.futures
 import threading
 import time
+from unittest import mock
 
 import pytest
 
 import tools.mcp_tool as mcp_mod
+
+
+# ---------------------------------------------------------------------------
+# Helpers
+# ---------------------------------------------------------------------------
 
 
 def _spawn_loop() -> tuple[asyncio.AbstractEventLoop, threading.Thread]:
@@ -60,6 +66,25 @@ def _restore_loop(mcp_mod, old_loop, old_thread):
     mcp_mod._mcp_thread = old_thread
 
 
+def _pre_completed_future(exception=None, value=None):
+    """Return a ``concurrent.futures.Future`` that is already done.
+
+    If *exception* is set the future is completed with that exception;
+    otherwise *value* (default ``None``) is the result.
+    """
+    fut = concurrent.futures.Future()
+    if exception is not None:
+        fut.set_exception(exception)
+    else:
+        fut.set_result(value)
+    return fut
+
+
+# ---------------------------------------------------------------------------
+# Tests
+# ---------------------------------------------------------------------------
+
+
 class TestRunOnMcpLoopCompletedFutureTimeoutRace:
     """Issue #63892: a completed future raising a real TimeoutError must not
     spin the poll loop and grow its traceback chain without bound."""
@@ -79,7 +104,6 @@ class TestRunOnMcpLoopCompletedFutureTimeoutRace:
         old_loop, old_thread = _install_loop(mcp_mod, loop, thread)
 
         async def _inner_raises_timeout():
-            # Mimics asyncio.wait_for(call_tool, timeout=0.1) expiring.
             raise asyncio.TimeoutError("inner wait_for expired")
 
         try:
@@ -90,67 +114,63 @@ class TestRunOnMcpLoopCompletedFutureTimeoutRace:
             _restore_loop(mcp_mod, old_loop, old_thread)
 
     def test_poll_loop_does_not_spin_when_inner_timeout_fires(self):
-        """Same scenario as above, but assert the poll loop visits
-        ``future.result(timeout=...)`` only a bounded number of times before
-        surfacing the exception. Pre-fix the loop spun ~420k times/sec.
+        """Injects a pre-completed Future with a stored TimeoutError by
+        patching ``safe_schedule_threadsafe``, then asserts the poll loop
+        surfaces the exception within a bounded number of polls.
 
-        We instrument ``future.result`` via a wrapper to count polls; once the
-        inner future completes with a stored TimeoutError the fixed code
-        surfaces it on the *next* poll (returning, not continuing). Without the
-        fix we would observe millions of polls within a 1-second window.
+        Pre-fix the loop spun ~420k times/sec because ``future.result()``
+        returned instantly (future was done) but the except clause
+        swallowed it and ``continue``-d.
         """
-        loop, thread = _spawn_loop()
-        old_loop, old_thread = _install_loop(mcp_mod, loop, thread)
 
-        async def _inner_raises_timeout():
-            raise asyncio.TimeoutError("inner wait_for expired")
+        # Build a pre-completed future with a real TimeoutError stored.
+        pre_completed = _pre_completed_future(
+            exception=asyncio.TimeoutError("inner wait_for expired")
+        )
 
-        future = asyncio.run_coroutine_threadsafe(_inner_raises_timeout(), loop)
-        # Drain the future so it's already completed before _run_on_mcp_loop
-        # ever polls. This is the exact shape of the bug: a completed future
-        # with a stored TimeoutError.
-        try:
-            future.result(timeout=2)
-        except concurrent.futures.TimeoutError:
-            pass  # poll timeout — fine, future isn't done yet
-        except BaseException:
-            pass  # real TimeoutError consumed — future is done now
-
-        # Snapshot the stored exception's traceback depth before invoking the
-        # poll loop. With the fix the poll loop re-raises once and surfaces
-        # immediately, leaving traceback depth essentially unchanged. Without
-        # the fix it would grow without bound.
-        try:
-            stored_exc = future.exception(timeout=2)
-        except concurrent.futures.TimeoutError:
-            stored_exc = None
-
-        # Allow up to a few polls (the loop has a 100ms wait, so within a
-        # 1-second test window a fixed loop should poll at most ~10 times;
-        # a spinning loop would poll ~hundreds of thousands of times).
+        # Wrap .result() to count polls.
         poll_count = {"n": 0}
-        original_result = future.result
+        orig_result = pre_completed.result
 
         def _counting_result(timeout=None):
             poll_count["n"] += 1
-            return original_result(timeout)
+            return orig_result(timeout)
 
-        future.result = _counting_result  # type: ignore[method-assign]
+        pre_completed.result = _counting_result  # type: ignore[method-assign]
 
-        try:
-            if stored_exc is not None:
-                # Future is done with a real exception. The fixed poll loop
-                # must surface it (re-raise) within a bounded number of polls.
-                with pytest.raises(asyncio.TimeoutError):
-                    mcp_mod._run_on_mcp_loop(_inner_raises_timeout(), timeout=1)
+        # Both arguments to _run_on_mcp_loop need to be valid so the
+        # function-under-test runs its body.  We supply a do-nothing
+        # coroutine because the injected future replaces whatever
+        # safe_schedule_threadsafe would have returned.
+        async def _dummy_coro():
+            pass
+
+        loop, thread = _spawn_loop()
+        old_loop, old_thread = _install_loop(mcp_mod, loop, thread)
+
+        # Patch safe_schedule_threadsafe to return the pre-completed future.
+        # This is the key fix over the original test: the function-under-test
+        # uses safe_schedule_threadsafe internally, so we intercept it here
+        # rather than counting polls on a different future object.
+        def _fake_sched(coro, loop, **kw):
+            coro.close()  # don't leak the coroutine
+            return pre_completed
+
+        with mock.patch(
+            "agent.async_utils.safe_schedule_threadsafe",
+            side_effect=_fake_sched,
+        ):
+            try:
+                with pytest.raises(asyncio.TimeoutError, match="inner wait_for expired"):
+                    mcp_mod._run_on_mcp_loop(_dummy_coro(), timeout=1)
                 # Loose bound — pre-fix this would be ~10^5+ within 1s.
                 assert poll_count["n"] < 100, (
                     f"poll loop spun {poll_count['n']} times — unbounded spin "
                     f"indicates #63892 regression"
                 )
-        finally:
-            _stop_loop(loop, thread)
-            _restore_loop(mcp_mod, old_loop, old_thread)
+            finally:
+                _stop_loop(loop, thread)
+                _restore_loop(mcp_mod, old_loop, old_thread)
 
     def test_traceback_depth_does_not_grow_under_repeated_polls(self):
         """Pre-fix the same exception object accumulated frames on each re-raise.
@@ -212,3 +232,102 @@ class TestRunOnMcpLoopCompletedFutureTimeoutRace:
         finally:
             _stop_loop(loop, thread)
             _restore_loop(mcp_mod, old_loop, old_thread)
+
+    def test_race_poll_timeout_then_future_becomes_done_with_value(self):
+        """Deterministic poll-timeout/success-race coverage.
+
+        On the first ``future.result(timeout=0.1)`` call (poll), the future
+        is still pending, so ``TimeoutError`` is raised.  Between the poll
+        and the ``future.done()`` check, the future completes.  The fix must
+        call ``future.result()`` (untimed) to surface the value instead of
+        ``continue``-ing the loop.
+
+        We use a custom Future subclass that changes state after the first
+        timed poll.
+        """
+        loop, thread = _spawn_loop()
+        old_loop, old_thread = _install_loop(mcp_mod, loop, thread)
+
+        class _RaceFuture(concurrent.futures.Future):
+            """A Future that is pending on the first ``result(timeout=...)``
+            call (raises TimeoutError) but becomes done before the handler
+            checks ``future.done()``."""
+
+            def __init__(self, value):
+                super().__init__()
+                self._race_value = value
+                self._polled = False
+
+            def result(self, timeout=None):
+                if not self._polled:
+                    # First call: simulate poll timeout.
+                    self._polled = True
+                    # We don't actually sleep — just raise immediately.
+                    # This is a "timed" call that expired.
+                    if timeout is not None and timeout < 999:
+                        raise concurrent.futures.TimeoutError()
+                # Second call (or untimed call): we are now "done".
+                if not self.done():
+                    self.set_result(self._race_value)
+                return super().result(timeout)
+
+        race_future = _RaceFuture(value="race_value")
+
+        async def _dummy_coro():
+            pass
+
+        with mock.patch(
+            "agent.async_utils.safe_schedule_threadsafe",
+            side_effect=lambda coro, loop, **kw: (coro.close(), race_future)[1],
+        ):
+            try:
+                result = mcp_mod._run_on_mcp_loop(_dummy_coro(), timeout=10)
+                assert result == "race_value", (
+                    f"Expected race_value, got {result!r}"
+                )
+            finally:
+                _stop_loop(loop, thread)
+                _restore_loop(mcp_mod, old_loop, old_thread)
+
+    def test_race_poll_timeout_then_future_becomes_done_with_exception(self):
+        """Deterministic poll-timeout/exception-race coverage.
+
+        Similar to the value-race above, but the future completes with a
+        stored exception between the poll and the ``future.done()`` check.
+        The fix must call ``future.result()`` (untimed) to surface the
+        exception.
+        """
+        loop, thread = _spawn_loop()
+        old_loop, old_thread = _install_loop(mcp_mod, loop, thread)
+
+        class _RaceFuture(concurrent.futures.Future):
+            def __init__(self, exc):
+                super().__init__()
+                self._race_exc = exc
+                self._polled = False
+
+            def result(self, timeout=None):
+                if not self._polled:
+                    self._polled = True
+                    if timeout is not None and timeout < 999:
+                        raise concurrent.futures.TimeoutError()
+                if not self.done():
+                    self.set_exception(self._race_exc)
+                return super().result(timeout)
+
+        race_exc = RuntimeError("server returned error")
+        race_future = _RaceFuture(exc=race_exc)
+
+        async def _dummy_coro():
+            pass
+
+        with mock.patch(
+            "agent.async_utils.safe_schedule_threadsafe",
+            side_effect=lambda coro, loop, **kw: (coro.close(), race_future)[1],
+        ):
+            try:
+                with pytest.raises(RuntimeError, match="server returned error"):
+                    mcp_mod._run_on_mcp_loop(_dummy_coro(), timeout=10)
+            finally:
+                _stop_loop(loop, thread)
+                _restore_loop(mcp_mod, old_loop, old_thread)

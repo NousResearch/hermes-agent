@@ -62,8 +62,12 @@ class GatewayAuthorizationMixin:
         if not platform:
             return None
         profile_name = (profile or "").strip() or None
-        if profile_name and profile_name != "default":
-            profile_adapters = getattr(self, "_profile_adapters", None) or {}
+        profile_adapters = getattr(self, "_profile_adapters", None) or {}
+        multiplexed = bool(
+            getattr(getattr(self, "config", None), "multiplex_profiles", False)
+            or (profile_name and profile_name in profile_adapters)
+        )
+        if multiplexed and profile_name and profile_name != "default":
             if profile_name in profile_adapters:
                 return profile_adapters[profile_name].get(platform)
             # Fail closed: a stamped secondary profile with no registry entry

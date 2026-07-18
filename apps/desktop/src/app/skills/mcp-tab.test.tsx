@@ -77,7 +77,20 @@ afterEach(() => {
 })
 
 describe('McpCatalog install → OAuth chaining', () => {
-  it('chains an oauth+http install straight into the desktop OAuth flow', async () => {
+  it('refreshes immediately, then refreshes again after OAuth succeeds', async () => {
+    const approvedFlow = {
+      flow_id: 'f1',
+      server_name: 'linear',
+      status: 'approved',
+      authorization_url: null,
+      error: null,
+      tools: [{ name: 'create_issue', description: 'Create an issue' }]
+    }
+
+    let approve: ((flow: typeof approvedFlow) => void) | undefined
+    completeMcpDesktopOAuth.mockImplementation(
+      () => new Promise<typeof approvedFlow>(resolve => (approve = resolve))
+    )
     const { McpCatalog } = await import('./mcp-tab')
     const onInstalled = vi.fn()
     render(<McpCatalog entries={[entry()]} loading={false} onInstalled={onInstalled} />)
@@ -90,7 +103,27 @@ describe('McpCatalog install → OAuth chaining', () => {
     await waitFor(() =>
       expect(completeMcpDesktopOAuth).toHaveBeenCalledWith(expect.objectContaining({ serverName: 'linear' }))
     )
-    await waitFor(() => expect(onInstalled).toHaveBeenCalled())
+    await waitFor(() => expect(onInstalled).toHaveBeenCalledTimes(1))
+    expect((screen.getByRole('button', { name: 'Install' }) as HTMLButtonElement).disabled).toBe(false)
+
+    approve?.(approvedFlow)
+
+    await waitFor(() => expect(onInstalled).toHaveBeenCalledTimes(2))
+  })
+
+  it('does not hold install completion behind persistent authorization_required polling', async () => {
+    // Models completeMcpDesktopOAuth continuing to poll an authorization_required
+    // flow after the user closes or abandons the browser.
+    completeMcpDesktopOAuth.mockImplementation(() => new Promise(() => undefined))
+    const { McpCatalog } = await import('./mcp-tab')
+    const onInstalled = vi.fn()
+    render(<McpCatalog entries={[entry()]} loading={false} onInstalled={onInstalled} />)
+
+    fireEvent.click(await screen.findByRole('button', { name: 'Install' }))
+
+    await waitFor(() => expect(completeMcpDesktopOAuth).toHaveBeenCalled())
+    await waitFor(() => expect(onInstalled).toHaveBeenCalledTimes(1))
+    expect((screen.getByRole('button', { name: 'Install' }) as HTMLButtonElement).disabled).toBe(false)
   })
 
   it('does not launch OAuth for a non-oauth entry', async () => {

@@ -1350,6 +1350,29 @@ export function McpCatalog({
   const [envDrafts, setEnvDrafts] = useState<Record<string, Record<string, string>>>({})
   const [envOpenFor, setEnvOpenFor] = useState<null | string>(null)
 
+  const connectAfterInstall = async (entry: McpCatalogEntry) => {
+    try {
+      const flow = await completeMcpDesktopOAuth({
+        serverName: entry.name,
+        start: authMcpServer,
+        status: getMcpOAuthFlow,
+        openExternal: url => window.hermesDesktop.openExternal(url)
+      })
+
+      notify({
+        kind: 'success',
+        title: m.authenticatedTitle,
+        message: m.authenticatedMessage(entry.name, flow.tools?.length ?? 0)
+      })
+      // OAuth persists post-install auth config, so reconcile catalog/config
+      // once more after approval without holding the install lifecycle open.
+      onInstalled()
+    } catch {
+      // Never fail the install over an auth hiccup: it already succeeded.
+      notify({ kind: 'info', title: m.catalogConnectPending(entry.name), message: '' })
+    }
+  }
+
   const install = async (entry: McpCatalogEntry) => {
     const required = entry.required_env.filter(env => env.required)
     const draft = envDrafts[entry.name] ?? {}
@@ -1395,36 +1418,21 @@ export function McpCatalog({
       notify({ kind: 'success', title: m.catalogInstallStarted(entry.name), message: '' })
       setEnvOpenFor(null)
 
+      // Refresh installed catalog/config immediately and release the row. The
+      // browser OAuth handoff can remain authorization_required for minutes.
+      onInstalled()
+
       // An OAuth-over-HTTP connector isn't usable straight after install — the
       // catalog install only writes config/env, it never mints a token. Chain
       // straight into the SAME desktop OAuth flow the Servers tab uses for
-      // re-auth (see `authenticate`), so "Install" actually connects. Best-effort:
-      // a cancelled/failed auth leaves the install intact — surface a connect-later
-      // state and let the user finish from the Servers tab's Authenticate action.
+      // re-auth (see `authenticate`), so "Install" actually connects. Run it as
+      // a non-blocking follow-up so closing the browser cannot strand the row.
       // The strict `=== 'http'` / `=== 'oauth'` checks are inherently version-skew
       // safe: a missing/renamed field on an older runtime's catalog just fails the
       // predicate, so the chain no-ops rather than crashing.
       if (entry.auth_type === 'oauth' && entry.transport === 'http') {
-        try {
-          const flow = await completeMcpDesktopOAuth({
-            serverName: entry.name,
-            start: authMcpServer,
-            status: getMcpOAuthFlow,
-            openExternal: url => window.hermesDesktop.openExternal(url)
-          })
-
-          notify({
-            kind: 'success',
-            title: m.authenticatedTitle,
-            message: m.authenticatedMessage(entry.name, flow.tools?.length ?? 0)
-          })
-        } catch {
-          // Never fail the install over an auth hiccup — it already succeeded.
-          notify({ kind: 'info', title: m.catalogConnectPending(entry.name), message: '' })
-        }
+        void connectAfterInstall(entry)
       }
-
-      onInstalled()
     } catch (err) {
       notifyError(err, m.catalogInstallFailed(entry.name))
     } finally {

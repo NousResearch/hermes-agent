@@ -31,3 +31,14 @@ test('OAuth Electron net request does not set forbidden Content-Length header', 
   assert.doesNotMatch(fn, /setHeader\(['"]Content-Length['"]/)
   assert.match(fn, /request\.write\(body\)/)
 })
+
+test('remote revalidation uses Electron networking for OS-trusted CAs', () => {
+  const start = source.indexOf("ipcMain.handle('hermes:connection:revalidate'")
+  const end = source.indexOf("ipcMain.handle('hermes:backend:touch'", start)
+  assert.notEqual(start, -1, 'revalidation handler should exist')
+  assert.notEqual(end, -1, 'revalidation handler boundary should exist')
+
+  const handler = source.slice(start, end)
+  assert.match(handler, /fetchJsonViaOauthSession/)
+  assert.doesNotMatch(handler, /fetchPublicJson/)
+})

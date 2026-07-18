@@ -7399,14 +7399,18 @@ ipcMain.handle('hermes:connection:revalidate', async () => {
   const base = conn.baseUrl.replace(/\/+$/, '')
 
   try {
-    await fetchPublicJson(`${base}/api/status`, { timeoutMs: 2_500 })
+    // Use Electron's network stack so private/internal CAs trusted by the OS
+    // behave exactly like the OAuth ticket and REST requests. Node's https
+    // client uses its own CA bundle and can reject an otherwise healthy remote.
+    await fetchJsonViaOauthSession(`${base}/api/status`, { timeoutMs: 2_500 })
 
     return { ok: true, rebuilt: false }
-  } catch {
+  } catch (error) {
     // Unreachable remote: drop the stale cache so the renderer's next reconnect
     // tick rebuilds a fresh, reachable descriptor. resetHermesConnection only
     // nulls connectionPromise for a remote (no child to SIGTERM).
-    rememberLog('Cached remote Hermes backend failed liveness probe; dropping stale connection.')
+    const detail = error instanceof Error ? error.message : String(error)
+    rememberLog(`Cached remote Hermes backend failed liveness probe (${detail}); dropping stale connection.`)
     resetHermesConnection()
 
     return { ok: true, rebuilt: true }

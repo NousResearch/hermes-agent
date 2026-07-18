@@ -1,5 +1,5 @@
 import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
-import { afterEach, beforeEach, describe, expect, it } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { $desktopBoot } from '@/store/boot'
 import { $desktopOnboarding } from '@/store/onboarding'
@@ -45,6 +45,14 @@ const remoteToken = {
   remoteTokenSet: true,
   remoteUrl: 'http://100.116.104.53:9191',
   cloudOrg: ''
+}
+
+const remoteOauth = {
+  ...remoteToken,
+  remoteAuthMode: 'oauth',
+  remoteOauthConnected: false,
+  remoteTokenSet: false,
+  remoteUrl: 'https://gateway.example.com'
 }
 
 beforeEach(() => {
@@ -96,6 +104,35 @@ describe('BootFailureOverlay', () => {
       expect(screen.getByRole('button', { name: /use local gateway/i })).toBeTruthy()
     } finally {
       restore()
+    }
+  })
+
+  it('retries OAuth sign-in without deleting an existing session', async () => {
+    const original = window.hermesDesktop
+    const oauthLogin = vi.fn(async () => ({ ok: true, baseUrl: remoteOauth.remoteUrl, connected: true }))
+    const oauthLogout = vi.fn(async () => ({ ok: true, connected: false }))
+    const resetBootstrap = vi.fn(async () => ({ ok: true }))
+    Object.defineProperty(window, 'hermesDesktop', {
+      configurable: true,
+      value: {
+        getRecentLogs: async () => ({ lines: [] }),
+        getConnectionConfig: async () => remoteOauth,
+        probeConnectionConfig: async () => ({ providers: [] }),
+        oauthLoginConnectionConfig: oauthLogin,
+        oauthLogoutConnectionConfig: oauthLogout,
+        resetBootstrap
+      }
+    })
+    $desktopBoot.set({ ...$desktopBoot.get(), error: 'Your remote gateway session has expired.' })
+
+    try {
+      render(<BootFailureOverlay />)
+      fireEvent.click(await screen.findByRole('button', { name: /sign in again/i }))
+      await waitFor(() => expect(oauthLogin).toHaveBeenCalledWith(remoteOauth.remoteUrl))
+      expect(oauthLogout).not.toHaveBeenCalled()
+      expect(resetBootstrap).toHaveBeenCalled()
+    } finally {
+      Object.defineProperty(window, 'hermesDesktop', { configurable: true, value: original })
     }
   })
 })

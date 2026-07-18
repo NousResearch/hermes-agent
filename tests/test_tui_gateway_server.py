@@ -5111,6 +5111,51 @@ def test_config_set_personality_rejects_unknown_name(monkeypatch):
     assert "Unknown personality" in resp["error"]["message"]
 
 
+def test_config_set_personality_rejects_invalid_definition_without_mutation(
+    monkeypatch,
+):
+    writes = []
+    agent = types.SimpleNamespace(
+        ephemeral_system_prompt="before",
+        _cached_system_prompt="cached",
+    )
+    session = _session(agent=agent, history=[])
+    server._sessions["sid"] = session
+    monkeypatch.setattr(
+        server,
+        "_available_personalities",
+        lambda cfg=None: {"broken": {"tone": 42}},
+    )
+    monkeypatch.setattr(
+        server,
+        "_write_config_key",
+        lambda path, value: writes.append((path, value)),
+    )
+
+    try:
+        resp = server.handle_request(
+            {
+                "id": "1",
+                "method": "config.set",
+                "params": {
+                    "session_id": "sid",
+                    "key": "personality",
+                    "value": "broken",
+                },
+            }
+        )
+
+        assert "Invalid personality 'broken'" in resp["error"]["message"]
+        assert writes == []
+        assert server._sessions["sid"] is session
+        assert session["agent"] is agent
+        assert agent.ephemeral_system_prompt == "before"
+        assert agent._cached_system_prompt == "cached"
+        assert session["history"] == []
+    finally:
+        server._sessions.pop("sid", None)
+
+
 def test_config_set_personality_preserves_history_and_returns_info(monkeypatch):
     agent = types.SimpleNamespace(
         ephemeral_system_prompt=None, _cached_system_prompt="old"
@@ -5155,6 +5200,164 @@ def test_config_set_personality_preserves_history_and_returns_info(monkeypatch):
     assert agent.ephemeral_system_prompt == "You are helpful."
     assert agent._cached_system_prompt == "old"
     assert ("session.info", "sid", {"model": "?"}) in emits
+
+
+def _reset_tui_config_state():
+    from tui_gateway import server
+
+    server._cfg_cache = None
+    server._cfg_mtime = None
+    server._cfg_path = None
+
+    cache_clear = getattr(server._available_personalities, "cache_clear", None)
+    if cache_clear is not None:
+        cache_clear()
+
+
+def test_config_set_personality_integration_with_real_lookup_and_write(
+    tmp_path, monkeypatch
+):
+    import yaml
+
+    from hermes_constants import reset_hermes_home_override, set_hermes_home_override
+
+    home = tmp_path / ".hermes"
+    home.mkdir()
+    cfg_file = home / "config.yaml"
+    cfg = {
+        "agent": {
+            "personalities": {
+                "super_helper": {
+                    "system_prompt": "You are a super helper.",
+                    "tone": "enthusiastic",
+                    "style": "concise",
+                }
+            }
+        }
+    }
+    cfg_file.write_text(yaml.safe_dump(cfg), encoding="utf-8")
+
+    token = set_hermes_home_override(home)
+    monkeypatch.setattr(server, "_hermes_home", home)
+    import cli
+    monkeypatch.setattr(cli, "_hermes_home", home)
+    try:
+        _reset_tui_config_state()
+
+        agent = types.SimpleNamespace(
+            ephemeral_system_prompt=None, _cached_system_prompt="old default prompt"
+        )
+        session = _session(
+            agent=agent,
+            history=[],
+            history_version=1,
+        )
+        server._sessions["sid"] = session
+
+        monkeypatch.setattr(server, "_session_info", lambda _agent, *a: {"model": "?"})
+
+        resp = server.handle_request(
+            {
+                "id": "1",
+                "method": "config.set",
+                "params": {
+                    "session_id": "sid",
+                    "key": "personality",
+                    "value": "super_helper",
+                },
+            }
+        )
+
+        assert "error" not in resp, f"Request failed: {resp}"
+        assert resp["result"]["key"] == "personality"
+        assert resp["result"]["value"] == "super_helper"
+        assert resp["result"]["history_reset"] is False
+
+        rendered = "You are a super helper.\nTone: enthusiastic\nStyle: concise"
+        assert agent.ephemeral_system_prompt == rendered
+        assert agent._cached_system_prompt == "old default prompt"
+
+        written_cfg = yaml.safe_load(cfg_file.read_text(encoding="utf-8"))
+        assert written_cfg["display"]["personality"] == "super_helper"
+        assert written_cfg["agent"]["system_prompt"] == rendered
+
+    finally:
+        server._sessions.pop("sid", None)
+        _reset_tui_config_state()
+        reset_hermes_home_override(token)
+
+
+def test_config_set_personality_invalid_integration_does_not_persist_or_mutate(
+    tmp_path, monkeypatch
+):
+    import yaml
+
+    from hermes_constants import reset_hermes_home_override, set_hermes_home_override
+
+    home = tmp_path / ".hermes"
+    home.mkdir()
+    cfg_file = home / "config.yaml"
+    cfg = {
+        "agent": {
+            "system_prompt": "before prompt",
+            "personalities": {
+                "broken": {
+                    "tone": 42
+                }
+            }
+        },
+        "display": {
+            "personality": "helper"
+        }
+    }
+    cfg_file.write_text(yaml.safe_dump(cfg), encoding="utf-8")
+
+    token = set_hermes_home_override(home)
+    monkeypatch.setattr(server, "_hermes_home", home)
+    import cli
+    monkeypatch.setattr(cli, "_hermes_home", home)
+    try:
+        _reset_tui_config_state()
+
+        agent = types.SimpleNamespace(
+            ephemeral_system_prompt="before overlay", _cached_system_prompt="old cached prompt"
+        )
+        session = _session(
+            agent=agent,
+            history=[],
+            history_version=1,
+        )
+        server._sessions["sid"] = session
+
+        monkeypatch.setattr(server, "_session_info", lambda _agent, *a: {"model": "?"})
+
+        resp = server.handle_request(
+            {
+                "id": "1",
+                "method": "config.set",
+                "params": {
+                    "session_id": "sid",
+                    "key": "personality",
+                    "value": "broken",
+                },
+            }
+        )
+
+        assert "error" in resp
+        error_msg = resp["error"]["message"].lower()
+        assert "invalid" in error_msg or "configuration" in error_msg or "personality" in error_msg
+
+        assert agent.ephemeral_system_prompt == "before overlay"
+        assert agent._cached_system_prompt == "old cached prompt"
+
+        written_cfg = yaml.safe_load(cfg_file.read_text(encoding="utf-8"))
+        assert written_cfg["display"]["personality"] == "helper"
+        assert written_cfg["agent"]["system_prompt"] == "before prompt"
+
+    finally:
+        server._sessions.pop("sid", None)
+        _reset_tui_config_state()
+        reset_hermes_home_override(token)
 
 
 def test_session_compress_uses_compress_helper(monkeypatch):

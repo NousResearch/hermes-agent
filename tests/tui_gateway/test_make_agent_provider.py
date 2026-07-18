@@ -264,6 +264,20 @@ def test_probe_config_health_flags_null_personalities_with_active_personality():
     assert "agent.personalities" in msg
 
 
+def test_probe_config_health_accepts_clear_personality_aliases():
+    from tui_gateway.server import _probe_config_health
+
+    for alias in ("none", "default", "neutral"):
+        msg = _probe_config_health(
+            {
+                "agent": {"personalities": None},
+                "display": {"personality": alias},
+                "model": {},
+            }
+        )
+        assert msg == ""
+
+
 def test_make_agent_tolerates_null_config_sections():
     """Bare `agent:` / `display:` keys in ~/.hermes/config.yaml parse as
     None. cfg.get("agent", {}) returns None (default only fires on missing

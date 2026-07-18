@@ -932,6 +932,33 @@ class TestSubcommandCompletion:
         assert "none" in texts
         assert len(texts) > 1
 
+    def test_personality_completion_skips_only_invalid_entries(self, monkeypatch):
+        personalities = {
+            "legacy": "Legacy prompt",
+            "broken": {"system_prompt": 42},
+            "mapped": {
+                "description": "Mapped description",
+                "system_prompt": "Mapped prompt",
+            },
+        }
+        monkeypatch.setattr(
+            "cli.load_cli_config",
+            lambda: {"agent": {"personalities": personalities}},
+        )
+
+        completions = _completions(SlashCommandCompleter(), "/personality ")
+
+        assert [completion.text for completion in completions] == [
+            "none",
+            "legacy",
+            "mapped",
+        ]
+        assert [completion.display_meta_text for completion in completions] == [
+            "clear personality overlay",
+            "Legacy prompt",
+            "Mapped description",
+        ]
+
 
 # ── Ghost text (SlashCommandAutoSuggest) ────────────────────────────────
 

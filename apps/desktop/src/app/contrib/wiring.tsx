@@ -55,7 +55,7 @@ import {
   setCurrentProvider,
   setMessages
 } from '@/store/session'
-import { focusOpenSession } from '@/store/session-states'
+import { focusOpenSession, getSessionStateGeneration } from '@/store/session-states'
 import { clearSessionTodos, setSessionTodos, todosForHydration } from '@/store/todos'
 import { isSecondaryWindow } from '@/store/windows'
 import { useSkinCommand } from '@/themes/use-skin-command'
@@ -266,15 +266,22 @@ export function ContribWiring({ children }: { children: ReactNode }) {
       }
 
       const storedProfile = $sessions.get().find(session => sessionMatchesStoredId(session, storedSessionId))?.profile
+      const stateGeneration = getSessionStateGeneration()
 
       for (let index = 0; index < Math.max(1, attempts); index += 1) {
         try {
           const latest = await getSessionMessages(storedSessionId, storedProfile)
+
+          if (stateGeneration !== getSessionStateGeneration()) {
+            return
+          }
+
           const messages = toChatMessages(latest.messages)
           updateSessionState(
             runtimeSessionId,
             state => ({ ...state, messages: preserveLocalAssistantErrors(messages, state.messages) }),
-            storedSessionId
+            storedSessionId,
+            stateGeneration
           )
 
           const restored = todosForHydration(latestSessionTodos(messages))
@@ -310,6 +317,7 @@ export function ContribWiring({ children }: { children: ReactNode }) {
     }
 
     const stored = $messagingSessions.get().find(s => sessionMatchesStoredId(s, storedSessionId))
+    const stateGeneration = getSessionStateGeneration()
 
     if (!stored || !isMessagingSource(stored.source)) {
       return
@@ -317,6 +325,11 @@ export function ContribWiring({ children }: { children: ReactNode }) {
 
     try {
       const latest = await getSessionMessages(storedSessionId, stored.profile)
+
+      if (stateGeneration !== getSessionStateGeneration()) {
+        return
+      }
+
       const signatureKey = `${stored.profile ?? 'default'}:${storedSessionId}`
       const sig = sessionMessagesSignature(latest.messages)
 
@@ -330,7 +343,8 @@ export function ContribWiring({ children }: { children: ReactNode }) {
       updateSessionState(
         runtimeSessionId,
         state => ({ ...state, messages: preserveLocalAssistantErrors(messages, state.messages) }),
-        storedSessionId
+        storedSessionId,
+        stateGeneration
       )
     } catch {
       // Non-fatal: next poll or manual refresh can hydrate.

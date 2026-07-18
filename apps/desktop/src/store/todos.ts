@@ -74,6 +74,15 @@ export function clearSessionTodos(sid: string) {
   $todosBySession.set(rest)
 }
 
+export function clearAllSessionTodos() {
+  for (const timer of clearTimers.values()) {
+    clearTimeout(timer)
+  }
+
+  clearTimers.clear()
+  $todosBySession.set({})
+}
+
 // Drop a still-active todo list (any pending/in_progress item) — used at turn
 // end, when an unfinished list means the turn stopped without a final `todo`
 // update, so the "Tasks N/M" panel would otherwise stay pinned above the

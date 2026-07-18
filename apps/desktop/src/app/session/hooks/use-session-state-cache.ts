@@ -17,7 +17,12 @@ import {
   setTurnStartedAt,
   setYoloActive
 } from '@/store/session'
-import { publishSessionState, setWatchdogClearFn } from '@/store/session-states'
+import {
+  getSessionStateGeneration,
+  publishSessionState,
+  setSessionStateCacheClearFn,
+  setWatchdogClearFn
+} from '@/store/session-states'
 
 import type { ClientSessionState } from '../../types'
 
@@ -135,6 +140,18 @@ export function useSessionStateCache({
     }
   }, [])
 
+  const clearSessionStateCache = useCallback(() => {
+    resetViewSync()
+    sessionStateByRuntimeIdRef.current.clear()
+    runtimeIdByStoredSessionIdRef.current.clear()
+  }, [resetViewSync])
+
+  useEffect(() => {
+    setSessionStateCacheClearFn(clearSessionStateCache)
+
+    return () => setSessionStateCacheClearFn(null)
+  }, [clearSessionStateCache])
+
   const flushPendingViewState = useCallback(() => {
     const pending = pendingViewStateRef.current
     pendingViewStateRef.current = null
@@ -251,8 +268,13 @@ export function useSessionStateCache({
     (
       sessionId: string,
       updater: (state: ClientSessionState) => ClientSessionState,
-      storedSessionId?: string | null
+      storedSessionId?: string | null,
+      expectedGeneration?: number
     ) => {
+      if (expectedGeneration !== undefined && expectedGeneration !== getSessionStateGeneration()) {
+        return sessionStateByRuntimeIdRef.current.get(sessionId) ?? createClientSessionState(storedSessionId ?? null)
+      }
+
       const previous = ensureSessionState(sessionId, storedSessionId)
       const next = updater({ ...previous, messages: previous.messages })
       sessionStateByRuntimeIdRef.current.set(sessionId, next)

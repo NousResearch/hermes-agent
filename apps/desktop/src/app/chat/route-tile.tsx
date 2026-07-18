@@ -13,19 +13,25 @@ import { ContribBoundary } from '@/contrib/react/boundary'
 import { useContributions } from '@/contrib/react/use-contributions'
 import { $routeTiles, closeRouteTile, type RouteTile } from '@/store/route-tiles'
 
-import { ARTIFACTS_ROUTE, contributedRoutes, MESSAGING_ROUTE, ROUTES_AREA, SKILLS_ROUTE } from '../routes'
+import { ARTIFACTS_ROUTE, contributedRoutes, MESSAGING_ROUTE, ROUTES_AREA, SKILLS_ROUTE, TASKS_ROUTE } from '../routes'
 
 import { paneMirror } from './pane-mirror'
 
 const SkillsView = lazy(async () => ({ default: (await import('../skills')).SkillsView }))
 const MessagingView = lazy(async () => ({ default: (await import('../messaging')).MessagingView }))
 const ArtifactsView = lazy(async () => ({ default: (await import('../artifacts')).ArtifactsView }))
+const TasksView = lazy(async () => ({ default: (await import('../tasks')).TasksView }))
 
 // Built-in page views + their pane titles, keyed by route.
 const BUILTIN_PAGES: Record<string, { render: () => ReactNode; title: string }> = {
   [ARTIFACTS_ROUTE]: { render: () => <ArtifactsView />, title: 'Artifacts' },
   [MESSAGING_ROUTE]: { render: () => <MessagingView />, title: 'Messaging' },
-  [SKILLS_ROUTE]: { render: () => <SkillsView />, title: 'Capabilities' }
+  [SKILLS_ROUTE]: { render: () => <SkillsView />, title: 'Capabilities' },
+  [TASKS_ROUTE]: { render: () => <TasksView />, title: 'Live tasks' }
+}
+
+export function hasBuiltinRoutePage(path: string): boolean {
+  return path in BUILTIN_PAGES
 }
 
 /** Humanize a route path into a tab title: `/my-atlas` → `My Atlas`. */

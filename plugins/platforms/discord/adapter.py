@@ -67,6 +67,12 @@ _DISCORD_NONCONVERSATIONAL_METADATA_KEYS = frozenset({
 # so they don't partition history after an upgrade. New emitters should set the
 # metadata flag, not rely on a regex here.
 _DISCORD_NONCONVERSATIONAL_HISTORY_MESSAGE_PATTERNS = (
+    # Bot-to-bot liveness probes are useful as explicit test artifacts, but
+    # once a thread is closed they must not trigger the peer bot or partition
+    # recent-history context.  In multi-bot Discord threads an exact
+    # HEARTBEAT_OK acknowledgement loop can otherwise continue indefinitely
+    # because each bot sees the other's reply as fresh context.
+    re.compile(r"^\s*HEARTBEAT_OK\s*$", re.IGNORECASE),
     re.compile(r"^\s*💾\s*Self-improvement review:\s+\S[\s\S]*$", re.IGNORECASE),
     # Legacy/background-review test doubles used this shorter form before the
     # self-improvement prefix became the stable emitter contract.
@@ -1117,6 +1123,21 @@ class DiscordAdapter(BasePlatformAdapter):
                 # Ignore Discord system messages (thread renames, pins, member joins, etc.)
                 # Allow both default and reply types — replies have a distinct MessageType.
                 if message.type not in {discord.MessageType.default, discord.MessageType.reply}:
+                    return
+
+                _message_content = getattr(message, "clean_content", message.content) or ""
+
+                # Bot-to-bot liveness/status pings are non-conversational.
+                # Drop them before DISCORD_ALLOW_BOTS admission so an exact
+                # HEARTBEAT_OK cannot wake another bot just because it is a
+                # reply to, or otherwise associated with, that bot.  This is a
+                # narrow guard: operational handoffs and explicit test prompts
+                # still flow through the normal bot-mention path.
+                if (
+                    getattr(message.author, "bot", False)
+                    and _looks_like_nonconversational_history_message(_message_content)
+                ):
+                    self._nonconversational_messages.mark_many([str(message.id)])
                     return
 
                 # Bot message filtering (DISCORD_ALLOW_BOTS):

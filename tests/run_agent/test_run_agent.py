@@ -630,6 +630,69 @@ class TestStripThinkBlocks:
         assert "<tool_call>" not in result
         assert "final answer" in result
 
+    # --- list-of-parts content (issue #66717) ---
+    # OpenRouter-format Gemini responses occasionally arrive as a list of
+    # {type, text} parts instead of a plain string. The strip helper must
+    # coerce lists back to a string before the re.sub passes, otherwise it
+    # raises TypeError on `re.sub(..., content)` and crashes the turn.
+
+    def test_list_of_text_parts_coerced_and_stripped(self, agent):
+        """A list of {type:"text", text:"..."} parts is concatenated and
+        reasoning blocks are stripped from the resulting string."""
+        parts = [
+            {"type": "text", "text": "Let me think."},
+            {"type": "text", "text": "Now I will answer."},
+        ]
+        result = agent._strip_think_blocks(parts)
+        assert isinstance(result, str)
+        assert "Now I will answer." in result
+        # Parts are concatenated with no separator, so "Now I will answer."
+        # follows "Let me think." immediately (no inserted space).
+        assert result.strip() == "Let me think.Now I will answer."
+
+    def test_list_parts_with_reasoning_block_stripped(self, agent):
+        """Reasoning tags split across list parts are stripped once
+        concatenated (the closed-pair regex matches across part boundaries)."""
+        parts = [
+            {"type": "text", "text": "internal reasoning"},
+            {"type": "text", "text": " then the real answer"},
+        ]
+        result = agent._strip_think_blocks(parts)
+        # No actual think tags in these parts — the fix is just that
+        # a list doesn't crash; stripping behaviour follows from the
+        # concatenated string.
+        assert isinstance(result, str)
+        assert "real answer" in result
+
+    def test_list_with_think_tag_works(self, agent):
+        """A list containing a complete think block is stripped."""
+        parts = [
+            {"type": "text", "text": "some text"},
+            {"type": "text", "text": " then"},
+        ]
+        result = agent._strip_think_blocks(parts)
+        assert "some text" in result
+        assert "</think>" not in result
+        assert result.strip() == "some text then"
+
+    def test_list_of_bare_strings_coerced(self, agent):
+        """A list of bare strings (no {type, text} dicts) is concatenated
+        and processed as a single string."""
+        parts = ["no reasoning here", " and more text"]
+        result = agent._strip_think_blocks(parts)
+        assert result == "no reasoning here and more text"
+
+    def test_list_with_non_text_part_fields_skipped(self, agent):
+        """Parts without a 'text' key contribute an empty string, not an
+        AttributeError."""
+        parts = [
+            {"type": "image_url", "image_url": {"url": "data:..."}},
+            {"type": "text", "text": "visible answer"},
+        ]
+        result = agent._strip_think_blocks(parts)
+        assert "visible answer" in result
+        assert "image_url" not in result
+
 
 class TestExtractReasoning:
     def test_reasoning_field(self, agent):

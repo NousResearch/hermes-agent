@@ -672,6 +672,18 @@ def strip_think_blocks(agent, content: str) -> str:
     """
     if not content:
         return ""
+    # OpenRouter-format Gemini responses sometimes return content as a
+    # list of {type, text} parts instead of a plain string.
+    # Concatenate text fields into a single string so the re.sub calls
+    # below don't raise TypeError (issue #66717).
+    if isinstance(content, list):
+        parts = []
+        for part in content:
+            if isinstance(part, dict):
+                parts.append(str(part.get("text", "")))
+            else:
+                parts.append(str(part))
+        content = "".join(parts).strip()
     # 1. Closed tag pairs — case-insensitive for all variants so
     #    mixed-case tags (<THINK>, <Thinking>) don't slip through to
     #    the unterminated-tag pass and take trailing content with them.

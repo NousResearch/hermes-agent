@@ -387,7 +387,6 @@ export const FIELD_LABELS: Record<string, string> = defineFieldCopy({
       language: 'xAI Language',
       speed: 'xAI Playback Speed',
       autoSpeechTags: 'xAI Auto Speech Tags',
-      textNormalization: 'xAI Text Normalization',
       optimizeStreamingLatency: 'xAI Streaming Latency Optimization',
       sampleRate: 'xAI Sample Rate',
       bitRate: 'xAI Bit Rate'
@@ -500,7 +499,6 @@ export const FIELD_DESCRIPTIONS: Record<string, string> = defineFieldCopy({
       language: 'Spoken language code (e.g. en, pt-BR) or "auto" for auto-detection.',
       speed: 'Playback speed. 0.7 = slower, 1.0 = normal, 1.5 = faster.',
       autoSpeechTags: 'Let an LLM insert expressive audio tags ([laughing], [sighs]) into the script before synthesis.',
-      textNormalization: 'Convert numbers, abbreviations, and symbols to spoken form before synthesis.',
       optimizeStreamingLatency: 'Latency vs. quality trade-off. 0 = best quality, 2 = lowest latency.',
       sampleRate: 'Audio sample rate in Hz. Higher = better quality, larger files.',
       bitRate: 'MP3 bitrate in bps. Only applies when codec is mp3.'
@@ -606,7 +604,6 @@ export const SECTIONS: DesktopConfigSection[] = [
       'tts.xai.language',
       'tts.xai.speed',
       'tts.xai.auto_speech_tags',
-      'tts.xai.text_normalization',
       'tts.xai.optimize_streaming_latency',
       'tts.xai.sample_rate',
       'tts.xai.bit_rate',

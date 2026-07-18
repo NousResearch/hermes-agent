@@ -568,7 +568,6 @@ export const zh: Translations = {
           language: 'xAI 语言',
           speed: '播放速度',
           autoSpeechTags: '自动语音标签',
-          textNormalization: '文本规范化',
           optimizeStreamingLatency: '流式延迟优化',
           sampleRate: '采样率',
           bitRate: '比特率'

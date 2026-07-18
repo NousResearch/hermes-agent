@@ -457,7 +457,6 @@ export const zhHant = defineLocale({
           language: 'xAI 語言',
           speed: '播放速度',
           autoSpeechTags: '自動語音標籤',
-          textNormalization: '文字正規化',
           optimizeStreamingLatency: '串流延遲最佳化',
           sampleRate: '取樣率',
           bitRate: '位元率'

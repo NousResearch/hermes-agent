@@ -287,36 +287,68 @@ def test_minimax_oauth_borrowed_root_grant_stays_owned_across_two_refreshes(
 # ---------------------------------------------------------------------------
 
 
-def test_minimax_oauth_load_pool_seeds_expires_at_from_singleton(
-    profile_and_root, monkeypatch
+@pytest.mark.parametrize("owner", ["root", "profile"])
+def test_minimax_oauth_load_pool_hydrates_and_refreshes_owned_source(
+    profile_and_root, monkeypatch, owner
 ):
-    """A pool entry seeded from the auth-store singleton must carry expires_at.
+    """The real load path must hydrate and refresh either owning auth store.
 
-    Proactive refresh in ``_entry_needs_refresh`` inspects ``entry.expires_at``.
-    If ``_seed_from_singletons`` only populates ``expires_at_ms`` (the previous
-    shape), MiniMax OAuth entries loaded through the normal ``load_pool`` path
-    would never proactively refresh and would lease expired access tokens
-    (Review A MUST-FIX #3).
+    ``load_pool`` must carry both expiry and refresh-token state in memory so
+    proactive selection can reach the source-aware refresh transaction.  A
+    root-borrowed grant must remain metadata-only in the profile pool on disk.
     """
     profile_path, root_path = profile_and_root
-    _write_store(
-        profile_path, {"version": 1, "providers": {}, "active_provider": "openrouter"}
+    expired_state = _minimax_state(expires_in_future_seconds=-10)
+    profile_providers = (
+        {"minimax-oauth": dict(expired_state)} if owner == "profile" else {}
     )
-    root_state = _minimax_state()
+    root_providers = {"minimax-oauth": dict(expired_state)} if owner == "root" else {}
     _write_store(
-        root_path,
-        {"version": 1, "providers": {"minimax-oauth": dict(root_state)}},
+        profile_path,
+        {
+            "version": 1,
+            "providers": profile_providers,
+            "active_provider": "openrouter",
+        },
     )
+    _write_store(root_path, {"version": 1, "providers": root_providers})
+    calls = _patch_refresh_pure(monkeypatch)
 
     pool = CP.load_pool("minimax-oauth")
 
     entry = pool.peek()
     assert entry is not None
     assert entry.source == "oauth"
-    # Both expiry representations must be populated so _entry_needs_refresh
-    # (which checks expires_at) actually fires.
-    assert entry.expires_at == root_state["expires_at"]
+    assert entry.expires_at == expired_state["expires_at"]
     assert entry.expires_at_ms is not None
+    assert entry.refresh_token == expired_state["refresh_token"]
+
+    if owner == "root":
+        profile_after_load = _read_store(profile_path)
+        persisted = profile_after_load["credential_pool"]["minimax-oauth"][0]
+        assert persisted["source_auth_path"] == str(root_path)
+        assert "access_token" not in persisted
+        assert "refresh_token" not in persisted
+
+    selected = pool.select()
+
+    assert selected is not None
+    assert selected.access_token == "rotated-access"
+    assert selected.refresh_token == "rotated-refresh"
+    assert calls["count"] == 1
+
+    source_path = root_path if owner == "root" else profile_path
+    source = _read_store(source_path)
+    state = source["providers"]["minimax-oauth"]
+    assert state["access_token"] == "rotated-access"
+    assert state["refresh_token"] == "rotated-refresh"
+
+    if owner == "root":
+        profile_after_refresh = _read_store(profile_path)
+        assert "minimax-oauth" not in profile_after_refresh.get("providers", {})
+        persisted = profile_after_refresh["credential_pool"]["minimax-oauth"][0]
+        assert "access_token" not in persisted
+        assert "refresh_token" not in persisted
 
 
 # ---------------------------------------------------------------------------

@@ -8460,8 +8460,6 @@ def _refresh_minimax_oauth_state(
     _minimax_save_auth_state(new_state, source_path=source_path, set_active=set_active)
     return new_state
 
-    return new_state
-
 
 def _is_terminal_minimax_oauth_refresh_error(exc: Exception) -> bool:
     """True when retrying the same MiniMax OAuth refresh token cannot succeed.

@@ -2864,6 +2864,13 @@ def _seed_from_singletons(
                         "source": source_name,
                         "auth_type": AUTH_TYPE_OAUTH,
                         "access_token": state["access_token"],
+                        # Keep the owning singleton's refresh grant in memory so
+                        # an expired entry loaded through the normal runtime path
+                        # can enter the source-aware refresh transaction.  For a
+                        # borrowed-root entry, source_auth_path below marks the
+                        # payload reference-only and to_dict() strips both tokens
+                        # before any profile credential-pool persistence.
+                        "refresh_token": state.get("refresh_token"),
                         "expires_at": raw_expires or None,
                         "expires_at_ms": expires_at_ms,
                         "base_url": base_url,

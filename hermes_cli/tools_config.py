@@ -1282,18 +1282,33 @@ def _run_post_setup(post_setup_key: str):
         camofox_dir = PROJECT_ROOT / "node_modules" / "@askjo" / "camofox-browser"
         _npm_bin = shutil.which("npm")
         if not camofox_dir.exists() and _npm_bin:
-            _print_info("    Installing Camofox browser server...")
-            import subprocess
-            # Absolute npm path so .cmd shim executes on Windows.
-            result = subprocess.run(
-                # --workspaces=false avoids resolving apps/desktop. See #38772.
-                [_npm_bin, "install", "--silent", "--workspaces=false"],
-                capture_output=True, text=True, cwd=str(PROJECT_ROOT)
-            )
-            if result.returncode == 0:
-                _print_success("    Camofox installed")
+            # Skip the npm-install path when hermes itself was installed via
+            # `uv tool install`. In that mode PROJECT_ROOT points at the
+            # uv-managed package dir (~/.local/share/uv/tools/hermes-agent/)
+            # which has no package.json, so `npm install` errors out and the
+            # camofox post-setup crashes the whole installer.
+            # Users in that mode should run `npx @askjo/camofox-browser`
+            # directly — see the message below. Issue #66044.
+            _hermes_pkg_json = PROJECT_ROOT / "package.json"
+            if not _hermes_pkg_json.exists():
+                _print_info("    Skipping Camofox npm install (no source checkout found).")
+                _print_info("    Start the Camofox server directly:")
+                _print_info("      npx @askjo/camofox-browser")
+                _print_info("    Or use Docker:")
+                _print_info("      docker run -p 9377:9377 -e CAMOFOX_PORT=9377 jo-inc/camofox-browser")
             else:
-                _print_warning("    npm install failed - run manually: npm install --workspaces=false")
+                _print_info("    Installing Camofox browser server...")
+                import subprocess
+                # Absolute npm path so .cmd shim executes on Windows.
+                result = subprocess.run(
+                    # --workspaces=false avoids resolving apps/desktop. See #38772.
+                    [_npm_bin, "install", "--silent", "--workspaces=false"],
+                    capture_output=True, text=True, cwd=str(PROJECT_ROOT)
+                )
+                if result.returncode == 0:
+                    _print_success("    Camofox installed")
+                else:
+                    _print_warning("    npm install failed - run manually: npm install --workspaces=false")
         if camofox_dir.exists():
             _print_info("    Start the Camofox server:")
             _print_info("      npx @askjo/camofox-browser")

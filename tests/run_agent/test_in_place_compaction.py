@@ -222,6 +222,32 @@ class TestInPlaceCompaction:
             )
             db.close()
 
+    def test_successful_boundary_rebuilds_prompt_after_memory_commit(self):
+        from hermes_state import SessionDB
+        from agent.conversation_compression import compress_context
+
+        with tempfile.TemporaryDirectory() as tmp:
+            db = SessionDB(db_path=Path(tmp) / "t.db")
+            _seed(db, "ip_memory_refresh", "ip-memory-refresh")
+            agent = _make_agent(db, "ip_memory_refresh", in_place=True)
+            state = {"memory": "before"}
+            agent._cached_system_prompt = "prompt:before"
+            agent._build_system_prompt = lambda *_args, **_kwargs: f"prompt:{state['memory']}"
+            agent.commit_memory_session = lambda *_args, **_kwargs: state.update(memory="after")
+            agent._flush_messages_to_session_db = lambda *args, **kwargs: True
+
+            _messages, prompt = compress_context(
+                agent,
+                [{"role": "user", "content": f"m{i}"} for i in range(8)],
+                approx_tokens=100_000,
+                system_message="sys",
+            )
+
+            assert prompt == "prompt:after"
+            assert agent._cached_system_prompt == "prompt:after"
+            assert db.get_session("ip_memory_refresh")["system_prompt"] == "prompt:after"
+            db.close()
+
     def test_compaction_marks_snapshot_copies_without_mutating_real_messages(self):
         from hermes_state import SessionDB
         from agent.conversation_compression import compress_context
@@ -433,6 +459,34 @@ class TestCompactedTurnsStaySearchable:
             assert {m["id"] for m in after} == {1, 4}
             # Live context still excludes them.
             assert len(db.get_messages_as_conversation(sid)) == 2
+            db.close()
+
+    def test_context_snapshots_are_not_search_results(self):
+        from hermes_state import SessionDB
+
+        with tempfile.TemporaryDirectory() as tmp:
+            db = SessionDB(db_path=Path(tmp) / "t.db")
+            sid = "20260619_snapshot_search"
+            db.create_session(sid, "cli", model="test/model")
+            original_id = db.append_message(
+                session_id=sid,
+                role="user",
+                content="SNAPSHOTNEEDLE durable request",
+            )
+            db.archive_and_compact(
+                sid,
+                [{
+                    "role": "user",
+                    "content": "SNAPSHOTNEEDLE durable request",
+                    "_context_snapshot": True,
+                }],
+            )
+
+            matches = db.search_messages(
+                "SNAPSHOTNEEDLE", role_filter=["user", "assistant"]
+            )
+
+            assert [match["id"] for match in matches] == [original_id]
             db.close()
 
     def test_rewound_turns_stay_hidden(self):

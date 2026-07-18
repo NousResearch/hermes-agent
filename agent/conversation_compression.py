@@ -997,6 +997,20 @@ def compress_context(
             agent.commit_memory_session(messages)
         except Exception as exc:
             logger.warning("Post-compression memory commit failed: %s", exc)
+        try:
+            # Memory providers may have changed the durable prompt block while
+            # committing the boundary. Reload and rebuild before the next model
+            # call so the compacted continuation never runs on stale memory.
+            agent._invalidate_system_prompt()
+            refreshed_system_prompt = agent._build_system_prompt(system_message)
+            agent._cached_system_prompt = refreshed_system_prompt
+            new_system_prompt = refreshed_system_prompt
+            if agent._session_db:
+                agent._session_db.update_system_prompt(
+                    agent.session_id, refreshed_system_prompt
+                )
+        except Exception as exc:
+            logger.warning("Post-compression prompt refresh failed: %s", exc)
 
         # Compaction-boundary bookkeeping, computed once. `old_session_id` is only
         # bound in the rotation branch; in-place leaves it unset. `_boundary_parent`

@@ -226,15 +226,6 @@ def get_last_init_error() -> Optional[str]:
     return _last_init_error
 
 
-# Distinctive opening shared by both background-review harness prompts
-# (_SKILL_REVIEW_PROMPT and _MEMORY_REVIEW_PROMPT in agent/background_review.py).
-# Matched case-sensitively against the leading content of a user/system message.
-_REVIEW_HARNESS_PREFIXES = (
-    "Review the conversation above and update the skill library",
-    "Review the conversation above and consider saving to memory",
-)
-
-
 def _is_background_review_harness_message(msg: Dict[str, Any]) -> bool:
     """True when ``msg`` is a persisted background-review harness prompt.
 
@@ -250,8 +241,18 @@ def _is_background_review_harness_message(msg: Dict[str, Any]) -> bool:
     content = msg.get("content")
     if not isinstance(content, str):
         return False
-    head = content.lstrip()
-    return any(head.startswith(p) for p in _REVIEW_HARNESS_PREFIXES)
+    head = content.strip()
+    try:
+        from agent.background_review import (
+            _MEMORY_REVIEW_PROMPT,
+            _SKILL_REVIEW_PROMPT,
+        )
+    except Exception:
+        return False
+    return head in {
+        _MEMORY_REVIEW_PROMPT.strip(),
+        _SKILL_REVIEW_PROMPT.strip(),
+    }
 
 
 def _strip_background_review_harness(
@@ -5060,15 +5061,37 @@ class SessionDB:
                 matched += 1
             return matched
 
+        def _longest_prefix_suffix(
+            pattern_rows: List[Dict[str, Any]],
+            sequence_rows: List[Dict[str, Any]],
+            max_overlap: int,
+        ) -> int:
+            """Linear-time longest pattern prefix matching a sequence suffix."""
+            if max_overlap <= 0:
+                return 0
+            pattern = [_signature(row) for row in pattern_rows[:max_overlap]]
+            sequence = [_signature(row) for row in sequence_rows[-max_overlap:]]
+            prefix = [0] * len(pattern)
+            matched = 0
+            for index in range(1, len(pattern)):
+                while matched and pattern[index] != pattern[matched]:
+                    matched = prefix[matched - 1]
+                if pattern[index] == pattern[matched]:
+                    matched += 1
+                prefix[index] = matched
+            matched = 0
+            for value in sequence:
+                while matched and (
+                    matched == len(pattern) or value != pattern[matched]
+                ):
+                    matched = prefix[matched - 1]
+                if matched < len(pattern) and value == pattern[matched]:
+                    matched += 1
+            return matched
+
         def _tail_overlap(rows: List[Dict[str, Any]]) -> int:
             max_overlap = min(len(rows), len(display))
-            for size in range(max_overlap, 0, -1):
-                if (
-                    [_signature(row) for row in rows[:size]]
-                    == [_signature(row) for row in display[-size:]]
-                ):
-                    return size
-            return 0
+            return _longest_prefix_suffix(rows, display, max_overlap)
 
         for lineage_id in session_ids:
             remaining = None if max_rows is None else max_rows - scanned_rows
@@ -5120,13 +5143,11 @@ class SessionDB:
                 if index < len(segments) - 1 and candidate:
                     reference = display + candidate
                     max_suffix = min(len(candidate) - 1, len(reference))
-                    for size in range(max_suffix, 0, -1):
-                        if (
-                            [_signature(row) for row in candidate[-size:]]
-                            == [_signature(row) for row in reference[:size]]
-                        ):
-                            candidate = candidate[:-size]
-                            break
+                    suffix_size = _longest_prefix_suffix(
+                        reference, candidate, max_suffix
+                    )
+                    if suffix_size:
+                        candidate = candidate[:-suffix_size]
                 _append_sanitized(candidate)
 
         return _strip_background_review_harness(display)
@@ -5159,35 +5180,26 @@ class SessionDB:
         # context_snapshot bit. Keep the compatibility projector only for those
         # rows; all newly written transcripts take the bounded keyset path.
         with self._lock:
-            possible_legacy = self._conn.execute(
+            has_legacy_snapshot = self._conn.execute(
                 """
-                SELECT content
+                SELECT 1
                 FROM messages
                 WHERE session_id IN (SELECT value FROM json_each(?))
                   AND COALESCE(context_snapshot, 0) = 0
-                  AND role = 'user'
-                  AND (content LIKE '%SUMMARY%' OR content LIKE '%COMPACTION%')
-                ORDER BY id DESC
-                LIMIT 20
+                  AND (
+                    instr(content, '[CONTEXT COMPACTION') > 0
+                    OR instr(content, '[CONTEXT SUMMARY]:') > 0
+                  )
+                LIMIT 1
                 """,
                 (lineage_json,),
-            ).fetchall()
-        has_legacy_snapshot = any(
-            ContextCompressor._is_context_summary_content(
-                self._decode_content(row["content"])
-            )
-            for row in possible_legacy
-        )
+            ).fetchone() is not None
         if has_legacy_snapshot or before_kind == "v1":
-            messages = [
-                message
-                for message in self.get_messages_for_display(
-                    session_id,
-                    include_ancestors=include_ancestors,
-                    max_rows=20_000,
-                )
-                if message.get("role") in {"user", "assistant"}
-            ]
+            messages = self.get_messages_for_display(
+                session_id,
+                include_ancestors=include_ancestors,
+                max_rows=20_000,
+            )
             end = len(messages) if before is None else min(before, len(messages))
             start = max(0, end - limit)
             page = messages[start:end]
@@ -5222,7 +5234,6 @@ class SessionDB:
                     WHERE session_id IN (SELECT value FROM json_each(?))
                       AND (active = 1 OR compacted = 1)
                       AND COALESCE(context_snapshot, 0) = 0
-                      AND role IN ('user', 'assistant')
                     """ + boundary_clause + " ORDER BY id DESC LIMIT ?",
                     params,
                 ).fetchall()
@@ -5749,7 +5760,10 @@ class SessionDB:
             order_by_sql = "ORDER BY rank"
 
         # Build WHERE clauses dynamically
-        where_clauses = ["messages_fts MATCH ?"]
+        where_clauses = [
+            "messages_fts MATCH ?",
+            "COALESCE(m.context_snapshot, 0) = 0",
+        ]
         params: list = [query]
         if not include_inactive:
             # Live rows (active=1) AND compaction-archived rows (compacted=1)
@@ -5873,7 +5887,10 @@ class SessionDB:
                     else:
                         parts.append('"' + tok.replace('"', '""') + '"')
                 trigram_query = " ".join(parts)
-                tri_where = ["messages_fts_trigram MATCH ?"]
+                tri_where = [
+                    "messages_fts_trigram MATCH ?",
+                    "COALESCE(m.context_snapshot, 0) = 0",
+                ]
                 tri_params: list = [trigram_query]
                 if not include_inactive:
                     tri_where.append("(m.active = 1 OR m.compacted = 1)")
@@ -5964,7 +5981,10 @@ class SessionDB:
                         "(m.content LIKE ? ESCAPE '\\' OR m.tool_name LIKE ? ESCAPE '\\' OR m.tool_calls LIKE ? ESCAPE '\\')"
                     )
                     like_params += [f"%{esc}%", f"%{esc}%", f"%{esc}%"]
-                like_where = [f"({' OR '.join(token_clauses)})"]
+                like_where = [
+                    f"({' OR '.join(token_clauses)})",
+                    "COALESCE(m.context_snapshot, 0) = 0",
+                ]
                 if not include_inactive:
                     like_where.append("(m.active = 1 OR m.compacted = 1)")
                 if session_filter_json is not None:
@@ -6056,8 +6076,9 @@ class SessionDB:
                                SELECT m.id, m.timestamp, m.role, m.content
                                FROM messages m
                                JOIN target t ON t.session_id = m.session_id
-                               WHERE (m.timestamp < t.timestamp)
-                                  OR (m.timestamp = t.timestamp AND m.id < t.id)
+                               WHERE COALESCE(m.context_snapshot, 0) = 0
+                                 AND ((m.timestamp < t.timestamp)
+                                  OR (m.timestamp = t.timestamp AND m.id < t.id))
                                ORDER BY m.timestamp DESC, m.id DESC
                                LIMIT 1
                            )
@@ -6071,8 +6092,9 @@ class SessionDB:
                                SELECT m.id, m.timestamp, m.role, m.content
                                FROM messages m
                                JOIN target t ON t.session_id = m.session_id
-                               WHERE (m.timestamp > t.timestamp)
-                                  OR (m.timestamp = t.timestamp AND m.id > t.id)
+                               WHERE COALESCE(m.context_snapshot, 0) = 0
+                                 AND ((m.timestamp > t.timestamp)
+                                  OR (m.timestamp = t.timestamp AND m.id > t.id))
                                ORDER BY m.timestamp ASC, m.id ASC
                                LIMIT 1
                            )""",

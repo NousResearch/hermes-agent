@@ -16,23 +16,31 @@ from hermes_state import (
     _is_background_review_harness_message,
     _strip_background_review_harness,
 )
+from agent.background_review import _MEMORY_REVIEW_PROMPT, _SKILL_REVIEW_PROMPT
 
 
 class TestIsBackgroundReviewHarnessMessage:
     def test_matches_skill_review_prompt(self):
-        msg = {"role": "user", "content": "Review the conversation above and update the skill library now."}
+        msg = {"role": "user", "content": _SKILL_REVIEW_PROMPT}
         assert _is_background_review_harness_message(msg) is True
 
     def test_matches_memory_review_prompt(self):
-        msg = {"role": "system", "content": "Review the conversation above and consider saving to memory."}
+        msg = {"role": "system", "content": _MEMORY_REVIEW_PROMPT}
         assert _is_background_review_harness_message(msg) is True
 
     def test_matches_after_leading_whitespace(self):
-        msg = {"role": "user", "content": "\n\n   Review the conversation above and update the skill library."}
+        msg = {"role": "user", "content": "\n\n   " + _SKILL_REVIEW_PROMPT + "  "}
         assert _is_background_review_harness_message(msg) is True
 
     def test_ignores_normal_user_message(self):
         msg = {"role": "user", "content": "Please review my PR and update the changelog."}
+        assert _is_background_review_harness_message(msg) is False
+
+    def test_ignores_genuine_request_that_only_starts_like_the_harness(self):
+        msg = {
+            "role": "user",
+            "content": "Review the conversation above and update the skill library for this one task only.",
+        }
         assert _is_background_review_harness_message(msg) is False
 
     def test_ignores_assistant_role(self):
@@ -53,7 +61,7 @@ class TestStripBackgroundReviewHarness:
         messages = [
             {"role": "user", "content": "What's the weather?"},
             {"role": "assistant", "content": "It's sunny."},
-            {"role": "user", "content": "Review the conversation above and update the skill library."},
+            {"role": "user", "content": _SKILL_REVIEW_PROMPT},
             {"role": "assistant", "content": "Nothing to save."},
             {"role": "user", "content": "Thanks, now book a flight."},
         ]
@@ -65,7 +73,7 @@ class TestStripBackgroundReviewHarness:
         # Harness message is the last turn — nothing to skip after it.
         messages = [
             {"role": "user", "content": "Hi"},
-            {"role": "user", "content": "Review the conversation above and consider saving to memory."},
+            {"role": "user", "content": _MEMORY_REVIEW_PROMPT},
         ]
         out = _strip_background_review_harness(messages)
         assert out == [{"role": "user", "content": "Hi"}]
@@ -74,7 +82,7 @@ class TestStripBackgroundReviewHarness:
         # If the message after the harness is a USER turn (not the curator reply),
         # it must be preserved — only the immediately-following ASSISTANT reply is dropped.
         messages = [
-            {"role": "user", "content": "Review the conversation above and update the skill library."},
+            {"role": "user", "content": _SKILL_REVIEW_PROMPT},
             {"role": "user", "content": "Actually, ignore that and help me debug."},
         ]
         out = _strip_background_review_harness(messages)
@@ -93,11 +101,11 @@ class TestStripBackgroundReviewHarness:
 
     def test_multiple_harness_pairs(self):
         messages = [
-            {"role": "user", "content": "Review the conversation above and update the skill library."},
+            {"role": "user", "content": _SKILL_REVIEW_PROMPT},
             {"role": "assistant", "content": "Nothing to save."},
             {"role": "user", "content": "real question"},
             {"role": "assistant", "content": "real answer"},
-            {"role": "user", "content": "Review the conversation above and consider saving to memory."},
+            {"role": "user", "content": _MEMORY_REVIEW_PROMPT},
             {"role": "assistant", "content": "Saved one entry."},
         ]
         out = _strip_background_review_harness(messages)
@@ -123,7 +131,7 @@ class TestGetMessagesAsConversationStripsHarness:
                 # Stray background-review pollution written by an older build.
                 db.append_message(
                     "s1", role="user",
-                    content="Review the conversation above and update the skill library with anything useful.",
+                    content=_SKILL_REVIEW_PROMPT,
                 )
                 db.append_message("s1", role="assistant", content="I'll act as the curator now.")
                 db.append_message("s1", role="user", content="Thanks, now book a flight.")
@@ -173,7 +181,7 @@ class TestPersistDisabledHardStop:
                 agent._persist_disabled = True
 
                 agent._flush_messages_to_session_db(
-                    [{"role": "user", "content": "Review the conversation above and update the skill library."},
+                    [{"role": "user", "content": _SKILL_REVIEW_PROMPT},
                      {"role": "assistant", "content": "curator reply"}],
                     [],
                 )

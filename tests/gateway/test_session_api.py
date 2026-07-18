@@ -782,7 +782,7 @@ async def test_session_messages_paginate_newest_first_across_compression_lineage
     app = _create_session_app(adapter)
     async with TestClient(TestServer(app)) as cli:
         latest_response = await cli.get(
-            f"/api/sessions/{root_id}/messages?limit=2"
+            f"/api/sessions/{root_id}/messages?limit=3"
         )
         assert latest_response.status == 200
         latest = await latest_response.json()
@@ -792,7 +792,7 @@ async def test_session_messages_paginate_newest_first_across_compression_lineage
         session_db.append_message(tip_id, "assistant", "new arrival reply")
         older_response = await cli.get(
             f"/api/sessions/{root_id}/messages"
-            f"?limit=2&before={latest['next_cursor']}"
+            f"?limit=3&before={latest['next_cursor']}"
         )
         assert older_response.status == 200
         older = await older_response.json()
@@ -801,7 +801,9 @@ async def test_session_messages_paginate_newest_first_across_compression_lineage
     assert [m["content"] for m in latest["data"]] == [
         "newer question",
         "newest reply",
+        "large tool output hidden by the chat renderer",
     ]
+    assert [m["role"] for m in latest["data"]] == ["user", "assistant", "tool"]
     assert latest["has_more"] is True
     assert isinstance(latest["next_cursor"], str)
     assert [m["content"] for m in older["data"]] == [
@@ -810,6 +812,43 @@ async def test_session_messages_paginate_newest_first_across_compression_lineage
     ]
     assert older["has_more"] is False
     assert older["next_cursor"] is None
+
+
+@pytest.mark.asyncio
+async def test_paginated_session_messages_preserve_tool_rows(adapter, session_db):
+    session_id = session_db.create_session("paged-tools", "api_server")
+    session_db.append_message(session_id, "user", "run the check")
+    session_db.append_message(
+        session_id,
+        "assistant",
+        None,
+        tool_calls=[{"name": "terminal", "arguments": "{}"}],
+    )
+    session_db.append_message(
+        session_id,
+        "tool",
+        "check passed",
+        tool_name="terminal",
+        tool_call_id="call-1",
+    )
+    session_db.append_message(session_id, "assistant", "done")
+
+    app = _create_session_app(adapter)
+    async with TestClient(TestServer(app)) as cli:
+        response = await cli.get(
+            f"/api/sessions/{session_id}/messages?limit=4"
+        )
+        payload = await response.json()
+
+    assert response.status == 200
+    assert [message["role"] for message in payload["data"]] == [
+        "user",
+        "assistant",
+        "tool",
+        "assistant",
+    ]
+    assert payload["data"][2]["content"] == "check passed"
+
 
 @pytest.mark.asyncio
 async def test_session_messages_reject_invalid_pagination(adapter, session_db):

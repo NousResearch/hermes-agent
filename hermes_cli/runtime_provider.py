@@ -352,6 +352,15 @@ def _provider_supports_explicit_api_mode(provider: Optional[str], configured_pro
         return True
     if normalized_provider == "custom":
         return normalized_configured == "custom" or normalized_configured.startswith("custom:")
+
+    # ProviderProfile aliases are registered as additional keys pointing to
+    # the same ProviderConfig. Compare canonical registry IDs so an explicit
+    # mode persisted under an alias is still recognized as belonging to the
+    # runtime provider family.
+    provider_config = PROVIDER_REGISTRY.get(normalized_provider)
+    configured_config = PROVIDER_REGISTRY.get(normalized_configured)
+    if provider_config is not None and configured_config is not None:
+        return provider_config.id == configured_config.id
     return normalized_configured == normalized_provider
 
 

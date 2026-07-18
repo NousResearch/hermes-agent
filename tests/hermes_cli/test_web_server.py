@@ -1235,6 +1235,9 @@ class TestWebServerEndpoints:
         # A ?profile= save must land in that profile's config, not the serving
         # process's — same contract as the skills/toolsets endpoints.
         monkeypatch.setenv("HOME", str(tmp_path))
+        # The suite pins HERMES_HONCHO_HOST=hermes; this test exercises
+        # profile-driven host resolution, so drop the override explicitly.
+        monkeypatch.delenv("HERMES_HONCHO_HOST", raising=False)
         from hermes_constants import get_hermes_home
         from hermes_cli.profiles import get_profile_dir
 

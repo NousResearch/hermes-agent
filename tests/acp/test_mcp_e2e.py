@@ -2,8 +2,8 @@
 
 Exercises the full flow through the ACP server layer:
   new_session(mcpServers) → MCP tools registered → prompt() →
-    tool_progress_callback (ToolCallStart) →
-    step_callback with results (ToolCallUpdate with rawOutput) →
+    tool_start_callback with canonical ID (ToolCallStart) →
+    tool_complete_callback with same ID (ToolCallUpdate with rawOutput) →
     session_update events arrive at the mock client
 """
 
@@ -125,17 +125,19 @@ class TestMcpRegistrationE2E:
             """Simulate an agent turn that calls terminal, gets a result, then responds."""
             agent = state.agent
 
-            # 1) Agent fires tool_progress_callback (ToolCallStart)
-            if agent.tool_progress_callback:
-                agent.tool_progress_callback(
-                    "tool.started", "terminal", "$ echo hello", {"command": "echo hello"}
+            # Executor emits canonical-ID start/completion callbacks.
+            if agent.tool_start_callback:
+                agent.tool_start_callback(
+                    "tc-terminal", "terminal", {"command": "echo hello"}
                 )
 
-            # 2) Agent fires step_callback with tool results (ToolCallUpdate)
-            if agent.step_callback:
-                agent.step_callback(1, [
-                    {"name": "terminal", "result": '{"output": "hello\\n", "exit_code": 0}'}
-                ])
+            if agent.tool_complete_callback:
+                agent.tool_complete_callback(
+                    "tc-terminal",
+                    "terminal",
+                    {"command": "echo hello"},
+                    '{"output": "hello\\n", "exit_code": 0}',
+                )
 
             return {
                 "final_response": "The command output 'hello'.",
@@ -208,16 +210,27 @@ class TestMcpRegistrationE2E:
 
         def mock_run(user_message, conversation_history=None, task_id=None, **kwargs):
             agent = state.agent
-            # Fire two tool calls
-            if agent.tool_progress_callback:
-                agent.tool_progress_callback("tool.started", "read_file", "read: /etc/hosts", {"path": "/etc/hosts"})
-                agent.tool_progress_callback("tool.started", "web_search", "web search: test", {"query": "test"})
+            if agent.tool_start_callback:
+                agent.tool_start_callback(
+                    "tc-read", "read_file", {"path": "/etc/hosts"}
+                )
+                agent.tool_start_callback(
+                    "tc-search", "web_search", {"query": "test"}
+                )
 
-            if agent.step_callback:
-                agent.step_callback(1, [
-                    {"name": "read_file", "result": '{"content": "127.0.0.1 localhost"}'},
-                    {"name": "web_search", "result": '{"data": {"web": []}}'},
-                ])
+            if agent.tool_complete_callback:
+                agent.tool_complete_callback(
+                    "tc-read",
+                    "read_file",
+                    {"path": "/etc/hosts"},
+                    '{"content": "127.0.0.1 localhost"}',
+                )
+                agent.tool_complete_callback(
+                    "tc-search",
+                    "web_search",
+                    {"query": "test"},
+                    '{"data": {"web": []}}',
+                )
 
             return {"final_response": "Done.", "messages": []}
 

@@ -1539,6 +1539,42 @@ class TestFilterAndAccumulate:
         assert c._accumulated == "visible"
 
 
+    def test_gemma4_channel_thought_complete(self):
+        """Gemma 4 <|channel>thought...<channel|> tokens are stripped."""
+        c = _make_consumer()
+        c._filter_and_accumulate(
+            "<|channel>thought Let me think about this<channel|>The answer is 42."
+        )
+        assert c._accumulated == "The answer is 42."
+
+    def test_gemma4_channel_thought_at_boundary(self):
+        """Gemma 4 token at line start is recognized as a block boundary."""
+        c = _make_consumer()
+        c._filter_and_accumulate("Prefix\n<|channel>thought reasoning<channel|>Suffix")
+        assert c._accumulated == "Prefix\nSuffix"
+
+    def test_gemma4_channel_thought_split_across_deltas(self):
+        """Gemma 4 token split across stream deltas is handled."""
+        c = _make_consumer()
+        c._filter_and_accumulate("<|channel>thought ")
+        c._filter_and_accumulate("reasoning<channel|>visible")
+        assert c._accumulated == "visible"
+
+    def test_gemma4_channel_thought_unclosed(self):
+        """Unclosed Gemma 4 token suppresses content from tag to end."""
+        c = _make_consumer()
+        c._filter_and_accumulate("Before\n<|channel>thought reasoning forever...")
+        assert c._accumulated == "Before\n"
+
+    def test_gemma4_channel_thought_multiline(self):
+        """Gemma 4 token with multiline reasoning content."""
+        c = _make_consumer()
+        c._filter_and_accumulate(
+            "<|channel>thought\nLine 1\nLine 2\n<channel|>Final answer"
+        )
+        assert c._accumulated == "Final answer"
+
+
 class TestFilterAndAccumulateIntegration:
     """Integration: verify think blocks don't leak through the full run() path."""
 

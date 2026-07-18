@@ -102,6 +102,9 @@ class GatewayStreamConsumer:
     # Reasoning/thinking tags that models emit inline in content.
     # Must stay in sync with cli.py _OPEN_TAGS/_CLOSE_TAGS and
     # run_agent.py _strip_think_blocks() tag variants.
+    # Gemma 4 uses non-standard tokens (<|channel>thought / <channel|>)
+    # which are normalized to <think> in _filter_and_accumulate() before
+    # the state machine runs, so they don't need entries here.
     _OPEN_THINK_TAGS = (
         "<REASONING_SCRATCHPAD>", "<think>", "<reasoning>",
         "<THINKING>", "<thinking>", "<thought>",
@@ -399,6 +402,10 @@ class GatewayStreamConsumer:
         discarded.  Partial tags at buffer boundaries are held back in
         ``_think_buffer`` until enough characters arrive to decide.
         """
+        # Normalize Gemma 4 reasoning tokens to standard <think> tags so
+        # the existing state machine handles them transparently.
+        text = text.replace("<|channel>thought", "<think>")
+        text = text.replace("<channel|>", "</think>")
         buf = self._think_buffer + text
         self._think_buffer = ""
 

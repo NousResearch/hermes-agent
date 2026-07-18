@@ -202,8 +202,9 @@ def _strip_reasoning_tags(text: str) -> str:
         partial-content dumps.
 
     Covers the variants emitted by reasoning models today: ``<think>``,
-    ``<thinking>``, ``<reasoning>``, ``<REASONING_SCRATCHPAD>``, and
-    ``<thought>`` (Gemma 4).  Must stay in sync with
+    ``<thinking>``, ``<reasoning>``, ``<REASONING_SCRATCHPAD>``,
+    ``<thought>`` (Gemma 4), and Gemma 4's non-standard
+    ``<|channel>thought`` / ``<channel|>`` tokens.  Must stay in sync with
     ``run_agent.py::_strip_think_blocks`` and the stream consumer's
     ``_OPEN_THINK_TAGS`` / ``_CLOSE_THINK_TAGS`` tuples.
 
@@ -235,6 +236,10 @@ def _strip_reasoning_tags(text: str) -> str:
             cleaned,
             flags=re.IGNORECASE,
         )
+    # Gemma 4 reasoning tokens (non-standard format).
+    # Open: <|channel>thought   Close: <channel|>
+    cleaned = re.sub(r"<\|channel>thought.*?<channel\|>", "", cleaned, flags=re.DOTALL)
+    cleaned = re.sub(r"(?:^|\n)[ \t]*<\|channel>thought.*$", "", cleaned, flags=re.DOTALL)
     # Tool-call XML blocks (openclaw/openclaw#67318).
     for tc_tag in ("tool_call", "tool_calls", "tool_result",
                    "function_call", "function_calls"):

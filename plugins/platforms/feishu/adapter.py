@@ -57,6 +57,7 @@ import json
 import logging
 import mimetypes
 import os
+import random
 import re
 import threading
 import time
@@ -66,7 +67,7 @@ from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
 from types import SimpleNamespace
-from typing import Any, Dict, List, Literal, Optional, Sequence
+from typing import Any, Dict, List, Literal, Optional, Sequence, Tuple
 from urllib.error import HTTPError, URLError
 from urllib.parse import urlencode
 from urllib.request import Request, urlopen
@@ -131,6 +132,7 @@ FEISHU_WEBHOOK_AVAILABLE = aiohttp is not None
 from gateway.config import Platform, PlatformConfig
 from gateway.platforms.base import (
     BasePlatformAdapter,
+    FinalDeliveryState,
     MessageEvent,
     MessageType,
     ProcessingOutcome,
@@ -140,7 +142,14 @@ from gateway.platforms.base import (
     cache_image_from_url,
     cache_audio_from_bytes,
     cache_image_from_bytes,
+    effective_delivery_state,
+    iter_media_tag_paths,
 )
+from gateway.platforms.feishu_card_renderer import (
+    build_feishu_card_v2_payloads,
+    build_feishu_card_v2_payloads_from_document,
+)
+from gateway.runtime_footer import split_marked_footer, strip_footer_marker
 from gateway.status import acquire_scoped_lock, release_scoped_lock
 from hermes_constants import get_hermes_home
 from utils import atomic_json_write, env_float, env_int
@@ -173,6 +182,9 @@ _AUDIO_EXTENSIONS = {".ogg", ".mp3", ".wav", ".m4a", ".aac", ".flac", ".opus", "
 _VIDEO_EXTENSIONS = {".mp4", ".mov", ".avi", ".mkv", ".webm", ".m4v", ".3gp"}
 _DOCUMENT_MIME_TO_EXT = {mime: ext for ext, mime in SUPPORTED_DOCUMENT_TYPES.items()}
 _FEISHU_IMAGE_UPLOAD_TYPE = "message"
+_FEISHU_CARD_IMAGE_EXTENSIONS = {".jpg", ".jpeg", ".png", ".webp"}
+_FEISHU_CARD_MAX_IMAGES = 3
+_FEISHU_FORCE_LEGACY_FINAL_RESPONSE = "_feishu_force_legacy_final_response"
 _FEISHU_FILE_UPLOAD_TYPE = "stream"
 _FEISHU_OPUS_UPLOAD_EXTENSIONS = {".ogg", ".opus"}
 _FEISHU_MEDIA_UPLOAD_EXTENSIONS = {".mp4", ".mov", ".avi", ".m4v"}
@@ -197,6 +209,9 @@ _DEFAULT_TEXT_BATCH_DELAY_SECONDS = 0.6
 _DEFAULT_TEXT_BATCH_MAX_MESSAGES = 8
 _DEFAULT_TEXT_BATCH_MAX_CHARS = 4000
 _DEFAULT_MEDIA_BATCH_DELAY_SECONDS = 0.8
+_FEISHU_OUTER_REQUEST_MAX_BYTES = 30 * 1024
+_FEISHU_MULTICARD_MIN_INTERVAL_SECONDS = 0.22
+_FEISHU_MULTICARD_JITTER_MAX_SECONDS = 0.03
 _DEFAULT_DEDUP_CACHE_SIZE = 2048
 _DEFAULT_WEBHOOK_HOST = "127.0.0.1"
 _DEFAULT_WEBHOOK_PORT = 8765
@@ -239,6 +254,75 @@ async def _read_limited_feishu_webhook_body(request: Any, max_bytes: int) -> byt
     if len(body) > max_bytes:
         raise ValueError("payload too large")
     return body
+
+
+async def _sleep_between_feishu_multicard_parts(
+    *,
+    sleep: Optional[Any] = None,
+    jitter: Optional[Any] = None,
+) -> None:
+    """Throttle one boundary inside a single multi-card delivery batch."""
+    sleep_fn = sleep or asyncio.sleep
+    jitter_fn = jitter or random.uniform
+    delay = _FEISHU_MULTICARD_MIN_INTERVAL_SECONDS + jitter_fn(
+        0.0,
+        _FEISHU_MULTICARD_JITTER_MAX_SECONDS,
+    )
+    await sleep_fn(delay)
+
+
+def _serialized_sdk_request_body_size(request_body: Any) -> int:
+    """Return the exact UTF-8 size emitted by the Lark SDK JSON serializer."""
+    serializer = getattr(lark, "JSON", None) if lark is not None else None
+    if serializer is not None:
+        serialized = serializer.marshal(request_body)
+        if not isinstance(serialized, str):
+            raise ValueError("Lark SDK failed to serialize interactive request body")
+        return len(serialized.encode("utf-8"))
+    fields = getattr(request_body, "__dict__", request_body)
+    return len(json.dumps(fields, ensure_ascii=False).encode("utf-8"))
+
+
+def _validate_interactive_request_body_size(request_body: Any) -> None:
+    size = _serialized_sdk_request_body_size(request_body)
+    if size >= _FEISHU_OUTER_REQUEST_MAX_BYTES:
+        raise ValueError(
+            "Feishu interactive SDK request body exceeds 30 KiB hard limit: "
+            f"{size} bytes"
+        )
+
+
+def _is_ambiguous_delivery_exception(exc: Exception) -> bool:
+    """Return True when an interactive request may have landed despite an error."""
+    if isinstance(exc, TimeoutError):
+        return True
+    exc_name = type(exc).__name__.lower()
+    if "timeout" in exc_name:
+        return True
+    # Also check the exception's string representation for timeout indicators
+    # (e.g. httpx.ReadTimeout("read timeout") or similar SDK wrappers)
+    exc_str = str(exc).lower()
+    return any(pat in exc_str for pat in ("timed out", "timeout"))
+
+
+def _ambiguous_card_delivery_result(
+    *,
+    error: str,
+    delivered_cards: int,
+    total_cards: int,
+) -> SendResult:
+    """Suppress cross-format fallback when Feishu acceptance is unknowable."""
+    return SendResult(
+        success=False,
+        error=error,
+        delivery_state=FinalDeliveryState.PARTIALLY_DELIVERED,
+        raw_response={
+            "delivery_ambiguous": True,
+            "delivered_cards": delivered_cards,
+            "total_cards": total_cards,
+            "failed_index": delivered_cards,
+        },
+    )
 
 
 _FEISHU_BOT_MSG_TRACK_SIZE = 512                   # LRU size for tracking sent message IDs
@@ -1880,9 +1964,204 @@ class FeishuAdapter(BasePlatformAdapter):
             self._webhook_runner = None
             self._webhook_site = None
 
+    def _should_send_final_response_as_card(
+        self,
+        content: str,
+        metadata: Optional[Dict[str, Any]],
+        reply_to: Optional[str] = None,
+    ) -> bool:
+        """Return True when this outbound send should use Feishu Card v2."""
+        mode = self._final_response_card_mode(metadata)
+        if mode not in {"card", "auto"}:
+            return False
+        if not self._final_response_card_has_reply_anchor(reply_to, metadata):
+            return False
+        if isinstance(metadata, dict) and metadata.get(_FEISHU_FORCE_LEGACY_FINAL_RESPONSE):
+            return False
+        # Auto mode keeps legacy delivery for responses with native attachments
+        # so the shared BasePlatformAdapter extraction path can deliver MEDIA
+        # files. Explicit card mode may still combine safe images via the rich
+        # final-response hook.
+        if mode == "auto" and iter_media_tag_paths(content or ""):
+            return False
+        return True
+
+    @staticmethod
+    def _final_response_card_has_reply_anchor(
+        reply_to: Optional[str],
+        metadata: Optional[Dict[str, Any]],
+    ) -> bool:
+        if not isinstance(metadata, dict) or not metadata.get("thread_id"):
+            return True
+        return bool(reply_to or metadata.get("reply_to_message_id"))
+
+    def _final_response_card_mode(self, metadata: Optional[Dict[str, Any]]) -> str:
+        if not isinstance(metadata, dict) or not metadata.get("hermes_final_response"):
+            return "legacy"
+        mode = str(self.config.extra.get("final_response_format") or "legacy").strip().lower()
+        return mode if mode in {"legacy", "auto", "card"} else "legacy"
+
+    def _final_response_table_policy(self) -> str:
+        policy = str(self.config.extra.get("markdown_tables") or "table").strip().lower()
+        return policy if policy in {"table", "markdown"} else "table"
+
     # =========================================================================
     # Outbound — send / edit / send_image / send_voice / …
     # =========================================================================
+
+    async def try_send_final_rich_response(
+        self,
+        *,
+        chat_id: str,
+        original_response: str,
+        text_content: str,
+        images: List[Tuple[str, str]],
+        media_files: List[Tuple[str, bool]],
+        local_files: List[str],
+        force_document_attachments: bool,
+        reply_to: Optional[str],
+        metadata: Optional[Dict[str, Any]],
+        is_ephemeral_response: bool = False,
+    ) -> Optional[SendResult]:
+        """Try to combine final reply text and safe images into one Card v2."""
+        mode = self._final_response_card_mode(metadata)
+        if mode not in {"card", "auto"}:
+            return None
+        if not self._final_response_card_has_reply_anchor(reply_to, metadata):
+            return None
+        if mode == "auto" and iter_media_tag_paths(original_response or ""):
+            # Base extracts MEDIA controls before invoking this hook, so the
+            # later legacy text send no longer contains the signal used by
+            # _should_send_final_response_as_card(). Preserve that signal on
+            # this per-delivery metadata object while returning None to keep
+            # the shared legacy text + native attachment rail.
+            if isinstance(metadata, dict):
+                metadata[_FEISHU_FORCE_LEGACY_FINAL_RESPONSE] = True
+            return None
+        if is_ephemeral_response or force_document_attachments or not self._client:
+            return None
+        if any(is_voice for _path, is_voice in media_files):
+            return None
+
+        image_sources: List[Tuple[str, str, str]] = []
+        unsupported_media = [
+            path for path, _is_voice in media_files
+            if Path(path).suffix.lower() not in _FEISHU_CARD_IMAGE_EXTENSIONS
+        ]
+        unsupported_local = [
+            path for path in local_files
+            if Path(path).suffix.lower() not in _FEISHU_CARD_IMAGE_EXTENSIONS
+        ]
+        if unsupported_media or unsupported_local:
+            return None
+
+        for image_url, alt_text in images:
+            if str(image_url).lower().endswith(".gif"):
+                return None
+            try:
+                image_path = await self._download_remote_image(image_url)
+            except Exception:
+                logger.warning("[Feishu] Failed to download rich-card image %s", image_url, exc_info=True)
+                return None
+            image_sources.append((image_url, image_path, alt_text or "image"))
+        for media_path, _is_voice in media_files:
+            image_sources.append((media_path, media_path, "image"))
+        for file_path in local_files:
+            image_sources.append((file_path, file_path, "image"))
+
+        if not image_sources or len(image_sources) > _FEISHU_CARD_MAX_IMAGES:
+            return None
+
+        sent_cards = 0
+        last_result: Optional[SendResult] = None
+        payloads: list = []
+        card_send_attempted = False
+        try:
+            image_key_by_source: Dict[str, str] = {}
+            for source, image_path, _alt in image_sources:
+                image_key_by_source[source] = await self._upload_image_for_card(image_path)
+
+            from gateway.rendering.document import ImageBlock, MessageDocument, ParagraphBlock
+            from gateway.rendering.markdown_parser import parse_markdown_document
+
+            text_content, footer_content = split_marked_footer(text_content)
+            doc = parse_markdown_document(text_content)
+            blocks = list(doc.blocks)
+            for source, _image_path, alt in image_sources:
+                blocks.append(ImageBlock(source=source, alt=alt))
+            if footer_content:
+                blocks.append(ParagraphBlock(text=footer_content))
+            payloads = build_feishu_card_v2_payloads_from_document(
+                MessageDocument(blocks=blocks),
+                table_policy=self._final_response_table_policy(),
+                image_key_by_source=image_key_by_source,
+            )
+            for part_index, payload in enumerate(payloads):
+                if part_index:
+                    await _sleep_between_feishu_multicard_parts()
+                card_send_attempted = True
+                response = await self._feishu_send_with_retry(
+                    chat_id=chat_id,
+                    msg_type="interactive",
+                    payload=payload,
+                    reply_to=reply_to,
+                    metadata=metadata,
+                )
+                result = self._finalize_send_result(response, "send final rich response card failed")
+                if not result.success:
+                    if sent_cards:
+                        logger.warning(
+                            "[Feishu] Final rich card failed after %d card(s); "
+                            "reporting partial delivery: %s",
+                            sent_cards,
+                            result.error,
+                        )
+                        return SendResult(
+                            success=False,
+                            error=result.error,
+                            delivery_state=FinalDeliveryState.PARTIALLY_DELIVERED,
+                            raw_response={
+                                "delivered_cards": sent_cards,
+                                "total_cards": len(payloads),
+                                "failed_index": sent_cards,
+                            },
+                        )
+                    if self._is_timeout_error(result.error):
+                        return _ambiguous_card_delivery_result(
+                            error=result.error or "Feishu interactive send timed out",
+                            delivered_cards=0,
+                            total_cards=len(payloads),
+                        )
+                    return None
+                last_result = result
+                sent_cards += 1
+            return last_result
+        except Exception as exc:
+            if sent_cards:
+                logger.warning(
+                    "[Feishu] Final rich card raised after %d card(s); "
+                    "reporting partial delivery",
+                    sent_cards,
+                    exc_info=True,
+                )
+                return SendResult(
+                    success=False,
+                    error="Rich card delivery exception after partial send",
+                    delivery_state=FinalDeliveryState.PARTIALLY_DELIVERED,
+                    raw_response={
+                        "delivered_cards": sent_cards,
+                        "total_cards": len(payloads),
+                        "failed_index": sent_cards,
+                    },
+                )
+            if card_send_attempted and _is_ambiguous_delivery_exception(exc):
+                return _ambiguous_card_delivery_result(
+                    error=f"{type(exc).__name__}: {exc}",
+                    delivered_cards=0,
+                    total_cards=len(payloads),
+                )
+            logger.warning("[Feishu] Final rich card failed; falling back to legacy delivery", exc_info=True)
+            return None
 
     async def send(
         self,
@@ -1895,12 +2174,96 @@ class FeishuAdapter(BasePlatformAdapter):
         if not self._client:
             return SendResult(success=False, error="Not connected")
 
+        content = strip_footer_marker(content)
+        if self._should_send_final_response_as_card(content, metadata, reply_to):
+            payloads: list = []
+            sent_cards = 0
+            card_send_attempted = False
+            try:
+                last_result: Optional[SendResult] = None
+                payloads = build_feishu_card_v2_payloads(
+                    content,
+                    table_policy=self._final_response_table_policy(),
+                )
+                for part_index, card_payload in enumerate(payloads):
+                    if part_index:
+                        await _sleep_between_feishu_multicard_parts()
+                    card_send_attempted = True
+                    response = await self._feishu_send_with_retry(
+                        chat_id=chat_id,
+                        msg_type="interactive",
+                        payload=card_payload,
+                        reply_to=reply_to,
+                        metadata=metadata,
+                    )
+                    result = self._finalize_send_result(response, "send final response card failed")
+                    if not result.success:
+                        if sent_cards:
+                            logger.warning(
+                                "[Feishu] Final response card failed after %d card(s); "
+                                "reporting partial delivery: %s",
+                                sent_cards,
+                                result.error,
+                            )
+                            return SendResult(
+                                success=False,
+                                error=result.error,
+                                delivery_state=FinalDeliveryState.PARTIALLY_DELIVERED,
+                                raw_response={
+                                    "delivered_cards": sent_cards,
+                                    "total_cards": len(payloads),
+                                    "failed_index": sent_cards,
+                                },
+                            )
+                        if self._is_timeout_error(result.error):
+                            return _ambiguous_card_delivery_result(
+                                error=result.error or "Feishu interactive send timed out",
+                                delivered_cards=0,
+                                total_cards=len(payloads),
+                            )
+                        logger.warning("[Feishu] Final response card API failed; falling back to legacy payload: %s", result.error)
+                        last_result = None
+                        break
+                    last_result = result
+                    sent_cards += 1
+                if last_result is not None:
+                    return last_result
+            except Exception as exc:
+                if sent_cards:
+                    logger.warning(
+                        "[Feishu] Final response card send failed after %d card(s); "
+                        "reporting partial delivery: %s",
+                        sent_cards,
+                        exc,
+                    )
+                    return SendResult(
+                        success=False,
+                        error=str(exc),
+                        delivery_state=FinalDeliveryState.PARTIALLY_DELIVERED,
+                        raw_response={
+                            "delivered_cards": sent_cards,
+                            "total_cards": len(payloads),
+                            "failed_index": sent_cards,
+                        },
+                    )
+                if card_send_attempted and _is_ambiguous_delivery_exception(exc):
+                    return _ambiguous_card_delivery_result(
+                        error=f"{type(exc).__name__}: {exc}",
+                        delivered_cards=0,
+                        total_cards=len(payloads),
+                    )
+                logger.warning(
+                    "[Feishu] Final response card send failed; falling back to legacy payload: %s",
+                    exc,
+                )
+
         formatted = self.format_message(content)
         chunks = self.truncate_message(formatted, self.MAX_MESSAGE_LENGTH)
-        last_response = None
+        last_result: Optional[SendResult] = None
+        delivered_chunks = 0
 
         try:
-            for chunk in chunks:
+            for chunk_index, chunk in enumerate(chunks):
                 msg_type, payload = self._build_outbound_payload(chunk)
                 try:
                     response = await self._feishu_send_with_retry(
@@ -1934,11 +2297,43 @@ class FeishuAdapter(BasePlatformAdapter):
                         reply_to=reply_to,
                         metadata=metadata,
                     )
-                last_response = response
+                result = self._finalize_send_result(response, "send failed")
+                if not result.success:
+                    if delivered_chunks:
+                        logger.warning(
+                            "[Feishu] Legacy chunk delivery failed after %d chunk(s); "
+                            "reporting partial delivery: %s",
+                            delivered_chunks,
+                            result.error,
+                        )
+                        return SendResult(
+                            success=False,
+                            error=result.error,
+                            delivery_state=FinalDeliveryState.PARTIALLY_DELIVERED,
+                            raw_response={
+                                "delivered_chunks": delivered_chunks,
+                                "total_chunks": len(chunks),
+                                "failed_index": chunk_index,
+                            },
+                        )
+                    return result
+                last_result = result
+                delivered_chunks += 1
 
-            return self._finalize_send_result(last_response, "send failed")
+            return last_result or SendResult(success=False, error="send produced no chunks")
         except Exception as exc:
             logger.error("[Feishu] Send error: %s", exc, exc_info=True)
+            if delivered_chunks:
+                return SendResult(
+                    success=False,
+                    error=str(exc),
+                    delivery_state=FinalDeliveryState.PARTIALLY_DELIVERED,
+                    raw_response={
+                        "delivered_chunks": delivered_chunks,
+                        "total_chunks": len(chunks),
+                        "failed_index": delivered_chunks,
+                    },
+                )
             return SendResult(success=False, error=str(exc))
 
     async def edit_message(
@@ -2277,6 +2672,31 @@ class FeishuAdapter(BasePlatformAdapter):
         except Exception as exc:
             logger.error("[Feishu] Failed to send image %s: %s", image_path, exc, exc_info=True)
             return SendResult(success=False, error=str(exc))
+
+    async def _upload_image_for_card(self, image_path: str) -> str:
+        """Upload a local image and return its Feishu image_key without sending it."""
+        if not self._client:
+            raise RuntimeError("Not connected")
+        if not os.path.exists(image_path):
+            raise FileNotFoundError(image_path)
+
+        import io as _io
+        with open(image_path, "rb") as f:
+            image_bytes = f.read()
+        image_file = _io.BytesIO(image_bytes)
+        image_file.name = os.path.basename(image_path)
+        body = self._build_image_upload_body(
+            image_type=_FEISHU_IMAGE_UPLOAD_TYPE,
+            image=image_file,
+        )
+        request = self._build_image_upload_request(body)
+        upload_response = await self._run_blocking(self._client.im.v1.image.create, request)
+        image_key = self._extract_response_field(upload_response, "image_key")
+        if not image_key:
+            code = getattr(upload_response, "code", "unknown")
+            msg = getattr(upload_response, "msg", "image upload failed")
+            raise RuntimeError(f"Feishu image upload missing image_key: [{code}] {msg}")
+        return image_key
 
     async def send_typing(self, chat_id: str, metadata=None) -> None:
         """Feishu bot API does not expose a typing indicator."""
@@ -4616,6 +5036,7 @@ class FeishuAdapter(BasePlatformAdapter):
         payload: str,
         reply_to: Optional[str],
         metadata: Optional[Dict[str, Any]],
+        uuid_value: str,
     ) -> Any:
         effective_reply_to = reply_to
         if not effective_reply_to and metadata and metadata.get("thread_id"):
@@ -4626,8 +5047,10 @@ class FeishuAdapter(BasePlatformAdapter):
                 content=payload,
                 msg_type=msg_type,
                 reply_in_thread=reply_in_thread,
-                uuid_value=str(uuid.uuid4()),
+                uuid_value=uuid_value,
             )
+            if msg_type == "interactive":
+                _validate_interactive_request_body_size(body)
             request = self._build_reply_message_request(effective_reply_to, body)
             return await self._run_blocking(self._client.im.v1.message.reply, request)
 
@@ -4635,12 +5058,12 @@ class FeishuAdapter(BasePlatformAdapter):
         # thread_id as receive_id so the message lands in the topic instead of
         # the main chat.
         _thread_id = (metadata or {}).get("thread_id")
-        if _thread_id:
+        if _thread_id and msg_type != "interactive":
             body = self._build_create_message_body(
                 receive_id=_thread_id,
                 msg_type=msg_type,
                 content=payload,
-                uuid_value=str(uuid.uuid4()),
+                uuid_value=uuid_value,
             )
             request = self._build_create_message_request("thread_id", body)
         else:
@@ -4656,8 +5079,10 @@ class FeishuAdapter(BasePlatformAdapter):
                 receive_id=receive_id,
                 msg_type=msg_type,
                 content=payload,
-                uuid_value=str(uuid.uuid4()),
+                uuid_value=uuid_value,
             )
+            if msg_type == "interactive":
+                _validate_interactive_request_body_size(body)
             request = self._build_create_message_request(receive_id_type, body)
         return await self._run_blocking(self._client.im.v1.message.create, request)
 
@@ -4793,6 +5218,7 @@ class FeishuAdapter(BasePlatformAdapter):
         reply_to: Optional[str],
         metadata: Optional[Dict[str, Any]],
     ) -> Any:
+        send_uuid = str(uuid.uuid4())
         last_error: Optional[Exception] = None
         active_reply_to = reply_to
         for attempt in range(_FEISHU_SEND_ATTEMPTS):
@@ -4803,6 +5229,7 @@ class FeishuAdapter(BasePlatformAdapter):
                     payload=payload,
                     reply_to=active_reply_to,
                     metadata=metadata,
+                    uuid_value=send_uuid,
                 )
                 # If replying to a message failed because it was withdrawn or not found,
                 # fall back to posting a new message directly to the chat.
@@ -4832,6 +5259,7 @@ class FeishuAdapter(BasePlatformAdapter):
                             payload=payload,
                             reply_to=None,
                             metadata=metadata,
+                            uuid_value=send_uuid,
                         )
                 return response
             except Exception as exc:

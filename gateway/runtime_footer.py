@@ -30,6 +30,7 @@ from typing import Any, Iterable, Optional
 
 _DEFAULT_FIELDS: tuple[str, ...] = ("model", "context_pct", "cwd")
 _SEP = " · "
+_FOOTER_MARKER = "<!-- HERMES_RUNTIME_FOOTER -->"
 
 
 def _home_relative_cwd(cwd: str) -> str:
@@ -86,6 +87,21 @@ def resolve_footer_config(
                     resolved["fields"] = [str(f) for f in plat_footer["fields"]]
 
     return resolved
+
+
+def split_marked_footer(text: str) -> tuple[str, str]:
+    """Split body and runtime footer when the hidden footer marker is present."""
+    if not text or _FOOTER_MARKER not in text:
+        return text or "", ""
+    body, footer = text.rsplit(_FOOTER_MARKER, 1)
+    return body.rstrip(), footer.strip()
+
+
+def strip_footer_marker(text: str) -> str:
+    """Remove the hidden runtime-footer marker while preserving footer text."""
+    if not text:
+        return ""
+    return text.replace(_FOOTER_MARKER + "\n", "").replace(_FOOTER_MARKER, "")
 
 
 def format_runtime_footer(

@@ -1894,6 +1894,21 @@ def coerce_plaintext_gateway_command(event: "MessageEvent") -> None:
         return
 
 
+class FinalDeliveryState(str, Enum):
+    """Explicit tri-state delivery contract.
+
+    ``NOT_HANDLED``
+        Zero content visible; safe to fall back.
+    ``FULLY_DELIVERED``
+        All content has been delivered.
+    ``PARTIALLY_DELIVERED``
+        Some content is already visible; must NOT re-send the full payload.
+    """
+    NOT_HANDLED = "not_handled"
+    FULLY_DELIVERED = "fully_delivered"
+    PARTIALLY_DELIVERED = "partially_delivered"
+
+
 @dataclass
 class SendResult:
     """Result of sending a message."""
@@ -1926,6 +1941,48 @@ class SendResult:
     # ``None`` (unset / not classified).  Producers should set this via
     # :func:`classify_send_error`.
     error_kind: Optional[str] = None
+    # Explicit tri-state delivery contract (D1).  When set, this overrides the
+    # legacy success/failure binary for downstream fallback decisions.
+    # PARTIALLY_DELIVERED must always pair with success=False (enforced in
+    # __post_init__).  Defaults to None for backward compatibility — legacy
+    # callers that don't set it are handled by effective_delivery_state().
+    delivery_state: Optional[FinalDeliveryState] = None
+
+    def __post_init__(self) -> None:
+        if self.delivery_state is None:
+            return
+        if not isinstance(self.delivery_state, FinalDeliveryState):
+            try:
+                self.delivery_state = FinalDeliveryState(self.delivery_state)
+            except (TypeError, ValueError) as exc:
+                raise ValueError(
+                    f"invalid delivery_state: {self.delivery_state!r}"
+                ) from exc
+        if self.delivery_state is FinalDeliveryState.FULLY_DELIVERED and not self.success:
+            raise ValueError(
+                "SendResult with FULLY_DELIVERED delivery_state must have success=True."
+            )
+        if self.delivery_state is FinalDeliveryState.NOT_HANDLED and self.success:
+            raise ValueError(
+                "SendResult with NOT_HANDLED delivery_state must have success=False."
+            )
+        if self.delivery_state is FinalDeliveryState.PARTIALLY_DELIVERED and self.success:
+            raise ValueError(
+                "SendResult with PARTIALLY_DELIVERED delivery_state must have "
+                "success=False to avoid reporting partial delivery as success."
+            )
+
+
+def effective_delivery_state(result: SendResult) -> FinalDeliveryState:
+    """Return the effective delivery state, inferring from legacy fields when
+    ``delivery_state`` is not explicitly set."""
+    if result.delivery_state is not None:
+        return result.delivery_state
+    return (
+        FinalDeliveryState.FULLY_DELIVERED
+        if result.success
+        else FinalDeliveryState.NOT_HANDLED
+    )
 
 
 # Machine-readable send-failure categories.  Kept platform-neutral so every
@@ -4137,7 +4194,16 @@ class BasePlatformAdapter(ABC):
         if not error:
             return False
         lowered = error.lower()
-        return "timed out" in lowered or "readtimeout" in lowered or "writetimeout" in lowered
+        return any(
+            pat in lowered
+            for pat in (
+                "timed out",
+                "timeout",
+                "read timeout",
+                "write timeout",
+                "request timeout",
+            )
+        )
 
     def _unwrap_ephemeral(self, response: Any) -> Tuple[Optional[str], int]:
         """Unwrap a handler response into (text, ttl_seconds).
@@ -4189,6 +4255,11 @@ class BasePlatformAdapter(ABC):
         if result.success:
             return result
 
+        # If the adapter explicitly reports partial delivery, do NOT retry
+        # or fall back — some content is already visible in the chat.
+        if effective_delivery_state(result) is FinalDeliveryState.PARTIALLY_DELIVERED:
+            return result
+
         error_str = result.error or ""
         is_network = result.retryable or self._is_retryable_error(error_str)
 
@@ -4221,6 +4292,9 @@ class BasePlatformAdapter(ABC):
                 )
                 if result.success:
                     logger.info("[%s] Send succeeded on retry %d", self.name, attempt)
+                    return result
+                # Partial delivery: do not retry or fall back.
+                if effective_delivery_state(result) is FinalDeliveryState.PARTIALLY_DELIVERED:
                     return result
                 error_str = result.error or ""
                 if result.retry_after is not None:
@@ -4896,6 +4970,28 @@ class BasePlatformAdapter(ABC):
             max_ms = 2500
         return random.uniform(min_ms / 1000.0, max_ms / 1000.0)
 
+    async def try_send_final_rich_response(
+        self,
+        *,
+        chat_id: str,
+        original_response: str,
+        text_content: str,
+        images: List[Tuple[str, str]],
+        media_files: List[Tuple[str, bool]],
+        local_files: List[str],
+        force_document_attachments: bool,
+        reply_to: Optional[str],
+        metadata: Optional[Dict[str, Any]],
+        is_ephemeral_response: bool = False,
+    ) -> Optional[SendResult]:
+        """Optionally send a platform-native rich final response.
+
+        Subclasses can override this to combine already-extracted text and
+        media into one richer platform message. Return ``None`` to let the base
+        legacy text/media delivery continue unchanged.
+        """
+        return None
+
     async def _process_message_background(self, event: MessageEvent, session_key: str) -> None:
         """Background task that actually processes the message."""
         # Track delivery outcomes for the processing-complete hook
@@ -5040,6 +5136,17 @@ class BasePlatformAdapter(ABC):
                 # metadata stays unmarked and progress bubbles remain
                 # thread-strict.
                 _final_thread_metadata = _mark_notify_metadata(_thread_metadata)
+                # The final-response marker is currently Feishu-only: this PR
+                # wires a concrete Feishu card renderer while leaving every
+                # other platform's final-message metadata unchanged. Command
+                # and ephemeral replies are system notices, not assistant
+                # completions, so keep them on Feishu's legacy text path.
+                if (
+                    self.platform == Platform.FEISHU
+                    and event.message_type != MessageType.COMMAND
+                    and not is_ephemeral_response
+                ):
+                    _final_thread_metadata["hermes_final_response"] = True
 
                 # Auto-TTS: if voice message, generate audio FIRST (before sending text)
                 # Gated via ``_should_auto_tts_for_chat``: fires when the chat has
@@ -5091,8 +5198,39 @@ class BasePlatformAdapter(ABC):
                         except OSError:
                             pass
 
+                _rich_final_response_delivered = False
+                if not _tts_caption_delivered:
+                    try:
+                        _rich_result = await self.try_send_final_rich_response(
+                            chat_id=event.source.chat_id,
+                            original_response=_response_pre_extract,
+                            text_content=text_content,
+                            images=list(images),
+                            media_files=list(media_files),
+                            local_files=list(local_files),
+                            force_document_attachments=force_document_attachments,
+                            reply_to=_reply_anchor_for_event(event),
+                            metadata=_final_thread_metadata,
+                            is_ephemeral_response=bool(_ephemeral_ttl and _ephemeral_ttl > 0),
+                        )
+                    except Exception:
+                        logger.warning(
+                            "[%s] Final rich response hook failed; falling back to legacy delivery",
+                            self.name,
+                            exc_info=True,
+                        )
+                        _rich_result = None
+                    if _rich_result is not None:
+                        _rich_state = effective_delivery_state(_rich_result)
+                        if _rich_state in {
+                            FinalDeliveryState.FULLY_DELIVERED,
+                            FinalDeliveryState.PARTIALLY_DELIVERED,
+                        }:
+                            _record_delivery(_rich_result)
+                            _rich_final_response_delivered = True
+
                 # Send the text portion
-                if text_content and not _tts_caption_delivered:
+                if text_content and not _tts_caption_delivered and not _rich_final_response_delivered:
                     logger.info("[%s] Sending response (%d chars) to %s", self.name, len(text_content), event.source.chat_id)
                     _reply_anchor = _reply_anchor_for_event(event)
                     result = await self._send_with_retry(
@@ -5122,7 +5260,7 @@ class BasePlatformAdapter(ABC):
                 human_delay = self._get_human_delay()
 
                 # Send extracted images as native attachments
-                if images:
+                if images and not _rich_final_response_delivered:
                     logger.info("[%s] Extracted %d image(s) to send as attachments", self.name, len(images))
                     try:
                         await self.send_multiple_images(
@@ -5134,6 +5272,10 @@ class BasePlatformAdapter(ABC):
                     except Exception as batch_err:
                         logger.warning("[%s] Error batching images: %s", self.name, batch_err, exc_info=True)
 
+
+                if _rich_final_response_delivered:
+                    media_files = []
+                    local_files = []
 
                 # Send extracted media files — route by file type
                 _VIDEO_EXTS = {'.mp4', '.mov', '.avi', '.mkv', '.webm', '.3gp'}
@@ -5778,3 +5920,14 @@ class BasePlatformAdapter(ABC):
             ]
 
         return chunks
+
+
+def iter_media_tag_paths(content: str) -> List[str]:
+    """Return deliverable MEDIA:<path> paths using the canonical media parser.
+
+    This delegates to ``BasePlatformAdapter.extract_media`` so card-rendering
+    decisions share the same quoted-path, extension, and protected-span
+    behavior as native attachment delivery.
+    """
+    media, _cleaned = BasePlatformAdapter.extract_media(content or "")
+    return [path for path, _is_voice in media]

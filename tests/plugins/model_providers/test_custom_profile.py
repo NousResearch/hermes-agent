@@ -130,6 +130,59 @@ class TestCustomReasoningWireShape:
         assert eb.get("think") is not True
 
 
+class TestCustomReasoningDisableConfig:
+    """``reasoning_disable`` config key overrides the locality heuristic."""
+
+    def test_disable_none_forces_on_remote(self, custom_profile, monkeypatch):
+        """reasoning_disable='none' → always send fields, even remote."""
+        import sys
+        _mod = sys.modules["plugins.model_providers.custom"]
+        monkeypatch.setattr(_mod, "_read_reasoning_disable_method", lambda ctx: "none")
+        eb, tl = custom_profile.build_api_kwargs_extras(
+            reasoning_config={"enabled": False},
+            model="doubao-seed-2.1-pro",
+            base_url="https://api.ofox.ai/v1",
+        )
+        assert eb == {"think": False}
+        assert tl == {"reasoning_effort": "none"}
+
+    def test_disable_omit_suppresses_on_local(self, custom_profile, monkeypatch):
+        """reasoning_disable='omit' → never send fields, even local."""
+        import sys
+        _mod = sys.modules["plugins.model_providers.custom"]
+        monkeypatch.setattr(_mod, "_read_reasoning_disable_method", lambda ctx: "omit")
+        eb, tl = custom_profile.build_api_kwargs_extras(
+            reasoning_config={"enabled": False},
+            model="glm-5.2",
+            base_url="http://localhost:11434/v1",
+        )
+        assert eb == {}
+        assert tl == {}
+
+    def test_disable_auto_keeps_locality_default(self, custom_profile, monkeypatch):
+        """reasoning_disable='auto' (default) → locality heuristic applies."""
+        import sys
+        _mod = sys.modules["plugins.model_providers.custom"]
+        monkeypatch.setattr(_mod, "_read_reasoning_disable_method", lambda ctx: "auto")
+        # Local → fields emitted
+        eb, tl = custom_profile.build_api_kwargs_extras(
+            reasoning_config={"enabled": False},
+            model="glm-5.2",
+            base_url="http://localhost:11434/v1",
+        )
+        assert eb == {"think": False}
+        assert tl == {"reasoning_effort": "none"}
+
+        # Remote → fields omitted
+        eb, tl = custom_profile.build_api_kwargs_extras(
+            reasoning_config={"enabled": False},
+            model="doubao-seed-2.1-pro",
+            base_url="https://api.ofox.ai/v1",
+        )
+        assert eb == {}
+        assert tl == {}
+
+
 class TestCustomReasoningWithNumCtx:
     """Ollama num_ctx and reasoning are independent and compose."""
 

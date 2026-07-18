@@ -68,6 +68,32 @@ def _is_local_endpoint(base_url: str) -> bool:
     return False
 
 
+def _read_reasoning_disable_method(ctx: dict) -> str:
+    """Return how to disable reasoning for the current custom provider.
+
+    Reads ``custom_providers[<name>].reasoning_disable`` from config.
+    Returns one of ``"auto"`` (default), ``"none"``, or ``"omit"``.
+    """
+    try:
+        from hermes_cli.config import load_config_readonly
+        cfg = load_config_readonly()
+        providers = cfg.get("custom_providers") or []
+        # Find the matching provider by base_url
+        for p in providers:
+            if not isinstance(p, dict):
+                continue
+            p_url = (p.get("base_url") or "").strip()
+            ctx_url = (ctx.get("base_url") or "").strip()
+            if p_url and ctx_url and p_url.rstrip("/") == ctx_url.rstrip("/"):
+                val = (p.get("reasoning_disable") or "").strip().lower()
+                if val in {"none", "omit"}:
+                    return val
+                return "auto"
+    except Exception:
+        pass
+    return "auto"
+
+
 class CustomProfile(ProviderProfile):
     """Custom/Ollama local provider — think=false and num_ctx support."""
 
@@ -120,12 +146,26 @@ class CustomProfile(ProviderProfile):
             _effort = (reasoning_config.get("effort") or "").strip().lower()
             _enabled = reasoning_config.get("enabled", True)
             if _effort == "none" or _enabled is False:
-                # Only send reasoning_effort="none" + think=False to LOCAL
-                # endpoints (Ollama, local vLLM/llama.cpp). Remote endpoints
-                # reject "none" as invalid — omit entirely so server default applies.
-                if _is_local:
+                # How to signal reasoning-off to the endpoint.
+                #
+                #   "auto" (default) → locality heuristic: send to local,
+                #     omit for remote (Ollama needs it; ofox/ARK reject it)
+                #   "none" → always send reasoning_effort="none" + think=False
+                #     (for remote endpoints that accept it)
+                #   "omit" → never send the disable fields
+                #     (for endpoints that reject "none", let server default apply)
+                #
+                # Read from the per-provider config key ``reasoning_disable``
+                # in ``custom_providers``. Falls back to "auto".
+                _method = _read_reasoning_disable_method(ctx)
+                if _method == "none":
                     top_level["reasoning_effort"] = "none"
                     extra_body["think"] = False
+                elif _method == "auto":
+                    if _is_local:
+                        top_level["reasoning_effort"] = "none"
+                        extra_body["think"] = False
+                # "omit": send neither — server default applies
             elif _effort:
                 top_level["reasoning_effort"] = _effort
 

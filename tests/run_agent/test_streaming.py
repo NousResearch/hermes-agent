@@ -400,15 +400,18 @@ class TestStreamingAccumulator:
         )
         agent.api_mode = "chat_completions"
         agent._interrupt_requested = False
-        # Mirror the CLI's quiet-mode setup: no display consumer registered.
-        agent.stream_delta_callback = None
-        agent.tool_gen_callback = None
+        # Mirror the CLI's quiet-mode setup: a no-op display sink
+        # (stdout stays quiet) but the delta still flows through
+        # _fire_stream_delta() so recovery text is retained (#62480).
+        agent.stream_delta_callback = lambda *a, **k: None
+        agent.tool_gen_callback = lambda *a, **k: None
 
         response = agent._interruptible_streaming_api_call({})
 
         # Content is still returned via the response object...
         assert response.choices[0].message.content == "Here is the partial answer"
-        # ...and it must ALSO be buffered for recovery, even without a callback.
+        # ...and it must ALSO be buffered for recovery, even though the
+        # display sink printed nothing.
         assert agent._current_streamed_assistant_text == "Here is the partial answer"
 
 

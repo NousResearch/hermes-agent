@@ -16161,11 +16161,16 @@ def main(
                     ):
                         cli.agent.quiet_mode = True
                         cli.agent.suppress_status_output = True
-                        # Suppress streaming display callbacks so stdout stays
-                        # machine-readable (no styled "Hermes" box, no tool-gen
-                        # status lines).  The response is printed once below.
-                        cli.agent.stream_delta_callback = None
-                        cli.agent.tool_gen_callback = None
+                        # Quiet mode must keep stdout machine-readable (no
+                        # styled "Hermes" box, no tool-gen status lines),
+                        # but the streamed-text buffer used by partial-response
+                        # recovery still needs every delta to flow through
+                        # _fire_stream_delta(). Register a no-op display
+                        # sink instead of dropping the callback, so the
+                        # streamed text is retained for recovery while
+                        # nothing is printed (#62480 review).
+                        cli.agent.stream_delta_callback = lambda *a, **k: None
+                        cli.agent.tool_gen_callback = lambda *a, **k: None
                         try:
                             result = cli.agent.run_conversation(
                                 user_message=effective_query,

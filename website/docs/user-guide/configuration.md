@@ -1400,7 +1400,7 @@ agent:
 
 ## Tool-Loop Guardrails
 
-Hermes detects when the agent is stuck in an unproductive tool-calling loop — the same tool call failing repeatedly, the same tool failing over and over, or an idempotent call returning the same result with no progress. By default it injects a **warning** into the tool result so the model self-corrects; it does not hard-stop, since a person watching the CLI/TUI can intervene.
+Hermes detects when the agent is stuck in an unproductive tool-calling loop — the same tool call failing repeatedly, the same tool failing over and over, an idempotent call returning the same result with no progress, the same *successful* call repeated back-to-back, or an unusually high number of tool calls in a single turn. By default it injects a **warning** into the tool result so the model self-corrects; it does not hard-stop, since a person watching the CLI/TUI can intervene.
 
 For unattended gateway / server deployments, enable hard stops so a stuck agent is circuit-broken instead of burning the iteration budget:
 
@@ -1412,13 +1412,15 @@ tool_loop_guardrails:
     exact_failure: 2           # identical failing call repeated N times
     same_tool_failure: 3       # same tool failing N times (different args)
     idempotent_no_progress: 2  # same result, no progress, N times
+    repeated_success: 4        # identical successful call repeated N times in a row (non-idempotent tools)
+    turn_volume: 25            # completed tool calls in one turn reach N (warns once per turn)
   hard_stop_after:
     exact_failure: 5
     same_tool_failure: 8
     idempotent_no_progress: 5
 ```
 
-`hard_stop_enabled` defaults to `false` because interactive sessions have a human in the loop. In unattended deployments (gateway, cron, kanban workers) set it to `true` so repeated failures are blocked rather than only warned. See also [Docker / unattended deployments](docker.md).
+`hard_stop_enabled` defaults to `false` because interactive sessions have a human in the loop. In unattended deployments (gateway, cron, kanban workers) set it to `true` so repeated failures are blocked rather than only warned. See also [Docker / unattended deployments](docker.md). The `repeated_success` and `turn_volume` detectors are warn-only: they inject guidance into the tool result but never block or halt the turn.
 
 ## TTS Configuration
 

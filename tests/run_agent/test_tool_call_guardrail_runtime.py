@@ -353,3 +353,78 @@ def test_guardrail_halt_emits_final_response_through_stream_delta_callback():
     assert halt_text in text_deltas, (
         f"halt message was never streamed; callback only saw {deltas!r}"
     )
+
+def test_sequential_path_appends_repeated_success_warning_to_tool_result():
+    """A redundant *successful* loop must warn through the same model-visible
+    channel as failure warnings: guidance appended to the tool result."""
+    agent = _make_agent("terminal")
+    args = {"command": "ls -la"}
+    for _ in range(3):
+        agent._tool_guardrails.after_call(
+            "terminal", args, json.dumps({"exit_code": 0}), failed=False
+        )
+    tc = _mock_tool_call("terminal", json.dumps(args), "c-redundant")
+    msg = SimpleNamespace(content="", tool_calls=[tc])
+    messages = []
+
+    with patch("run_agent.handle_function_call", return_value=json.dumps({"exit_code": 0})) as mock_hfc:
+        agent._execute_tool_calls_sequential(msg, messages, "task-1")
+
+    mock_hfc.assert_called_once()  # warn-only: execution still happens
+    assert [m["role"] for m in messages] == ["tool"]
+    assert messages[0]["tool_call_id"] == "c-redundant"
+    content = messages[0]["content"]
+    assert "Tool loop warning" in content
+    assert "repeated_success_warning" in content
+    assert agent._tool_guardrail_halt_decision is None
+
+
+def test_concurrent_path_emits_turn_volume_warning_exactly_once():
+    agent = _make_agent(
+        "web_search",
+        config={"tool_loop_guardrails": {"warn_after": {"turn_volume": 3}}},
+    )
+    calls = [
+        _mock_tool_call("web_search", json.dumps({"query": f"q{i}"}), f"c-{i}")
+        for i in range(3)
+    ]
+    msg = SimpleNamespace(content="", tool_calls=calls)
+    messages = []
+
+    def fake_handle(name, args, task_id, **kwargs):
+        return json.dumps({"ok": args["query"]})
+
+    with patch("run_agent.handle_function_call", side_effect=fake_handle):
+        agent._execute_tool_calls_concurrent(msg, messages, "task-1")
+
+    assert len(messages) == 3
+    volume_hits = [m for m in messages if "turn_volume_warning" in m["content"]]
+    assert len(volume_hits) == 1
+    assert "Tool loop warning" in volume_hits[0]["content"]
+    assert agent._tool_guardrail_halt_decision is None
+
+
+def test_repeated_success_streak_resets_at_turn_boundary():
+    """build_turn_context resets the controller, so a streak accumulated in
+    one turn must not warn on the first identical call of the next turn."""
+    agent = _make_agent("terminal", max_iterations=5)
+    args = {"command": "ls"}
+    for _ in range(3):
+        agent._tool_guardrails.after_call(
+            "terminal", args, json.dumps({"exit_code": 0}), failed=False
+        )
+
+    agent.client.chat.completions.create.side_effect = [
+        _mock_response(content="done", finish_reason="stop", tool_calls=None)
+    ]
+    with (
+        patch.object(agent, "_persist_session"),
+        patch.object(agent, "_save_trajectory"),
+        patch.object(agent, "_cleanup_task_resources"),
+    ):
+        agent.run_conversation("hello")
+
+    decision = agent._tool_guardrails.after_call(
+        "terminal", args, json.dumps({"exit_code": 0}), failed=False
+    )
+    assert decision.action == "allow"

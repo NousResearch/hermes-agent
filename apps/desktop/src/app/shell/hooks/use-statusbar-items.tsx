@@ -428,9 +428,10 @@ export function useStatusbarItems({
       },
       {
         ...approvalModeItem,
-        hidden: gatewayState !== 'open',
+        hidden: gatewayState !== 'open'
       },
       {
+        actionId: 'view.showTerminal',
         className: `w-7 justify-center px-0${terminalTakeover ? ' bg-accent/55 text-foreground' : ''}`,
         hidden: !chatOpen,
         icon: <Terminal className="size-3.5" />,
@@ -457,7 +458,7 @@ export function useStatusbarItems({
       sessionStartedAt,
       gatewayState,
       terminalTakeover,
-      turnStartedAt,
+      turnStartedAt
     ]
   )
 

@@ -57,11 +57,7 @@ export function GatewayConnectingOverlay() {
   const initialBootActive = boot.visible || boot.running || boot.progress < 100
 
   const connecting =
-    !coldBootDoneRef.current &&
-    !gatewaySwitching &&
-    gatewayState !== 'open' &&
-    !boot.error &&
-    initialBootActive
+    !coldBootDoneRef.current && !gatewaySwitching && gatewayState !== 'open' && !boot.error && initialBootActive
 
   // Latches once we've actually shown the overlay, so the brief frame where
   // gatewayState flips to "open" (connecting -> false) before the exit phase

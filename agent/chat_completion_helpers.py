@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import json
 import logging
+import math
 import os
 import re
 import threading
@@ -35,6 +36,7 @@ from agent.message_sanitization import (
     _sanitize_surrogates,
     _repair_tool_call_arguments,
 )
+from agent.stream_single_writer import claim_stream_writer, stream_writer_is_current
 from tools.terminal_tool import is_persistent_env
 from utils import base_url_host_matches, base_url_hostname, env_float, env_int
 
@@ -189,6 +191,31 @@ def _env_float(name: str, default: float) -> float:
         return float(os.getenv(name, str(default)))
     except (TypeError, ValueError):
         return default
+
+
+def _codex_wait_notice_recovery(
+    *,
+    stale_timeout: float,
+    ttfb_enabled: bool,
+    ttfb_timeout: float,
+    last_event_ts: Optional[float],
+    call_start: float,
+    idle_enabled: bool,
+    idle_timeout: float,
+    elapsed: float,
+) -> str:
+    """Describe the earliest enabled Codex watchdog on the call timeline."""
+    deadlines: list[float] = []
+    if math.isfinite(stale_timeout):
+        deadlines.append(stale_timeout)
+    if last_event_ts is None:
+        if ttfb_enabled and math.isfinite(ttfb_timeout):
+            deadlines.append(ttfb_timeout)
+    elif idle_enabled and math.isfinite(idle_timeout):
+        deadlines.append(max(0.0, last_event_ts - call_start) + idle_timeout)
+    if not deadlines or min(deadlines) <= elapsed:
+        return ""
+    return f"; auto-reconnect at {int(min(deadlines))}s"
 
 
 # ── Cross-turn stale-call circuit breaker (#58962) ─────────────────────
@@ -611,17 +638,26 @@ def interruptible_api_call(agent, api_kwargs: dict):
         # usually a slow/overloaded provider, but the UI never said so).
         if _poll_count % 100 == 0:  # 100 × 0.3s = 30s
             _elapsed = time.time() - _call_start
-            _deadline = _stale_timeout
-            if (
-                _ttfb_enabled
-                and getattr(agent, "_codex_stream_last_event_ts", None) is None
-            ):
-                _deadline = min(_deadline, _ttfb_timeout)
-            agent._emit_wait_notice(
-                f"⏳ waiting on {api_kwargs.get('model', 'the provider')} — "
-                f"{int(_elapsed)}s with no response yet (provider may be slow "
-                f"or overloaded; auto-reconnect at {int(_deadline)}s)"
-            )
+            try:
+                _recovery = _codex_wait_notice_recovery(
+                    stale_timeout=_stale_timeout,
+                    ttfb_enabled=_ttfb_enabled,
+                    ttfb_timeout=_ttfb_timeout,
+                    last_event_ts=getattr(
+                        agent, "_codex_stream_last_event_ts", None
+                    ),
+                    call_start=_call_start,
+                    idle_enabled=_codex_idle_enabled,
+                    idle_timeout=_codex_idle_timeout,
+                    elapsed=_elapsed,
+                )
+                agent._emit_wait_notice(
+                    f"⏳ waiting on {api_kwargs.get('model', 'the provider')} — "
+                    f"{int(_elapsed)}s with no response yet (provider may be slow "
+                    f"or overloaded{_recovery})"
+                )
+            except Exception:
+                logger.debug("wait-notice construction failed", exc_info=True)
 
         _elapsed = time.time() - _call_start
 
@@ -2109,6 +2145,10 @@ def interruptible_streaming_api_call(agent, api_kwargs: dict, *, on_first_delta=
                         invalidate_runtime_client(region)
                     raise
 
+                # Claim the delta sink for this bedrock stream (#65991) so a
+                # superseded attempt's callbacks are fenced by the sink guard.
+                claim_stream_writer(agent)
+
                 def _on_text(text):
                     _fire_first()
                     agent._fire_stream_delta(text)
@@ -2307,6 +2347,11 @@ def interruptible_streaming_api_call(agent, api_kwargs: dict, *, on_first_delta=
         _diag = agent._stream_diag_init()
         request_client_holder["diag"] = _diag
         stream = request_client.chat.completions.create(**stream_kwargs)
+        # Claim the delta sink for THIS attempt (#65991). If a prior attempt's
+        # stream is somehow still alive (a stale-stream reconnect whose socket
+        # abort raced), this claim supersedes it so its late chunks are fenced
+        # out of the turn instead of interleaving with ours.
+        _writer_token = claim_stream_writer(agent)
 
         # Some OpenAI-compatible adapters (for example copilot-acp, and the MoA
         # openai-codex aggregator) accept stream=True but still return a
@@ -2379,6 +2424,18 @@ def interruptible_streaming_api_call(agent, api_kwargs: dict, *, on_first_delta=
         reasoning_parts: list = []
         usage_obj = None
         for chunk in stream:
+            # Stop the moment a newer attempt has claimed the delta sink
+            # (#65991): this attempt has been superseded, so it must neither
+            # fire deltas (incl. the tool-suppressed raw-callback path below)
+            # nor keep consuming a stream that would interleave into the turn.
+            if not stream_writer_is_current(agent, _writer_token):
+                logger.warning(
+                    "Streaming attempt superseded by a newer stream; stopping "
+                    "consumption to preserve the single-writer invariant "
+                    "(model=%s).",
+                    api_kwargs.get("model", "unknown"),
+                )
+                break
             last_chunk_time["t"] = time.time()
             agent._touch_activity("receiving stream response")
 
@@ -2701,7 +2758,20 @@ def interruptible_streaming_api_call(agent, api_kwargs: dict, *, on_first_delta=
                 )
             except Exception:
                 pass
+            # Claim the delta sink for THIS attempt (#65991) — parity with the
+            # chat_completions path so a superseded anthropic stream is fenced.
+            _writer_token = claim_stream_writer(agent)
             for event in stream:
+                # Bail the instant a newer attempt supersedes this one so a
+                # stale stream can't interleave tokens into the turn.
+                if not stream_writer_is_current(agent, _writer_token):
+                    logger.warning(
+                        "Anthropic streaming attempt superseded by a newer "
+                        "stream; stopping consumption to preserve the "
+                        "single-writer invariant (model=%s).",
+                        api_kwargs.get("model", "unknown"),
+                    )
+                    break
                 saw_stream_event = True
                 # Update stale-stream timer on every event so the
                 # outer poll loop knows data is flowing.  Without

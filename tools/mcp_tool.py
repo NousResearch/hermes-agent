@@ -575,6 +575,53 @@ def _prepend_path(env: dict, directory: str) -> dict:
     return updated
 
 
+# Safety cap on nextCursor pagination loops so a misbehaving server that
+# returns a cursor forever cannot spin discovery indefinitely. 50 pages at
+# the common 50-100 items/page covers thousands of tools/resources/prompts.
+_MCP_LIST_MAX_PAGES = 50
+
+
+async def _paginate_full_list(list_method, items_attr: str, server_name: str):
+    """Drain a paginated MCP ``list_*`` call by following ``nextCursor``.
+
+    The MCP spec allows servers to paginate ``tools/list``,
+    ``resources/list``, and ``prompts/list`` responses via an opaque
+    ``nextCursor`` token. The Python SDK's ``ClientSession.list_*`` methods
+    fetch exactly one page per call, so a client that never passes the
+    cursor back silently sees only the first page — on a paginated server
+    every tool/resource/prompt past page 1 would be invisible to the agent.
+
+    Args:
+        list_method: Bound ``session.list_tools`` / ``list_resources`` /
+            ``list_prompts`` coroutine function.
+        items_attr: Result attribute holding the page's items
+            (``"tools"``, ``"resources"``, or ``"prompts"``).
+        server_name: For log messages.
+
+    Returns:
+        Combined list of items across all pages. Callers must hold the
+        server's ``_rpc_lock`` for the duration so pages come from a
+        consistent snapshot.
+    """
+    items: list = []
+    cursor = None
+    for _ in range(_MCP_LIST_MAX_PAGES):
+        result = await (list_method(cursor=cursor) if cursor else list_method())
+        items.extend(getattr(result, items_attr, None) or [])
+        cursor = getattr(result, "nextCursor", None)
+        # Per the MCP spec the cursor is an opaque string; anything else
+        # (including mock objects in tests) means "no more pages".
+        if not isinstance(cursor, str) or not cursor:
+            break
+    else:
+        logger.warning(
+            "MCP server '%s': %s pagination exceeded %d pages; "
+            "truncating at %d items",
+            server_name, items_attr, _MCP_LIST_MAX_PAGES, len(items),
+        )
+    return items
+
+
 def _resolve_stdio_command(command: str, env: dict) -> tuple[str, dict]:
     """Resolve a stdio MCP command against the exact subprocess environment.
 
@@ -1938,10 +1985,11 @@ class MCPServerTask:
             # Capture old tool names for change diff
             old_tool_names = set(self._registered_tool_names)
 
-            # 1. Fetch current tool list from server
+            # 1. Fetch current tool list from server (follow nextCursor)
             async with self._rpc_lock:
-                tools_result = await self.session.list_tools()
-            new_mcp_tools = tools_result.tools if hasattr(tools_result, "tools") else []
+                new_mcp_tools = await _paginate_full_list(
+                    self.session.list_tools, "tools", self.name
+                )
 
             # 2. Re-register with fresh tool list. Avoid nuke-and-repave for
             # all names: live agent turns may already have tool-call IDs
@@ -2743,12 +2791,9 @@ class MCPServerTask:
             self._register_discovered_tools_if_needed()
             return
         async with self._rpc_lock:
-            tools_result = await self.session.list_tools()
-        self._tools = (
-            tools_result.tools
-            if hasattr(tools_result, "tools")
-            else []
-        )
+            self._tools = await _paginate_full_list(
+                self.session.list_tools, "tools", self.name
+            )
         self._register_discovered_tools_if_needed()
 
     def _register_discovered_tools_if_needed(self) -> None:
@@ -3201,6 +3246,15 @@ def _signal_reconnect(server: Any) -> bool:
     else:
         event.set()
     return True
+
+
+def reconnect_mcp_server(server_name: str) -> bool:
+    """Ask a currently-live MCP server to rebuild after external re-auth."""
+    with _lock:
+        server = _servers.get(server_name)
+    if server is None:
+        return False
+    return _signal_reconnect(server)
 
 
 def _wait_for_server_session_ready(
@@ -3775,6 +3829,27 @@ def _wrap_with_home_override(coro: "Coroutine") -> "Coroutine":
     return _scoped()
 
 
+def _wrap_with_dashboard_oauth_flow(coro):
+    """Propagate a dashboard OAuth flow onto the dedicated MCP loop task."""
+    try:
+        from tools.mcp_dashboard_oauth import (
+            dashboard_oauth_flow,
+            get_dashboard_oauth_flow,
+        )
+
+        flow = get_dashboard_oauth_flow()
+    except Exception:
+        return coro
+    if flow is None:
+        return coro
+
+    async def _scoped():
+        with dashboard_oauth_flow(flow):
+            return await coro
+
+    return _scoped()
+
+
 def _run_on_mcp_loop(coro_or_factory, timeout: float = 30):
     """Schedule a coroutine on the MCP event loop and block until done.
 
@@ -3809,6 +3884,7 @@ def _run_on_mcp_loop(coro_or_factory, timeout: float = 30):
     # task's own context (task-local — concurrent calls carrying different
     # scopes don't interfere). No-op when no override is active.
     coro = _wrap_with_home_override(coro)
+    coro = _wrap_with_dashboard_oauth_flow(coro)
 
     future = safe_schedule_threadsafe(
         coro, loop,
@@ -4254,9 +4330,11 @@ def _make_list_resources_handler(server_name: str, tool_timeout: float):
         async def _call():
             _mark_server_call_started(server)
             async with server._rpc_lock:
-                result = await server.session.list_resources()
+                all_resources = await _paginate_full_list(
+                    server.session.list_resources, "resources", server_name
+                )
             resources = []
-            for r in (result.resources if hasattr(result, "resources") else []):
+            for r in all_resources:
                 entry = {}
                 if hasattr(r, "uri"):
                     entry["uri"] = str(r.uri)
@@ -4379,9 +4457,11 @@ def _make_list_prompts_handler(server_name: str, tool_timeout: float):
         async def _call():
             _mark_server_call_started(server)
             async with server._rpc_lock:
-                result = await server.session.list_prompts()
+                all_prompts = await _paginate_full_list(
+                    server.session.list_prompts, "prompts", server_name
+                )
             prompts = []
-            for p in (result.prompts if hasattr(result, "prompts") else []):
+            for p in all_prompts:
                 entry = {}
                 if hasattr(p, "name"):
                     entry["name"] = p.name

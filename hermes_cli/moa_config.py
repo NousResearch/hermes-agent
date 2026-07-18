@@ -70,7 +70,7 @@ def _coerce_int_or_none(value: Any) -> int | None:
 def _coerce_fanout(value: Any) -> str:
     """Normalize the fan-out cadence; unknown values fall back to default."""
     mode = str(value or "").strip().lower()
-    return mode if mode in {"per_iteration", "user_turn"} else "per_iteration"
+    return mode if mode in {"per_iteration", "user_turn"} else "user_turn"
 
 
 def _clean_reasoning_effort(value: Any) -> str | None:
@@ -189,7 +189,7 @@ def _default_preset() -> dict[str, Any]:
         "aggregator_temperature": None,
         "max_tokens": 4096,
         "reference_max_tokens": None,
-        "fanout": "per_iteration",
+        "fanout": "user_turn",
         "enabled": True,
     }
 
@@ -227,12 +227,11 @@ def _normalize_preset(raw: Any) -> dict[str, Any]:
         # judgement, so capping roughly halves per-turn wall time. Does NOT cap
         # the acting aggregator (its output is the user-visible answer).
         "reference_max_tokens": _coerce_int_or_none(raw.get("reference_max_tokens")),
-        # When the reference fan-out runs. "per_iteration" (default) re-runs
-        # the advisors whenever the advisory view changes — i.e. every tool
-        # iteration, so advice tracks live task state. "user_turn" runs the
-        # advisors ONCE per user turn (the original MoA shape): the
-        # aggregator gets their upfront plan-level advice, then acts alone
-        # for the rest of the tool loop.
+        # When the reference fan-out runs. "user_turn" (default) runs the
+        # advisors ONCE per user turn: the aggregator gets their upfront
+        # plan-level advice, then acts alone for the rest of the tool loop.
+        # "per_iteration" re-runs the fan-out on every tool iteration so
+        # advice tracks live task state.
         "fanout": _coerce_fanout(raw.get("fanout")),
     }
 
@@ -280,7 +279,7 @@ def normalize_moa_config(raw: Any) -> dict[str, Any]:
         "aggregator_temperature": active["aggregator_temperature"],
         "max_tokens": active["max_tokens"],
         "reference_max_tokens": active.get("reference_max_tokens"),
-        "fanout": active.get("fanout", "per_iteration"),
+        "fanout": active.get("fanout", "user_turn"),
         "enabled": active["enabled"],
     }
 

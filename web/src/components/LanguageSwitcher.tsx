@@ -1,24 +1,24 @@
-import { useState, useRef, useEffect } from "react";
-import { createPortal } from "react-dom";
-import { Check } from "lucide-react";
-import { Button } from "@nous-research/ui/ui/components/button";
-import { BottomSheet } from "@nous-research/ui/ui/components/bottom-sheet";
-import { Typography } from "@nous-research/ui/ui/components/typography/index";
-import { Toast } from "@nous-research/ui/ui/components/toast";
-import { useBelowBreakpoint } from "@nous-research/ui/hooks/use-below-breakpoint";
-import { useToast } from "@nous-research/ui/hooks/use-toast";
-import { useI18n } from "@/i18n";
-import { LOCALE_META } from "@/i18n";
-import type { Locale } from "@/i18n";
-import { cn } from "@/lib/utils";
+import { useState, useRef, useEffect } from 'react'
+import { createPortal } from 'react-dom'
+import { Check } from 'lucide-react'
+import { Button } from '@nous-research/ui/ui/components/button'
+import { BottomSheet } from '@nous-research/ui/ui/components/bottom-sheet'
+import { Typography } from '@nous-research/ui/ui/components/typography/index'
+import { Toast } from '@nous-research/ui/ui/components/toast'
+import { useBelowBreakpoint } from '@nous-research/ui/hooks/use-below-breakpoint'
+import { useToast } from '@nous-research/ui/hooks/use-toast'
+import { useI18n } from '@/i18n'
+import { LOCALE_META } from '@/i18n'
+import type { Locale } from '@/i18n'
+import { cn } from '@/lib/utils'
 
 /**
  * Language picker — shows the current language's endonym, opens a dropdown
  * of all supported locales when clicked. Persists the local preference and
  * the shared display.language config through the I18n context.
  *
- * Replaces the older two-state EN↔ZH toggle now that we ship 16 locales
- * (en, zh, zh-hant, ja, de, es, fr, tr, uk, af, ko, it, ga, pt, ru, hu).
+ * Replaces the older two-state EN↔ZH toggle with the shared locale registry;
+ * newly registered language packs appear here without component changes.
  *
  * No country flags by design — languages aren't countries, and flag pairings
  * inevitably create political mismappings (e.g. Mandarin variants ≠ any single
@@ -29,73 +29,62 @@ import { cn } from "@/lib/utils";
  * viewport / overflow ancestors. Below the `sm` breakpoint, `dropUp` uses a
  * bottom sheet portaled to `document.body` instead of an anchored dropdown.
  */
-export function LanguageSwitcher({
-  collapsed = false,
-  dropUp = false,
-}: LanguageSwitcherProps) {
-  const { locale, setLocale, t } = useI18n();
-  const { toast, showToast } = useToast();
-  const [open, setOpen] = useState(false);
-  const [savingLocale, setSavingLocale] = useState<Locale | null>(null);
-  const [dropUpStyle, setDropUpStyle] = useState<
-    { bottom: number; left: number } | undefined
-  >();
-  const containerRef = useRef<HTMLDivElement>(null);
-  const dropdownRef = useRef<HTMLDivElement>(null);
-  const narrowViewport = useBelowBreakpoint(640);
-  const useMobileSheet = Boolean(dropUp && narrowViewport);
+export function LanguageSwitcher({ collapsed = false, dropUp = false }: LanguageSwitcherProps) {
+  const { locale, setLocale, t } = useI18n()
+  const { toast, showToast } = useToast()
+  const [open, setOpen] = useState(false)
+  const [savingLocale, setSavingLocale] = useState<Locale | null>(null)
+  const [dropUpStyle, setDropUpStyle] = useState<{ bottom: number; left: number } | undefined>()
+  const containerRef = useRef<HTMLDivElement>(null)
+  const dropdownRef = useRef<HTMLDivElement>(null)
+  const narrowViewport = useBelowBreakpoint(640)
+  const useMobileSheet = Boolean(dropUp && narrowViewport)
 
   useEffect(() => {
-    if (!open) return;
+    if (!open) return
     function onKey(e: KeyboardEvent) {
-      if (e.key === "Escape") setOpen(false);
+      if (e.key === 'Escape') setOpen(false)
     }
-    document.addEventListener("keydown", onKey);
-    return () => document.removeEventListener("keydown", onKey);
-  }, [open]);
+    document.addEventListener('keydown', onKey)
+    return () => document.removeEventListener('keydown', onKey)
+  }, [open])
 
   useEffect(() => {
-    if (!open || useMobileSheet) return;
+    if (!open || useMobileSheet) return
 
     function onPointerDown(e: PointerEvent) {
-      const target = e.target as Node;
-      if (containerRef.current?.contains(target)) return;
-      if (dropdownRef.current?.contains(target)) return;
-      setOpen(false);
+      const target = e.target as Node
+      if (containerRef.current?.contains(target)) return
+      if (dropdownRef.current?.contains(target)) return
+      setOpen(false)
     }
 
-    document.addEventListener("pointerdown", onPointerDown);
-    return () => document.removeEventListener("pointerdown", onPointerDown);
-  }, [open, useMobileSheet]);
+    document.addEventListener('pointerdown', onPointerDown)
+    return () => document.removeEventListener('pointerdown', onPointerDown)
+  }, [open, useMobileSheet])
 
-  const current = LOCALE_META[locale];
-  const allLocales = Object.entries(LOCALE_META) as Array<
-    [Locale, typeof current]
-  >;
-  const sheetTitle = t.language.switchTo;
+  const current = LOCALE_META[locale]
+  const allLocales = Object.entries(LOCALE_META) as Array<[Locale, typeof current]>
+  const sheetTitle = t.language.switchTo
   const toggleOpen = () => {
     if (!open && dropUp && !useMobileSheet) {
-      const rect = containerRef.current?.getBoundingClientRect();
-      setDropUpStyle(
-        rect
-          ? { bottom: window.innerHeight - rect.top + 4, left: rect.left }
-          : undefined,
-      );
+      const rect = containerRef.current?.getBoundingClientRect()
+      setDropUpStyle(rect ? { bottom: window.innerHeight - rect.top + 4, left: rect.left } : undefined)
     }
-    setOpen((value) => !value);
-  };
+    setOpen(value => !value)
+  }
   const selectLocale = async (code: Locale) => {
-    if (savingLocale) return;
-    setSavingLocale(code);
+    if (savingLocale) return
+    setSavingLocale(code)
     try {
-      await setLocale(code);
-      setOpen(false);
+      await setLocale(code)
+      setOpen(false)
     } catch {
-      showToast(t.language.saveFailed, "error");
+      showToast(t.language.saveFailed, 'error')
     } finally {
-      setSavingLocale(null);
+      setSavingLocale(null)
     }
-  };
+  }
 
   return (
     <div ref={containerRef} className="relative inline-flex">
@@ -107,13 +96,13 @@ export function LanguageSwitcher({
         aria-haspopup="listbox"
         aria-expanded={open}
         className={cn(
-          "px-2 py-1 normal-case tracking-normal font-normal text-xs text-text-secondary hover:text-foreground",
-          collapsed && "hover:bg-transparent",
+          'px-2 py-1 normal-case tracking-normal font-normal text-xs text-text-secondary hover:text-foreground',
+          collapsed && 'hover:bg-transparent'
         )}
       >
         <span className="inline-flex items-center gap-1.5">
           <Typography className="hidden sm:inline text-display tracking-wide text-xs">
-            {locale === "en" ? "EN" : current.name}
+            {locale === 'en' ? 'EN' : current.name}
           </Typography>
         </span>
       </Button>
@@ -144,10 +133,8 @@ export function LanguageSwitcher({
               ref={dropdownRef}
               aria-label={sheetTitle}
               className={cn(
-                "min-w-[10rem] border border-border bg-popover shadow-md py-1 max-h-80 overflow-y-auto",
-                dropUp
-                  ? "fixed z-[100]"
-                  : "absolute z-50 right-0 top-full mt-1",
+                'min-w-[10rem] border border-border bg-popover shadow-md py-1 max-h-80 overflow-y-auto',
+                dropUp ? 'fixed z-[100]' : 'absolute z-50 right-0 top-full mt-1'
               )}
               role="listbox"
               style={dropUp ? dropUpStyle : undefined}
@@ -159,37 +146,30 @@ export function LanguageSwitcher({
                 savingLocale={savingLocale}
               />
             </div>
-          );
-          return dropUp ? createPortal(dropdown, document.body) : dropdown;
+          )
+          return dropUp ? createPortal(dropdown, document.body) : dropdown
         })()}
       <Toast toast={toast} />
     </div>
-  );
+  )
 }
 
-function LanguageSwitcherOptions({
-  allLocales,
-  locale,
-  onSelectLocale,
-  savingLocale,
-}: LanguageSwitcherOptionsProps) {
+function LanguageSwitcherOptions({ allLocales, locale, onSelectLocale, savingLocale }: LanguageSwitcherOptionsProps) {
   return (
     <>
       {allLocales.map(([code, meta]) => {
-        const selected = code === locale;
+        const selected = code === locale
 
         return (
           <button
             aria-selected={selected}
             disabled={savingLocale !== null}
             className={cn(
-              "w-full text-left px-3 py-1.5 flex items-center gap-2 cursor-pointer",
-              "font-sans text-display text-xs tracking-[0.08em]",
-              "hover:bg-accent hover:text-accent-foreground transition-colors",
-              savingLocale && "cursor-wait opacity-60",
-              selected
-                ? "font-semibold text-foreground"
-                : "text-muted-foreground",
+              'w-full text-left px-3 py-1.5 flex items-center gap-2 cursor-pointer',
+              'font-sans text-display text-xs tracking-[0.08em]',
+              'hover:bg-accent hover:text-accent-foreground transition-colors',
+              savingLocale && 'cursor-wait opacity-60',
+              selected ? 'font-semibold text-foreground' : 'text-muted-foreground'
             )}
             key={code}
             onClick={() => void onSelectLocale(code)}
@@ -198,24 +178,22 @@ function LanguageSwitcherOptions({
           >
             <span className="truncate">{meta.name}</span>
 
-            {selected && (
-              <Check className="ml-auto h-3 w-3 shrink-0 text-midground" />
-            )}
+            {selected && <Check className="ml-auto h-3 w-3 shrink-0 text-midground" />}
           </button>
-        );
+        )
       })}
     </>
-  );
+  )
 }
 
 interface LanguageSwitcherOptionsProps {
-  allLocales: Array<[Locale, (typeof LOCALE_META)[Locale]]>;
-  locale: Locale;
-  onSelectLocale: (code: Locale) => Promise<void>;
-  savingLocale: Locale | null;
+  allLocales: Array<[Locale, (typeof LOCALE_META)[Locale]]>
+  locale: Locale
+  onSelectLocale: (code: Locale) => Promise<void>
+  savingLocale: Locale | null
 }
 
 interface LanguageSwitcherProps {
-  collapsed?: boolean;
-  dropUp?: boolean;
+  collapsed?: boolean
+  dropUp?: boolean
 }

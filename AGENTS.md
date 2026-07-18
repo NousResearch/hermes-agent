@@ -457,6 +457,34 @@ Newline-delimited JSON-RPC over stdio. Requests from Ink, events from Python. Se
 | Completions | `useCompletion` hook | `complete.slash`, `complete.path` |
 | Theming | `theme.ts` + `branding.tsx` | `gateway.ready` with skin data |
 
+### Localization Framework (Dashboard + TUI)
+
+- The localization architecture is language-neutral. English is the complete
+  source catalog and final fallback; Simplified Chinese is the first complete
+  non-English implementation that proves the framework, not a privileged
+  runtime branch and not the only intended locale.
+- Adding another language should require locale-pack modules plus registry
+  metadata for the applicable surfaces. Components, commands, schema renderers,
+  and bundled Dashboard extensions consume stable translation keys; they must
+  not copy business logic or add `if (locale === ...)` presentation branches.
+- Locale packs overlay English independently. A missing Traditional Chinese or
+  any other locale entry falls back directly to English, never through
+  Simplified Chinese. Traditional Chinese remains its own language pack even
+  when compatibility aliases normalize legacy locale identifiers to it.
+- Keep locale normalization and compatibility aliases at configuration and
+  transport boundaries. Do not leak browser/OS legacy identifiers into display
+  names, translation ownership, or component logic.
+- The current rollout boundary is the Dashboard/Web UI and the Ink TUI,
+  including the TUI embedded by Dashboard and bundled Dashboard extension UI.
+  Classic CLI presentation, the separate Electron Desktop chat surface, the
+  website, and messaging-platform presentation require deliberate follow-up
+  work rather than incidental changes in this framework.
+- Acceptance tests should enforce behavior: the English catalog is complete,
+  complete locale packs cover every key, partial packs fall back to English,
+  and registering a new locale does not require changing feature code. Do not
+  freeze locale counts or make tests assume that English and Simplified Chinese
+  are the only possible languages.
+
 ### Slash Command Flow
 
 1. Built-in client commands (`/help`, `/quit`, `/clear`, `/resume`, `/copy`, `/paste`, etc.) handled locally in `app.tsx`

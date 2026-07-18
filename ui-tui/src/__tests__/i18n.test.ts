@@ -49,8 +49,6 @@ const EMPTY_OVERLAYS: [string, TuiLocaleOverlay][] = [
   ['zh-hant', zhHant]
 ]
 
-const FULL_PACKS = ['en', 'zh'] as const
-
 // ─── Locale set ────────────────────────────────────────────────
 
 describe('LOCALES', () => {
@@ -162,7 +160,7 @@ describe('fallback chain', () => {
   })
 
   it('translate: unknown key returns the key itself', () => {
-    for (const locale of [...FULL_PACKS, 'ja'] as const) {
+    for (const locale of LOCALES) {
       expect(translate(locale, 'this.key.does.not.exist' as TranslationKey)).toBe('this.key.does.not.exist')
     }
   })

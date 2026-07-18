@@ -1,7 +1,6 @@
-// All 16 locales supported by the Hermes Dashboard.
-// TUI mirrors the same set so third-party translators can follow
-// the same workflow: add a locale file, import it into the catalog,
-// and translations light up everywhere.
+// TUI mirrors the Dashboard locale registry so translators can follow the
+// same workflow: add a locale file, register it, and translations light up
+// without changing feature components.
 export const LOCALES = [
   'en',
   'zh',

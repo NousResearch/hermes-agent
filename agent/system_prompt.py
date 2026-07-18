@@ -392,21 +392,31 @@ def build_system_prompt_parts(agent: Any, system_message: Optional[str] = None) 
         active_profile = _resolve_active_profile_name()
     except Exception:
         active_profile = "default"
+    # Resolve the platform-native Hermes home so the prompt's profile paths
+    # are correct on Windows (%LOCALAPPDATA%\hermes\profiles\<name>) and
+    # macOS/Linux (~/.hermes/profiles/<name>). Hard-coding ``~/.hermes``
+    # misled Windows users who asked the agent where their profile lived.
+    # See NousResearch/hermes-agent#66196.
+    try:
+        from hermes_constants import get_hermes_home
+        _hermes_home_str = str(get_hermes_home())
+    except Exception:
+        _hermes_home_str = "~/.hermes"
     if active_profile == "default":
         stable_parts.append(
-            "Active Hermes profile: default. Other profiles (if any) live "
-            "under ~/.hermes/profiles/<name>/. Each profile has its own "
-            "skills/, plugins/, cron/, and memories/ that affect a different "
-            "session than this one. Do not modify another profile's "
-            "skills/plugins/cron/memories unless the user explicitly directs "
-            "you to."
+            f"Active Hermes profile: default. Other profiles (if any) live "
+            f"under {_hermes_home_str}/profiles/<name>/. Each profile has its own "
+            f"skills/, plugins/, cron/, and memories/ that affect a different "
+            f"session than this one. Do not modify another profile's "
+            f"skills/plugins/cron/memories unless the user explicitly directs "
+            f"you to."
         )
     else:
         stable_parts.append(
             f"Active Hermes profile: {active_profile}. This session reads "
-            f"and writes ~/.hermes/profiles/{active_profile}/. The default "
-            f"profile's data lives at ~/.hermes/skills/, ~/.hermes/plugins/, "
-            f"~/.hermes/cron/, ~/.hermes/memories/ — those belong to a "
+            f"and writes {_hermes_home_str}/profiles/{active_profile}/. The default "
+            f"profile's data lives at {_hermes_home_str}/skills/, {_hermes_home_str}/plugins/, "
+            f"{_hermes_home_str}/cron/, {_hermes_home_str}/memories/ — those belong to a "
             f"different session run from a different shell. Do NOT modify "
             f"another profile's skills/plugins/cron/memories unless the user "
             f"explicitly directs you to. The cross-profile write guard will "

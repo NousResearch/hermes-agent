@@ -579,6 +579,36 @@ def _db_opens_cleanly(db_path: Path) -> Optional[str]:
             return "; ".join(problems[:3])
         conn.execute("SELECT COUNT(*) FROM sessions").fetchone()
 
+        # FTS5 read probe: run a representative MATCH query against the
+        # messages_fts* virtual tables. The FTS *write* probe above catches
+        # the corruption class where base tables read fine but writes fail
+        # through the triggers (#50502). It does NOT catch partial FTS5
+        # index corruption — bad shadow-table segments where reads still
+        # parse but MATCH / snippet / rank queries error out with
+        # "database disk image is malformed". session_search, /resume title
+        # resolution, and any feature relying on FTS5 discovery then break
+        # silently because the official repair tool's check-only path
+        # reports the DB as healthy. #66724.
+        try:
+            for fts_table in ("messages_fts", "messages_fts_trigram"):
+                # No-op queries against the actual FTS5 APIs the search
+                # tools use. The trigram table is included because it backs
+                # the title-resolution path; either corruption mode would
+                # break session recall without this probe. Empty MATCH
+                # string is the safest probe — every FTS5 index accepts it
+                # without requiring populated content.
+                conn.execute(
+                    f"SELECT 1 FROM {fts_table} WHERE {fts_table} MATCH '' LIMIT 1"
+                ).fetchone()
+        except sqlite3.OperationalError as exc:
+            msg = str(exc).lower()
+            if "no such table" in msg or "no such column" in msg:
+                # FTS5 not built yet (brand new file mid-init) — not the
+                # corruption class we probe.
+                pass
+            else:
+                return f"fts5 read probe failed on {fts_table}: {exc}"
+
         # FTS write probe: drive a row through the messages_fts* triggers in a
         # transaction that is always rolled back, so a corrupt FTS index that
         # rejects writes is caught even though reads look healthy. The probe is

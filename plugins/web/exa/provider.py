@@ -125,12 +125,28 @@ class ExaWebSearchProvider(WebSearchProvider):
             if is_interrupted():
                 return {"success": False, "error": "Interrupted"}
 
-            logger.info("Exa search: '%s' (limit=%d)", query, limit)
-            response = _get_exa_client().search(
-                query,
-                num_results=limit,
-                contents={"highlights": True},
+            # ``site:<domain>`` is an operator, not a literal term. Exa has a
+            # native domain filter (``include_domains``), so parse the operator
+            # out and apply it natively. Otherwise the ``site:`` token is sent
+            # verbatim and results come back with empty highlights.
+            from tools.web_tools import parse_site_operator
+
+            domains, residual = parse_site_operator(query)
+            effective_query = residual if domains else query
+
+            logger.info(
+                "Exa search: '%s' (limit=%d, include_domains=%s)",
+                effective_query,
+                limit,
+                domains or None,
             )
+            search_kwargs: Dict[str, Any] = {
+                "num_results": limit,
+                "contents": {"highlights": True},
+            }
+            if domains:
+                search_kwargs["include_domains"] = domains
+            response = _get_exa_client().search(effective_query, **search_kwargs)
 
             web_results = []
             for i, result in enumerate(response.results or []):

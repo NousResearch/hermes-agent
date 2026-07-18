@@ -103,6 +103,39 @@ import sys
 logger = logging.getLogger(__name__)
 
 
+# ─── Query Operators ──────────────────────────────────────────────────────────
+
+# Matches a ``site:<domain>`` search operator token. The domain runs to the
+# next whitespace; an optional ``http(s)://`` scheme is tolerated and stripped
+# by :func:`parse_site_operator`.
+_SITE_OPERATOR_RE = re.compile(r"\bsite:(\S+)", re.IGNORECASE)
+
+
+def parse_site_operator(query: str) -> tuple[list[str], str]:
+    """Split ``site:<domain>`` operators out of a web-search query.
+
+    Returns ``(domains, residual_query)`` where ``domains`` is the
+    order-preserving, de-duplicated list of domains referenced by ``site:``
+    tokens (scheme stripped, lower-cased) and ``residual_query`` is the query
+    with those tokens removed and whitespace collapsed.
+
+    When no ``site:`` operator is present, ``domains`` is empty and
+    ``residual_query`` is the whitespace-collapsed input. This lets providers
+    with a native domain filter (e.g. Exa ``include_domains``) apply it
+    natively instead of shipping ``site:`` to the backend as a literal term.
+    """
+    if not query:
+        return [], ""
+    domains: list[str] = []
+    for match in _SITE_OPERATOR_RE.finditer(query):
+        dom = match.group(1).strip().strip("\"'").rstrip("/")
+        dom = re.sub(r"^https?://", "", dom, flags=re.IGNORECASE).lower()
+        if dom and dom not in domains:
+            domains.append(dom)
+    residual = " ".join(_SITE_OPERATOR_RE.sub("", query).split())
+    return domains, residual
+
+
 def _web_extract_url(value: Any) -> Optional[str]:
     """Return a usable URL from a model-supplied extract item.
 

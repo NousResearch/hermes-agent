@@ -529,7 +529,7 @@ def show_status(args):
     if jobs_file.exists():
         import json
         try:
-            with open(jobs_file, encoding="utf-8") as f:
+            with open(jobs_file, encoding="utf-8-sig") as f:
                 data = json.load(f)
                 jobs = data.get("jobs", [])
                 enabled_jobs = [j for j in jobs if j.get("enabled", True)]

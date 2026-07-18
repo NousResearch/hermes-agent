@@ -8750,8 +8750,8 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         except Exception:
             pass
         queue.append(event)
+        source = getattr(event, "source", None)
         try:
-            source = event.source
             logger.info(
                 "Queued inbound message during gateway startup restore: platform=%s chat=%s",
                 source.platform.value if source and source.platform else "unknown",
@@ -8759,6 +8759,75 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             )
         except Exception:
             pass
+        # Acknowledge ONCE per chat so the user isn't left staring at silence —
+        # a queued message (esp. a slash command) otherwise looks dead until the
+        # gate releases. The gate is already bounded (see _finish_startup_restore),
+        # but even a bounded wait is long enough to look broken; the ack tells the
+        # user their message landed. One ack per (platform, chat) avoids spamming a
+        # burst of queued messages; fire-and-forget so queuing stays non-blocking.
+        # Greptile #258: guard the ack path — a feedback nicety must never break
+        # queuing (the load-bearing half). Any unexpected error is logged, not raised.
+        try:
+            self._maybe_ack_startup_restore_queue(source)
+        except Exception as e:
+            logger.debug("startup-restore ack scheduling failed: %s", e)
+
+    def _maybe_ack_startup_restore_queue(self, source: Any) -> None:
+        """Send a single 'still starting up' ack per chat for queued inbound."""
+        if source is None:
+            return
+        platform = getattr(source, "platform", None)
+        chat_id = getattr(source, "chat_id", None)
+        if platform is None or chat_id is None:
+            return
+        acked = getattr(self, "_startup_restore_acked_chats", None)
+        if acked is None:
+            acked = set()
+            self._startup_restore_acked_chats = acked
+        key = (getattr(platform, "value", platform), str(chat_id))
+        if key in acked:
+            return
+        adapter = self.adapters.get(platform) if getattr(self, "adapters", None) else None
+        if adapter is None:
+            # Greptile #258: do NOT burn the dedupe key when the adapter isn't
+            # registered yet — a later queued message (adapter now up) must
+            # still be able to ack this chat.
+            return
+        acked.add(key)
+        try:
+            task = asyncio.create_task(
+                self._send_startup_restore_ack(adapter, chat_id)
+            )
+            # getattr self-heal: harness/object.__new__ runners may lack
+            # _background_tasks (the known CI-only attr-miss class).
+            background_tasks = getattr(self, "_background_tasks", None)
+            if background_tasks is None:
+                background_tasks = set()
+                self._background_tasks = background_tasks
+            background_tasks.add(task)
+            task.add_done_callback(background_tasks.discard)
+        except RuntimeError:
+            # No running loop (shouldn't happen on the gateway path). Un-burn the
+            # dedupe key so a later queued message on this chat can still ack
+            # (Greptile #396: burning it here left the chat permanently un-acked
+            # for the whole restore cycle after a transient loop hiccup).
+            acked.discard(key)
+
+    async def _send_startup_restore_ack(self, adapter: Any, chat_id: Any) -> None:
+        # Greptile #258: the ack is fire-and-forget, so by the time this task
+        # runs the restore gate may already have released and the queued message
+        # answered — an ack AFTER the real response reads as confusing noise.
+        # Only send while the restore is still actually in progress.
+        if not getattr(self, "_startup_restore_in_progress", False):
+            return
+        try:
+            await adapter.send(
+                chat_id,
+                "⏳ Still starting up — your message is queued and I'll get to it "
+                "in a moment.",
+            )
+        except Exception as e:
+            logger.debug("startup-restore ack send failed: %s", e)
 
     async def _drain_startup_restore_queue(self) -> int:
         """Replay queued inbound without surrendering ownership on failure.
@@ -9831,6 +9900,8 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         self._startup_restore_watchdog_task.add_done_callback(
             background_tasks.discard
         )
+        # Reset per-restore-cycle ack dedupe so a fresh restart re-acks queued chats.
+        self._startup_restore_acked_chats = set()
 
         connected_count = 0
         enabled_platform_count = 0

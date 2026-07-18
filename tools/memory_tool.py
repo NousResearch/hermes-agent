@@ -228,7 +228,16 @@ class MemoryStore:
 
         sanitized: List[str] = []
         for entry in entries:
-            if not entry or "[BLOCKED:" in entry:
+            if not entry:
+                sanitized.append(entry)
+                continue
+            # Strip optional [core] prefix before checking for existing
+            # block marker — entries like "[core] [BLOCKED: ...]" from a
+            # prior session's sanitization must pass through unchanged.
+            body = entry
+            if entry.lower().startswith(_CORE_PREFIX):
+                body = entry[entry.lower().find(_CORE_PREFIX) + _CORE_PREFIX_LEN:].strip()
+            if body.startswith("[BLOCKED:"):
                 sanitized.append(entry)
                 continue
             findings = scan_for_threats(entry, scope="strict")

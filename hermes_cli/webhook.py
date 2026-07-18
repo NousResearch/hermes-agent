@@ -165,8 +165,12 @@ def webhook_command(args):
         _cmd_test(args)
 
 
+def _normalize_subscription_name(name: str) -> str:
+    return name.strip().lower().replace(" ", "-")
+
+
 def _cmd_subscribe(args):
-    name = args.name.strip().lower().replace(" ", "-")
+    name = _normalize_subscription_name(args.name)
     if not re.match(r'^[a-z0-9][a-z0-9_-]*$', name):
         print(f"Error: Invalid name '{name}'. Use lowercase alphanumeric with hyphens/underscores.")
         return
@@ -262,7 +266,7 @@ def _cmd_list(args):
 
 
 def _cmd_set_enabled(args, *, enabled: bool):
-    name = args.name.strip().lower()
+    name = _normalize_subscription_name(args.name)
     subs = _load_subscriptions()
 
     if name not in subs:
@@ -280,7 +284,7 @@ def _cmd_set_enabled(args, *, enabled: bool):
 
 
 def _cmd_remove(args):
-    name = args.name.strip().lower()
+    name = _normalize_subscription_name(args.name)
     subs = _load_subscriptions()
 
     if name not in subs:
@@ -295,7 +299,7 @@ def _cmd_remove(args):
 
 def _cmd_test(args):
     """Send a test POST to a webhook route."""
-    name = args.name.strip().lower()
+    name = _normalize_subscription_name(args.name)
     subs = _load_subscriptions()
 
     if name not in subs:

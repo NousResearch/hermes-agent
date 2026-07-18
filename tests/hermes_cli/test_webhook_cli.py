@@ -177,6 +177,13 @@ class TestEnableDisable:
         assert "Disabled" in out
         assert _load_subscriptions()["pause-me"]["enabled"] is False
 
+    def test_disable_normalizes_subscription_name(self):
+        webhook_command(_make_args(webhook_action="subscribe", name="my route"))
+
+        webhook_command(_make_args(webhook_action="disable", name="my route"))
+
+        assert _load_subscriptions()["my-route"]["enabled"] is False
+
     def test_enable_existing(self, capsys):
         webhook_command(_make_args(webhook_action="subscribe", name="resume-me"))
         webhook_command(_make_args(webhook_action="disable", name="resume-me"))

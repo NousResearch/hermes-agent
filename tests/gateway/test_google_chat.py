@@ -253,6 +253,9 @@ class TestEnvConfigLoading:
         "GOOGLE_CLOUD_PROJECT",
         "GOOGLE_CHAT_SUBSCRIPTION_NAME",
         "GOOGLE_CHAT_SUBSCRIPTION",
+        "GOOGLE_CHAT_HTTP_EVENTS_URL",
+        "GOOGLE_CHAT_HTTP_EVENTS_AUDIENCE",
+        "GOOGLE_CHAT_HTTP_EVENTS_SERVICE_ACCOUNT_EMAIL",
         "GOOGLE_CHAT_SERVICE_ACCOUNT_JSON",
         "GOOGLE_APPLICATION_CREDENTIALS",
         "GOOGLE_CHAT_HOME_CHANNEL",
@@ -281,7 +284,34 @@ class TestEnvConfigLoading:
         cfg = load_gateway_config()
         assert _GC not in cfg.platforms
 
-
+    def test_http_events_enable_without_pubsub(self, monkeypatch):
+        self._clean_env(monkeypatch)
+        monkeypatch.setenv(
+            "GOOGLE_CHAT_HTTP_EVENTS_URL",
+            "https://example.test/google-chat/events",
+        )
+        monkeypatch.setenv(
+            "GOOGLE_CHAT_HTTP_EVENTS_AUDIENCE",
+            "https://callback.example.test/events",
+        )
+        monkeypatch.setenv(
+            "GOOGLE_CHAT_HTTP_EVENTS_SERVICE_ACCOUNT_EMAIL",
+            "chat-callback@example.iam.gserviceaccount.com",
+        )
+        cfg = load_gateway_config()
+        assert _GC in cfg.platforms
+        assert (
+            cfg.platforms[_GC].extra["http_events_url"]
+            == "https://example.test/google-chat/events"
+        )
+        assert (
+            cfg.platforms[_GC].extra["http_events_audience"]
+            == "https://callback.example.test/events"
+        )
+        assert (
+            cfg.platforms[_GC].extra["http_events_service_account_email"]
+            == "chat-callback@example.iam.gserviceaccount.com"
+        )
 
 
 # ===========================================================================
@@ -390,6 +420,185 @@ class TestValidateConfig:
         project, sub = a._validate_config()
         assert project == "test-project"
         assert sub == "projects/test-project/subscriptions/test-sub"
+
+    def test_http_events_mode_does_not_require_pubsub(self):
+        cfg = PlatformConfig(enabled=True)
+        cfg.extra["http_events_url"] = "https://example.test/google-chat/events"
+        a = GoogleChatAdapter(cfg)
+        project, sub = a._validate_config()
+        assert project == ""
+        assert sub is None
+
+    def test_full_subscription_can_infer_project(self):
+        cfg = PlatformConfig(enabled=True)
+        cfg.extra["subscription_name"] = "projects/inferred/subscriptions/sub"
+        a = GoogleChatAdapter(cfg)
+        project, sub = a._validate_config()
+        assert project == "inferred"
+        assert sub == "projects/inferred/subscriptions/sub"
+
+
+class TestHttpEventIngress:
+    def test_cached_google_auth_request_reuses_successful_get_response(self, monkeypatch):
+        now = [100.0]
+        calls = []
+
+        class Response:
+            status = 200
+
+        response = Response()
+
+        def raw_request(**kwargs):
+            calls.append(kwargs)
+            return response
+
+        monkeypatch.setattr(_gc_mod.time, "monotonic", lambda: now[0])
+        request = _gc_mod._CachedGoogleAuthRequest(raw_request, ttl_seconds=300)
+
+        assert request("https://www.googleapis.com/oauth2/v1/certs") is response
+        assert request("https://www.googleapis.com/oauth2/v1/certs") is response
+        assert len(calls) == 1
+
+        now[0] += 301
+        assert request("https://www.googleapis.com/oauth2/v1/certs") is response
+        assert len(calls) == 2
+
+    def test_cached_google_auth_request_does_not_cache_post_response(self):
+        calls = []
+
+        def raw_request(**kwargs):
+            calls.append(kwargs)
+            return object()
+
+        request = _gc_mod._CachedGoogleAuthRequest(raw_request, ttl_seconds=300)
+
+        request("https://example.test/token", method="POST")
+        request("https://example.test/token", method="POST")
+
+        assert len(calls) == 2
+
+    def test_verify_google_id_token_uses_cached_request_and_configured_audience(self, monkeypatch):
+        request = object()
+        captured = {}
+
+        monkeypatch.setattr(_gc_mod, "_get_google_id_token_request", lambda: request)
+
+        class FakeIdToken:
+            @staticmethod
+            def verify_oauth2_token(token, req, audience):
+                captured.update(token=token, request=req, audience=audience)
+                return {"email": "bot@example.test"}
+
+        monkeypatch.setitem(sys.modules, "google.oauth2.id_token", FakeIdToken)
+        monkeypatch.setattr(sys.modules["google.oauth2"], "id_token", FakeIdToken, raising=False)
+
+        assert _gc_mod._verify_google_id_token("signed-token", "https://callback.example/events") == {
+            "email": "bot@example.test"
+        }
+        assert captured == {
+            "token": "signed-token",
+            "request": request,
+            "audience": "https://callback.example/events",
+        }
+
+    def test_verify_http_event_request_accepts_expected_google_identity(self, monkeypatch):
+        cfg = PlatformConfig(enabled=True)
+        cfg.extra.update(
+            {
+                "http_events_url": "https://example.test/google-chat/events",
+                "http_events_service_account_email": (
+                    "chat-callback@example.iam.gserviceaccount.com"
+                ),
+            }
+        )
+        a = GoogleChatAdapter(cfg)
+
+        def fake_verify(token, audience):
+            assert token == "signed-token"
+            assert audience == "https://example.test/google-chat/events"
+            return {"email": "chat-callback@example.iam.gserviceaccount.com"}
+
+        monkeypatch.setattr(_gc_mod, "_verify_google_id_token", fake_verify)
+
+        assert a.verify_http_event_request("Bearer signed-token") == (True, "")
+
+    def test_verify_http_event_request_rejects_unexpected_identity(self, monkeypatch):
+        cfg = PlatformConfig(enabled=True)
+        cfg.extra.update(
+            {
+                "http_events_url": "https://example.test/google-chat/events",
+                "http_events_service_account_email": (
+                    "expected@example.iam.gserviceaccount.com"
+                ),
+            }
+        )
+        a = GoogleChatAdapter(cfg)
+        monkeypatch.setattr(
+            _gc_mod,
+            "_verify_google_id_token",
+            lambda _token, _audience: {
+                "email": "other@example.iam.gserviceaccount.com"
+            },
+        )
+
+        ok, code = a.verify_http_event_request("Bearer signed-token")
+
+        assert ok is False
+        assert code == "unexpected_google_bearer_identity"
+
+    def test_verify_http_event_request_requires_callback_identity_config(self):
+        cfg = PlatformConfig(enabled=True)
+        cfg.extra["http_events_url"] = "https://example.test/google-chat/events"
+        a = GoogleChatAdapter(cfg)
+
+        assert a.verify_http_event_request("Bearer signed-token") == (
+            False,
+            "google_chat_http_events_not_configured",
+        )
+
+    @pytest.mark.asyncio
+    async def test_dispatch_http_event_routes_message_payload(self, adapter):
+        envelope = _make_chat_envelope(text="hello from http")
+
+        result = await adapter.dispatch_http_event(envelope)
+
+        assert result == {}
+        adapter.handle_message.assert_awaited_once()
+        event = adapter.handle_message.await_args.args[0]
+        assert event.text == "hello from http"
+        assert event.source.chat_id == "spaces/S"
+
+    @pytest.mark.asyncio
+    async def test_dispatch_http_event_ignores_bot_messages(self, adapter):
+        envelope = _make_chat_envelope(text="bot echo", sender_type="BOT")
+
+        assert await adapter.dispatch_http_event(envelope) == {}
+        adapter.handle_message.assert_not_awaited()
+
+
+class TestConnectModes:
+    @pytest.mark.asyncio
+    async def test_connect_http_mode_skips_pubsub_subscriber(self, tmp_path, monkeypatch):
+        cfg = PlatformConfig(enabled=True)
+        cfg.extra.update({
+            "http_events_url": "https://example.test/google-chat/events",
+            "service_account_json": "{}",
+        })
+        a = GoogleChatAdapter(cfg)
+        a._thread_count_store._path = tmp_path / "google_chat_thread_counts.json"
+        monkeypatch.setattr(_gc_mod, "_load_google_modules", lambda: True)
+        monkeypatch.setattr(a, "_load_sa_credentials", MagicMock(return_value=MagicMock()))
+        monkeypatch.setattr(_gc_mod, "build_service", MagicMock(return_value=MagicMock()))
+        subscriber_client = MagicMock()
+        monkeypatch.setattr(_gc_mod, "pubsub_v1", MagicMock(SubscriberClient=subscriber_client))
+        a._resolve_bot_user_id = AsyncMock(return_value=None)
+
+        assert await a.connect() is True
+        subscriber_client.assert_not_called()
+        assert a._subscription_path is None
+        assert a._supervisor_task is None
+        assert a.is_connected is True
+        await a.disconnect()
 
 
 # ===========================================================================

@@ -445,6 +445,40 @@ class TestStripThinkBlocks:
     def test_none_returns_empty(self, agent):
         assert agent._strip_think_blocks(None) == ""
 
+    def test_list_content_flattened_no_crash(self, agent):
+        """Anthropic-via-OpenRouter returns content as a block list.
+
+        A raw list reaching ``re.sub`` raised ``TypeError: expected string
+        or bytes-like object, got 'list'``, which the outer conversation
+        loop swallowed and retried forever (infinite "preparing terminal…"
+        loop). ``strip_think_blocks`` must flatten list content to visible
+        text and drop reasoning blocks.
+        """
+        result = agent._strip_think_blocks(
+            [
+                {"type": "text", "text": "visible answer"},
+                {"type": "thinking", "thinking": "internal reasoning"},
+            ]
+        )
+        assert isinstance(result, str)
+        assert "visible answer" in result
+        assert "internal reasoning" not in result
+
+    def test_dict_content_flattened_no_crash(self, agent):
+        """Some servers return content as a single dict block."""
+        result = agent._strip_think_blocks({"type": "text", "text": "hello world"})
+        assert isinstance(result, str)
+        assert "hello world" in result
+
+    def test_list_of_only_thinking_returns_empty(self, agent):
+        """A list carrying only reasoning blocks yields no visible text."""
+        assert (
+            agent._strip_think_blocks([{"type": "thinking", "thinking": "x"}]) == ""
+        )
+
+    def test_empty_list_returns_empty(self, agent):
+        assert agent._strip_think_blocks([]) == ""
+
     def test_no_blocks_unchanged(self, agent):
         assert agent._strip_think_blocks("hello world") == "hello world"
 
@@ -1995,23 +2029,38 @@ class TestBuildApiKwargs:
         )
         assert kwargs["extra_body"]["reasoning"] == {"effort": "medium"}
 
-    def test_reasoning_xhigh_normalized_for_copilot(self, agent):
-        """xhigh effort should normalize to high for Copilot GitHub Models."""
+    def test_reasoning_xhigh_preserved_for_copilot_when_supported(self, agent, monkeypatch):
+        """The registered Copilot profile must preserve a supported xhigh."""
         from agent.transports import get_transport
         from providers import get_provider_profile
 
+        monkeypatch.setattr(
+            "hermes_cli.models.github_model_reasoning_efforts",
+            lambda _model: ["none", "low", "medium", "high", "xhigh"],
+        )
         transport = get_transport("chat_completions")
         profile = get_provider_profile("copilot")
         msgs = [{"role": "user", "content": "hi"}]
         kwargs = transport.build_kwargs(
-            model="gpt-5.4",
+            model="gpt-5.5",
             messages=msgs,
             tools=None,
             supports_reasoning=True,
             reasoning_config={"enabled": True, "effort": "xhigh"},
             provider_profile=profile,
         )
-        assert kwargs["extra_body"]["reasoning"] == {"effort": "high"}
+        assert kwargs["extra_body"]["reasoning"] == {"effort": "xhigh"}
+
+    def test_core_responses_preserves_supported_xhigh(self, agent, monkeypatch):
+        """The core GitHub Responses path must preserve a supported xhigh."""
+        monkeypatch.setattr(
+            "hermes_cli.models.github_model_reasoning_efforts",
+            lambda _model: ["none", "low", "medium", "high", "xhigh"],
+        )
+        agent.model = "gpt-5.5"
+        agent.reasoning_config = {"enabled": True, "effort": "xhigh"}
+
+        assert agent._github_models_reasoning_extra_body() == {"effort": "xhigh"}
 
     def test_reasoning_omitted_for_non_reasoning_copilot_model(self, agent):
         agent.base_url = "https://api.githubcopilot.com"
@@ -6170,9 +6219,16 @@ class TestCredentialPoolRecovery:
             def current(self):
                 return current
 
-            def mark_exhausted_and_rotate(self, *, status_code, error_context=None):
+            def mark_exhausted_and_rotate(
+                self,
+                *,
+                status_code,
+                error_context=None,
+                api_key_hint=None,
+            ):
                 assert status_code == 402
                 assert error_context is None
+                assert api_key_hint == agent.api_key
                 return next_entry
 
         agent._credential_pool = _Pool()
@@ -6191,9 +6247,16 @@ class TestCredentialPoolRecovery:
         next_entry = SimpleNamespace(label="secondary")
 
         class _Pool:
-            def mark_exhausted_and_rotate(self, *, status_code, error_context=None):
+            def mark_exhausted_and_rotate(
+                self,
+                *,
+                status_code,
+                error_context=None,
+                api_key_hint=None,
+            ):
                 assert status_code == 400
                 assert error_context == {"reason": "out_of_extra_usage"}
+                assert api_key_hint == agent.api_key
                 return next_entry
 
         agent._credential_pool = _Pool()

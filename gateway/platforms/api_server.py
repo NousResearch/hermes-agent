@@ -40,6 +40,7 @@ Requires:
 """
 
 import asyncio
+import errno
 import hashlib
 import hmac
 import json
@@ -931,6 +932,11 @@ class APIServerAdapter(BasePlatformAdapter):
     # ``async_delivery_supported()``.
     supports_async_delivery: bool = False
 
+    # Same statelessness applies to the startup auto-resume prompt: no client
+    # is waiting to answer "session restored — what next?", so a resumed turn
+    # should complete the interrupted work rather than acknowledge (#57056).
+    interactive_resume: bool = False
+
     def __init__(self, config: PlatformConfig):
         super().__init__(config, Platform.API_SERVER)
         extra = config.extra or {}
@@ -994,6 +1000,10 @@ class APIServerAdapter(BasePlatformAdapter):
         # (the /v1/runs path tracks its own in-flight set via
         # _active_run_tasks).
         self._inflight_agent_runs: int = 0
+        # Back-reference to the owning GatewayRunner (set by gateway/run.py)
+        # so /api/platforms/{platform}/events can resolve sibling adapters.
+        # BasePlatformAdapter declares the class-level default of None.
+        self.gateway_runner: Optional[Any] = None
         # Requests admitted before their handler reaches agent bookkeeping.
         # Shutdown counts this reservation so the request cannot slip through
         # the drain between its first await and _run_agent()/task registration.
@@ -1235,7 +1245,13 @@ class APIServerAdapter(BasePlatformAdapter):
         auth_header = request.headers.get("Authorization", "")
         if auth_header.startswith("Bearer "):
             token = auth_header[7:].strip()
-            if hmac.compare_digest(token, self._api_key):
+            # Compare as bytes: ``hmac.compare_digest`` raises TypeError on a
+            # str containing non-ASCII characters, and ``token`` is the raw
+            # client-supplied header. A stray non-ASCII byte in the key would
+            # otherwise crash this handler (500) instead of returning a clean
+            # 401. Encoding both sides keeps the timing-safe comparison and
+            # matches web_server.py's dashboard-token check.
+            if hmac.compare_digest(token.encode(), self._api_key.encode()):
                 return None  # Auth OK
 
         logger.warning(
@@ -1246,6 +1262,131 @@ class APIServerAdapter(BasePlatformAdapter):
             {"error": {"message": "Invalid API key", "type": "invalid_request_error", "code": "invalid_api_key"}},
             status=401,
         )
+
+    @staticmethod
+    def _normalize_callback_platform(value: str) -> str:
+        normalized = (value or "").strip().lower().replace("-", "_")
+        if not re.fullmatch(r"[a-z0-9_]+", normalized):
+            return ""
+        return normalized
+
+    def _get_platform_callback_adapter(
+        self,
+        request: "web.Request",
+        platform_name: str,
+    ) -> Optional[Any]:
+        injected = request.app.get("platform_event_adapters")
+        if isinstance(injected, dict):
+            adapter = injected.get(platform_name)
+            if adapter is not None:
+                return adapter
+
+        adapter = request.app.get(f"{platform_name}_adapter")
+        if adapter is not None:
+            return adapter
+
+        runner = self.gateway_runner or request.app.get("gateway_runner")
+        adapters = getattr(runner, "adapters", None)
+        if not adapters:
+            return None
+
+        try:
+            from gateway.config import Platform as _Platform
+            return adapters.get(_Platform(platform_name))
+        except Exception:
+            for platform, candidate in adapters.items():
+                if getattr(platform, "value", platform) == platform_name:
+                    return candidate
+        return None
+
+    async def _handle_platform_event_callback(self, request: "web.Request") -> "web.Response":
+        platform_name = self._normalize_callback_platform(
+            request.match_info.get("platform", "")
+        )
+        if not platform_name:
+            return web.json_response(
+                _openai_error(
+                    "Invalid platform name",
+                    code="invalid_platform",
+                ),
+                status=400,
+            )
+
+        adapter = self._get_platform_callback_adapter(request, platform_name)
+        if adapter is None:
+            return web.json_response(
+                _openai_error(
+                    "Platform adapter is not connected",
+                    code="platform_unavailable",
+                ),
+                status=503,
+            )
+
+        verifier = getattr(adapter, "verify_http_event_request", None)
+        dispatcher = getattr(adapter, "dispatch_http_event", None)
+        if verifier is None or dispatcher is None:
+            return web.json_response(
+                _openai_error(
+                    "Platform adapter does not support HTTP events",
+                    code="platform_http_events_unsupported",
+                ),
+                status=503,
+            )
+
+        auth_header = request.headers.get("Authorization", "")
+        try:
+            if asyncio.iscoroutinefunction(verifier):
+                ok, code = await verifier(auth_header)
+            else:
+                # Platform verifiers may do blocking network I/O (e.g. Google
+                # signing-cert fetches) — keep that off the event loop.
+                ok, code = await asyncio.to_thread(verifier, auth_header)
+        except Exception:
+            # Fail closed: a crashing verifier must never admit the event.
+            logger.exception(
+                "Platform HTTP event verifier failed for %s", platform_name
+            )
+            ok, code = False, "platform_event_verifier_error"
+        if not ok:
+            return web.json_response(
+                _openai_error(
+                    "Invalid platform event authorization",
+                    code=code or "invalid_platform_event_authorization",
+                ),
+                status=401,
+            )
+
+        try:
+            payload = await request.json()
+        except Exception:
+            return web.json_response(
+                _openai_error("Invalid JSON in platform event", code="invalid_json"),
+                status=400,
+            )
+
+        if not isinstance(payload, dict):
+            return web.json_response(
+                _openai_error(
+                    "Platform event must be a JSON object",
+                    code="invalid_request",
+                ),
+                status=400,
+            )
+
+        try:
+            result = await dispatcher(payload)
+        except Exception:
+            logger.exception("Platform HTTP event dispatch failed for %s", platform_name)
+            return web.json_response(
+                _openai_error(
+                    "Platform event dispatch failed",
+                    err_type="server_error",
+                    code="platform_event_dispatch_failed",
+                ),
+                status=500,
+            )
+
+        return web.json_response(result if isinstance(result, dict) else {})
 
     # ------------------------------------------------------------------
     # Multi-profile multiplexing (/p/<profile>/…)
@@ -1283,8 +1424,27 @@ class APIServerAdapter(BasePlatformAdapter):
 
     @staticmethod
     def _profile_scope(profile: Optional[str]):
-        """Enter the multiplex profile runtime scope, or a no-op when unset."""
+        """Enter the multiplex profile runtime scope, or a no-op when unset.
+
+        When no ``/p/<profile>/`` prefix was given AND multiplexing is active,
+        enter the DEFAULT profile's scope instead of a no-op: api_server is a
+        port-binding platform that lives on the default profile, and with
+        multiplex fail-closed ``get_secret`` active, an unscoped agent run
+        raises ``UnscopedSecretError`` on its first credential read (#61276).
+        Single-profile gateways keep the no-op — ``get_secret`` falls through
+        to ``os.environ`` there, unchanged.
+        """
         if not profile:
+            try:
+                from agent.secret_scope import is_multiplex_active
+
+                if is_multiplex_active():
+                    from gateway.run import _profile_runtime_scope
+                    from hermes_constants import get_hermes_home
+
+                    return _profile_runtime_scope(get_hermes_home())
+            except Exception:
+                pass
             return nullcontext()
         from gateway.run import _profile_runtime_scope
         from hermes_cli.profiles import get_profile_dir
@@ -1338,6 +1498,10 @@ class APIServerAdapter(BasePlatformAdapter):
             ("POST", "/v1/responses", self._handle_responses),
             ("GET", "/v1/responses/{response_id}", self._handle_get_response),
             ("DELETE", "/v1/responses/{response_id}", self._handle_delete_response),
+            # Generic platform HTTP event callback ingress. Authenticated by
+            # the target adapter's own verifier (platform-signed bearer), NOT
+            # API_SERVER_KEY — external platforms hold no API server key.
+            ("POST", "/api/platforms/{platform}/events", self._handle_platform_event_callback),
             ("GET", "/api/jobs", self._handle_list_jobs),
             ("POST", "/api/jobs", self._handle_create_job),
             ("GET", "/api/jobs/{job_id}", self._handle_get_job),
@@ -5148,6 +5312,8 @@ class APIServerAdapter(BasePlatformAdapter):
             # native routes first lets those shims no-op instead of shadowing the
             # upstream session-control handlers.
             self._app["api_server_adapter"] = self
+            if self.gateway_runner is not None:
+                self._app["gateway_runner"] = self.gateway_runner
 
             # Start background sweep to clean up orphaned (unconsumed) run streams
             sweep_task = asyncio.create_task(self._sweep_orphaned_runs())
@@ -5212,6 +5378,25 @@ class APIServerAdapter(BasePlatformAdapter):
                 await self._runner.cleanup()
                 self._runner = None
                 self._site = None
+                if getattr(exc, "errno", None) == errno.EADDRINUSE:
+                    # A port conflict is a configuration error, not a
+                    # transient blip — another process holds the port for
+                    # its lifetime. A bare ``return False`` makes the
+                    # reconnect watcher in gateway.run treat it as retryable
+                    # and loop forever at the backoff cap (observed: 1568+
+                    # retries over 5 days across multi-profile setups all
+                    # defaulting to the same port, #52132), filling
+                    # errors.log and leaking the adapter's ResponseStore
+                    # fds each retry. Non-retryable drops it from the
+                    # reconnect queue; the operator recovers with
+                    # ``/platform resume api_server`` after changing the port.
+                    self._set_fatal_error(
+                        "api_server_port_in_use",
+                        f"Port {self._port} already in use. Set "
+                        f"platforms.api_server.port in config.yaml to a "
+                        f"different value, then `/platform resume api_server`.",
+                        retryable=False,
+                    )
                 logger.error(
                     "[%s] Could not bind %s:%d: %s. Set a different port in "
                     "config.yaml: platforms.api_server.port",

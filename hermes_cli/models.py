@@ -69,8 +69,7 @@ OPENROUTER_MODELS: list[tuple[str, str]] = [
     ("qwen/qwen3.7-plus",                      ""),
     ("qwen/qwen3.6-35b-a3b",                   ""),
     # MoonshotAI
-    ("moonshotai/kimi-k2.6",                   "recommended"),
-    ("moonshotai/kimi-k2.7-code",              ""),
+    ("moonshotai/kimi-k3",                     "recommended"),
     # MiniMax
     ("minimax/minimax-m3",                     ""),
     # Z-AI
@@ -220,8 +219,7 @@ _PROVIDER_MODELS: dict[str, list[str]] = {
         "qwen/qwen3.7-plus",
         "qwen/qwen3.6-35b-a3b",
         # MoonshotAI
-        "moonshotai/kimi-k2.6",
-        "moonshotai/kimi-k2.7-code",
+        "moonshotai/kimi-k3",
         # MiniMax
         "minimax/minimax-m3",
         # Z-AI
@@ -324,6 +322,7 @@ _PROVIDER_MODELS: dict[str, list[str]] = {
         "kimi-k2.6",
         "kimi-k2.5",
         "kimi-for-coding",
+        "kimi-for-coding-highspeed",
         "kimi-k2-thinking",
         "kimi-k2-thinking-turbo",
         "kimi-k2-turbo-preview",
@@ -3304,6 +3303,54 @@ def lmstudio_model_reasoning_options(
             return [str(o).strip().lower() for o in opts if isinstance(o, str)]
         return []
     return []
+
+
+def ollama_model_supports_thinking(
+    model: str,
+    base_url: Optional[str],
+    api_key: Optional[str] = None,
+    timeout: float = 5.0,
+) -> Optional[bool]:
+    """Return True if an Ollama (Cloud or local) model advertises ``thinking``.
+
+    Probes the native ``/api/show`` endpoint and checks the ``capabilities``
+    list, which Ollama populates from the model's metadata (e.g.
+    ``deepseek-v4-pro`` → ``["completion", "tools", "thinking"]`` while
+    ``gemma3:27b`` → ``["completion", "vision"]``). This is the authoritative
+    capability source — the OpenAI-compat ``/v1/models`` endpoint omits it.
+
+    Returns:
+        True  — the model declares the ``thinking`` capability.
+        False — ``/api/show`` succeeded but the model has no ``thinking`` cap.
+        None  — the probe failed (unreachable / non-Ollama / error); the caller
+                decides the fallback (we treat None as "don't emit").
+    """
+    import httpx
+
+    server_url = (base_url or "").strip().rstrip("/")
+    if server_url.endswith("/v1"):
+        server_url = server_url[:-3]
+    if not server_url:
+        return None
+
+    bare_model = _strip_ollama_cloud_suffix((model or "").strip())
+    if not bare_model:
+        return None
+
+    token = str(api_key or "").strip()
+    headers = {"Authorization": f"Bearer {token}"} if token else {}
+
+    try:
+        with httpx.Client(timeout=timeout, headers=headers) as client:
+            resp = client.post(f"{server_url}/api/show", json={"name": bare_model})
+            if resp.status_code != 200:
+                return None
+            caps = resp.json().get("capabilities")
+            if isinstance(caps, list):
+                return "thinking" in caps
+    except Exception:
+        return None
+    return None
 
 
 def _fetch_github_models(api_key: Optional[str] = None, timeout: float = 5.0) -> Optional[list[str]]:

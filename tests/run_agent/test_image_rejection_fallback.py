@@ -83,6 +83,53 @@ class TestStripImagesPreservesAlternation:
         assert msgs[2]["content"] == [{"type": "text", "text": "Captured 1024x768"}]
         assert msgs[2]["tool_call_id"] == "call_1"
 
+    def test_assistant_with_tool_calls_and_image_only_content_preserved(self):
+        """Assistant messages carrying tool_calls must NEVER be deleted —
+        dropping them would orphan the paired tool responses, which providers
+        reject with unmatched tool_call_id errors.
+        """
+        msgs = [
+            {"role": "user", "content": "annotate this screenshot"},
+            {
+                "role": "assistant",
+                "content": [
+                    {"type": "image_url", "image_url": {"url": "data:image/png;base64,..."}},
+                ],
+                "tool_calls": [{
+                    "id": "call_xyz",
+                    "type": "function",
+                    "function": {"name": "annotate", "arguments": "{}"},
+                }],
+            },
+            {"role": "tool", "tool_call_id": "call_xyz", "content": "done"},
+        ]
+        changed = _strip_images_from_messages(msgs)
+        assert changed is True
+        # Length preserved — assistant message with tool_calls NOT deleted
+        assert len(msgs) == 3
+        assert msgs[1]["tool_calls"][0]["id"] == "call_xyz"
+        # Content replaced with text placeholder (now a string, not a list)
+        assert isinstance(msgs[1]["content"], str)
+        assert "image content removed" in msgs[1]["content"].lower()
+        # Paired tool response still matches
+        assert msgs[2]["tool_call_id"] == "call_xyz"
+
+    def test_image_only_user_message_dropped(self):
+        """Synthetic image-only user messages (gateway injection pattern) are
+        safe to drop — no tool_call_id linkage to preserve."""
+        msgs = [
+            {"role": "user", "content": "what's in this?"},
+            {"role": "assistant", "content": "I'll check."},
+            {
+                "role": "user",
+                "content": [{"type": "image_url", "image_url": {"url": "data:..."}}],
+            },
+        ]
+        changed = _strip_images_from_messages(msgs)
+        assert changed is True
+        # Synthetic image-only user message dropped
+        assert len(msgs) == 2
+        assert msgs[-1]["role"] == "assistant"
 
     def test_multiple_tool_messages_all_preserved(self):
         """Parallel tool calls: each tool_call_id must retain a paired message."""

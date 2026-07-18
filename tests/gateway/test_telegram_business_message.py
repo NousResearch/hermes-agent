@@ -283,3 +283,313 @@ def test_build_message_event_keeps_customer_inbound(classify_adapter):
 
     result = classify_adapter._build_message_event(msg, MagicMock())
     assert result is not None, "Customer inbound business messages must be processed"
+
+
+# ---------------------------------------------------------------------------
+# Review follow-up: SessionSource persistence round-trip
+# ---------------------------------------------------------------------------
+
+
+def test_session_source_serialization_round_trips_business_connection_id():
+    """Restored sources must keep send-as-owner routing across persistence."""
+    from gateway.session import SessionSource
+    from gateway.platforms.base import Platform
+
+    src = SessionSource(
+        platform=Platform.TELEGRAM,
+        chat_id="123",
+        chat_type="dm",
+        business_connection_id="conn_persist1",
+    )
+    data = src.to_dict()
+    assert data["business_connection_id"] == "conn_persist1"
+    restored = SessionSource.from_dict(data)
+    assert restored.business_connection_id == "conn_persist1"
+
+
+def test_session_source_serialization_omits_field_when_absent():
+    from gateway.session import SessionSource
+    from gateway.platforms.base import Platform
+
+    src = SessionSource(platform=Platform.TELEGRAM, chat_id="123")
+    data = src.to_dict()
+    assert "business_connection_id" not in data
+    assert SessionSource.from_dict(data).business_connection_id is None
+
+
+# ---------------------------------------------------------------------------
+# Review follow-up (#42400): owner/bot/customer classification
+# ---------------------------------------------------------------------------
+
+
+def _biz_msg(conn="conn_c1", from_id=999, chat_id=999, sender_business_bot=None):
+    msg = MagicMock()
+    msg.business_connection_id = conn
+    msg.sender_business_bot = sender_business_bot
+    msg.from_user = SimpleNamespace(id=from_id) if from_id is not None else None
+    msg.chat = SimpleNamespace(id=chat_id, type="private")
+    return msg
+
+
+class TestBusinessMessageClassification:
+    def test_non_business_returns_none(self, classify_adapter):
+        assert classify_adapter._classify_business_message(_biz_msg(conn=None)) is None
+
+    def test_bot_echo(self, classify_adapter):
+        m = _biz_msg(sender_business_bot=SimpleNamespace(id=42))
+        assert classify_adapter._classify_business_message(m) == "bot_echo"
+
+    def test_customer_inbound(self, classify_adapter):
+        # In a private business chat the peer's from_user.id equals chat.id.
+        m = _biz_msg(from_id=999, chat_id=999)
+        assert classify_adapter._classify_business_message(m) == "customer"
+
+    def test_owner_via_connection_state(self, classify_adapter):
+        classify_adapter._business_connections["conn_c1"] = {
+            "can_reply": True,
+            "user_chat_id": 111,
+        }
+        m = _biz_msg(from_id=111, chat_id=999)
+        assert classify_adapter._classify_business_message(m) == "owner_outgoing"
+
+    def test_owner_via_structural_fallback_after_restart(self, classify_adapter):
+        # No tracked connection (e.g. gateway restarted; Telegram does not
+        # replay BusinessConnection updates): the owner is still detected
+        # because their from_user.id differs from the chat's peer id.
+        m = _biz_msg(from_id=111, chat_id=999)
+        assert classify_adapter._classify_business_message(m) == "owner_outgoing"
+
+
+# ---------------------------------------------------------------------------
+# Review follow-up (#42400): handler wiring — owner observed, not enqueued
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture
+def intake_adapter(monkeypatch):
+    """Adapter wired for testing handler intake classification."""
+    _install_fake_telegram(monkeypatch)
+    from plugins.platforms.telegram.adapter import TelegramAdapter
+
+    a = TelegramAdapter(PlatformConfig(enabled=True, token="fake"))
+    a._ensure_forum_commands = AsyncMock()
+    a._cache_replied_media = AsyncMock()
+    a._cache_observed_media = AsyncMock()
+    a._clean_bot_trigger_text = lambda t: t
+    a._enqueue_text_event = MagicMock()
+    a._observe_business_owner_message = MagicMock()
+    a.handle_message = AsyncMock()
+    return a
+
+
+def _update_for(msg, update_id=7):
+    """A business update: update.message is None, effective_message is set."""
+    return SimpleNamespace(update_id=update_id, message=None, effective_message=msg)
+
+
+def _full_biz_text_msg(text="hello", from_id=456, chat_id=456, conn="conn_t1"):
+    msg = MagicMock()
+    msg.text = text
+    msg.business_connection_id = conn
+    msg.sender_business_bot = None
+    msg.message_id = 321
+    msg.message_thread_id = None
+    msg.chat = MagicMock(id=chat_id, type="private", full_name="Client Chat")
+    msg.chat.message_thread_id = None
+    msg.from_user = MagicMock(id=from_id, full_name="Someone", is_bot=False)
+    msg.reply_to_message = None
+    msg.quote = None
+    return msg
+
+
+@pytest.mark.asyncio
+async def test_text_handler_enqueues_customer_message(intake_adapter):
+    msg = _full_biz_text_msg(from_id=456, chat_id=456)
+    await intake_adapter._handle_text_message(_update_for(msg), MagicMock())
+    intake_adapter._enqueue_text_event.assert_called_once()
+    intake_adapter._observe_business_owner_message.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_text_handler_observes_owner_message_without_enqueue(intake_adapter):
+    from gateway.platforms.base import MessageType
+
+    msg = _full_biz_text_msg(from_id=111, chat_id=456)
+    await intake_adapter._handle_text_message(_update_for(msg), MagicMock())
+    intake_adapter._observe_business_owner_message.assert_called_once()
+    assert intake_adapter._observe_business_owner_message.call_args.args[1] == MessageType.TEXT
+    intake_adapter._enqueue_text_event.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_text_handler_skips_bot_echo_entirely(intake_adapter):
+    msg = _full_biz_text_msg(from_id=111, chat_id=456)
+    msg.sender_business_bot = MagicMock(id=8712662056)
+    await intake_adapter._handle_text_message(_update_for(msg), MagicMock())
+    intake_adapter._enqueue_text_event.assert_not_called()
+    intake_adapter._observe_business_owner_message.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_command_from_business_customer_routed_as_text(intake_adapter):
+    """A customer must never drive operator slash commands: the business
+    connection pre-authorizes the conversation, not operator authority."""
+    msg = _full_biz_text_msg(text="/restart", from_id=456, chat_id=456)
+    await intake_adapter._handle_command(_update_for(msg), MagicMock())
+    intake_adapter.handle_message.assert_not_called()
+    intake_adapter._enqueue_text_event.assert_called_once()
+
+
+@pytest.mark.asyncio
+async def test_command_from_owner_observed_not_executed(intake_adapter):
+    msg = _full_biz_text_msg(text="/note done", from_id=111, chat_id=456)
+    await intake_adapter._handle_command(_update_for(msg), MagicMock())
+    intake_adapter.handle_message.assert_not_called()
+    intake_adapter._enqueue_text_event.assert_not_called()
+    intake_adapter._observe_business_owner_message.assert_called_once()
+
+
+# ---------------------------------------------------------------------------
+# Review follow-up: media handler must use the effective-message path
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_media_handler_reaches_business_media(intake_adapter):
+    """Business media arrives as update.business_message (update.message is
+    None); reading update.message directly dropped it before any handling."""
+    msg = MagicMock()
+    msg.business_connection_id = "conn_m1"
+    msg.sender_business_bot = None
+    auth = MagicMock(return_value=False)
+    intake_adapter._is_user_authorized_from_message = auth
+
+    await intake_adapter._handle_media_message(_update_for(msg), MagicMock())
+
+    auth.assert_called_once_with(msg)
+
+
+@pytest.mark.asyncio
+async def test_media_handler_observes_owner_media(intake_adapter):
+    from gateway.platforms.base import MessageType
+
+    msg = _full_biz_text_msg(from_id=111, chat_id=456)
+    msg.caption = None
+    intake_adapter._media_message_type = MagicMock(return_value=MessageType.PHOTO)
+    stub_event = MagicMock(message_type=MessageType.PHOTO)
+    intake_adapter._build_message_event = MagicMock(return_value=stub_event)
+
+    await intake_adapter._handle_media_message(_update_for(msg), MagicMock())
+
+    intake_adapter._cache_observed_media.assert_awaited_once_with(msg, stub_event)
+    intake_adapter._observe_business_owner_message.assert_called_once()
+    intake_adapter.handle_message.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_media_handler_skips_bot_echo(intake_adapter):
+    msg = _full_biz_text_msg(from_id=111, chat_id=456)
+    msg.sender_business_bot = MagicMock(id=1)
+    intake_adapter._build_message_event = MagicMock()
+
+    await intake_adapter._handle_media_message(_update_for(msg), MagicMock())
+
+    intake_adapter._build_message_event.assert_not_called()
+    intake_adapter.handle_message.assert_not_called()
+
+
+# ---------------------------------------------------------------------------
+# Review follow-up: owner observation appends to the customer-chat session
+# ---------------------------------------------------------------------------
+
+
+def test_observe_business_owner_message_appends_to_chat_session(monkeypatch):
+    from gateway.platforms.base import MessageType
+
+    _install_fake_telegram(monkeypatch)
+    from plugins.platforms.telegram.adapter import TelegramAdapter
+
+    a = TelegramAdapter(PlatformConfig(enabled=True, token="fake"))
+    store = MagicMock()
+    store.get_or_create_session.return_value = SimpleNamespace(session_id="sess-1")
+    a._session_store = store
+
+    event = MagicMock()
+    event.source = SimpleNamespace(user_name="Olga Owner", user_id="111")
+    event.text = "handled it, no need to reply"
+    event.message_id = 777
+
+    a._observe_business_owner_message(MagicMock(), MessageType.TEXT, event=event)
+
+    store.get_or_create_session.assert_called_once_with(event.source)
+    store.append_to_transcript.assert_called_once()
+    sid, entry = store.append_to_transcript.call_args.args
+    assert sid == "sess-1"
+    assert entry["role"] == "user"
+    assert entry["observed"] is True
+    assert entry["message_id"] == "777"
+    assert "Olga Owner" in entry["content"]
+    assert "handled it, no need to reply" in entry["content"]
+
+
+def test_observe_business_owner_message_without_store_is_noop(monkeypatch):
+    from gateway.platforms.base import MessageType
+
+    _install_fake_telegram(monkeypatch)
+    from plugins.platforms.telegram.adapter import TelegramAdapter
+
+    a = TelegramAdapter(PlatformConfig(enabled=True, token="fake"))
+    # No _session_store set: must not raise.
+    a._observe_business_owner_message(MagicMock(), MessageType.TEXT, event=MagicMock())
+
+
+# ---------------------------------------------------------------------------
+# Review follow-up: media/draft send paths carry the connection ID
+# ---------------------------------------------------------------------------
+
+
+def test_business_kwargs_helper(monkeypatch):
+    _install_fake_telegram(monkeypatch)
+    from plugins.platforms.telegram.adapter import TelegramAdapter
+
+    a = TelegramAdapter(PlatformConfig(enabled=True, token="fake"))
+    assert a._business_kwargs({"business_connection_id": "c9"}) == {
+        "business_connection_id": "c9"
+    }
+    assert a._business_kwargs({}) == {}
+    assert a._business_kwargs(None) == {}
+
+
+@pytest.mark.asyncio
+async def test_send_document_carries_business_connection_id(send_adapter, tmp_path):
+    doc = tmp_path / "invoice.pdf"
+    doc.write_bytes(b"%PDF-1.4 test")
+    send_adapter._send_with_dm_topic_reply_anchor_retry = AsyncMock(
+        return_value=SimpleNamespace(message_id=5)
+    )
+    send_adapter._reply_to_message_id_for_send = lambda *a, **k: None
+
+    await send_adapter.send_document(
+        "123456", str(doc), metadata={"business_connection_id": "conn_doc1"}
+    )
+
+    kwargs_dict = send_adapter._send_with_dm_topic_reply_anchor_retry.call_args.args[1]
+    assert kwargs_dict["business_connection_id"] == "conn_doc1"
+
+
+def test_draft_streaming_disabled_for_business_sends(monkeypatch):
+    """Drafts cannot target a business chat; business replies must take the
+    plain send path (which carries business_connection_id end to end)."""
+    _install_fake_telegram(monkeypatch)
+    from plugins.platforms.telegram.adapter import TelegramAdapter
+
+    a = TelegramAdapter(PlatformConfig(enabled=True, token="fake"))
+    a._bot = MagicMock()  # MagicMock exposes send_message_draft
+
+    assert a.supports_draft_streaming("dm", metadata={}) is True
+    assert (
+        a.supports_draft_streaming(
+            "dm", metadata={"business_connection_id": "conn_d1"}
+        )
+        is False
+    )

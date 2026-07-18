@@ -590,6 +590,52 @@ def test_cmd_update_rechecks_target_after_branch_switch_race(
     assert not any(" reset --hard " in f" {' '.join(cmd)} " for cmd in calls)
 
 
+def test_cmd_update_restores_detached_head_after_target_recheck_failure(
+    monkeypatch, tmp_path, capsys
+):
+    _setup_update_mocks(monkeypatch, tmp_path)
+    calls = []
+    head_proofs = 0
+    monkeypatch.setattr(
+        hermes_main,
+        "_capture_head_sha",
+        lambda *args: "detached-original-sha",
+    )
+
+    def fake_run(cmd, **kwargs):
+        nonlocal head_proofs
+        calls.append(cmd)
+        joined = " ".join(str(part) for part in cmd)
+        if "fetch origin main" in joined:
+            return SimpleNamespace(returncode=0, stdout="", stderr="")
+        if "rev-parse --abbrev-ref HEAD" in joined:
+            return SimpleNamespace(returncode=0, stdout="HEAD\n", stderr="")
+        if "show-ref --verify --quiet refs/heads/main" in joined:
+            return SimpleNamespace(returncode=1, stdout="", stderr="")
+        if "rev-list --count origin/main..HEAD" in joined:
+            head_proofs += 1
+            value = "0\n" if head_proofs == 1 else "1\n"
+            return SimpleNamespace(returncode=0, stdout=value, stderr="")
+        return SimpleNamespace(returncode=0, stdout="", stderr="")
+
+    monkeypatch.setattr(hermes_main.subprocess, "run", fake_run)
+    monkeypatch.setattr(
+        hermes_config,
+        "load_config",
+        lambda: {"updates": {"protect_local_commits": True}},
+    )
+
+    with pytest.raises(SystemExit) as exc:
+        hermes_main._cmd_update_impl(SimpleNamespace(yes=True), gateway_mode=False)
+
+    assert exc.value.code == 3
+    assert ["git", "checkout", "main"] in calls
+    assert ["git", "checkout", "--detach", "detached-original-sha"] in calls
+    assert "target branch changed" in capsys.readouterr().out
+    assert not any(" pull " in f" {' '.join(cmd)} " for cmd in calls)
+    assert not any(" reset --hard " in f" {' '.join(cmd)} " for cmd in calls)
+
+
 @pytest.mark.parametrize("value", ["true", 1, [], {}])
 def test_cmd_update_rejects_invalid_local_commit_protection_value(
     monkeypatch, tmp_path, capsys, value
@@ -716,6 +762,68 @@ def test_cmd_update_protection_never_resets_after_failed_fast_forward(
 
     assert exc.value.code == 3
     assert "Refusing to reset branch" in capsys.readouterr().out
+    assert not any(" reset --hard " in f" {' '.join(cmd)} " for cmd in calls)
+
+
+def test_cmd_update_protected_pull_abort_restores_branch_and_stash(
+    monkeypatch, tmp_path, capsys
+):
+    _setup_update_mocks(monkeypatch, tmp_path)
+    calls = []
+    restored_stashes = []
+    head_proofs = 0
+    monkeypatch.setattr(
+        hermes_main,
+        "_capture_head_sha",
+        lambda *args: "original-sha",
+    )
+    monkeypatch.setattr(
+        hermes_main,
+        "_stash_local_changes_if_needed",
+        lambda *args, **kwargs: "stash-sha",
+    )
+    monkeypatch.setattr(
+        hermes_main,
+        "_restore_stashed_changes",
+        lambda *args, **kwargs: restored_stashes.append(args[2]) or True,
+    )
+
+    def fake_run(cmd, **kwargs):
+        nonlocal head_proofs
+        calls.append(cmd)
+        joined = " ".join(str(part) for part in cmd)
+        if "fetch origin main" in joined:
+            return SimpleNamespace(returncode=0, stdout="", stderr="")
+        if "rev-parse --abbrev-ref HEAD" in joined:
+            return SimpleNamespace(returncode=0, stdout="deploy/custom\n", stderr="")
+        if "show-ref --verify --quiet refs/heads/main" in joined:
+            return SimpleNamespace(returncode=0, stdout="", stderr="")
+        if "rev-list --count origin/main..refs/heads/main" in joined:
+            return SimpleNamespace(returncode=0, stdout="0\n", stderr="")
+        if "rev-list --count origin/main..HEAD" in joined:
+            head_proofs += 1
+            return SimpleNamespace(returncode=0, stdout="0\n", stderr="")
+        if "rev-list HEAD..origin/main --count" in joined:
+            return SimpleNamespace(returncode=0, stdout="1\n", stderr="")
+        if "pull --ff-only origin main" in joined:
+            return SimpleNamespace(returncode=128, stdout="", stderr="diverged")
+        return SimpleNamespace(returncode=0, stdout="", stderr="")
+
+    monkeypatch.setattr(hermes_main.subprocess, "run", fake_run)
+    monkeypatch.setattr(
+        hermes_config,
+        "load_config",
+        lambda: {"updates": {"protect_local_commits": True}},
+    )
+
+    with pytest.raises(SystemExit) as exc:
+        hermes_main._cmd_update_impl(SimpleNamespace(yes=True), gateway_mode=False)
+
+    assert exc.value.code == 3
+    assert ["git", "checkout", "main"] in calls
+    assert ["git", "checkout", "deploy/custom"] in calls
+    assert restored_stashes == ["stash-sha"]
+    assert "Local changes preserved in stash" not in capsys.readouterr().out
     assert not any(" reset --hard " in f" {' '.join(cmd)} " for cmd in calls)
 
 

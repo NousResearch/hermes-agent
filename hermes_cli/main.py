@@ -9994,6 +9994,11 @@ def _cmd_update_impl(args, gateway_mode: bool):
             check=True,
         )
         current_branch = result.stdout.strip()
+        original_head_sha = _capture_head_sha(git_cmd, PROJECT_ROOT)
+        if protect_local_commits and current_branch == "HEAD" and not original_head_sha:
+            print("✗ Update blocked: detached HEAD could not be captured for restoration.")
+            _resume_windows_gateways_after_update(_windows_gateway_resume)
+            sys.exit(3)
 
         if protect_local_commits:
             protected_revisions = [("HEAD", "HEAD")]
@@ -10118,6 +10123,46 @@ def _cmd_update_impl(args, gateway_mode: bool):
         else:
             auto_stash_ref = _stash_local_changes_if_needed(git_cmd, PROJECT_ROOT)
 
+        def _restore_protected_checkout() -> bool:
+            """Restore the exact caller checkout before a protected-mode abort."""
+            nonlocal auto_stash_ref
+
+            if current_branch == "HEAD":
+                checkout_args = ["checkout", "--detach", original_head_sha]
+            else:
+                checkout_args = ["checkout", current_branch]
+            restore_checkout = subprocess.run(
+                git_cmd + checkout_args,
+                cwd=PROJECT_ROOT,
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+            if restore_checkout.returncode != 0 and original_head_sha:
+                # The original branch may have moved or been deleted during the
+                # race. Detaching at its captured SHA still preserves the exact
+                # caller tree and avoids applying a stash on the wrong branch.
+                restore_checkout = subprocess.run(
+                    git_cmd + ["checkout", "--detach", original_head_sha],
+                    cwd=PROJECT_ROOT,
+                    capture_output=True,
+                    text=True,
+                    check=False,
+                )
+            if restore_checkout.returncode != 0:
+                return False
+            if auto_stash_ref is not None:
+                if not _restore_stashed_changes(
+                    git_cmd,
+                    PROJECT_ROOT,
+                    auto_stash_ref,
+                    prompt_user=False,
+                    input_fn=gw_input_fn,
+                ):
+                    return False
+                auto_stash_ref = None
+            return True
+
         if protect_local_commits:
             # Re-prove the checked-out target immediately after branch
             # transition. A different process may have advanced the target ref
@@ -10139,24 +10184,11 @@ def _cmd_update_impl(args, gateway_mode: bool):
             except ValueError:
                 target_local_count = None
             if target_local_count is None or target_local_count > 0:
-                if current_branch not in {branch, "HEAD"}:
-                    subprocess.run(
-                        git_cmd + ["checkout", current_branch],
-                        cwd=PROJECT_ROOT,
-                        capture_output=True,
-                        text=True,
-                        check=False,
-                    )
-                if auto_stash_ref is not None:
-                    _restore_stashed_changes(
-                        git_cmd,
-                        PROJECT_ROOT,
-                        auto_stash_ref,
-                        prompt_user=False,
-                        input_fn=gw_input_fn,
-                    )
+                restored = _restore_protected_checkout()
                 print("✗ Update blocked: target branch changed during protected preflight.")
                 print(f"  Refusing to update or reset branch '{branch}'.")
+                if not restored:
+                    print("  Original checkout could not be restored automatically; stash was preserved.")
                 _resume_windows_gateways_after_update(_windows_gateway_resume)
                 sys.exit(3)
 
@@ -10286,6 +10318,7 @@ def _cmd_update_impl(args, gateway_mode: bool):
             )
             if pull_result.returncode != 0:
                 if protect_local_commits:
+                    restored = _restore_protected_checkout()
                     print(
                         "✗ Fast-forward update is not possible while local commits are protected."
                     )
@@ -10293,6 +10326,10 @@ def _cmd_update_impl(args, gateway_mode: bool):
                         f"  Refusing to reset branch '{branch}' to origin/{branch}. "
                         "Review and integrate the divergence manually."
                     )
+                    if not restored:
+                        print(
+                            "  Original checkout could not be restored automatically; stash was preserved."
+                        )
                     _resume_windows_gateways_after_update(_windows_gateway_resume)
                     # Exit 3 prevents Desktop from retrying a policy rejection.
                     sys.exit(3)

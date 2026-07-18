@@ -5359,23 +5359,21 @@ def get_mcp_status() -> List[dict]:
         connecting = set(_server_connecting)
         connect_errors = dict(_server_connect_errors)
 
+    # agent.disabled_toolsets is a hard boundary for MCP servers (#61184).
+    # Surface that in status so list/banner UIs do not show a blocked server
+    # as plain "connected/enabled".
+    try:
+        from toolsets import is_mcp_server_disabled_by_toolsets
+    except Exception:
+        def is_mcp_server_disabled_by_toolsets(_name, _d=None):  # type: ignore
+            return False
+
     for name, cfg in configured.items():
         transport = cfg.get("transport", "http") if "url" in cfg else "stdio"
         enabled = _parse_boolish(cfg.get("enabled", True), default=True)
+        blocked_by_disabled = bool(is_mcp_server_disabled_by_toolsets(str(name)))
         server = active_servers.get(name)
-        if server and server.session is not None:
-            entry = {
-                "name": name,
-                "transport": transport,
-                "tools": len(server._registered_tool_names) if hasattr(server, "_registered_tool_names") else len(server._tools),
-                "connected": True,
-                "disabled": False,
-                "status": "connected",
-            }
-            if server._sampling:
-                entry["sampling"] = dict(server._sampling.metrics)
-            result.append(entry)
-        elif not enabled:
+        if not enabled:
             # A server with enabled: false is intentionally not connected — it is
             # disabled, not failed. Surface that distinction so consumers (banner,
             # TUI) can render "disabled" rather than an alarming "failed".
@@ -5387,6 +5385,37 @@ def get_mcp_status() -> List[dict]:
                 "disabled": True,
                 "status": "disabled",
             })
+        elif blocked_by_disabled:
+            # Report as not-connected for UI consumers that key on `connected`
+            # first (banner, TUI). The process may still hold a live socket, but
+            # tools from this server are a hard deny for the active profile.
+            tool_count = 0
+            if server is not None:
+                if hasattr(server, "_registered_tool_names"):
+                    tool_count = len(server._registered_tool_names)
+                else:
+                    tool_count = len(getattr(server, "_tools", []) or [])
+            result.append({
+                "name": name,
+                "transport": transport,
+                "tools": tool_count,
+                "connected": False,
+                "disabled": True,
+                "status": "disabled_toolsets",
+                "reason": "agent.disabled_toolsets",
+            })
+        elif server and server.session is not None:
+            entry = {
+                "name": name,
+                "transport": transport,
+                "tools": len(server._registered_tool_names) if hasattr(server, "_registered_tool_names") else len(server._tools),
+                "connected": True,
+                "disabled": False,
+                "status": "connected",
+            }
+            if server._sampling:
+                entry["sampling"] = dict(server._sampling.metrics)
+            result.append(entry)
         elif name in connecting:
             result.append({
                 "name": name,

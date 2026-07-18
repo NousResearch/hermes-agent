@@ -695,6 +695,7 @@ agent:
   disabled_toolsets:
     - memory       # hide memory tools + MEMORY_GUIDANCE injection
     - web          # no web_search / web_extract anywhere
+    - server-b     # block an MCP server (bare name or mcp-server-b)
 ```
 
 This applies **after** per-platform tool config (`platform_toolsets` written by
@@ -702,6 +703,12 @@ This applies **after** per-platform tool config (`platform_toolsets` written by
 platform's saved config still lists it. Use this when you want a single
 switch for "turn X off everywhere" rather than editing 15+ platform rows in
 the `hermes tools` UI.
+
+MCP servers register as toolset `mcp-<name>` with bare `<name>` as an alias.
+Either form in `disabled_toolsets` is honored — including in `hermes -z`
+oneshot mode, where discovery completes before the tool snapshot and dispatch
+refuses any tool belonging to a disabled MCP server (issue #61184).
+`hermes mcp list` / `hermes tools list` surface servers blocked this way.
 
 Leaving the list empty, or omitting the key, is a no-op.
 

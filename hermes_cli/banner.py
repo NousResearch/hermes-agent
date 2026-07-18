@@ -768,10 +768,15 @@ def build_welcome_banner(console: "Console", model: str, cwd: str,
                     f"[dim {dim}]{srv['name']}[/] [{text}]({srv['transport']})[/] "
                     f"[dim {dim}]—[/] [{text}]{srv['tools']} tool(s)[/]"
                 )
-            elif srv.get("disabled") or status == "disabled":
+            elif srv.get("disabled") or status in {"disabled", "disabled_toolsets"}:
+                label = (
+                    "disabled (disabled_toolsets)"
+                    if status == "disabled_toolsets"
+                    else "disabled"
+                )
                 right_lines.append(
                     f"[dim {dim}]{srv['name']}[/] [dim]({srv['transport']})[/] "
-                    f"[dim {dim}]— disabled[/]"
+                    f"[dim {dim}]— {label}[/]"
                 )
             elif status == "connecting":
                 right_lines.append(

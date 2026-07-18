@@ -395,6 +395,37 @@ def _run_agent(
     if toolsets_list is None and use_config_toolsets:
         toolsets_list = sorted(_get_platform_tools(cfg, "cli"))
 
+    # agent.disabled_toolsets is a hard security boundary (issue #61184).
+    # Apply it in oneshot the same way interactive CLI / cron / gateway do —
+    # not only by subtracting names from the enabled list, but as an explicit
+    # disabled_toolsets pass to AIAgent so schema assembly AND dispatch refuse
+    # tools from disabled MCP servers (bare name or mcp-<name> alias).
+    agent_cfg = cfg.get("agent") if isinstance(cfg.get("agent"), dict) else {}
+    disabled_toolsets = list(agent_cfg.get("disabled_toolsets") or []) or None
+
+    # MCP discovery used to race oneshot tool snapshotting (#38448 / #61184):
+    # background discovery started in _prepare_agent_startup, but -z never
+    # waited, so aliases (server-b → mcp-server-b) were missing when tools
+    # were resolved and disabled-toolset subtraction could no-op. Ensure the
+    # shared discovery owner exists, then wait only for its configured bounded
+    # interval before building AIAgent. Slow servers continue in that same
+    # background thread and are picked up by late-binding refresh.
+    try:
+        from hermes_cli.mcp_startup import (
+            start_background_mcp_discovery,
+            wait_for_mcp_discovery,
+        )
+
+        start_background_mcp_discovery(
+            logger=logging.getLogger(__name__),
+            thread_name="oneshot-mcp-discovery",
+        )
+        wait_for_mcp_discovery()
+    except Exception:
+        logging.getLogger(__name__).debug(
+            "oneshot MCP discovery failed (non-fatal)", exc_info=True,
+        )
+
     session_db = _create_session_db_for_oneshot()
     # Read the effective fallback chain from profile config so oneshot workers
     # honour the same merge semantics as interactive CLI and gateway sessions.
@@ -407,6 +438,7 @@ def _run_agent(
         api_mode=runtime.get("api_mode"),
         model=effective_model,
         enabled_toolsets=toolsets_list,
+        disabled_toolsets=disabled_toolsets,
         quiet_mode=True,
         platform="cli",
         session_db=session_db,

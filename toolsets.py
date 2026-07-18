@@ -881,6 +881,177 @@ def validate_toolset(name: str) -> bool:
     return name in _get_registry_toolset_aliases()
 
 
+def _configured_mcp_server_names() -> Set[str]:
+    """Return bare MCP server names from config (``mcp_servers`` keys).
+
+    Fail-soft: any config error yields an empty set so callers can still
+    expand via live registry aliases alone.
+    """
+    try:
+        from hermes_cli.config import read_raw_config
+
+        servers = (read_raw_config() or {}).get("mcp_servers") or {}
+        if not isinstance(servers, dict):
+            return set()
+        return {str(name) for name in servers.keys() if name}
+    except Exception:
+        return set()
+
+
+def expand_disabled_toolset_names(
+    names: Optional[List[str]],
+    *,
+    mcp_server_names: Optional[Set[str]] = None,
+) -> List[str]:
+    """Expand disabled toolset names so MCP bare and ``mcp-<name>`` forms match.
+
+    Issue #61184: ``agent.disabled_toolsets: [server-b]`` must also disable
+    the canonical toolset ``mcp-server-b`` (and vice versa). Expansion also
+    follows live registry aliases (``server-b`` → ``mcp-server-b``) once MCP
+    discovery has registered them.
+
+    Non-MCP names (``memory``, ``web``, ``hermes-cli``, …) are returned
+    unchanged — only MCP bare/canonical pairs and registered aliases are
+    expanded.
+    """
+    if not names:
+        return []
+
+    known_mcp = set(mcp_server_names) if mcp_server_names is not None else _configured_mcp_server_names()
+    aliases = _get_registry_toolset_aliases()  # alias → canonical
+    reverse: Dict[str, Set[str]] = {}
+    for alias, canonical in aliases.items():
+        reverse.setdefault(canonical, set()).add(alias)
+
+    expanded: List[str] = []
+    seen: Set[str] = set()
+
+    def _add(value: str) -> None:
+        if value and value not in seen:
+            seen.add(value)
+            expanded.append(value)
+
+    for raw in names:
+        name = str(raw).strip()
+        if not name:
+            continue
+        _add(name)
+
+        # Live registry alias → canonical (and reverse).
+        target = aliases.get(name)
+        if target:
+            _add(target)
+            for alias in reverse.get(target, ()):
+                _add(alias)
+        for alias in reverse.get(name, ()):
+            _add(alias)
+
+        # MCP bare ↔ mcp-<name> for configured servers or registered aliases.
+        if name.startswith("mcp-"):
+            bare = name[4:]
+            if bare and (bare in known_mcp or name in aliases.values() or bare in aliases):
+                _add(bare)
+        else:
+            if name in known_mcp or name in aliases or f"mcp-{name}" in reverse:
+                _add(f"mcp-{name}")
+
+    return expanded
+
+
+def disabled_toolset_label(toolset_name: str, disabled_names: Optional[List[str]] = None) -> str:
+    """Human-readable label for a disabled toolset (bare + canonical when MCP)."""
+    if not toolset_name:
+        return "''"
+    if toolset_name.startswith("mcp-"):
+        bare = toolset_name[4:]
+        return f"'{bare}' / '{toolset_name}'"
+    # Dual-label bare MCP server names (configured or aliased).
+    mcp_form = f"mcp-{toolset_name}"
+    known_mcp = _configured_mcp_server_names()
+    aliases = _get_registry_toolset_aliases()
+    if (
+        toolset_name in known_mcp
+        or aliases.get(toolset_name) == mcp_form
+        or (disabled_names and mcp_form in set(expand_disabled_toolset_names(list(disabled_names))))
+    ):
+        return f"'{toolset_name}' / '{mcp_form}'"
+    return f"'{toolset_name}'"
+
+
+def tool_blocked_by_disabled_toolsets(
+    tool_name: str,
+    disabled_toolsets: Optional[List[str]],
+) -> Optional[str]:
+    """Return a label if *tool_name* belongs to a disabled toolset, else None.
+
+    Defense-in-depth for issue #61184: schema filtering should already exclude
+    these tools, but stale schemas, tool_call bridges, or direct dispatch must
+    still refuse execution.
+    """
+    if not tool_name or not disabled_toolsets:
+        return None
+
+    expanded = expand_disabled_toolset_names(list(disabled_toolsets))
+    if not expanded:
+        return None
+    expanded_set = set(expanded)
+
+    try:
+        from tools.registry import registry
+
+        toolset = registry.get_toolset_for_tool(tool_name)
+    except Exception:
+        toolset = None
+
+    if toolset and toolset in expanded_set:
+        return disabled_toolset_label(toolset, disabled_toolsets)
+
+    # Alias form: toolset is mcp-server-b, disabled listed server-b (expanded).
+    if toolset:
+        for name in expanded:
+            if name == toolset:
+                return disabled_toolset_label(toolset, disabled_toolsets)
+            try:
+                if validate_toolset(name) and tool_name in set(resolve_toolset(name)):
+                    return disabled_toolset_label(toolset or name, disabled_toolsets)
+            except Exception:
+                continue
+
+    # Fallback without toolset metadata: subtract by resolved tool names.
+    for name in expanded:
+        try:
+            if validate_toolset(name) and tool_name in set(resolve_toolset(name)):
+                return disabled_toolset_label(name, disabled_toolsets)
+        except Exception:
+            continue
+
+    return None
+
+
+def is_mcp_server_disabled_by_toolsets(
+    server_name: str,
+    disabled_toolsets: Optional[List[str]] = None,
+) -> bool:
+    """True if *server_name* is blocked by ``agent.disabled_toolsets`` (#61184)."""
+    if not server_name:
+        return False
+    if disabled_toolsets is None:
+        try:
+            from hermes_cli.config import read_raw_config
+
+            agent_cfg = (read_raw_config() or {}).get("agent") or {}
+            disabled_toolsets = agent_cfg.get("disabled_toolsets") or []
+        except Exception:
+            disabled_toolsets = []
+    if not disabled_toolsets:
+        return False
+    expanded = set(expand_disabled_toolset_names(list(disabled_toolsets)))
+    return (
+        str(server_name) in expanded
+        or f"mcp-{server_name}" in expanded
+    )
+
+
 def create_custom_toolset(
     name: str,
     description: str,

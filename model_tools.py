@@ -30,7 +30,12 @@ import time
 from typing import Dict, Any, List, Optional, Tuple
 
 from tools.registry import discover_builtin_tools, registry
-from toolsets import resolve_toolset, validate_toolset
+from toolsets import (
+    expand_disabled_toolset_names,
+    resolve_toolset,
+    tool_blocked_by_disabled_toolsets,
+    validate_toolset,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -396,8 +401,18 @@ def _compute_tool_definitions(
     # This ensures that even if a composite toolset (like hermes-cli)
     # is enabled, any tools belonging to a disabled toolset are strictly
     # stripped out. See issue #17309.
+    #
+    # Expand MCP bare/canonical aliases so ``server-b`` and ``mcp-server-b``
+    # both strip the same tools (#61184). Only warn for operator-supplied
+    # names (not synthetic expansions that may not exist pre-discovery).
     if disabled_toolsets:
-        for toolset_name in disabled_toolsets:
+        original_disabled = [str(n) for n in disabled_toolsets]
+        expanded_disabled = expand_disabled_toolset_names(original_disabled)
+        seen_disabled: set = set()
+        for toolset_name in expanded_disabled:
+            if toolset_name in seen_disabled:
+                continue
+            seen_disabled.add(toolset_name)
             if validate_toolset(toolset_name):
                 from toolsets import bundle_non_core_tools, get_toolset
                 if toolset_name.startswith("hermes-") or (get_toolset(toolset_name) or {}).get("posture"):
@@ -432,7 +447,7 @@ def _compute_tool_definitions(
                 tools_to_include.difference_update(legacy_tools)
                 if not quiet_mode:
                     print(f"🚫 Disabled legacy toolset '{toolset_name}': {', '.join(legacy_tools)}")
-            elif not quiet_mode:
+            elif not quiet_mode and toolset_name in original_disabled:
                 print(f"⚠️  Unknown toolset: {toolset_name}")
 
     # Plugin-registered tools are now resolved through the normal toolset
@@ -1128,6 +1143,7 @@ def handle_function_call(
                 }, ensure_ascii=False)
             # Recurse with the underlying tool. All hooks fire against the
             # real tool name. The bridge is invisible to hooks by design.
+            # Disabled-toolset enforcement also runs on the recursive call.
             return handle_function_call(
                 function_name=underlying_name,
                 function_args=underlying_args,
@@ -1142,6 +1158,23 @@ def handle_function_call(
                 enabled_toolsets=enabled_toolsets,
                 disabled_toolsets=disabled_toolsets,
             )
+
+    # ── Disabled-toolset hard boundary (issue #61184) ────────────────
+    # Schema filtering should already exclude these tools, but a stale
+    # snapshot, progressive-disclosure tool_call, or direct dispatch must
+    # never execute a tool from a disabled toolset — especially a disabled
+    # MCP server that shares a local tool name with an allowed one.
+    if disabled_toolsets:
+        blocked_label = tool_blocked_by_disabled_toolsets(
+            function_name, list(disabled_toolsets),
+        )
+        if blocked_label:
+            err = (
+                f"Tool '{function_name}' belongs to disabled toolset "
+                f"{blocked_label} and cannot be executed."
+            )
+            logger.warning("Refusing disabled-toolset dispatch: %s", err)
+            return json.dumps({"error": err}, ensure_ascii=False)
 
     _tool_original_args = dict(function_args)
     if not skip_tool_request_middleware:

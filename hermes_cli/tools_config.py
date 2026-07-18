@@ -1919,10 +1919,27 @@ def _get_platform_tools(
     # globally suppress specific toolsets (e.g. "memory") across all
     # platforms without per-platform toolset configuration.  This runs
     # last so it overrides everything above.
+    #
+    # Expand MCP bare/canonical aliases so ``server-b`` and ``mcp-server-b``
+    # both remove the MCP server from the platform toolset list (#61184).
     agent_cfg = config.get("agent") or {}
     disabled_toolsets = agent_cfg.get("disabled_toolsets") or []
     if disabled_toolsets:
-        disabled_set = {str(ts) for ts in disabled_toolsets}
+        try:
+            from toolsets import expand_disabled_toolset_names
+
+            mcp_names = {
+                str(n)
+                for n in ((config.get("mcp_servers") or {}) if isinstance(config.get("mcp_servers"), dict) else {})
+            }
+            disabled_set = set(
+                expand_disabled_toolset_names(
+                    [str(ts) for ts in disabled_toolsets],
+                    mcp_server_names=mcp_names,
+                )
+            )
+        except Exception:
+            disabled_set = {str(ts) for ts in disabled_toolsets}
         enabled_toolsets -= disabled_set
 
     # #38798: if this platform was explicitly configured but every toolset name
@@ -4455,10 +4472,22 @@ def _print_tools_list(enabled_toolsets: set, mcp_servers: dict, platform: str = 
     if mcp_servers:
         print()
         print("MCP servers:")
+        try:
+            from toolsets import is_mcp_server_disabled_by_toolsets
+
+            agent_disabled = is_mcp_server_disabled_by_toolsets
+        except Exception:
+            agent_disabled = lambda _name, _d=None: False  # noqa: E731
         for srv_name, srv_cfg in mcp_servers.items():
             tools_cfg = srv_cfg.get("tools") or {}
             exclude = tools_cfg.get("exclude") or []
             include = tools_cfg.get("include") or []
+            if agent_disabled(str(srv_name)):
+                _print_info(
+                    f"{srv_name}  "
+                    f"{color('disabled by agent.disabled_toolsets', Colors.YELLOW)}"
+                )
+                continue
             if include:
                 _print_info(f"{srv_name}  [include only: {', '.join(include)}]")
             elif exclude:

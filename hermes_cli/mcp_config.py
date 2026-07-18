@@ -705,11 +705,25 @@ def cmd_mcp_list(args=None):
         else:
             tools_str = "all"
 
-        # Enabled status
+        # Enabled status — also surface agent.disabled_toolsets so a
+        # configured-but-blocked MCP server is not shown as plain "enabled"
+        # (issue #61184).
         enabled = cfg.get("enabled", True)
         if isinstance(enabled, str):
             enabled = enabled.lower() in {"true", "1", "yes"}
-        status = color("✓ enabled", Colors.GREEN) if enabled else color("✗ disabled", Colors.DIM)
+        blocked_by_disabled = False
+        try:
+            from toolsets import is_mcp_server_disabled_by_toolsets
+
+            blocked_by_disabled = is_mcp_server_disabled_by_toolsets(str(name))
+        except Exception:
+            blocked_by_disabled = False
+        if not enabled:
+            status = color("✗ disabled", Colors.DIM)
+        elif blocked_by_disabled:
+            status = color("✗ blocked (disabled_toolsets)", Colors.YELLOW)
+        else:
+            status = color("✓ enabled", Colors.GREEN)
 
         print(f"  {name:<16} {transport:<30} {tools_str:<12} {status}")
 

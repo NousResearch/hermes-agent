@@ -6,6 +6,8 @@ from datetime import datetime
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
+import pytest
+
 from plugins.memory.honcho.session import (
     HonchoSession,
     HonchoSessionManager,
@@ -426,12 +428,13 @@ class TestPeerLookupHelpers:
         mgr, session = self._make_cached_manager()
         assistant_peer = MagicMock()
         scope = MagicMock()
+        scope.create.return_value = [SimpleNamespace(id="conc-user")]
         assistant_peer.conclusions_of.return_value = scope
         mgr._get_or_create_peer = MagicMock(return_value=assistant_peer)
 
-        ok = mgr.create_conclusion(session.key, "User prefers dark mode")
+        conclusion_id = mgr.create_conclusion(session.key, "User prefers dark mode")
 
-        assert ok is True
+        assert conclusion_id == "conc-user"
         assistant_peer.conclusions_of.assert_called_once_with(session.user_peer_id)
         scope.create.assert_called_once_with([{
             "content": "User prefers dark mode",
@@ -442,12 +445,13 @@ class TestPeerLookupHelpers:
         mgr, session = self._make_cached_manager()
         assistant_peer = MagicMock()
         scope = MagicMock()
+        scope.create.return_value = [SimpleNamespace(id="conc-ai")]
         assistant_peer.conclusions_of.return_value = scope
         mgr._get_or_create_peer = MagicMock(return_value=assistant_peer)
 
-        ok = mgr.create_conclusion(session.key, "Assistant prefers terse summaries", peer="ai")
+        conclusion_id = mgr.create_conclusion(session.key, "Assistant prefers terse summaries", peer="ai")
 
-        assert ok is True
+        assert conclusion_id == "conc-ai"
         assistant_peer.conclusions_of.assert_called_once_with(session.assistant_peer_id)
         scope.create.assert_called_once_with([{
             "content": "Assistant prefers terse summaries",
@@ -458,17 +462,42 @@ class TestPeerLookupHelpers:
         mgr, session = self._make_cached_manager()
         assistant_peer = MagicMock()
         scope = MagicMock()
+        scope.create.return_value = [SimpleNamespace(id="conc-robert")]
         assistant_peer.conclusions_of.return_value = scope
         mgr._get_or_create_peer = MagicMock(return_value=assistant_peer)
 
-        ok = mgr.create_conclusion(session.key, "Robert prefers vinyl", peer=session.user_peer_id)
+        conclusion_id = mgr.create_conclusion(session.key, "Robert prefers vinyl", peer=session.user_peer_id)
 
-        assert ok is True
+        assert conclusion_id == "conc-robert"
         assistant_peer.conclusions_of.assert_called_once_with(session.user_peer_id)
         scope.create.assert_called_once_with([{
             "content": "Robert prefers vinyl",
             "session_id": session.honcho_session_id,
         }])
+
+    @pytest.mark.parametrize(
+        "created",
+        [[], [SimpleNamespace(id=None)]],
+    )
+    def test_create_conclusion_returns_none_without_created_id(self, created):
+        mgr, session = self._make_cached_manager()
+        assistant_peer = MagicMock()
+        scope = MagicMock()
+        scope.create.return_value = created
+        assistant_peer.conclusions_of.return_value = scope
+        mgr._get_or_create_peer = MagicMock(return_value=assistant_peer)
+
+        assert mgr.create_conclusion(session.key, "User prefers dark mode") is None
+
+    def test_create_conclusion_returns_none_on_sdk_exception(self):
+        mgr, session = self._make_cached_manager()
+        assistant_peer = MagicMock()
+        scope = MagicMock()
+        scope.create.side_effect = RuntimeError("boom")
+        assistant_peer.conclusions_of.return_value = scope
+        mgr._get_or_create_peer = MagicMock(return_value=assistant_peer)
+
+        assert mgr.create_conclusion(session.key, "User prefers dark mode") is None
 
     def test_list_conclusions_uses_query_when_query_given(self):
         mgr, session = self._make_cached_manager()
@@ -536,7 +565,7 @@ class TestConcludeToolDispatch:
         provider._session_initialized = True
         provider._session_key = "telegram:123"
         provider._manager = MagicMock()
-        provider._manager.create_conclusion.return_value = True
+        provider._manager.create_conclusion.return_value = "conc-123"
 
         result = provider.handle_tool_call(
             "honcho_conclude",
@@ -550,12 +579,38 @@ class TestConcludeToolDispatch:
             peer="user",
         )
 
+    def test_honcho_conclude_returns_id_for_immediate_deletion(self):
+        import json
+
+        provider = HonchoMemoryProvider()
+        provider._session_initialized = True
+        provider._session_key = "telegram:123"
+        provider._manager = MagicMock()
+        provider._manager.create_conclusion.return_value = "conc-123"
+        provider._manager.delete_conclusion.return_value = True
+
+        created = json.loads(provider.handle_tool_call(
+            "honcho_conclude",
+            {"conclusion": "Temporary health check"},
+        ))
+        deleted = json.loads(provider.handle_tool_call(
+            "honcho_conclude",
+            {"delete_id": created["conclusion_id"]},
+        ))
+
+        assert created["conclusion_id"] == "conc-123"
+        assert created["peer"] == "user"
+        assert deleted == {"result": "Conclusion conc-123 deleted."}
+        provider._manager.delete_conclusion.assert_called_once_with(
+            "telegram:123", "conc-123", peer="user"
+        )
+
     def test_honcho_conclude_can_target_ai_peer(self):
         provider = HonchoMemoryProvider()
         provider._session_initialized = True
         provider._session_key = "telegram:123"
         provider._manager = MagicMock()
-        provider._manager.create_conclusion.return_value = True
+        provider._manager.create_conclusion.return_value = "conc-123"
 
         result = provider.handle_tool_call(
             "honcho_conclude",

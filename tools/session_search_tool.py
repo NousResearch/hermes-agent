@@ -31,6 +31,7 @@ support.
 
 import json
 import logging
+import time
 from typing import Any, Dict, List, Optional, Union
 
 # Sources that are excluded from session browsing/searching by default.
@@ -54,6 +55,10 @@ _DEMOTED_SESSION_SOURCES = ("cron",)
 # interactive matches buried under a wall of cron hits, so this is well above
 # the handful of distinct sessions a typical query returns.
 _DISCOVER_SCAN_LIMIT = 300
+
+# Per-session message cap for the time-window shape. If a single session has
+# more messages inside the window, the result is clipped to head+tail.
+_MAX_TIME_WINDOW_MESSAGES = 300
 
 
 def _format_timestamp(ts: Union[int, float, str, None]) -> str:
@@ -79,6 +84,47 @@ def _format_timestamp(ts: Union[int, float, str, None]) -> str:
     except Exception as e:
         logging.debug("Unexpected error formatting timestamp %s: %s", ts, e, exc_info=True)
     return str(ts)
+
+
+def _is_iso_date_only(value: str) -> bool:
+    """Return True for simple YYYY-MM-DD strings."""
+    if len(value) != 10:
+        return False
+    if value[4] != "-" or value[7] != "-":
+        return False
+    return value[:4].isdigit() and value[5:7].isdigit() and value[8:10].isdigit()
+
+
+def _parse_time_boundary(value: Union[int, float, str, None], field_name: str = "") -> Optional[float]:
+    """Parse Unix epoch or ISO-8601 into a float timestamp. Invalid inputs return None."""
+    if value is None:
+        return None
+    if isinstance(value, (int, float)):
+        return float(value)
+    if isinstance(value, str):
+        raw = value.strip()
+        if not raw:
+            return None
+        # Plain epoch string (possibly negative, possibly float)
+        digits = raw.replace(".", "", 1)
+        if digits.isdigit() or (digits.startswith("-") and digits[1:].isdigit()):
+            try:
+                return float(raw)
+            except (ValueError, TypeError):
+                return None
+        from datetime import datetime, timedelta
+        try:
+            iso = raw.replace("Z", "+00:00")
+            dt = datetime.fromisoformat(iso)
+            if field_name == "window_end" and _is_iso_date_only(raw):
+                dt = dt + timedelta(days=1) - timedelta(seconds=1)
+            if dt.tzinfo is None:
+                local_tz = datetime.now().astimezone().tzinfo
+                dt = dt.replace(tzinfo=local_tz)
+            return dt.timestamp()
+        except (ValueError, TypeError):
+            return None
+    return None
 
 
 def _resolve_to_parent(db, session_id: str) -> str:
@@ -616,6 +662,123 @@ def _discover(
     }, ensure_ascii=False)
 
 
+def _time_window(
+    db,
+    window_start: float,
+    window_end: float,
+    role_filter: Optional[List[str]],
+    limit: int,
+    current_session_id: str = None,
+) -> str:
+    """Return messages inside [window_start, window_end] grouped by lineage root."""
+    if window_end < window_start:
+        window_start, window_end = window_end, window_start
+
+    try:
+        rows = db.search_messages_by_time_window(
+            start=window_start,
+            end=window_end,
+            exclude_sources=list(_HIDDEN_SESSION_SOURCES),
+            role_filter=role_filter,
+            limit=10000,
+            offset=0,
+        )
+    except Exception as e:
+        logging.error("search_messages_by_time_window failed: %s", e, exc_info=True)
+        return tool_error(f"Failed to search time window: {e}", success=False)
+
+    current_root = _resolve_to_parent(db, current_session_id) if current_session_id else None
+
+    groups: Dict[str, Dict[str, Any]] = {}
+    for row in rows:
+        sid = row.get("session_id")
+        if not sid:
+            continue
+        root = _resolve_to_parent(db, sid)
+        if not root:
+            root = sid
+        if current_root and root == current_root:
+            continue
+        if root not in groups:
+            meta = db.get_session(root) or {}
+            groups[root] = {
+                "session_id": root,
+                "source": meta.get("source") or row.get("source") or "unknown",
+                "model": meta.get("model") or row.get("model"),
+                "title": meta.get("title"),
+                "messages": [],
+                "message_ids": set(),
+                "latest_ts": 0.0,
+            }
+        group = groups[root]
+        msg_id = row.get("id")
+        if msg_id in group["message_ids"]:
+            continue
+        group["message_ids"].add(msg_id)
+        group["messages"].append(row)
+        ts = row.get("timestamp") or 0
+        if ts > group["latest_ts"]:
+            group["latest_ts"] = ts
+
+    if not groups:
+        return json.dumps({
+            "success": True,
+            "mode": "time_window",
+            "window_start": _format_timestamp(window_start),
+            "window_end": _format_timestamp(window_end),
+            "count": 0,
+            "sessions_considered": 0,
+            "message": "No messages found in the selected time window.",
+            "results": [],
+        }, ensure_ascii=False)
+
+    sorted_roots = sorted(groups.keys(), key=lambda r: groups[r]["latest_ts"], reverse=True)
+    selected = sorted_roots[:limit]
+
+    results = []
+    for root in selected:
+        group = groups[root]
+        messages = group["messages"]
+        messages.sort(key=lambda m: (m.get("timestamp", 0), m.get("id", 0)))
+        truncated = False
+        if len(messages) > _MAX_TIME_WINDOW_MESSAGES:
+            head = _MAX_TIME_WINDOW_MESSAGES // 2
+            tail = _MAX_TIME_WINDOW_MESSAGES - head
+            messages = messages[:head] + messages[-tail:]
+            truncated = True
+        first_ts = messages[0].get("timestamp") if messages else None
+        last_ts = messages[-1].get("timestamp") if messages else None
+        results.append({
+            "session_id": root,
+            "source": group["source"],
+            "model": group["model"],
+            "title": group["title"],
+            "message_count": len(messages),
+            "window_first_message": _format_timestamp(first_ts),
+            "window_last_message": _format_timestamp(last_ts),
+            "messages": [_shape_message(m) for m in messages],
+            "truncated": truncated,
+        })
+
+    total_messages = sum(r["message_count"] for r in results)
+    sessions_with = sum(1 for r in results if r["message_count"] > 0)
+    message = (
+        f"Found {total_messages} message(s) across {sessions_with} session(s) in the selected time window."
+        if total_messages else "No messages found in the selected time window."
+    )
+
+    return json.dumps({
+        "success": True,
+        "mode": "time_window",
+        "window_start": _format_timestamp(window_start),
+        "window_end": _format_timestamp(window_end),
+        "count": len(results),
+        "sessions_considered": len(groups),
+        "message": message,
+        "results": results,
+    }, ensure_ascii=False)
+
+
 def session_search(
     query: str = "",
     role_filter: str = None,
@@ -628,6 +791,9 @@ def session_search(
     window: int = 5,
     # Discovery shape
     sort: str = None,
+    # Time-window shape
+    window_start: Union[int, float, str, None] = None,
+    window_end: Union[int, float, str, None] = None,
     # Cross-profile (any shape)
     profile: str = None,
 ) -> str:
@@ -706,6 +872,11 @@ def session_search(
                 return json.dumps(found, ensure_ascii=False)
         return result
 
+    # Parse role_filter once; used by discovery and time-window shapes.
+    role_list: Optional[List[str]] = None
+    if isinstance(role_filter, str) and role_filter.strip():
+        role_list = [r.strip() for r in role_filter.split(",") if r.strip()]
+
     # Limit clamp [1, 10]
     if not isinstance(limit, int):
         try:
@@ -714,14 +885,28 @@ def session_search(
             limit = 3
     limit = max(1, min(limit, 10))
 
+    # Time-window shape: explicit start/end timestamps, no keyword query.
+    if (window_start is not None or window_end is not None) and (not query or not isinstance(query, str) or not query.strip()):
+        parsed_start = _parse_time_boundary(window_start, "window_start")
+        parsed_end = _parse_time_boundary(window_end, "window_end")
+        if parsed_start is not None or parsed_end is not None:
+            # Defaults: end = now, start = end - 24h
+            if parsed_end is None:
+                parsed_end = time.time()
+            if parsed_start is None:
+                parsed_start = parsed_end - 86400.0
+            return _time_window(
+                db=db,
+                window_start=parsed_start,
+                window_end=parsed_end,
+                role_filter=role_list,
+                limit=limit,
+                current_session_id=current_session_id,
+            )
+
     # Browse shape: no query → recent sessions.
     if not query or not isinstance(query, str) or not query.strip():
         return _list_recent_sessions(db, limit, current_session_id)
-
-    # Parse role_filter
-    role_list: Optional[List[str]] = None
-    if isinstance(role_filter, str) and role_filter.strip():
-        role_list = [r.strip() for r in role_filter.split(",") if r.strip()]
 
     # Normalise sort
     sort_norm: Optional[str] = None
@@ -766,7 +951,7 @@ SESSION_SEARCH_SCHEMA = {
         "and why before falling back to session history. Do not conclude 'not found' "
         "or 'no prior correspondence' from session_search alone when a direct source "
         "was provided.\n\n"
-        "FOUR CALLING SHAPES\n\n"
+        "FIVE CALLING SHAPES\n\n"
         "  1) DISCOVERY — pass `query`:\n"
         "     session_search(query=\"auth refactor\", limit=3)\n"
         "     Runs FTS5, dedupes hits by session lineage, returns the top N sessions. "
@@ -798,7 +983,12 @@ SESSION_SEARCH_SCHEMA = {
         "large). This is how you resolve an `@session:<profile>/<id>` link the "
         "user dropped into the chat: split the value on `/` into profile + id "
         "and call session_search(session_id=id, profile=profile).\n\n"
-        "  4) BROWSE — no args:\n"
+        "  4) TIME-WINDOW — pass `window_start` + `window_end`:\n"
+        "     session_search(window_start=\"2026-04-19T14:00:00\", window_end=\"2026-04-19T16:00:00\")\n"
+        "     Returns all messages whose timestamps fall inside the interval, grouped by session. "
+        "Use for temporal recap questions like \"recap what we discussed yesterday between 2pm and 4pm\". "
+        "`window_start`/`window_end` accept Unix seconds, ISO-8601 strings, or date-only strings.\n\n"
+        "  5) BROWSE — no args:\n"
         "     session_search()\n"
         "     Returns recent sessions chronologically: titles, previews, timestamps. "
         "Use when the user asks \"what was I working on\" without naming a topic.\n\n"
@@ -822,9 +1012,25 @@ SESSION_SEARCH_SCHEMA = {
                 "type": "string",
                 "description": (
                     "Search query (discovery shape). Keywords, phrases, or boolean "
-                    "expressions to find in past sessions. Omit to browse recent "
-                    "sessions. Ignored when session_id + around_message_id are set "
-                    "(scroll shape)."
+                    "expressions to find in past sessions. Mutually exclusive with "
+                    "window_start/window_end; omit both to browse recent sessions. "
+                    "Ignored when session_id + around_message_id are set (scroll shape)."
+                ),
+            },
+            "window_start": {
+                "type": ["number", "string"],
+                "description": (
+                    "Time-window shape start. Unix seconds (number) or ISO-8601 string. "
+                    "Date-only values like '2026-04-19' are treated as start-of-day local time. "
+                    "Defaults to 24 hours before window_end if omitted."
+                ),
+            },
+            "window_end": {
+                "type": ["number", "string"],
+                "description": (
+                    "Time-window shape end. Unix seconds (number) or ISO-8601 string. "
+                    "Date-only values like '2026-04-19' are treated as end-of-day local time. "
+                    "Defaults to the current time if omitted."
                 ),
             },
             "limit": {
@@ -912,6 +1118,8 @@ registry.register(
         around_message_id=args.get("around_message_id"),
         window=args.get("window", 5),
         sort=args.get("sort"),
+        window_start=args.get("window_start"),
+        window_end=args.get("window_end"),
         profile=args.get("profile"),
         db=kw.get("db"),
         current_session_id=kw.get("current_session_id"),

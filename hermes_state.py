@@ -888,6 +888,7 @@ CREATE INDEX IF NOT EXISTS idx_sessions_source_id ON sessions(source, id);
 CREATE INDEX IF NOT EXISTS idx_sessions_parent ON sessions(parent_session_id);
 CREATE INDEX IF NOT EXISTS idx_sessions_started ON sessions(started_at DESC);
 CREATE INDEX IF NOT EXISTS idx_messages_session ON messages(session_id, timestamp);
+CREATE INDEX IF NOT EXISTS idx_messages_timestamp ON messages(timestamp);
 CREATE INDEX IF NOT EXISTS idx_compression_locks_expires ON compression_locks(expires_at);
 CREATE INDEX IF NOT EXISTS idx_session_model_usage_session ON session_model_usage(session_id);
 CREATE INDEX IF NOT EXISTS idx_session_model_usage_model ON session_model_usage(model);
@@ -5555,6 +5556,93 @@ class SessionDB:
             match.pop("content", None)
 
         return matches
+
+    def search_messages_by_time_window(
+        self,
+        start: float,
+        end: float,
+        source_filter: List[str] = None,
+        exclude_sources: List[str] = None,
+        role_filter: List[str] = None,
+        include_inactive: bool = False,
+        sort: str = None,
+        limit: int = 1000,
+        offset: int = 0,
+    ) -> List[Dict[str, Any]]:
+        """Return messages whose timestamps fall inside [start, end].
+
+        Mirrors ``search_messages`` visibility semantics: rewound rows
+        (``active=0``, ``compacted=0``) are hidden unless ``include_inactive``
+        is True; compaction-archived rows (``active=0``, ``compacted=1``) are
+        included by default so summarized-away history stays discoverable.
+        """
+        where_clauses = ["m.timestamp >= ? AND m.timestamp <= ?"]
+        params: list = [start, end]
+
+        if not include_inactive:
+            where_clauses.append("(m.active = 1 OR m.compacted = 1)")
+
+        if source_filter is not None:
+            placeholders = ",".join("?" for _ in source_filter)
+            where_clauses.append(f"s.source IN ({placeholders})")
+            params.extend(source_filter)
+
+        if exclude_sources is not None:
+            placeholders = ",".join("?" for _ in exclude_sources)
+            where_clauses.append(f"s.source NOT IN ({placeholders})")
+            params.extend(exclude_sources)
+
+        if role_filter:
+            placeholders = ",".join("?" for _ in role_filter)
+            where_clauses.append(f"m.role IN ({placeholders})")
+            params.extend(role_filter)
+
+        if sort == "newest":
+            order_by_sql = "ORDER BY m.timestamp DESC, m.id DESC"
+        elif sort == "oldest":
+            order_by_sql = "ORDER BY m.timestamp ASC, m.id ASC"
+        else:
+            order_by_sql = "ORDER BY m.timestamp ASC, m.id ASC"
+
+        where_sql = " AND ".join(where_clauses)
+        params.extend([limit, offset])
+
+        sql = f"""
+            SELECT
+                m.id,
+                m.session_id,
+                m.role,
+                m.content,
+                m.timestamp,
+                m.tool_name,
+                m.tool_calls,
+                m.tool_call_id,
+                s.source,
+                s.model,
+                s.started_at AS session_started,
+                s.title AS session_title
+            FROM messages m
+            JOIN sessions s ON s.id = m.session_id
+            WHERE {where_sql}
+            {order_by_sql}
+            LIMIT ? OFFSET ?
+        """
+
+        with self._lock:
+            cursor = self._conn.execute(sql, params)
+            rows = [dict(row) for row in cursor.fetchall()]
+
+        for row in rows:
+            if "content" in row:
+                row["content"] = self._decode_content(row["content"])
+            if row.get("tool_calls"):
+                try:
+                    row["tool_calls"] = json.loads(row["tool_calls"])
+                except (json.JSONDecodeError, TypeError):
+                    logger.warning("Failed to deserialize tool_calls in search_messages_by_time_window")
+                    row["tool_calls"] = []
+
+        return rows
 
     def search_sessions_by_id(
         self,

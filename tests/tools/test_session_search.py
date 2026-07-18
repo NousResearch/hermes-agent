@@ -17,6 +17,7 @@ from tools.session_search_tool import (
     SESSION_SEARCH_SCHEMA,
     _HIDDEN_SESSION_SOURCES,
     _format_timestamp,
+    _parse_time_boundary,
     session_search,
 )
 
@@ -638,3 +639,180 @@ class TestCronDemotion:
         # Interactive rows first, in original relative order; cron last, in
         # original relative order.
         assert [r["id"] for r in ordered] == [2, 4, 5, 1, 3]
+
+
+# =========================================================================
+# Time-window retrieval shape
+# =========================================================================
+
+class TestTimeWindowShape:
+    def test_parse_time_boundary_epoch_and_iso(self):
+        assert _parse_time_boundary(1773987600, "window_start") == 1773987600.0
+        assert _parse_time_boundary("1773987600.5", "window_start") == 1773987600.5
+        out = _parse_time_boundary("2026-04-19T14:00:00+08:00", "window_start")
+        assert out is not None and out > 0
+        # Date-only window_end maps to end-of-day in the input timezone.
+        end_ts = _parse_time_boundary("2026-04-19", "window_end")
+        start_ts = _parse_time_boundary("2026-04-19", "window_start")
+        # End-of-day local is 24 hours ahead of start-of-day local (minus 1s end-bound).
+        assert end_ts is not None and start_ts is not None
+        assert end_ts > start_ts
+        assert _parse_time_boundary("not a date", "window_start") is None
+
+    def test_schema_has_time_window_params(self):
+        params = SESSION_SEARCH_SCHEMA["parameters"]["properties"]
+        assert "window_start" in params
+        assert "window_end" in params
+
+    def _seed_time_range(self, db):
+        now = int(time.time())
+        db.create_session("s1", source="cli")
+        db.append_message("s1", role="user", content="A", timestamp=now - 120)
+        db.append_message("s1", role="assistant", content="B", timestamp=now - 60)
+        db.create_session("s2", source="cli")
+        db.append_message("s2", role="user", content="C", timestamp=now - 30)
+        db._conn.commit()
+        return now
+
+    def test_time_window_returns_only_messages_in_range(self, db):
+        now = self._seed_time_range(db)
+        result = json.loads(session_search(
+            window_start=now - 90,
+            window_end=now - 45,
+            db=db,
+        ))
+        assert result["success"] is True
+        assert result["mode"] == "time_window"
+        assert result["count"] == 1
+        assert result["results"][0]["session_id"] == "s1"
+        contents = [m["content"] for m in result["results"][0]["messages"]]
+        assert contents == ["B"]
+
+    def test_time_window_excludes_current_session_lineage(self, db):
+        now = self._seed_time_range(db)
+        result = json.loads(session_search(
+            window_start=now - 200,
+            window_end=now,
+            db=db,
+            current_session_id="s1",
+        ))
+        assert result["success"] is True
+        assert result["count"] == 1
+        assert result["results"][0]["session_id"] == "s2"
+
+    def test_time_window_groups_child_session_under_root(self, db):
+        now = int(time.time())
+        db.create_session("parent", source="cli")
+        db.create_session("child", source="cli", parent_session_id="parent")
+        db.append_message("child", role="user", content="child msg", timestamp=now - 100)
+        db._conn.commit()
+        result = json.loads(session_search(
+            window_start=now - 200,
+            window_end=now,
+            db=db,
+        ))
+        assert result["success"] is True
+        assert result["count"] == 1
+        assert result["results"][0]["session_id"] == "parent"
+        contents = [m["content"] for m in result["results"][0]["messages"]]
+        assert contents == ["child msg"]
+
+    def test_time_window_defaults_to_24h_when_start_missing(self, db):
+        now = int(time.time())
+        db.create_session("s_recent", source="cli")
+        db.append_message("s_recent", role="user", content="recent", timestamp=now - 100)
+        db.create_session("s_old", source="cli")
+        db.append_message("s_old", role="user", content="old", timestamp=now - 90000)
+        db._conn.commit()
+        result = json.loads(session_search(
+            window_end=now,
+            db=db,
+        ))
+        assert result["success"] is True
+        contents = [m["content"]
+                      for r in result["results"]
+                      for m in r["messages"]]
+        assert "recent" in contents
+        assert "old" not in contents
+
+    def test_time_window_role_filter(self, db):
+        now = int(time.time())
+        db.create_session("s_roles", source="cli")
+        db.append_message("s_roles", role="user", content="u", timestamp=now - 100)
+        db.append_message("s_roles", role="assistant", content="a", timestamp=now - 80)
+        db._conn.commit()
+        result = json.loads(session_search(
+            window_start=now - 200,
+            window_end=now,
+            role_filter="user",
+            db=db,
+        ))
+        assert result["success"] is True
+        contents = [m["content"] for m in result["results"][0]["messages"]]
+        assert contents == ["u"]
+
+    def test_time_window_respects_active_compacted_visibility(self, db):
+        now = int(time.time())
+        db.create_session("s_vis", source="cli")
+        db.append_message("s_vis", role="user", content="rewound", timestamp=now - 100)
+        db.append_message("s_vis", role="user", content="compacted", timestamp=now - 90)
+        db.append_message("s_vis", role="user", content="live", timestamp=now - 80)
+        # Mark first as rewound, second as compaction-archived.
+        db._conn.execute(
+            "UPDATE messages SET active=0, compacted=0 WHERE content=?",
+            ("rewound",),
+        )
+        db._conn.execute(
+            "UPDATE messages SET active=0, compacted=1 WHERE content=?",
+            ("compacted",),
+        )
+        db._conn.commit()
+        result = json.loads(session_search(
+            window_start=now - 200,
+            window_end=now,
+            db=db,
+        ))
+        assert result["success"] is True
+        contents = [m["content"]
+                      for r in result["results"]
+                      for m in r["messages"]]
+        assert "rewound" not in contents
+        assert "compacted" in contents
+        assert "live" in contents
+
+    def test_time_window_limit_counts_roots_not_rows(self, db):
+        now = int(time.time())
+        for i in range(2):
+            sid = f"root_{i}"
+            db.create_session(sid, source="cli")
+            for j in range(20):
+                db.append_message(sid, role="user", content=f"r{i}m{j}", timestamp=now - 200 + i + j)
+        db._conn.commit()
+        result = json.loads(session_search(
+            window_start=now - 300,
+            window_end=now,
+            limit=1,
+            db=db,
+        ))
+        assert result["success"] is True
+        assert result["count"] == 1
+        assert result["sessions_considered"] == 2
+
+    def test_time_window_truncation_flag(self, db, monkeypatch):
+        monkeypatch.setattr("tools.session_search_tool._MAX_TIME_WINDOW_MESSAGES", 5)
+        now = int(time.time())
+        db.create_session("s_trunc", source="cli")
+        for i in range(12):
+            db.append_message("s_trunc", role="user", content=str(i), timestamp=now - 100 + i)
+        db._conn.commit()
+        result = json.loads(session_search(
+            window_start=now - 120,
+            window_end=now,
+            db=db,
+        ))
+        assert result["success"] is True
+        assert result["results"][0]["truncated"] is True
+        assert result["results"][0]["message_count"] == 5
+        contents = [m["content"] for m in result["results"][0]["messages"]]
+        assert contents[0] == "0"
+        assert contents[-1] == "11"

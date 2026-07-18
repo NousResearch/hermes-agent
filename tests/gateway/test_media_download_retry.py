@@ -34,7 +34,11 @@ def _make_timeout_error() -> httpx.TimeoutException:
     return httpx.TimeoutException("timed out")
 
 
-def _make_stream_response(content: bytes = b"\xff\xd8\xff fake media"):
+def _make_stream_response(
+    content: bytes = b"\xff\xd8\xff fake media",
+    *,
+    headers=None,
+):
     """Build a mock httpx response suitable for ``client.stream()`` usage.
 
     Exposes ``raise_for_status``, an empty ``headers`` mapping (no
@@ -43,7 +47,10 @@ def _make_stream_response(content: bytes = b"\xff\xd8\xff fake media"):
     """
     resp = MagicMock()
     resp.raise_for_status = MagicMock()
-    resp.headers = {}
+    resp.headers = headers or {}
+    resp.has_redirect_location = False
+    resp.next_request = None
+    resp.aclose = AsyncMock()
 
     async def _aiter():
         yield content
@@ -53,16 +60,23 @@ def _make_stream_response(content: bytes = b"\xff\xd8\xff fake media"):
 
 
 def _make_stream_client(*, responses=None, side_effect=None):
-    """Build a mock httpx client whose ``.stream()`` is an async CM.
+    """Build a mock httpx client supporting streamed ``send``/``stream``.
 
-    ``responses`` is a list of response objects (or exceptions) returned on
-    successive ``.stream()`` calls; ``side_effect`` is a single exception
-    raised on every call. The returned client also supports being used as an
-    ``async with`` context manager (``httpx.AsyncClient(...)``).
+    ``responses`` supplies successive response objects (or exceptions), and
+    ``side_effect`` is raised on every request. The client also implements the
+    async context-manager protocol used by ``httpx.AsyncClient``.
     """
     mock_client = AsyncMock()
     mock_client.__aenter__ = AsyncMock(return_value=mock_client)
     mock_client.__aexit__ = AsyncMock(return_value=False)
+    mock_client.max_redirects = 20
+    mock_client.build_request = MagicMock(
+        side_effect=lambda method, url, **kwargs: httpx.Request(
+            method,
+            url,
+            headers=kwargs.get("headers"),
+        )
+    )
 
     call_state = {"i": 0}
 
@@ -80,6 +94,18 @@ def _make_stream_client(*, responses=None, side_effect=None):
         return cm
 
     mock_client.stream = MagicMock(side_effect=_stream)
+
+    async def _send(_request, **_kwargs):
+        idx = call_state["i"]
+        call_state["i"] += 1
+        if side_effect is not None:
+            raise side_effect
+        item = responses[idx]
+        if isinstance(item, Exception):
+            raise item
+        return item
+
+    mock_client.send = AsyncMock(side_effect=_send)
     mock_client._call_state = call_state
     return mock_client
 
@@ -753,6 +779,176 @@ class TestSlackDownloadSlackFileBytes:
 
         result = asyncio.run(run())
         assert result == b"raw bytes here"
+
+    def test_limited_stream_returns_body_under_cap(self):
+        adapter = _make_slack_adapter()
+        response = _make_stream_response(b"1234")
+        mock_client = _make_stream_client(responses=[response])
+
+        async def run():
+            with patch("httpx.AsyncClient", return_value=mock_client):
+                return await adapter._download_slack_file_bytes(
+                    "https://files.slack.com/file.bin",
+                    max_bytes=5,
+                )
+
+        assert asyncio.run(run()) == b"1234"
+        assert mock_client.send.await_count == 1
+        assert (
+            mock_client.build_request.call_args.kwargs["headers"]["Accept-Encoding"]
+            == "identity"
+        )
+
+    def test_limited_stream_rejects_content_encoding_before_read(self):
+        adapter = _make_slack_adapter()
+        response = _make_stream_response(
+            b"compressed",
+            headers={"content-encoding": "gzip", "content-length": "10"},
+        )
+        response.aiter_bytes = MagicMock(side_effect=AssertionError("body was read"))
+        mock_client = _make_stream_client(responses=[response])
+
+        async def run():
+            with patch("httpx.AsyncClient", return_value=mock_client):
+                await adapter._download_slack_file_bytes(
+                    "https://files.slack.com/file.bin",
+                    max_bytes=5,
+                )
+
+        with pytest.raises(ValueError, match="unexpected Content-Encoding"):
+            asyncio.run(run())
+        assert mock_client.send.await_count == 1
+
+    def test_limited_stream_rejects_actual_body_over_cap(self):
+        adapter = _make_slack_adapter()
+        response = _make_stream_response(b"123456")
+        mock_client = _make_stream_client(responses=[response])
+
+        async def run():
+            with patch("httpx.AsyncClient", return_value=mock_client):
+                await adapter._download_slack_file_bytes(
+                    "https://files.slack.com/file.bin",
+                    max_bytes=5,
+                )
+
+        with pytest.raises(ValueError, match="too large"):
+            asyncio.run(run())
+        assert mock_client.send.await_count == 1
+
+    def test_limited_stream_rejects_oversized_content_length_before_read(self):
+        adapter = _make_slack_adapter()
+        response = _make_stream_response(
+            b"123456",
+            headers={"content-length": "6"},
+        )
+        response.aiter_bytes = MagicMock(side_effect=AssertionError("body was read"))
+        mock_client = _make_stream_client(responses=[response])
+
+        async def run():
+            with patch("httpx.AsyncClient", return_value=mock_client):
+                await adapter._download_slack_file_bytes(
+                    "https://files.slack.com/file.bin",
+                    max_bytes=5,
+                )
+
+        with pytest.raises(ValueError, match="too large"):
+            asyncio.run(run())
+        assert mock_client.send.await_count == 1
+
+    def test_zero_stream_cap_allows_body(self):
+        adapter = _make_slack_adapter()
+        response = _make_stream_response(b"123456")
+        mock_client = _make_stream_client(responses=[response])
+
+        async def run():
+            with patch("httpx.AsyncClient", return_value=mock_client):
+                return await adapter._download_slack_file_bytes(
+                    "https://files.slack.com/file.bin",
+                    max_bytes=0,
+                )
+
+        assert asyncio.run(run()) == b"123456"
+
+    def test_limited_stream_retries_mid_body_read_error(self):
+        adapter = _make_slack_adapter()
+        broken = _make_stream_response()
+
+        async def _broken_body():
+            yield b"partial"
+            raise httpx.ReadError("connection reset")
+
+        broken.aiter_bytes = lambda: _broken_body()
+        recovered = _make_stream_response(b"complete")
+        mock_client = _make_stream_client(responses=[broken, recovered])
+
+        async def run():
+            with (
+                patch("httpx.AsyncClient", return_value=mock_client),
+                patch("asyncio.sleep", new_callable=AsyncMock),
+            ):
+                return await adapter._download_slack_file_bytes(
+                    "https://files.slack.com/file.bin",
+                    max_bytes=32,
+                )
+
+        assert asyncio.run(run()) == b"complete"
+        assert mock_client.send.await_count == 2
+
+    def test_limited_stream_does_not_read_redirect_body_or_leak_auth(self):
+        adapter = _make_slack_adapter()
+        seen_headers = []
+
+        class TrackingStream(httpx.AsyncByteStream):
+            def __init__(self):
+                self.reads = 0
+                self.closed = 0
+
+            async def __aiter__(self):
+                self.reads += 1
+                yield b"x" * (1024 * 1024)
+
+            async def aclose(self):
+                self.closed += 1
+
+        redirect_body = TrackingStream()
+
+        def handler(request):
+            seen_headers.append((request.url.host, dict(request.headers)))
+            if request.url.host == "files.slack.com":
+                return httpx.Response(
+                    302,
+                    headers={
+                        "location": "https://cdn.example/file.bin",
+                        "content-encoding": "gzip",
+                    },
+                    stream=redirect_body,
+                )
+            return httpx.Response(200, content=b"ok")
+
+        transport = httpx.MockTransport(handler)
+        real_client = httpx.AsyncClient
+
+        async def run():
+            with patch(
+                "httpx.AsyncClient",
+                side_effect=lambda **kwargs: real_client(
+                    transport=transport,
+                    **kwargs,
+                ),
+            ):
+                return await adapter._download_slack_file_bytes(
+                    "https://files.slack.com/file.bin",
+                    max_bytes=10,
+                )
+
+        assert asyncio.run(run()) == b"ok"
+        assert redirect_body.reads == 0
+        assert redirect_body.closed == 1
+        assert seen_headers[0][1]["authorization"] == (
+            f"Bearer {adapter.config.token}"
+        )
+        assert "authorization" not in seen_headers[1][1]
+        assert seen_headers[1][1]["accept-encoding"] == "identity"
 
     def test_rejects_html_response(self):
         """Slack HTML sign-in pages should not be accepted as file bytes."""

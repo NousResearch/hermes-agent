@@ -72,6 +72,73 @@ class TestInboundMediaSizeCap:
             validate_inbound_media_size(300, media_type="image", max_bytes=200)
 
 
+class TestInboundDocumentSizeCap:
+    def test_default_is_20_mib(self, monkeypatch):
+        import gateway.platforms.base as base
+        import hermes_cli.config as config
+
+        monkeypatch.setattr(config, "load_config", lambda: {})
+
+        assert base.DEFAULT_INBOUND_DOCUMENT_MAX_BYTES == 20 * 1024 * 1024
+        assert (
+            base.get_inbound_document_max_bytes()
+            == base.DEFAULT_INBOUND_DOCUMENT_MAX_BYTES
+        )
+
+    @pytest.mark.parametrize("raw", [0, -1, "0", "-1"])
+    def test_non_positive_values_disable_cap(self, monkeypatch, raw):
+        import gateway.platforms.base as base
+        import hermes_cli.config as config
+
+        monkeypatch.setattr(
+            config,
+            "load_config",
+            lambda: {"gateway": {"max_inbound_document_bytes": raw}},
+        )
+
+        assert base.get_inbound_document_max_bytes() == 0
+
+    def test_positive_override_is_returned(self, monkeypatch):
+        import gateway.platforms.base as base
+        import hermes_cli.config as config
+
+        monkeypatch.setattr(
+            config,
+            "load_config",
+            lambda: {"gateway": {"max_inbound_document_bytes": "33554432"}},
+        )
+
+        assert base.get_inbound_document_max_bytes() == 32 * 1024 * 1024
+
+    @pytest.mark.parametrize(
+        "raw",
+        [True, "nonsense", 1.5, float("inf"), float("nan")],
+    )
+    def test_invalid_values_fall_back_to_default(self, monkeypatch, raw):
+        import gateway.platforms.base as base
+        import hermes_cli.config as config
+
+        monkeypatch.setattr(
+            config,
+            "load_config",
+            lambda: {"gateway": {"max_inbound_document_bytes": raw}},
+        )
+
+        assert (
+            base.get_inbound_document_max_bytes()
+            == base.DEFAULT_INBOUND_DOCUMENT_MAX_BYTES
+        )
+
+    def test_default_config_exposes_setting(self):
+        import gateway.platforms.base as base
+        from hermes_cli.config import DEFAULT_CONFIG
+
+        assert (
+            DEFAULT_CONFIG["gateway"]["max_inbound_document_bytes"]
+            == base.DEFAULT_INBOUND_DOCUMENT_MAX_BYTES
+        )
+
+
 class TestSecretCaptureGuidance:
     def test_gateway_secret_capture_message_points_to_local_setup(self):
         message = GATEWAY_SECRET_CAPTURE_UNSUPPORTED_MESSAGE

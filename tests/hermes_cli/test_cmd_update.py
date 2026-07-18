@@ -410,8 +410,9 @@ class TestCmdUpdateBranchFallback:
 
     @patch("shutil.which", return_value=None)
     @patch("subprocess.run")
+    @patch("hermes_cli.main._resolve_git_cmd", return_value=["git"])
     def test_update_on_fork_checks_upstream_when_origin_up_to_date(
-        self, mock_run, _mock_which, mock_args, capsys
+        self, mock_resolve_git, mock_run, _mock_which, mock_args, capsys
     ):
         """Regression for issue #26172: forks whose local HEAD already matches
         origin/main must still consult upstream/main before printing

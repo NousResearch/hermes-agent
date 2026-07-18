@@ -399,6 +399,7 @@ def _setup_update_mocks(monkeypatch, tmp_path):
 def test_cmd_update_retries_optional_extras_individually_when_all_fails(monkeypatch, tmp_path, capsys):
     """When .[all] fails, update should keep base deps and retry extras individually."""
     _setup_update_mocks(monkeypatch, tmp_path)
+    monkeypatch.setattr(hermes_main, "_resolve_git_cmd", lambda: ["git"])
     monkeypatch.setattr("shutil.which", lambda name: "/usr/bin/uv" if name == "uv" else None)
     monkeypatch.setattr(hermes_main, "_is_termux_env", lambda env=None: False)
     monkeypatch.setattr(hermes_main, "_load_installable_optional_extras", lambda group="all": ["matrix", "mcp"])
@@ -449,6 +450,7 @@ def test_cmd_update_retries_optional_extras_individually_when_all_fails(monkeypa
 def test_cmd_update_succeeds_with_extras(monkeypatch, tmp_path):
     """When .[all] succeeds, no fallback should be attempted."""
     _setup_update_mocks(monkeypatch, tmp_path)
+    monkeypatch.setattr(hermes_main, "_resolve_git_cmd", lambda: ["git"])
     monkeypatch.setattr("shutil.which", lambda name: "/usr/bin/uv" if name == "uv" else None)
     monkeypatch.setattr(hermes_main, "_is_termux_env", lambda env=None: False)
 
@@ -571,6 +573,7 @@ def _make_update_side_effect(
 def test_cmd_update_falls_back_to_reset_when_ff_only_fails(monkeypatch, tmp_path, capsys):
     """When --ff-only fails (diverged history), update resets to origin/{branch}."""
     _setup_update_mocks(monkeypatch, tmp_path)
+    monkeypatch.setattr(hermes_main, "_resolve_git_cmd", lambda: ["git"])
     monkeypatch.setattr("shutil.which", lambda name: "/usr/bin/uv" if name == "uv" else None)
 
     side_effect, recorded = _make_update_side_effect(ff_only_fails=True)
@@ -692,6 +695,7 @@ def test_cmd_update_fetch_is_scoped_to_target_branch(monkeypatch, tmp_path):
     pulls every ref, and this repo has thousands of auto-generated branches, so
     an unscoped fetch can stall for minutes on a non-single-branch checkout."""
     _setup_update_mocks(monkeypatch, tmp_path)
+    monkeypatch.setattr(hermes_main, "_resolve_git_cmd", lambda: ["git"])
     monkeypatch.setattr("shutil.which", lambda name: "/usr/bin/uv" if name == "uv" else None)
 
     side_effect, recorded = _make_update_side_effect()

@@ -232,7 +232,6 @@ def format_pending_summarized(
         "⚠️ **Approval needed**\n"
         f"Reason: {reason}\n"
         f"Advisory interpretation: {clean_summary}\n\n"
-        f"Full command:\n{_md_code_block(redacted)}\n\n"
         f"{reactions}"
     )
 
@@ -267,11 +266,11 @@ def format_terminal_compact(
 
     text = (
         f"**{label}**{actor_bit} · {reason}\n"
-        f"`{preview}`\n\n"
-        f"Full command:\n{_md_code_block(redacted)}"
+        f"`{preview}`"
     )
     if summary:
         text += f"\n\nAdvisory interpretation: {sanitize_summary(summary)}"
+    text += "\n\n(Full command in rich clients / <details>)"
 
     details_inner = _html_pre(redacted)
     if summary:

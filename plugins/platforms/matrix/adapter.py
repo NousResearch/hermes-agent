@@ -3479,6 +3479,28 @@ class MatrixAdapter(BasePlatformAdapter):
                         await self._finalize_matrix_approval_prompt(
                             room_id, reacts_to, prompt, choice=choice, actor=sender,
                         )
+                    else:
+                        # Common race: approvals.timeout (waiter) is shorter than
+                        # MATRIX_APPROVAL_TIMEOUT_SECONDS (prompt UI). User reacts
+                        # after the agent already timed out → queue empty.
+                        prompt.resolved = True
+                        self._approval_prompts_by_event.pop(reacts_to, None)
+                        self._approval_prompt_by_session.pop(prompt.session_key, None)
+                        await self._redact_bot_approval_reactions(room_id, prompt)
+                        logger.warning(
+                            "Matrix approval reaction %s from %s on %s had no "
+                            "pending waiter (session=%s, choice=%s) — likely "
+                            "approvals.timeout already elapsed",
+                            key, sender, reacts_to, prompt.session_key, choice,
+                        )
+                        await self._send_invalid_reaction_feedback(
+                            room_id,
+                            reacts_to,
+                            "That approval wait already timed out on the agent "
+                            "side, so the reaction could not be applied. Please "
+                            "re-run the command and approve again (or raise "
+                            "`approvals.timeout` in config).",
+                        )
                 except Exception as exc:
                     logger.error("Failed to resolve gateway approval from Matrix reaction: %s", exc)
                 return

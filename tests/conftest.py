@@ -905,3 +905,22 @@ def _live_system_guard(request, monkeypatch):
         pass
 
     yield
+
+
+@pytest.fixture(autouse=True)
+def _moa_caches_isolated():
+    """Clear module-level MoA cold-start caches before each test.
+
+    ``agent.moa_loop`` caches the resolved preset and each slot's provider
+    runtime process-wide (#66793). Without this, a test that resolves a slot
+    (e.g. via a mocked ``resolve_runtime_provider``) leaves the resolved
+    value in the cache, and a later test exercising the same (provider, model)
+    would read the stale entry instead of its own mock — a cross-test
+    ordering trap that bites when running a single MoA test file directly.
+    """
+    import agent.moa_loop as moa
+    moa._preset_cache.clear()
+    moa._runtime_cache.clear()
+    yield
+    moa._preset_cache.clear()
+    moa._runtime_cache.clear()

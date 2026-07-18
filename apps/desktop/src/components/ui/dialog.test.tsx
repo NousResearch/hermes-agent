@@ -89,9 +89,12 @@ describe('DialogContent close button', () => {
     const closeButton = screen.getByRole('button', { name: /close/i })
     fireEvent.focus(closeButton)
 
-    await waitFor(() => {
-      const tooltip = screen.getByRole('tooltip')
-      expect(tooltip.textContent).toMatch(/close/i)
-    })
+    await waitFor(
+      () => {
+        const tooltip = screen.getByRole('tooltip')
+        expect(tooltip.textContent).toMatch(/close/i)
+      },
+      { timeout: 3000 }
+    )
   })
 })

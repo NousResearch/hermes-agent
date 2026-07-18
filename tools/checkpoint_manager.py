@@ -48,6 +48,7 @@ reclaim object storage.  A size-cap pass drops the oldest checkpoints per
 project until total store size is under ``max_total_size_mb``.
 """
 
+import fnmatch
 import hashlib
 import json
 import logging
@@ -546,14 +547,42 @@ def _list_projects(store: Path) -> List[Dict]:
 
 
 def _dir_file_count(path: str) -> int:
-    """Quick file count estimate (stops early if over _MAX_FILES)."""
+    """Count checkpoint candidates, pruning the default excludes."""
     count = 0
     try:
-        for _ in Path(path).rglob("*"):
-            count += 1
-            if count > _MAX_FILES:
-                return count
-    except (PermissionError, OSError):
+        root = _normalize_path(path)
+        if not root.is_dir():
+            return 0
+
+        directory_patterns = tuple(
+            pattern[:-1] for pattern in DEFAULT_EXCLUDES if pattern.endswith("/")
+        )
+        file_patterns = tuple(
+            pattern for pattern in DEFAULT_EXCLUDES if not pattern.endswith("/")
+        )
+
+        for current_dir, directory_names, file_names in os.walk(root):
+            retained_directories = []
+            for name in directory_names:
+                candidate = Path(current_dir) / name
+                if candidate.is_symlink():
+                    if not any(fnmatch.fnmatchcase(name, p) for p in file_patterns):
+                        count += 1
+                elif not any(
+                    fnmatch.fnmatchcase(name, p) for p in directory_patterns
+                ):
+                    retained_directories.append(name)
+                if count > _MAX_FILES:
+                    return count
+            directory_names[:] = retained_directories
+
+            for name in file_names:
+                if any(fnmatch.fnmatchcase(name, p) for p in file_patterns):
+                    continue
+                count += 1
+                if count > _MAX_FILES:
+                    return count
+    except OSError:
         pass
     return count
 

@@ -826,13 +826,13 @@ class TestFirecrawlEnvResolution:
 
         fake_key = "fc-test-key-from-dotenv"
         with patch(
-            "hermes_cli.config.get_env_value",
+            "hermes_cli.config.get_env_value_prefer_dotenv",
             side_effect=lambda k: fake_key if k == "FIRECRAWL_API_KEY" else None,
         ):
             from plugins.web.firecrawl.provider import _get_direct_firecrawl_config
 
             result = _get_direct_firecrawl_config()
-            assert result is not None, "get_env_value fallback should find the key"
+            assert result is not None, "prefer-dotenv resolver should find the key"
             kwargs, _cache_key = result
             assert kwargs["api_key"] == fake_key
 
@@ -843,7 +843,7 @@ class TestFirecrawlEnvResolution:
 
         fake_url = "https://firecrawl.internal.example.com"
         with patch(
-            "hermes_cli.config.get_env_value",
+            "hermes_cli.config.get_env_value_prefer_dotenv",
             side_effect=lambda k: fake_url if k == "FIRECRAWL_API_URL" else None,
         ):
             from plugins.web.firecrawl.provider import _get_direct_firecrawl_config
@@ -889,15 +889,30 @@ class TestSiblingProvidersEnvResolution:
                 "config-aware env layer (get_env_value_prefer_dotenv)"
             )
 
-    def test_get_provider_env_falls_back_to_os_environ(self, monkeypatch):
-        """When the config layer has no value, process env still wins."""
+    def test_get_provider_env_falls_back_to_os_environ_when_helper_unavailable(
+        self, monkeypatch
+    ):
+        """When the prefer-dotenv helper is unavailable (old install), process
+        env still wins via the legacy fallback path."""
+        import builtins
+
         from agent.web_search_provider import get_provider_env
 
         monkeypatch.setenv("WSP_TEST_FALLBACK_KEY", "  from-process-env  ")
-        with patch(
-            "hermes_cli.config.get_env_value_prefer_dotenv",
-            return_value=None,
-        ), patch("hermes_cli.config.get_env_value", return_value=None):
+
+        real_import = builtins.__import__
+
+        def _no_prefer_dotenv(name, *args, **kwargs):
+            module = real_import(name, *args, **kwargs)
+            if name == "hermes_cli.config" and args and args[3] and (
+                "get_env_value_prefer_dotenv" in args[3]
+            ):
+                raise ImportError("prefer-dotenv unavailable")
+            return module
+
+        with patch("builtins.__import__", side_effect=_no_prefer_dotenv), patch(
+            "hermes_cli.config.get_env_value", return_value=None
+        ):
             assert get_provider_env("WSP_TEST_FALLBACK_KEY") == "from-process-env"
 
     def test_get_provider_env_prefers_dotenv_over_stale_os_environ(self, monkeypatch):
@@ -920,26 +935,30 @@ class TestSiblingProvidersEnvResolution:
             prefer.assert_called_once_with("TAVILY_API_KEY")
             process_first.assert_not_called()
 
-    def test_get_provider_env_falls_back_when_prefer_dotenv_empty(self, monkeypatch):
-        """If prefer-dotenv finds nothing, process-env lookup still works."""
+    def test_get_provider_env_empty_prefer_dotenv_is_authoritative(self, monkeypatch):
+        """When the prefer-dotenv helper is available and returns empty, that is
+        authoritative: in an active profile scope an absent key is intentional,
+        so we must NOT re-resolve through the environment-first path and pick a
+        stale process-global key (hermes-sweeper review on #65460)."""
         from agent.web_search_provider import get_provider_env
 
-        monkeypatch.delenv("WSP_TEST_PROCESS_ONLY", raising=False)
+        monkeypatch.setenv("WSP_TEST_PROCESS_ONLY", "stale-process-global")
         with patch(
             "hermes_cli.config.get_env_value_prefer_dotenv",
             return_value=None,
         ), patch(
             "hermes_cli.config.get_env_value",
-            return_value="  process-only-key  ",
-        ):
-            assert get_provider_env("WSP_TEST_PROCESS_ONLY") == "process-only-key"
+            return_value="stale-process-global",
+        ) as process_first:
+            assert get_provider_env("WSP_TEST_PROCESS_ONLY") == ""
+            process_first.assert_not_called()
 
     def test_get_provider_env_unset_returns_empty(self, monkeypatch):
         monkeypatch.delenv("WSP_TEST_UNSET_KEY", raising=False)
         with patch(
             "hermes_cli.config.get_env_value_prefer_dotenv",
             return_value=None,
-        ), patch("hermes_cli.config.get_env_value", return_value=None):
+        ):
             from agent.web_search_provider import get_provider_env
 
             assert get_provider_env("WSP_TEST_UNSET_KEY") == ""

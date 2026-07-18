@@ -74,20 +74,29 @@ def get_provider_env(name: str) -> str:
 
     Returns the stripped value, or ``""`` when unset.
     """
-    val: Optional[str] = None
+    # Preferred path: ~/.hermes/.env wins over stale/empty process env.
+    # An empty result here is authoritative — in an active profile scope an
+    # absent key is intentional (secret_scope), so we must NOT re-resolve it
+    # through the environment-first helpers, which could select an unrelated
+    # process-global key. Fallbacks apply only when the prefer-dotenv helper
+    # is genuinely unavailable (older installs / early import contexts).
     try:
         from hermes_cli.config import get_env_value_prefer_dotenv
-
-        val = get_env_value_prefer_dotenv(name)
     except Exception:  # noqa: BLE001 — prefer-dotenv optional on older trees
-        val = None
-    if not val:
-        try:
-            from hermes_cli.config import get_env_value
+        get_env_value_prefer_dotenv = None  # type: ignore[assignment]
 
-            val = get_env_value(name)
-        except Exception:  # noqa: BLE001 — config layer optional here
-            val = None
+    if get_env_value_prefer_dotenv is not None:
+        return (get_env_value_prefer_dotenv(name) or "").strip()
+
+    # Helper unavailable: fall back to the legacy env-first resolver, then a
+    # bare os.getenv (original gateway / delegate / subprocess path, #40190).
+    val: Optional[str] = None
+    try:
+        from hermes_cli.config import get_env_value
+
+        val = get_env_value(name)
+    except Exception:  # noqa: BLE001 — config layer optional here
+        val = None
     if not val:
         val = os.getenv(name, "")
     return (val or "").strip()

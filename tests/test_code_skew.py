@@ -5,6 +5,9 @@ crash; these prove the guard that turns it into a clear "restart the gateway"
 message before a model switch can hit it.
 """
 
+import subprocess
+from pathlib import Path
+
 import pytest
 
 from gateway import code_skew
@@ -77,3 +80,30 @@ class TestModelSwitchSkewGuard:
         assert "abc1234567" in msg
         assert "def4567890" in msg
         assert "hermes gateway restart" in msg
+
+
+class TestBootstrapBytecodePurge:
+    def test_purges_stale_gateway_bytecode_before_gateway_run_import(
+        self, monkeypatch, tmp_path
+    ):
+        from hermes_cli import gateway_bootstrap
+
+        project_root = tmp_path / "repo"
+        pycache = project_root / "gateway" / "__pycache__"
+        pycache.mkdir(parents=True)
+        stale_pyc = pycache / "run.cpython-311.pyc"
+        stale_pyc.write_bytes(b"stale")
+        hermes_home = tmp_path / "home"
+        hermes_home.mkdir()
+        (hermes_home / ".gateway_boot_fingerprint").write_text("git:HEAD:oldsha")
+
+        monkeypatch.setattr(gateway_bootstrap, "PROJECT_ROOT", project_root)
+        monkeypatch.setattr(gateway_bootstrap, "get_hermes_home", lambda: hermes_home)
+        monkeypatch.setattr(
+            gateway_bootstrap.subprocess,
+            "run",
+            lambda *args, **kwargs: subprocess.CompletedProcess(args[0], 0, "newsha\n", ""),
+        )
+
+        assert gateway_bootstrap.purge_stale_gateway_pycache_before_import() is True
+        assert not stale_pyc.exists()

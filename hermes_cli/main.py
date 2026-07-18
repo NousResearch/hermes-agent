@@ -9949,15 +9949,6 @@ def _cmd_update_impl(args, gateway_mode: bool):
     if sys.platform == "win32":
         git_cmd = ["git", "-c", "windows.appendAtomically=false"]
 
-    # Discard npm lockfile churn before any stash/branch logic. npm rewrites
-    # tracked package-lock.json files non-deterministically at install/build
-    # time (platform-specific optional deps, ideallyInert annotations, etc.),
-    # which is never an intentional edit on a managed install but leaves the
-    # tree dirty — forcing an autostash on every update and making branch
-    # switches fragile. Restoring them first lets the common case (only
-    # lockfile churn) update with a clean tree.
-    _discard_lockfile_churn(git_cmd, PROJECT_ROOT)
-
     # Detect if we're updating from a fork (before any branch logic)
     origin_url = _get_origin_url(git_cmd, PROJECT_ROOT)
     is_fork = _is_fork(origin_url)
@@ -10087,6 +10078,12 @@ def _cmd_update_impl(args, gateway_mode: bool):
                 _resume_windows_gateways_after_update(_windows_gateway_resume)
                 # Exit 3 is the staged Desktop updater's terminal policy-rejection code.
                 sys.exit(3)
+
+        # Discard npm lockfile churn only after the protected-commit proof.
+        # npm rewrites tracked package-lock.json files non-deterministically at
+        # install/build time, but a blocked tailored deployment must not mutate
+        # even this generated file before reporting the policy rejection.
+        _discard_lockfile_churn(git_cmd, PROJECT_ROOT)
 
         # If user is on a different branch than the update target, switch
         # to the target. When the target is "main" this is the historical

@@ -402,6 +402,12 @@ def test_cmd_update_protects_local_commits_before_checkout_or_pull(
     """A tailored deployment must fail closed before update can reset its HEAD."""
     _setup_update_mocks(monkeypatch, tmp_path)
     calls = []
+    discarded_lockfiles = []
+    monkeypatch.setattr(
+        hermes_main,
+        "_discard_lockfile_churn",
+        lambda *args: discarded_lockfiles.append(args),
+    )
 
     def fake_run(cmd, **kwargs):
         calls.append(cmd)
@@ -429,6 +435,7 @@ def test_cmd_update_protects_local_commits_before_checkout_or_pull(
     assert not any(" checkout " in f" {' '.join(cmd)} " for cmd in calls)
     assert not any(" pull " in f" {' '.join(cmd)} " for cmd in calls)
     assert not any(" reset " in f" {' '.join(cmd)} " for cmd in calls)
+    assert discarded_lockfiles == []
 
 
 @pytest.mark.parametrize(

@@ -45,6 +45,7 @@ import subprocess
 from pathlib import Path
 from typing import Optional, Dict, Any, List
 
+from hermes_cli._subprocess_compat import IS_WINDOWS, windows_hide_flags
 from utils import env_var_enabled
 
 logger = logging.getLogger(__name__)
@@ -697,6 +698,7 @@ def _sudo_nopasswd_works() -> bool:
             stderr=subprocess.DEVNULL,
             timeout=3,
             check=False,
+            **({"creationflags": windows_hide_flags()} if IS_WINDOWS else {}),
         )
         return probe.returncode == 0
     except Exception:
@@ -2923,13 +2925,19 @@ def check_terminal_requirements() -> bool:
             if not docker:
                 logger.error("Docker executable not found in PATH or common install locations")
                 return False
-            result = subprocess.run([docker, "version"], capture_output=True, timeout=5, stdin=subprocess.DEVNULL)
+            result = subprocess.run(
+                [docker, "version"], capture_output=True, timeout=5, stdin=subprocess.DEVNULL,
+                **({"creationflags": windows_hide_flags()} if IS_WINDOWS else {}),
+            )
             return result.returncode == 0
 
         elif env_type == "singularity":
             executable = shutil.which("apptainer") or shutil.which("singularity")
             if executable:
-                result = subprocess.run([executable, "--version"], capture_output=True, timeout=5, stdin=subprocess.DEVNULL)
+                result = subprocess.run(
+                    [executable, "--version"], capture_output=True, timeout=5, stdin=subprocess.DEVNULL,
+                    **({"creationflags": windows_hide_flags()} if IS_WINDOWS else {}),
+                )
                 return result.returncode == 0
             return False
 

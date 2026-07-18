@@ -185,3 +185,89 @@ def test_modal_backend_managed_mode_without_feature_flag_logs_clear_error(monkey
         "Nous Tool Gateway access is not currently available" in record.getMessage()
         for record in caplog.records
     )
+
+
+# ── Windows console-window suppression on backend probes (#62734) ──────────
+
+
+class _RecordingRun:
+    """Stand-in for subprocess.run that records kwargs and reports success."""
+
+    def __init__(self):
+        self.calls = []
+
+    def __call__(self, *args, **kwargs):
+        self.calls.append((args, kwargs))
+
+        class _Result:
+            returncode = 0
+
+        return _Result()
+
+
+def test_docker_probe_hides_console_window_on_windows(monkeypatch):
+    """The docker version probe must pass CREATE_NO_WINDOW flags on Windows."""
+    _clear_terminal_env(monkeypatch)
+    monkeypatch.setenv("TERMINAL_ENV", "docker")
+    import tools.environments.docker as _docker_env
+    monkeypatch.setattr(_docker_env, "find_docker", lambda: "docker")
+    monkeypatch.setattr(terminal_tool_module, "IS_WINDOWS", True)
+    recorder = _RecordingRun()
+    monkeypatch.setattr(terminal_tool_module.subprocess, "run", recorder)
+
+    ok = terminal_tool_module.check_terminal_requirements()
+
+    assert ok is True
+    assert recorder.calls, "docker probe never ran"
+    _, kwargs = recorder.calls[-1]
+    assert "creationflags" in kwargs, "docker probe must hide its console window on Windows"
+
+
+def test_singularity_probe_hides_console_window_on_windows(monkeypatch):
+    """The apptainer/singularity version probe must pass CREATE_NO_WINDOW on Windows."""
+    _clear_terminal_env(monkeypatch)
+    monkeypatch.setenv("TERMINAL_ENV", "singularity")
+    monkeypatch.setattr(terminal_tool_module.shutil, "which", lambda name: "apptainer")
+    monkeypatch.setattr(terminal_tool_module, "IS_WINDOWS", True)
+    recorder = _RecordingRun()
+    monkeypatch.setattr(terminal_tool_module.subprocess, "run", recorder)
+
+    ok = terminal_tool_module.check_terminal_requirements()
+
+    assert ok is True
+    assert recorder.calls, "singularity probe never ran"
+    _, kwargs = recorder.calls[-1]
+    assert "creationflags" in kwargs, "singularity probe must hide its console window on Windows"
+
+
+def test_backend_probes_pass_no_creationflags_on_posix(monkeypatch):
+    """On POSIX the probes must not grow a creationflags kwarg (no-damage guarantee)."""
+    _clear_terminal_env(monkeypatch)
+    monkeypatch.setenv("TERMINAL_ENV", "docker")
+    import tools.environments.docker as _docker_env
+    monkeypatch.setattr(_docker_env, "find_docker", lambda: "docker")
+    monkeypatch.setattr(terminal_tool_module, "IS_WINDOWS", False)
+    recorder = _RecordingRun()
+    monkeypatch.setattr(terminal_tool_module.subprocess, "run", recorder)
+
+    ok = terminal_tool_module.check_terminal_requirements()
+
+    assert ok is True
+    _, kwargs = recorder.calls[-1]
+    assert "creationflags" not in kwargs
+
+
+def test_sudo_probe_hides_console_window_on_windows(monkeypatch):
+    """Same class, same file: the sudo -n probe (Win11 ships sudo.exe)."""
+    _clear_terminal_env(monkeypatch)
+    monkeypatch.setenv("TERMINAL_ENV", "local")
+    monkeypatch.setattr(terminal_tool_module, "IS_WINDOWS", True)
+    recorder = _RecordingRun()
+    monkeypatch.setattr(terminal_tool_module.subprocess, "run", recorder)
+
+    result = terminal_tool_module._sudo_nopasswd_works()
+
+    assert result is True
+    assert recorder.calls, "sudo probe never ran"
+    _, kwargs = recorder.calls[-1]
+    assert "creationflags" in kwargs, "sudo probe must hide its console window on Windows"

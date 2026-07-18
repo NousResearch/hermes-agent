@@ -71,7 +71,7 @@ export function activeGateway(): HermesGateway | null {
     return primaryGateway
   }
 
-  return secondaries.get(activeKey)?.gateway ?? primaryGateway
+  return secondaries.get(activeKey)?.gateway ?? null
 }
 
 // Mirror a backend's connection state into the global composer state, but only

@@ -1966,3 +1966,214 @@ class TestBedrockIamStreamingFallback:
 
         client.converse.assert_not_called()
         assert getattr(agent, "_disable_streaming", False) is False
+
+
+class _BlockingEventStream:
+    """Mock boto3 ``converse_stream()`` response whose event iterator blocks
+    forever — simulates a provider that opens the stream then stops yielding
+    events. The worker thread sits inside ``for event in event_stream`` exactly
+    as a wedged Bedrock stream would, giving the liveness watchdog something to
+    trip on."""
+
+    def __init__(self, release):
+        self._release = release
+
+    def get(self, key, default=None):
+        if key == "stream":
+            return self
+        return default
+
+    def __iter__(self):
+        return self
+
+    def __next__(self):
+        # Never yields — blocks until the test releases it (teardown) so the
+        # daemon worker can exit instead of leaking a truly-hung thread.
+        self._release.wait(timeout=30)
+        raise StopIteration
+
+
+def test_on_event_fires_per_bedrock_event():
+    """FIX 1: on_event fires once for EVERY yielded Bedrock event — text,
+    tool-input delta, messageStop, and metadata alike — providing wire-level
+    liveness (not just text deltas)."""
+    from agent.bedrock_adapter import stream_converse_with_callbacks
+
+    events = [
+        {"contentBlockDelta": {"delta": {"text": "a"}}},
+        {"contentBlockStart": {"start": {"toolUse": {"toolUseId": "t1", "name": "x"}}}},
+        {"contentBlockDelta": {"delta": {"toolUse": {"input": "{}"}}}},
+        {"contentBlockStop": {}},
+        {"messageStop": {"stopReason": "end_turn"}},
+        {"metadata": {"usage": {"inputTokens": 1, "outputTokens": 1}}},
+    ]
+    calls = {"n": 0}
+
+    stream_converse_with_callbacks(
+        {"stream": iter(events)},
+        on_event=lambda: calls.__setitem__("n", calls["n"] + 1),
+    )
+
+    assert calls["n"] == len(events)
+
+
+def test_on_event_exception_is_swallowed():
+    """FIX 1: a raising on_event callback must never abort the stream."""
+    from agent.bedrock_adapter import stream_converse_with_callbacks
+
+    events = [{"messageStop": {"stopReason": "end_turn"}}]
+
+    def _boom():
+        raise ValueError("liveness hook blew up")
+
+    resp = stream_converse_with_callbacks({"stream": iter(events)}, on_event=_boom)
+    assert resp is not None
+    assert resp.choices[0].finish_reason == "stop"
+
+
+class TestBedrockStreamLivenessWatchdog:
+    """FIX 1: Bedrock streaming participates in the #58962 cross-turn stale
+    breaker and no longer hangs when the stream stops yielding events."""
+
+    def _make_bedrock_agent(self):
+        from run_agent import AIAgent
+
+        agent = AIAgent(
+            api_key="test-key",
+            base_url="https://openrouter.ai/api/v1",
+            model="anthropic.claude-3-sonnet-20240229-v1:0",
+            quiet_mode=True,
+            skip_context_files=True,
+            skip_memory=True,
+        )
+        agent.api_mode = "bedrock_converse"
+        agent._interrupt_requested = False
+        return agent
+
+    def test_stalled_stream_bumps_streak_and_aborts(self, monkeypatch):
+        """A Bedrock stream that opens then stops yielding events trips the
+        watchdog: it bumps the cross-turn stale streak and raises TimeoutError
+        instead of hanging forever."""
+        pytest.importorskip("botocore", reason="botocore required for Bedrock tests")
+        import threading as _t
+
+        # Tiny stale timeout so the watchdog trips quickly; give-up threshold
+        # kept above 1 so a single call raises TimeoutError (not the breaker).
+        monkeypatch.setenv("HERMES_STREAM_STALE_TIMEOUT", "0.5")
+        monkeypatch.setenv("HERMES_STREAM_STALE_GIVEUP", "5")
+
+        agent = self._make_bedrock_agent()
+        agent._consecutive_stale_streams = 0
+        release = _t.Event()
+
+        client = MagicMock()
+        client.converse_stream.return_value = _BlockingEventStream(release)
+
+        try:
+            with patch(
+                "agent.bedrock_adapter._get_bedrock_runtime_client",
+                return_value=client,
+            ):
+                with pytest.raises(TimeoutError):
+                    agent._interruptible_streaming_api_call(
+                        {"modelId": agent.model, "messages": []}
+                    )
+        finally:
+            release.set()
+
+        # Watchdog counted exactly one stale kill in the cross-turn breaker.
+        assert agent._consecutive_stale_streams == 1
+
+    def test_pre_elevated_streak_aborts_before_streaming(self, monkeypatch):
+        """A streak already past the give-up threshold aborts at entry with
+        RuntimeError — Bedrock never even opens a stream (cross-turn breaker)."""
+        pytest.importorskip("botocore", reason="botocore required for Bedrock tests")
+
+        monkeypatch.setenv("HERMES_STREAM_STALE_GIVEUP", "5")
+
+        agent = self._make_bedrock_agent()
+        agent._consecutive_stale_streams = 5
+
+        client = MagicMock()
+        with patch(
+            "agent.bedrock_adapter._get_bedrock_runtime_client",
+            return_value=client,
+        ):
+            with pytest.raises(RuntimeError, match="unresponsive"):
+                agent._interruptible_streaming_api_call(
+                    {"modelId": agent.model, "messages": []}
+                )
+
+        client.converse_stream.assert_not_called()
+
+    def test_successful_stream_resets_streak(self, monkeypatch):
+        """A Bedrock stream that completes normally clears any prior stale
+        streak so a recovered provider doesn't carry it into later turns."""
+        pytest.importorskip("botocore", reason="botocore required for Bedrock tests")
+
+        monkeypatch.setenv("HERMES_STREAM_STALE_TIMEOUT", "60")
+
+        agent = self._make_bedrock_agent()
+        agent._consecutive_stale_streams = 3  # simulate a prior wedged streak
+
+        events = [
+            {"contentBlockDelta": {"delta": {"text": "hi"}}},
+            {"messageStop": {"stopReason": "end_turn"}},
+            {"metadata": {"usage": {"inputTokens": 1, "outputTokens": 1}}},
+        ]
+        client = MagicMock()
+        client.converse_stream.return_value = {"stream": iter(events)}
+
+        with patch(
+            "agent.bedrock_adapter._get_bedrock_runtime_client",
+            return_value=client,
+        ):
+            response = agent._interruptible_streaming_api_call(
+                {"modelId": agent.model, "messages": []}
+            )
+
+        assert response.choices[0].message.content == "hi"
+        assert agent._consecutive_stale_streams == 0
+
+
+class TestBedrockReasoningStaleFloor:
+    """The Bedrock inference-profile id -> reasoning stale-timeout floor
+    normalizer must match floor-table keys regardless of whether the model
+    is keyed with a dashed version (``claude-opus-4``) or a dotted version
+    (``claude-sonnet-4.5``). Bedrock always dashes the version, so the
+    normalizer has to try the alternate separator form."""
+
+    @pytest.mark.parametrize(
+        "model_id, expected",
+        [
+            # opus is keyed dashed/base (``claude-opus-4`` -> 240) and
+            # matches the Bedrock dashed id unchanged.
+            ("us.anthropic.claude-opus-4-6-v1:0", 240.0),
+            # sonnet is keyed DOTTED (``claude-sonnet-4.5`` /
+            # ``claude-sonnet-4.6`` -> 180). The Bedrock dashed id must
+            # now resolve via the alternate version-separator form.
+            ("us.anthropic.claude-sonnet-4-5-v1:0", 180.0),
+            ("us.anthropic.claude-sonnet-4-6-v1:0", 180.0),
+            # region prefix variations still strip correctly.
+            ("eu.anthropic.claude-sonnet-4-5-v1:0", 180.0),
+        ],
+    )
+    def test_bedrock_reasoning_models_resolve_floor(self, model_id, expected):
+        from agent.chat_completion_helpers import _bedrock_reasoning_stale_floor
+
+        assert _bedrock_reasoning_stale_floor(model_id) == expected
+
+    @pytest.mark.parametrize(
+        "model_id",
+        [
+            # Non-reasoning Bedrock model -> no floor.
+            "us.anthropic.claude-3-5-haiku-20241022-v1:0",
+            "us.amazon.nova-lite-v1:0",
+            "",
+            None,
+        ],
+    )
+    def test_non_reasoning_bedrock_models_return_none(self, model_id):
+        from agent.chat_completion_helpers import _bedrock_reasoning_stale_floor
+
+        assert _bedrock_reasoning_stale_floor(model_id) is None

@@ -124,6 +124,9 @@ gateway:
     label_normal:          "NORMAL"
     status_fast:           "fast"
     status_normal:         "normal"
+    picker_title:          "⚡ **Priority Processing**\\n\\nJelenlegi mód: `{mode}`\\n\\nVálassz egy opciót:"
+    choice_fast:           "fast — Priority Processing bekapcsolva"
+    choice_normal:         "normal — normál feldolgozás"
 
   footer:
     status:                "📎 Futási idejű lábléc: **{state}**\nMezők: `{fields}`\nPlatform: `{platform}`"
@@ -194,6 +197,11 @@ gateway:
     reset_global_unsupported:  "⚠️ A `/reasoning reset --global` nem támogatott. Használd a `/reasoning <level> --global` parancsot a globális alapérték módosításához."
     reset_done:                "🧠 ✓ A munkamenet gondolkodási felülbírálása törölve; visszaállás a globális konfigurációra."
     unknown_arg:               "⚠️ Ismeretlen argumentum: `{arg}`\n\n**Érvényes szintek:** none, minimal, low, medium, high, xhigh, max, ultra\n**Megjelenítés:** show, hide\n**Megőrzés:** add hozzá a `--global` opciót a munkameneten túli mentéshez"
+    picker_title:              "🧠 **Gondolkodási beállítások**\\n\\n**Erőfeszítés:** `{level}`\\n**Hatókör:** {scope}\\n**Megjelenítés:** {display}\\n\\nVálassz egy opciót:"
+    choice_none:               "none — gondolkodás kikapcsolása"
+    choice_reset:              "reset — munkameneti felülbírálás törlése"
+    choice_show:               "gondolkodás megjelenítése a válaszokban"
+    choice_hide:               "gondolkodás elrejtése a válaszokból"
     set_global:                "🧠 ✓ Gondolkodási erőfeszítés beállítva: `{effort}` (mentve a konfigurációba)\n_(a következő üzenettől lép életbe)_"
     set_global_save_failed:    "🧠 ✓ Gondolkodási erőfeszítés beállítva: `{effort}` (csak ebben a munkamenetben — a konfiguráció mentése sikertelen)\n_(a következő üzenettől lép életbe)_"
     set_session:               "🧠 ✓ Gondolkodási erőfeszítés beállítva: `{effort}` (csak ebben a munkamenetben — add hozzá a `--global` opciót a megőrzéshez)\n_(a következő üzenettől lép életbe)_"

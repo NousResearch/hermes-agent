@@ -78,6 +78,25 @@ logger = logging.getLogger(__name__)
 # to treat it as cancellation metadata rather than assistant prose.
 INTERRUPT_WAITING_FOR_MODEL_PREFIX = "Operation interrupted: waiting for model response ("
 
+# Modules that indicate a deterministic local processing error when they
+# appear in an exception traceback WITHOUT any API-call module. Used by the
+# outer-loop error classifier to avoid retrying bugs that will fail
+# identically every time (e.g. TypeError from passing list content into a
+# regex helper).  IMPORTANT: do NOT include "conversation_loop" or
+# "run_agent" here — those are the container modules for the try/except
+# itself, so every exception passes through them, which would make
+# _hit_local always True and misclassify transient API/network errors as
+# non-retryable local bugs. (#66267)
+_LOCAL_PROCESSING_MODULES = frozenset({
+    "agent_runtime_helpers",
+    "message_content",
+    "message_sanitization",
+    "chat_completion_helpers",  # only local when NOT also an API-call module
+})
+_API_CALL_MODULES = frozenset({
+    "chat_completion_helpers",
+})
+
 
 def _image_error_max_dimension(error: Exception) -> Optional[int]:
     """Extract a provider-reported image dimension ceiling, if present."""
@@ -5597,7 +5616,36 @@ def run_conversation(
                 break
             
         except Exception as e:
-            error_msg = f"Error during OpenAI-compatible API call #{api_call_count}: {str(e)}"
+            # Phase-aware error classification. The huge outer try/except spans
+            # both the actual API request and all local post-processing of the
+            # returned assistant message. Deterministic local bugs (e.g.
+            # passing a multimodal content list into a regex helper after a
+            # vision turn or context compaction) should not be retried: they
+            # will fail identically on every iteration and only burn the
+            # iteration budget. We classify an error as local by inspecting the
+            # traceback: if the exception propagated through any of the known
+            # local post-processing helpers and never entered the interruptible
+            # API-call helpers, it is almost certainly a local processing bug.
+            # (#66267)
+            tb_module_names: set[str] = set()
+            _tb = e.__traceback__
+            while _tb is not None:
+                _fname = os.path.splitext(os.path.basename(_tb.tb_frame.f_code.co_filename))[0]
+                tb_module_names.add(_fname)
+                _tb = _tb.tb_next
+
+            _hit_local = bool(tb_module_names & _LOCAL_PROCESSING_MODULES)
+            _hit_api = bool(tb_module_names & _API_CALL_MODULES)
+
+            _is_local_processing_error = _hit_local and not _hit_api
+
+            if _is_local_processing_error:
+                error_msg = (
+                    f"Error during local message processing after "
+                    f"OpenAI-compatible API call #{api_call_count}: {str(e)}"
+                )
+            else:
+                error_msg = f"Error during OpenAI-compatible API call #{api_call_count}: {str(e)}"
             try:
                 print(f"❌ {error_msg}")
             except (OSError, ValueError):
@@ -5644,10 +5692,19 @@ def run_conversation(
             # message pollutes history, burns tokens, and risks violating
             # role-alternation invariants.
 
-            # If we're near the limit, break to avoid infinite loops
-            if api_call_count >= agent.max_iterations - 1:
-                _turn_exit_reason = f"error_near_max_iterations({error_msg[:80]})"
-                final_response = f"I apologize, but I encountered repeated errors: {error_msg}"
+            # If we're near the limit, break to avoid infinite loops.
+            # Local processing errors are deterministic — stop immediately
+            # rather than retrying until the budget is exhausted.
+            if (
+                _is_local_processing_error
+                or api_call_count >= agent.max_iterations - 1
+            ):
+                if _is_local_processing_error:
+                    _turn_exit_reason = f"local_processing_error({error_msg[:80]})"
+                    final_response = f"I apologize, but I encountered an error while processing the model response: {error_msg}"
+                else:
+                    _turn_exit_reason = f"error_near_max_iterations({error_msg[:80]})"
+                    final_response = f"I apologize, but I encountered repeated errors: {error_msg}"
                 # Append as assistant so the history stays valid for
                 # session resume (avoids consecutive user messages).
                 messages.append({"role": "assistant", "content": final_response})

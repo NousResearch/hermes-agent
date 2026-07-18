@@ -3784,6 +3784,42 @@ class BasePlatformAdapter(ABC):
         cleaned = re.sub(r'\n{3,}', '\n\n', cleaned)
         return cleaned.rstrip()
 
+    # ``[[artifact:/abs/path.html|Optional Title]]`` — a channel-agnostic
+    # publish hint. Browser surfaces (hermes-webui) render the tag themselves
+    # (inline preview + publish affordance); messaging platforms have no
+    # stable-URL concept, so the gateway normalizes the tag down to the bare
+    # file path and the existing deliverable pipeline ships the file as a
+    # native attachment. Optional feature-neutral fallback: no config needed.
+    _ARTIFACT_TAG_RE = re.compile(r'\[\[artifact:([^|\]\n]+)(?:\|[^\]\n]*)?\]\]')
+
+    @classmethod
+    def normalize_artifact_tags(cls, content: str) -> str:
+        """Rewrite [[artifact:path|title]] tags to their bare file path.
+
+        Runs before the media extractors so the path flows into the normal
+        bare-path deliverable detection (which validates isfile() itself).
+        Tags inside fenced code blocks or inline code stay untouched so
+        documentation examples are never mutated (same contract as
+        extract_local_files).
+        """
+        if not content or '[[artifact:' not in content:
+            return content
+        code_spans: list = []
+        for m in re.finditer(r'```[^\n]*\n.*?```', content, re.DOTALL):
+            code_spans.append((m.start(), m.end()))
+        for m in re.finditer(r'`[^`\n]+`', content):
+            code_spans.append((m.start(), m.end()))
+
+        def _in_code(pos: int) -> bool:
+            return any(s <= pos < e for s, e in code_spans)
+
+        def _sub(match: "re.Match") -> str:
+            if _in_code(match.start()):
+                return match.group(0)
+            return match.group(1).strip()
+
+        return cls._ARTIFACT_TAG_RE.sub(_sub, content)
+
     @staticmethod
     def extract_local_files(content: str) -> Tuple[List[str], str]:
         """
@@ -4991,6 +5027,10 @@ class BasePlatformAdapter(ABC):
 
                 # Pre-extract snapshot for the #29346 recovery/invariant below.
                 _response_pre_extract = response
+
+                # [[artifact:...]] tags → bare paths for native delivery on
+                # messaging platforms (browser surfaces render the tag itself).
+                response = self.normalize_artifact_tags(response)
 
                 # Extract MEDIA:<path> tags (from TTS tool) before other processing
                 media_files, response = self.extract_media(response)

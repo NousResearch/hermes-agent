@@ -200,6 +200,7 @@ export function useGatewayEventHandler(deps: GatewayEventDeps) {
         // composer atoms as the fallback for an uncached session) invalidates.
         const knownState = sessionId ? sessionStateByRuntimeIdRef.current.get(sessionId) : undefined
         const modelValueChanged = modelChanged && payload!.model !== (knownState?.model ?? $currentModel.get())
+
         const providerValueChanged =
           providerChanged && payload!.provider !== (knownState?.provider ?? $currentProvider.get())
 

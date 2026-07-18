@@ -246,6 +246,109 @@ class GatewayStreamConsumer:
             meta["notify"] = True
         return meta or None
 
+    @staticmethod
+    def _platform_name(value: Any) -> str:
+        """Normalize adapter/platform enum values for observer hooks."""
+        raw = getattr(value, "value", value)
+        return str(raw or "").lower()
+
+    def _delivery_platform(self) -> str:
+        return self._platform_name(getattr(self.adapter, "platform", ""))
+
+    def _record_gateway_delivery(
+        self,
+        *,
+        operation: str,
+        result: Any = None,
+        error: BaseException | None = None,
+        chat_id: Any = None,
+        message_id: Any = None,
+        content: Any = None,
+        metadata: Any = None,
+        finalize: bool | None = None,
+    ) -> None:
+        """Emit a fail-open observer hook for platform delivery attempts."""
+        try:
+            from hermes_cli.plugins import has_hook, invoke_hook
+
+            if not has_hook("post_gateway_delivery"):
+                return
+            meta = metadata if isinstance(metadata, dict) else {}
+            platform = self._delivery_platform()
+            target_chat_id = str(chat_id or self.chat_id or "")
+            thread_id = str(meta.get("thread_id") or "")
+            delivered_message_id = (
+                message_id
+                or getattr(result, "message_id", None)
+                or meta.get("message_id")
+                or ""
+            )
+            success = bool(getattr(result, "success", False)) if result is not None else False
+            status = "ok" if success and error is None else "error"
+            error_text = str(error) if error is not None else str(getattr(result, "error", "") or "")
+            raw_response = getattr(result, "raw_response", None) if result is not None else None
+            continuation_ids = getattr(result, "continuation_message_ids", ()) if result is not None else ()
+            invoke_hook(
+                "post_gateway_delivery",
+                platform=platform,
+                chat_id=target_chat_id,
+                chat_type=self.cfg.chat_type or "",
+                thread_id=thread_id,
+                source=":".join(x for x in (platform, target_chat_id, thread_id) if x),
+                operation=operation,
+                status=status,
+                success=success,
+                message_id=str(delivered_message_id or ""),
+                error=error_text,
+                content_preview=(str(content or "")[:500] if content is not None else ""),
+                content_chars=len(str(content or "")) if content is not None else 0,
+                metadata=meta,
+                finalize=finalize,
+                raw_response=raw_response,
+                continuation_message_ids=tuple(str(x) for x in (continuation_ids or ())),
+                transport=self.cfg.transport or "edit",
+            )
+        except Exception:
+            logger.debug("post_gateway_delivery hook failed", exc_info=True)
+
+    def _record_delivery_from_kwargs(
+        self,
+        *,
+        operation: str,
+        result: Any = None,
+        error: BaseException | None = None,
+        kwargs: dict[str, Any],
+    ) -> None:
+        finalize_value = kwargs.get("finalize")
+        self._record_gateway_delivery(
+            operation=operation,
+            result=result,
+            error=error,
+            chat_id=kwargs.get("chat_id"),
+            message_id=kwargs.get("message_id"),
+            content=kwargs.get("content"),
+            metadata=kwargs.get("metadata"),
+            finalize=finalize_value if isinstance(finalize_value, bool) else None,
+        )
+
+    async def _send_message(self, *, operation: str = "send", **kwargs):
+        try:
+            result = await self.adapter.send(**kwargs)
+        except Exception as exc:
+            self._record_delivery_from_kwargs(operation=operation, error=exc, kwargs=kwargs)
+            raise
+        self._record_delivery_from_kwargs(operation=operation, result=result, kwargs=kwargs)
+        return result
+
+    async def _send_draft_message(self, **kwargs):
+        try:
+            result = await self.adapter.send_draft(**kwargs)
+        except Exception as exc:
+            self._record_delivery_from_kwargs(operation="send_draft", error=exc, kwargs=kwargs)
+            raise
+        self._record_delivery_from_kwargs(operation="send_draft", result=result, kwargs=kwargs)
+        return result
+
     @property
     def already_sent(self) -> bool:
         """True if at least one message was sent or edited during the run."""
@@ -308,7 +411,13 @@ class GatewayStreamConsumer:
                     kwargs["metadata"] = self.metadata
             except (TypeError, ValueError):
                 pass
-        return await self.adapter.edit_message(**kwargs)
+        try:
+            result = await self.adapter.edit_message(**kwargs)
+        except Exception as exc:
+            self._record_delivery_from_kwargs(operation="edit", error=exc, kwargs=kwargs)
+            raise
+        self._record_delivery_from_kwargs(operation="edit", result=result, kwargs=kwargs)
+        return result
 
     def has_delivered_text(self, text: str) -> bool:
         """Return True if *text* was already delivered as visible chat content."""
@@ -925,7 +1034,7 @@ class GatewayStreamConsumer:
         if not text.strip():
             return reply_to_id
         try:
-            result = await self.adapter.send(
+            result = await self._send_message(
                 chat_id=self.chat_id,
                 content=text,
                 reply_to=reply_to_id,
@@ -1075,7 +1184,7 @@ class GatewayStreamConsumer:
             # Try sending with one retry on flood-control errors.
             result = None
             for attempt in range(2):
-                result = await self.adapter.send(
+                result = await self._send_message(
                     chat_id=self.chat_id,
                     content=chunk,
                     metadata=self._metadata_for_send(final=True),
@@ -1314,7 +1423,7 @@ class GatewayStreamConsumer:
             self._use_draft_streaming = False
             return False
         try:
-            result = await self.adapter.send_draft(
+            result = await self._send_draft_message(
                 chat_id=self.chat_id,
                 draft_id=self._draft_id,
                 content=text,
@@ -1362,7 +1471,7 @@ class GatewayStreamConsumer:
         if not tail.strip():
             return
         try:
-            result = await self.adapter.send(
+            result = await self._send_message(
                 chat_id=self.chat_id,
                 content=tail,
                 metadata=self.metadata,
@@ -1399,7 +1508,7 @@ class GatewayStreamConsumer:
         if not text.strip():
             return False
         try:
-            result = await self.adapter.send(
+            result = await self._send_message(
                 chat_id=self.chat_id,
                 content=text,
                 metadata=self.metadata,
@@ -1538,7 +1647,7 @@ class GatewayStreamConsumer:
         if self._message_id and self._message_id != "__no_edit__":
             stale_ids.add(self._message_id)
         try:
-            result = await self.adapter.send(
+            result = await self._send_message(
                 chat_id=self.chat_id,
                 content=text,
                 metadata=self._metadata_for_send(final=True),
@@ -1919,7 +2028,7 @@ class GatewayStreamConsumer:
             else:
                 # First message — send new, threaded to the original user message
                 # so it lands in the correct topic/thread.
-                result = await self.adapter.send(
+                result = await self._send_message(
                     chat_id=self.chat_id,
                     content=text,
                     reply_to=self._initial_reply_to_id,

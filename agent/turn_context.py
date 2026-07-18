@@ -536,6 +536,11 @@ def build_turn_context(
             model=agent.model,
             platform=getattr(agent, "platform", None) or "",
             sender_id=getattr(agent, "_user_id", None) or "",
+            chat_id=getattr(agent, "_chat_id", None) or "",
+            chat_name=getattr(agent, "_chat_name", None) or "",
+            chat_type=getattr(agent, "_chat_type", None) or "",
+            thread_id=getattr(agent, "_thread_id", None) or "",
+            gateway_session_key=getattr(agent, "_gateway_session_key", None) or "",
         )
         _ctx_parts: list[str] = []
         # Spill oversized per-hook context to disk so a runaway plugin

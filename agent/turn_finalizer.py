@@ -409,6 +409,11 @@ def finalize_turn(
                 conversation_history=list(messages),
                 model=agent.model,
                 platform=getattr(agent, "platform", None) or "",
+                chat_id=getattr(agent, "_chat_id", None) or "",
+                chat_name=getattr(agent, "_chat_name", None) or "",
+                chat_type=getattr(agent, "_chat_type", None) or "",
+                thread_id=getattr(agent, "_thread_id", None) or "",
+                gateway_session_key=getattr(agent, "_gateway_session_key", None) or "",
             )
         except Exception as exc:
             logger.warning("post_llm_call hook failed: %s", exc)
@@ -539,6 +544,11 @@ def finalize_turn(
             interrupted=interrupted,
             model=agent.model,
             platform=getattr(agent, "platform", None) or "",
+            chat_id=getattr(agent, "_chat_id", None) or "",
+            chat_name=getattr(agent, "_chat_name", None) or "",
+            chat_type=getattr(agent, "_chat_type", None) or "",
+            thread_id=getattr(agent, "_thread_id", None) or "",
+            gateway_session_key=getattr(agent, "_gateway_session_key", None) or "",
         )
     except Exception as exc:
         logger.warning("on_session_end hook failed: %s", exc)

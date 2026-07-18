@@ -4161,6 +4161,52 @@ class BasePlatformAdapter(ABC):
             return response.text, int(ttl or 0)
         return response, 0
 
+    def _emit_post_gateway_delivery(
+        self,
+        *,
+        chat_id: str,
+        content: str,
+        reply_to: Optional[str] = None,
+        metadata: Any = None,
+        operation: str = "send",
+        result: Optional["SendResult"] = None,
+        error: Optional[BaseException] = None,
+    ) -> None:
+        """Emit delivery observability for direct adapter sends, fail-open."""
+        try:
+            from hermes_cli.plugins import has_hook, invoke_hook
+
+            if not has_hook("post_gateway_delivery"):
+                return
+            meta = metadata if isinstance(metadata, dict) else {}
+            platform = _platform_name(getattr(self, "platform", getattr(self, "name", "")))
+            target_chat_id = str(chat_id or "")
+            thread_id = str(meta.get("thread_id") or "")
+            success = bool(getattr(result, "success", False)) if result is not None else False
+            error_text = str(error) if error is not None else str(getattr(result, "error", "") or "")
+            invoke_hook(
+                "post_gateway_delivery",
+                platform=platform,
+                chat_id=target_chat_id,
+                chat_type=str(meta.get("chat_type") or ""),
+                thread_id=thread_id,
+                source=":".join(x for x in (platform, target_chat_id, thread_id) if x),
+                operation=operation,
+                status="ok" if success and error is None else "error",
+                success=success,
+                message_id=str(getattr(result, "message_id", "") or ""),
+                error=error_text,
+                content_preview=str(content or "")[:500],
+                content_chars=len(str(content or "")),
+                metadata=meta,
+                reply_to=str(reply_to or ""),
+                raw_response=getattr(result, "raw_response", None) if result is not None else None,
+                continuation_message_ids=tuple(str(x) for x in (getattr(result, "continuation_message_ids", ()) or ())),
+                transport="send_with_retry",
+            )
+        except Exception:
+            logger.debug("post_gateway_delivery hook failed", exc_info=True)
+
     async def _send_with_retry(
         self,
         chat_id: str,
@@ -4184,6 +4230,14 @@ class BasePlatformAdapter(ABC):
             content=content,
             reply_to=reply_to,
             metadata=metadata,
+        )
+        self._emit_post_gateway_delivery(
+            chat_id=chat_id,
+            content=content,
+            reply_to=reply_to,
+            metadata=metadata,
+            operation="send",
+            result=result,
         )
 
         if result.success:
@@ -4219,6 +4273,14 @@ class BasePlatformAdapter(ABC):
                     reply_to=reply_to,
                     metadata=metadata,
                 )
+                self._emit_post_gateway_delivery(
+                    chat_id=chat_id,
+                    content=content,
+                    reply_to=reply_to,
+                    metadata=metadata,
+                    operation="send_retry",
+                    result=result,
+                )
                 if result.success:
                     logger.info("[%s] Send succeeded on retry %d", self.name, attempt)
                     return result
@@ -4235,8 +4297,24 @@ class BasePlatformAdapter(ABC):
                     "Please try again \u2014 your request was processed but the response could not be sent."
                 )
                 try:
-                    await self.send(chat_id=chat_id, content=notice, reply_to=reply_to, metadata=metadata)
+                    notice_result = await self.send(chat_id=chat_id, content=notice, reply_to=reply_to, metadata=metadata)
+                    self._emit_post_gateway_delivery(
+                        chat_id=chat_id,
+                        content=notice,
+                        reply_to=reply_to,
+                        metadata=metadata,
+                        operation="send_failure_notice",
+                        result=notice_result,
+                    )
                 except Exception as notify_err:
+                    self._emit_post_gateway_delivery(
+                        chat_id=chat_id,
+                        content=notice,
+                        reply_to=reply_to,
+                        metadata=metadata,
+                        operation="send_failure_notice",
+                        error=notify_err,
+                    )
                     logger.debug("[%s] Could not send delivery-failure notice: %s", self.name, notify_err)
                 return result
 
@@ -4247,6 +4325,14 @@ class BasePlatformAdapter(ABC):
             content=f"(Response formatting failed, plain text:)\n\n{content[:3500]}",
             reply_to=reply_to,
             metadata=metadata,
+        )
+        self._emit_post_gateway_delivery(
+            chat_id=chat_id,
+            content=f"(Response formatting failed, plain text:)\n\n{content[:3500]}",
+            reply_to=reply_to,
+            metadata=metadata,
+            operation="send_fallback",
+            result=fallback_result,
         )
         if not fallback_result.success:
             logger.error("[%s] Fallback send also failed: %s", self.name, fallback_result.error)

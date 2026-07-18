@@ -507,3 +507,147 @@ class TestRichAwareOverflow:
         assert consumer._message_id == "final1"
         assert consumer._preview_message_ids == set()
         assert consumer.final_response_sent is True
+
+
+class TestGatewayDeliveryHooks:
+    @pytest.mark.asyncio
+    async def test_send_message_emits_post_gateway_delivery_hook(self, monkeypatch):
+        from gateway.platforms.base import SendResult
+
+        calls = []
+        monkeypatch.setattr(
+            "hermes_cli.plugins.has_hook",
+            lambda name: name == "post_gateway_delivery",
+        )
+        monkeypatch.setattr(
+            "hermes_cli.plugins.invoke_hook",
+            lambda name, **kwargs: calls.append((name, kwargs)) or [],
+        )
+
+        adapter = SimpleNamespace(platform="slack")
+
+        async def _send(**kwargs):
+            return SendResult(success=True, message_id="m-123")
+
+        adapter.send = _send
+        consumer = GatewayStreamConsumer(
+            adapter,
+            "C123",
+            StreamConsumerConfig(chat_type="group"),
+            metadata={"thread_id": "178.456"},
+        )
+
+        result = await consumer._send_message(
+            chat_id="C123",
+            content="hello delivery",
+            metadata={"thread_id": "178.456"},
+        )
+
+        assert result.success is True
+        assert calls
+        name, payload = calls[0]
+        assert name == "post_gateway_delivery"
+        assert payload["platform"] == "slack"
+        assert payload["chat_id"] == "C123"
+        assert payload["thread_id"] == "178.456"
+        assert payload["source"] == "slack:C123:178.456"
+        assert payload["operation"] == "send"
+        assert payload["status"] == "ok"
+        assert payload["message_id"] == "m-123"
+        assert payload["content_preview"] == "hello delivery"
+
+
+class TestBaseAdapterDeliveryHooks:
+    @pytest.mark.asyncio
+    async def test_send_with_retry_emits_post_gateway_delivery_hook(self, monkeypatch):
+        from gateway.platforms.base import BasePlatformAdapter, SendResult
+
+        calls = []
+        monkeypatch.setattr(
+            "hermes_cli.plugins.has_hook",
+            lambda name: name == "post_gateway_delivery",
+        )
+        monkeypatch.setattr(
+            "hermes_cli.plugins.invoke_hook",
+            lambda name, **kwargs: calls.append((name, kwargs)) or [],
+        )
+
+        Adapter = type(
+            "DeliveryAdapter",
+            (BasePlatformAdapter,),
+            {"MAX_MESSAGE_LENGTH": 4096, "platform": SimpleNamespace(value="slack")},
+        )
+        Adapter.__abstractmethods__ = frozenset()
+        adapter = Adapter.__new__(Adapter)
+        adapter._typing_paused = set()
+        adapter._fatal_error_message = None
+
+        async def _send(**kwargs):
+            return SendResult(success=True, message_id="m-retry")
+
+        adapter.send = _send
+        result = await adapter._send_with_retry(
+            chat_id="C123",
+            content="retry path response",
+            metadata={"thread_id": "178.456"},
+        )
+
+        assert result.success is True
+        assert calls
+        name, payload = calls[0]
+        assert name == "post_gateway_delivery"
+        assert payload["platform"] == "slack"
+        assert payload["chat_id"] == "C123"
+        assert payload["thread_id"] == "178.456"
+        assert payload["source"] == "slack:C123:178.456"
+        assert payload["operation"] == "send"
+        assert payload["status"] == "ok"
+        assert payload["message_id"] == "m-retry"
+        assert payload["content_preview"] == "retry path response"
+        assert payload["transport"] == "send_with_retry"
+
+    @pytest.mark.asyncio
+    async def test_send_with_retry_emits_retry_success_hook(self, monkeypatch):
+        from gateway.platforms.base import BasePlatformAdapter, SendResult
+
+        calls = []
+        monkeypatch.setattr(
+            "hermes_cli.plugins.has_hook",
+            lambda name: name == "post_gateway_delivery",
+        )
+        monkeypatch.setattr(
+            "hermes_cli.plugins.invoke_hook",
+            lambda name, **kwargs: calls.append((name, kwargs)) or [],
+        )
+        monkeypatch.setattr("gateway.platforms.base.asyncio.sleep", AsyncMock())
+
+        Adapter = type(
+            "RetryDeliveryAdapter",
+            (BasePlatformAdapter,),
+            {"MAX_MESSAGE_LENGTH": 4096, "platform": SimpleNamespace(value="slack")},
+        )
+        Adapter.__abstractmethods__ = frozenset()
+        adapter = Adapter.__new__(Adapter)
+        adapter._typing_paused = set()
+        adapter._fatal_error_message = None
+        results = iter([
+            SendResult(success=False, error="temporary unavailable", retryable=True),
+            SendResult(success=True, message_id="m-retry-2"),
+        ])
+
+        async def _send(**kwargs):
+            return next(results)
+
+        adapter.send = _send
+        result = await adapter._send_with_retry(
+            chat_id="C123",
+            content="retry eventually succeeds",
+            metadata={"thread_id": "178.456"},
+            base_delay=0,
+        )
+
+        assert result.success is True
+        operations = [payload["operation"] for _name, payload in calls]
+        assert operations == ["send", "send_retry"]
+        assert calls[-1][1]["status"] == "ok"
+        assert calls[-1][1]["message_id"] == "m-retry-2"

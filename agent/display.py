@@ -134,26 +134,55 @@ def get_skin_tool_prefix() -> str:
     return "┊"
 
 
-def apply_tool_label(tool_name: str, label_map: Optional[dict] = None) -> str:
-    """Map a raw tool name to a human-readable label via operator config.
+# Curated default labels — the built-in mapping current main renders via
+# `display.friendly_tool_labels`. This module keeps a placeholder so the
+# operator-config layer composes correctly against the curated layer;
+# populate this dict on rebase-merge from the values in
+# `gateway/run.py:friendly_tool_labels`. Empty here = no curated labels
+# yet, and `apply_tool_label({}, tool)` returns the raw name (matching
+# pre-PR behavior for anyone who hasn't opted into either layer).
+_CURATED_TOOL_LABELS: dict[str, str] = {}
+
+
+def apply_tool_label(
+    tool_name: str,
+    label_map: Optional[dict] = None,
+    *,
+    curated: Optional[dict] = None,
+) -> str:
+    """Map a raw tool name to a human-readable label.
 
     Chat platforms (WhatsApp / Slack / Telegram / Discord) render tool-progress
     lines like ``⚙️ mcp_gbrain_query: "..."`` — the raw tool name reads like an
-    internal ID to non-technical users. Operators can override per tool via
-    the ``display.tool_labels`` config map (e.g. ``mcp_gbrain_query: "Searching
-    information"``) so chat surfaces show plain-English verbs instead.
+    internal ID to non-technical users. Two composable layers:
 
-    When ``label_map`` is None / empty / does not contain ``tool_name``, the
-    raw name is returned unchanged. Default behavior is therefore unchanged
-    for any operator who hasn't configured overrides.
+    1. **Operator-supplied ``label_map``** (from ``display.tool_labels`` in
+       gateway config) — per-tool overrides written by the deployment owner
+       for their specific audience (e.g. mapping ``mcp_gbrain_query`` to
+       "Searching information" for a CEO-facing bot).
+    2. **Curated defaults** (``_CURATED_TOOL_LABELS`` / ``curated`` param) —
+       the built-in humane rendering for common tools (e.g. ``read_file``
+       → "Reading file"). Preserves the friendly baseline for operators
+       who haven't customized every tool.
 
-    Resolution is a single ``dict.get(tool_name, tool_name)`` — no precedence
-    ladder, no skin-style overlay. The intent is "operator config is the only
-    source of truth" so a missing entry is unambiguous.
+    Resolution order (first hit wins):
+        operator override → curated default → raw tool name
+
+    An empty operator map does NOT regress the curated defaults; that's
+    the whole point of the two-layer composition. Reviewer's concern on
+    #51869 was that an unconfigured operator would lose the curated
+    labels current main already ships — this composition prevents that.
     """
-    if not label_map:
-        return tool_name
-    return label_map.get(tool_name, tool_name)
+    if label_map:
+        override = label_map.get(tool_name)
+        if override:
+            return override
+    curated = curated if curated is not None else _CURATED_TOOL_LABELS
+    if curated:
+        curated_label = curated.get(tool_name)
+        if curated_label:
+            return curated_label
+    return tool_name
 
 
 def format_friendly_preview(
@@ -170,6 +199,16 @@ def format_friendly_preview(
     is useful in chat. When ``trim_paths`` is True (default), file-path
     tools' previews are trimmed to the basename; everything else passes
     through unchanged.
+
+    Reversibility contract (reviewer's ask on #51869): this function is
+    the ONLY place path basename-fication happens. When ``trim_paths`` is
+    False, ``raw_preview`` is returned exactly as received — the operator
+    setting ``display.trim_path_previews: false`` therefore restores the
+    full path (as far as ``build_tool_preview``'s ``_path()`` helper had
+    preserved it — that helper does length truncation, not basename-
+    fication). If any future callsite starts reducing paths BEFORE
+    reaching this function, it MUST be reverted so the config knob
+    remains meaningful.
 
     Tools recognised as file-path-shaped: ``read_file``, ``write_file``,
     ``edit_file``, ``patch``, ``list_files``. These are the names the

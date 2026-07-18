@@ -392,3 +392,173 @@ class TestFormatFriendlyPreview:
             assert (
                 format_friendly_preview(t, "/long/path/foo.txt", True) == "foo.txt"
             ), f"path-tool {t} should trim"
+
+
+class TestApplyToolLabelWithCurated:
+    """Reviewer feedback on #51869: the operator ``label_map`` must COMPOSE
+    with the curated defaults on main — an empty operator map should NOT
+    regress the curated humane labels. Resolution order:
+
+        operator override → curated default → raw tool name
+    """
+
+    def test_curated_wins_when_operator_map_empty(self):
+        """Empty operator map preserves curated defaults — regression guard
+        for the exact bug the reviewer flagged."""
+        curated = {"read_file": "Reading file"}
+        assert apply_tool_label("read_file", {}, curated=curated) == "Reading file"
+
+    def test_operator_override_beats_curated(self):
+        """When both layers name the tool, operator wins — operators are
+        the source of truth for their audience."""
+        curated = {"read_file": "Reading file"}
+        operator = {"read_file": "Fetching content"}
+        assert apply_tool_label("read_file", operator, curated=curated) == "Fetching content"
+
+    def test_curated_fills_gap_when_operator_covers_only_some_tools(self):
+        """Partial operator overrides: overrides win where present, curated
+        fills the rest, raw name for anything neither knows."""
+        curated = {"read_file": "Reading", "write_file": "Writing"}
+        operator = {"read_file": "Loading"}
+        assert apply_tool_label("read_file", operator, curated=curated) == "Loading"
+        assert apply_tool_label("write_file", operator, curated=curated) == "Writing"
+        assert apply_tool_label("mcp_x", operator, curated=curated) == "mcp_x"
+
+    def test_curated_none_falls_back_to_raw(self):
+        """No curated map and no operator match → raw tool name, matching
+        pre-PR behavior for anyone who's on neither layer."""
+        assert apply_tool_label("read_file", None, curated={}) == "read_file"
+        assert apply_tool_label("read_file", {}, curated={}) == "read_file"
+
+    def test_operator_override_with_empty_curated(self):
+        """Operator map still works when curated is empty — the two layers
+        are independent."""
+        operator = {"read_file": "Reading X"}
+        assert apply_tool_label("read_file", operator, curated={}) == "Reading X"
+
+    def test_operator_maps_to_empty_string_falls_through_to_curated(self):
+        """An operator entry mapping to '' is treated as 'no override' so
+        the curated default still fires. Prevents an accidentally-blank
+        config from erasing labels entirely."""
+        curated = {"read_file": "Reading file"}
+        operator = {"read_file": ""}
+        assert apply_tool_label("read_file", operator, curated=curated) == "Reading file"
+
+
+class TestFormatFriendlyPreviewReversibility:
+    """Reviewer feedback on #51869 — reversibility contract for
+    ``trim_paths=False``. The whole point of the operator's
+    ``display.trim_path_previews: false`` config knob is that it
+    restores the full path. Any code path that reduces the preview to
+    a basename BEFORE this function would break that contract."""
+
+    def test_trim_off_returns_raw_preview_verbatim(self):
+        """No transformation applied when trim_paths=False — even for
+        path-shaped tools, even for previews that would normally trim."""
+        raw = "/very/long/absolute/path/to/STATUS_QUERY.md"
+        assert format_friendly_preview("read_file", raw, trim_paths=False) == raw
+
+    def test_trim_off_preserves_pre_truncated_preview(self):
+        """When ``build_tool_preview`` has already length-truncated (adding
+        '...' prefix), trim_off preserves that exactly — no basename
+        derivation happens."""
+        raw = "...long/path/rules/STATUS_QUERY.md"
+        assert format_friendly_preview("read_file", raw, trim_paths=False) == raw
+
+    def test_trim_on_still_basenames_for_path_tools(self):
+        """Positive control: with trim_paths=True (default), the path IS
+        reduced to basename. This is the behavior we want to remain
+        reversible via the config knob."""
+        raw = "/very/long/absolute/path/to/STATUS_QUERY.md"
+        assert format_friendly_preview("read_file", raw, trim_paths=True) == "STATUS_QUERY.md"
+
+    def test_trim_off_for_all_path_tools(self):
+        """Reversibility holds for every recognised path-shaped tool."""
+        raw = "/deep/nested/tree/file.py"
+        for tool in ("read_file", "write_file", "edit_file", "patch", "list_files"):
+            assert format_friendly_preview(tool, raw, trim_paths=False) == raw, (
+                f"trim_paths=False must preserve raw preview for {tool}"
+            )
+
+    def test_trim_off_still_returns_none_for_none_preview(self):
+        """The `None` and empty short-circuits still apply."""
+        assert format_friendly_preview("read_file", None, trim_paths=False) is None
+        assert format_friendly_preview("read_file", "", trim_paths=False) == ""
+
+
+class TestGatewayLevelWiring:
+    """Reviewer's third ask on #51869: exercise the config → render pipeline,
+    not just the helpers. These tests import the gateway's config resolver
+    and drive `apply_tool_label`/`format_friendly_preview` with values it
+    actually returns, so a regression in the wiring (default lookup, key
+    name, resolution order) surfaces here rather than only in production."""
+
+    def test_resolve_display_setting_defaults_for_tool_labels(self):
+        """The resolver's default for `tool_labels` must be an empty dict
+        (or None) so the composition layer falls back to curated + raw."""
+        from gateway.display_config import resolve_display_setting
+
+        # A minimal user_config with no display block at all.
+        user_cfg = {}
+        result = resolve_display_setting(user_cfg, "telegram", "tool_labels", {})
+        # Must be dict-like and empty-truthy so `if label_map:` short-circuits.
+        assert result in (None, {}, dict())
+
+    def test_resolve_display_setting_defaults_for_trim_path_previews(self):
+        """The resolver's default for `trim_path_previews` must be True so
+        the pre-PR path-trimming behavior is preserved for opt-in-only."""
+        from gateway.display_config import resolve_display_setting
+
+        user_cfg = {}
+        result = resolve_display_setting(user_cfg, "telegram", "trim_path_previews", True)
+        assert result is True
+
+    def test_resolve_and_apply_tool_label_composes_with_curated(self):
+        """End-to-end wiring: pull tool_labels from config, apply via
+        apply_tool_label with a non-empty curated map, verify composition."""
+        from gateway.display_config import resolve_display_setting
+
+        # Operator supplied a partial map — read_file overridden, others not.
+        user_cfg = {"display": {"tool_labels": {"read_file": "Fetching info"}}}
+        label_map = resolve_display_setting(user_cfg, "telegram", "tool_labels", {})
+        curated = {"read_file": "Reading file", "write_file": "Writing file"}
+
+        # Operator override wins.
+        assert apply_tool_label("read_file", label_map, curated=curated) == "Fetching info"
+        # Curated fills the gap for write_file.
+        assert apply_tool_label("write_file", label_map, curated=curated) == "Writing file"
+        # Neither layer knows this tool → raw.
+        assert apply_tool_label("mcp_unknown", label_map, curated=curated) == "mcp_unknown"
+
+    def test_resolve_and_format_preview_with_trim_off(self):
+        """End-to-end: user sets trim_path_previews: false → gateway
+        resolves False → format_friendly_preview returns raw path."""
+        from gateway.display_config import resolve_display_setting
+
+        user_cfg = {"display": {"trim_path_previews": False}}
+        trim = resolve_display_setting(user_cfg, "telegram", "trim_path_previews", True)
+        assert trim is False
+
+        raw = "/deep/nested/path/to/rules/STATUS_QUERY.md"
+        assert format_friendly_preview("read_file", raw, trim) == raw
+
+    def test_per_platform_trim_path_override_beats_global(self):
+        """Per-platform overrides win over global (documented resolution
+        order in display_config.py). Verifies the platform-specific
+        preview config path works end-to-end."""
+        from gateway.display_config import resolve_display_setting
+
+        user_cfg = {
+            "display": {
+                "trim_path_previews": True,   # global on
+                "platforms": {
+                    "whatsapp": {"trim_path_previews": False},  # off on WhatsApp
+                },
+            },
+        }
+        assert resolve_display_setting(
+            user_cfg, "whatsapp", "trim_path_previews", True,
+        ) is False
+        assert resolve_display_setting(
+            user_cfg, "telegram", "trim_path_previews", True,
+        ) is True

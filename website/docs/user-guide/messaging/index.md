@@ -326,6 +326,36 @@ display:
   #   separate             — send one message per tool (pre-v0.9 style; noisier)
   # Only applies where tool_progress is already enabled.
   tool_progress_grouping: accumulate   # accumulate | separate
+
+  # Friendly rendering for non-technical audiences. Two-layer composition:
+  #   1. `tool_labels` (below) — operator-supplied per-tool overrides
+  #   2. Built-in curated labels — the humane defaults Hermes ships with
+  # Operator entries win where present; curated defaults fill the rest;
+  # any tool neither knows renders as the raw name. Setting an empty
+  # `tool_labels` block does NOT regress the curated defaults.
+  tool_labels:
+    mcp_gbrain_query: "Searching information"
+    read_file: "Fetching content"
+    # ... one entry per tool you want to relabel for your audience.
+
+  # File-path arg previews (read_file, write_file, edit_file, patch,
+  # list_files) trim to basename by default (`/long/abs/path/foo.md`
+  # → `foo.md`). Set false to render the full path — useful when the
+  # dirname carries meaning for your users. Reversible: setting false
+  # restores the full path (as much as the length-truncation stage
+  # preserved).
+  trim_path_previews: true    # false to keep full paths
+
+  # Per-platform overrides — an operator can e.g. keep full paths in
+  # Slack (developer channel) while trimming them on WhatsApp (CEO).
+  platforms:
+    whatsapp:
+      trim_path_previews: true
+      tool_labels:
+        # Platform-specific overrides layer on top of the global map.
+        mcp_gbrain_query: "Looking up"
+    slack:
+      trim_path_previews: false
 ```
 
 ### Message timestamps in model context

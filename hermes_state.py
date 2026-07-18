@@ -17,6 +17,7 @@ Key design decisions:
 import asyncio
 import json
 import logging
+import os
 import random
 import re
 import sqlite3
@@ -192,6 +193,17 @@ _FTS_TRIGGERS = (
     "messages_fts_trigram_delete",
     "messages_fts_trigram_update",
 )
+
+
+def _fts_trigram_disabled() -> bool:
+    """True when HERMES_DISABLE_FTS_TRIGRAM disables the CJK trigram index.
+
+    When set, the trigram virtual table is never created or rebuilt and CJK
+    search falls back to LIKE (same behavior as a missing trigram tokenizer).
+    """
+    return os.environ.get("HERMES_DISABLE_FTS_TRIGRAM", "").strip().lower() in (
+        "1", "true", "yes", "on",
+    )
 
 
 def _set_last_init_error(msg: Optional[str]) -> None:
@@ -1189,6 +1201,7 @@ class SessionDB:
         *,
         include_trigram: bool = True,
     ) -> None:
+        include_trigram = include_trigram and not _fts_trigram_disabled()
         cursor.execute("DELETE FROM messages_fts")
         cursor.execute(
             "INSERT INTO messages_fts(rowid, content) "
@@ -1628,7 +1641,7 @@ class SessionDB:
                 # v11+ code drops and rebuilds both FTS tables below, so doing
                 # the v10-only trigram backfill first only burns startup time
                 # and WAL space before v11 throws the work away.
-                if fts5_available:
+                if fts5_available and not _fts_trigram_disabled():
                     _fts_trigram_exists = self._fts_table_probe(
                         cursor, "messages_fts_trigram"
                     )
@@ -1644,7 +1657,7 @@ class SessionDB:
                             fts_migrations_complete = False
                     elif _fts_trigram_exists is None:
                         fts_migrations_complete = False
-                else:
+                elif not fts5_available:
                     fts_migrations_complete = False
             if current_version < 11:
                 # v11: re-index FTS5 tables to cover tool_name + tool_calls and
@@ -1686,8 +1699,11 @@ class SessionDB:
                                 "COALESCE(tool_calls, '') "
                                 "FROM messages"
                             )
-                        trigram_ok = self._ensure_fts_schema(
-                            cursor, "messages_fts_trigram", FTS_TRIGRAM_SQL
+                        trigram_ok = (
+                            not _fts_trigram_disabled()
+                            and self._ensure_fts_schema(
+                                cursor, "messages_fts_trigram", FTS_TRIGRAM_SQL
+                            )
                         )
                         if trigram_ok:
                             cursor.execute(
@@ -1901,15 +1917,23 @@ class SessionDB:
             # FTS5 setup. Run the DDL even when the virtual table exists so
             # CREATE TRIGGER IF NOT EXISTS repairs trigger-only degradation from
             # an earlier no-FTS5 runtime.
-            triggers_need_repair = self._fts_trigger_count(cursor) < len(_FTS_TRIGGERS)
+            expected_triggers = (
+                sum(1 for trigger in _FTS_TRIGGERS if "trigram" not in trigger)
+                if _fts_trigram_disabled()
+                else len(_FTS_TRIGGERS)
+            )
+            triggers_need_repair = self._fts_trigger_count(cursor) < expected_triggers
             self._fts_enabled = self._ensure_fts_schema(cursor, "messages_fts", FTS_SQL)
 
             # Trigram FTS5 for CJK/substring search. This is optional relative
             # to the main FTS table; if it cannot be created, CJK search falls
             # back to LIKE.
             if self._fts_enabled:
-                trigram_enabled = self._ensure_fts_schema(
-                    cursor, "messages_fts_trigram", FTS_TRIGRAM_SQL
+                trigram_enabled = (
+                    not _fts_trigram_disabled()
+                    and self._ensure_fts_schema(
+                        cursor, "messages_fts_trigram", FTS_TRIGRAM_SQL
+                    )
                 )
                 self._trigram_available = trigram_enabled
                 if triggers_need_repair:

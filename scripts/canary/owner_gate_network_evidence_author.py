@@ -13,6 +13,7 @@ import base64
 import hashlib
 import ipaddress
 import json
+import math
 import os
 import re
 import subprocess
@@ -35,6 +36,7 @@ _MAX_CAPTURE_BYTES = 16 * 1024 * 1024
 
 _RESOURCE_PREFIX = "https://www.googleapis.com/compute/v1/"
 _REGION = re.compile(r"^[a-z]+-[a-z0-9]+[0-9]$")
+_NETWORK_NAME = re.compile(r"^[a-z](?:[-a-z0-9]{0,61}[a-z0-9])?$")
 _MAX_REGIONS = 128
 _MAX_ITEMS = 10_000
 _RFC1918 = tuple(
@@ -230,6 +232,8 @@ def _canonical_inventory(value: Any) -> Any:
         return sorted(normalized, key=foundation.canonical_json_bytes)
     if value is None or isinstance(value, (str, int, bool)):
         return value
+    if isinstance(value, float) and math.isfinite(value):
+        return value
     raise OwnerGateNetworkEvidenceAuthorError(
         "owner_gate_network_inventory_invalid"
     )
@@ -414,8 +418,29 @@ def _normalize_and_author(
     for address in addresses:
         if address.get("purpose") != "VPC_PEERING":
             continue
+        address_network = address.get("network")
+        address_network_prefix = (
+            f"{_RESOURCE_PREFIX}projects/{foundation.PROJECT}/global/networks/"
+        )
+        if (
+            not isinstance(address_network, str)
+            or not address_network.startswith(address_network_prefix)
+        ):
+            raise OwnerGateNetworkEvidenceAuthorError(
+                "owner_gate_network_private_service_ranges_invalid"
+            )
+        address_network_name = address_network[len(address_network_prefix) :]
+        if (
+            _NETWORK_NAME.fullmatch(address_network_name) is None
+            or address_network
+            != f"{address_network_prefix}{address_network_name}"
+        ):
+            raise OwnerGateNetworkEvidenceAuthorError(
+                "owner_gate_network_private_service_ranges_invalid"
+            )
+        if address_network_name != foundation.NETWORK_NAME:
+            continue
         try:
-            _network(address.get("network"))
             prefix_value = address.get("prefixLength")
             if prefix_value is None:
                 raise TypeError("missing prefixLength")
@@ -423,7 +448,7 @@ def _normalize_and_author(
             network = ipaddress.ip_network(
                 f"{address.get('address')}/{prefix}", strict=True
             )
-        except (OwnerGateNetworkEvidenceAuthorError, TypeError, ValueError) as exc:
+        except (TypeError, ValueError) as exc:
             raise OwnerGateNetworkEvidenceAuthorError(
                 "owner_gate_network_private_service_ranges_invalid"
             ) from None

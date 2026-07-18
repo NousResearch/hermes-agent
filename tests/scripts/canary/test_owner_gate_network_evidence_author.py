@@ -92,6 +92,7 @@ def _raw() -> dict[tuple[str, ...], Any]:
                 "ipCidrRange": "10.80.0.0/24",
                 "privateIpGoogleAccess": False,
                 "secondaryIpRanges": [],
+                "logConfig": {"flowSampling": 0.5},
             },
             {
                 "name": "canary",
@@ -133,15 +134,29 @@ def _raw() -> dict[tuple[str, ...], Any]:
             "peerNetwork": "projects/peer/global/networks/peer",
             "state": "ACTIVE",
         }],
-        commands["private_service_ranges"]: [{
-            "name": "managed-services",
-            "network": network,
-            "purpose": "VPC_PEERING",
-            "addressType": "INTERNAL",
-            "address": "10.71.208.0",
-            "prefixLength": 24,
-            "status": "RESERVED",
-        }],
+        commands["private_service_ranges"]: [
+            {
+                "name": "managed-services",
+                "network": network,
+                "purpose": "VPC_PEERING",
+                "addressType": "INTERNAL",
+                "address": "10.71.208.0",
+                "prefixLength": 24,
+                "status": "RESERVED",
+            },
+            {
+                "name": "foreign-managed-services",
+                "network": (
+                    f"{PREFIX}projects/{foundation.PROJECT}/global/networks/"
+                    "muncho-canary-vpc"
+                ),
+                "purpose": "VPC_PEERING",
+                "addressType": "INTERNAL",
+                "address": "10.80.3.0",
+                "prefixLength": 28,
+                "status": "RESERVED",
+            },
+        ],
         commands["regions"]: [
             {"name": "europe-west3", "status": "UP"},
             {"name": "us-central1", "status": "UP"},
@@ -202,6 +217,20 @@ def test_collect_and_author_uses_complete_read_only_inventory_and_signs() -> Non
         "private_service_ranges",
         "serverless_connectors",
     }
+    assert result["range_inventory_receipts"]["aggregate_subnets"] == (
+        foundation.sha256_json(
+            author._canonical_inventory(
+                values[author.inventory_commands()["subnets"]]
+            )
+        )
+    )
+    assert result["range_inventory_receipts"]["private_service_ranges"] == (
+        foundation.sha256_json(
+            author._canonical_inventory(
+                values[author.inventory_commands()["private_service_ranges"]]
+            )
+        )
+    )
     assert set(calls) == {
         *author.inventory_commands().values(),
         author.connector_command("europe-west3"),
@@ -221,6 +250,37 @@ def test_collect_rejects_invalid_route_destination() -> None:
     with pytest.raises(
         author.OwnerGateNetworkEvidenceAuthorError,
         match="owner_gate_network_route_invalid",
+    ):
+        author._collect_and_author_with_runner(
+            release_revision=RELEASE,
+            run_json=_runner(values, []),
+            collected_at_unix=NOW,
+        )
+
+
+@pytest.mark.parametrize("value", [float("nan"), float("inf"), float("-inf")])
+def test_canonical_inventory_rejects_non_finite_float(value: float) -> None:
+    with pytest.raises(
+        author.OwnerGateNetworkEvidenceAuthorError,
+        match="owner_gate_network_inventory_invalid",
+    ):
+        author._canonical_inventory({"value": value})
+
+
+@pytest.mark.parametrize("mutation", ["network_suffix", "host_bits"])
+def test_collect_rejects_malformed_target_private_service_range(
+    mutation: str,
+) -> None:
+    values = _raw()
+    address = values[author.inventory_commands()["private_service_ranges"]][0]
+    if mutation == "network_suffix":
+        address["network"] += "/extra"
+    else:
+        address["address"] = "10.71.208.1"
+
+    with pytest.raises(
+        author.OwnerGateNetworkEvidenceAuthorError,
+        match="owner_gate_network_private_service_ranges_invalid",
     ):
         author._collect_and_author_with_runner(
             release_revision=RELEASE,

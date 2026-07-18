@@ -46,6 +46,10 @@ class TestProviderEnvDetection:
         content = "KIMI_CN_API_KEY=sk-test\n"
         assert _has_provider_env_config(content)
 
+    def test_detects_kimi_coding_api_key(self):
+        content = "KIMI_CODING_API_KEY=sk-kimi-test\n"
+        assert _has_provider_env_config(content)
+
     def test_detects_google_api_key(self):
         content = "GOOGLE_API_KEY=AIza-test\n"
         assert _has_provider_env_config(content)

@@ -4,6 +4,7 @@ import type { HermesConfigRecord } from '@/types/hermes'
 
 import { defineFieldCopy, fieldCopyForSchemaKey, schemaKeyToFieldCopyKey } from './field-copy'
 import { enumOptionsFor, getNested, providerGroup, setNested, stripToolsetLabel, toolsetDisplayLabel } from './helpers'
+import { BUILTIN_PERSONALITIES } from './constants'
 
 describe('settings helpers', () => {
   it('lists Hindsight as a built-in desktop memory provider option', () => {
@@ -177,25 +178,12 @@ describe('settings helpers', () => {
   })
 
   describe('enumOptionsFor — display.personality merges agent.personalities (#61312)', () => {
-    it('returns the 14 built-in personalities when config has none', () => {
+    it('returns all built-in personalities when config has none', () => {
       const opts = enumOptionsFor('display.personality', '', {} as HermesConfigRecord)
-      expect(opts).toEqual([
-        '',
-        'helpful',
-        'concise',
-        'technical',
-        'creative',
-        'teacher',
-        'kawaii',
-        'catgirl',
-        'pirate',
-        'shakespeare',
-        'surfer',
-        'noir',
-        'uwu',
-        'philosopher',
-        'hype'
-      ])
+      // The empty-string default plus every BUILTIN_PERSONALITIES entry.
+      // Derive from the mutable source so a catalog addition doesn't
+      // break this test as a change-detector (#61312 review).
+      expect(opts).toEqual(['', ...BUILTIN_PERSONALITIES])
     })
 
     it('appends a single custom personality from agent.personalities', () => {
@@ -210,21 +198,24 @@ describe('settings helpers', () => {
       expect(opts).toContain('helpful') // the built-ins remain
     })
 
-    it('appends multiple custom personalities and de-duplicates', () => {
+    it('appends multiple custom personalities and de-duplicates built-in collisions', () => {
       const opts = enumOptionsFor('display.personality', '', {
         agent: {
           personalities: {
             bug_hunter: 'You are a bug bounty hunter. …',
             chef: 'You are a chef. …',
+            helpful: 'You are helpful. But a custom spin.', // built-in collision → Set dedup
             pentester: 'pentest the world' // also appears hardcoded in JS bundles
           }
         }
       } as unknown as HermesConfigRecord)
-      // Custom names appear once each.
+      // Built-in helpful deduplicates — custom name appears exactly once.
+      expect(opts?.filter((name) => name === 'helpful')).toHaveLength(1)
+      // Other customs appear once each (no false duplicates).
       expect(opts?.filter((name) => name === 'bug_hunter')).toHaveLength(1)
       expect(opts?.filter((name) => name === 'chef')).toHaveLength(1)
       expect(opts?.filter((name) => name === 'pentester')).toHaveLength(1)
-      // Built-ins remain present.
+      // Built-in 'helpful' is still present.
       expect(opts).toContain('helpful')
     })
 

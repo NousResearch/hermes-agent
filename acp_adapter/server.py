@@ -213,6 +213,21 @@ def _format_resource_text(
     return f"{header}\nURI: {uri}\n\n{body}"
 
 
+def _save_attachment_to_cache(data: bytes, display_name: str) -> str | None:
+    """Materialize undeliverable attachment bytes into the document cache.
+
+    Returns the saved path, or None when saving fails — an attachment must
+    never fail the prompt; callers fall back to the omit placeholder.
+    """
+    try:
+        from gateway.platforms.base import cache_document_from_bytes
+
+        return cache_document_from_bytes(data, display_name or "attachment.bin")
+    except Exception:
+        logger.warning("Could not persist ACP attachment %r", display_name, exc_info=True)
+        return None
+
+
 def _resource_link_to_parts(block: ResourceContentBlock) -> list[dict[str, Any]]:
     """Convert an ACP resource_link block to OpenAI content parts.
 
@@ -333,12 +348,18 @@ def _embedded_resource_to_parts(block: EmbeddedResourceContentBlock) -> list[dic
         # Image blobs go through as image_url so vision models can see them.
         if _is_image_resource(mime_type):
             if len(data) > _MAX_ACP_RESOURCE_BYTES:
+                saved = _save_attachment_to_cache(data, _resource_display_name(uri) or "attachment.bin")
+                if saved is not None:
+                    body = (
+                        f"[Embedded image too large to inline: {len(data)} bytes, "
+                        f"cap={_MAX_ACP_RESOURCE_BYTES}. Image saved to {saved} — "
+                        f"use your tools to read or process it.]"
+                    )
+                else:
+                    body = f"[Embedded image too large to inline: {len(data)} bytes, cap={_MAX_ACP_RESOURCE_BYTES}]"
                 return [{
                     "type": "text",
-                    "text": _format_resource_text(
-                        uri=uri,
-                        body=f"[Embedded image too large to inline: {len(data)} bytes, cap={_MAX_ACP_RESOURCE_BYTES}]",
-                    ),
+                    "text": _format_resource_text(uri=uri, body=body),
                 }]
             display = _resource_display_name(uri)
             return [
@@ -348,11 +369,22 @@ def _embedded_resource_to_parts(block: EmbeddedResourceContentBlock) -> list[dic
 
         text = _decode_text_bytes(data[:_MAX_ACP_RESOURCE_BYTES], mime_type)
         if text is None:
-            body = f"[Binary embedded file omitted: {len(data)} bytes, mime={mime_type or 'unknown'}]"
+            saved = _save_attachment_to_cache(data, _resource_display_name(uri) or "attachment.bin")
+            if saved is not None:
+                body = (
+                    f"[Binary attachment saved to {saved} — {len(data)} bytes, "
+                    f"mime={mime_type or 'unknown'}. Use your tools to read or process it.]"
+                )
+            else:
+                body = f"[Binary embedded file omitted: {len(data)} bytes, mime={mime_type or 'unknown'}]"
         else:
             body = text
             if len(data) > _MAX_ACP_RESOURCE_BYTES:
-                body += f"\n\n[Truncated to {_MAX_ACP_RESOURCE_BYTES} of {len(data)} bytes]"
+                note = f"[Truncated to {_MAX_ACP_RESOURCE_BYTES} of {len(data)} bytes"
+                saved = _save_attachment_to_cache(data, _resource_display_name(uri) or "attachment.bin")
+                if saved is not None:
+                    note += f"; full file saved to {saved}"
+                body += f"\n\n{note}]"
         return [{"type": "text", "text": _format_resource_text(uri=uri, body=body)}]
 
     text = getattr(resource, "text", None)

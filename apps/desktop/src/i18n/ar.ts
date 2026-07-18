@@ -224,6 +224,7 @@ export const ar: Translations = {
   keybinds: {
     title: 'اختصارات لوحة المفاتيح',
     subtitle: open => `انقر اختصارًا لإعادة تعيينه · يفتح ${open} هذه اللوحة مجددًا.`,
+    search: 'البحث في الاختصارات',
     rebind: 'إعادة تعيين',
     reset: 'استعادة الافتراضي',
     resetAll: 'استعادة الكل',
@@ -342,11 +343,13 @@ export const ar: Translations = {
       providerApiKeys: 'مفاتيح الواجهة البرمجية',
       gateway: 'البوابة',
       apiKeys: 'الأدوات والمفاتيح',
+      keybinds: 'اختصارات لوحة المفاتيح',
       keysTools: 'الأدوات',
       keysSettings: 'الإعدادات',
       mcp: 'بروتوكول سياق النموذج',
       archivedChats: 'المحادثات المؤرشفة',
       about: 'حول',
+      billing: 'الفوترة',
       notifications: 'الإشعارات',
       plugins: 'الإضافات'
     },
@@ -1348,6 +1351,11 @@ export const ar: Translations = {
       noProviderKeys: 'لا تتوفر مفاتيح واجهة برمجية للمزوّدين.',
       searchKeys: 'ابحث عن مزوّد…',
       noKeysMatch: 'لا مزوّد يطابق بحثك.',
+      localEndpoint: {
+        title: 'نقطة نهاية محلية أو مخصصة',
+        description:
+          'وجّه هرمس إلى أي نقطة نهاية متوافقة مع واجهة أوبن أي آي، مثل زيفرا وفي إل إل إم ولاما دوت سي بلس بلس وأولاما وغيرها.'
+      },
       loading: 'جارٍ تحميل المزوّدين...',
       providerNames: {
         OpenRouter: 'OpenRouter',
@@ -3330,6 +3338,7 @@ export const ar: Translations = {
       finishedUnread: 'انتهت — غير مقروءة',
       backgroundRunning: 'مهمة تعمل في الخلفية',
       handoffOrigin: platform => `محوّلة من ${platform}`,
+      ownedByProfile: profile => `الملف الشخصي: ${profile}`,
       renamed: 'أُعيدت التسمية',
       renameFailed: 'فشلت إعادة التسمية',
       renameTitle: 'إعادة تسمية الجلسة',
@@ -3664,6 +3673,7 @@ export const ar: Translations = {
     recommended: 'موصى به',
     connected: 'متصل',
     featuredPitch: 'اشتراك واحد وأكثر من 300 نموذج متقدم؛ الطريقة الموصى بها لتشغيل هرمس',
+    fireworksPitch: 'واجهة نماذج مباشرة لنماذج متقدمة تستضيفها فايرووركس',
     openRouterPitch: 'مفتاح واحد ومئات النماذج؛ خيار افتراضي جيد',
     openRouterName: 'OpenRouter',
     providerNames: {
@@ -3946,6 +3956,7 @@ export const ar: Translations = {
       noModel: 'لا نموذج',
       switchModel: 'تبديل النموذج',
       openModelPicker: 'فتح منتقي النموذج',
+      modelPinned: 'مثبّت باختيارك؛ تستخدم المحادثات الجديدة هذا بدل الإعداد الافتراضي',
       modelTitle: (provider, model) => `النموذج · ${provider}: ${model}`,
       providerModelTitle: (provider, model) => `${provider} · ${model}`
     }

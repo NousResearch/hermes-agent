@@ -63,7 +63,7 @@ export default function McpPage() {
   const { toast, showToast } = useToast();
   const { setEnd } = usePageHeader();
   const { t } = useI18n();
-  const copy = t.mcpPage ?? en.mcpPage!;
+  const copy = { ...en.mcpPage!, ...t.mcpPage };
 
   // Add server modal state
   const [createModalOpen, setCreateModalOpen] = useState(false);

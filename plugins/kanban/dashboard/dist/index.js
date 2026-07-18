@@ -3131,8 +3131,8 @@
                   : tx(t, "assigneePlaceholder", "assignee"),
                 className: "h-8 text-sm",
                 title: props.columnName === "triage"
-                  ? "Hermes profile that will spec this task (default: the dispatcher's configured specifier). Leave blank to let the dispatcher pick."
-                  : "Hermes profile to assign. Leave blank and the dispatcher will pick from available profiles when the task is Ready.",
+                  ? tx(t, "tooltips.assigneeInput", "Hermes profile that will spec this task.")
+                  : tx(t, "tooltips.workerAssigneeInput", "Hermes profile to assign."),
                 style: { textTransform: "none" },
                 autoCapitalize: "none",
                 autoCorrect: "off",
@@ -3147,7 +3147,7 @@
                 onChange: function (e) { setPriority(e.target.value); },
                 placeholder: "pri",
                 className: "h-8 text-sm",
-                title: "Priority. Higher-priority tasks are claimed first by the dispatcher. 0 = default.",
+                title: tx(t, "tooltips.priorityInput", "Priority. Higher is claimed first."),
               }),
             ),
           ),
@@ -3159,7 +3159,7 @@
               onChange: function (e) { setSkills(e.target.value); },
               placeholder: tx(t, "skillsPlaceholder",
                 "skills (optional, comma-separated): translation, github-code-review"),
-              title: "Force-load these skills into the worker (in addition to the built-in kanban-worker).",
+              title: tx(t, "tooltips.skillsInput", "Force-load these skills into the worker."),
               className: "h-8 text-sm",
             }),
           ),
@@ -3168,7 +3168,7 @@
             h("div", { className: "flex gap-2" },
               h(Select, Object.assign({
                 value: workspaceKind,
-                title: "Choose whether task files are temporary or preserved after completion.",
+                title: tx(t, "tooltips.workspaceKind", "Choose whether task files are temporary or preserved."),
                 className: "h-8 text-sm flex-1",
               }, selectChangeHandler(setWorkspaceKind)),
                 h(SelectOption, { value: "scratch" },
@@ -3197,7 +3197,7 @@
             h(Select, Object.assign({
               value: parent,
               className: "h-8 text-sm",
-              title: "Optional parent task. A child stays blocked in its current column until the parent is marked done.",
+              title: tx(t, "tooltips.parentTask", "Optional parent task."),
             }, selectChangeHandler(setParent)),
               h(SelectOption, { value: "" }, tx(t, "noParent", "— no parent —")),
               (props.allTasks || []).map(function (task) {
@@ -3209,7 +3209,7 @@
           h("div", { className: "flex gap-2 items-center" },
             h("label", {
               className: "flex items-center gap-1.5 text-xs cursor-pointer select-none",
-              title: "Goal mode: the worker keeps going in the same session until a judge agrees the card is done (or the turn budget runs out, which blocks it for review). Best for open-ended cards one shot rarely finishes.",
+              title: tx(t, "tooltips.goalMode", "Goal mode keeps the worker going."),
             },
               h("input", {
                 type: "checkbox",
@@ -3225,7 +3225,7 @@
               onChange: function (e) { setGoalMaxTurns(e.target.value); },
               placeholder: tx(t, "goalMaxTurns", "max turns (default 20)"),
               className: "h-8 text-sm w-44",
-              title: "Turn budget for the goal loop. Blank = backend default (20).",
+              title: tx(t, "tooltips.goalTurns", "Turn budget for the goal loop."),
               min: 1,
             }) : null,
           ),

@@ -432,6 +432,18 @@ class TestLifecycle:
         assert asyncio.run(adapter.get_chat_info("ch:42"))["type"] == "group"
         assert asyncio.run(adapter.get_chat_info("dm:4"))["type"] == "dm"
 
+    def test_connect_accepts_is_reconnect_kwarg(self):
+        """The gateway reconnect watcher forwards ``is_reconnect=`` on every
+        retry (contract enforced repo-wide by
+        ``test_adapter_connect_is_reconnect_contract.py``). An adapter that
+        rejects the kwarg silently disconnects after its first outage, so we
+        also exercise the call shape directly here.
+        """
+        config = PlatformConfig(enabled=True, token="", extra={})
+        adapter = SynologyChatAdapter(config)
+        # Unconfigured adapter: returns False, but the kwarg must be accepted.
+        assert asyncio.run(adapter.connect(is_reconnect=True)) is False
+
 
 # ---------------------------------------------------------------------------
 # Hooks
@@ -568,3 +580,22 @@ class TestStandaloneSend:
              patch("aiohttp.TCPConnector", MagicMock()), patch("aiohttp.ClientTimeout", MagicMock()):
             result = asyncio.run(_standalone_send(pconfig, "dm:4", "ping"))
         assert "error" in result and "800" in result["error"]
+
+    def test_standalone_non_numeric_dm_target_fails_before_post(self):
+        """DSM ``method=chatbot`` requires integer ``user_ids``. The detached
+        path must reject a non-numeric DM target with an explicit error and
+        never reach the network — matching the in-process
+        ``_dm_destination`` rejection, instead of POSTing a payload without
+        ``user_ids`` and getting an ambiguous DSM error back.
+        """
+        pconfig = MagicMock()
+        pconfig.extra = {"incoming_url": "https://nas/chatbot"}
+        posted = {}
+        with patch("aiohttp.ClientSession", self._patched_session(posted)), \
+             patch("aiohttp.TCPConnector", MagicMock()), patch("aiohttp.ClientTimeout", MagicMock()):
+            prefixed = asyncio.run(_standalone_send(pconfig, "dm:alice", "ping"))
+            bare = asyncio.run(_standalone_send(pconfig, "not-a-channel", "ping"))
+        for result in (prefixed, bare):
+            assert "error" in result
+            assert "non-numeric DM target" in result["error"]
+        assert posted == {}  # nothing was ever POSTed

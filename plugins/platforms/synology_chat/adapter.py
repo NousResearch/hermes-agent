@@ -609,11 +609,15 @@ async def _standalone_send(
             return {"error": f"channel '{channel_id}' has no incoming_url"}
         url, payload = channel["incoming_url"], {"text": message}
     elif chat_id.startswith(_DM_PREFIX):
-        url, payload = _dm_payload(incoming_url, chat_id[len(_DM_PREFIX):])
+        url, payload, dm_error = _dm_payload(incoming_url, chat_id[len(_DM_PREFIX):])
+        if dm_error:
+            return {"error": dm_error}
     elif chat_id in channels and channels[chat_id].get("incoming_url"):
         url, payload = channels[chat_id]["incoming_url"], {"text": message}
     else:
-        url, payload = _dm_payload(incoming_url, chat_id)
+        url, payload, dm_error = _dm_payload(incoming_url, chat_id)
+        if dm_error:
+            return {"error": dm_error}
     payload["text"] = message
 
     ca_bundle = (extra.get("ca_bundle") or os.getenv("SYNOLOGY_CHAT_CA_BUNDLE", "")).strip()
@@ -651,13 +655,21 @@ async def _standalone_send(
         return {"error": f"Synology Chat standalone send failed: {exc}"}
 
 
-def _dm_payload(incoming_url: str, user_id: str) -> Tuple[str, Dict[str, Any]]:
-    payload: Dict[str, Any] = {}
+def _dm_payload(
+    incoming_url: str, user_id: str
+) -> Tuple[Optional[str], Dict[str, Any], Optional[str]]:
+    """Standalone twin of ``SynologyChatAdapter._dm_destination`` — same
+    contract: DSM ``method=chatbot`` requires integer ``user_ids`` (error 800
+    otherwise), so a non-numeric target fails here, BEFORE the POST, instead
+    of silently omitting ``user_ids`` and letting DSM answer with an
+    ambiguous error.
+    """
     try:
-        payload["user_ids"] = [int(user_id)]
+        return incoming_url, {"user_ids": [int(user_id)]}, None
     except ValueError:
-        pass
-    return incoming_url, payload
+        return None, {}, (
+            f"non-numeric DM target '{user_id}' — chatbot API needs an integer user_id"
+        )
 
 
 # ---------------------------------------------------------------------------

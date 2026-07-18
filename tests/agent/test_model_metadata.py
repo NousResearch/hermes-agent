@@ -199,14 +199,16 @@ class TestDefaultContextLengths:
             )
 
             for base_url in accepted_urls:
-                assert get_model_context_length(
-                    "k3", provider="kimi-coding", base_url=base_url
-                ) == 1_048_576
+                for model in ("k3", "kimi-k3", "kimi-k3-cot"):
+                    assert get_model_context_length(
+                        model, provider="kimi-coding", base_url=base_url
+                    ) == 1_048_576
 
             for base_url in rejected_urls:
-                assert get_model_context_length(
-                    "k3", provider="kimi-coding", base_url=base_url
-                ) != 1_048_576
+                for model in ("k3", "kimi-k3", "kimi-k3-cot"):
+                    assert get_model_context_length(
+                        model, provider="kimi-coding", base_url=base_url
+                    ) != 1_048_576
 
     def test_grok_substring_matching(self):
         # Longest-first substring matching must resolve the real xAI model

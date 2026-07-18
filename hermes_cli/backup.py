@@ -232,7 +232,9 @@ def _should_exclude(rel_path: Path) -> bool:
     return name in _EXCLUDED_NAMES or name.startswith(_EXCLUDED_PREFIXES) or name.endswith(_EXCLUDED_SUFFIXES)
 
 
-def _iter_backup_files(hermes_root: Path, out_path: Path, skipped_dirs: Optional[set] = None):
+def _iter_backup_files(
+    hermes_root: Path, out_path: Path, skipped_dirs: Optional[set] = None,
+    skipped_symlinks: Optional[list[str]] = None):
     """Yield ``(abs_path, rel_path)`` for every file a full backup should hold.
 
     The one owner of the walk policy (directory pruning so os.walk never descends a multi-GB
@@ -248,10 +250,15 @@ def _iter_backup_files(hermes_root: Path, out_path: Path, skipped_dirs: Optional
             and not _in_excluded_root_dir(rel_dir / d)]
         if skipped_dirs is not None:
             skipped_dirs.update(str(rel_dir / d) for d in set(dirnames) - set(kept))
+        if skipped_symlinks is not None:
+            skipped_symlinks.extend(str(rel_dir / d) for d in kept
+                                    if (Path(dirpath) / d).is_symlink())
         dirnames[:] = kept
         for fname in filenames:
             rel = rel_dir / fname
             fpath = hermes_root / rel
+            if skipped_symlinks is not None and fpath.is_symlink() and not _should_exclude(rel):
+                skipped_symlinks.append(str(rel))
             # zipfile.write() follows file symlinks, so skip links before any archive write can
             # copy data from outside HERMES_HOME; never archive the output zip into itself.
             if _should_exclude(rel) or fpath.is_symlink():
@@ -630,7 +637,8 @@ def _run_backup_locked(args, hermes_root: Path) -> bool:
     logger.info("backup phase=scan status=started")
     print(f"Scanning {display_hermes_home()} ...")
     skipped_dirs: set = set()
-    files_to_add: list[tuple[Path, Path]] = list(_iter_backup_files(hermes_root, out_path, skipped_dirs))
+    skipped_symlinks: list[str] = []
+    files_to_add = list(_iter_backup_files(hermes_root, out_path, skipped_dirs, skipped_symlinks))
     external_to_add, skipped_external = _collect_external_entries()
     if not files_to_add and not external_to_add:
         logger.info("backup phase=scan status=empty duration_ms=%.1f", (time.monotonic() - scan_started) * 1000)
@@ -679,6 +687,9 @@ def _run_backup_locked(args, hermes_root: Path) -> bool:
               "(not portable):\n" + "\n".join(f"    {p}" for p in sorted(skipped_external)[:10]))
     if skipped_dirs:
         print("\n  Excluded directories:\n" + "\n".join(f"    {d}/" for d in sorted(skipped_dirs)))
+    if skipped_symlinks:
+        _print_capped(f"\n  Symlinks skipped (not archived): {len(skipped_symlinks)}",
+                      sorted(skipped_symlinks), "    ")
     if errors:
         _print_capped(f"\n  Archive kept, but {len(errors)} file(s) could not be added (exit status 1):",
                       errors, "  ")

@@ -1022,6 +1022,11 @@ class GatewayKanbanWatchersMixin:
                     stale_timeout_seconds=stale_timeout_seconds,
                     default_assignee=default_assignee,
                     max_in_progress_per_profile=max_in_progress_per_profile,
+                    # The process-lifetime singleton lock proves that no prior
+                    # gateway dispatcher sharing this Hermes home is alive.
+                    # kanban_db combines that proof with a foreign claim host
+                    # before requeueing restart-killed workers.
+                    owns_singleton_dispatcher_lock=(_lock_state == "held"),
                 )
             except sqlite3.DatabaseError as exc:
                 if _is_corrupt_board_db_error(exc):

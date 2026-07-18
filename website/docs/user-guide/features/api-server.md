@@ -112,6 +112,47 @@ Uploaded files (`file` / `input_file` / `file_id`) and non-image `data:` URLs re
 - **Chat Completions**: Hermes emits `event: hermes.tool.progress` for tool-start visibility without polluting persisted assistant text.
 - **Responses**: Hermes emits spec-native `function_call` and `function_call_output` output items during the SSE stream, so clients can render structured tool UI in real time.
 
+#### Ephemeral read-only-memory turns
+
+Clients that own the canonical conversation transcript can request an isolated
+agent turn by adding `X-Hermes-Ephemeral: true` to a Chat Completions request.
+Hermes still loads the active profile's identity and existing memory for
+context, but does not expose model-callable tools for the ephemeral request. For
+that request, Hermes:
+
+- does not create or update a session transcript;
+- does not expose memory-provider or built-in memory mutation tools;
+- does not expose file, shell, messaging, scheduling, skill, plugin, or other model-callable tools;
+- does not run automatic memory/skill curator nudges;
+- does not sync the turn or session-end observations to external memory;
+- does not write provider-error request dumps; and
+- does not place the result in the idempotency cache.
+
+The mode fails closed. The header value must be exactly `true`, and the request
+must not include `X-Hermes-Session-Id`, `X-Hermes-Session-Key`, or
+`Idempotency-Key`. A non-streaming response includes an `X-Hermes-Ephemeral:
+true` header and a machine-readable `hermes` object:
+
+```json
+{
+  "hermes": {
+    "ephemeral": true,
+    "persistence": "disabled",
+    "memory": "read-only",
+    "tools": "disabled",
+    "profile": "hermes-agent",
+    "provider": "configured-provider",
+    "model": "configured-runtime-model"
+  }
+}
+```
+
+`profile` is the stable Hermes agent identity advertised by the API server;
+`provider` and `model` record the actual inference route used for that turn.
+This mode controls Hermes persistence, not an upstream model provider's own
+logging or retention. Clients handling sensitive context must review that
+separate boundary.
+
 ### POST /v1/responses
 
 OpenAI Responses API format. Supports server-side conversation state via `previous_response_id` — the server stores full conversation history (including tool calls and results) so multi-turn context is preserved without the client managing it.
@@ -214,7 +255,9 @@ Returns a machine-readable description of the API server's stable surface for ex
     "run_submission": true,
     "run_status": true,
     "run_events_sse": true,
-    "run_stop": true
+    "run_stop": true,
+    "ephemeral_chat_completions": true,
+    "ephemeral_header": "X-Hermes-Ephemeral"
   }
 }
 ```

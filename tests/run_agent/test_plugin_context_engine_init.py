@@ -107,6 +107,36 @@ def test_active_context_engine_tools_survive_explicit_platform_toolsets():
     }
 
 
+def test_tools_disabled_agent_does_not_inject_context_engine_tools():
+    """Plugin recovery schemas must not bypass the tools-disabled boundary."""
+    engine = _ToolEngine()
+    cfg = {"context": {"engine": "stub"}, "agent": {}}
+
+    with (
+        patch("hermes_cli.config.load_config", return_value=cfg),
+        patch("plugins.context_engine.load_context_engine", return_value=engine),
+        patch("agent.model_metadata.get_model_context_length", return_value=204_800),
+        patch("run_agent.get_tool_definitions", return_value=[]),
+        patch("run_agent.check_toolset_requirements", return_value={}),
+        patch("run_agent.OpenAI"),
+    ):
+        from run_agent import AIAgent
+
+        agent = AIAgent(
+            api_key="test-key-1234567890",
+            base_url="https://openrouter.ai/api/v1",
+            enabled_toolsets=["context_engine"],
+            quiet_mode=True,
+            skip_context_files=True,
+            skip_memory=True,
+            tools_disabled=True,
+        )
+
+    assert engine.get_tool_schemas()
+    assert getattr(agent, "tools", None) == []
+    assert getattr(agent, "valid_tool_names", None) == set()
+
+
 def test_plugin_engine_update_model_args():
     """Verify update_model() receives model, context_length, base_url, api_key, provider."""
     engine = _StubEngine()

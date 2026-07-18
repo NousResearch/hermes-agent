@@ -1712,6 +1712,7 @@ class APIServerAdapter(BasePlatformAdapter):
         tool_complete_callback=None,
         gateway_session_key: Optional[str] = None,
         route: Optional[Dict[str, Any]] = None,
+        ephemeral: bool = False,
     ) -> Any:
         """
         Create an AIAgent instance using the gateway's runtime config.
@@ -1827,10 +1828,13 @@ class APIServerAdapter(BasePlatformAdapter):
             tool_progress_callback=tool_progress_callback,
             tool_start_callback=tool_start_callback,
             tool_complete_callback=tool_complete_callback,
-            session_db=self._ensure_session_db(),
+            session_db=None if ephemeral else self._ensure_session_db(),
             fallback_model=fallback_model,
             reasoning_config=reasoning_config,
             gateway_session_key=gateway_session_key,
+            persist_disabled=ephemeral,
+            memory_read_only=ephemeral,
+            tools_disabled=ephemeral,
         )
         return agent
 
@@ -2001,6 +2005,8 @@ class APIServerAdapter(BasePlatformAdapter):
                 "realtime_voice": False,
                 "session_continuity_header": "X-Hermes-Session-Id",
                 "session_key_header": "X-Hermes-Session-Key",
+                "ephemeral_chat_completions": True,
+                "ephemeral_header": "X-Hermes-Ephemeral",
                 "cors": bool(self._cors_origins),
             },
             "endpoints": {
@@ -2556,6 +2562,36 @@ class APIServerAdapter(BasePlatformAdapter):
         if limited is not None:
             return limited
 
+        raw_ephemeral = request.headers.get("X-Hermes-Ephemeral")
+        if raw_ephemeral is not None and raw_ephemeral != "true":
+            return web.json_response(
+                _openai_error(
+                    "X-Hermes-Ephemeral must be exactly 'true' when present",
+                    code="invalid_ephemeral_mode",
+                ),
+                status=400,
+            )
+        ephemeral = raw_ephemeral == "true"
+        if ephemeral and (
+            request.headers.get("X-Hermes-Session-Id")
+            or request.headers.get("X-Hermes-Session-Key")
+        ):
+            return web.json_response(
+                _openai_error(
+                    "Ephemeral requests cannot use durable session headers",
+                    code="ephemeral_session_conflict",
+                ),
+                status=400,
+            )
+        if ephemeral and request.headers.get("Idempotency-Key"):
+            return web.json_response(
+                _openai_error(
+                    "Ephemeral requests cannot use response caching",
+                    code="ephemeral_cache_conflict",
+                ),
+                status=400,
+            )
+
         # Parse request body
         try:
             body = await request.json()
@@ -2661,6 +2697,10 @@ class APIServerAdapter(BasePlatformAdapter):
             except Exception as e:
                 logger.warning("Failed to load session history for %s: %s", session_id, e)
                 history = []
+        elif ephemeral:
+            # The caller supplies the full transcript. A random, non-reusable
+            # task identity prevents accidental continuity across room turns.
+            session_id = f"api-ephemeral-{uuid.uuid4().hex}"
         else:
             # Derive a stable session ID from the conversation fingerprint so
             # that consecutive messages from the same Open WebUI (or similar)
@@ -2766,6 +2806,7 @@ class APIServerAdapter(BasePlatformAdapter):
                 agent_ref=agent_ref,
                 gateway_session_key=gateway_session_key,
                 route=route,
+                ephemeral=ephemeral,
             ))
             # Ensure SSE drain loops can terminate without relying on polling
             # agent_task.done(), which can race with queue timeout checks.
@@ -2775,6 +2816,7 @@ class APIServerAdapter(BasePlatformAdapter):
                 request, completion_id, model_name, created, _stream_q,
                 agent_task, agent_ref, session_id=session_id,
                 gateway_session_key=gateway_session_key,
+                ephemeral=ephemeral,
             )
 
         # Non-streaming: run the agent (with optional Idempotency-Key)
@@ -2786,6 +2828,7 @@ class APIServerAdapter(BasePlatformAdapter):
                 session_id=session_id,
                 gateway_session_key=gateway_session_key,
                 route=route,
+                ephemeral=ephemeral,
             )
 
         idempotency_key = request.headers.get("Idempotency-Key")
@@ -2826,9 +2869,11 @@ class APIServerAdapter(BasePlatformAdapter):
         else:
             finish_reason = "stop"
 
-        response_headers = {
-            "X-Hermes-Session-Id": result.get("session_id", session_id),
-        }
+        response_headers = {}
+        if ephemeral:
+            response_headers["X-Hermes-Ephemeral"] = "true"
+        else:
+            response_headers["X-Hermes-Session-Id"] = result.get("session_id", session_id)
         if gateway_session_key:
             response_headers["X-Hermes-Session-Key"] = gateway_session_key
 
@@ -2874,14 +2919,25 @@ class APIServerAdapter(BasePlatformAdapter):
                 "total_tokens": usage.get("total_tokens", 0),
             },
         }
-        if is_partial or is_failed or not completed:
+        if ephemeral:
+            runtime = result.get("_hermes_runtime", {})
             response_data["hermes"] = {
+                "ephemeral": True,
+                "profile": model_name,
+                "provider": runtime.get("provider"),
+                "model": runtime.get("model"),
+                "persistence": "disabled",
+                "memory": "read-only",
+                "tools": "disabled",
+            }
+        if is_partial or is_failed or not completed:
+            response_data.setdefault("hermes", {}).update({
                 "completed": completed,
                 "partial": is_partial,
                 "failed": is_failed,
                 "error": err_msg,
                 "error_code": "output_truncated" if finish_reason == "length" else "agent_error",
-            }
+            })
             response_headers["X-Hermes-Completed"] = "false"
             response_headers["X-Hermes-Partial"] = "true" if is_partial else "false"
             if err_msg:
@@ -2892,7 +2948,7 @@ class APIServerAdapter(BasePlatformAdapter):
     async def _write_sse_chat_completion(
         self, request: "web.Request", completion_id: str, model: str,
         created: int, stream_q, agent_task, agent_ref=None, session_id: str = None,
-        gateway_session_key: str = None,
+        gateway_session_key: str = None, ephemeral: bool = False,
     ) -> "web.StreamResponse":
         """Write real streaming SSE from agent's stream_delta_callback queue.
 
@@ -2913,7 +2969,9 @@ class APIServerAdapter(BasePlatformAdapter):
         cors = self._cors_headers_for_origin(origin) if origin else None
         if cors:
             sse_headers.update(cors)
-        if session_id:
+        if ephemeral:
+            sse_headers["X-Hermes-Ephemeral"] = "true"
+        elif session_id:
             sse_headers["X-Hermes-Session-Id"] = session_id
         if gateway_session_key:
             sse_headers["X-Hermes-Session-Key"] = gateway_session_key
@@ -4533,6 +4591,7 @@ class APIServerAdapter(BasePlatformAdapter):
         agent_ref: Optional[list] = None,
         gateway_session_key: Optional[str] = None,
         route: Optional[Dict[str, Any]] = None,
+        ephemeral: bool = False,
     ) -> tuple:
         """
         Create an agent and run a conversation in a thread executor.
@@ -4574,6 +4633,7 @@ class APIServerAdapter(BasePlatformAdapter):
                         tool_complete_callback=tool_complete_callback,
                         gateway_session_key=gateway_session_key,
                         route=route,
+                        ephemeral=ephemeral,
                     )
                     if agent_ref is not None:
                         agent_ref[0] = agent
@@ -4594,6 +4654,11 @@ class APIServerAdapter(BasePlatformAdapter):
                     _eff_sid = getattr(agent, "session_id", session_id)
                     if isinstance(_eff_sid, str) and _eff_sid:
                         result["session_id"] = _eff_sid
+                    if ephemeral:
+                        result["_hermes_runtime"] = {
+                            "provider": getattr(agent, "provider", None),
+                            "model": getattr(agent, "model", None),
+                        }
                     return result, usage
                 finally:
                     clear_session_vars(tokens)

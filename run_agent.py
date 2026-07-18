@@ -479,6 +479,9 @@ class AIAgent:
         skip_context_files: bool = False,
         load_soul_identity: bool = False,
         skip_memory: bool = False,
+        persist_disabled: bool = False,
+        memory_read_only: bool = False,
+        tools_disabled: bool = False,
         session_db=None,
         parent_session_id: str = None,
         iteration_budget: "IterationBudget" = None,
@@ -555,6 +558,9 @@ class AIAgent:
             skip_context_files=skip_context_files,
             load_soul_identity=load_soul_identity,
             skip_memory=skip_memory,
+            persist_disabled=persist_disabled,
+            memory_read_only=memory_read_only,
+            tools_disabled=tools_disabled,
             session_db=session_db,
             parent_session_id=parent_session_id,
             iteration_budget=iteration_budget,
@@ -3403,10 +3409,11 @@ class AIAgent:
         session expiry, etc.
         """
         if self._memory_manager:
-            try:
-                self._memory_manager.on_session_end(messages or [])
-            except Exception as e:
-                logger.warning("Memory provider on_session_end failed during shutdown: %s", e, exc_info=True)
+            if not getattr(self, "_memory_read_only", False):
+                try:
+                    self._memory_manager.on_session_end(messages or [])
+                except Exception as e:
+                    logger.warning("Memory provider on_session_end failed during shutdown: %s", e, exc_info=True)
             try:
                 self._memory_manager.shutdown_all()
             except Exception:
@@ -3480,7 +3487,7 @@ class AIAgent:
         providers are strictly best-effort — a misconfigured or offline
         backend must not block the user from seeing their response.
         """
-        if interrupted:
+        if interrupted or getattr(self, "_memory_read_only", False):
             return
         if not (self._memory_manager and final_response and original_user_message):
             return

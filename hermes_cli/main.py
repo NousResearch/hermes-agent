@@ -9848,7 +9848,8 @@ def _cmd_update_impl(args, gateway_mode: bool):
         print("✗ Update blocked: update safety configuration is invalid or unreadable.")
         print(f"  {update_safety_config_error}")
         print("  Fix config.yaml before retrying the update.")
-        sys.exit(1)
+        # Exit 3 is the staged Desktop updater's terminal policy-rejection code.
+        sys.exit(3)
 
     print("⚕ Updating Hermes Agent...")
     print()
@@ -10075,7 +10076,8 @@ def _cmd_update_impl(args, gateway_mode: bool):
                     "updates.protect_local_commits to false."
                 )
                 _resume_windows_gateways_after_update(_windows_gateway_resume)
-                sys.exit(1)
+                # Exit 3 is the staged Desktop updater's terminal policy-rejection code.
+                sys.exit(3)
 
         # If user is on a different branch than the update target, switch
         # to the target. When the target is "main" this is the historical
@@ -10102,8 +10104,13 @@ def _cmd_update_impl(args, gateway_mode: bool):
                 # it up as a tracking branch of origin/<branch>. This is
                 # the common case when the requested branch exists upstream
                 # but was never checked out locally.
+                checkout_args = (
+                    ["checkout", "--track", "-b", branch, f"origin/{branch}"]
+                    if protect_local_commits
+                    else ["checkout", "-B", branch, f"origin/{branch}"]
+                )
                 track_result = subprocess.run(
-                    git_cmd + ["checkout", "-B", branch, f"origin/{branch}"],
+                    git_cmd + checkout_args,
                     cwd=PROJECT_ROOT,
                     capture_output=True,
                     text=True,
@@ -10238,6 +10245,17 @@ def _cmd_update_impl(args, gateway_mode: bool):
                 text=True,
             )
             if pull_result.returncode != 0:
+                if protect_local_commits:
+                    print(
+                        "✗ Fast-forward update is not possible while local commits are protected."
+                    )
+                    print(
+                        f"  Refusing to reset branch '{branch}' to origin/{branch}. "
+                        "Review and integrate the divergence manually."
+                    )
+                    _resume_windows_gateways_after_update(_windows_gateway_resume)
+                    # Exit 3 prevents Desktop from retrying a policy rejection.
+                    sys.exit(3)
                 # ff-only failed — local and remote have diverged (e.g. upstream
                 # force-pushed or rebase).  Since local changes are already
                 # stashed, reset to match the remote exactly.
@@ -10277,7 +10295,7 @@ def _cmd_update_impl(args, gateway_mode: bool):
                     # ~6 lines so the user sees the actual SyntaxError text.
                     for line in str(syntax_error).splitlines()[:6]:
                         print(f"    {line}")
-                if pre_pull_sha:
+                if pre_pull_sha and not protect_local_commits:
                     print()
                     print(f"→ Rolling back to {pre_pull_sha[:10]}...")
                     rollback_result = subprocess.run(
@@ -10294,11 +10312,15 @@ def _cmd_update_impl(args, gateway_mode: bool):
                         print(f"    cd {PROJECT_ROOT} && git reset --hard {pre_pull_sha}")
                         if rollback_result.stderr.strip():
                             print(f"    ({rollback_result.stderr.strip().splitlines()[0]})")
-                else:
+                elif not pre_pull_sha:
                     print()
                     print("  Could not capture pre-pull SHA — recover manually with:")
                     print(f"    cd {PROJECT_ROOT} && git reflog && git reset --hard <prev-sha>")
-                sys.exit(1)
+                else:
+                    print()
+                    print("  Automatic rollback is disabled while local commits are protected.")
+                    print(f"  Review the update and recover manually from {pre_pull_sha} if needed.")
+                sys.exit(3 if protect_local_commits else 1)
 
             update_succeeded = True
         finally:
@@ -11535,7 +11557,7 @@ def _cmd_update_impl(args, gateway_mode: bool):
                 _resume_windows_gateways_after_update(_windows_gateway_resume)
             else:
                 print(f"✗ Update failed: {e}")
-            sys.exit(1)
+            sys.exit(3 if protect_local_commits else 1)
 
 
 def _coalesce_session_name_args(argv: list) -> list:

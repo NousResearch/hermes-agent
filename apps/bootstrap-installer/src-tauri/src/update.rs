@@ -41,6 +41,18 @@ use crate::events::{BootstrapEvent, LogStream, StageInfo, StageState};
 /// hermes_cli/main.py (sys.exit(2)). We surface a targeted message for this.
 const UPDATE_EXIT_CONCURRENT: i32 = 2;
 
+/// `hermes update` exit code meaning a configured safety policy rejected the
+/// update before any destructive checkout/reset. Retrying the same request
+/// cannot make it safe and can produce misleading lock errors.
+const UPDATE_EXIT_PROTECTED: i32 = 3;
+
+fn update_needs_retry(exit_code: Option<i32>) -> bool {
+    !matches!(
+        exit_code,
+        Some(0) | Some(UPDATE_EXIT_CONCURRENT) | Some(UPDATE_EXIT_PROTECTED)
+    )
+}
+
 /// How long to wait for the old desktop process to release files under the
 /// install tree before giving up and letting `hermes update`'s own guard decide.
 const DESKTOP_EXIT_WAIT: Duration = Duration::from_secs(20);
@@ -267,7 +279,7 @@ async fn run_update(app: AppHandle) -> Result<()> {
     // stare at a scary crash first), retry once automatically. Skip the retry
     // for the concurrent-instance guard (exit 2) — that's a "close Hermes" state
     // a retry can't fix.
-    if !matches!(update.exit_code, Some(0) | Some(UPDATE_EXIT_CONCURRENT)) {
+    if update_needs_retry(update.exit_code) {
         emit_log(
             &app,
             Some("update"),
@@ -294,6 +306,26 @@ async fn run_update(app: AppHandle) -> Result<()> {
         Some(code) if code == UPDATE_EXIT_CONCURRENT => {
             let msg = "Hermes is still running. Close all Hermes windows and try \
                        the update again."
+                .to_string();
+            emit_stage(
+                &app,
+                "update",
+                StageState::Failed,
+                Some(update_ms),
+                Some(msg.clone()),
+            );
+            emit(
+                &app,
+                BootstrapEvent::Failed {
+                    stage: Some("update".into()),
+                    error: msg.clone(),
+                },
+            );
+            return Err(anyhow!(msg));
+        }
+        Some(code) if code == UPDATE_EXIT_PROTECTED => {
+            let msg = "Update blocked to preserve reviewed local deployment commits. \
+                       Publish or manually integrate those commits before updating."
                 .to_string();
             emit_stage(
                 &app,
@@ -1173,6 +1205,21 @@ mod tests {
             with_install.len(),
             base.len() + 1,
             "include_install adds exactly one stage"
+        );
+    }
+
+    #[test]
+    fn update_retries_only_for_transient_failures() {
+        assert!(!update_needs_retry(Some(0)), "success must not retry");
+        assert!(update_needs_retry(Some(1)), "ordinary failure retries once");
+        assert!(update_needs_retry(None), "a killed update retries once");
+        assert!(
+            !update_needs_retry(Some(UPDATE_EXIT_CONCURRENT)),
+            "concurrent-process rejection is terminal"
+        );
+        assert!(
+            !update_needs_retry(Some(UPDATE_EXIT_PROTECTED)),
+            "local-commit protection rejection is terminal"
         );
     }
 

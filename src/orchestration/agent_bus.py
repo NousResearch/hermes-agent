@@ -50,16 +50,21 @@ class AgentCommunicationBus:
                 break
         return out
 
-    def broadcast_tool_hint(
+    async def broadcast_tool_hint(
         self,
         *,
         from_agent: str,
         tool_name: str,
         args_preview: str,
     ) -> AgentMessage:
-        return AgentMessage(
+        msg = AgentMessage(
             kind="tool.hint",
             from_agent=from_agent,
             to_agent="*",
             payload={"tool": tool_name, "preview": args_preview},
         )
+        async with self._lock:
+            for agent_id, q in self._queues.items():
+                if agent_id != from_agent:
+                    await q.put(msg)
+        return msg

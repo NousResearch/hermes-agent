@@ -210,6 +210,11 @@ class TaskGraph:
     """Directed acyclic batch executor."""
 
     def __init__(self, specs: Sequence[GraphTaskSpec]) -> None:
+        # _validate_specs may run twice if the caller already used
+        # validate_dag() (the public pre-flight check).  This is
+        # intentional — the constructor guard ensures a TaskGraph is
+        # never constructed with invalid specs regardless of whether
+        # the caller ran the pre-flight.
         self._spec_by_id = _validate_specs(tuple(specs))
         self._dependents: Dict[str, List[str]] = defaultdict(list)
         self._pending_deps: Dict[str, int] = {}

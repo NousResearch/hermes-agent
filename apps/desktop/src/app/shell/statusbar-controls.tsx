@@ -2,7 +2,7 @@ import { type ComponentProps, type ReactNode, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from '@/components/ui/dropdown-menu'
-import { Tip, Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@/components/ui/tooltip'
+import { Tip, TipKeybindLabel, Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@/components/ui/tooltip'
 import { cn } from '@/lib/utils'
 
 // Shared chrome styling for interactive statusbar items (button / link / menu
@@ -42,6 +42,8 @@ export interface StatusbarItem {
   menuContent?: ((close: () => void) => ReactNode) | ReactNode
   menuItems?: readonly StatusbarMenuItem[]
   onSelect?: (modifiers: StatusbarSelectModifiers) => void
+  /** Keybind action id — when set, the tooltip shows the label + keybind hint. */
+  actionId?: string
   title?: string
   to?: string
   variant?: 'action' | 'link' | 'menu' | 'text'
@@ -101,6 +103,8 @@ function StatusbarItemView({ item, navigate }: { item: StatusbarItem; navigate: 
     return <>{item.render()}</>
   }
 
+  const tooltipLabel = item.actionId ? <TipKeybindLabel actionId={item.actionId} text={item.title} /> : item.title
+
   const content = (
     <>
       {item.icon}
@@ -129,7 +133,7 @@ function StatusbarItemView({ item, navigate }: { item: StatusbarItem; navigate: 
           <TooltipProvider delayDuration={0}>
             <Tooltip>
               <TooltipTrigger asChild>{trigger}</TooltipTrigger>
-              <TooltipContent>{item.title}</TooltipContent>
+              <TooltipContent>{tooltipLabel}</TooltipContent>
             </Tooltip>
           </TooltipProvider>
         ) : (
@@ -185,7 +189,7 @@ function StatusbarItemView({ item, navigate }: { item: StatusbarItem; navigate: 
 
   if (item.variant === 'text' && !item.onSelect && !item.to && !item.href) {
     return (
-      <Tip label={item.title}>
+      <Tip label={tooltipLabel}>
         <div
           className={cn(
             'inline-flex h-full items-center gap-1 px-1.5 text-[0.6875rem] text-(--ui-text-tertiary)',
@@ -200,7 +204,7 @@ function StatusbarItemView({ item, navigate }: { item: StatusbarItem; navigate: 
 
   if (item.href || item.variant === 'link') {
     return (
-      <Tip label={item.title}>
+      <Tip label={tooltipLabel}>
         <a className={cn(STATUSBAR_ACTION_CLASS, item.className)} href={item.href} rel="noreferrer" target="_blank">
           {content}
         </a>
@@ -209,7 +213,7 @@ function StatusbarItemView({ item, navigate }: { item: StatusbarItem; navigate: 
   }
 
   return (
-    <Tip label={item.title}>
+    <Tip label={tooltipLabel}>
       <button
         className={cn(STATUSBAR_ACTION_CLASS, item.className)}
         disabled={item.disabled}

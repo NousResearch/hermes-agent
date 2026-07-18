@@ -1504,6 +1504,85 @@ class TestMediaDeliveryDefaultMode:
         assert BasePlatformAdapter.validate_media_delivery_path(str(link)) is None
 
 
+class TestDockerContainerMediaPathTranslation:
+    """MEDIA:/workspace (and configured mounts) must resolve to host paths."""
+
+    def test_configured_workspace_mount_translates(self, tmp_path, monkeypatch):
+        import json
+
+        host_ws = tmp_path / "host-ws"
+        host_ws.mkdir()
+        media = host_ws / "shot.png"
+        media.write_bytes(b"\x89PNG\r\n\x1a\n")
+        monkeypatch.setenv(
+            "TERMINAL_DOCKER_VOLUMES",
+            json.dumps([f"{host_ws}:/workspace"]),
+        )
+        monkeypatch.delenv("TERMINAL_ENV", raising=False)
+
+        assert BasePlatformAdapter.validate_media_delivery_path(
+            "/workspace/shot.png"
+        ) == str(media.resolve())
+
+    def test_configured_output_mount_translates(self, tmp_path, monkeypatch):
+        import json
+
+        host_out = tmp_path / "documents"
+        host_out.mkdir()
+        media = host_out / "report.pdf"
+        media.write_bytes(b"%PDF-1.4")
+        monkeypatch.setenv(
+            "TERMINAL_DOCKER_VOLUMES",
+            json.dumps([f"{host_out}:/output"]),
+        )
+
+        assert BasePlatformAdapter.validate_media_delivery_path(
+            "/output/report.pdf"
+        ) == str(media.resolve())
+
+    def test_longest_prefix_wins(self, tmp_path, monkeypatch):
+        import json
+
+        host_a = tmp_path / "a"
+        host_b = tmp_path / "b"
+        host_a.mkdir()
+        host_b.mkdir()
+        nested = host_b / "file.png"
+        nested.write_bytes(b"png")
+        monkeypatch.setenv(
+            "TERMINAL_DOCKER_VOLUMES",
+            json.dumps([
+                f"{host_a}:/data",
+                f"{host_b}:/data/nested",
+            ]),
+        )
+
+        assert BasePlatformAdapter.validate_media_delivery_path(
+            "/data/nested/file.png"
+        ) == str(nested.resolve())
+
+    def test_default_persistent_workspace_fallback(self, tmp_path, monkeypatch):
+        sandbox = tmp_path / "sandboxes"
+        ws = sandbox / "docker" / "default" / "workspace"
+        ws.mkdir(parents=True)
+        media = ws / "out.png"
+        media.write_bytes(b"png")
+        monkeypatch.setenv("TERMINAL_ENV", "docker")
+        monkeypatch.setenv("TERMINAL_CONTAINER_PERSISTENT", "true")
+        monkeypatch.setenv("TERMINAL_SANDBOX_DIR", str(sandbox))
+        monkeypatch.delenv("TERMINAL_DOCKER_VOLUMES", raising=False)
+        monkeypatch.delenv("TERMINAL_DOCKER_MOUNT_CWD_TO_WORKSPACE", raising=False)
+
+        assert BasePlatformAdapter.validate_media_delivery_path(
+            "/workspace/out.png"
+        ) == str(media.resolve())
+
+    def test_unmapped_container_path_fails(self, monkeypatch):
+        monkeypatch.delenv("TERMINAL_DOCKER_VOLUMES", raising=False)
+        monkeypatch.delenv("TERMINAL_ENV", raising=False)
+        assert BasePlatformAdapter.validate_media_delivery_path("/workspace/nope.png") is None
+
+
 # ---------------------------------------------------------------------------
 # should_send_media_as_audio
 # ---------------------------------------------------------------------------

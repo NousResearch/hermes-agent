@@ -234,6 +234,108 @@ class TestPlayInVoiceChannelMixerPath:
         assert vc.play.called
 
 
+class TestLeadSilence:
+    """Warm-up lead silence prepended to speech so the first word isn't clipped
+    (issue #66827)."""
+
+    def test_bytes_empty_when_unset(self):
+        adapter = _make_adapter()  # default cfg has no lead_silence_ms
+        assert adapter._lead_silence_bytes() == b""
+
+    def test_bytes_empty_when_zero_or_negative(self):
+        assert _make_adapter({"lead_silence_ms": 0})._lead_silence_bytes() == b""
+        assert _make_adapter({"lead_silence_ms": -50})._lead_silence_bytes() == b""
+
+    def test_bytes_empty_when_non_numeric(self):
+        assert _make_adapter({"lead_silence_ms": "nope"})._lead_silence_bytes() == b""
+
+    def test_bytes_length_matches_ms(self):
+        adapter = _make_adapter({"lead_silence_ms": 200})
+        lead = adapter._lead_silence_bytes()
+        assert lead == b"\x00" * (vm.BYTES_PER_MS * 200)
+        assert len(lead) == 200 * 192  # 48kHz stereo s16 -> 192 bytes/ms
+
+    @pytest.mark.asyncio
+    async def test_mixer_path_prepends_lead_silence(self):
+        adapter = _make_adapter({
+            "enabled": True, "speech_gain": 1.0, "lead_silence_ms": 200,
+        })
+        vc = MagicMock()
+        vc.is_connected.return_value = True
+        adapter._voice_clients[111] = vc
+
+        class _Mixer:
+            def __init__(self):
+                self._polls = 0
+                self.play_speech = MagicMock()
+
+            @property
+            def speech_active(self):
+                self._polls += 1
+                return self._polls <= 1
+
+        mixer = _Mixer()
+        adapter._voice_mixers[111] = mixer
+        adapter._reset_voice_timeout = MagicMock()
+
+        fake_pcm = b"\x11" * vm.FRAME_SIZE
+        with patch.object(vm, "decode_to_pcm", return_value=fake_pcm):
+            ok = await adapter.play_in_voice_channel(111, "/tmp/x.mp3")
+        assert ok is True
+        sent = mixer.play_speech.call_args.args[0]
+        assert len(sent) == vm.BYTES_PER_MS * 200 + vm.FRAME_SIZE
+        assert sent.startswith(b"\x00" * (vm.BYTES_PER_MS * 200))
+        assert sent.endswith(fake_pcm)
+
+    @pytest.mark.asyncio
+    async def test_legacy_path_applies_adelay(self):
+        adapter = _make_adapter({"lead_silence_ms": 150})  # no mixer installed
+        vc = MagicMock()
+        vc.is_connected.return_value = True
+        vc.is_playing.return_value = False
+        adapter._voice_clients[111] = vc
+        adapter._reset_voice_timeout = MagicMock()
+        adapter._voice_receivers[111] = MagicMock()
+
+        with patch("plugins.platforms.discord.adapter.discord") as mock_discord:
+            mock_discord.FFmpegPCMAudio.return_value = MagicMock()
+            mock_discord.PCMVolumeTransformer.return_value = MagicMock()
+
+            async def _fast(coro, *a, **k):
+                if hasattr(coro, "close"):
+                    coro.close()
+                return None
+            with patch("asyncio.wait_for", _fast):
+                await adapter.play_in_voice_channel(111, "/tmp/x.mp3")
+
+        _, kwargs = mock_discord.FFmpegPCMAudio.call_args
+        assert kwargs.get("options") == "-af adelay=150:all=1"
+
+    @pytest.mark.asyncio
+    async def test_legacy_path_no_option_when_disabled(self):
+        adapter = _make_adapter({"lead_silence_ms": 0})
+        vc = MagicMock()
+        vc.is_connected.return_value = True
+        vc.is_playing.return_value = False
+        adapter._voice_clients[111] = vc
+        adapter._reset_voice_timeout = MagicMock()
+        adapter._voice_receivers[111] = MagicMock()
+
+        with patch("plugins.platforms.discord.adapter.discord") as mock_discord:
+            mock_discord.FFmpegPCMAudio.return_value = MagicMock()
+            mock_discord.PCMVolumeTransformer.return_value = MagicMock()
+
+            async def _fast(coro, *a, **k):
+                if hasattr(coro, "close"):
+                    coro.close()
+                return None
+            with patch("asyncio.wait_for", _fast):
+                await adapter.play_in_voice_channel(111, "/tmp/x.mp3")
+
+        _, kwargs = mock_discord.FFmpegPCMAudio.call_args
+        assert "options" not in kwargs
+
+
 class TestPlayAckInVoice:
     @pytest.mark.asyncio
     async def test_noop_when_ack_disabled(self):

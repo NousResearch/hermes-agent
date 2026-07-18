@@ -434,10 +434,11 @@ function bindPaneVisibility(
   paneId: string,
   $open: { get(): boolean; listen(fn: (open: boolean) => void): void },
   close?: () => void,
-  open?: () => void
+  open?: () => void,
+  revealOnShow = true
 ) {
-  setTreePaneHidden(paneId, !$open.get())
-  $open.listen(isOpen => setTreePaneHidden(paneId, !isOpen))
+  setTreePaneHidden(paneId, !$open.get(), { revealOnShow })
+  $open.listen(isOpen => setTreePaneHidden(paneId, !isOpen, { revealOnShow }))
 
   // The tab menu's Close routes through the owning store (never dismissal),
   // so the pane's toggle buttons stay truthful.
@@ -517,13 +518,24 @@ bindTreeSideVisibility('right', $fileBrowserOpen, setFileBrowserOpen)
 // rode the rail's row and vanished with it), its zone stands on its own.
 const $hasWorkspace = computed($currentCwd, cwd => Boolean(cwd.trim()))
 
-bindPaneVisibility('files', $hasWorkspace)
+// Workspace discovery is structural availability, not user intent to reveal
+// the pane. Unhide Files without reopening a side the user explicitly closed;
+// an actual file/browser action still goes through revealTreePane.
+bindPaneVisibility('files', $hasWorkspace, undefined, undefined, false)
 // ⌘G — the review sidebar appears/disappears (and comes to the front).
 bindPaneVisibility(
   'review',
   computed([$reviewOpen, $hasWorkspace], (open, workspace) => open && workspace),
-  closeReview
+  closeReview,
+  undefined,
+  false
 )
+// Unlike a cwd change, toggling Review on is explicit reveal intent.
+$reviewOpen.listen(open => {
+  if (open && $hasWorkspace.get()) {
+    revealTreePane(REVIEW_PANE_ID)
+  }
+})
 // ⌃` / statusbar toggle — the terminal COLLAPSES to a rail (tab stays), not
 // hides; PTYs stay alive while collapsed (see PersistentTerminal).
 bindPaneCollapse(

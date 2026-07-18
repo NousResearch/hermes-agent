@@ -117,7 +117,7 @@ function toggledSet<T>(set: ReadonlySet<T>, item: T, present: boolean): Set<T> |
   return next
 }
 
-export function setTreePaneHidden(paneId: string, hidden: boolean) {
+export function setTreePaneHidden(paneId: string, hidden: boolean, options: { revealOnShow?: boolean } = {}) {
   const next = toggledSet($hiddenTreePanes.get(), paneId, hidden)
 
   if (!next) {
@@ -126,8 +126,10 @@ export function setTreePaneHidden(paneId: string, hidden: boolean) {
 
   $hiddenTreePanes.set(next)
 
-  // Unhiding is an intent to SEE the pane — front it in its group.
-  if (!hidden) {
+  // Most unhide calls are explicit intent to SEE the pane, so front it in its
+  // group and open its side. Structural availability changes (for example a
+  // workspace cwd appearing) opt out so they cannot override persisted chrome.
+  if (!hidden && options.revealOnShow !== false) {
     revealTreePane(paneId)
   }
 }

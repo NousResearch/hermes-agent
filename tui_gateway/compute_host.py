@@ -376,7 +376,13 @@ class ComputeHost:
             except Exception:
                 pass
             text = frame.get("text") if "text" in frame else frame.get("prompt", "")
-            server._run_prompt_submit(request_id, sid, session, text)
+            getattr(server, "_run_prompt_submit")(
+                request_id,
+                sid,
+                session,
+                text,
+                turn_id=str(frame.get("user_turn_id") or ""),
+            )
             run_thread = session.get("_run_thread")
             if run_thread is not None and hasattr(run_thread, "join"):
                 run_thread.join()
@@ -420,6 +426,7 @@ class ComputeHost:
         session = server._sessions.get(sid)
         if session is not None:
             session["transport"] = self._transport
+            session["user_turn_id"] = str(frame.get("user_turn_id") or "")
             if frame.get("cols") is not None:
                 session["cols"] = int(frame.get("cols") or 80)
             if frame.get("cwd"):
@@ -486,6 +493,7 @@ class ComputeHost:
                 "history": list(history),
                 "history_lock": threading.Lock(),
                 "history_version": int(frame.get("history_version") or 0),
+                "user_turn_id": str(frame.get("user_turn_id") or ""),
                 "inflight_turn": None,
                 "created_at": time.time(),
                 "last_active": time.time(),
@@ -505,6 +513,7 @@ class ComputeHost:
             }
         session = server._sessions[sid]
         session["transport"] = self._transport
+        session["user_turn_id"] = str(frame.get("user_turn_id") or "")
         session["profile_home"] = profile_home or session.get("profile_home")
         if isinstance(frame.get("attached_images"), list):
             session["attached_images"] = list(frame.get("attached_images") or [])

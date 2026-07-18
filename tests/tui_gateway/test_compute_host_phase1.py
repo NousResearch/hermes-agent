@@ -16,6 +16,32 @@ from tui_gateway.host_supervisor import (
 )
 
 
+def test_compute_host_turn_frame_carries_user_turn_identity():
+    from tui_gateway import server
+
+    session = {
+        "history": [],
+        "history_lock": threading.Lock(),
+        "history_version": 0,
+        "user_turn_id": "turn-newer",
+        "session_key": "session-key",
+        "cols": 80,
+        "cwd": os.getcwd(),
+        "attached_images": [],
+    }
+
+    frame = getattr(server, "_compute_host_turn_frame")(
+        "rid", "sid", session, "hello", turn_id="turn-owner"
+    )
+
+    assert frame["user_turn_id"] == "turn-owner"
+
+    legacy_frame = getattr(server, "_compute_host_turn_frame")(
+        "rid", "sid", session, "hello"
+    )
+    assert legacy_frame["user_turn_id"] == ""
+
+
 def _json_lines(out: io.StringIO) -> list[dict]:
     frames = []
     for line in out.getvalue().splitlines():

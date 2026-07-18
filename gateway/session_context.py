@@ -91,6 +91,13 @@ _SESSION_UI_SESSION_ID: ContextVar = ContextVar("HERMES_UI_SESSION_ID", default=
 # private-chat topic (those lanes route only with thread id + reply anchor).
 _SESSION_MESSAGE_ID: ContextVar = ContextVar("HERMES_SESSION_MESSAGE_ID", default=_UNSET)
 
+# Opaque identity of the real user turn currently running. Detached delegation
+# completions compare this token with the live session's token before they are
+# allowed to synthesize a follow-up agent turn. Unlike transcript/history
+# counters, the token is not advanced by goal/delegation auto-follow-ups and
+# cannot accidentally match after a process restart.
+_SESSION_TURN_ID: ContextVar = ContextVar("HERMES_SESSION_TURN_ID", default=_UNSET)
+
 _SESSION_PROFILE: ContextVar = ContextVar("HERMES_SESSION_PROFILE", default=_UNSET)
 
 # Whether the current session's delivery channel can route an ASYNC completion
@@ -132,6 +139,7 @@ _VAR_MAP = {
     "HERMES_SESSION_ID": _SESSION_ID,
     "HERMES_UI_SESSION_ID": _SESSION_UI_SESSION_ID,
     "HERMES_SESSION_MESSAGE_ID": _SESSION_MESSAGE_ID,
+    "HERMES_SESSION_TURN_ID": _SESSION_TURN_ID,
     "HERMES_SESSION_PROFILE": _SESSION_PROFILE,
     "HERMES_CRON_AUTO_DELIVER_PLATFORM": _CRON_AUTO_DELIVER_PLATFORM,
     "HERMES_CRON_AUTO_DELIVER_CHAT_ID": _CRON_AUTO_DELIVER_CHAT_ID,
@@ -152,6 +160,16 @@ def set_current_session_id(session_id: str) -> None:
 
     os.environ["HERMES_SESSION_ID"] = session_id
     _SESSION_ID.set(session_id)
+
+
+def set_current_turn_id(turn_id: str):
+    """Bind the current real-user-turn identity and return its reset token."""
+    return _SESSION_TURN_ID.set(str(turn_id or ""))
+
+
+def reset_current_turn_id(token) -> None:
+    """Restore the prior real-user-turn identity for this execution context."""
+    _SESSION_TURN_ID.reset(token)
 
 
 def set_session_vars(
@@ -237,6 +255,7 @@ def clear_session_vars(tokens: list) -> None:
         _SESSION_ID,
         _SESSION_UI_SESSION_ID,
         _SESSION_MESSAGE_ID,
+        _SESSION_TURN_ID,
         _SESSION_PROFILE,
     ):
         var.set("")

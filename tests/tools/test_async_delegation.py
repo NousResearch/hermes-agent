@@ -46,6 +46,16 @@ def _drain_one(timeout=5.0):
     return None
 
 
+def test_complete_event_delivery_rejects_false_ack(monkeypatch):
+    monkeypatch.setattr(ad, "complete_completion_delivery", lambda *_args: False)
+
+    with pytest.raises(RuntimeError, match="acknowledgement was rejected"):
+        ad.complete_event_delivery(
+            {"type": "async_delegation", "delegation_id": "deleg_ack"},
+            "claim",
+        )
+
+
 def _drain_for(delegation_id, timeout=5.0):
     """Drain until the event for *delegation_id* appears (discarding others).
 
@@ -122,16 +132,22 @@ def test_async_executor_workers_are_daemon_threads():
 
 
 def test_completion_event_lands_on_shared_queue_with_session_key():
+    from gateway import session_context
+
     def runner():
         return {"status": "completed", "summary": "the result",
                 "api_calls": 3, "duration_seconds": 2.0, "model": "test-model"}
 
-    res = ad.dispatch_async_delegation(
-        goal="compute X", context="some context", toolsets=["web", "file"],
-        role="leaf", model="test-model", session_key="agent:main:cli:dm:local",
-        parent_session_id="20260703_parent_sid",
-        runner=runner, max_async_children=3,
-    )
+    turn_token = getattr(session_context, "set_current_turn_id")("turn-current")
+    try:
+        res = ad.dispatch_async_delegation(
+            goal="compute X", context="some context", toolsets=["web", "file"],
+            role="leaf", model="test-model", session_key="agent:main:cli:dm:local",
+            parent_session_id="20260703_parent_sid",
+            runner=runner, max_async_children=3,
+        )
+    finally:
+        getattr(session_context, "reset_current_turn_id")(turn_token)
     assert res["status"] == "dispatched"
 
     evt = _drain_one()
@@ -141,6 +157,7 @@ def test_completion_event_lands_on_shared_queue_with_session_key():
     assert evt["session_key"] == "agent:main:cli:dm:local"
     assert evt["parent_session_id"] == "20260703_parent_sid"
     assert evt["delegation_id"] == res["delegation_id"]
+    assert evt["dispatch_turn_id"] == "turn-current"
 
 
 def test_rich_reinjection_block_is_self_contained():
@@ -549,7 +566,7 @@ def test_delegate_task_background_uses_live_tui_agent_session_id(monkeypatch):
     assert evt["origin_ui_session_id"] == "origin-tab"
 
 
-def test_delegate_task_background_batch_runs_as_one_unit(monkeypatch):
+def test_delegate_task_background_batch_runs_as_one_unit(monkeypatch, request):
     """A multi-item batch with background=True dispatches the WHOLE fan-out as
     ONE background unit (one handle, one async slot). The children run in
     parallel and join; the consolidated results come back as a single
@@ -589,6 +606,12 @@ def test_delegate_task_background_batch_runs_as_one_unit(monkeypatch):
     monkeypatch.setattr(dt, "_build_child_agent", lambda **kw: fake_child)
     monkeypatch.setattr(dt, "_run_single_child", _blocking_child)
     monkeypatch.setattr(dt, "_resolve_delegation_credentials", lambda *a, **k: creds)
+    from gateway import session_context
+
+    turn_token = getattr(session_context, "set_current_turn_id")("turn-batch")
+    request.addfinalizer(
+        lambda: getattr(session_context, "reset_current_turn_id")(turn_token)
+    )
     out = dt.delegate_task(
         tasks=[{"goal": "a"}, {"goal": "b"}, {"goal": "c"}],
         background=True,
@@ -612,6 +635,7 @@ def test_delegate_task_background_batch_runs_as_one_unit(monkeypatch):
     assert evt is not None
     assert evt["type"] == "async_delegation"
     assert evt.get("is_batch") is True
+    assert evt["dispatch_turn_id"] == "turn-batch"
     assert len(evt["results"]) == 3
     summaries = sorted(r["summary"] for r in evt["results"])
     assert summaries == ["done: a", "done: b", "done: c"]

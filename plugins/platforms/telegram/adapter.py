@@ -4686,10 +4686,6 @@ class TelegramAdapter(BasePlatformAdapter):
                             self.format_message(chunk)
                         )
                     else:
-                        # Plain attempt: on finalize the MarkdownV2 attempt
-                        # failed, so degrade to clean stripped text, never
-                        # the raw chunk (raw ** / ``` markers would render
-                        # literally); streaming previews stay raw.
                         text = _strip_mdv2(chunk) if finalize else chunk
                     sent_msg = await self._bot.send_message(
                         chat_id=normalize_telegram_chat_id(chat_id),

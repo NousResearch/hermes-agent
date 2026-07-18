@@ -286,6 +286,36 @@ $GAPI docs create --title "Draft" --body "First paragraph..."
 $GAPI docs append DOC_ID --text "Additional content to append"
 ```
 
+## Save content to Drive without detouring to a temp file
+
+Use `scripts/save_to_drive.py` when you already have text in conversation
+and want to drop it directly into Drive.
+
+```bash
+python scripts/save_to_drive.py --title "Research Notes" --content "..."\npython scripts/save_to_drive.py --title "Draft" --content-file ~/Desktop/draft.md
+```
+
+This is preferable to shelling out with ad hoc code because auth/token
+refresh already lives in `google_api.py`.
+
+## Search + Save to Drive shortcut
+
+When the user asks for a web/Drive-style search-and-persist flow, prefer
+this sequence:
+
+1. Search the web or Drive for the source material.
+2. Summarize/condense the content.
+3. Save the summary to Drive with `save_to_drive.py` instead of printing
+   it to chat.
+
+Example flow:
+
+```bash
+python skills/productivity/google-workspace/scripts/save_to_drive.py \\
+  --title "BlackGold Market Brief: <topic>" \\
+  --content "<summarized content>"
+```
+
 ## Output Format
 
 All commands return JSON. Parse with `jq` or read directly. Key fields:

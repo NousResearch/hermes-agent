@@ -56,10 +56,9 @@ SCOPES = [
 
 REQUIRED_PACKAGES = ["google-api-python-client", "google-auth-oauthlib", "google-auth-httplib2"]
 
-# OAuth redirect for "out of band" manual code copy flow.
-# Google deprecated OOB, so we use a localhost redirect and tell the user to
-# copy the code from the browser's URL bar (or the page body).
-REDIRECT_URI = "http://localhost:1"
+# Use an installed-app localhost redirect instead of deprecated OOB/localhost:1.
+# Must match the client_secret.json redirect_uris exactly.
+REDIRECT_URI = "http://localhost:3000/"
 
 
 def _normalize_authorized_user_payload(payload: dict) -> dict:

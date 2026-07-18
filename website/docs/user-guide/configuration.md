@@ -1493,6 +1493,94 @@ display:
   language: en            # UI language for static messages (approval prompts, some gateway replies). en | zh | zh-hant | ja | de | es | fr | tr | uk | af | ko | it | ga | pt | ru | hu
 ```
 
+### Recommended output UX defaults
+
+`final_response_markdown`, `tool_progress`, and `tool_progress_grouping`
+are the three knobs that most affect how readable Hermes output is on each
+surface.
+
+#### `final_response_markdown`
+
+Controls how the agent's closing message is rendered in the terminal/TUI/desktop:
+
+- `render` — final replies keep full markdown (headings, bold, code fences).
+  Best for wide terminals, the TUI, and the desktop app where the markdown
+  pane can display it cleanly.
+- `strip` — removes the most verbose markdown decorators so the final reply
+  reads as plain terminal prose. Code blocks and lists are preserved. This is
+  the safer default for narrow terminals and messaging platforms.
+- `raw` — passes the markdown through unchanged. Use only if you pipe the
+  output to another renderer.
+
+**Recommendation:** `render` for desktop/TUI; `strip` for narrow terminals
+unless you explicitly opt in.
+
+#### `tool_progress`
+
+What tool-call progress to show during a turn:
+
+- `off` — silent. Only the final response is shown.
+- `new` — show a compact indicator only when the active tool changes.
+- `all` — every tool call with a short preview (good balance of context and
+  parsimony).
+- `verbose` — full args and results for each call.
+
+**Recommendation by surface:**
+
+| Surface | Default | Notes |
+|---------|---------|-------|
+| Classic CLI / TUI | `all` or `verbose` | Panels comfortably show tool args + previews |
+| Telegram / Discord / Slack | `new` | Minimum viable progress; switch to `all` when debugging |
+| Signal / SMS | `off` | These adapters cannot edit/stream bubbles reliably |
+
+Switch in the moment with `/verbose`, or set per-platform overrides under
+`display.platforms` (see *Per-platform progress overrides* below).
+
+#### `tool_progress_grouping`
+
+Controls how gateway tool-progress is grouped on platforms that support
+message editing:
+
+- `accumulate` — edits one bubble in place as each tool finishes. Keeps the
+  chat clean; best default for Telegram, Discord, Slack.
+- `separate` — sends one message per tool call. Noisier, but preserves
+  individual tool timing/exceptions without collapsing them.
+
+**Recommendation matrix:**
+
+| Platform | Best grouping | Why |
+|---------|---------------|-----|
+| Telegram / Discord / Slack | `accumulate` | Editing is smooth; one bubble is cleaner than many |
+| CLI / TUI / Desktop | N/A | Not a gateway platform; grouping doesn't apply |
+| Signal / SMS / non-editing | N/A | No message editing; grouping doesn't apply |
+
+Per-platform override via `display.platforms.<platform>.tool_progress_grouping`.
+
+#### Ready-to-paste examples
+
+**A) Rich terminal (CLI / TUI / desktop) — maximize output fidelity**
+
+```yaml
+# ~/.hermes/config.yaml
+display:
+  final_response_markdown: render
+  tool_progress: verbose
+  tool_preview_length: 0          # Show full paths/commands
+  streaming: true                 # Optional: live token stream
+  show_reasoning: true            # Optional: show thinking before reply
+```
+
+**B) Messaging-light (Telegram / Discord) — unobtrusive but available**
+
+```yaml
+# ~/.hermes/config.yaml
+display:
+  final_response_markdown: strip
+  tool_progress: new
+  tool_progress_grouping: accumulate
+  tool_progress_command: true     # Lets you use /verbose to boost detail
+```
+
 ### File-mutation verifier
 
 When `display.file_mutation_verifier` is `true` (default), Hermes appends a one-line advisory to the assistant's final response whenever a `write_file` or `patch` call failed during the turn and was never superseded by a successful write to the same path. This catches the "batch of parallel patches, half silently fail, model summarises success" class of over-claim without requiring you to manually run `git status` after every edit.

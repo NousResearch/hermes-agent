@@ -52,11 +52,6 @@ _HERMES_CORE_TOOLS = [
     "text_to_speech",
     # Planning & memory
     "todo", "memory",
-    # NOTE: the desktop Project tools (project_list/create/switch) are
-    # deliberately NOT here. They only make sense where a GUI can follow the
-    # move, so they live in the `project` toolset and are enabled solely by the
-    # GUI gateway (tui_gateway/server.py::_load_enabled_toolsets) — keeping them
-    # off every CLI/messaging/cron schema (narrow waist).
     # Session history search
     "session_search",
     # Clarifying questions
@@ -187,7 +182,6 @@ TOOLSETS = {
         "tools": ["cronjob"],
         "includes": []
     },
-    
 
     "file": {
         "description": "File manipulation tools: read, write, patch (with fuzzy matching), and search (content + files)",
@@ -247,6 +241,23 @@ TOOLSETS = {
         "description": "Spawn subagents with isolated context for complex subtasks",
         "tools": ["delegate_task"],
         "includes": []
+    },
+
+    "local_graph": {
+        "description": (
+            "Stage 0 local graph helpers: SQLite adjacency store with optional "
+            "FTS5 search and bounded shortest-path traversal. Opt-in by default; "
+            "enable this toolset explicitly when needed."
+        ),
+        "tools": [
+            "local_graph_add_node",
+            "local_graph_add_edge",
+            "local_graph_neighbors",
+            "local_graph_get_node",
+            "local_graph_search",
+            "local_graph_path",
+        ],
+        "includes": [],
     },
 
     # "honcho" toolset removed — Honcho is now a memory provider plugin.
@@ -360,6 +371,10 @@ TOOLSETS = {
             "todo", "memory",
             "session_search", "clarify",
             "execute_code", "delegate_task",
+            "repo_health",
+            "test_health",
+            "docker_health",
+            "cron_health",
         ],
         "includes": [],
         # Posture toolset: selected per-session by agent/coding_context.py,
@@ -422,16 +437,25 @@ TOOLSETS = {
             "execute_code", "delegate_task",
             # Cronjob management
             "cronjob",
+            # Observability
+            "repo_health",
+            "test_health",
+            "docker_health",
+            "cron_health",
             # Home Assistant smart home control (gated on HASS_TOKEN via check_fn)
             "ha_list_entities", "ha_get_state", "ha_list_services", "ha_call_service",
-
         ],
         "includes": []
     },
     
     "hermes-cli": {
         "description": "Full interactive CLI toolset - all default tools plus cronjob management",
-        "tools": _HERMES_CORE_TOOLS,
+        "tools": _HERMES_CORE_TOOLS + [
+            "repo_health",
+            "test_health",
+            "docker_health",
+            "cron_health",
+        ],
         "includes": []
     },
 
@@ -472,7 +496,7 @@ TOOLSETS = {
         "tools": _HERMES_CORE_TOOLS,
         "includes": []
     },
-    
+
     "hermes-signal": {
         "description": "Signal bot toolset - encrypted messaging platform (full access)",
         "tools": _HERMES_CORE_TOOLS,
@@ -580,7 +604,41 @@ TOOLSETS = {
         "description": "Gateway toolset - union of all messaging platform tools",
         "tools": [],
         "includes": ["hermes-telegram", "hermes-discord", "hermes-whatsapp", "hermes-slack", "hermes-signal", "hermes-bluebubbles", "hermes-homeassistant", "hermes-email", "hermes-sms", "hermes-mattermost", "hermes-matrix", "hermes-dingtalk", "hermes-feishu", "hermes-wecom", "hermes-wecom-callback", "hermes-weixin", "hermes-qqbot", "hermes-webhook", "hermes-yuanbao"]
-    }
+    },
+
+    "local_graph": {
+        "description": (
+            "Stage 0 local graph helpers: SQLite adjacency store with optional "
+            "FTS5 search and bounded shortest-path traversal. Opt-in by default; "
+            "enable only via `local_graph.enabled: true` in config.yaml. Not "
+            "included by any bundled hermes-* toolset."
+        ),
+        "tools": [
+            "local_graph_add_node",
+            "local_graph_add_edge",
+            "local_graph_neighbors",
+            "local_graph_get_node",
+            "local_graph_search",
+            "local_graph_path",
+        ],
+        "includes": [],
+    },
+
+    "ops": {
+        "description": "Operations observability tools: repo, test, docker, and cron health.",
+        "tools": [
+            "repo_health",
+            "test_health",
+            "docker_health",
+            "cron_health",
+        ],
+        "includes": [],
+    },
+    "repo": {
+        "description": "Compact helper toolset exposing `repo_health` for git repo-state snapshots.",
+        "tools": ["repo_health"],
+        "includes": [],
+    },
 }
 
 
@@ -656,34 +714,6 @@ def get_toolset(name: str, *, include_registry: bool = True) -> Optional[Dict[st
         "tools": registry.get_tool_names_for_toolset(registry_toolset),
         "includes": [],
     }
-
-
-def bundle_non_core_tools(toolset_name: str) -> Set[str]:
-    """Return a ``hermes-*`` bundle's platform-specific tools, excluding core.
-
-    Platform bundles are defined as ``_HERMES_CORE_TOOLS + [platform extras]``.
-    When a bundle name appears in ``disabled_toolsets``, subtracting the whole
-    bundle would strip core tools (terminal, read_file, …) shared by every
-    other enabled toolset, emptying the model's tool list (#33924). This
-    returns only the bundle's non-core delta (its own extras plus those of any
-    one-level ``includes``), so disabling a bundle removes its platform tools
-    while leaving core intact.
-
-    Bundle nesting is one level deep in practice (only ``hermes-gateway``
-    includes other bundles, and those leaves don't nest further), so a single
-    ``includes`` pass is sufficient. Unknown/garbage names fall back to the
-    full resolution minus core — never re-introducing the core wipe.
-    """
-    core = set(_HERMES_CORE_TOOLS)
-    ts_def = get_toolset(toolset_name)
-    if not (ts_def and "tools" in ts_def):
-        return set(resolve_toolset(toolset_name)) - core
-    to_remove = set(ts_def["tools"]) - core
-    for inc in ts_def.get("includes", []):
-        inc_def = get_toolset(inc)
-        if inc_def and "tools" in inc_def:
-            to_remove.update(set(inc_def["tools"]) - core)
-    return to_remove
 
 
 def resolve_toolset(name: str, visited: Set[str] = None, *, include_registry: bool = True) -> List[str]:
@@ -816,7 +846,7 @@ def _get_registry_toolset_aliases() -> Dict[str, str]:
 def get_all_toolsets() -> Dict[str, Dict[str, Any]]:
     """
     Get all available toolsets with their definitions.
-
+    
     Includes both statically-defined toolsets and plugin-registered ones.
     
     Returns:
@@ -841,7 +871,7 @@ def get_all_toolsets() -> Dict[str, Dict[str, Any]]:
 def get_toolset_names() -> List[str]:
     """
     Get names of all available toolsets (excluding aliases).
-
+    
     Includes plugin-registered toolset names.
     
     Returns:
@@ -857,7 +887,6 @@ def get_toolset_names() -> List[str]:
         else:
             names.add(ts_name)
     return sorted(names)
-
 
 
 
@@ -904,7 +933,6 @@ def create_custom_toolset(
 
 
 
-
 def get_toolset_info(name: str) -> Dict[str, Any]:
     """
     Get detailed information about a toolset including resolved tools.
@@ -930,7 +958,6 @@ def get_toolset_info(name: str) -> Dict[str, Any]:
         "tool_count": len(resolved_tools),
         "is_composite": bool(toolset["includes"])
     }
-
 
 
 

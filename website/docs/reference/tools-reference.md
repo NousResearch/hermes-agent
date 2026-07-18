@@ -205,6 +205,25 @@ The single `video_generate` tool covers both modalities — pass `image_url` to 
 |------|-------------|----------------------|
 | `video_generate` | Generate a video from a text prompt (text-to-video) or animate a still image (image-to-video) using the user's configured video generation backend. Pass `image_url` to animate that image; omit it to generate from text alone. The backend auto-routes to the right endpoint. Returns either an HTTP URL or an absolute file path in the `video` field. | Active `video_gen` plugin + its credential (e.g. `XAI_API_KEY`, `FAL_KEY`) |
 
+## `ops` toolset
+
+Operations observability tools. All are gated by runtime checks: `repo_health` needs `git` and a current git repo, `test_health` needs `pytest`, `docker_health` needs the Docker CLI/daemon, and `cron_health` needs the local cron state file.
+
+|| Tool | Description | Requires environment |
+||------|-------------|----------------------|
+|| `repo_health` | Return a compact snapshot of the current git repository state: current branch, clean/dirty status, dirty/untracked file counts, and ahead/behind counts vs origin/<branch> when the branch tracks an upstream. | `git` available and cwd inside a git repo |
+|| `test_health` | Run a bounded pytest slice and return counts, duration, and a small capped set of representative failure summaries. | `pytest` detected on PATH |
+|| `docker_health` | Inspect the local Docker stack: daemon reachability, discovered compose files, per-file service status counts, container health summary counts, and bounded top issues. | `docker` CLI/daemon available |
+|| `cron_health` | Read the local cron state file and return total jobs, enabled count, recent failures, and a capped last-run summary. | Hermes cron state file present/readable |
+
+## `repo` toolset
+
+Compact helper toolset exposing `repo_health` for git repo-state snapshots.
+
+|| Tool | Description | Requires environment |
+||------|-------------|----------------------|
+|| `repo_health` | Return a compact snapshot of the current git repository state: current branch, clean/dirty status, dirty/untracked file counts, and ahead/behind counts vs origin/<branch> when the branch tracks an upstream. | `git` available and cwd inside a git repo |
+
 ## `web` toolset
 
 | Tool | Description | Requires environment |

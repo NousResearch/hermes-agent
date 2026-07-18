@@ -10443,6 +10443,23 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
     # Tool progress callback (audio cues for voice mode)
     # ====================================================================
 
+    def _tool_message_prefix(self, is_error: bool = False) -> str:
+        """Return a concise tool-result prefix with status color."""
+        return f"\033[{'31m' if is_error else '32m'}✓\033[0m" if not is_error else f"\033[31m✗\033[0m"
+
+    def _tool_status_frame(self, label: str, duration: float, *, is_error: bool = False, note: str = "") -> str:
+        """Return a framed tool status line for CLI tool-progress output.
+
+        Provides a consistent visual container for tool results so users can
+        scan completed calls quickly. Success/warn/error state is expressed
+        with frame + token color instead of raw ad-hoc prefixes, and empty
+        results render as an explicit noop line instead of disappearing.
+        """
+        marked = f"{self._tool_message_prefix(is_error=is_error)} {label}  {duration:.1f}s"
+        if note:
+            marked = f"{marked}  {note}"
+        return f"\033[{'31m' if is_error else '32m'}┌─ {label} {duration:.1f}s ─┐\033[0m\n\033[{'31m' if is_error else '32m'}│ {marked} │\033[0m\n\033[{'31m' if is_error else '32m'}└─{'─' * (len(f'{label} {duration:.1f}s') + 2)}┘\033[0m"
+
     def _on_tool_progress(self, event_type: str, function_name: str = None, preview: str = None, function_args: dict = None, **kwargs):
         """Called on tool lifecycle events (tool.started, tool.completed, reasoning.available, etc.).
 

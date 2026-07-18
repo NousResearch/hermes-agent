@@ -4759,6 +4759,18 @@ def _register_server_tools(name: str, server: MCPServerTask, config: dict) -> Li
     include_set = _normalize_name_filter(tools_filter.get("include"), f"mcp_servers.{name}.tools.include")
     exclude_set = _normalize_name_filter(tools_filter.get("exclude"), f"mcp_servers.{name}.tools.exclude")
 
+    # Description-only mode: tools from this server are always deferrable,
+    # discovered via tool_search rather than loaded into the tools array
+    # on every turn. Mirroring Claude Code's ``defer_loading`` pattern.
+    tool_injection = config.get("tool_injection", "full")
+    is_description_only = tool_injection == "description_only"
+
+    if is_description_only:
+        logger.info(
+            "MCP server '%s': tool_injection=description_only — "
+            "tools will be deferred and discovered via tool_search", name,
+        )
+
     def _should_register(tool_name: str) -> bool:
         if include_set:
             return tool_name in include_set
@@ -4798,6 +4810,13 @@ def _register_server_tools(name: str, server: MCPServerTask, config: dict) -> Li
         )
         _track_mcp_tool_server(tool_name_prefixed, name)
         registered_names.append(tool_name_prefixed)
+
+        # Description-only tools: mark for always-deferred treatment
+        # so they are discovered via tool_search rather than bloating
+        # the tools array on every turn.
+        if is_description_only:
+            from tools.tool_search import mark_description_only_tool
+            mark_description_only_tool(tool_name_prefixed)
 
     # Register MCP Resources & Prompts utility tools, filtered by config and
     # only when the server actually supports the corresponding capability.

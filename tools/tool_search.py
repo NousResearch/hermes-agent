@@ -160,6 +160,27 @@ def _core_tool_names() -> frozenset[str]:
         return frozenset()
 
 
+# Tools from description_only MCP servers are *always* deferrable,
+# regardless of the threshold gate. Populated by mcp_tool.py during
+# server registration.
+_description_only_tool_names: set[str] = set()
+
+
+def mark_description_only_tool(name: str) -> None:
+    """Mark a tool as description-only (always deferrable)."""
+    _description_only_tool_names.add(name)
+
+
+def is_description_only_tool(name: str) -> bool:
+    """Return True if this tool is registered as description-only."""
+    return name in _description_only_tool_names
+
+
+def get_description_only_tool_names() -> set[str]:
+    """Return a copy of the description-only tool name set."""
+    return set(_description_only_tool_names)
+
+
 def is_deferrable_tool_name(name: str) -> bool:
     """Return True if a tool with this name is *eligible* for deferral.
 
@@ -167,11 +188,19 @@ def is_deferrable_tool_name(name: str) -> bool:
     OR it is not in ``_HERMES_CORE_TOOLS``. Core tools are never deferred
     even when their toolset is technically plugin-provided (this protects
     against accidental shadowing).
+
+    Tools from description-only MCP servers are always deferrable
+    regardless of the threshold gate — they are designed to be discovered
+    via tool_search and loaded on demand, mirroring Claude Code's
+    ``defer_loading`` pattern.
     """
     if name in BRIDGE_TOOL_NAMES:
         return False
     if name in _core_tool_names():
         return False
+    # Description-only tools: always defer, even under threshold.
+    if name in _description_only_tool_names:
+        return True
     # Check registry toolset for MCP prefix.
     try:
         from tools.registry import registry
@@ -552,11 +581,19 @@ def assemble_tool_defs(
                 if (td.get("function") or {}).get("name") not in BRIDGE_TOOL_NAMES]
 
     visible, deferrable = classify_tools(incoming)
+
+    # Description-only tools: always force-defer, even when the total
+    # deferrable count is below the threshold gate. This ensures tools
+    # from servers with ``tool_injection: description_only`` are always
+    # discovered via tool_search rather than bloating the tools array.
+    deferrable_names = {(t.get("function") or {}).get("name") for t in deferrable}
+    has_description_only = bool(deferrable_names & _description_only_tool_names)
+
     if not deferrable:
         return AssemblyResult(tool_defs=incoming, activated=False)
 
     deferrable_tokens = estimate_tokens_from_schemas(deferrable)
-    if not should_activate(config, deferrable_tokens, context_length):
+    if not should_activate(config, deferrable_tokens, context_length) and not has_description_only:
         return AssemblyResult(
             tool_defs=incoming,
             activated=False,
@@ -732,4 +769,7 @@ __all__ = [
     "dispatch_tool_describe",
     "resolve_underlying_call",
     "scoped_deferrable_names",
+    "mark_description_only_tool",
+    "is_description_only_tool",
+    "get_description_only_tool_names",
 ]

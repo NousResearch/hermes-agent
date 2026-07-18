@@ -321,6 +321,36 @@ def build_system_prompt_parts(agent: Any, system_message: Optional[str] = None) 
     if skills_prompt:
         stable_parts.append(skills_prompt)
 
+    # MCP tool inventory — for servers with ``tool_injection: description_only``,
+    # inject tool names + one-line descriptions into the stable tier so the
+    # agent knows what tools exist without paying for full JSON schemas on
+    # every turn. Full schemas are loaded on demand via tool_search / tool_describe.
+    # Mirroring Claude Code's ``defer_loading`` pattern and Skill frontmatter
+    # discovery (name + description in prompt, body loaded on /skill).
+    if agent.valid_tool_names:
+        try:
+            from tools.tool_search import get_description_only_tool_names
+            _do_names = get_description_only_tool_names()
+            if _do_names:
+                from tools.registry import registry
+                _do_lines = []
+                for _tn in sorted(_do_names):
+                    _entry = registry.get_entry(_tn)
+                    if _entry:
+                        _desc = (_entry.description or "")[:200].replace("\n", " ")
+                        _do_lines.append(f"- **{_tn}**: {_desc}")
+                if _do_lines:
+                    _do_block = (
+                        "## Available MCP Tools (description-only — load on demand)\n\n"
+                        "The following tools are available via `tool_search`. "
+                        "Call `tool_search` to find one, `tool_describe` to load "
+                        "its full parameter schema, then `tool_call` to invoke it.\n\n"
+                        + "\n".join(_do_lines)
+                    )
+                    stable_parts.append(_do_block)
+        except Exception:
+            pass
+
     # Alibaba Coding Plan API always returns "glm-4.7" as model name regardless
     # of the requested model. Inject explicit model identity into the system prompt
     # so the agent can correctly report which model it is (workaround for API bug).

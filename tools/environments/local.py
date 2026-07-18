@@ -282,6 +282,7 @@ def _build_provider_env_blocklist() -> frozenset:
         "DISCORD_REQUIRE_MENTION",
         "DISCORD_FREE_RESPONSE_CHANNELS",
         "DISCORD_AUTO_THREAD",
+        "SLACK_SIGNING_SECRET",
         "SLACK_HOME_CHANNEL",
         "SLACK_HOME_CHANNEL_NAME",
         "SLACK_ALLOWED_USERS",
@@ -460,6 +461,8 @@ def _sanitize_subprocess_env(base_env: dict | None, extra_env: dict | None = Non
     for key, value in (base_env or {}).items():
         if key.startswith(_HERMES_PROVIDER_ENV_FORCE_PREFIX):
             continue
+        if key in _ALWAYS_STRIP_KEYS:
+            continue
         if _is_hermes_internal_secret(key):
             continue
         if key not in _HERMES_PROVIDER_ENV_BLOCKLIST or _is_passthrough(key):
@@ -468,9 +471,11 @@ def _sanitize_subprocess_env(base_env: dict | None, extra_env: dict | None = Non
     for key, value in (extra_env or {}).items():
         if key.startswith(_HERMES_PROVIDER_ENV_FORCE_PREFIX):
             real_key = key[len(_HERMES_PROVIDER_ENV_FORCE_PREFIX):]
-            if _is_hermes_internal_secret(real_key):
+            if real_key in _ALWAYS_STRIP_KEYS or _is_hermes_internal_secret(real_key):
                 continue
             sanitized[real_key] = value
+        elif key in _ALWAYS_STRIP_KEYS:
+            continue
         elif _is_hermes_internal_secret(key):
             continue
         elif key not in _HERMES_PROVIDER_ENV_BLOCKLIST or _is_passthrough(key):
@@ -615,8 +620,66 @@ def hermes_subprocess_env(*, inherit_credentials: bool = False) -> dict[str, str
     return env
 
 
-def _find_bash() -> str:
-    """Find bash for command execution."""
+def _is_wsl_bash_launcher(path: str) -> bool:
+    """True for Windows' legacy WSL ``bash.exe`` launcher.
+
+    The launcher can successfully run Linux commands when a WSL distribution
+    is installed, but it cannot consume the native Windows/MSYS paths Hermes
+    passes to a shell. It must therefore never qualify as Git Bash merely
+    because it starts successfully.
+    """
+    if not path:
+        return False
+    windows_dir = os.environ.get("SystemRoot") or os.environ.get("WINDIR")
+    windows_dir = windows_dir or r"C:\Windows"
+    launchers = {
+        ntpath.normcase(ntpath.join(windows_dir, directory, "bash.exe"))
+        for directory in ("System32", "Sysnative", "SysWOW64")
+    }
+
+    def _normalized(candidate: str) -> str:
+        normalized = ntpath.normpath(candidate)
+        if normalized.startswith("\\\\?\\UNC\\"):
+            normalized = "\\\\" + normalized[8:]
+        elif normalized.startswith("\\\\?\\"):
+            normalized = normalized[4:]
+        return ntpath.normcase(normalized)
+
+    raw = _normalized(path)
+    if raw in launchers:
+        return True
+
+    # On native Windows, realpath uses GetFinalPathNameByHandleW. This expands
+    # symlinks, junctions and 8.3 aliases so a renamed System32 launcher cannot
+    # bypass the direct-path check above. It is best-effort because candidates
+    # can disappear between discovery and inspection.
+    try:
+        resolved = _normalized(os.path.realpath(path))
+    except (OSError, ValueError):
+        resolved = raw
+    if resolved in launchers:
+        return True
+
+    # UNC aliases can retain their share prefix after final-path resolution.
+    # Match only the Windows-directory tail, not arbitrary */System32/bash.exe
+    # paths, so a normal Git/MSYS installation remains eligible.
+    windows_leaf = ntpath.basename(ntpath.normpath(windows_dir)) or "Windows"
+    return any(
+        resolved.endswith(
+            "\\" + ntpath.normcase(ntpath.join(windows_leaf, directory, "bash.exe"))
+        )
+        for directory in ("System32", "Sysnative", "SysWOW64")
+    )
+
+
+def _find_bash(*, reject_wsl: bool = False) -> str:
+    """Find bash for command execution.
+
+    ``reject_wsl`` is for native Windows callers that pass Windows script
+    paths directly to bash (notably cron). The default remains permissive so
+    the terminal's documented ``HERMES_GIT_BASH_PATH`` WSL override continues
+    to work.
+    """
     if not _IS_WINDOWS:
         return (
             shutil.which("bash")
@@ -626,6 +689,10 @@ def _find_bash() -> str:
             or "/bin/sh"
         )
 
+    # Resolver probes execute a candidate shell before the caller's command.
+    # Keep those probes under the same credential-scoping policy as terminal
+    # and cron subprocesses rather than inheriting the agent's full environment.
+    probe_env = _sanitize_subprocess_env(os.environ.copy())
     candidates: list[str] = []
 
     custom = os.environ.get("HERMES_GIT_BASH_PATH")
@@ -666,12 +733,19 @@ def _find_bash() -> str:
     if found and found not in candidates:
         candidates.append(found)
 
+    if reject_wsl:
+        candidates = [
+            candidate
+            for candidate in candidates
+            if not _is_wsl_bash_launcher(candidate)
+        ]
+
     # Prefer the first candidate that can actually start.  A stale
     # HERMES_GIT_BASH_PATH pointing at a broken Git-for-Windows install
     # (``Directory \\drivers\\etc does not exist``) must not win over a
     # healthy portable Git under %LOCALAPPDATA%\\hermes\\git.
     for candidate in candidates:
-        if _bash_starts(candidate):
+        if _bash_starts(candidate, env=probe_env):
             if candidate != custom and custom and os.path.isfile(custom):
                 logger.warning(
                     "HERMES_GIT_BASH_PATH=%s fails to start; using %s instead",
@@ -686,7 +760,7 @@ def _find_bash() -> str:
             for candidate in candidates
             if (detail := _bash_probe_details_cache.get(candidate))
         )
-        if _mandatory_aslr_enabled() is True or _looks_like_msys_spawn_failure(
+        if _mandatory_aslr_enabled(env=probe_env) is True or _looks_like_msys_spawn_failure(
             probe_details
         ):
             raise RuntimeError(_git_bash_aslr_help(candidates[0], probe_details))
@@ -724,11 +798,14 @@ def _looks_like_msys_spawn_failure(details: str) -> bool:
     )
 
 
-def _mandatory_aslr_enabled() -> "bool | None":
+def _mandatory_aslr_enabled(*, env: dict[str, str] | None = None) -> "bool | None":
     """Return Windows' system-wide ForceRelocateImages state when available."""
     global _mandatory_aslr_enabled_cache
     if _mandatory_aslr_enabled_cache is not None:
         return _mandatory_aslr_enabled_cache
+
+    if env is None:
+        env = _sanitize_subprocess_env(os.environ.copy())
 
     try:
         powershell = shutil.which("powershell.exe") or "powershell.exe"
@@ -744,6 +821,7 @@ def _mandatory_aslr_enabled() -> "bool | None":
             text=True,
             timeout=10,
             creationflags=windows_hide_flags(),
+            env=env,
         )
         if result.returncode != 0:
             return None
@@ -790,7 +868,7 @@ def _git_bash_aslr_help(bash: str, details: str = "") -> str:
     )
 
 
-def _bash_starts(bash: str) -> bool:
+def _bash_starts(bash: str, *, env: dict[str, str] | None = None) -> bool:
     """True if *bash* can launch external MSYS programs.
 
     Uses ``--noprofile --norc`` so a broken login post-install
@@ -803,6 +881,9 @@ def _bash_starts(bash: str) -> bool:
     if cached is not None:
         return cached
 
+    if env is None:
+        env = _sanitize_subprocess_env(os.environ.copy())
+
     try:
         result = subprocess.run(
             [bash, "--noprofile", "--norc", "-c", _BASH_EXTERNAL_PROGRAM_PROBE],
@@ -810,6 +891,7 @@ def _bash_starts(bash: str) -> bool:
             text=True,
             timeout=15,
             creationflags=windows_hide_flags() if _IS_WINDOWS else 0,
+            env=env,
         )
         ok = result.returncode == 0
         if not ok:
@@ -1137,10 +1219,10 @@ def _make_run_env(env: dict) -> dict:
     for k, v in merged.items():
         if k.startswith(_HERMES_PROVIDER_ENV_FORCE_PREFIX):
             real_key = k[len(_HERMES_PROVIDER_ENV_FORCE_PREFIX):]
-            if _is_hermes_internal_secret(real_key):
+            if real_key in _ALWAYS_STRIP_KEYS or _is_hermes_internal_secret(real_key):
                 continue
             run_env[real_key] = v
-        elif _is_hermes_internal_secret(k):
+        elif k in _ALWAYS_STRIP_KEYS or _is_hermes_internal_secret(k):
             continue
         elif k not in _HERMES_PROVIDER_ENV_BLOCKLIST or _is_passthrough(k):
             run_env[k] = v

@@ -2182,8 +2182,12 @@ def _run_job_script(script_path: str) -> tuple[bool, str]:
             try:
                 from tools.environments.local import _find_bash
 
-                _bash = _find_bash()
-            except (ImportError, RuntimeError):
+                _bash = _find_bash(reject_wsl=True)
+            except RuntimeError as exc:
+                return False, (
+                    f"Cannot run .sh/.bash script {path.name!r}: {exc}"
+                )
+            except ImportError:
                 _bash = None
         else:
             _bash = shutil.which("bash") or (

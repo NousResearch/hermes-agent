@@ -260,6 +260,32 @@ class TestForceEnvOptIn:
 
         assert result_env["OPENAI_BASE_URL"] == "http://intended/v1"
 
+    def test_force_prefix_cannot_restore_tier_one_secrets(self):
+        """Gateway, GitHub, and infrastructure secrets are never forceable."""
+        from tools.environments.local import (
+            _ALWAYS_STRIP_KEYS,
+            _sanitize_subprocess_env,
+        )
+
+        base = {key: f"base-{key}" for key in _ALWAYS_STRIP_KEYS}
+        forced = {
+            f"{_HERMES_PROVIDER_ENV_FORCE_PREFIX}{key}": f"forced-{key}"
+            for key in _ALWAYS_STRIP_KEYS
+        }
+
+        result = _sanitize_subprocess_env(base, forced)
+
+        leaked = {key for key in _ALWAYS_STRIP_KEYS if key in result}
+        assert not leaked, f"Tier-1 keys restored by force prefix: {sorted(leaked)}"
+
+        terminal_result = _run_with_env(extra_os_env=base, self_env=forced)
+        terminal_leaks = {
+            key for key in _ALWAYS_STRIP_KEYS if key in terminal_result
+        }
+        assert not terminal_leaks, (
+            f"Tier-1 keys leaked to terminal env: {sorted(terminal_leaks)}"
+        )
+
 
 class TestActiveVenvMarkerStripping:
     """Active-virtualenv markers must not leak into terminal subprocesses (#23473).
@@ -322,6 +348,12 @@ class TestBlocklistCoverage:
             "LLM_MODEL",
         }
         assert must_block.issubset(_HERMES_PROVIDER_ENV_BLOCKLIST)
+
+    def test_tier_one_keys_are_also_in_provider_blocklist(self):
+        from tools.environments.local import _ALWAYS_STRIP_KEYS
+
+        missing = _ALWAYS_STRIP_KEYS - _HERMES_PROVIDER_ENV_BLOCKLIST
+        assert not missing, f"Tier-1 keys missing from blocklist: {sorted(missing)}"
 
     def test_registry_vars_are_in_blocklist(self):
         """Every api_key_env_var and base_url_env_var from PROVIDER_REGISTRY

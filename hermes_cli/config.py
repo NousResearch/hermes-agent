@@ -3170,6 +3170,11 @@ DEFAULT_CONFIG = {
         #
         # Legacy boolean values are honored: true -> full, false -> off.
         "pre_update_backup": "quick",
+        # Per-file size ceiling (MiB) for the *quick* pre-update snapshot.
+        # Default 1024 (1 GiB). Raise this when state.db is only a few GiB
+        # but still needs a clean make-before-break path (#66726). Set to 0
+        # to disable the ceiling and always copy listed state files.
+        "pre_update_snapshot_max_mb": 1024,
         # How many full pre-update backup zips to retain (mode ``full``).
         # Older ones are pruned automatically after each successful backup.
         # Values below 1 are floored to 1 — the backup just created is

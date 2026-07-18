@@ -172,11 +172,14 @@ hermes gateway install --force
 ```
 
 A positive value makes the generated unit use `Type=notify`,
-`NotifyAccess=main`, and the matching `WatchdogSec`. Hermes sends heartbeats
-only while its event loop is making timely progress; systemd restarts the
-process when they stop. The default `0` keeps the existing `Type=simple`
-behavior. This setting is Linux/systemd-only and does not treat an ordinary
-platform network disconnect as an event-loop failure.
+`NotifyAccess=main`, and the matching `WatchdogSec`. Hermes normally sends
+heartbeats while its event loop makes timely progress. A late callback shows
+that the loop has resumed, so Hermes renews the watchdog lease with a degraded
+status and reports healthy again after two consecutive timely samples. A full
+stall prevents the callback from running, so no heartbeat is sent and systemd
+restarts the process when `WatchdogSec` expires. The default `0` keeps the
+existing `Type=simple` behavior. This setting is Linux/systemd-only and does
+not treat an ordinary platform network disconnect as an event-loop failure.
 
 ## Chat Commands (Inside Messaging)
 

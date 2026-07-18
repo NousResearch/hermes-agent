@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import socket
+import time
 
 import pytest
 
@@ -92,7 +93,7 @@ def test_watchdog_interval_is_disabled_for_missing_invalid_or_nonpositive_values
     assert watchdog_interval_seconds() is None
 
 
-def test_watchdog_latches_when_loop_progress_is_late(monkeypatch):
+def test_watchdog_recovers_after_loop_progress_is_late(monkeypatch):
     calls: list[str] = []
     monkeypatch.setenv("NOTIFY_SOCKET", "/tmp/hermes-test-notify")
     monkeypatch.setenv("WATCHDOG_USEC", "1000000")
@@ -106,10 +107,54 @@ def test_watchdog_latches_when_loop_progress_is_late(monkeypatch):
 
     assert watchdog.record_tick(scheduled_at=10.0, now=10.05) is True
     assert calls == ["WATCHDOG=1"]
-    assert watchdog.record_tick(scheduled_at=10.0, now=10.2) is False
+    assert watchdog.record_tick(scheduled_at=10.0, now=10.2) is True
     assert watchdog.unhealthy is True
-    assert calls[-1].startswith("STATUS=watchdog unhealthy")
-    assert watchdog.record_tick(scheduled_at=10.0, now=10.3) is False
+    assert "WATCHDOG=1" in calls[-1]
+    assert "STATUS=watchdog degraded" in calls[-1]
+
+    # A recovered event loop must keep feeding systemd.  Require two timely
+    # samples before clearing the degraded status so one lucky wake-up does not
+    # hide recurring starvation.
+    assert watchdog.record_tick(scheduled_at=10.3, now=10.35) is True
+    assert watchdog.unhealthy is True
+    assert watchdog.record_tick(scheduled_at=10.4, now=10.45) is True
+    assert watchdog.unhealthy is False
+    assert "STATUS=watchdog healthy" in calls[-1]
+
+
+@pytest.mark.asyncio
+async def test_watchdog_task_survives_a_transient_event_loop_stall(monkeypatch):
+    calls: list[str] = []
+    degraded = asyncio.Event()
+    healthy = asyncio.Event()
+    monkeypatch.setenv("NOTIFY_SOCKET", "/tmp/hermes-test-notify")
+    monkeypatch.setenv("WATCHDOG_USEC", "100000")
+
+    import gateway.systemd_notify as notify_mod
+
+    def _capture(message: str) -> bool:
+        calls.append(message)
+        if "STATUS=watchdog degraded" in message:
+            degraded.set()
+        if "STATUS=watchdog healthy" in message:
+            healthy.set()
+        return True
+
+    monkeypatch.setattr(notify_mod, "notify", _capture)
+    watchdog = notify_mod.SystemdWatchdog(lag_tolerance_seconds=0.01)
+
+    assert watchdog.start() is True
+    try:
+        await asyncio.sleep(0)  # Let the watchdog establish its first deadline.
+        time.sleep(0.08)  # Fault injection: delay the loop, but not past WatchdogSec.
+
+        await asyncio.wait_for(degraded.wait(), timeout=2.0)
+        await asyncio.wait_for(healthy.wait(), timeout=2.0)
+        assert watchdog.task is not None
+        assert not watchdog.task.done()
+        assert calls.count("WATCHDOG=1") >= 1
+    finally:
+        await watchdog.stop()
 
 
 @pytest.mark.asyncio

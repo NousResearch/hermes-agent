@@ -468,7 +468,6 @@ export const ja = defineLocale({
           language: 'xAI 言語',
           speed: '再生速度',
           autoSpeechTags: '自動音声タグ',
-          textNormalization: 'テキスト正規化',
           optimizeStreamingLatency: 'ストリーミング遅延最適化',
           sampleRate: 'サンプルレート',
           bitRate: 'ビットレート'

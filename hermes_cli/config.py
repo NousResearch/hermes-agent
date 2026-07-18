@@ -2187,7 +2187,6 @@ DEFAULT_CONFIG = {
             "language": "en",  # BCP-47 code ("en", "pt-BR") or "auto"
             "speed": 1.0,  # 0.7–1.5, playback speed
             "auto_speech_tags": False,  # insert expressive audio tags via LLM rewrite
-            "text_normalization": False,  # normalize numbers/abbreviations/symbols to spoken form
             "optimize_streaming_latency": 0,  # 0–2, trades quality for lower latency
             "sample_rate": 24000,  # 22050 / 24000 / 44100 / 48000
             "bit_rate": 128000,  # MP3 bitrate; only applies when codec=mp3

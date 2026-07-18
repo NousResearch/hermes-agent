@@ -134,7 +134,19 @@ export function useRouteResume({
       // pathname flips to / (same null+/:sid signature). freshDraftReady is the
       // discriminator: it's true while heading into a blank new chat, false when
       // genuinely stranded on a routed session.
-      const stuckOnRoutedSession = routedSessionId !== selectedStoredSessionIdRef.current && !freshDraftReady
+      //
+      // Also must NOT fire when create/fork already moved selection + runtime to
+      // a new session B while the router still shows stale A (#66057). That looks
+      // "stuck on A" but resuming A yanks the UI back off the new chat.
+      const selectionMovedAheadOfRoute =
+        Boolean(selectedStoredSessionIdRef.current) &&
+        selectedStoredSessionIdRef.current !== routedSessionId &&
+        Boolean(activeSessionIdRef.current)
+
+      const stuckOnRoutedSession =
+        routedSessionId !== selectedStoredSessionIdRef.current &&
+        !freshDraftReady &&
+        !selectionMovedAheadOfRoute
 
       // Resume when the route meaningfully changed, the gateway just opened, or
       // we're stranded on a routed session that never loaded. The first two

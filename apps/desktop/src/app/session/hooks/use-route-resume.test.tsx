@@ -36,6 +36,91 @@ describe('useRouteResume', () => {
     vi.restoreAllMocks()
   })
 
+  it('does not resume stale routed session A when refs already moved to new session B (#66057)', () => {
+    // createBackendSessionForSend updates refs/atoms to B and navigates, but the
+    // router can still report A for a tick. stuckOnRoutedSession must NOT treat
+    // that as "stranded on A" and call resumeSession(A) (jump-back bug).
+    const resumeSession = vi.fn(async () => undefined)
+    const startFreshSessionDraft = vi.fn()
+    const activeSessionIdRef: MutableRefObject<null | string> = { current: 'runtime-B' }
+    const creatingSessionRef = { current: false }
+    const runtimeIdByStoredSessionIdRef = { current: new Map([['session-B', 'runtime-B']]) }
+    const selectedStoredSessionIdRef: MutableRefObject<null | string> = { current: 'session-B' }
+
+    const { rerender } = render(
+      <RouteResumeHarness
+        activeSessionId="runtime-A"
+        activeSessionIdRef={{ current: 'runtime-A' }}
+        creatingSessionRef={creatingSessionRef}
+        currentView="chat"
+        freshDraftReady={false}
+        gatewayState="open"
+        locationPathname="/session-A"
+        resumeSession={resumeSession}
+        routedSessionId="session-A"
+        runtimeIdByStoredSessionIdRef={{ current: new Map([['session-A', 'runtime-A']]) }}
+        selectedStoredSessionId="session-A"
+        selectedStoredSessionIdRef={{ current: 'session-A' }}
+        startFreshSessionDraft={startFreshSessionDraft}
+      />
+    )
+
+    expect(resumeSession).not.toHaveBeenCalled()
+
+    // Simulate post-create: refs/atoms already on B, route still on A, guard down
+    // (the old setTimeout(0) clear), freshDraftReady false.
+    rerender(
+      <RouteResumeHarness
+        activeSessionId="runtime-B"
+        activeSessionIdRef={activeSessionIdRef}
+        creatingSessionRef={creatingSessionRef}
+        currentView="chat"
+        freshDraftReady={false}
+        gatewayState="open"
+        locationPathname="/session-A"
+        resumeSession={resumeSession}
+        routedSessionId="session-A"
+        runtimeIdByStoredSessionIdRef={runtimeIdByStoredSessionIdRef}
+        selectedStoredSessionId="session-B"
+        selectedStoredSessionIdRef={selectedStoredSessionIdRef}
+        startFreshSessionDraft={startFreshSessionDraft}
+      />
+    )
+
+    expect(resumeSession).not.toHaveBeenCalled()
+  })
+
+  it('holds the create guard until the route catches up to the created session (#66057)', () => {
+    // While creatingSessionRef is true, even the stale-route + moved-selection
+    // shape must not resume. (Belt + guard: selectionMovedAheadOfRoute alone
+    // also blocks; this asserts the creatingSessionRef gate still works.)
+    const resumeSession = vi.fn(async () => undefined)
+    const startFreshSessionDraft = vi.fn()
+    const creatingSessionRef = { current: true }
+    const activeSessionIdRef: MutableRefObject<null | string> = { current: 'runtime-B' }
+    const selectedStoredSessionIdRef: MutableRefObject<null | string> = { current: 'session-B' }
+
+    render(
+      <RouteResumeHarness
+        activeSessionId="runtime-B"
+        activeSessionIdRef={activeSessionIdRef}
+        creatingSessionRef={creatingSessionRef}
+        currentView="chat"
+        freshDraftReady={false}
+        gatewayState="open"
+        locationPathname="/session-A"
+        resumeSession={resumeSession}
+        routedSessionId="session-A"
+        runtimeIdByStoredSessionIdRef={{ current: new Map([['session-B', 'runtime-B']]) }}
+        selectedStoredSessionId="session-B"
+        selectedStoredSessionIdRef={selectedStoredSessionIdRef}
+        startFreshSessionDraft={startFreshSessionDraft}
+      />
+    )
+
+    expect(resumeSession).not.toHaveBeenCalled()
+  })
+
   it('does not re-resume the old session during a /:sid -> /new transition', () => {
     const resumeSession = vi.fn(async () => undefined)
     const startFreshSessionDraft = vi.fn()

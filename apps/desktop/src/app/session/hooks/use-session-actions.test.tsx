@@ -113,6 +113,7 @@ function Harness({
     navigate: navigate as never,
     requestGateway,
     resetViewSync: vi.fn(),
+    routedSessionId: null,
     runtimeIdByStoredSessionIdRef: ref(new Map<string, string>()),
     selectedStoredSessionId: null,
     selectedStoredSessionIdRef: ref<string | null>(null),
@@ -591,6 +592,7 @@ function ResumeHarness({
     navigate: vi.fn() as never,
     requestGateway,
     resetViewSync: vi.fn(),
+    routedSessionId: null,
     runtimeIdByStoredSessionIdRef: runtimeIdByStoredSessionIdRef ?? ref(new Map<string, string>()),
     selectedStoredSessionId,
     selectedStoredSessionIdRef: ref<string | null>(selectedStoredSessionId),
@@ -998,6 +1000,7 @@ function BranchHarness({
     navigate: navigate as never,
     requestGateway,
     resetViewSync: vi.fn(),
+    routedSessionId: null,
     runtimeIdByStoredSessionIdRef: ref(new Map<string, string>()),
     selectedStoredSessionId: null,
     selectedStoredSessionIdRef: ref<string | null>(null),
@@ -1397,5 +1400,86 @@ describe('createBackendSessionForSend workspace target', () => {
     )
 
     expect(params).toMatchObject({ cwd: '/clicked-workspace' })
+  })
+})
+
+describe('createBackendSessionForSend creatingSessionRef hold (#66057)', () => {
+  afterEach(() => {
+    cleanup()
+    $newChatProfile.set(null)
+    $activeGatewayProfile.set('default')
+    setCurrentCwd('')
+    setNewChatWorkspaceTarget(undefined)
+    vi.restoreAllMocks()
+  })
+
+  it('keeps creatingSessionRef true until routedSessionId catches up to the created stored id', async () => {
+    const creatingSessionRef: MutableRefObject<boolean> = { current: false }
+    const selectedStoredSessionIdRef: MutableRefObject<null | string> = { current: null }
+    const navigate = vi.fn()
+    let routedSessionId: null | string = null
+
+    function GuardHarness({
+      onReady,
+      routeId
+    }: {
+      onReady: (create: () => Promise<string | null>) => void
+      routeId: null | string
+    }) {
+      const ref = <T,>(value: T): MutableRefObject<T> => ({ current: value })
+      const actions = useSessionActions({
+        activeSessionId: null,
+        activeSessionIdRef: ref<string | null>(null),
+        busyRef: ref(false),
+        creatingSessionRef,
+        ensureSessionState: () => ({}) as ClientSessionState,
+        getRouteToken: () => 'token',
+        navigate: navigate as never,
+        requestGateway: async method => {
+          if (method === 'session.create') {
+            return { session_id: 'rt-new', stored_session_id: 'stored-new' } as never
+          }
+
+          return {} as never
+        },
+        resetViewSync: vi.fn(),
+        routedSessionId: routeId,
+        runtimeIdByStoredSessionIdRef: ref(new Map<string, string>()),
+        selectedStoredSessionId: selectedStoredSessionIdRef.current,
+        selectedStoredSessionIdRef,
+        sessionStateByRuntimeIdRef: ref(new Map<string, ClientSessionState>()),
+        syncSessionStateToView: vi.fn(),
+        updateSessionState: () => ({}) as ClientSessionState
+      })
+
+      useEffect(() => {
+        onReady(() => actions.createBackendSessionForSend())
+      }, [actions, onReady])
+
+      return null
+    }
+
+    let create: (() => Promise<string | null>) | null = null
+    const { rerender } = render(
+      <GuardHarness onReady={fn => (create = fn)} routeId={routedSessionId} />
+    )
+    await waitFor(() => expect(create).not.toBeNull())
+
+    await act(async () => {
+      await create!()
+    })
+
+    expect(navigate).toHaveBeenCalled()
+    expect(creatingSessionRef.current).toBe(true)
+    expect(selectedStoredSessionIdRef.current).toBe('stored-new')
+
+    // Route still stale — guard must stay up.
+    rerender(<GuardHarness onReady={() => undefined} routeId={null} />)
+    expect(creatingSessionRef.current).toBe(true)
+
+    // Router catches up to the created stored id — release the guard.
+    routedSessionId = 'stored-new'
+    rerender(<GuardHarness onReady={() => undefined} routeId={routedSessionId} />)
+    expect(creatingSessionRef.current).toBe(false)
   })
 })

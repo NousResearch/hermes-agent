@@ -48,6 +48,17 @@ def test_enqueue_merges_second_arrival_losslessly():
 
 # ── _handle_busy_submit (policy) ───────────────────────────────────────────
 
+
+def test_hybrid_config_maps_to_queue_outside_messaging_gateway(monkeypatch):
+    monkeypatch.setattr(
+        server,
+        "_load_cfg",
+        lambda: {"display": {"busy_input_mode": "hybrid"}},
+    )
+
+    assert server._load_busy_input_mode() == "queue"
+
+
 def test_busy_interrupt_mode_interrupts_and_queues(monkeypatch):
     monkeypatch.setattr(server, "_load_busy_input_mode", lambda: "interrupt")
     calls = {"interrupt": 0}

@@ -276,16 +276,17 @@ gateway:
 - **多条消息合并** — 中断期间发送的消息合并为一个 prompt
 - **`/stop` 命令** — 中断而不排队后续消息
 
-### 队列 vs 中断 vs 引导（繁忙输入模式）
+### 队列 vs 中断 vs 引导 vs 混合（繁忙输入模式）
 
-默认情况下，向繁忙的 agent 发送消息会中断它。另有两种模式可用：
+默认情况下，向繁忙的 agent 发送消息会中断它。另有三种模式可用：
 
 - `queue` — 后续消息等待，在当前任务完成后作为下一轮运行。
 - `steer` — 后续消息通过 `/steer` 注入当前运行，在下一次工具调用后到达 agent。不中断，不开新轮次。如果 agent 尚未开始，则回退为 `queue` 行为。
+- `hybrid` — 普通后续消息排队；编辑启动当前轮次的消息时，将修正后的文本 steer 进当前轮次。编辑其他消息仍会排队。
 
 ```yaml
 display:
-  busy_input_mode: steer   # 或 queue，或 interrupt（默认）
+  busy_input_mode: steer   # 或 queue、hybrid，或 interrupt（默认）
   busy_ack_enabled: true   # 设为 false 可完全抑制 ⚡/⏳/⏩ 聊天回复
 ```
 

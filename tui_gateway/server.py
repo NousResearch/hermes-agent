@@ -407,6 +407,11 @@ def _load_busy_input_mode() -> str:
     if not isinstance(display, dict):
         display = {}
     raw = str(display.get("busy_input_mode", "") or "").strip().lower()
+    if raw == "hybrid":
+        # Hybrid's steer-on-edit branch requires messaging event metadata. The
+        # TUI has no equivalent edit identity, so use hybrid's normal-input
+        # behavior instead of silently interrupting the active turn.
+        return "queue"
     return raw if raw in {"queue", "steer", "interrupt"} else "interrupt"
 
 

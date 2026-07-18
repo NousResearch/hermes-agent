@@ -316,16 +316,17 @@ Send any message while the agent is working to interrupt it. Key behaviors:
 - **Multiple messages are combined** — messages sent during interruption are joined into one prompt
 - **`/stop` command** — interrupts without queuing a follow-up message
 
-### Queue vs interrupt vs steer (busy-input mode)
+### Queue vs interrupt vs steer vs hybrid (busy-input mode)
 
-By default, messaging a busy agent interrupts it. Two other modes are available:
+By default, messaging a busy agent interrupts it. Three other modes are available:
 
 - `queue` — follow-up messages wait and run as the next turn after the current task finishes.
 - `steer` — follow-up messages are injected into the current run via `/steer`, arriving at the agent after the next tool call. No interrupt, no new turn. Falls back to `queue` behavior if the agent hasn't started yet.
+- `hybrid` — normal follow-ups queue, while editing the message that launched the active turn steers the corrected text into that turn. Editing any other message stays queued.
 
 ```yaml
 display:
-  busy_input_mode: steer   # or queue, or interrupt (default)
+  busy_input_mode: steer   # or queue, hybrid, or interrupt (default)
   busy_ack_enabled: true   # set to false to suppress the ⚡/⏳/⏩ chat reply entirely
 ```
 

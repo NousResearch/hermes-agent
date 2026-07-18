@@ -473,6 +473,8 @@ class TestSyncSkills:
     def test_user_deleted_skill_not_re_added(self, tmp_path):
         """Skill in manifest but not on disk = user deleted it. Don't re-add."""
         bundled = self._setup_bundled(tmp_path)
+        # A per-skill DESCRIPTION must not recreate the deleted directory.
+        (bundled / "old-skill" / "DESCRIPTION.md").write_text("Skill desc")
         skills_dir = tmp_path / "user_skills"
         manifest_file = skills_dir / ".bundled_manifest"
         skills_dir.mkdir(parents=True)

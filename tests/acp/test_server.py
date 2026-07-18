@@ -1748,6 +1748,64 @@ class TestSlashCommands:
         assert "anthropic" in runtime_calls
 
 
+class TestModelNameSlashSplit:
+    def test_configured_custom_provider_slash_form(self, monkeypatch):
+        monkeypatch.setattr("hermes_cli.config.load_config", lambda: {})
+        monkeypatch.setattr(
+            "hermes_cli.config.get_compatible_custom_providers",
+            lambda _config: [{"name": "local lab"}],
+        )
+
+        assert HermesACPAgent._resolve_model_selection(
+            "custom:local-lab/vendor/model", "deepseek"
+        ) == ("custom:local-lab", "vendor/model")
+
+    def test_unknown_custom_provider_keeps_existing_custom_model_semantics(self, monkeypatch):
+        monkeypatch.setattr("hermes_cli.config.load_config", lambda: {})
+        monkeypatch.setattr(
+            "hermes_cli.config.get_compatible_custom_providers",
+            lambda _config: [{"name": "configured"}],
+        )
+
+        assert HermesACPAgent._resolve_model_selection(
+            "custom:unknown/vendor/model", "deepseek"
+        ) == ("custom", "unknown/vendor/model")
+
+    def test_native_provider_slash_form(self):
+        assert HermesACPAgent._resolve_model_selection(
+            "anthropic/claude-sonnet-4-6", "deepseek"
+        ) == ("anthropic", "claude-sonnet-4-6")
+
+    def test_aggregator_model_slug_is_not_split(self):
+        assert HermesACPAgent._resolve_model_selection(
+            "anthropic/claude-sonnet-4-6", "openrouter"
+        ) == ("openrouter", "anthropic/claude-sonnet-4-6")
+
+    def test_existing_colon_form_is_unchanged(self):
+        assert HermesACPAgent._resolve_model_selection(
+            "anthropic:claude-sonnet-4-6", "deepseek"
+        ) == ("anthropic", "claude-sonnet-4-6")
+
+    @pytest.mark.asyncio
+    async def test_set_session_model_routes_slash_provider(self, agent, mock_manager):
+        state = mock_manager.create_session(cwd="/tmp")
+        state.agent.provider = "deepseek"
+        state.agent.base_url = "https://deepseek.example/v1"
+        state.agent.api_mode = "chat_completions"
+        replacement = SimpleNamespace(provider="anthropic")
+        mock_manager._make_agent = MagicMock(return_value=replacement)
+
+        await agent.set_session_model(
+            model_id="anthropic/claude-sonnet-4-6",
+            session_id=state.session_id,
+        )
+
+        assert state.model == "claude-sonnet-4-6"
+        assert state.agent is replacement
+        assert mock_manager._make_agent.call_args.kwargs["requested_provider"] == "anthropic"
+        assert mock_manager._make_agent.call_args.kwargs["base_url"] is None
+
+
 # ---------------------------------------------------------------------------
 # _register_session_mcp_servers
 # ---------------------------------------------------------------------------

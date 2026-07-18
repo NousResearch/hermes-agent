@@ -107,6 +107,21 @@ _TEXT_RESOURCE_MIME_TYPES = {
 }
 
 
+def _is_configured_custom_provider(name: str) -> bool:
+    """Whether a custom-provider name resolves in the active config."""
+    try:
+        from hermes_cli.config import get_compatible_custom_providers, load_config
+
+        target = name.strip().lower().replace(" ", "-")
+        return any(
+            str(entry.get("name") or "").strip().lower().replace(" ", "-") == target
+            for entry in get_compatible_custom_providers(load_config())
+        )
+    except Exception:
+        logger.debug("Could not resolve ACP custom-provider name", exc_info=True)
+        return False
+
+
 def _resource_display_name(uri: str, name: str | None = None, title: str | None = None) -> str:
     """Human-readable attachment name for prompt context."""
     raw_name = (name or "").strip()
@@ -644,9 +659,45 @@ class HermesACPAgent(acp.Agent):
 
     @staticmethod
     def _resolve_model_selection(raw_model: str, current_provider: str) -> tuple[str, str]:
-        """Resolve ``provider:model`` input into the provider and normalized model id."""
+        """Resolve ACP colon- or slash-delimited model selections."""
         target_provider = current_provider
         new_model = raw_model.strip()
+
+        if not new_model:
+            return target_provider, new_model
+
+        if new_model.startswith("custom:"):
+            custom_model = new_model.removeprefix("custom:")
+            custom_name, separator, model_name = custom_model.partition("/")
+            normalized_name = custom_name.strip().lower().replace(" ", "-")
+            if (
+                separator
+                and normalized_name
+                and model_name.strip()
+                and _is_configured_custom_provider(normalized_name)
+            ):
+                return f"custom:{normalized_name}", model_name.strip()
+
+        if ":" not in new_model and "/" in new_model:
+            try:
+                from hermes_cli.models import (
+                    _AGGREGATOR_PROVIDERS,
+                    _KNOWN_PROVIDER_NAMES,
+                    normalize_provider,
+                )
+
+                provider_name, model_name = new_model.split("/", 1)
+                provider_name = provider_name.strip().lower()
+                model_name = model_name.strip()
+                current = normalize_provider(current_provider)
+                if (
+                    current not in _AGGREGATOR_PROVIDERS
+                    and provider_name in _KNOWN_PROVIDER_NAMES
+                    and model_name
+                ):
+                    return normalize_provider(provider_name), model_name
+            except Exception:
+                logger.debug("ACP slash-form provider detection failed", exc_info=True)
 
         try:
             from hermes_cli.models import detect_provider_for_model, parse_model_input

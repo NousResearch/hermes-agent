@@ -4967,19 +4967,31 @@ function installZoomShortcuts(window) {
   window.webContents.on('before-input-event', (event, input) => {
     const mod = IS_MAC ? input.meta : input.control
 
-    if (!mod || input.alt || input.shift) {
+    if (!mod || input.alt) {
       return
     }
 
     const key = input.key
 
     if (key === '0') {
+      if (input.shift) {
+        return // Ctrl/Cmd+Shift+0 is not a zoom chord — leave it alone
+      }
+
       event.preventDefault()
       setAndPersistZoomLevel(window, 0)
     } else if (key === '=' || key === '+') {
+      // Zoom-in must accept the shift modifier: on US layouts Plus is
+      // physically Shift+=, so Cmd+Plus arrives as Cmd+Shift+'+' (or '='
+      // depending on platform). The old blanket shift guard silently
+      // dropped keyboard zoom-in on macOS (#43517).
       event.preventDefault()
       setAndPersistZoomLevel(window, window.webContents.getZoomLevel() + ZOOM_STEP)
     } else if (key === '-') {
+      if (input.shift) {
+        return // Shift+'-' is '_' territory on most layouts, not zoom-out
+      }
+
       event.preventDefault()
       setAndPersistZoomLevel(window, window.webContents.getZoomLevel() - ZOOM_STEP)
     }

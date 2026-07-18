@@ -1256,6 +1256,23 @@ def _prepend_shell_init(cmd_string: str, files: list[str]) -> str:
         # path.  Escape single quotes defensively anyway.
         safe = path.replace("'", "'\\''")
         prelude_parts.append(f"[ -r '{safe}' ] && . '{safe}' 2>/dev/null || true")
+    # Re-assert the active interpreter's venv bin onto PATH after profile
+    # files run.  A bash -l login shell sources /etc/profile and friends,
+    # which on bare containers with empty profiles falls back to bash's
+    # compiled default PATH (``/usr/local/bin:/usr/bin:/bin``) and silently
+    # drops ``$VIRTUAL_ENV/bin``.  Re-export so the captured ``export -p``
+    # snapshot (init_session) keeps the venv on PATH and every subsequent
+    # foreground command resolves ``python`` to the venv interpreter
+    # instead of the system one.  Issue #66642.
+    prelude_parts.append(
+        'if [ -n "$VIRTUAL_ENV" ] && [ -d "$VIRTUAL_ENV/bin" ]; then\n'
+        '  case ":$PATH:" in\n'
+        '    *":$VIRTUAL_ENV/bin:"*) ;;\n'
+        '    *) PATH="$VIRTUAL_ENV/bin:$PATH" ;;\n'
+        '  esac\n'
+        '  export PATH\n'
+        'fi'
+    )
     prelude = "\n".join(prelude_parts) + "\n"
     return prelude + cmd_string
 

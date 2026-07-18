@@ -1990,3 +1990,43 @@ class TestBinaryAttachmentPersistence:
         assert "full file saved to" in parts[0]["text"]
         saved = re.search(r"full file saved to (\S+?)\]?$", parts[0]["text"], re.M).group(1)
         assert Path(saved).stat().st_size == len(data)
+
+
+class TestResourceLinkPathDisclosure:
+    """Non-inlined resource links must name the on-disk path so the model
+    can use its tools on the file (no copying — the file already exists)."""
+
+    @staticmethod
+    def _make_link_block(path, mime_type=None, name=None):
+        from acp.schema import ResourceContentBlock
+
+        return ResourceContentBlock(
+            type="resource_link",
+            uri=path.as_uri(),
+            name=name or path.name,
+            mime_type=mime_type,
+        )
+
+    def test_binary_file_link_includes_path(self, tmp_path):
+        from acp_adapter import server as server_mod
+
+        f = tmp_path / "blob.bin"
+        f.write_bytes(b"\x00\x01\x02\x03")
+        parts = server_mod._resource_link_to_parts(
+            self._make_link_block(f, mime_type="application/octet-stream")
+        )
+        assert len(parts) == 1 and parts[0]["type"] == "text"
+        assert str(f) in parts[0]["text"]
+        assert "use your tools" in parts[0]["text"].lower()
+
+    def test_oversized_image_link_includes_path(self, tmp_path):
+        from acp_adapter import server as server_mod
+
+        f = tmp_path / "big.png"
+        f.write_bytes(b"\x89PNG" + b"\x00" * (server_mod._MAX_ACP_RESOURCE_BYTES + 1))
+        parts = server_mod._resource_link_to_parts(
+            self._make_link_block(f, mime_type="image/png")
+        )
+        assert len(parts) == 1 and parts[0]["type"] == "text"
+        assert "too large to inline" in parts[0]["text"]
+        assert f"File is at {f}" in parts[0]["text"]

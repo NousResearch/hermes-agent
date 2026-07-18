@@ -269,7 +269,10 @@ def _resource_link_to_parts(block: ResourceContentBlock) -> list[dict[str, Any]]
                         uri=uri,
                         name=name,
                         title=title,
-                        body=f"[Image too large to inline: {size} bytes, cap={_MAX_ACP_RESOURCE_BYTES}]",
+                        body=(
+                            f"[Image too large to inline: {size} bytes, "
+                            f"cap={_MAX_ACP_RESOURCE_BYTES}. File is at {path}.]"
+                        ),
                     ),
                 }]
             with path.open("rb") as fh:
@@ -304,7 +307,11 @@ def _resource_link_to_parts(block: ResourceContentBlock) -> list[dict[str, Any]]
                     uri=uri,
                     name=name,
                     title=title,
-                    body=f"[Binary file omitted: {size} bytes, mime={mime_type or 'unknown'}]",
+                    body=(
+                        f"[Binary file at {path} — {size} bytes, "
+                        f"mime={mime_type or 'unknown'}. Not inlined; use your tools "
+                        f"to read or process it.]"
+                    ),
                 ),
             }]
         note = None

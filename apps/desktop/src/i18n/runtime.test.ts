@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 
 import { fieldCopyForSchemaKey } from '@/app/settings/field-copy'
+import { RU_FIELD_DESCRIPTIONS, RU_FIELD_LABELS } from '@/app/settings/ru-constants'
 
 import { TRANSLATIONS } from './catalog'
 import { en } from './en'
@@ -53,6 +54,17 @@ describe('desktop i18n runtime translator', () => {
 
     expect(fieldCopyForSchemaKey(zh.settings.fieldLabels, field)).toBe('推理过程块')
     expect(fieldCopyForSchemaKey(zh.settings.fieldDescriptions, field)).toBe('当后端提供推理内容时予以显示。')
+  })
+
+  it('keeps Russian settings field copy complete and addressable from schema keys', () => {
+    const field = ['display', 'show_reasoning'].join('.')
+
+    expect(Object.keys(RU_FIELD_LABELS).sort()).toEqual(Object.keys(en.settings.fieldLabels).sort())
+    expect(Object.keys(RU_FIELD_DESCRIPTIONS).sort()).toEqual(Object.keys(en.settings.fieldDescriptions).sort())
+    expect(fieldCopyForSchemaKey(ru.settings.fieldLabels, field)).toBe('Блоки рассуждений')
+    expect(fieldCopyForSchemaKey(ru.settings.fieldDescriptions, field)).toBe(
+      'Показывать разделы с рассуждениями, если их передаёт бэкенд.'
+    )
   })
 
   it('falls back to English when the active locale cannot resolve a key', () => {

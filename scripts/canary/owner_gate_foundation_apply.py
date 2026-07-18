@@ -15,6 +15,7 @@ from __future__ import annotations
 import argparse
 import base64
 import hashlib
+import ipaddress
 import json
 import os
 import re
@@ -170,6 +171,7 @@ from cryptography.hazmat.primitives.asymmetric.ed25519 import (
 from scripts.canary import full_canary_owner_launcher as launcher
 from scripts.canary import owner_gate_foundation as foundation
 from scripts.canary import owner_gate_foundation_journal as foundation_journal
+from scripts.canary import owner_gate_network_evidence_author as network_author
 from scripts.canary import owner_gate_owner_reauth as owner_reauth
 from scripts.canary import owner_gate_pre_foundation as pre_foundation
 from scripts.canary import owner_gate_project_ancestry as project_ancestry
@@ -503,6 +505,13 @@ class OperationObservation:
 
 class FoundationApplyProvider(Protocol):
     def assert_stable(self) -> None: ...
+
+    def observe_network_evidence_sha256(
+        self,
+        evidence: foundation.ProductionNetworkEvidence,
+        *,
+        expected_created_owner_subnet_identity: Mapping[str, Any] | None = None,
+    ) -> str: ...
 
     def observe_ancestry_chain(self) -> Sequence[Mapping[str, Any]]: ...
 
@@ -941,6 +950,34 @@ def _validate_live_ancestry(
         live,
     ):
         _error("owner_gate_foundation_live_ancestry_mismatch")
+
+
+def _validate_live_network_evidence(
+    provider: FoundationApplyProvider,
+    chain: ValidatedFoundationAChain,
+    *,
+    expected_created_owner_subnet_identity: Mapping[str, Any] | None = None,
+) -> None:
+    """Bind apply to the exact live inventory that the author signed."""
+
+    try:
+        live_sha256 = provider.observe_network_evidence_sha256(
+            chain.network_evidence,
+            expected_created_owner_subnet_identity=(
+                expected_created_owner_subnet_identity
+            ),
+        )
+    except OwnerGateFoundationApplyError:
+        raise
+    except Exception as exc:
+        _error("owner_gate_foundation_live_network_evidence_unknown", exc)
+    if (
+        not isinstance(live_sha256, str)
+        or _SHA256.fullmatch(live_sha256) is None
+    ):
+        _error("owner_gate_foundation_live_network_evidence_unknown")
+    if live_sha256 != chain.network_evidence.evidence_sha256:
+        _error("owner_gate_foundation_live_network_evidence_mismatch")
 
 
 def _fresh_reauth(
@@ -2240,7 +2277,10 @@ def _preflight_failure_is_proven_nonmutating(
     """Admit a clean failure only before any step artifact can exist."""
 
     if (
-        failed_step_name != "preflight_live_ancestry"
+        failed_step_name not in {
+            "preflight_live_network_evidence",
+            "preflight_live_ancestry",
+        }
         or step_receipts
         or created_steps
     ):
@@ -2445,7 +2485,7 @@ def _apply_with_leased_provider(
     if success is not None and isinstance(success.get("receipt"), Mapping):
         provider.assert_stable()
         _fresh_reauth(chain, now_unix=started_now)
-        _validate_live_ancestry(provider, chain)
+        replay_created_owner_subnet_identity: Mapping[str, Any] | None = None
         for index, step in enumerate(chain.plan.foundation_steps):
             preexisting = _read_transition(
                 journal=journal,
@@ -2478,6 +2518,25 @@ def _apply_with_leased_provider(
                 step=step,
                 transition=terminal_transition,
             )
+            if (
+                step.name == "create_dedicated_private_owner_gate_subnet"
+                and post_body is not None
+            ):
+                identity = terminal_transition.get("resource_identity")
+                if not isinstance(identity, Mapping):
+                    _error("owner_gate_foundation_terminal_journal_invalid")
+                replay_created_owner_subnet_identity = dict(identity)
+        _validate_live_network_evidence(
+            provider,
+            chain,
+            expected_created_owner_subnet_identity=(
+                replay_created_owner_subnet_identity
+            ),
+        )
+        _validate_live_ancestry(provider, chain)
+        replay_completed = now_unix()
+        _fresh_reauth(chain, now_unix=replay_completed)
+        provider.assert_stable()
         return pre_foundation.validate_foundation_apply_receipt(
             success["receipt"],
             public_key=chain.release_public_key,
@@ -2488,14 +2547,142 @@ def _apply_with_leased_provider(
                 chain.ancestry_collector_public_key
             ),
             plan=chain.plan,
-            now_unix=started_now,
+            now_unix=replay_completed,
         )
     created_steps: list[foundation.PlanStep] = []
     step_receipts: list[Mapping[str, Any]] = []
-    current_step = "preflight_live_ancestry"
+    created_owner_subnet_identity: Mapping[str, Any] | None = None
+    subnet_step_context: tuple[int, foundation.PlanStep] | None = None
+    for index, step in enumerate(chain.plan.foundation_steps):
+        if step.name != "create_dedicated_private_owner_gate_subnet":
+            continue
+        subnet_step_context = (index, step)
+        resumed_subnet_post = _read_transition(
+            journal=journal,
+            chain=chain,
+            transaction_id=transaction_id,
+            name=f"s{index}-post",
+            phase="postcondition_exact",
+            step_index=index,
+            step=step,
+        )
+        if resumed_subnet_post is not None:
+            identity = resumed_subnet_post.get("resource_identity")
+            if not isinstance(identity, Mapping):
+                _error("owner_gate_foundation_journal_transition_invalid")
+            created_owner_subnet_identity = dict(identity)
+        break
+    if subnet_step_context is None:
+        _error("owner_gate_foundation_chain_invalid")
+    current_step = "preflight_live_network_evidence"
     try:
         provider.assert_stable()
         _fresh_reauth(chain, now_unix=started_now)
+        if created_owner_subnet_identity is None:
+            subnet_index, subnet_step = subnet_step_context
+            subnet_operation_body = _read_transition(
+                journal=journal,
+                chain=chain,
+                transaction_id=transaction_id,
+                name=f"s{subnet_index}-operation",
+                phase="operation_observed",
+                step_index=subnet_index,
+                step=subnet_step,
+            )
+            if subnet_operation_body is not None:
+                subnet_intent = _read_transition(
+                    journal=journal,
+                    chain=chain,
+                    transaction_id=transaction_id,
+                    name=f"s{subnet_index}-intent",
+                    phase="mutation_intent",
+                    step_index=subnet_index,
+                    step=subnet_step,
+                )
+                subnet_pre = _read_transition(
+                    journal=journal,
+                    chain=chain,
+                    transaction_id=transaction_id,
+                    name=f"s{subnet_index}-pre",
+                    phase="precondition_absent",
+                    step_index=subnet_index,
+                    step=subnet_step,
+                )
+                subnet_operation = _operation_from_transition(
+                    subnet_operation_body
+                )
+                if (
+                    subnet_intent is None
+                    or subnet_pre is None
+                    or subnet_intent.get("attempt_id")
+                    != subnet_operation.attempt_id
+                    or subnet_intent.get("precondition_receipt_sha256")
+                    != subnet_pre.get("precondition_receipt_sha256")
+                    or subnet_intent.get("precondition")
+                    != subnet_pre.get("precondition")
+                ):
+                    _error(
+                        "owner_gate_foundation_journal_transition_invalid"
+                    )
+                if subnet_operation.state == "completed":
+                    current_step = (
+                        "preflight_recover_completed_owner_subnet"
+                    )
+                    recovered = _observe_completed_postcondition(
+                        provider=provider,
+                        chain=chain,
+                        step=subnet_step,
+                        operation=subnet_operation,
+                        expected_state="exact",
+                        now_unix=now_unix,
+                        wait=postcondition_wait,
+                    )
+                    if recovered.state == "exact":
+                        recovered_post = _transition_body(
+                            chain=chain,
+                            transaction_id=transaction_id,
+                            phase="postcondition_exact",
+                            step_index=subnet_index,
+                            step=subnet_step,
+                            payload={
+                                "attempt_id": subnet_operation.attempt_id,
+                                "provider_result_binding_sha256": (
+                                    subnet_operation
+                                    .provider_result_binding_sha256
+                                ),
+                                "operation_receipt_sha256": (
+                                    subnet_operation.receipt_sha256
+                                ),
+                                "postcondition_receipt_sha256": (
+                                    recovered.receipt_sha256
+                                ),
+                                "resource_identity": dict(
+                                    recovered.resource_identity or {}
+                                ),
+                            },
+                        )
+                        _publish_transition(
+                            journal=journal,
+                            transaction_id=transaction_id,
+                            name=f"s{subnet_index}-post",
+                            body=recovered_post,
+                            private_key=private_key,
+                        )
+                        identity = recovered_post.get("resource_identity")
+                        if not isinstance(identity, Mapping):
+                            _error(
+                                "owner_gate_foundation_journal_transition_invalid"
+                            )
+                        created_owner_subnet_identity = dict(identity)
+        current_step = "preflight_live_network_evidence"
+        _validate_live_network_evidence(
+            provider,
+            chain,
+            expected_created_owner_subnet_identity=(
+                created_owner_subnet_identity
+            ),
+        )
+        current_step = "preflight_live_ancestry"
         _validate_live_ancestry(provider, chain)
         for index, step in enumerate(chain.plan.foundation_steps):
             current_step = step.name
@@ -2548,6 +2735,13 @@ def _apply_with_leased_provider(
                     disposition="created",
                 ))
                 created_steps.append(step)
+                if step.name == "create_dedicated_private_owner_gate_subnet":
+                    identity = post_body.get("resource_identity")
+                    if not isinstance(identity, Mapping):
+                        _error(
+                            "owner_gate_foundation_journal_transition_invalid"
+                        )
+                    created_owner_subnet_identity = dict(identity)
                 continue
             intent = _read_transition(
                 journal=journal,
@@ -2827,10 +3021,25 @@ def _apply_with_leased_provider(
                 disposition="created",
             ))
             created_steps.append(step)
+            if step.name == "create_dedicated_private_owner_gate_subnet":
+                identity = post_body.get("resource_identity")
+                if not isinstance(identity, Mapping):
+                    _error("owner_gate_foundation_journal_transition_invalid")
+                created_owner_subnet_identity = dict(identity)
+        current_step = "terminal_live_network_evidence"
+        terminal_started = now_unix()
+        _fresh_reauth(chain, now_unix=terminal_started)
+        _validate_live_network_evidence(
+            provider,
+            chain,
+            expected_created_owner_subnet_identity=(
+                created_owner_subnet_identity
+            ),
+        )
         current_step = "terminal_live_ancestry"
+        _validate_live_ancestry(provider, chain)
         completed = now_unix()
         _fresh_reauth(chain, now_unix=completed)
-        _validate_live_ancestry(provider, chain)
         provider.assert_stable()
         execution = _ProviderExecutionResult(
             step_receipts=tuple(step_receipts),
@@ -3272,6 +3481,107 @@ def _provider_link_equals(value: Any, expected: str) -> bool:
     return normalized == expected
 
 
+def _pre_foundation_network_inventory(
+    raw: Mapping[str, Any],
+    expected_created_owner_subnet_identity: Mapping[str, Any],
+) -> Mapping[str, Any]:
+    """Remove only the exact journal-bound subnet/route created by apply."""
+
+    if not isinstance(raw, Mapping) or not isinstance(
+        expected_created_owner_subnet_identity,
+        Mapping,
+    ):
+        _error("owner_gate_foundation_live_network_evidence_mismatch")
+    expected_subnet = dict(expected_created_owner_subnet_identity)
+    expected_route_raw = expected_subnet.pop("local_route_identity", None)
+    if not isinstance(expected_route_raw, Mapping):
+        _error("owner_gate_foundation_live_network_evidence_mismatch")
+    expected_route = dict(expected_route_raw)
+    prefix = "https://www.googleapis.com/compute/v1/"
+
+    def relative(value: Any) -> str:
+        if not isinstance(value, str) or not value.startswith(prefix):
+            _error("owner_gate_foundation_live_network_evidence_mismatch")
+        result = value.removeprefix(prefix)
+        if not result.startswith("projects/"):
+            _error("owner_gate_foundation_live_network_evidence_mismatch")
+        return result
+
+    for field in (
+        "self_link",
+        "network_self_link",
+        "region_self_link",
+    ):
+        expected_subnet[field] = relative(expected_subnet.get(field))
+    for field in (
+        "self_link",
+        "network_self_link",
+        "next_hop_network_self_link",
+    ):
+        expected_route[field] = relative(expected_route.get(field))
+
+    desired = ipaddress.ip_network(
+        foundation.OWNER_GATE_SUBNET_CIDR,
+        strict=True,
+    )
+    network_self_link = (
+        f"projects/{foundation.PROJECT}/global/networks/"
+        f"{foundation.NETWORK_NAME}"
+    )
+    try:
+        subnets = network_author._items(raw.get("subnets"), label="subnets")
+        routes = network_author._items(raw.get("routes"), label="routes")
+        subnet_matches: list[tuple[int, Mapping[str, Any]]] = []
+        for index, item in enumerate(subnets):
+            if not network_author._owner_gate_subnet_candidate(item):
+                continue
+            subnet_matches.append((
+                index,
+                network_author._require_exact_owner_gate_subnet(
+                    item,
+                    desired=desired,
+                    network_self_link=network_self_link,
+                ),
+            ))
+        route_matches: list[tuple[int, Mapping[str, Any]]] = []
+        for index, item in enumerate(routes):
+            if (
+                item.get("destRange") != foundation.OWNER_GATE_SUBNET_CIDR
+                or network_author._normalized_resource(item.get("network"))
+                != network_self_link
+            ):
+                continue
+            route_matches.append((
+                index,
+                network_author._require_exact_owner_gate_subnet_route(
+                    item,
+                    desired=desired,
+                    network_self_link=network_self_link,
+                ),
+            ))
+    except network_author.OwnerGateNetworkEvidenceAuthorError as exc:
+        _error("owner_gate_foundation_live_network_evidence_mismatch", exc)
+    if (
+        len(subnet_matches) != 1
+        or dict(subnet_matches[0][1]) != expected_subnet
+        or len(route_matches) != 1
+        or dict(route_matches[0][1]) != expected_route
+    ):
+        _error("owner_gate_foundation_live_network_evidence_mismatch")
+    projected = dict(raw)
+    projected["subnets"] = [
+        item
+        for index, item in enumerate(subnets)
+        if index != subnet_matches[0][0]
+    ]
+    projected["routes"] = [
+        item
+        for index, item in enumerate(routes)
+        if index != route_matches[0][0]
+    ]
+    return projected
+
+
 def _provider_tag(value: Any) -> str:
     if not isinstance(value, str) or not value or len(value) > 1024:
         _error("owner_gate_foundation_provider_resource_invalid")
@@ -3543,6 +3853,67 @@ class _TrustedGcloudFoundationProvider:
             pre_etag,
             str(post_etag),
         )
+
+    def observe_network_evidence_sha256(
+        self,
+        evidence: foundation.ProductionNetworkEvidence,
+        *,
+        expected_created_owner_subnet_identity: Mapping[str, Any] | None = None,
+    ) -> str:
+        """Recollect and normalize the signed inventory through this runtime."""
+
+        if not isinstance(evidence, foundation.ProductionNetworkEvidence):
+            _error("owner_gate_foundation_live_network_evidence_unknown")
+        self.assert_stable()
+
+        def run_json(logical: Sequence[str]) -> Any:
+            value, _receipt = self._read_json(tuple(logical))
+            return value
+
+        try:
+            raw = network_author._collect_raw(run_json)
+            if expected_created_owner_subnet_identity is not None:
+                if (
+                    evidence.preexisting_owner_gate_subnet_identity is not None
+                    or evidence.preexisting_owner_gate_subnet_route_identity
+                    is not None
+                ):
+                    _error(
+                        "owner_gate_foundation_live_network_evidence_mismatch"
+                    )
+                raw = _pre_foundation_network_inventory(
+                    raw,
+                    expected_created_owner_subnet_identity,
+                )
+            unsigned = network_author._normalize_inventory(
+                raw,
+                collected_at_unix=evidence.collected_at_unix,
+            )
+        except network_author.OwnerGateNetworkEvidenceAuthorError as exc:
+            _error("owner_gate_foundation_live_network_evidence_unknown", exc)
+        self.assert_stable()
+        return foundation.sha256_json(unsigned)
+
+    def _require_network_connectivity_api_disabled(self) -> None:
+        """Close the policy-based-route enablement race before mutation."""
+
+        self.assert_stable()
+        logical = network_author.inventory_commands()[
+            "network_connectivity_service"
+        ]
+        value, _receipt = self._read_json(logical)
+        try:
+            services = network_author._items(
+                value,
+                label="network_connectivity_service",
+            )
+        except network_author.OwnerGateNetworkEvidenceAuthorError as exc:
+            _error("owner_gate_foundation_live_network_evidence_unknown", exc)
+        if services != []:
+            _error(
+                "owner_gate_foundation_network_policy_based_routes_not_disabled"
+            )
+        self.assert_stable()
 
     def observe_ancestry_chain(self) -> Sequence[Mapping[str, Any]]:
         token = self._token_provider()
@@ -3819,21 +4190,76 @@ class _TrustedGcloudFoundationProvider:
                 if len(matches) != 1:
                     return "drift", None, None, receipts
                 subnet = matches[0]
+                routes = _list(read((
+                    "gcloud",
+                    "compute",
+                    "routes",
+                    "list",
+                    project,
+                    "--format=json",
+                )))
+                expected_network = (
+                    "https://www.googleapis.com/compute/v1/"
+                    f"projects/{spec.project}/global/networks/"
+                    f"{foundation.NETWORK_NAME}"
+                )
+                route_matches = [
+                    item
+                    for item in routes
+                    if item.get("destRange")
+                    == foundation.OWNER_GATE_SUBNET_CIDR
+                    and _provider_link_equals(
+                        item.get("network"),
+                        expected_network,
+                    )
+                ]
+                if len(route_matches) != 1:
+                    return "drift", None, None, receipts
+                desired = ipaddress.ip_network(
+                    foundation.OWNER_GATE_SUBNET_CIDR,
+                    strict=True,
+                )
+                normalized_network = expected_network.removeprefix(
+                    "https://www.googleapis.com/compute/v1/"
+                )
+                try:
+                    subnet_identity = (
+                        network_author._require_exact_owner_gate_subnet(
+                            subnet,
+                            desired=desired,
+                            network_self_link=normalized_network,
+                        )
+                    )
+                    route_identity = (
+                        network_author._require_exact_owner_gate_subnet_route(
+                            route_matches[0],
+                            desired=desired,
+                            network_self_link=normalized_network,
+                        )
+                    )
+                except network_author.OwnerGateNetworkEvidenceAuthorError:
+                    return "drift", None, None, receipts
+                subnet_identity = dict(subnet_identity)
+                for field in (
+                    "self_link",
+                    "network_self_link",
+                    "region_self_link",
+                ):
+                    subnet_identity[field] = _provider_link(
+                        subnet_identity[field]
+                    )
+                route_identity = dict(route_identity)
+                for field in (
+                    "self_link",
+                    "network_self_link",
+                    "next_hop_network_self_link",
+                ):
+                    route_identity[field] = _provider_link(
+                        route_identity[field]
+                    )
                 identity = {
-                    "resource_type": "compute_subnetwork",
-                    "name": subnet.get("name"),
-                    "self_link": _provider_link(subnet.get("selfLink")),
-                    "numeric_id": str(subnet.get("id", "")),
-                    "fingerprint": subnet.get("fingerprint"),
-                    "network_self_link": _provider_link(subnet.get("network")),
-                    "region_self_link": _provider_link(subnet.get("region")),
-                    "ip_cidr_range": subnet.get("ipCidrRange"),
-                    "private_ip_google_access": subnet.get(
-                        "privateIpGoogleAccess"
-                    ),
-                    "stack_type": subnet.get("stackType"),
-                    "purpose": subnet.get("purpose", "PRIVATE"),
-                    "secondary_ip_ranges": subnet.get("secondaryIpRanges", []),
+                    **subnet_identity,
+                    "local_route_identity": route_identity,
                 }
             elif step.name == "create_private_owner_gate_vm":
                 instances = _list(read((
@@ -4178,6 +4604,7 @@ class _TrustedGcloudFoundationProvider:
             or _SHA256.fullmatch(attempt_id or "") is None
         ):
             _error("owner_gate_foundation_provider_step_forbidden")
+        self._require_network_connectivity_api_disabled()
         if _iam_binding_contract(step, plan=plan) is not None:
             return self._iam_binding_operation(
                 step,

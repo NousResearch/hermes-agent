@@ -169,6 +169,8 @@ def _raw() -> dict[tuple[str, ...], Any]:
             "targetTags": [foundation.IAP_NETWORK_TAG],
             "allowed": [{"IPProtocol": "tcp", "ports": ["22"]}],
         },
+        commands["network_connectivity_service"]: [],
+        commands["policy_based_routes"]: [],
         author.connector_command("europe-west3"): [{
             "name": "connector-eu",
             "network": foundation.NETWORK_NAME,
@@ -178,6 +180,62 @@ def _raw() -> dict[tuple[str, ...], Any]:
         author.connector_command("us-central1"): [],
     }
     return values
+
+
+def _exact_owner_subnet() -> dict[str, Any]:
+    return {
+        "allowSubnetCidrRoutesOverlap": False,
+        "creationTimestamp": "2026-07-18T10:55:39.616-07:00",
+        "fingerprint": "FzPFdmwu4-E=",
+        "gatewayAddress": "10.80.3.1",
+        "id": "7031348902426444020",
+        "ipCidrRange": foundation.OWNER_GATE_SUBNET_CIDR,
+        "kind": "compute#subnetwork",
+        "name": foundation.OWNER_GATE_SUBNET_NAME,
+        "network": _network(),
+        "privateIpGoogleAccess": True,
+        "privateIpv6GoogleAccess": "DISABLE_GOOGLE_ACCESS",
+        "purpose": "PRIVATE",
+        "region": (
+            f"{PREFIX}projects/{foundation.PROJECT}/regions/"
+            f"{foundation.REGION}"
+        ),
+        "selfLink": (
+            f"{PREFIX}projects/{foundation.PROJECT}/regions/"
+            f"{foundation.REGION}/subnetworks/"
+            f"{foundation.OWNER_GATE_SUBNET_NAME}"
+        ),
+        "stackType": "IPV4_ONLY",
+    }
+
+
+def _exact_owner_subnet_route() -> dict[str, Any]:
+    name = "default-route-r-a067554b8415d325"
+    return {
+        "creationTimestamp": "2026-07-18T10:55:43.221-07:00",
+        "description": (
+            "Default local route to the subnetwork "
+            f"{foundation.OWNER_GATE_SUBNET_CIDR}."
+        ),
+        "destRange": foundation.OWNER_GATE_SUBNET_CIDR,
+        "id": "2065908379405385968",
+        "kind": "compute#route",
+        "name": name,
+        "network": _network(),
+        "nextHopNetwork": _network(),
+        "priority": 0,
+        "selfLink": (
+            f"{PREFIX}projects/{foundation.PROJECT}/global/routes/{name}"
+        ),
+    }
+
+
+def _with_exact_owner_subnet(
+    values: dict[tuple[str, ...], Any],
+) -> None:
+    commands = author.inventory_commands()
+    values[commands["subnets"]].append(_exact_owner_subnet())
+    values[commands["routes"]].append(_exact_owner_subnet_route())
 
 
 def _runner(values: dict[tuple[str, ...], Any], calls: list[tuple[str, ...]]):
@@ -216,7 +274,12 @@ def test_collect_and_author_uses_complete_read_only_inventory_and_signs() -> Non
         "peerings",
         "private_service_ranges",
         "serverless_connectors",
+        "network_connectivity_service",
+        "policy_based_routes",
     }
+    assert result["network_connectivity_api_disabled"] is True
+    assert result["preexisting_owner_gate_subnet_identity"] is None
+    assert result["preexisting_owner_gate_subnet_route_identity"] is None
     assert result["range_inventory_receipts"]["aggregate_subnets"] == (
         foundation.sha256_json(
             author._canonical_inventory(
@@ -301,6 +364,276 @@ def test_collect_rejects_owner_gate_subnet_overlap() -> None:
         "ipCidrRange": foundation.OWNER_GATE_SUBNET_CIDR,
         "privateIpGoogleAccess": True,
         "secondaryIpRanges": [],
+    })
+
+    with pytest.raises(
+        author.OwnerGateNetworkEvidenceAuthorError,
+        match="owner_gate_network_owner_subnet_overlap",
+    ):
+        author._collect_and_author_with_runner(
+            release_revision=RELEASE,
+            run_json=_runner(values, []),
+            collected_at_unix=NOW,
+        )
+
+
+def test_collect_accepts_exact_preexisting_owner_subnet_and_local_route() -> None:
+    values = _raw()
+    _with_exact_owner_subnet(values)
+
+    result = author._collect_and_author_with_runner(
+        release_revision=RELEASE,
+        run_json=_runner(values, []),
+        collected_at_unix=NOW,
+    )
+
+    assert foundation.OWNER_GATE_SUBNET_CIDR not in (
+        result["reserved_network_ranges"]
+    )
+    commands = author.inventory_commands()
+    assert result["range_inventory_receipts"]["aggregate_subnets"] == (
+        foundation.sha256_json(
+            author._canonical_inventory(values[commands["subnets"]])
+        )
+    )
+    assert result["range_inventory_receipts"]["routes"] == (
+        foundation.sha256_json(
+            author._canonical_inventory(values[commands["routes"]])
+        )
+    )
+    assert result["preexisting_owner_gate_subnet_identity"] == {
+        "resource_type": "compute_subnetwork",
+        "kind": "compute#subnetwork",
+        "name": foundation.OWNER_GATE_SUBNET_NAME,
+        "self_link": (
+            f"projects/{foundation.PROJECT}/regions/{foundation.REGION}/"
+            f"subnetworks/{foundation.OWNER_GATE_SUBNET_NAME}"
+        ),
+        "numeric_id": "7031348902426444020",
+        "fingerprint": "FzPFdmwu4-E=",
+        "creation_timestamp": "2026-07-18T10:55:39.616-07:00",
+        "network_self_link": (
+            f"projects/{foundation.PROJECT}/global/networks/"
+            f"{foundation.NETWORK_NAME}"
+        ),
+        "region_self_link": (
+            f"projects/{foundation.PROJECT}/regions/{foundation.REGION}"
+        ),
+        "ip_cidr_range": foundation.OWNER_GATE_SUBNET_CIDR,
+        "private_ip_google_access": True,
+        "stack_type": "IPV4_ONLY",
+        "purpose": "PRIVATE",
+        "secondary_ip_ranges": [],
+        "allow_subnet_cidr_routes_overlap": False,
+        "gateway_address": "10.80.3.1",
+        "private_ipv6_google_access": "DISABLE_GOOGLE_ACCESS",
+    }
+    route_name = "default-route-r-a067554b8415d325"
+    assert result["preexisting_owner_gate_subnet_route_identity"] == {
+        "resource_type": "compute_route",
+        "kind": "compute#route",
+        "name": route_name,
+        "self_link": (
+            f"projects/{foundation.PROJECT}/global/routes/{route_name}"
+        ),
+        "numeric_id": "2065908379405385968",
+        "creation_timestamp": "2026-07-18T10:55:43.221-07:00",
+        "network_self_link": (
+            f"projects/{foundation.PROJECT}/global/networks/"
+            f"{foundation.NETWORK_NAME}"
+        ),
+        "destination_range": foundation.OWNER_GATE_SUBNET_CIDR,
+        "next_hop_network_self_link": (
+            f"projects/{foundation.PROJECT}/global/networks/"
+            f"{foundation.NETWORK_NAME}"
+        ),
+        "priority": 0,
+        "description": (
+            "Default local route to the subnetwork "
+            f"{foundation.OWNER_GATE_SUBNET_CIDR}."
+        ),
+        "route_type": "SUBNET",
+        "tags": [],
+    }
+
+
+def test_collect_rejects_enabled_network_connectivity_api() -> None:
+    values = _raw()
+    values[author.inventory_commands()["network_connectivity_service"]] = [{
+        "config": {
+            "name": "networkconnectivity.googleapis.com",
+            "title": "Network Connectivity API",
+        },
+        "state": "ENABLED",
+    }]
+
+    with pytest.raises(
+        author.OwnerGateNetworkEvidenceAuthorError,
+        match="owner_gate_network_policy_based_routes_not_disabled",
+    ):
+        author._collect_and_author_with_runner(
+            release_revision=RELEASE,
+            run_json=_runner(values, []),
+            collected_at_unix=NOW,
+        )
+
+
+def test_collect_rejects_policy_based_route_asset() -> None:
+    values = _raw()
+    values[author.inventory_commands()["policy_based_routes"]] = [{
+        "assetType": "networkconnectivity.googleapis.com/PolicyBasedRoute",
+        "name": (
+            "//networkconnectivity.googleapis.com/projects/"
+            f"{foundation.PROJECT}/locations/global/policyBasedRoutes/redirect"
+        ),
+        "resource": {"data": {"priority": 100}},
+    }]
+
+    with pytest.raises(
+        author.OwnerGateNetworkEvidenceAuthorError,
+        match="owner_gate_network_policy_based_routes_present",
+    ):
+        author._collect_and_author_with_runner(
+            release_revision=RELEASE,
+            run_json=_runner(values, []),
+            collected_at_unix=NOW,
+        )
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("kind", "compute#network"),
+        ("name", "owner-subnet-name-drift"),
+        ("selfLink", f"{PREFIX}projects/other/regions/europe-west3/subnetworks/drift"),
+        ("network", f"{PREFIX}projects/{foundation.PROJECT}/global/networks/other"),
+        ("region", f"{PREFIX}projects/{foundation.PROJECT}/regions/europe-west2"),
+        ("ipCidrRange", "10.80.4.0/28"),
+        ("id", "0"),
+        ("fingerprint", ""),
+        ("privateIpGoogleAccess", False),
+        ("stackType", "IPV4_IPV6"),
+        ("purpose", "REGIONAL_MANAGED_PROXY"),
+        ("secondaryIpRanges", [{"ipCidrRange": "10.80.5.0/28"}]),
+        ("allowSubnetCidrRoutesOverlap", True),
+        ("gatewayAddress", "10.80.3.2"),
+        ("privateIpv6GoogleAccess", "ENABLE_OUTBOUND_VM_ACCESS_TO_GOOGLE"),
+    ],
+)
+def test_collect_rejects_preexisting_owner_subnet_identity_drift(
+    field: str,
+    value: Any,
+) -> None:
+    values = _raw()
+    subnet = _exact_owner_subnet()
+    subnet[field] = value
+    commands = author.inventory_commands()
+    values[commands["subnets"]].append(subnet)
+    values[commands["routes"]].append(_exact_owner_subnet_route())
+
+    with pytest.raises(
+        author.OwnerGateNetworkEvidenceAuthorError,
+        match="owner_gate_network_owner_subnet_invalid",
+    ):
+        author._collect_and_author_with_runner(
+            release_revision=RELEASE,
+            run_json=_runner(values, []),
+            collected_at_unix=NOW,
+        )
+
+
+def test_collect_rejects_duplicate_exact_owner_subnets() -> None:
+    values = _raw()
+    commands = author.inventory_commands()
+    values[commands["subnets"]].extend([
+        _exact_owner_subnet(),
+        _exact_owner_subnet(),
+    ])
+    values[commands["routes"]].append(_exact_owner_subnet_route())
+
+    with pytest.raises(
+        author.OwnerGateNetworkEvidenceAuthorError,
+        match="owner_gate_network_owner_subnet_invalid",
+    ):
+        author._collect_and_author_with_runner(
+            release_revision=RELEASE,
+            run_json=_runner(values, []),
+            collected_at_unix=NOW,
+        )
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("kind", "compute#forwardingRule"),
+        ("name", "custom-owner-route"),
+        ("selfLink", f"{PREFIX}projects/{foundation.PROJECT}/global/routes/drift"),
+        ("id", "0"),
+        ("network", f"{PREFIX}projects/{foundation.PROJECT}/global/networks/other"),
+        ("nextHopNetwork", f"{PREFIX}projects/{foundation.PROJECT}/global/networks/other"),
+        ("priority", 1),
+        ("description", "custom route"),
+        ("routeType", "STATIC"),
+        ("tags", ["owner"]),
+        ("nextHopPeering", "peer-a"),
+    ],
+)
+def test_collect_rejects_preexisting_owner_subnet_route_drift(
+    field: str,
+    value: Any,
+) -> None:
+    values = _raw()
+    subnet_route = _exact_owner_subnet_route()
+    subnet_route[field] = value
+    commands = author.inventory_commands()
+    values[commands["subnets"]].append(_exact_owner_subnet())
+    values[commands["routes"]].append(subnet_route)
+
+    with pytest.raises(
+        author.OwnerGateNetworkEvidenceAuthorError,
+        match="owner_gate_network_owner_subnet_route_invalid",
+    ):
+        author._collect_and_author_with_runner(
+            release_revision=RELEASE,
+            run_json=_runner(values, []),
+            collected_at_unix=NOW,
+        )
+
+
+@pytest.mark.parametrize("route_count", [0, 2])
+def test_collect_rejects_missing_or_duplicate_owner_subnet_route(
+    route_count: int,
+) -> None:
+    values = _raw()
+    commands = author.inventory_commands()
+    values[commands["subnets"]].append(_exact_owner_subnet())
+    values[commands["routes"]].extend(
+        _exact_owner_subnet_route() for _ in range(route_count)
+    )
+
+    with pytest.raises(
+        author.OwnerGateNetworkEvidenceAuthorError,
+        match="owner_gate_network_owner_subnet_route_invalid",
+    ):
+        author._collect_and_author_with_runner(
+            release_revision=RELEASE,
+            run_json=_runner(values, []),
+            collected_at_unix=NOW,
+        )
+
+
+def test_collect_exact_owner_subnet_does_not_hide_other_overlap() -> None:
+    values = _raw()
+    _with_exact_owner_subnet(values)
+    commands = author.inventory_commands()
+    values[commands["private_service_ranges"]].append({
+        "name": "owner-range-collision",
+        "network": _network(),
+        "purpose": "VPC_PEERING",
+        "addressType": "INTERNAL",
+        "address": "10.80.3.0",
+        "prefixLength": 28,
+        "status": "RESERVED",
     })
 
     with pytest.raises(

@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import base64
 import hashlib
+import ipaddress
 import json
 import os
 import re
@@ -49,6 +50,7 @@ MAX_JSON_BYTES = 4 * 1024 * 1024
 _REVISION = re.compile(r"^[0-9a-f]{40}$")
 _SHA256 = re.compile(r"^[0-9a-f]{64}$")
 _NUMERIC_ID = re.compile(r"^[1-9][0-9]{5,30}$")
+_OWNER_SUBNET_ROUTE_NAME = re.compile(r"^default-route-r-[0-9a-f]{16}$")
 _IMAGE = re.compile(
     r"^projects/debian-cloud/global/images/"
     r"debian-12-bookworm-v[0-9]{8}$"
@@ -275,6 +277,15 @@ def inert_plan_projection(
         or plan.architecture.get("package_deployment_authorized") is not False
         or plan.architecture.get("service_start_authorized") is not False
         or plan.architecture.get("mutation_iam_enabled_during_bootstrap") is not False
+        or plan.architecture.get("network_connectivity_api_disabled") is not True
+        or type(
+            plan.architecture.get("network_evidence_collected_at_unix")
+        )
+        is not int
+        or plan.architecture["network_evidence_collected_at_unix"] <= 0
+        or "preexisting_owner_gate_subnet_identity" not in plan.architecture
+        or "preexisting_owner_gate_subnet_route_identity"
+        not in plan.architecture
     ):
         _error("owner_gate_pre_foundation_plan_invalid")
     spec_payload = {
@@ -788,6 +799,16 @@ def _provider_link(relative: str) -> str:
     return "https://www.googleapis.com/compute/v1/" + relative
 
 
+def _provider_relative(value: Any) -> str:
+    prefix = "https://www.googleapis.com/compute/v1/"
+    if not isinstance(value, str) or not value.startswith(prefix):
+        _error("owner_gate_foundation_apply_identity_invalid")
+    relative = value.removeprefix(prefix)
+    if not relative.startswith("projects/"):
+        _error("owner_gate_foundation_apply_identity_invalid")
+    return relative
+
+
 def _provider_tag(value: Any) -> bool:
     return (
         isinstance(value, str)
@@ -942,10 +963,12 @@ def _validate_resource_identity(
             value,
             frozenset({
                 "resource_type",
+                "kind",
                 "name",
                 "self_link",
                 "numeric_id",
                 "fingerprint",
+                "creation_timestamp",
                 "network_self_link",
                 "region_self_link",
                 "ip_cidr_range",
@@ -953,15 +976,57 @@ def _validate_resource_identity(
                 "stack_type",
                 "purpose",
                 "secondary_ip_ranges",
+                "allow_subnet_cidr_routes_overlap",
+                "gateway_address",
+                "private_ipv6_google_access",
+                "local_route_identity",
             }),
             code="owner_gate_foundation_apply_identity_invalid",
         )
+        route = _strict_mapping(
+            item.get("local_route_identity"),
+            frozenset({
+                "resource_type",
+                "kind",
+                "name",
+                "self_link",
+                "numeric_id",
+                "creation_timestamp",
+                "network_self_link",
+                "destination_range",
+                "next_hop_network_self_link",
+                "priority",
+                "description",
+                "route_type",
+                "tags",
+            }),
+            code="owner_gate_foundation_apply_identity_invalid",
+        )
+        route_name = route.get("name")
+        route_self_link = _provider_link(
+            f"projects/{spec.project}/global/routes/{route_name}"
+        )
+        expected_route_description = (
+            "Default local route to the subnetwork "
+            f"{foundation.OWNER_GATE_SUBNET_CIDR}."
+        )
+        gateway_address = str(
+            ipaddress.ip_network(
+                foundation.OWNER_GATE_SUBNET_CIDR,
+                strict=True,
+            ).network_address
+            + 1
+        )
         if (
             item.get("resource_type") != "compute_subnetwork"
+            or item.get("kind") != "compute#subnetwork"
             or item.get("name") != foundation.OWNER_GATE_SUBNET_NAME
             or item.get("self_link") != _provider_link(subnet_relative)
             or _NUMERIC_ID.fullmatch(str(item.get("numeric_id", ""))) is None
             or not _provider_tag(item.get("fingerprint"))
+            or not isinstance(item.get("creation_timestamp"), str)
+            or _RFC3339_TIMESTAMP.fullmatch(item["creation_timestamp"])
+            is None
             or item.get("network_self_link") != network
             or item.get("region_self_link")
             != _provider_link(
@@ -972,8 +1037,79 @@ def _validate_resource_identity(
             or item.get("stack_type") != "IPV4_ONLY"
             or item.get("purpose") != "PRIVATE"
             or item.get("secondary_ip_ranges") != []
+            or item.get("allow_subnet_cidr_routes_overlap") is not False
+            or item.get("gateway_address") != gateway_address
+            or item.get("private_ipv6_google_access")
+            != "DISABLE_GOOGLE_ACCESS"
+            or route.get("resource_type") != "compute_route"
+            or route.get("kind") != "compute#route"
+            or not isinstance(route_name, str)
+            or _OWNER_SUBNET_ROUTE_NAME.fullmatch(route_name) is None
+            or route.get("self_link") != route_self_link
+            or _NUMERIC_ID.fullmatch(str(route.get("numeric_id", "")))
+            is None
+            or not isinstance(route.get("creation_timestamp"), str)
+            or _RFC3339_TIMESTAMP.fullmatch(route["creation_timestamp"])
+            is None
+            or route.get("network_self_link") != network
+            or route.get("destination_range")
+            != foundation.OWNER_GATE_SUBNET_CIDR
+            or route.get("next_hop_network_self_link")
+            != network
+            or type(route.get("priority")) is not int
+            or route.get("priority") != 0
+            or route.get("description") != expected_route_description
+            or route.get("route_type") != "SUBNET"
+            or route.get("tags") != []
         ):
             _error("owner_gate_foundation_apply_identity_invalid")
+
+        architecture = plan.architecture
+        if not isinstance(architecture, Mapping):
+            _error("owner_gate_foundation_apply_identity_invalid")
+        subnet_key = "preexisting_owner_gate_subnet_identity"
+        route_key = "preexisting_owner_gate_subnet_route_identity"
+        subnet_bound = subnet_key in architecture
+        route_bound = route_key in architecture
+        if not subnet_bound or not route_bound:
+            _error("owner_gate_foundation_apply_identity_invalid")
+        signed_subnet = architecture[subnet_key]
+        signed_route = architecture[route_key]
+        if (signed_subnet is None) != (signed_route is None):
+            _error("owner_gate_foundation_apply_identity_invalid")
+        if signed_subnet is not None:
+            if not isinstance(signed_subnet, Mapping) or not isinstance(
+                signed_route,
+                Mapping,
+            ):
+                _error("owner_gate_foundation_apply_identity_invalid")
+            observed_subnet = {
+                key: entry
+                for key, entry in item.items()
+                if key != "local_route_identity"
+            }
+            for field in (
+                "self_link",
+                "network_self_link",
+                "region_self_link",
+            ):
+                observed_subnet[field] = _provider_relative(
+                    observed_subnet[field]
+                )
+            observed_route = dict(route)
+            for field in (
+                "self_link",
+                "network_self_link",
+                "next_hop_network_self_link",
+            ):
+                observed_route[field] = _provider_relative(
+                    observed_route[field]
+                )
+            if (
+                dict(signed_subnet) != observed_subnet
+                or dict(signed_route) != observed_route
+            ):
+                _error("owner_gate_foundation_apply_identity_invalid")
         return dict(item)
     if step_name == "create_private_owner_gate_vm":
         item = _strict_mapping(

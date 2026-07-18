@@ -13,7 +13,7 @@ import time
 import urllib.error
 from dataclasses import replace
 from pathlib import Path
-from typing import Any, Mapping
+from typing import Any, Mapping, Sequence
 
 import pytest
 
@@ -38,15 +38,24 @@ def _pin_release_key(monkeypatch: pytest.MonkeyPatch) -> None:
     )
 
 
-def _chain() -> apply.ValidatedFoundationAChain:
-    authority, _plan, _evidence = helpers._authority()
+def _chain(
+    *,
+    preexisting_owner_subnet: bool = False,
+) -> apply.ValidatedFoundationAChain:
+    signed_evidence = helpers._signed_network_evidence(
+        preexisting_owner_subnet=preexisting_owner_subnet,
+    )
+    evidence = helpers._evidence(
+        preexisting_owner_subnet=preexisting_owner_subnet,
+    )
+    authority, _plan, _evidence = helpers._authority(evidence=evidence)
     return apply.decode_validated_foundation_a_chain(
         pre_foundation_authority_raw=gate.canonical_json_bytes(authority),
         owner_reauthentication_receipt_raw=gate.canonical_json_bytes(
             helpers._owner_reauth_receipt()
         ),
         network_evidence_raw=gate.canonical_json_bytes(
-            helpers._signed_network_evidence()
+            signed_evidence
         ),
         project_ancestry_evidence_raw=helpers._signed_ancestry_raw(),
         release_public_key=helpers.RELEASE_KEY.public_key(),
@@ -129,6 +138,8 @@ class _FakeProvider:
         shared_execute_count: Any | None = None,
         first_execute_entered: Any | None = None,
         release_first_execute: Any | None = None,
+        live_network_evidence_sha256: str | None = None,
+        live_network_evidence_sha256_sequence: Sequence[str] | None = None,
     ) -> None:
         self.chain = chain
         self.plan = chain.plan
@@ -150,6 +161,11 @@ class _FakeProvider:
         self.shared_execute_count = shared_execute_count
         self.first_execute_entered = first_execute_entered
         self.release_first_execute = release_first_execute
+        self.live_network_evidence_sha256 = live_network_evidence_sha256
+        self.live_network_evidence_sha256_sequence = list(
+            live_network_evidence_sha256_sequence or []
+        )
+        self.network_evidence_calls = 0
 
     def assert_stable(self) -> None:
         if self.authority_drift_after_failure and self.failed:
@@ -159,6 +175,26 @@ class _FakeProvider:
 
     def observe_ancestry_chain(self) -> list[Mapping[str, Any]]:
         return [dict(item) for item in self.chain.ancestry_evidence.ordered_chain]
+
+    def observe_network_evidence_sha256(
+        self,
+        evidence: gate.ProductionNetworkEvidence,
+        *,
+        expected_created_owner_subnet_identity: Mapping[str, Any] | None = None,
+    ) -> str:
+        assert evidence is self.chain.network_evidence
+        self.network_evidence_calls += 1
+        if expected_created_owner_subnet_identity is not None:
+            assert (
+                expected_created_owner_subnet_identity["resource_type"]
+                == "compute_subnetwork"
+            )
+        if self.live_network_evidence_sha256_sequence:
+            return self.live_network_evidence_sha256_sequence.pop(0)
+        return (
+            self.live_network_evidence_sha256
+            or evidence.evidence_sha256
+        )
 
     def inspect_resource(
         self,
@@ -471,6 +507,84 @@ class _RollbackPostconditionProvider(_FakeProvider):
                 )
             assert state == "absent"
         return super().inspect_resource(step, plan=plan)
+
+
+def test_all_preexisting_exact_foundation_performs_no_mutation(
+    tmp_path: Path,
+) -> None:
+    chain = _chain(preexisting_owner_subnet=True)
+    provider = _FakeProvider(chain)
+    provider.states = {
+        step.name: "exact" for step in chain.plan.foundation_steps
+    }
+
+    receipt = apply._apply_with_provider(
+        chain=chain,
+        private_key=helpers.RELEASE_KEY,
+        provider=provider,
+        journal=_journal_for_test(tmp_path / "journal"),
+        now_unix=lambda: helpers.NOW + 2,
+    )
+
+    assert provider.execute_calls == []
+    assert provider.rollback_calls == []
+    assert [
+        item["disposition"] for item in receipt["applied_steps"]
+    ] == ["preexisting_exact"] * len(chain.plan.foundation_steps)
+    subnet_receipt = next(
+        item
+        for item in receipt["applied_steps"]
+        if item["step_name"]
+        == "create_dedicated_private_owner_gate_subnet"
+    )
+    signed_subnet = (
+        chain.network_evidence.preexisting_owner_gate_subnet_identity
+    )
+    signed_route = (
+        chain.network_evidence.preexisting_owner_gate_subnet_route_identity
+    )
+    assert isinstance(signed_subnet, Mapping)
+    assert isinstance(signed_route, Mapping)
+    assert subnet_receipt["resource_identity"]["numeric_id"] == (
+        signed_subnet["numeric_id"]
+    )
+    assert subnet_receipt["resource_identity"]["fingerprint"] == (
+        signed_subnet["fingerprint"]
+    )
+    assert (
+        subnet_receipt["resource_identity"]["local_route_identity"]
+        ["numeric_id"]
+        == signed_route["numeric_id"]
+    )
+
+
+def test_live_network_evidence_mismatch_fails_before_any_mutation(
+    tmp_path: Path,
+) -> None:
+    chain = _chain()
+    provider = _FakeProvider(
+        chain,
+        live_network_evidence_sha256="f" * 64,
+    )
+
+    with pytest.raises(apply.FoundationApplyFailed) as caught:
+        apply._apply_with_provider(
+            chain=chain,
+            private_key=helpers.RELEASE_KEY,
+            provider=provider,
+            journal=_journal_for_test(tmp_path / "journal"),
+            now_unix=lambda: helpers.NOW + 2,
+        )
+
+    assert provider.execute_calls == []
+    assert provider.rollback_calls == []
+    assert caught.value.receipt["failed_step_name"] == (
+        "preflight_live_network_evidence"
+    )
+    assert caught.value.receipt["failure_code"] == (
+        "owner_gate_foundation_live_network_evidence_mismatch"
+    )
+    assert caught.value.receipt["partial_unknown_state"] is False
 
 
 def test_completed_create_waits_for_exact_provider_visibility(
@@ -798,6 +912,105 @@ def test_iam_cas_add_and_remove_use_real_policy_etag(
     )
 
 
+def test_provider_requires_network_connectivity_api_disabled_before_mutation(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    provider = object.__new__(apply._TrustedGcloudFoundationProvider)
+    stable_checks = 0
+
+    def stable() -> None:
+        nonlocal stable_checks
+        stable_checks += 1
+
+    monkeypatch.setattr(provider, "assert_stable", stable)
+    monkeypatch.setattr(
+        provider,
+        "_read_json",
+        lambda logical: (
+            [],
+            _digest("network-connectivity-disabled"),
+        )
+        if logical
+        == apply.network_author.inventory_commands()[
+            "network_connectivity_service"
+        ]
+        else (_ for _ in ()).throw(AssertionError(logical)),
+    )
+
+    provider._require_network_connectivity_api_disabled()
+
+    assert stable_checks == 2
+
+
+def test_provider_rejects_enabled_network_connectivity_api_before_mutation(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    provider = object.__new__(apply._TrustedGcloudFoundationProvider)
+    monkeypatch.setattr(provider, "assert_stable", lambda: None)
+    monkeypatch.setattr(
+        provider,
+        "_read_json",
+        lambda _logical: (
+            [{"config": {"name": "networkconnectivity.googleapis.com"}}],
+            _digest("network-connectivity-enabled"),
+        ),
+    )
+
+    with pytest.raises(
+        apply.OwnerGateFoundationApplyError,
+        match=(
+            "owner_gate_foundation_network_policy_based_routes_not_disabled"
+        ),
+    ):
+        provider._require_network_connectivity_api_disabled()
+
+
+def test_execute_step_rechecks_network_connectivity_before_iam_mutation(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    chain = _chain()
+    provider = object.__new__(apply._TrustedGcloudFoundationProvider)
+    provider._plan_sha256 = apply.pre_foundation.inert_plan_sha256(chain.plan)
+    calls: list[str] = []
+    monkeypatch.setattr(
+        provider,
+        "_require_network_connectivity_api_disabled",
+        lambda: calls.append("network_guard"),
+    )
+    attempt_id = "a" * 64
+    expected = apply.OperationObservation(
+        "completed",
+        "b" * 64,
+        attempt_id,
+        "c" * 64,
+    )
+
+    def iam_operation(*_args: Any, **_kwargs: Any) -> Any:
+        calls.append("iam_mutation")
+        return expected
+
+    monkeypatch.setattr(provider, "_iam_binding_operation", iam_operation)
+    step = next(
+        item
+        for item in chain.plan.foundation_steps
+        if item.name
+        == (
+            "bind_narrow_iam_observation_reader_to_owner_gate_"
+            "service_account"
+        )
+    )
+
+    observed = provider.execute_step(
+        step,
+        plan=chain.plan,
+        attempt_id=attempt_id,
+        precondition={"policy_etag": "etag-before"},
+    )
+
+    assert observed is expected
+    assert calls == ["network_guard", "iam_mutation"]
+
+
 @pytest.mark.parametrize(
     ("response", "expected"),
     [
@@ -1068,6 +1281,152 @@ def test_provider_accepts_exact_compute_firewall_without_fingerprint(
     assert "fingerprint" not in observed.resource_identity
 
 
+def test_provider_accepts_exact_preexisting_compute_subnet(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    chain = _chain()
+    provider = object.__new__(apply._TrustedGcloudFoundationProvider)
+    provider._plan_sha256 = apply.pre_foundation.inert_plan_sha256(chain.plan)
+    name = gate.OWNER_GATE_SUBNET_NAME
+    live_subnet = {
+        "allowSubnetCidrRoutesOverlap": False,
+        "creationTimestamp": "2026-07-18T10:53:28.127-07:00",
+        "fingerprint": "FzPFdmwu4-E=",
+        "gatewayAddress": "10.80.3.1",
+        "id": "7031348902426444020",
+        "ipCidrRange": gate.OWNER_GATE_SUBNET_CIDR,
+        "kind": "compute#subnetwork",
+        "name": name,
+        "network": (
+            "https://www.googleapis.com/compute/v1/projects/"
+            f"{gate.PROJECT}/global/networks/{gate.NETWORK_NAME}"
+        ),
+        "privateIpGoogleAccess": True,
+        "privateIpv6GoogleAccess": "DISABLE_GOOGLE_ACCESS",
+        "purpose": "PRIVATE",
+        "region": (
+            "https://www.googleapis.com/compute/v1/projects/"
+            f"{gate.PROJECT}/regions/{gate.REGION}"
+        ),
+        "secondaryIpRanges": [],
+        "selfLink": (
+            "https://www.googleapis.com/compute/v1/projects/"
+            f"{gate.PROJECT}/regions/{gate.REGION}/subnetworks/{name}"
+        ),
+        "stackType": "IPV4_ONLY",
+    }
+    route_name = "default-route-r-a067554b8415d325"
+    live_route = {
+        "creationTimestamp": "2026-07-18T10:53:28.127-07:00",
+        "description": (
+            "Default local route to the subnetwork "
+            f"{gate.OWNER_GATE_SUBNET_CIDR}."
+        ),
+        "destRange": gate.OWNER_GATE_SUBNET_CIDR,
+        "id": "4567890123456789012",
+        "kind": "compute#route",
+        "name": route_name,
+        "network": live_subnet["network"],
+        "nextHopNetwork": live_subnet["network"],
+        "priority": 0,
+        "selfLink": (
+            "https://www.googleapis.com/compute/v1/projects/"
+            f"{gate.PROJECT}/global/routes/{route_name}"
+        ),
+    }
+
+    def read(logical: tuple[str, ...]) -> tuple[Any, str]:
+        if logical[1:4] == ("compute", "networks", "subnets"):
+            return [live_subnet], _digest("subnet-read")
+        if logical[1:3] == ("compute", "routes"):
+            return [live_route], _digest("route-read")
+        raise AssertionError(logical)
+
+    monkeypatch.setattr(
+        provider,
+        "_read_json",
+        read,
+    )
+    step = next(
+        item
+        for item in chain.plan.foundation_steps
+        if item.name == "create_dedicated_private_owner_gate_subnet"
+    )
+
+    observed = provider.inspect_resource(step, plan=chain.plan)
+
+    assert observed.state == "exact"
+    assert observed.resource_identity is not None
+    assert observed.resource_identity["numeric_id"] == live_subnet["id"]
+    assert observed.resource_identity["fingerprint"] == (
+        live_subnet["fingerprint"]
+    )
+    assert observed.resource_identity["local_route_identity"]["numeric_id"] == (
+        live_route["id"]
+    )
+
+
+def test_post_foundation_network_projection_strips_only_journaled_exact_pair(
+) -> None:
+    from tests.scripts.canary import (
+        test_owner_gate_network_evidence_author as network_fixture,
+    )
+
+    values = network_fixture._raw()
+    network_fixture._with_exact_owner_subnet(values)
+    raw = apply.network_author._collect_raw(
+        network_fixture._runner(values, [])
+    )
+    live = apply.network_author._normalize_inventory(
+        raw,
+        collected_at_unix=network_fixture.NOW,
+    )
+    subnet_identity = dict(live["preexisting_owner_gate_subnet_identity"])
+    route_identity = dict(
+        live["preexisting_owner_gate_subnet_route_identity"]
+    )
+    provider_prefix = "https://www.googleapis.com/compute/v1/"
+    for field in ("self_link", "network_self_link", "region_self_link"):
+        subnet_identity[field] = provider_prefix + subnet_identity[field]
+    for field in (
+        "self_link",
+        "network_self_link",
+        "next_hop_network_self_link",
+    ):
+        route_identity[field] = provider_prefix + route_identity[field]
+    receipt_identity = {
+        **subnet_identity,
+        "local_route_identity": route_identity,
+    }
+
+    projected = apply._pre_foundation_network_inventory(
+        raw,
+        receipt_identity,
+    )
+    normalized = apply.network_author._normalize_inventory(
+        projected,
+        collected_at_unix=network_fixture.NOW,
+    )
+    original_values = network_fixture._raw()
+    original = apply.network_author._normalize_inventory(
+        apply.network_author._collect_raw(
+            network_fixture._runner(original_values, [])
+        ),
+        collected_at_unix=network_fixture.NOW,
+    )
+
+    assert normalized == original
+    tampered = {
+        **receipt_identity,
+        "numeric_id": "9999999999999999999",
+    }
+    with pytest.raises(
+        apply.OwnerGateFoundationApplyError,
+        match="owner_gate_foundation_live_network_evidence_mismatch",
+    ):
+        apply._pre_foundation_network_inventory(raw, tampered)
+
+
 @pytest.mark.parametrize(
     ("step_name", "exact_item"),
     [
@@ -1164,7 +1523,7 @@ def test_manifest_only_preflight_failure_intent_crash_replays_cleanly(
         phase="failure_intent",
     )
     assert intent is not None
-    assert intent["failed_step_name"] == "preflight_live_ancestry"
+    assert intent["failed_step_name"] == "preflight_live_network_evidence"
     assert intent["inherently_unknown"] is False
 
     successor = _FakeProvider(chain)
@@ -1690,6 +2049,141 @@ def test_terminal_success_replay_revalidates_live_resources(tmp_path: Path) -> N
         )
     assert drifted.execute_calls == []
     assert drifted.rollback_calls == []
+
+
+def test_terminal_success_replay_revalidates_live_network_evidence(
+    tmp_path: Path,
+) -> None:
+    chain = _chain()
+    store = _journal_for_test(tmp_path / "journal")
+    first = _FakeProvider(chain)
+    apply._apply_with_provider(
+        chain=chain,
+        private_key=helpers.RELEASE_KEY,
+        provider=first,
+        journal=store,
+        now_unix=lambda: helpers.NOW + 2,
+    )
+    drifted = _FakeProvider(
+        chain,
+        live_network_evidence_sha256="f" * 64,
+    )
+    for step in chain.plan.foundation_steps:
+        drifted.states[step.name] = "exact"
+        if step.name.startswith("bind_narrow_"):
+            drifted.policy_etags[step.name] = "etag-policy-1"
+
+    with pytest.raises(
+        apply.OwnerGateFoundationApplyError,
+        match="owner_gate_foundation_live_network_evidence_mismatch",
+    ):
+        apply._apply_with_provider(
+            chain=chain,
+            private_key=helpers.RELEASE_KEY,
+            provider=drifted,
+            journal=store,
+            now_unix=lambda: helpers.NOW + 2,
+        )
+
+    assert drifted.execute_calls == []
+    assert drifted.rollback_calls == []
+    assert drifted.network_evidence_calls == 1
+
+
+def test_terminal_network_drift_never_publishes_success(tmp_path: Path) -> None:
+    chain = _chain()
+    store = _journal_for_test(tmp_path / "journal")
+    provider = _FakeProvider(
+        chain,
+        live_network_evidence_sha256_sequence=[
+            chain.network_evidence.evidence_sha256,
+            "f" * 64,
+        ],
+    )
+
+    with pytest.raises(apply.FoundationApplyFailed) as caught:
+        apply._apply_with_provider(
+            chain=chain,
+            private_key=helpers.RELEASE_KEY,
+            provider=provider,
+            journal=store,
+            now_unix=lambda: helpers.NOW + 2,
+        )
+
+    assert provider.network_evidence_calls == 2
+    assert caught.value.receipt["failed_step_name"] == (
+        "terminal_live_network_evidence"
+    )
+    assert caught.value.receipt["failure_code"] == (
+        "owner_gate_foundation_live_network_evidence_mismatch"
+    )
+    assert caught.value.receipt["terminal_state"] == (
+        "manual_reconciliation_required"
+    )
+    assert store.read(apply._transaction_id(chain), "success") is None
+
+
+@pytest.mark.parametrize("crash_artifact", ["operation", "post"])
+def test_resume_after_journaled_subnet_creation_projects_network_inventory(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    crash_artifact: str,
+) -> None:
+    chain = _chain()
+    store = _journal_for_test(tmp_path / "journal")
+    subnet_index = next(
+        index
+        for index, step in enumerate(chain.plan.foundation_steps)
+        if step.name == "create_dedicated_private_owner_gate_subnet"
+    )
+    crashing = _FakeProvider(chain)
+    publish = apply._publish_transition
+
+    def crash_after_subnet_artifact(*args: Any, **kwargs: Any) -> Any:
+        result = publish(*args, **kwargs)
+        if kwargs.get("name") == f"s{subnet_index}-{crash_artifact}":
+            raise SystemExit(
+                f"simulated_process_death_after_subnet_{crash_artifact}"
+            )
+        return result
+
+    with monkeypatch.context() as context:
+        context.setattr(
+            apply,
+            "_publish_transition",
+            crash_after_subnet_artifact,
+        )
+        with pytest.raises(SystemExit):
+            apply._apply_with_provider(
+                chain=chain,
+                private_key=helpers.RELEASE_KEY,
+                provider=crashing,
+                journal=store,
+                now_unix=lambda: helpers.NOW + 2,
+            )
+
+    successor = _FakeProvider(chain)
+    subnet_step = chain.plan.foundation_steps[subnet_index]
+    assert subnet_step.name == "create_dedicated_private_owner_gate_subnet"
+    for step in chain.plan.foundation_steps[: subnet_index + 1]:
+        successor.states[step.name] = "exact"
+        if step.name.startswith("bind_narrow_"):
+            successor.policy_etags[step.name] = "etag-policy-1"
+    receipt = apply._apply_with_provider(
+        chain=chain,
+        private_key=helpers.RELEASE_KEY,
+        provider=successor,
+        journal=store,
+        now_unix=lambda: helpers.NOW + 2,
+    )
+
+    assert receipt["schema"] == apply.pre_foundation.APPLY_RECEIPT_SCHEMA
+    assert subnet_step.name not in successor.execute_calls
+    assert successor.execute_calls == [
+        step.name
+        for step in chain.plan.foundation_steps[subnet_index + 1 :]
+    ]
+    assert successor.network_evidence_calls == 2
 
 
 @pytest.mark.parametrize("case", ["missing", "diverged"])
@@ -2249,6 +2743,7 @@ def _synthetic_sealed_owner_support(tmp_path: Path) -> Path:
         "full_canary_owner_launcher",
         "owner_gate_foundation",
         "owner_gate_foundation_journal",
+        "owner_gate_network_evidence_author",
         "owner_gate_owner_reauth",
         "owner_gate_pre_foundation",
         "owner_gate_project_ancestry",

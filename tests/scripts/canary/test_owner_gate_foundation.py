@@ -19,10 +19,61 @@ NETWORK_KEY_ID = hashlib.sha256(
 ).hexdigest()
 
 
+def _preexisting_owner_gate_identities() -> tuple[dict, dict]:
+    network = f"projects/{gate.PROJECT}/global/networks/{gate.NETWORK_NAME}"
+    subnet = {
+        "resource_type": "compute_subnetwork",
+        "kind": "compute#subnetwork",
+        "name": gate.OWNER_GATE_SUBNET_NAME,
+        "self_link": (
+            f"projects/{gate.PROJECT}/regions/{gate.REGION}/subnetworks/"
+            f"{gate.OWNER_GATE_SUBNET_NAME}"
+        ),
+        "numeric_id": "7031348902426444020",
+        "fingerprint": "FzPFdmwu4-E=",
+        "creation_timestamp": "2026-07-18T10:55:39.616-07:00",
+        "network_self_link": network,
+        "region_self_link": (
+            f"projects/{gate.PROJECT}/regions/{gate.REGION}"
+        ),
+        "ip_cidr_range": gate.OWNER_GATE_SUBNET_CIDR,
+        "private_ip_google_access": True,
+        "stack_type": "IPV4_ONLY",
+        "purpose": "PRIVATE",
+        "secondary_ip_ranges": [],
+        "allow_subnet_cidr_routes_overlap": False,
+        "gateway_address": "10.80.3.1",
+        "private_ipv6_google_access": "DISABLE_GOOGLE_ACCESS",
+    }
+    route_name = "default-route-r-a067554b8415d325"
+    route = {
+        "resource_type": "compute_route",
+        "kind": "compute#route",
+        "name": route_name,
+        "self_link": (
+            f"projects/{gate.PROJECT}/global/routes/{route_name}"
+        ),
+        "numeric_id": "2065908379405385968",
+        "creation_timestamp": "2026-07-18T10:55:43.221-07:00",
+        "network_self_link": network,
+        "destination_range": gate.OWNER_GATE_SUBNET_CIDR,
+        "next_hop_network_self_link": network,
+        "priority": 0,
+        "description": (
+            "Default local route to the subnetwork "
+            f"{gate.OWNER_GATE_SUBNET_CIDR}."
+        ),
+        "route_type": "SUBNET",
+        "tags": [],
+    }
+    return subnet, route
+
+
 def _signed_network_evidence(
     key: Ed25519PrivateKey,
     *,
     collected_at: int = NOW - 1,
+    preexisting_owner_subnet: bool = False,
 ) -> dict:
     body = {
         "schema": gate.NETWORK_EVIDENCE_SCHEMA,
@@ -51,17 +102,26 @@ def _signed_network_evidence(
             "10.80.2.0/28",
             "10.71.208.0/24",
         ],
+        "preexisting_owner_gate_subnet_identity": None,
+        "preexisting_owner_gate_subnet_route_identity": None,
         "range_inventory_receipts": {
             "aggregate_subnets": "1" * 64,
             "routes": "2" * 64,
             "peerings": "3" * 64,
             "private_service_ranges": "4" * 64,
             "serverless_connectors": "5" * 64,
+            "network_connectivity_service": gate.sha256_json([]),
+            "policy_based_routes": gate.sha256_json([]),
         },
+        "network_connectivity_api_disabled": True,
         "private_google_access": False,
         "iap_firewall_rule": "allow-iap-ssh",
         "iap_source_range": gate.IAP_SOURCE_RANGE,
     }
+    if preexisting_owner_subnet:
+        subnet, route = _preexisting_owner_gate_identities()
+        body["preexisting_owner_gate_subnet_identity"] = subnet
+        body["preexisting_owner_gate_subnet_route_identity"] = route
     evidence_sha256 = gate.sha256_json(body)
     public_key_id = hashlib.sha256(key.public_key().public_bytes_raw()).hexdigest()
     signed = {
@@ -81,11 +141,17 @@ def _signed_network_evidence(
     }
 
 
-def _plan() -> gate.OwnerGateFoundationPlan:
+def _plan(
+    *,
+    preexisting_owner_subnet: bool = False,
+) -> gate.OwnerGateFoundationPlan:
     key = NETWORK_KEY
     key_id = NETWORK_KEY_ID
     evidence = gate.ProductionNetworkEvidence.from_mapping(
-        _signed_network_evidence(key),
+        _signed_network_evidence(
+            key,
+            preexisting_owner_subnet=preexisting_owner_subnet,
+        ),
         public_key=key.public_key(),
         expected_public_key_id=key_id,
         now_unix=NOW,
@@ -127,6 +193,21 @@ def test_plan_is_private_fixed_ip_and_dedicated_subnet() -> None:
     )
     assert report["architecture"]["same_production_vpc"] is True
     assert report["architecture"]["same_production_subnet"] is False
+
+
+def test_plan_binds_preexisting_network_identity_and_disabled_api() -> None:
+    subnet, route = _preexisting_owner_gate_identities()
+    architecture = _plan(preexisting_owner_subnet=True).report()[
+        "architecture"
+    ]
+
+    assert architecture["network_evidence_collected_at_unix"] == NOW - 1
+    assert architecture["preexisting_owner_gate_subnet_identity"] == subnet
+    assert (
+        architecture["preexisting_owner_gate_subnet_route_identity"]
+        == route
+    )
+    assert architecture["network_connectivity_api_disabled"] is True
 
 
 def test_bootstrap_has_no_mutation_binding() -> None:
@@ -197,6 +278,82 @@ def test_network_evidence_rejects_overlap() -> None:
         )
     ).rstrip(b"=").decode("ascii")
     with pytest.raises(gate.OwnerGateFoundationError):
+        gate.ProductionNetworkEvidence.from_mapping(
+            signed,
+            public_key=key.public_key(),
+            expected_public_key_id=key_id,
+            now_unix=NOW,
+        )
+
+
+def test_network_evidence_uses_v2_attestation_domain() -> None:
+    assert gate.NETWORK_EVIDENCE_SCHEMA == (
+        "muncho-owner-gate-production-network-evidence.v2"
+    )
+    assert gate.NETWORK_EVIDENCE_SIGNATURE_DOMAIN == (
+        b"muncho-owner-gate/production-network-evidence/v2\x00"
+    )
+
+
+@pytest.mark.parametrize(
+    "mutation",
+    [
+        "subnet_without_route",
+        "route_without_subnet",
+        "subnet_identity_drift",
+        "route_identity_drift",
+        "network_connectivity_api_enabled",
+    ],
+)
+def test_network_evidence_rejects_unbound_preexisting_network_state(
+    mutation: str,
+) -> None:
+    key = Ed25519PrivateKey.generate()
+    subnet, route = _preexisting_owner_gate_identities()
+    raw = _signed_network_evidence(key)
+    body = {
+        name: value
+        for name, value in raw.items()
+        if name not in {
+            "evidence_sha256",
+            "collector_public_key_id",
+            "signature_ed25519_b64url",
+        }
+    }
+    if mutation == "subnet_without_route":
+        body["preexisting_owner_gate_subnet_identity"] = subnet
+    elif mutation == "route_without_subnet":
+        body["preexisting_owner_gate_subnet_route_identity"] = route
+    elif mutation == "subnet_identity_drift":
+        subnet["numeric_id"] = "0"
+        body["preexisting_owner_gate_subnet_identity"] = subnet
+        body["preexisting_owner_gate_subnet_route_identity"] = route
+    elif mutation == "route_identity_drift":
+        route["next_hop_network_self_link"] = (
+            f"projects/{gate.PROJECT}/global/networks/other"
+        )
+        body["preexisting_owner_gate_subnet_identity"] = subnet
+        body["preexisting_owner_gate_subnet_route_identity"] = route
+    else:
+        body["network_connectivity_api_disabled"] = False
+    evidence_sha256 = gate.sha256_json(body)
+    key_id = hashlib.sha256(key.public_key().public_bytes_raw()).hexdigest()
+    signed = {
+        **body,
+        "evidence_sha256": evidence_sha256,
+        "collector_public_key_id": key_id,
+    }
+    signed["signature_ed25519_b64url"] = base64.urlsafe_b64encode(
+        key.sign(
+            gate.NETWORK_EVIDENCE_SIGNATURE_DOMAIN
+            + gate.canonical_json_bytes(signed)
+        )
+    ).rstrip(b"=").decode("ascii")
+
+    with pytest.raises(
+        gate.OwnerGateFoundationError,
+        match="owner_gate_network_evidence_invalid",
+    ):
         gate.ProductionNetworkEvidence.from_mapping(
             signed,
             public_key=key.public_key(),

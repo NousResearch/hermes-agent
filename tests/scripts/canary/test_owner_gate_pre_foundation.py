@@ -37,6 +37,54 @@ NETWORK_KEY_ID = hashlib.sha256(
 ).hexdigest()
 
 
+def _preexisting_owner_gate_identities() -> tuple[dict, dict]:
+    network = f"projects/{gate.PROJECT}/global/networks/{gate.NETWORK_NAME}"
+    region = f"projects/{gate.PROJECT}/regions/{gate.REGION}"
+    subnet = {
+        "resource_type": "compute_subnetwork",
+        "kind": "compute#subnetwork",
+        "name": gate.OWNER_GATE_SUBNET_NAME,
+        "self_link": (
+            f"{region}/subnetworks/{gate.OWNER_GATE_SUBNET_NAME}"
+        ),
+        "numeric_id": "2222222222222222222",
+        "fingerprint": "fingerprint-subnet-1",
+        "creation_timestamp": "2026-07-18T10:55:39.616-07:00",
+        "network_self_link": network,
+        "region_self_link": region,
+        "ip_cidr_range": gate.OWNER_GATE_SUBNET_CIDR,
+        "private_ip_google_access": True,
+        "stack_type": "IPV4_ONLY",
+        "purpose": "PRIVATE",
+        "secondary_ip_ranges": [],
+        "allow_subnet_cidr_routes_overlap": False,
+        "gateway_address": "10.80.3.1",
+        "private_ipv6_google_access": "DISABLE_GOOGLE_ACCESS",
+    }
+    route_name = "default-route-r-a067554b8415d325"
+    route = {
+        "resource_type": "compute_route",
+        "kind": "compute#route",
+        "name": route_name,
+        "self_link": (
+            f"projects/{gate.PROJECT}/global/routes/{route_name}"
+        ),
+        "numeric_id": "2065908379405385968",
+        "creation_timestamp": "2026-07-18T10:55:43.221-07:00",
+        "network_self_link": network,
+        "destination_range": gate.OWNER_GATE_SUBNET_CIDR,
+        "next_hop_network_self_link": network,
+        "priority": 0,
+        "description": (
+            "Default local route to the subnetwork "
+            f"{gate.OWNER_GATE_SUBNET_CIDR}."
+        ),
+        "route_type": "SUBNET",
+        "tags": [],
+    }
+    return subnet, route
+
+
 @pytest.fixture(autouse=True)
 def _pin_release_key(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(
@@ -50,6 +98,7 @@ def _signed_network_evidence(
     key: Ed25519PrivateKey = NETWORK_KEY,
     *,
     collected_at_unix: int = NOW - 1,
+    preexisting_owner_subnet: bool = False,
 ) -> dict:
     body = {
         "schema": gate.NETWORK_EVIDENCE_SCHEMA,
@@ -78,17 +127,26 @@ def _signed_network_evidence(
             "10.80.2.0/28",
             "10.71.208.0/24",
         ],
+        "preexisting_owner_gate_subnet_identity": None,
+        "preexisting_owner_gate_subnet_route_identity": None,
         "range_inventory_receipts": {
             "aggregate_subnets": "1" * 64,
             "routes": "2" * 64,
             "peerings": "3" * 64,
             "private_service_ranges": "4" * 64,
             "serverless_connectors": "5" * 64,
+            "network_connectivity_service": gate.sha256_json([]),
+            "policy_based_routes": gate.sha256_json([]),
         },
+        "network_connectivity_api_disabled": True,
         "private_google_access": False,
         "iap_firewall_rule": "allow-iap-ssh",
         "iap_source_range": gate.IAP_SOURCE_RANGE,
     }
+    if preexisting_owner_subnet:
+        subnet, route = _preexisting_owner_gate_identities()
+        body["preexisting_owner_gate_subnet_identity"] = subnet
+        body["preexisting_owner_gate_subnet_route_identity"] = route
     evidence_sha256 = gate.sha256_json(body)
     key_id = hashlib.sha256(key.public_key().public_bytes_raw()).hexdigest()
     signed = {
@@ -246,10 +304,15 @@ def _evidence(
     key: Ed25519PrivateKey = NETWORK_KEY,
     *,
     collected_at_unix: int = NOW - 1,
+    preexisting_owner_subnet: bool = False,
 ) -> gate.ProductionNetworkEvidence:
     key_id = hashlib.sha256(key.public_key().public_bytes_raw()).hexdigest()
     return gate.ProductionNetworkEvidence.from_mapping(
-        _signed_network_evidence(key, collected_at_unix=collected_at_unix),
+        _signed_network_evidence(
+            key,
+            collected_at_unix=collected_at_unix,
+            preexisting_owner_subnet=preexisting_owner_subnet,
+        ),
         public_key=key.public_key(),
         expected_public_key_id=key_id,
         now_unix=NOW,
@@ -427,20 +490,24 @@ def _resource_identity(
             ],
         }
     if step_name == "create_dedicated_private_owner_gate_subnet":
+        subnet_identity, route_identity = _preexisting_owner_gate_identities()
+        subnet_identity = dict(subnet_identity)
+        for field in (
+            "self_link",
+            "network_self_link",
+            "region_self_link",
+        ):
+            subnet_identity[field] = provider + subnet_identity[field]
+        route_identity = dict(route_identity)
+        for field in (
+            "self_link",
+            "network_self_link",
+            "next_hop_network_self_link",
+        ):
+            route_identity[field] = provider + route_identity[field]
         return {
-            "resource_type": "compute_subnetwork",
-            "name": gate.OWNER_GATE_SUBNET_NAME,
-            "self_link": subnet,
-            "numeric_id": "2222222222222222222",
-            "fingerprint": "fingerprint-subnet-1",
-            "network_self_link": network,
-            "region_self_link": provider
-            + f"projects/{gate.PROJECT}/regions/{gate.REGION}",
-            "ip_cidr_range": gate.OWNER_GATE_SUBNET_CIDR,
-            "private_ip_google_access": True,
-            "stack_type": "IPV4_ONLY",
-            "purpose": "PRIVATE",
-            "secondary_ip_ranges": [],
+            **subnet_identity,
+            "local_route_identity": route_identity,
         }
     if step_name == "create_private_owner_gate_vm":
         return {
@@ -972,6 +1039,61 @@ def test_apply_receipt_requires_exact_ordered_step_receipts() -> None:
         _apply_body(authority, plan, steps=drifted)
 
 
+def test_apply_identity_accepts_fresh_subnet_receipt_when_author_saw_none() -> None:
+    authority, plan, evidence = _authority()
+    assert evidence.preexisting_owner_gate_subnet_identity is None
+    assert evidence.preexisting_owner_gate_subnet_route_identity is None
+
+    body = _apply_body(authority, plan)
+
+    assert body["partial_unknown_state"] is False
+
+
+def test_apply_identity_accepts_exact_preexisting_signed_network_receipt() -> None:
+    evidence = _evidence(preexisting_owner_subnet=True)
+    authority, plan, _ = _authority(evidence=evidence)
+    expected_subnet, expected_route = _preexisting_owner_gate_identities()
+
+    body = _apply_body(authority, plan)
+
+    assert plan.architecture["preexisting_owner_gate_subnet_identity"] == (
+        expected_subnet
+    )
+    assert plan.architecture[
+        "preexisting_owner_gate_subnet_route_identity"
+    ] == expected_route
+    assert body["partial_unknown_state"] is False
+
+
+@pytest.mark.parametrize("identity", ["subnet", "route"])
+def test_apply_identity_rejects_preexisting_signed_network_drift(
+    identity: str,
+) -> None:
+    evidence = _evidence(preexisting_owner_subnet=True)
+    authority, plan, _ = _authority(evidence=evidence)
+    steps = _step_receipts(plan)
+    target = next(
+        item
+        for item in steps
+        if item["step_name"]
+        == "create_dedicated_private_owner_gate_subnet"
+    )
+    if identity == "subnet":
+        target["resource_identity"]["numeric_id"] = (
+            "9999999999999999999"
+        )
+    else:
+        target["resource_identity"]["local_route_identity"][
+            "numeric_id"
+        ] = "9999999999999999999"
+
+    with pytest.raises(
+        pre.OwnerGatePreFoundationError,
+        match="owner_gate_foundation_apply_identity_invalid",
+    ):
+        _apply_body(authority, plan, steps=steps)
+
+
 @pytest.mark.parametrize(
     ("step_name", "field"),
     [
@@ -986,12 +1108,33 @@ def test_apply_receipt_requires_exact_ordered_step_receipts() -> None:
             "bind_narrow_iam_observation_reader_to_owner_gate_service_account",
             "binding_members",
         ),
+        ("create_dedicated_private_owner_gate_subnet", "kind"),
+        (
+            "create_dedicated_private_owner_gate_subnet",
+            "creation_timestamp",
+        ),
         ("create_dedicated_private_owner_gate_subnet", "region_self_link"),
         ("create_dedicated_private_owner_gate_subnet", "stack_type"),
         ("create_dedicated_private_owner_gate_subnet", "purpose"),
         (
             "create_dedicated_private_owner_gate_subnet",
             "secondary_ip_ranges",
+        ),
+        (
+            "create_dedicated_private_owner_gate_subnet",
+            "allow_subnet_cidr_routes_overlap",
+        ),
+        (
+            "create_dedicated_private_owner_gate_subnet",
+            "gateway_address",
+        ),
+        (
+            "create_dedicated_private_owner_gate_subnet",
+            "private_ipv6_google_access",
+        ),
+        (
+            "create_dedicated_private_owner_gate_subnet",
+            "local_route_identity",
         ),
         ("create_private_owner_gate_vm", "network_self_link"),
         ("create_private_owner_gate_vm", "network_numeric_id"),
@@ -1056,6 +1199,42 @@ def test_apply_identity_rejects_omitted_exact_projection_field(
     steps = _step_receipts(plan)
     target = next(item for item in steps if item["step_name"] == step_name)
     target["resource_identity"].pop(field)
+
+    with pytest.raises(
+        pre.OwnerGatePreFoundationError,
+        match="owner_gate_foundation_apply_identity_invalid",
+    ):
+        _apply_body(authority, plan, steps=steps)
+
+
+@pytest.mark.parametrize(
+    "field",
+    [
+        "kind",
+        "self_link",
+        "numeric_id",
+        "creation_timestamp",
+        "network_self_link",
+        "destination_range",
+        "next_hop_network_self_link",
+        "priority",
+        "description",
+        "route_type",
+        "tags",
+    ],
+)
+def test_apply_identity_rejects_omitted_local_subnet_route_field(
+    field: str,
+) -> None:
+    authority, plan, _ = _authority()
+    steps = _step_receipts(plan)
+    target = next(
+        item
+        for item in steps
+        if item["step_name"]
+        == "create_dedicated_private_owner_gate_subnet"
+    )
+    target["resource_identity"]["local_route_identity"].pop(field)
 
     with pytest.raises(
         pre.OwnerGatePreFoundationError,

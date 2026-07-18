@@ -37,6 +37,23 @@ _MAX_CAPTURE_BYTES = 16 * 1024 * 1024
 _RESOURCE_PREFIX = "https://www.googleapis.com/compute/v1/"
 _REGION = re.compile(r"^[a-z]+-[a-z0-9]+[0-9]$")
 _NETWORK_NAME = re.compile(r"^[a-z](?:[-a-z0-9]{0,61}[a-z0-9])?$")
+_NUMERIC_ID = re.compile(r"^[1-9][0-9]{5,30}$")
+_OPAQUE_PROVIDER_TAG = re.compile(r"^[A-Za-z0-9_+/=.-]{1,256}$")
+_OWNER_SUBNET_ROUTE_NAME = re.compile(r"^default-route-r-[0-9a-f]{16}$")
+_RFC3339_TIMESTAMP = re.compile(
+    r"^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}"
+    r"(?:\.[0-9]{1,9})?(?:Z|[+-][0-9]{2}:[0-9]{2})$"
+)
+_ALTERNATE_ROUTE_NEXT_HOPS = (
+    "nextHopGateway",
+    "nextHopHub",
+    "nextHopIlb",
+    "nextHopInstance",
+    "nextHopIp",
+    "nextHopMed",
+    "nextHopPeering",
+    "nextHopVpnTunnel",
+)
 _MAX_REGIONS = 128
 _MAX_ITEMS = 10_000
 _RFC1918 = tuple(
@@ -164,6 +181,27 @@ def inventory_commands() -> Mapping[str, tuple[str, ...]]:
             project,
             json_format,
         ),
+        "network_connectivity_service": (
+            "gcloud",
+            "services",
+            "list",
+            "--enabled",
+            project,
+            "--filter=config.name=networkconnectivity.googleapis.com",
+            json_format,
+        ),
+        "policy_based_routes": (
+            "gcloud",
+            "asset",
+            "list",
+            project,
+            (
+                "--asset-types="
+                "networkconnectivity.googleapis.com/PolicyBasedRoute"
+            ),
+            "--content-type=resource",
+            json_format,
+        ),
     }
 
 
@@ -255,6 +293,181 @@ def _private_cidr(value: Any, *, label: str) -> ipaddress.IPv4Network:
     return network
 
 
+def _normalized_resource(value: Any) -> str:
+    if not isinstance(value, str):
+        return ""
+    return value.removeprefix(_RESOURCE_PREFIX)
+
+
+def _owner_gate_subnet_candidate(value: Mapping[str, Any]) -> bool:
+    expected_region = (
+        f"projects/{foundation.PROJECT}/regions/{foundation.REGION}"
+    )
+    expected_subnet = (
+        f"{expected_region}/subnetworks/{foundation.OWNER_GATE_SUBNET_NAME}"
+    )
+    return (
+        _normalized_resource(value.get("selfLink")) == expected_subnet
+        or (
+            value.get("name") == foundation.OWNER_GATE_SUBNET_NAME
+            and _normalized_resource(value.get("region")) == expected_region
+        )
+    )
+
+
+def _require_exact_owner_gate_subnet(
+    value: Mapping[str, Any],
+    *,
+    desired: ipaddress.IPv4Network,
+    network_self_link: str,
+) -> Mapping[str, Any]:
+    expected_region = (
+        f"projects/{foundation.PROJECT}/regions/{foundation.REGION}"
+    )
+    expected_subnet = (
+        f"{expected_region}/subnetworks/{foundation.OWNER_GATE_SUBNET_NAME}"
+    )
+    try:
+        observed_network = _network(value.get("network"))
+        observed_region = _resource(
+            value.get("region"),
+            suffix=expected_region,
+            label="owner_subnet",
+        )
+        observed_subnet = _resource(
+            value.get("selfLink"),
+            suffix=expected_subnet,
+            label="owner_subnet",
+        )
+        observed_cidr = _private_cidr(
+            value.get("ipCidrRange"),
+            label="owner_subnet",
+        )
+    except OwnerGateNetworkEvidenceAuthorError:
+        raise OwnerGateNetworkEvidenceAuthorError(
+            "owner_gate_network_owner_subnet_invalid"
+        ) from None
+    secondary = value.get("secondaryIpRanges", [])
+    creation_timestamp = value.get("creationTimestamp")
+    if (
+        value.get("kind") != "compute#subnetwork"
+        or value.get("name") != foundation.OWNER_GATE_SUBNET_NAME
+        or observed_subnet != expected_subnet
+        or observed_network != network_self_link
+        or observed_region != expected_region
+        or observed_cidr != desired
+        or _NUMERIC_ID.fullmatch(str(value.get("id", ""))) is None
+        or not isinstance(value.get("fingerprint"), str)
+        or _OPAQUE_PROVIDER_TAG.fullmatch(value["fingerprint"]) is None
+        or value.get("privateIpGoogleAccess") is not True
+        or value.get("stackType") != "IPV4_ONLY"
+        or value.get("purpose", "PRIVATE") != "PRIVATE"
+        or secondary != []
+        or value.get("allowSubnetCidrRoutesOverlap") is not False
+        or value.get("gatewayAddress")
+        != str(ipaddress.ip_address(int(desired.network_address) + 1))
+        or value.get("privateIpv6GoogleAccess")
+        != "DISABLE_GOOGLE_ACCESS"
+        or not isinstance(creation_timestamp, str)
+        or _RFC3339_TIMESTAMP.fullmatch(creation_timestamp) is None
+    ):
+        raise OwnerGateNetworkEvidenceAuthorError(
+            "owner_gate_network_owner_subnet_invalid"
+        )
+    return {
+        "resource_type": "compute_subnetwork",
+        "kind": "compute#subnetwork",
+        "name": foundation.OWNER_GATE_SUBNET_NAME,
+        "self_link": observed_subnet,
+        "numeric_id": str(value["id"]),
+        "fingerprint": value["fingerprint"],
+        "creation_timestamp": creation_timestamp,
+        "network_self_link": observed_network,
+        "region_self_link": observed_region,
+        "ip_cidr_range": str(observed_cidr),
+        "private_ip_google_access": True,
+        "stack_type": "IPV4_ONLY",
+        "purpose": "PRIVATE",
+        "secondary_ip_ranges": [],
+        "allow_subnet_cidr_routes_overlap": False,
+        "gateway_address": str(
+            ipaddress.ip_address(int(desired.network_address) + 1)
+        ),
+        "private_ipv6_google_access": "DISABLE_GOOGLE_ACCESS",
+    }
+
+
+def _require_exact_owner_gate_subnet_route(
+    value: Mapping[str, Any],
+    *,
+    desired: ipaddress.IPv4Network,
+    network_self_link: str,
+) -> Mapping[str, Any]:
+    name = value.get("name")
+    expected_description = (
+        f"Default local route to the subnetwork {desired}."
+    )
+    try:
+        observed_network = _network(value.get("network"))
+        next_hop_network = _network(value.get("nextHopNetwork"))
+        observed_destination = ipaddress.ip_network(
+            str(value.get("destRange")),
+            strict=True,
+        )
+        observed_self_link = _resource(
+            value.get("selfLink"),
+            suffix=(
+                f"projects/{foundation.PROJECT}/global/routes/{name}"
+            ),
+            label="owner_subnet_route",
+        )
+    except (TypeError, ValueError, OwnerGateNetworkEvidenceAuthorError):
+        raise OwnerGateNetworkEvidenceAuthorError(
+            "owner_gate_network_owner_subnet_route_invalid"
+        ) from None
+    creation_timestamp = value.get("creationTimestamp")
+    if (
+        value.get("kind") != "compute#route"
+        or not isinstance(name, str)
+        or _OWNER_SUBNET_ROUTE_NAME.fullmatch(name) is None
+        or observed_self_link
+        != f"projects/{foundation.PROJECT}/global/routes/{name}"
+        or _NUMERIC_ID.fullmatch(str(value.get("id", ""))) is None
+        or observed_network != network_self_link
+        or next_hop_network != network_self_link
+        or observed_destination != desired
+        or type(value.get("priority")) is not int
+        or value.get("priority") != 0
+        or value.get("description") != expected_description
+        or value.get("routeType", "SUBNET") != "SUBNET"
+        or value.get("tags", []) != []
+        or any(
+            value.get(field) not in (None, "")
+            for field in _ALTERNATE_ROUTE_NEXT_HOPS
+        )
+        or not isinstance(creation_timestamp, str)
+        or _RFC3339_TIMESTAMP.fullmatch(creation_timestamp) is None
+    ):
+        raise OwnerGateNetworkEvidenceAuthorError(
+            "owner_gate_network_owner_subnet_route_invalid"
+        )
+    return {
+        "resource_type": "compute_route",
+        "kind": "compute#route",
+        "name": name,
+        "self_link": observed_self_link,
+        "numeric_id": str(value["id"]),
+        "creation_timestamp": creation_timestamp,
+        "network_self_link": observed_network,
+        "destination_range": str(observed_destination),
+        "next_hop_network_self_link": next_hop_network,
+        "priority": 0,
+        "description": expected_description,
+        "route_type": "SUBNET",
+        "tags": [],
+    }
+
+
 def _collect_raw(run_json: RunJson) -> Mapping[str, Any]:
     if not callable(run_json):
         raise OwnerGateNetworkEvidenceAuthorError(
@@ -280,10 +493,9 @@ def _collect_raw(run_json: RunJson) -> Mapping[str, Any]:
     return raw
 
 
-def _normalize_and_author(
+def _normalize_inventory(
     raw: Mapping[str, Any],
     *,
-    release_revision: str,
     collected_at_unix: int,
 ) -> Mapping[str, Any]:
     instance = raw.get("instance")
@@ -341,6 +553,10 @@ def _normalize_and_author(
             "owner_gate_network_instance_invalid"
         )
 
+    desired = ipaddress.ip_network(
+        foundation.OWNER_GATE_SUBNET_CIDR,
+        strict=True,
+    )
     subnets = _items(raw.get("subnets"), label="subnets")
     target_subnets = [
         item
@@ -364,14 +580,33 @@ def _normalize_and_author(
             "owner_gate_network_subnet_invalid"
         )
 
+    owner_subnets = [
+        item for item in subnets if _owner_gate_subnet_candidate(item)
+    ]
+    if len(owner_subnets) > 1:
+        raise OwnerGateNetworkEvidenceAuthorError(
+            "owner_gate_network_owner_subnet_invalid"
+        )
+    owner_subnet = owner_subnets[0] if owner_subnets else None
+    owner_subnet_identity: Mapping[str, Any] | None = None
+    if owner_subnet is not None:
+        owner_subnet_identity = _require_exact_owner_gate_subnet(
+            owner_subnet,
+            desired=desired,
+            network_self_link=network_self_link,
+        )
+
     reserved: set[ipaddress.IPv4Network] = set()
     for subnet in subnets:
         try:
-            if _network(subnet.get("network")) != network_self_link:
+            observed_network = _network(subnet.get("network"))
+            if observed_network != network_self_link:
                 continue
         except OwnerGateNetworkEvidenceAuthorError:
             continue
-        reserved.add(_private_cidr(subnet.get("ipCidrRange"), label="subnet"))
+        primary = _private_cidr(subnet.get("ipCidrRange"), label="subnet")
+        if subnet is not owner_subnet:
+            reserved.add(primary)
         secondary = subnet.get("secondaryIpRanges", [])
         if not isinstance(secondary, list):
             raise OwnerGateNetworkEvidenceAuthorError(
@@ -387,9 +622,12 @@ def _normalize_and_author(
             )
 
     routes = _items(raw.get("routes"), label="routes")
+    owner_subnet_routes: list[Mapping[str, Any]] = []
     for route in routes:
         try:
-            _network(route.get("network"))
+            observed_network = _network(route.get("network"))
+            if observed_network != network_self_link:
+                continue
         except OwnerGateNetworkEvidenceAuthorError:
             continue
         destination = route.get("destRange")
@@ -405,12 +643,26 @@ def _normalize_and_author(
             raise OwnerGateNetworkEvidenceAuthorError(
                 "owner_gate_network_route_invalid"
             )
+        if owner_subnet is not None and route_network == desired:
+            owner_subnet_routes.append(route)
+            continue
         # Every route remains covered by the signed inventory digest.  Only
         # private IPv4 destinations can collide with the private owner-gate
         # subnet, so public/default routes are deliberately excluded from the
         # overlap set instead of making otherwise valid inventories unusable.
         if any(route_network.subnet_of(parent) for parent in _RFC1918):
             reserved.add(route_network)
+    owner_subnet_route_identity: Mapping[str, Any] | None = None
+    if owner_subnet is not None:
+        if len(owner_subnet_routes) != 1:
+            raise OwnerGateNetworkEvidenceAuthorError(
+                "owner_gate_network_owner_subnet_route_invalid"
+            )
+        owner_subnet_route_identity = _require_exact_owner_gate_subnet_route(
+            owner_subnet_routes[0],
+            desired=desired,
+            network_self_link=network_self_link,
+        )
 
     addresses = _items(
         raw.get("private_service_ranges"), label="private_service_ranges"
@@ -488,6 +740,22 @@ def _normalize_and_author(
             )
 
     peerings = _items(raw.get("peerings"), label="peerings")
+    network_connectivity_services = _items(
+        raw.get("network_connectivity_service"),
+        label="network_connectivity_service",
+    )
+    if network_connectivity_services != []:
+        raise OwnerGateNetworkEvidenceAuthorError(
+            "owner_gate_network_policy_based_routes_not_disabled"
+        )
+    policy_based_routes = _items(
+        raw.get("policy_based_routes"),
+        label="policy_based_routes",
+    )
+    if policy_based_routes != []:
+        raise OwnerGateNetworkEvidenceAuthorError(
+            "owner_gate_network_policy_based_routes_present"
+        )
     firewall = raw.get("iap_firewall")
     if not isinstance(firewall, Mapping):
         raise OwnerGateNetworkEvidenceAuthorError(
@@ -508,7 +776,6 @@ def _normalize_and_author(
             "owner_gate_network_iap_firewall_invalid"
         )
 
-    desired = ipaddress.ip_network(foundation.OWNER_GATE_SUBNET_CIDR, strict=True)
     if any(desired.overlaps(item) for item in reserved):
         raise OwnerGateNetworkEvidenceAuthorError(
             "owner_gate_network_owner_subnet_overlap"
@@ -524,6 +791,12 @@ def _normalize_and_author(
         ),
         "serverless_connectors": foundation.sha256_json(
             _canonical_inventory(connector_inventory)
+        ),
+        "network_connectivity_service": foundation.sha256_json(
+            _canonical_inventory(network_connectivity_services)
+        ),
+        "policy_based_routes": foundation.sha256_json(
+            _canonical_inventory(policy_based_routes)
         ),
     }
     unsigned = {
@@ -546,11 +819,29 @@ def _normalize_and_author(
                 ipaddress.ip_network(item).prefixlen,
             ),
         ),
+        "preexisting_owner_gate_subnet_identity": owner_subnet_identity,
+        "preexisting_owner_gate_subnet_route_identity": (
+            owner_subnet_route_identity
+        ),
         "range_inventory_receipts": receipts,
+        "network_connectivity_api_disabled": True,
         "private_google_access": target_subnet["privateIpGoogleAccess"],
         "iap_firewall_rule": "allow-iap-ssh",
         "iap_source_range": foundation.IAP_SOURCE_RANGE,
     }
+    return unsigned
+
+
+def _normalize_and_author(
+    raw: Mapping[str, Any],
+    *,
+    release_revision: str,
+    collected_at_unix: int,
+) -> Mapping[str, Any]:
+    unsigned = _normalize_inventory(
+        raw,
+        collected_at_unix=collected_at_unix,
+    )
     evidence_sha256 = foundation.sha256_json(unsigned)
     try:
         private_raw = release_author._read_exact_regular(

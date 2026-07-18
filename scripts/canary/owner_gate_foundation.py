@@ -103,9 +103,9 @@ MUTATION_ENABLE_SEAL = Path(
     "/etc/muncho-owner-gate/storage-executor-enabled"
 )
 
-NETWORK_EVIDENCE_SCHEMA = "muncho-owner-gate-production-network-evidence.v1"
+NETWORK_EVIDENCE_SCHEMA = "muncho-owner-gate-production-network-evidence.v2"
 NETWORK_EVIDENCE_SIGNATURE_DOMAIN = (
-    b"muncho-owner-gate/production-network-evidence/v1\x00"
+    b"muncho-owner-gate/production-network-evidence/v2\x00"
 )
 PLAN_SCHEMA = "muncho-owner-gate-gce-foundation-plan.v1"
 PREFLIGHT_MAX_AGE_SECONDS = 900
@@ -156,6 +156,12 @@ _REVISION = re.compile(r"^[0-9a-f]{40}$")
 _NUMERIC_ID = re.compile(r"^[1-9][0-9]{5,30}$")
 _RESOURCE_NAME = re.compile(r"^[a-z][a-z0-9-]{1,61}[a-z0-9]$")
 _B64URL_UNPADDED = re.compile(r"^[A-Za-z0-9_-]+$")
+_OPAQUE_PROVIDER_TAG = re.compile(r"^[A-Za-z0-9_+/=.-]{1,256}$")
+_OWNER_SUBNET_ROUTE_NAME = re.compile(r"^default-route-r-[0-9a-f]{16}$")
+_RFC3339_TIMESTAMP = re.compile(
+    r"^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}"
+    r"(?:\.[0-9]{1,9})?(?:Z|[+-][0-9]{2}:[0-9]{2})$"
+)
 
 
 class OwnerGateFoundationError(RuntimeError):
@@ -217,6 +223,135 @@ def _strict_keys(value: Mapping[str, Any], fields: frozenset[str], label: str) -
         raise OwnerGateFoundationError(f"owner_gate_{label}_fields_invalid")
 
 
+def _validate_preexisting_owner_gate_network_identities(
+    *,
+    subnet_identity: Mapping[str, Any] | None,
+    route_identity: Mapping[str, Any] | None,
+) -> None:
+    """Validate the exact, author-observed owner subnet and local route."""
+
+    if subnet_identity is None and route_identity is None:
+        return
+    if not isinstance(subnet_identity, Mapping) or not isinstance(
+        route_identity, Mapping
+    ):
+        raise OwnerGateFoundationError(
+            "owner_gate_network_evidence_invalid"
+        )
+
+    subnet_fields = frozenset(
+        {
+            "resource_type",
+            "kind",
+            "name",
+            "self_link",
+            "numeric_id",
+            "fingerprint",
+            "creation_timestamp",
+            "network_self_link",
+            "region_self_link",
+            "ip_cidr_range",
+            "private_ip_google_access",
+            "stack_type",
+            "purpose",
+            "secondary_ip_ranges",
+            "allow_subnet_cidr_routes_overlap",
+            "gateway_address",
+            "private_ipv6_google_access",
+        }
+    )
+    route_fields = frozenset(
+        {
+            "resource_type",
+            "kind",
+            "name",
+            "self_link",
+            "numeric_id",
+            "creation_timestamp",
+            "network_self_link",
+            "destination_range",
+            "next_hop_network_self_link",
+            "priority",
+            "description",
+            "route_type",
+            "tags",
+        }
+    )
+    try:
+        _strict_keys(subnet_identity, subnet_fields, "network_evidence")
+        _strict_keys(route_identity, route_fields, "network_evidence")
+    except OwnerGateFoundationError:
+        raise OwnerGateFoundationError(
+            "owner_gate_network_evidence_invalid"
+        ) from None
+
+    network = f"projects/{PROJECT}/global/networks/{NETWORK_NAME}"
+    region = f"projects/{PROJECT}/regions/{REGION}"
+    subnet = f"{region}/subnetworks/{OWNER_GATE_SUBNET_NAME}"
+    route_name = route_identity.get("name")
+    route = f"projects/{PROJECT}/global/routes/{route_name}"
+    expected_description = (
+        f"Default local route to the subnetwork {OWNER_GATE_SUBNET_CIDR}."
+    )
+    if (
+        subnet_identity.get("resource_type") != "compute_subnetwork"
+        or subnet_identity.get("kind") != "compute#subnetwork"
+        or subnet_identity.get("name") != OWNER_GATE_SUBNET_NAME
+        or subnet_identity.get("self_link") != subnet
+        or not isinstance(subnet_identity.get("numeric_id"), str)
+        or _NUMERIC_ID.fullmatch(
+            str(subnet_identity.get("numeric_id", ""))
+        )
+        is None
+        or not isinstance(subnet_identity.get("fingerprint"), str)
+        or _OPAQUE_PROVIDER_TAG.fullmatch(
+            str(subnet_identity.get("fingerprint", ""))
+        )
+        is None
+        or _RFC3339_TIMESTAMP.fullmatch(
+            str(subnet_identity.get("creation_timestamp", ""))
+        )
+        is None
+        or subnet_identity.get("network_self_link") != network
+        or subnet_identity.get("region_self_link") != region
+        or subnet_identity.get("ip_cidr_range") != OWNER_GATE_SUBNET_CIDR
+        or subnet_identity.get("private_ip_google_access") is not True
+        or subnet_identity.get("stack_type") != "IPV4_ONLY"
+        or subnet_identity.get("purpose") != "PRIVATE"
+        or subnet_identity.get("secondary_ip_ranges") != []
+        or subnet_identity.get("allow_subnet_cidr_routes_overlap") is not False
+        or subnet_identity.get("gateway_address") != "10.80.3.1"
+        or subnet_identity.get("private_ipv6_google_access")
+        != "DISABLE_GOOGLE_ACCESS"
+        or route_identity.get("resource_type") != "compute_route"
+        or route_identity.get("kind") != "compute#route"
+        or not isinstance(route_name, str)
+        or _OWNER_SUBNET_ROUTE_NAME.fullmatch(route_name) is None
+        or route_identity.get("self_link") != route
+        or not isinstance(route_identity.get("numeric_id"), str)
+        or _NUMERIC_ID.fullmatch(
+            str(route_identity.get("numeric_id", ""))
+        )
+        is None
+        or _RFC3339_TIMESTAMP.fullmatch(
+            str(route_identity.get("creation_timestamp", ""))
+        )
+        is None
+        or route_identity.get("network_self_link") != network
+        or route_identity.get("destination_range")
+        != OWNER_GATE_SUBNET_CIDR
+        or route_identity.get("next_hop_network_self_link") != network
+        or type(route_identity.get("priority")) is not int
+        or route_identity.get("priority") != 0
+        or route_identity.get("description") != expected_description
+        or route_identity.get("route_type") != "SUBNET"
+        or route_identity.get("tags") != []
+    ):
+        raise OwnerGateFoundationError(
+            "owner_gate_network_evidence_invalid"
+        )
+
+
 @dataclass(frozen=True)
 class ProductionNetworkEvidence:
     schema: str
@@ -232,7 +367,10 @@ class ProductionNetworkEvidence:
     source_internal_ip: str
     subnetwork_cidr: str
     reserved_network_ranges: tuple[str, ...]
+    preexisting_owner_gate_subnet_identity: Mapping[str, Any] | None
+    preexisting_owner_gate_subnet_route_identity: Mapping[str, Any] | None
     range_inventory_receipts: Mapping[str, str]
+    network_connectivity_api_disabled: bool
     private_google_access: bool
     iap_firewall_rule: str
     iap_source_range: str
@@ -317,6 +455,10 @@ class ProductionNetworkEvidence:
             ) from None
 
     def validate(self, *, now_unix: int | None = None) -> None:
+        _validate_preexisting_owner_gate_network_identities(
+            subnet_identity=self.preexisting_owner_gate_subnet_identity,
+            route_identity=self.preexisting_owner_gate_subnet_route_identity,
+        )
         expected_network = (
             f"projects/{PROJECT}/global/networks/{NETWORK_NAME}"
         )
@@ -355,6 +497,7 @@ class ProductionNetworkEvidence:
             or isinstance(self.collected_at_unix, bool)
             or self.collected_at_unix <= 0
             or not isinstance(self.private_google_access, bool)
+            or self.network_connectivity_api_disabled is not True
             or not isinstance(self.range_inventory_receipts, Mapping)
             or set(self.range_inventory_receipts) != {
                 "aggregate_subnets",
@@ -362,11 +505,19 @@ class ProductionNetworkEvidence:
                 "peerings",
                 "private_service_ranges",
                 "serverless_connectors",
+                "network_connectivity_service",
+                "policy_based_routes",
             }
             or any(
                 _SHA256.fullmatch(str(item)) is None
                 for item in self.range_inventory_receipts.values()
             )
+            or self.range_inventory_receipts.get(
+                "network_connectivity_service"
+            )
+            != sha256_json([])
+            or self.range_inventory_receipts.get("policy_based_routes")
+            != sha256_json([])
             or _SHA256.fullmatch(self.collector_public_key_id or "") is None
             or not isinstance(self.signature_ed25519_b64url, str)
             or not self.signature_ed25519_b64url
@@ -634,6 +785,28 @@ def build_plan(
         spec=spec,
         network_evidence_sha256=network_evidence.evidence_sha256,
         architecture={
+            "network_evidence_collected_at_unix": (
+                network_evidence.collected_at_unix
+            ),
+            "preexisting_owner_gate_subnet_identity": (
+                None
+                if network_evidence.preexisting_owner_gate_subnet_identity
+                is None
+                else dict(
+                    network_evidence.preexisting_owner_gate_subnet_identity
+                )
+            ),
+            "preexisting_owner_gate_subnet_route_identity": (
+                None
+                if network_evidence.preexisting_owner_gate_subnet_route_identity
+                is None
+                else dict(
+                    network_evidence.preexisting_owner_gate_subnet_route_identity
+                )
+            ),
+            "network_connectivity_api_disabled": (
+                network_evidence.network_connectivity_api_disabled
+            ),
             "private_vm": True,
             "external_ip_allowed": False,
             "same_production_vpc": True,

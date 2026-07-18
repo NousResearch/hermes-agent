@@ -10,6 +10,7 @@ next turn, drained in ``run``'s tail.
 """
 
 import threading
+import time
 import types
 
 from tui_gateway import server
@@ -52,11 +53,14 @@ def test_busy_interrupt_mode_interrupts_and_queues(monkeypatch):
     monkeypatch.setattr(server, "_load_busy_input_mode", lambda: "interrupt")
     calls = {"interrupt": 0}
     agent = types.SimpleNamespace(interrupt=lambda *a, **k: calls.__setitem__("interrupt", calls["interrupt"] + 1))
-    session = _session(agent=agent)
+    session = _session(agent=agent, running=True)
 
     resp = server._handle_busy_submit("r1", "sid", session, "redirect", "ws-1")
 
     assert resp["result"]["status"] == "queued"
+    deadline = time.monotonic() + 1
+    while calls["interrupt"] != 1 and time.monotonic() < deadline:
+        time.sleep(0.01)
     assert calls["interrupt"] == 1
     assert session["queued_prompt"]["text"] == "redirect"
 
@@ -65,7 +69,7 @@ def test_busy_queue_mode_queues_without_interrupting(monkeypatch):
     monkeypatch.setattr(server, "_load_busy_input_mode", lambda: "queue")
     calls = {"interrupt": 0}
     agent = types.SimpleNamespace(interrupt=lambda *a, **k: calls.__setitem__("interrupt", calls["interrupt"] + 1))
-    session = _session(agent=agent)
+    session = _session(agent=agent, running=True)
 
     resp = server._handle_busy_submit("r1", "sid", session, "later", "ws-1")
 
@@ -77,7 +81,7 @@ def test_busy_queue_mode_queues_without_interrupting(monkeypatch):
 def test_busy_steer_mode_injects_when_accepted(monkeypatch):
     monkeypatch.setattr(server, "_load_busy_input_mode", lambda: "steer")
     agent = types.SimpleNamespace(steer=lambda text: True, interrupt=lambda *a, **k: None)
-    session = _session(agent=agent)
+    session = _session(agent=agent, running=True)
 
     resp = server._handle_busy_submit("r1", "sid", session, "nudge", "ws-1")
 
@@ -88,12 +92,46 @@ def test_busy_steer_mode_injects_when_accepted(monkeypatch):
 def test_busy_steer_mode_falls_back_to_queue_when_rejected(monkeypatch):
     monkeypatch.setattr(server, "_load_busy_input_mode", lambda: "steer")
     agent = types.SimpleNamespace(steer=lambda text: False, interrupt=lambda *a, **k: None)
-    session = _session(agent=agent)
+    session = _session(agent=agent, running=True)
 
     resp = server._handle_busy_submit("r1", "sid", session, "nudge", "ws-1")
 
     assert resp["result"]["status"] == "queued"
     assert session["queued_prompt"]["text"] == "nudge"
+
+
+def test_busy_interrupt_does_not_hold_history_lock_or_delay_queue(monkeypatch):
+    monkeypatch.setattr(server, "_load_busy_input_mode", lambda: "interrupt")
+    interrupt_started = threading.Event()
+    release_interrupt = threading.Event()
+
+    def blocking_interrupt():
+        interrupt_started.set()
+        release_interrupt.wait(timeout=2)
+
+    session = _session(
+        agent=types.SimpleNamespace(interrupt=blocking_interrupt),
+        running=True,
+    )
+
+    started = time.monotonic()
+    resp = server._handle_busy_submit("r1", "sid", session, "keep this", "ws-1")
+
+    assert resp["result"]["status"] == "queued"
+    assert time.monotonic() - started < 0.25
+    assert session["queued_prompt"]["text"] == "keep this"
+    assert interrupt_started.wait(timeout=1)
+    assert session["history_lock"].acquire(timeout=0.25)
+    session["history_lock"].release()
+    release_interrupt.set()
+
+
+def test_busy_helper_retries_when_turn_finished(monkeypatch):
+    monkeypatch.setattr(server, "_load_busy_input_mode", lambda: "interrupt")
+    session = _session(running=False)
+
+    assert server._handle_busy_submit("r1", "sid", session, "run now", "ws-1") is None
+    assert session.get("queued_prompt") is None
 
 
 # ── _drain_queued_prompt ───────────────────────────────────────────────────

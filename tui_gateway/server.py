@@ -749,23 +749,48 @@ def _attach_worker(sid: str, session: dict, worker) -> None:
     worker.close()
 
 
-def _close_session_by_id(sid: str, *, end_reason: str = "tui_close") -> bool:
-    """Single idempotent teardown for one session: pop it under the sessions
-    lock, then finalize, unregister notify, close agent + slash worker via the
-    shared ``_teardown_session`` path. Returns True iff it closed a live
-    session. The ``_finalized`` / worker ``_closed`` guards make concurrent or
-    repeat calls (e.g. session.close racing the WS-orphan reaper) harmless."""
+def _pop_session_by_id(sid: str) -> dict | None:
+    """Atomically detach one live session from the registry.
+
+    Detaching is the ownership claim for teardown: once the record is no
+    longer in ``_sessions``, a concurrent close/reaper becomes a no-op.  Keep
+    this operation separate from ``_teardown_session`` because finalization can
+    flush SQLite state, invoke plugins, commit memory, interrupt delegations,
+    and close agents/workers.  None of that slow external work belongs under
+    the global ``_session_resume_lock``.
+    """
     with _sessions_lock:
         session = _sessions.pop(sid, None)
     if session is None:
-        return False
+        return None
     # The session is already out of _sessions here, so downstream teardown
     # (e.g. _finalize_session's per-session async-delegation interrupt) can't
     # recover its live id by scanning the dict — stamp it on the record.
     session["_sid"] = sid
+    return session
+
+
+def _teardown_popped_session(
+    session: dict | None, *, end_reason: str = "tui_close"
+) -> bool:
+    """Finish a close after the caller has atomically detached the session."""
+    if session is None:
+        return False
     _teardown_session(session, end_reason=end_reason)
     return True
 
+
+def _close_session_by_id(sid: str, *, end_reason: str = "tui_close") -> bool:
+    """Single idempotent teardown funnel for callers needing no resume race.
+
+    Resume-sensitive callers first pop under ``_session_resume_lock`` and then
+    call ``_teardown_popped_session`` after releasing it.  Other reapers can use
+    this convenience wrapper directly.  The pop remains the single atomic
+    ownership claim, so concurrent/repeat close attempts stay harmless.
+    """
+    return _teardown_popped_session(
+        _pop_session_by_id(sid), end_reason=end_reason
+    )
 
 
 def _ws_session_is_orphaned(session: dict | None) -> bool:
@@ -795,9 +820,10 @@ def _schedule_ws_orphan_reap(sid: str) -> None:
     def _reap() -> None:
         # Serialize the orphan re-check against session.resume (which re-binds a
         # live transport under _session_resume_lock and would make this session
-        # non-orphaned). The actual pop + teardown then goes through the shared
-        # _close_session_by_id funnel so the dict mutation happens under
-        # _sessions_lock — consistent with every other _sessions mutator
+        # non-orphaned). Claim teardown by popping under both lifecycle locks,
+        # then release the global resume lock before the slow finalization work.
+        # The dict mutation still happens under _sessions_lock — consistent
+        # with every other _sessions mutator
         # (#39591: _reap previously popped under _session_resume_lock, giving no
         # mutual exclusion against _init_session / _close_session_by_id, which
         # guard with _sessions_lock). _sessions_lock is an RLock and the global
@@ -805,7 +831,8 @@ def _schedule_ws_orphan_reap(sid: str) -> None:
         with _session_resume_lock:
             if not _ws_session_is_orphaned(_sessions.get(sid)):
                 return
-            _close_session_by_id(sid, end_reason="ws_orphan_reap")
+            session = _pop_session_by_id(sid)
+        _teardown_popped_session(session, end_reason="ws_orphan_reap")
 
     timer = threading.Timer(_WS_ORPHAN_REAP_GRACE_S, _reap)
     timer.daemon = True
@@ -5441,7 +5468,44 @@ def _enqueue_prompt(session: dict, text: Any, transport: Any) -> None:
     session["queued_prompt"] = {"text": text, "transport": transport}
 
 
-def _handle_busy_submit(rid, sid: str, session: dict, text: Any, transport: Any) -> dict:
+def _interrupt_busy_session(sid: str, session: dict, agent: Any) -> None:
+    """Interrupt a busy turn without blocking the RPC reader or session lock.
+
+    Some providers cannot apply ``interrupt()`` until a synchronous tool or
+    network call returns. Running that call inline used to leave
+    ``prompt.submit`` holding ``history_lock`` for the whole wait, which in turn
+    blocked ``session.resume`` and delayed the queued prompt itself. Keep at
+    most one interrupt worker per session so repeated steering cannot leak an
+    unbounded number of blocked threads.
+    """
+    use_agent = agent is not None and hasattr(agent, "interrupt")
+    use_compute_host = not use_agent and _session_uses_compute_host(session)
+    if not use_agent and not use_compute_host:
+        return
+
+    with session["history_lock"]:
+        if session.get("_busy_interrupt_pending"):
+            return
+        session["_busy_interrupt_pending"] = True
+
+    def interrupt() -> None:
+        try:
+            if use_agent:
+                agent.interrupt()
+            else:
+                _get_compute_host_supervisor().interrupt(sid)
+        except Exception:
+            pass
+        finally:
+            with session["history_lock"]:
+                session["_busy_interrupt_pending"] = False
+
+    threading.Thread(target=interrupt, daemon=True, name=f"busy-interrupt-{sid}").start()
+
+
+def _handle_busy_submit(
+    rid, sid: str, session: dict, text: Any, transport: Any
+) -> dict | None:
     """Apply the ``display.busy_input_mode`` policy to a prompt that lands while
     a turn is in flight, instead of rejecting it with ``session busy``.
 
@@ -5458,25 +5522,30 @@ def _handle_busy_submit(rid, sid: str, session: dict, text: Any, transport: Any)
     """
     mode = _load_busy_input_mode()
     agent = session.get("agent")
+    with session["history_lock"]:
+        if not session.get("running"):
+            # The turn ended between prompt.submit's first busy check and this
+            # helper. Let the caller retry and claim the now-idle session.
+            return None
     if mode == "steer" and agent is not None and hasattr(agent, "steer"):
         try:
             if agent.steer(text):
-                session["last_active"] = time.time()
+                with session["history_lock"]:
+                    session["last_active"] = time.time()
                 return _ok(rid, {"status": "steered"})
         except Exception:
             pass  # fall through to queue
-    if mode != "queue" and agent is not None and hasattr(agent, "interrupt"):
-        try:
-            agent.interrupt()
-        except Exception:
-            pass
-    elif mode != "queue" and _session_uses_compute_host(session):
-        try:
-            _get_compute_host_supervisor().interrupt(sid)
-        except Exception:
-            pass
-    _enqueue_prompt(session, text, transport)
-    session["last_active"] = time.time()
+    # Queue before asking the live turn to stop. In particular, never call a
+    # provider or compute-host method while holding history_lock: an interrupt
+    # can wait behind the very operation it is trying to cancel.
+    with session["history_lock"]:
+        if not session.get("running"):
+            return None
+        _enqueue_prompt(session, text, transport)
+        session["last_active"] = time.time()
+
+    if mode != "queue":
+        _interrupt_busy_session(sid, session, agent)
     return _ok(rid, {"status": "queued"})
 
 
@@ -8725,13 +8794,13 @@ def _(rid, params: dict) -> dict:
 @method("session.close")
 def _(rid, params: dict) -> dict:
     sid = params.get("session_id", "")
-    # Serialize against the WS-orphan reaper (which also pops under
-    # _session_resume_lock) so a disconnect-reap and an explicit close can't
-    # both tear the same session down. _close_session_by_id is the single
-    # idempotent teardown path (pop + _teardown_session) and returns False
-    # when the session is already gone.
+    # Serialize only the ownership claim against session.resume / the orphan
+    # reaper. Finalization may run arbitrary plugin/agent cleanup and must not
+    # keep every unrelated session.resume waiting behind it.
     with _session_resume_lock:
-        return _ok(rid, {"closed": _close_session_by_id(sid, end_reason="tui_close")})
+        session = _pop_session_by_id(sid)
+    closed = _teardown_popped_session(session, end_reason="tui_close")
+    return _ok(rid, {"closed": closed})
 
 
 @method("session.branch")
@@ -9163,13 +9232,25 @@ def _(rid, params: dict) -> dict:
     # or fallback moved the session transport to stdio.
     if (t := current_transport()) is not None:
         session["transport"] = t
+    while True:
+        busy_transport = None
+        with session["history_lock"]:
+            if session.get("running"):
+                # Don't reject a mid-turn prompt — queue it (and, by default,
+                # interrupt the live turn) so it runs as the next turn. The
+                # provider interrupt itself must happen after this lock is
+                # released: a non-interruptible tool may keep it waiting.
+                busy_transport = t or session.get("transport")
+            else:
+                break
+        busy_response = _handle_busy_submit(rid, sid, session, text, busy_transport)
+        if busy_response is not None:
+            return busy_response
+        # The old turn finished between the two lock acquisitions. Retry the
+        # claim so this prompt starts normally instead of being stranded in a
+        # queue whose drain already ran.
+
     with session["history_lock"]:
-        if session.get("running"):
-            # Don't reject a mid-turn prompt — queue it (and, by default,
-            # interrupt the live turn) so it runs as the next turn. See
-            # _handle_busy_submit for why the old "session busy" rejection
-            # dropped messages when teardown outlived the client's retry window.
-            return _handle_busy_submit(rid, sid, session, text, t or session.get("transport"))
         # A watch session's run lives in the PARENT turn, so its own running
         # flag is False — without this, typing mid-run builds a second agent
         # racing the in-flight child on the same stored session (interleaved

@@ -2278,6 +2278,50 @@ def test_session_close_commits_memory_and_fires_finalize_hook(monkeypatch):
         server._sessions.pop("sid", None)
 
 
+def test_session_close_releases_resume_lock_before_slow_teardown(monkeypatch):
+    """One slow session finalizer must not stall unrelated session.resume RPCs."""
+    teardown_started = threading.Event()
+    release_teardown = threading.Event()
+    response = {}
+
+    def _slow_teardown(_session, *, end_reason="tui_close"):
+        assert end_reason == "tui_close"
+        teardown_started.set()
+        assert release_teardown.wait(timeout=2.0)
+
+    monkeypatch.setattr(server, "_teardown_session", _slow_teardown)
+    server._sessions["slow-close"] = _session()
+
+    def _close():
+        response.update(
+            server.handle_request(
+                {
+                    "id": "close",
+                    "method": "session.close",
+                    "params": {"session_id": "slow-close"},
+                }
+            )
+        )
+
+    thread = threading.Thread(target=_close)
+    thread.start()
+    acquired = False
+    try:
+        assert teardown_started.wait(timeout=1.0)
+        assert "slow-close" not in server._sessions
+        acquired = server._session_resume_lock.acquire(timeout=0.2)
+        assert acquired, "slow teardown kept the global resume lock held"
+    finally:
+        if acquired:
+            server._session_resume_lock.release()
+        release_teardown.set()
+        thread.join(timeout=2.0)
+        server._sessions.pop("slow-close", None)
+
+    assert not thread.is_alive()
+    assert response["result"] == {"closed": True}
+
+
 def test_ws_orphan_reap_closes_worker_when_session_stays_detached(monkeypatch):
     """A detached WS session past its grace window has its slash_worker closed.
 
@@ -2306,6 +2350,51 @@ def test_ws_orphan_reap_closes_worker_when_session_stays_detached(monkeypatch):
         assert closed["worker"] is True
     finally:
         server._sessions.pop("orphan-sid", None)
+
+
+def test_ws_orphan_reap_releases_resume_lock_before_slow_teardown(monkeypatch):
+    """Grace reaping claims under the lock but finalizes after releasing it."""
+    scheduled = {}
+    teardown_started = threading.Event()
+    release_teardown = threading.Event()
+
+    class _Timer:
+        def __init__(self, _delay, callback):
+            scheduled["callback"] = callback
+
+        def start(self):
+            return None
+
+    def _slow_teardown(_session, *, end_reason="tui_close"):
+        assert end_reason == "ws_orphan_reap"
+        teardown_started.set()
+        assert release_teardown.wait(timeout=2.0)
+
+    monkeypatch.setattr(server, "_WS_ORPHAN_REAP_GRACE_S", 0.01)
+    monkeypatch.setattr(server.threading, "Timer", _Timer)
+    monkeypatch.setattr(server, "_teardown_session", _slow_teardown)
+    server._sessions["slow-orphan"] = _session(
+        transport=server._detached_ws_transport,
+        running=False,
+    )
+
+    server._schedule_ws_orphan_reap("slow-orphan")
+    thread = threading.Thread(target=scheduled["callback"])
+    thread.start()
+    acquired = False
+    try:
+        assert teardown_started.wait(timeout=1.0)
+        assert "slow-orphan" not in server._sessions
+        acquired = server._session_resume_lock.acquire(timeout=0.2)
+        assert acquired, "orphan teardown kept the global resume lock held"
+    finally:
+        if acquired:
+            server._session_resume_lock.release()
+        release_teardown.set()
+        thread.join(timeout=2.0)
+        server._sessions.pop("slow-orphan", None)
+
+    assert not thread.is_alive()
 
 
 def test_finalize_session_closes_slash_worker(monkeypatch):
@@ -9773,17 +9862,20 @@ def test_restart_slash_worker_stores_on_live_session(monkeypatch):
         server._sessions.pop("live-restart", None)
 
 
-def test_session_close_rpc_delegates_to_close_session_by_id(monkeypatch):
+def test_session_close_rpc_claims_then_tears_down(monkeypatch):
     seen = []
+    claimed = {"session_key": "k"}
+    monkeypatch.setattr(server, "_pop_session_by_id", lambda sid: seen.append(sid) or claimed)
     monkeypatch.setattr(
-        server, "_close_session_by_id",
-        lambda sid, *, end_reason: bool(seen.append((sid, end_reason))) or True,
+        server,
+        "_teardown_popped_session",
+        lambda session, *, end_reason: seen.append((session, end_reason)) or True,
     )
     resp = server.handle_request(
         {"id": "1", "method": "session.close", "params": {"session_id": "s9"}}
     )
     assert resp["result"] == {"closed": True}
-    assert seen == [("s9", "tui_close")]
+    assert seen == ["s9", (claimed, "tui_close")]
 
 
 def test_close_sessions_for_transport_closes_flagged_repoints_rest(monkeypatch):

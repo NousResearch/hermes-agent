@@ -1069,6 +1069,14 @@ def _normalized_inference_axes(job: Dict[str, Any]) -> Tuple[Optional[str], Opti
     )
 
 
+def job_id_for_dedup_key(dedup_key: str) -> str:
+    """Return the stable cron job ID for a caller-owned idempotency key."""
+    normalized = str(dedup_key or "").strip()
+    if not normalized:
+        raise ValueError("dedup_key must not be empty")
+    return uuid.uuid5(uuid.NAMESPACE_URL, f"hermes-cron:{normalized}").hex[:12]
+
+
 def create_job(
     prompt: Optional[str],
     schedule: str,
@@ -1087,6 +1095,7 @@ def create_job(
     workdir: Optional[str] = None,
     no_agent: bool = False,
     attach_to_session: Optional[bool] = None,
+    dedup_key: Optional[str] = None,
 ) -> Dict[str, Any]:
     """
     Create a new cron job.
@@ -1128,13 +1137,28 @@ def create_job(
                 script's cwd so relative paths inside the script behave
                 predictably.
         no_agent: When True, skip the agent entirely — run ``script`` on schedule
-                and deliver its stdout directly. Empty stdout = silent (no
-                delivery). Requires ``script`` to be set. Ideal for classic
-                watchdogs and periodic alerts that don't need LLM reasoning.
+                 and deliver its stdout directly. Empty stdout = silent (no
+                 delivery). Requires ``script`` to be set. Ideal for classic
+                 watchdogs and periodic alerts that don't need LLM reasoning.
+        dedup_key: Optional caller-owned idempotency key. Repeated creates with
+                   the same key return the original job instead of adding a duplicate.
 
     Returns:
         The created job dict
     """
+    normalized_dedup_key = _normalize_job_optional_text(dedup_key)
+    if normalized_dedup_key:
+        # Fast idempotency check before schedule parsing. Replaying a durable
+        # reservation after a crash may happen after its one-shot timestamp has
+        # passed; the existing job still wins.
+        with _jobs_lock():
+            existing = next(
+                (item for item in load_jobs() if item.get("dedup_key") == normalized_dedup_key),
+                None,
+            )
+            if existing is not None:
+                return copy.deepcopy(existing)
+
     parsed_schedule = parse_schedule(schedule)
 
     # Normalize repeat: treat 0 or negative values as None (infinite)
@@ -1149,7 +1173,6 @@ def create_job(
     if deliver is None:
         deliver = "origin" if origin else "local"
 
-    job_id = uuid.uuid4().hex[:12]
     now = _hermes_now().isoformat()
 
     normalized_skills = _normalize_skill_list(skill, skills)
@@ -1163,6 +1186,8 @@ def create_job(
     normalized_workdir = _normalize_workdir(workdir)
     normalized_no_agent = bool(no_agent)
     normalized_attach = attach_to_session if isinstance(attach_to_session, bool) else None
+    normalized_dedup_key = _normalize_job_optional_text(dedup_key)
+    job_id = job_id_for_dedup_key(normalized_dedup_key) if normalized_dedup_key else uuid.uuid4().hex[:12]
 
     # no_agent jobs are meaningless without a script — the script IS the job.
     # Surface this as a clear ValueError at create time so bad configs never
@@ -1253,6 +1278,8 @@ def create_job(
         "enabled_toolsets": normalized_toolsets,
         "workdir": normalized_workdir,
     }
+    if normalized_dedup_key:
+        job["dedup_key"] = normalized_dedup_key
     # Only persist attach_to_session when explicitly set, so existing jobs and
     # the common case stay byte-identical (absent key => fall back to the
     # global cron.mirror_delivery config, default off).
@@ -1261,6 +1288,13 @@ def create_job(
 
     with _jobs_lock():
         jobs = load_jobs()
+        if normalized_dedup_key:
+            existing = next((item for item in jobs if item.get("dedup_key") == normalized_dedup_key), None)
+            if existing is not None:
+                return copy.deepcopy(existing)
+            collision = next((item for item in jobs if item.get("id") == job_id), None)
+            if collision is not None:
+                raise RuntimeError(f"Cron dedup job id collision for key {normalized_dedup_key!r}")
         jobs.append(job)
         save_jobs(jobs)
 

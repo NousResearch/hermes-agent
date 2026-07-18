@@ -1030,10 +1030,31 @@ def build_api_kwargs(agent, api_messages: list) -> dict:
             try:
                 import copy as _copy
                 from tools.schema_sanitizer import (
+                    inline_schema_refs,
                     strip_pattern_and_format,
                     strip_slash_enum,
                 )
                 tools_for_api = _copy.deepcopy(tools_for_api)
+                # Defense-in-depth: inline local `$ref` pointers (issue #67131).
+                # The main sanitizer call site (`sanitize_tool_schemas`) now
+                # inlines refs BEFORE `strip_nullable_unions` collapses
+                # `anyOf/0/...`, but tools assembled via legacy paths or
+                # bundled before this fix rolls out may still carry dangling
+                # `.../anyOf/0/...` refs that xAI 400s on. Inline again here
+                # — it's idempotent on schemas with no refs.
+                for _tool_entry in tools_for_api:
+                    if not isinstance(_tool_entry, dict):
+                        continue
+                    _fn = _tool_entry.get("function") if isinstance(_tool_entry, dict) else None
+                    if isinstance(_fn, dict) and isinstance(_fn.get("parameters"), dict):
+                        _fn["parameters"] = inline_schema_refs(
+                            _fn["parameters"], only_through_combinators=False,
+                        )
+                    elif isinstance(_tool_entry.get("parameters"), dict):
+                        # Responses-format: {"name": "...", "parameters": {...}}
+                        _tool_entry["parameters"] = inline_schema_refs(
+                            _tool_entry["parameters"], only_through_combinators=False,
+                        )
                 tools_for_api, _ = strip_pattern_and_format(tools_for_api)
                 tools_for_api, _ = strip_slash_enum(tools_for_api)
             except Exception as exc:

@@ -122,6 +122,99 @@ if ($errFrame) {
 }
 
 # -----------------------------------------------------------------------------
+# Test: install recovery marker + stash-ref-verify logic (#46791)
+#
+# These tests don't drive the install script end-to-end (that has heavy side
+# effects). Instead they exercise the git primitives the recovery flow relies
+# on, in a throwaway temp repo. Regression: if these assumptions break on a
+# future git version, the installer's recovery path becomes unsafe.
+# -----------------------------------------------------------------------------
+Write-Host ""
+Write-Host "-- install recovery primitives (#46791) --"
+
+function New-TempGitRepo {
+    $dir = Join-Path ([System.IO.Path]::GetTempPath()) ("hermes-recov-" + [Guid]::NewGuid().ToString("N"))
+    New-Item -ItemType Directory -Path $dir | Out-Null
+    Push-Location $dir
+    git init -q
+    git config user.email "test@local"
+    git config user.name "test"
+    # Disable autocrlf so the stashed/dirtied files round-trip cleanly on
+    # Windows test hosts.
+    git config core.autocrlf false
+    Pop-Location
+    return $dir
+}
+
+function Remove-TempGitRepo {
+    param([string]$Dir)
+    if ($Dir -and (Test-Path $Dir)) {
+        Remove-Item -Recurse -Force $Dir -ErrorAction SilentlyContinue
+    }
+}
+
+# Case 1: stash@{0} resolves to a real commit after a successful push, and
+# `git rev-parse --verify` returns exit 0.
+$tmp1 = New-TempGitRepo
+Push-Location $tmp1
+try {
+    "a" | Out-File -FilePath "tracked.txt" -Encoding ASCII -NoNewline
+    git add tracked.txt | Out-Null
+    git commit -q -m "init"
+    "dirty" | Out-File -FilePath "tracked.txt" -Encoding ASCII -NoNewline
+    git stash push --include-untracked -m "hermes-install-autostash-test" 2>$null
+    Assert-Equal -Expected 0 -Actual $LASTEXITCODE -Label "stash push succeeds on dirty tracked file"
+    git rev-parse --verify "stash@{0}" 2>$null
+    Assert-Equal -Expected 0 -Actual $LASTEXITCODE -Label "stash@{0} resolves after push"
+} finally {
+    Pop-Location
+    Remove-TempGitRepo -Dir $tmp1
+}
+
+# Case 2: after `git stash drop stash@{0}`, `git rev-parse --verify stash@{0}`
+# must FAIL with non-zero exit -- this is the exact guard the installer uses
+# before calling `git stash apply` (#46791 bug class).
+$tmp2 = New-TempGitRepo
+Push-Location $tmp2
+try {
+    "a" | Out-File -FilePath "tracked.txt" -Encoding ASCII -NoNewline
+    git add tracked.txt | Out-Null
+    git commit -q -m "init"
+    "dirty" | Out-File -FilePath "tracked.txt" -Encoding ASCII -NoNewline
+    git stash push --include-untracked -m "hermes-install-autostash-test" 2>$null
+    git stash drop "stash@{0}" 2>$null
+    Assert-Equal -Expected 0 -Actual $LASTEXITCODE -Label "stash drop succeeds"
+    git rev-parse --verify "stash@{0}" 2>$null
+    Assert-True ($LASTEXITCODE -ne 0) -Label "stash@{0} no longer resolves after drop (regression guard for #46791)"
+} finally {
+    Pop-Location
+    Remove-TempGitRepo -Dir $tmp2
+}
+
+# Case 3: a second stash push shifts refs -- stash@{0} becomes the new stash
+# and the original moves to stash@{1}. The installer's post-pull-dirt block
+# relies on this exact shift to track the user's autostash ref.
+$tmp3 = New-TempGitRepo
+Push-Location $tmp3
+try {
+    "a" | Out-File -FilePath "tracked.txt" -Encoding ASCII -NoNewline
+    git add tracked.txt | Out-Null
+    git commit -q -m "init"
+    "dirty" | Out-File -FilePath "tracked.txt" -Encoding ASCII -NoNewline
+    git stash push --include-untracked -m "user-autostash" 2>$null
+    $userStash = (git rev-parse "stash@{0}" 2>$null).Trim()
+    "dirty-2" | Out-File -FilePath "tracked.txt" -Encoding ASCII -NoNewline
+    git stash push --include-untracked -m "hermes-install-post-pull-dirt" 2>$null
+    $dirtStash = (git rev-parse "stash@{0}" 2>$null).Trim()
+    $userStashAfterShift = (git rev-parse "stash@{1}" 2>$null).Trim()
+    Assert-True ($userStash -eq $userStashAfterShift) -Label "user autostash ref shifts from stash@{0} to stash@{1} after a second push (#46791)"
+    Assert-True ($dirtStash -ne $userStash) -Label "new post-pull-dirt stash is distinct from user stash"
+} finally {
+    Pop-Location
+    Remove-TempGitRepo -Dir $tmp3
+}
+
+# -----------------------------------------------------------------------------
 # Summary
 # -----------------------------------------------------------------------------
 Write-Host ""

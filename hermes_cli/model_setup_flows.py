@@ -2857,9 +2857,22 @@ def _model_flow_api_key_provider(config, provider_id, current_model=""):
         model_list = list(dict.fromkeys(mid for mid in model_list if mid))
 
     if model_list:
+        # Per-model pricing, when the provider supports it (fireworks via the
+        # models.dev disk cache, novita/deepinfra via their cached /models
+        # endpoints). get_pricing_for_provider() is memoized in-process and
+        # returns {} for providers without pricing — never a blocking fetch
+        # beyond the catalog lookup that already happened above.
+        pricing: dict = {}
+        try:
+            from hermes_cli.models import get_pricing_for_provider
+
+            pricing = get_pricing_for_provider(provider_id) or {}
+        except Exception:
+            pricing = {}
         selected = _prompt_model_selection(
             model_list,
             current_model=current_model,
+            pricing=pricing,
             confirm_provider=provider_id,
             confirm_base_url=effective_base,
             confirm_api_key=existing_key,

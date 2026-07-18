@@ -133,7 +133,7 @@ END;
 
 ## Schema Version and Migrations
 
-Current schema version: **11**
+Current schema version: **21**
 
 The `schema_version` table stores a single integer. Simple column additions are handled declaratively by `_reconcile_columns()` (which diffs live columns against `SCHEMA_SQL` and ADDs any missing ones). The version-gated chain is reserved for data migrations and index/FTS changes that can't be expressed declaratively:
 
@@ -150,6 +150,11 @@ The `schema_version` table stores a single integer. Simple column additions are 
 | 9 | Add `codex_message_items` column to messages for Codex Responses message id/phase replay |
 | 10 | Add `messages_fts_trigram` virtual table (trigram tokenizer for CJK / substring search) and backfill existing rows |
 | 11 | Re-index `messages_fts` and `messages_fts_trigram` to cover `tool_name` + `tool_calls` and switch from external-content to inline mode; drop old triggers and backfill every message row |
+| 16 | Tag delegate subagent rows in `model_config` (`$._delegate_from`) so session pickers stay clean after parent deletes orphan them |
+| 18 | Gateway metadata consolidation — backfill `display_name` / `origin_json` / `expiry_finalized` from `sessions.json` |
+| 20 | Per-model usage attribution — seed `session_model_usage` rows from historical per-session aggregate totals |
+
+Versions not listed above were declarative column additions handled by `_reconcile_columns()` (version bump only, no data migration).
 
 Declarative column adds use `ALTER TABLE ADD COLUMN` wrapped in try/except to handle the column-already-exists case (idempotent). The version number is bumped after each successful migration block.
 

@@ -12,6 +12,7 @@ concurrently, barrier calls sequentially — while preserving:
 """
 
 import json
+import sys
 import threading
 import time
 import uuid
@@ -398,3 +399,122 @@ class TestSegmentedDispatchIntegration:
         contents = [m["content"] for m in messages]
         hits = [c for c in contents if "focus on the tests" in c]
         assert len(hits) == 1
+
+
+class TestPathCanonicalization:
+    """Regression tests for _canonical_path / _extract_parallel_scope_path fixes.
+
+    Verifies that symlink aliases, relative/absolute cwd mismatches, and
+    (on Windows) case-insensitive aliases are never placed in the same
+    parallel segment.
+    """
+
+    def test_relative_and_absolute_same_target_use_separate_segments(self, tmp_path):
+        """A relative path resolved against execution_cwd and an absolute path
+        pointing to the same file must be detected as overlapping."""
+        from agent.tool_dispatch_helpers import (
+            _canonical_path,
+            _paths_overlap,
+        )
+
+        target = tmp_path / "config.json"
+        target.touch()
+
+        abs_path = _canonical_path(str(target))
+        rel_path = _canonical_path("config.json", execution_cwd=tmp_path)
+
+        assert _paths_overlap(abs_path, rel_path), (
+            "Absolute and relative paths pointing to the same file must overlap"
+        )
+
+    def test_symlink_aliases_are_not_parallelized(self, tmp_path):
+        """A symlink alias and the real path must be detected as overlapping
+        so they are never placed in the same parallel segment."""
+        import os
+        from agent.tool_dispatch_helpers import (
+            _canonical_path,
+            _paths_overlap,
+        )
+
+        real_dir = tmp_path / "real"
+        real_dir.mkdir()
+        target = real_dir / "config.json"
+        target.touch()
+
+        alias_dir = tmp_path / "alias"
+        alias_dir.symlink_to(real_dir)
+
+        real_path = _canonical_path(str(target))
+        alias_path = _canonical_path(str(alias_dir / "config.json"))
+
+        assert _paths_overlap(real_path, alias_path), (
+            "Symlink alias and real path must overlap — "
+            "they must not be parallelized"
+        )
+
+    def test_execution_cwd_used_over_process_cwd(self, tmp_path, monkeypatch):
+        """_extract_parallel_scope_path must use execution_cwd, not
+        process cwd, when resolving relative paths."""
+        from agent.tool_dispatch_helpers import (
+            _extract_parallel_scope_path,
+            _paths_overlap,
+        )
+
+        exec_cwd = tmp_path / "sub"
+        exec_cwd.mkdir()
+        (exec_cwd / "x.txt").touch()
+
+        # Point process cwd somewhere else entirely.
+        monkeypatch.chdir(tmp_path)
+
+        # With execution_cwd supplied the relative path resolves under exec_cwd.
+        path_with_cwd = _extract_parallel_scope_path(
+            "write_file", {"path": "x.txt"}, execution_cwd=exec_cwd
+        )
+        # The absolute path under exec_cwd must match.
+        path_absolute = _extract_parallel_scope_path(
+            "write_file", {"path": str(exec_cwd / "x.txt")}
+        )
+
+        assert path_with_cwd is not None
+        assert path_absolute is not None
+        assert _paths_overlap(path_with_cwd, path_absolute), (
+            "execution_cwd-relative path and absolute path must overlap; "
+            "process cwd must not be used when execution_cwd is provided"
+        )
+
+    def test_symlink_alias_nonexistent_write_target_overlap(self, tmp_path):
+        """Symlink parent + not-yet-created leaf file must still be detected
+        as overlapping — write_file targets may not exist at planning time."""
+        import os
+        from agent.tool_dispatch_helpers import _canonical_path, _paths_overlap
+
+        real_dir = tmp_path / "real"
+        real_dir.mkdir()
+        alias_dir = tmp_path / "alias"
+        alias_dir.symlink_to(real_dir)
+
+        # Leaf file does NOT exist yet (write_file scenario).
+        real_target = _canonical_path(str(real_dir / "new.txt"))
+        alias_target = _canonical_path(str(alias_dir / "new.txt"))
+
+        assert _paths_overlap(real_target, alias_target), (
+            "Symlink parent + nonexistent leaf must overlap — "
+            "write_file targets are planned before they exist"
+        )
+
+    @pytest.mark.skipif(
+        sys.platform != "win32",
+        reason="normcase() case-folding only matters on Windows",
+    )
+    def test_case_insensitive_paths_overlap_windows(self, tmp_path):
+        """On Windows, FILE.txt and file.txt are the same file — they must
+        be detected as overlapping after normcase() canonicalisation."""
+        from agent.tool_dispatch_helpers import _canonical_path, _paths_overlap
+
+        upper = _canonical_path(str(tmp_path / "FILE.txt"), execution_cwd=tmp_path)
+        lower = _canonical_path(str(tmp_path / "file.txt"), execution_cwd=tmp_path)
+
+        assert _paths_overlap(upper, lower), (
+            "Case-insensitive aliases must overlap on Windows"
+        )

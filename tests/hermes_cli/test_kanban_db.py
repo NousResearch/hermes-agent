@@ -848,6 +848,88 @@ def test_detect_crashed_workers_isolated_failure_normal_retry(
             )
 
 
+def test_crashed_and_gave_up_events_include_redacted_worker_log_tail(
+    kanban_home, monkeypatch,
+):
+    """Fast spawn failures must surface the actual worker error on the card."""
+    import hermes_cli.kanban_db as _kb
+
+    monkeypatch.setattr(_kb, "_pid_alive", lambda _pid: False)
+    monkeypatch.setenv("HERMES_KANBAN_CRASH_GRACE_SECONDS", "0")
+
+    with kb.connect() as conn:
+        host = _kb._claimer_id().split(":", 1)[0]
+        tid = kb.create_task(
+            conn,
+            title="wrong provider",
+            assignee="worker",
+            max_retries=1,
+        )
+        kb.claim_task(conn, tid, claimer=f"{host}:worker")
+        kb._set_worker_pid(conn, tid, 81234)
+
+        log_dir = kb.worker_logs_dir()
+        log_dir.mkdir(parents=True, exist_ok=True)
+        secret = "sk-" + "abcdefghijklmnopqrstuvwxyz123456"
+        (log_dir / f"{tid}.log").write_text(
+            "startup noise\n"
+            "Provider: openai-codex Model: claude-fable-5\n"
+            f"HTTP 400: claude-fable-5 not supported with token {secret}\n",
+            encoding="utf-8",
+        )
+
+        assert kb.detect_crashed_workers(conn) == [tid]
+        events = kb.list_events(conn, tid)
+
+    crashed = next(event for event in events if event.kind == "crashed")
+    gave_up = next(event for event in events if event.kind == "gave_up")
+    for event in (crashed, gave_up):
+        assert event.payload is not None
+        tail = event.payload["stderr_tail"]
+        assert "Provider: openai-codex Model: claude-fable-5" in tail
+        assert "HTTP 400" in tail
+        assert secret not in tail
+
+
+def test_log_tail_redaction_failure_does_not_block_crash_recovery(
+    kanban_home, monkeypatch,
+):
+    """Observability failure must not roll back the crash-state transition."""
+    import agent.redact as redact
+    import hermes_cli.kanban_db as _kb
+
+    monkeypatch.setattr(_kb, "_pid_alive", lambda _pid: False)
+    monkeypatch.setenv("HERMES_KANBAN_CRASH_GRACE_SECONDS", "0")
+    monkeypatch.setattr(
+        redact,
+        "redact_sensitive_text",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(RuntimeError("redactor failed")),
+    )
+
+    with kb.connect() as conn:
+        host = _kb._claimer_id().split(":", 1)[0]
+        tid = kb.create_task(
+            conn,
+            title="redactor failure",
+            assignee="worker",
+            max_retries=1,
+        )
+        kb.claim_task(conn, tid, claimer=f"{host}:worker")
+        kb._set_worker_pid(conn, tid, 81235)
+        log_dir = kb.worker_logs_dir()
+        log_dir.mkdir(parents=True, exist_ok=True)
+        (log_dir / f"{tid}.log").write_text("HTTP 400\n", encoding="utf-8")
+
+        assert kb.detect_crashed_workers(conn) == [tid]
+        task = kb.get_task(conn, tid)
+        events = kb.list_events(conn, tid)
+
+    assert task is not None and task.status == "blocked"
+    for event in (event for event in events if event.kind in {"crashed", "gave_up"}):
+        assert event.payload is not None
+        assert "stderr_tail" not in event.payload
+
+
 def test_detect_crashed_workers_skips_freshly_claimed_tasks(
     kanban_home, monkeypatch,
 ):

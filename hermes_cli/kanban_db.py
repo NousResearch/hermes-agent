@@ -611,6 +611,44 @@ def worker_logs_dir(board: Optional[str] = None) -> Path:
     return board_dir(slug) / "logs"
 
 
+_WORKER_LOG_TAIL_BYTES = 4096
+
+
+def _worker_log_stderr_tail(
+    task_id: str,
+    *,
+    board: Optional[str] = None,
+) -> Optional[str]:
+    """Return a bounded, redacted tail of a worker's combined output log.
+
+    ``_default_spawn`` merges stderr into stdout, so the per-task log is the
+    only durable source for startup/provider errors after the child exits.
+    This helper is best-effort: crash accounting must still work when the log
+    is absent, unreadable, or contains malformed bytes.
+    """
+    try:
+        path = worker_logs_dir(board=board) / f"{task_id}.log"
+        with path.open("rb") as log_f:
+            log_f.seek(0, os.SEEK_END)
+            size = log_f.tell()
+            log_f.seek(max(0, size - _WORKER_LOG_TAIL_BYTES))
+            raw = log_f.read(_WORKER_LOG_TAIL_BYTES)
+        tail = raw.decode("utf-8", errors="replace").strip()
+        if not tail:
+            return None
+        # Event payloads are durable board history. Redact unconditionally,
+        # independent of the display-only security.redact_secrets toggle.
+        from agent.redact import redact_sensitive_text  # type: ignore[import-not-found]
+        return redact_sensitive_text(tail, force=True).strip() or None
+    except (OSError, ImportError):
+        return None
+    except Exception:
+        # Log-tail capture is observability only. A redactor/runtime failure
+        # must never roll back the surrounding crash-recovery transaction.
+        _log.debug("failed to capture worker log tail for %s", task_id, exc_info=True)
+        return None
+
+
 def board_metadata_path(board: Optional[str] = None) -> Path:
     """Return the path to ``board.json`` for ``board``.
 
@@ -7044,7 +7082,11 @@ def _protocol_violation_streak(conn: sqlite3.Connection, task_id: str) -> int:
     return streak
 
 
-def detect_crashed_workers(conn: sqlite3.Connection) -> list[str]:
+def detect_crashed_workers(
+    conn: sqlite3.Connection,
+    *,
+    board: Optional[str] = None,
+) -> list[str]:
     """Reclaim ``running`` tasks whose worker PID is no longer alive.
 
     Appends a ``crashed`` event and drops the task back to ``ready``.
@@ -7080,8 +7122,8 @@ def detect_crashed_workers(conn: sqlite3.Connection) -> list[str]:
     # clean-exit-but-still-running case, which is accounted against its
     # own bounded violation streak instead of the unified failure
     # counter (see the post-txn loop below).
-    crash_details: list[tuple[str, int, str, bool, str]] = []
-    # (task_id, pid, claimer, protocol_violation, error_text)
+    crash_details: list[tuple[str, int, str, bool, str, Optional[str]]] = []
+    # (task_id, pid, claimer, protocol_violation, error_text, stderr_tail)
     with write_txn(conn):
         rows = conn.execute(
             "SELECT id, worker_pid, claim_lock, started_at FROM tasks "
@@ -7167,6 +7209,9 @@ def detect_crashed_workers(conn: sqlite3.Connection) -> list[str]:
                 if code is not None and kind != "unknown":
                     event_payload["exit_kind"] = kind
                     event_payload["exit_code"] = code
+                stderr_tail = _worker_log_stderr_tail(row["id"], board=board)
+                if stderr_tail:
+                    event_payload["stderr_tail"] = stderr_tail
 
             cur = conn.execute(
                 "UPDATE tasks SET status = 'ready', claim_lock = NULL, "
@@ -7218,7 +7263,8 @@ def detect_crashed_workers(conn: sqlite3.Connection) -> list[str]:
                     crashed.append(row["id"])
                     crash_details.append(
                         (row["id"], pid, row["claim_lock"],
-                         protocol_violation, error_text)
+                         protocol_violation, error_text,
+                         event_payload.get("stderr_tail"))
                     )
     # Outside the main txn: account each crashed task and maybe trip the
     # breaker (the task transitions ready → blocked with a ``gave_up`` event
@@ -7240,10 +7286,17 @@ def detect_crashed_workers(conn: sqlite3.Connection) -> list[str]:
     if crash_details:
         # Fingerprint errors to detect systemic failures.
         _fp_counts: dict[str, int] = {}
-        for _, _, _, _, err_text in crash_details:
+        for _, _, _, _, err_text, _ in crash_details:
             fp = _error_fingerprint(err_text)
             _fp_counts[fp] = _fp_counts.get(fp, 0) + 1
-        for tid, pid, claimer, protocol_violation, error_text in crash_details:
+        for (
+            tid,
+            pid,
+            claimer,
+            protocol_violation,
+            error_text,
+            stderr_tail,
+        ) in crash_details:
             if protocol_violation:
                 streak = _protocol_violation_streak(conn, tid)
                 trow = conn.execute(
@@ -7292,6 +7345,9 @@ def detect_crashed_workers(conn: sqlite3.Connection) -> list[str]:
                 continue
             fp = _error_fingerprint(error_text)
             is_systemic = _fp_counts.get(fp, 0) >= 3
+            failure_payload = {"pid": pid, "claimer": claimer}
+            if stderr_tail:
+                failure_payload["stderr_tail"] = stderr_tail
             tripped = _record_task_failure(
                 conn, tid,
                 error=error_text,
@@ -7299,7 +7355,7 @@ def detect_crashed_workers(conn: sqlite3.Connection) -> list[str]:
                 failure_limit=1 if is_systemic else None,
                 release_claim=False,
                 end_run=False,
-                event_payload_extra={"pid": pid, "claimer": claimer},
+                event_payload_extra=failure_payload,
             )
             if tripped:
                 auto_blocked.append(tid)
@@ -7874,7 +7930,7 @@ def _dispatch_once_locked(
     result.stale = detect_stale_running(
         conn, stale_timeout_seconds=stale_timeout_seconds,
     )
-    result.crashed = detect_crashed_workers(conn)
+    result.crashed = detect_crashed_workers(conn, board=board)
     # detect_crashed_workers stashes protocol-violation auto-blocks on
     # itself so the public list-return stays stable. Pull them into the
     # DispatchResult here so telemetry / tests see the trip.
@@ -8688,7 +8744,15 @@ def _default_spawn(
             if sk and sk != "kanban-worker":
                 cmd.extend(["--skills", sk])
     if task.model_override:
-        cmd.extend(["-m", task.model_override])
+        provider, separator, model = task.model_override.partition("/")
+        if (
+            separator
+            and model
+            and re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]*", provider)
+        ):
+            cmd.extend(["--provider", provider, "-m", model])
+        else:
+            cmd.extend(["-m", task.model_override])
         # Structured spawn line so per-task model overrides are auditable
         # post-hoc ("why did this task cost Opus money"). Only emitted when
         # an override is actually set — a cleared/no-override task logs

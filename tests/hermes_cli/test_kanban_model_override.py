@@ -240,6 +240,39 @@ def test_argv_injection_via_cli_create(kanban_home, monkeypatch):
     assert argv[argv.index("-m") + 1] == "x ; y"
 
 
+def test_vendor_prefixed_override_forces_provider_on_spawn(
+    kanban_home, monkeypatch,
+):
+    """A vendor-prefixed override must beat the assignee profile default.
+
+    Regression: passing the whole ``provider/model`` value through ``-m`` let
+    the CLI strip the prefix while retaining the profile's openai-codex
+    provider, routing ``claude-fable-5`` to the Codex endpoint.
+    """
+    profile_home = kanban_home / "profiles" / "worker"
+    profile_home.mkdir(parents=True)
+    (profile_home / "config.yaml").write_text(
+        "model:\n  provider: openai-codex\n  default: gpt-5.5\n",
+        encoding="utf-8",
+    )
+    with kb.connect() as conn:
+        tid = kb.create_task(
+            conn,
+            title="fable task",
+            assignee="worker",
+            model_override="claude-apx-6/claude-fable-5",
+        )
+        task = kb.get_task(conn, tid)
+
+    argv = _spawn_argv_for(monkeypatch, task)
+
+    assert argv.count("--provider") == 1
+    assert argv[argv.index("--provider") + 1] == "claude-apx-6"
+    assert argv.count("-m") == 1
+    assert argv[argv.index("-m") + 1] == "claude-fable-5"
+    assert "claude-apx-6/claude-fable-5" not in argv
+
+
 # ---------------------------------------------------------------------------
 # Phase 3 — retry / re-read path: model changed between spawns is re-read
 # ---------------------------------------------------------------------------

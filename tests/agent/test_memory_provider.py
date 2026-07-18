@@ -1,5 +1,6 @@
 """Tests for the memory provider interface, manager, and builtin provider."""
 
+import copy
 import json
 import threading
 import time
@@ -404,6 +405,52 @@ class TestMemoryManager:
         mgr.add_provider(p)
         mgr.on_pre_compress([{"role": "user", "content": "old"}])
         assert p.pre_compress_called
+
+    def test_on_pre_compress_passes_sanitized_messages_to_provider(self):
+        class _TrackingProvider(FakeMemoryProvider):
+            def __init__(self):
+                super().__init__("tracking")
+                self.received = None
+
+            def on_pre_compress(self, messages):
+                self.pre_compress_called = True
+                self.received = messages
+
+        mgr = MemoryManager()
+        provider = _TrackingProvider()
+        mgr.add_provider(provider)
+        messages = [
+            {"role": "system", "content": "sys"},
+            {"role": "user", "content": "retain", "meta": {"scope": "kept"}},
+            {"role": "assistant", "content": "reply-1"},
+            {
+                "role": "user",
+                "content": "synthetic",
+                TURN_MEMORY_DISPOSITION_KEY: "do_not_retain",
+            },
+            {"role": "assistant", "content": "temp-reply"},
+            {"role": "tool", "content": "temp-tool", "tool_name": "search"},
+            {"role": "user", "content": "next"},
+            {"role": "assistant", "content": "reply-2"},
+        ]
+        baseline = copy.deepcopy(messages)
+
+        mgr.on_pre_compress(messages)
+
+        assert provider.pre_compress_called
+        assert [m["content"] for m in provider.received] == [
+            "sys",
+            "retain",
+            "reply-1",
+            "next",
+            "reply-2",
+        ]
+        assert all(
+            TURN_MEMORY_DISPOSITION_KEY not in message for message in provider.received
+        )
+        assert messages == baseline
+        assert provider.received[0] is not messages[0]
+
 
     def test_shutdown_all_reverse_order(self):
         mgr = MemoryManager()

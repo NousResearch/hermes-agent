@@ -1007,9 +1007,10 @@ class MemoryManager:
         summary prompt. Empty string if no provider contributes.
         """
         parts = []
+        safe_messages = memory_safe_session_messages(messages)
         for provider in self._providers:
             try:
-                result = provider.on_pre_compress(messages)
+                result = provider.on_pre_compress(safe_messages)
                 if result and result.strip():
                     parts.append(result)
             except Exception as e:

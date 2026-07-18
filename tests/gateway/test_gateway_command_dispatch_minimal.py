@@ -1,3 +1,4 @@
+import dataclasses
 from datetime import datetime
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
@@ -123,7 +124,7 @@ async def test_idle_queue_sends_payload_as_next_turn(command_text):
     assert result == {"final_response": "", "messages": []}
     assert captured["text"] == "do this next"
     assert captured["command"] is None
-    assert captured["source"] == _make_source()
+    assert captured["source"] == dataclasses.replace(_make_source(), message_id="m1")
     assert captured["key"] == build_session_key(_make_source())
     assert captured["generation"] == 1
     assert runner._running_agents == {}

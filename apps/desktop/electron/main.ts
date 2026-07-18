@@ -8550,6 +8550,58 @@ ipcMain.handle('hermes:fs:rename', async (_event, targetPath, newName) => {
   return { path: dst }
 })
 
+// ── Avatar (profile picture for the AI agent in chat) ──────────────────────
+//
+// The avatar is stored at HERMES_HOME/avatar.png and persists across updates.
+// get() returns a data URL or null; set() accepts a data URL (image/png);
+// reset() removes the file.
+
+ipcMain.handle('hermes:avatar:get', async () => {
+  const avatarPath = path.join(HERMES_HOME, 'avatar.png')
+
+  try {
+    await fs.promises.access(avatarPath, fs.constants.R_OK)
+    const data = await fs.promises.readFile(avatarPath)
+    return `data:image/png;base64,${data.toString('base64')}`
+  } catch {
+    return null
+  }
+})
+
+ipcMain.handle('hermes:avatar:set', async (_event, dataUrl: string) => {
+  if (typeof dataUrl !== 'string' || !dataUrl.startsWith('data:image/')) {
+    throw new Error('Invalid avatar data: expected a data URL starting with data:image/')
+  }
+
+  await fs.promises.mkdir(HERMES_HOME, { recursive: true })
+
+  const matches = dataUrl.match(/^data:image\/(png|jpeg|webp|gif);base64,(.+)$/)
+
+  if (!matches) {
+    throw new Error('Unsupported image format — only base64 data URLs for png, jpeg, webp, or gif are accepted.')
+  }
+
+  const [, ext, base64Data] = matches
+  const buffer = Buffer.from(base64Data, 'base64')
+  const avatarPath = path.join(HERMES_HOME, 'avatar.png')
+
+  await fs.promises.writeFile(avatarPath, buffer)
+
+  return `data:image/png;base64,${buffer.toString('base64')}`
+})
+
+ipcMain.handle('hermes:avatar:reset', async () => {
+  const avatarPath = path.join(HERMES_HOME, 'avatar.png')
+
+  try {
+    await fs.promises.unlink(avatarPath)
+  } catch {
+    // File doesn't exist — that's fine
+  }
+
+  return true
+})
+
 // Write a small UTF-8 text file (e.g. a project's IDEA.md at creation). The path
 // is hardened (resolveRequestedPathForIpc) and the parent must already exist —
 // this never creates directory trees or escapes the allowed roots, and content

@@ -10402,9 +10402,27 @@ def _cmd_update_impl(args, gateway_mode: bool):
                         text=True,
                         check=False,
                     )
+                    rollback_tree = None
+                    if rollback_ref.returncode == 0:
+                        # The CAS above proves the target ref still points at the
+                        # commit installed by this pull. Local changes were
+                        # stashed before checkout, so it is now safe and necessary
+                        # to restore the index/worktree as well as the branch ref.
+                        rollback_tree = subprocess.run(
+                            git_cmd + ["reset", "--hard", pre_pull_sha],
+                            cwd=PROJECT_ROOT,
+                            capture_output=True,
+                            text=True,
+                            check=False,
+                        )
                     restored = _restore_protected_checkout()
                     print()
-                    if rollback_ref.returncode == 0 and restored:
+                    if (
+                        rollback_ref.returncode == 0
+                        and rollback_tree is not None
+                        and rollback_tree.returncode == 0
+                        and restored
+                    ):
                         print(
                             "  Protected rollback restored the target ref and original checkout."
                         )

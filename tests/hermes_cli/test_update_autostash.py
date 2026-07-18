@@ -841,10 +841,10 @@ def test_cmd_update_protected_pull_abort_restores_branch_and_stash(
     assert not any(" reset --hard " in f" {' '.join(cmd)} " for cmd in calls)
 
 
-def test_cmd_update_protection_disables_syntax_rollback_reset(
+def test_cmd_update_protection_uses_cas_before_syntax_rollback_reset(
     monkeypatch, tmp_path, capsys
 ):
-    """Protected mode must not hard-reset even after a bad incoming commit."""
+    """A bad incoming commit is reset only after an exact compare-and-swap."""
     _setup_update_mocks(monkeypatch, tmp_path)
     calls = []
 
@@ -881,7 +881,14 @@ def test_cmd_update_protection_disables_syntax_rollback_reset(
 
     assert exc.value.code == 3
     assert "Protected rollback restored" in capsys.readouterr().out
-    assert not any(" reset --hard " in f" {' '.join(cmd)} " for cmd in calls)
+    assert [
+        "git",
+        "update-ref",
+        "refs/heads/main",
+        "abc123",
+        "abc123",
+    ] in calls
+    assert ["git", "reset", "--hard", "abc123"] in calls
 
 
 def test_cmd_update_retries_optional_extras_individually_when_all_fails(monkeypatch, tmp_path, capsys):

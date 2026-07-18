@@ -143,10 +143,13 @@ def _sealed_identity(prefix: tuple[str, ...]) -> dict:
     return {**unsigned, "identity_sha256": foundation.sha256_json(unsigned)}
 
 
-@pytest.mark.parametrize("source_tree_oid", ("a" * 39, "A" * 40, "g" * 40))
+@pytest.mark.parametrize(
+    "source_tree_oid",
+    ("a" * 39, "A" * 40, "g" * 40, int("1" * 40)),
+)
 def test_sealed_identity_rejects_invalid_source_tree_oid(
     tmp_path: Path,
-    source_tree_oid: str,
+    source_tree_oid: object,
 ) -> None:
     executable, _configuration = _runtime(tmp_path)
     identity = _sealed_identity(executable.prefix)

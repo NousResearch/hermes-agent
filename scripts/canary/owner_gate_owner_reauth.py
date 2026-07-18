@@ -466,6 +466,7 @@ def _validate_sealed_runtime_identity(
         "owner_support_manifest_sha256",
         "bootstrap_receipt_file_sha256",
     )
+    source_tree_oid = identity.get("owner_support_source_tree_oid")
     if re.fullmatch(r"[0-9a-f]{40}", expected_release_revision or "") is None:
         _error("owner_gate_owner_reauth_runtime_invalid")
     if (
@@ -476,11 +477,8 @@ def _validate_sealed_runtime_identity(
         != _sha256_json(list(prefix))
         or any(type(identity.get(field)) is not int or identity[field] <= 0 for field in count_fields)
         or any(_SHA256.fullmatch(str(identity.get(field, ""))) is None for field in sha_fields)
-        or re.fullmatch(
-            r"[0-9a-f]{40}",
-            str(identity.get("owner_support_source_tree_oid", "")),
-        )
-        is None
+        or not isinstance(source_tree_oid, str)
+        or re.fullmatch(r"[0-9a-f]{40}", source_tree_oid) is None
         or not isinstance(identity.get("python_version"), str)
         or not identity["python_version"]
         or digest != _sha256_json(unsigned)

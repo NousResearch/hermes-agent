@@ -7173,9 +7173,9 @@ function wireCommonWindowHandlers(win, { zoom = true }: { zoom?: boolean } = {})
 
   if (zoom) {
     installZoomShortcuts(win)
-    // Re-apply persisted zoom on show/restore/cross-display move (Windows can
-    // drop webContents zoom after minimize or a monitor-scale change) and on
-    // EVERY full load — not once. The crash-recovery path calls
+    // Re-apply persisted zoom on show/restore/resize/cross-display move
+    // (Chromium can drop webContents zoom after these window transitions) and
+    // on EVERY full load — not once. The crash-recovery path calls
     // webContents.reload(), which fires did-finish-load again after a `once`
     // listener is spent, so zoom was silently lost on renderer crash
     // recovery and any in-place reload/navigation (#46429).

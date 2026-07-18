@@ -923,11 +923,21 @@ def main():
         with open(args.from_json, encoding="utf-8") as f:
             timings = json.load(f)
     else:
-        token = expect_env("GITHUB_TOKEN")
+        # GITHUB_TOKEN is wired from a repo secret (AUTOFIX_BOT_PAT), which
+        # fork-originated PR runs never receive — so a missing token is the
+        # NORMAL case for community PRs, not a configuration error. Route it
+        # through the same degraded path as any other unavailable-timings
+        # condition instead of crashing (which reddened every fork PR and
+        # spammed contributors with failure mail).
+        token = os.environ.get("GITHUB_TOKEN")
         repo = expect_env("GITHUB_REPOSITORY")
         run_id = expect_env("GITHUB_RUN_ID")
         head_sha = expect_env("GITHUB_SHA")
         try:
+            if not token:
+                raise TimingsUnavailable(
+                    "GITHUB_TOKEN not set (secrets are unavailable to fork PR runs)"
+                )
             timings = collect_timings(token, repo, run_id, head_sha)
         except TimingsUnavailable as e:
             # Observability job: a missing report must never redden the PR.

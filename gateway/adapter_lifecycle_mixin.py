@@ -2,7 +2,11 @@
 
 Extracted from ``gateway/run.py`` as part of the god-file decomposition
 campaign (Phase 4 mechanical mixin lift). This mixin holds the per-adapter
-connect/disconnect/teardown helpers:
+connect/disconnect/teardown helpers, plus the two module-level default
+constants (``_ADAPTER_DISCONNECT_TIMEOUT_SECS_DEFAULT``,
+``_PLATFORM_CONNECT_TIMEOUT_SECS_DEFAULT``) those helpers fall back to.
+After the constant lift, this module has no runtime dependency back into
+``gateway.run`` — the extraction is one-way:
 
   - ``_safe_adapter_disconnect`` — defensive ``adapter.disconnect()``
     used on failed-connect paths so partial-init resources (aiohttp
@@ -16,9 +20,11 @@ connect/disconnect/teardown helpers:
     ``TimeoutStopSec`` and trip a SIGKILL that skips ``atexit`` PID-file
     cleanup (#14128).
   - ``_adapter_disconnect_timeout_secs`` — env-tunable budget for the
-    two methods above.
+    two methods above; falls back to
+    ``_ADAPTER_DISCONNECT_TIMEOUT_SECS_DEFAULT``.
   - ``_platform_connect_timeout_secs`` — env-tunable budget for the
-    connect path below.
+    connect path below; falls back to
+    ``_PLATFORM_CONNECT_TIMEOUT_SECS_DEFAULT``.
   - ``_connect_adapter_with_timeout`` — wraps ``adapter.connect()`` so
     one platform's slow boot can't block the others; forwards
     ``is_reconnect`` so platforms can preserve server-side queues on a
@@ -26,19 +32,17 @@ connect/disconnect/teardown helpers:
 
 Behavior-neutral: every method is lifted verbatim from ``GatewayRunner``.
 The five methods read only ``os.getenv`` and the two module-level default
-constants (``_ADAPTER_DISCONNECT_TIMEOUT_SECS_DEFAULT``,
-``_PLATFORM_CONNECT_TIMEOUT_SECS_DEFAULT``); they touch no ``self.*``
-state and so do not require ``GatewayRunner.__init__`` to have been
-called — bare ``object.__new__(GatewayRunner)`` shells in the regression
-suite continue to work. The constants continue to live in
-``gateway.run`` (their canonical home since they are tunable from
-``config.yaml`` documentation paths); this module imports them lazily at
-call time so there is no import cycle:
+constants declared above; they touch no ``self.*`` state and so do not
+require ``GatewayRunner.__init__`` to have been called — bare
+``object.__new__(GatewayRunner)`` shells in the regression suite continue
+to work.
 
-    adapter_lifecycle_mixin.py  --(lazy import at call time)--> gateway.run
-
-The lazy import preserves the exact logger name (``"gateway.run"``) so log
-records emitted from these helpers keep their original logger name.
+The defaults live here (not in ``gateway.run``) because a repository-wide
+search showed they have no other consumer outside these two getters;
+keeping them alongside their getters makes the mixin extraction one-way
+and prevents a runtime dependency back into the god-file being extracted
+from. The lazy logger name (``"gateway.run"``) is preserved so log
+records emitted from these helpers keep their original namespace.
 """
 
 from __future__ import annotations
@@ -50,6 +54,17 @@ import time
 from typing import Optional
 
 logger = logging.getLogger("gateway.run")
+
+# Default per-adapter disconnect timeout (seconds). Used as the floor for the
+# env-var-overridable ``HERMES_GATEWAY_ADAPTER_DISCONNECT_TIMEOUT`` getter and
+# as a bounds in shutdown-path teardown so a wedged adapter cannot stall the
+# gateway past systemd's ``TimeoutStopSec``.
+_ADAPTER_DISCONNECT_TIMEOUT_SECS_DEFAULT = 5.0
+
+# Default per-platform connect timeout (seconds). Used as the floor for the
+# env-var-overridable ``HERMES_GATEWAY_PLATFORM_CONNECT_TIMEOUT`` getter so
+# one slow platform boot cannot block the others during startup/retry.
+_PLATFORM_CONNECT_TIMEOUT_SECS_DEFAULT = 30.0
 
 
 class GatewayAdapterLifecycleMixin:
@@ -153,9 +168,6 @@ class GatewayAdapterLifecycleMixin:
                 )
             else:
                 return max(0.0, timeout)
-        # Default lives in gateway.run (canonical home for the constant);
-        # lazy import to avoid a module-level cycle.
-        from gateway.run import _ADAPTER_DISCONNECT_TIMEOUT_SECS_DEFAULT
         return _ADAPTER_DISCONNECT_TIMEOUT_SECS_DEFAULT
 
     def _platform_connect_timeout_secs(self) -> float:
@@ -171,8 +183,6 @@ class GatewayAdapterLifecycleMixin:
                 )
             else:
                 return max(0.0, timeout)
-        # Default lives in gateway.run; lazy import to avoid a cycle.
-        from gateway.run import _PLATFORM_CONNECT_TIMEOUT_SECS_DEFAULT
         return _PLATFORM_CONNECT_TIMEOUT_SECS_DEFAULT
 
     async def _connect_adapter_with_timeout(

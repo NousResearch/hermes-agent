@@ -29,7 +29,6 @@ change-detector test (snapshot of a current value).
 
 from __future__ import annotations
 
-import os
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
@@ -99,7 +98,7 @@ def test_timeout_secs_methods_dont_require_init_state():
 
 
 @pytest.mark.asyncio
-async def test_connect_helper_forwards_is_reconnect_kwarg():
+async def test_connect_helper_forwards_is_reconnect_kwarg(monkeypatch):
     """``_connect_adapter_with_timeout`` must forward ``is_reconnect`` through
     to ``adapter.connect`` unchanged. This is the behavior that preserves
     messages sent during an outage (#46621) — a regression here silently
@@ -109,7 +108,10 @@ async def test_connect_helper_forwards_is_reconnect_kwarg():
     adapter.connect = AsyncMock(return_value=True)
 
     # Use a generous timeout so the test itself is not racy on slow CI.
-    os.environ.pop("HERMES_GATEWAY_PLATFORM_CONNECT_TIMEOUT", None)
+    # ``monkeypatch.delenv(..., raising=False)`` handles both "unset" and
+    # "set" cases (suppresses KeyError if the var was never in os.environ)
+    # and restores the inherited process environment for later tests.
+    monkeypatch.delenv("HERMES_GATEWAY_PLATFORM_CONNECT_TIMEOUT", raising=False)
     result = await shell._connect_adapter_with_timeout(
         adapter, Platform.TELEGRAM, is_reconnect=True
     )

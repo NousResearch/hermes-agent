@@ -695,10 +695,10 @@ def _require_linux_root() -> None:
     flags = sys.flags
     if (
         not sys.platform.startswith("linux")
-        or os.getuid() != ROOT_UID
-        or os.geteuid() != ROOT_UID
-        or os.getgid() != ROOT_GID
-        or os.getegid() != ROOT_GID
+        or os.getuid() != ROOT_UID  # windows-footgun: ok — POSIX root boundary
+        or os.geteuid() != ROOT_UID  # windows-footgun: ok — POSIX root boundary
+        or os.getgid() != ROOT_GID  # windows-footgun: ok — POSIX root boundary
+        or os.getegid() != ROOT_GID  # windows-footgun: ok — POSIX root boundary
         or flags.isolated != 1
         or flags.ignore_environment != 1
         or flags.no_user_site != 1

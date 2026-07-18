@@ -3309,6 +3309,80 @@ def apply_pending_steer_to_tool_results(agent, messages: list, num_tool_msgs: in
     )
 
 
+def format_leftover_steer_for_delivery(steer_text: str) -> str:
+    """Wrap a leftover /steer for delivery as a standalone next-turn message.
+
+    The "leftover" path is taken when a /steer lands after the final assistant
+    turn — there is no remaining tool batch to drain it into, so the caller
+    delivers it straight to the user-input queue as the next turn. Like the
+    mid-batch (:func:`apply_pending_steer_to_tool_results`) and pre-API drain
+    paths, it must carry the ``[OUT-OF-BAND USER MESSAGE]`` marker; otherwise
+    the model receives raw ``/steer`` command text and treats it as untrusted
+    tool output rather than a genuine user instruction (issue #60543).
+
+    ``format_steer_marker`` prefixes newlines for *appending* to existing tool
+    content; here the marker is the whole message, so surrounding whitespace is
+    stripped for a clean standalone turn.
+    """
+    return format_steer_marker(steer_text).strip()
+
+
+def queue_cli_leftover_steer(pending_input: Any, result: Any) -> Optional[str]:
+    """CLI delivery seam for leftover /steer (#60543).
+
+    Called by ``cli.py`` after a turn returns ``result["pending_steer"]``.
+    Queues the marked leftover text onto ``pending_input`` and returns the
+    delivered string, or ``None`` when there is nothing to deliver.
+    """
+    leftover = result.get("pending_steer") if result else None
+    if not leftover or pending_input is None:
+        return None
+    delivered = format_leftover_steer_for_delivery(leftover)
+    pending_input.put(delivered)
+    return delivered
+
+
+def resolve_gateway_leftover_steer(
+    result: Any,
+    pending: Any = None,
+    pending_event: Any = None,
+) -> Optional[str]:
+    """Gateway delivery seam for leftover /steer (#60543).
+
+    When no other pending work exists, return the marked leftover text from
+    ``result["pending_steer"]``. Returns ``None`` when a queued message or
+    event already has priority, or when there is no leftover steer.
+    """
+    if not result or pending or pending_event:
+        return None
+    leftover = result.get("pending_steer")
+    if not leftover:
+        return None
+    return format_leftover_steer_for_delivery(leftover)
+
+
+def discard_pending_slash_command(pending: Optional[str]) -> Optional[str]:
+    """Gateway slash-command safety net: drop pending text that is a known command.
+
+    Commands must not be passed to the agent as user input. A leftover steer
+    wrapped by :func:`format_leftover_steer_for_delivery` no longer starts with
+    ``/``, so it survives even when the steer body begins with ``/stop …``.
+    """
+    if not pending or not str(pending).strip().startswith("/"):
+        return pending
+    parts = str(pending).strip().split(None, 1)
+    cmd_word = parts[0][1:].lower() if parts else ""
+    if not cmd_word:
+        return pending
+    try:
+        from hermes_cli.commands import resolve_command
+
+        if resolve_command(cmd_word):
+            return None
+    except Exception:
+        pass
+    return pending
+
 
 def force_close_tcp_sockets(client: Any) -> int:
     """Abort in-flight TCP I/O by shutting down sockets WITHOUT closing FDs.
@@ -3386,6 +3460,10 @@ __all__ = [
     "cleanup_dead_connections",
     "extract_api_error_context",
     "apply_pending_steer_to_tool_results",
+    "format_leftover_steer_for_delivery",
+    "queue_cli_leftover_steer",
+    "resolve_gateway_leftover_steer",
+    "discard_pending_slash_command",
     "_iter_pool_sockets",
     "force_close_tcp_sockets",
 ]

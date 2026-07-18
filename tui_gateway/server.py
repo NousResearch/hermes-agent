@@ -5004,6 +5004,7 @@ def _init_session(
     cwd: str | None = None,
     session_db=None,
     source: str | None = None,
+    explicit_cwd: bool = False,
 ):
     now = time.time()
     with _sessions_lock:
@@ -5020,7 +5021,7 @@ def _init_session(
             "attached_images": [],
             "image_counter": 0,
             "cwd": cwd or _completion_cwd(),
-            "explicit_cwd": False,
+            "explicit_cwd": bool(explicit_cwd),
             "cols": cols,
             "slash_worker": None,
             "show_reasoning": _load_show_reasoning(),
@@ -8816,10 +8817,9 @@ def _(rid, params: dict) -> dict:
             list(history),
             cols=session.get("cols", 80),
             source=source,
+            explicit_cwd=branch_explicit_cwd,
         )
         if new_sid in _sessions:
-            _sessions[new_sid]["explicit_cwd"] = branch_explicit_cwd
-            _register_session_cwd(_sessions[new_sid])
             _sessions[new_sid]["active_session_lease"] = lease
     except Exception as e:
         if lease is not None:

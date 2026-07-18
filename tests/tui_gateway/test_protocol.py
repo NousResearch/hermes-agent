@@ -414,6 +414,32 @@ def test_init_session_keeps_persisted_cwd_without_terminal_override(server, monk
     assert calls == []
 
 
+@pytest.mark.parametrize("backend", ["docker", "ssh"])
+def test_deferred_resume_skips_implicit_remote_cwd_override(server, monkeypatch, backend):
+    calls = []
+    terminal_tool = types.SimpleNamespace(
+        register_task_env_overrides=lambda key, overrides: calls.append((key, overrides))
+    )
+    record = server._deferred_session_record(
+        "session-key",
+        cols=80,
+        cwd="/host/launch-dir",
+        history=[],
+        lease=None,
+    )
+
+    monkeypatch.setenv("TERMINAL_ENV", backend)
+    monkeypatch.setattr(server, "_find_live_session_by_key", lambda _key: None)
+
+    with patch.dict(sys.modules, {"tools.terminal_tool": terminal_tool}):
+        reused = server._claim_or_reuse_live("sid-resumed", "session-key", record, None)
+
+    assert reused is None
+    assert record["explicit_cwd"] is False
+    assert server._sessions["sid-resumed"] is record
+    assert calls == []
+
+
 def test_set_session_cwd_registers_terminal_override(server, monkeypatch, tmp_path):
     calls = []
     updated = []
@@ -1312,9 +1338,12 @@ def test_session_branch_persists_branched_from_marker(
             model="test/model", session_id=session_id or key
         ),
     )
+
     def _init_session(sid, *args, **kwargs):
         init_calls.append((args, kwargs))
-        server._sessions[sid] = {"explicit_cwd": False}
+        server._sessions[sid] = {
+            "explicit_cwd": bool(kwargs.get("explicit_cwd", False))
+        }
 
     monkeypatch.setattr(server, "_init_session", _init_session)
     monkeypatch.setattr(
@@ -1356,8 +1385,8 @@ def test_session_branch_persists_branched_from_marker(
     assert len(init_calls) == 1
     child_sid = resp["result"]["session_id"]
     assert server._sessions[child_sid]["explicit_cwd"] is expected_explicit_cwd
-    assert len(register_calls) == 1
-    assert register_calls[0]["explicit_cwd"] is expected_explicit_cwd
+    assert init_calls[0][1]["explicit_cwd"] is expected_explicit_cwd
+    assert register_calls == []
 
 
 def test_make_agent_accepts_list_system_prompt(server, monkeypatch):

@@ -70,6 +70,26 @@ def _stable_prompt(agent):
         return build_system_prompt_parts(agent)["stable"]
 
 
+class TestAlibabaCodingPlanModelIdentity:
+    def test_coding_plan_injects_requested_model_identity(self):
+        agent = _make_agent(
+            provider="alibaba-coding-plan",
+            model="qwen/qwen3.6-plus",
+        )
+
+        stable = _stable_prompt(agent)
+
+        assert "You are powered by the model named qwen3.6-plus" in stable
+        assert "The exact model ID is qwen/qwen3.6-plus" in stable
+
+    def test_plain_alibaba_does_not_inject_coding_plan_workaround(self):
+        agent = _make_agent(provider="alibaba", model="qwen-plus")
+
+        stable = _stable_prompt(agent)
+
+        assert "You are powered by the model named" not in stable
+
+
 def _init_code_repo(path):
     """A git repo that actually holds code — the coding posture requires a source
     file (or manifest), not a bare ``.git`` (a prose/notes repo stays general)."""

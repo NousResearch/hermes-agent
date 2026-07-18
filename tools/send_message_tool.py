@@ -406,6 +406,14 @@ def _handle_send(args):
     except (ValueError, KeyError):
         return tool_error(f"Unknown platform: {platform_name}")
 
+    # Secretary Mode is Telegram-only; fail loudly rather than silently
+    # dropping the send-as-owner intent on other platforms.
+    if business_connection_id and platform != Platform.TELEGRAM:
+        return tool_error(
+            "'business_connection_id' (Telegram Secretary Mode) is only "
+            f"supported for telegram targets, got '{platform_name}'"
+        )
+
     pconfig = config.platforms.get(platform)
     if not pconfig or not pconfig.enabled:
         # Weixin can be configured purely via .env; synthesize a pconfig so
@@ -499,6 +507,7 @@ def _handle_send(args):
                 thread_id=thread_id,
                 media_files=media_files,
                 force_document=force_document_attachments,
+                business_connection_id=business_connection_id,
             )
         )
         if used_home_channel and isinstance(result, dict) and result.get("success"):
@@ -778,7 +787,7 @@ async def _send_via_adapter(
     }
 
 
-async def _send_to_platform(platform, pconfig, chat_id, message, thread_id=None, media_files=None, force_document=False):
+async def _send_to_platform(platform, pconfig, chat_id, message, thread_id=None, media_files=None, force_document=False, business_connection_id=None):
     """Route a message to the appropriate platform sender.
 
     Long messages are automatically chunked to fit within platform limits
@@ -1327,6 +1336,11 @@ async def _send_telegram(token, chat_id, message, media_files=None, thread_id=No
                                 media_kwargs["duration"] = duration
                         except Exception:
                             pass
+                    # Secretary Mode: media must carry the connection ID too,
+                    # or attachments are delivered as the bot while the text
+                    # went out as the owner.
+                    if business_connection_id:
+                        media_kwargs["business_connection_id"] = business_connection_id
                     try:
                         if ext in _IMAGE_EXTS and not force_document:
                             last_msg = await bot.send_photo(

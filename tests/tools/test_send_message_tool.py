@@ -317,6 +317,7 @@ class TestSendMessageTool:
             thread_id=None,
             media_files=[],
             force_document=False,
+            business_connection_id=None,
         )
 
     def test_cron_duplicate_target_is_skipped_and_explained(self):
@@ -382,6 +383,7 @@ class TestSendMessageTool:
             thread_id="17585",
             media_files=[],
             force_document=False,
+            business_connection_id=None,
         )
 
     def test_display_label_target_resolves_via_channel_directory(self, tmp_path):
@@ -421,6 +423,7 @@ class TestSendMessageTool:
             thread_id="17585",
             media_files=[],
             force_document=False,
+            business_connection_id=None,
         )
 
     def test_resolved_slack_thread_name_preserves_thread_id(self):
@@ -455,6 +458,7 @@ class TestSendMessageTool:
             thread_id="171.000001",
             media_files=[],
             force_document=False,
+            business_connection_id=None,
         )
 
     def test_resolved_matrix_thread_name_preserves_thread_id(self):
@@ -496,6 +500,7 @@ class TestSendMessageTool:
             thread_id="$thread123:matrix.example.org",
             media_files=[],
             force_document=False,
+            business_connection_id=None,
         )
 
     def test_mirror_receives_current_session_user_id(self):
@@ -567,6 +572,7 @@ class TestSendMessageTool:
             thread_id=None,
             media_files=[],
             force_document=False,
+            business_connection_id=None,
         )
 
     def test_top_level_send_failure_redacts_query_token(self):
@@ -3383,3 +3389,159 @@ class TestSendTelegramThreadNotFoundRetry:
         finally:
             if media_path and os.path.exists(media_path):
                 os.unlink(media_path)
+
+
+class TestTelegramSecretaryModeSend:
+    """Secretary Mode: business_connection_id threading through the
+    standalone send engine (PR #60809 review regression tests)."""
+
+    def _pconfig(self):
+        return SimpleNamespace(enabled=True, token="tok", extra={})
+
+    def test_send_to_platform_threads_business_connection_id(self):
+        helper = AsyncMock(
+            return_value={
+                "success": True,
+                "platform": "telegram",
+                "chat_id": "123",
+                "message_id": "9",
+            }
+        )
+        with patch("tools.send_message_tool._send_telegram", helper):
+            result = asyncio.run(
+                _send_to_platform(
+                    Platform.TELEGRAM,
+                    self._pconfig(),
+                    "123",
+                    "reply as owner",
+                    business_connection_id="biz_conn_7",
+                )
+            )
+        assert result["success"] is True
+        assert helper.await_args.kwargs["business_connection_id"] == "biz_conn_7"
+
+    def test_send_to_platform_plain_telegram_send_regression(self):
+        """A plain Telegram send must work without business_connection_id.
+
+        Regression: the original Secretary Mode patch referenced
+        ``business_connection_id`` inside ``_send_to_platform`` without it
+        being a parameter — a NameError on EVERY standalone Telegram send,
+        business or not.
+        """
+        helper = AsyncMock(return_value={"success": True})
+        with patch("tools.send_message_tool._send_telegram", helper):
+            result = asyncio.run(
+                _send_to_platform(Platform.TELEGRAM, self._pconfig(), "123", "plain")
+            )
+        assert result["success"] is True
+        assert helper.await_args.kwargs["business_connection_id"] is None
+
+    def test_send_telegram_text_carries_business_connection_id(self, monkeypatch):
+        bot = MagicMock()
+        bot.send_message = AsyncMock(return_value=SimpleNamespace(message_id=1))
+        _install_telegram_mock(monkeypatch, bot)
+
+        result = asyncio.run(
+            _send_telegram(
+                "tok", "123", "hello", business_connection_id="biz_conn_8"
+            )
+        )
+        assert result["success"] is True
+        assert (
+            bot.send_message.await_args.kwargs["business_connection_id"]
+            == "biz_conn_8"
+        )
+
+    def test_send_telegram_text_omits_kwarg_when_absent(self, monkeypatch):
+        bot = MagicMock()
+        bot.send_message = AsyncMock(return_value=SimpleNamespace(message_id=1))
+        _install_telegram_mock(monkeypatch, bot)
+
+        result = asyncio.run(_send_telegram("tok", "123", "plain"))
+        assert result["success"] is True
+        assert "business_connection_id" not in bot.send_message.await_args.kwargs
+
+    def test_send_telegram_media_carries_business_connection_id(
+        self, tmp_path, monkeypatch
+    ):
+        """Attachments must ride the same business connection as the text,
+        or a Secretary Mode reply's media is delivered as the bot."""
+        image_path = tmp_path / "pic.png"
+        image_path.write_bytes(b"\x89PNG\r\n\x1a\n" + b"\x00" * 16)
+
+        bot = MagicMock()
+        bot.send_message = AsyncMock(return_value=SimpleNamespace(message_id=1))
+        bot.send_photo = AsyncMock(return_value=SimpleNamespace(message_id=2))
+        bot.send_video = AsyncMock()
+        bot.send_voice = AsyncMock()
+        bot.send_audio = AsyncMock()
+        bot.send_document = AsyncMock()
+        _install_telegram_mock(monkeypatch, bot)
+
+        result = asyncio.run(
+            _send_telegram(
+                "tok",
+                "123",
+                "with media",
+                media_files=[(str(image_path), False)],
+                business_connection_id="biz_conn_9",
+            )
+        )
+        assert result["success"] is True
+        assert (
+            bot.send_photo.await_args.kwargs["business_connection_id"]
+            == "biz_conn_9"
+        )
+
+    def test_handle_send_rejects_non_telegram_business_send(self, monkeypatch):
+        """The Telegram-only flag must fail loudly on other platforms rather
+        than silently dropping the send-as-owner intent."""
+        fake_config = SimpleNamespace(platforms={})
+        monkeypatch.setattr(
+            "gateway.config.load_gateway_config", lambda: fake_config
+        )
+
+        result = json.loads(
+            send_message_tool(
+                {
+                    "action": "send",
+                    "target": "discord:123456789",
+                    "message": "hi",
+                    "business_connection_id": "biz_conn_10",
+                }
+            )
+        )
+        assert "error" in result
+        assert "telegram" in result["error"].lower()
+
+    def test_handle_send_forwards_business_connection_id(self, monkeypatch):
+        """End to end: tool args -> _handle_send -> _send_to_platform."""
+        pconfig = SimpleNamespace(enabled=True, token="tok", extra={})
+        from gateway.config import Platform as _P
+
+        fake_config = SimpleNamespace(platforms={_P.TELEGRAM: pconfig})
+        monkeypatch.setattr(
+            "gateway.config.load_gateway_config", lambda: fake_config
+        )
+
+        helper = AsyncMock(
+            return_value={
+                "success": True,
+                "platform": "telegram",
+                "chat_id": "123",
+                "message_id": "1",
+            }
+        )
+        with patch("tools.send_message_tool._send_to_platform", helper):
+            result = json.loads(
+                send_message_tool(
+                    {
+                        "action": "send",
+                        "target": "telegram:123",
+                        "message": "reply as owner",
+                        "business_connection_id": "biz_conn_11",
+                    }
+                )
+            )
+        assert result.get("success") is True
+        assert helper.await_args.kwargs["business_connection_id"] == "biz_conn_11"

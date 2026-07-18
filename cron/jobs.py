@@ -1084,6 +1084,7 @@ def create_job(
     workdir: Optional[str] = None,
     no_agent: bool = False,
     attach_to_session: Optional[bool] = None,
+    memory_enabled: Optional[bool] = None,
 ) -> Dict[str, Any]:
     """
     Create a new cron job.
@@ -1255,6 +1256,12 @@ def create_job(
     # global cron.mirror_delivery config, default off).
     if normalized_attach is not None:
         job["attach_to_session"] = normalized_attach
+
+    # Only persist memory_enabled when explicitly set, so existing jobs and
+    # the common case stay byte-identical (absent key => cron default of
+    # skip_memory=True).
+    if isinstance(memory_enabled, bool):
+        job["memory_enabled"] = memory_enabled
 
     with _jobs_lock():
         jobs = load_jobs()

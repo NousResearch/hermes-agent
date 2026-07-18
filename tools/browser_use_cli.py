@@ -22,10 +22,13 @@ _BACKEND_KEY = "browser-use"
 # Cloud daemon names become the BU_NAME env var
 _SESSION_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$")
 
-_DEFAULT_TIMEOUT_S = 120
+_DEFAULT_TIMEOUT_S = 300
 _MIN_TIMEOUT_S = 5
-_MAX_TIMEOUT_S = 600
+_MAX_TIMEOUT_S = 1800
 _STDERR_CAP_CHARS = 4000
+
+# Filesystem-safe task ids for per-task workspace dirs.
+_TASK_ID_SAFE_RE = re.compile(r"[^A-Za-z0-9._-]+")
 
 # Screenshot paths printed by capture_screenshot() in the exec output
 _IMAGE_PATH_RE = re.compile(r"(/[^\s\"']+?\.(?:png|jpe?g|webp))", re.IGNORECASE)
@@ -85,6 +88,25 @@ def _find_cli() -> Optional[List[str]]:
     return None
 
 
+def _workspace_dir(task_id: Optional[str]) -> Optional[str]:
+    """Stable per-task scratch dir that persists across browser_exec calls"""
+    existing = os.environ.get("BH_AGENT_WORKSPACE")
+    if existing:
+        return existing
+    try:
+        from pathlib import Path
+
+        from hermes_constants import get_hermes_home
+
+        safe = _TASK_ID_SAFE_RE.sub("_", str(task_id or "default"))[:80] or "default"
+        path = Path(get_hermes_home()) / "cache" / "browser-use" / "workspace" / safe
+        path.mkdir(parents=True, exist_ok=True)
+        return str(path)
+    except Exception as e:
+        logger.debug("browser_exec workspace unavailable: %s", e)
+        return None
+
+
 def _find_screenshot(stdout: str, since: float) -> Optional[str]:
     """Return the last screenshot path printed during this exec, or None.
 
@@ -134,7 +156,12 @@ def _native_screenshot_result(result: Dict[str, Any], path: str) -> Optional[Dic
         return None
 
 
-def browser_exec(code: str, session: str = "", timeout_s: int = _DEFAULT_TIMEOUT_S):
+def browser_exec(
+    code: str,
+    session: str = "",
+    timeout_s: int = _DEFAULT_TIMEOUT_S,
+    task_id: Optional[str] = None,
+):
     """Run Python code through the browser-use CLI, and return its output"""
     from tools.registry import tool_error, tool_result
 
@@ -159,6 +186,10 @@ def browser_exec(code: str, session: str = "", timeout_s: int = _DEFAULT_TIMEOUT
             )
         env["BU_NAME"] = session
 
+    workspace = _workspace_dir(task_id)
+    if workspace:
+        env["BH_AGENT_WORKSPACE"] = workspace
+
     # BU_AUTOSPAWN makes the CLI start a Browser Use cloud browser when no
     # local Chrome/CDP endpoint is reachable (their API key authenticates it)
     if "BU_AUTOSPAWN" not in env and is_legacy_browser_use_cloud_config(_read_browser_cfg()):
@@ -182,8 +213,10 @@ def browser_exec(code: str, session: str = "", timeout_s: int = _DEFAULT_TIMEOUT
     except subprocess.TimeoutExpired:
         return tool_error(
             f"browser-use exec timed out after {timeout}s. The daemon may "
-            "still be working; retry with a larger timeout_s, or split the "
-            "code into smaller steps."
+            "still be working; retry with a larger timeout_s (max "
+            f"{_MAX_TIMEOUT_S}), or split the work into several calls that "
+            "append to workspace files — anything already written to the "
+            "workspace is preserved."
         )
     except OSError as e:
         return tool_error(f"Failed to launch browser-use CLI: {e}")
@@ -193,6 +226,8 @@ def browser_exec(code: str, session: str = "", timeout_s: int = _DEFAULT_TIMEOUT
         "exit_code": proc.returncode,
         "output": proc.stdout,
     }
+    if workspace:
+        result["workspace"] = workspace
     if session:
         result["session"] = session
     stderr = (proc.stderr or "").strip()
@@ -213,18 +248,34 @@ def browser_exec(code: str, session: str = "", timeout_s: int = _DEFAULT_TIMEOUT
 # The tool description is the CLI's skill, fetched from browser-use skill
 _HEADER_BASE = (
     "Drive a real web browser via the Browser Use CLI. The `code` argument "
-    "is piped verbatim to the `browser-use` CLI on stdin and executed with "
-    "its pre-imported helpers; stdout comes back in the result. Start `code` "
-    "with a one-line comment describing the step for the user in plain, "
+    "is piped verbatim to the `browser-use` CLI on stdin and executed as "
+    "full Python (standard library available) with the CLI's pre-imported "
+    "browser helpers; stdout comes back in the result. Start `code` with a "
+    "one-line comment describing the step for the user in plain, "
     "non-technical language, max 60 chars (e.g. `# Searching Amazon for "
-    "paper towels`) — the UI displays it as the step label. Batch whole "
-    "sub-procedures (navigate, wait, extract, act) into ONE call — do not "
-    "spend a call per action. js() takes a JS expression: js('document.title') "
-    "or js('(() => {...})()') — a bare '() => {...}' returns the function "
-    "itself, uncalled. The CLI's own documentation follows and is complete "
-    "(no need to read separate browser-use skill files) — where it shows "
-    "shell heredocs (browser-use <<'PY' … PY), pass the Python as `code` "
-    "instead; where it shows BU_NAME=<name>, pass session=<name> instead."
+    "paper towels`) — the UI displays it as the step label.\n\n"
+    "STATE: the browser session and the workspace persist across calls; "
+    "Python variables do NOT (each call is a fresh interpreter). The "
+    "workspace is a stable directory — path in $BH_AGENT_WORKSPACE and "
+    "returned as `workspace` in every result. For multi-item tasks "
+    "('collect all N products / every entry / the full table'), append each "
+    "batch to a JSON/CSV file in the workspace as you go, then read it back "
+    "to assemble the final answer; define reusable functions in "
+    "agent_helpers.py there — the harness auto-imports it into every call. "
+    "Do aggregation in code, not in your head: dedupe, count, sort, and "
+    "format with Python inside the exec. Before giving a final answer on a "
+    "multi-item task, verify the collected count against what was asked "
+    "and go back for anything missing.\n\n"
+    "Batch each sub-procedure (navigate, wait, extract, act) into one call "
+    "— do not spend a call per action — but for long extractions prefer "
+    "several medium calls that append to workspace files over one giant "
+    "call, so progress survives timeouts. js() takes a JS expression: "
+    "js('document.title') or js('(() => {...})()') — a bare '() => {...}' "
+    "returns the function itself, uncalled. The CLI's own documentation "
+    "follows and is complete (no need to read separate browser-use skill "
+    "files) — where it shows shell heredocs (browser-use <<'PY' … PY), pass "
+    "the Python as `code` instead; where it shows BU_NAME=<name>, pass "
+    "session=<name> instead."
 )
 
 _HEADER_VISION = (
@@ -330,6 +381,7 @@ registry.register(
         code=args.get("code", ""),
         session=args.get("session", "") or "",
         timeout_s=args.get("timeout_s", _DEFAULT_TIMEOUT_S),
+        task_id=kw.get("task_id"),
     ),
     check_fn=is_browser_use_cli_mode,
     dynamic_schema_overrides=_dynamic_schema_overrides,

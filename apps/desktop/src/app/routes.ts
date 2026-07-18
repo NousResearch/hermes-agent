@@ -158,6 +158,38 @@ export function appViewForPath(pathname: string): AppView {
   return APP_VIEW_BY_PATH.get(pathname) ?? 'chat'
 }
 
+/** Decide where clicking a session in the sidebar should route the app, or
+ *  `null` for "stay put" (the caller already fronted the right pane).
+ *
+ *  `alreadyOpen` is the result of `focusOpenSession(sessionId)`: true when the
+ *  session is the main session or an open tile whose pane was just fronted.
+ *
+ *  - Not open yet → load it into main via its own route.
+ *  - Open, and we're already on the chat view → nothing to do (`null`).
+ *  - Open, but a full-page route (Plugins/Artifacts/Messaging/Skills) is
+ *    covering the chat layout → route back to chat so the fronted pane becomes
+ *    visible. Target the MAIN session so an open tile stays a tile rather than
+ *    being promoted to main; fall back to the clicked id when there is no main.
+ *
+ *  Regression guard for #66875 (clicking the most recent/main session from a
+ *  non-chat tab did nothing). */
+export function resumeSessionNavTarget(
+  sessionId: string,
+  alreadyOpen: boolean,
+  pathname: string,
+  mainSessionId: null | string
+): null | string {
+  if (!alreadyOpen) {
+    return sessionRoute(sessionId)
+  }
+
+  if (appViewForPath(pathname) !== 'chat') {
+    return sessionRoute(mainSessionId ?? sessionId)
+  }
+
+  return null
+}
+
 /** True while the workspace pane shows a FULL PAGE (skills/messaging/
  *  artifacts/plugin routes) instead of the chat. Published by the wiring
  *  (which owns the router location); the workspace pane contribution mirrors

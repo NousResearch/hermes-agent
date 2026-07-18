@@ -74,7 +74,7 @@ import { RemoteFolderPicker } from '../right-sidebar/files/remote-picker'
 import { resetProjectTreeState } from '../right-sidebar/files/use-project-tree'
 import { PersistentTerminal } from '../right-sidebar/terminal/persistent'
 import { closeAllTerminals } from '../right-sidebar/terminal/terminals'
-import { CRON_ROUTE, routeSessionId, sessionRoute, SETTINGS_ROUTE, syncWorkspaceIsPage } from '../routes'
+import { CRON_ROUTE, resumeSessionNavTarget, routeSessionId, sessionRoute, SETTINGS_ROUTE, syncWorkspaceIsPage } from '../routes'
 import { SessionPickerOverlay } from '../session-picker-overlay'
 import { SessionSwitcher } from '../session-switcher'
 import { useBackgroundQueueDrain } from '../session/hooks/use-background-queue-drain'
@@ -762,10 +762,22 @@ export function ContribWiring({ children }: { children: ReactNode }) {
     onRemoveAttachment: id => void composer.removeAttachment(id),
     onRestoreToMessage: restoreToMessage,
     // Already on screen (open tile, or the main session)? Jump to its tab;
-    // otherwise load it into main.
+    // otherwise load it into main. When a full-page route (Plugins/Artifacts/…)
+    // is covering the chat layout, fronting an already-open pane is invisible, so
+    // resumeSessionNavTarget also routes back to chat — otherwise clicking the
+    // most recent (main) session from a non-chat tab looked like a no-op
+    // (#66875). Navigating to the main session's own route is a view-only switch:
+    // useRouteResume treats it as alreadyActive and does not re-resume.
     onResumeSession: sessionId => {
-      if (!focusOpenSession(sessionId)) {
-        navigate(sessionRoute(sessionId))
+      const target = resumeSessionNavTarget(
+        sessionId,
+        focusOpenSession(sessionId),
+        location.pathname,
+        selectedStoredSessionIdRef.current
+      )
+
+      if (target !== null) {
+        navigate(target)
       }
     },
     onRetryResume: sessionId => void resumeSession(sessionId, true),

@@ -511,6 +511,40 @@ class ProcessRegistry:
         self._move_to_finished(session)
         return session
 
+    def _start_detached_exit_monitor(self, session: ProcessSession) -> None:
+        """Monitor a checkpoint-recovered host process until it exits.
+
+        A recovered session has no ``Popen`` handle or stdout reader. Before
+        this monitor existed, its state changed only when some caller happened
+        to poll/list it; an idle WebUI therefore never received the promised
+        notify_on_complete wakeup after a server restart.
+        """
+        if session.exited or not session.detached or session.pid_scope != "host":
+            return
+        if session._reader_thread is not None and session._reader_thread.is_alive():
+            return
+
+        def _monitor() -> None:
+            while not session.exited:
+                if session._completion_event.wait(1.0):
+                    break
+                try:
+                    self._refresh_detached_session(session)
+                except Exception:
+                    logger.debug(
+                        "Detached process exit monitor failed for %s",
+                        session.id,
+                        exc_info=True,
+                    )
+
+        thread = threading.Thread(
+            target=_monitor,
+            daemon=True,
+            name=f"proc-detached-monitor-{session.id}",
+        )
+        session._reader_thread = thread
+        thread.start()
+
     @staticmethod
     def _proc_alive(proc) -> bool:
         """True if a psutil.Process is running and not a zombie.
@@ -1735,6 +1769,7 @@ class ProcessRegistry:
                 "uptime_seconds": int(time.time() - s.started_at),
                 "status": "exited" if s.exited else "running",
                 "output_preview": s.output_buffer[-200:] if s.output_buffer else "",
+                "session_key": s.session_key,
             }
             # Flag processes surfaced only because they share the gateway
             # session (not the current task) — these are the long-lived
@@ -1991,6 +2026,7 @@ class ProcessRegistry:
                 self._running[session.id] = session
             recovered += 1
             logger.info("Recovered detached process: %s (pid=%d)", session.command[:60], pid)
+            self._start_detached_exit_monitor(session)
 
             # Re-enqueue watcher so gateway can resume notifications
             if session.watcher_interval > 0:

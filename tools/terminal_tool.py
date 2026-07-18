@@ -2694,6 +2694,14 @@ def terminal_tool(
                     proc_session.watch_patterns = list(watch_patterns)
                     result_data["watch_patterns"] = proc_session.watch_patterns
 
+                # ``spawn_local`` / ``spawn_via_env`` checkpoint the process
+                # before terminal_tool attaches notification/routing metadata.
+                # Persist once more after those fields are final so a host
+                # restart cannot silently recover the process as
+                # notify_on_complete=False.
+                if background and (notify_on_complete or watch_patterns):
+                    process_registry._write_checkpoint()
+
                 return json.dumps(result_data, ensure_ascii=False)
             except Exception as e:
                 return json.dumps({

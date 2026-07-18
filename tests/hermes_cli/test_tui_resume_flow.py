@@ -1282,6 +1282,28 @@ def test_tui_cache_refresh_keeps_previous_returned_generation_launchable(
     )
 
 
+def test_tui_cached_bundle_rejects_symlinked_generations_parent(
+    monkeypatch, main_mod, tmp_path
+):
+    cache_root = tmp_path / "home" / "cache" / "tui-bundle"
+    outside = tmp_path / "outside-generations"
+    evil = outside / "evil"
+    (evil / "dist").mkdir(parents=True)
+    (evil / "dist" / "entry.js").write_text("console.log('evil')\n", encoding="utf-8")
+    cache_root.mkdir(parents=True)
+    (cache_root / "generations").symlink_to(outside, target_is_directory=True)
+    (cache_root / "current").write_text("evil\n", encoding="utf-8")
+
+    assert main_mod._tui_cached_active_bundle_dir(cache_root) == cache_root
+
+    staged = cache_root / "staged"
+    staged.mkdir()
+    with pytest.raises(RuntimeError, match="unsafe TUI cache generations"):
+        main_mod._publish_tui_cached_generation(cache_root, staged, "deadbeef")
+    main_mod._cleanup_tui_cached_generations(cache_root, evil)
+    assert (evil / "dist" / "entry.js").is_file()
+
+
 def test_print_tui_exit_summary_includes_resume_and_token_totals(monkeypatch, capsys):
     import hermes_cli.main as main_mod
 

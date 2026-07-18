@@ -1643,6 +1643,22 @@ def _tui_cached_build_dir() -> Path:
     return get_hermes_home() / "cache" / "tui-bundle-build"
 
 
+def _tui_cached_generations_dir(cache_root: Path, *, create: bool = False) -> Optional[Path]:
+    """Return a trusted generations directory, rejecting parent symlink escapes."""
+    generations = cache_root / "generations"
+    if generations.is_symlink():
+        return None
+    if create:
+        generations.mkdir(parents=True, exist_ok=True)
+    try:
+        trusted_root = cache_root.resolve()
+        resolved = generations.resolve()
+        resolved.relative_to(trusted_root)
+    except (OSError, ValueError):
+        return None
+    return resolved
+
+
 def _tui_cached_active_bundle_dir(cache_root: Path) -> Path:
     """Resolve the atomically selected immutable bundle generation."""
     selector = cache_root / "current"
@@ -1652,7 +1668,9 @@ def _tui_cached_active_bundle_dir(cache_root: Path) -> Path:
         return cache_root  # Backward-compatible legacy single-directory cache.
     if not generation_name or Path(generation_name).name != generation_name:
         return cache_root
-    generations = (cache_root / "generations").resolve()
+    generations = _tui_cached_generations_dir(cache_root)
+    if generations is None:
+        return cache_root
     candidate = (generations / generation_name).resolve()
     try:
         candidate.relative_to(generations)
@@ -1663,8 +1681,9 @@ def _tui_cached_active_bundle_dir(cache_root: Path) -> Path:
 
 def _publish_tui_cached_generation(cache_root: Path, staged: Path, stamp: str) -> Path:
     """Publish *staged* immutably, then atomically select it for new launches."""
-    generations = cache_root / "generations"
-    generations.mkdir(parents=True, exist_ok=True)
+    generations = _tui_cached_generations_dir(cache_root, create=True)
+    if generations is None:
+        raise RuntimeError("refusing unsafe TUI cache generations directory")
     generation = generations / f"{stamp[:16]}-{os.getpid()}-{_time.time_ns()}"
     staged.replace(generation)
 
@@ -1682,8 +1701,8 @@ def _publish_tui_cached_generation(cache_root: Path, staged: Path, stamp: str) -
 
 def _cleanup_tui_cached_generations(cache_root: Path, active: Path) -> None:
     """Best-effort cleanup, separate from publish, after a seven-day grace period."""
-    generations = cache_root / "generations"
-    if not generations.is_dir():
+    generations = _tui_cached_generations_dir(cache_root)
+    if generations is None or not generations.is_dir():
         return
     cutoff = _time.time() - 7 * 24 * 60 * 60
     try:
@@ -1796,8 +1815,9 @@ def _ensure_tui_cached_bundle(
         source_root = _workspace_root(tui_dir)
         build_dir = _tui_cached_build_dir()
         tmp_build = build_dir.with_name(f"{build_dir.name}.{os.getpid()}.tmp")
-        generations = cache_root / "generations"
-        generations.mkdir(parents=True, exist_ok=True)
+        generations = _tui_cached_generations_dir(cache_root, create=True)
+        if generations is None:
+            raise RuntimeError("refusing unsafe TUI cache generations directory")
         tmp_cache = generations / f".tmp-{os.getpid()}-{_time.time_ns()}"
         stamp = _tui_bundle_stamp(tui_dir)
 

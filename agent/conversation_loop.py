@@ -1671,6 +1671,13 @@ def run_conversation(
                             )
                     continue  # Retry the API call
 
+                # ── Dump response (success) ────────────────────────────
+                if env_var_enabled("HERMES_DUMP_REQUESTS"):
+                    agent._dump_api_response_debug(
+                        response=response,
+                        reason="success",
+                    )
+
                 # Check finish_reason before proceeding
                 if agent.api_mode == "codex_responses":
                     status = getattr(response, "status", None)
@@ -3878,6 +3885,12 @@ def run_conversation(
                         agent._dump_api_request_debug(
                             api_kwargs, reason="non_retryable_client_error", error=api_error,
                         )
+                    if env_var_enabled("HERMES_DUMP_REQUESTS"):
+                        agent._dump_api_response_debug(
+                            reason="non_retryable_client_error",
+                            error=api_error,
+                            status=status_code,
+                        )
                     # Terminal — flush buffered context so the user sees
                     # what was tried before the abort.
                     agent._flush_status_buffer()
@@ -4193,6 +4206,12 @@ def run_conversation(
                     if api_kwargs is not None:
                         agent._dump_api_request_debug(
                             api_kwargs, reason="max_retries_exhausted", error=api_error,
+                        )
+                    if env_var_enabled("HERMES_DUMP_REQUESTS"):
+                        agent._dump_api_response_debug(
+                            reason="max_retries_exhausted",
+                            error=api_error,
+                            status=status_code,
                         )
                     agent._persist_session(messages, conversation_history)
                     if classified.reason == FailoverReason.billing:

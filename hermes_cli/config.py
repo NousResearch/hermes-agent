@@ -3426,6 +3426,19 @@ DEFAULT_CONFIG = {
 
     # Config schema version - bump this when adding new required fields
     "_config_version": 33,
+
+    # Federation: cross-machine agent communication.
+    # Enabled peers can discover each other and delegate tasks across machines.
+    # Each peer exposes {url}/federation/ping and {url}/federation/task endpoints.
+    # Auth is HMAC-SHA256 with a shared_secret per peer (empty = no auth).
+    "federation": {
+        "enabled": False,
+        "peers": [
+            # Example peer configuration:
+            # {"name": "hermes-gpu-1", "url": "http://10.0.0.5:8642",
+            #  "shared_secret": "", "enabled": True, "tags": ["gpu"]},
+        ],
+    },
 }
 
 # =============================================================================

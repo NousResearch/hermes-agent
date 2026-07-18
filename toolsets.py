@@ -278,6 +278,19 @@ TOOLSETS = {
         "includes": [],
     },
 
+    "federation": {
+        "description": (
+            "Federation — cross-machine agent communication. Discover peers, "
+            "probe their status, and delegate tasks to remote Hermes instances. "
+            "Enabled via federation.enabled in config.yaml with a configured "
+            "peer list. Auth via HMAC-SHA256 shared secrets."
+        ),
+        "tools": [
+            "federation_discover", "federation_delegate",
+        ],
+        "includes": [],
+    },
+
     "discord": {
         "description": "Discord read and participate tools (fetch messages, search members, create threads)",
         "tools": ["discord"],

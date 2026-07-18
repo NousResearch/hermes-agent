@@ -16674,6 +16674,36 @@ def mount_spa(application: FastAPI):
 
     application.mount("/assets", StaticFiles(directory=WEB_DIST / "assets"), name="assets")
 
+    # --- Prefix-aware PWA manifest ------------------------------------------
+    # The static manifest.webmanifest uses root-absolute paths for start_url,
+    # scope, and icon src.  Behind X-Forwarded-Prefix (e.g. /hermes) those
+    # resolve to the origin root instead of the proxied path.  This route
+    # intercepts the manifest request, reads the static file, and rewrites
+    # the paths so the installed PWA stays under the forwarded prefix.
+    @application.get("/manifest.webmanifest")
+    async def serve_manifest(request: Request):
+        prefix = _normalise_prefix(request.headers.get("x-forwarded-prefix"))
+        manifest_path = WEB_DIST / "manifest.webmanifest"
+        if not manifest_path.exists():
+            return JSONResponse({"detail": "manifest not found"}, status_code=404)
+        import json as _json
+        raw = manifest_path.read_text(encoding="utf-8")
+        if prefix:
+            try:
+                data = _json.loads(raw)
+                for key in ("id", "start_url", "scope"):
+                    val = data.get(key)
+                    if isinstance(val, str) and val.startswith("/"):
+                        data[key] = prefix + val
+                for icon in data.get("icons") or []:
+                    src = icon.get("src", "")
+                    if isinstance(src, str) and src.startswith("/"):
+                        icon["src"] = prefix + src
+                raw = _json.dumps(data, indent=2)
+            except Exception:
+                pass  # serve unmodified on parse error
+        return Response(content=raw, media_type="application/manifest+json")
+
     @application.get("/{full_path:path}")
     async def serve_spa(full_path: str, request: Request):
         prefix = _normalise_prefix(request.headers.get("x-forwarded-prefix"))

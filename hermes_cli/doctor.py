@@ -440,7 +440,7 @@ def _build_apikey_providers_list() -> list:
     # API-key loop (with custom headers/auth). Skip their pluggable profiles
     # here so the generic Bearer-auth loop doesn't run a duplicate, broken
     # check (e.g. Anthropic native API requires x-api-key, not Bearer).
-    _dedicated_canonical = {"anthropic", "openrouter", "bedrock"}
+    _dedicated_canonical = {"anthropic", "openrouter", "bedrock", "azure-foundry"}
     _known_canonical.update(_dedicated_canonical)
     try:
         from providers import list_providers
@@ -2129,6 +2129,213 @@ def run_doctor(args):
                                        b=_base_env, s=_supports:
                                 _probe_apikey_provider(p, e, u, b, s)))
 
+
+    def _probe_azure_foundry_apikey() -> _ConnectivityResult:
+        """Probe Azure Foundry when configured with a static API key.
+
+        Azure AI Foundry commonly exposes either:
+
+        * OpenAI-compatible ``…/openai/v1`` (or similar) URLs, or
+        * Anthropic Messages under a ``…/anthropic`` suffix.
+
+        The generic API-key loop always hit ``{base}/models`` with
+        ``Authorization: Bearer …``. Anthropic-style Foundry deployments
+        answer that with HTTP 404 even when chat works (issue #66756), and
+        Bearer auth is the wrong header family for Anthropic traffic
+        (``x-api-key``). Probe with the same transport heuristics the
+        runtime uses, then fall back to a soft "key configured" pass when
+        the endpoint simply has no listable ``/models``.
+        """
+        pname = "Azure Foundry"
+        label = pname.ljust(20)
+        try:
+            from hermes_cli.config import load_config, get_env_value_prefer_dotenv
+        except Exception:
+            get_env_value_prefer_dotenv = None  # type: ignore
+            load_config = None  # type: ignore
+
+        key = ""
+        if get_env_value_prefer_dotenv is not None:
+            try:
+                key = get_env_value_prefer_dotenv("AZURE_FOUNDRY_API_KEY") or ""
+            except Exception:
+                key = ""
+        if not key:
+            key = os.getenv("AZURE_FOUNDRY_API_KEY", "") or ""
+        if not key:
+            return _ConnectivityResult(pname, [], [])
+
+        base = ""
+        api_mode = ""
+        model_name = ""
+        auth_mode = "api_key"
+        try:
+            if load_config is not None:
+                cfg = load_config()
+                model_cfg = cfg.get("model") if isinstance(cfg, dict) else {}
+                if isinstance(model_cfg, dict):
+                    cfg_provider = str(model_cfg.get("provider") or "").strip().lower()
+                    auth_mode = str(model_cfg.get("auth_mode") or "api_key").strip().lower() or "api_key"
+                    if cfg_provider in {"azure-foundry", "azure", "azure-ai-foundry", "azure-ai"}:
+                        base = str(model_cfg.get("base_url") or "").strip()
+                        api_mode = str(model_cfg.get("api_mode") or "").strip().lower()
+                        model_name = str(model_cfg.get("default") or model_cfg.get("model") or "").strip()
+        except Exception:
+            pass
+        if not base:
+            base = os.getenv("AZURE_FOUNDRY_BASE_URL", "") or ""
+        # Entra deployments are covered by _probe_azure_entra; don't double-report.
+        if auth_mode == "entra_id":
+            return _ConnectivityResult(pname, [], [])
+        if not base:
+            return _ConnectivityResult(
+                pname,
+                [(color("✓", Colors.GREEN), label,
+                  color("(key configured)", Colors.DIM))],
+                [],
+            )
+
+        try:
+            import httpx
+            from hermes_cli.runtime_provider import _detect_api_mode_for_url
+            from agent.auxiliary_client import _to_openai_base_url
+        except Exception as e:
+            return _ConnectivityResult(
+                pname,
+                [(color("⚠", Colors.YELLOW), label,
+                  color(f"({e})", Colors.DIM))],
+                [],
+            )
+
+        detected = api_mode or (_detect_api_mode_for_url(base) or "")
+        if not detected and model_name:
+            try:
+                from hermes_cli.models import azure_foundry_model_api_mode
+                detected = azure_foundry_model_api_mode(model_name) or ""
+            except Exception:
+                detected = ""
+
+        try:
+            if detected == "anthropic_messages" or base.rstrip("/").endswith("/anthropic"):
+                # Match runtime: strip trailing /v1 if present, probe Messages
+                # with Anthropic headers. A 200/4xx on /v1/models invent or a
+                # short messages call both prove auth+route are live.
+                anth_base = base.rstrip("/")
+                if anth_base.endswith("/v1"):
+                    anth_base = anth_base[:-3].rstrip("/")
+                headers = {
+                    "x-api-key": key,
+                    "anthropic-version": "2023-06-01",
+                    "content-type": "application/json",
+                    "User-Agent": _HERMES_USER_AGENT,
+                }
+                # Prefer a cheap GET /v1/models when the gateway implements it
+                models_url = anth_base + "/v1/models"
+                r = httpx.get(models_url, headers=headers, timeout=10)
+                if r.status_code == 200:
+                    return _ConnectivityResult(
+                        pname,
+                        [(color("✓", Colors.GREEN), label, "")],
+                        [],
+                    )
+                if r.status_code == 401:
+                    return _ConnectivityResult(
+                        pname,
+                        [(color("✗", Colors.RED), label,
+                          color("(invalid API key)", Colors.DIM))],
+                        ["Check AZURE_FOUNDRY_API_KEY in .env"],
+                    )
+                # Many Foundry Anthropic deployments have no models listing
+                # (404). Fall through to a minimal messages POST.
+                if r.status_code in {404, 405, 501}:
+                    payload = {
+                        "model": model_name or "claude-sonnet-4-5",
+                        "max_tokens": 1,
+                        "messages": [{"role": "user", "content": "ping"}],
+                    }
+                    mr = httpx.post(
+                        anth_base + "/v1/messages",
+                        headers=headers,
+                        json=payload,
+                        timeout=15,
+                    )
+                    # 200 = healthy. 400 with a model/param complaint still
+                    # proves the route+auth worked (same bar as curl in #66756).
+                    if mr.status_code in {200, 400}:
+                        return _ConnectivityResult(
+                            pname,
+                            [(color("✓", Colors.GREEN), label,
+                              color("(anthropic endpoint)", Colors.DIM))],
+                            [],
+                        )
+                    if mr.status_code == 401:
+                        return _ConnectivityResult(
+                            pname,
+                            [(color("✗", Colors.RED), label,
+                              color("(invalid API key)", Colors.DIM))],
+                            ["Check AZURE_FOUNDRY_API_KEY in .env"],
+                        )
+                    return _ConnectivityResult(
+                        pname,
+                        [(color("⚠", Colors.YELLOW), label,
+                          color(f"(HTTP {mr.status_code})", Colors.DIM))],
+                        [],
+                    )
+                return _ConnectivityResult(
+                    pname,
+                    [(color("⚠", Colors.YELLOW), label,
+                      color(f"(HTTP {r.status_code})", Colors.DIM))],
+                    [],
+                )
+
+            # OpenAI-compatible Foundry: /models via Bearer (and api-key).
+            oai_base = base
+            if oai_base.rstrip("/").endswith("/anthropic"):
+                oai_base = _to_openai_base_url(oai_base)
+            url = oai_base.rstrip("/") + "/models"
+            headers = {
+                "Authorization": f"Bearer {key}",
+                "api-key": key,
+                "User-Agent": _HERMES_USER_AGENT,
+            }
+            r = httpx.get(url, headers=headers, timeout=10)
+            if r.status_code == 200:
+                return _ConnectivityResult(
+                    pname,
+                    [(color("✓", Colors.GREEN), label, "")],
+                    [],
+                )
+            if r.status_code == 401:
+                return _ConnectivityResult(
+                    pname,
+                    [(color("✗", Colors.RED), label,
+                      color("(invalid API key)", Colors.DIM))],
+                    ["Check AZURE_FOUNDRY_API_KEY in .env"],
+                )
+            # No list endpoint: key is present and URL is configured — don't
+            # scare the user when runtime chat already works.
+            if r.status_code in {404, 405, 501}:
+                return _ConnectivityResult(
+                    pname,
+                    [(color("✓", Colors.GREEN), label,
+                      color("(key configured)", Colors.DIM))],
+                    [],
+                )
+            return _ConnectivityResult(
+                pname,
+                [(color("⚠", Colors.YELLOW), label,
+                  color(f"(HTTP {r.status_code})", Colors.DIM))],
+                [],
+            )
+        except Exception as e:
+            return _ConnectivityResult(
+                pname,
+                [(color("⚠", Colors.YELLOW), label,
+                  color(f"({e})", Colors.DIM))],
+                [],
+            )
+
+    _probes.append(("Azure Foundry", _probe_azure_foundry_apikey))
     _probes.append(("AWS Bedrock", _probe_bedrock))
     _probes.append(("Azure Foundry (Entra ID)", _probe_azure_entra))
 

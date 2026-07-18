@@ -7,15 +7,18 @@ path (including the ``run_agent`` prologue that used to crash on list content)
 executes against a real aiohttp app.
 """
 
+import warnings
 from unittest.mock import MagicMock, patch
 
 import pytest
 from aiohttp import web
 from aiohttp.test_utils import TestClient, TestServer
+from aiohttp.web_exceptions import NotAppKeyWarning
 
 from gateway.config import PlatformConfig
 from gateway.platforms.api_server import (
     APIServerAdapter,
+    _API_SERVER_ADAPTER_KEY,
     _content_has_visible_payload,
     _normalize_multimodal_content,
     cors_middleware,
@@ -129,11 +132,19 @@ def _make_adapter() -> APIServerAdapter:
 def _create_app(adapter: APIServerAdapter) -> web.Application:
     mws = [mw for mw in (cors_middleware, security_headers_middleware) if mw is not None]
     app = web.Application(middlewares=mws)
-    app["api_server_adapter"] = adapter
+    app[_API_SERVER_ADAPTER_KEY] = adapter
     app.router.add_post("/v1/chat/completions", adapter._handle_chat_completions)
     app.router.add_post("/v1/responses", adapter._handle_responses)
     app.router.add_get("/v1/responses/{response_id}", adapter._handle_get_response)
     return app
+
+
+def test_create_app_uses_appkey_without_warning():
+    adapter = _make_adapter()
+    with warnings.catch_warnings():
+        warnings.simplefilter("error", NotAppKeyWarning)
+        app = _create_app(adapter)
+    assert app[_API_SERVER_ADAPTER_KEY] is adapter
 
 
 @pytest.fixture

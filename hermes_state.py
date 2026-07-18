@@ -1016,6 +1016,12 @@ class SessionDB:
 
         self._lock = threading.Lock()
         self._write_count = 0
+        # One-shot guard for the runtime FTS rebuild recovery on the write
+        # path. A corrupt FTS shadow table makes EVERY message write raise
+        # the malformed/corrupt error class via the sync triggers; we repair
+        # in place at most once per SessionDB instance so a genuinely
+        # unrecoverable database can't put writers into a rebuild loop.
+        self._fts_runtime_rebuild_attempted = False
         self._fts_enabled = False
         self._trigram_available = False
         self._fts_unavailable_warned = False
@@ -1297,10 +1303,88 @@ class SessionDB:
                         continue
                 # Non-lock error or retries exhausted — propagate.
                 raise
+            except sqlite3.DatabaseError as exc:
+                # Corrupt FTS shadow tables make every write raise the
+                # malformed/corrupt error class through the FTS sync triggers
+                # while the canonical messages table is intact. The gateway
+                # session store has its own retry queue for transcript
+                # appends (#65637 salvage), but cron and CLI writers call
+                # SessionDB directly — without this, their writes hard-fail
+                # until the next process restart triggers the offline repair.
+                # Rebuild the FTS index in place (once per instance) via
+                # rebuild_fts() and retry the failed write immediately.
+                if not self._try_runtime_fts_rebuild(exc):
+                    raise
+                continue
         # Retries exhausted (shouldn't normally reach here).
         raise last_err or sqlite3.OperationalError(
             "database is locked after max retries"
         )
+
+    @staticmethod
+    def _is_fts_write_corruption_error(exc: sqlite3.DatabaseError) -> bool:
+        """True for the error class a corrupt FTS index raises on writes.
+
+        The message varies by SQLite version: older builds raise the generic
+        ``database disk image is malformed`` (covered by
+        ``is_malformed_db_error``); newer builds (e.g. ubuntu-latest CI)
+        raise the FTS5-specific ``fts5: corrupt structure record for table
+        "messages_fts"``. Both mean the same thing for the write path: the
+        canonical rows are fine, the FTS shadow tables are not.
+        """
+        if is_malformed_db_error(exc):
+            return True
+        msg = str(exc).lower()
+        return "fts5" in msg and "corrupt" in msg
+
+    def _try_runtime_fts_rebuild(self, exc: sqlite3.DatabaseError) -> bool:
+        """One-shot in-place FTS rebuild after a corrupt-index write failure.
+
+        Returns True when a rebuild was performed and the failed write should
+        be retried; False when the error isn't the FTS-corruption class, FTS
+        is disabled, or a rebuild was already attempted for this instance.
+
+        Delegates to :meth:`rebuild_fts` (the FTS5 ``'rebuild'`` command —
+        index rewritten from the canonical messages table, zero message-row
+        mutation). Safe to call from ``_execute_write``'s except path: the
+        failed transaction was rolled back and ``self._lock`` released before
+        the exception propagated, and ``rebuild_fts`` re-acquires it.
+        E2E-verified: a corrupted ``messages_fts_data`` shadow table rejects
+        every append; after the in-place rebuild the same append succeeds and
+        search works again.
+        """
+        if self._fts_runtime_rebuild_attempted:
+            return False
+        if not self._fts_enabled:
+            return False
+        if not self._is_fts_write_corruption_error(exc):
+            return False
+        self._fts_runtime_rebuild_attempted = True
+        logger.warning(
+            "state.db write failed with an FTS-corruption error (%s) — "
+            "attempting one-shot in-place FTS rebuild; canonical message "
+            "rows are preserved.", exc,
+        )
+        try:
+            rebuilt = self.rebuild_fts()
+        except Exception as rebuild_exc:
+            logger.error(
+                "In-place FTS rebuild failed (%s); the database needs the "
+                "full offline repair path (repair_state_db_schema).",
+                rebuild_exc,
+            )
+            return False
+        if not rebuilt:
+            logger.error(
+                "In-place FTS rebuild made no progress; the database needs "
+                "the full offline repair path (repair_state_db_schema)."
+            )
+            return False
+        logger.warning(
+            "state.db FTS indexes rebuilt in place (%d); retrying the failed write.",
+            rebuilt,
+        )
+        return True
 
     def _try_wal_checkpoint(self) -> None:
         """Best-effort PASSIVE WAL checkpoint.  Never raises.

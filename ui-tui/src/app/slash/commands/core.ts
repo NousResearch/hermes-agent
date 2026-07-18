@@ -7,6 +7,7 @@ import { isSectionName, nextDetailsMode, parseDetailsMode, SECTION_NAMES } from 
 import type {
   ConfigGetValueResponse,
   ConfigSetResponse,
+  SessionCloseResponse,
   SessionSaveResponse,
   SessionStatusResponse,
   SessionSteerResponse,
@@ -121,7 +122,7 @@ export const coreCommands: SlashCommand[] = [
     aliases: ['exit'],
     help: 'exit hermes',
     name: 'quit',
-    run: (_arg, ctx) => {
+    run: (arg, ctx, cmd) => {
       // In the hosted dashboard chat there is no in-page restart path after
       // the PTY child exits, so quitting bricks the tab until a refresh. The
       // keyboard idle-exit (Ctrl+C / Ctrl+D) and SIGINT handling already refuse
@@ -135,7 +136,51 @@ export const coreCommands: SlashCommand[] = [
         return
       }
 
-      ctx.session.die()
+      const trimmed = arg.trim()
+
+      if (!trimmed) {
+        ctx.session.die()
+
+        return
+      }
+
+      const flag = trimmed.toLowerCase()
+      const usageCommand = cmd.trim().split(/\s+/, 1)[0] || '/quit'
+
+      if (flag !== '--delete' && flag !== '-d') {
+        ctx.transcript.sys(
+          `✗ Unknown argument: ${trimmed}. Use ${usageCommand} --delete to also remove session history.`
+        )
+
+        return
+      }
+
+      if (!ctx.sid) {
+        ctx.transcript.sys('warning: no active session to delete; exiting')
+        ctx.session.die()
+
+        return
+      }
+
+      void ctx.gateway
+        .rpc<SessionCloseResponse>('session.close', { delete: true, session_id: ctx.sid })
+        .then(r => {
+          if (ctx.stale()) {
+            return
+          }
+
+          if (r?.deleted) {
+            ctx.transcript.sys(r.deleted_session_id ? `session ${r.deleted_session_id} deleted` : 'session deleted')
+          } else {
+            const detail =
+              r?.delete_error || (r?.closed === false ? 'session already closed' : 'session was not deleted')
+
+            ctx.transcript.sys(`warning: ${detail}`)
+          }
+
+          ctx.session.die()
+        })
+        .catch(ctx.guardedErr)
     }
   },
 

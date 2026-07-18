@@ -207,6 +207,120 @@ class TestFeishuExecApproval:
         ids = list(adapter._approval_state.keys())
         assert ids[0] != ids[1]
 
+    # -----------------------------------------------------------------------
+    # approval_mentions opt-in (mirrors discord.approval_mentions, commit e0176cbd4)
+    # -----------------------------------------------------------------------
+
+    @pytest.mark.asyncio
+    async def test_no_mention_when_disabled(self):
+        """Default off: no <at> tag in card markdown."""
+        adapter = _make_adapter()
+        adapter._approval_mentions = False
+        adapter._admins = {"ou_admin1"}
+
+        mock_response = SimpleNamespace(
+            success=lambda: True,
+            data=SimpleNamespace(message_id="msg_m1"),
+        )
+        with patch.object(
+            adapter, "_feishu_send_with_retry", new_callable=AsyncMock,
+            return_value=mock_response,
+        ) as mock_send:
+            await adapter.send_exec_approval(
+                chat_id="oc_1", command="rm -rf /tmp", session_key="s1"
+            )
+
+        card = json.loads(mock_send.call_args[1]["payload"])
+        content = card["elements"][0]["content"]
+        assert "<at" not in content
+
+    @pytest.mark.asyncio
+    async def test_mention_admins_when_enabled(self):
+        """When enabled, <at user_id="ou_xxx"> prepended for each admin."""
+        adapter = _make_adapter()
+        adapter._approval_mentions = True
+        adapter._admins = {"ou_admin1", "ou_admin2", "not_an_open_id"}
+
+        mock_response = SimpleNamespace(
+            success=lambda: True,
+            data=SimpleNamespace(message_id="msg_m2"),
+        )
+        with patch.object(
+            adapter, "_feishu_send_with_retry", new_callable=AsyncMock,
+            return_value=mock_response,
+        ) as mock_send:
+            await adapter.send_exec_approval(
+                chat_id="oc_1", command="rm -rf /tmp", session_key="s1"
+            )
+
+        card = json.loads(mock_send.call_args[1]["payload"])
+        content = card["elements"][0]["content"]
+        # Only ou_ prefixed IDs are mentioned; "not_an_open_id" is skipped.
+        assert '<at user_id="ou_admin1"></at>' in content
+        assert '<at user_id="ou_admin2"></at>' in content
+        assert "not_an_open_id" not in content
+        # Mention prefix comes before the code block.
+        assert content.index("<at") < content.index("```")
+
+    @pytest.mark.asyncio
+    async def test_mention_no_admins_is_noop(self):
+        """When enabled but no admins configured, no mention is added."""
+        adapter = _make_adapter()
+        adapter._approval_mentions = True
+        adapter._admins = set()
+
+        mock_response = SimpleNamespace(
+            success=lambda: True,
+            data=SimpleNamespace(message_id="msg_m3"),
+        )
+        with patch.object(
+            adapter, "_feishu_send_with_retry", new_callable=AsyncMock,
+            return_value=mock_response,
+        ) as mock_send:
+            await adapter.send_exec_approval(
+                chat_id="oc_1", command="ls", session_key="s1"
+            )
+
+        card = json.loads(mock_send.call_args[1]["payload"])
+        content = card["elements"][0]["content"]
+        assert "<at" not in content
+
+    # -----------------------------------------------------------------------
+    # Config propagation: _load_settings -> _apply_settings
+    # Mirrors Discord's test_yaml_config_bridges_approval_mentions_to_env.
+    # -----------------------------------------------------------------------
+
+    def test_yaml_config_propagates_approval_mentions(self):
+        """YAML extra.approval_mentions=true reaches settings."""
+        settings = FeishuAdapter._load_settings({"approval_mentions": True, "admins": ["ou_admin1"]})
+        assert settings.approval_mentions is True
+
+    def test_yaml_config_defaults_off(self):
+        """Without approval_mentions in YAML, settings.approval_mentions is False."""
+        settings = FeishuAdapter._load_settings({})
+        assert settings.approval_mentions is False
+
+    def test_apply_settings_propagates_to_instance(self):
+        """_apply_settings writes approval_mentions onto the adapter instance."""
+        adapter = _make_adapter()
+        assert adapter._approval_mentions is False  # default off
+
+        from plugins.platforms.feishu.adapter import FeishuAdapterSettings
+        settings = FeishuAdapterSettings(
+            app_id="", app_secret="", domain_name="feishu",
+            connection_mode="websocket", encrypt_key="",
+            verification_token="", group_policy="allowlist",
+            allowed_group_users=frozenset(),
+            bot_open_id="", bot_user_id="", bot_name="",
+            dedup_cache_size=32, text_batch_delay_seconds=0.5,
+            text_batch_split_delay_seconds=2.0, text_batch_max_messages=3,
+            text_batch_max_chars=1500, media_batch_delay_seconds=1.0,
+            webhook_host="0.0.0.0", webhook_port=9806, webhook_path="/webhook",
+            approval_mentions=True,
+        )
+        adapter._apply_settings(settings)
+        assert adapter._approval_mentions is True
+
 
 # ===========================================================================
 # send_update_prompt — interactive card with buttons

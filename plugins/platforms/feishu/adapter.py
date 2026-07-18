@@ -409,6 +409,10 @@ class FeishuAdapterSettings:
     group_rules: Dict[str, FeishuGroupRule] = field(default_factory=dict)
     allow_bots: str = "none"  # "none" | "mentions" | "all"
     require_mention: bool = True
+    # When True, exec-approval cards prepend <at user_id="ou_xxx">@admin</at>
+    # for each configured admin so they get a Feishu mention notification.
+    # Mirrors discord.approval_mentions (commit e0176cbd4). Default off.
+    approval_mentions: bool = False
 
 
 @dataclass
@@ -1600,6 +1604,9 @@ class FeishuAdapter(BasePlatformAdapter):
             require_mention=_to_boolean(
                 extra.get("require_mention", os.getenv("FEISHU_REQUIRE_MENTION", "true"))
             ),
+            approval_mentions=_to_boolean(
+                extra.get("approval_mentions", os.getenv("FEISHU_APPROVAL_MENTIONS", "false"))
+            ),
         )
 
     def _apply_settings(self, settings: FeishuAdapterSettings) -> None:
@@ -1632,6 +1639,7 @@ class FeishuAdapter(BasePlatformAdapter):
         self._ws_ping_timeout = settings.ws_ping_timeout
         self._allow_bots = settings.allow_bots
         self._require_mention = settings.require_mention
+        self._approval_mentions = settings.approval_mentions
 
     def _build_event_handler(self) -> Any:
         if EventDispatcherHandler is None:
@@ -2011,6 +2019,22 @@ class FeishuAdapter(BasePlatformAdapter):
                     actions.append(_btn("✅ Always", "approve_always"))
             actions.append(_btn("❌ Deny", "deny", "danger"))
             scope_note = "\n\n**Smart DENY:** owner override applies to this one operation only." if smart_denied else ""
+
+            # Build <at> mention prefix for configured admins when opt-in.
+            # Mirrors discord.approval_mentions: default off, only mentions
+            # allowlist/admin entries that are valid Feishu open_ids (ou_xxx).
+            mention_prefix = ""
+            if self._approval_mentions:
+                admin_open_ids = sorted(
+                    uid for uid in self._admins
+                    if isinstance(uid, str) and uid.startswith("ou_")
+                )
+                if admin_open_ids:
+                    mention_parts = [
+                        f'<at user_id="{oid}"></at>' for oid in admin_open_ids
+                    ]
+                    mention_prefix = " ".join(mention_parts) + "\n\n"
+
             card = {
                 "config": {"wide_screen_mode": True},
                 "header": {
@@ -2020,7 +2044,7 @@ class FeishuAdapter(BasePlatformAdapter):
                 "elements": [
                     {
                         "tag": "markdown",
-                        "content": f"```\n{cmd_preview}\n```\n**Reason:** {description}{scope_note}",
+                        "content": f"{mention_prefix}```\n{cmd_preview}\n```\n**Reason:** {description}{scope_note}",
                     },
                     {
                         "tag": "action",

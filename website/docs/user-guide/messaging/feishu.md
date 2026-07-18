@@ -289,6 +289,13 @@ Card action events are dispatched with `MessageType.COMMAND`, so they flow throu
 
 This is also how **command approval** works — when the agent needs to run a dangerous command, it sends an interactive card with Allow Once / Session / Always / Deny buttons. The user clicks a button, and the card action callback delivers the approval decision back to the agent.
 
+
+### Approval Mention Notifications
+
+When `approval_mentions` is enabled (default: off), dangerous-command approval cards prepend an `<at user_id="ou_xxx">` mention for each configured admin. This ensures admins receive a Feishu mention notification when the agent is blocked waiting for approval, instead of silently waiting.
+
+Only admins with valid `ou_`-prefixed open_ids are mentioned; other entries are skipped.
+
 ### Required Feishu App Configuration
 
 Interactive cards require **three** configuration steps in the Feishu Developer Console. Missing any of them causes error **200340** when users click card buttons.
@@ -499,6 +506,7 @@ platforms:
       default_group_policy: "open"     # Default for groups not in group_rules
       admins:                          # Users who can manage bot settings
         - "ou_admin_open_id"
+      approval_mentions: false         # When true, approval cards @-mention admins
       group_rules:
         "oc_group_chat_id_1":
           policy: "allowlist"          # open | allowlist | blacklist | admin_only | disabled
@@ -547,6 +555,7 @@ Inbound messages are deduplicated using message IDs with a 24-hour TTL. The dedu
 | `FEISHU_ALLOWED_USERS` | — | _(empty)_ | Comma-separated open_id list for user allowlist |
 | `FEISHU_ALLOW_BOTS` | — | `none` | Accept messages from other bots: `none`, `mentions`, or `all` |
 | `FEISHU_REQUIRE_MENTION` | — | `true` | Whether group messages must @mention the bot |
+| `FEISHU_APPROVAL_MENTIONS` | — | `false` | When true, approval cards @-mention configured admins |
 | `FEISHU_HOME_CHANNEL` | — | — | Chat ID for cron/notification output |
 | `FEISHU_ENCRYPT_KEY` | — | _(empty)_ | Encrypt key for webhook signature verification |
 | `FEISHU_VERIFICATION_TOKEN` | — | _(empty)_ | Verification token for webhook payload auth |

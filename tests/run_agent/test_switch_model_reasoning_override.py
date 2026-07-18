@@ -138,6 +138,34 @@ class TestSwitchModelReasoningOverride:
         assert agent.reasoning_config is not None
         assert agent.reasoning_config.get("effort") == "low"
 
+    def test_scoped_reasoning_survives_model_switch(self):
+        """A gateway session/lane override stays fixed for the whole turn."""
+        from agent.agent_runtime_helpers import switch_model
+
+        agent = self._make_fake_agent()
+        agent.reasoning_config = {"enabled": False}
+        agent._reasoning_config_fixed = True
+        fake_cfg = {
+            "agent": {
+                "reasoning_effort": "high",
+                "reasoning_overrides": {"claude-opus-4.5": "xhigh"},
+            },
+        }
+
+        with patch("hermes_cli.config.load_config", return_value=fake_cfg):
+            try:
+                switch_model(
+                    agent,
+                    new_model="claude-opus-4.5",
+                    new_provider="anthropic",
+                    base_url="https://api.anthropic.com",
+                    api_mode="anthropic_messages",
+                )
+            except Exception:
+                pass
+
+        assert agent.reasoning_config == {"enabled": False}
+
     def test_restore_primary_runtime_restores_reasoning(self):
         """restore_primary_runtime should restore reasoning_config from snapshot."""
         from agent.agent_runtime_helpers import restore_primary_runtime

@@ -342,6 +342,7 @@ discord:
   history_backfill: true          # Prepend recent channel scrollback on mention (default: true)
   history_backfill_limit: 50      # Max messages to scan backwards (default: 50)
   channel_prompts: {}             # Per-channel ephemeral system prompts
+  channel_overrides: {}           # Per-channel/thread runtime overrides
   allow_mentions:                 # What the bot is allowed to ping (safe defaults)
     everyone: false               # @everyone / @here pings (default: false)
     roles: false                  # @role pings (default: false)
@@ -468,6 +469,34 @@ Behavior:
 - Exact thread/channel ID matches win.
 - If a message arrives inside a thread or forum post and that thread has no explicit entry, Hermes falls back to the parent channel/forum ID.
 - Prompts are applied ephemerally at runtime, so changing them affects future turns immediately without rewriting past session history.
+
+#### `discord.channel_overrides[].reasoning_effort`
+
+**Type:** string or boolean — **Default:** unset (inherit)
+
+Set the reasoning effort for a Discord channel or thread. Accepted values are
+`minimal`, `low`, `medium`, `high`, `xhigh`, `max`, and `ultra`. Use `false` or
+`none` to disable reasoning explicitly.
+
+```yaml
+discord:
+  channel_overrides:
+    "100000000000000001":
+      reasoning_effort: high
+    "100000000000000002":
+      reasoning_effort: false
+```
+
+Resolution order:
+
+1. A live session `/reasoning` override.
+2. The exact thread or channel ID.
+3. The parent channel ID for a Discord thread.
+4. Per-model and global reasoning configuration.
+
+An exact thread entry that sets another channel override but omits
+`reasoning_effort` still inherits its parent channel's reasoning setting. Run
+`/reasoning reset` to clear a session override and return to the lane default.
 
 #### `discord.history_backfill`
 
@@ -880,5 +909,4 @@ Leave `everyone` and `roles` at `false` unless you know exactly why you need the
 :::
 
 For more information on securing your Hermes Agent deployment, see the [Security Guide](../security.md).
-
 

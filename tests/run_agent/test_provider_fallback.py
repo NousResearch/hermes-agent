@@ -103,6 +103,25 @@ class TestFallbackChainAdvancement:
             assert agent.model == "gpt-4o"
             assert agent._fallback_activated is True
 
+    def test_scoped_reasoning_survives_fallback(self):
+        agent = _make_agent(
+            fallback_model=[{"provider": "openai", "model": "gpt-4o"}]
+        )
+        agent.reasoning_config = {"enabled": False}
+        agent._reasoning_config_fixed = True
+
+        with (
+            patch(
+                "agent.auxiliary_client.resolve_provider_client",
+                return_value=(_mock_client(), "gpt-4o"),
+            ),
+            patch("hermes_constants.resolve_reasoning_config") as resolve_reasoning,
+        ):
+            assert agent._try_activate_fallback() is True
+
+        assert agent.reasoning_config == {"enabled": False}
+        resolve_reasoning.assert_not_called()
+
     def test_second_fallback_works(self):
         fbs = [
             {"provider": "openai", "model": "gpt-4o"},

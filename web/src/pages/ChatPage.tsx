@@ -464,6 +464,15 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
     term.attachCustomKeyEventHandler((ev) => {
       if (ev.type !== "keydown") return true;
 
+      // Let Tab / Shift-Tab escape the terminal so screen-reader and keyboard
+      // users can navigate to other page controls (WCAG 2.1.2 No Keyboard Trap).
+      // Folding into the existing handler — xterm stores one handler per
+      // terminal (lib/xterm.js CoreBrowserTerminal.attachCustomKeyEventHandler
+      // assigns directly to `_customKeyEventHandler`), so registering Tab
+      // escape separately would silently overwrite the clipboard handler and
+      // Tab would never escape. See #36784.
+      if (ev.key === "Tab") return false;
+
       // Copy: Cmd+C on macOS, Ctrl+Shift+C on other platforms. Bare Ctrl+C
       // is reserved for SIGINT to the TUI child — matches xterm / gnome-terminal /
       // konsole / Windows Terminal. Ctrl+Shift+C only copies if a selection exists;
@@ -534,13 +543,6 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
     term.loadAddon(new WebLinksAddon());
 
     term.open(host);
-
-    // Let Tab / Shift-Tab escape the terminal so screen-reader and keyboard
-    // users can navigate to other page controls (WCAG 2.1.2 No Keyboard Trap).
-    term.attachCustomKeyEventHandler((event) => {
-      if (event.key === "Tab") return false;
-      return true;
-    });
 
     // WebGL draws from a texture atlas sized with device pixels. On phones and
     // in DevTools device mode that often produces *visually* much larger cells

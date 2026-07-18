@@ -28,6 +28,7 @@ def test_methods_registered():
         "projects.set_primary",
         "projects.archive",
         "projects.set_active",
+        "projects.assign_session",
         "projects.for_cwd",
     ):
         assert m in server._methods
@@ -170,6 +171,47 @@ def test_add_folder_and_for_cwd(tmp_path):
     assert resolved["project"]["id"] == pid
     # branch key is present (empty string when not a git repo).
     assert "branch" in resolved
+
+
+def test_assign_session_rpc_moves_session_between_projects(tmp_path):
+    target_dir = tmp_path / "target"
+    natural_dir = tmp_path / "natural"
+    target_dir.mkdir()
+    natural_dir.mkdir()
+
+    target = _call("projects.create", {"name": "Target", "folders": [str(target_dir)]})["project"]
+    natural = _call("projects.create", {"name": "Natural", "folders": [str(natural_dir)]})["project"]
+
+    db = server._get_db()
+    assert db is not None
+    db.create_session("assigned-session", "cli", cwd=str(natural_dir))
+    db.append_message("assigned-session", role="user", content="move me")
+
+    payload = _call("projects.assign_session", {"id": target["id"], "session_id": "assigned-session"})
+    assert payload == {"project_id": target["id"], "session_id": "assigned-session"}
+
+    tree = _call("projects.project_sessions", {"project_id": target["id"]})["project"]
+    assert tree["id"] == target["id"]
+    assert tree["sessionCount"] == 1
+    assert tree["repos"][0]["groups"][0]["sessions"][0]["id"] == "assigned-session"
+
+    natural_tree = _call("projects.project_sessions", {"project_id": natural["id"]})["project"]
+    assert natural_tree["sessionCount"] == 0
+
+    overview = _call("projects.tree", {"preview_limit": 3})
+    assert overview["session_project_assignments"] == {"assigned-session": target["id"]}
+
+
+def test_assign_session_rpc_rejects_session_missing_from_active_profile(tmp_path):
+    target_dir = tmp_path / "target"
+    target_dir.mkdir()
+    target = _call("projects.create", {"name": "Target", "folders": [str(target_dir)]})["project"]
+
+    resp = server._methods["projects.assign_session"](1, {"id": target["id"], "session_id": "other-profile-session"})
+
+    assert resp["error"]["code"] == 5063
+    assert "active profile" in resp["error"]["message"]
+    assert _call("projects.tree", {"preview_limit": 3})["session_project_assignments"] == {}
 
 
 def test_update_and_archive(tmp_path):

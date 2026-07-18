@@ -62,6 +62,7 @@ import {
   toggleSidebarMessagingOpen,
   unpinSession
 } from '@/store/layout'
+import { notify, notifyError } from '@/store/notifications'
 import { $newChatProfile, $profiles, $profileScope, ALL_PROFILES, normalizeProfileKey } from '@/store/profile'
 import {
   $activeProjectId,
@@ -71,7 +72,9 @@ import {
   $projectTreeLoading,
   $removedSessionIds,
   $reposScanning,
+  $sessionProjectAssignments,
   ALL_PROJECTS,
+  assignSessionToProject,
   enterProject,
   exitProjectScope,
   fetchProjectSessions,
@@ -320,6 +323,7 @@ export function ChatSidebar({
   const projectTree = useStore($projectTree)
   const projectTreeLoading = useStore($projectTreeLoading)
   const removedSessionIds = useStore($removedSessionIds)
+  const sessionProjectAssignments = useStore($sessionProjectAssignments)
   const reposScanning = useStore($reposScanning)
   const activeProjectId = useStore($activeProjectId)
   const projectScope = useStore($projectScope)
@@ -695,8 +699,9 @@ export function ChatSidebar({
   // backend now seeds each project folder as an (empty) repo, so the overlay
   // always has a lane to place a new in-project session into.
   const enteredProjectContent = useMemo(
-    () => (enteredProject ? overlayLiveLanes(enteredProject, agentSessions, removedSessionIds) : undefined),
-    [enteredProject, agentSessions, removedSessionIds]
+    () =>
+      enteredProject ? overlayLiveLanes(enteredProject, agentSessions, removedSessionIds, sessionProjectAssignments) : undefined,
+    [enteredProject, agentSessions, removedSessionIds, sessionProjectAssignments]
   )
 
   const scopedRepoPaths = useMemo(
@@ -786,8 +791,16 @@ export function ChatSidebar({
   // session shows under its project instantly (and with its working arc),
   // matching the flat Recents list. Keyed by project path for the rows.
   const overviewPreviews = useMemo<Record<string, SessionInfo[]>>(
-    () => overlayLivePreviews(projectOverview ?? [], agentSessions, projects, PROJECT_PREVIEW_COUNT, removedSessionIds),
-    [projectOverview, agentSessions, projects, removedSessionIds]
+    () =>
+      overlayLivePreviews(
+        projectOverview ?? [],
+        agentSessions,
+        projects,
+        PROJECT_PREVIEW_COUNT,
+        removedSessionIds,
+        sessionProjectAssignments
+      ),
+    [projectOverview, agentSessions, projects, removedSessionIds, sessionProjectAssignments]
   )
 
   const onEnterProject = useCallback(
@@ -801,6 +814,24 @@ export function ChatSidebar({
       enterProject(id)
     },
     [projectModel, syncProjectCwd]
+  )
+
+  const onAssignSessionToProject = useCallback(
+    async (sessionId: string, projectId: string) => {
+      const project = projectModel.find(node => node.id === projectId)
+
+      try {
+        await assignSessionToProject(sessionId, projectId)
+        notify({
+          durationMs: 2_000,
+          kind: 'success',
+          message: s.row.movedToProject(project?.label ?? s.projects.sectionLabel)
+        })
+      } catch (err) {
+        notifyError(err, s.row.moveToProjectFailed)
+      }
+    },
+    [projectModel, s.projects.sectionLabel, s.row]
   )
 
   // The Sessions section is a project switcher in grouped mode: its label reads
@@ -1385,6 +1416,7 @@ export function ChatSidebar({
                 }
                 liveSessions={inProject ? agentSessions : undefined}
                 onArchiveSession={onArchiveSession}
+                onAssignSessionToProject={onAssignSessionToProject}
                 onBranchSession={onBranchSession}
                 onDeleteSession={onDeleteSession}
                 onEnterProject={onEnterProject}
@@ -1405,6 +1437,7 @@ export function ChatSidebar({
                 projectRepoWorktrees={inProject ? scopedRepoWorktrees : undefined}
                 projectsLoading={worktreeGroupingActive ? projectTreeLoading : false}
                 removedSessionIds={inProject ? removedSessionIds : undefined}
+                sessionProjectAssignments={inProject ? sessionProjectAssignments : undefined}
                 rootClassName={cn(
                   'min-h-32 flex-1 overflow-hidden p-0',
                   !recentsVirtualizes && 'compact:min-h-0 compact:flex-none compact:overflow-visible'

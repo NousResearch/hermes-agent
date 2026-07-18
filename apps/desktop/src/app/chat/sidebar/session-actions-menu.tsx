@@ -15,6 +15,9 @@ import {
   ContextMenuContent,
   ContextMenuItem,
   ContextMenuSeparator,
+  ContextMenuSub,
+  ContextMenuSubContent,
+  ContextMenuSubTrigger,
   ContextMenuTrigger
 } from '@/components/ui/context-menu'
 import { CopyButton } from '@/components/ui/copy-button'
@@ -31,6 +34,9 @@ import {
   DropdownMenuContent,
   DropdownMenuItem,
   DropdownMenuSeparator,
+  DropdownMenuSub,
+  DropdownMenuSubContent,
+  DropdownMenuSubTrigger,
   DropdownMenuTrigger
 } from '@/components/ui/dropdown-menu'
 import { Input } from '@/components/ui/input'
@@ -40,6 +46,7 @@ import { triggerHaptic } from '@/lib/haptics'
 import { exportSession } from '@/lib/session-export'
 import { activeGateway } from '@/store/gateway'
 import { notify, notifyError } from '@/store/notifications'
+import { $projects, assignSessionToProject } from '@/store/projects'
 import { $activeSessionId, $selectedStoredSessionId, setSessions } from '@/store/session'
 import { $sessionTiles, openSessionTile } from '@/store/session-states'
 import { canOpenSessionWindow, openSessionInNewWindow } from '@/store/windows'
@@ -115,15 +122,33 @@ interface SessionActions {
 }
 
 type MenuItem = typeof DropdownMenuItem | typeof ContextMenuItem
+type MenuSub = typeof DropdownMenuSub | typeof ContextMenuSub
+type MenuSubTrigger = typeof DropdownMenuSubTrigger | typeof ContextMenuSubTrigger
+type MenuSubContent = typeof DropdownMenuSubContent | typeof ContextMenuSubContent
 
 /** A menu flavour (dropdown / context) — item + separator components. */
 interface MenuKit {
   Item: MenuItem
   Separator: typeof DropdownMenuSeparator | typeof ContextMenuSeparator
+  Sub: MenuSub
+  SubContent: MenuSubContent
+  SubTrigger: MenuSubTrigger
 }
 
-const DROPDOWN_KIT: MenuKit = { Item: DropdownMenuItem, Separator: DropdownMenuSeparator }
-const CONTEXT_KIT: MenuKit = { Item: ContextMenuItem, Separator: ContextMenuSeparator }
+const DROPDOWN_KIT: MenuKit = {
+  Item: DropdownMenuItem,
+  Separator: DropdownMenuSeparator,
+  Sub: DropdownMenuSub,
+  SubContent: DropdownMenuSubContent,
+  SubTrigger: DropdownMenuSubTrigger
+}
+const CONTEXT_KIT: MenuKit = {
+  Item: ContextMenuItem,
+  Separator: ContextMenuSeparator,
+  Sub: ContextMenuSub,
+  SubContent: ContextMenuSubContent,
+  SubTrigger: ContextMenuSubTrigger
+}
 
 interface ItemSpec {
   className?: string
@@ -150,9 +175,21 @@ function useSessionActions({
 }: SessionActions) {
   const { t } = useI18n()
   const r = t.sidebar.row
+  const projects = useStore($projects)
   const [renameOpen, setRenameOpen] = useState(false)
+  const assignableProjects = projects.filter(project => !project.archived)
   const tiles = useStore($sessionTiles)
   const selectedStoredSessionId = useStore($selectedStoredSessionId)
+
+  const moveToProject = async (projectId: string, label: string) => {
+    try {
+      triggerHaptic('selection')
+      await assignSessionToProject(sessionId, projectId)
+      notify({ durationMs: 2_000, kind: 'success', message: r.movedToProject(label) })
+    } catch (err) {
+      notifyError(err, r.moveToProjectFailed)
+    }
+  }
 
   // Already showing as a tab somewhere (a tile, or loaded in main — main IS
   // a tab): offering "Open in new tab" again is noise.
@@ -321,6 +358,31 @@ function useSessionActions({
     </Item>
   )
 
+  const renderMoveToProject = (kit: MenuKit) =>
+    assignableProjects.length ? (
+      <kit.Sub key={r.moveToProject}>
+        <kit.SubTrigger disabled={!sessionId}>
+          <Codicon name="folder-opened" size="0.875rem" />
+          <span>{r.moveToProject}</span>
+        </kit.SubTrigger>
+        <kit.SubContent className="w-48">
+          {assignableProjects.map(project => (
+            <kit.Item key={project.id} onSelect={() => void moveToProject(project.id, project.name)}>
+              <Codicon name={project.icon || 'folder-library'} size="0.875rem" />
+              <span className="truncate">{project.name}</span>
+            </kit.Item>
+          ))}
+        </kit.SubContent>
+      </kit.Sub>
+    ) : (
+      renderMenuItem(kit.Item, {
+        disabled: true,
+        icon: 'folder-opened',
+        label: r.moveToProject,
+        onSelect: () => undefined
+      })
+    )
+
   const renderItems = (kit: MenuKit) => (
     <>
       {openItems.map(item => renderMenuItem(kit.Item, item))}
@@ -338,6 +400,7 @@ function useSessionActions({
       />
       <kit.Separator />
       {workItems.map(item => renderMenuItem(kit.Item, item))}
+      {renderMoveToProject(kit)}
       {tabCloseItems.length > 0 && (
         <>
           <kit.Separator />

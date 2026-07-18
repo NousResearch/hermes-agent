@@ -28,6 +28,7 @@ export const $activeProjectId = atom<null | string>(null)
 // source of project membership — the desktop no longer derives it.
 export const $projectTree = atom<SidebarProjectTree[]>([])
 export const $projectTreeLoading = atom(false)
+export const $sessionProjectAssignments = atom<Record<string, string>>({})
 
 // False when the connected backend predates the projects.* JSON-RPC surface
 // (same semver label, older install). Null until the first probe.
@@ -248,6 +249,7 @@ interface ProjectTreePayload {
   projects: SidebarProjectTree[]
   active_id: null | string
   scoped_session_ids: string[]
+  session_project_assignments?: Record<string, string>
 }
 
 // Pull the authoritative project tree (overview structure + counts + preview
@@ -264,6 +266,7 @@ export async function refreshProjectTree(): Promise<void> {
 
     $projectTree.set(res.projects ?? [])
     $activeProjectId.set(res.active_id ?? null)
+    $sessionProjectAssignments.set(res.session_project_assignments ?? {})
 
     // Reconcile the optimistic eviction layer against the fresh snapshot: keep
     // evicting ids the server still lists (delete in flight) and drop the rest
@@ -300,6 +303,12 @@ export async function fetchProjectSessions(projectId: string): Promise<SidebarPr
   } catch {
     return null
   }
+}
+
+export async function assignSessionToProject(sessionId: string, projectId: string): Promise<void> {
+  await gatewayRequest('projects.assign_session', { id: projectId, session_id: sessionId })
+  markProjectsRpcSuccess()
+  await Promise.all([refreshProjects(), refreshProjectTree()])
 }
 
 // One filesystem scan per app run: the heavy disk walk happens once, the result

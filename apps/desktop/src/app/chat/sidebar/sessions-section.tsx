@@ -111,6 +111,7 @@ interface SidebarSessionsSectionProps {
   // True while the backend project tree is loading (overview skeleton).
   projectsLoading?: boolean
   onEnterProject?: (id: string) => void
+  onAssignSessionToProject?: (sessionId: string, projectId: string) => void
   // The entered project's flattened content: main-checkout sessions render
   // directly (no redundant repo/branch header); only linked worktrees nest.
   projectContent?: SidebarProjectTree
@@ -119,6 +120,8 @@ interface SidebarSessionsSectionProps {
   projectRepoWorktrees?: Record<string, HermesGitWorktree[]>
   // Live session cache used for optimistic placement inside entered-project lanes.
   liveSessions?: SessionInfo[]
+  // Explicit session -> project memberships from the backend tree. These beat cwd inference.
+  sessionProjectAssignments?: Readonly<Record<string, string>>
   // Client-side optimistic eviction layer (deleted/archived ids).
   removedSessionIds?: ReadonlySet<string>
   activeProjectId?: null | string
@@ -166,9 +169,11 @@ export function SidebarSessionsSection({
   projectOverviewPreviews,
   projectsLoading = false,
   onEnterProject,
+  onAssignSessionToProject,
   projectContent,
   projectRepoWorktrees,
   liveSessions,
+  sessionProjectAssignments,
   removedSessionIds,
   activeProjectId,
   labelMeta,
@@ -256,6 +261,7 @@ export function SidebarSessionsSection({
             removedSessionIds={removedSessionIds}
             renderRows={renderRows}
             repoWorktrees={projectRepoWorktrees}
+            sessionProjectAssignments={sessionProjectAssignments}
           />
         ) : (
           emptyState
@@ -275,6 +281,7 @@ export function SidebarSessionsSection({
       <Row
         activeProjectId={activeProjectId}
         key={project.id}
+        onAssignSession={onAssignSessionToProject}
         onEnter={onEnterProject}
         onNewSession={onNewSessionInWorkspace}
         previewSessions={project.path ? projectOverviewPreviews?.[project.path] : undefined}

@@ -27,6 +27,35 @@ export function sessionInlineRef(payload: SessionDragPayload): InlineRefInput {
   return { kind: 'session', label: sessionLabel(payload), value: `${payload.profile || 'default'}/${payload.id}` }
 }
 
+// --- Native DnD session drag (sidebar → project overview row) ---------------
+// The pointer drag session (session-drag.ts) handles pane/tab drops; the
+// project overview row still uses native DnD for session→project assignment,
+// so the MIME type + read/write helpers live here.
+
+export const HERMES_SESSION_MIME = 'application/x-hermes-session'
+
+export function writeSessionDrag(transfer: DataTransfer, payload: SessionDragPayload) {
+  transfer.setData(HERMES_SESSION_MIME, JSON.stringify(payload))
+}
+
+export function dragHasSession(transfer: DataTransfer | null) {
+  return Boolean(transfer) && Array.from(transfer!.types || []).includes(HERMES_SESSION_MIME)
+}
+
+export function readSessionDrag(transfer: DataTransfer | null): null | SessionDragPayload {
+  const raw = transfer?.getData(HERMES_SESSION_MIME)
+
+  if (!raw) {
+    return null
+  }
+
+  try {
+    return JSON.parse(raw) as SessionDragPayload
+  } catch {
+    return null
+  }
+}
+
 export function dragHasAttachments(transfer: DataTransfer | null, pathsMime: string) {
   if (!transfer) {
     return false

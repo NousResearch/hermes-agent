@@ -429,6 +429,7 @@ function liveLaneForRepo(repoRoot: string, session: SessionInfo): null | Sidebar
 }
 
 const NO_REMOVED: ReadonlySet<string> = new Set()
+const NO_ASSIGNMENTS: Readonly<Record<string, string>> = {}
 
 /**
  * Reconcile ONE repo's lanes against the live `$sessions` cache: evict
@@ -441,7 +442,9 @@ const NO_REMOVED: ReadonlySet<string> = new Set()
 export function overlayRepoLanes(
   repo: SidebarWorkspaceTree,
   live: SessionInfo[],
-  removed: ReadonlySet<string> = NO_REMOVED
+  removed: ReadonlySet<string> = NO_REMOVED,
+  projectId?: string,
+  sessionProjectAssignments: Readonly<Record<string, string>> = NO_ASSIGNMENTS
 ): SidebarWorkspaceTree {
   const repoRootKey = pathKey(repo.path)
   let changed = false
@@ -461,8 +464,9 @@ export function overlayRepoLanes(
 
   for (const session of live) {
     const cwd = (session.cwd || '').trim()
+    const assignedProjectId = sessionProjectAssignments[session.id]
 
-    if (removed.has(session.id) || !cwd) {
+    if (removed.has(session.id) || !cwd || (assignedProjectId && assignedProjectId !== projectId)) {
       continue
     }
 
@@ -534,12 +538,13 @@ export function overlayRepoLanes(
 export function overlayLiveLanes(
   project: SidebarProjectTree,
   live: SessionInfo[],
-  removed: ReadonlySet<string> = NO_REMOVED
+  removed: ReadonlySet<string> = NO_REMOVED,
+  sessionProjectAssignments: Readonly<Record<string, string>> = NO_ASSIGNMENTS
 ): SidebarProjectTree {
   let changed = false
 
   const repos = project.repos.map(repo => {
-    const next = overlayRepoLanes(repo, live, removed)
+    const next = overlayRepoLanes(repo, live, removed, project.id, sessionProjectAssignments)
 
     changed ||= next !== repo
 
@@ -559,7 +564,8 @@ export function overlayLivePreviews(
   live: SessionInfo[],
   explicitProjects: ProjectInfo[],
   limit: number,
-  removed: ReadonlySet<string> = new Set()
+  removed: ReadonlySet<string> = new Set(),
+  sessionProjectAssignments: Readonly<Record<string, string>> = NO_ASSIGNMENTS
 ): Record<string, SessionInfo[]> {
   const byProject = new Map<string, SessionInfo[]>()
 
@@ -568,7 +574,7 @@ export function overlayLivePreviews(
       continue
     }
 
-    const projectId = liveSessionProjectId(session, explicitProjects)
+    const projectId = sessionProjectAssignments[session.id] ?? liveSessionProjectId(session, explicitProjects)
 
     if (!projectId) {
       continue

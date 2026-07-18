@@ -93,6 +93,15 @@ CREATE TABLE IF NOT EXISTS discovered_repos (
     label         TEXT,
     last_seen     INTEGER NOT NULL
 );
+
+CREATE TABLE IF NOT EXISTS project_session_assignments (
+    session_id   TEXT PRIMARY KEY,
+    project_id   TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+    assigned_at  INTEGER NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_project_session_assignments_project
+    ON project_session_assignments(project_id);
 """
 
 
@@ -588,6 +597,46 @@ def delete_project(conn: sqlite3.Connection, project_id: str) -> bool:
     with write_txn(conn):
         cur = conn.execute("DELETE FROM projects WHERE id = ?", (project_id,))
     return cur.rowcount > 0
+
+
+def assign_session(conn: sqlite3.Connection, project_id: str, session_id: str) -> None:
+    """Pin an existing session to a project, overriding cwd-based grouping."""
+    sid = str(session_id or "").strip()
+    if not sid:
+        raise ValueError("session_id required")
+    if get_project(conn, project_id) is None:
+        raise ValueError(f"no such project: {project_id}")
+    with write_txn(conn):
+        conn.execute(
+            "INSERT INTO project_session_assignments (session_id, project_id, assigned_at) "
+            "VALUES (?, ?, ?) "
+            "ON CONFLICT(session_id) DO UPDATE SET "
+            "project_id = excluded.project_id, assigned_at = excluded.assigned_at",
+            (sid, project_id, _now()),
+        )
+
+
+def unassign_session(conn: sqlite3.Connection, session_id: str) -> bool:
+    """Remove an explicit project assignment so cwd inference applies again."""
+    sid = str(session_id or "").strip()
+    if not sid:
+        return False
+    with write_txn(conn):
+        cur = conn.execute(
+            "DELETE FROM project_session_assignments WHERE session_id = ?", (sid,)
+        )
+    return cur.rowcount > 0
+
+
+def list_session_assignments(conn: sqlite3.Connection) -> dict[str, str]:
+    """Current explicit session -> project assignments for non-archived projects."""
+    rows = conn.execute(
+        "SELECT psa.session_id, psa.project_id "
+        "FROM project_session_assignments psa "
+        "JOIN projects p ON p.id = psa.project_id "
+        "WHERE p.archived = 0"
+    ).fetchall()
+    return {str(r["session_id"]): str(r["project_id"]) for r in rows}
 
 
 # ---------------------------------------------------------------------------

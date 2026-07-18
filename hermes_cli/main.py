@@ -5602,6 +5602,38 @@ def _desktop_linux_sandbox_helper_is_regular_file(packaged_executable: Path) -> 
     return stat.S_ISREG(sandbox_lstat.st_mode)
 
 
+def _refresh_bootstrap_pin() -> None:
+    """Update pinnedCommit in .hermes-bootstrap-complete to match current HEAD.
+
+    The desktop app keys off this file: when pinnedCommit matches HEAD it
+    skips the CLI verification/bootstrap step and goes straight to
+    createActiveBackend().  ``hermes update`` changes HEAD, so keep the pin
+    in sync so the desktop app can launch from a desktop entry (clean PATH).
+    """
+    marker = PROJECT_ROOT / ".hermes-bootstrap-complete"
+    if not marker.exists():
+        return
+    try:
+        stamp = json.loads(marker.read_text(encoding="utf-8"))
+        head = subprocess.run(
+            ["git", "rev-parse", "HEAD"],
+            cwd=PROJECT_ROOT,
+            capture_output=True,
+            text=True,
+            check=True,
+        ).stdout.strip()
+        if stamp.get("pinnedCommit") == head:
+            return
+        stamp["pinnedCommit"] = head
+        stamp["completedAt"] = datetime.now().isoformat()
+        marker.write_text(
+            json.dumps(stamp, indent=2, ensure_ascii=False) + "\n",
+            encoding="utf-8",
+        )
+    except Exception:
+        pass  # non-fatal — worst case desktop re-bootstraps
+
+
 
 def _desktop_linux_sandbox_fixup(packaged_executable: Path) -> bool:
     """Configure Electron's Linux SUID sandbox helper when required."""
@@ -10617,6 +10649,11 @@ def _cmd_update_impl(args, gateway_mode: bool):
             print("  be in a mixed state until the Node deps are rebuilt.")
         else:
             print("✓ Update complete!")
+
+        # Refresh the pinnedCommit in .hermes-bootstrap-complete so the
+        # desktop app can start from a desktop entry without needing PATH
+        # or re-bootstrapping after an update.
+        _refresh_bootstrap_pin()
 
         # Curator first-run heads-up. Only prints when curator is enabled AND
         # has never run — i.e. the window where the ticker would otherwise

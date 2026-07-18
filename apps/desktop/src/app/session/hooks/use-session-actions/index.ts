@@ -382,6 +382,7 @@ async function desktopSessionCreateParams(
 interface FreshSessionDraftOptions {
   preserveRoute?: boolean
   replaceRoute?: boolean
+  rotateFreshDraftKey?: boolean
   workspaceTarget?: NewChatWorkspaceTarget
 }
 
@@ -556,7 +557,10 @@ export function useSessionActions({
         ? normalizeNewChatWorkspaceTarget(draftOptions.workspaceTarget)
         : undefined
 
-      rotateFreshDraftKey()
+      if (draftOptions.rotateFreshDraftKey !== false) {
+        rotateFreshDraftKey()
+      }
+
       resetViewSync()
       busyRef.current = false
       setBusy(false)

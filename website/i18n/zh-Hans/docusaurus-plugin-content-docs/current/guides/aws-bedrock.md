@@ -10,7 +10,7 @@ Hermes Agent 通过 **Converse API** 原生支持 Amazon Bedrock——而非 Ope
 
 ## 前提条件
 
-- **AWS 凭证** — [boto3 凭证链](https://boto3.amazonaws.com/v1/documentation/api/latest/guide/credentials.html)支持的任意来源：
+- **AWS 凭证** — [boto3 凭证链](https://docs.aws.amazon.com/boto3/latest/guide/credentials.html)支持的任意来源：
   - IAM 实例角色（EC2、ECS、Lambda — 零配置）
   - `AWS_ACCESS_KEY_ID` + `AWS_SECRET_ACCESS_KEY` 环境变量
   - `AWS_PROFILE`（用于 SSO 或命名配置文件）

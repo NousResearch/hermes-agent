@@ -90,6 +90,9 @@ async def test_enrich_message_with_transcription_avoids_bogus_no_provider_messag
     with patch(
         "tools.transcription_tools.transcribe_audio",
         return_value={"success": False, "error": "VOICE_TOOLS_OPENAI_KEY not set"},
+    ), patch(
+        "tools.transcription_tools.transcribe_audio_local_fallback",
+        return_value={"success": False, "error": "not installed"},
     ):
         result, transcripts = await runner._enrich_message_with_transcription(
             "caption",
@@ -97,11 +100,40 @@ async def test_enrich_message_with_transcription_avoids_bogus_no_provider_messag
         )
 
     assert "No STT provider is configured" not in result
-    assert "[voice message could not be transcribed]" in result
+    assert "voice message could not be transcribed automatically" in result
+    assert "/tmp/voice.ogg" in result
     # The opaque backend cause must NOT leak into the LLM-visible prompt.
     assert "VOICE_TOOLS_OPENAI_KEY" not in result
     assert "caption" in result
     assert transcripts == []
+
+
+@pytest.mark.asyncio
+async def test_enrich_message_with_transcription_falls_back_to_installed_local_stt():
+    from gateway.run import GatewayRunner
+
+    runner = GatewayRunner.__new__(GatewayRunner)
+    runner.config = GatewayConfig(stt_enabled=True)
+
+    with patch(
+        "tools.transcription_tools.transcribe_audio",
+        return_value={"success": False, "error": "configured provider unavailable"},
+    ), patch(
+        "tools.transcription_tools.transcribe_audio_local_fallback",
+        return_value={
+            "success": True,
+            "transcript": "recovered locally",
+            "provider": "local",
+        },
+    ) as local_fallback:
+        result, transcripts = await runner._enrich_message_with_transcription(
+            "",
+            ["/tmp/voice.ogg"],
+        )
+
+    assert result == '"recovered locally"'
+    assert transcripts == ["recovered locally"]
+    local_fallback.assert_called_once_with("/tmp/voice.ogg")
 
 
 @pytest.mark.asyncio

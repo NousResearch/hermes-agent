@@ -355,6 +355,9 @@ def _summarize_action(action: str, args: Dict[str, Any]) -> str:
 
 def _dispatch(backend: ComputerUseBackend, action: str, args: Dict[str, Any]) -> Any:
     capture_after = bool(args.get("capture_after"))
+    # Self-localization marker defaults on; honor an explicit false.
+    show_marker = args.get("show_action_marker", True)
+    show_marker = bool(show_marker) if show_marker is not None else True
 
     if action == "capture":
         mode = str(args.get("mode", "som"))
@@ -387,7 +390,7 @@ def _dispatch(backend: ComputerUseBackend, action: str, args: Dict[str, Any]) ->
         if not app:
             return json.dumps({"error": "focus_app requires `app`"})
         res = backend.focus_app(app, raise_window=bool(args.get("raise_window")))
-        return _maybe_follow_capture(backend, res, capture_after)
+        return _maybe_follow_capture(backend, res, capture_after, show_marker)
 
     if action in {"click", "double_click", "right_click", "middle_click"}:
         button = args.get("button")
@@ -408,7 +411,7 @@ def _dispatch(backend: ComputerUseBackend, action: str, args: Dict[str, Any]) ->
             x=x, y=y, button=button or "left", click_count=click_count,
             modifiers=args.get("modifiers"),
         )
-        return _maybe_follow_capture(backend, res, capture_after)
+        return _maybe_follow_capture(backend, res, capture_after, show_marker)
 
     if action == "drag":
         has_elements = args.get("from_element") is not None and args.get("to_element") is not None
@@ -425,7 +428,7 @@ def _dispatch(backend: ComputerUseBackend, action: str, args: Dict[str, Any]) ->
             button=args.get("button", "left"),
             modifiers=args.get("modifiers"),
         )
-        return _maybe_follow_capture(backend, res, capture_after)
+        return _maybe_follow_capture(backend, res, capture_after, show_marker)
 
     if action == "scroll":
         coord = args.get("coordinate") or (None, None)
@@ -437,22 +440,22 @@ def _dispatch(backend: ComputerUseBackend, action: str, args: Dict[str, Any]) ->
             y=coord[1] if coord and coord[1] is not None else None,
             modifiers=args.get("modifiers"),
         )
-        return _maybe_follow_capture(backend, res, capture_after)
+        return _maybe_follow_capture(backend, res, capture_after, show_marker)
 
     if action == "type":
         res = backend.type_text(args.get("text", ""))
-        return _maybe_follow_capture(backend, res, capture_after)
+        return _maybe_follow_capture(backend, res, capture_after, show_marker)
 
     if action == "key":
         res = backend.key(args.get("keys", ""))
-        return _maybe_follow_capture(backend, res, capture_after)
+        return _maybe_follow_capture(backend, res, capture_after, show_marker)
 
     if action == "set_value":
         value = args.get("value")
         if value is None:
             return json.dumps({"error": "set_value requires `value`"})
         res = backend.set_value(value=str(value), element=args.get("element"))
-        return _maybe_follow_capture(backend, res, capture_after)
+        return _maybe_follow_capture(backend, res, capture_after, show_marker)
 
     return json.dumps({"error": f"unknown action {action!r}"})
 
@@ -856,8 +859,39 @@ def _route_capture_through_aux_vision(
     })
 
 
+def _apply_action_marker(backend: ComputerUseBackend, cap: CaptureResult) -> None:
+    """Composite the previous action's landing-point marker onto `cap`.
+
+    Codex-style self-localization: the follow-up screenshot gets a marker at
+    the resolved pixel where the just-executed click/drag landed, so the model
+    can visually confirm its own action site. Mutates `cap.png_b64` in place.
+
+    Best-effort and non-fatal: if the backend has no pending marker, Pillow is
+    unavailable, or compositing fails, the capture is returned unchanged.
+    """
+    consume = getattr(backend, "consume_action_marker", None)
+    if not callable(consume):
+        return
+    marker = consume()
+    if marker is None or not cap.png_b64:
+        return
+    try:
+        from tools.computer_use.action_marker import overlay_action_marker
+
+        raw = base64.b64decode(cap.png_b64, validate=False)
+        marked = overlay_action_marker(raw, marker)
+        if marked is not raw and marked != raw:
+            cap.png_b64 = base64.b64encode(marked).decode("ascii")
+            cap.png_bytes_len = len(marked)
+            # The compositor always re-encodes as PNG.
+            cap.image_mime_type = "image/png"
+    except Exception as e:  # pragma: no cover - defensive
+        logger.warning("action-marker compositing failed: %s", e)
+
+
 def _maybe_follow_capture(
     backend: ComputerUseBackend, res: ActionResult, do_capture: bool,
+    show_marker: bool = True,
 ) -> Any:
     if not do_capture:
         return _text_response(res)
@@ -880,6 +914,11 @@ def _maybe_follow_capture(
     except Exception as e:
         logger.warning("follow-up capture failed: %s", e)
         return _text_response(res)
+    # Draw the self-localization marker at the just-executed action's landing
+    # point so the model sees where *its own* action went (the cua-driver agent
+    # cursor only paints the user's physical screen, never this PNG).
+    if show_marker:
+        _apply_action_marker(backend, cap)
     # Combine action summary with the capture.
     resp = _capture_response(cap)
     if isinstance(resp, dict) and resp.get("_multimodal"):

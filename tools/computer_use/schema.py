@@ -224,8 +224,24 @@ COMPUTER_USE_SCHEMA: Dict[str, Any] = {
                 "description": (
                     "If true, take a follow-up capture after the action "
                     "and include it in the response. Saves a round-trip "
-                    "when you need to verify an action's effect."
+                    "when you need to verify an action's effect. The "
+                    "follow-up screenshot is stamped with a marker at the "
+                    "landing point of the action you just performed "
+                    "(click crosshair / drag arrow) so you can see where "
+                    "your own action went — self-localization. Disable the "
+                    "marker with show_action_marker=false."
                 ),
+            },
+            "show_action_marker": {
+                "type": "boolean",
+                "description": (
+                    "Default true. When a follow-up capture is taken "
+                    "(capture_after=true) after a click/drag, draw a marker "
+                    "at the resolved landing point so you can visually "
+                    "confirm where your action landed. Set false to get the "
+                    "unmarked screenshot."
+                ),
+                "default": True,
             },
         },
         "required": ["action"],

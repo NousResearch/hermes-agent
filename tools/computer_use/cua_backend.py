@@ -49,6 +49,7 @@ import threading
 import uuid
 from typing import Any, Dict, List, Optional, Tuple
 
+from tools.computer_use.action_marker import ActionMarker
 from tools.computer_use.backend import (
     ActionResult,
     CaptureResult,
@@ -1197,6 +1198,14 @@ class CuaDriverBackend(ComputerUseBackend):
         # element. Cleared whenever a fresh capture overwrites the
         # snapshot context.
         self._snapshot_tokens: Dict[int, str] = {}
+        # Codex-style self-localization: the resolved landing point of the
+        # most recent pointer action (click/drag/...). Consumed by the
+        # follow-up capture (capture_after=True) so the model sees a marker
+        # at *its own* action site in the returned PNG. Also caches the last
+        # snapshot's element_index -> center-pixel map so element-index
+        # clicks (which carry no explicit x/y) can still be localized.
+        self._last_action_marker: Optional[ActionMarker] = None
+        self._element_centers: Dict[int, Tuple[int, int]] = {}
         # Per-instance cua-driver session id. cua-driver's MCP server
         # instructions ask every consumer to declare a stable session
         # at the start of a run (start_session) and tear it down at
@@ -1730,6 +1739,15 @@ class CuaDriverBackend(ComputerUseBackend):
                 for e in elements
                 if e.element_token
             }
+            # Cache element_index -> center pixel for self-localization of
+            # element-index clicks/drags (which resolve to a frame server-side
+            # and carry no explicit x/y). Only elements with real bounds
+            # contribute; markdown-parsed (0,0,0,0) frames are skipped.
+            self._element_centers = {
+                e.index: e.center()
+                for e in elements
+                if e.bounds and any(e.bounds[2:])
+            }
 
             # Image may arrive as an MCP image part or inside
             # structuredContent (screenshot_png_b64) depending on the driver
@@ -1764,6 +1782,57 @@ class CuaDriverBackend(ComputerUseBackend):
             png_bytes_len=png_bytes_len,
             image_mime_type=image_mime_type,
         )
+
+    # ── Self-localization markers ──────────────────────────────────
+    def _record_point_marker(
+        self,
+        *,
+        kind: str,
+        x: Optional[int],
+        y: Optional[int],
+        element: Optional[int],
+        label: str,
+    ) -> None:
+        """Remember where a point action (click/double_click/...) landed.
+
+        Explicit x/y take precedence; an element index resolves to the cached
+        center pixel from the last snapshot. When neither yields a pixel (e.g.
+        an element click on a driver that returned no bounds), the marker is
+        cleared so the follow-up capture is left unmarked rather than pointing
+        at a stale location.
+        """
+        point: Optional[Tuple[int, int]] = None
+        if x is not None and y is not None:
+            point = (int(x), int(y))
+        elif element is not None:
+            point = self._element_centers.get(element)
+        self._last_action_marker = (
+            ActionMarker(kind=kind, point=point, label=label) if point else None
+        )
+
+    def _record_drag_marker(
+        self,
+        *,
+        start: Optional[Tuple[int, int]],
+        end: Optional[Tuple[int, int]],
+    ) -> None:
+        """Remember a drag gesture's endpoints for the follow-up capture."""
+        if start and end:
+            self._last_action_marker = ActionMarker(
+                kind="drag", start=start, end=end, label="drag",
+            )
+        else:
+            self._last_action_marker = None
+
+    def consume_action_marker(self) -> Optional[ActionMarker]:
+        """Return and clear the pending self-localization marker.
+
+        One-shot: the follow-up capture consumes it so a later capture with no
+        preceding action doesn't re-stamp a stale point.
+        """
+        marker = self._last_action_marker
+        self._last_action_marker = None
+        return marker
 
     # ── Pointer ────────────────────────────────────────────────────
     def click(
@@ -1815,6 +1884,14 @@ class CuaDriverBackend(ComputerUseBackend):
         if modifiers:
             args["modifier"] = modifiers
 
+        # Record the resolved landing point for self-localization on the
+        # follow-up capture. Explicit x/y wins; otherwise resolve the element
+        # index to its cached center pixel from the last snapshot.
+        self._record_point_marker(
+            kind="click",
+            x=x, y=y, element=element,
+            label=("double_click" if click_count == 2 else "click"),
+        )
         return self._action(tool, args)
 
     def drag(
@@ -1839,6 +1916,10 @@ class CuaDriverBackend(ComputerUseBackend):
             args["from_element"] = from_element
             args["to_element"] = to_element
             args["window_id"] = self._active_window_id
+            self._record_drag_marker(
+                start=self._element_centers.get(from_element),
+                end=self._element_centers.get(to_element),
+            )
         elif from_xy is not None and to_xy is not None:
             if self._active_window_id is None:
                 return ActionResult(ok=False, action="drag",
@@ -1846,6 +1927,10 @@ class CuaDriverBackend(ComputerUseBackend):
             args["from_x"], args["from_y"] = int(from_xy[0]), int(from_xy[1])
             args["to_x"], args["to_y"] = int(to_xy[0]), int(to_xy[1])
             args["window_id"] = self._active_window_id
+            self._record_drag_marker(
+                start=(int(from_xy[0]), int(from_xy[1])),
+                end=(int(to_xy[0]), int(to_xy[1])),
+            )
         else:
             return ActionResult(ok=False, action="drag",
                                 message="drag requires from_element/to_element or from_coordinate/to_coordinate.")

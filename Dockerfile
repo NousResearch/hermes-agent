@@ -26,8 +26,8 @@ ENV PLAYWRIGHT_BROWSERS_PATH=/opt/hermes/.playwright
 # replaces tini with s6-overlay's /init (PID 1 = s6-svscan), which reaps
 # zombies non-blockingly on SIGCHLD and additionally supervises the main
 # hermes process, the dashboard, and per-profile gateways.
-RUN apt-get update && \
-    apt-get install -y --no-install-recommends \
+RUN apt-get -o Acquire::Retries=3 update && \
+    apt-get -o Acquire::Retries=3 install -y --no-install-recommends \
     ca-certificates curl iputils-ping python3 python-is-python3 ripgrep ffmpeg gcc g++ make cmake python3-dev python3-venv libffi-dev libolm-dev procps git openssh-client docker-cli xz-utils && \
     rm -rf /var/lib/apt/lists/*
 
@@ -40,33 +40,30 @@ RUN apt-get update && \
 # we map between them inline. The noarch + symlinks tarballs are
 # architecture-independent and reused as-is.
 #
-# We use `curl` instead of `ADD` for the per-arch tarball because `ADD`
-# evaluates its URL at parse time, before any ARG / TARGETARCH substitution
-# — splitting one URL per arch into two ADDs would download both on every
-# build and leave dead bytes in the cache. A single curl + arch-keyed URL
-# is simpler and cache-friendlier.
-#
-# Supply-chain integrity: every tarball is checksum-verified against the
-# upstream-published SHA256. To bump S6_OVERLAY_VERSION, fetch the four
-# `.sha256` files from the corresponding release and update the ARGs. The
-# checksum lookup happens during build, so a compromised release artifact
-# fails the build loudly instead of silently producing a tampered image.
+# We use `curl` instead of `ADD` for ALL three tarballs: `ADD` evaluates its
+# URL at parse time (no ARG / TARGETARCH substitution) and — critically for
+# CI reliability — cannot retry, so a single GitHub-release CDN blip fails
+# the whole 15-45 min build. curl -fsSL --retry 3 self-heals those blips,
+# and every tarball is still checksum-verified below before extraction.
 ARG TARGETARCH
 ARG S6_OVERLAY_VERSION=3.2.3.0
 ARG S6_OVERLAY_NOARCH_SHA256=b720f9d9340efc8bb07528b9743813c836e4b02f8693d90241f047998b4c53cf
 ARG S6_OVERLAY_X86_64_SHA256=a93f02882c6ed46b21e7adb5c0add86154f01236c93cd82c7d682722e8840563
 ARG S6_OVERLAY_AARCH64_SHA256=0952056ff913482163cc30e35b2e944b507ba1025d78f5becbb89367bf344581
 ARG S6_OVERLAY_SYMLINKS_SHA256=a60dc5235de3ecbcf874b9c1f18d73263ab99b289b9329aa950e8729c4789f0e
-ADD https://github.com/just-containers/s6-overlay/releases/download/v${S6_OVERLAY_VERSION}/s6-overlay-noarch.tar.xz /tmp/
-ADD https://github.com/just-containers/s6-overlay/releases/download/v${S6_OVERLAY_VERSION}/s6-overlay-symlinks-noarch.tar.xz /tmp/
 RUN set -eu; \
     case "${TARGETARCH:-amd64}" in \
         amd64) s6_arch="x86_64"; s6_arch_sha="${S6_OVERLAY_X86_64_SHA256}" ;; \
         arm64) s6_arch="aarch64"; s6_arch_sha="${S6_OVERLAY_AARCH64_SHA256}" ;; \
         *) echo "Unsupported TARGETARCH=${TARGETARCH} for s6-overlay" >&2; exit 1 ;; \
     esac; \
+    base="https://github.com/just-containers/s6-overlay/releases/download/v${S6_OVERLAY_VERSION}"; \
+    curl -fsSL --retry 3 -o /tmp/s6-overlay-noarch.tar.xz \
+        "${base}/s6-overlay-noarch.tar.xz"; \
+    curl -fsSL --retry 3 -o /tmp/s6-overlay-symlinks-noarch.tar.xz \
+        "${base}/s6-overlay-symlinks-noarch.tar.xz"; \
     curl -fsSL --retry 3 -o /tmp/s6-overlay-arch.tar.xz \
-        "https://github.com/just-containers/s6-overlay/releases/download/v${S6_OVERLAY_VERSION}/s6-overlay-${s6_arch}.tar.xz"; \
+        "${base}/s6-overlay-${s6_arch}.tar.xz"; \
     { \
         printf '%s  %s\n' "${S6_OVERLAY_NOARCH_SHA256}" /tmp/s6-overlay-noarch.tar.xz; \
         printf '%s  %s\n' "${s6_arch_sha}" /tmp/s6-overlay-arch.tar.xz; \
@@ -135,8 +132,11 @@ COPY apps/shared/ apps/shared/
 # guards against a future regression if the source npm version changes.
 ENV npm_config_install_links=false
 
-RUN npm install --prefer-offline --no-audit && \
-    npx playwright install --with-deps chromium --only-shell && \
+RUN npm install --prefer-offline --no-audit --fetch-retries=5 && \
+    for i in 1 2 3; do \
+        npx playwright install --with-deps chromium --only-shell && break || \
+        { [ "$i" = 3 ] && exit 1; echo "playwright install failed (attempt $i); retrying in 10s"; sleep 10; }; \
+    done && \
     npm cache clean --force
 
 # ---------- Layer-cached Python dependency install ----------

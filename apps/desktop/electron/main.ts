@@ -5,6 +5,7 @@ import http from 'node:http'
 import https from 'node:https'
 import os from 'node:os'
 import path from 'node:path'
+import tls from 'node:tls'
 import { pathToFileURL } from 'node:url'
 
 import {
@@ -142,6 +143,7 @@ import {
   getVenvSitePackagesEntries,
   resolveVenvHermesCommand
 } from './windows-hermes-path'
+import { installWindowsSystemCaTrust } from './windows-system-ca'
 import { readWindowsUserEnvVar } from './windows-user-env'
 import { isPackagedInstallPath as isPackagedInstallPathUnderRoots } from './workspace-cwd'
 import { readWslWindowsClipboardImage } from './wsl-clipboard-image'
@@ -2715,8 +2717,13 @@ async function applyUpdatesPosixInApp(opts: any) {
   // Put the Hermes-managed Node and the venv on PATH so `hermes desktop`'s
   // npm build can find them on a machine with no system Node. Windows portable
   // Node lives directly under %LOCALAPPDATA%\hermes\node, not node\bin.
+  // PYTHONUNBUFFERED: `hermes update` writes to a pipe here, so CPython
+  // block-buffers stdout and long quiet steps (the pre-update backup can zip
+  // multi-GB archives for minutes) stream nothing to the progress UI — users
+  // read the silence as a hang and cancel a healthy update.
   const env: Record<string, string> = {
     HERMES_HOME,
+    PYTHONUNBUFFERED: '1',
     PATH: pathWithHermesManagedNode(path.join(updateRoot, 'venv', 'bin'))
   }
 
@@ -9149,6 +9156,16 @@ app.on('open-url', (event, url) => {
 })
 
 app.whenReady().then(() => {
+  const systemCa = installWindowsSystemCaTrust(tls)
+
+  if (systemCa.applied) {
+    rememberLog(
+      `[tls] trusting ${systemCa.systemCertificateCount} Windows system CA certificate(s) for backend connections`
+    )
+  } else if (systemCa.error) {
+    rememberLog(`[tls] could not load Windows system CA certificates: ${systemCa.error}`)
+  }
+
   if (IS_MAC) {
     Menu.setApplicationMenu(buildApplicationMenu())
   } else {

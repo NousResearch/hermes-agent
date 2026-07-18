@@ -35,6 +35,7 @@ jobs:
   detect:
     name: Detect affected areas
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     outputs:
       python: ${{ steps.classify.outputs.python }}
       frontend: ${{ steps.classify.outputs.frontend }}
@@ -51,6 +52,10 @@ jobs:
       - name: Detect affected areas
         id: classify
         uses: ./.github/actions/detect-changes
+        with:
+          # Forks get no repo secrets (AUTOFIX_BOT_PAT is empty); fall back to
+          # the built-in read-only token so classification still works there.
+          github-token: ${{ secrets.AUTOFIX_BOT_PAT || github.token }}
 
   # ─────────────────────────────────────────────────────────────────────
   # Lane-gated sub-workflows. Each runs in parallel after detect finishes.
@@ -63,6 +68,7 @@ jobs:
     uses: ./.github/workflows/tests.yml
     with:
       slice_count: 8
+    secrets: inherit
 
   lint:
     name: Python lints
@@ -72,47 +78,55 @@ jobs:
     with:
       event_name: ${{ needs.detect.outputs.event_name }}
       ci_review: ${{ needs.detect.outputs.ci_review == 'true' }}
+    secrets: inherit
 
   js-tests:
     name: JS & TS checks
     needs: detect
     if: needs.detect.outputs.frontend == 'true'
     uses: ./.github/workflows/js-tests.yml
+    secrets: inherit
 
   docs-site:
     name: Docs Site
     needs: detect
     if: needs.detect.outputs.site == 'true'
     uses: ./.github/workflows/docs-site-checks.yml
+    secrets: inherit
 
   history-check:
     name: Deny unrelated histories
     needs: detect
     if: needs.detect.outputs.event_name == 'pull_request'
     uses: ./.github/workflows/history-check.yml
+    secrets: inherit
 
   contributor-check:
     name: Check contributors
     needs: detect
     if: needs.detect.outputs.python == 'true'
     uses: ./.github/workflows/contributor-check.yml
+    secrets: inherit
 
   uv-lockfile:
     name: Check uv.lock
     needs: detect
     uses: ./.github/workflows/uv-lockfile-check.yml
+    secrets: inherit
 
   lockfile-diff:
     name: package-lock.json diff
     needs: detect
     if: needs.detect.outputs.event_name == 'pull_request' && needs.detect.outputs.npm_lock == 'true'
     uses: ./.github/workflows/lockfile-diff.yml
+    secrets: inherit
 
   docker-lint:
     name: Lint Docker scripts
     needs: detect
     if: needs.detect.outputs.docker_meta == 'true'
     uses: ./.github/workflows/docker-lint.yml
+    secrets: inherit
 
   docker:
     name: Build&Test Docker image
@@ -131,10 +145,12 @@ jobs:
       scan: ${{ needs.detect.outputs.scan == 'true' }}
       deps: ${{ needs.detect.outputs.deps == 'true' }}
       mcp_catalog: ${{ needs.detect.outputs.mcp_catalog == 'true' }}
+    secrets: inherit
 
   osv-scanner:
     name: OSV scan
     uses: ./.github/workflows/osv-scanner.yml
+    secrets: inherit
 
   # ─────────────────────────────────────────────────────────────────────
   # Gate: runs after everything. ``if: always()`` ensures it reports a
@@ -161,6 +177,7 @@ jobs:
       # - docker
     if: always()
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     steps:
       - name: Evaluate job results
         env:
@@ -191,6 +208,7 @@ jobs:
     needs: [all-checks-pass, docker]
     if: always()
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     steps:
       - name: Checkout code
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
@@ -208,7 +226,7 @@ jobs:
 
       - name: Collect timings and generate report
         env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GITHUB_TOKEN: ${{ secrets.AUTOFIX_BOT_PAT }}
         run: |
           python3 scripts/ci/timings_report.py \
             --baseline ci-timings-baseline.json \
@@ -217,6 +235,8 @@ jobs:
             --summary-out ci-timings-summary.md
 
       - name: Upload HTML report
+        # Advisory report — artifact-service blips must not fail the job.
+        continue-on-error: true
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         id: ci-timings-artifact
         with:

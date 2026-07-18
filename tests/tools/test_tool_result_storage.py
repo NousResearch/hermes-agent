@@ -519,6 +519,23 @@ class TestEnforceTurnBudget:
         # Should be truncated (no sandbox available)
         assert "Truncated" in msgs[0]["content"] or PERSISTED_OUTPUT_TAG in msgs[0]["content"]
 
+    def test_target_without_env_does_not_spill_into_default_env(self):
+        default_env = MagicMock()
+        default_env.execute.return_value = {"output": "", "returncode": 0}
+        msgs = [
+            {"role": "tool", "tool_call_id": "targeted", "content": "x" * 250_000},
+        ]
+
+        enforce_turn_budget(
+            msgs,
+            env=default_env,
+            env_resolver=lambda _msg: None,
+            config=BudgetConfig(turn_budget=200_000),
+        )
+
+        default_env.execute.assert_not_called()
+        assert "Truncated" in msgs[0]["content"]
+
     def test_returns_same_list(self):
         msgs = [{"role": "tool", "tool_call_id": "t1", "content": "ok"}]
         result = enforce_turn_budget(msgs, env=None, config=BudgetConfig(turn_budget=200_000))

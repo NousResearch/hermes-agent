@@ -182,6 +182,34 @@ class FileStateRegistryUnitTests(unittest.TestCase):
         self.assertIn(foo, out["child"])
         self.assertNotIn(baz, out["child"])
 
+    def test_delegate_state_aggregates_task_targets_without_cross_target_conflicts(self):
+        path = self._mk()
+        file_state.record_read(("parent", "alpha"), path, namespace="alpha")
+        file_state.record_read(("parent", "beta"), path, namespace="beta")
+        since = time.time()
+        time.sleep(0.01)
+        file_state.note_write(("child", "alpha"), path, namespace="alpha")
+
+        parent_reads = file_state.known_reads("parent")
+
+        self.assertIn(f"alpha\0{path}", parent_reads)
+        self.assertIn(f"beta\0{path}", parent_reads)
+        out = file_state.writes_since("parent", since, [f"alpha\0{path}"])
+        self.assertEqual(out, {"child": [path]})
+
+    def test_writes_since_excludes_all_scopes_of_raw_parent_task(self):
+        path = self._mk()
+        file_state.record_read(("parent", "alpha"), path, namespace="alpha")
+        since = time.time()
+        time.sleep(0.01)
+        file_state.note_write(("parent", "alpha"), path, namespace="alpha")
+
+        out = file_state.writes_since(
+            "parent", since, file_state.known_reads("parent"),
+        )
+
+        self.assertEqual(out, {})
+
     def test_writes_since_excludes_the_target_agent(self):
         p = self._mk()
         file_state.record_read("parent", p)

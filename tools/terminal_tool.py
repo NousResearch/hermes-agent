@@ -42,8 +42,10 @@ import threading
 import atexit
 import shutil
 import subprocess
+from contextlib import contextmanager
+from contextvars import ContextVar
 from pathlib import Path
-from typing import Optional, Dict, Any, List
+from typing import Optional, Dict, Any, List, Hashable
 
 from utils import env_var_enabled
 
@@ -200,8 +202,35 @@ def set_approval_callback(cb):
     _callback_tls.approval = cb
 
 
-def _get_sudo_password_cache_scope() -> str:
-    """Return the cache scope for interactive sudo passwords."""
+_sudo_execution_context: ContextVar[
+    tuple[str, str, bool, Optional[str]] | None
+] = ContextVar(
+    "hermes_sudo_execution_context", default=None,
+)
+
+
+@contextmanager
+def _scoped_sudo_execution(
+    target: str,
+    backend: str,
+    *,
+    named: bool = False,
+    sudo_password: Optional[str] = None,
+):
+    token = _sudo_execution_context.set(
+        (target, backend, named, sudo_password),
+    )
+    try:
+        yield
+    finally:
+        _sudo_execution_context.reset(token)
+
+
+def _get_sudo_password_cache_scope(
+    execution_target: str | None = None,
+    execution_backend: str | None = None,
+) -> str:
+    """Return the session + target scope for interactive sudo passwords."""
     try:
         from gateway.session_context import get_session_env
 
@@ -209,29 +238,49 @@ def _get_sudo_password_cache_scope() -> str:
     except Exception:
         session_key = os.getenv("HERMES_SESSION_KEY", "")
     if session_key:
-        return f"session:{session_key}"
+        base_scope = f"session:{session_key}"
+    else:
+        callback = _get_sudo_password_callback()
+        if callback is not None:
+            owner = getattr(callback, "__self__", None)
+            func = getattr(callback, "__func__", None)
+            if owner is not None and func is not None:
+                base_scope = f"callback-owner:{id(owner)}:{id(func)}"
+            else:
+                base_scope = f"callback:{id(callback)}"
+        else:
+            base_scope = f"thread:{threading.get_ident()}"
 
-    callback = _get_sudo_password_callback()
-    if callback is not None:
-        owner = getattr(callback, "__self__", None)
-        func = getattr(callback, "__func__", None)
-        if owner is not None and func is not None:
-            return f"callback-owner:{id(owner)}:{id(func)}"
-        return f"callback:{id(callback)}"
+    active_context = _sudo_execution_context.get()
+    if execution_target is None and active_context is not None:
+        execution_target = active_context[0]
+    if execution_backend is None and active_context is not None:
+        execution_backend = active_context[1]
+    if execution_target is None and execution_backend is None:
+        return base_scope
+    return (
+        f"{base_scope}|target:{execution_target!r}"
+        f"|backend:{str(execution_backend or '').lower()}"
+    )
 
-    return f"thread:{threading.get_ident()}"
 
-
-def _get_cached_sudo_password() -> str:
-    """Return the cached sudo password for the current scope."""
-    scope = _get_sudo_password_cache_scope()
+def _get_cached_sudo_password(
+    execution_target: str | None = None,
+    execution_backend: str | None = None,
+) -> str:
+    """Return the cached sudo password for the current target scope."""
+    scope = _get_sudo_password_cache_scope(execution_target, execution_backend)
     with _sudo_password_cache_lock:
         return _sudo_password_cache.get(scope, "")
 
 
-def _set_cached_sudo_password(password: str) -> None:
-    """Persist a sudo password for the current scope."""
-    scope = _get_sudo_password_cache_scope()
+def _set_cached_sudo_password(
+    password: str,
+    execution_target: str | None = None,
+    execution_backend: str | None = None,
+) -> None:
+    """Persist a sudo password for the current target scope."""
+    scope = _get_sudo_password_cache_scope(execution_target, execution_backend)
     with _sudo_password_cache_lock:
         if password:
             _sudo_password_cache[scope] = password
@@ -279,11 +328,17 @@ def _docker_has_host_access(config: Dict[str, Any]) -> bool:
 
 
 def _check_all_guards(command: str, env_type: str,
-                      has_host_access: bool = False) -> dict:
+                      has_host_access: bool = False,
+                      execution_target: str = "default",
+                      execution_backend: Optional[str] = None,
+                      execution_target_named: bool = False) -> dict:
     """Delegate to consolidated guard (tirith + dangerous cmd) with CLI callback."""
     return _check_all_guards_impl(command, env_type,
                                   approval_callback=_get_approval_callback(),
-                                  has_host_access=has_host_access)
+                                  has_host_access=has_host_access,
+                                  execution_target=execution_target,
+                                  execution_backend=execution_backend or env_type,
+                                  execution_target_named=execution_target_named)
 
 
 # Allowlist: characters that can legitimately appear in directory paths.
@@ -359,7 +414,10 @@ def _sudo_wrong_password_failure(output: str) -> bool:
 
 
 def _invalidate_cached_sudo_on_auth_failure(
-    command: str | None, output: str
+    command: str | None,
+    output: str,
+    execution_target: str | None = None,
+    execution_backend: str | None = None,
 ) -> bool:
     """Drop a session-cached sudo password after sudo rejects it.
 
@@ -372,9 +430,9 @@ def _invalidate_cached_sudo_on_auth_failure(
         return False
     if _count_real_sudo_invocations(command or "") == 0:
         return False
-    if not _get_cached_sudo_password():
+    if not _get_cached_sudo_password(execution_target, execution_backend):
         return False
-    _set_cached_sudo_password("")
+    _set_cached_sudo_password("", execution_target, execution_backend)
     return True
 
 
@@ -685,7 +743,11 @@ def _sudo_nopasswd_works() -> bool:
     cache) so an expired sudo timestamp cannot make a later command silently
     block waiting for a password.
     """
-    terminal_env = os.getenv("TERMINAL_ENV", "local").strip().lower() or "local"
+    active_context = _sudo_execution_context.get()
+    if active_context is not None:
+        terminal_env = active_context[1].strip().lower() or "local"
+    else:
+        terminal_env = os.getenv("TERMINAL_ENV", "local").strip().lower() or "local"
     if terminal_env != "local":
         return False
 
@@ -909,12 +971,24 @@ def _transform_sudo_command(command: str | None) -> tuple[str | None, str | None
     if sudo_count == 0:
         return command, None
 
-    has_configured_password = "SUDO_PASSWORD" in os.environ
-    sudo_password = (
-        os.environ.get("SUDO_PASSWORD", "")
-        if has_configured_password
-        else _get_cached_sudo_password()
-    )
+    active_context = _sudo_execution_context.get()
+    if active_context is not None and active_context[2]:
+        # Named targets are config-isolated: never inherit the default target's
+        # bridged SUDO_PASSWORD into another host/container.
+        configured_password = active_context[3]
+        has_configured_password = configured_password is not None
+        sudo_password = (
+            str(configured_password)
+            if has_configured_password
+            else _get_cached_sudo_password()
+        )
+    else:
+        has_configured_password = "SUDO_PASSWORD" in os.environ
+        sudo_password = (
+            os.environ.get("SUDO_PASSWORD", "")
+            if has_configured_password
+            else _get_cached_sudo_password()
+        )
 
     # Local hosts with sudoers NOPASSWD should not be forced through the
     # interactive Hermes password prompt or the sudo -S password-pipe path.
@@ -955,7 +1029,7 @@ import sys
 
 
 # Tool description for LLM
-TERMINAL_TOOL_DESCRIPTION = """Execute shell commands on a Linux environment. Filesystem, current working directory, and exported environment variables persist between calls.
+TERMINAL_TOOL_DESCRIPTION = """Execute shell commands on the selected execution target (using bash/Linux shell semantics). Filesystem, current working directory, and exported environment variables persist between calls.
 
 Do NOT use cat/head/tail to read files — use read_file instead.
 Do NOT use grep/rg/find to search — use search_files instead.
@@ -979,10 +1053,10 @@ Do NOT use vim/nano/interactive tools without pty=true — they hang without a p
 """
 
 # Global state for environment lifecycle management
-_active_environments: Dict[str, Any] = {}
-_last_activity: Dict[str, float] = {}
+_active_environments: Dict[Hashable, Any] = {}
+_last_activity: Dict[Hashable, float] = {}
 _env_lock = threading.Lock()
-_creation_locks: Dict[str, threading.Lock] = {}  # Per-task locks for sandbox creation
+_creation_locks: Dict[Hashable, threading.Lock] = {}  # Per-target locks for sandbox creation
 _creation_locks_lock = threading.Lock()  # Protects _creation_locks dict itself
 _cleanup_thread = None
 _cleanup_running = False
@@ -1026,15 +1100,32 @@ def _maybe_reap_docker_orphans(container_config: Dict[str, Any]) -> None:
             return
         _docker_orphan_reaper_ran = True
 
-    # 2 × lifetime_seconds gives sibling Hermes processes a generous grace
-    # window. Floor at 60s so an operator with TERMINAL_LIFETIME_SECONDS=0
-    # doesn't get an instant-reap that races their own setup.
-    # ``container_config`` only carries container_* keys, so read
-    # lifetime_seconds from the env var the rest of the module uses.
+    # 2 × the longest configured Docker-target lifetime gives every named
+    # sibling a conservative grace window. A process-wide reaper runs only
+    # once, so using the first-created target's value could reap a longer-lived
+    # target prematurely.
     try:
-        lifetime = int(os.getenv("TERMINAL_LIFETIME_SECONDS", "300"))
+        lifetime = int(container_config.get(
+            "lifetime_seconds", os.getenv("TERMINAL_LIFETIME_SECONDS", "300"),
+        ))
     except (TypeError, ValueError):
         lifetime = 300
+    try:
+        from tools.execution_targets import list_execution_targets
+
+        targets = list_execution_targets()
+        if targets and targets[0].named:
+            for target in targets:
+                if target.backend != "docker":
+                    continue
+                try:
+                    lifetime = max(
+                        lifetime, int(target.config.get("lifetime_seconds", 300)),
+                    )
+                except (TypeError, ValueError):
+                    continue
+    except Exception:
+        logger.debug("Could not resolve Docker target lifetimes", exc_info=True)
     lifetime = max(60, lifetime)
     max_age = lifetime * 2
 
@@ -1067,8 +1158,10 @@ def _maybe_reap_docker_orphans(container_config: Dict[str, Any]) -> None:
 #
 # This is never exposed to the model -- only infrastructure code calls it.
 # Thread-safe because each task_id is unique per rollout.
-_task_env_overrides: Dict[str, Dict[str, Any]] = {}
-
+_task_env_overrides: Dict[Hashable, Dict[str, Any]] = {}
+_task_env_overrides_lock = threading.Lock()
+_active_turn_counts: Dict[Hashable, int] = {}
+_active_turn_counts_lock = threading.Lock()
 # ── Per-session cwd records (cwd rearchitecture, step 1) ────────────────────
 #
 # The durable source of truth for "which directory is THIS session working
@@ -1083,11 +1176,75 @@ _task_env_overrides: Dict[str, Dict[str, Any]] = {}
 # here. Readers still use the legacy env.cwd ladder. Later steps flip
 # file_tools and _resolve_command_cwd to read this store, then delete the
 # env-side tracking + ownership guards.
-_session_cwd: Dict[str, str] = {}
+_session_cwd: Dict[Hashable, str] = {}
 _session_cwd_lock = threading.Lock()
 
 
-def record_session_cwd(session_key: Optional[str], cwd: Optional[str]) -> None:
+def _target_resolution(target=None):
+    from tools.execution_targets import resolve_execution_target
+
+    return resolve_execution_target(target)
+
+
+def _environment_scope_key(task_key: Hashable, resolution) -> Hashable:
+    return resolution.environment_key(task_key)
+
+
+def _profile_scoped_task_key(task_key: Hashable) -> Hashable:
+    try:
+        return _target_resolution(None).scope_task_key(task_key)
+    except Exception:
+        return task_key
+
+
+def _turn_scope_key(task_id: Hashable) -> Hashable:
+    collapsed = _resolve_container_task_id(str(task_id))
+    return _profile_scoped_task_key(collapsed)
+
+
+def register_environment_turn(task_id: Hashable) -> None:
+    """Mark one conversation turn as using the shared target environments."""
+    key = _turn_scope_key(task_id)
+    with _active_turn_counts_lock:
+        _active_turn_counts[key] = _active_turn_counts.get(key, 0) + 1
+
+
+def release_environment_turn(task_id: Hashable) -> int:
+    """Release a turn and return the remaining users of its environment scope."""
+    key = _turn_scope_key(task_id)
+    with _active_turn_counts_lock:
+        remaining = max(0, _active_turn_counts.get(key, 0) - 1)
+        if remaining:
+            _active_turn_counts[key] = remaining
+        else:
+            _active_turn_counts.pop(key, None)
+        return remaining
+
+
+def active_environment_turns(task_id: Hashable) -> int:
+    """Return active tool executions sharing this task's environment scope."""
+    key = _turn_scope_key(task_id)
+    with _active_turn_counts_lock:
+        return _active_turn_counts.get(key, 0)
+
+
+@contextmanager
+def environment_turn_usage(task_id: Hashable):
+    """Keep shared environments alive for one in-flight tool execution."""
+    register_environment_turn(task_id)
+    try:
+        yield
+    finally:
+        release_environment_turn(task_id)
+
+
+def record_session_cwd(
+    session_key: Optional[str],
+    cwd: Optional[str],
+    target: Optional[str] = None,
+    *,
+    _resolution=None,
+) -> None:
     """Record *cwd* as the working directory of *session_key*.
 
     Called wherever a session's live cwd becomes known: after a terminal
@@ -1098,28 +1255,66 @@ def record_session_cwd(session_key: Optional[str], cwd: Optional[str]) -> None:
     """
     if not isinstance(cwd, str) or not cwd.strip():
         return
-    key = str(session_key or "default")
+    resolution = _resolution or _target_resolution(target)
+    key = resolution.session_key(session_key)
     with _session_cwd_lock:
         if _session_cwd.get(key) != cwd:
             _session_cwd[key] = cwd
 
 
-def get_session_cwd(session_key: Optional[str]) -> Optional[str]:
+def get_session_cwd(
+    session_key: Optional[str],
+    target: Optional[str] = None,
+    *,
+    _resolution=None,
+) -> Optional[str]:
     """Return the recorded working directory for *session_key*, if any.
 
     No fallback chain here on purpose: callers decide what an absent record
     means (config default, TERMINAL_CWD seed, process cwd). ``None``/empty
     keys read the ``"default"`` record.
     """
-    key = str(session_key or "default")
+    resolution = _resolution or _target_resolution(target)
+    key = resolution.session_key(session_key)
     with _session_cwd_lock:
         return _session_cwd.get(key)
 
 
-def clear_session_cwd(session_key: str) -> None:
-    """Drop a session's cwd record (session teardown)."""
+def inherit_session_cwds(parent_task_id: str, child_task_id: str) -> int:
+    """Seed a child with every cwd scope currently owned by its parent."""
+    if not parent_task_id or not child_task_id:
+        return 0
+    parent_key = _profile_scoped_task_key(parent_task_id)
+    child_key = _profile_scoped_task_key(child_task_id)
+    inherited: Dict[Hashable, str] = {}
     with _session_cwd_lock:
-        _session_cwd.pop(session_key, None)
+        for key, cwd in _session_cwd.items():
+            if key == parent_key:
+                inherited[child_key] = cwd
+            elif (
+                isinstance(key, tuple)
+                and len(key) == 2
+                and key[0] == parent_key
+            ):
+                inherited[(child_key, key[1])] = cwd
+        _session_cwd.update(inherited)
+    return len(inherited)
+
+
+def clear_session_cwd(session_key: str) -> None:
+    """Drop all legacy and named-target cwd records for a raw session."""
+    raw = str(session_key or "default")
+    scoped = _profile_scoped_task_key(raw)
+    with _session_cwd_lock:
+        _session_cwd.pop(raw, None)
+        _session_cwd.pop(scoped, None)
+        for key in list(_session_cwd):
+            if (
+                isinstance(key, tuple)
+                and len(key) == 2
+                and key[0] in {raw, scoped}
+            ):
+                _session_cwd.pop(key, None)
 
 
 def register_task_env_overrides(task_id: str, overrides: Dict[str, Any]):
@@ -1138,7 +1333,7 @@ def register_task_env_overrides(task_id: str, overrides: Dict[str, Any]):
         task_id: The rollout's unique task identifier
         overrides: Dict of config keys to override
     """
-    _task_env_overrides[task_id] = overrides
+    _task_env_overrides[_profile_scoped_task_key(task_id)] = overrides
 
     # If a live environment already exists for this task, a freshly registered
     # ``cwd`` override (e.g. the ACP client switching the editor's project root
@@ -1148,8 +1343,23 @@ def register_task_env_overrides(task_id: str, overrides: Dict[str, Any]):
     new_cwd = overrides.get("cwd")
     if isinstance(new_cwd, str) and new_cwd.strip():
         # A registered workspace cwd IS the session's working directory until
-        # a `cd` changes it.
-        record_session_cwd(task_id, new_cwd)
+        # a `cd` changes it. With named targets this host/workspace override
+        # belongs to the configured default target only; applying it to every
+        # explicit remote/container target would replace that target's own cwd.
+        try:
+            default_resolution = _target_resolution(None)
+        except Exception:
+            default_resolution = None
+        if (
+            default_resolution is not None
+            and not (
+                default_resolution.named
+                and default_resolution.backend == "ssh"
+            )
+        ):
+            record_session_cwd(
+                task_id, new_cwd, _resolution=default_resolution,
+            )
         # The live env is cached under the raw task_id for per-session surfaces
         # (ACP/gateway/dashboard) and under the collapsed container id for
         # isolation-keyed rollouts. Try the raw id first, then the container id,
@@ -1157,9 +1367,24 @@ def register_task_env_overrides(task_id: str, overrides: Dict[str, Any]):
         # updates the originating session's env.
         container_id = _resolve_container_task_id(task_id)
         with _env_lock:
-            env = _active_environments.get(task_id) or _active_environments.get(container_id)
-        if env is not None and getattr(env, "cwd", None) is not None:
-            env.cwd = new_cwd
+            if (
+                default_resolution is not None
+                and default_resolution.named
+                and default_resolution.backend != "ssh"
+            ):
+                candidate_keys = {
+                    default_resolution.environment_key(task_id),
+                    default_resolution.environment_key(container_id),
+                }
+            else:
+                candidate_keys = {task_id, container_id}
+            envs = [
+                env for key, env in _active_environments.items()
+                if key in candidate_keys
+            ]
+        for env in envs:
+            if getattr(env, "cwd", None) is not None:
+                env.cwd = new_cwd
 
 
 def clear_task_env_overrides(task_id: str):
@@ -1168,7 +1393,7 @@ def clear_task_env_overrides(task_id: str):
 
     Called during cleanup to avoid stale entries accumulating.
     """
-    _task_env_overrides.pop(task_id, None)
+    _task_env_overrides.pop(_profile_scoped_task_key(task_id), None)
     clear_session_cwd(task_id)
 
 
@@ -1200,10 +1425,11 @@ def _resolve_container_task_id(task_id: Optional[str]) -> str:
         "docker_image", "modal_image", "singularity_image",
         "daytona_image", "env_type",
     })
-    if task_id and task_id in _task_env_overrides:
-        overrides = _task_env_overrides[task_id]
+    scoped_task_id = _profile_scoped_task_key(task_id) if task_id else None
+    if scoped_task_id and scoped_task_id in _task_env_overrides:
+        overrides = _task_env_overrides[scoped_task_id]
         if set(overrides.keys()) & _ISOLATION_KEYS:
-            return task_id
+            return str(task_id)
     return "default"
 
 
@@ -1220,9 +1446,11 @@ def resolve_task_overrides(task_id: Optional[str]) -> Dict[str, Any]:
     source of that lookup so the terminal and file layers can't drift apart.
     """
     raw = task_id or "default"
+    scoped_raw = _profile_scoped_task_key(raw)
+    scoped_collapsed = _profile_scoped_task_key(_resolve_container_task_id(raw))
     return (
-        _task_env_overrides.get(raw)
-        or _task_env_overrides.get(_resolve_container_task_id(raw))
+        _task_env_overrides.get(scoped_raw)
+        or _task_env_overrides.get(scoped_collapsed)
         or {}
     )
 
@@ -1305,6 +1533,40 @@ def _is_unusable_container_cwd(cwd: str) -> bool:
     return False
 
 
+def _apply_task_cwd_override(
+    config: Dict[str, Any], cwd: str, cwd_override: Optional[str],
+) -> str:
+    """Apply a task workspace cwd without leaking host paths into containers.
+
+    Docker's explicit mount-cwd mode is the exception: a registered host
+    workspace should become the bind source and commands should run in
+    ``/workspace``. Other container backends fall back to the target's already
+    sanitized configured cwd.
+    """
+    env_type = config.get("env_type")
+    if (
+        env_type == "docker"
+        and config.get("docker_mount_cwd_to_workspace")
+        and isinstance(cwd_override, str)
+        and cwd_override.strip()
+    ):
+        candidate = os.path.abspath(os.path.expanduser(cwd_override))
+        is_host_path = (
+            any(candidate.startswith(prefix) for prefix in _HOST_CWD_PREFIXES)
+            or (
+                os.path.isabs(candidate)
+                and os.path.isdir(candidate)
+                and not candidate.startswith(("/workspace", "/root"))
+            )
+        )
+        if is_host_path:
+            config["host_cwd"] = candidate
+            return "/workspace"
+    if env_type in _CONTAINER_BACKENDS and _is_unusable_container_cwd(cwd):
+        return config["cwd"]
+    return cwd
+
+
 # One-shot guard for the config-fallback bridge below.  Purely an
 # optimization: after the first attempt either TERMINAL_ENV is set (bridge
 # succeeded — merged config always carries terminal.backend) or the import
@@ -1346,14 +1608,50 @@ def _ensure_terminal_env_bridged() -> None:
         logger.debug("terminal config → env fallback bridge failed", exc_info=True)
 
 
-def _get_env_config() -> Dict[str, Any]:
-    """Get terminal environment configuration from environment variables."""
-    # Default image with Python and Node.js for maximum compatibility
+def _get_env_config(terminal_config: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+    """Return canonical terminal config for legacy env vars or a target mapping.
+
+    ``terminal_config is None`` is the historical flat/env-driven path.  A
+    selected named target passes its inherited mapping here directly; values
+    are parsed without mutating ``os.environ`` so concurrent target calls
+    cannot affect each other.
+    """
     default_image = "nikolaik/python-nodejs:python3.11-nodejs20"
-    _ensure_terminal_env_bridged()
-    env_type = os.getenv("TERMINAL_ENV", "local")
+    if terminal_config is None:
+        _ensure_terminal_env_bridged()
+
+    def _get(key: str, env_name: str, default: Any) -> Any:
+        if terminal_config is None:
+            return os.getenv(env_name, str(default) if not isinstance(default, (list, dict)) else json.dumps(default))
+        return terminal_config.get(key, default)
+
+    def _coerce(value: Any, converter: Any, label: str, key: str) -> Any:
+        if converter is json.loads and isinstance(value, (list, dict)):
+            return value
+        try:
+            return converter(value)
+        except (TypeError, ValueError, json.JSONDecodeError):
+            source = (
+                f"terminal target setting {key}"
+                if terminal_config is not None
+                else f"TERMINAL_{key.upper()}"
+            )
+            raise ValueError(f"Invalid value for {source}: {value!r} (expected {label}).")
+
+    def _bool(key: str, env_name: str, default: bool) -> bool:
+        value = _get(key, env_name, default)
+        if isinstance(value, bool):
+            return value
+        return str(value).lower() in {"true", "1", "yes"}
+
+    env_type = str(
+        _get(
+            "backend", "TERMINAL_ENV",
+            terminal_config.get("env_type", "local") if terminal_config else "local",
+        )
+    ).strip().lower() or "local"
     
-    mount_docker_cwd = os.getenv("TERMINAL_DOCKER_MOUNT_CWD_TO_WORKSPACE", "false").lower() in {"true", "1", "yes"}
+    mount_docker_cwd = _bool("docker_mount_cwd_to_workspace", "TERMINAL_DOCKER_MOUNT_CWD_TO_WORKSPACE", False)
     container_backend = env_type in {"docker", "singularity", "modal", "daytona"}
     docker_backend = env_type == "docker"
 
@@ -1362,19 +1660,19 @@ def _get_env_config() -> Dict[str, Any]:
     # until a backend that can consume them is selected; a stale or invalid
     # Docker value should not make local terminal/execute_code unusable.
     if container_backend:
-        container_cpu = _parse_env_var("TERMINAL_CONTAINER_CPU", "1", float, "number")
-        container_memory = _parse_env_var("TERMINAL_CONTAINER_MEMORY", "5120")
-        container_disk = _parse_env_var("TERMINAL_CONTAINER_DISK", "51200")
+        container_cpu = _coerce(_get("container_cpu", "TERMINAL_CONTAINER_CPU", 1), float, "number", "container_cpu")
+        container_memory = _coerce(_get("container_memory", "TERMINAL_CONTAINER_MEMORY", 5120), int, "integer", "container_memory")
+        container_disk = _coerce(_get("container_disk", "TERMINAL_CONTAINER_DISK", 51200), int, "integer", "container_disk")
     else:
         container_cpu = 1.0
         container_memory = 5120
         container_disk = 51200
 
     if docker_backend:
-        docker_forward_env = _parse_env_var("TERMINAL_DOCKER_FORWARD_ENV", "[]", json.loads, "valid JSON")
-        docker_volumes = _parse_env_var("TERMINAL_DOCKER_VOLUMES", "[]", json.loads, "valid JSON")
-        docker_env = _parse_env_var("TERMINAL_DOCKER_ENV", "{}", json.loads, "valid JSON")
-        docker_extra_args = _parse_env_var("TERMINAL_DOCKER_EXTRA_ARGS", "[]", json.loads, "valid JSON")
+        docker_forward_env = _coerce(_get("docker_forward_env", "TERMINAL_DOCKER_FORWARD_ENV", []), json.loads, "valid JSON", "docker_forward_env")
+        docker_volumes = _coerce(_get("docker_volumes", "TERMINAL_DOCKER_VOLUMES", []), json.loads, "valid JSON", "docker_volumes")
+        docker_env = _coerce(_get("docker_env", "TERMINAL_DOCKER_ENV", {}), json.loads, "valid JSON", "docker_env")
+        docker_extra_args = _coerce(_get("docker_extra_args", "TERMINAL_DOCKER_EXTRA_ARGS", []), json.loads, "valid JSON", "docker_extra_args")
     else:
         docker_forward_env = []
         docker_volumes = []
@@ -1395,12 +1693,18 @@ def _get_env_config() -> Dict[str, Any]:
     # If Docker cwd passthrough is explicitly enabled, remap the host path to
     # /workspace and track the original host path separately. Otherwise keep the
     # normal sandbox behavior and discard host paths.
-    cwd = os.getenv("TERMINAL_CWD", default_cwd)
+    cwd = str(_get("cwd", "TERMINAL_CWD", default_cwd) or default_cwd)
+    if env_type == "local" and cwd in {".", "./", "auto", "cwd"}:
+        cwd = _safe_getcwd()
     if cwd and not _is_ssh_remote_tilde_cwd(env_type, cwd):
         cwd = os.path.expanduser(cwd)
     host_cwd = None
     if env_type == "docker" and mount_docker_cwd:
-        docker_cwd_source = os.getenv("TERMINAL_CWD") or _safe_getcwd()
+        docker_cwd_source = (
+            (os.getenv("TERMINAL_CWD") or _safe_getcwd())
+            if terminal_config is None
+            else (cwd or _safe_getcwd())
+        )
         candidate = os.path.abspath(os.path.expanduser(docker_cwd_source))
         if (
             any(candidate.startswith(p) for p in _HOST_CWD_PREFIXES)
@@ -1418,40 +1722,40 @@ def _get_env_config() -> Dict[str, Any]:
 
     return {
         "env_type": env_type,
-        "modal_mode": coerce_modal_mode(os.getenv("TERMINAL_MODAL_MODE", "auto")),
-        "docker_image": os.getenv("TERMINAL_DOCKER_IMAGE", default_image),
+        "modal_mode": coerce_modal_mode(_get("modal_mode", "TERMINAL_MODAL_MODE", "auto")),
+        "docker_image": str(_get("docker_image", "TERMINAL_DOCKER_IMAGE", default_image)),
         "docker_forward_env": docker_forward_env,
-        "singularity_image": os.getenv("TERMINAL_SINGULARITY_IMAGE", f"docker://{default_image}"),
-        "modal_image": os.getenv("TERMINAL_MODAL_IMAGE", default_image),
-        "daytona_image": os.getenv("TERMINAL_DAYTONA_IMAGE", default_image),
+        "singularity_image": str(_get("singularity_image", "TERMINAL_SINGULARITY_IMAGE", f"docker://{default_image}")),
+        "modal_image": str(_get("modal_image", "TERMINAL_MODAL_IMAGE", default_image)),
+        "daytona_image": str(_get("daytona_image", "TERMINAL_DAYTONA_IMAGE", default_image)),
         "cwd": cwd,
         "host_cwd": host_cwd,
         "docker_mount_cwd_to_workspace": mount_docker_cwd,
-        "timeout": _parse_env_var("TERMINAL_TIMEOUT", "180"),
-        "lifetime_seconds": _parse_env_var("TERMINAL_LIFETIME_SECONDS", "300"),
+        "timeout": _coerce(_get("timeout", "TERMINAL_TIMEOUT", 180), int, "integer", "timeout"),
+        "lifetime_seconds": _coerce(_get("lifetime_seconds", "TERMINAL_LIFETIME_SECONDS", 300), int, "integer", "lifetime_seconds"),
         # SSH-specific config
-        "ssh_host": os.getenv("TERMINAL_SSH_HOST", ""),
-        "ssh_user": os.getenv("TERMINAL_SSH_USER", ""),
-        "ssh_port": _parse_env_var("TERMINAL_SSH_PORT", "22"),
-        "ssh_key": os.getenv("TERMINAL_SSH_KEY", ""),
+        "ssh_host": str(_get("ssh_host", "TERMINAL_SSH_HOST", "")),
+        "ssh_user": str(_get("ssh_user", "TERMINAL_SSH_USER", "")),
+        "ssh_port": _coerce(_get("ssh_port", "TERMINAL_SSH_PORT", 22), int, "integer", "ssh_port"),
+        "ssh_key": str(_get("ssh_key", "TERMINAL_SSH_KEY", "")),
         # Persistent shell: SSH defaults to the config-level persistent_shell
         # setting (true by default for non-local backends); local is always opt-in.
         # Per-backend env vars override if explicitly set.
-        "ssh_persistent": os.getenv(
-            "TERMINAL_SSH_PERSISTENT",
-            os.getenv("TERMINAL_PERSISTENT_SHELL", "true"),
-        ).lower() in {"true", "1", "yes"},
-        "local_persistent": os.getenv("TERMINAL_LOCAL_PERSISTENT", "false").lower() in {"true", "1", "yes"},
+        "ssh_persistent": _bool(
+            "ssh_persistent", "TERMINAL_SSH_PERSISTENT",
+            _bool("persistent_shell", "TERMINAL_PERSISTENT_SHELL", True),
+        ),
+        "local_persistent": _bool("local_persistent", "TERMINAL_LOCAL_PERSISTENT", False),
         # Container resource config (applies to docker, singularity, modal,
         # daytona -- ignored for local/ssh)
         "container_cpu": container_cpu,
         "container_memory": container_memory,     # MB (default 5GB)
         "container_disk": container_disk,        # MB (default 50GB)
-        "container_persistent": os.getenv("TERMINAL_CONTAINER_PERSISTENT", "true").lower() in {"true", "1", "yes"},
+        "container_persistent": _bool("container_persistent", "TERMINAL_CONTAINER_PERSISTENT", True),
         "docker_volumes": docker_volumes,
         "docker_env": docker_env,
-        "docker_run_as_host_user": os.getenv("TERMINAL_DOCKER_RUN_AS_HOST_USER", "false").lower() in {"true", "1", "yes"},
-        "docker_network": os.getenv("TERMINAL_DOCKER_NETWORK", "true").lower() in {"true", "1", "yes"},
+        "docker_run_as_host_user": _bool("docker_run_as_host_user", "TERMINAL_DOCKER_RUN_AS_HOST_USER", False),
+        "docker_network": _bool("docker_network", "TERMINAL_DOCKER_NETWORK", True),
         "docker_extra_args": docker_extra_args,
         # Cross-process container reuse (issue #20561).  The docs claim
         # "ONE long-lived container shared across sessions" — this toggle
@@ -1459,17 +1763,25 @@ def _get_env_config() -> Dict[str, Any]:
         # attaching to it instead of always starting a fresh one.  Set to
         # ``false`` for hard per-process isolation (no reuse, container is
         # removed on exit).
-        "docker_persist_across_processes": os.getenv(
-            "TERMINAL_DOCKER_PERSIST_ACROSS_PROCESSES", "true"
-        ).lower() in {"true", "1", "yes"},
+        "docker_persist_across_processes": _bool(
+            "docker_persist_across_processes", "TERMINAL_DOCKER_PERSIST_ACROSS_PROCESSES", True,
+        ),
         # Startup orphan reaper for hermes-tagged containers left behind by
         # crashed / SIGKILL'd previous processes that bypassed atexit.
         # Conservative: only sweeps Exited containers older than 2× the
         # idle-reap window AND scoped to the current profile. Issue #20561.
-        "docker_orphan_reaper": os.getenv(
-            "TERMINAL_DOCKER_ORPHAN_REAPER", "true"
-        ).lower() in {"true", "1", "yes"},
+        "docker_orphan_reaper": _bool(
+            "docker_orphan_reaper", "TERMINAL_DOCKER_ORPHAN_REAPER", True,
+        ),
     }
+
+
+def _record_environment_lifetime(env: Any, config: Dict[str, Any]) -> None:
+    """Attach the resolved target's idle lifetime to its environment."""
+    try:
+        env._hermes_lifetime_seconds = int(config["lifetime_seconds"])
+    except (AttributeError, KeyError, TypeError, ValueError):
+        pass
 
 
 def _get_modal_backend_state(modal_mode: object | None) -> Dict[str, Any]:
@@ -1515,7 +1827,12 @@ def _create_environment(env_type: str, image: str, cwd: str, timeout: int,
     docker_network = cc.get("docker_network", True)
 
     if env_type == "local":
-        return _LocalEnvironment(cwd=cwd, timeout=timeout)
+        env = _LocalEnvironment(cwd=cwd, timeout=timeout)
+        setattr(
+            env, "_persistent",
+            bool((local_config or {}).get("persistent", False)),
+        )
+        return env
     
     elif env_type == "docker":
         # One-shot orphan reaper: clean up labeled containers left behind by
@@ -1655,7 +1972,11 @@ def _cleanup_inactive_envs(lifetime_seconds: int = 300):
 
     with _env_lock:
         for task_id, last_time in list(_last_activity.items()):
-            if current_time - last_time > lifetime_seconds:
+            tracked_env = _active_environments.get(task_id)
+            effective_lifetime = getattr(
+                tracked_env, "_hermes_lifetime_seconds", lifetime_seconds,
+            )
+            if current_time - last_time > effective_lifetime:
                 env = _active_environments.pop(task_id, None)
                 _last_activity.pop(task_id, None)
                 if env is not None:
@@ -1732,14 +2053,23 @@ def _stop_cleanup_thread():
             pass
 
 
-def get_active_env(task_id: str):
+def get_active_env(task_id: str, target: Optional[str] = None):
     """Return the active BaseEnvironment for *task_id*, or None."""
-    lookup = _resolve_container_task_id(task_id)
+    resolution = _target_resolution(target)
+    lookup = _environment_scope_key(_resolve_container_task_id(task_id), resolution)
+    raw_lookup = _environment_scope_key(task_id, resolution)
     with _env_lock:
-        return _active_environments.get(lookup) or _active_environments.get(task_id)
+        return _active_environments.get(lookup) or _active_environments.get(raw_lookup)
 
 
-def is_persistent_env(task_id: str) -> bool:
+def _environment_is_persistent(env: Any) -> bool:
+    return bool(
+        getattr(env, "_persistent", False)
+        or getattr(env, "persistent_filesystem", False)
+    )
+
+
+def is_persistent_env(task_id: str, target: Optional[str] = None) -> bool:
     """Return True if the active environment for task_id is configured for
     cross-turn persistence (``persistent_filesystem=True``).
 
@@ -1750,10 +2080,10 @@ def is_persistent_env(task_id: str) -> bool:
     (``_cleanup_inactive_envs``) handles persistent envs once they exceed
     ``terminal.lifetime_seconds``.
     """
-    env = get_active_env(task_id)
+    env = get_active_env(task_id, target=target)
     if env is None:
         return False
-    return bool(getattr(env, "_persistent", False))
+    return _environment_is_persistent(env)
 
 
 
@@ -1785,11 +2115,20 @@ def cleanup_all_environments():
     return cleaned
 
 
-def cleanup_vm(task_id: str, *, force_remove: bool = False):
+def cleanup_vm(
+    task_id: Hashable,
+    *,
+    force_remove: bool = False,
+    preserve_persistent: bool = False,
+    target: Optional[str] = None,
+    include_collapsed: bool = False,
+):
     """Manually clean up a specific environment by task_id.
 
     *force_remove* (default False) is forwarded to backends that accept it
-    — currently only ``DockerEnvironment``. The default of False matches
+    — currently only ``DockerEnvironment``. ``preserve_persistent`` is used
+    by per-turn cleanup to keep each persistent named sibling live while
+    removing only non-persistent targets. The default of False matches
     session-lifecycle semantics: this function is called from
     ``AIAgent.close()`` (TUI session close, gateway session teardown) and the
     per-turn cleanup branch for non-persistent envs, both of which should
@@ -1806,51 +2145,121 @@ def cleanup_vm(task_id: str, *, force_remove: bool = False):
     via this function), so persist-mode idle envs are similarly no-op'd —
     only the orphan reaper at next startup reclaims them.
     """
-    # Remove from tracking dicts while holding the lock, but defer the
-    # actual (potentially slow) env.cleanup() call to outside the lock
-    # so other tool calls aren't blocked.
-    env = None
+    # Direct tuple keys are used by global/idle cleanup. For a raw task,
+    # omitted target cleans every target scope owned by that exact raw key;
+    # an explicit target cleans exactly that scope. Do not collapse arbitrary
+    # subagent ids to "default" here: legacy cleanup_vm(child_id) never tore
+    # down the parent's shared environment, and doing so in named mode would
+    # let a delegate's close race/disrupt its parent.
+    if isinstance(task_id, tuple):
+        keys = [task_id]
+    elif target is None:
+        try:
+            resolution = _target_resolution(None)
+            scoped_task_id = resolution.scope_task_key(task_id)
+            collapsed_task_id = _resolve_container_task_id(str(task_id))
+            scoped_collapsed_task_id = resolution.scope_task_key(collapsed_task_id)
+        except Exception:
+            scoped_task_id = task_id
+            collapsed_task_id = task_id
+            scoped_collapsed_task_id = task_id
+        matching_task_ids = {task_id, scoped_task_id}
+        if include_collapsed:
+            matching_task_ids.update({
+                collapsed_task_id, scoped_collapsed_task_id,
+            })
+        with _env_lock:
+            keys = [
+                key for key in _active_environments
+                if key in matching_task_ids
+                or (
+                    isinstance(key, tuple) and len(key) == 2
+                    and key[0] in matching_task_ids
+                )
+            ]
+        if not keys:
+            keys = [task_id]
+    else:
+        resolution = _target_resolution(target)
+        if resolution.named:
+            keys = [resolution.environment_key(task_id)]
+        else:
+            keys = [task_id]
+
+    active_process_keys = set()
+    if preserve_persistent:
+        try:
+            from tools.process_registry import process_registry
+
+            active_process_keys = {
+                key for key in keys
+                if process_registry.has_active_processes(key)
+            }
+        except Exception:
+            logger.debug(
+                "Failed to inspect active processes before cleanup",
+                exc_info=True,
+            )
+
+    envs = []
+    removed_keys = []
     with _env_lock:
-        env = _active_environments.pop(task_id, None)
-        _last_activity.pop(task_id, None)
+        for key in keys:
+            existing = _active_environments.get(key)
+            if key in active_process_keys:
+                continue
+            if (
+                preserve_persistent
+                and existing is not None
+                and _environment_is_persistent(existing)
+            ):
+                continue
+            env = _active_environments.pop(key, None)
+            _last_activity.pop(key, None)
+            removed_keys.append(key)
+            if env is not None:
+                envs.append((key, env))
 
     # Clean up per-task creation lock
     with _creation_locks_lock:
-        _creation_locks.pop(task_id, None)
+        for key in removed_keys:
+            _creation_locks.pop(key, None)
 
     # Invalidate stale file_ops cache entry
     try:
         from tools.file_tools import clear_file_ops_cache
-        clear_file_ops_cache(task_id)
+        for key in removed_keys:
+            clear_file_ops_cache(key)
     except ImportError:
         pass
 
-    if env is None:
+    if not envs:
         return
 
-    try:
-        if hasattr(env, 'cleanup'):
-            # Pass force_remove only if the env's cleanup() accepts it
-            # (DockerEnvironment after issue #20561; other backends don't).
-            import inspect
-            sig = inspect.signature(env.cleanup)
-            if "force_remove" in sig.parameters:
-                env.cleanup(force_remove=force_remove)
+    for key, env in envs:
+        try:
+            if hasattr(env, 'cleanup'):
+                # Pass force_remove only if the env's cleanup() accepts it
+                # (DockerEnvironment after issue #20561; other backends don't).
+                import inspect
+                sig = inspect.signature(env.cleanup)
+                if "force_remove" in sig.parameters:
+                    env.cleanup(force_remove=force_remove)
+                else:
+                    env.cleanup()
+            elif hasattr(env, 'stop'):
+                env.stop()
+            elif hasattr(env, 'terminate'):
+                env.terminate()
+
+            logger.info("Manually cleaned up environment for task: %s", key)
+
+        except Exception as e:
+            error_str = str(e)
+            if "404" in error_str or "not found" in error_str.lower():
+                logger.info("Environment for task %s already cleaned up", key)
             else:
-                env.cleanup()
-        elif hasattr(env, 'stop'):
-            env.stop()
-        elif hasattr(env, 'terminate'):
-            env.terminate()
-
-        logger.info("Manually cleaned up environment for task: %s", task_id)
-
-    except Exception as e:
-        error_str = str(e)
-        if "404" in error_str or "not found" in error_str.lower():
-            logger.info("Environment for task %s already cleaned up", task_id)
-        else:
-            logger.warning("Error cleaning up environment for task %s: %s", task_id, e)
+                logger.warning("Error cleaning up environment for task %s: %s", key, e)
 
 
 def _atexit_cleanup():
@@ -2082,6 +2491,8 @@ def _resolve_command_cwd(
     workdir: Optional[str],
     default_cwd: str,
     session_key: Optional[str] = None,
+    target: Optional[str] = None,
+    _resolution=None,
 ) -> str:
     """Return the cwd for a command. Explicit ``workdir=`` overrides everything.
 
@@ -2094,7 +2505,9 @@ def _resolve_command_cwd(
     """
     if workdir:
         return workdir
-    return get_session_cwd(session_key) or default_cwd
+    return get_session_cwd(
+        session_key, target=target, _resolution=_resolution,
+    ) or default_cwd
 
 
 def terminal_tool(
@@ -2108,6 +2521,7 @@ def terminal_tool(
     pty: bool = False,
     notify_on_complete: bool = False,
     watch_patterns: Optional[List[str]] = None,
+    target: Optional[str] = None,
 ) -> str:
     """
     Execute a command in the configured terminal environment.
@@ -2123,6 +2537,7 @@ def terminal_tool(
         pty: If True, use pseudo-terminal for interactive CLI tools (local backend only)
         notify_on_complete: If True and background=True, you'll be notified exactly once when the process exits. The right choice for almost every long task. MUTUALLY EXCLUSIVE with watch_patterns.
         watch_patterns: List of strings to watch for in background output. HARD rate limit: 1 notification per 15s per process. After 3 strike windows in a row, watch_patterns is disabled and the session is auto-promoted to notify_on_complete. Use ONLY for rare, one-shot mid-process signals on long-lived processes (server readiness, migration-done markers). NEVER use in loops/batch jobs — error patterns there will hit the strike limit and get disabled. MUTUALLY EXCLUSIVE with notify_on_complete — set one, not both.
+        target: Named execution target. Omit to use the configured default.
 
     Returns:
         str: JSON string with output, exit_code, and error fields
@@ -2153,15 +2568,33 @@ def terminal_tool(
                 "status": "error",
             }, ensure_ascii=False)
 
-        # Get configuration
-        config = _get_env_config()
+        # Resolve configuration per call. Named targets read merged config
+        # directly; legacy flat config keeps the existing env-driven path.
+        from tools.execution_targets import ExecutionTargetError
+        try:
+            target_resolution = _target_resolution(target)
+        except ExecutionTargetError as exc:
+            return json.dumps({
+                "output": "", "exit_code": -1, "error": str(exc), "status": "error",
+            }, ensure_ascii=False)
+        config = (
+            _get_env_config(dict(target_resolution.config))
+            if target_resolution.named else _get_env_config()
+        )
         env_type = config["env_type"]
 
         # Use task_id for environment isolation. By default all subagent
         # task_ids collapse back to "default" so the top-level agent and
         # every delegate_task child share one container; only task_ids with
         # a registered env override (RL benchmarks) get isolated sandboxes.
-        effective_task_id = _resolve_container_task_id(task_id)
+        effective_base_task_id = _resolve_container_task_id(task_id)
+        effective_task_id = _environment_scope_key(
+            effective_base_task_id, target_resolution,
+        )
+        raw_environment_key = _environment_scope_key(
+            task_id, target_resolution,
+        ) if task_id else None
+        backend_task_id = target_resolution.backend_task_id(effective_base_task_id)
 
         # Check per-task overrides (set by environments like TerminalBench2Env)
         # before falling back to global env var config. ``resolve_task_overrides``
@@ -2183,26 +2616,21 @@ def terminal_tool(
         else:
             image = ""
 
-        cwd = overrides.get("cwd") or get_session_cwd(task_id) or config["cwd"]
-        # A per-task cwd override (registered by the gateway/TUI for workspace
-        # tracking, or by RL/benchmark envs) wins over config["cwd"] — but
-        # config["cwd"] was already sanitized for container backends in
-        # _get_env_config() while the override is raw. On a container backend a
-        # raw host path (e.g. a Windows desktop session's C:\Users\<user>, or a
-        # POSIX /home/<user>) reaches `docker run -w <host-path>` and the
-        # container fails to start (exit 125). Re-apply the same host/relative
-        # path guard to the *resolved* cwd so the override can't bypass it.
-        # Valid in-container override paths (RL/benchmark sandboxes that set
-        # cwd to /workspace, /root, etc.) are absolute non-host paths and pass
-        # through untouched.
-        if env_type in _CONTAINER_BACKENDS and _is_unusable_container_cwd(cwd):
-            if cwd != config["cwd"]:
-                logger.info(
-                    "Ignoring host/relative cwd override %r for %s backend "
-                    "(won't exist in sandbox). Using %r instead.",
-                    cwd, env_type, config["cwd"],
+        cwd_override = (
+            overrides.get("cwd")
+            if (
+                not target_resolution.named
+                or (
+                    target_resolution.is_default
+                    and target_resolution.backend != "ssh"
                 )
-            cwd = config["cwd"]
+            )
+            else None
+        )
+        cwd = cwd_override or get_session_cwd(
+            task_id, _resolution=target_resolution,
+        ) or config["cwd"]
+        cwd = _apply_task_cwd_override(config, cwd, cwd_override)
         default_timeout = config["timeout"]
         effective_timeout = timeout or default_timeout
 
@@ -2245,7 +2673,7 @@ def terminal_tool(
             # task_id; honor it instead of spawning a duplicate.
             _existing_key = (
                 effective_task_id if effective_task_id in _active_environments
-                else (task_id if task_id and task_id in _active_environments else None)
+                else (raw_environment_key if raw_environment_key in _active_environments else None)
             )
             if _existing_key is not None:
                 _last_activity[_existing_key] = time.time()
@@ -2266,7 +2694,7 @@ def terminal_tool(
                 with _env_lock:
                     _existing_key = (
                         effective_task_id if effective_task_id in _active_environments
-                        else (task_id if task_id and task_id in _active_environments else None)
+                        else (raw_environment_key if raw_environment_key in _active_environments else None)
                     )
                     if _existing_key is not None:
                         _last_activity[_existing_key] = time.time()
@@ -2276,7 +2704,7 @@ def terminal_tool(
                 if needs_creation:
                     if env_type == "singularity":
                         _check_disk_usage_warning()
-                    logger.info("Creating new %s environment for task %s...", env_type, effective_task_id[:8])
+                    logger.info("Creating new %s environment for task %s...", env_type, effective_task_id)
                     try:
                         ssh_config = None
                         if env_type == "ssh":
@@ -2305,6 +2733,7 @@ def terminal_tool(
                                 "docker_network": config.get("docker_network", True),
                                 "docker_persist_across_processes": config.get("docker_persist_across_processes", True),
                                 "docker_orphan_reaper": config.get("docker_orphan_reaper", True),
+                                "lifetime_seconds": config.get("lifetime_seconds", 300),
                             }
 
                         local_config = None
@@ -2321,9 +2750,10 @@ def terminal_tool(
                             ssh_config=ssh_config,
                             container_config=container_config,
                             local_config=local_config,
-                            task_id=effective_task_id,
+                            task_id=backend_task_id,
                             host_cwd=config.get("host_cwd"),
                         )
+                        _record_environment_lifetime(new_env, config)
                     except ImportError as e:
                         return json.dumps({
                             "output": "",
@@ -2336,7 +2766,7 @@ def terminal_tool(
                         _active_environments[effective_task_id] = new_env
                         _last_activity[effective_task_id] = time.time()
                         env = new_env
-                    logger.info("%s environment ready for task %s", env_type, effective_task_id[:8])
+                    logger.info("%s environment ready for task %s", env_type, effective_task_id)
 
         if env is None:
             # Unreachable in practice (either the cached branch or the creation
@@ -2383,11 +2813,14 @@ def terminal_tool(
             approval = _check_all_guards(
                 command, env_type,
                 has_host_access=_docker_has_host_access(config),
+                execution_target=target_resolution.target,
+                execution_backend=target_resolution.backend,
+                execution_target_named=target_resolution.named,
             )
             if not approval["approved"]:
                 # Check if this is an approval_required (gateway ask mode)
                 if approval.get("status") == "pending_approval":
-                    return json.dumps({
+                    pending_result = {
                         "output": "",
                         "exit_code": -1,
                         "error": "",
@@ -2398,7 +2831,9 @@ def terminal_tool(
                         "pattern_key": approval.get("pattern_key", ""),
                         "smart_denied": approval.get("smart_denied", False),
                         "allow_permanent": approval.get("allow_permanent", True),
-                    }, ensure_ascii=False)
+                    }
+                    pending_result.update(target_resolution.metadata(cwd=cwd))
+                    return json.dumps(pending_result, ensure_ascii=False)
                 # Command was blocked
                 desc = approval.get("description", "command flagged")
                 fallback_msg = (
@@ -2463,25 +2898,57 @@ def terminal_tool(
                 workdir=workdir,
                 default_cwd=cwd,
                 session_key=session_key,
+                _resolution=target_resolution,
             )
             try:
-                if env_type == "local":
-                    proc_session = process_registry.spawn_local(
-                        command=command,
-                        cwd=effective_cwd,
-                        task_id=effective_task_id,
-                        session_key=session_key,
-                        env_vars=env.env if hasattr(env, 'env') else None,
-                        use_pty=effective_pty,
-                    )
-                else:
-                    proc_session = process_registry.spawn_via_env(
-                        env=env,
-                        command=command,
-                        cwd=effective_cwd,
-                        task_id=effective_task_id,
-                        session_key=session_key,
-                    )
+                spawn_metadata = {}
+                environment_task_key = str(
+                    target_resolution.scope_task_key(effective_base_task_id)
+                )
+                if target_resolution.named:
+                    spawn_metadata = {
+                        "target": target_resolution.target,
+                        "backend": target_resolution.backend,
+                        "timeout_seconds": effective_timeout,
+                        "environment_task_key": environment_task_key,
+                    }
+                with _scoped_sudo_execution(
+                    target_resolution.target,
+                    target_resolution.backend,
+                    named=target_resolution.named,
+                    sudo_password=target_resolution.config.get("sudo_password"),
+                ):
+                    if env_type == "local":
+                        proc_session = process_registry.spawn_local(
+                            command=command,
+                            cwd=effective_cwd,
+                            task_id=effective_base_task_id,
+                            session_key=session_key,
+                            env_vars=env.env if hasattr(env, 'env') else None,
+                            use_pty=effective_pty,
+                            **spawn_metadata,
+                        )
+                    else:
+                        proc_session = process_registry.spawn_via_env(
+                            env=env,
+                            command=command,
+                            cwd=effective_cwd,
+                            task_id=effective_base_task_id,
+                            session_key=session_key,
+                            timeout=effective_timeout,
+                            **spawn_metadata,
+                        )
+
+                # Preserve the exact legacy spawn call signature while still
+                # attaching additive metadata to subsequent process results.
+                if not target_resolution.named:
+                    proc_session.target = target_resolution.target
+                    proc_session.backend = target_resolution.backend
+                    proc_session.timeout_seconds = effective_timeout
+                    proc_session.environment_task_key = environment_task_key
+                    checkpoint = getattr(process_registry, "_write_checkpoint", None)
+                    if callable(checkpoint):
+                        checkpoint()
 
                 result_data = {
                     "output": "Background process started",
@@ -2490,6 +2957,7 @@ def terminal_tool(
                     "exit_code": 0,
                     "error": None,
                 }
+                result_data.update(target_resolution.metadata(cwd=effective_cwd))
                 # Background spawns detached and returns exit_code 0 immediately;
                 # it never inline-polls is_interrupted(), so the stale-bit kill
                 # cannot occur here and this note never co-occurs with rc=130.
@@ -2724,6 +3192,7 @@ def terminal_tool(
                         workdir=workdir,
                         default_cwd=cwd,
                         session_key=session_key,
+                        _resolution=target_resolution,
                     )
                     execute_kwargs = {
                         "timeout": effective_timeout,
@@ -2735,7 +3204,13 @@ def terminal_tool(
                         # reads, RPC reads) intentionally stay unbounded.
                         "bounded_capture": True,
                     }
-                    result = env.execute(command, **execute_kwargs)
+                    with _scoped_sudo_execution(
+                        target_resolution.target,
+                        target_resolution.backend,
+                        named=target_resolution.named,
+                        sudo_password=target_resolution.config.get("sudo_password"),
+                    ):
+                        result = env.execute(command, **execute_kwargs)
                 except Exception as e:
                     error_str = str(e).lower()
                     if "timeout" in error_str:
@@ -2771,7 +3246,9 @@ def terminal_tool(
             # session — record it under the session key so the durable record
             # never depends on the shared env surviving or on who drives the
             # env next.
-            record_session_cwd(session_key, getattr(env, "cwd", None))
+            record_session_cwd(
+                session_key, getattr(env, "cwd", None), _resolution=target_resolution,
+            )
 
             # Extract output
             output = result.get("output", "")
@@ -2782,7 +3259,10 @@ def terminal_tool(
 
             sudo_auth_failed = _sudo_wrong_password_failure(output)
             sudo_cache_cleared = _invalidate_cached_sudo_on_auth_failure(
-                command, output
+                command,
+                output,
+                target_resolution.target,
+                target_resolution.backend,
             )
             if sudo_cache_cleared:
                 has_sudo_prompt_callback = _get_sudo_password_callback() is not None
@@ -2800,13 +3280,21 @@ def terminal_tool(
             # The hook is fail-open, and the first valid string return wins.
             try:
                 from hermes_cli.plugins import invoke_hook
+                hook_kwargs = {
+                    "command": command,
+                    "output": output,
+                    "returncode": returncode,
+                    "task_id": effective_base_task_id or "",
+                    "env_type": env_type,
+                }
+                if target_resolution.named:
+                    hook_kwargs.update({
+                        "execution_target": target_resolution.target,
+                        "execution_backend": target_resolution.backend,
+                    })
                 hook_results = invoke_hook(
                     "transform_terminal_output",
-                    command=command,
-                    output=output,
-                    returncode=returncode,
-                    task_id=effective_task_id or "",
-                    env_type=env_type,
+                    **hook_kwargs,
                 )
                 for hook_result in hook_results:
                     if isinstance(hook_result, str):
@@ -2854,25 +3342,31 @@ def terminal_tool(
                 "exit_code": returncode,
                 "error": None,
             }
-            try:
-                from agent.verification_evidence import record_terminal_result
+            result_dict.update(target_resolution.metadata(cwd=command_cwd))
+            if target_resolution.backend == "local":
+                try:
+                    from agent.verification_evidence import record_terminal_result
 
-                evidence = record_terminal_result(
-                    command=command,
-                    cwd=command_cwd,
-                    session_id=session_id or task_id or effective_task_id or "default",
-                    exit_code=returncode,
-                    output=output,
-                )
-                if evidence:
-                    result_dict["verification_evidence"] = {
-                        "status": evidence.get("status"),
-                        "kind": evidence.get("kind"),
-                        "scope": evidence.get("scope"),
-                        "canonical_command": evidence.get("canonical_command"),
-                    }
-            except Exception:
-                logger.debug("verification evidence recording failed", exc_info=True)
+                    evidence = record_terminal_result(
+                        command=command,
+                        cwd=command_cwd,
+                        session_id=(
+                            session_id or task_id or backend_task_id or "default"
+                        ),
+                        exit_code=returncode,
+                        output=output,
+                    )
+                    if evidence:
+                        result_dict["verification_evidence"] = {
+                            "status": evidence.get("status"),
+                            "kind": evidence.get("kind"),
+                            "scope": evidence.get("scope"),
+                            "canonical_command": evidence.get("canonical_command"),
+                        }
+                except Exception:
+                    logger.debug(
+                        "verification evidence recording failed", exc_info=True,
+                    )
             if approval_note:
                 # Treat rc=130 as an interrupt only when the executor's marker is
                 # present.  A command can legitimately exit 130 on its own
@@ -2909,10 +3403,9 @@ def terminal_tool(
         }, ensure_ascii=False)
 
 
-def check_terminal_requirements() -> bool:
-    """Check if all requirements for the terminal tool are met."""
+def _check_terminal_config_requirements(config: Dict[str, Any]) -> bool:
+    """Check one already-resolved backend configuration."""
     try:
-        config = _get_env_config()
         env_type = config["env_type"]
 
         if env_type == "local":
@@ -3019,6 +3512,46 @@ def check_terminal_requirements() -> bool:
         return False
 
 
+def check_terminal_requirements() -> bool:
+    """Keep tools available when any configured execution target is usable."""
+    try:
+        from tools.execution_targets import list_execution_targets
+
+        inventory = list_execution_targets()
+    except Exception as exc:
+        # In named-target mode, malformed config should remain model-visible via
+        # the normal tool error instead of removing every execution/file tool.
+        try:
+            from hermes_cli.config import load_config_readonly
+
+            terminal_cfg = load_config_readonly().get("terminal", {})
+            if isinstance(terminal_cfg, dict) and terminal_cfg.get("targets"):
+                logger.error("Invalid named execution target config: %s", exc)
+                return True
+        except Exception:
+            pass
+        return _check_terminal_config_requirements(_get_env_config())
+
+    if inventory and inventory[0].named:
+        # Cheap/always-available local targets first, so an unavailable Docker
+        # daemon or cloud credential on another target does not emit a scary
+        # startup error when at least one target is healthy.
+        ordered = sorted(
+            inventory,
+            key=lambda item: (item.backend != "local", not item.is_default, item.target),
+        )
+        for resolution in ordered:
+            try:
+                config = _get_env_config(dict(resolution.config))
+            except Exception:
+                continue
+            if _check_terminal_config_requirements(config):
+                return True
+        return False
+
+    return _check_terminal_config_requirements(_get_env_config())
+
+
 if __name__ == "__main__":
     # Simple test when run directly
     print("Terminal Tool Module")
@@ -3095,6 +3628,10 @@ TERMINAL_SCHEMA = {
                 "type": "string",
                 "description": "Working directory for this command (absolute path). Defaults to the session working directory."
             },
+            "target": {
+                "type": "string",
+                "description": "Named execution target from terminal.targets (for example 'local' or 'devbox'). Omit to use terminal.default_target; legacy flat config accepts only 'default'.",
+            },
             "pty": {
                 "type": "boolean",
                 "description": "Run in pseudo-terminal (PTY) mode for interactive CLI tools like Codex, Claude Code, or Python REPL. Only works with local and SSH backends. Default: false.",
@@ -3127,6 +3664,7 @@ def _handle_terminal(args, **kw):
         pty=args.get("pty", False),
         notify_on_complete=args.get("notify_on_complete", False),
         watch_patterns=args.get("watch_patterns"),
+        target=args.get("target"),
     )
 
 

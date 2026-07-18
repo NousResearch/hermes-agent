@@ -1958,9 +1958,10 @@ def _run_single_child(
         # isolated in its own record (a child's cd no longer bleeds back into
         # the parent once readers flip to the record store).
         try:
-            from tools.terminal_tool import get_session_cwd, record_session_cwd
+            from tools.terminal_tool import inherit_session_cwds
 
-            record_session_cwd(child_task_id, get_session_cwd(parent_task_id))
+            if parent_task_id:
+                inherit_session_cwds(parent_task_id, child_task_id)
         except Exception as e:
             logger.debug("Child cwd seed failed: %s", e)
         wall_start = time.time()

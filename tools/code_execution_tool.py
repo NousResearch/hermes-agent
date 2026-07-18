@@ -292,33 +292,33 @@ _TOOL_STUBS = {
     ),
     "read_file": (
         "read_file",
-        "path: str, offset: int = 1, limit: int = 500",
+        "path: str, offset: int = 1, limit: int = 500, target: str = None",
         '"""Read a file (1-indexed lines). Returns dict with "content" and "total_lines"."""',
-        '{"path": path, "offset": offset, "limit": limit}',
+        '{"path": path, "offset": offset, "limit": limit, "target": target}',
     ),
     "write_file": (
         "write_file",
-        "path: str, content: str, cross_profile: bool = False",
+        "path: str, content: str, cross_profile: bool = False, target: str = None",
         '"""Write content to a file (always overwrites). Returns dict with status. cross_profile=True opts out of the cross-Hermes-profile soft guard."""',
-        '{"path": path, "content": content, "cross_profile": cross_profile}',
+        '{"path": path, "content": content, "cross_profile": cross_profile, "target": target}',
     ),
     "search_files": (
         "search_files",
-        'pattern: str, target: str = "content", path: str = ".", file_glob: str = None, limit: int = 50, offset: int = 0, output_mode: str = "content", context: int = 0',
+        'pattern: str, target: str = "content", path: str = ".", file_glob: str = None, limit: int = 50, offset: int = 0, output_mode: str = "content", context: int = 0, execution_target: str = None',
         '"""Search file contents (target="content") or find files by name (target="files"). Returns dict with "matches"."""',
-        '{"pattern": pattern, "target": target, "path": path, "file_glob": file_glob, "limit": limit, "offset": offset, "output_mode": output_mode, "context": context}',
+        '{"pattern": pattern, "target": target, "path": path, "file_glob": file_glob, "limit": limit, "offset": offset, "output_mode": output_mode, "context": context, "execution_target": execution_target}',
     ),
     "patch": (
         "patch",
-        'path: str = None, old_string: str = None, new_string: str = None, replace_all: bool = False, mode: str = "replace", patch: str = None, cross_profile: bool = False',
+        'path: str = None, old_string: str = None, new_string: str = None, replace_all: bool = False, mode: str = "replace", patch: str = None, cross_profile: bool = False, target: str = None',
         '"""Targeted find-and-replace (mode="replace") or V4A multi-file patches (mode="patch"). Returns dict with status. cross_profile=True opts out of the cross-Hermes-profile soft guard."""',
-        '{"path": path, "old_string": old_string, "new_string": new_string, "replace_all": replace_all, "mode": mode, "patch": patch, "cross_profile": cross_profile}',
+        '{"path": path, "old_string": old_string, "new_string": new_string, "replace_all": replace_all, "mode": mode, "patch": patch, "cross_profile": cross_profile, "target": target}',
     ),
     "terminal": (
         "terminal",
-        "command: str, timeout: int = None, workdir: str = None",
+        "command: str, timeout: int = None, workdir: str = None, target: str = None",
         '"""Run a shell command (foreground only). Returns dict with "output" and "exit_code"."""',
-        '{"command": command, "timeout": timeout, "workdir": workdir}',
+        '{"command": command, "timeout": timeout, "workdir": workdir, "target": target}',
     ),
 }
 
@@ -541,6 +541,24 @@ def _call(tool_name, args):
 _TERMINAL_BLOCKED_PARAMS = {"background", "pty", "notify_on_complete", "watch_patterns"}
 
 
+def _inherit_execution_target(tool_name: str, tool_args: Any,
+                              execution_target: Optional[str]) -> Any:
+    """Default nested target-aware tool calls to execute_code's target.
+
+    The generated stubs always send their optional selector, often as
+    ``None``. Treat that as omitted while preserving any explicit selector.
+    ``search_files`` keeps its historical ``target`` search-mode argument, so
+    its execution selector is named ``execution_target``.
+    """
+    if not execution_target or not isinstance(tool_args, dict):
+        return tool_args
+    selector = "execution_target" if tool_name == "search_files" else "target"
+    if tool_name in {"terminal", "read_file", "write_file", "patch", "search_files"}:
+        if tool_args.get(selector) is None:
+            tool_args[selector] = execution_target
+    return tool_args
+
+
 def _rpc_server_loop(
     server_sock: socket.socket,
     task_id: str,
@@ -550,6 +568,7 @@ def _rpc_server_loop(
     allowed_tools: frozenset,
     stop_event: threading.Event,
     rpc_token: str,
+    execution_target: Optional[str] = None,
 ):
     """
     Accept one client connection and dispatch tool-call requests until
@@ -607,6 +626,9 @@ def _rpc_server_loop(
 
                 tool_name = request.get("tool", "")
                 tool_args = request.get("args", {})
+                tool_args = _inherit_execution_target(
+                    tool_name, tool_args, execution_target,
+                )
 
                 # Enforce the allow-list
                 if tool_name not in allowed_tools:
@@ -684,7 +706,7 @@ def _rpc_server_loop(
 # Remote execution support (file-based RPC via terminal backend)
 # ---------------------------------------------------------------------------
 
-def _get_or_create_env(task_id: str):
+def _get_or_create_env(task_id: str, target: str = None):
     """Get or create the terminal environment for *task_id*.
 
     Reuses the same environment (container/sandbox/SSH session) that the
@@ -694,17 +716,27 @@ def _get_or_create_env(task_id: str):
     from tools.terminal_tool import (
         _active_environments, _env_lock, _create_environment,
         _get_env_config, _last_activity, _start_cleanup_thread,
-        _creation_locks, _creation_locks_lock, _task_env_overrides,
-        _resolve_container_task_id,
+        _creation_locks, _creation_locks_lock, _resolve_container_task_id,
+        resolve_task_overrides, get_session_cwd, _record_environment_lifetime,
+        _apply_task_cwd_override,
     )
+    from tools.execution_targets import resolve_execution_target
 
-    effective_task_id = _resolve_container_task_id(task_id)
+    raw_task_id = task_id or "default"
+    resolution = resolve_execution_target(target)
+    base_task_id = _resolve_container_task_id(raw_task_id)
+    effective_task_id = resolution.environment_key(base_task_id)
+    backend_task_id = resolution.backend_task_id(base_task_id)
+    config = (
+        _get_env_config(dict(resolution.config))
+        if resolution.named else _get_env_config()
+    )
 
     # Fast path: environment already exists
     with _env_lock:
         if effective_task_id in _active_environments:
             _last_activity[effective_task_id] = time.time()
-            return _active_environments[effective_task_id], _get_env_config()["env_type"]
+            return _active_environments[effective_task_id], config["env_type"]
 
     # Slow path: create environment (same pattern as file_tools._get_file_ops)
     with _creation_locks_lock:
@@ -716,11 +748,10 @@ def _get_or_create_env(task_id: str):
         with _env_lock:
             if effective_task_id in _active_environments:
                 _last_activity[effective_task_id] = time.time()
-                return _active_environments[effective_task_id], _get_env_config()["env_type"]
+                return _active_environments[effective_task_id], config["env_type"]
 
-        config = _get_env_config()
         env_type = config["env_type"]
-        overrides = _task_env_overrides.get(effective_task_id, {})
+        overrides = resolve_task_overrides(raw_task_id)
 
         if env_type == "docker":
             image = overrides.get("docker_image") or config["docker_image"]
@@ -733,7 +764,18 @@ def _get_or_create_env(task_id: str):
         else:
             image = ""
 
-        cwd = overrides.get("cwd") or config["cwd"]
+        cwd_override = (
+            overrides.get("cwd")
+            if (
+                not resolution.named
+                or (resolution.is_default and resolution.backend != "ssh")
+            )
+            else None
+        )
+        cwd = cwd_override or get_session_cwd(
+            raw_task_id, _resolution=resolution,
+        ) or config["cwd"]
+        cwd = _apply_task_cwd_override(config, cwd, cwd_override)
 
         container_config = None
         if env_type in {"docker", "singularity", "modal", "daytona"}:
@@ -742,9 +784,17 @@ def _get_or_create_env(task_id: str):
                 "container_memory": config.get("container_memory", 5120),
                 "container_disk": config.get("container_disk", 51200),
                 "container_persistent": config.get("container_persistent", True),
+                "modal_mode": config.get("modal_mode", "auto"),
                 "docker_volumes": config.get("docker_volumes", []),
+                "docker_mount_cwd_to_workspace": config.get("docker_mount_cwd_to_workspace", False),
+                "docker_forward_env": config.get("docker_forward_env", []),
+                "docker_env": config.get("docker_env", {}),
                 "docker_run_as_host_user": config.get("docker_run_as_host_user", False),
+                "docker_extra_args": config.get("docker_extra_args", []),
                 "docker_network": config.get("docker_network", True),
+                "docker_persist_across_processes": config.get("docker_persist_across_processes", True),
+                "docker_orphan_reaper": config.get("docker_orphan_reaper", True),
+                "lifetime_seconds": config.get("lifetime_seconds", 300),
             }
 
         ssh_config = None
@@ -764,7 +814,7 @@ def _get_or_create_env(task_id: str):
             }
 
         logger.info("Creating new %s environment for execute_code task %s...",
-                     env_type, effective_task_id[:8])
+                     env_type, str(effective_task_id)[:48])
         env = _create_environment(
             env_type=env_type,
             image=image,
@@ -773,9 +823,10 @@ def _get_or_create_env(task_id: str):
             ssh_config=ssh_config,
             container_config=container_config,
             local_config=local_config,
-            task_id=effective_task_id,
+            task_id=backend_task_id,
             host_cwd=config.get("host_cwd"),
         )
+        _record_environment_lifetime(env, config)
 
         with _env_lock:
             _active_environments[effective_task_id] = env
@@ -783,7 +834,7 @@ def _get_or_create_env(task_id: str):
 
         _start_cleanup_thread()
         logger.info("%s environment ready for execute_code task %s",
-                     env_type, effective_task_id[:8])
+                     env_type, str(effective_task_id)[:48])
         return env, env_type
 
 
@@ -830,6 +881,7 @@ def _rpc_poll_loop(
     allowed_tools: frozenset,
     stop_event: threading.Event,
     rpc_token: str,
+    execution_target: Optional[str] = None,
 ):
     """Poll the remote filesystem for tool call requests and dispatch them.
 
@@ -895,6 +947,9 @@ def _rpc_poll_loop(
 
                 tool_name = request.get("tool", "")
                 tool_args = request.get("args", {})
+                tool_args = _inherit_execution_target(
+                    tool_name, tool_args, execution_target,
+                )
                 seq = request.get("seq", 0)
                 seq_str = f"{seq:06d}"
                 res_file = f"{rpc_dir}/res_{seq_str}"
@@ -977,6 +1032,8 @@ def _execute_remote(
     code: str,
     task_id: Optional[str],
     enabled_tools: Optional[List[str]],
+    target: str = None,
+    mode: str = "strict",
 ) -> str:
     """Run a script on the remote terminal backend via file-based RPC.
 
@@ -994,8 +1051,15 @@ def _execute_remote(
     if not sandbox_tools:
         sandbox_tools = SANDBOX_ALLOWED_TOOLS
 
+    from tools.execution_targets import resolve_execution_target
+
     effective_task_id = task_id or "default"
-    env, env_type = _get_or_create_env(effective_task_id)
+    resolution = resolve_execution_target(target)
+    # Legacy omitted/default selection already routes every nested call to the
+    # one existing environment.  Keep that path byte-for-byte compatible and
+    # only inject/pass the extra selector when named targets are configured.
+    inherited_target = resolution.target if resolution.named else None
+    env, env_type = _get_or_create_env(effective_task_id, inherited_target)
 
     sandbox_id = uuid.uuid4().hex[:12]
     temp_dir = _env_temp_dir(env)
@@ -1016,7 +1080,7 @@ def _execute_remote(
             cwd="/", timeout=15,
         )
         if "OK" not in py_check.get("output", ""):
-            return json.dumps({
+            result = {
                 "status": "error",
                 "error": (
                     f"Python 3 is not available in the {env_type} terminal "
@@ -1025,7 +1089,9 @@ def _execute_remote(
                 ),
                 "tool_calls_made": 0,
                 "duration_seconds": 0,
-            })
+            }
+            result.update(resolution.metadata(cwd=getattr(env, "cwd", None)))
+            return json.dumps(result)
 
         # Create sandbox directory on remote
         env.execute(
@@ -1050,6 +1116,7 @@ def _execute_remote(
                 env, f"{sandbox_dir}/rpc", effective_task_id,
                 tool_call_log, tool_call_counter, max_tool_calls,
                 sandbox_tools, stop_event, rpc_token,
+                inherited_target,
             ),
             daemon=True,
         )
@@ -1059,7 +1126,8 @@ def _execute_remote(
         env_prefix = (
             f"HERMES_RPC_DIR={shlex.quote(f'{sandbox_dir}/rpc')} "
             f"HERMES_RPC_TOKEN={shlex.quote(rpc_token)} "
-            f"PYTHONDONTWRITEBYTECODE=1"
+            f"PYTHONDONTWRITEBYTECODE=1 "
+            f"PYTHONPATH={shlex.quote(sandbox_dir)}:$PYTHONPATH"
         )
         tz = os.getenv("HERMES_TIMEZONE", "").strip()
         if tz:
@@ -1068,8 +1136,25 @@ def _execute_remote(
         # Execute the script on the remote backend
         logger.info("Executing code on %s backend (task %s)...",
                      env_type, effective_task_id[:8])
+        if mode == "project":
+            from tools.terminal_tool import get_session_cwd
+
+            run_cwd = (
+                get_session_cwd(effective_task_id, target=inherited_target)
+                or getattr(env, "cwd", None)
+                or resolution.config.get("cwd")
+                or "/"
+            )
+        else:
+            run_cwd = sandbox_dir
+        script_ref = (
+            shlex.quote(f"{sandbox_dir}/script.py")
+            if mode == "project"
+            else "script.py"
+        )
         script_result = env.execute(
-            f"cd {quoted_sandbox_dir} && {env_prefix} python3 script.py",
+            f"{env_prefix} python3 {script_ref}",
+            cwd=run_cwd,
             timeout=timeout,
         )
 
@@ -1090,12 +1175,14 @@ def _execute_remote(
             duration, tool_call_counter[0], type(exc).__name__, exc,
             exc_info=True,
         )
-        return json.dumps({
+        result = {
             "status": "error",
             "error": str(exc),
             "tool_calls_made": tool_call_counter[0],
             "duration_seconds": duration,
-        }, ensure_ascii=False)
+        }
+        result.update(resolution.metadata(cwd=getattr(env, "cwd", None)))
+        return json.dumps(result, ensure_ascii=False)
 
     finally:
         # Stop the polling thread
@@ -1136,6 +1223,7 @@ def _execute_remote(
         "duration_seconds": duration,
     }
     result.update(stdout_metadata)
+    result.update(resolution.metadata(cwd=getattr(env, "cwd", None)))
 
     if status == "timeout":
         timeout_msg = f"Script timed out after {timeout}s and was killed."
@@ -1169,6 +1257,7 @@ def execute_code(
     code: str,
     task_id: Optional[str] = None,
     enabled_tools: Optional[List[str]] = None,
+    target: str = None,
 ) -> str:
     """
     Run a Python script in a sandboxed child process with RPC access
@@ -1182,6 +1271,8 @@ def execute_code(
         task_id:       Session task ID for tool isolation (terminal env, etc.).
         enabled_tools: Tool names enabled in the current session. The sandbox
                        gets the intersection with SANDBOX_ALLOWED_TOOLS.
+        target:        Optional named execution target. The configured default
+                       is selected when omitted.
 
     Returns:
         JSON string with execution results.
@@ -1195,9 +1286,23 @@ def execute_code(
     if not code or not code.strip():
         return tool_error("No code provided.")
 
+    try:
+        from tools.execution_targets import resolve_execution_target
+
+        resolution = resolve_execution_target(target)
+    except Exception as exc:
+        return tool_error(str(exc))
+    # Legacy omitted/default selection already routes every nested call to the
+    # one existing environment. Preserve that call shape and only propagate a
+    # selector when named targets are configured.
+    inherited_target = resolution.target if resolution.named else None
+
     # Dispatch: remote backends use file-based RPC, local uses UDS
     from tools.terminal_tool import _get_env_config, _docker_has_host_access
-    _env_config = _get_env_config()
+    _env_config = (
+        _get_env_config(dict(resolution.config))
+        if resolution.named else _get_env_config()
+    )
     env_type = _env_config["env_type"]
 
     # execute_code runs arbitrary Python (subprocess/os.system/...) that never
@@ -1210,6 +1315,9 @@ def execute_code(
     _guard = check_execute_code_guard(
         code, env_type,
         has_host_access=_docker_has_host_access(_env_config),
+        execution_target=resolution.target,
+        execution_backend=resolution.backend,
+        execution_target_named=resolution.named,
     )
     if not _guard.get("approved", False):
         return json.dumps({
@@ -1230,7 +1338,12 @@ def execute_code(
         clear_current_thread_interrupt()
 
     if env_type != "local":
-        return _execute_remote(code, task_id, enabled_tools)
+        mode = _get_execution_mode()
+        if inherited_target is None:
+            return _execute_remote(code, task_id, enabled_tools, mode=mode)
+        return _execute_remote(
+            code, task_id, enabled_tools, inherited_target, mode=mode,
+        )
 
     # --- Local execution path (UDS) --- below this line is unchanged ---
 
@@ -1325,6 +1438,7 @@ def execute_code(
             args=(
                 server_sock, task_id, tool_call_log,
                 tool_call_counter, max_tool_calls, sandbox_tools, stop_event, rpc_token,
+                inherited_target,
             ),
             daemon=True,
         )
@@ -1392,7 +1506,9 @@ def execute_code(
         # Env scrubbing and tool whitelist apply identically in both modes.
         _mode = _get_execution_mode()
         _child_python = _resolve_child_python(_mode)
-        _child_cwd = _resolve_child_cwd(_mode, tmpdir, task_id=task_id or "")
+        _child_cwd = _resolve_child_cwd(
+            _mode, tmpdir, task_id=task_id or "", target=inherited_target,
+        )
         _script_path = os.path.join(tmpdir, "script.py")
 
         proc = subprocess.Popen(
@@ -1560,6 +1676,7 @@ def execute_code(
             "duration_seconds": duration,
         }
         result.update(stdout_metadata)
+        result.update(resolution.metadata(cwd=_child_cwd))
 
         if status == "timeout":
             timeout_msg = f"Script timed out after {timeout}s and was killed."
@@ -1597,12 +1714,14 @@ def execute_code(
             exc,
             exc_info=True,
         )
-        return json.dumps({
+        result = {
             "status": "error",
             "error": str(exc),
             "tool_calls_made": tool_call_counter[0],
             "duration_seconds": duration,
-        }, ensure_ascii=False)
+        }
+        result.update(resolution.metadata())
+        return json.dumps(result, ensure_ascii=False)
 
     finally:
         # Cleanup temp dir and socket
@@ -1792,7 +1911,8 @@ def _resolve_child_python(mode: str) -> str:
     return sys.executable
 
 
-def _resolve_child_cwd(mode: str, staging_dir: str, task_id: str = "") -> str:
+def _resolve_child_cwd(mode: str, staging_dir: str, task_id: str = "",
+                       target: str = None) -> str:
     """Resolve the working directory for the execute_code subprocess.
 
     - ``strict``: the staging tmpdir (today's behavior).
@@ -1810,16 +1930,39 @@ def _resolve_child_cwd(mode: str, staging_dir: str, task_id: str = "") -> str:
     """
     if mode != "project":
         return staging_dir
+
+    target_resolution = None
+    target_cwd = ""
+    if target is not None:
+        try:
+            from tools.execution_targets import resolve_execution_target
+
+            target_resolution = resolve_execution_target(target)
+            target_cwd = str(target_resolution.config.get("cwd") or "").strip()
+        except Exception:
+            target_resolution = None
+
     if task_id:
         # 1. The session's cwd record — IS the session's `cd` state.
         try:
             from tools.terminal_tool import get_session_cwd
 
-            recorded = get_session_cwd(task_id)
+            recorded = get_session_cwd(task_id, target=target)
         except Exception:
             recorded = None
         if recorded and os.path.isdir(recorded):
             return recorded
+        # A non-default target owns its configured cwd. The host workspace
+        # override below belongs to the default target and must not replace it.
+        if (
+            target_resolution is not None
+            and target_resolution.named
+            and not target_resolution.is_default
+            and target_cwd
+        ):
+            expanded_target_cwd = os.path.abspath(os.path.expanduser(target_cwd))
+            if os.path.isdir(expanded_target_cwd):
+                return expanded_target_cwd
         # 2. Registered workspace override (session.cwd.set → gateway/TUI/ACP).
         try:
             from tools.file_tools import _registered_task_cwd_override
@@ -1829,7 +1972,9 @@ def _resolve_child_cwd(mode: str, staging_dir: str, task_id: str = "") -> str:
             session_cwd = None
         if session_cwd and os.path.isdir(session_cwd):
             return session_cwd
-    raw = os.environ.get("TERMINAL_CWD", "").strip()
+    raw = target_cwd
+    if not raw:
+        raw = os.environ.get("TERMINAL_CWD", "").strip()
     if raw:
         expanded = os.path.expanduser(raw)
         if os.path.isdir(expanded):
@@ -1855,19 +2000,19 @@ _TOOL_DOC_LINES = [
      "    Returns {\"results\": [{\"url\", \"title\", \"content\", \"error\"}, ...]} where content is markdown.\n"
      "    No LLM summarization. Pages over char_limit (default 15000) are head+tail truncated; full text stored on disk (path in the content footer)."),
     ("read_file",
-     "  read_file(path: str, offset: int = 1, limit: int = 500) -> dict\n"
+     "  read_file(path: str, offset: int = 1, limit: int = 500, target: str = None) -> dict\n"
      "    Lines are 1-indexed. Returns {\"content\": \"...\", \"total_lines\": N}"),
     ("write_file",
-     "  write_file(path: str, content: str) -> dict\n"
+     "  write_file(path: str, content: str, target: str = None) -> dict\n"
      "    Always overwrites the entire file."),
     ("search_files",
-     "  search_files(pattern: str, target=\"content\", path=\".\", file_glob=None, limit=50) -> dict\n"
-     "    target: \"content\" (search inside files) or \"files\" (find files by name). Returns {\"matches\": [...]}"),
+     "  search_files(pattern: str, target=\"content\", path=\".\", file_glob=None, limit=50, execution_target: str = None) -> dict\n"
+     "    target selects search mode (\"content\" or \"files\"); execution_target selects the configured environment. Returns {\"matches\": [...]}"),
     ("patch",
-     "  patch(path: str, old_string: str, new_string: str, replace_all: bool = False) -> dict\n"
+     "  patch(path: str, old_string: str, new_string: str, replace_all: bool = False, target: str = None) -> dict\n"
      "    Replaces old_string with new_string in the file."),
     ("terminal",
-     "  terminal(command: str, timeout=None, workdir=None) -> dict\n"
+     "  terminal(command: str, timeout=None, workdir=None, target: str = None) -> dict\n"
      "    Foreground only (no background/pty). Returns {\"output\": \"...\", \"exit_code\": N}"),
 ]
 
@@ -1955,6 +2100,13 @@ def build_execute_code_schema(enabled_sandbox_tools: set = None,
                         "and print your final result to stdout."
                     ),
                 },
+                "target": {
+                    "type": "string",
+                    "description": (
+                        "Optional named execution target, for example 'local' "
+                        "or 'devbox'. Uses terminal.default_target when omitted."
+                    ),
+                },
             },
             "required": ["code"],
         },
@@ -1976,7 +2128,8 @@ registry.register(
     handler=lambda args, **kw: execute_code(
         code=args.get("code", ""),
         task_id=kw.get("task_id"),
-        enabled_tools=kw.get("enabled_tools")),
+        enabled_tools=kw.get("enabled_tools"),
+        target=args.get("target")),
     check_fn=check_sandbox_requirements,
     emoji="🐍",
     max_result_size_chars=100_000,

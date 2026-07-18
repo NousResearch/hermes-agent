@@ -73,6 +73,23 @@ class TestOverrideCwdSanitizedAtCallSite:
     the (sanitized) config["cwd"] and flowed raw into `docker run -w`.
     """
 
+    def test_explicit_docker_mount_mode_uses_registered_host_workspace(
+        self, tmp_path,
+    ):
+        config = {
+            "env_type": "docker",
+            "cwd": "/workspace",
+            "host_cwd": None,
+            "docker_mount_cwd_to_workspace": True,
+        }
+
+        cwd = tt._apply_task_cwd_override(
+            config, str(tmp_path), str(tmp_path),
+        )
+
+        assert cwd == "/workspace"
+        assert config["host_cwd"] == str(tmp_path)
+
     def _run_and_capture_cwd(self, monkeypatch, override_cwd, config_cwd="/root"):
         """Drive terminal_tool() on the docker backend with a host-path cwd
         override registered, and return the cwd that reached _create_environment

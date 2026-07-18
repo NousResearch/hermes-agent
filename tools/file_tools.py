@@ -148,11 +148,13 @@ _BLOCKED_DEVICE_PATHS = frozenset({
 })
 
 
-def _resolve_path(filepath: str, task_id: str = "default") -> Path | PurePosixPath:
+def _resolve_path(
+    filepath: str, task_id: str = "default", execution_target: str | None = None,
+) -> Path | PurePosixPath:
     """Resolve a path relative to TERMINAL_CWD (the worktree base directory)
     instead of the main repository root.
     """
-    return _resolve_path_for_task(filepath, task_id)
+    return _resolve_path_for_task(filepath, task_id, execution_target)
 
 
 # Sentinel ``TERMINAL_CWD`` values that mean "not configured", NOT a literal
@@ -167,7 +169,9 @@ _TERMINAL_CWD_SENTINELS = frozenset({"", ".", "./", "auto", "cwd"})
 _CONTAINER_PATH_BACKENDS_FALLBACK = frozenset({"docker", "singularity", "modal", "daytona"})
 
 
-def _terminal_env_type_for_task(task_id: str = "default") -> str:
+def _terminal_env_type_for_task(
+    task_id: str = "default", execution_target: str | None = None,
+) -> str:
     """Best-effort terminal backend type for path-resolution decisions."""
     try:
         from tools.terminal_tool import (
@@ -176,13 +180,19 @@ def _terminal_env_type_for_task(task_id: str = "default") -> str:
             _get_env_config,
             _resolve_container_task_id,
         )
+        from tools.execution_targets import resolve_execution_target
 
+        resolution = resolve_execution_target(execution_target)
         try:
-            container_key = _resolve_container_task_id(task_id)
+            container_key = resolution.environment_key(
+                _resolve_container_task_id(task_id)
+            )
+            raw_key = resolution.environment_key(task_id)
         except Exception:
             container_key = task_id
+            raw_key = task_id
         with _env_lock:
-            env = _active_environments.get(container_key) or _active_environments.get(task_id)
+            env = _active_environments.get(container_key) or _active_environments.get(raw_key)
         if env is not None:
             name = env.__class__.__name__.lower()
             if "local" in name:
@@ -197,19 +207,128 @@ def _terminal_env_type_for_task(task_id: str = "default") -> str:
                 return "modal"
             if "daytona" in name:
                 return "daytona"
-        cfg = _get_env_config()
+        cfg = (
+            _get_env_config(dict(resolution.config))
+            if resolution.named else _get_env_config()
+        )
         return str(cfg.get("env_type") or os.getenv("TERMINAL_ENV") or "local").lower()
     except Exception:
         return str(os.getenv("TERMINAL_ENV") or "local").lower()
 
 
-def _uses_container_paths(task_id: str = "default") -> bool:
+def _uses_container_paths(
+    task_id: str = "default", execution_target: str | None = None,
+) -> bool:
     try:
         from tools.terminal_tool import _CONTAINER_BACKENDS
         container_backends = _CONTAINER_BACKENDS
     except Exception:
         container_backends = _CONTAINER_PATH_BACKENDS_FALLBACK
-    return _terminal_env_type_for_task(task_id) in container_backends
+    return _terminal_env_type_for_task(task_id, execution_target) in container_backends
+
+
+def _file_state_namespace(
+    task_id: str = "default", execution_target: str | None = None,
+) -> str | None:
+    """Namespace remote/container paths, but share locks for local aliases."""
+    try:
+        from tools.execution_targets import resolve_execution_target
+
+        resolution = resolve_execution_target(execution_target)
+        if resolution.backend == "local":
+            return None
+        if resolution.profile_scope:
+            return f"profile-{resolution.profile_scope}:{resolution.target}"
+        # Preserve the pre-target single-profile legacy state key.
+        return resolution.target if execution_target is not None else None
+    except Exception:
+        # Unknown targets are reported by the tool resolver before state access.
+        return execution_target
+
+
+def _backend_operation_path(
+    original: str,
+    resolved: str | Path | PurePosixPath,
+    task_id: str = "default",
+    execution_target: str | None = None,
+) -> str:
+    """Return the path that should be sent to the selected backend.
+
+    SSH owns relative and ``~`` expansion. Resolving those paths on the Hermes
+    host first creates a host-absolute path that may name a different file (or
+    no file) on the remote machine. Container/local backends retain the existing
+    exact resolved-path contract.
+    """
+    if _terminal_env_type_for_task(task_id, execution_target) == "ssh":
+        original = str(original)
+        if posixpath.isabs(original) or original.startswith("~"):
+            return original
+        try:
+            from tools.terminal_tool import get_session_cwd
+
+            recorded_cwd = get_session_cwd(task_id, target=execution_target)
+        except Exception:
+            recorded_cwd = None
+        if recorded_cwd and posixpath.isabs(str(recorded_cwd)):
+            return posixpath.normpath(posixpath.join(str(recorded_cwd), original))
+        try:
+            from tools.execution_targets import resolve_execution_target
+
+            resolution = resolve_execution_target(execution_target)
+        except Exception:
+            resolution = None
+        # Legacy SSH file operations historically followed the live env cwd.
+        # Only a named target has a stable configured root we can anchor before
+        # a session-specific terminal cwd has been recorded.
+        if resolution is not None and resolution.named:
+            session_cwd = _authoritative_workspace_root(task_id, execution_target)
+            if session_cwd and posixpath.isabs(str(session_cwd)):
+                return posixpath.normpath(posixpath.join(str(session_cwd), original))
+        return original
+    return str(resolved)
+
+
+def _backend_v4a_patch(
+    patch_text: str,
+    task_id: str,
+    execution_target: str | None,
+) -> str:
+    """Anchor relative V4A headers to the calling SSH session's cwd."""
+    if _terminal_env_type_for_task(task_id, execution_target) != "ssh":
+        return patch_text
+    import re
+
+    def _single(match):
+        path = match.group(2).strip()
+        routed = _backend_operation_path(
+            path, path, task_id, execution_target,
+        )
+        return match.group(1) + routed
+
+    rewritten = re.sub(
+        r"^(\*\*\*\s*(?:Update|Add|Delete)\s+File:\s*)(.+)$",
+        _single,
+        patch_text,
+        flags=re.MULTILINE,
+    )
+
+    def _move(match):
+        source = match.group(2).strip()
+        destination = match.group(3).strip()
+        routed_source = _backend_operation_path(
+            source, source, task_id, execution_target,
+        )
+        routed_destination = _backend_operation_path(
+            destination, destination, task_id, execution_target,
+        )
+        return f"{match.group(1)}{routed_source} -> {routed_destination}"
+
+    return re.sub(
+        r"^(\*\*\*\s*Move\s+File:\s*)(.+?)\s*->\s*(.+)$",
+        _move,
+        rewritten,
+        flags=re.MULTILINE,
+    )
 
 
 def _normalize_without_host_deref(path: str | Path | PurePosixPath) -> PurePosixPath:
@@ -269,7 +388,9 @@ def _registered_task_cwd_override(task_id: str = "default") -> str | None:
     return _sentinel_free_abs_cwd(overrides.get("cwd"))
 
 
-def _authoritative_workspace_root(task_id: str = "default") -> str | None:
+def _authoritative_workspace_root(
+    task_id: str = "default", execution_target: str | None = None,
+) -> str | None:
     """Best-effort absolute workspace root for divergence checks.
 
     Resolution:
@@ -279,11 +400,12 @@ def _authoritative_workspace_root(task_id: str = "default") -> str | None:
          registration, keyed by the raw session id. Because the record is
          per-session, one session's ``cd`` can never leak into another
          session's resolution.
-      2. A registered task/session cwd override (TUI/Desktop/ACP sessions
+      2. For an explicit non-default named target, that target's configured
+         cwd. Host workspace overrides must not leak into remote targets.
+      3. A registered task/session cwd override (TUI/Desktop/ACP sessions
          register a raw-keyed cwd before any tool runs). Normally already
-         mirrored into the record at registration; kept as a direct fallback
-         so a cleared/never-written record still resolves the workspace.
-      3. A sentinel-free absolute ``$TERMINAL_CWD`` (the worktree path set by
+         mirrored into the default target's record; kept as a fallback.
+      4. A sentinel-free absolute ``$TERMINAL_CWD`` (the worktree path set by
          ``cli.py``/``main.py`` for ``-w`` sessions).
 
     Returns ``None`` only when there is genuinely no reliable anchor, in which
@@ -292,14 +414,72 @@ def _authoritative_workspace_root(task_id: str = "default") -> str | None:
     try:
         from tools.terminal_tool import get_session_cwd
 
-        recorded = get_session_cwd(task_id)
+        recorded = get_session_cwd(task_id, target=execution_target)
     except Exception:
         recorded = None
     if recorded:
         return recorded
-    registered = _registered_task_cwd_override(task_id)
+
+    target_resolution = None
+    configured_target_cwd = None
+    if execution_target is not None:
+        try:
+            from tools.execution_targets import resolve_execution_target
+            from tools.terminal_tool import _get_env_config
+
+            target_resolution = resolve_execution_target(execution_target)
+            configured = _get_env_config(
+                dict(target_resolution.config)
+            ).get("cwd")
+            if isinstance(configured, str) and configured.strip():
+                if (
+                    target_resolution.backend == "ssh"
+                    and (
+                        configured in {".", "./", "auto", "cwd", "~"}
+                        or configured.startswith("~/")
+                    )
+                ):
+                    # Keep relative/tilde SSH paths on the remote side. Before
+                    # the SSH environment exists there is no truthful absolute
+                    # host-side anchor; actual file operations preserve the raw
+                    # path, and a later terminal call records the resolved remote
+                    # cwd for this session.
+                    configured_target_cwd = configured
+                elif configured in {".", "./", "auto", "cwd"}:
+                    configured_target_cwd = os.getcwd()
+                elif configured == "~" or configured.startswith("~/"):
+                    # SSH expands this remotely; local targets expand here.
+                    configured_target_cwd = (
+                        configured
+                        if target_resolution.backend == "ssh"
+                        else _expand_tilde(configured)
+                    )
+                else:
+                    configured_target_cwd = configured
+        except Exception:
+            target_resolution = None
+
+    if (
+        target_resolution is not None
+        and target_resolution.named
+        and not target_resolution.is_default
+        and configured_target_cwd
+    ):
+        return configured_target_cwd
+
+    registered = (
+        None
+        if (
+            target_resolution is not None
+            and target_resolution.named
+            and target_resolution.backend == "ssh"
+        )
+        else _registered_task_cwd_override(task_id)
+    )
     if registered:
         return registered
+    if configured_target_cwd:
+        return configured_target_cwd
     return _configured_terminal_cwd()
 
 
@@ -307,6 +487,7 @@ def _resolve_base_dir(
     task_id: str = "default",
     *,
     container_paths: bool | None = None,
+    execution_target: str | None = None,
 ) -> Path | PurePosixPath:
     """Return the ABSOLUTE base directory for resolving relative paths.
 
@@ -330,9 +511,16 @@ def _resolve_base_dir(
     outright (rather than anchoring them to the process cwd) and fall through to
     the process cwd only as a last resort, deterministically.
     """
-    root = _authoritative_workspace_root(task_id)
+    root = (
+        _authoritative_workspace_root(task_id, execution_target)
+        if execution_target is not None
+        else _authoritative_workspace_root(task_id)
+    )
     if container_paths is None:
-        container_paths = _uses_container_paths(task_id)
+        container_paths = (
+            _uses_container_paths(task_id, execution_target)
+            if execution_target is not None else _uses_container_paths(task_id)
+        )
     if root:
         base_text = _expand_tilde(root)
     else:
@@ -361,7 +549,9 @@ def _resolve_base_dir(
     return base.resolve()
 
 
-def _resolve_path_for_task(filepath: str, task_id: str = "default") -> Path | PurePosixPath:
+def _resolve_path_for_task(
+    filepath: str, task_id: str = "default", execution_target: str | None = None,
+) -> Path | PurePosixPath:
     """Resolve *filepath* against the task's absolute base directory.
 
     See :func:`_resolve_base_dir` for how the base is chosen. Absolute input
@@ -371,12 +561,17 @@ def _resolve_path_for_task(filepath: str, task_id: str = "default") -> Path | Pu
     translated to ``C:\\Users\\...`` before resolution so file tools don't
     treat them as relative ``\\c\\Users\\...`` under the process cwd.
     """
-    container_paths = _uses_container_paths(task_id)
+    container_paths = (
+        _uses_container_paths(task_id, execution_target)
+        if execution_target is not None else _uses_container_paths(task_id)
+    )
     if container_paths:
         expanded = _expand_tilde(filepath)
         if posixpath.isabs(expanded):
             return _normalize_without_host_deref(expanded)
-        resolved = _resolve_base_dir(task_id, container_paths=True) / expanded
+        resolved = _resolve_base_dir(
+            task_id, container_paths=True, execution_target=execution_target,
+        ) / expanded
         return _normalize_without_host_deref(resolved)
 
     # Host paths only — never rewrite Linux paths inside a container/WSL env.
@@ -388,17 +583,24 @@ def _resolve_path_for_task(filepath: str, task_id: str = "default") -> Path | Pu
 
         if ntpath.isabs(expanded):
             return Path(ntpath.normpath(expanded))
-        joined = ntpath.join(str(_resolve_base_dir(task_id, container_paths=False)), expanded)
+        joined = ntpath.join(str(_resolve_base_dir(
+            task_id, container_paths=False, execution_target=execution_target,
+        )), expanded)
         return Path(ntpath.normpath(joined))
 
     p = Path(expanded)
     if p.is_absolute():
         return p.resolve()
-    resolved = _resolve_base_dir(task_id, container_paths=False) / p
+    resolved = _resolve_base_dir(
+        task_id, container_paths=False, execution_target=execution_target,
+    ) / p
     return resolved.resolve()
 
 
-def _path_resolution_warning(filepath: str, resolved: Path, task_id: str = "default") -> str | None:
+def _path_resolution_warning(
+    filepath: str, resolved: Path, task_id: str = "default",
+    execution_target: str | None = None,
+) -> str | None:
     """Warn when a relative path resolved OUTSIDE the task's workspace root.
 
     Surfaces the worktree-cwd divergence the moment it would matter: if the
@@ -416,10 +618,10 @@ def _path_resolution_warning(filepath: str, resolved: Path, task_id: str = "defa
     try:
         if Path(_expand_tilde(filepath)).is_absolute():
             return None
-        workspace_root = _authoritative_workspace_root(task_id)
+        workspace_root = _authoritative_workspace_root(task_id, execution_target)
         if not workspace_root:
             return None  # No authoritative workspace root to compare against.
-        if _uses_container_paths(task_id):
+        if _uses_container_paths(task_id, execution_target):
             root = _normalize_without_host_deref(Path(_expand_tilde(workspace_root)))
         else:
             root = Path(_expand_tilde(workspace_root)).resolve()
@@ -515,7 +717,9 @@ def _is_blocked_device(filepath: str, base_dir: str | Path | None = None) -> boo
     return False
 
 
-def _search_result_read_block_error(path: str, task_id: str = "default") -> str | None:
+def _search_result_read_block_error(
+    path: str, task_id: str = "default", execution_target: str | None = None,
+) -> str | None:
     """Return the read-safety error for a search result path.
 
     Search backends may return paths relative to the task cwd, while
@@ -524,20 +728,22 @@ def _search_result_read_block_error(path: str, task_id: str = "default") -> str 
     resolution before applying the shared read guard.
     """
     try:
-        resolved = _resolve_path_for_task(path, task_id)
+        resolved = _resolve_path_for_task(path, task_id, execution_target)
     except (OSError, ValueError, RuntimeError):
         return get_read_block_error(path)
     return get_read_block_error(str(resolved))
 
 
-def _filter_read_blocked_search_results(result, task_id: str = "default") -> int:
+def _filter_read_blocked_search_results(
+    result, task_id: str = "default", execution_target: str | None = None,
+) -> int:
     """Remove credential/cache/env paths from a SearchResult in-place."""
     omitted = 0
 
     if hasattr(result, "matches") and result.matches:
         allowed_matches = []
         for match in result.matches:
-            if _search_result_read_block_error(match.path, task_id):
+            if _search_result_read_block_error(match.path, task_id, execution_target):
                 omitted += 1
                 continue
             allowed_matches.append(match)
@@ -546,7 +752,7 @@ def _filter_read_blocked_search_results(result, task_id: str = "default") -> int
     if hasattr(result, "files") and result.files:
         allowed_files = []
         for file_path in result.files:
-            if _search_result_read_block_error(file_path, task_id):
+            if _search_result_read_block_error(file_path, task_id, execution_target):
                 omitted += 1
                 continue
             allowed_files.append(file_path)
@@ -555,7 +761,7 @@ def _filter_read_blocked_search_results(result, task_id: str = "default") -> int
     if hasattr(result, "counts") and result.counts:
         allowed_counts = {}
         for file_path, count in result.counts.items():
-            if _search_result_read_block_error(file_path, task_id):
+            if _search_result_read_block_error(file_path, task_id, execution_target):
                 omitted += 1
                 continue
             allowed_counts[file_path] = count
@@ -593,10 +799,12 @@ def _get_hermes_config_resolved() -> str | None:
     return _hermes_config_resolved
 
 
-def _check_sensitive_path(filepath: str, task_id: str = "default") -> str | None:
+def _check_sensitive_path(
+    filepath: str, task_id: str = "default", execution_target: str | None = None,
+) -> str | None:
     """Return an error message if the path targets a sensitive system location."""
     try:
-        resolved = str(_resolve_path_for_task(filepath, task_id))
+        resolved = str(_resolve_path_for_task(filepath, task_id, execution_target))
     except (OSError, ValueError):
         resolved = filepath
     normalized = os.path.normpath(_expand_tilde(filepath))
@@ -623,7 +831,9 @@ def _check_sensitive_path(filepath: str, task_id: str = "default") -> str | None
     return None
 
 
-def _get_container_mirror_prefix_for_task(task_id: str = "default") -> str | None:
+def _get_container_mirror_prefix_for_task(
+    task_id: str = "default", execution_target: str | None = None,
+) -> str | None:
     """Return the container-side Hermes mirror prefix for Docker file tools."""
     try:
         from tools.terminal_tool import (
@@ -632,14 +842,17 @@ def _get_container_mirror_prefix_for_task(task_id: str = "default") -> str | Non
             _get_env_config,
             _resolve_container_task_id,
         )
+        from tools.execution_targets import resolve_execution_target
 
-        container_key = _resolve_container_task_id(task_id)
+        resolution = resolve_execution_target(execution_target)
+        container_key = resolution.environment_key(_resolve_container_task_id(task_id))
+        raw_key = resolution.environment_key(task_id)
     except Exception:
         return None
 
     try:
         with _env_lock:
-            env = _active_environments.get(container_key) or _active_environments.get(task_id)
+            env = _active_environments.get(container_key) or _active_environments.get(raw_key)
 
         if env is not None:
             if env.__class__.__name__ == "DockerEnvironment" and bool(
@@ -648,7 +861,10 @@ def _get_container_mirror_prefix_for_task(task_id: str = "default") -> str | Non
                 return "/root/.hermes"
             return None
 
-        config = _get_env_config()
+        config = (
+            _get_env_config(dict(resolution.config))
+            if resolution.named else _get_env_config()
+        )
     except Exception:
         return None
 
@@ -657,7 +873,9 @@ def _get_container_mirror_prefix_for_task(task_id: str = "default") -> str | Non
     return None
 
 
-def _check_cross_profile_path(filepath: str, task_id: str = "default") -> str | None:
+def _check_cross_profile_path(
+    filepath: str, task_id: str = "default", execution_target: str | None = None,
+) -> str | None:
     """Return a soft-guard warning when ``filepath`` lands in another Hermes
     profile's scoped area, a host-side sandbox-mirror of authoritative profile
     state, or the Docker container's sandbox mirror of Hermes state.
@@ -699,7 +917,7 @@ def _check_cross_profile_path(filepath: str, task_id: str = "default") -> str | 
     # in a session that cd'd into ``~/.hermes/profiles/other/`` is
     # classified against the right base.
     try:
-        resolved = str(_resolve_path_for_task(filepath, task_id))
+        resolved = str(_resolve_path_for_task(filepath, task_id, execution_target))
     except (OSError, ValueError):
         resolved = filepath
 
@@ -711,9 +929,14 @@ def _check_cross_profile_path(filepath: str, task_id: str = "default") -> str | 
     if warning is not None:
         return warning
 
+    mirror_prefix = (
+        _get_container_mirror_prefix_for_task(task_id)
+        if execution_target is None
+        else _get_container_mirror_prefix_for_task(task_id, execution_target)
+    )
     return get_container_mirror_warning(
         resolved,
-        mirror_prefix=_get_container_mirror_prefix_for_task(task_id),
+        mirror_prefix=mirror_prefix,
     )
 
 
@@ -925,7 +1148,9 @@ def _is_internal_file_tool_content(content: str) -> bool:
     )
 
 
-def _get_file_ops(task_id: str = "default") -> ShellFileOperations:
+def _get_file_ops(
+    task_id: str = "default", target: str = None,
+) -> ShellFileOperations:
     """Get or create ShellFileOperations for a terminal environment.
 
     Respects the TERMINAL_ENV setting -- if the task_id doesn't have an
@@ -946,13 +1171,17 @@ def _get_file_ops(task_id: str = "default") -> ShellFileOperations:
         _creation_locks,
         _creation_locks_lock,
         _resolve_container_task_id,
-        _is_unusable_container_cwd,
-        _CONTAINER_BACKENDS,
+        _record_environment_lifetime,
+        _apply_task_cwd_override,
     )
+    from tools.execution_targets import resolve_execution_target
     import time
 
     raw_task_id = task_id or "default"
-    task_id = _resolve_container_task_id(raw_task_id)
+    resolution = resolve_execution_target(target)
+    base_task_id = _resolve_container_task_id(raw_task_id)
+    task_id = resolution.environment_key(base_task_id)
+    backend_task_id = resolution.backend_task_id(base_task_id)
 
     # Fast path: check cache -- but also verify the underlying environment
     # is still alive (it may have been killed by the cleanup thread).
@@ -973,7 +1202,9 @@ def _get_file_ops(task_id: str = "default") -> ShellFileOperations:
                 if old_cwd:
                     try:
                         from tools.terminal_tool import record_session_cwd
-                        record_session_cwd(raw_task_id, old_cwd)
+                        record_session_cwd(
+                            raw_task_id, old_cwd, _resolution=resolution,
+                        )
                     except Exception:
                         pass
                 with _file_ops_lock:
@@ -998,7 +1229,10 @@ def _get_file_ops(task_id: str = "default") -> ShellFileOperations:
         if terminal_env is None:
             from tools.terminal_tool import resolve_task_overrides
 
-            config = _get_env_config()
+            config = (
+                _get_env_config(dict(resolution.config))
+                if resolution.named else _get_env_config()
+            )
             env_type = config["env_type"]
             overrides = resolve_task_overrides(raw_task_id)
 
@@ -1015,31 +1249,22 @@ def _get_file_ops(task_id: str = "default") -> ShellFileOperations:
 
             try:
                 from tools.terminal_tool import get_session_cwd
-                recorded_cwd = get_session_cwd(raw_task_id)
+                recorded_cwd = get_session_cwd(
+                    raw_task_id, _resolution=resolution,
+                )
             except Exception:
                 recorded_cwd = None
-            cwd = overrides.get("cwd") or recorded_cwd or config["cwd"]
-            # Re-apply the container cwd guard that _get_env_config() already
-            # ran on config["cwd"] (see #50636).  A per-task cwd override
-            # registered by the gateway/TUI/ACP for workspace tracking is a
-            # raw host path (e.g. a Desktop session's /Users/<me>/workspace or
-            # C:\\Users\\<me>). On a container backend that reaches
-            # ``docker run -w <host-path>`` and the container starts in a
-            # directory that doesn't exist inside the sandbox, so search_files
-            # and friends silently return empty results (#54447).  Sanitize it
-            # back to the already-validated config["cwd"] so the override can't
-            # bypass the guard.  Valid in-container override paths (RL/benchmark
-            # sandboxes that set cwd to /workspace, /root, etc.) are absolute
-            # non-host paths and pass through untouched.
-            if env_type in _CONTAINER_BACKENDS and _is_unusable_container_cwd(cwd):
-                if cwd != config["cwd"]:
-                    logger.info(
-                        "Ignoring host/relative cwd override %r for %s backend "
-                        "(won't exist in sandbox). Using %r instead.",
-                        cwd, env_type, config["cwd"],
-                    )
-                cwd = config["cwd"]
-            logger.info("Creating new %s environment for task %s...", env_type, task_id[:8])
+            cwd_override = (
+                overrides.get("cwd")
+                if (
+                    not resolution.named
+                    or (resolution.is_default and resolution.backend != "ssh")
+                )
+                else None
+            )
+            cwd = cwd_override or recorded_cwd or config["cwd"]
+            cwd = _apply_task_cwd_override(config, cwd, cwd_override)
+            logger.info("Creating new %s environment for task %s...", env_type, task_id)
 
             container_config = None
             if env_type in {"docker", "singularity", "modal", "daytona"}:
@@ -1048,11 +1273,17 @@ def _get_file_ops(task_id: str = "default") -> ShellFileOperations:
                     "container_memory": config.get("container_memory", 5120),
                     "container_disk": config.get("container_disk", 51200),
                     "container_persistent": config.get("container_persistent", True),
+                    "modal_mode": config.get("modal_mode", "auto"),
                     "docker_volumes": config.get("docker_volumes", []),
                     "docker_mount_cwd_to_workspace": config.get("docker_mount_cwd_to_workspace", False),
                     "docker_forward_env": config.get("docker_forward_env", []),
+                    "docker_env": config.get("docker_env", {}),
                     "docker_run_as_host_user": config.get("docker_run_as_host_user", False),
+                    "docker_extra_args": config.get("docker_extra_args", []),
                     "docker_network": config.get("docker_network", True),
+                    "docker_persist_across_processes": config.get("docker_persist_across_processes", True),
+                    "docker_orphan_reaper": config.get("docker_orphan_reaper", True),
+                    "lifetime_seconds": config.get("lifetime_seconds", 300),
                 }
 
             ssh_config = None
@@ -1079,16 +1310,17 @@ def _get_file_ops(task_id: str = "default") -> ShellFileOperations:
                 ssh_config=ssh_config,
                 container_config=container_config,
                 local_config=local_config,
-                task_id=task_id,
+                task_id=backend_task_id,
                 host_cwd=config.get("host_cwd"),
             )
+            _record_environment_lifetime(terminal_env, config)
 
             with _env_lock:
                 _active_environments[task_id] = terminal_env
                 _last_activity[task_id] = time.time()
 
             _start_cleanup_thread()
-            logger.info("%s environment ready for task %s", env_type, task_id[:8])
+            logger.info("%s environment ready for task %s", env_type, task_id)
 
     # Build file_ops from the (guaranteed live) environment and cache it
     file_ops = ShellFileOperations(terminal_env)
@@ -1097,7 +1329,7 @@ def _get_file_ops(task_id: str = "default") -> ShellFileOperations:
     return file_ops
 
 
-def clear_file_ops_cache(task_id: str = None):
+def clear_file_ops_cache(task_id=None):
     """Clear the file operations cache."""
     with _file_ops_lock:
         if task_id:
@@ -1106,15 +1338,27 @@ def clear_file_ops_cache(task_id: str = None):
             _file_ops_cache.clear()
 
 
-def read_file_tool(path: str, offset: int = 1, limit: int = 500, task_id: str = "default") -> str:
+def read_file_tool(
+    path: str, offset: int = 1, limit: int = 500,
+    task_id: str = "default", target: str = None,
+) -> str:
     """Read a file with pagination and line numbers."""
     try:
+        from tools.execution_targets import resolve_execution_target
+
+        resolution = resolve_execution_target(target)
+        selected_target = resolution.target if resolution.named else None
+        host_mtime_tracking = resolution.backend == "local"
+        state_task_id = resolution.session_key(task_id)
+        state_namespace = _file_state_namespace(task_id, selected_target)
         offset, limit = normalize_read_pagination(offset, limit)
 
         # ── Device path guard ─────────────────────────────────────────
         # Block paths that would hang the process (infinite output,
         # blocking on input).  Pure path check — no I/O.
-        device_base = None if Path(path).expanduser().is_absolute() else _resolve_base_dir(task_id)
+        device_base = None if Path(path).expanduser().is_absolute() else _resolve_base_dir(
+            task_id, execution_target=selected_target,
+        )
         if _is_blocked_device(path, base_dir=device_base):
             return json.dumps({
                 "error": (
@@ -1123,20 +1367,27 @@ def read_file_tool(path: str, offset: int = 1, limit: int = 500, task_id: str = 
                 ),
             })
 
-        _resolved = _resolve_path_for_task(path, task_id)
+        _resolved = _resolve_path_for_task(path, task_id, selected_target)
 
         # ── Structured-document extraction ────────────────────────────
         # Try before the binary-extension guard so .docx/.xlsx can render as text.
         # Malformed documents fall through to the normal path/binary guard.
         from tools.read_extract import ExtractionError, extract_document_text, is_extractable_document
 
-        if is_extractable_document(str(_resolved)):
+        if (
+            _terminal_env_type_for_task(task_id, selected_target) == "local"
+            and is_extractable_document(str(_resolved))
+        ):
             try:
                 extracted_text = extract_document_text(str(_resolved))
             except ExtractionError:
                 logger.debug("document extraction failed for %s", path, exc_info=True)
             else:
-                file_ops = _get_file_ops(task_id)
+                file_ops = (
+                    _get_file_ops(task_id)
+                    if selected_target is None
+                    else _get_file_ops(task_id, target=selected_target)
+                )
                 lines = extracted_text.splitlines()
                 total_lines = len(lines)
                 end_line = offset + limit - 1
@@ -1182,6 +1433,9 @@ def read_file_tool(path: str, offset: int = 1, limit: int = 500, task_id: str = 
                         )
                 if result_dict["content"]:
                     result_dict["content"] = redact_sensitive_text(result_dict["content"], file_read=True)
+                result_dict.update(resolution.metadata(
+                    cwd=_authoritative_workspace_root(task_id, selected_target),
+                ))
                 return json.dumps(result_dict, ensure_ascii=False)
 
         # ── Binary file guard ─────────────────────────────────────────
@@ -1213,7 +1467,7 @@ def read_file_tool(path: str, offset: int = 1, limit: int = 500, task_id: str = 
         resolved_str = str(_resolved)
         dedup_key = (resolved_str, offset, limit)
         with _read_tracker_lock:
-            task_data = _read_tracker.setdefault(task_id, {
+            task_data = _read_tracker.setdefault(state_task_id, {
                 "last_key": None, "consecutive": 0,
                 "read_history": set(), "dedup": {},
                 "dedup_hits": {}, "read_timestamps": {},
@@ -1225,7 +1479,11 @@ def read_file_tool(path: str, offset: int = 1, limit: int = 500, task_id: str = 
                 task_data["dedup_hits"] = {}
             if "read_timestamps" not in task_data:
                 task_data["read_timestamps"] = {}
-            cached_mtime = task_data.get("dedup", {}).get(dedup_key)
+            cached_mtime = (
+                task_data.get("dedup", {}).get(dedup_key)
+                if host_mtime_tracking
+                else None
+            )
 
         if cached_mtime is not None:
             try:
@@ -1256,20 +1514,32 @@ def read_file_tool(path: str, offset: int = 1, limit: int = 500, task_id: str = 
                             "already_read": hits + 1,
                         }, ensure_ascii=False)
 
-                    return json.dumps({
+                    unchanged = {
                         "status": "unchanged",
                         "message": _READ_DEDUP_STATUS_MESSAGE,
                         "path": path,
                         "dedup": True,
                         "content_returned": False,
-                    }, ensure_ascii=False)
+                    }
+                    unchanged.update(resolution.metadata(
+                        cwd=_authoritative_workspace_root(task_id, selected_target),
+                    ))
+                    return json.dumps(unchanged, ensure_ascii=False)
             except OSError:
                 pass  # stat failed — fall through to full read
 
         # ── Perform the read ──────────────────────────────────────────
-        file_ops = _get_file_ops(task_id)
-        result = file_ops.read_file(path, offset, limit)
+        file_ops = (
+            _get_file_ops(task_id)
+            if selected_target is None
+            else _get_file_ops(task_id, target=selected_target)
+        )
+        operation_path = _backend_operation_path(
+            path, _resolved, task_id, selected_target,
+        )
+        result = file_ops.read_file(operation_path, offset, limit)
         result_dict = result.to_dict()
+        result_dict.setdefault("resolved_path", operation_path)
 
         # ── Character-count guard ─────────────────────────────────────
         # We're model-agnostic so we can't count tokens; characters are
@@ -1354,12 +1624,13 @@ def read_file_tool(path: str, offset: int = 1, limit: int = 500, task_id: str = 
             # 1. Dedup: skip identical re-reads of unchanged files.
             # 2. Staleness: warn on write/patch if the file changed since
             #    the agent last read it (external edit, concurrent agent, etc.).
-            try:
-                _mtime_now = os.path.getmtime(resolved_str)
-                task_data["dedup"][dedup_key] = _mtime_now
-                task_data.setdefault("read_timestamps", {})[resolved_str] = _mtime_now
-            except OSError:
-                pass  # Can't stat — skip tracking for this entry
+            if host_mtime_tracking:
+                try:
+                    _mtime_now = os.path.getmtime(resolved_str)
+                    task_data["dedup"][dedup_key] = _mtime_now
+                    task_data.setdefault("read_timestamps", {})[resolved_str] = _mtime_now
+                except OSError:
+                    pass  # Can't stat — skip tracking for this entry
 
             # Bound the per-task containers so a long CLI session doesn't
             # accumulate megabytes of dict/set state.  See _cap_read_tracker_data.
@@ -1374,7 +1645,11 @@ def read_file_tool(path: str, offset: int = 1, limit: int = 500, task_id: str = 
         # isn't nested under ours.
         try:
             _partial = (offset > 1) or bool(result_dict.get("truncated"))
-            file_state.record_read(task_id, resolved_str, partial=_partial)
+            file_state.record_read(
+                state_task_id, resolved_str, partial=_partial,
+                namespace=state_namespace,
+                stat_path=host_mtime_tracking,
+            )
         except Exception:
             logger.debug("file_state.record_read failed", exc_info=True)
 
@@ -1396,6 +1671,10 @@ def read_file_tool(path: str, offset: int = 1, limit: int = 500, task_id: str = 
                 "If you are stuck in a loop, stop reading and proceed with writing or responding."
             )
 
+        result_dict.update(resolution.metadata(
+            cwd=_authoritative_workspace_root(task_id, selected_target),
+        ))
+
         return json.dumps(result_dict, ensure_ascii=False)
     except Exception as e:
         return tool_error(str(e))
@@ -1416,8 +1695,25 @@ def reset_file_dedup(task_id: str = None):
     """
     with _read_tracker_lock:
         if task_id:
-            task_data = _read_tracker.get(task_id)
-            if task_data:
+            try:
+                from tools.execution_targets import resolve_execution_target
+
+                scoped_task_id = resolve_execution_target().scope_task_key(task_id)
+            except Exception:
+                scoped_task_id = task_id
+            task_ids = {task_id, scoped_task_id}
+            keys = list(task_ids) + [
+                key for key in _read_tracker
+                if (
+                    isinstance(key, tuple)
+                    and len(key) == 2
+                    and key[0] in task_ids
+                )
+            ]
+            for key in keys:
+                task_data = _read_tracker.get(key)
+                if not task_data:
+                    continue
                 if "dedup" in task_data:
                     task_data["dedup"].clear()
                 if "dedup_hits" in task_data:
@@ -1430,7 +1726,9 @@ def reset_file_dedup(task_id: str = None):
                     task_data["dedup_hits"].clear()
 
 
-def notify_other_tool_call(task_id: str = "default"):
+def notify_other_tool_call(
+    task_id: str = "default", execution_target: str | None = None,
+):
     """Reset consecutive read/search counter for a task.
 
     Called by the tool dispatcher (model_tools.py) whenever a tool OTHER
@@ -1440,8 +1738,34 @@ def notify_other_tool_call(task_id: str = "default"):
     resets and the next read is treated as fresh.
     """
     with _read_tracker_lock:
-        task_data = _read_tracker.get(task_id)
-        if task_data:
+        if execution_target is None:
+            try:
+                from tools.execution_targets import resolve_execution_target
+
+                scoped_task_id = resolve_execution_target().scope_task_key(task_id)
+            except Exception:
+                scoped_task_id = task_id
+            keys = [task_id, scoped_task_id] + [
+                key for key in _read_tracker
+                if (
+                    isinstance(key, tuple)
+                    and len(key) == 2
+                    and key[0] in {task_id, scoped_task_id}
+                )
+            ]
+        else:
+            try:
+                from tools.execution_targets import resolve_execution_target
+
+                keys = [
+                    resolve_execution_target(execution_target).session_key(task_id)
+                ]
+            except Exception:
+                keys = [task_id]
+        for key in keys:
+            task_data = _read_tracker.get(key)
+            if not task_data:
+                continue
             task_data["last_key"] = None
             task_data["consecutive"] = 0
             # An intervening non-read tool call breaks any stub-loop in
@@ -1450,7 +1774,9 @@ def notify_other_tool_call(task_id: str = "default"):
                 task_data["dedup_hits"].clear()
 
 
-def _invalidate_dedup_for_path(filepath: str, task_id: str) -> None:
+def _invalidate_dedup_for_path(
+    filepath: str, task_id: str, execution_target: str | None = None,
+) -> None:
     """Remove all dedup cache entries whose resolved path matches *filepath*.
 
     Called after write_file and patch so that a subsequent read_file on
@@ -1463,12 +1789,16 @@ def _invalidate_dedup_for_path(filepath: str, task_id: str) -> None:
     Must be called with ``_read_tracker_lock`` **not** held — acquires it
     internally.
     """
+    from tools.execution_targets import resolve_execution_target
+    resolution = resolve_execution_target(execution_target)
+    selected_target = resolution.target if resolution.named else None
+    state_task_id = resolution.session_key(task_id)
     try:
-        resolved = str(_resolve_path(filepath))
+        resolved = str(_resolve_path_for_task(filepath, task_id, selected_target))
     except (OSError, ValueError):
         return
     with _read_tracker_lock:
-        task_data = _read_tracker.get(task_id)
+        task_data = _read_tracker.get(state_task_id)
         if task_data is None:
             return
         dedup = task_data.get("dedup")
@@ -1480,7 +1810,9 @@ def _invalidate_dedup_for_path(filepath: str, task_id: str) -> None:
             del dedup[k]
 
 
-def _update_read_timestamp(filepath: str, task_id: str) -> None:
+def _update_read_timestamp(
+    filepath: str, task_id: str, execution_target: str | None = None,
+) -> None:
     """Record the file's current modification time after a successful write.
 
     Called after write_file and patch so that consecutive edits by the
@@ -1491,32 +1823,42 @@ def _update_read_timestamp(filepath: str, task_id: str) -> None:
     subsequent reads return fresh content (fixes #13144).
     """
     # Invalidate dedup first (before acquiring lock for timestamp update).
-    _invalidate_dedup_for_path(filepath, task_id)
+    from tools.execution_targets import resolve_execution_target
+    resolution = resolve_execution_target(execution_target)
+    selected_target = resolution.target if resolution.named else None
+    state_task_id = resolution.session_key(task_id)
+    _invalidate_dedup_for_path(filepath, task_id, selected_target)
     try:
-        resolved = str(_resolve_path_for_task(filepath, task_id))
+        resolved = str(_resolve_path_for_task(filepath, task_id, selected_target))
         current_mtime = os.path.getmtime(resolved)
     except (OSError, ValueError):
         return
     with _read_tracker_lock:
-        task_data = _read_tracker.get(task_id)
+        task_data = _read_tracker.get(state_task_id)
         if task_data is not None:
             task_data.setdefault("read_timestamps", {})[resolved] = current_mtime
             _cap_read_tracker_data(task_data)
 
 
-def _check_file_staleness(filepath: str, task_id: str) -> str | None:
+def _check_file_staleness(
+    filepath: str, task_id: str, execution_target: str | None = None,
+) -> str | None:
     """Check whether a file was modified since the agent last read it.
 
     Returns a warning string if the file is stale (mtime changed since
     the last read_file call for this task), or None if the file is fresh
     or was never read.  Does not block — the write still proceeds.
     """
+    from tools.execution_targets import resolve_execution_target
+    resolution = resolve_execution_target(execution_target)
+    selected_target = resolution.target if resolution.named else None
+    state_task_id = resolution.session_key(task_id)
     try:
-        resolved = str(_resolve_path_for_task(filepath, task_id))
+        resolved = str(_resolve_path_for_task(filepath, task_id, selected_target))
     except (OSError, ValueError):
         return None
     with _read_tracker_lock:
-        task_data = _read_tracker.get(task_id)
+        task_data = _read_tracker.get(state_task_id)
         if not task_data:
             return None
         read_mtime = task_data.get("read_timestamps", {}).get(resolved)
@@ -1539,6 +1881,7 @@ def _mark_verification_stale(
     task_id: str,
     resolved_paths: list[str],
     session_id: str | None = None,
+    execution_target: str | None = None,
 ) -> None:
     """Best-effort note that successful edits made prior verification stale."""
     paths = [p for p in resolved_paths if p]
@@ -1558,7 +1901,7 @@ def _mark_verification_stale(
                 cwd = candidate
                 break
         if cwd is None:
-            cwd = _authoritative_workspace_root(task_id)
+            cwd = _authoritative_workspace_root(task_id, execution_target)
         if cwd is None:
             try:
                 cwd = str(Path(paths[0]).parent)
@@ -1571,7 +1914,8 @@ def _mark_verification_stale(
 
 def write_file_tool(path: str, content: str, task_id: str = "default",
                     cross_profile: bool = False,
-                    session_id: str | None = None) -> str:
+                    session_id: str | None = None,
+                    target: str = None) -> str:
     """Write content to a file.
 
     ``cross_profile`` opts out of the soft cross-Hermes-profile guard. The
@@ -1580,11 +1924,19 @@ def write_file_tool(path: str, content: str, task_id: str = "default",
     Pass ``True`` after explicit user direction — same shape as ``force``
     on the terminal tool.
     """
-    sensitive_err = _check_sensitive_path(path, task_id)
+    try:
+        from tools.execution_targets import resolve_execution_target
+        resolution = resolve_execution_target(target)
+    except Exception as exc:
+        return tool_error(str(exc))
+    selected_target = resolution.target if resolution.named else None
+    state_task_id = resolution.session_key(task_id)
+    state_namespace = _file_state_namespace(task_id, selected_target)
+    sensitive_err = _check_sensitive_path(path, task_id, selected_target)
     if sensitive_err:
         return tool_error(sensitive_err)
     if not cross_profile:
-        cross_warning = _check_cross_profile_path(path, task_id)
+        cross_warning = _check_cross_profile_path(path, task_id, selected_target)
         if cross_warning:
             return tool_error(cross_warning)
     if _is_internal_file_tool_content(content):
@@ -1598,35 +1950,56 @@ def write_file_tool(path: str, content: str, task_id: str = "default",
         # fall back to the legacy path — write proceeds, per-task staleness
         # check below still runs.
         try:
-            _resolved = str(_resolve_path_for_task(path, task_id))
+            _resolved = str(_resolve_path_for_task(path, task_id, selected_target))
         except Exception:
             _resolved = None
 
         if _resolved is None:
-            stale_warning = _check_file_staleness(path, task_id)
-            file_ops = _get_file_ops(task_id)
+            stale_warning = _check_file_staleness(path, task_id, selected_target)
+            file_ops = (
+                _get_file_ops(task_id)
+                if selected_target is None
+                else _get_file_ops(task_id, target=selected_target)
+            )
             result = file_ops.write_file(path, content)
             result_dict = result.to_dict()
             if stale_warning:
                 result_dict["_warning"] = stale_warning
             if not result_dict.get("error"):
-                _mark_verification_stale(task_id, [path], session_id=session_id)
-            _update_read_timestamp(path, task_id)
+                _mark_verification_stale(
+                    task_id, [path], session_id=session_id,
+                    execution_target=selected_target,
+                )
+            _update_read_timestamp(path, task_id, selected_target)
+            result_dict.update(resolution.metadata(
+                cwd=_authoritative_workspace_root(task_id, selected_target),
+            ))
             return json.dumps(result_dict, ensure_ascii=False)
 
         # Serialize the read→modify→write region per-path so concurrent
         # subagents can't interleave on the same file.  Different paths
         # remain fully parallel.
-        with file_state.lock_path(_resolved):
+        with file_state.lock_path(_resolved, namespace=state_namespace):
             # Cross-agent staleness wins over per-task warning when both
             # fire — its message names the sibling subagent.
-            cross_warning = file_state.check_stale(task_id, _resolved)
-            stale_warning = _check_file_staleness(path, task_id)
+            cross_warning = file_state.check_stale(
+                state_task_id, _resolved, namespace=state_namespace,
+            )
+            stale_warning = _check_file_staleness(path, task_id, selected_target)
             # Workspace-divergence warning: relative path resolving outside the
             # terminal's cwd (the worktree-cwd bug). Lowest priority of the three.
-            cwd_warning = _path_resolution_warning(path, Path(_resolved), task_id)
-            file_ops = _get_file_ops(task_id)
-            result = file_ops.write_file(_resolved, content)
+            cwd_warning = _path_resolution_warning(
+                path, Path(_resolved), task_id, selected_target,
+            )
+            file_ops = (
+                _get_file_ops(task_id)
+                if selected_target is None
+                else _get_file_ops(task_id, target=selected_target)
+            )
+            operation_path = _backend_operation_path(
+                path, _resolved, task_id, selected_target,
+            )
+            result = file_ops.write_file(operation_path, content)
             result_dict = result.to_dict()
             effective_warning = cross_warning or stale_warning or cwd_warning
             if effective_warning:
@@ -1634,15 +2007,23 @@ def write_file_tool(path: str, content: str, task_id: str = "default",
             # Always report the ABSOLUTE path actually written, so a wrong-cwd
             # mismatch is visible in the response instead of silently routing
             # the edit to the wrong checkout.
-            result_dict["resolved_path"] = _resolved
+            result_dict["resolved_path"] = operation_path
             if not result_dict.get("error"):
-                result_dict["files_modified"] = [_resolved]
-                _mark_verification_stale(task_id, [_resolved], session_id=session_id)
+                result_dict["files_modified"] = [operation_path]
+                _mark_verification_stale(
+                    task_id, [operation_path], session_id=session_id,
+                    execution_target=selected_target,
+                )
             # Refresh stamps after the successful write so consecutive
             # writes by this task don't trigger false staleness warnings.
-            _update_read_timestamp(path, task_id)
+            _update_read_timestamp(path, task_id, selected_target)
             if not result_dict.get("error"):
-                file_state.note_write(task_id, _resolved)
+                file_state.note_write(
+                    state_task_id, _resolved, namespace=state_namespace,
+                )
+        result_dict.update(resolution.metadata(
+            cwd=_authoritative_workspace_root(task_id, selected_target),
+        ))
         return json.dumps(result_dict, ensure_ascii=False)
     except Exception as e:
         if _is_expected_write_exception(e):
@@ -1655,13 +2036,22 @@ def write_file_tool(path: str, content: str, task_id: str = "default",
 def patch_tool(mode: str = "replace", path: str = None, old_string: str = None,
                new_string: str = None, replace_all: bool = False, patch: str = None,
                task_id: str = "default", cross_profile: bool = False,
-               session_id: str | None = None) -> str:
+               session_id: str | None = None, target: str = None) -> str:
     """Patch a file using replace mode or V4A patch format.
 
     ``cross_profile`` opts out of the soft cross-Hermes-profile guard for
     targets under another profile's skills/plugins/cron/memories
     directory. Same shape as ``write_file``'s flag.
     """
+    try:
+        from tools.execution_targets import resolve_execution_target
+        resolution = resolve_execution_target(target)
+    except Exception as exc:
+        return tool_error(str(exc))
+    selected_target = resolution.target if resolution.named else None
+    state_task_id = resolution.session_key(task_id)
+    state_namespace = _file_state_namespace(task_id, selected_target)
+
     # Check sensitive paths for both replace (explicit path) and V4A patch (extract paths)
     _paths_to_check = []
     if path:
@@ -1708,11 +2098,11 @@ def patch_tool(mode: str = "replace", path: str = None, old_string: str = None,
                     return _err
                 _paths_to_check.append(v4a_path)
     for _p in _paths_to_check:
-        sensitive_err = _check_sensitive_path(_p, task_id)
+        sensitive_err = _check_sensitive_path(_p, task_id, selected_target)
         if sensitive_err:
             return tool_error(sensitive_err)
         if not cross_profile:
-            cross_warning = _check_cross_profile_path(_p, task_id)
+            cross_warning = _check_cross_profile_path(_p, task_id, selected_target)
             if cross_warning:
                 return tool_error(cross_warning)
     try:
@@ -1723,7 +2113,7 @@ def patch_tool(mode: str = "replace", path: str = None, old_string: str = None,
         _seen: set[str] = set()
         for _p in _paths_to_check:
             try:
-                _r = str(_resolve_path_for_task(_p, task_id))
+                _r = str(_resolve_path_for_task(_p, task_id, selected_target))
             except Exception:
                 _r = None
             if _r and _r not in _seen:
@@ -1737,7 +2127,9 @@ def patch_tool(mode: str = "replace", path: str = None, old_string: str = None,
         from contextlib import ExitStack
         with ExitStack() as _locks:
             for _r in _resolved_paths:
-                _locks.enter_context(file_state.lock_path(_r))
+                _locks.enter_context(
+                    file_state.lock_path(_r, namespace=state_namespace)
+                )
 
             # Collect warnings — cross-agent registry first (names sibling),
             # then per-task tracker as a fallback.
@@ -1745,20 +2137,28 @@ def patch_tool(mode: str = "replace", path: str = None, old_string: str = None,
             _path_to_resolved: dict[str, str] = {}
             for _p in _paths_to_check:
                 try:
-                    _r = str(_resolve_path_for_task(_p, task_id))
+                    _r = str(_resolve_path_for_task(_p, task_id, selected_target))
                 except Exception:
                     _r = None
                 _path_to_resolved[_p] = _r
-                _cross = file_state.check_stale(task_id, _r) if _r else None
-                _sw = _cross or _check_file_staleness(_p, task_id)
+                _cross = file_state.check_stale(
+                    state_task_id, _r, namespace=state_namespace,
+                ) if _r else None
+                _sw = _cross or _check_file_staleness(_p, task_id, selected_target)
                 if not _sw and _r:
                     # Workspace-divergence warning (worktree-cwd bug): relative
                     # path resolving outside the terminal's cwd.
-                    _sw = _path_resolution_warning(_p, Path(_r), task_id)
+                    _sw = _path_resolution_warning(
+                        _p, Path(_r), task_id, selected_target,
+                    )
                 if _sw:
                     stale_warnings.append(_sw)
 
-            file_ops = _get_file_ops(task_id)
+            file_ops = (
+                _get_file_ops(task_id)
+                if selected_target is None
+                else _get_file_ops(task_id, target=selected_target)
+            )
 
             if mode == "replace":
                 if not path:
@@ -1770,12 +2170,17 @@ def patch_tool(mode: str = "replace", path: str = None, old_string: str = None,
                 # shell's own cwd may differ (worktree-cwd bug), and a relative
                 # path would let the two layers disagree about which file is
                 # being edited.
-                _replace_target = _path_to_resolved.get(path) or path
+                _replace_target = _backend_operation_path(
+                    path, _path_to_resolved.get(path) or path,
+                    task_id, selected_target,
+                )
                 result = file_ops.patch_replace(_replace_target, old_string, new_string, replace_all)
             elif mode == "patch":
                 if not patch:
                     return tool_error("patch content required")
-                result = file_ops.patch_v4a(patch)
+                result = file_ops.patch_v4a(
+                    _backend_v4a_patch(patch, task_id, selected_target)
+                )
             else:
                 return tool_error(f"Unknown mode: {mode}")
 
@@ -1786,7 +2191,11 @@ def patch_tool(mode: str = "replace", path: str = None, old_string: str = None,
             # mismatch (e.g. a worktree session editing the main checkout) is
             # visible in the response instead of silently landing elsewhere.
             _resolved_modified = [
-                _path_to_resolved.get(_p) or _p for _p in _paths_to_check
+                _backend_operation_path(
+                    _p, _path_to_resolved.get(_p) or _p,
+                    task_id, selected_target,
+                )
+                for _p in _paths_to_check
             ]
             # Refresh stored timestamps for all successfully-patched paths so
             # consecutive edits by this task don't trigger false warnings.
@@ -1794,16 +2203,21 @@ def patch_tool(mode: str = "replace", path: str = None, old_string: str = None,
                 result_dict["files_modified"] = _resolved_modified
                 if len(_resolved_modified) == 1:
                     result_dict["resolved_path"] = _resolved_modified[0]
-                _mark_verification_stale(task_id, _resolved_modified, session_id=session_id)
+                _mark_verification_stale(
+                    task_id, _resolved_modified, session_id=session_id,
+                    execution_target=selected_target,
+                )
                 for _p in _paths_to_check:
-                    _update_read_timestamp(_p, task_id)
+                    _update_read_timestamp(_p, task_id, selected_target)
                     _r = _path_to_resolved.get(_p)
                     if _r:
-                        file_state.note_write(task_id, _r)
+                        file_state.note_write(
+                            state_task_id, _r, namespace=state_namespace,
+                        )
                 # Successful patch: clear any prior consecutive-failure
                 # counters for the touched paths so a future failure on
                 # the same path starts the escalation cycle fresh.
-                _reset_patch_failures(task_id, [
+                _reset_patch_failures(state_task_id, [
                     _r for _r in (_path_to_resolved.get(_p) for _p in _paths_to_check) if _r
                 ])
         # Hint when old_string not found — saves iterations where the agent
@@ -1818,7 +2232,7 @@ def patch_tool(mode: str = "replace", path: str = None, old_string: str = None,
             failure_count = 0
             if mode == "replace" and path:
                 resolved = _path_to_resolved.get(path) or path
-                failure_count = _record_patch_failure(task_id, resolved)
+                failure_count = _record_patch_failure(state_task_id, resolved)
 
             if failure_count >= 3:
                 # Escalating hint after multiple consecutive failures on the
@@ -1841,6 +2255,9 @@ def patch_tool(mode: str = "replace", path: str = None, old_string: str = None,
                     "old_string not found. Use read_file to verify the current "
                     "content, or search_files to locate the text."
                 )
+        result_dict.update(resolution.metadata(
+            cwd=_authoritative_workspace_root(task_id, selected_target),
+        ))
         return json.dumps(result_dict, ensure_ascii=False)
     except Exception as e:
         return tool_error(str(e))
@@ -1849,9 +2266,14 @@ def patch_tool(mode: str = "replace", path: str = None, old_string: str = None,
 def search_tool(pattern: str, target: str = "content", path: str = ".",
                 file_glob: str = None, limit: int = 50, offset: int = 0,
                 output_mode: str = "content", context: int = 0,
-                task_id: str = "default") -> str:
+                task_id: str = "default", execution_target: str = None) -> str:
     """Search for content or files."""
     try:
+        from tools.execution_targets import resolve_execution_target
+
+        resolution = resolve_execution_target(execution_target)
+        selected_target = resolution.target if resolution.named else None
+        state_task_id = resolution.session_key(task_id)
         offset, limit = normalize_search_pagination(offset, limit)
 
         # Track searches to detect *consecutive* repeated search loops.
@@ -1867,7 +2289,7 @@ def search_tool(pattern: str, target: str = "content", path: str = ".",
             offset,
         )
         with _read_tracker_lock:
-            task_data = _read_tracker.setdefault(task_id, {
+            task_data = _read_tracker.setdefault(state_task_id, {
                 "last_key": None, "consecutive": 0, "read_history": set(),
             })
             if task_data["last_key"] == search_key:
@@ -1889,19 +2311,29 @@ def search_tool(pattern: str, target: str = "content", path: str = ".",
             }, ensure_ascii=False)
 
         try:
-            resolved_path = _resolve_path_for_task(path, task_id)
+            resolved_path = _resolve_path_for_task(path, task_id, selected_target)
         except (OSError, ValueError, RuntimeError):
             resolved_path = None
         block_error = get_read_block_error(str(resolved_path) if resolved_path else path)
         if block_error:
             return json.dumps({"error": block_error}, ensure_ascii=False)
 
-        file_ops = _get_file_ops(task_id)
+        file_ops = (
+            _get_file_ops(task_id)
+            if selected_target is None
+            else _get_file_ops(task_id, target=selected_target)
+        )
+        operation_path = _backend_operation_path(
+            path, resolved_path or path, task_id, selected_target,
+        )
         result = file_ops.search(
-            pattern=pattern, path=path, target=target, file_glob=file_glob,
+            pattern=pattern, path=operation_path, target=target,
+            file_glob=file_glob,
             limit=limit, offset=offset, output_mode=output_mode, context=context
         )
-        omitted = _filter_read_blocked_search_results(result, task_id)
+        omitted = _filter_read_blocked_search_results(
+            result, task_id, selected_target,
+        )
         if hasattr(result, 'matches'):
             for m in result.matches:
                 if hasattr(m, 'content') and m.content:
@@ -1919,6 +2351,10 @@ def search_tool(pattern: str, target: str = "content", path: str = ".",
                 f"You have run this exact search {count} times consecutively. "
                 "The results have not changed. Use the information you already have."
             )
+
+        result_dict.update(resolution.metadata(
+            cwd=_authoritative_workspace_root(task_id, selected_target),
+        ))
 
         result_json = json.dumps(result_dict, ensure_ascii=False)
         # Hint when results were truncated — explicit next offset is clearer
@@ -1952,7 +2388,8 @@ READ_FILE_SCHEMA = {
         "properties": {
             "path": {"type": "string", "description": "Path to the file to read (absolute, relative, or ~/path)"},
             "offset": {"type": "integer", "description": "Line number to start reading from (1-indexed, default: 1)", "default": 1, "minimum": 1},
-            "limit": {"type": "integer", "description": "Maximum number of lines to read (default: 500, max: 2000)", "default": 500, "maximum": 2000}
+            "limit": {"type": "integer", "description": "Maximum number of lines to read (default: 500, max: 2000)", "default": 500, "maximum": 2000},
+            "target": {"type": "string", "description": "Optional named execution target, for example 'local' or 'devbox'. Uses terminal.default_target when omitted."},
         },
         "required": ["path"]
     }
@@ -1966,6 +2403,7 @@ WRITE_FILE_SCHEMA = {
         "properties": {
             "path": {"type": "string", "description": "Path to the file to write (will be created if it doesn't exist, overwritten if it does)"},
             "content": {"type": "string", "description": "Complete content to write to the file"},
+            "target": {"type": "string", "description": "Optional named execution target, for example 'local' or 'devbox'. Uses terminal.default_target when omitted."},
             "cross_profile": {
                 "type": "boolean",
                 "description": "Opt out of the cross-profile soft guard. Defaults to false. Set true ONLY after explicit user direction to edit another Hermes profile's skills/plugins/cron/memories — by default these writes are blocked with a warning because they affect a different profile than the one this session is running under.",
@@ -2022,6 +2460,7 @@ PATCH_SCHEMA = {
                 "description": "Opt out of the cross-profile soft guard. Defaults to false. Set true ONLY after explicit user direction to edit another Hermes profile's skills/plugins/cron/memories.",
                 "default": False,
             },
+            "target": {"type": "string", "description": "Optional named execution target, for example 'local' or 'devbox'. Uses terminal.default_target when omitted."},
         },
         "required": ["mode"],
     },
@@ -2029,7 +2468,7 @@ PATCH_SCHEMA = {
 
 SEARCH_FILES_SCHEMA = {
     "name": "search_files",
-    "description": "Search file contents or find files by name. Use this instead of grep/rg/find/ls in terminal. Ripgrep-backed, faster than shell equivalents.\n\nContent search (target='content'): Regex search inside files. Output modes: full matches with line numbers, file paths only, or match counts.\n\nFile search (target='files'): Find files by glob pattern (e.g., '*.py', '*config*'). Also use this instead of ls — results sorted by modification time.",
+    "description": "Search file contents or find files by name. Use this instead of grep/rg/find/ls in terminal. Ripgrep-backed, faster than shell equivalents.\n\nCompatibility exception: target still selects search mode ('content' or 'files'); execution_target selects the named terminal execution target.\n\nContent search (target='content'): Regex search inside files. Output modes: full matches with line numbers, file paths only, or match counts.\n\nFile search (target='files'): Find files by glob pattern (e.g., '*.py', '*config*'). Also use this instead of ls — results sorted by modification time.",
     "parameters": {
         "type": "object",
         "properties": {
@@ -2040,7 +2479,8 @@ SEARCH_FILES_SCHEMA = {
             "limit": {"type": "integer", "description": "Maximum number of results to return (default: 50)", "default": 50},
             "offset": {"type": "integer", "description": "Skip first N results for pagination (default: 0)", "default": 0},
             "output_mode": {"type": "string", "enum": ["content", "files_only", "count"], "description": "Output format for grep mode: 'content' shows matching lines with line numbers, 'files_only' lists file paths, 'count' shows match counts per file", "default": "content"},
-            "context": {"type": "integer", "description": "Number of context lines before and after each match (grep mode only)", "default": 0}
+            "context": {"type": "integer", "description": "Number of context lines before and after each match (grep mode only)", "default": 0},
+            "execution_target": {"type": "string", "description": "Optional named execution target, for example 'local' or 'devbox'. This is separate from target, which selects content/files search mode."},
         },
         "required": ["pattern"]
     }
@@ -2049,7 +2489,10 @@ SEARCH_FILES_SCHEMA = {
 
 def _handle_read_file(args, **kw):
     tid = kw.get("task_id") or "default"
-    return read_file_tool(path=args.get("path", ""), offset=args.get("offset", 1), limit=args.get("limit", 500), task_id=tid)
+    return read_file_tool(
+        path=args.get("path", ""), offset=args.get("offset", 1),
+        limit=args.get("limit", 500), task_id=tid, target=args.get("target"),
+    )
 
 
 def _handle_write_file(args, **kw):
@@ -2076,6 +2519,7 @@ def _handle_write_file(args, **kw):
         path=args["path"], content=args["content"], task_id=tid,
         cross_profile=bool(args.get("cross_profile", False)),
         session_id=kw.get("session_id"),
+        target=args.get("target"),
     )
 
 
@@ -2087,6 +2531,7 @@ def _handle_patch(args, **kw):
         replace_all=args.get("replace_all", False), patch=args.get("patch"), task_id=tid,
         cross_profile=bool(args.get("cross_profile", False)),
         session_id=kw.get("session_id"),
+        target=args.get("target"),
     )
 
 
@@ -2098,7 +2543,10 @@ def _handle_search_files(args, **kw):
     return search_tool(
         pattern=args.get("pattern", ""), target=target, path=args.get("path", "."),
         file_glob=args.get("file_glob"), limit=args.get("limit", 50), offset=args.get("offset", 0),
-        output_mode=args.get("output_mode", "content"), context=args.get("context", 0), task_id=tid)
+        output_mode=args.get("output_mode", "content"),
+        context=args.get("context", 0), task_id=tid,
+        execution_target=args.get("execution_target"),
+    )
 
 
 registry.register(name="read_file", toolset="file", schema=READ_FILE_SCHEMA, handler=_handle_read_file, check_fn=_check_file_reqs, emoji="📖", max_result_size_chars=100_000)

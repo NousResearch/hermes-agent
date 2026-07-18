@@ -144,6 +144,39 @@ class TestTirithAllowDangerous:
         # allow_permanent should be True (no tirith warning)
         assert cb.call_args[1]["allow_permanent"] is True
 
+    @patch(_TIRITH_PATCH, return_value=_tirith_result("allow"))
+    def test_named_target_session_approval_does_not_authorize_sibling_target(
+        self, mock_tirith,
+    ):
+        os.environ["HERMES_INTERACTIVE"] = "1"
+        command = "rm -rf /tmp/hermes-target-scope"
+
+        approve_local = MagicMock(return_value="session")
+        first = check_all_command_guards(
+            command, "local", approval_callback=approve_local,
+            execution_target="local", execution_backend="local",
+            execution_target_named=True,
+        )
+        assert first["approved"] is True
+
+        local_again = MagicMock(return_value="deny")
+        second = check_all_command_guards(
+            command, "local", approval_callback=local_again,
+            execution_target="local", execution_backend="local",
+            execution_target_named=True,
+        )
+        assert second["approved"] is True
+        local_again.assert_not_called()
+
+        deny_prod = MagicMock(return_value="deny")
+        third = check_all_command_guards(
+            command, "local", approval_callback=deny_prod,
+            execution_target="prod", execution_backend="ssh",
+            execution_target_named=True,
+        )
+        assert third["approved"] is False
+        deny_prod.assert_called_once()
+
 
 # ---------------------------------------------------------------------------
 # tirith warn + safe command

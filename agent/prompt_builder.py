@@ -4,6 +4,7 @@ All functions are stateless. AIAgent._build_system_prompt() calls these to
 assemble pieces, then combines them with memory and ephemeral prompts.
 """
 
+import hashlib
 import json
 import logging
 import os
@@ -935,7 +936,7 @@ _BACKEND_FALLBACK_DESCRIPTIONS: dict[str, str] = {
 # a mid-process backend switch rebuilds the string. Kept in-module (not on
 # disk) because the probe captures live backend state that may change
 # across Hermes restarts.
-_BACKEND_PROBE_CACHE: dict[tuple[str, str], str] = {}
+_BACKEND_PROBE_CACHE: dict[tuple[str, str, str], str] = {}
 
 
 _WINDOWS_BASH_SHELL_HINT = (
@@ -949,7 +950,11 @@ _WINDOWS_BASH_SHELL_HINT = (
 )
 
 
-def _probe_remote_backend(env_type: str) -> str | None:
+def _probe_remote_backend(
+    env_type: str,
+    terminal_config: dict | None = None,
+    target_name: str = "",
+) -> str | None:
     """Run a tiny introspection command inside the active terminal backend.
 
     Returns a pre-formatted multi-line string describing the backend's OS,
@@ -957,8 +962,14 @@ def _probe_remote_backend(env_type: str) -> str | None:
     per process. Used only for non-local backends where the agent's tools
     operate on a different machine than the host Hermes runs on.
     """
-    cwd_hint = os.getenv("TERMINAL_CWD", "")
-    cache_key = (env_type, cwd_hint)
+    if terminal_config is None:
+        config_identity = os.getenv("TERMINAL_CWD", "")
+    else:
+        serialized = json.dumps(
+            terminal_config, sort_keys=True, default=str, ensure_ascii=True,
+        )
+        config_identity = hashlib.sha256(serialized.encode("utf-8")).hexdigest()
+    cache_key = (env_type, target_name, config_identity)
     cached = _BACKEND_PROBE_CACHE.get(cache_key)
     if cached is not None:
         return cached or None
@@ -973,7 +984,11 @@ def _probe_remote_backend(env_type: str) -> str | None:
         return None
 
     try:
-        config = _get_env_config()
+        config = (
+            _get_env_config(dict(terminal_config))
+            if terminal_config is not None
+            else _get_env_config()
+        )
         # Build the environment the same way tools/terminal_tool.py does for a
         # live command: select the backend image, then assemble ssh/container
         # config from the env-derived dict. (There is no `get_environment`
@@ -1024,7 +1039,12 @@ def _probe_remote_backend(env_type: str) -> str | None:
             timeout=config.get("timeout", 180),
             ssh_config=ssh_config,
             container_config=container_config,
-            task_id="prompt-backend-probe",
+            task_id=(
+                "prompt-backend-probe-"
+                + hashlib.sha256(
+                    f"{env_type}:{target_name}:{config_identity}".encode("utf-8")
+                ).hexdigest()[:12]
+            ),
             host_cwd=config.get("host_cwd"),
         )
         # Single-line POSIX probe — works on any Unixy backend. Wrapped in
@@ -1102,7 +1122,26 @@ def build_environment_hints() -> str:
 
     hints: list[str] = []
 
-    backend = (os.getenv("TERMINAL_ENV") or "local").strip().lower()
+    target_inventory = ()
+    default_target = None
+    try:
+        from tools.execution_targets import list_execution_targets
+
+        resolved_targets = list_execution_targets()
+        if resolved_targets and resolved_targets[0].named:
+            target_inventory = resolved_targets
+            default_target = next(
+                (item for item in target_inventory if item.is_default),
+                target_inventory[0],
+            )
+    except Exception as e:
+        logger.debug("Could not resolve named execution targets for prompt: %s", e)
+
+    backend = (
+        default_target.backend
+        if default_target is not None
+        else (os.getenv("TERMINAL_ENV") or "local")
+    ).strip().lower()
     is_remote_backend = backend in _REMOTE_TERMINAL_BACKENDS
 
     if not is_remote_backend:
@@ -1120,8 +1159,15 @@ def build_environment_hints() -> str:
 
         host_lines.append(f"User home directory: {os.path.expanduser('~')}")
         try:
-            host_lines.append(f"Current working directory: {resolve_agent_cwd()}")
-        except OSError:
+            if default_target is not None:
+                from tools.terminal_tool import _get_env_config
+
+                cwd_hint = _get_env_config(dict(default_target.config)).get("cwd")
+            else:
+                cwd_hint = resolve_agent_cwd()
+            if cwd_hint:
+                host_lines.append(f"Current working directory: {cwd_hint}")
+        except (OSError, TypeError, ValueError):
             pass
 
         if sys.platform == "win32" and not is_wsl():
@@ -1139,11 +1185,32 @@ def build_environment_hints() -> str:
             hints.append(_WINDOWS_BASH_SHELL_HINT)
     else:
         # --- Remote backend block (host info suppressed) ---
-        probe = _probe_remote_backend(backend)
+        probe = (
+            _probe_remote_backend(
+                backend,
+                terminal_config=dict(default_target.config),
+                target_name=(
+                    f"{default_target.profile_scope}:{default_target.target}"
+                    if default_target.profile_scope
+                    else default_target.target
+                ),
+            )
+            if default_target is not None
+            else _probe_remote_backend(backend)
+        )
+        tool_scope = (
+            "Calls to `terminal`, `read_file`, `write_file`, `patch`, "
+            "`search_files`, and `execute_code` that omit an execution-target "
+            "selector operate"
+            if default_target is not None
+            else (
+                "Your `terminal`, `read_file`, `write_file`, `patch`, "
+                "`search_files`, and `execute_code` tools all operate"
+            )
+        )
         if probe:
             hints.append(
-                f"Terminal backend: {backend}. Your `terminal`, `read_file`, "
-                f"`write_file`, `patch`, and `search_files` tools all operate "
+                f"Terminal backend: {backend}. {tool_scope} "
                 f"inside this {backend} environment — NOT on the machine "
                 f"where Hermes itself is running. The host OS, home, and cwd "
                 f"of the Hermes process are irrelevant; only the following "
@@ -1154,8 +1221,7 @@ def build_environment_hints() -> str:
                 backend, f"a {backend} environment (likely Linux)"
             )
             hints.append(
-                f"Terminal backend: {backend}. Your `terminal`, `read_file`, "
-                f"`write_file`, `patch`, and `search_files` tools all operate "
+                f"Terminal backend: {backend}. {tool_scope} "
                 f"inside {description} — NOT on the machine where Hermes "
                 f"itself runs. The backend probe didn't respond at "
                 f"prompt-build time, so the sandbox's current user, $HOME, "
@@ -1163,6 +1229,23 @@ def build_environment_hints() -> str:
                 f"them, probe directly with a terminal call like "
                 f"`uname -a && whoami && pwd`."
             )
+
+    if default_target is not None and default_target.named:
+        target_summary = ", ".join(
+            f"{json.dumps(item.target, ensure_ascii=True)} ({item.backend}"
+            f"{', default' if item.is_default else ''})"
+            for item in target_inventory
+        )
+        hints.append(
+            "Configured execution targets: " + target_summary + ". "
+            "`terminal`, `read_file`, `write_file`, `patch`, and `execute_code` "
+            "select one with `target`; `search_files` uses `execution_target` "
+            "because its existing `target` argument selects content/files mode. "
+            "Omitting the selector uses the default target. Environment facts "
+            "above describe only the default target "
+            f"{json.dumps(default_target.target, ensure_ascii=True)}; "
+            "tool results report the resolved target, backend, and cwd."
+        )
 
     if is_wsl():
         hints.append(WSL_ENVIRONMENT_HINT)

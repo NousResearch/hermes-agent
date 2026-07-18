@@ -38,7 +38,6 @@ from agent.message_sanitization import (
     _repair_tool_call_arguments,
 )
 from agent.stream_single_writer import claim_stream_writer, stream_writer_is_current
-from tools.terminal_tool import is_persistent_env
 from utils import base_url_host_matches, base_url_hostname, env_float, env_int
 
 logger = logging.getLogger(__name__)
@@ -2118,23 +2117,23 @@ def handle_max_iterations(agent, messages: list, api_call_count: int) -> str:
 def cleanup_task_resources(agent, task_id: str) -> None:
     """Clean up VM and browser resources for a given task.
 
-    Skips ``cleanup_vm`` when the active terminal environment is marked
-    persistent (``persistent_filesystem=True``) so that long-lived sandbox
-    containers survive between turns. The idle reaper in
+    Removes each non-persistent target while keeping persistent named sibling
+    environments live so long-lived containers survive between turns. The
+    idle reaper in
     ``terminal_tool._cleanup_inactive_envs`` still tears them down once
     ``terminal.lifetime_seconds`` is exceeded. Non-persistent backends are
     torn down per-turn as before to prevent resource leakage (the original
     intent of this hook for the Morph backend, see commit fbd3a2fd).
     """
     try:
-        if is_persistent_env(task_id):
-            if agent.verbose_logging:
-                logging.debug(
-                    f"Skipping per-turn cleanup_vm for persistent env {task_id}; "
-                    f"idle reaper will handle it."
-                )
-        else:
-            _ra().cleanup_vm(task_id)
+        from tools.terminal_tool import active_environment_turns
+
+        remaining_turns = active_environment_turns(task_id)
+        _ra().cleanup_vm(
+            task_id,
+            preserve_persistent=True,
+            include_collapsed=(remaining_turns == 0),
+        )
     except Exception as e:
         if agent.verbose_logging:
             logger.warning(f"Failed to cleanup VM for task {task_id}: {e}")

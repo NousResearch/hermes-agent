@@ -569,7 +569,7 @@ def load_cli_config() -> Dict[str, Any]:
             logger.warning("Failed to load cli-config.yaml: %s", e)
 
     # Expand ${ENV_VAR} references in config values before bridging to env vars.
-    from hermes_cli.config import _expand_env_vars
+    from hermes_cli.config import _expand_env_vars, effective_terminal_config
     defaults = _expand_env_vars(defaults)
 
     # Managed scope: overlay administrator-pinned values LAST so they win over
@@ -584,8 +584,19 @@ def load_cli_config() -> Dict[str, Any]:
 
     defaults = managed_scope.apply_managed_overlay(defaults)
 
+    if os.environ.get("_HERMES_GATEWAY") != "1":
+        from tools.execution_targets import set_execution_target_config_source
+
+        set_execution_target_config_source(defaults)
+
     # Apply terminal config to environment variables (so terminal_tool picks them up)
-    terminal_config = defaults.get("terminal", {})
+    raw_terminal_config = defaults.get("terminal", {})
+    named_terminal_mode = (
+        isinstance(raw_terminal_config, dict)
+        and isinstance(raw_terminal_config.get("targets"), dict)
+        and bool(raw_terminal_config.get("targets"))
+    )
+    terminal_config = effective_terminal_config(raw_terminal_config)
     
     # Normalize config key: the new config system (hermes_cli/config.py) and all
     # documentation use "backend", the legacy cli-config.yaml uses "env_type".
@@ -601,9 +612,13 @@ def load_cli_config() -> Dict[str, Any]:
     _CWD_PLACEHOLDERS = (".", "auto", "cwd")
     effective_backend = terminal_config.get("env_type", "local")
 
-    if effective_backend == "local":
+    if effective_backend == "local" and (
+        not named_terminal_mode
+        or terminal_config.get("cwd") in _CWD_PLACEHOLDERS
+    ):
         terminal_config["cwd"] = os.getcwd()
-        defaults["terminal"]["cwd"] = terminal_config["cwd"]
+        if not named_terminal_mode:
+            defaults["terminal"]["cwd"] = terminal_config["cwd"]
     elif terminal_config.get("cwd") in _CWD_PLACEHOLDERS:
         terminal_config.pop("cwd", None)
     

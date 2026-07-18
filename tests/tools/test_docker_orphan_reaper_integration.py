@@ -11,6 +11,7 @@ opt-out would silently do nothing.
 """
 
 import os
+from types import SimpleNamespace
 from unittest.mock import patch
 
 import tools.terminal_tool as terminal_tool
@@ -103,6 +104,34 @@ def test_maybe_reap_floors_at_60_seconds(monkeypatch):
     assert captured_args.get("max_age_seconds") == 120, (
         f"expected floored 60 × 2 = 120, got {captured_args.get('max_age_seconds')}"
     )
+
+
+def test_named_targets_use_longest_docker_lifetime(monkeypatch):
+    _reset_reaper_gate()
+    captured_args = {}
+
+    monkeypatch.setattr(
+        "tools.execution_targets.list_execution_targets",
+        lambda: (
+            SimpleNamespace(
+                named=True, backend="docker", config={"lifetime_seconds": 60},
+            ),
+            SimpleNamespace(
+                named=True, backend="docker", config={"lifetime_seconds": 900},
+            ),
+        ),
+    )
+
+    with patch(
+        "tools.environments.docker.reap_orphan_containers",
+        lambda **kwargs: captured_args.update(kwargs) or 0,
+    ):
+        terminal_tool._maybe_reap_docker_orphans({
+            "docker_orphan_reaper": True,
+            "lifetime_seconds": 60,
+        })
+
+    assert captured_args["max_age_seconds"] == 1800
 
 
 def test_maybe_reap_passes_current_profile_as_filter(monkeypatch):

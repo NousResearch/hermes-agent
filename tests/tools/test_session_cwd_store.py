@@ -242,3 +242,26 @@ class TestCommandCwdReadsTheRecord:
         assert tt.get_session_cwd("sess-a") == "/project"
         json.loads(tt.terminal_tool(command="pwd", task_id="sess-a"))
         assert fake.last_cwd_arg == "/project"
+
+
+def test_inherit_session_cwds_copies_every_named_target_scope(monkeypatch):
+    monkeypatch.setattr(
+        "tools.execution_targets._load_merged_config",
+        lambda: {
+            "terminal": {
+                "default_target": "alpha",
+                "targets": {
+                    "alpha": {"backend": "local", "cwd": "/alpha"},
+                    "beta": {"backend": "local", "cwd": "/beta"},
+                },
+            },
+        },
+    )
+    tt.record_session_cwd("parent", "/alpha/work", target="alpha")
+    tt.record_session_cwd("parent", "/beta/work", target="beta")
+
+    count = tt.inherit_session_cwds("parent", "child")
+
+    assert count == 2
+    assert tt.get_session_cwd("child", target="alpha") == "/alpha/work"
+    assert tt.get_session_cwd("child", target="beta") == "/beta/work"

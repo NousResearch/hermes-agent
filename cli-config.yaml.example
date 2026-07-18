@@ -224,6 +224,23 @@ terminal:
   # sudo_password: "hunter2"  # Optional: pipe a sudo password via sudo -S. SECURITY WARNING: plaintext.
   # sudo_password: ""         # Explicit empty password: try empty and never open the interactive sudo prompt.
 
+# Optional: route each tool call to one of several execution environments.
+# Top-level terminal settings (such as timeout and resource limits) are
+# inherited by every target; values inside a target override them. Keep
+# targets absent or empty to retain the single-backend configuration above.
+# terminal:
+#   timeout: 180
+#   default_target: "local"
+#   targets:
+#     local:
+#       backend: "local"
+#       cwd: "/workspace/local"
+#     devbox:
+#       backend: "ssh"
+#       ssh_host: "devbox.example.com"
+#       ssh_user: "bruno"
+#       cwd: "/home/bruno/project"
+
 # -----------------------------------------------------------------------------
 # OPTION 2: SSH remote execution
 # Commands run on a remote server - agent code stays local (sandboxed)

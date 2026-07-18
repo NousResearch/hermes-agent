@@ -130,6 +130,47 @@ terminal:
 
 For cloud sandboxes such as Modal and Daytona, `container_persistent: true` means Hermes will try to preserve filesystem state across sandbox recreation. It does not promise that the same live sandbox, PID space, or background processes will still be running later.
 
+### Named Execution Targets
+
+A single Hermes process can route terminal, file, and Python execution calls to several configured environments. Top-level backend settings under `terminal` are inherited by every target, and each target overrides the values it declares. Keep process-wide policy such as shell initialization and environment-passthrough settings at the top level:
+
+```yaml
+terminal:
+  timeout: 180
+  container_memory: 5120
+  default_target: local
+  targets:
+    local:
+      backend: local
+      cwd: /workspace/local
+    devbox:
+      backend: ssh
+      ssh_host: devbox.example.com
+      ssh_user: bruno
+      cwd: /home/bruno/project
+```
+
+When `targets` is non-empty, a tool call with no selector uses `default_target`. The default must name an entry; invalid defaults and unknown explicit names fail with an error listing the available names. Target names are arbitrary non-empty strings.
+
+The tools use fixed string parameters so changing config does not change the model tool schema:
+
+```text
+terminal(command="git status", target="devbox")
+read_file(path="README.md", target="local")
+write_file(path="notes.txt", content="...", target="devbox")
+patch(mode="replace", path="app.py", old_string="old", new_string="new", target="devbox")
+execute_code(code="print('hello')", target="devbox")
+search_files(pattern="TODO", target="content", execution_target="devbox")
+```
+
+`search_files` is the compatibility exception: its existing `target` argument still selects `content` or `files` search mode, while `execution_target` selects the named environment. A target's terminal and file operations share the same environment and per-session working directory. A `cd` on one target does not change another target; an explicit `workdir` on a terminal call still wins.
+
+Background process follow-up actions remain keyed only by `session_id`. Process start, list, poll, log, wait, kill, and recovered checkpoint results expose the selected `target` and `backend`. Successful terminal/file/code-execution results expose the same metadata (and `cwd` when available). The system prompt lists configured names and marks the default without changing tool schemas.
+
+Command and execute-code approval prompts identify the resolved target/backend. Session and UI-created permanent pattern approvals are scoped to a named target, so approving a command on `local` does not silently authorize the same pattern on `prod`. Explicit entries an operator writes in the global `approvals.command_allowlist` remain global by design.
+
+If `targets` is absent or empty, Hermes preserves the existing flat config and environment-variable behavior exactly. In that legacy mode, omitted `target` and `target="default"` select the existing environment; every other explicit name is an error. Environment variables remain the legacy single-backend interface and do not select named targets. In named mode Hermes mirrors the resolved default target into `TERMINAL_*` for older internal consumers, but explicit tool selection still comes only from `target` / `execution_target`. Start a new Hermes process after changing a target's backend/host settings; already-created environments and background sessions remain bound to the settings with which they were spawned.
+
 ### Backend Overview
 
 | Backend | Where commands run | Isolation | Best for |
@@ -289,7 +330,7 @@ Parallel subagents spawned via `delegate_task(tasks=[...])` share this one conta
 
 #### Environment variable overrides
 
-Every key under `terminal:` has an env-var override of the form `TERMINAL_<KEY_UPPERCASE>`. The most useful ones for the Docker backend:
+Legacy single-backend terminal settings have `TERMINAL_*` environment-variable overrides. Named `default_target` / `targets` selection is config-only; environment variables do not switch targets. The most useful Docker overrides are:
 
 | Env var | Maps to | Notes |
 |---|---|---|

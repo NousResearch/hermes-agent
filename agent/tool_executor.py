@@ -20,7 +20,7 @@ import os
 import random
 import threading
 import time
-from typing import Any, Optional
+from typing import Any, Optional, cast
 
 from agent.display import (
     KawaiiSpinner,
@@ -45,6 +45,7 @@ from tools.terminal_tool import (
 )
 from tools.thread_context import propagate_context_to_thread
 from tools.tool_result_storage import (
+    PERSISTED_OUTPUT_TAG,
     maybe_persist_tool_result,
     enforce_turn_budget,
 )
@@ -67,6 +68,195 @@ def _budget_for_agent(agent) -> BudgetConfig:
         return budget_for_context_window(int(ctx)) if ctx else DEFAULT_BUDGET
     except Exception:
         return DEFAULT_BUDGET
+
+
+def _handle_function_call_with_env_usage(
+    effective_task_id: str,
+    function_name: str,
+    function_args: dict,
+    **kwargs,
+):
+    from tools.terminal_tool import environment_turn_usage
+
+    with environment_turn_usage(effective_task_id):
+        return _ra().handle_function_call(
+            function_name, function_args, effective_task_id, **kwargs,
+        )
+
+
+_TARGET_RESULT_TOOLS = {
+    "terminal", "read_file", "write_file", "patch", "search_files",
+    "execute_code", "process",
+}
+
+
+def _resolved_tool_target(tool_name: str, args: dict, result: Any = None) -> str | None:
+    """Resolve the target identity carried by a tool call/result."""
+    if tool_name in _TARGET_RESULT_TOOLS and isinstance(result, str):
+        try:
+            payload = json.loads(result)
+        except (json.JSONDecodeError, TypeError):
+            payload = None
+        if isinstance(payload, dict) and isinstance(payload.get("target"), str):
+            return payload["target"]
+    if tool_name == "search_files":
+        value = args.get("execution_target")
+    elif tool_name in _TARGET_RESULT_TOOLS:
+        value = args.get("target")
+    else:
+        value = None
+    return value if isinstance(value, str) and value else None
+
+
+def _active_env_for_tool_result(
+    task_id: str, tool_name: str, args: dict, result: Any = None,
+):
+    target = _resolved_tool_target(tool_name, args, result)
+    try:
+        return get_active_env(task_id, target=target)
+    except Exception:
+        # Persistence is best-effort. Preserve the handler's actionable
+        # configuration error instead of raising a second lookup failure.
+        return None
+
+
+def _append_persisted_target_hint(content: str, target: str | None) -> str:
+    if (
+        target
+        and PERSISTED_OUTPUT_TAG in content
+        and "Execution target for this saved output:" not in content
+    ):
+        return (
+            content
+            + "\nExecution target for this saved output: "
+            + json.dumps(target, ensure_ascii=True)
+            + ". Pass that value as `target` to `read_file`."
+        )
+    return content
+
+
+def _tool_target_map(agent) -> dict[str, str]:
+    mapping = getattr(agent, "_execution_target_by_tool_call", None)
+    if not isinstance(mapping, dict):
+        mapping = {}
+        setattr(agent, "_execution_target_by_tool_call", mapping)
+    return mapping
+
+
+def _selected_local_target_cwd(
+    effective_task_id: str,
+    function_name: str,
+    function_args: dict,
+) -> str | None:
+    """Return the selected target's host cwd, or None for remote targets."""
+    selector_name = (
+        "execution_target" if function_name == "search_files" else "target"
+    )
+    target = function_args.get(selector_name)
+    try:
+        from tools.execution_targets import resolve_execution_target
+        from tools.terminal_tool import _get_env_config, get_session_cwd
+
+        resolution = resolve_execution_target(target)
+        if resolution.backend != "local":
+            return None
+        selected = resolution.target if resolution.named else None
+        cwd = get_session_cwd(effective_task_id, target=selected)
+        if not cwd:
+            config = (
+                _get_env_config(dict(resolution.config))
+                if resolution.named
+                else _get_env_config()
+            )
+            cwd = config.get("cwd")
+        if not isinstance(cwd, str) or not cwd:
+            return None
+        return os.path.abspath(os.path.expanduser(cwd))
+    except Exception:
+        return None
+
+
+def _target_subdirectory_hints(
+    agent,
+    task_id: str,
+    tool_name: str,
+    args: dict,
+    target: str | None,
+):
+    """Load local hints from the selected target; never scan host paths for remotes."""
+    try:
+        from agent.subdirectory_hints import SubdirectoryHintTracker
+        from tools.execution_targets import resolve_execution_target
+        from tools.terminal_tool import _get_env_config, get_session_cwd
+
+        resolution = resolve_execution_target(target)
+        if resolution.backend != "local":
+            return None
+        if not resolution.named:
+            return agent._subdirectory_hints.check_tool_call(tool_name, args)
+        selected_target = resolution.target
+        cwd = get_session_cwd(task_id, target=selected_target)
+        if not cwd:
+            cwd = _get_env_config(dict(resolution.config)).get("cwd")
+        if not isinstance(cwd, str) or not cwd.strip():
+            return None
+        cache_key = (resolution.profile_scope, selected_target, cwd)
+        trackers = getattr(agent, "_target_subdirectory_hints", None)
+        if not isinstance(trackers, dict):
+            trackers = {}
+            setattr(agent, "_target_subdirectory_hints", trackers)
+        tracker = trackers.get(cache_key)
+        if tracker is None:
+            tracker = SubdirectoryHintTracker(working_dir=cwd)
+            trackers[cache_key] = tracker
+        return tracker.check_tool_call(tool_name, args)
+    except Exception:
+        # Hints are optional context. Never replace a tool result with hint
+        # discovery/configuration failures.
+        return None
+
+
+def _enforce_target_aware_turn_budget(
+    tool_messages: list[dict], task_id: str, config: BudgetConfig,
+    target_by_tool_call: dict[str, str] | None = None,
+) -> None:
+    """Persist each aggregate-spilled result in its producing target."""
+    if target_by_tool_call is None:
+        target_by_tool_call = {}
+
+    def _resolve_message_env(message: dict):
+        call_id = str(message.get("tool_call_id") or "")
+        if call_id not in target_by_tool_call:
+            return default_env
+        target = target_by_tool_call.get(call_id)
+        if not isinstance(target, str) or not target:
+            return None
+        try:
+            return get_active_env(task_id, target=target)
+        except Exception:
+            return None
+
+    try:
+        default_env = get_active_env(task_id)
+    except Exception:
+        default_env = None
+
+    enforce_turn_budget(
+        tool_messages,
+        env=default_env,
+        env_resolver=_resolve_message_env,
+        config=config,
+    )
+    for message in tool_messages:
+        tool_call_id = str(message.get("tool_call_id") or "")
+        target = target_by_tool_call.get(tool_call_id)
+        content = message.get("content", "")
+        if isinstance(content, str):
+            message["content"] = _append_persisted_target_hint(
+                content, target,
+            )
+        if tool_call_id:
+            target_by_tool_call.pop(tool_call_id, None)
 
 # Maximum number of concurrent worker threads for parallel tool execution.
 # Mirrors the constant in ``run_agent`` for tests/imports that look here.
@@ -602,16 +792,19 @@ def execute_tool_calls_concurrent(agent, assistant_message, messages: list, effe
         start = time.time()
         try:
             try:
-                result = agent._invoke_tool(
-                    function_name,
-                    function_args,
-                    effective_task_id,
-                    tool_call.id,
-                    messages=messages,
-                    pre_tool_block_checked=True,
-                    skip_tool_request_middleware=True,
-                    tool_request_middleware_trace=list(middleware_trace),
-                )
+                from tools.terminal_tool import environment_turn_usage
+
+                with environment_turn_usage(effective_task_id):
+                    result = agent._invoke_tool(
+                        function_name,
+                        function_args,
+                        effective_task_id,
+                        tool_call.id,
+                        messages=messages,
+                        pre_tool_block_checked=True,
+                        skip_tool_request_middleware=True,
+                        tool_request_middleware_trace=list(middleware_trace),
+                    )
             except KeyboardInterrupt:
                 try:
                     agent.interrupt("keyboard interrupt")
@@ -949,20 +1142,33 @@ def execute_tool_calls_concurrent(agent, assistant_message, messages: list, effe
             except Exception as cb_err:
                 logging.debug(f"Tool complete callback error: {cb_err}")
 
+        result_execution_target = _resolved_tool_target(
+            name, args, function_result,
+        )
         function_result = maybe_persist_tool_result(
             content=function_result,
             tool_name=name,
             tool_use_id=tc.id,
-            env=get_active_env(effective_task_id),
+            env=_active_env_for_tool_result(
+                effective_task_id, name, args, function_result,
+            ),
             config=_tool_budget,
         ) if not _is_multimodal_tool_result(function_result) else function_result
+        if isinstance(function_result, str):
+            function_result = _append_persisted_target_hint(
+                function_result, result_execution_target,
+            )
 
-        subdir_hints = agent._subdirectory_hints.check_tool_call(name, args)
+        subdir_hints = _target_subdirectory_hints(
+            agent, effective_task_id, name, args, result_execution_target,
+        )
         if subdir_hints:
             if _is_multimodal_tool_result(function_result):
                 # Append the hint to the text summary part so the model
                 # still sees it; don't touch the image blocks.
-                _append_subdir_hint_to_multimodal(function_result, subdir_hints)
+                _append_subdir_hint_to_multimodal(
+                    cast(dict[str, Any], function_result), subdir_hints,
+                )
             else:
                 function_result += subdir_hints
 
@@ -981,6 +1187,8 @@ def execute_tool_calls_concurrent(agent, assistant_message, messages: list, effe
             tc.id,
             effect_disposition=effect_disposition,
         )
+        if result_execution_target:
+            _tool_target_map(agent)[str(tc.id)] = result_execution_target
         messages.append(tool_message)
         risk_metadata = tool_message.get("_tool_output_risk")
         if (
@@ -1014,7 +1222,10 @@ def execute_tool_calls_concurrent(agent, assistant_message, messages: list, effe
     num_tools = len(parsed_calls)
     if finalize and num_tools > 0:
         turn_tool_msgs = messages[-num_tools:]
-        enforce_turn_budget(turn_tool_msgs, env=get_active_env(effective_task_id), config=_tool_budget)
+        _enforce_target_aware_turn_budget(
+            turn_tool_msgs, effective_task_id, _tool_budget,
+            _tool_target_map(agent),
+        )
 
     # ── /steer injection ──────────────────────────────────────────────
     # Append any pending user steer text to the last tool result so the
@@ -1189,8 +1400,17 @@ def execute_tool_calls_sequential(agent, assistant_message, messages: list, effe
         if not _execution_blocked and function_name in {"write_file", "patch"} and agent._checkpoint_mgr.enabled:
             try:
                 file_path = function_args.get("path", "")
-                if file_path:
-                    work_dir = agent._checkpoint_mgr.get_working_dir_for_path(file_path)
+                target_cwd = _selected_local_target_cwd(
+                    effective_task_id, function_name, function_args,
+                )
+                if file_path and target_cwd:
+                    resolved_path = (
+                        file_path if os.path.isabs(file_path)
+                        else os.path.join(target_cwd, file_path)
+                    )
+                    work_dir = agent._checkpoint_mgr.get_working_dir_for_path(
+                        resolved_path,
+                    )
                     agent._checkpoint_mgr.ensure_checkpoint(
                         work_dir, f"before {function_name}"
                     )
@@ -1202,10 +1422,19 @@ def execute_tool_calls_sequential(agent, assistant_message, messages: list, effe
             try:
                 cmd = function_args.get("command", "")
                 if _is_destructive_command(cmd):
-                    cwd = function_args.get("workdir") or os.getenv("TERMINAL_CWD", os.getcwd())
-                    agent._checkpoint_mgr.ensure_checkpoint(
-                        cwd, f"before terminal: {cmd[:60]}"
+                    target_cwd = _selected_local_target_cwd(
+                        effective_task_id, function_name, function_args,
                     )
+                    if target_cwd:
+                        requested_cwd = function_args.get("workdir")
+                        cwd = (
+                            requested_cwd
+                            if requested_cwd and os.path.isabs(requested_cwd)
+                            else os.path.join(target_cwd, requested_cwd or "")
+                        )
+                        agent._checkpoint_mgr.ensure_checkpoint(
+                            cwd, f"before terminal: {cmd[:60]}"
+                        )
             except Exception:
                 pass  # never block tool execution
 
@@ -1483,8 +1712,8 @@ def execute_tool_calls_sequential(agent, assistant_message, messages: list, effe
                 spinner.start()
             _spinner_result = None
             try:
-                function_result = _ra().handle_function_call(
-                    function_name, function_args, effective_task_id,
+                function_result = _handle_function_call_with_env_usage(
+                    effective_task_id, function_name, function_args,
                     tool_call_id=tool_call.id,
                     session_id=agent.session_id or "",
                     turn_id=getattr(agent, "_current_turn_id", "") or "",
@@ -1525,8 +1754,8 @@ def execute_tool_calls_sequential(agent, assistant_message, messages: list, effe
                     agent._vprint(f"  {cute_msg}")
         else:
             try:
-                function_result = _ra().handle_function_call(
-                    function_name, function_args, effective_task_id,
+                function_result = _handle_function_call_with_env_usage(
+                    effective_task_id, function_name, function_args,
                     tool_call_id=tool_call.id,
                     session_id=agent.session_id or "",
                     turn_id=getattr(agent, "_current_turn_id", "") or "",
@@ -1645,19 +1874,36 @@ def execute_tool_calls_sequential(agent, assistant_message, messages: list, effe
             except Exception as cb_err:
                 logging.debug(f"Tool complete callback error: {cb_err}")
 
+        result_execution_target = _resolved_tool_target(
+            function_name, function_args, function_result,
+        )
         function_result = maybe_persist_tool_result(
             content=function_result,
             tool_name=function_name,
             tool_use_id=tool_call.id,
-            env=get_active_env(effective_task_id),
+            env=_active_env_for_tool_result(
+                effective_task_id, function_name, function_args, function_result,
+            ),
             config=_tool_budget,
         ) if not _is_multimodal_tool_result(function_result) else function_result
+        if isinstance(function_result, str):
+            function_result = _append_persisted_target_hint(
+                function_result, result_execution_target,
+            )
 
         # Discover subdirectory context files from tool arguments
-        subdir_hints = agent._subdirectory_hints.check_tool_call(function_name, function_args)
+        subdir_hints = _target_subdirectory_hints(
+            agent,
+            effective_task_id,
+            function_name,
+            function_args,
+            result_execution_target,
+        )
         if subdir_hints:
             if _is_multimodal_tool_result(function_result):
-                _append_subdir_hint_to_multimodal(function_result, subdir_hints)
+                _append_subdir_hint_to_multimodal(
+                    cast(dict[str, Any], function_result), subdir_hints,
+                )
             else:
                 function_result += subdir_hints
 
@@ -1665,6 +1911,8 @@ def execute_tool_calls_sequential(agent, assistant_message, messages: list, effe
         # (see parallel path for rationale). String results pass through.
         _tool_content = agent._tool_result_content_for_active_model(function_name, function_result)
         tool_message = make_tool_result_message(function_name, _tool_content, tool_call.id)
+        if result_execution_target:
+            _tool_target_map(agent)[str(tool_call.id)] = result_execution_target
         messages.append(tool_message)
         risk_metadata = tool_message.get("_tool_output_risk")
         if (
@@ -1728,7 +1976,10 @@ def execute_tool_calls_sequential(agent, assistant_message, messages: list, effe
     # ── Per-turn aggregate budget enforcement ─────────────────────────
     num_tools_seq = len(assistant_message.tool_calls)
     if finalize and num_tools_seq > 0:
-        enforce_turn_budget(messages[-num_tools_seq:], env=get_active_env(effective_task_id), config=_tool_budget)
+        _enforce_target_aware_turn_budget(
+            messages[-num_tools_seq:], effective_task_id, _tool_budget,
+            _tool_target_map(agent),
+        )
 
     # ── /steer injection ──────────────────────────────────────────────
     # See _execute_tool_calls_parallel for the rationale. Same hook,
@@ -1786,10 +2037,9 @@ def execute_tool_calls_segmented(agent, assistant_message, messages: list, effec
     total_tools = len(assistant_message.tool_calls)
     if total_tools > 0:
         _tool_budget = _budget_for_agent(agent)
-        enforce_turn_budget(
-            messages[-total_tools:],
-            env=get_active_env(effective_task_id),
-            config=_tool_budget,
+        _enforce_target_aware_turn_budget(
+            messages[-total_tools:], effective_task_id, _tool_budget,
+            _tool_target_map(agent),
         )
         agent._apply_pending_steer_to_tool_results(messages, total_tools)
 

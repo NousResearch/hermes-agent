@@ -3074,6 +3074,8 @@ def _await_gateway_decision(session_key: str, notify_cb, approval_data: dict,
     description = approval_data.get("description", "")
     primary_key = approval_data.get("pattern_key", "")
     all_keys = approval_data.get("pattern_keys", [primary_key])
+    execution_target = approval_data.get("target")
+    execution_backend = approval_data.get("backend")
 
     entry = _ApprovalEntry(approval_data)
     with _lock:
@@ -3097,6 +3099,8 @@ def _await_gateway_decision(session_key: str, notify_cb, approval_data: dict,
         pattern_keys=list(all_keys),
         session_key=session_key,
         surface=surface,
+        target=execution_target,
+        backend=execution_backend,
     )
 
     # Notify the user (bridges sync agent thread → async gateway)
@@ -3166,13 +3170,37 @@ def _await_gateway_decision(session_key: str, notify_cb, approval_data: dict,
         session_key=session_key,
         surface=surface,
         choice=_outcome,
+        target=execution_target,
+        backend=execution_backend,
     )
     return {"resolved": resolved, "choice": choice, "reason": entry.reason}
 
 
+def _execution_scoped_pattern_key(
+    pattern_key: str, execution_target: str, named: bool,
+) -> str:
+    """Scope persisted approvals to a named target without key collisions."""
+    if not named:
+        return pattern_key
+    target = str(execution_target or "")
+    try:
+        from tools.execution_targets import _active_profile_scope
+
+        profile_scope = _active_profile_scope()
+    except Exception:
+        profile_scope = ""
+    digest = hashlib.sha256(
+        f"{profile_scope}:{target}".encode("utf-8")
+    ).hexdigest()[:16]
+    return f"target:{digest}:{pattern_key}"
+
+
 def check_all_command_guards(command: str, env_type: str,
                              approval_callback=None,
-                             has_host_access: bool = False) -> dict:
+                             has_host_access: bool = False,
+                             execution_target: str = "default",
+                             execution_backend: Optional[str] = None,
+                             execution_target_named: bool = False) -> dict:
     """Run all pre-exec security checks and return a single approval decision.
 
     Gathers findings from tirith and dangerous-command detection, then
@@ -3360,12 +3388,17 @@ def check_all_command_guards(command: str, env_type: str,
     if tirith_result["action"] in {"block", "warn"}:
         findings = tirith_result.get("findings") or []
         rule_id = findings[0].get("rule_id", "unknown") if findings else "unknown"
-        tirith_key = f"tirith:{rule_id}"
+        tirith_key = _execution_scoped_pattern_key(
+            f"tirith:{rule_id}", execution_target, execution_target_named,
+        )
         tirith_desc = _format_tirith_description(tirith_result)
         if not is_approved(session_key, tirith_key):
             warnings.append((tirith_key, tirith_desc, True))
 
     if is_dangerous:
+        pattern_key = _execution_scoped_pattern_key(
+            pattern_key, execution_target, execution_target_named,
+        )
         if not is_approved(session_key, pattern_key):
             warnings.append((pattern_key, description, False))
 
@@ -3373,13 +3406,23 @@ def check_all_command_guards(command: str, env_type: str,
     if not warnings:
         return {"approved": True, "message": None}
 
+    execution_backend = execution_backend or env_type
+
+    def _target_description(description: str) -> str:
+        return (
+            f"{description} [execution target: {execution_target!r}; "
+            f"backend: {execution_backend}]"
+        )
+
     # --- Phase 2.5: Smart approval (auxiliary LLM risk assessment) ---
     # When approvals.mode=smart, ask the aux LLM before prompting the user.
     # Inspired by OpenAI Codex's Smart Approvals guardian subagent
     # (openai/codex#13860).
     smart_denied_for_owner = False
     if approval_mode == "smart":
-        combined_desc_for_llm = "; ".join(desc for _, desc, _ in warnings)
+        combined_desc_for_llm = _target_description(
+            "; ".join(desc for _, desc, _ in warnings)
+        )
         observer_payload = _prepare_smart_approval_observer(
             command=command,
             description=combined_desc_for_llm,
@@ -3387,6 +3430,10 @@ def check_all_command_guards(command: str, env_type: str,
             pattern_keys=[key for key, _, _ in warnings],
             session_key=session_key,
         )
+        if isinstance(observer_payload, dict):
+            observer_payload.update(
+                target=execution_target, backend=execution_backend,
+            )
         verdict = _smart_approve(command, combined_desc_for_llm)
         _observe_smart_approval_verdict(observer_payload, verdict)
         if verdict == "approve":
@@ -3413,7 +3460,9 @@ def check_all_command_guards(command: str, env_type: str,
     # --- Phase 3: Approval ---
 
     # Combine descriptions for a single approval prompt
-    combined_desc = "; ".join(desc for _, desc, _ in warnings)
+    combined_desc = _target_description(
+        "; ".join(desc for _, desc, _ in warnings)
+    )
     primary_key = warnings[0][0]
     all_keys = [key for key, _, _ in warnings]
     has_tirith = any(is_t for _, _, is_t in warnings)
@@ -3448,6 +3497,8 @@ def check_all_command_guards(command: str, env_type: str,
                 # Smart DENY overrides are one-operation decisions, so the UI
                 # must not offer a permanent scope.
                 "allow_permanent": not has_tirith and not smart_denied_for_owner,
+                "target": execution_target,
+                "backend": execution_backend,
             }
             if smart_denied_for_owner:
                 approval_data["smart_denied"] = True
@@ -3530,6 +3581,8 @@ def check_all_command_guards(command: str, env_type: str,
             "pattern_key": primary_key,
             "pattern_keys": all_keys,
             "description": _disp_combined_desc,
+            "target": execution_target,
+            "backend": execution_backend,
         }
         if smart_denied_for_owner:
             pending_data.update(smart_denied=True, allow_permanent=False)
@@ -3544,6 +3597,8 @@ def check_all_command_guards(command: str, env_type: str,
             "message": (
                 f"⚠️ {_disp_combined_desc}. Asking the user for approval.\n\n**Command:**\n```\n{_disp_command}\n```"
             ),
+            "target": execution_target,
+            "backend": execution_backend,
         }
         if smart_denied_for_owner:
             result.update(smart_denied=True, allow_permanent=False)
@@ -3559,6 +3614,8 @@ def check_all_command_guards(command: str, env_type: str,
         pattern_keys=list(all_keys),
         session_key=session_key,
         surface="cli",
+        target=execution_target,
+        backend=execution_backend,
     )
     choice = prompt_dangerous_approval(
         command,
@@ -3576,6 +3633,8 @@ def check_all_command_guards(command: str, env_type: str,
         session_key=session_key,
         surface="cli",
         choice=choice,
+        target=execution_target,
+        backend=execution_backend,
     )
 
     if choice == "deny":
@@ -3613,7 +3672,10 @@ def check_all_command_guards(command: str, env_type: str,
 
 
 def check_execute_code_guard(code: str, env_type: str,
-                             has_host_access: bool = False) -> dict:
+                             has_host_access: bool = False,
+                             execution_target: str = "default",
+                             execution_backend: str | None = None,
+                             execution_target_named: bool = False) -> dict:
     """Approve an execute_code script before its child process is spawned.
 
     execute_code runs arbitrary local Python — the script can call
@@ -3631,11 +3693,18 @@ def check_execute_code_guard(code: str, env_type: str,
     trusted-by-config (set a gateway/ask surface or ``approvals.cron_mode`` to
     require approval).
     """
-    pattern_key = "execute_code"
+    pattern_key = _execution_scoped_pattern_key(
+        "execute_code", execution_target, execution_target_named,
+    )
     description = (
         "execute_code script execution. The script can spawn subprocesses or "
         "mutate files without passing through terminal command approval; "
         "approval is one-shot for this run."
+    )
+    execution_backend = execution_backend or env_type
+    description += (
+        f" [execution target: {execution_target!r}; "
+        f"backend: {execution_backend}]"
     )
 
     # Isolated backends already sandbox the child — matches the container skip
@@ -3706,6 +3775,10 @@ def check_execute_code_guard(code: str, env_type: str,
             pattern_keys=[pattern_key],
             session_key=session_key,
         )
+        if isinstance(observer_payload, dict):
+            observer_payload.update(
+                target=execution_target, backend=execution_backend,
+            )
         verdict = _smart_approve(command, description)
         _observe_smart_approval_verdict(observer_payload, verdict)
         if verdict == "approve":
@@ -3753,6 +3826,8 @@ def check_execute_code_guard(code: str, env_type: str,
             "pattern_key": pattern_key,
             "pattern_keys": [pattern_key],
             "description": display_description,
+            "target": execution_target,
+            "backend": execution_backend,
         }
         if smart_denied_for_owner:
             pending_data.update(smart_denied=True, allow_permanent=False)
@@ -3764,6 +3839,8 @@ def check_execute_code_guard(code: str, env_type: str,
             "approval_pending": True,
             "command": display_command,
             "description": display_description,
+            "target": execution_target,
+            "backend": execution_backend,
             "message": (
                 f"⚠️ {display_description}. Asking the user for approval.\n\n"
                 f"**Code:**\n```python\n{display_code}\n```"
@@ -3779,6 +3856,8 @@ def check_execute_code_guard(code: str, env_type: str,
         "pattern_keys": [pattern_key],
         "description": display_description,
         "allow_permanent": not smart_denied_for_owner,
+        "target": execution_target,
+        "backend": execution_backend,
     }
     if smart_denied_for_owner:
         approval_data["smart_denied"] = True

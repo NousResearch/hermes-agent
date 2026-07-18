@@ -605,6 +605,7 @@ def _resolve_active_context_length() -> int:
 # so if something slips through, the LLM sees a sensible message.
 _AGENT_LOOP_TOOLS = {"todo", "memory", "session_search", "delegate_task"}
 _READ_SEARCH_TOOLS = {"read_file", "search_files"}
+_TARGET_SELECTOR_TOOLS = {"terminal", "write_file", "patch", "execute_code"}
 
 
 # =========================================================================
@@ -1232,7 +1233,14 @@ def handle_function_call(
         if function_name not in _READ_SEARCH_TOOLS:
             try:
                 from tools.file_tools import notify_other_tool_call
-                notify_other_tool_call(task_id or "default")
+                notify_other_tool_call(
+                    task_id or "default",
+                    (
+                        function_args.get("target")
+                        if function_name in _TARGET_SELECTOR_TOOLS
+                        else None
+                    ),
+                )
             except Exception:
                 pass  # file_tools may not be loaded yet
 

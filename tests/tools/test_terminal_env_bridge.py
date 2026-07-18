@@ -28,6 +28,9 @@ def _reset_bridge_state(monkeypatch):
     monkeypatch.delenv("TERMINAL_ENV", raising=False)
     monkeypatch.delenv("TERMINAL_CWD", raising=False)
     monkeypatch.delenv("TERMINAL_DOCKER_IMAGE", raising=False)
+    monkeypatch.delenv("TERMINAL_TIMEOUT", raising=False)
+    monkeypatch.delenv("TERMINAL_SSH_HOST", raising=False)
+    monkeypatch.delenv("TERMINAL_SSH_USER", raising=False)
     # The config layer caches by (path, mtime, size); leave it alone — each
     # test writes its own config.yaml which changes the signature.
     yield
@@ -64,6 +67,76 @@ def test_explicit_terminal_env_wins_over_config(monkeypatch):
     config = terminal_tool._get_env_config()
 
     assert config["env_type"] == "local"
+
+
+def test_bridge_mirrors_named_default_target_for_legacy_consumers():
+    _write_config(
+        "terminal:\n"
+        "  backend: local\n"
+        "  timeout: 77\n"
+        "  default_target: devbox\n"
+        "  targets:\n"
+        "    local:\n"
+        "      backend: local\n"
+        "      cwd: /workspace/local\n"
+        "    devbox:\n"
+        "      backend: ssh\n"
+        "      cwd: /srv/project\n"
+        "      ssh_host: devbox.example.com\n"
+        "      ssh_user: agent\n"
+    )
+
+    from hermes_cli.config import apply_terminal_config_to_env, load_config_readonly
+
+    mirrored = apply_terminal_config_to_env(
+        env={}, config=load_config_readonly(), override=True,
+    )
+    config = terminal_tool._get_env_config()
+
+    assert config["env_type"] == "ssh"
+    assert config["cwd"] == "/srv/project"
+    assert config["timeout"] == 77
+    assert config["ssh_host"] == "devbox.example.com"
+    assert mirrored["TERMINAL_ENV"] == "ssh"
+    assert mirrored["TERMINAL_CWD"] == "/srv/project"
+    assert mirrored["TERMINAL_TIMEOUT"] == "77"
+    assert mirrored["TERMINAL_SSH_HOST"] == "devbox.example.com"
+
+
+def test_bridge_preserves_remote_tilde_for_named_ssh_default():
+    from hermes_cli.config import apply_terminal_config_to_env
+
+    mirrored = apply_terminal_config_to_env(
+        env={},
+        config={
+            "terminal": {
+                "default_target": "devbox",
+                "targets": {
+                    "devbox": {
+                        "backend": "ssh",
+                        "cwd": "~/project",
+                        "ssh_host": "devbox.example.com",
+                        "ssh_user": "agent",
+                    },
+                },
+            },
+        },
+        override=True,
+    )
+
+    assert mirrored["TERMINAL_ENV"] == "ssh"
+    assert mirrored["TERMINAL_CWD"] == "~/project"
+
+
+def test_invalid_default_target_type_stays_fail_open():
+    from hermes_cli.config import effective_terminal_config
+
+    effective = effective_terminal_config({
+        "backend": "local",
+        "default_target": ["not", "hashable"],
+        "targets": {"local": {"backend": "local"}},
+    })
+    assert effective == {"backend": "local"}
 
 
 def test_preset_terminal_vars_survive_backfill(monkeypatch):

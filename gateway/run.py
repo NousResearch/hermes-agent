@@ -1626,6 +1626,12 @@ if _config_path.exists():
         # config.yaml overrides .env for these since it's the documented config path.
         _terminal_cfg = _cfg.get("terminal", {})
         if _terminal_cfg and isinstance(_terminal_cfg, dict):
+            from hermes_cli.config import effective_terminal_config
+
+            # Legacy consumers below still read TERMINAL_* as the one backend
+            # used when a tool call omits target. In named mode that is the
+            # selected default target, not the top-level inheritance mapping.
+            _terminal_cfg = effective_terminal_config(_terminal_cfg)
             _terminal_backend = str(
                 _terminal_cfg.get("backend") or os.environ.get("TERMINAL_ENV") or ""
             ).strip().lower()

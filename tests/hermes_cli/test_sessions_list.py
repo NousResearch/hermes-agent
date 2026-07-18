@@ -1,8 +1,23 @@
 import sys
 import time
 
+import pytest
 
-def test_sessions_list_titled_layout_shows_source(monkeypatch, capsys):
+
+@pytest.mark.parametrize(
+    ("argv_tail", "session_fields", "workspace_label"),
+    [
+        ([], {}, None),
+        (
+            ["--workspace", "project"],
+            {"git_repo_root": "/work/project", "cwd": "/work/project/src"},
+            "project",
+        ),
+    ],
+)
+def test_sessions_list_titled_layout_shows_source(
+    monkeypatch, capsys, argv_tail, session_fields, workspace_label
+):
     import hermes_cli.main as main_mod
     import hermes_state
 
@@ -17,6 +32,7 @@ def test_sessions_list_titled_layout_shows_source(monkeypatch, capsys):
                     "title": "Named chat",
                     "preview": "hello from telegram",
                     "last_active": time.time(),
+                    **session_fields,
                 }
             ]
 
@@ -24,7 +40,7 @@ def test_sessions_list_titled_layout_shows_source(monkeypatch, capsys):
             pass
 
     monkeypatch.setattr(hermes_state, "SessionDB", lambda: FakeDB())
-    monkeypatch.setattr(sys, "argv", ["hermes", "sessions", "list"])
+    monkeypatch.setattr(sys, "argv", ["hermes", "sessions", "list", *argv_tail])
 
     main_mod.main()
 
@@ -37,6 +53,9 @@ def test_sessions_list_titled_layout_shows_source(monkeypatch, capsys):
     assert "Named chat" in output
     assert "telegram" in output
     assert "20260401_201329_d85961" in output
+    if workspace_label:
+        assert "Workspace" in header
+        assert workspace_label in output
 
 
 def test_sessions_list_empty_result_closes_db(monkeypatch, capsys):

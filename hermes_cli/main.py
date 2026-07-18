@@ -14294,17 +14294,17 @@ def main():
 
             if has_ws:
                 if has_titles:
-                    print(f"{'Title':<28} {'Workspace':<18} {'Last Active':<13} {'ID'}")
-                    print("─" * 110)
+                    header = f"{'Title':<28} {'Workspace':<18} {'Last Active':<13} {'Src':<6} {'ID'}"
                 else:
-                    print(f"{'Preview':<38} {'Workspace':<18} {'Last Active':<13} {'Src':<6} {'ID'}")
-                    print("─" * 100)
+                    header = f"{'Preview':<38} {'Workspace':<18} {'Last Active':<13} {'Src':<6} {'ID'}"
+                print(header)
+                print("─" * len(header))
                 for s in sessions:
                     last_active = _relative_time(s.get("last_active"))
                     ws = _ws_label(s)[:16]
                     if has_titles:
                         title = (s.get("title") or "—")[:26]
-                        print(f"{title:<28} {ws:<18} {last_active:<13} {s['id']}")
+                        print(f"{title:<28} {ws:<18} {last_active:<13} {s['source']:<6} {s['id']}")
                     else:
                         preview = s.get("preview", "")[:36]
                         print(f"{preview:<38} {ws:<18} {last_active:<13} {s['source']:<6} {s['id']}")

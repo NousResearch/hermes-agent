@@ -650,6 +650,8 @@ def run_conversation(
 
     # Main conversation loop counters (pure locals consumed by the loop below).
     api_call_count = 0
+    iteration_window_count = 0
+    iteration_summary_rollovers = 0
     final_response = None
     interrupted = False
     failed = False
@@ -686,7 +688,80 @@ def run_conversation(
             should_review_memory=_should_review_memory,
         )
 
-    while (api_call_count < agent.max_iterations and agent.iteration_budget.remaining > 0) or agent._budget_grace_call:
+    while True:
+        _iteration_window_open = (
+            iteration_window_count < agent.max_iterations
+            and agent.iteration_budget.remaining > 0
+        )
+        if not (_iteration_window_open or agent._budget_grace_call):
+            if (
+                not getattr(agent, "_summarize_and_continue_on_limit", False)
+                or agent.max_iterations <= 0
+            ):
+                break
+
+            # max_turns is a summary checkpoint, not a stop signal. Reuse the
+            # context-compression path so the checkpoint stays internal,
+            # cache-safe, and cannot masquerade as the final answer.
+            iteration_summary_rollovers += 1
+            agent._touch_activity(
+                f"summarizing iteration window #{iteration_summary_rollovers}"
+            )
+            agent._emit_status(
+                f"📦 Iteration checkpoint {iteration_summary_rollovers}: "
+                f"summarizing after {iteration_window_count} calls, then continuing"
+            )
+            _pre_rollover_messages = messages
+            try:
+                messages, active_system_prompt = agent._compress_context(
+                    messages,
+                    system_message,
+                    approx_tokens=estimate_request_tokens_rough(
+                        messages, tools=agent.tools or None
+                    ),
+                    task_id=effective_task_id,
+                    force=True,
+                )
+            except Exception as _rollover_error:
+                logger.warning(
+                    "Iteration checkpoint summary failed; continuing with the "
+                    "existing context (window=%d, calls=%d): %s",
+                    iteration_summary_rollovers,
+                    api_call_count,
+                    _rollover_error,
+                    exc_info=True,
+                )
+                messages = _pre_rollover_messages
+            else:
+                if messages is _pre_rollover_messages:
+                    logger.warning(
+                        "Iteration checkpoint summary made no progress; continuing "
+                        "with the existing context (window=%d, calls=%d)",
+                        iteration_summary_rollovers,
+                        api_call_count,
+                    )
+                conversation_history = conversation_history_after_compression(
+                    agent, messages
+                )
+
+            # Compression may rewrite the transcript. Rebase API-only context
+            # injection onto the newest preserved user row before continuing.
+            for _summary_user_idx in range(len(messages) - 1, -1, -1):
+                if messages[_summary_user_idx].get("role") == "user":
+                    current_turn_user_idx = _summary_user_idx
+                    break
+
+            agent.iteration_budget = IterationBudget(agent.max_iterations)
+            iteration_window_count = 0
+            agent._budget_exhausted_injected = False
+            agent._budget_grace_call = False
+            agent._empty_content_retries = 0
+            agent._thinking_prefill_retries = 0
+            agent._last_content_with_tools = None
+            agent._last_content_tools_all_housekeeping = False
+            agent._mute_post_response = False
+            continue
+
         # Reset per-turn checkpoint dedup so each iteration can take one snapshot
         agent._checkpoint_mgr.new_turn()
 
@@ -699,6 +774,7 @@ def run_conversation(
             break
         
         api_call_count += 1
+        iteration_window_count += 1
         agent._api_call_count = api_call_count
         agent._touch_activity(f"starting API call #{api_call_count}")
 
@@ -1041,6 +1117,7 @@ def run_conversation(
             messages.append({"role": "assistant", "content": final_response})
             agent._emit_status("❌ Ollama runtime context is too small for Hermes tool use")
             api_call_count -= 1
+            iteration_window_count -= 1
             agent._api_call_count = api_call_count
             try:
                 agent.iteration_budget.refund()
@@ -1121,6 +1198,7 @@ def run_conversation(
                 agent, messages
             )
             api_call_count -= 1
+            iteration_window_count -= 1
             agent._api_call_count = api_call_count
             agent.iteration_budget.refund()
             continue
@@ -5644,8 +5722,10 @@ def run_conversation(
             # message pollutes history, burns tokens, and risks violating
             # role-alternation invariants.
 
-            # If we're near the limit, break to avoid infinite loops
-            if api_call_count >= agent.max_iterations - 1:
+            # Repeated non-tool errors are a hard blocker within the current
+            # summary window; a prior rollover must not make every later error
+            # look permanently near the limit.
+            if iteration_window_count >= agent.max_iterations - 1:
                 _turn_exit_reason = f"error_near_max_iterations({error_msg[:80]})"
                 final_response = f"I apologize, but I encountered repeated errors: {error_msg}"
                 # Append as assistant so the history stays valid for
@@ -5672,6 +5752,7 @@ def run_conversation(
         _should_review_memory=_should_review_memory,
         _turn_exit_reason=_turn_exit_reason,
         _pending_verification_response=_pending_verification_response,
+        iteration_summary_rollovers=iteration_summary_rollovers,
     )
 
 

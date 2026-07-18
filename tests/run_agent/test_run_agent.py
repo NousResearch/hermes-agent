@@ -4305,6 +4305,71 @@ class TestRunConversation:
         assert mock_handle_function_call.call_args.kwargs["tool_call_id"] == "c1"
         assert mock_handle_function_call.call_args.kwargs["session_id"] == agent.session_id
 
+    def test_iteration_limit_summary_rollover_continues_same_turn(self, agent):
+        """The configured limit is a summary checkpoint, not a stop signal."""
+        self._setup_agent(agent)
+        agent.max_iterations = 1
+        agent._summarize_and_continue_on_limit = True
+        tc = _mock_tool_call(name="web_search", arguments="{}", call_id="c1")
+        resp1 = _mock_response(content="", finish_reason="tool_calls", tool_calls=[tc])
+        resp2 = _mock_response(content="Done after checkpoint", finish_reason="stop")
+        agent.client.chat.completions.create.side_effect = [resp1, resp2]
+        compacted = [
+            {
+                "role": "user",
+                "content": "[Conversation summary]\nSearch started; continue the unfinished task.",
+            }
+        ]
+
+        with (
+            patch("run_agent.handle_function_call", return_value="search result"),
+            patch.object(
+                agent,
+                "_compress_context",
+                return_value=(compacted, "You are helpful."),
+            ) as mock_compress,
+            patch.object(agent, "_persist_session"),
+            patch.object(agent, "_save_trajectory"),
+            patch.object(agent, "_cleanup_task_resources"),
+        ):
+            result = agent.run_conversation("search something")
+
+        assert result["final_response"] == "Done after checkpoint"
+        assert result["completed"] is True
+        assert result["api_calls"] == 2
+        assert result["iteration_summary_rollovers"] == 1
+        mock_compress.assert_called_once()
+        assert mock_compress.call_args.kwargs["force"] is True
+
+    def test_iteration_summary_failure_does_not_stop_unfinished_work(self, agent):
+        """A broken summarizer is not a hard blocker for the underlying task."""
+        self._setup_agent(agent)
+        agent.max_iterations = 1
+        agent._summarize_and_continue_on_limit = True
+        tc = _mock_tool_call(name="web_search", arguments="{}", call_id="c1")
+        agent.client.chat.completions.create.side_effect = [
+            _mock_response(content="", finish_reason="tool_calls", tool_calls=[tc]),
+            _mock_response(content="Done despite summary outage", finish_reason="stop"),
+        ]
+
+        with (
+            patch("run_agent.handle_function_call", return_value="search result"),
+            patch.object(
+                agent,
+                "_compress_context",
+                side_effect=RuntimeError("summarizer unavailable"),
+            ),
+            patch.object(agent, "_persist_session"),
+            patch.object(agent, "_save_trajectory"),
+            patch.object(agent, "_cleanup_task_resources"),
+        ):
+            result = agent.run_conversation("search something")
+
+        assert result["final_response"] == "Done despite summary outage"
+        assert result["completed"] is True
+        assert result["api_calls"] == 2
+        assert result["iteration_summary_rollovers"] == 1
+
     def test_tool_call_none_args_verbose_logging_does_not_crash(self, agent):
         self._setup_agent(agent)
         agent.verbose_logging = True

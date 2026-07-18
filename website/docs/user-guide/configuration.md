@@ -838,10 +838,17 @@ Instead, when the budget is actually exhausted (90/90), Hermes injects one messa
 ```yaml
 agent:
   max_turns: 90                # Max iterations per conversation turn (default: 90)
+  summarize_and_continue_on_limit: false  # Summarize, reset, and continue
   api_max_retries: 3           # Retries per provider before fallback engages (default: 3)
 ```
 
 When the iteration budget is fully exhausted, the CLI shows a notification to the user: `⚠ Iteration budget reached (90/90) — response may be incomplete`.
+
+Set `agent.summarize_and_continue_on_limit: true` when long-running tasks must
+not stop at that boundary. Hermes then forces an internal context summary,
+renews the `max_turns` window, and continues the same user turn. The checkpoint
+summary is not delivered as the final answer. Interrupts, guardrail halts,
+provider failures, and other hard errors still stop normally.
 
 `agent.api_max_retries` controls how many times Hermes retries a provider API call on transient errors (rate limits, connection drops, 5xx) **before** fallback-provider switching engages. The default is `3` — four attempts total. If you have [fallback providers](/user-guide/features/fallback-providers) configured and want to fail over faster, drop this to `0` so the first transient error on your primary immediately hands off to the fallback instead of churning retries against the flaky endpoint.
 

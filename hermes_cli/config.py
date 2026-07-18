@@ -1011,6 +1011,10 @@ DEFAULT_CONFIG = {
     "max_live_sessions": 16,
     "agent": {
         "max_turns": 90,
+        # Treat max_turns as a forced context-summary checkpoint instead of a
+        # terminal budget. The agent compacts the transcript, resets the
+        # per-window budget, and continues the same user turn.
+        "summarize_and_continue_on_limit": False,
         # Inactivity timeout for gateway agent execution (seconds).
         # The agent can run indefinitely as long as it's actively calling
         # tools or receiving API responses.  Only fires when the agent has

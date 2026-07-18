@@ -1537,6 +1537,12 @@ def init_agent(
     # conversation loop's intent-ack block.
     agent._intent_ack_continuation = _agent_section.get("intent_ack_continuation", "auto")
 
+    # Optional iteration-budget rollover. When enabled, max_turns becomes a
+    # forced context-summary checkpoint rather than a terminal condition.
+    agent._summarize_and_continue_on_limit = bool(
+        _agent_section.get("summarize_and_continue_on_limit", False)
+    )
+
     # Universal task-completion guidance toggle.  Default True.  Surfaced
     # as a separate flag from tool_use_enforcement because the guidance
     # applies to ALL models, not just the model families enforcement

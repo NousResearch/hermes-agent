@@ -1416,9 +1416,20 @@ tool_loop_guardrails:
     exact_failure: 5
     same_tool_failure: 8
     idempotent_no_progress: 5
+  session_caps:
+    max_web_searches: 200      # max web_search calls per session (0 = unlimited)
+    max_subagents: 200         # max subagents spawned per session (0 = unlimited)
 ```
 
 `hard_stop_enabled` defaults to `false` because interactive sessions have a human in the loop. In unattended deployments (gateway, cron, kanban workers) set it to `true` so repeated failures are blocked rather than only warned. See also [Docker / unattended deployments](docker.md).
+
+### Session-wide runaway-loop caps
+
+Separate from the per-turn thresholds above, `session_caps` sets hard ceilings on the total number of `web_search` calls and subagent spawns over the **whole session** (not per turn). These are always on — a legitimate session almost never issues 200 web searches or spawns 200 subagents, so hitting a cap is a strong runaway-loop signal. When a cap is reached, the offending tool call is blocked with an explanatory message and the turn stops cleanly instead of burning the rest of the budget. The counters reset only when a fresh session starts (`/new` or `/clear`). Set either value to `0` to disable that cap entirely.
+
+A single `delegate_task` batch counts each task toward `max_subagents` (a batch of 3 spends 3), so the cap tracks real subagents spawned rather than `delegate_task` invocations.
+
+This mirrors Claude Code's per-session WebSearch and subagent caps (v2.1.212), which also default to 200 and reset on `/clear`.
 
 ## TTS Configuration
 

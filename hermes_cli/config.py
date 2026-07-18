@@ -1417,6 +1417,17 @@ DEFAULT_CONFIG = {
             "same_tool_failure": 8,
             "idempotent_no_progress": 5,
         },
+        # Session-wide runaway-loop caps (inspired by Claude Code v2.1.212,
+        # Week 29, July 2026). Unlike the per-turn warn/hard-stop thresholds
+        # above, these count over the WHOLE session and reset only when a fresh
+        # session starts (/new or /clear). They are always-on hard ceilings — a
+        # legitimate session almost never issues 200 web searches or spawns 200
+        # subagents, so hitting one is a strong runaway-loop signal. Set either
+        # to 0 to disable that cap (unlimited).
+        "session_caps": {
+            "max_web_searches": 200,   # max web_search calls per session (0 = unlimited)
+            "max_subagents": 200,      # max subagents spawned per session (0 = unlimited)
+        },
     },
 
     "compression": {

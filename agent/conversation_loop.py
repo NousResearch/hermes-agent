@@ -66,6 +66,7 @@ from agent.retry_utils import (
 )
 from agent.trajectory import has_incomplete_scratchpad
 from agent.usage_pricing import estimate_usage_cost, normalize_usage
+from agent.zai_prompt_policy import apply_zai_special_prompt
 from hermes_constants import PARTIAL_STREAM_STUB_ID
 from hermes_logging import set_session_context
 from tools.skill_provenance import set_current_write_origin
@@ -900,6 +901,7 @@ def run_conversation(
             effective_system = (effective_system + "\n\n" + agent.ephemeral_system_prompt).strip()
         if effective_system:
             api_messages = [{"role": "system", "content": effective_system}] + api_messages
+        api_messages = apply_zai_special_prompt(agent, api_messages)
 
         if moa_config:
             try:

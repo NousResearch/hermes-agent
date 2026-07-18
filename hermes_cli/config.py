@@ -3096,6 +3096,17 @@ DEFAULT_CONFIG = {
         },
     },
 
+    # Generic trusted-edge observability correlation. The secret key remains in
+    # HERMES_OBSERVABILITY_CORRELATION_HMAC_K1; config.yaml only controls which
+    # consumers may emit or persist the derived identifier.
+    "observability": {
+        "correlation": {
+            "scheme": "hmac-sha256-v1:k1",
+            "emitter_metadata_enabled": False,
+            "history_execution_writer_enabled": False,
+        },
+    },
+
     # Real-time token streaming to messaging platforms (Telegram, Discord,
     # Slack, etc.). Read at the top level by the gateway; absent this block the
     # gateway falls back to these same defaults, so adding it here only makes
@@ -4221,6 +4232,14 @@ OPTIONAL_ENV_VARS = {
         "prompt": "Langfuse server URL (leave empty for cloud.langfuse.com)",
         "url": None,
         "password": False,
+        "category": "tool",
+        "advanced": True,
+    },
+    "HERMES_OBSERVABILITY_CORRELATION_HMAC_K1": {
+        "description": "K1 HMAC secret for trusted observability correlation (base64:<strict-unpadded-base64url>)",
+        "prompt": "Observability correlation K1 HMAC secret",
+        "url": None,
+        "password": True,
         "category": "tool",
         "advanced": True,
     },
@@ -5490,7 +5509,7 @@ _KNOWN_ROOT_KEYS = {
     "fallback_providers", "credential_pool_strategies", "toolsets",
     "agent", "terminal", "display", "compression", "delegation",
     "auxiliary", "moa", "custom_providers", "context", "memory", "gateway",
-    "sessions", "streaming", "updates", "mcp_servers",
+    "observability", "sessions", "streaming", "updates", "mcp_servers",
 }
 
 # Valid fields inside a custom_providers list entry

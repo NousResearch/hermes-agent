@@ -19,9 +19,15 @@ Optional env vars:
   HERMES_LANGFUSE_SAMPLE_RATE - sampling rate 0.0–1.0 (default: 1.0)
   HERMES_LANGFUSE_MAX_CHARS   - max chars per field (default: 12000)
   HERMES_LANGFUSE_DEBUG       - set to "true" for verbose logging
+  HERMES_OBSERVABILITY_CORRELATION_HMAC_K1
+                                - K1 HMAC key as base64:<strict-unpadded-base64url>
 """
 from __future__ import annotations
 
+import base64
+import binascii
+import hashlib
+import hmac
 import json
 import logging
 import os
@@ -50,6 +56,22 @@ class TraceState:
     pending_tools_by_name: Dict[str, list] = field(default_factory=dict)
     turn_tool_calls: list[dict[str, Any]] = field(default_factory=list)
     last_updated_at: float = field(default_factory=time.time)
+
+
+_CORRELATION_SCHEME = "hmac-sha256-v1:k1"
+_CORRELATION_SECRET_ENV = "HERMES_OBSERVABILITY_CORRELATION_HMAC_K1"
+_CORRELATION_MESSAGE_PREFIX = b"hermes-observability-correlation-hmac-v1\x00"
+_CORRELATION_KEY_PAYLOAD_RE = re.compile(r"^[A-Za-z0-9_-]+$")
+
+
+@dataclass(frozen=True)
+class CorrelationConfig:
+    scheme: str = _CORRELATION_SCHEME
+    emitter_metadata_enabled: bool = False
+    hmac_key: Optional[bytes] = field(default=None, repr=False)
+
+
+_CORRELATION_CONFIG = CorrelationConfig()
 
 
 _STATE_LOCK = threading.Lock()
@@ -90,6 +112,93 @@ def _env_bool(*names: str) -> bool:
         if value:
             return value in {"1", "true", "yes", "on"}
     return False
+
+
+def _parse_correlation_hmac_k1(value: Any) -> Optional[bytes]:
+    """Parse the strict, unpadded base64url K1 secret format."""
+    if not isinstance(value, str) or not value.startswith("base64:"):
+        return None
+
+    payload = value[len("base64:"):]
+    if not _CORRELATION_KEY_PAYLOAD_RE.fullmatch(payload):
+        return None
+    if len(payload) % 4 == 1:
+        return None
+
+    try:
+        decoded = base64.b64decode(
+            payload + ("=" * (-len(payload) % 4)),
+            altchars=b"-_",
+            validate=True,
+        )
+    except (binascii.Error, ValueError):
+        return None
+
+    canonical = base64.urlsafe_b64encode(decoded).decode("ascii").rstrip("=")
+    if canonical != payload or not 32 <= len(decoded) <= 64:
+        return None
+    return decoded
+
+
+def _load_correlation_config() -> CorrelationConfig:
+    """Load the immutable trusted-edge config once during plugin registration."""
+    try:
+        from hermes_cli.config import load_config_readonly
+
+        config = load_config_readonly()
+    except Exception:
+        return CorrelationConfig()
+    if not isinstance(config, dict):
+        return CorrelationConfig()
+
+    observability = config.get("observability")
+    if not isinstance(observability, dict):
+        return CorrelationConfig()
+
+    correlation = observability.get("correlation")
+    if not isinstance(correlation, dict):
+        return CorrelationConfig()
+
+    scheme = correlation.get("scheme")
+    if not isinstance(scheme, str):
+        scheme = ""
+    enabled = correlation.get("emitter_metadata_enabled") is True
+    key = None
+    if enabled and scheme == _CORRELATION_SCHEME:
+        key = _parse_correlation_hmac_k1(os.environ.get(_CORRELATION_SECRET_ENV))
+    return CorrelationConfig(
+        scheme=scheme,
+        emitter_metadata_enabled=enabled,
+        hmac_key=key,
+    )
+
+
+def _derive_correlation_id(
+    task_id: Any,
+    config: Optional[CorrelationConfig] = None,
+) -> Optional[str]:
+    """Derive the K1 correlation digest without coercing or normalizing task IDs."""
+    correlation = config if config is not None else _CORRELATION_CONFIG
+    key = correlation.hmac_key
+    if (
+        correlation.emitter_metadata_enabled is not True
+        or correlation.scheme != _CORRELATION_SCHEME
+        or not isinstance(key, bytes)
+        or not 32 <= len(key) <= 64
+        or not isinstance(task_id, str)
+        or not task_id
+        or task_id != task_id.strip()
+        or "\x00" in task_id
+    ):
+        return None
+
+    try:
+        task_bytes = task_id.encode("utf-8", errors="strict")
+    except UnicodeEncodeError:
+        return None
+
+    message = _CORRELATION_MESSAGE_PREFIX + task_bytes
+    return hmac.new(key, message, hashlib.sha256).hexdigest()
 
 
 def _debug_enabled() -> bool:
@@ -615,6 +724,10 @@ def _start_root_trace(task_key: str, *, task_id: str, session_id: str, platform:
         "model": model,
         "api_mode": api_mode,
     }
+    correlation_id = _derive_correlation_id(task_id)
+    if correlation_id is not None:
+        metadata["correlation_scheme"] = _CORRELATION_SCHEME
+        metadata["correlation_id"] = correlation_id
 
     # session_id must be passed in trace_context for Langfuse session grouping.
     trace_ctx: Dict[str, Any] = {"trace_id": trace_id}
@@ -663,7 +776,7 @@ def _start_root_trace(task_key: str, *, task_id: str, session_id: str, platform:
     except Exception:
         pass
 
-    _debug(f"started trace {trace_id} for {task_key}")
+    _debug(f"started trace {trace_id}")
     return TraceState(trace_id=trace_id, root_ctx=root_ctx, root_span=root_span)
 
 
@@ -1126,6 +1239,8 @@ def on_post_tool_call(*, tool_name: str = "", args: Any = None, result: Any = No
 
 
 def register(ctx) -> None:
+    global _CORRELATION_CONFIG
+    _CORRELATION_CONFIG = _load_correlation_config()
     # Register for both hook name variants so the plugin works across
     # Hermes versions.  pre_api_request / post_api_request fire per API
     # call (preferred); pre_llm_call / post_llm_call fire once per turn.

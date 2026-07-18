@@ -827,10 +827,14 @@ async def test_session_messages_reject_invalid_pagination(adapter, session_db):
             f"/api/sessions/{session_id}/messages?limit=50&before=v1:"
             + ("9" * 5000)
         )
+        sqlite_overflow_cursor = await cli.get(
+            f"/api/sessions/{session_id}/messages?limit=50&before=v2:9223372036854775808"
+        )
 
     assert too_large.status == 400
     assert bad_cursor.status == 400
     assert oversized_cursor.status == 400
+    assert sqlite_overflow_cursor.status == 400
 
 @pytest.mark.asyncio
 async def test_session_messages_do_not_prepend_explicit_branch_parent(

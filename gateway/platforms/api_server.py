@@ -2735,6 +2735,8 @@ class APIServerAdapter(BasePlatformAdapter):
             match = re.fullmatch(r"(v1|v2):(\d{1,20})", before_raw)
             before_kind = match.group(1) if match else ""
             before = int(match.group(2)) if match else -1
+            if before_kind == "v2" and before > 9_223_372_036_854_775_807:
+                before = -1
             if before < 0:
                 return web.json_response(
                     _openai_error(

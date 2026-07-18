@@ -36,9 +36,10 @@ targets the *structural* fitness of a prompt, not its voice.
 
 ## How to Run
 
-Commands run via the bundled helper script. `${HERMES_SKILL_DIR}` is substituted
-at scan time by the skill loader; copy-paste the resolved path or run from inside
-the skill directory.
+Drive the bundled helper script through the native `terminal` tool — it is the
+supported interaction surface here, not ad-hoc Python pasting. The loader
+substitutes `${HERMES_SKILL_DIR}` at scan time, so copy the resolved path or run
+from inside the skill directory.
 
 ```bash
 # Score a prompt across 8 quality dimensions

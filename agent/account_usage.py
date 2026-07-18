@@ -214,7 +214,7 @@ def build_nous_credits_snapshot(account_info) -> Optional[AccountUsageSnapshot]:
             return None
 
         details.append(f"Top up: {nous_portal_topup_url(account_info)}")
-        details.append("(or run /credits)")
+        details.append("(or run /topup)")
 
         plan = getattr(sub, "plan", None) if sub is not None else None
         return AccountUsageSnapshot(
@@ -340,7 +340,7 @@ def _snapshot_from_credits_state(state) -> Optional[AccountUsageSnapshot]:
 
 @dataclass(frozen=True)
 class CreditsView:
-    """Surface-agnostic data for the ``/credits`` command.
+    """Surface-agnostic data for the ``/topup`` balance view.
 
     One portal fetch, one parse — consumed identically by the CLI panel, the
     gateway button, and any other money surface. Fail-open: when not logged in
@@ -356,11 +356,11 @@ class CreditsView:
 
 
 def build_credits_view(*, markdown: bool = False, timeout: float = 10.0) -> CreditsView:
-    """Build the /credits view: balance block + identity line + top-up URL.
+    """Build the /topup balance view: balance block + identity line + top-up URL.
 
     Reuses the same account fetch + snapshot + URL builder as the /usage credits
     block, so the numbers always match. The balance block is the rendered
-    snapshot MINUS its trailing top-up/command-hint lines (the /credits surface
+    snapshot MINUS its trailing top-up/command-hint lines (the /topup surface
     supplies its own affordance). Fail-open → ``CreditsView(logged_in=False)``.
     """
     not_logged_in = CreditsView(logged_in=False)
@@ -386,7 +386,7 @@ def build_credits_view(*, markdown: bool = False, timeout: float = 10.0) -> Cred
                 timeout=timeout
             )
     except Exception:
-        logger.debug("credits ▸ /credits portal fetch failed (fail-open)", exc_info=True)
+        logger.debug("credits ▸ /topup portal fetch failed (fail-open)", exc_info=True)
         return not_logged_in
 
     if account is None or not getattr(account, "logged_in", False):
@@ -394,8 +394,8 @@ def build_credits_view(*, markdown: bool = False, timeout: float = 10.0) -> Cred
 
     snapshot = build_nous_credits_snapshot(account)
     # Balance lines = the snapshot block minus the two trailing affordance lines
-    # ("Top up: <url>" + "(or run /credits)") that build_nous_credits_snapshot
-    # appends for the /usage surface. /credits renders its own button/panel.
+    # ("Top up: <url>" + "(or run /topup)") that build_nous_credits_snapshot
+    # appends for the /usage surface. /topup renders its own button/panel.
     balance_lines: list[str] = []
     if snapshot is not None:
         rendered = render_account_usage_lines(snapshot, markdown=markdown)
@@ -425,15 +425,28 @@ def build_credits_view(*, markdown: bool = False, timeout: float = 10.0) -> Cred
     )
 
 
-def _resolve_codex_usage_url(base_url: str) -> str:
+def _codex_backend_urls(base_url: str) -> tuple[str, str, str]:
+    """Resolve the Codex backend endpoints (usage, reset-credits list, consume).
+
+    Mirrors the Codex CLI's PathStyle split (codex-rs backend-client): base URLs
+    containing ``/backend-api`` use the ChatGPT ``/wham/...`` paths; everything
+    else uses ``/api/codex/...``.
+    """
     normalized = (base_url or "").strip().rstrip("/")
     if not normalized:
         normalized = "https://chatgpt.com/backend-api/codex"
     if normalized.endswith("/codex"):
         normalized = normalized[: -len("/codex")]
-    if "/backend-api" in normalized:
-        return normalized + "/wham/usage"
-    return normalized + "/api/codex/usage"
+    prefix = normalized + ("/wham" if "/backend-api" in normalized else "/api/codex")
+    return (
+        prefix + "/usage",
+        prefix + "/rate-limit-reset-credits",
+        prefix + "/rate-limit-reset-credits/consume",
+    )
+
+
+def _resolve_codex_usage_url(base_url: str) -> str:
+    return _codex_backend_urls(base_url)[0]
 
 
 def _resolve_codex_usage_credentials(
@@ -525,6 +538,14 @@ def _fetch_codex_account_usage(
             )
         )
     details: list[str] = []
+    reset_credits = payload.get("rate_limit_reset_credits") or {}
+    banked = reset_credits.get("available_count")
+    if isinstance(banked, (int, float)) and int(banked) > 0:
+        count = int(banked)
+        plural = "s" if count != 1 else ""
+        details.append(
+            f"You have {count} reset{plural} banked - use /usage reset to activate"
+        )
     credits = payload.get("credits") or {}
     if credits.get("has_credits"):
         balance = credits.get("balance")
@@ -539,6 +560,179 @@ def _fetch_codex_account_usage(
         plan=_title_case_slug(payload.get("plan_type")),
         windows=tuple(windows),
         details=tuple(details),
+    )
+
+
+@dataclass(frozen=True)
+class CodexResetRedeemResult:
+    """Outcome of a `/usage reset` attempt against the Codex backend."""
+
+    status: str  # reset | nothing_to_reset | no_credit | already_redeemed |
+    #              not_exhausted | no_credits_banked | unavailable
+    message: str
+    available_count: int = 0
+    windows_reset: int = 0
+
+    @property
+    def redeemed(self) -> bool:
+        return self.status == "reset"
+
+
+# Client-side guard threshold: a rate-limit window only counts as exhausted
+# when it is fully used. Below this, redeeming a banked reset wastes most of
+# its value, so we block and point at --force instead.
+_CODEX_WINDOW_EXHAUSTED_PERCENT = 100.0
+
+
+def redeem_codex_reset_credit(
+    *,
+    base_url: Optional[str] = None,
+    api_key: Optional[str] = None,
+    force: bool = False,
+) -> CodexResetRedeemResult:
+    """Redeem one banked Codex rate-limit reset credit (`/usage reset`).
+
+    Flow (mirrors the Codex CLI's reset-credits picker, codex-rs
+    ``backend-client``):
+
+    1. ``GET .../usage`` — read the current windows + banked credit count.
+    2. Guard: zero banked credits → refuse. No window fully used and not
+       ``force`` → refuse with a warning (a banked reset restores the WHOLE
+       5h + weekly allowance; burning it early wastes it). The backend has
+       the same protection (``nothing_to_reset`` doesn't consume the
+       credit), but failing fast client-side gives a clearer message.
+    3. ``POST .../rate-limit-reset-credits/consume`` with a fresh UUID
+       idempotency key (``redeem_request_id``). No ``credit_id`` — the
+       backend picks the next available credit, exactly like the CLI's
+       default "Full reset" option.
+
+    Never raises: every failure mode returns a ``CodexResetRedeemResult``
+    with a user-renderable message.
+    """
+    import uuid
+
+    try:
+        token, resolved_base_url, account_id = _resolve_codex_usage_credentials(base_url, api_key)
+    except Exception:
+        return CodexResetRedeemResult(
+            status="unavailable",
+            message="No Codex credentials available. Run `hermes auth` to sign in with your ChatGPT account.",
+        )
+    usage_url, _credits_url, consume_url = _codex_backend_urls(resolved_base_url)
+    headers = {
+        "Authorization": f"Bearer {token}",
+        "Accept": "application/json",
+        "User-Agent": "codex-cli",
+    }
+    if account_id:
+        headers["ChatGPT-Account-Id"] = account_id
+
+    try:
+        with httpx.Client(timeout=15.0) as client:
+            usage_resp = client.get(usage_url, headers=headers)
+            usage_resp.raise_for_status()
+            payload = usage_resp.json() or {}
+
+            reset_credits = payload.get("rate_limit_reset_credits") or {}
+            raw_count = reset_credits.get("available_count")
+            available = int(raw_count) if isinstance(raw_count, (int, float)) else 0
+            if available <= 0:
+                return CodexResetRedeemResult(
+                    status="no_credits_banked",
+                    message="No banked reset credits on this account — nothing to redeem.",
+                )
+
+            rate_limit = payload.get("rate_limit") or {}
+            worst_used: Optional[float] = None
+            for key in ("primary_window", "secondary_window"):
+                used = (rate_limit.get(key) or {}).get("used_percent")
+                if isinstance(used, (int, float)):
+                    worst_used = max(worst_used or 0.0, float(used))
+            exhausted = worst_used is not None and worst_used >= _CODEX_WINDOW_EXHAUSTED_PERCENT
+            if not exhausted and not force:
+                usage_note = (
+                    f"your busiest window is only {worst_used:.0f}% used"
+                    if worst_used is not None
+                    else "your current usage could not be confirmed as exhausted"
+                )
+                plural = "s" if available != 1 else ""
+                return CodexResetRedeemResult(
+                    status="not_exhausted",
+                    message=(
+                        f"⚠️ Not redeeming: {usage_note}. A banked reset restores your FULL "
+                        f"5h + weekly limits, so spending it now would waste most of it. "
+                        f"You have {available} reset{plural} banked. "
+                        f"Use `/usage reset --force` to redeem anyway."
+                    ),
+                    available_count=available,
+                )
+
+            consume_resp = client.post(
+                consume_url,
+                headers={**headers, "Content-Type": "application/json"},
+                json={"redeem_request_id": str(uuid.uuid4())},
+            )
+            consume_resp.raise_for_status()
+            body = consume_resp.json() or {}
+    except httpx.HTTPStatusError as exc:
+        code = exc.response.status_code
+        if code in (401, 403):
+            return CodexResetRedeemResult(
+                status="unavailable",
+                message=(
+                    "Codex backend rejected the request (HTTP "
+                    f"{code}). Reset credits require ChatGPT-account (OAuth) auth — "
+                    "run `hermes auth` and sign in with your ChatGPT account."
+                ),
+            )
+        return CodexResetRedeemResult(
+            status="unavailable",
+            message=f"Codex backend error (HTTP {code}) — try again shortly.",
+        )
+    except Exception as exc:
+        return CodexResetRedeemResult(
+            status="unavailable",
+            message=f"Could not reach the Codex backend: {exc}",
+        )
+
+    code = str(body.get("code", "") or "").strip().lower()
+    windows_reset = body.get("windows_reset")
+    windows_reset = int(windows_reset) if isinstance(windows_reset, (int, float)) else 0
+    remaining = max(0, available - 1)
+    plural = "s" if remaining != 1 else ""
+    if code == "reset":
+        return CodexResetRedeemResult(
+            status="reset",
+            message=(
+                f"✅ Reset redeemed — your usage limits have been reset. "
+                f"{remaining} banked reset{plural} remaining."
+            ),
+            available_count=remaining,
+            windows_reset=windows_reset,
+        )
+    if code == "nothing_to_reset":
+        return CodexResetRedeemResult(
+            status="nothing_to_reset",
+            message=(
+                "Backend reports nothing to reset — your limits aren't exhausted. "
+                "The credit was NOT spent."
+            ),
+            available_count=available,
+        )
+    if code == "no_credit":
+        return CodexResetRedeemResult(
+            status="no_credit",
+            message="Backend reports no available reset credit on this account.",
+        )
+    if code == "already_redeemed":
+        return CodexResetRedeemResult(
+            status="already_redeemed",
+            message="This redemption was already processed — no additional credit was spent.",
+            available_count=remaining,
+        )
+    return CodexResetRedeemResult(
+        status="unavailable",
+        message=f"Unexpected response from the Codex backend: {body!r}",
     )
 
 

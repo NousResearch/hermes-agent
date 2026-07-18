@@ -26,6 +26,9 @@ class _FakeAgent:
     def _has_stream_consumers(self):
         return False
 
+    def _claim_stream_writer(self):
+        return 1
+
     def _fire_stream_delta(self, text):
         pass
 

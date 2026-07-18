@@ -1635,17 +1635,22 @@ class ContextCompressor(ContextEngine):
     ) -> tuple[List[Dict[str, Any]], int]:
         """Run the cheap tool-output prune WITHOUT any LLM summarization.
 
-        Reuses :meth:`_prune_old_tool_results` — the same routine
-        :meth:`compress` runs in its Phase 1 — but protects a token-budget
-        tail sized by ``prune_protect_tokens`` rather than the summary
-        tail budget. No conversation turns are summarized or dropped; only
-        old tool *results* (never tool *calls*, user, or assistant text) are
-        replaced with informative one-line stubs. Duplicate tool results are
-        collapsed to a back-reference and oversized tool-call arguments
-        outside the protected tail are truncated.
+        Reuses :meth:`_prune_old_tool_results` in ``result_only`` mode — the
+        same routine :meth:`compress` runs in its Phase 1 — but protects a
+        token-budget tail sized by ``prune_protect_tokens`` rather than the
+        summary tail budget. No conversation turns are summarized or dropped;
+        only old tool *results* (never tool *calls*, user, or assistant text)
+        are replaced with informative one-line stubs. Tool-call arguments are
+        left byte-for-byte intact (``result_only=True``).
 
-        Returns ``(messages, pruned_count)``. When the phase is disarmed or
-        nothing qualifies, returns the input unchanged with ``0``.
+        After pruning, the actual token savings are measured and compared
+        against ``prune_minimum_tokens``. If the measured savings fall below
+        the threshold, the original messages are returned unchanged — this
+        prevents churning the prompt-cache prefix for a trivial gain.
+
+        Returns ``(messages, pruned_count)``. When the phase is disarmed,
+        nothing qualifies, or measured savings are insufficient, returns the
+        input unchanged with ``0``.
         """
         if self.prune_protect_tokens is None or not messages:
             return messages, 0
@@ -1653,7 +1658,21 @@ class ContextCompressor(ContextEngine):
             messages,
             protect_tail_count=self.protect_last_n,
             protect_tail_tokens=self.prune_protect_tokens,
+            result_only=True,
         )
+        if not pruned_count:
+            return messages, 0
+        # Measured savings gate: estimate token delta and only commit
+        # when it meets the prune_minimum_tokens threshold.
+        pre_tokens = estimate_messages_tokens_rough(messages)
+        post_tokens = estimate_messages_tokens_rough(pruned_messages)
+        saved = max(0, pre_tokens - post_tokens)
+        if saved < self.prune_minimum_tokens:
+            logger.debug(
+                "Prune-first: measured savings %d < minimum %d — rollback",
+                saved, self.prune_minimum_tokens,
+            )
+            return messages, 0
         return pruned_messages, pruned_count
 
     # ------------------------------------------------------------------
@@ -1663,6 +1682,7 @@ class ContextCompressor(ContextEngine):
     def _prune_old_tool_results(
         self, messages: List[Dict[str, Any]], protect_tail_count: int,
         protect_tail_tokens: int | None = None,
+        result_only: bool = False,
     ) -> tuple[List[Dict[str, Any]], int]:
         """Replace old tool result contents with informative 1-line summaries.
 
@@ -1672,8 +1692,11 @@ class ContextCompressor(ContextEngine):
             [read_file] read config.py from line 1 (3,400 chars)
 
         Also deduplicates identical tool results (e.g. reading the same file
-        5x keeps only the newest full copy) and truncates large tool_call
-        arguments in assistant messages outside the protected tail.
+        5x keeps only the newest full copy) and, unless ``result_only`` is
+        True, truncates large tool_call arguments in assistant messages
+        outside the protected tail. When ``result_only=True``, only tool
+        *result* content blocks are pruned — tool-call arguments, user, and
+        assistant text are left byte-for-byte intact.
 
         Walks backward from the end, protecting the most recent messages that
         fall within ``protect_tail_tokens`` (when provided) OR the last
@@ -1798,27 +1821,31 @@ class ContextCompressor(ContextEngine):
         # outside the protected tail. write_file with 50KB content, for
         # example, survives pruning entirely without this.
         #
+        # Skipped in result_only mode (prune-first phase) — the result-only
+        # contract guarantees tool-call arguments are never mutated.
+        #
         # The shrinking is done inside the parsed JSON structure so the
         # result remains valid JSON — otherwise downstream providers 400
         # on every subsequent turn until the broken call falls out of
         # the window. See ``_truncate_tool_call_args_json`` docstring.
-        for i in range(prune_boundary):
-            msg = result[i]
-            if msg.get("role") != "assistant" or not msg.get("tool_calls"):
-                continue
-            new_tcs = []
-            modified = False
-            for tc in msg["tool_calls"]:
-                if isinstance(tc, dict):
-                    args = tc.get("function", {}).get("arguments", "")
-                    if len(args) > 500:
-                        new_args = _truncate_tool_call_args_json(args)
-                        if new_args != args:
-                            tc = {**tc, "function": {**tc["function"], "arguments": new_args}}
-                            modified = True
-                new_tcs.append(tc)
-            if modified:
-                result[i] = {**msg, "tool_calls": new_tcs}
+        if not result_only:
+            for i in range(prune_boundary):
+                msg = result[i]
+                if msg.get("role") != "assistant" or not msg.get("tool_calls"):
+                    continue
+                new_tcs = []
+                modified = False
+                for tc in msg["tool_calls"]:
+                    if isinstance(tc, dict):
+                        args = tc.get("function", {}).get("arguments", "")
+                        if len(args) > 500:
+                            new_args = _truncate_tool_call_args_json(args)
+                            if new_args != args:
+                                tc = {**tc, "function": {**tc["function"], "arguments": new_args}}
+                                modified = True
+                    new_tcs.append(tc)
+                if modified:
+                    result[i] = {**msg, "tool_calls": new_tcs}
 
         return result, pruned
 

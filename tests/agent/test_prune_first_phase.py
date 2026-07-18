@@ -194,3 +194,58 @@ class TestConfigCoercion:
     def test_minimum_defaults_when_unset(self):
         c = _make(1_000_000, prune_protect_tokens=40_000)
         assert c.prune_minimum_tokens == ContextCompressor._DEFAULT_PRUNE_MINIMUM_TOKENS
+
+
+class TestResultOnlyContract:
+    """prune_tools_only must never mutate tool-call arguments."""
+
+    def test_tool_call_arguments_preserved_verbatim(self):
+        c = _make(1_000_000, prune_protect_tokens=4_000)
+        # Build a session with large tool-call arguments that Pass 3
+        # would truncate if result_only were not in effect.
+        msgs = [
+            {"role": "system", "content": "system prompt"},
+            {"role": "user", "content": "write a large file"},
+        ]
+        big_args = '{"content": "' + "A" * 2000 + '"}'
+        for i in range(20):
+            cid = f"call_{i}"
+            msgs.append({
+                "role": "assistant",
+                "content": "",
+                "tool_calls": [{
+                    "id": cid,
+                    "type": "function",
+                    "function": {"name": "write_file", "arguments": big_args},
+                }],
+            })
+            msgs.append(_big_tool_result(cid, 8000))
+            msgs.append({"role": "assistant", "content": f"step {i}"})
+        msgs.append({"role": "user", "content": "done"})
+
+        out, pruned = c.prune_tools_only(msgs)
+        # Tool-call arguments must be byte-for-byte identical.
+        for m_in, m_out in zip(msgs, out):
+            if m_in.get("role") == "assistant" and m_in.get("tool_calls"):
+                for tc_in, tc_out in zip(m_in["tool_calls"], m_out["tool_calls"]):
+                    assert tc_in["function"]["arguments"] == tc_out["function"]["arguments"], \
+                        "prune_tools_only must not truncate tool-call arguments"
+
+
+class TestMeasuredSavingsGate:
+    """prune_tools_only must roll back if measured savings < prune_minimum_tokens."""
+
+    def test_rollback_when_savings_insufficient(self):
+        # Very high minimum so trivial pruning won't meet it.
+        c = _make(1_000_000, prune_protect_tokens=4_000, prune_minimum_tokens=999_999)
+        msgs = _long_session(10, tool_chars=500)  # small results, little to save
+        out, pruned = c.prune_tools_only(msgs)
+        assert pruned == 0, "should roll back when savings < minimum"
+        assert out is msgs, "should return original object on rollback"
+
+    def test_commits_when_savings_sufficient(self):
+        # Low minimum with a big session — savings will exceed it.
+        c = _make(1_000_000, prune_protect_tokens=4_000, prune_minimum_tokens=100)
+        msgs = _long_session(40, tool_chars=8000)
+        out, pruned = c.prune_tools_only(msgs)
+        assert pruned > 0, "should commit when savings >= minimum"

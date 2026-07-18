@@ -1758,6 +1758,13 @@ def patch_tool(mode: str = "replace", path: str = None, old_string: str = None,
                 if _sw:
                     stale_warnings.append(_sw)
 
+            # Bail out before mutation if the agent's view of any target file
+            # is stale (sibling write, external edit, partial read, or mtime
+            # drift).  Running the patch on a stale view creates silent data
+            # loss risk — the agent might be overwriting changes it hasn't seen.
+            if stale_warnings:
+                return tool_error(stale_warnings[0] if len(stale_warnings) == 1 else " | ".join(stale_warnings))
+
             file_ops = _get_file_ops(task_id)
 
             if mode == "replace":
@@ -1780,18 +1787,6 @@ def patch_tool(mode: str = "replace", path: str = None, old_string: str = None,
                 return tool_error(f"Unknown mode: {mode}")
 
             result_dict = result.to_dict()
-            if stale_warnings:
-                combined = stale_warnings[0] if len(stale_warnings) == 1 else " | ".join(stale_warnings)
-                # If the patch "succeeded" (wrote to disk), but the agent had a
-                # stale view of the file (partial read, external edit, or sibling
-                # write), surface the staleness as a failure so the agent knows to
-                # re-read before retrying.  A _warning hidden in a success
-                # response is easy to miss — silent data loss.
-                if result_dict.get("success"):
-                    result_dict["success"] = False
-                    result_dict["error"] = combined
-                else:
-                    result_dict["_warning"] = combined
             # Report the ABSOLUTE path(s) actually patched so a wrong-cwd
             # mismatch (e.g. a worktree session editing the main checkout) is
             # visible in the response instead of silently landing elsewhere.

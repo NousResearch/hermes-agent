@@ -265,17 +265,16 @@ class FileToolsIntegrationTests(unittest.TestCase):
                 task_id="agentA",
             )
         )
-        # After the staleness guard fix, a successful patch against a stale
-        # view (sibling write) reports success=false and surfaces the warning
-        # as the error message.  A patch that genuinely fails (old_string not
-        # found) will have a different error.  Check both paths.
-        err = r.get("error", "")
-        warn = r.get("_warning", "")
-        stale_signal = err or warn
-        self.assertTrue(
-            stale_signal and "agentB" in stale_signal,
-            f"expected sibling warning in error or _warning, got error={err!r} _warning={warn!r}",
-        )
+        # After the staleness guard fix, a stale view blocks the mutation
+        # entirely — the function returns tool_error before calling
+        # patch_replace.  The error names the sibling; success is always
+        # false; _warning is never set.  Verify the file was NOT mutated.
+        self.assertFalse(r.get("success"), f"expected success=false, got: {r}")
+        self.assertIn("agentB", r.get("error", ""))
+        self.assertNotIn("_warning", r)
+        # The file should still contain agentB's write, not agentA's stale patch.
+        content = json.loads(read_file_tool(path=p, task_id="agentA", offset=1, limit=1))
+        self.assertIn("hello planet", content.get("content", ""))
 
     def test_net_new_file_no_warning(self):
         p = os.path.join(self._tmpdir, "brand_new.txt")

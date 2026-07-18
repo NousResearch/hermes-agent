@@ -1320,12 +1320,9 @@ class TestInterimAssistantMessageConfig:
 class TestCliRefreshIntervalConfig:
     """Test the CLI refresh_interval config default (#45592 / #48309)."""
 
-    def test_default_config_enables_cli_refresh_interval(self):
-        """cli_refresh_interval defaults to 1.0 so the idle status-bar
-        clock keeps ticking and the bottom chrome stays alive during
-        idle (#45592). Users on emulators where the periodic redraw
-        fights auto-scroll can set it to 0 (#48309)."""
-        assert DEFAULT_CONFIG["display"]["cli_refresh_interval"] == 1.0
+    def test_default_config_disables_cli_refresh_interval(self):
+        """Background redraws default off so they cannot fight scrollback."""
+        assert DEFAULT_CONFIG["display"]["cli_refresh_interval"] == 0
 
 
 class TestDiscordChannelPromptsConfig:

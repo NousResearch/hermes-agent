@@ -239,7 +239,9 @@ def _should_skip_backup_file(abs_path: Path, rel_path: Path, out_path: Path) -> 
         return True
 
     # zipfile.write() follows file symlinks, so skip links before any archive
-    # write can copy data from outside HERMES_HOME.
+    # write can copy data from outside HERMES_HOME. run_backup separately
+    # records the skipped links and reports them in its summary so the omission
+    # is never silent.
     if abs_path.is_symlink():
         return True
 
@@ -326,6 +328,7 @@ def run_backup(args) -> None:
     print(f"Scanning {display_hermes_home()} ...")
     files_to_add: list[tuple[Path, Path]] = []  # (absolute, relative)
     skipped_dirs = set()
+    skipped_symlinks: list[str] = []
 
     for dirpath, dirnames, filenames in os.walk(hermes_root, followlinks=False):
         dp = Path(dirpath)
@@ -343,9 +346,23 @@ def run_backup(args) -> None:
         for removed in set(orig_dirnames) - set(dirnames):
             skipped_dirs.add(str(rel_dir / removed))
 
+        # Symlinked directories are listed in ``dirnames`` but os.walk (with
+        # followlinks=False) never descends into them, so the whole subtree is
+        # silently dropped from the archive. Record them — highest-impact case
+        # for a lost content tree — so the summary can surface the omission.
+        for d in dirnames:
+            if (dp / d).is_symlink():
+                skipped_symlinks.append(str(rel_dir / d))
+
         for fname in filenames:
             fpath = dp / fname
             rel = fpath.relative_to(hermes_root)
+
+            # Symlinked files are dropped for security (see
+            # _should_skip_backup_file). Record ones that would otherwise have
+            # been archived so the skip is reported, not silent.
+            if fpath.is_symlink() and not _should_exclude(rel):
+                skipped_symlinks.append(str(rel))
 
             if _should_skip_backup_file(fpath, rel, out_path):
                 continue
@@ -463,6 +480,17 @@ def run_backup(args) -> None:
         print("\n  Excluded directories:")
         for d in sorted(skipped_dirs):
             print(f"    {d}/")
+
+    # Symlinks are deliberately not followed into the archive (security), so
+    # this is not an error and does not flip "Backup complete" — but the
+    # dropped content must be visible, especially a whole symlinked subtree an
+    # operator only discovers is missing at restore time.
+    if skipped_symlinks:
+        print(f"\n  Symlinks skipped (not archived): {len(skipped_symlinks)}")
+        for p in sorted(skipped_symlinks)[:10]:
+            print(f"    {p}")
+        if len(skipped_symlinks) > 10:
+            print(f"    ... and {len(skipped_symlinks) - 10} more")
 
     if errors:
         print(f"\n  Warnings ({len(errors)} files skipped):")

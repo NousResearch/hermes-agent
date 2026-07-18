@@ -174,6 +174,34 @@ class TestSyncJobsProviderSnapshots:
         assert result["updated"] == []
         assert store[0]["provider_snapshot"] == "existing-p"
 
+    def test_resolver_failure_surfaces_no_save(self, monkeypatch):
+        """When the global default resolution itself fails (e.g. a
+        misconfigured provider), ``sync_jobs_provider_snapshots`` must
+        raise rather than silently recording a no-op. The store must
+        remain completely untouched (no save_jobs call) so a broken
+        config can't wipe every job's snapshot (#61468 review).
+        """
+        jobs = [
+            {"id": "j1", "provider_snapshot": "old"},
+            {"id": "j2", "provider_snapshot": "old"},
+            {"id": "j3", "provider": "pinned", "provider_snapshot": "custom"},
+            {"id": "j4", "no_agent": True},
+        ]
+        store = self._mock_jobs_store(jobs, monkeypatch)
+
+        def _boom(**kw):
+            raise RuntimeError("provider resolver blew up")
+
+        monkeypatch.setattr(
+            "cron.jobs._compute_provider_model_snapshots", _boom,
+        )
+
+        with pytest.raises(RuntimeError):
+            sync_jobs_provider_snapshots()
+
+        # Store must be byte-for-byte unchanged — no save_jobs happened.
+        assert store == jobs
+
     def test_lock_exclusion(self, monkeypatch):
         """Verifies _jobs_lock context manager is entered."""
         jobs = [{"id": "j1", "provider_snapshot": "old"}]

@@ -888,6 +888,7 @@ def _compute_provider_model_snapshots(
     model: Any,
     base_url: Any,
     no_agent: Any,
+    raise_on_error: bool = False,
 ) -> Tuple[Optional[str], Optional[str]]:
     """Snapshot unpinned inference axes for the provider/model drift guard.
 
@@ -895,6 +896,12 @@ def _compute_provider_model_snapshots(
     time. Capture the current resolution for each unpinned axis so a later
     global switch fails closed instead of silently changing spend. Pinned axes
     and no-agent script jobs intentionally carry no snapshot.
+
+    When ``raise_on_error`` is True, a resolver failure is re-raised instead
+    of being swallowed to ``None``. Callers that need to distinguish "resolved
+    to no default" from "resolution itself failed" (e.g.
+    ``sync_jobs_provider_snapshots``) pass True so the failure surfaces rather
+    than being reported as a silent no-op (#61468 review).
     """
     normalized_provider = _normalize_job_optional_text(provider)
     normalized_model = _normalize_job_optional_text(model)
@@ -918,11 +925,15 @@ def _compute_provider_model_snapshots(
             snap_provider = str(snap.get("provider") or "").strip().lower()
             provider_snapshot = snap_provider or None
         except Exception:
+            if raise_on_error:
+                raise
             provider_snapshot = None
     if normalized_model is None:
         try:
             model_snapshot = _resolve_default_model_snapshot() or None
         except Exception:
+            if raise_on_error:
+                raise
             model_snapshot = None
     return provider_snapshot, model_snapshot
 
@@ -1246,6 +1257,7 @@ def sync_jobs_provider_snapshots() -> Dict[str, Any]:
             model=None,
             base_url=None,
             no_agent=False,
+            raise_on_error=True,
         )
     except Exception as exc:
         # Resolution failures are not consequence-free: the job store still

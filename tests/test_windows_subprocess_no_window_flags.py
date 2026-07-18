@@ -99,16 +99,84 @@ def test_coding_context_git_hides_git_windows(monkeypatch):
 
     captured = []
 
-    def fake_run(cmd, **kwargs):
-        captured.append((cmd, kwargs))
-        return _Completed(stdout="clean\n")
+    class _FakePopen:
+        """Fast-path stand-in: git returns within the budget."""
+
+        def __init__(self, cmd, **kwargs):
+            captured.append((cmd, kwargs))
+            self.returncode = 0
+
+        def communicate(self, timeout=None):
+            return ("clean\n", "")
+
+        def kill(self):  # pragma: no cover - never reached on the fast path
+            raise AssertionError("kill() must not run when git returns in time")
 
     monkeypatch.setattr(coding_context, "IS_WINDOWS", True)
     monkeypatch.setattr(coding_context, "windows_hide_flags", lambda: _CREATE_NO_WINDOW)
-    monkeypatch.setattr(coding_context.subprocess, "run", fake_run)
+    monkeypatch.setattr(coding_context.subprocess, "Popen", _FakePopen)
 
     assert coding_context._git(Path("C:/repo"), "status", "--short") == "clean"
-    assert captured[0][1]["creationflags"] == _CREATE_NO_WINDOW
+    cmd, kwargs = captured[0]
+    assert cmd[:2] == ["git", "-C"]
+    assert cmd[3:] == ["status", "--short"]
+    # The window-hiding flag and the detached stdin must survive the run()->Popen
+    # rewrite — this is exactly what the previous subprocess.run patch stopped
+    # intercepting once _git switched to Popen.
+    assert kwargs["creationflags"] == _CREATE_NO_WINDOW
+    assert kwargs["stdin"] == subprocess.DEVNULL
+
+
+def test_coding_context_git_timeout_kills_and_returns_empty(monkeypatch):
+    """A hung git is killed, cleaned up with a *bounded* second communicate,
+    and the probe returns "" — never run()'s unbounded post-kill join."""
+    from agent import coding_context
+
+    kills = []
+    communicate_timeouts = []
+
+    class _HangingPopen:
+        def __init__(self, cmd, **kwargs):
+            self.returncode = None
+
+        def communicate(self, timeout=None):
+            communicate_timeouts.append(timeout)
+            if len(communicate_timeouts) == 1:
+                raise subprocess.TimeoutExpired(cmd="git", timeout=timeout)
+            return ("", "")  # bounded post-kill drain succeeds
+
+        def kill(self):
+            kills.append(True)
+
+    monkeypatch.setattr(coding_context, "IS_WINDOWS", False)
+    monkeypatch.setattr(coding_context.subprocess, "Popen", _HangingPopen)
+
+    assert coding_context._git(Path("/repo"), "status", "--short") == ""
+    assert kills == [True]
+    # First wait is the probe budget; the cleanup wait is bounded (1s), not
+    # the indefinite join subprocess.run() would perform.
+    assert communicate_timeouts == [coding_context._GIT_TIMEOUT, 1]
+
+
+def test_coding_context_git_timeout_cleanup_also_hangs_is_swallowed(monkeypatch):
+    """If even the bounded cleanup times out, _git abandons the pipes and still
+    honours the empty-string failure contract instead of propagating."""
+    from agent import coding_context
+
+    class _StuckPopen:
+        def __init__(self, cmd, **kwargs):
+            self.returncode = None
+
+        def communicate(self, timeout=None):
+            raise subprocess.TimeoutExpired(cmd="git", timeout=timeout)
+
+        def kill(self):
+            pass
+
+    monkeypatch.setattr(coding_context, "IS_WINDOWS", False)
+    monkeypatch.setattr(coding_context.subprocess, "Popen", _StuckPopen)
+
+    assert coding_context._git(Path("/repo"), "status", "--short") == ""
 
 
 def test_context_reference_git_and_rg_hide_windows(monkeypatch):

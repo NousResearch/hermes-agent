@@ -58,14 +58,15 @@ class TelegramFallbackTransport(httpx.AsyncBaseTransport):
     ``curl --resolve api.telegram.org:443:<ip>``.
     """
 
-    def __init__(self, fallback_ips: Iterable[str], **transport_kwargs):
+    def __init__(self, fallback_ips: Iterable[str], limits: Optional[httpx.Limits] = None, **transport_kwargs):
         self._fallback_ips = list(dict.fromkeys(_normalize_fallback_ips(fallback_ips)))
         proxy_url = _resolve_proxy_url(target_hosts=[_TELEGRAM_API_HOST, *self._fallback_ips])
         if proxy_url and "proxy" not in transport_kwargs:
             transport_kwargs["proxy"] = proxy_url
-        self._primary = httpx.AsyncHTTPTransport(**transport_kwargs)
+        self._limits = limits
+        self._primary = httpx.AsyncHTTPTransport(limits=limits, **transport_kwargs)
         self._fallbacks = {
-            ip: httpx.AsyncHTTPTransport(**transport_kwargs) for ip in self._fallback_ips
+            ip: httpx.AsyncHTTPTransport(limits=limits, **transport_kwargs) for ip in self._fallback_ips
         }
         self._sticky_ip: Optional[str] = None
         self._sticky_lock = asyncio.Lock()

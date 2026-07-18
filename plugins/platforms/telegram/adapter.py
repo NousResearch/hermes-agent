@@ -2312,17 +2312,31 @@ class TelegramAdapter(BasePlatformAdapter):
                 )
                 # Keep request/update pools separate to reduce contention during
                 # polling reconnect + bot API bootstrap/delete_webhook calls.
+                # httpx ignores the client-level `limits` kwarg when a custom
+                # `transport` is supplied (#58790).  Unlike the proxy/direct
+                # branches (which inject limits at the client level via
+                # `_with_limits`), this branch MUST pass the tuned limits
+                # directly into TelegramFallbackTransport so its inner
+                # AsyncHTTPTransport instances honour keepalive_expiry — do not
+                # route this through `_with_limits`, httpx would discard it.
+                _transport_kwargs: dict = {}
+                if _pool_limits is not None:
+                    _transport_kwargs["limits"] = _pool_limits
                 request = HTTPXRequest(
                     **request_kwargs,
-                    httpx_kwargs=_with_limits(
-                        {"transport": TelegramFallbackTransport(fallback_ips)}
-                    ),
+                    httpx_kwargs={
+                        "transport": TelegramFallbackTransport(
+                            fallback_ips, **_transport_kwargs
+                        )
+                    },
                 )
                 get_updates_request = HTTPXRequest(
                     **request_kwargs,
-                    httpx_kwargs=_with_limits(
-                        {"transport": TelegramFallbackTransport(fallback_ips)}
-                    ),
+                    httpx_kwargs={
+                        "transport": TelegramFallbackTransport(
+                            fallback_ips, **_transport_kwargs
+                        )
+                    },
                 )
             elif proxy_url:
                 logger.info("[%s] Proxy detected; passing explicitly to HTTPXRequest: %s", self.name, proxy_url)

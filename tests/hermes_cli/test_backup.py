@@ -2520,6 +2520,26 @@ class TestRestoreCronJobsIfEmptied:
         result = restore_cron_jobs_if_emptied(snap_id, hermes_home=hermes_home)
         assert result is None
 
+    def test_bom_live_file_still_counted(self, tmp_path):
+        """A UTF-8 BOM on the live jobs.json (Windows editors) must not make
+        _count_cron_jobs report None — that would silently disable the
+        auto-restore safety net. utf-8-sig matches cron/jobs.load_jobs."""
+        from hermes_cli.backup import _count_cron_jobs, restore_cron_jobs_if_emptied
+        hermes_home = tmp_path / ".hermes"
+        jobs_path = hermes_home / "cron" / "jobs.json"
+        self._seed_jobs(jobs_path, [{"id": "a"}, {"id": "b"}, {"id": "c"}])
+        snap_id = self._make_snapshot(hermes_home)
+        assert snap_id
+
+        # Migration empties the file AND a Windows editor leaves a BOM.
+        jobs_path.write_bytes(b"\xef\xbb\xbf" + json.dumps({"jobs": []}).encode())
+        assert _count_cron_jobs(jobs_path) == 0  # not None
+
+        result = restore_cron_jobs_if_emptied(snap_id, hermes_home=hermes_home)
+        assert result is not None
+        assert result["restored"] is True
+        assert result["job_count"] == 3
+
     def test_noop_when_live_file_unreadable(self, tmp_path):
         """An unparseable live file is left alone — that's a different failure
         mode the user should see, not silently overwrite."""

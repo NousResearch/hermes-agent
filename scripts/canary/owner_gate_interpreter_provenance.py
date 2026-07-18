@@ -211,6 +211,21 @@ def _disk_command(name: str, account: str) -> tuple[str, ...]:
     )
 
 
+def _disk_name_from_source(
+    source: object,
+    *,
+    zone: str,
+    error_code: str,
+) -> str:
+    prefix = f"{zone}/disks/"
+    if not isinstance(source, str) or not source.startswith(prefix):
+        _error(error_code)
+    name = source[len(prefix) :]
+    if _DISK_NAME.fullmatch(name) is None or source != f"{prefix}{name}":
+        _error(error_code)
+    return name
+
+
 def _validate_image(value: Mapping[str, Any]) -> Mapping[str, str]:
     if (
         set(value) != {"id", "name", "selfLink", "status", "architecture"}
@@ -261,13 +276,13 @@ def _validate_instance(
     if (
         not isinstance(device, str)
         or _DISK_NAME.fullmatch(device) is None
-        or source
-        != (
-            "https://www.googleapis.com/compute/v1/projects/"
-            f"{foundation.PROJECT}/zones/{foundation.ZONE}/disks/{device}"
-        )
     ):
         _error("owner_gate_interpreter_instance_invalid")
+    disk_name = _disk_name_from_source(
+        source,
+        zone=zone,
+        error_code="owner_gate_interpreter_instance_invalid",
+    )
     normalized = {
         "id": host.instance_id,
         "name": host.name,
@@ -275,7 +290,7 @@ def _validate_instance(
         "status": "RUNNING",
         "boot_disk": {"deviceName": device, "source": source},
     }
-    return normalized, device
+    return normalized, disk_name
 
 
 def _validate_disk(
@@ -386,6 +401,10 @@ def _validate_ssh_dry_run(
         (item.split("=", 1)[1] for item in argv if item.startswith("--command=")),
         None,
     )
+    try:
+        remote_argv = () if remote is None else tuple(shlex.split(remote, posix=True))
+    except ValueError as exc:
+        _error("owner_gate_interpreter_ssh_dry_run_invalid", exc)
     proxy = "ProxyCommand " + " ".join((
         *prefix,
         "compute",
@@ -411,7 +430,7 @@ def _validate_ssh_dry_run(
         *ssh_options,
         f"{launcher.OS_LOGIN_USERNAME}@compute.{host.instance_id}",
         "--",
-        *(() if remote is None else remote.split(" ")),
+        *remote_argv,
     )
     if remote is None or observed != expected:
         _error("owner_gate_interpreter_ssh_dry_run_invalid")
@@ -765,7 +784,17 @@ def validate_interpreter_provenance(
             or instance.get("status") != "RUNNING"
             or not isinstance(boot, Mapping)
             or set(boot) != {"deviceName", "source"}
-            or disk.get("name") != boot.get("deviceName")
+            or not isinstance(boot.get("deviceName"), str)
+            or _DISK_NAME.fullmatch(boot.get("deviceName")) is None
+        ):
+            _error("owner_gate_interpreter_evidence_invalid")
+        boot_disk_resource_name = _disk_name_from_source(
+            boot.get("source"),
+            zone=expected_zone,
+            error_code="owner_gate_interpreter_evidence_invalid",
+        )
+        if (
+            disk.get("name") != boot_disk_resource_name
             or disk.get("selfLink") != boot.get("source")
             or disk.get("sourceImage") != DEBIAN_IMAGE_SELF_LINK
             or disk.get("sourceImageId") != checked_image["id"]

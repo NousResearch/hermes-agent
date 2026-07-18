@@ -186,11 +186,37 @@ whatsapp:
 
 ## Message Formatting & Delivery
 
-WhatsApp supports **streaming (progressive) responses** — the bot edits its message in real-time as the AI generates text, just like Discord and Telegram. Internally, WhatsApp is classified as a TIER_MEDIUM platform for delivery capabilities.
+WhatsApp uses **final-only response delivery**. Hermes may send separate tool/status progress messages while it works, but the generated answer is sent only after it is complete instead of repeatedly editing a streamed preview. This avoids noisy Baileys protocol-message edit upserts and lets final formatting, media, and cascade handling run exactly once.
+
+### Human Cascade
+
+By default, qualifying prose replies in direct messages can be split at paragraph boundaries into a small number of natural chat bubbles. Group replies remain single-message unless group cascading is explicitly enabled. Approval gates, active prompts, and copy-sensitive or heavily structured content stay together automatically.
+
+Configure the behavior under `gateway.platforms.whatsapp.extra`:
+
+```yaml
+# ~/.hermes/config.yaml
+gateway:
+  platforms:
+    whatsapp:
+      extra:
+        human_cascade_messages: true               # false disables cascade delivery
+        human_cascade_groups: false                # keep group replies single by default
+        human_cascade_max_bubbles: 3               # 0 = unlimited; 1 = effectively disabled
+        human_cascade_delay_seconds: 0.55           # base delay between bubbles
+        human_cascade_delay_jitter_seconds: 0.25    # random variation added to the delay
+        human_cascade_min_total_chars: 320          # shorter replies stay together
+        human_cascade_max_total_chars: 900          # longer replies use normal chunking
+        human_cascade_min_lead_chars: 40            # minimum useful lead paragraph length
+        human_cascade_max_bubble_chars: 320         # maximum non-final bubble length
+        human_cascade_max_merged_bubble_chars: 640  # maximum merged final bubble length
+```
+
+Set `human_cascade_messages: false` to opt out entirely. The defaults apply cascade delivery to eligible direct-message replies only; set `human_cascade_groups: true` to allow the same behavior in groups.
 
 ### Chunking
 
-Long responses are automatically split into multiple messages at **4,096 characters** per chunk (WhatsApp's practical display limit). You don't need to configure anything — the gateway handles splitting and sends chunks sequentially.
+Responses that are too long or unsuitable for human cascade are automatically split into multiple messages at **4,096 characters** per chunk (WhatsApp's practical display limit). The adapter sends those chunks sequentially.
 
 ### WhatsApp-Compatible Markdown
 

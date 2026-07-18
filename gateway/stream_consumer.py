@@ -242,6 +242,12 @@ class GatewayStreamConsumer:
         meta = dict(self.metadata) if self.metadata else {}
         if expect_edits:
             meta["expect_edits"] = True
+        if not final:
+            # Stream preview/commentary/progress sends are gateway chrome, not
+            # the final assistant reply. Messaging adapters that support rich
+            # final delivery (for example WhatsApp cascade bubbles) must keep
+            # these as one unit instead of fanning scratch/status text out.
+            meta["delivery_style"] = "single"
         if final:
             meta["notify"] = True
         return meta or None

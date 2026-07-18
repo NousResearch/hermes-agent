@@ -507,6 +507,10 @@ async def _send_or_update_status_coro(adapter, chat_id, status_key, content, met
     Telegram) edit the previous bubble for the same status_key instead of
     appending a new one. Adapters without the method fall back to plain send.
     """
+    metadata = dict(metadata or {})
+    # Status/thinking/progress bubbles are gateway chrome, not the final answer.
+    # Keep them single-unit on platforms with rich final-message delivery.
+    metadata["delivery_style"] = "single"
     sender = getattr(adapter, "send_or_update_status", None)
     if callable(sender):
         return await sender(chat_id, status_key, content, metadata=metadata)
@@ -17882,8 +17886,15 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                             _chat_id=source.chat_id,
                         ) -> None:
                             _adapter.pause_typing_for_chat(_chat_id)
+                    # Non-editable messaging adapters (WhatsApp, Signal-style
+                    # transports, BlueBubbles, QQ, WeChat, …) must not receive
+                    # progressive preview sends. A first preview cannot be
+                    # edited into the final answer later, so let the normal
+                    # final send path run once instead.
                     _adapter_supports_edit = getattr(_adapter, "SUPPORTS_MESSAGE_EDITING", True)
-                    _effective_cursor = _scfg.cursor if _adapter_supports_edit else ""
+                    if not _adapter_supports_edit:
+                        raise RuntimeError("skip streaming for non-editable platform")
+                    _effective_cursor = _scfg.cursor
                     _buffer_only = False
                     if source.platform == Platform.MATRIX:
                         _effective_cursor = ""

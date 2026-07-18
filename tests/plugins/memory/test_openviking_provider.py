@@ -2405,6 +2405,150 @@ def test_sync_turn_retries_batch_write_with_fresh_client():
     )]
 
 
+def _long_structured_turn(assistant_count=204):
+    return [
+        {"role": "user", "content": "u"},
+        *[
+            {"role": "assistant", "content": f"assistant-{index}"}
+            for index in range(assistant_count)
+        ],
+    ]
+
+
+@pytest.mark.parametrize(
+    ("assistant_count", "expected_chunk_sizes"),
+    [
+        (99, [100]),
+        (100, [100, 1]),
+        (204, [100, 100, 5]),
+    ],
+)
+def test_sync_turn_chunks_structured_messages_to_openviking_limit(
+    monkeypatch,
+    assistant_count,
+    expected_chunk_sizes,
+):
+    provider = OpenVikingMemoryProvider()
+    provider._client = MagicMock()
+    provider._endpoint = "http://test"
+    provider._api_key = ""
+    provider._account = "acct"
+    provider._user = "usr"
+    provider._agent = "hermes"
+    provider._session_id = "sid-chunked"
+
+    captured = []
+
+    class StubClient:
+        def __init__(self, *args, **kwargs):
+            pass
+
+        def post(self, path, payload=None, **kwargs):
+            captured.append((path, payload))
+            return {}
+
+    monkeypatch.setattr(openviking_module, "_VikingClient", StubClient)
+    messages = _long_structured_turn(assistant_count)
+
+    provider.sync_turn("u", f"assistant-{assistant_count - 1}", messages=messages)
+    assert provider._drain_writers("sid-chunked", timeout=2.0)
+
+    assert [
+        len(payload["messages"])
+        for _path, payload in captured
+    ] == expected_chunk_sizes
+    assert all(path == "/api/v1/sessions/sid-chunked/messages/batch" for path, _ in captured)
+    assert [
+        message
+        for _path, payload in captured
+        for message in payload["messages"]
+    ] == provider._messages_to_openviking_batch(messages, assistant_peer_id="hermes")
+
+
+def test_sync_turn_retries_only_unsent_chunks_with_fresh_client(monkeypatch):
+    provider = OpenVikingMemoryProvider()
+    provider._client = MagicMock()
+    provider._endpoint = "http://test"
+    provider._api_key = ""
+    provider._account = "acct"
+    provider._user = "usr"
+    provider._agent = "hermes"
+    provider._session_id = "sid-resume"
+
+    clients = []
+    attempts = []
+    accepted = []
+
+    class StubClient:
+        def __init__(self, *args, **kwargs):
+            self.index = len(clients)
+            clients.append(self)
+
+        def post(self, path, payload=None, **kwargs):
+            attempts.append((self.index, path, payload))
+            if self.index == 0 and len([item for item in attempts if item[0] == 0]) == 2:
+                raise RuntimeError("transient second chunk failure")
+            accepted.extend(payload["messages"])
+            return {}
+
+    monkeypatch.setattr(openviking_module, "_VikingClient", StubClient)
+    messages = _long_structured_turn()
+
+    provider.sync_turn("u", "assistant-203", messages=messages)
+    assert provider._drain_writers("sid-resume", timeout=2.0)
+
+    assert len(clients) == 2
+    assert [
+        (client_index, len(payload["messages"]))
+        for client_index, _path, payload in attempts
+    ] == [(0, 100), (0, 100), (1, 100), (1, 5)]
+    assert accepted == provider._messages_to_openviking_batch(
+        messages,
+        assistant_peer_id="hermes",
+    )
+
+
+def test_sync_turn_falls_back_to_individual_writes_for_unsent_chunks(monkeypatch):
+    provider = OpenVikingMemoryProvider()
+    provider._client = MagicMock()
+    provider._endpoint = "http://test"
+    provider._api_key = ""
+    provider._account = "acct"
+    provider._user = "usr"
+    provider._agent = "hermes"
+    provider._session_id = "sid-individual-fallback"
+
+    clients = []
+    accepted = []
+
+    class StubClient:
+        def __init__(self, *args, **kwargs):
+            self.index = len(clients)
+            clients.append(self)
+
+        def post(self, path, payload=None, **kwargs):
+            if path.endswith("/messages/batch"):
+                if self.index == 0 and not accepted:
+                    accepted.extend(payload["messages"])
+                    return {}
+                raise RuntimeError("persistent batch failure")
+            assert path == "/api/v1/sessions/sid-individual-fallback/messages"
+            accepted.append(payload)
+            return {}
+
+    monkeypatch.setattr(openviking_module, "_VikingClient", StubClient)
+    messages = _long_structured_turn()
+
+    provider.sync_turn("u", "assistant-203", messages=messages)
+    assert provider._drain_writers("sid-individual-fallback", timeout=2.0)
+
+    assert len(clients) == 2
+    assert accepted == provider._messages_to_openviking_batch(
+        messages,
+        assistant_peer_id="hermes",
+    )
+
+
 def test_sync_turn_structured_messages_include_assistant_peer_id():
     provider = OpenVikingMemoryProvider()
     provider._client = MagicMock()

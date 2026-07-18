@@ -422,13 +422,20 @@ def finalize_turn(
     # reasoning on the tool-call step and leave the final-answer step
     # with reasoning=None, so picking only the last assistant would
     # silently drop legitimate same-turn reasoning.
+    #
+    # Streamed chat-completions (Mistral, vLLM) accumulate into a synthetic
+    # final message that carries the thinking body on ``reasoning_content``
+    # only — ``reasoning`` stays unset — so fall back to it when the
+    # canonical field is absent (#56459).
     last_reasoning = None
     for msg in reversed(messages):
         if msg.get("role") == "user":
             break  # turn boundary — don't cross into prior turns
-        if msg.get("role") == "assistant" and msg.get("reasoning"):
-            last_reasoning = msg["reasoning"]
-            break
+        if msg.get("role") == "assistant":
+            reasoning_text = msg.get("reasoning") or msg.get("reasoning_content")
+            if reasoning_text:
+                last_reasoning = reasoning_text
+                break
 
     # Build result with interrupt info if applicable
     result = {

@@ -298,6 +298,7 @@ class _SlashWorker:
     def __init__(self, session_key: str, model: str, profile_home: str | None = None):
         self._lock = threading.Lock()
         self._seq = 0
+        self.model = model or ""
         self.stderr_tail: list[str] = []
         self.stdout_queue: queue.Queue[dict | None] = queue.Queue()
 
@@ -3063,27 +3064,36 @@ def _tool_progress_enabled(sid: str) -> bool:
     return _session_tool_progress_mode(sid) != "off"
 
 
+def _slash_worker_lifecycle_lock(session: dict) -> threading.RLock:
+    lock = session.get("slash_worker_lifecycle_lock")
+    if lock is not None:
+        return lock
+    with _sessions_lock:
+        return session.setdefault("slash_worker_lifecycle_lock", threading.RLock())
+
+
 def _restart_slash_worker(sid: str, session: dict):
-    worker = session.get("slash_worker")
-    if worker:
+    with _slash_worker_lifecycle_lock(session):
+        worker = session.get("slash_worker")
+        if worker:
+            try:
+                worker.close()
+            except Exception:
+                pass
         try:
-            worker.close()
+            new_worker = _SlashWorker(
+                session["session_key"],
+                getattr(session.get("agent"), "model", _resolve_model()),
+                profile_home=session.get("profile_home"),
+            )
         except Exception:
-            pass
-    try:
-        new_worker = _SlashWorker(
-            session["session_key"],
-            getattr(session.get("agent"), "model", _resolve_model()),
-            profile_home=session.get("profile_home"),
-        )
-    except Exception:
-        session["slash_worker"] = None
-        return
-    # Route through the same store-iff-still-mapped guard as the spawn sites:
-    # the post-turn restart runs as `running` flips false, exactly when a
-    # close_on_disconnect reap can pop this session — a bare store would orphan
-    # the fresh worker (it self-heals only on gateway exit via the watchdog).
-    _attach_worker(sid, session, new_worker)
+            session["slash_worker"] = None
+            return
+        # Route through the same store-iff-still-mapped guard as the spawn sites:
+        # the post-turn restart runs as `running` flips false, exactly when a
+        # close_on_disconnect reap can pop this session — a bare store would orphan
+        # the fresh worker (it self-heals only on gateway exit via the watchdog).
+        _attach_worker(sid, session, new_worker)
 
 
 def _persist_model_switch(result) -> None:
@@ -3258,7 +3268,10 @@ def _apply_model_switch(
                 f"Model switch to {result.new_model} failed ({exc}); "
                 f"staying on {getattr(agent, 'model', current_model)}."
             ) from exc
-        _restart_slash_worker(sid, session)
+        # A model switch can race a pooled slash.exec request. Closing the
+        # persistent worker here can break its transport mid-command, so defer
+        # replacement until the next slash.exec lifecycle lock is held.
+        session["slash_worker_stale"] = True
         _persist_live_session_runtime(session)
         _persist_live_session_system_prompt(session)
         _append_model_switch_marker(
@@ -14391,32 +14404,48 @@ def _(rid, params: dict) -> dict:
         except Exception as e:
             return _ok(rid, {"output": f"Plugin command error: {e}"})
 
-    worker = session.get("slash_worker")
-    if not worker:
-        try:
-            worker = _SlashWorker(
-                session["session_key"],
-                getattr(session.get("agent"), "model", _resolve_model()),
-                profile_home=session.get("profile_home"),
-            )
-            _attach_worker(params.get("session_id", ""), session, worker)
-        except Exception as e:
-            return _err(rid, 5030, f"slash worker start failed: {e}")
+    with _slash_worker_lifecycle_lock(session):
+        worker = session.get("slash_worker")
+        target_model = getattr(session.get("agent"), "model", _resolve_model()) or ""
+        worker_model = getattr(worker, "model", "") if worker else ""
+        if worker and (
+            session.get("slash_worker_stale") or worker_model != target_model
+        ):
+            try:
+                worker.close()
+            except Exception:
+                pass
+            session["slash_worker"] = None
+            worker = None
 
-    try:
-        output = worker.run(cmd)
-        warning = _mirror_slash_side_effects(params.get("session_id", ""), session, cmd)
-        payload = {"output": output or "(no output)"}
-        if warning:
-            payload["warning"] = warning
-        return _ok(rid, payload)
-    except Exception as e:
+        if not worker:
+            try:
+                worker = _SlashWorker(
+                    session["session_key"],
+                    target_model,
+                    profile_home=session.get("profile_home"),
+                )
+                _attach_worker(params.get("session_id", ""), session, worker)
+                session["slash_worker_stale"] = False
+            except Exception as e:
+                return _err(rid, 5030, f"slash worker start failed: {e}")
+
         try:
-            worker.close()
-        except Exception:
-            pass
-        session["slash_worker"] = None
-        return _err(rid, 5030, str(e))
+            output = worker.run(cmd)
+            warning = _mirror_slash_side_effects(
+                params.get("session_id", ""), session, cmd
+            )
+            payload = {"output": output or "(no output)"}
+            if warning:
+                payload["warning"] = warning
+            return _ok(rid, payload)
+        except Exception as e:
+            try:
+                worker.close()
+            except Exception:
+                pass
+            session["slash_worker"] = None
+            return _err(rid, 5030, str(e))
 
 
 # ── Methods: voice ───────────────────────────────────────────────────

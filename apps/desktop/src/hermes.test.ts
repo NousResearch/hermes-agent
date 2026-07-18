@@ -10,7 +10,8 @@ import {
   getSessionMessages,
   getStatus,
   listAllProfileSessions,
-  listSessions
+  listSessions,
+  speakText
 } from './hermes'
 import { refreshActiveProfile } from './store/profile'
 
@@ -122,6 +123,19 @@ describe('Hermes REST session helpers', () => {
     const call = api.mock.calls[0]?.[0] as { path: string; timeoutMs?: number }
     expect(call.path).toBe('/api/status')
     expect(call.timeoutMs).toBeUndefined()
+  })
+
+  it('keeps natural read-aloud generation alive for long replies', async () => {
+    api.mockResolvedValue({ data_url: 'data:audio/mp3;base64,AA==' })
+
+    await speakText('read this aloud')
+
+    expect(api).toHaveBeenCalledWith({
+      path: '/api/audio/speak',
+      method: 'POST',
+      body: { text: 'read this aloud' },
+      timeoutMs: 300_000
+    })
   })
 
   it('tags cross-profile message reads for Electron routing and backend lookup', async () => {

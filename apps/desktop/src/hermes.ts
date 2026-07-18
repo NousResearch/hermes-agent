@@ -71,6 +71,9 @@ import type {
 export const STARTUP_REQUEST_TIMEOUT_MS = 60_000
 const DEFAULT_GATEWAY_REQUEST_TIMEOUT_MS = 30_000
 const SESSION_LIST_REQUEST_TIMEOUT_MS = 60_000
+// Natural TTS providers generate a complete audio response before Desktop can
+// play it. Long replies must not inherit the generic 15s request limit.
+export const AUDIO_SPEAK_REQUEST_TIMEOUT_MS = 300_000
 // prompt.submit is effectively fire-and-forget: turn completion is signaled by
 // stream / message.complete events, NOT by the RPC return. A long turn (MoA
 // presets running references + aggregator in series, deep reasoning, large tool
@@ -1127,7 +1130,8 @@ export function speakText(text: string): Promise<AudioSpeakResponse> {
   return window.hermesDesktop.api<AudioSpeakResponse>({
     path: '/api/audio/speak',
     method: 'POST',
-    body: { text }
+    body: { text },
+    timeoutMs: AUDIO_SPEAK_REQUEST_TIMEOUT_MS
   })
 }
 

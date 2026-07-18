@@ -569,6 +569,50 @@ class TestFeishuAdapterMessaging(unittest.TestCase):
         )
 
     @patch.dict(os.environ, {}, clear=True)
+    def test_edit_message_falls_back_to_text_when_interactive_update_is_rejected(self):
+        from gateway.config import PlatformConfig
+        from plugins.platforms.feishu.adapter import FeishuAdapter
+
+        adapter = FeishuAdapter(PlatformConfig())
+        captured = {"calls": []}
+
+        class _MessageAPI:
+            def update(self, request):
+                captured["calls"].append(request)
+                if len(captured["calls"]) == 1:
+                    return SimpleNamespace(
+                        success=lambda: False,
+                        code=230001,
+                        msg="Failed to create card content",
+                    )
+                return SimpleNamespace(success=lambda: True)
+
+        adapter._client = SimpleNamespace(
+            im=SimpleNamespace(v1=SimpleNamespace(message=_MessageAPI()))
+        )
+
+        async def _direct(func, *args, **kwargs):
+            return func(*args, **kwargs)
+
+        content = "| Name | Score |\n| --- | ---: |\n| Alice | 10 |"
+        with patch("plugins.platforms.feishu.adapter.asyncio.to_thread", side_effect=_direct):
+            result = asyncio.run(
+                adapter.edit_message(
+                    chat_id="oc_chat",
+                    message_id="om_progress",
+                    content=content,
+                )
+            )
+
+        self.assertTrue(result.success)
+        self.assertEqual(captured["calls"][0].request_body.msg_type, "interactive")
+        self.assertEqual(captured["calls"][1].request_body.msg_type, "text")
+        self.assertEqual(
+            captured["calls"][1].request_body.content,
+            json.dumps({"text": content}, ensure_ascii=False),
+        )
+
+    @patch.dict(os.environ, {}, clear=True)
     def test_get_chat_info_uses_real_feishu_chat_api(self):
         from gateway.config import PlatformConfig
         from plugins.platforms.feishu.adapter import FeishuAdapter
@@ -2644,6 +2688,98 @@ class TestAdapterBehavior(unittest.TestCase):
         self.assertEqual(captured["message_request"].request_body.content, '{"file_key": "file_audio_123"}')
 
     @patch.dict(os.environ, {}, clear=True)
+    def test_build_outbound_payload_routes_mixed_table_content_to_interactive_card(self):
+        from gateway.config import PlatformConfig
+        from plugins.platforms.feishu.adapter import FeishuAdapter
+
+        adapter = FeishuAdapter(PlatformConfig())
+        msg_type, raw_payload = adapter._build_outbound_payload(
+            "# Summary\n"
+            "| Expr | Meaning |\n"
+            "| --- | --- |\n"
+            "| `a|b` | **union** |\n"
+            "| a \\| b | escaped |\n"
+            "Tail"
+        )
+
+        self.assertEqual(msg_type, "interactive")
+        payload = json.loads(raw_payload)
+        elements = payload["body"]["elements"]
+        self.assertEqual([element["tag"] for element in elements], ["markdown", "table", "markdown"])
+        self.assertEqual(elements[0]["content"], "**Summary**")
+        self.assertEqual(elements[1]["columns"][0]["display_name"], "Expr")
+        self.assertEqual(elements[1]["rows"][0], {"c0": "`a|b`", "c1": "**union**"})
+        self.assertEqual(elements[1]["rows"][1], {"c0": "a | b", "c1": "escaped"})
+        self.assertEqual(elements[2]["content"], "Tail")
+
+    @patch.dict(os.environ, {}, clear=True)
+    def test_build_outbound_payload_preserves_table_syntax_inside_fenced_code(self):
+        from gateway.config import PlatformConfig
+        from plugins.platforms.feishu.adapter import FeishuAdapter
+
+        adapter = FeishuAdapter(PlatformConfig())
+        content = "```markdown\n| A | B |\n| --- | --- |\n| 1 | 2 |\n```"
+        msg_type, raw_payload = adapter._build_outbound_payload(content)
+
+        self.assertEqual(msg_type, "post")
+        payload = json.loads(raw_payload)
+        self.assertEqual(
+            payload["zh_cn"]["content"],
+            [[{"tag": "md", "text": content}]],
+        )
+
+    @patch.dict(os.environ, {}, clear=True)
+    def test_table_card_keeps_heading_syntax_inside_fenced_code(self):
+        from gateway.config import PlatformConfig
+        from plugins.platforms.feishu.adapter import FeishuAdapter
+
+        adapter = FeishuAdapter(PlatformConfig())
+        msg_type, raw_payload = adapter._build_outbound_payload(
+            "```python\n# code comment\n```\n"
+            "| A | B |\n| --- | --- |\n| 1 | 2 |"
+        )
+
+        self.assertEqual(msg_type, "interactive")
+        elements = json.loads(raw_payload)["body"]["elements"]
+        self.assertEqual(elements[0]["tag"], "markdown")
+        self.assertIn("# code comment", elements[0]["content"])
+        self.assertNotIn("**code comment**", elements[0]["content"])
+
+    @patch.dict(os.environ, {}, clear=True)
+    def test_build_outbound_payload_supports_multiple_tables_in_order(self):
+        from gateway.config import PlatformConfig
+        from plugins.platforms.feishu.adapter import FeishuAdapter
+
+        adapter = FeishuAdapter(PlatformConfig())
+        msg_type, raw_payload = adapter._build_outbound_payload(
+            "| A | B |\n| --- | --- |\n| 1 | 2 |\n\n"
+            "Between\n\n"
+            "| C | D |\n| --- | --- |\n| 3 | 4 |"
+        )
+
+        self.assertEqual(msg_type, "interactive")
+        elements = json.loads(raw_payload)["body"]["elements"]
+        self.assertEqual([element["tag"] for element in elements], ["table", "markdown", "table"])
+        self.assertEqual(elements[1]["content"], "Between")
+
+    @patch.dict(os.environ, {}, clear=True)
+    def test_build_outbound_payload_falls_back_to_text_for_card_limits(self):
+        from gateway.config import PlatformConfig
+        from plugins.platforms.feishu.adapter import FeishuAdapter
+
+        adapter = FeishuAdapter(PlatformConfig())
+        tables = []
+        for index in range(6):
+            tables.append(
+                f"| Name | Value |\n| --- | --- |\n| item-{index} | {index} |"
+            )
+        content = "\n\n".join(tables)
+        msg_type, raw_payload = adapter._build_outbound_payload(content)
+
+        self.assertEqual(msg_type, "text")
+        self.assertEqual(json.loads(raw_payload), {"text": content})
+
+    @patch.dict(os.environ, {}, clear=True)
     def test_build_post_payload_extracts_title_and_links(self):
         from gateway.config import PlatformConfig
         from plugins.platforms.feishu.adapter import FeishuAdapter
@@ -2902,6 +3038,43 @@ class TestAdapterBehavior(unittest.TestCase):
         self.assertEqual(
             captured["calls"][1].request_body.content,
             json.dumps({"text": "可以用 粗体 和 斜体。"}, ensure_ascii=False),
+        )
+
+    @patch.dict(os.environ, {}, clear=True)
+    def test_send_falls_back_to_text_when_interactive_payload_is_rejected(self):
+        from gateway.config import PlatformConfig
+        from plugins.platforms.feishu.adapter import FeishuAdapter
+
+        adapter = FeishuAdapter(PlatformConfig())
+        captured = {"calls": []}
+
+        class _MessageAPI:
+            def create(self, request):
+                captured["calls"].append(request)
+                if len(captured["calls"]) == 1:
+                    raise RuntimeError("Failed to create card content")
+                return SimpleNamespace(
+                    success=lambda: True,
+                    data=SimpleNamespace(message_id="om_plain_card_fallback"),
+                )
+
+        adapter._client = SimpleNamespace(
+            im=SimpleNamespace(v1=SimpleNamespace(message=_MessageAPI()))
+        )
+
+        async def _direct(func, *args, **kwargs):
+            return func(*args, **kwargs)
+
+        content = "| Name | Score |\n| --- | ---: |\n| Alice | 10 |"
+        with patch("plugins.platforms.feishu.adapter.asyncio.to_thread", side_effect=_direct):
+            result = asyncio.run(adapter.send(chat_id="oc_chat", content=content))
+
+        self.assertTrue(result.success)
+        self.assertEqual(captured["calls"][0].request_body.msg_type, "interactive")
+        self.assertEqual(captured["calls"][1].request_body.msg_type, "text")
+        self.assertEqual(
+            captured["calls"][1].request_body.content,
+            json.dumps({"text": content}, ensure_ascii=False),
         )
 
     @patch.dict(os.environ, {}, clear=True)

@@ -1,0 +1,3 @@
+name: mlx_whisper
+version: 0.1.0
+description: "MLX Whisper STT provider for macOS Apple Silicon — local, free, GPU-accelerated"

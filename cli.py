@@ -13518,6 +13518,16 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
             )
         except Exception:
             pass
+
+        # HSP skill sync — best-effort periodic pull, piggy-backing on the
+        # curator tick. Inert unless the DEV-PHASE gate is open
+        # (tool_gateway_admin) and a sync base URL is configured; swallows all
+        # errors so it never blocks CLI startup.
+        try:
+            from tools.skills_sync_client import maybe_pull_skills
+            maybe_pull_skills()
+        except Exception:
+            pass
         if self.preloaded_skills and not self._startup_skills_line_shown:
             skills_label = ", ".join(self.preloaded_skills)
             self._console_print(

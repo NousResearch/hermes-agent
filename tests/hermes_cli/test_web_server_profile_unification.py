@@ -107,6 +107,32 @@ class TestProfileScopedConfig:
         assert resp.status_code == 404
 
 
+class TestDesktopPinnedSessions:
+    def test_pinned_sessions_are_machine_global_not_active_profile_state(self, client, isolated_profiles):
+        """Desktop pins span profile scopes, including the All profiles view.
+
+        The renderer's legacy localStorage key is global to the Desktop app.
+        Persisting its recovery copy under the currently active profile would
+        replace the pin set every time the user switched profiles.
+        """
+        response = client.put(
+            "/api/desktop/pinned-sessions?profile=worker_beta",
+            json={"pinned_session_ids": ["lineage-root-a", "lineage-root-b"]},
+        )
+
+        assert response.status_code == 200
+        assert response.json()["pinned_session_ids"] == ["lineage-root-a", "lineage-root-b"]
+
+        worker = client.get("/api/desktop/pinned-sessions", params={"profile": "worker_beta"})
+        default = client.get("/api/desktop/pinned-sessions")
+
+        assert worker.status_code == 200
+        assert worker.json() == {"exists": True, "pinned_session_ids": ["lineage-root-a", "lineage-root-b"]}
+        assert default.status_code == 200
+        assert default.json() == worker.json()
+        assert not (isolated_profiles["worker_beta"] / "state" / "desktop-pinned-sessions.json").exists()
+
+
 class TestProfileScopedEnv:
     def test_env_set_lands_in_target_profile_only(self, client, isolated_profiles):
         resp = client.put(

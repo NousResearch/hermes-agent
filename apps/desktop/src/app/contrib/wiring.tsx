@@ -28,7 +28,7 @@ import { sessionMessagesSignature } from '@/lib/session-signatures'
 import { isMessagingSource } from '@/lib/session-source'
 import { latestSessionTodos } from '@/lib/todos'
 import { setCronFocusJobId } from '@/store/cron'
-import { $pinnedSessionIds, pinSession, restoreWorktree, unpinSession } from '@/store/layout'
+import { $pinnedSessionIds, hydratePinnedSessionIds, pinSession, restoreWorktree, unpinSession } from '@/store/layout'
 import { $filePreviewTarget, $previewTarget } from '@/store/preview'
 import { $activeGatewayProfile, $freshSessionRequest, $profileScope, refreshActiveProfile } from '@/store/profile'
 import { $startWorkSessionRequest, followActiveSessionCwd, resolveNewSessionCwd } from '@/store/projects'
@@ -424,6 +424,16 @@ export function ContribWiring({ children }: { children: ReactNode }) {
   // global model + active-profile pill (both are nanostores — the blanket
   // invalidateQueries on swap doesn't touch them).
   const activeGatewayProfile = useStore($activeGatewayProfile)
+
+  // Pins span profiles and used to exist only in this renderer's localStorage.
+  // Only the primary window owns reconciliation: secondary windows share
+  // localStorage but have independent Nanostore instances.
+  useEffect(() => {
+    if (!isSecondaryWindow()) {
+      void hydratePinnedSessionIds()
+    }
+  }, [])
+
   const lastGatewayProfileRef = useRef(activeGatewayProfile)
 
   useEffect(() => {

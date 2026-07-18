@@ -2,11 +2,14 @@ import { atom, computed, type ReadableAtom, type WritableAtom } from 'nanostores
 
 import { SIDEBAR_COLLAPSE_MEDIA_QUERY } from '@/app/layout-constants'
 import { PANE_TOGGLE_REVEAL_EVENT } from '@/components/pane-shell'
+import { getDesktopPinnedSessions, saveDesktopPinnedSessions } from '@/hermes'
 import { matchesQuery } from '@/hooks/use-media-query'
 import { Codecs, persistentAtom } from '@/lib/persisted'
-import { arraysEqual, insertUniqueId } from '@/lib/storage'
+import { createPinnedSessionWriter, reconcilePinnedSessions } from '@/lib/pinned-session-state'
+import { arraysEqual, insertUniqueId, persistBoolean, storedBoolean } from '@/lib/storage'
 
 import { $paneStates, ensurePaneRegistered, setPaneOpen, setPaneWidthOverride, togglePane } from './panes'
+import { isSecondaryWindow } from './windows'
 
 export const SIDEBAR_DEFAULT_WIDTH = 237
 export const SIDEBAR_MAX_WIDTH = 360
@@ -20,6 +23,7 @@ export const FILE_BROWSER_MAX_WIDTH = '20rem'
 export const SIDEBAR_SESSIONS_PAGE_SIZE = 50
 
 const SIDEBAR_PINNED_STORAGE_KEY = 'hermes.desktop.pinnedSessions'
+const SIDEBAR_PINNED_DIRTY_STORAGE_KEY = 'hermes.desktop.pinnedSessionsDirty'
 const SIDEBAR_AGENTS_GROUPED_STORAGE_KEY = 'hermes.desktop.agentsGroupedByWorkspace'
 const SIDEBAR_CRON_OPEN_STORAGE_KEY = 'hermes.desktop.sidebarCronOpen'
 const SIDEBAR_MESSAGING_OPEN_STORAGE_KEY = 'hermes.desktop.sidebarMessagingOpen'
@@ -70,6 +74,92 @@ export const $sidebarWidth: ReadableAtom<number> = computed($paneStates, states 
 })
 
 export const $pinnedSessionIds = persistentAtom(SIDEBAR_PINNED_STORAGE_KEY, [] as string[], Codecs.stringArray)
+
+// The renderer keeps localStorage for instant paint, but the machine-owned
+// backend record is the recovery source after an Electron/localStorage reset.
+// A local dirty marker prevents a failed final PUT from being overwritten by a
+// stale durable record on the next launch.
+let pinSyncReady = false
+let pinSyncApplyingRemote = false
+let pinSyncObservedInitialValue = false
+let pinSyncPersistGeneration = 0
+let pinSyncHydration: null | Promise<void> = null
+const persistPinnedSessionIds = createPinnedSessionWriter(saveDesktopPinnedSessions)
+
+function schedulePinnedSessionPersist(ids: readonly string[]): void {
+  const generation = ++pinSyncPersistGeneration
+  persistBoolean(SIDEBAR_PINNED_DIRTY_STORAGE_KEY, true)
+
+  void persistPinnedSessionIds(ids)
+    .then(() => {
+      if (generation === pinSyncPersistGeneration) {
+        persistBoolean(SIDEBAR_PINNED_DIRTY_STORAGE_KEY, false)
+      }
+    })
+    .catch(() => undefined)
+}
+
+if (!isSecondaryWindow()) {
+  $pinnedSessionIds.subscribe(ids => {
+    const isLocalMutation = pinSyncObservedInitialValue && !pinSyncApplyingRemote
+
+    pinSyncObservedInitialValue = true
+
+    if (isLocalMutation) {
+      persistBoolean(SIDEBAR_PINNED_DIRTY_STORAGE_KEY, true)
+
+      if (pinSyncReady) {
+        schedulePinnedSessionPersist(ids)
+      }
+    }
+  })
+}
+
+/** Hydrate machine-global sidebar pins, preserving legacy local pins on first migration. */
+export function hydratePinnedSessionIds(): Promise<void> {
+  if (isSecondaryWindow()) {
+    return Promise.resolve()
+  }
+
+  if (pinSyncHydration) {
+    return pinSyncHydration
+  }
+
+  const localPinsAtRequest = $pinnedSessionIds.get()
+  const localWasDirty = storedBoolean(SIDEBAR_PINNED_DIRTY_STORAGE_KEY, false)
+
+  pinSyncHydration = (async () => {
+    try {
+      const durable = await getDesktopPinnedSessions()
+      const localPinsNow = $pinnedSessionIds.get()
+
+      const reconciliation = localWasDirty
+        ? reconcilePinnedSessions(localPinsNow, localPinsNow, { exists: false, pinned_session_ids: [] })
+        : reconcilePinnedSessions(localPinsAtRequest, localPinsNow, durable)
+
+      pinSyncApplyingRemote = true
+
+      try {
+        setOrderIds($pinnedSessionIds, reconciliation.pinnedSessionIds)
+      } finally {
+        pinSyncApplyingRemote = false
+      }
+
+      pinSyncReady = true
+
+      if (reconciliation.shouldPersist) {
+        schedulePinnedSessionPersist(reconciliation.pinnedSessionIds)
+      }
+    } catch {
+      // Older/offline backends retain the local cache. The dirty marker keeps
+      // a failed local write authoritative on the next startup.
+      pinSyncReady = true
+    }
+  })()
+
+  return pinSyncHydration
+}
+
 export const $sidebarSessionOrderIds = persistentAtom(
   SIDEBAR_SESSION_ORDER_STORAGE_KEY,
   [] as string[],

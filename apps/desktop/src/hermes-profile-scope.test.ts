@@ -3,8 +3,10 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import {
   checkHermesUpdate,
   getActionStatus,
+  getDesktopPinnedSessions,
   getStatus,
   restartGateway,
+  saveDesktopPinnedSessions,
   setApiRequestProfile,
   updateHermes
 } from './hermes'
@@ -45,5 +47,15 @@ describe('backend action helpers are profile-scoped', () => {
     for (const call of api.mock.calls) {
       expect(call[0].profile).toBe('coder')
     }
+  })
+
+  it('keeps the machine-global Desktop pin recovery record on the primary backend', () => {
+    setApiRequestProfile('coder')
+
+    void getDesktopPinnedSessions()
+    expect(lastProfile()).toBeUndefined()
+
+    void saveDesktopPinnedSessions(['root-a'])
+    expect(lastProfile()).toBeUndefined()
   })
 })

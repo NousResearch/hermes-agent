@@ -12,6 +12,7 @@ from agent.prompt_caching import apply_anthropic_cache_control
 from agent.anthropic_adapter import (
     _is_azure_anthropic_endpoint,
     _is_oauth_token,
+    _load_config_safe,
     _refresh_oauth_token,
     _to_plain_data,
     _write_claude_code_credentials,
@@ -533,65 +534,77 @@ class TestResolveAnthropicToken:
 
         assert resolve_anthropic_token() == "cc-auto-token"
 
+    def _write_refreshable_claude_code_credentials(self, tmp_path, monkeypatch):
+        """Plant a valid, refreshable ~/.claude/.credentials.json under tmp_path."""
+        cred_file = tmp_path / ".claude" / ".credentials.json"
+        cred_file.parent.mkdir(parents=True, exist_ok=True)
+        cred_file.write_text(json.dumps({
+            "claudeAiOauth": {
+                "accessToken": "cc-auto-token",
+                "refreshToken": "refresh-token",
+                "expiresAt": int(time.time() * 1000) + 3600_000,
+            }
+        }))
+        monkeypatch.setattr("agent.anthropic_adapter.Path.home", lambda: tmp_path)
+
+    def _write_hermes_config(self, tmp_path, monkeypatch, body):
+        """Point HERMES_HOME at a temp dir holding a real config.yaml."""
+        hermes_home = tmp_path / "hermes_home"
+        hermes_home.mkdir()
+        (hermes_home / "config.yaml").write_text(body)
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+
     def test_force_env_token_config_overrides_claude_code_credential_preference(self, monkeypatch, tmp_path):
         """When ``anthropic.force_env_token`` is true in config.yaml, Hermes
         must respect the user's explicit ``ANTHROPIC_TOKEN`` from .env even
         when a refreshable Claude Code credential exists. Otherwise an
         orphaned/expired Claude Code credential silently wins and every
         API call fails with HTTP 400 "add funds at claude.ai/settings/usage".
+
+        End-to-end through the real config loader: HERMES_HOME points at a
+        temp dir containing an actual config.yaml, so this exercises YAML
+        parsing and key lookup rather than a stubbed ``_load_config_safe``.
         """
         monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
         monkeypatch.setenv("ANTHROPIC_TOKEN", "sk-ant-oat01-user-env-token")
         monkeypatch.delenv("CLAUDE_CODE_OAUTH_TOKEN", raising=False)
 
-        cred_file = tmp_path / ".claude" / ".credentials.json"
-        cred_file.parent.mkdir(parents=True)
-        cred_file.write_text(json.dumps({
-            "claudeAiOauth": {
-                "accessToken": "cc-auto-token",
-                "refreshToken": "refresh-token",
-                "expiresAt": int(time.time() * 1000) + 3600_000,
-            }
-        }))
-        monkeypatch.setattr("agent.anthropic_adapter.Path.home", lambda: tmp_path)
+        self._write_refreshable_claude_code_credentials(tmp_path, monkeypatch)
+        self._write_hermes_config(tmp_path, monkeypatch, "anthropic:\n  force_env_token: true\n")
 
-        # Stub config load to simulate the user opting in via config.yaml.
-        # We patch the safe-loader rather than load_config itself so the test
-        # remains insulated from the real ~/.hermes/config.yaml.
-        monkeypatch.setattr(
-            "agent.anthropic_adapter._load_config_safe",
-            lambda: {"anthropic": {"force_env_token": True}},
-        )
+        # Sanity: the real loader actually sees the opt-in we just wrote.
+        assert _load_config_safe()["anthropic"]["force_env_token"] is True
 
         # User's .env token wins; Claude Code credential is NOT substituted.
         assert resolve_anthropic_token() == "sk-ant-oat01-user-env-token"
 
     def test_force_env_token_default_false_preserves_refresh_preference(self, monkeypatch, tmp_path):
-        """Invariant: when ``force_env_token`` is absent/false (the default),
-        the existing refresh-prefer behavior is preserved — a refreshable
-        Claude Code credential must still win over a static env OAuth token
-        so refresh can proceed. Regression guard against accidentally flipping
-        the default on/off."""
+        """Invariant: when ``force_env_token`` is absent (the default), the
+        existing refresh-prefer behavior is preserved — a refreshable Claude
+        Code credential must still win over a static env OAuth token so
+        refresh can proceed. Regression guard against flipping the default.
+
+        Also goes through a real config.yaml (one that simply omits the key).
+        """
         monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
         monkeypatch.setenv("ANTHROPIC_TOKEN", "sk-ant-oat01-static-token")
         monkeypatch.delenv("CLAUDE_CODE_OAUTH_TOKEN", raising=False)
 
-        cred_file = tmp_path / ".claude" / ".credentials.json"
-        cred_file.parent.mkdir(parents=True)
-        cred_file.write_text(json.dumps({
-            "claudeAiOauth": {
-                "accessToken": "cc-auto-token",
-                "refreshToken": "refresh-token",
-                "expiresAt": int(time.time() * 1000) + 3600_000,
-            }
-        }))
-        monkeypatch.setattr("agent.anthropic_adapter.Path.home", lambda: tmp_path)
+        self._write_refreshable_claude_code_credentials(tmp_path, monkeypatch)
+        self._write_hermes_config(tmp_path, monkeypatch, "anthropic:\n  base_url: https://api.anthropic.com\n")
 
-        # Config absent → force_env_token defaults to False → existing behavior.
-        monkeypatch.setattr(
-            "agent.anthropic_adapter._load_config_safe",
-            lambda: {},
-        )
+        assert resolve_anthropic_token() == "cc-auto-token"
+
+    def test_force_env_token_explicit_false_preserves_refresh_preference(self, monkeypatch, tmp_path):
+        """Same invariant as above, but with the key written out explicitly as
+        ``false`` — guards against a truthiness bug that treats "key present"
+        as opt-in."""
+        monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+        monkeypatch.setenv("ANTHROPIC_TOKEN", "sk-ant-oat01-static-token")
+        monkeypatch.delenv("CLAUDE_CODE_OAUTH_TOKEN", raising=False)
+
+        self._write_refreshable_claude_code_credentials(tmp_path, monkeypatch)
+        self._write_hermes_config(tmp_path, monkeypatch, "anthropic:\n  force_env_token: false\n")
 
         assert resolve_anthropic_token() == "cc-auto-token"
 

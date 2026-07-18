@@ -2870,6 +2870,74 @@ def test_initialize_skips_pending_session_owned_by_live_same_profile_provider(tm
 
 
 @pytest.mark.skipif(os.name == "nt", reason="POSIX advisory locks")
+@pytest.mark.parametrize("owner_run_id", ["dead-owner", ""])
+def test_concurrent_providers_claim_unlocked_pending_owner_once(
+    tmp_path,
+    monkeypatch,
+    owner_run_id,
+):
+    """Only one provider may recover a missing or legacy owner lock."""
+    import threading
+
+    pytest.importorskip("fcntl")
+    _clear_openviking_env(monkeypatch)
+
+    pending_dir = tmp_path / openviking_module._PENDING_SESSIONS_RELATIVE_DIR
+    pending_dir.mkdir(parents=True)
+    marker = pending_dir / "old-sid.json"
+    marker.write_text(
+        json.dumps({"session_id": "old-sid", "owner_run_id": owner_run_id}),
+        encoding="utf-8",
+    )
+
+    posts = []
+    posts_lock = threading.Lock()
+    commit_started = threading.Event()
+    release_commit = threading.Event()
+
+    class StubClient:
+        def post(self, path, payload=None, **kwargs):
+            with posts_lock:
+                posts.append((path, payload))
+            commit_started.set()
+            release_commit.wait(timeout=5.0)
+            return {}
+
+    providers = [OpenVikingMemoryProvider(), OpenVikingMemoryProvider()]
+    scan_barrier = threading.Barrier(len(providers))
+    for provider in providers:
+        provider._client = StubClient()
+        provider._hermes_home = str(tmp_path)
+        pending_sessions = provider._pending_sessions
+
+        def _scan_together(scan=pending_sessions):
+            sessions = scan()
+            scan_barrier.wait(timeout=2.0)
+            return sessions
+
+        provider._pending_sessions = _scan_together
+
+    recovery_threads = [
+        threading.Thread(target=provider._recover_pending_sessions, args=("new-sid",))
+        for provider in providers
+    ]
+    for thread in recovery_threads:
+        thread.start()
+    for thread in recovery_threads:
+        thread.join(timeout=2.0)
+        assert not thread.is_alive()
+
+    assert commit_started.wait(timeout=2.0), "recovery commit did not start"
+    release_commit.set()
+    assert all(provider._drain_finalizers(timeout=2.0) for provider in providers)
+
+    assert posts.count((
+        "/api/v1/sessions/old-sid/commit",
+        {"keep_recent_count": 0},
+    )) == 1
+
+
+@pytest.mark.skipif(os.name == "nt", reason="POSIX advisory locks")
 def test_initialize_recovers_free_owner_lock_once_and_cleans_marker(tmp_path, monkeypatch):
     pytest.importorskip("fcntl")
     _clear_openviking_env(monkeypatch)
@@ -3035,9 +3103,16 @@ def test_initialize_skips_multiple_pending_sessions_for_one_live_owner(tmp_path,
     other_provider.shutdown()
 
 
-def test_initialize_recovers_legacy_pending_session_marker(tmp_path, monkeypatch):
+@pytest.mark.parametrize("advisory_locks", [True, False])
+def test_initialize_recovers_legacy_pending_session_marker(
+    tmp_path,
+    monkeypatch,
+    advisory_locks,
+):
     _clear_openviking_env(monkeypatch)
     monkeypatch.setenv("OPENVIKING_ENDPOINT", "http://test")
+    if not advisory_locks:
+        monkeypatch.setattr(openviking_module, "fcntl", None)
 
     pending_dir = tmp_path / openviking_module._PENDING_SESSIONS_RELATIVE_DIR
     pending_dir.mkdir(parents=True)
@@ -3109,6 +3184,37 @@ def test_initialize_skips_owned_pending_marker_when_fcntl_unavailable(tmp_path, 
         {"keep_recent_count": 0},
     ) not in posts
     assert marker.exists()
+
+
+def test_sync_turn_does_not_mark_owned_session_without_advisory_lock(tmp_path, monkeypatch):
+    _clear_openviking_env(monkeypatch)
+    monkeypatch.setattr(openviking_module, "fcntl", None)
+
+    class StubClient:
+        def __init__(self, *args, **kwargs):
+            pass
+
+        def post(self, path, payload=None, **kwargs):
+            return {}
+
+    monkeypatch.setattr(openviking_module, "_VikingClient", StubClient)
+
+    provider = OpenVikingMemoryProvider()
+    provider._client = StubClient()
+    provider._endpoint = "http://test"
+    provider._api_key = ""
+    provider._account = "acct"
+    provider._user = "usr"
+    provider._agent = "hermes"
+    provider._session_id = "sid-no-lock"
+    provider._hermes_home = str(tmp_path)
+    provider._acquire_run_lock()
+
+    provider.sync_turn("u", "a")
+    assert provider._drain_writers("sid-no-lock", timeout=2.0)
+
+    assert provider._run_lock_path is None
+    assert not (tmp_path / openviking_module._PENDING_SESSIONS_RELATIVE_DIR).exists()
 
 
 def test_initialize_recovers_pending_session_without_blocking_startup(tmp_path, monkeypatch):

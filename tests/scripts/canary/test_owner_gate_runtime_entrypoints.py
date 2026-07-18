@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import os
 import runpy
+import subprocess
+import sys
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any, Callable
@@ -19,6 +21,7 @@ ENTRYPOINTS = (
     ("muncho-passkey-v2-web", 29101),
     ("muncho-owner-gate-install", 0),
     ("muncho-owner-gate-activate-storage", 0),
+    ("muncho-owner-gate-stage-activation-evidence", 0),
 )
 
 
@@ -107,6 +110,36 @@ def _call(
         getegid_fn=(lambda: uid) if getegid_fn is None else getegid_fn,
         flags=_flags() if flags is None else flags,
     )
+
+
+def test_activation_evidence_wrapper_imports_exact_module_under_isolation() -> None:
+    name = "muncho-owner-gate-stage-activation-evidence"
+    wrapper = ENTRYPOINT_ROOT / name
+    code = f"""
+import runpy
+from pathlib import Path
+namespace = runpy.run_path({str(wrapper)!r}, run_name="isolated_wrapper_e2e")
+namespace["_main"].__globals__["_validated_release"] = (
+    lambda: Path({str(ROOT)!r})
+)
+raise SystemExit(namespace["_main"]())
+"""
+    completed = subprocess.run(
+        (sys.executable, "-I", "-B", "-c", code),
+        input=b"",
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        check=False,
+        timeout=30,
+    )
+    assert completed.returncode == 2
+    assert completed.stdout == b""
+    assert completed.stderr == (
+        b'{"error_code":"owner_gate_activation_evidence_staging_failed",'
+        b'"ok":false}\n'
+    )
+    assert b"ModuleNotFoundError" not in completed.stderr
+    assert b"Traceback" not in completed.stderr
 
 
 @pytest.mark.parametrize(("name", "uid"), ENTRYPOINTS)

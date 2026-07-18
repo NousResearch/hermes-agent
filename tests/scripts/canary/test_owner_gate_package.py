@@ -50,6 +50,59 @@ def test_bootstrap_append_only_journal_is_in_root_runtime_inventory() -> None:
     )
 
 
+def test_activation_evidence_stager_is_in_exact_release_closure(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    runtime = "scripts/canary/owner_gate_activation_evidence_stager.py"
+    entrypoint = "bin/muncho-owner-gate-stage-activation-evidence"
+    asset = (
+        "ops/muncho/owner-gate/bin/"
+        "muncho-owner-gate-stage-activation-evidence"
+    )
+    assert runtime in package.ROOT_RUNTIME_FILES
+    assert entrypoint in package.REQUIRED_ENTRYPOINTS
+    assert asset in package.REQUIRED_ASSET_FILES
+
+    def local_blob(
+        source_root: Path,
+        release_revision: str,
+        relative: str,
+        *,
+        required: bool,
+    ):
+        assert source_root == ROOT
+        assert release_revision == REVISION
+        selected = source_root / relative
+        if not selected.is_file():
+            if required:
+                raise package.OwnerGatePackageError(
+                    "owner_gate_package_git_object_missing"
+                )
+            return None
+        raw = selected.read_bytes()
+        mode = "100755" if selected.stat().st_mode & 0o111 else "100644"
+        return raw, mode
+
+    monkeypatch.setattr(package, "_git_blob", local_blob)
+    closure = package.resolve_runtime_source_closure(
+        ROOT,
+        release_revision=REVISION,
+    )
+    assert runtime in closure
+    assert "scripts/canary/owner_gate_activation_seal.py" in closure
+    assert "scripts/canary/passkey_v2_protocol.py" in closure
+
+
+def test_activation_evidence_staging_receipts_have_exact_tmpfiles_identity() -> None:
+    tmpfiles = (
+        ROOT / "ops/muncho/owner-gate/muncho-owner-gate.tmpfiles"
+    ).read_text(encoding="ascii").splitlines()
+    assert tmpfiles.count(
+        "d /var/lib/muncho-owner-gate/"
+        "activation-evidence-staging-receipts 0700 root root -"
+    ) == 1
+
+
 def _write(path: Path, content: bytes) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_bytes(content)

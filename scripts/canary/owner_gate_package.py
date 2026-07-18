@@ -48,6 +48,7 @@ REQUIRED_ENTRYPOINTS = (
     "bin/muncho-owner-gate-bootstrap",
     "bin/muncho-owner-gate-install",
     "bin/muncho-owner-gate-intake",
+    "bin/muncho-owner-gate-stage-activation-evidence",
     "bin/muncho-cloud-trusted-signer-provision",
     "bin/muncho-host-offline-runtime-bootstrap",
     "bin/muncho-host-observation-attestor",
@@ -57,6 +58,7 @@ REQUIRED_ENTRYPOINTS = (
     "bin/muncho-passkey-v2-executor",
 )
 ROOT_RUNTIME_FILES = (
+    "scripts/canary/owner_gate_activation_evidence_stager.py",
     "scripts/canary/owner_gate_activation_seal.py",
     "scripts/canary/owner_gate_bootstrap.py",
     "scripts/canary/owner_gate_bootstrap_journal.py",
@@ -79,6 +81,7 @@ REQUIRED_ASSET_FILES = (
     "ops/muncho/owner-gate/bin/muncho-owner-gate-bootstrap",
     "ops/muncho/owner-gate/bin/muncho-owner-gate-install",
     "ops/muncho/owner-gate/bin/muncho-owner-gate-intake",
+    "ops/muncho/owner-gate/bin/muncho-owner-gate-stage-activation-evidence",
     "ops/muncho/owner-gate/bin/muncho-cloud-trusted-signer-provision",
     "ops/muncho/owner-gate/bin/muncho-host-offline-runtime-bootstrap",
     "ops/muncho/owner-gate/bin/muncho-host-observation-attestor",

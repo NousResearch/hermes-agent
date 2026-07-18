@@ -952,6 +952,57 @@ def test_get_named_custom_provider_transport_resolves_via_display_name(monkeypat
     assert result["api_mode"] == "codex_responses"
 
 
+def test_named_custom_runtime_lifts_responses_websocket_settings(monkeypatch):
+    config = {
+        "providers": {
+            "sub2api-codex": {
+                "api": "https://relay.example.com/v1",
+                "api_key": "test-key",
+                "default_model": "gpt-5",
+                "transport": "codex_responses",
+                "responses_transport": "auto",
+                "responses_ws_url": "wss://relay.example.com/ws/responses",
+            },
+        },
+    }
+    monkeypatch.setattr(rp, "load_config", lambda: config)
+
+    runtime = rp._resolve_named_custom_runtime(
+        requested_provider="custom:sub2api-codex",
+    )
+
+    assert runtime is not None
+    assert runtime["responses_transport"] == "auto"
+    assert runtime["responses_ws_url"] == "wss://relay.example.com/ws/responses"
+    assert runtime["responses_transport_provider"] == "custom:sub2api-codex"
+
+
+def test_legacy_custom_provider_runtime_lifts_responses_websocket_settings(monkeypatch):
+    config = {
+        "custom_providers": [
+            {
+                "name": "sub2api-codex",
+                "base_url": "https://relay.example.com/v1",
+                "api_key": "test-key",
+                "model": "gpt-5",
+                "api_mode": "codex_responses",
+                "responses_transport": "websocket",
+                "responses_ws_url": "wss://relay.example.com/ws/responses",
+            },
+        ],
+    }
+    monkeypatch.setattr(rp, "load_config", lambda: config)
+
+    runtime = rp._resolve_named_custom_runtime(
+        requested_provider="custom:sub2api-codex",
+    )
+
+    assert runtime is not None
+    assert runtime["responses_transport"] == "websocket"
+    assert runtime["responses_ws_url"] == "wss://relay.example.com/ws/responses"
+    assert runtime["responses_transport_provider"] == "custom:sub2api-codex"
+
+
 # =============================================================================
 # Regression: user_providers override for private models not listed by /v1/models
 # =============================================================================

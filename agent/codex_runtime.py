@@ -1207,6 +1207,112 @@ def run_codex_stream(agent, api_kwargs: dict, client: Any = None, on_first_delta
         agent._codex_stream_last_event_ts = time.time()
         agent._touch_activity("receiving stream response")
 
+    from agent.codex_responses_ws_transport import (
+        GenericWsNotStartedError,
+        GenericWsRejectedError,
+        GenericWsStartedError,
+        is_generic_codex_ws_eligible,
+        normalize_responses_transport,
+        run_generic_codex_ws_stream,
+    )
+
+    transport = normalize_responses_transport(
+        getattr(agent, "responses_transport", "sse")
+    )
+    transport_provider = getattr(agent, "responses_transport_provider", None) or agent.provider
+    ws_identity = (
+        getattr(agent, "session_id", None),
+        transport_provider,
+        str(getattr(agent, "base_url", "") or "").rstrip("/"),
+        api_kwargs.get("model") or getattr(agent, "model", None),
+    )
+    ws_eligible = transport in {"websocket", "auto"} and is_generic_codex_ws_eligible(
+        provider=transport_provider,
+        base_url=agent.base_url,
+        api_mode=agent.api_mode,
+    )
+    if (
+        transport in {"websocket", "auto"}
+        and ws_eligible
+        and not (
+            transport == "auto"
+            and getattr(agent, "_generic_ws_auto_disabled_for", None) == ws_identity
+        )
+    ):
+        _writer_token = claim_stream_writer(agent)
+
+        def _interrupt_or_superseded_ws(_tok=_writer_token) -> bool:
+            if agent._interrupt_requested:
+                return True
+            if not stream_writer_is_current(agent, _tok):
+                logger.warning(
+                    "Codex WebSocket streaming attempt superseded by a newer stream; "
+                    "stopping consumption to preserve the single-writer "
+                    "invariant (model=%s).",
+                    api_kwargs.get("model", "unknown"),
+                )
+                return True
+            return False
+
+        registered_abort: dict[str, Any] = {"callback": None}
+
+        def _register_connection_abort(abort) -> None:
+            def _active_abort(reason: str) -> None:
+                abort(reason)
+
+            registered_abort["callback"] = _active_abort
+            agent._active_request_abort = _active_abort
+
+        try:
+            timeout = getattr(agent, "_client_kwargs", {}).get("timeout", 15.0)
+            if not isinstance(timeout, (int, float)):
+                timeout = 15.0
+            return run_generic_codex_ws_stream(
+                api_kwargs=api_kwargs,
+                client=active_client,
+                api_key=getattr(agent, "api_key", None),
+                headers=getattr(agent, "_client_kwargs", {}).get("default_headers"),
+                provider=transport_provider,
+                base_url=agent.base_url,
+                responses_ws_url=getattr(agent, "responses_ws_url", None),
+                session_id=getattr(agent, "session_id", None),
+                transport=transport,
+                collect_events=lambda events, _unused_client: _consume_codex_event_stream(
+                    events,
+                    model=api_kwargs.get("model"),
+                    on_text_delta=_on_text_delta,
+                    on_reasoning_delta=_on_reasoning_delta,
+                    on_commentary_message=(
+                        _on_commentary_message
+                        if (
+                            getattr(agent, "interim_assistant_callback", None) is not None
+                            and getattr(agent, "show_commentary", True)
+                        )
+                        else None
+                    ),
+                    on_first_delta=on_first_delta,
+                    on_event=_on_event,
+                    interrupt_check=_interrupt_or_superseded_ws,
+                ),
+                interrupted=_interrupt_or_superseded_ws,
+                timeout=timeout,
+                register_connection_abort=_register_connection_abort,
+            )
+        except GenericWsNotStartedError:
+            if transport != "auto":
+                raise
+            agent._generic_ws_auto_disabled_for = ws_identity
+            logger.debug(
+                "Generic Codex Responses WebSocket unavailable before request start; "
+                "using SSE for this runtime (model=%s).",
+                api_kwargs.get("model", "unknown"),
+            )
+        except (GenericWsStartedError, GenericWsRejectedError):
+            raise
+        finally:
+            if getattr(agent, "_active_request_abort", None) is registered_abort["callback"]:
+                agent._active_request_abort = None
+
     for attempt in range(max_stream_retries + 1):
         if agent._interrupt_requested:
             raise InterruptedError("Agent interrupted before Codex stream retry")

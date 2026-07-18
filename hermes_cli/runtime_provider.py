@@ -615,6 +615,21 @@ def _lift_extra_headers(entry: Dict[str, Any], result: Dict[str, Any]) -> None:
         result["extra_headers"] = extra_headers
 
 
+def _lift_responses_ws_transport(
+    entry: Dict[str, Any], result: Dict[str, Any], *, identity: str,
+) -> None:
+    """Copy opt-in generic Responses WebSocket settings from a named entry."""
+    from agent.codex_responses_ws_transport import normalize_responses_transport
+
+    result["responses_transport"] = normalize_responses_transport(
+        entry.get("responses_transport")
+    )
+    ws_url = entry.get("responses_ws_url")
+    if isinstance(ws_url, str) and ws_url.strip():
+        result["responses_ws_url"] = ws_url.strip()
+    result["responses_transport_provider"] = identity
+
+
 def _get_named_custom_provider(requested_provider: str) -> Optional[Dict[str, Any]]:
     requested_norm = _normalize_custom_provider_name(requested_provider or "")
     if not requested_norm:
@@ -695,6 +710,9 @@ def _get_named_custom_provider(requested_provider: str) -> Optional[Dict[str, An
                     api_mode = _parse_api_mode(entry.get("api_mode") or entry.get("transport"))
                     if api_mode:
                         result["api_mode"] = api_mode
+                    _lift_responses_ws_transport(
+                        entry, result, identity=f"custom:{name_norm}",
+                    )
                     _lift_max_output_tokens(entry, result)
                     return result
             # Also check the 'name' field if present
@@ -718,6 +736,9 @@ def _get_named_custom_provider(requested_provider: str) -> Optional[Dict[str, An
                         api_mode = _parse_api_mode(entry.get("api_mode") or entry.get("transport"))
                         if api_mode:
                             result["api_mode"] = api_mode
+                        _lift_responses_ws_transport(
+                            entry, result, identity=f"custom:{display_norm}",
+                        )
                         _lift_max_output_tokens(entry, result)
                         return result
 
@@ -766,6 +787,11 @@ def _get_named_custom_provider(requested_provider: str) -> Optional[Dict[str, An
         api_mode = _parse_api_mode(entry.get("api_mode"))
         if api_mode:
             result["api_mode"] = api_mode
+        _lift_responses_ws_transport(
+            entry,
+            result,
+            identity=provider_menu_key or menu_key,
+        )
         model_name = str(entry.get("model", "") or "").strip()
         if model_name:
             result["model"] = model_name
@@ -1003,6 +1029,13 @@ def _resolve_named_custom_runtime(
         # credentials. NEVER log the values.
         if custom_provider.get("extra_headers"):
             pool_result["extra_headers"] = dict(custom_provider["extra_headers"])
+        for key in (
+            "responses_transport",
+            "responses_ws_url",
+            "responses_transport_provider",
+        ):
+            if key in custom_provider:
+                pool_result[key] = custom_provider[key]
         return pool_result
 
     _cp_is_openai_url   = base_url_host_matches(base_url, "openai.com") or base_url_host_matches(base_url, "openai.azure.com")
@@ -1043,6 +1076,13 @@ def _resolve_named_custom_runtime(
     request_overrides = _custom_provider_request_overrides(custom_provider)
     if request_overrides:
         result["request_overrides"] = request_overrides
+    for key in (
+        "responses_transport",
+        "responses_ws_url",
+        "responses_transport_provider",
+    ):
+        if key in custom_provider:
+            result[key] = custom_provider[key]
     return result
 
 

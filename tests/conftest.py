@@ -207,12 +207,19 @@ _HERMES_BEHAVIORAL_VARS = frozenset({
     "HERMES_KANBAN_BOARD",
     "HERMES_KANBAN_HOME",
     "HERMES_KANBAN_WORKSPACES_ROOT",
+    "HERMES_KANBAN_ATTACHMENTS_ROOT",
     "HERMES_KANBAN_LOGS_ROOT",
     "HERMES_KANBAN_TASK",
     "HERMES_KANBAN_WORKSPACE",
     "HERMES_KANBAN_RUN_ID",
     "HERMES_KANBAN_CLAIM_LOCK",
     "HERMES_KANBAN_DISPATCH_IN_GATEWAY",
+    # Behavioral Kanban pins the dispatcher injects into worker env. A
+    # developer shell that inherited them (e.g. an agent running INSIDE a
+    # kanban worker) leaks them via ``_default_spawn``'s ``dict(os.environ)``
+    # copy, flipping goal-mode assertions under direct pytest.
+    "HERMES_KANBAN_GOAL_MODE",
+    "HERMES_KANBAN_GOAL_MAX_TURNS",
     "HERMES_TENANT",
     # Honcho host selection changes which nested config block wins. A local
     # shell override leaked "myhost" into the full suite and flipped 20
@@ -472,15 +479,22 @@ def _isolate_kanban_root(tmp_path, monkeypatch, *, home=None):
         home = tmp_path / ".hermes"
     home.mkdir(parents=True, exist_ok=True)
 
-    # Clear ALL inherited Kanban pins that could redirect resolution
-    # outside the temp root, before any of them is read.
+    # Clear ALL inherited Kanban pins that could redirect a
+    # mutation-capable path (DB, board, workspaces, attachments, logs, the
+    # per-worker run/workspace pins) at a live board, before any of them is
+    # read. Missing even one — e.g. ``HERMES_KANBAN_ATTACHMENTS_ROOT`` —
+    # lets a poisoned developer-shell / dispatched-worker env route real
+    # disk writes outside the temp root.
     for _var in (
         "HERMES_KANBAN_DB",
         "HERMES_KANBAN_HOME",
         "HERMES_KANBAN_BOARD",
         "HERMES_KANBAN_TASK",
         "HERMES_KANBAN_WORKSPACES_ROOT",
+        "HERMES_KANBAN_ATTACHMENTS_ROOT",
         "HERMES_KANBAN_LOGS_ROOT",
+        "HERMES_KANBAN_RUN_ID",
+        "HERMES_KANBAN_WORKSPACE",
     ):
         monkeypatch.delenv(_var, raising=False)
 
@@ -488,18 +502,23 @@ def _isolate_kanban_root(tmp_path, monkeypatch, *, home=None):
     monkeypatch.setattr(_Path, "home", lambda: tmp_path)
     _kb._INITIALIZED_PATHS.clear()
 
-    # Fail closed: both the resolved kanban home and the resolved
-    # ``kanban.db`` must live inside the fresh per-test temp root, or no
-    # mutation-capable test built on this helper is allowed to proceed.
+    # Fail closed: EVERY mutation-capable Kanban path — the home, the
+    # ``kanban.db``, the workspaces root, the attachments root, and the
+    # worker logs dir — must resolve inside the fresh per-test temp root, or
+    # no mutation-capable test built on this helper is allowed to proceed.
     root = tmp_path.resolve()
-    resolved_home = _kb.kanban_home().resolve()
-    resolved_db = _kb.kanban_db_path().resolve()
-    assert resolved_home.is_relative_to(root), (
-        f"resolved kanban home {resolved_home} escaped temp root {root}"
-    )
-    assert resolved_db.is_relative_to(root), (
-        f"resolved kanban DB {resolved_db} escaped temp root {root}"
-    )
+    _mutation_paths = {
+        "kanban home": _kb.kanban_home(),
+        "kanban.db": _kb.kanban_db_path(),
+        "workspaces root": _kb.workspaces_root(),
+        "attachments root": _kb.attachments_root(),
+        "worker logs dir": _kb.worker_logs_dir(),
+    }
+    for _label, _path in _mutation_paths.items():
+        _resolved = _path.resolve()
+        assert _resolved.is_relative_to(root), (
+            f"resolved {_label} {_resolved} escaped temp root {root}"
+        )
     return home
 
 

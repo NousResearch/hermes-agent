@@ -26,15 +26,10 @@ from hermes_cli import kanban_db as kb
 
 
 @pytest.fixture
-def kanban_home(tmp_path, monkeypatch):
-    home = tmp_path / ".hermes"
-    home.mkdir()
-    monkeypatch.setenv("HERMES_HOME", str(home))
-    monkeypatch.setenv("HERMES_KANBAN_HOME", str(home))
-    monkeypatch.setattr(Path, "home", lambda: tmp_path)
-    db_path = kb.kanban_db_path(board="default")
-    kb._INITIALIZED_PATHS.discard(str(db_path.resolve()))
-    return home
+def kanban_home(tmp_path, monkeypatch, isolate_kanban_root):
+    # Shared fail-closed guard (tests/conftest.py); the init cache is reset
+    # inside the helper so these lock-boundary tests init from a clean slate.
+    return isolate_kanban_root(tmp_path, monkeypatch)
 
 
 def _hold_init_lock(db_path: Path):

@@ -43,11 +43,12 @@ def _load_plugin_router():
 
 
 @pytest.fixture
-def kanban_home(tmp_path, monkeypatch):
-    home = tmp_path / ".hermes"
-    home.mkdir()
-    monkeypatch.setenv("HERMES_HOME", str(home))
-    monkeypatch.setattr(Path, "home", lambda: tmp_path)
+def kanban_home(tmp_path, monkeypatch, isolate_kanban_root):
+    # Shared fail-closed guard (tests/conftest.py): clears every inherited
+    # Kanban path pin — including HERMES_KANBAN_ATTACHMENTS_ROOT, which this
+    # suite writes to — and asserts the attachments root resolves inside the
+    # per-test temp root before any file is written.
+    home = isolate_kanban_root(tmp_path, monkeypatch)
     kb.init_db()
     return home
 

@@ -13,7 +13,6 @@ Covers three layers:
 from __future__ import annotations
 
 import sqlite3
-from pathlib import Path
 
 import pytest
 
@@ -22,11 +21,10 @@ from hermes_cli import goals
 
 
 @pytest.fixture
-def kanban_home(tmp_path, monkeypatch):
-    home = tmp_path / ".hermes"
-    home.mkdir()
-    monkeypatch.setenv("HERMES_HOME", str(home))
-    monkeypatch.setattr(Path, "home", lambda: tmp_path)
+def kanban_home(tmp_path, monkeypatch, isolate_kanban_root):
+    # Shared fail-closed guard (tests/conftest.py): clears inherited Kanban
+    # pins and asserts containment under the temp root before mutating.
+    home = isolate_kanban_root(tmp_path, monkeypatch)
     kb.init_db()
     return home
 
@@ -67,12 +65,9 @@ def test_goal_mode_without_max_turns(kanban_home):
     assert task.goal_max_turns is None
 
 
-def test_legacy_db_migrates_goal_columns(tmp_path, monkeypatch):
+def test_legacy_db_migrates_goal_columns(tmp_path, monkeypatch, isolate_kanban_root):
     """A tasks table created without goal columns must gain them on init."""
-    home = tmp_path / ".hermes"
-    home.mkdir()
-    monkeypatch.setenv("HERMES_HOME", str(home))
-    monkeypatch.setattr(Path, "home", lambda: tmp_path)
+    isolate_kanban_root(tmp_path, monkeypatch)
 
     db_path = kb.kanban_db_path()
     db_path.parent.mkdir(parents=True, exist_ok=True)

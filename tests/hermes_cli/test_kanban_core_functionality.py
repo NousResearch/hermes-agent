@@ -30,14 +30,11 @@ from hermes_cli.kanban import run_slash
 # ---------------------------------------------------------------------------
 
 @pytest.fixture
-def kanban_home(tmp_path, monkeypatch):
-    home = tmp_path / ".hermes"
-    home.mkdir()
-    monkeypatch.setenv("HERMES_HOME", str(home))
-    # Existing crash-detection tests pre-date the grace window; pin to 0
-    # so they keep their immediate-reclaim semantics.
-    monkeypatch.setenv("HERMES_KANBAN_CRASH_GRACE_SECONDS", "0")
-    monkeypatch.setattr(Path, "home", lambda: tmp_path)
+def kanban_home(tmp_path, monkeypatch, isolate_kanban_root):
+    # Shared fail-closed guard (tests/conftest.py): clears every inherited
+    # Kanban pin and asserts home + kanban.db (+ workspaces/attachments/logs)
+    # resolve under tmp_path before any mutation.
+    home = isolate_kanban_root(tmp_path, monkeypatch)
     # Disable the detect_crashed_workers grace period for legacy tests in
     # this file that claim a task and immediately expect
     # ``detect_crashed_workers`` to act on it. The grace period (30s by

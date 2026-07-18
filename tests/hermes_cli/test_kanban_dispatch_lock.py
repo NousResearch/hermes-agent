@@ -12,22 +12,17 @@ empty ``DispatchResult`` with ``skipped_locked=True`` and does no DB writes.
 
 from __future__ import annotations
 
-from pathlib import Path
-
 import pytest
 
 from hermes_cli import kanban_db as kb
 
 
 @pytest.fixture
-def kanban_home(tmp_path, monkeypatch):
-    home = tmp_path / ".hermes"
-    home.mkdir()
-    monkeypatch.setenv("HERMES_HOME", str(home))
-    monkeypatch.setenv("HERMES_KANBAN_HOME", str(home))
-    monkeypatch.setattr(Path, "home", lambda: tmp_path)
-    db_path = kb.kanban_db_path(board="default")
-    kb._INITIALIZED_PATHS.discard(str(db_path.resolve()))
+def kanban_home(tmp_path, monkeypatch, isolate_kanban_root):
+    # Shared fail-closed guard: clears every inherited Kanban path pin and
+    # aborts unless home + kanban.db (and workspaces/attachments/logs)
+    # resolve inside the per-test temp root. See tests/conftest.py.
+    home = isolate_kanban_root(tmp_path, monkeypatch)
     kb.init_db()
     return home
 

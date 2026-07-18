@@ -69,6 +69,7 @@ ROOT_RUNTIME_FILES = (
     "scripts/canary/passkey_v2_storage_growth.py",
     "scripts/canary/storage_growth_contract.py",
     "scripts/canary/owner_gate_firewall_readiness.py",
+    "scripts/canary/owner_gate_host_observation_producer.py",
     "scripts/canary/storage_growth_trusted_collector.py",
     "scripts/canary/trusted_signer_provisioning.py",
     "scripts/canary/trusted_signer_stage0.py",

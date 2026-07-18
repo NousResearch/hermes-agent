@@ -16,10 +16,8 @@ if (
 ):
     raise SystemExit("trusted_observation_host_runtime_invalid")
 sys.path.insert(0, str(release))
-from scripts.canary.trusted_signer_provisioning import (
-    verify_host_signer_runtime_readiness,
+from scripts.canary.owner_gate_host_observation_producer import (
+    observation_dispatcher_main,
 )
-from scripts.canary.storage_growth_trusted_collector import host_attestor_main
 
-verify_host_signer_runtime_readiness(release.name)
-raise SystemExit(host_attestor_main(sys.argv[1:]))
+raise SystemExit(observation_dispatcher_main(sys.argv[1:]))

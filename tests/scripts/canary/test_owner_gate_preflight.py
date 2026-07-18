@@ -196,10 +196,15 @@ def _cloud(plan, key, *, iam: bool) -> dict:
 def _host(plan, key, *, iam: bool) -> dict:
     body = {
         "schema": preflight.HOST_OBSERVATION_SCHEMA,
+        "phase": "post_iam" if iam else "inert",
         "collected_at_unix": NOW - 1,
+        "completed_at_unix": NOW - 1,
+        "fresh_through_unix": NOW + 59,
         "plan_sha256": plan.sha256,
+        "observation_binding_sha256": "4" * 64,
         "release": {
             "revision": REVISION,
+            "source_tree_oid": "a" * 40,
             "root": f"/opt/muncho-owner-gate/releases/{REVISION}",
             "uid": 0,
             "gid": 0,
@@ -207,6 +212,21 @@ def _host(plan, key, *, iam: bool) -> dict:
             "immutable": True,
             "package_sha256": "3" * 64,
             "package_inventory_sha256": "5" * 64,
+            "pre_foundation_authority_sha256": "7" * 64,
+            "foundation_apply_receipt_sha256": "8" * 64,
+            "project_ancestry_evidence_sha256": "9" * 64,
+            "project_ancestry_chain_sha256": "a" * 64,
+            "resource_ancestor_chain": [
+                "organizations/123456789012",
+                "projects/123456789012",
+            ],
+            "install_receipt_sha256": "c" * 64,
+            "install_receipt_file_sha256": "d" * 64,
+            "cloud_signer_provisioning_receipt_sha256": "f" * 64,
+            "cloud_signer_readiness_sha256": "0" * 64,
+            "host_signer_provisioning_receipt_sha256": "1" * 64,
+            "host_signer_readiness_sha256": "2" * 64,
+            "attached_sa_permission_probe_report_sha256": "3" * 64,
             "offline_wheelhouse_verified": True,
             "network_install_performed": False,
             "entrypoints": [
@@ -214,6 +234,13 @@ def _host(plan, key, *, iam: bool) -> dict:
                 "muncho-passkey-v2-web",
                 "muncho-passkey-v2-authority",
                 "muncho-passkey-v2-executor",
+                "muncho-owner-gate-cloud-observation-signer",
+                "muncho-host-observation-attestor",
+            ],
+            "observation_dispatcher_schemas": [
+                "muncho-storage-growth-trusted-attestation-request.v1",
+                "muncho-owner-gate-attached-sa-permission-probe-request.v1",
+                "muncho-owner-gate-host-observation-frame.v1",
             ],
             "python_version": "3.11.2",
             "python_executable": (
@@ -310,11 +337,6 @@ def _host(plan, key, *, iam: bool) -> dict:
             "uid": 29103,
             "mutation_iam_binding_present": iam,
             "activation_seal_present": False,
-            "activation_seal_required_for_mutation_only": True,
-            "activation_seal_exact_contract_verified": True,
-            "activation_seal_expected_uid": 0,
-            "activation_seal_expected_gid": 29103,
-            "activation_seal_expected_mode": "0440",
             "authorization_receipt_signature_self_verified": True,
             "receipt_action_binding_self_verified": True,
             "local_gcloud_present": False,
@@ -327,14 +349,9 @@ def _host(plan, key, *, iam: bool) -> dict:
             "receipt_public_key_owner": "root:root",
             "receipt_public_key_mode": "0444",
         },
-        "old_v1": {"unit": "muncho-passkey-stepup.service", "active": False, "masked": True, "trusted_for_v2": False},
-        "caddy": {
-            "public_origin": "https://auth.lomliev.com",
-            "still_on_current_host": True,
-            "private_v2_upstream_active": False,
-            "config_validated": True,
-            "rollback_mode": "pre_migration_v1_only",
-        },
+        "effective_permission_probe": (
+            preflight.expected_effective_permission_probe(iam)
+        ),
         "secret_material_recorded": False,
     }
     return _attest(body, key)
@@ -553,6 +570,25 @@ def test_host_unit_rejects_unrequested_extra_property() -> None:
             cloud_collector_public_key=cloud_key.public_key(),
             host_collector_public_key=host_key.public_key(),
             now_unix=NOW,
+        )
+
+
+def test_host_observation_must_be_consumed_before_signed_freshness_deadline() -> None:
+    network_key = Ed25519PrivateKey.generate()
+    cloud_key = Ed25519PrivateKey.generate()
+    host_key = Ed25519PrivateKey.generate()
+    plan = _plan(network_key, cloud_key, host_key)
+    with pytest.raises(
+        preflight.OwnerGatePreflightError,
+        match="owner_gate_preflight_stale",
+    ):
+        preflight.build_preflight_report(
+            plan=plan,
+            cloud_observation=_cloud(plan, cloud_key, iam=False),
+            host_observation=_host(plan, host_key, iam=False),
+            cloud_collector_public_key=cloud_key.public_key(),
+            host_collector_public_key=host_key.public_key(),
+            now_unix=NOW + 60,
         )
 
 

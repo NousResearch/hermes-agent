@@ -21,9 +21,23 @@ from scripts.canary import owner_gate_foundation as foundation
 
 
 CLOUD_OBSERVATION_SCHEMA = "muncho-owner-gate-cloud-observation.v1"
-HOST_OBSERVATION_SCHEMA = "muncho-owner-gate-host-observation.v1"
+HOST_OBSERVATION_SCHEMA = "muncho-owner-gate-host-observation.v2"
 PREFLIGHT_SCHEMA = "muncho-owner-gate-inert-preflight.v1"
 POST_IAM_PREFLIGHT_SCHEMA = "muncho-owner-gate-post-iam-preflight.v1"
+HOST_OBSERVATION_FRESHNESS_SECONDS = 60
+HOST_RELEASE_ENTRYPOINTS = (
+    "muncho-owner-gate-intake",
+    "muncho-passkey-v2-web",
+    "muncho-passkey-v2-authority",
+    "muncho-passkey-v2-executor",
+    "muncho-owner-gate-cloud-observation-signer",
+    "muncho-host-observation-attestor",
+)
+HOST_OBSERVATION_DISPATCHER_SCHEMAS = (
+    "muncho-storage-growth-trusted-attestation-request.v1",
+    "muncho-owner-gate-attached-sa-permission-probe-request.v1",
+    "muncho-owner-gate-host-observation-frame.v1",
+)
 
 WEB_UID = 29101
 AUTHORITY_UID = 29102
@@ -578,10 +592,13 @@ def _validate_host(
     mutation_binding_present: bool,
 ) -> str:
     _strict(raw, {
-        "schema", "collected_at_unix", "plan_sha256", "release", "identities",
+        "schema", "phase", "collected_at_unix", "completed_at_unix",
+        "fresh_through_unix", "plan_sha256",
+        "observation_binding_sha256", "release", "identities",
         "sockets", "units", "filesystem_boundaries", "metadata_firewall",
         "sqlite", "migration", "webauthn", "request_intake", "executor",
-        "old_v1", "caddy", "secret_material_recorded", "report_sha256",
+        "effective_permission_probe",
+        "secret_material_recorded", "report_sha256",
         "attestation",
     }, "host_observation")
     _verify_seal(raw, label="host_observation")
@@ -593,22 +610,46 @@ def _validate_host(
     )
     if (
         raw["schema"] != HOST_OBSERVATION_SCHEMA
+        or raw["phase"]
+        != ("post_iam" if mutation_binding_present else "inert")
         or raw["plan_sha256"] != plan_sha256
+        or _SHA256.fullmatch(
+            str(raw["observation_binding_sha256"])
+        ) is None
         or not isinstance(raw["collected_at_unix"], int)
+        or isinstance(raw["collected_at_unix"], bool)
         or raw["collected_at_unix"] <= 0
+        or not isinstance(raw["completed_at_unix"], int)
+        or isinstance(raw["completed_at_unix"], bool)
+        or raw["completed_at_unix"] < raw["collected_at_unix"]
+        or raw["fresh_through_unix"]
+        != raw["collected_at_unix"] + HOST_OBSERVATION_FRESHNESS_SECONDS
+        or raw["completed_at_unix"] > raw["fresh_through_unix"]
         or raw["secret_material_recorded"] is not False
     ):
         raise OwnerGatePreflightError("owner_gate_host_observation_invalid")
 
     release = _strict(raw["release"], {
-        "revision", "root", "uid", "gid", "mode", "immutable", "package_sha256",
-        "package_inventory_sha256",
+        "revision", "source_tree_oid", "root", "uid", "gid", "mode", "immutable",
+        "package_sha256", "package_inventory_sha256",
+        "pre_foundation_authority_sha256", "foundation_apply_receipt_sha256",
+        "project_ancestry_evidence_sha256", "project_ancestry_chain_sha256",
+        "resource_ancestor_chain",
+        "install_receipt_sha256", "install_receipt_file_sha256",
+        "cloud_signer_provisioning_receipt_sha256",
+        "cloud_signer_readiness_sha256",
+        "host_signer_provisioning_receipt_sha256",
+        "host_signer_readiness_sha256",
+        "attached_sa_permission_probe_report_sha256",
         "offline_wheelhouse_verified", "network_install_performed", "entrypoints",
+        "observation_dispatcher_schemas",
         "python_version", "python_executable", "python_executable_sha256",
         "python_hash_revalidated_by_sha256sum",
     }, "host_release")
     if (
         release["revision"] != spec.release_revision
+        or re.fullmatch(r"[0-9a-f]{40}", str(release["source_tree_oid"]))
+        is None
         or release["root"] != str(spec.release_root)
         or release["uid"] != 0
         or release["gid"] != 0
@@ -617,6 +658,26 @@ def _validate_host(
         or not _SHA256.fullmatch(str(release["package_sha256"]))
         or release["package_inventory_sha256"]
         != spec.package_inventory_sha256
+        or any(
+            _SHA256.fullmatch(str(release[name])) is None
+            for name in (
+                "pre_foundation_authority_sha256",
+                "foundation_apply_receipt_sha256",
+                "project_ancestry_evidence_sha256",
+                "project_ancestry_chain_sha256",
+                "install_receipt_sha256",
+                "install_receipt_file_sha256",
+                "cloud_signer_provisioning_receipt_sha256",
+                "cloud_signer_readiness_sha256",
+                "host_signer_provisioning_receipt_sha256",
+                "host_signer_readiness_sha256",
+                "attached_sa_permission_probe_report_sha256",
+            )
+        )
+        or not isinstance(release["resource_ancestor_chain"], list)
+        or not release["resource_ancestor_chain"]
+        or len(release["resource_ancestor_chain"])
+        != len(set(release["resource_ancestor_chain"]))
         or release["offline_wheelhouse_verified"] is not True
         or release["network_install_performed"] is not False
         or release["python_version"] != "3.11.2"
@@ -625,12 +686,9 @@ def _validate_host(
         or release["python_executable_sha256"] != spec.interpreter_sha256
         or release["python_hash_revalidated_by_sha256sum"] is not True
         or sorted(release["entrypoints"])
-        != sorted((
-            "muncho-owner-gate-intake",
-            "muncho-passkey-v2-web",
-            "muncho-passkey-v2-authority",
-            "muncho-passkey-v2-executor",
-        ))
+        != sorted(HOST_RELEASE_ENTRYPOINTS)
+        or release["observation_dispatcher_schemas"]
+        != list(HOST_OBSERVATION_DISPATCHER_SCHEMAS)
     ):
         raise OwnerGatePreflightError("owner_gate_host_release_invalid")
 
@@ -786,11 +844,6 @@ def _validate_host(
         "uid": EXECUTOR_UID,
         "mutation_iam_binding_present": mutation_binding_present,
         "activation_seal_present": False,
-        "activation_seal_required_for_mutation_only": True,
-        "activation_seal_exact_contract_verified": True,
-        "activation_seal_expected_uid": 0,
-        "activation_seal_expected_gid": EXECUTOR_UID,
-        "activation_seal_expected_mode": "0440",
         "authorization_receipt_signature_self_verified": True,
         "receipt_action_binding_self_verified": True,
         "local_gcloud_present": False,
@@ -804,21 +857,12 @@ def _validate_host(
         "receipt_public_key_mode": "0444",
     }:
         raise OwnerGatePreflightError("owner_gate_host_executor_invalid")
-    if raw["old_v1"] != {
-        "unit": "muncho-passkey-stepup.service",
-        "active": False,
-        "masked": True,
-        "trusted_for_v2": False,
-    }:
-        raise OwnerGatePreflightError("owner_gate_host_old_v1_invalid")
-    if raw["caddy"] != {
-        "public_origin": "https://auth.lomliev.com",
-        "still_on_current_host": True,
-        "private_v2_upstream_active": False,
-        "config_validated": True,
-        "rollback_mode": "pre_migration_v1_only",
-    }:
-        raise OwnerGatePreflightError("owner_gate_host_caddy_invalid")
+    if raw["effective_permission_probe"] != expected_effective_permission_probe(
+        mutation_binding_present
+    ):
+        raise OwnerGatePreflightError(
+            "owner_gate_host_effective_permission_probe_invalid"
+        )
     return key_id
 
 
@@ -870,6 +914,11 @@ def build_preflight_report(
             or now_unix - collected > foundation.PREFLIGHT_MAX_AGE_SECONDS
         ):
             raise OwnerGatePreflightError("owner_gate_preflight_stale")
+    if (
+        host_observation["completed_at_unix"] > now_unix
+        or host_observation["fresh_through_unix"] < now_unix
+    ):
+        raise OwnerGatePreflightError("owner_gate_preflight_stale")
     unsigned = {
         "schema": PREFLIGHT_SCHEMA,
         "plan_sha256": plan.sha256,
@@ -889,8 +938,6 @@ def build_preflight_report(
         "atomic_single_use_ready": True,
         "request_intake_ready": True,
         "metadata_uid_firewall_ready": True,
-        "old_v1_masked": True,
-        "caddy_cutover_performed": False,
         "mutation_iam_binding_present": False,
         "executor_activation_seal_present": False,
         "inert_noop_security_smoke_ready": True,
@@ -942,6 +989,11 @@ def build_post_iam_preflight_report(
         collected = observed["collected_at_unix"]
         if collected > now_unix or now_unix - collected > foundation.PREFLIGHT_MAX_AGE_SECONDS:
             raise OwnerGatePreflightError("owner_gate_preflight_stale")
+    if (
+        host_observation["completed_at_unix"] > now_unix
+        or host_observation["fresh_through_unix"] < now_unix
+    ):
+        raise OwnerGatePreflightError("owner_gate_preflight_stale")
     unsigned = {
         "schema": POST_IAM_PREFLIGHT_SCHEMA,
         "plan_sha256": plan.sha256,

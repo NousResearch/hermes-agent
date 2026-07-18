@@ -23,6 +23,10 @@ Example config::
                                 # 180). Set below the server's session TTL for
                                 # servers that GC idle sessions quickly (e.g.
                                 # Unreal Engine editor MCP, ~15s). Floored at 5s.
+        idle_timeout_seconds: 3600      # optional stdio recycle after idle
+        max_lifetime_seconds: 86400     # optional stdio recycle after age
+        # The recycle settings may also live under lifecycle: {...}.
+        # Use 0 to disable either recycle limit.
       github:
         command: "npx"
         args: ["-y", "@modelcontextprotocol/server-github"]
@@ -98,6 +102,7 @@ import shutil
 import sys
 import threading
 import time
+from types import SimpleNamespace
 from typing import Callable
 from datetime import datetime
 from typing import Any, Coroutine, Dict, List, Optional
@@ -330,6 +335,7 @@ _MAX_BACKOFF_SECONDS = 60
 # server is unrevivable: its tools are out of the registry, so no tool call
 # can ever reach the circuit-breaker half-open probe or _signal_reconnect.
 _PARKED_RETRY_INTERVAL = 300     # seconds between parked self-probes
+_RECYCLED_RECONNECT_TIMEOUT = 15.0
 
 # Keepalive cadence for HTTP/SSE sessions. The MCP spec lets a server expire
 # idle sessions on any TTL it chooses (Streamable HTTP "Session Management"),
@@ -569,6 +575,53 @@ def _prepend_path(env: dict, directory: str) -> dict:
     return updated
 
 
+# Safety cap on nextCursor pagination loops so a misbehaving server that
+# returns a cursor forever cannot spin discovery indefinitely. 50 pages at
+# the common 50-100 items/page covers thousands of tools/resources/prompts.
+_MCP_LIST_MAX_PAGES = 50
+
+
+async def _paginate_full_list(list_method, items_attr: str, server_name: str):
+    """Drain a paginated MCP ``list_*`` call by following ``nextCursor``.
+
+    The MCP spec allows servers to paginate ``tools/list``,
+    ``resources/list``, and ``prompts/list`` responses via an opaque
+    ``nextCursor`` token. The Python SDK's ``ClientSession.list_*`` methods
+    fetch exactly one page per call, so a client that never passes the
+    cursor back silently sees only the first page — on a paginated server
+    every tool/resource/prompt past page 1 would be invisible to the agent.
+
+    Args:
+        list_method: Bound ``session.list_tools`` / ``list_resources`` /
+            ``list_prompts`` coroutine function.
+        items_attr: Result attribute holding the page's items
+            (``"tools"``, ``"resources"``, or ``"prompts"``).
+        server_name: For log messages.
+
+    Returns:
+        Combined list of items across all pages. Callers must hold the
+        server's ``_rpc_lock`` for the duration so pages come from a
+        consistent snapshot.
+    """
+    items: list = []
+    cursor = None
+    for _ in range(_MCP_LIST_MAX_PAGES):
+        result = await (list_method(cursor=cursor) if cursor else list_method())
+        items.extend(getattr(result, items_attr, None) or [])
+        cursor = getattr(result, "nextCursor", None)
+        # Per the MCP spec the cursor is an opaque string; anything else
+        # (including mock objects in tests) means "no more pages".
+        if not isinstance(cursor, str) or not cursor:
+            break
+    else:
+        logger.warning(
+            "MCP server '%s': %s pagination exceeded %d pages; "
+            "truncating at %d items",
+            server_name, items_attr, _MCP_LIST_MAX_PAGES, len(items),
+        )
+    return items
+
+
 def _resolve_stdio_command(command: str, env: dict) -> tuple[str, dict]:
     """Resolve a stdio MCP command against the exact subprocess environment.
 
@@ -614,6 +667,34 @@ def _resolve_stdio_command(command: str, env: dict) -> tuple[str, dict]:
         resolved_env = _prepend_path(resolved_env, command_dir)
 
     return resolved_command, resolved_env
+
+
+def _wrap_command_with_watchdog(command: str, args: list) -> tuple[str, list]:
+    """Wrap a stdio MCP server command in the parent-death watchdog supervisor.
+
+    On POSIX, the watchdog records this process's PID and later detects parent
+    death directly through ``getppid()``. Returns the (command, args) unchanged
+    on non-POSIX platforms or if the PID cannot be read.
+    """
+    if os.name != "posix":
+        # Relies on process groups (os.getpgid/os.killpg); no POSIX
+        # equivalent wired up here yet, matching the existing killpg-based
+        # orphan cleanup's platform scope (Windows falls back to plain
+        # os.kill there too).
+        return command, args
+    try:
+        my_pid = os.getpid()
+    except Exception:
+        # Never let watchdog bookkeeping failure block a real MCP connection.
+        return command, args
+    watchdog_args = [
+        os.path.join(os.path.dirname(os.path.abspath(__file__)), "mcp_stdio_watchdog.py"),
+        "--ppid", str(my_pid),
+        "--",
+        command,
+        *args,
+    ]
+    return sys.executable, watchdog_args
 
 
 # ---------------------------------------------------------------------------
@@ -672,6 +753,169 @@ def _cache_mcp_image_block(block) -> str:
         return ""
 
     return f"MEDIA:{image_path}"
+
+
+# ---------------------------------------------------------------------------
+# MCP resource blocks (ResourceLink / EmbeddedResource / AudioContent)
+# ---------------------------------------------------------------------------
+
+# Hard cap on decoded resource bytes materialized from an MCP tool result.
+# Prevents a misbehaving server from filling the cache disk via one block.
+_MCP_RESOURCE_MAX_BYTES = 50 * 1024 * 1024
+
+# Base64 expands raw bytes by ~4/3; reject oversized payloads before decoding
+# so a multi-GB blob string is never transiently doubled in memory.
+_MCP_RESOURCE_MAX_B64_CHARS = _MCP_RESOURCE_MAX_BYTES * 4 // 3 + 4
+
+
+def _mcp_resource_filename(uri: str, mime_type: str) -> str:
+    """Derive a safe display filename for an MCP resource.
+
+    Only the last path segment of the URI is considered, and only as a
+    *name hint* — `cache_document_from_bytes` re-sanitizes and prefixes it,
+    so remote path components can't influence the cache location.
+    """
+    import mimetypes
+    import re as _re
+    from pathlib import Path
+    from urllib.parse import urlparse, unquote
+
+    name = ""
+    if uri:
+        try:
+            name = Path(unquote(urlparse(str(uri)).path or "")).name
+        except (ValueError, TypeError):
+            name = ""
+    # Strip control characters (newlines/ANSI escapes from hostile URIs would
+    # otherwise land in the filename and the transcript marker) and cap the
+    # length, preserving the extension.
+    name = _re.sub(r"[\x00-\x1f\x7f]", "", name).strip()
+    if len(name) > 150:
+        stem, dot, ext = name.rpartition(".")
+        if dot and 0 < len(ext) <= 12:
+            name = stem[: 150 - len(ext) - 1] + "." + ext
+        else:
+            name = name[:150]
+    if not name or name in {".", ".."}:
+        normalized = (mime_type or "").split(";", 1)[0].strip().lower()
+        ext = mimetypes.guess_extension(normalized) or ".bin"
+        name = f"resource{ext}"
+    return name
+
+
+def _cache_mcp_audio_block(block) -> str:
+    """Cache an MCP ``AudioContent`` block and return a ``MEDIA:`` tag.
+
+    Returns an empty string when *block* is not audio or on any failure —
+    same fail-open contract as ``_cache_mcp_image_block``.
+    """
+    import base64
+
+    data = getattr(block, "data", None)
+    mime_type = str(getattr(block, "mimeType", None) or "").split(";", 1)[0].strip().lower()
+    if data is None or not mime_type.startswith("audio/"):
+        return ""
+    if len(data) > _MCP_RESOURCE_MAX_B64_CHARS:
+        return f"[MCP audio resource too large to cache: ~{len(data) * 3 // 4} bytes]"
+    try:
+        raw_bytes = base64.b64decode(data)
+    except (TypeError, ValueError) as exc:
+        logger.warning("MCP audio block decode failed (%s): %s", mime_type, exc)
+        return ""
+    if len(raw_bytes) > _MCP_RESOURCE_MAX_BYTES:
+        return f"[MCP audio resource too large to cache: {len(raw_bytes)} bytes]"
+    try:
+        from gateway.platforms.base import cache_audio_from_bytes
+        import mimetypes
+
+        ext = (
+            {"audio/wav": ".wav", "audio/x-wav": ".wav", "audio/wave": ".wav"}.get(mime_type)
+            or mimetypes.guess_extension(mime_type)
+            or ".ogg"
+        )
+        audio_path = cache_audio_from_bytes(raw_bytes, ext=ext)
+    except ImportError:
+        logger.debug("MCP audio caching skipped — gateway.platforms.base unavailable")
+        return ""
+    except Exception as exc:
+        logger.warning("MCP audio block cache failed: %s", exc)
+        return ""
+    return f"MEDIA:{audio_path}"
+
+
+def _render_mcp_resource_block(block, server_name: str = "") -> str:
+    """Render an MCP ``ResourceLink`` or ``EmbeddedResource`` block as text.
+
+    - ``EmbeddedResource`` with text contents → the text itself.
+    - ``EmbeddedResource`` with blob contents → bytes are decoded (size-capped)
+      and materialized into the Hermes document cache; returns a marker with
+      the local path so file/terminal tools can consume it.
+    - ``ResourceLink`` → the URI plus a pointer at the server's read_resource
+      tool. No network fetch happens here; the link is only readable through
+      the originating MCP session.
+
+    Returns an empty string for non-resource blocks. Failures are logged and
+    reported inline rather than silently dropping the block.
+    """
+    block_type = getattr(block, "type", "")
+
+    if block_type == "resource_link" or (
+        hasattr(block, "uri") and not hasattr(block, "resource") and block_type != "text"
+    ):
+        uri = getattr(block, "uri", None)
+        if not uri:
+            return ""
+        name = getattr(block, "name", "") or ""
+        mime = getattr(block, "mimeType", "") or ""
+        details = f"uri={uri}"
+        if name:
+            details += f", name={name}"
+        if mime:
+            details += f", mimeType={mime}"
+        reader = (
+            mcp_prefixed_tool_name(server_name, "read_resource")
+            if server_name
+            else "the MCP server's read_resource tool"
+        )
+        return f"[MCP resource link: {details} — fetch it with {reader}]"
+
+    resource = getattr(block, "resource", None)
+    if resource is None:
+        return ""
+
+    text = getattr(resource, "text", None)
+    if text is not None:
+        return str(text)
+
+    blob = getattr(resource, "blob", None)
+    if blob is None:
+        return ""
+
+    import base64
+
+    uri = str(getattr(resource, "uri", "") or "")
+    mime = str(getattr(resource, "mimeType", "") or "")
+    if len(blob) > _MCP_RESOURCE_MAX_B64_CHARS:
+        return f"[MCP embedded resource too large to cache: ~{len(blob) * 3 // 4} bytes, uri={uri}]"
+    try:
+        raw_bytes = base64.b64decode(blob)
+    except (TypeError, ValueError) as exc:
+        logger.warning("MCP embedded resource decode failed (%s): %s", mime or uri, exc)
+        return f"[MCP embedded resource could not be decoded: {mime or uri}]"
+    if len(raw_bytes) > _MCP_RESOURCE_MAX_BYTES:
+        return f"[MCP embedded resource too large to cache: {len(raw_bytes)} bytes, uri={uri}]"
+    try:
+        from gateway.platforms.base import cache_document_from_bytes
+
+        path = cache_document_from_bytes(raw_bytes, _mcp_resource_filename(uri, mime))
+    except ImportError:
+        logger.debug("MCP resource caching skipped — gateway.platforms.base unavailable")
+        return f"[MCP embedded resource received ({len(raw_bytes)} bytes, {mime or 'unknown type'}) but document cache unavailable in this process]"
+    except Exception as exc:
+        logger.warning("MCP embedded resource cache failed: %s", exc)
+        return f"[MCP embedded resource could not be cached: {mime or uri}]"
+    detail = mime or "unknown type"
+    return f"[MCP resource saved to {path} ({detail}, {len(raw_bytes)} bytes) — read it with read_file or terminal tools]"
 
 
 # ---------------------------------------------------------------------------
@@ -1483,6 +1727,8 @@ class MCPServerTask:
         "_registered_tool_names", "_auth_type", "_refresh_lock",
         "_rpc_lock", "_pending_refresh_tasks",
         "_pending_call_context",
+        "_lifecycle_started_at", "_last_tool_call_at",
+        "_idle_timeout_seconds", "_max_lifetime_seconds", "_recycled_reason",
         "initialize_result", "_ping_unsupported",
         "_reconnect_retries",
     )
@@ -1527,6 +1773,12 @@ class MCPServerTask:
         # gateway-platform attribution and routes the approval prompt
         # to the right surface (Telegram, Slack, etc.).
         self._pending_call_context: Optional[contextvars.Context] = None
+        now = time.monotonic()
+        self._lifecycle_started_at: float = now
+        self._last_tool_call_at: float = now
+        self._idle_timeout_seconds: Optional[float] = None
+        self._max_lifetime_seconds: Optional[float] = None
+        self._recycled_reason: Optional[str] = None
         # Captures the ``InitializeResult`` returned by
         # ``await session.initialize()`` so downstream code can inspect the
         # server's real advertised capabilities (``.capabilities.resources``,
@@ -1563,6 +1815,53 @@ class MCPServerTask:
         if caps is None:
             return True
         return getattr(caps, "tools", None) is not None
+
+    def _is_recycled_stdio(self) -> bool:
+        """Return True when a stdio server was intentionally recycled."""
+        return not self._is_http() and self._recycled_reason is not None
+
+    def mark_tool_call(self) -> None:
+        """Record that a user-visible MCP operation is starting."""
+        self._last_tool_call_at = time.monotonic()
+
+    def _mark_lifecycle_started(self) -> None:
+        now = time.monotonic()
+        self._lifecycle_started_at = now
+        self._last_tool_call_at = now
+        self._recycled_reason = None
+
+    def _stdio_recycle_reason(self, now: Optional[float] = None) -> Optional[str]:
+        """Return the stdio recycle reason if idle/age limits have elapsed."""
+        if self._is_http() or self._rpc_lock.locked():
+            return None
+        now = time.monotonic() if now is None else now
+        if (
+            self._max_lifetime_seconds is not None
+            and now - self._lifecycle_started_at >= self._max_lifetime_seconds
+        ):
+            return "max_lifetime_seconds"
+        if (
+            self._idle_timeout_seconds is not None
+            and now - self._last_tool_call_at >= self._idle_timeout_seconds
+        ):
+            return "idle_timeout_seconds"
+        return None
+
+    def _next_stdio_recycle_deadline(self) -> Optional[float]:
+        """Return the next monotonic recycle deadline for stdio, if any."""
+        if self._is_http() or self._rpc_lock.locked():
+            return None
+        deadlines = []
+        if self._max_lifetime_seconds is not None:
+            deadlines.append(self._lifecycle_started_at + self._max_lifetime_seconds)
+        if self._idle_timeout_seconds is not None:
+            deadlines.append(self._last_tool_call_at + self._idle_timeout_seconds)
+        return min(deadlines) if deadlines else None
+
+    def _mark_stdio_recycled(self, reason: str) -> None:
+        """Mark a stdio session dormant before its transport finishes closing."""
+        self._recycled_reason = reason
+        self.session = None
 
     # ----- Dynamic tool discovery (notifications/tools/list_changed) -----
 
@@ -1679,10 +1978,11 @@ class MCPServerTask:
             # Capture old tool names for change diff
             old_tool_names = set(self._registered_tool_names)
 
-            # 1. Fetch current tool list from server
+            # 1. Fetch current tool list from server (follow nextCursor)
             async with self._rpc_lock:
-                tools_result = await self.session.list_tools()
-            new_mcp_tools = tools_result.tools if hasattr(tools_result, "tools") else []
+                new_mcp_tools = await _paginate_full_list(
+                    self.session.list_tools, "tools", self.name
+                )
 
             # 2. Re-register with fresh tool list. Avoid nuke-and-repave for
             # all names: live agent turns may already have tool-call IDs
@@ -1776,6 +2076,9 @@ class MCPServerTask:
                         tokens, new session ID, etc.). The reconnect event
                         is cleared before return so the next cycle starts
                         with a fresh signal.
+            "recycle"   if a stdio idle/max-lifetime limit elapsed. The
+                        current transport is torn down and restarted lazily
+                        on the next tool call.
 
         Shutdown takes precedence if both events are set simultaneously.
 
@@ -1807,13 +2110,28 @@ class MCPServerTask:
         reconnect_task = asyncio.create_task(self._reconnect_event.wait())
         try:
             while True:
+                recycle_reason = self._stdio_recycle_reason()
+                if recycle_reason is not None:
+                    self._mark_stdio_recycled(recycle_reason)
+                    return "recycle"
+
+                timeout = keepalive_interval
+                recycle_deadline = self._next_stdio_recycle_deadline()
+                if recycle_deadline is not None:
+                    timeout = max(0.0, min(timeout, recycle_deadline - time.monotonic()))
+
                 done, _pending = await asyncio.wait(
                     {shutdown_task, reconnect_task},
-                    timeout=keepalive_interval,
+                    timeout=timeout,
                     return_when=asyncio.FIRST_COMPLETED,
                 )
                 if done:
                     break
+
+                recycle_reason = self._stdio_recycle_reason()
+                if recycle_reason is not None:
+                    self._mark_stdio_recycled(recycle_reason)
+                    return "recycle"
 
                 # Timeout — no lifecycle event fired.  Probe the connection
                 # to detect stale/expired sessions. Prefer ``ping`` (MCP base
@@ -1919,6 +2237,9 @@ class MCPServerTask:
         # it with a wall-clock timeout so a stalled SSL handshake can't freeze
         # MCP discovery / gateway startup (#29184). The check is fail-open, so
         # on timeout we log and proceed rather than blocking indefinitely.
+        # NOTE: must run against the REAL command/args — the watchdog wrap
+        # below rewrites argv to `python -m tools.mcp_stdio_watchdog …`,
+        # which would silently turn the preflight into a no-op.
         from tools.osv_check import check_package_for_malware
         try:
             malware_error = await asyncio.wait_for(
@@ -1937,6 +2258,18 @@ class MCPServerTask:
                 f"MCP server '{self.name}': {malware_error}"
             )
 
+        # Wrap the real command in a parent-death watchdog supervisor so an
+        # ungraceful exit of this Hermes process (kill -9, crash, force-quit)
+        # can't leave the stdio MCP child (and its own descendants, e.g.
+        # mcp-remote's spawned `node`) running forever. On a clean exit,
+        # MCPServerTask.shutdown() / _kill_orphaned_mcp_children() still do
+        # the reaping as before -- this only covers the case where that code
+        # never gets to run. POSIX-only (relies on process groups); no-op
+        # elsewhere, matching existing killpg-based cleanup's platform scope.
+        # Applied AFTER the OSV preflight so the check inspects the real
+        # package, not the watchdog wrapper.
+        command, args = _wrap_command_with_watchdog(command, args)
+
         server_params = StdioServerParameters(
             command=command,
             args=args,
@@ -1950,6 +2283,18 @@ class MCPServerTask:
             sampling_kwargs["message_handler"] = self._make_message_handler()
         if _MCP_LOGGING_CALLBACK_SUPPORTED:
             sampling_kwargs["logging_callback"] = self._make_logging_callback()
+
+        # Reap any orphaned subprocesses from prior failed connection
+        # attempts before spawning a new one.  Without this, each retry in
+        # the run() reconnect loop spawns a fresh process pair while the
+        # previous failed pair lingers — leading to rapid zombie
+        # accumulation (see #57355, #57228).  The unscoped sweep also
+        # opportunistically reaps orphans left by *other* servers that
+        # never reconnect; per-server filtering via ``server_name`` remains
+        # available for scoped call sites.  Run in a worker thread: the
+        # reaper blocks up to 2s (SIGTERM → wait → SIGKILL) when orphans
+        # exist, which would otherwise stall the shared MCP event loop.
+        await asyncio.to_thread(_kill_orphaned_mcp_children)
 
         # Snapshot child PIDs before spawning so we can track the new one.
         pids_before = _snapshot_child_pids()
@@ -1995,8 +2340,25 @@ class MCPServerTask:
                 async with ClientSession(
                     read_stream, write_stream, **sampling_kwargs
                 ) as session:
-                    self.initialize_result = await session.initialize()
+                    # Bound the MCP handshake. A stdio server that never
+                    # completes ``initialize`` (e.g. emits a non-JSON-RPC frame
+                    # and then blocks on stdin) otherwise hangs this coroutine
+                    # forever on the background loop: ``connect_timeout`` only
+                    # bounds the caller's ``.result()`` wait, not the coroutine
+                    # itself. Because the connect never unwinds, the cleanup
+                    # ``finally`` below never runs, so the spawned child and its
+                    # stdio pipes/pidfd leak on every discovery retry — unbounded
+                    # until the gateway hits EMFILE. Timing out here converts the
+                    # hang into a normal failure, letting the ``finally`` reap the
+                    # child. See #59349.
+                    connect_timeout = float(
+                        config.get("connect_timeout", _DEFAULT_CONNECT_TIMEOUT)
+                    )
+                    self.initialize_result = await asyncio.wait_for(
+                        session.initialize(), timeout=connect_timeout
+                    )
                     self.session = session
+                    self._mark_lifecycle_started()
                     await self._discover_tools()
                     self._ready.set()
                     # Session is live again: clear any breaker state from a
@@ -2010,7 +2372,7 @@ class MCPServerTask:
                     # stdio transport does not use OAuth, but we still honor
                     # _reconnect_event (e.g. future manual /mcp refresh) for
                     # consistency with _run_http.
-                    await self._wait_for_lifecycle_event()
+                    return await self._wait_for_lifecycle_event()
         finally:
             # Runs on clean exit, exceptions, AND asyncio cancellation.
             # If any of the spawned PIDs are still alive, the SDK's
@@ -2041,6 +2403,7 @@ class MCPServerTask:
                                 pgroup_alive = False
                         if pid_alive or pgroup_alive:
                             _orphan_stdio_pids.add(pid)
+                            _orphan_stdio_pid_servers[pid] = self.name
                         else:
                             # Nothing left to reap — drop the pgid entry so
                             # PID-reuse can't surface stale pgroup state later.
@@ -2283,7 +2646,13 @@ class MCPServerTask:
                 async with ClientSession(
                     read_stream, write_stream, **sampling_kwargs
                 ) as session:
-                    self.initialize_result = await session.initialize()
+                    # Bound the handshake — same orphaned-task hang as the
+                    # stdio path (#59349): an endpoint that accepts the
+                    # connection but never answers ``initialize`` parks this
+                    # coroutine forever on the background loop.
+                    self.initialize_result = await asyncio.wait_for(
+                        session.initialize(), timeout=float(connect_timeout)
+                    )
                     self.session = session
                     await self._discover_tools()
                     self._ready.set()
@@ -2298,7 +2667,7 @@ class MCPServerTask:
                             "MCP server '%s': reconnect requested — "
                             "tearing down SSE session", self.name,
                         )
-            return
+            return reason
 
         if _MCP_NEW_HTTP:
             # New API (mcp >= 1.24.0): build an explicit httpx.AsyncClient
@@ -2337,7 +2706,10 @@ class MCPServerTask:
                     read_stream, write_stream, _get_session_id,
                 ):
                     async with ClientSession(read_stream, write_stream, **sampling_kwargs) as session:
-                        self.initialize_result = await session.initialize()
+                        # Bound the handshake (#59349) — see stdio path.
+                        self.initialize_result = await asyncio.wait_for(
+                            session.initialize(), timeout=float(connect_timeout)
+                        )
                         self.session = session
                         await self._discover_tools()
                         self._ready.set()
@@ -2352,6 +2724,7 @@ class MCPServerTask:
                                 "MCP server '%s': reconnect requested — "
                                 "tearing down HTTP session", self.name,
                             )
+            return reason
         else:
             # Deprecated API (mcp < 1.24.0): manages httpx client internally.
             _http_kwargs: dict = {
@@ -2365,7 +2738,10 @@ class MCPServerTask:
                 read_stream, write_stream, _get_session_id,
             ):
                 async with ClientSession(read_stream, write_stream, **sampling_kwargs) as session:
-                    self.initialize_result = await session.initialize()
+                    # Bound the handshake (#59349) — see stdio path.
+                    self.initialize_result = await asyncio.wait_for(
+                        session.initialize(), timeout=float(connect_timeout)
+                    )
                     self.session = session
                     await self._discover_tools()
                     self._ready.set()
@@ -2380,6 +2756,7 @@ class MCPServerTask:
                             "MCP server '%s': reconnect requested — "
                             "tearing down legacy HTTP session", self.name,
                         )
+            return reason
 
     async def _discover_tools(self):
         """Discover tools from the connected session.
@@ -2407,12 +2784,9 @@ class MCPServerTask:
             self._register_discovered_tools_if_needed()
             return
         async with self._rpc_lock:
-            tools_result = await self.session.list_tools()
-        self._tools = (
-            tools_result.tools
-            if hasattr(tools_result, "tools")
-            else []
-        )
+            self._tools = await _paginate_full_list(
+                self.session.list_tools, "tools", self.name
+            )
         self._register_discovered_tools_if_needed()
 
     def _register_discovered_tools_if_needed(self) -> None:
@@ -2440,6 +2814,8 @@ class MCPServerTask:
         self._config = config
         self.tool_timeout = config.get("timeout", _DEFAULT_TOOL_TIMEOUT)
         self._auth_type = (config.get("auth") or "").lower().strip()
+        self._idle_timeout_seconds = _get_lifecycle_seconds(config, "idle_timeout_seconds")
+        self._max_lifetime_seconds = _get_lifecycle_seconds(config, "max_lifetime_seconds")
 
         # Set up sampling handler if enabled and SDK types are available
         sampling_config = config.get("sampling", {})
@@ -2515,9 +2891,9 @@ class MCPServerTask:
         while True:
             try:
                 if self._is_http():
-                    await self._run_http(config)
+                    lifecycle_reason = await self._run_http(config)
                 else:
-                    await self._run_stdio(config)
+                    lifecycle_reason = await self._run_stdio(config)
                 # Transport returned cleanly. Two cases:
                 #  - _shutdown_event was set: exit the run loop entirely.
                 #  - _reconnect_event was set (auth recovery): loop back and
@@ -2525,6 +2901,18 @@ class MCPServerTask:
                 #    touch the retry counters — this is not a failure.
                 if self._shutdown_event.is_set():
                     break
+                if lifecycle_reason == "recycle":
+                    logger.info(
+                        "MCP server '%s': stdio session recycled after %s; "
+                        "waiting for lazy reconnect",
+                        self.name, self._recycled_reason,
+                    )
+                    self.session = None
+                    await self._wait_for_lazy_reconnect()
+                    if self._shutdown_event.is_set():
+                        break
+                    self._reconnect_event.clear()
+                    continue
                 logger.info(
                     "MCP server '%s': reconnecting (OAuth recovery or "
                     "manual refresh)",
@@ -2560,6 +2948,13 @@ class MCPServerTask:
                 raise
             except Exception as exc:
                 self.session = None
+                if self._is_recycled_stdio():
+                    logger.warning(
+                        "MCP server '%s': lazy reconnect after stdio recycle "
+                        "failed, marking unavailable while retrying: %s",
+                        self.name, exc,
+                    )
+                    self._recycled_reason = None
 
                 # If this is the first connection attempt, retry with backoff
                 # before giving up. A transient DNS/network blip at startup
@@ -2686,7 +3081,19 @@ class MCPServerTask:
     async def start(self, config: dict):
         """Create the background Task and wait until ready (or failed)."""
         self._task = asyncio.ensure_future(self.run(config))
-        await self._ready.wait()
+        try:
+            await self._ready.wait()
+        except asyncio.CancelledError:
+            # The caller's connect timeout (discover_mcp_tools wraps start()
+            # in asyncio.wait_for) cancels *this* coroutine, but the
+            # ensure_future'd run() task is independent and would otherwise
+            # keep running detached — parked on a hung transport with no
+            # owner to reap it (#59349). Propagate the cancellation so the
+            # transport context managers unwind and their finally blocks
+            # release the child process / FDs.
+            if self._task and not self._task.done():
+                self._task.cancel()
+            raise
         if self._error:
             raise self._error
 
@@ -2735,6 +3142,24 @@ class MCPServerTask:
             registry.deregister(tool_name)
             _forget_mcp_tool_server(tool_name)
         self._registered_tool_names = []
+
+    async def _wait_for_lazy_reconnect(self) -> None:
+        """Wait while an intentionally recycled stdio server is dormant."""
+        shutdown_task = asyncio.create_task(self._shutdown_event.wait())
+        reconnect_task = asyncio.create_task(self._reconnect_event.wait())
+        try:
+            await asyncio.wait(
+                {shutdown_task, reconnect_task},
+                return_when=asyncio.FIRST_COMPLETED,
+            )
+        finally:
+            for task in (shutdown_task, reconnect_task):
+                if not task.done():
+                    task.cancel()
+                    try:
+                        await task
+                    except (asyncio.CancelledError, Exception):
+                        pass
 
 
 # ---------------------------------------------------------------------------
@@ -2814,6 +3239,15 @@ def _signal_reconnect(server: Any) -> bool:
     else:
         event.set()
     return True
+
+
+def reconnect_mcp_server(server_name: str) -> bool:
+    """Ask a currently-live MCP server to rebuild after external re-auth."""
+    with _lock:
+        server = _servers.get(server_name)
+    if server is None:
+        return False
+    return _signal_reconnect(server)
 
 
 def _wait_for_server_session_ready(
@@ -3234,6 +3668,7 @@ _stdio_pids: Dict[int, str] = {}  # pid -> server_name
 # Separate from _stdio_pids so cleanup sweeps never race with active
 # sessions (e.g. concurrent cron jobs or live user chats).
 _orphan_stdio_pids: set = set()
+_orphan_stdio_pid_servers: Dict[int, str] = {}
 
 # Process-group IDs of stdio MCP subprocesses, captured at spawn time.
 # The MCP SDK spawns stdio children with ``start_new_session=True`` so each
@@ -3387,6 +3822,27 @@ def _wrap_with_home_override(coro: "Coroutine") -> "Coroutine":
     return _scoped()
 
 
+def _wrap_with_dashboard_oauth_flow(coro):
+    """Propagate a dashboard OAuth flow onto the dedicated MCP loop task."""
+    try:
+        from tools.mcp_dashboard_oauth import (
+            dashboard_oauth_flow,
+            get_dashboard_oauth_flow,
+        )
+
+        flow = get_dashboard_oauth_flow()
+    except Exception:
+        return coro
+    if flow is None:
+        return coro
+
+    async def _scoped():
+        with dashboard_oauth_flow(flow):
+            return await coro
+
+    return _scoped()
+
+
 def _run_on_mcp_loop(coro_or_factory, timeout: float = 30):
     """Schedule a coroutine on the MCP event loop and block until done.
 
@@ -3421,6 +3877,7 @@ def _run_on_mcp_loop(coro_or_factory, timeout: float = 30):
     # task's own context (task-local — concurrent calls carrying different
     # scopes don't interfere). No-op when no override is active.
     coro = _wrap_with_home_override(coro)
+    coro = _wrap_with_dashboard_oauth_flow(coro)
 
     future = safe_schedule_threadsafe(
         coro, loop,
@@ -3531,9 +3988,8 @@ def _load_mcp_config() -> Dict[str, dict]:
     """
     try:
         from hermes_cli.config import load_config
-        # Safe mode (--safe-mode / HERMES_SAFE_MODE=1): troubleshooting run
-        # with all customizations disabled — no MCP servers connect.
         from utils import env_var_enabled as _env_enabled
+
         if _env_enabled("HERMES_SAFE_MODE"):
             return {}
         config = load_config()
@@ -3581,6 +4037,58 @@ async def _connect_server(name: str, config: dict) -> MCPServerTask:
 # Handler / check-fn factories
 # ---------------------------------------------------------------------------
 
+def _request_lazy_reconnect(server_name: str, server: MCPServerTask) -> bool:
+    """Wake a recycled stdio server and wait briefly for a fresh session."""
+    if not server._is_recycled_stdio():
+        return False
+
+    with _lock:
+        loop = _mcp_loop
+    if loop is None or not loop.is_running():
+        return False
+
+    def _signal_reconnect() -> None:
+        server._ready.clear()
+        server._reconnect_event.set()
+
+    loop.call_soon_threadsafe(_signal_reconnect)
+
+    async def _await_ready() -> bool:
+        deadline = time.monotonic() + _RECYCLED_RECONNECT_TIMEOUT
+        while time.monotonic() < deadline:
+            if server.session is not None and server._ready.is_set():
+                return True
+            await asyncio.sleep(0.05)
+        return False
+
+    try:
+        return bool(_run_on_mcp_loop(_await_ready, timeout=_RECYCLED_RECONNECT_TIMEOUT))
+    except Exception as exc:
+        logger.warning(
+            "MCP server '%s': lazy reconnect after stdio recycle failed: %s",
+            server_name, exc,
+        )
+        return False
+
+
+def _get_connected_server_for_call(server_name: str) -> Optional[MCPServerTask]:
+    """Return a connected server, lazily reconnecting recycled stdio state."""
+    with _lock:
+        server = _servers.get(server_name)
+    if server is not None and server.session is None and server._is_recycled_stdio():
+        _request_lazy_reconnect(server_name, server)
+        with _lock:
+            server = _servers.get(server_name)
+    return server
+
+
+def _mark_server_call_started(server: Any) -> None:
+    """Record a user-visible MCP operation when the server supports it."""
+    mark_tool_call = getattr(server, "mark_tool_call", None)
+    if callable(mark_tool_call):
+        mark_tool_call()
+
+
 def _make_tool_handler(server_name: str, tool_name: str, tool_timeout: float):
     """Return a sync handler that calls an MCP tool via the background loop.
 
@@ -3615,8 +4123,7 @@ def _make_tool_handler(server_name: str, tool_name: str, tool_timeout: float):
                 }, ensure_ascii=False)
             # Cooldown elapsed → fall through as a half-open probe.
 
-        with _lock:
-            server = _servers.get(server_name)
+        server = _get_connected_server_for_call(server_name)
         if not server:
             _bump_server_error(server_name)
             return json.dumps({
@@ -3658,6 +4165,7 @@ def _make_tool_handler(server_name: str, tool_name: str, tool_timeout: float):
                 }, ensure_ascii=False)
 
         async def _call():
+            _mark_server_call_started(server)
             async with server._rpc_lock:
                 # Snapshot the agent's context so an elicitation callback
                 # triggered during this call (fired on the MCP recv loop
@@ -3672,8 +4180,15 @@ def _make_tool_handler(server_name: str, tool_name: str, tool_timeout: float):
             if result.isError:
                 error_text = ""
                 for block in (result.content or []):
-                    if hasattr(block, "text"):
+                    if getattr(block, "text", None):
                         error_text += block.text
+                        continue
+                    # EmbeddedResource blocks inside error payloads carry
+                    # their text under .resource.text — previously dropped,
+                    # leaving a bare "MCP tool returned an error".
+                    res_text = getattr(getattr(block, "resource", None), "text", None)
+                    if res_text:
+                        error_text += str(res_text)
                 return json.dumps({
                     "error": _sanitize_error(
                         error_text or "MCP tool returned an error"
@@ -3699,6 +4214,34 @@ def _make_tool_handler(server_name: str, tool_name: str, tool_timeout: float):
                 image_tag = _cache_mcp_image_block(block)
                 if image_tag:
                     parts.append(image_tag)
+                    continue
+                audio_tag = _cache_mcp_audio_block(block)
+                if audio_tag:
+                    parts.append(audio_tag)
+                    continue
+                # ResourceLink / EmbeddedResource blocks (PDFs, archives,
+                # office docs, ...). Previously these were silently dropped,
+                # so document-oriented MCP tools appeared to return metadata
+                # only (enterprise customer report, 2026-07).
+                resource_text = _render_mcp_resource_block(block, server_name)
+                if resource_text:
+                    parts.append(resource_text)
+                    continue
+                # Benign empty renders (empty text blocks, empty text
+                # resources, audio in a process without the gateway cache)
+                # aren't data loss — log at debug. Warn only for genuinely
+                # unrecognized block shapes.
+                block_type = getattr(block, "type", None) or type(block).__name__
+                if block_type in {"text", "resource", "audio", "image"}:
+                    logger.debug(
+                        "MCP %s: content block type %r rendered empty",
+                        server_name, block_type,
+                    )
+                else:
+                    logger.warning(
+                        "MCP %s: dropping unsupported content block type %r",
+                        server_name, block_type,
+                    )
             text_result = "\n".join(parts) if parts else ""
 
             # Combine content + structuredContent when both are present.
@@ -3771,18 +4314,20 @@ def _make_list_resources_handler(server_name: str, tool_timeout: float):
     """Return a sync handler that lists resources from an MCP server."""
 
     def _handler(args: dict, **kwargs) -> str:
-        with _lock:
-            server = _servers.get(server_name)
+        server = _get_connected_server_for_call(server_name)
         if not server or not server.session:
             return json.dumps({
                 "error": f"MCP server '{server_name}' is not connected"
             }, ensure_ascii=False)
 
         async def _call():
+            _mark_server_call_started(server)
             async with server._rpc_lock:
-                result = await server.session.list_resources()
+                all_resources = await _paginate_full_list(
+                    server.session.list_resources, "resources", server_name
+                )
             resources = []
-            for r in (result.resources if hasattr(result, "resources") else []):
+            for r in all_resources:
                 entry = {}
                 if hasattr(r, "uri"):
                     entry["uri"] = str(r.uri)
@@ -3831,8 +4376,7 @@ def _make_read_resource_handler(server_name: str, tool_timeout: float):
     def _handler(args: dict, **kwargs) -> str:
         from tools.registry import tool_error
 
-        with _lock:
-            server = _servers.get(server_name)
+        server = _get_connected_server_for_call(server_name)
         if not server or not server.session:
             return json.dumps({
                 "error": f"MCP server '{server_name}' is not connected"
@@ -3843,16 +4387,24 @@ def _make_read_resource_handler(server_name: str, tool_timeout: float):
             return tool_error("Missing required parameter 'uri'")
 
         async def _call():
+            _mark_server_call_started(server)
             async with server._rpc_lock:
                 result = await server.session.read_resource(uri)
             # read_resource returns ReadResourceResult with .contents list
             parts: List[str] = []
             contents = result.contents if hasattr(result, "contents") else []
             for block in contents:
-                if hasattr(block, "text"):
+                if getattr(block, "text", None) is not None:
                     parts.append(block.text)
-                elif hasattr(block, "blob"):
-                    parts.append(f"[binary data, {len(block.blob)} bytes]")
+                elif getattr(block, "blob", None) is not None:
+                    # Materialize binary resource contents into the document
+                    # cache instead of discarding them (same contract as
+                    # EmbeddedResource blocks in tool results).
+                    rendered = _render_mcp_resource_block(
+                        SimpleNamespace(type="resource", resource=block),
+                        server_name,
+                    )
+                    parts.append(rendered or f"[binary data, {len(block.blob)} bytes]")
             return json.dumps({"result": "\n".join(parts) if parts else ""}, ensure_ascii=False)
 
         def _call_once():
@@ -3889,18 +4441,20 @@ def _make_list_prompts_handler(server_name: str, tool_timeout: float):
     """Return a sync handler that lists prompts from an MCP server."""
 
     def _handler(args: dict, **kwargs) -> str:
-        with _lock:
-            server = _servers.get(server_name)
+        server = _get_connected_server_for_call(server_name)
         if not server or not server.session:
             return json.dumps({
                 "error": f"MCP server '{server_name}' is not connected"
             }, ensure_ascii=False)
 
         async def _call():
+            _mark_server_call_started(server)
             async with server._rpc_lock:
-                result = await server.session.list_prompts()
+                all_prompts = await _paginate_full_list(
+                    server.session.list_prompts, "prompts", server_name
+                )
             prompts = []
-            for p in (result.prompts if hasattr(result, "prompts") else []):
+            for p in all_prompts:
                 entry = {}
                 if hasattr(p, "name"):
                     entry["name"] = p.name
@@ -3954,8 +4508,7 @@ def _make_get_prompt_handler(server_name: str, tool_timeout: float):
     def _handler(args: dict, **kwargs) -> str:
         from tools.registry import tool_error
 
-        with _lock:
-            server = _servers.get(server_name)
+        server = _get_connected_server_for_call(server_name)
         if not server or not server.session:
             return json.dumps({
                 "error": f"MCP server '{server_name}' is not connected"
@@ -3967,6 +4520,7 @@ def _make_get_prompt_handler(server_name: str, tool_timeout: float):
         arguments = args.get("arguments", {})
 
         async def _call():
+            _mark_server_call_started(server)
             async with server._rpc_lock:
                 result = await server.session.get_prompt(name, arguments=arguments)
             # GetPromptResult has .messages list
@@ -4025,7 +4579,10 @@ def _make_check_fn(server_name: str):
     def _check() -> bool:
         with _lock:
             server = _servers.get(server_name)
-        return server is not None and server.session is not None
+        return (
+            server is not None
+            and (server.session is not None or server._is_recycled_stdio())
+        )
 
     return _check
 
@@ -4323,6 +4880,27 @@ def _parse_boolish(value: Any, default: bool = True) -> bool:
             return False
     logger.warning("MCP config expected a boolean-ish value, got %r; using default=%s", value, default)
     return default
+
+
+def _get_lifecycle_seconds(config: dict, key: str) -> Optional[float]:
+    """Return an optional positive lifecycle timeout from top-level/nested config."""
+    raw = config.get(key)
+    lifecycle = config.get("lifecycle")
+    if raw is None and isinstance(lifecycle, dict):
+        raw = lifecycle.get(key)
+    if raw is None:
+        return None
+    try:
+        seconds = float(raw)
+    except (TypeError, ValueError):
+        logger.warning("MCP config %s must be a number of seconds; ignoring %r", key, raw)
+        return None
+    if seconds == 0:
+        return None
+    if seconds < 0:
+        logger.warning("MCP config %s must be positive; ignoring %r", key, raw)
+        return None
+    return seconds
 
 
 _UTILITY_CAPABILITY_METHODS = {
@@ -5162,7 +5740,10 @@ def shutdown_mcp_servers():
     _stop_mcp_loop()
 
 
-def _kill_orphaned_mcp_children(include_active: bool = False) -> None:
+def _kill_orphaned_mcp_children(
+    include_active: bool = False,
+    server_name: Optional[str] = None,
+) -> None:
     """Best-effort graceful shutdown of stdio MCP subprocesses to reap orphans.
 
     Orphans are PIDs that survived their session context exit (SDK teardown
@@ -5181,6 +5762,10 @@ def _kill_orphaned_mcp_children(include_active: bool = False) -> None:
     first) are reaped alongside the direct child.  Falls back to ``os.kill``
     on Windows and when no pgid is recorded.
 
+    When ``server_name`` is set, only orphaned PIDs known to belong to that
+    MCP server are reaped. This lets stdio reconnects clean up their previous
+    transport without touching unrelated servers.
+
     With ``include_active=True`` also kills every PID in ``_stdio_pids`` —
     used only at final shutdown, after the MCP event loop has stopped and no
     sessions can still be in flight.
@@ -5190,11 +5775,24 @@ def _kill_orphaned_mcp_children(include_active: bool = False) -> None:
     with _lock:
         pids: Dict[int, str] = {}
         for opid in _orphan_stdio_pids:
-            pids[opid] = "orphan"
-        _orphan_stdio_pids.clear()
+            owner = _orphan_stdio_pid_servers.get(opid, "orphan")
+            if server_name is not None and owner != server_name:
+                continue
+            pids[opid] = owner
+        for opid in pids:
+            _orphan_stdio_pids.discard(opid)
+            _orphan_stdio_pid_servers.pop(opid, None)
         if include_active:
-            pids.update(dict(_stdio_pids))
-            _stdio_pids.clear()
+            active = dict(_stdio_pids)
+            if server_name is not None:
+                active = {
+                    pid: owner
+                    for pid, owner in active.items()
+                    if owner == server_name
+                }
+            pids.update(active)
+            for pid in active:
+                _stdio_pids.pop(pid, None)
         # Snapshot pgids for the pids we're about to kill, then drop the
         # entries so a future spawn can't collide with stale state.
         pgids: Dict[int, int] = {pid: _stdio_pgids[pid] for pid in pids if pid in _stdio_pgids}

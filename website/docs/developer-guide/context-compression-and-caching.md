@@ -86,6 +86,7 @@ compression:
   protect_last_n: 20         # Minimum protected tail messages (default: 20)
   codex_gpt55_autoraise: true  # gpt-5.5 on Codex OAuth: raise trigger to 85% (default: true)
   codex_gpt55_autoraise_notice: true  # Show the one-time autoraise notice (default: true)
+  codex_app_server_auto: native  # native|hermes|off for Codex app-server thread compaction
 
 # Summarization model/provider configured under auxiliary:
 auxiliary:
@@ -105,6 +106,7 @@ auxiliary:
 | `protect_first_n` | `3` | (hardcoded) | System prompt + first exchange always preserved |
 | `codex_gpt55_autoraise` | `true` | bool | Raise the trigger to 85% for gpt-5.5 on the ChatGPT Codex OAuth route (see below). Set `false` to keep the global `threshold` |
 | `codex_gpt55_autoraise_notice` | `true` | bool | Show the one-time Codex gpt-5.5 autoraise notice. Set `false` to keep the 85% autoraise but suppress the banner |
+| `codex_app_server_auto` | `native` | `native`, `hermes`, `off` | Thread-compaction mode for Codex app-server sessions (see below) |
 
 ### Codex gpt-5.5 threshold autoraise
 
@@ -130,6 +132,28 @@ To keep the 85% autoraise but hide only the one-time notice:
 ```bash
 hermes config set compression.codex_gpt55_autoraise_notice false
 ```
+
+### Codex app-server thread compaction
+
+Codex app-server sessions (`api_mode: codex_app_server` — the codex CLI/agent
+runtime) are different from every other route: the codex agent owns the backing
+thread context, so Hermes' auxiliary summarizer cannot shrink it — rewriting the
+local transcript mirror leaves the real thread growing unbounded until a hard
+context reset. For this runtime, compaction goes through the app-server's own
+mechanism instead:
+
+- Manual compaction (`/compress`) asks the app-server to compact the thread
+  (`thread/compact/start`) and waits for the compaction turn to complete.
+- Automatic compaction is controlled by `compression.codex_app_server_auto`:
+  the default `native` lets the app-server decide when to compact and Hermes
+  records the resulting compaction events (compression counters, session
+  events). Set `hermes` to let Hermes' compression threshold initiate
+  app-server compaction, or `off` to disable Hermes-initiated automatic
+  compaction entirely (codex may still compact natively).
+
+Hermes' local transcript is never rewritten on this runtime — state.db records
+the compaction boundary while the visible transcript stays intact. All other
+routes (including Codex OAuth chat sessions) keep Hermes' summary compressor.
 
 ### Computed Values (for a 200K context model at defaults)
 

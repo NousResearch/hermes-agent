@@ -30,6 +30,7 @@ from hermes_cli.providers import (
     custom_provider_slug,
     determine_api_mode,
     get_label,
+    host_mandated_api_mode,
     is_aggregator,
     resolve_provider_full,
 )
@@ -348,14 +349,28 @@ class ModelSwitchResult:
     capabilities: Optional[ModelCapabilities] = None
     model_info: Optional[ModelInfo] = None
     is_global: bool = False
+
+
+@dataclass(frozen=True)
+class ModelFlagParseResult:
+    """Parsed flags for a /model command."""
+
+    model_input: str
+    explicit_provider: str = ""
+    is_global: bool = False
+    force_refresh: bool = False
+    is_session: bool = False
+    is_once: bool = False
 # ---------------------------------------------------------------------------
 # Flag parsing
 # ---------------------------------------------------------------------------
 
-def parse_model_flags(raw_args: str) -> tuple[str, str, bool, bool, bool]:
-    """Parse --provider, --global, --session, and --refresh flags from /model command args.
+def parse_model_flags_detailed(raw_args: str) -> ModelFlagParseResult:
+    """Parse flags from /model command args.
 
-    Returns ``(model_input, explicit_provider, is_global, force_refresh, is_session)``.
+    Returns a :class:`ModelFlagParseResult`. ``--once`` is intentionally
+    parsed here but interpreted by each caller because each frontend has its
+    own live-session restore hook.
 
     ``is_global`` and ``is_session`` are independent flag presences; the
     *effective* persistence decision is resolved by
@@ -367,6 +382,7 @@ def parse_model_flags(raw_args: str) -> tuple[str, str, bool, bool, bool]:
         "sonnet"                         -> ("sonnet", "", False, False, False)
         "sonnet --global"                -> ("sonnet", "", True, False, False)
         "sonnet --session"               -> ("sonnet", "", False, False, True)
+        "sonnet --once"                  -> is_once=True
         "sonnet --provider anthropic"    -> ("sonnet", "anthropic", False, False, False)
         "--provider my-ollama"           -> ("", "my-ollama", False, False, False)
         "--refresh"                      -> ("", "", False, True, False)
@@ -376,33 +392,32 @@ def parse_model_flags(raw_args: str) -> tuple[str, str, bool, bool, bool]:
     explicit_provider = ""
     force_refresh = False
     is_session = False
+    is_once = False
 
     # Normalize Unicode dashes (Telegram/iOS auto-converts -- to em/en dash)
     # A single Unicode dash before a flag keyword becomes "--"
     import re as _re
-    raw_args = _re.sub(r'[\u2012\u2013\u2014\u2015](provider|global|session|refresh)', r'--\1', raw_args)
+    raw_args = _re.sub(r'[\u2012\u2013\u2014\u2015](provider|global|session|refresh|once)', r'--\1', raw_args)
 
-    # Extract --global
-    if "--global" in raw_args:
-        is_global = True
-        raw_args = raw_args.replace("--global", "").strip()
-
-    # Extract --session (explicit session-only; overrides the persist default)
-    if "--session" in raw_args:
-        is_session = True
-        raw_args = raw_args.replace("--session", "").strip()
-
-    # Extract --refresh (bust the model picker disk cache before listing)
-    if "--refresh" in raw_args:
-        force_refresh = True
-        raw_args = raw_args.replace("--refresh", "").strip()
-
-    # Extract --provider <name>
+    # Keep this hand-rolled because model IDs may contain colons/slashes and
+    # the historical parser did not require shell quoting.
     parts = raw_args.split()
     i = 0
     filtered: list[str] = []
     while i < len(parts):
-        if parts[i] == "--provider" and i + 1 < len(parts):
+        if parts[i] == "--global":
+            is_global = True
+            i += 1
+        elif parts[i] == "--session":
+            is_session = True
+            i += 1
+        elif parts[i] == "--refresh":
+            force_refresh = True
+            i += 1
+        elif parts[i] == "--once":
+            is_once = True
+            i += 1
+        elif parts[i] == "--provider" and i + 1 < len(parts):
             explicit_provider = parts[i + 1]
             i += 2
         else:
@@ -410,17 +425,41 @@ def parse_model_flags(raw_args: str) -> tuple[str, str, bool, bool, bool]:
             i += 1
 
     model_input = " ".join(filtered).strip()
-    return (model_input, explicit_provider, is_global, force_refresh, is_session)
+    return ModelFlagParseResult(
+        model_input=model_input,
+        explicit_provider=explicit_provider,
+        is_global=is_global,
+        force_refresh=force_refresh,
+        is_session=is_session,
+        is_once=is_once,
+    )
 
 
-def resolve_persist_behavior(is_global: bool, is_session: bool) -> bool:
+def parse_model_flags(raw_args: str) -> tuple[str, str, bool, bool, bool]:
+    """Parse legacy /model flags and return the historical 5-tuple.
+
+    New call sites that care about ``--once`` should use
+    :func:`parse_model_flags_detailed`.
+    """
+    parsed = parse_model_flags_detailed(raw_args)
+    return (
+        parsed.model_input,
+        parsed.explicit_provider,
+        parsed.is_global,
+        parsed.force_refresh,
+        parsed.is_session,
+    )
+
+
+def resolve_persist_behavior(is_global: bool, is_session: bool, is_once: bool = False) -> bool:
     """Decide whether a ``/model`` switch should persist to ``config.yaml``.
 
     Resolution order:
 
-    1. ``--session`` explicitly opts out → ``False`` (this session only).
-    2. ``--global`` explicitly opts in → ``True``.
-    3. Otherwise defer to ``model.persist_switch_by_default`` in
+    1. ``--once`` explicitly opts out → ``False`` (next turn only).
+    2. ``--session`` explicitly opts out → ``False`` (this session only).
+    3. ``--global`` explicitly opts in → ``True``.
+    4. Otherwise defer to ``model.persist_switch_by_default`` in
        ``config.yaml`` (defaults to ``True``, so a plain ``/model <name>``
        survives across sessions — the behavior users expect).
 
@@ -428,6 +467,8 @@ def resolve_persist_behavior(is_global: bool, is_session: bool) -> bool:
     flat string rather than a dict, in which case the built-in default
     (``True``) applies.
     """
+    if is_once:
+        return False
     if is_session:
         return False
     if is_global:
@@ -548,7 +589,12 @@ def _model_sort_key(model_id: str, prefix: str) -> tuple:
 
     # Suffix quality ranking: pro/max > (no suffix) > omni/flash/mini/lite
     # Lower number = preferred
-    _SUFFIX_RANK = {"pro": 0, "max": 0, "plus": 0, "turbo": 0}
+    # "sol" is the flagship tier of the GPT-5.6 series (sol > terra > luna);
+    # without it, alias resolution would tiebreak alphabetically and pick
+    # luna (the cheapest) for `/model gpt`. Unlike pro/max/plus/turbo it is a
+    # series codename, not a generic quality word — revisit if another vendor
+    # ever ships a "-sol" suffix that isn't a flagship.
+    _SUFFIX_RANK = {"pro": 0, "max": 0, "plus": 0, "turbo": 0, "sol": 0}
     suffix_rank = _SUFFIX_RANK.get(suffix, 1)
 
     return version_key + (suffix_rank, suffix)
@@ -1250,6 +1296,21 @@ def switch_model(
             if not api_key:
                 api_key = "no-key-required"
 
+    # --- Resolve api_mode from the final (provider, base_url) before validation ---
+    # Two cases this closes, both surfaced when the switched model's reasoning
+    # is actually applied (post the reasoning-unification refactor):
+    #   1. api_mode empty (e.g. alias cleared it above) → fill from the endpoint.
+    #   2. api_mode carried a STALE value from the previous session state
+    #      (e.g. a same-provider /model switch to gpt-5.x on api.openai.com that
+    #      kept the prior openrouter/chat_completions mode). A host that mandates
+    #      one wire protocol must override the stale value — otherwise the request
+    #      goes out on chat_completions and OpenAI 400s on tools+reasoning_effort.
+    _mandated_mode = host_mandated_api_mode(base_url)
+    if _mandated_mode is not None:
+        api_mode = _mandated_mode
+    elif not api_mode:
+        api_mode = determine_api_mode(target_provider, base_url)
+
     # --- Normalize model name for target provider ---
     new_model = normalize_model_for_provider(new_model, target_provider)
 
@@ -1389,6 +1450,25 @@ import threading as _threading  # noqa: E402
 _picker_prewarm_done = _threading.Event()
 
 
+def _credential_pool_is_usable(provider: str, *, raw_pool_present: bool = False) -> bool:
+    """Return whether *provider* has a credential that can be selected now.
+
+    ``auth.json`` historically allowed opaque token-style pool values that do
+    not deserialize into ``PooledCredential`` entries. Preserve visibility for
+    those legacy values, but when a real pool exists its availability state is
+    authoritative: an all-exhausted/dead pool is not authenticated.
+    """
+    try:
+        from agent.credential_pool import load_pool
+
+        pool = load_pool(provider)
+        if pool.has_credentials():
+            return pool.has_available()
+    except Exception:
+        pass
+    return raw_pool_present
+
+
 def _extra_headers_from_config(entry: Any) -> dict[str, str]:
     if not isinstance(entry, dict):
         return {}
@@ -1456,6 +1536,7 @@ def list_authenticated_providers(
     refresh: bool = False,
     probe_custom_providers: bool = True,
     probe_current_custom_provider: bool = False,
+    for_picker: bool = False,
 ) -> List[dict]:
     """Detect which providers have credentials and list their curated models.
 
@@ -1678,6 +1759,12 @@ def list_authenticated_providers(
         # section 2 (HERMES_OVERLAYS) with proper auth store checking.
         if pconfig and pconfig.auth_type != "api_key":
             continue
+        # models.dev catalogs include providers Hermes may not route yet.
+        # Gate on runtime capability rather than registry membership: special
+        # providers and plugin aliases can be routable without a registry row.
+        from hermes_cli.auth import is_runtime_provider_routable
+        if not is_runtime_provider_routable(hermes_id):
+            continue
         if pconfig and pconfig.api_key_env_vars:
             env_vars = list(pconfig.api_key_env_vars)
         else:
@@ -1691,8 +1778,13 @@ def list_authenticated_providers(
             try:
                 from hermes_cli.auth import _load_auth_store
                 store = _load_auth_store()
-                if store and store.get("credential_pool", {}).get(hermes_id):
-                    has_creds = True
+                raw_pool_present = bool(
+                    store and store.get("credential_pool", {}).get(hermes_id)
+                )
+                if raw_pool_present:
+                    has_creds = _credential_pool_is_usable(
+                        hermes_id, raw_pool_present=True
+                    )
             except Exception:
                 pass
         if not has_creds:
@@ -1707,6 +1799,15 @@ def list_authenticated_providers(
             model_ids = curated.get(hermes_id, [])
             if hermes_id in _MODELS_DEV_PREFERRED:
                 model_ids = _merge_with_models_dev(hermes_id, model_ids)
+        # A providers.<built-in>.models block extends the provider's discovered
+        # catalog. Section 3 cannot emit it later because this built-in row owns
+        # the slug, so merge declarations here before applying max_models.
+        configured_models: list[str] = []
+        if isinstance(user_providers, dict):
+            configured = user_providers.get(hermes_id)
+            if isinstance(configured, dict):
+                configured_models = _declared_model_ids(configured.get("models"))
+        model_ids = list(dict.fromkeys([*configured_models, *model_ids]))
         total = len(model_ids)
         if hermes_id in _UNCAPPED_PICKER_PROVIDERS:
             top = model_ids  # Aggregator: show full catalog regardless of max_models
@@ -1781,10 +1882,22 @@ def list_authenticated_providers(
         # imports on demand but aren't in the raw auth.json yet.
         if not has_creds:
             try:
-                from agent.credential_pool import load_pool
-                pool = load_pool(hermes_slug)
-                if pool.has_credentials():
+                if _credential_pool_is_usable(hermes_slug):
                     has_creds = True
+                elif for_picker:
+                    # For the interactive /model picker, also show providers
+                    # whose credential pool has entries but all are temporarily
+                    # rate-limited.  Rate limits are per-model for many
+                    # providers (e.g. Google Gemini) — switching to a different
+                    # model under the same provider may work even when all keys
+                    # are in cooldown.
+                    try:
+                        from agent.credential_pool import load_pool
+                        _pool = load_pool(hermes_slug)
+                        if _pool.has_credentials():
+                            has_creds = True
+                    except Exception:
+                        pass
             except Exception as exc:
                 logger.debug("Credential pool check failed for %s: %s", hermes_slug, exc)
         # Fallback: check external credential files directly.
@@ -1922,9 +2035,7 @@ def list_authenticated_providers(
                 pass
         if not _cp_has_creds:
             try:
-                from agent.credential_pool import load_pool
-                _cp_pool = load_pool(_cp.slug)
-                if _cp_pool.has_credentials():
+                if _credential_pool_is_usable(_cp.slug):
                     _cp_has_creds = True
             except Exception:
                 pass
@@ -2208,6 +2319,7 @@ def list_authenticated_providers(
                     "api_url": api_url,
                     "api_key": api_key,
                     "models": [],
+                    "has_explicit_models": False,
                     "discover_models": discover,
                     "extra_headers": entry_extra_headers,
                 }
@@ -2230,7 +2342,10 @@ def list_authenticated_providers(
             if default_model and default_model not in groups[group_key]["models"]:
                 groups[group_key]["models"].append(default_model)
 
-            for model_id in _declared_model_ids(entry.get("models", {})):
+            declared_models = _declared_model_ids(entry.get("models", {}))
+            if declared_models:
+                groups[group_key]["has_explicit_models"] = True
+            for model_id in declared_models:
                 if model_id not in groups[group_key]["models"]:
                     groups[group_key]["models"].append(model_id)
 
@@ -2293,11 +2408,13 @@ def list_authenticated_providers(
             #   the (possibly partial) ``models:`` subset configured for
             #   context-length overrides with the full live catalog.
             #   This is the Bifrost / aggregator-gateway case.
-            # - Without an api_key but with an explicit ``models:`` list
-            #   (or top-level ``model:``), the user is narrowing a public
-            #   endpoint to a specific subset (e.g. ollama.com /v1/models
-            #   returns 35 models but the user only wants 4). Preserve the
-            #   explicit list and skip live discovery.
+            # - Without an api_key but with an explicit ``models:`` list,
+            #   the user is narrowing a public endpoint to a specific subset
+            #   (e.g. ollama.com /v1/models returns 35 models but the user
+            #   only wants 4). Preserve the explicit list and skip live
+            #   discovery. The singular ``model:`` field is only the current
+            #   active selection and must not suppress discovery on local
+            #   no-key endpoints.
             # - Without an api_key AND no explicit models, fall through to
             #   live discovery so bare-endpoint custom providers (local
             #   llama.cpp / Ollama servers) still appear populated.
@@ -2315,7 +2432,7 @@ def list_authenticated_providers(
             should_probe = (
                 _can_probe_custom_provider(row_is_current=_grp_is_current)
                 and bool(api_url)
-                and (bool(api_key) or not grp["models"])
+                and (bool(api_key) or not grp.get("has_explicit_models"))
                 and grp.get("discover_models", True)
             )
             if should_probe:
@@ -2426,6 +2543,7 @@ def list_picker_providers(
         custom_providers=custom_providers,
         max_models=max_models,
         current_model=current_model,
+        for_picker=True,
     )
     if include_moa:
         providers = _prepend_moa_picker_provider(providers, current_provider=current_provider)

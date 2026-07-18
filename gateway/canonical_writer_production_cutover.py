@@ -23,6 +23,7 @@ from __future__ import annotations
 import argparse
 import copy
 import hashlib
+import ipaddress
 import json
 import os
 import re
@@ -1031,9 +1032,16 @@ _DATABASE_RECOVERY_SCRATCH_FIELDS = frozenset({
     "deleted",
     "readback_sha256",
     "deleted_at_unix",
+    "private_ip",
+    "server_ca_sha256",
+    "cloud_sql_ssl_mode",
+    "tls_mode",
+    "tls_ca_verified",
+    "tls_hostname_verified",
 })
 _DATABASE_RECOVERY_PROBE_FIELDS = frozenset({
     "schema",
+    "ok",
     "release_revision",
     "scratch_instance",
     "database",
@@ -1042,6 +1050,18 @@ _DATABASE_RECOVERY_PROBE_FIELDS = frozenset({
     "schema_sha256",
     "content_sha256",
     "canonical_event_row_count",
+    "scratch_private_ip",
+    "server_ca_sha256",
+    "tls_mode",
+    "tls_ca_verified",
+    "tls_hostname_verified",
+    "canary_instance_id",
+    "canary_network",
+    "canary_subnetwork",
+    "canary_private_ip",
+    "release_manifest_file_sha256",
+    "stopped_units_sha256",
+    "psql_executable_sha256",
     "probed_at_unix",
     "secret_material_recorded",
     "secret_digest_recorded",
@@ -1052,6 +1072,10 @@ _CLOUD_SQL_BACKUP_ID = re.compile(r"^[1-9][0-9]{0,19}$")
 _CLOUD_SQL_PRIVATE_NETWORK = re.compile(
     rf"^projects/{re.escape(PROJECT)}/global/networks/"
     r"[a-z](?:[-a-z0-9]{0,61}[a-z0-9])?$"
+)
+_CLOUD_SQL_RFC1918 = tuple(
+    ipaddress.ip_network(value)
+    for value in ("10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16")
 )
 
 
@@ -1107,6 +1131,10 @@ def _validate_database_recovery_receipt(
         scratch["deleted_at_unix"],
         raw["backup_rechecked_at_unix"],
     )
+    try:
+        scratch_address = ipaddress.ip_address(str(scratch["private_ip"]))
+    except ValueError as exc:
+        raise ValueError("database recovery receipt is invalid") from exc
     if (
         raw["schema"] != DATABASE_RECOVERY_RECEIPT_SCHEMA
         or raw["release_revision"] != revision
@@ -1138,13 +1166,32 @@ def _validate_database_recovery_receipt(
         or scratch["backup_enabled"] is not False
         or scratch["deletion_protection_enabled"] is not False
         or scratch["deleted"] is not True
+        or not isinstance(scratch["private_ip"], str)
+        or scratch_address.version != 4
+        or not any(scratch_address in network for network in _CLOUD_SQL_RFC1918)
+        or scratch["private_ip"] != probe["scratch_private_ip"]
+        or scratch["server_ca_sha256"] != probe["server_ca_sha256"]
+        or scratch["cloud_sql_ssl_mode"] != "ENCRYPTED_ONLY"
+        or scratch["tls_mode"] != "verify-ca"
+        or scratch["tls_ca_verified"] is not True
+        or scratch["tls_hostname_verified"] is not False
         or probe["schema"] != DATABASE_RECOVERY_PROBE_RECEIPT_SCHEMA
+        or probe["ok"] is not True
         or probe["release_revision"] != revision
         or probe["scratch_instance"] != scratch["instance"]
         or probe["database"] != DATABASE
         or probe["probe_contract_sha256"]
         != _sha256_json(DATABASE_RECOVERY_PROBE_CONTRACT)
         or probe["transaction_read_only"] is not True
+        or probe["tls_mode"] != "verify-ca"
+        or probe["tls_ca_verified"] is not True
+        or probe["tls_hostname_verified"] is not False
+        or probe["canary_instance_id"] != "9153645328899914617"
+        or probe["canary_network"] != "muncho-canary-vpc"
+        or probe["canary_subnetwork"] != "muncho-canary-europe-west3"
+        or probe["canary_private_ip"] != "10.90.0.2"
+        or probe["psql_executable_sha256"]
+        != "f79699639336f0ed369158e9e4085929d943427e25393725ae28f1f4d95690c4"
         or type(probe["canonical_event_row_count"]) is not int
         or probe["canonical_event_row_count"] < 0
         or any(type(timestamp) is not int or timestamp <= 0 for timestamp in timestamp_fields)
@@ -1167,6 +1214,10 @@ def _validate_database_recovery_receipt(
                 scratch["readback_sha256"],
                 probe["schema_sha256"],
                 probe["content_sha256"],
+                probe["server_ca_sha256"],
+                probe["release_manifest_file_sha256"],
+                probe["stopped_units_sha256"],
+                probe["psql_executable_sha256"],
                 raw["journal_prefix_sha256"],
             )
         )

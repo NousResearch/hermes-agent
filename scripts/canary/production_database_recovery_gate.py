@@ -9,21 +9,24 @@ retained.  Every mutation is preceded by a durable journal intent and all
 provider operations are reconciled by deterministic provider identity so a
 crash can resume without creating a second backup or scratch instance.
 
-The repository does not currently contain a private-network PostgreSQL probe
-transport with a recovery-only credential.  The production probe therefore
-fails closed *before the first Cloud mutation*.  Tests exercise the complete
-contract through a private injected probe; installing the fixed transport is
-the one remaining deployment prerequisite for this gate.
+The private probe reuses the release-bound IAP/OS Login transport and reads one
+fixed Secret Manager version only after a fresh stopped-release, VM, network,
+scratch-address, and server-CA gate.  It sends one bounded secret frame to the
+fixed remote module, which exposes no caller-selected target, path, command, or
+SQL.  Availability is proven before the first Cloud mutation.
 """
 
 from __future__ import annotations
 
 import copy
 import hashlib
+import ipaddress
 import json
 import os
 import re
+import ssl
 import stat
+import struct
 import time
 import urllib.parse
 from datetime import datetime
@@ -32,6 +35,7 @@ from typing import Any, Callable, Mapping, Protocol
 
 from gateway import canonical_writer_production_cutover as cutover
 from scripts.canary import full_canary_owner_launcher as owner_transport
+from scripts.canary import production_database_recovery_probe as remote_probe
 
 
 JOURNAL_SCHEMA = "muncho-production-database-recovery-journal.v1"
@@ -44,12 +48,17 @@ _SHA256 = re.compile(r"^[0-9a-f]{64}$")
 _REVISION = re.compile(r"^[0-9a-f]{40}$")
 _OPERATION_ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,254}$")
 _BACKUP_ID = re.compile(r"^[1-9][0-9]{0,19}$")
+_RFC1918 = tuple(
+    ipaddress.ip_network(value)
+    for value in ("10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16")
+)
 _SOURCE_PRIVATE_NETWORK = re.compile(
     rf"^projects/{re.escape(cutover.PROJECT)}/global/networks/"
     r"[a-z](?:[-a-z0-9]{0,61}[a-z0-9])?$"
 )
 _PROBE_RECEIPT_FIELDS = frozenset({
     "schema",
+    "ok",
     "release_revision",
     "scratch_instance",
     "database",
@@ -58,6 +67,18 @@ _PROBE_RECEIPT_FIELDS = frozenset({
     "schema_sha256",
     "content_sha256",
     "canonical_event_row_count",
+    "scratch_private_ip",
+    "server_ca_sha256",
+    "tls_mode",
+    "tls_ca_verified",
+    "tls_hostname_verified",
+    "canary_instance_id",
+    "canary_network",
+    "canary_subnetwork",
+    "canary_private_ip",
+    "release_manifest_file_sha256",
+    "stopped_units_sha256",
+    "psql_executable_sha256",
     "probed_at_unix",
     "secret_material_recorded",
     "secret_digest_recorded",
@@ -486,6 +507,8 @@ class RecoveryProvider(Protocol):
 
     def backup_readback(self, *, backup_id: str) -> Mapping[str, Any]: ...
 
+    def scratch_readback(self, *, release_revision: str) -> Mapping[str, Any]: ...
+
 
 class RecoveryProbe(Protocol):
     def require_available(self) -> None: ...
@@ -499,13 +522,452 @@ class RecoveryProbe(Protocol):
     ) -> Mapping[str, Any]: ...
 
 
+class SecretAccessor(Protocol):
+    def access(self) -> tuple[str, bytearray]: ...
+
+
+class PrivateProbeTransport(Protocol):
+    def require_available(self, release_revision: str) -> Mapping[str, Any]: ...
+
+    def open_probe(self, release_revision: str) -> Any: ...
+
+
+def _zeroize(value: bytearray | memoryview | None) -> None:
+    if value is None:
+        return
+    try:
+        view = value if isinstance(value, memoryview) else memoryview(value)
+        view.cast("B")[:] = b"\x00" * view.nbytes
+        if not isinstance(value, memoryview):
+            view.release()
+    except (TypeError, ValueError, BufferError):
+        pass
+
+
+def _crc32c(value: bytearray) -> int:
+    crc = 0xFFFFFFFF
+    for octet in value:
+        crc ^= octet
+        for _ in range(8):
+            crc = (crc >> 1) ^ (0x82F63B78 if crc & 1 else 0)
+    return (~crc) & 0xFFFFFFFF
+
+
+_BASE64_VALUES = {
+    character: index
+    for index, character in enumerate(
+        "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/"
+    )
+}
+
+
+def _decode_secret_base64(value: str) -> bytearray:
+    """Strictly decode into the only wipeable plaintext representation."""
+
+    maximum_encoded = ((remote_probe.MAX_PASSWORD_BYTES + 2) // 3) * 4
+    if (
+        type(value) is not str
+        or not 4 <= len(value) <= maximum_encoded
+        or len(value) % 4 != 0
+    ):
+        raise ProductionDatabaseRecoveryError(
+            "production_database_recovery_secret_shape_invalid"
+        )
+    result = bytearray()
+    try:
+        for offset in range(0, len(value), 4):
+            quartet = value[offset : offset + 4]
+            final = offset + 4 == len(value)
+            if quartet[0] == "=" or quartet[1] == "=":
+                raise ValueError("invalid base64 padding")
+            first = _BASE64_VALUES.get(quartet[0])
+            second = _BASE64_VALUES.get(quartet[1])
+            third = None if quartet[2] == "=" else _BASE64_VALUES.get(quartet[2])
+            fourth = None if quartet[3] == "=" else _BASE64_VALUES.get(quartet[3])
+            if (
+                first is None
+                or second is None
+                or (quartet[2] != "=" and third is None)
+                or (quartet[3] != "=" and fourth is None)
+                or (quartet[2] == "=" and quartet[3] != "=")
+                or ((quartet[2] == "=" or quartet[3] == "=") and not final)
+                or (quartet[2] == "=" and second & 0x0F != 0)
+                or (quartet[3] == "=" and third is not None and third & 0x03 != 0)
+            ):
+                raise ValueError("invalid base64 encoding")
+            result.append((first << 2) | (second >> 4))
+            if third is not None:
+                result.append(((second & 0x0F) << 4) | (third >> 2))
+            if fourth is not None and third is not None:
+                result.append(((third & 0x03) << 6) | fourth)
+            if len(result) > remote_probe.MAX_PASSWORD_BYTES:
+                raise ValueError("decoded secret is oversized")
+        return result
+    except (KeyError, TypeError, ValueError):
+        _zeroize(result)
+        raise ProductionDatabaseRecoveryError(
+            "production_database_recovery_secret_shape_invalid"
+        ) from None
+
+
+class FixedSecretManagerAccess:
+    """Read only the fixed built-in postgres password through owner REST.
+
+    CPython's JSON response and base64 text are immutable transient objects;
+    their references are dropped immediately after decoding.  The plaintext
+    itself is decoded directly into a bytearray and is explicitly wiped by
+    this boundary on failure and by its caller after the one framed write.
+    """
+
+    _RESOURCE = (
+        "projects/adventico-ai-platform/secrets/ai-platform-db-password"
+    )
+    _URL = (
+        "https://secretmanager.googleapis.com/v1/"
+        f"{_RESOURCE}/versions/latest:access"
+    )
+    _VERSION_NAME = re.compile(
+        r"^projects/(?:adventico-ai-platform|39589465056)/secrets/"
+        r"ai-platform-db-password/versions/([1-9][0-9]{0,18})$"
+    )
+
+    def __init__(
+        self,
+        token_provider: Callable[[], str],
+        *,
+        requester: Any = owner_transport._default_http_request,
+        timeout_seconds: float = 20.0,
+    ) -> None:
+        self._token_provider = token_provider
+        self._requester = requester
+        self._timeout_seconds = timeout_seconds
+
+    def access(self) -> tuple[str, bytearray]:
+        password: bytearray | None = None
+        token: str | None = None
+        headers: dict[str, str] = {}
+        response: Any = None
+        value: Mapping[str, Any] | None = None
+        payload: Mapping[str, Any] | None = None
+        encoded_data: str | None = None
+        checksum_text: str | None = None
+        try:
+            owner_transport._reject_custom_ca_environment()
+            token = self._token_provider()
+            if (
+                not isinstance(token, str)
+                or not token
+                or len(token) > 16 * 1024
+                or any(not 0x21 <= ord(character) <= 0x7E for character in token)
+            ):
+                raise ProductionDatabaseRecoveryError(
+                    "production_database_recovery_secret_access_failed"
+                )
+            headers.update(
+                {
+                    "Accept": "application/json",
+                    "Authorization": f"Bearer {token}",
+                }
+            )
+            try:
+                response = self._requester(
+                    "GET",
+                    self._URL,
+                    headers,
+                    None,
+                    self._timeout_seconds,
+                )
+            finally:
+                headers.clear()
+                token = None
+            if response.status != 200 or not isinstance(response.body, bytes):
+                raise ProductionDatabaseRecoveryError(
+                    "production_database_recovery_secret_access_failed"
+                )
+            value = owner_transport._decode_json_object(
+                response.body,
+                maximum=128 * 1024,
+            )
+            payload = value.get("payload")
+            name = value.get("name")
+            if (
+                set(value) != {"name", "payload"}
+                or not isinstance(name, str)
+                or not isinstance(payload, Mapping)
+                or set(payload) != {"data", "dataCrc32c"}
+                or not isinstance(payload.get("data"), str)
+                or not isinstance(payload.get("dataCrc32c"), str)
+            ):
+                raise ProductionDatabaseRecoveryError(
+                    "production_database_recovery_secret_shape_invalid"
+                )
+            matched = self._VERSION_NAME.fullmatch(name)
+            if matched is None:
+                raise ProductionDatabaseRecoveryError(
+                    "production_database_recovery_secret_shape_invalid"
+                )
+            encoded_data = payload["data"]
+            checksum_text = payload["dataCrc32c"]
+            try:
+                password = _decode_secret_base64(encoded_data)
+                checksum = int(checksum_text, 10)
+            except (UnicodeError, ValueError, TypeError):
+                raise ProductionDatabaseRecoveryError(
+                    "production_database_recovery_secret_shape_invalid"
+                ) from None
+            version = matched.group(1)
+            response = None
+            value = None
+            payload = None
+            encoded_data = None
+            checksum_text = None
+            if (
+                not 1 <= len(password) <= remote_probe.MAX_PASSWORD_BYTES
+                or not 0 <= checksum <= 0xFFFFFFFF
+                or _crc32c(password) != checksum
+                or any(value in {0, 10, 13} for value in password)
+            ):
+                raise ProductionDatabaseRecoveryError(
+                    "production_database_recovery_secret_shape_invalid"
+                )
+            result = password
+            password = None
+            return version, result
+        except ProductionDatabaseRecoveryError:
+            raise
+        except Exception:
+            raise ProductionDatabaseRecoveryError(
+                "production_database_recovery_secret_access_failed"
+            ) from None
+        finally:
+            headers.clear()
+            token = None
+            response = None
+            value = None
+            payload = None
+            encoded_data = None
+            checksum_text = None
+            _zeroize(password)
+
+
+_REMOTE_PREFLIGHT_FIELDS = frozenset({
+    "schema", "ok", "release_revision", "canary_instance_id",
+    "canary_host_identity_sha256", "canary_network", "canary_subnetwork",
+    "canary_private_ip", "network_identity_sha256",
+    "release_manifest_file_sha256", "stopped_units_sha256", "psql_executable",
+    "psql_executable_sha256", "database", "probe_contract_sha256",
+    "accepts_caller_target", "accepts_caller_sql", "accepts_caller_command",
+    "preflight_sha256",
+})
+_REMOTE_GATE_FIELDS = frozenset({
+    "schema", "ok", "release_revision", "preflight_sha256", "challenge",
+    "issued_at_unix", "expires_at_unix", "gate_sha256",
+})
+
+
+def _validate_remote_preflight(
+    value: Mapping[str, Any], *, release_revision: str
+) -> Mapping[str, Any]:
+    if not isinstance(value, Mapping):
+        raise ProductionDatabaseRecoveryError(
+            "production_database_recovery_probe_preflight_invalid"
+        )
+    unsigned = {name: item for name, item in value.items() if name != "preflight_sha256"}
+    if (
+        set(value) != _REMOTE_PREFLIGHT_FIELDS
+        or value.get("schema") != remote_probe.PREFLIGHT_SCHEMA
+        or value.get("ok") is not True
+        or value.get("release_revision") != release_revision
+        or value.get("canary_instance_id") != owner_transport.VM_INSTANCE_ID
+        or value.get("canary_network") != remote_probe.EXPECTED_NETWORK
+        or value.get("canary_subnetwork") != remote_probe.EXPECTED_SUBNETWORK
+        or value.get("canary_private_ip") != remote_probe.EXPECTED_PRIVATE_IP
+        or value.get("psql_executable") != str(remote_probe.PSQL)
+        or value.get("psql_executable_sha256")
+        != remote_probe.EXPECTED_PSQL_SHA256
+        or value.get("database") != cutover.DATABASE
+        or value.get("probe_contract_sha256")
+        != _sha_json(cutover.DATABASE_RECOVERY_PROBE_CONTRACT)
+        or value.get("accepts_caller_target") is not False
+        or value.get("accepts_caller_sql") is not False
+        or value.get("accepts_caller_command") is not False
+        or any(
+            _SHA256.fullmatch(str(value.get(name))) is None
+            for name in (
+                "canary_host_identity_sha256", "network_identity_sha256",
+                "release_manifest_file_sha256", "stopped_units_sha256",
+                "psql_executable_sha256",
+            )
+        )
+        or value.get("preflight_sha256") != _sha_json(unsigned)
+    ):
+        raise ProductionDatabaseRecoveryError(
+            "production_database_recovery_probe_preflight_invalid"
+        )
+    return copy.deepcopy(dict(value))
+
+
+def _validate_remote_gate(
+    value: Mapping[str, Any],
+    *,
+    release_revision: str,
+    preflight: Mapping[str, Any],
+    now_unix: int,
+) -> Mapping[str, Any]:
+    if not isinstance(value, Mapping):
+        raise ProductionDatabaseRecoveryError(
+            "production_database_recovery_probe_gate_invalid"
+        )
+    unsigned = {name: item for name, item in value.items() if name != "gate_sha256"}
+    if (
+        set(value) != _REMOTE_GATE_FIELDS
+        or value.get("schema") != remote_probe.GATE_SCHEMA
+        or value.get("ok") is not True
+        or value.get("release_revision") != release_revision
+        or value.get("preflight_sha256") != preflight["preflight_sha256"]
+        or not isinstance(value.get("challenge"), str)
+        or re.fullmatch(r"[0-9a-f]{64}", value["challenge"]) is None
+        or type(value.get("issued_at_unix")) is not int
+        or type(value.get("expires_at_unix")) is not int
+        or not value["issued_at_unix"] <= now_unix < value["expires_at_unix"]
+        or value["expires_at_unix"] - value["issued_at_unix"]
+        != remote_probe.GATE_LIFETIME_SECONDS
+        or value.get("gate_sha256") != _sha_json(unsigned)
+    ):
+        raise ProductionDatabaseRecoveryError(
+            "production_database_recovery_probe_gate_invalid"
+        )
+    return copy.deepcopy(dict(value))
+
+
+def _remote_failure(value: Mapping[str, Any], *, revision: str) -> bool:
+    if not isinstance(value, Mapping) or value.get("schema") != remote_probe.FAILURE_SCHEMA:
+        return False
+    unsigned = {name: item for name, item in value.items() if name != "receipt_sha256"}
+    if (
+        set(value)
+        != {
+            "schema", "ok", "release_revision", "error_code",
+            "secret_material_recorded", "secret_digest_recorded", "receipt_sha256",
+        }
+        or value.get("ok") is not False
+        or value.get("release_revision") not in {None, revision}
+        or value.get("error_code") != "production_database_recovery_probe_failed"
+        or value.get("secret_material_recorded") is not False
+        or value.get("secret_digest_recorded") is not False
+        or value.get("receipt_sha256") != _sha_json(unsigned)
+    ):
+        raise ProductionDatabaseRecoveryError(
+            "production_database_recovery_probe_failure_invalid"
+        )
+    return True
+
+
+class FixedDatabaseRecoveryIapTransport(owner_transport.IapCoordinatorTransport):
+    """Existing pinned IAP transport specialized to the fixed probe module."""
+
+    _MODULE = "scripts.canary.production_database_recovery_probe"
+    _COMMANDS = frozenset({"preflight", "probe"})
+
+    def require_available(self, release_revision: str) -> Mapping[str, Any]:
+        session = self._open(release_revision, "preflight", approved=False)
+        primary: BaseException | None = None
+        try:
+            value = session.read_gate()
+            if _remote_failure(value, revision=release_revision):
+                session.mark_validated(value)
+                raise ProductionDatabaseRecoveryError(
+                    "production_database_recovery_probe_preflight_failed"
+                )
+            validated = _validate_remote_preflight(
+                value, release_revision=release_revision
+            )
+            session.complete_read_only()
+            return validated
+        except BaseException as exc:
+            primary = exc
+            if not session.termination_proven:
+                try:
+                    session.abort_and_prove_terminated()
+                except BaseException:
+                    pass
+            raise
+        finally:
+            try:
+                session.close()
+            except BaseException:
+                if primary is None:
+                    raise
+
+    def open_probe(self, release_revision: str) -> Any:
+        return self._open(
+            release_revision,
+            "probe",
+            approved=True,
+            post_frame_timeout_seconds=300.0,
+            maximum_line_bytes=owner_transport.PHASE_B_MAX_RESPONSE_BYTES,
+        )
+
+
 class FixedPrivateReadOnlyProbe:
-    """Fail-closed placeholder for the fixed private PostgreSQL probe edge."""
+    """Owner edge for one exact secret frame and one exact remote SQL probe."""
+
+    def __init__(
+        self,
+        release_revision: str,
+        *,
+        transport: PrivateProbeTransport,
+        secret_accessor: SecretAccessor,
+        clock: Callable[[], float] = time.time,
+    ) -> None:
+        self._revision = _release(release_revision)
+        self._transport = transport
+        self._secret_accessor = secret_accessor
+        self._clock = clock
+        self._preflight: Mapping[str, Any] | None = None
 
     def require_available(self) -> None:
-        raise ProductionDatabaseRecoveryError(
-            "production_database_recovery_probe_transport_unavailable"
+        observed = self._transport.require_available(self._revision)
+        self._preflight = _validate_remote_preflight(
+            observed, release_revision=self._revision
         )
+
+    @staticmethod
+    def _frame(
+        *,
+        revision: str,
+        gate: Mapping[str, Any],
+        scratch: Mapping[str, Any],
+        secret_version: str,
+        password: bytearray,
+    ) -> bytearray:
+        metadata = {
+            "schema": remote_probe.FRAME_SCHEMA,
+            "release_revision": revision,
+            "gate_sha256": gate["gate_sha256"],
+            "scratch_instance": scratch["instance"],
+            "scratch_private_ip": scratch["private_ip"],
+            "server_ca_pem": scratch["server_ca_pem"],
+            "server_ca_sha256": scratch["server_ca_sha256"],
+            "tls_mode": remote_probe.TLS_MODE,
+            "secret_resource": FixedSecretManagerAccess._RESOURCE,
+            "secret_version": secret_version,
+        }
+        metadata_raw = _canonical(metadata)
+        if (
+            len(metadata_raw) > remote_probe.MAX_METADATA_BYTES
+            or not 1 <= len(password) <= remote_probe.MAX_PASSWORD_BYTES
+        ):
+            raise ProductionDatabaseRecoveryError(
+                "production_database_recovery_probe_frame_invalid"
+            )
+        frame = bytearray(12 + len(metadata_raw) + len(password))
+        struct.pack_into(
+            ">4sII", frame, 0, remote_probe.FRAME_MAGIC, len(metadata_raw), len(password)
+        )
+        frame[12 : 12 + len(metadata_raw)] = metadata_raw
+        frame[12 + len(metadata_raw) :] = password
+        return frame
 
     def probe(
         self,
@@ -514,9 +976,113 @@ class FixedPrivateReadOnlyProbe:
         scratch: Mapping[str, Any],
         now_unix: int,
     ) -> Mapping[str, Any]:
-        del release_revision, scratch, now_unix
-        self.require_available()
-        raise AssertionError("unreachable")
+        if release_revision != self._revision or type(now_unix) is not int:
+            raise ProductionDatabaseRecoveryError(
+                "production_database_recovery_probe_invalid"
+            )
+        if self._preflight is None:
+            self.require_available()
+        preflight = copy.deepcopy(dict(self._preflight or {}))
+        private_ip = scratch.get("private_ip")
+        ca_pem = scratch.get("server_ca_pem")
+        try:
+            address = ipaddress.ip_address(str(private_ip))
+            ca_raw = str(ca_pem).encode("ascii", errors="strict")
+            ssl.PEM_cert_to_DER_cert(str(ca_pem))
+        except (ValueError, UnicodeError, ssl.SSLError) as exc:
+            raise ProductionDatabaseRecoveryError(
+                "production_database_recovery_probe_scratch_invalid"
+            ) from exc
+        if (
+            scratch.get("project") != cutover.PROJECT
+            or scratch.get("instance")
+            != cutover.database_recovery_scratch_instance(self._revision)
+            or scratch.get("region") != cutover.PRODUCTION_SQL_REGION
+            or scratch.get("private_network")
+            != cutover.DATABASE_RECOVERY_SCRATCH_NETWORK
+            or not isinstance(scratch.get("database_version"), str)
+            or not scratch["database_version"].startswith("POSTGRES_")
+            or type(private_ip) is not str
+            or address.version != 4
+            or not any(address in network for network in _RFC1918)
+            or type(ca_pem) is not str
+            or not 1 <= len(ca_raw) <= remote_probe.MAX_CA_BYTES
+            or scratch.get("server_ca_sha256") != _sha(ca_raw)
+            or scratch.get("ssl_mode") != "ENCRYPTED_ONLY"
+            or scratch.get("server_ca_mode") != "GOOGLE_MANAGED_INTERNAL_CA"
+            or scratch.get("connection_name")
+            != (
+                f"{cutover.PROJECT}:{cutover.PRODUCTION_SQL_REGION}:"
+                f"{cutover.database_recovery_scratch_instance(self._revision)}"
+            )
+        ):
+            raise ProductionDatabaseRecoveryError(
+                "production_database_recovery_probe_scratch_invalid"
+            )
+        session = self._transport.open_probe(self._revision)
+        password: bytearray | None = None
+        frame: bytearray | None = None
+        primary: BaseException | None = None
+        try:
+            gate_raw = session.read_gate()
+            if _remote_failure(gate_raw, revision=self._revision):
+                session.mark_validated(gate_raw)
+                raise ProductionDatabaseRecoveryError(
+                    "production_database_recovery_probe_remote_failed"
+                )
+            gate = _validate_remote_gate(
+                gate_raw,
+                release_revision=self._revision,
+                preflight=preflight,
+                now_unix=int(self._clock()),
+            )
+            # This is deliberately the last operation before the one bounded
+            # secret frame crosses the already-validated IAP session.
+            secret_version, password = self._secret_accessor.access()
+            frame = self._frame(
+                revision=self._revision,
+                gate=gate,
+                scratch=scratch,
+                secret_version=secret_version,
+                password=password,
+            )
+            value = session.finish(frame)
+            _zeroize(frame)
+            frame = None
+            _zeroize(password)
+            password = None
+            if _remote_failure(value, revision=self._revision):
+                session.mark_validated(value)
+                raise ProductionDatabaseRecoveryError(
+                    "production_database_recovery_probe_remote_failed"
+                )
+            validated = _validated_probe_receipt_for_delete(
+                value,
+                release_revision=self._revision,
+                scratch_instance=str(scratch["instance"]),
+                backup_completed_at_unix=1,
+                now_unix=int(self._clock()),
+                expected_scratch=scratch,
+                expected_preflight=preflight,
+            )
+            session.mark_validated(validated)
+            return validated
+        except BaseException as exc:
+            primary = exc
+            if not getattr(session, "termination_proven", False):
+                try:
+                    session.abort_and_prove_terminated()
+                except BaseException:
+                    pass
+            raise
+        finally:
+            _zeroize(frame)
+            _zeroize(password)
+            try:
+                session.close()
+            except BaseException:
+                if primary is None:
+                    raise
 
 
 class CloudSqlRecoveryProvider:
@@ -700,6 +1266,15 @@ class CloudSqlRecoveryProvider:
             for item in addresses
             if isinstance(item, Mapping) and item.get("type") == "PRIVATE"
         ] if isinstance(addresses, list) else []
+        private_ip = (
+            private_addresses[0].get("ipAddress")
+            if len(private_addresses) == 1
+            else None
+        )
+        try:
+            parsed_private_ip = ipaddress.ip_address(str(private_ip))
+        except ValueError:
+            parsed_private_ip = None
         if (
             raw.get("kind") != "sql#instance"
             or raw.get("project") != cutover.PROJECT
@@ -713,8 +1288,12 @@ class CloudSqlRecoveryProvider:
             or not raw["databaseVersion"].startswith("POSTGRES_")
             or ip_configuration.get("ipv4Enabled") is not False
             or (ip_configuration.get("authorizedNetworks") or []) != []
+            or ip_configuration.get("sslMode") != "ENCRYPTED_ONLY"
             or not isinstance(ip_configuration.get("privateNetwork"), str)
             or len(private_addresses) != 1
+            or parsed_private_ip is None
+            or parsed_private_ip.version != 4
+            or not any(parsed_private_ip in network for network in _RFC1918)
             or any(
                 isinstance(item, Mapping) and item.get("type") == "PRIMARY"
                 for item in (addresses or [])
@@ -729,6 +1308,8 @@ class CloudSqlRecoveryProvider:
                     backup.get("enabled") is not False
                     or backup.get("pointInTimeRecoveryEnabled") not in {None, False}
                     or settings.get("deletionProtectionEnabled") is not False
+                    or ip_configuration.get("serverCaMode")
+                    != "GOOGLE_MANAGED_INTERNAL_CA"
                 )
             )
         ):
@@ -758,6 +1339,39 @@ class CloudSqlRecoveryProvider:
             "configuration_sha256": _sha_json(configuration),
             "readback_sha256": _sha_json(raw),
         }
+        if scratch:
+            ca = raw.get("serverCaCert")
+            connection_name = raw.get("connectionName")
+            if not isinstance(ca, Mapping):
+                raise ProductionDatabaseRecoveryError(
+                    "production_database_recovery_server_ca_invalid"
+                )
+            ca_pem = ca.get("cert")
+            try:
+                ca_raw = str(ca_pem).encode("ascii", errors="strict")
+                ssl.PEM_cert_to_DER_cert(str(ca_pem))
+            except (UnicodeError, ValueError, ssl.SSLError) as exc:
+                raise ProductionDatabaseRecoveryError(
+                    "production_database_recovery_server_ca_invalid"
+                ) from exc
+            if (
+                ca.get("kind") != "sql#sslCert"
+                or ca.get("instance") != expected_name
+                or not 1 <= len(ca_raw) <= remote_probe.MAX_CA_BYTES
+                or connection_name
+                != f"{cutover.PROJECT}:{cutover.PRODUCTION_SQL_REGION}:{expected_name}"
+            ):
+                raise ProductionDatabaseRecoveryError(
+                    "production_database_recovery_server_ca_invalid"
+                )
+            projection.update({
+                "private_ip": str(parsed_private_ip),
+                "server_ca_pem": str(ca_pem),
+                "server_ca_sha256": _sha(ca_raw),
+                "ssl_mode": "ENCRYPTED_ONLY",
+                "server_ca_mode": "GOOGLE_MANAGED_INTERNAL_CA",
+                "connection_name": str(connection_name),
+            })
         return projection
 
     def source_readback(self) -> Mapping[str, Any]:
@@ -1047,6 +1661,24 @@ class CloudSqlRecoveryProvider:
             "restored_backup_id": backup_id,
         }
 
+    def scratch_readback(self, *, release_revision: str) -> Mapping[str, Any]:
+        name = cutover.database_recovery_scratch_instance(release_revision)
+        matches = [item for item in self._instances() if item.get("name") == name]
+        databases = self._databases(name)
+        if (
+            len(matches) != 1
+            or [item.get("name") for item in databases].count(cutover.DATABASE) != 1
+        ):
+            raise ProductionDatabaseRecoveryError(
+                "production_database_recovery_probe_readback_invalid"
+            )
+        return self._instance_projection(
+            matches[0],
+            expected_name=name,
+            expected_network=cutover.DATABASE_RECOVERY_SCRATCH_NETWORK,
+            scratch=True,
+        )
+
     def delete_scratch(
         self, *, release_revision: str
     ) -> Mapping[str, Any]:
@@ -1118,10 +1750,16 @@ def build_probe_receipt(
     content_sha256: str,
     canonical_event_row_count: int,
     probed_at_unix: int,
+    scratch_private_ip: str = "10.0.0.2",
+    server_ca_sha256: str = "a" * 64,
+    release_manifest_file_sha256: str = "b" * 64,
+    stopped_units_sha256: str = "c" * 64,
+    psql_executable_sha256: str = remote_probe.EXPECTED_PSQL_SHA256,
 ) -> Mapping[str, Any]:
     revision = _release(release_revision)
     unsigned = {
         "schema": cutover.DATABASE_RECOVERY_PROBE_RECEIPT_SCHEMA,
+        "ok": True,
         "release_revision": revision,
         "scratch_instance": scratch_instance,
         "database": cutover.DATABASE,
@@ -1132,6 +1770,18 @@ def build_probe_receipt(
         "schema_sha256": schema_sha256,
         "content_sha256": content_sha256,
         "canonical_event_row_count": canonical_event_row_count,
+        "scratch_private_ip": scratch_private_ip,
+        "server_ca_sha256": server_ca_sha256,
+        "tls_mode": remote_probe.TLS_MODE,
+        "tls_ca_verified": True,
+        "tls_hostname_verified": False,
+        "canary_instance_id": owner_transport.VM_INSTANCE_ID,
+        "canary_network": remote_probe.EXPECTED_NETWORK,
+        "canary_subnetwork": remote_probe.EXPECTED_SUBNETWORK,
+        "canary_private_ip": remote_probe.EXPECTED_PRIVATE_IP,
+        "release_manifest_file_sha256": release_manifest_file_sha256,
+        "stopped_units_sha256": stopped_units_sha256,
+        "psql_executable_sha256": psql_executable_sha256,
         "probed_at_unix": probed_at_unix,
         "secret_material_recorded": False,
         "secret_digest_recorded": False,
@@ -1152,6 +1802,17 @@ def build_probe_receipt(
         or canonical_event_row_count < 0
         or type(probed_at_unix) is not int
         or probed_at_unix <= 0
+        or not isinstance(scratch_private_ip, str)
+        or psql_executable_sha256 != remote_probe.EXPECTED_PSQL_SHA256
+        or any(
+            _SHA256.fullmatch(value or "") is None
+            for value in (
+                server_ca_sha256,
+                release_manifest_file_sha256,
+                stopped_units_sha256,
+                psql_executable_sha256,
+            )
+        )
     ):
         raise ProductionDatabaseRecoveryError(
             "production_database_recovery_probe_invalid"
@@ -1185,6 +1846,8 @@ def _validated_probe_receipt_for_delete(
     scratch_instance: str,
     backup_completed_at_unix: int,
     now_unix: int,
+    expected_scratch: Mapping[str, Any] | None = None,
+    expected_preflight: Mapping[str, Any] | None = None,
 ) -> Mapping[str, Any]:
     if not isinstance(value, Mapping):
         raise ProductionDatabaseRecoveryError(
@@ -1197,6 +1860,7 @@ def _validated_probe_receipt_for_delete(
         set(value) != _PROBE_RECEIPT_FIELDS
         or value.get("schema")
         != cutover.DATABASE_RECOVERY_PROBE_RECEIPT_SCHEMA
+        or value.get("ok") is not True
         or value.get("release_revision") != release_revision
         or value.get("scratch_instance") != scratch_instance
         or value.get("database") != cutover.DATABASE
@@ -1207,6 +1871,16 @@ def _validated_probe_receipt_for_delete(
         or _SHA256.fullmatch(str(value.get("content_sha256"))) is None
         or type(value.get("canonical_event_row_count")) is not int
         or value["canonical_event_row_count"] < 0
+        or not isinstance(value.get("scratch_private_ip"), str)
+        or value.get("tls_mode") != remote_probe.TLS_MODE
+        or value.get("tls_ca_verified") is not True
+        or value.get("tls_hostname_verified") is not False
+        or value.get("canary_instance_id") != owner_transport.VM_INSTANCE_ID
+        or value.get("canary_network") != remote_probe.EXPECTED_NETWORK
+        or value.get("canary_subnetwork") != remote_probe.EXPECTED_SUBNETWORK
+        or value.get("canary_private_ip") != remote_probe.EXPECTED_PRIVATE_IP
+        or value.get("psql_executable_sha256")
+        != remote_probe.EXPECTED_PSQL_SHA256
         or type(value.get("probed_at_unix")) is not int
         or not backup_completed_at_unix
         <= value["probed_at_unix"]
@@ -1214,6 +1888,47 @@ def _validated_probe_receipt_for_delete(
         or value.get("secret_material_recorded") is not False
         or value.get("secret_digest_recorded") is not False
         or value.get("receipt_sha256") != _sha_json(unsigned)
+        or any(
+            _SHA256.fullmatch(str(value.get(name))) is None
+            for name in (
+                "server_ca_sha256",
+                "release_manifest_file_sha256",
+                "stopped_units_sha256",
+                "psql_executable_sha256",
+            )
+        )
+    ):
+        raise ProductionDatabaseRecoveryError(
+            "production_database_recovery_probe_invalid"
+        )
+    try:
+        address = ipaddress.ip_address(str(value["scratch_private_ip"]))
+    except ValueError as exc:
+        raise ProductionDatabaseRecoveryError(
+            "production_database_recovery_probe_invalid"
+        ) from exc
+    if address.version != 4 or not any(address in network for network in _RFC1918):
+        raise ProductionDatabaseRecoveryError(
+            "production_database_recovery_probe_invalid"
+        )
+    if expected_scratch is not None and (
+        value["scratch_private_ip"] != expected_scratch.get("private_ip")
+        or value["server_ca_sha256"] != expected_scratch.get("server_ca_sha256")
+    ):
+        raise ProductionDatabaseRecoveryError(
+            "production_database_recovery_probe_invalid"
+        )
+    if expected_preflight is not None and any(
+        value[name] != expected_preflight.get(name)
+        for name in (
+            "canary_instance_id",
+            "canary_network",
+            "canary_subnetwork",
+            "canary_private_ip",
+            "release_manifest_file_sha256",
+            "stopped_units_sha256",
+            "psql_executable_sha256",
+        )
     ):
         raise ProductionDatabaseRecoveryError(
             "production_database_recovery_probe_invalid"
@@ -1441,6 +2156,15 @@ def _execute_gate(
         or _SHA256.fullmatch(str(scratch.get("configuration_sha256"))) is None
         or _SHA256.fullmatch(str(scratch.get("readback_sha256"))) is None
         or _OPERATION_ID.fullmatch(str(scratch.get("create_operation_id"))) is None
+        or not isinstance(scratch.get("private_ip"), str)
+        or scratch.get("ssl_mode") != "ENCRYPTED_ONLY"
+        or scratch.get("server_ca_mode") != "GOOGLE_MANAGED_INTERNAL_CA"
+        or _SHA256.fullmatch(str(scratch.get("server_ca_sha256"))) is None
+        or not isinstance(scratch.get("server_ca_pem"), str)
+        or scratch.get("server_ca_sha256")
+        != _sha(scratch["server_ca_pem"].encode("ascii", errors="strict"))
+        or scratch.get("connection_name")
+        != f"{cutover.PROJECT}:{cutover.PRODUCTION_SQL_REGION}:{scratch_name}"
     ):
         raise ProductionDatabaseRecoveryError(
             "production_database_recovery_scratch_invalid"
@@ -1480,6 +2204,15 @@ def _execute_gate(
             str(restored.get("restore_operation_id"))
         )
         is None
+        or not isinstance(restored.get("private_ip"), str)
+        or restored.get("ssl_mode") != "ENCRYPTED_ONLY"
+        or restored.get("server_ca_mode") != "GOOGLE_MANAGED_INTERNAL_CA"
+        or _SHA256.fullmatch(str(restored.get("server_ca_sha256"))) is None
+        or not isinstance(restored.get("server_ca_pem"), str)
+        or restored.get("server_ca_sha256")
+        != _sha(restored["server_ca_pem"].encode("ascii", errors="strict"))
+        or restored.get("connection_name")
+        != f"{cutover.PROJECT}:{cutover.PRODUCTION_SQL_REGION}:{scratch_name}"
     ):
         raise ProductionDatabaseRecoveryError(
             "production_database_recovery_restore_invalid"
@@ -1488,9 +2221,46 @@ def _execute_gate(
     if journal.has("probe_receipt"):
         probe_receipt = journal.payload("probe_receipt")
     else:
+        fresh_probe_readback = provider.scratch_readback(
+            release_revision=revision
+        )
+        if (
+            fresh_probe_readback.get("project") != cutover.PROJECT
+            or fresh_probe_readback.get("instance") != scratch_name
+            or fresh_probe_readback.get("region") != cutover.PRODUCTION_SQL_REGION
+            or fresh_probe_readback.get("private_network")
+            != cutover.DATABASE_RECOVERY_SCRATCH_NETWORK
+            or fresh_probe_readback.get("ssl_mode") != "ENCRYPTED_ONLY"
+            or fresh_probe_readback.get("server_ca_mode")
+            != "GOOGLE_MANAGED_INTERNAL_CA"
+            or not isinstance(fresh_probe_readback.get("private_ip"), str)
+            or not isinstance(fresh_probe_readback.get("server_ca_pem"), str)
+            or fresh_probe_readback.get("server_ca_sha256")
+            != _sha(
+                fresh_probe_readback["server_ca_pem"].encode(
+                    "ascii", errors="strict"
+                )
+            )
+            or fresh_probe_readback.get("connection_name")
+            != f"{cutover.PROJECT}:{cutover.PRODUCTION_SQL_REGION}:{scratch_name}"
+            or _SHA256.fullmatch(
+                str(fresh_probe_readback.get("readback_sha256"))
+            )
+            is None
+        ):
+            raise ProductionDatabaseRecoveryError(
+                "production_database_recovery_probe_readback_invalid"
+            )
+        probe_scratch = {
+            **dict(restored),
+            **dict(fresh_probe_readback),
+            "create_operation_id": scratch["create_operation_id"],
+            "restore_operation_id": restored["restore_operation_id"],
+            "restored_backup_id": backup["backup_id"],
+        }
         candidate_probe_receipt = probe.probe(
             release_revision=revision,
-            scratch=restored,
+            scratch=probe_scratch,
             now_unix=int(clock()),
         )
         candidate_probe_receipt = _validated_probe_receipt_for_delete(
@@ -1499,6 +2269,7 @@ def _execute_gate(
             scratch_instance=scratch_name,
             backup_completed_at_unix=int(backup["completed_at_unix"]),
             now_unix=int(clock()),
+            expected_scratch=probe_scratch,
         )
         probe_receipt = journal.record(
             "probe_receipt",
@@ -1589,6 +2360,12 @@ def _execute_gate(
             "deleted": True,
             "readback_sha256": restored["readback_sha256"],
             "deleted_at_unix": deleted_at,
+            "private_ip": probe_receipt["scratch_private_ip"],
+            "server_ca_sha256": probe_receipt["server_ca_sha256"],
+            "cloud_sql_ssl_mode": "ENCRYPTED_ONLY",
+            "tls_mode": probe_receipt["tls_mode"],
+            "tls_ca_verified": probe_receipt["tls_ca_verified"],
+            "tls_hostname_verified": probe_receipt["tls_hostname_verified"],
         },
         "probe_receipt": copy.deepcopy(dict(probe_receipt)),
         "backup_rechecked_at_unix": recheck_payload["rechecked_at_unix"],
@@ -1620,9 +2397,14 @@ def run_for_owner(
     """Run the sole production boundary with no caller-controlled target."""
 
     revision = _release(release_revision)
-    probe = FixedPrivateReadOnlyProbe()
-    # Fail before binding mutation authority, minting a token, or opening a
-    # journal when the fixed private probe edge is not installed.
+    transport = FixedDatabaseRecoveryIapTransport(owner_identity)
+    probe = FixedPrivateReadOnlyProbe(
+        revision,
+        transport=transport,
+        secret_accessor=FixedSecretManagerAccess(owner_identity),
+    )
+    # Prove the exact release-bound remote runtime before binding mutation
+    # authority, minting a token, fetching a secret, or opening a journal.
     probe.require_available()
     if (
         _SHA256.fullmatch(expected_owner_subject_sha256 or "") is None
@@ -1668,7 +2450,9 @@ def validate_receipt_for_freeze(
 
 __all__ = [
     "CloudSqlRecoveryProvider",
+    "FixedDatabaseRecoveryIapTransport",
     "FixedPrivateReadOnlyProbe",
+    "FixedSecretManagerAccess",
     "MAX_BACKUP_RECHECK_AGE_SECONDS",
     "ProductionDatabaseRecoveryError",
     "build_probe_receipt",

@@ -12,6 +12,7 @@ from scripts.canary import production_database_recovery_gate as recovery
 
 REVISION = "a" * 40
 NOW = 1_800_000_000
+CA_PEM = "-----BEGIN CERTIFICATE-----\nYQ==\n-----END CERTIFICATE-----\n"
 
 
 class Clock:
@@ -48,6 +49,8 @@ class Probe:
             content_sha256="2" * 64,
             canonical_event_row_count=14_073,
             probed_at_unix=now_unix,
+            scratch_private_ip=str(scratch["private_ip"]),
+            server_ca_sha256=str(scratch["server_ca_sha256"]),
         )
 
 
@@ -87,6 +90,28 @@ class Provider:
         self.scratch_exists = False
         self.restored = False
 
+    @staticmethod
+    def _scratch_projection(release_revision: str) -> dict[str, Any]:
+        scratch = cutover.database_recovery_scratch_instance(release_revision)
+        return {
+            "project": cutover.PROJECT,
+            "instance": scratch,
+            "region": cutover.PRODUCTION_SQL_REGION,
+            "private_network": cutover.DATABASE_RECOVERY_SCRATCH_NETWORK,
+            "database_version": "POSTGRES_18",
+            "configuration_sha256": "6" * 64,
+            "readback_sha256": "7" * 64,
+            "create_operation_id": "create-operation",
+            "private_ip": "10.0.0.2",
+            "server_ca_pem": CA_PEM,
+            "server_ca_sha256": recovery._sha(CA_PEM.encode("ascii")),
+            "ssl_mode": "ENCRYPTED_ONLY",
+            "server_ca_mode": "GOOGLE_MANAGED_INTERNAL_CA",
+            "connection_name": (
+                f"{cutover.PROJECT}:{cutover.PRODUCTION_SQL_REGION}:{scratch}"
+            ),
+        }
+
     def source_readback(self) -> Mapping[str, Any]:
         self.calls.append("source_readback")
         return {
@@ -125,18 +150,7 @@ class Provider:
         assert source["instance"] == cutover.PRODUCTION_SQL_INSTANCE
         self.calls.append("ensure_scratch")
         self.scratch_exists = True
-        return {
-            "project": cutover.PROJECT,
-            "instance": cutover.database_recovery_scratch_instance(
-                release_revision
-            ),
-            "region": cutover.PRODUCTION_SQL_REGION,
-            "private_network": cutover.DATABASE_RECOVERY_SCRATCH_NETWORK,
-            "database_version": "POSTGRES_18",
-            "configuration_sha256": "6" * 64,
-            "readback_sha256": "7" * 64,
-            "create_operation_id": "create-operation",
-        }
+        return self._scratch_projection(release_revision)
 
     def ensure_restore(
         self,
@@ -161,6 +175,13 @@ class Provider:
             "restore_operation_id": "restore-operation",
             "restored_backup_id": backup["backup_id"],
         }
+
+    def scratch_readback(self, *, release_revision: str) -> Mapping[str, Any]:
+        assert self.restored
+        self.calls.append("scratch_readback")
+        result = self._scratch_projection(release_revision)
+        result.pop("create_operation_id")
+        return result
 
     def delete_scratch(
         self, *, release_revision: str
@@ -210,6 +231,7 @@ def test_fixed_gate_restores_probes_deletes_only_scratch_and_retains_backup(
         "ensure_backup",
         "ensure_scratch",
         "ensure_restore",
+        "scratch_readback",
         "delete_scratch",
         "backup_readback",
     ]
@@ -283,12 +305,18 @@ def test_unavailable_fixed_probe_fails_before_cloud_or_journal(
     provider = Provider(root)
     with pytest.raises(
         recovery.ProductionDatabaseRecoveryError,
-        match="production_database_recovery_probe_transport_unavailable",
+        match="injected_probe_transport_unavailable",
     ):
+        class UnavailableProbe:
+            def require_available(self) -> None:
+                raise recovery.ProductionDatabaseRecoveryError(
+                    "injected_probe_transport_unavailable"
+                )
+
         recovery._execute_gate(
             release_revision=REVISION,
             provider=provider,
-            probe=recovery.FixedPrivateReadOnlyProbe(),
+            probe=UnavailableProbe(),  # type: ignore[arg-type]
             journal_root=root,
             clock=Clock(),
         )
@@ -504,9 +532,19 @@ def test_cloud_sql_mutation_contract_is_fixed_and_private(
                 "ipv4Enabled": False,
                 "privateNetwork": cutover.DATABASE_RECOVERY_SCRATCH_NETWORK,
                 "authorizedNetworks": [],
+                "sslMode": "ENCRYPTED_ONLY",
+                "serverCaMode": "GOOGLE_MANAGED_INTERNAL_CA",
             },
         },
         "ipAddresses": [{"type": "PRIVATE", "ipAddress": "10.0.0.2"}],
+        "connectionName": (
+            f"{cutover.PROJECT}:{cutover.PRODUCTION_SQL_REGION}:{scratch_name}"
+        ),
+        "serverCaCert": {
+            "kind": "sql#sslCert",
+            "instance": scratch_name,
+            "cert": CA_PEM,
+        },
     }
     requests: list[tuple[str, str, Mapping[str, Any] | None, Mapping[str, Any] | None]] = []
 

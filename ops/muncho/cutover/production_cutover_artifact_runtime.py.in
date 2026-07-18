@@ -1134,16 +1134,23 @@ def _validate_database_recovery_receipt(
             "create_operation_id", "restore_operation_id",
             "delete_operation_id", "restored_backup_id", "private_only",
             "backup_enabled", "deletion_protection_enabled", "deleted",
-            "readback_sha256", "deleted_at_unix",
+            "readback_sha256", "deleted_at_unix", "private_ip",
+            "server_ca_sha256", "cloud_sql_ssl_mode", "tls_mode",
+            "tls_ca_verified", "tls_hostname_verified",
         },
         "artifact_plan_invalid",
     )
     probe = _hashed(
         raw.get("probe_receipt"),
         {
-            "schema", "release_revision", "scratch_instance", "database",
+            "schema", "ok", "release_revision", "scratch_instance", "database",
             "probe_contract_sha256", "transaction_read_only", "schema_sha256",
             "content_sha256", "canonical_event_row_count", "probed_at_unix",
+            "scratch_private_ip", "server_ca_sha256", "tls_mode",
+            "tls_ca_verified", "tls_hostname_verified", "canary_instance_id",
+            "canary_network", "canary_subnetwork", "canary_private_ip",
+            "release_manifest_file_sha256", "stopped_units_sha256",
+            "psql_executable_sha256",
             "secret_material_recorded", "secret_digest_recorded",
             "receipt_sha256",
         },
@@ -1154,6 +1161,14 @@ def _validate_database_recovery_receipt(
     timestamps = (
         backup.get("completed_at_unix"), probe.get("probed_at_unix"),
         scratch.get("deleted_at_unix"), raw.get("backup_rechecked_at_unix"),
+    )
+    try:
+        scratch_address = ipaddress.ip_address(str(scratch.get("private_ip")))
+    except ValueError:
+        return False
+    rfc1918 = tuple(
+        ipaddress.ip_network(item)
+        for item in ("10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16")
     )
     operation = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,254}$")
     return bool(
@@ -1195,14 +1210,32 @@ def _validate_database_recovery_receipt(
         and scratch.get("backup_enabled") is False
         and scratch.get("deletion_protection_enabled") is False
         and scratch.get("deleted") is True
+        and scratch_address.version == 4
+        and any(scratch_address in network for network in rfc1918)
+        and scratch.get("private_ip") == probe.get("scratch_private_ip")
+        and scratch.get("server_ca_sha256") == probe.get("server_ca_sha256")
+        and scratch.get("cloud_sql_ssl_mode") == "ENCRYPTED_ONLY"
+        and scratch.get("tls_mode") == "verify-ca"
+        and scratch.get("tls_ca_verified") is True
+        and scratch.get("tls_hostname_verified") is False
         and probe.get("schema")
         == "muncho-production-database-recovery-probe-receipt.v1"
+        and probe.get("ok") is True
         and probe.get("release_revision") == revision
         and probe.get("scratch_instance") == scratch_name
         and probe.get("database") == DATABASE
         and probe.get("probe_contract_sha256")
         == "60472b84789b0811f1e2326f2757c98f6d7286e229035ab2a907d0b03d9578f6"
         and probe.get("transaction_read_only") is True
+        and probe.get("tls_mode") == "verify-ca"
+        and probe.get("tls_ca_verified") is True
+        and probe.get("tls_hostname_verified") is False
+        and probe.get("canary_instance_id") == "9153645328899914617"
+        and probe.get("canary_network") == "muncho-canary-vpc"
+        and probe.get("canary_subnetwork") == "muncho-canary-europe-west3"
+        and probe.get("canary_private_ip") == "10.90.0.2"
+        and probe.get("psql_executable_sha256")
+        == "f79699639336f0ed369158e9e4085929d943427e25393725ae28f1f4d95690c4"
         and type(probe.get("canonical_event_row_count")) is int
         and probe["canonical_event_row_count"] >= 0
         and all(type(item) is int and item > 0 for item in timestamps)
@@ -1218,6 +1251,10 @@ def _validate_database_recovery_receipt(
                 backup.get("readback_sha256"), scratch.get("readback_sha256"),
                 probe.get("probe_contract_sha256"), probe.get("schema_sha256"),
                 probe.get("content_sha256"), raw.get("journal_prefix_sha256"),
+                probe.get("server_ca_sha256"),
+                probe.get("release_manifest_file_sha256"),
+                probe.get("stopped_units_sha256"),
+                probe.get("psql_executable_sha256"),
             )
         )
     )

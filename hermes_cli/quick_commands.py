@@ -406,8 +406,11 @@ def _new_process_group_kwargs() -> dict[str, Any]:
 
 
 def _posix_group_exists(pgid: int) -> bool:
+    killpg = getattr(os, "killpg", None)
+    if killpg is None:
+        return False
     try:
-        os.killpg(pgid, 0)
+        killpg(pgid, 0)
         return True
     except ProcessLookupError:
         return False

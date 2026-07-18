@@ -65,6 +65,7 @@ async def test_connect_retries_when_initialize_wall_deadline_expires(monkeypatch
     monkeypatch.setattr(tg_adapter, "_await_with_thread_deadline", _fake_deadline)
 
     adapter = TelegramAdapter(PlatformConfig(enabled=True, token="test-token"))
+    adapter._topic_hooks.start = AsyncMock()
     monkeypatch.setattr(adapter, "_acquire_platform_lock", lambda *a, **k: True)
     monkeypatch.setattr(adapter, "_fallback_ips", lambda: [])
     monkeypatch.setattr(adapter, "_delete_webhook_best_effort", AsyncMock())
@@ -79,6 +80,7 @@ async def test_connect_retries_when_initialize_wall_deadline_expires(monkeypatch
     assert deadline_calls == 2
     tg_adapter.asyncio.sleep.assert_awaited_once_with(1)
     fake_app.start.assert_awaited_once()
+    adapter._topic_hooks.start.assert_awaited_once()
 
 
 @pytest.mark.asyncio

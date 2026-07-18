@@ -3016,6 +3016,7 @@ class BasePlatformAdapter(ABC):
         self,
         chat_id: str,
         message_id: str,
+        metadata: Optional[Dict[str, Any]] = None,
     ) -> bool:
         """
         Delete a previously sent message.  Optional — platforms that don't
@@ -3062,6 +3063,7 @@ class BasePlatformAdapter(ABC):
         chat_id: str,
         message_id: str,
         ttl_seconds: int,
+        metadata: Optional[Dict[str, Any]] = None,
     ) -> None:
         """Spawn a detached task that deletes ``message_id`` after ``ttl_seconds``.
 
@@ -3070,10 +3072,30 @@ class BasePlatformAdapter(ABC):
         Does not block the caller.
         """
 
+        # Snapshot caller-owned routing metadata before the detached task can
+        # observe later mutation. Concrete adapters that predate the optional
+        # metadata parameter remain compatible: pass it only when supported.
+        delete_metadata = dict(metadata) if metadata else None
+
         async def _run_delete() -> None:
             try:
                 await asyncio.sleep(max(1, int(ttl_seconds)))
-                await self.delete_message(chat_id=chat_id, message_id=message_id)
+                kwargs: Dict[str, Any] = {
+                    "chat_id": chat_id,
+                    "message_id": message_id,
+                }
+                if delete_metadata is not None:
+                    try:
+                        params = inspect.signature(self.delete_message).parameters
+                        accepts_metadata = "metadata" in params or any(
+                            param.kind is inspect.Parameter.VAR_KEYWORD
+                            for param in params.values()
+                        )
+                    except (TypeError, ValueError):
+                        accepts_metadata = False
+                    if accepts_metadata:
+                        kwargs["metadata"] = delete_metadata
+                await self.delete_message(**kwargs)
             except asyncio.CancelledError:
                 raise
             except Exception as e:
@@ -4636,17 +4658,19 @@ class BasePlatformAdapter(ABC):
                     len(_text),
                     event.source.chat_id,
                 )
+                _send_metadata = _mark_notify_metadata(thread_meta)
                 _r = await self._send_with_retry(
                     chat_id=event.source.chat_id,
                     content=_text,
                     reply_to=_reply_anchor_for_event(event),
-                    metadata=_mark_notify_metadata(thread_meta),
+                    metadata=_send_metadata,
                 )
                 if _eph_ttl > 0 and _r.success and _r.message_id:
                     self._schedule_ephemeral_delete(
                         chat_id=event.source.chat_id,
                         message_id=_r.message_id,
                         ttl_seconds=_eph_ttl,
+                        metadata=_send_metadata,
                     )
             # Old adapter task (if any) is cancelled AFTER the response has
             # been sent — keeps ordering deterministic and avoids the race.
@@ -4777,17 +4801,19 @@ class BasePlatformAdapter(ABC):
                     response = await self._message_handler(event)
                     _text, _eph_ttl = self._unwrap_ephemeral(response)
                     if _text:
+                        _send_metadata = _mark_notify_metadata(_thread_meta)
                         _r = await self._send_with_retry(
                             chat_id=event.source.chat_id,
                             content=_text,
                             reply_to=_reply_anchor_for_event(event),
-                            metadata=_mark_notify_metadata(_thread_meta),
+                            metadata=_send_metadata,
                         )
                         if _eph_ttl > 0 and _r.success and _r.message_id:
                             self._schedule_ephemeral_delete(
                                 chat_id=event.source.chat_id,
                                 message_id=_r.message_id,
                                 ttl_seconds=_eph_ttl,
+                                metadata=_send_metadata,
                             )
                 except Exception as e:
                     logger.error("[%s] Command '/%s' dispatch failed: %s", self.name, cmd, e, exc_info=True)
@@ -4830,17 +4856,19 @@ class BasePlatformAdapter(ABC):
                         response = await self._message_handler(event)
                         _text, _eph_ttl = self._unwrap_ephemeral(response)
                         if _text:
+                            _send_metadata = _mark_notify_metadata(_thread_meta)
                             _r = await self._send_with_retry(
                                 chat_id=event.source.chat_id,
                                 content=_text,
                                 reply_to=_reply_anchor_for_event(event),
-                                metadata=_mark_notify_metadata(_thread_meta),
+                                metadata=_send_metadata,
                             )
                             if _eph_ttl > 0 and _r.success and _r.message_id:
                                 self._schedule_ephemeral_delete(
                                     chat_id=event.source.chat_id,
                                     message_id=_r.message_id,
                                     ttl_seconds=_eph_ttl,
+                                    metadata=_send_metadata,
                                 )
                     except Exception as e:
                         logger.error(
@@ -5237,6 +5265,7 @@ class BasePlatformAdapter(ABC):
                             chat_id=event.source.chat_id,
                             message_id=result.message_id,
                             ttl_seconds=_ephemeral_ttl,
+                            metadata=_final_thread_metadata,
                         )
 
                 # Human-like pacing delay between text and media

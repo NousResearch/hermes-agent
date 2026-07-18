@@ -322,7 +322,12 @@ class HealthFoodClient:
             response = connection.getresponse()
             payload = response.read(_MAX_RESPONSE_BYTES + 1)
             if len(payload) > _MAX_RESPONSE_BYTES:
-                raise HealthClientError(REASON_BAD_RESPONSE)
+                # A 200 (or 5xx) can be post-commit even when its body is
+                # oversized. Preserve the exact mutation for reconciliation.
+                raise HealthClientError(
+                    REASON_BAD_RESPONSE,
+                    retryable=response.status == 200 or response.status >= 500,
+                )
             if response.status != 200:
                 # Includes 5xx: safe to retry the identical envelope.
                 raise HealthClientError(
@@ -340,33 +345,39 @@ class HealthFoodClient:
 
     # ── verification ────────────────────────────────────────────────────
     def _verify(self, envelope: FrozenEnvelope, body: bytes) -> VerifiedCommit:
+        # Every failure below occurs after an HTTP 200. The server may already
+        # have committed the mutation, so the only safe recovery is replaying
+        # this exact idempotent envelope. Never authorize a fresh mutation.
+        def ambiguous(reason: str) -> HealthClientError:
+            return HealthClientError(reason, retryable=True)
+
         try:
             parsed = json.loads(body.decode("utf-8"))
         except (ValueError, UnicodeDecodeError):
-            raise HealthClientError(REASON_BAD_RESPONSE) from None
+            raise ambiguous(REASON_BAD_RESPONSE) from None
         if not isinstance(parsed, dict) or set(parsed.keys()) != _RESPONSE_KEYS:
-            raise HealthClientError(REASON_BAD_RESPONSE)
+            raise ambiguous(REASON_BAD_RESPONSE)
         if parsed["schema"] != RESPONSE_SCHEMA or parsed["receipt_schema"] != RECEIPT_SCHEMA:
-            raise HealthClientError(REASON_BAD_RESPONSE)
+            raise ambiguous(REASON_BAD_RESPONSE)
         if type(parsed["replayed"]) is not bool:
-            raise HealthClientError(REASON_BAD_RESPONSE)
+            raise ambiguous(REASON_BAD_RESPONSE)
         receipt_sha = parsed["receipt_sha256"]
         if not isinstance(receipt_sha, str) or not _SHA256_RE.match(receipt_sha):
-            raise HealthClientError(REASON_BAD_RESPONSE)
+            raise ambiguous(REASON_BAD_RESPONSE)
         try:
             receipt_bytes = base64.b64decode(
                 str(parsed["receipt_canonical_json_b64"]), validate=True
             )
         except (ValueError, TypeError):
-            raise HealthClientError(REASON_BAD_RESPONSE) from None
+            raise ambiguous(REASON_BAD_RESPONSE) from None
         if hashlib.sha256(receipt_bytes).hexdigest() != receipt_sha:
-            raise HealthClientError(REASON_RECEIPT_MISMATCH)
+            raise ambiguous(REASON_RECEIPT_MISMATCH)
         try:
             receipt = json.loads(receipt_bytes.decode("utf-8"))
         except (ValueError, UnicodeDecodeError):
-            raise HealthClientError(REASON_BAD_RESPONSE) from None
+            raise ambiguous(REASON_BAD_RESPONSE) from None
         if not isinstance(receipt, dict):
-            raise HealthClientError(REASON_BAD_RESPONSE)
+            raise ambiguous(REASON_BAD_RESPONSE)
         # Receipt must bind to the exact frozen request identity.
         if (
             receipt.get("schema") != RECEIPT_SCHEMA
@@ -377,7 +388,7 @@ class HealthFoodClient:
             or receipt.get("status") != "applied"
             or receipt.get("same_transaction_readback_match") is not True
         ):
-            raise HealthClientError(REASON_RECEIPT_MISMATCH)
+            raise ambiguous(REASON_RECEIPT_MISMATCH)
         # Separate authenticated post-commit readback gates acknowledgement:
         # missing/failed proofs fail closed (retryable — canonical state is
         # unchanged by a readback failure; retry reuses the same envelope).

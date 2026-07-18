@@ -1172,6 +1172,25 @@ class PluginContext:
         self._manager._hooks.setdefault(hook_name, []).append(callback)
         logger.debug("Plugin %s registered hook: %s", self.manifest.name, hook_name)
 
+    def register_topic_hook_factory(self, profile: str, factory: Callable) -> None:
+        """Register a lazy authenticated topic-hook factory.
+
+        Factory registration is inert.  Telegram instantiates it only when
+        the operator explicitly enables the same profile under strict topic
+        routing.  This keeps plugin credentials and state untouched during
+        ordinary discovery and preserves stable per-profile prompt/tool
+        namespaces.
+        """
+        from gateway.topic_hooks import register_topic_hook_factory
+
+        plugin_id = self.manifest.key or self.manifest.name
+        register_topic_hook_factory(profile, factory, owner=plugin_id)
+        logger.debug(
+            "Plugin %s registered topic hook factory: %s",
+            self.manifest.name,
+            profile,
+        )
+
     # -- middleware registration -------------------------------------------
 
     def register_middleware(self, kind: str, callback: Callable) -> None:
@@ -1290,6 +1309,12 @@ class PluginManager:
             self._discovered = True
             return
         if force:
+            # Lazy strict-topic hook declarations belong to the discovery
+            # generation. Keeping them would leave a removed plugin reachable
+            # after an explicit rescan.
+            from gateway.topic_hooks import clear_topic_hook_factories
+
+            clear_topic_hook_factories()
             self._plugins.clear()
             self._hooks.clear()
             self._middleware.clear()

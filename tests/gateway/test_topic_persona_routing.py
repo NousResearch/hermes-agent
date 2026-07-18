@@ -35,6 +35,11 @@ from gateway.profile_routing import (
     match_profile_route,
     parse_profile_routes,
 )
+from gateway.topic_routing import (
+    TopicRouteRegistry,
+    validate_topic_persona_alignment,
+)
+import pytest
 
 PLATFORM = "telegram"
 
@@ -45,7 +50,7 @@ FOREIGN_CHAT = "-1009999999999"
 
 # Forum topic (message thread) ids. Strings, because profile_routes matches by
 # exact string equality (unlike the int-keyed topic_routing gate).
-SOL_GENERAL = "1"  # the "General" topic — no persona route registered
+SOL_GENERAL = "1"  # the non-deletable General topic, renamed Sol
 ATLAS_THREAD = "77"
 METIS_THREAD = "78"
 UNREGISTERED_THREAD = "999"  # a topic with no persona route
@@ -58,6 +63,13 @@ def _persona_routes():
     """
     return parse_profile_routes(
         [
+            {
+                "name": "sol-topic",
+                "platform": PLATFORM,
+                "chat_id": OWNER_CHAT,
+                "thread_id": SOL_GENERAL,
+                "profile": "sol",
+            },
             {
                 "name": "atlas-topic",
                 "platform": PLATFORM,
@@ -92,6 +104,11 @@ def _match(routes, chat_id=OWNER_CHAT, thread_id=None, parent_chat_id=None):
 class TestTopicResolvesToPersona:
     """(1) A registered forum topic resolves to its distinct persona."""
 
+    def test_sol_general_routes_to_sol(self):
+        matched = _match(_persona_routes(), thread_id=SOL_GENERAL)
+        assert matched is not None
+        assert matched.profile == "sol"
+
     def test_atlas_topic_routes_to_atlas(self):
         matched = _match(_persona_routes(), thread_id=ATLAS_THREAD)
         assert matched is not None
@@ -110,18 +127,17 @@ class TestTopicResolvesToPersona:
 
 
 class TestFailClosedAtPersonaLayer:
-    """(2) Every non-registered topic keeps default behavior — no persona is
-    applied (matcher returns None), and it is never misrouted to atlas/metis.
+    """(2) Every non-registered topic has no persona route and is never
+    misrouted. The strict gate rejects these before profile fallback can run.
     """
 
     def test_unregistered_thread_same_chat_returns_none(self):
         # A topic on the owner chat that has no persona route.
         assert _match(_persona_routes(), thread_id=UNREGISTERED_THREAD) is None
 
-    def test_general_topic_returns_none(self):
-        # The "General" topic (thread 1) has no persona route in this set,
-        # so it stays on the default profile.
-        assert _match(_persona_routes(), thread_id=SOL_GENERAL) is None
+    def test_general_topic_never_uses_default_profile(self):
+        matched = _match(_persona_routes(), thread_id=SOL_GENERAL)
+        assert matched is not None and matched.profile == "sol"
 
     def test_foreign_chat_returns_none_even_for_registered_thread_id(self):
         # A foreign chat reusing a registered thread id must NOT inherit atlas.
@@ -139,7 +155,6 @@ class TestFailClosedAtPersonaLayer:
         routes = _persona_routes()
         for chat_id, thread_id in (
             (OWNER_CHAT, UNREGISTERED_THREAD),
-            (OWNER_CHAT, SOL_GENERAL),
             (OWNER_CHAT, None),
             (FOREIGN_CHAT, ATLAS_THREAD),
             (FOREIGN_CHAT, METIS_THREAD),
@@ -229,3 +244,216 @@ class TestGateAndPersonaCompose:
         # same topic, which is what build_source stamps onto source.profile.
         matched = _match(_persona_routes(), thread_id=ATLAS_THREAD)
         assert matched is not None and matched.profile == "atlas"
+
+
+class TestStrictPersonaAlignment:
+    @staticmethod
+    def _registry():
+        return TopicRouteRegistry.from_config(
+            [
+                {"chat_id": OWNER_CHAT, "thread_id": 1, "profile": "sol"},
+                {"chat_id": OWNER_CHAT, "thread_id": 77, "profile": "atlas"},
+                {"chat_id": OWNER_CHAT, "thread_id": 78, "profile": "metis"},
+            ]
+        )
+
+    def test_all_three_exact_routes_align(self):
+        validate_topic_persona_alignment(
+            self._registry(), _persona_routes(), multiplex_profiles=True
+        )
+
+    def test_missing_sol_persona_fails_startup(self):
+        routes = [route for route in _persona_routes() if route.profile != "sol"]
+        with pytest.raises(ValueError, match="missing exact profile route"):
+            validate_topic_persona_alignment(
+                self._registry(), routes, multiplex_profiles=True
+            )
+
+    def test_profile_mismatch_fails_startup(self):
+        routes = [
+            ProfileRoute(
+                name=route.name,
+                platform=route.platform,
+                profile="metis" if route.profile == "atlas" else route.profile,
+                chat_id=route.chat_id,
+                thread_id=route.thread_id,
+            )
+            for route in _persona_routes()
+        ]
+        with pytest.raises(ValueError, match="profile mismatch"):
+            validate_topic_persona_alignment(
+                self._registry(), routes, multiplex_profiles=True
+            )
+
+    def test_multiplex_required_for_distinct_personas(self):
+        with pytest.raises(ValueError, match="multiplex_profiles"):
+            validate_topic_persona_alignment(
+                self._registry(), _persona_routes(), multiplex_profiles=False
+            )
+
+    def test_numeric_yaml_ids_are_normalized_for_runtime_matching(self):
+        routes = parse_profile_routes(
+            [
+                {
+                    "name": "atlas-topic",
+                    "platform": PLATFORM,
+                    "chat_id": -1001000000000,
+                    "thread_id": 77,
+                    "profile": "atlas",
+                }
+            ]
+        )
+        assert routes[0].chat_id == OWNER_CHAT
+        assert routes[0].thread_id == ATLAS_THREAD
+
+    def test_noncanonical_thread_spelling_cannot_pass_alignment(self):
+        routes = [
+            ProfileRoute(
+                name=route.name,
+                platform=route.platform,
+                profile=route.profile,
+                chat_id=route.chat_id,
+                thread_id="01" if route.profile == "sol" else route.thread_id,
+            )
+            for route in _persona_routes()
+        ]
+        with pytest.raises(ValueError, match="missing exact profile route"):
+            validate_topic_persona_alignment(
+                self._registry(), routes, multiplex_profiles=True
+            )
+
+    def test_telegram_route_with_guild_discriminator_cannot_pass_alignment(self):
+        routes = [
+            ProfileRoute(
+                name=route.name,
+                platform=route.platform,
+                profile=route.profile,
+                chat_id=route.chat_id,
+                thread_id=route.thread_id,
+                guild_id="impossible-on-telegram",
+            )
+            if route.profile == "sol"
+            else route
+            for route in _persona_routes()
+        ]
+        with pytest.raises(ValueError, match="missing exact profile route"):
+            validate_topic_persona_alignment(
+                self._registry(), routes, multiplex_profiles=True
+            )
+
+    def test_gateway_config_enforces_alignment_at_startup(self):
+        from gateway.config import GatewayConfig
+
+        topic_routes = [
+            {"chat_id": OWNER_CHAT, "thread_id": 1, "profile": "sol"},
+            {"chat_id": OWNER_CHAT, "thread_id": 77, "profile": "atlas"},
+            {"chat_id": OWNER_CHAT, "thread_id": 78, "profile": "metis"},
+        ]
+        raw_profile_routes = [
+            {
+                "name": route.name,
+                "platform": route.platform,
+                "chat_id": route.chat_id,
+                "thread_id": route.thread_id,
+                "profile": route.profile,
+            }
+            for route in _persona_routes()
+        ]
+        config = GatewayConfig.from_dict(
+            {
+                "multiplex_profiles": True,
+                "profile_routes": raw_profile_routes,
+                "platforms": {
+                    "telegram": {
+                        "enabled": True,
+                        "token": "synthetic-test-token",
+                        "extra": {
+                            "topic_routing": {
+                                "mode": "strict",
+                                "routes": topic_routes,
+                            }
+                        },
+                    }
+                },
+            }
+        )
+        assert {route.profile for route in config.profile_routes} == {
+            "sol",
+            "atlas",
+            "metis",
+        }
+
+    def test_gateway_config_enforces_nested_profile_routes_at_startup(self):
+        """Raw YAML callers may keep both multiplex settings under gateway."""
+        from gateway.config import GatewayConfig
+
+        topic_routes = [
+            {"chat_id": OWNER_CHAT, "thread_id": 1, "profile": "sol"},
+            {"chat_id": OWNER_CHAT, "thread_id": 77, "profile": "atlas"},
+            {"chat_id": OWNER_CHAT, "thread_id": 78, "profile": "metis"},
+        ]
+        raw_profile_routes = [
+            {
+                "name": route.name,
+                "platform": route.platform,
+                "chat_id": route.chat_id,
+                "thread_id": route.thread_id,
+                "profile": route.profile,
+            }
+            for route in _persona_routes()
+        ]
+
+        config = GatewayConfig.from_dict(
+            {
+                "gateway": {
+                    "multiplex_profiles": True,
+                    "profile_routes": raw_profile_routes,
+                },
+                "platforms": {
+                    "telegram": {
+                        "enabled": True,
+                        "token": "synthetic-test-token",
+                        "extra": {
+                            "topic_routing": {
+                                "mode": "strict",
+                                "routes": topic_routes,
+                            }
+                        },
+                    }
+                },
+            }
+        )
+
+        assert {route.profile for route in config.profile_routes} == {
+            "sol",
+            "atlas",
+            "metis",
+        }
+
+    def test_disabled_telegram_leaves_stale_topic_routing_inert(self):
+        from gateway.config import GatewayConfig, Platform
+
+        config = GatewayConfig.from_dict(
+            {
+                "platforms": {
+                    "telegram": {
+                        "enabled": False,
+                        "token": "synthetic-test-token",
+                        "extra": {
+                            "topic_routing": {
+                                "mode": "legacy-stale-value",
+                                "routes": [
+                                    {
+                                        "chat_id": OWNER_CHAT,
+                                        "thread_id": 1,
+                                        "profile": "sol",
+                                    }
+                                ],
+                            }
+                        },
+                    }
+                }
+            }
+        )
+
+        assert config.platforms[Platform.TELEGRAM].enabled is False

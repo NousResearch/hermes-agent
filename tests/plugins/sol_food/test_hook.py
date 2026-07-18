@@ -7,15 +7,17 @@ import json
 import stat
 import os
 from pathlib import Path
+from unittest.mock import AsyncMock
 
 import pytest
 
 from gateway.topic_hooks import HookDecision, MediaDescriptor
 from gateway.topic_routing import RouteOrigin, TopicRoute
-from plugins.sol_food.health_client import HealthClientError
-from plugins.sol_food.hook import SolFoodHook
+from plugins.sol_food.health_client import FrozenEnvelope, HealthClientError
+from plugins.sol_food.hook import SolFoodHook, _EnvelopeStore
 from plugins.sol_food.legacy_guard import LegacyHelperPresent
 from plugins.sol_food.limits import (
+    FOOD_CAPTION_MAX_CHARS,
     FOOD_PARSE_DEADLINE_SECONDS,
     FOOD_TEXT_MAX_CHARS,
 )
@@ -43,6 +45,18 @@ class Replies:
 
     async def __call__(self, text: str) -> None:
         self.messages.append(text)
+
+
+class PresentedReplies(Replies):
+    def __init__(self):
+        super().__init__()
+        self.actions = []
+        self.present_actions = self._present_actions
+
+    async def _present_actions(self, text, actions):
+        self.messages.append(text)
+        self.actions = actions
+        return 909
 
 
 class FakeHealthClient:
@@ -74,6 +88,51 @@ class FakeHealthClient:
             replayed=self.replayed,
             receipt=receipt,
         )
+
+
+@pytest.mark.asyncio
+async def test_envelope_publish_and_delete_fsync_parent_directory(
+    tmp_path, monkeypatch
+):
+    events = []
+    real_fsync = os.fsync
+    real_replace = os.replace
+    real_unlink = os.unlink
+
+    def tracked_fsync(fd):
+        mode = os.fstat(fd).st_mode
+        events.append("fsync_dir" if stat.S_ISDIR(mode) else "fsync_file")
+        return real_fsync(fd)
+
+    def tracked_replace(src, dst):
+        events.append("replace")
+        return real_replace(src, dst)
+
+    def tracked_unlink(path):
+        events.append("unlink")
+        return real_unlink(path)
+
+    monkeypatch.setattr(os, "fsync", tracked_fsync)
+    monkeypatch.setattr(os, "replace", tracked_replace)
+    monkeypatch.setattr(os, "unlink", tracked_unlink)
+    store = _EnvelopeStore(tmp_path)
+    request_bytes = b"{}"
+    envelope = FrozenEnvelope(
+        mutation_id="00000000-0000-4000-8000-000000000001",
+        entry_id="00000000-0000-4000-8000-000000000002",
+        operation="create",
+        expected_revision=0,
+        request_bytes=request_bytes,
+        request_sha256=hashlib.sha256(request_bytes).hexdigest(),
+    )
+
+    store.save("proposal", envelope, 123)
+    assert events.index("fsync_file") < events.index("replace")
+    assert events.index("replace") < events.index("fsync_dir")
+
+    events.clear()
+    store.delete("proposal")
+    assert events == ["unlink", "fsync_dir"]
 
 
 def sample_candidates(n=2):
@@ -145,6 +204,36 @@ class TestConversation:
         assert decision is HookDecision.CONTINUE
         assert replies.messages == []
 
+    @pytest.mark.asyncio
+    async def test_explicit_food_text_creates_proposal_and_consumes(self, hook):
+        replies = Replies()
+        decision = await hook.on_message(
+            SOL, origin(), "/food synthetic meal", replies
+        )
+        assert decision is HookDecision.CONSUME
+        assert await hook._store.has_active_proposal("208214988", 1)
+
+    @pytest.mark.asyncio
+    async def test_downloaded_sol_photo_creates_proposal_and_consumes(self, hook):
+        replies = Replies()
+        png = (
+            b"\x89PNG\r\n\x1a\n"
+            + b"\x00\x00\x00\rIHDR"
+            + (64).to_bytes(4, "big")
+            + (64).to_bytes(4, "big")
+            + b"\x08\x02\x00\x00\x00"
+        )
+        decision = await hook.on_media_downloaded(
+            SOL,
+            origin(),
+            MediaDescriptor("photo", len(png), 64, 64, None),
+            png,
+            None,
+            replies,
+        )
+        assert decision is HookDecision.CONSUME
+        assert await hook._store.has_active_proposal("208214988", 1)
+
 
 class TestTextProposal:
     @pytest.mark.asyncio
@@ -170,6 +259,46 @@ class TestTextProposal:
         proposal_id = await hook.propose_from_text(origin(), "synthetic meal", replies)
         assert proposal_id is not None
         assert health.calls == []  # candidates never write
+
+    @pytest.mark.asyncio
+    async def test_active_proposal_edit_enforces_text_length_before_parser(self, hook):
+        replies = Replies()
+        proposal_id = await hook.propose_from_text(
+            origin(), "synthetic meal", replies
+        )
+        assert proposal_id is not None
+        parser = AsyncMock(return_value=sample_candidates())
+        hook._parser = parser
+
+        decision = await hook.on_message(
+            SOL,
+            origin(update_id=1001),
+            "/food " + "x" * (FOOD_TEXT_MAX_CHARS + 1),
+            replies,
+        )
+
+        assert decision is HookDecision.CONSUME
+        parser.assert_not_awaited()
+        assert replies.messages[-1] == (
+            "That description is too long to log — please shorten it."
+        )
+
+    @pytest.mark.asyncio
+    async def test_origin_presenter_binds_opaque_buttons_before_callback(self, hook):
+        replies = PresentedReplies()
+        proposal_id = await hook.propose_from_text(
+            origin(), "synthetic meal", replies
+        )
+        proposal = await hook._store.get(proposal_id)
+        assert proposal.presentation_message_id == 909
+        assert [label for label, _token in replies.actions] == [
+            "Option 1",
+            "Option 2",
+            "Confirm",
+            "Edit",
+            "Cancel",
+        ]
+        assert all(token.startswith("sf1:") for _label, token in replies.actions)
 
 
 class TestParserCeilings:
@@ -247,6 +376,20 @@ class TestMediaGate:
         )
         decision = await hook.on_media_pre_download(SOL, origin(), media, replies)
         assert decision is HookDecision.CONTINUE
+
+    @pytest.mark.asyncio
+    async def test_overlong_caption_denied_before_download(self, hook):
+        replies = Replies()
+        media = MediaDescriptor(
+            kind="photo",
+            file_size=100,
+            width=10,
+            height=10,
+            media_group_id=None,
+            caption_length=FOOD_CAPTION_MAX_CHARS + 1,
+        )
+        decision = await hook.on_media_pre_download(SOL, origin(), media, replies)
+        assert decision is HookDecision.DENY
 
     @pytest.mark.asyncio
     async def test_non_photo_media_ignored(self, hook):
@@ -380,6 +523,43 @@ class TestCallbacks:
 
 class TestFrozenRetry:
     @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        "reason",
+        ["health_client_bad_response", "health_client_receipt_mismatch"],
+    )
+    async def test_post_200_ambiguity_retains_and_replays_exact_envelope(
+        self, hook, health, reason
+    ):
+        health.error = HealthClientError(reason, retryable=True)
+        replies = Replies()
+        proposal_id = await hook.propose_from_text(
+            origin(), "synthetic meal", replies
+        )
+        proposal = await hook._store.get(proposal_id)
+        tokens = {r["action"]: t for t, r in proposal.tokens.items()}
+        await hook.on_callback(
+            SOL, origin(update_id=2170), tokens["choice:0"], replies
+        )
+        proposal = await hook._store.get(proposal_id)
+        tokens = {
+            r["action"]: t for t, r in proposal.tokens.items() if not r["consumed"]
+        }
+        await hook.on_callback(
+            SOL, origin(update_id=2171), tokens[ACTION_CONFIRM], replies
+        )
+
+        frozen, _ = hook._envelopes.load(proposal_id)
+        assert frozen.request_bytes == health.calls[0]
+        proposal = await hook._store.get(proposal_id)
+        assert proposal.awaiting_commit is True
+        assert proposal.state is ProposalState.PENDING
+
+        health.error = None
+        health.replayed = True
+        assert await hook.reconcile() == 1
+        assert health.calls == [frozen.request_bytes, frozen.request_bytes]
+
+    @pytest.mark.asyncio
     async def test_transport_loss_retries_identical_bytes(self, hook, health):
         health.error = HealthClientError("health_client_transport_error", retryable=True)
         replies = Replies()
@@ -441,6 +621,70 @@ class TestFrozenRetry:
         count = await reborn.reconcile()
         assert count == 1
         assert health.calls[-1] == first_bytes
+
+    @pytest.mark.asyncio
+    async def test_lifecycle_reconciles_on_start_retries_and_never_duplicates_task(
+        self, tmp_path, clock, health
+    ):
+        state_dir = tmp_path / "lifecycle-reconcile"
+        home = tmp_path / "lifecycle-home"
+        original = SolFoodHook(
+            state_dir=state_dir,
+            hermes_home=home,
+            health_client=health,
+            parser=default_parser,
+            clock=clock,
+        )
+        health.error = HealthClientError(
+            "health_client_transport_error", retryable=True
+        )
+        replies = Replies()
+        proposal_id = await original.propose_from_text(
+            origin(), "synthetic meal", replies
+        )
+        proposal = await original._store.get(proposal_id)
+        tokens = {r["action"]: t for t, r in proposal.tokens.items()}
+        await original.on_callback(
+            SOL, origin(update_id=2350), tokens["choice:0"], replies
+        )
+        proposal = await original._store.get(proposal_id)
+        tokens = {
+            r["action"]: t for t, r in proposal.tokens.items() if not r["consumed"]
+        }
+        await original.on_callback(
+            SOL, origin(update_id=2351), tokens[ACTION_CONFIRM], replies
+        )
+        first_bytes = health.calls[0]
+
+        reborn = SolFoodHook(
+            state_dir=state_dir,
+            hermes_home=home,
+            health_client=health,
+            parser=default_parser,
+            clock=clock,
+            reconcile_retry_seconds=0.01,
+        )
+        await reborn.start()
+        await reborn.start()
+        for _ in range(50):
+            if len(health.calls) >= 2:
+                break
+            await asyncio.sleep(0.005)
+        assert health.calls[:2] == [first_bytes, first_bytes]
+
+        health.error = None
+        health.replayed = True
+        for _ in range(100):
+            if reborn._envelopes.pending_ids() == []:
+                break
+            await asyncio.sleep(0.005)
+        assert reborn._envelopes.pending_ids() == []
+        assert health.calls == [first_bytes, first_bytes, first_bytes]
+
+        await reborn.start()
+        await asyncio.sleep(0.02)
+        assert health.calls == [first_bytes, first_bytes, first_bytes]
+        await reborn.stop()
 
 
 class TestCrashWindows:
@@ -591,6 +835,99 @@ class TestCrashWindows:
         assert await hook.reconcile() == 1
         assert len(health.calls) == 2
         assert health.calls[1] == health.calls[0]
+
+    @pytest.mark.asyncio
+    async def test_awaiting_commit_rejects_edit_and_cancel_then_reconciles_original(
+        self, tmp_path, clock, health
+    ):
+        hook = SolFoodHook(
+            state_dir=tmp_path / "cw-edit",
+            hermes_home=tmp_path / "cw-edit-h",
+            health_client=health,
+            parser=default_parser,
+            clock=clock,
+        )
+        proposal_id, tokens, replies = await self._prep_single_candidate(hook)
+        cancel_token = tokens[ACTION_CANCEL]
+        health.error = HealthClientError(
+            "health_client_transport_error", retryable=True
+        )
+        await hook.on_callback(
+            SOL, origin(update_id=4250), tokens[ACTION_CONFIRM], replies
+        )
+        first_bytes = health.calls[0]
+        frozen, _frozen_update = hook._envelopes.load(proposal_id)
+        parser = AsyncMock(return_value=sample_candidates(2))
+        hook._parser = parser
+
+        decision = await hook.on_message(
+            SOL,
+            origin(update_id=4251),
+            "/food revised synthetic meal",
+            replies,
+        )
+
+        assert decision is HookDecision.CONSUME
+        parser.assert_not_awaited()
+        proposal = await hook._store.get(proposal_id)
+        assert proposal.awaiting_commit is True
+        assert proposal.state is ProposalState.PENDING
+        assert hook._envelopes.load(proposal_id)[0].request_bytes == frozen.request_bytes
+
+        await hook.on_callback(
+            SOL, origin(update_id=4252), cancel_token, replies
+        )
+        proposal = await hook._store.get(proposal_id)
+        assert proposal.awaiting_commit is True
+        assert proposal.state is ProposalState.PENDING
+
+        health.error = None
+        health.replayed = True
+        assert await hook.reconcile() == 1
+        assert health.calls == [first_bytes, first_bytes]
+        proposal = await hook._store.get(proposal_id)
+        assert proposal.state is ProposalState.CONFIRMED
+
+    @pytest.mark.asyncio
+    async def test_confirm_racing_parser_rejects_edit_under_store_lock(
+        self, tmp_path, clock, health
+    ):
+        hook = SolFoodHook(
+            state_dir=tmp_path / "cw-edit-race",
+            hermes_home=tmp_path / "cw-edit-race-h",
+            health_client=health,
+            parser=default_parser,
+            clock=clock,
+        )
+        proposal_id, tokens, replies = await self._prep_single_candidate(hook)
+        proposal = await hook._store.get(proposal_id)
+        original_version = proposal.version
+        original_hash = proposal.version_hash
+        health.error = HealthClientError(
+            "health_client_transport_error", retryable=True
+        )
+
+        async def parser_racing_confirm(_text, _image_path):
+            await hook.on_callback(
+                SOL, origin(update_id=4260), tokens[ACTION_CONFIRM], replies
+            )
+            return sample_candidates(2)
+
+        hook._parser = parser_racing_confirm
+        decision = await hook.on_message(
+            SOL,
+            origin(update_id=4261),
+            "/food revised while confirm races",
+            replies,
+        )
+
+        assert decision is HookDecision.CONSUME
+        proposal = await hook._store.get(proposal_id)
+        assert proposal.awaiting_commit is True
+        assert proposal.version == original_version
+        assert proposal.version_hash == original_hash
+        assert len(health.calls) == 1
+        assert "pending" in replies.messages[-1]
 
     @pytest.mark.asyncio
     async def test_cancel_race_discards_prefrozen_envelope(

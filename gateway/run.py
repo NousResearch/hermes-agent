@@ -20284,10 +20284,18 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     _notify_res = None
                     if _heartbeat_msg_id:
                         try:
+                            _notify_edit_kwargs = {}
+                            if getattr(
+                                _notify_adapter, "_topic_route_registry", None
+                            ) is not None:
+                                _notify_edit_kwargs["metadata"] = (
+                                    _status_thread_metadata
+                                )
                             _notify_res = await _notify_adapter.edit_message(
                                 source.chat_id,
                                 _heartbeat_msg_id,
                                 _heartbeat_text,
+                                **_notify_edit_kwargs,
                             )
                         except Exception as _ee:
                             logger.debug("Heartbeat edit failed: %s", _ee)
@@ -20945,11 +20953,15 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 _sc_msg_id = _sc.message_id
                 if _sc_msg_id:
                     try:
+                        _edit_kwargs = {}
+                        if getattr(_sc.adapter, "_topic_route_registry", None) is not None:
+                            _edit_kwargs["metadata"] = self._thread_metadata_for_source(source)
                         await _sc.adapter.edit_message(
                             chat_id=source.chat_id,
                             message_id=_sc_msg_id,
                             content=response["final_response"],
                             finalize=True,
+                            **_edit_kwargs,
                         )
                         response["already_sent"] = True
                         logger.info(
@@ -20980,14 +20992,26 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             _chat_id_snapshot = source.chat_id
             _adapter_snapshot = _cleanup_adapter
             _loop_snapshot = asyncio.get_running_loop()
+            _delete_metadata_snapshot = (
+                self._thread_metadata_for_source(source)
+                if getattr(_adapter_snapshot, "_topic_route_registry", None) is not None
+                else None
+            )
 
             def _cleanup_temp_bubbles() -> None:
                 async def _delete_all() -> None:
                     for _mid in _ids_snapshot:
                         try:
-                            await _adapter_snapshot.delete_message(
-                                _chat_id_snapshot, _mid
-                            )
+                            if _delete_metadata_snapshot is None:
+                                await _adapter_snapshot.delete_message(
+                                    _chat_id_snapshot, _mid
+                                )
+                            else:
+                                await _adapter_snapshot.delete_message(
+                                    _chat_id_snapshot,
+                                    _mid,
+                                    metadata=_delete_metadata_snapshot,
+                                )
                         except Exception:
                             pass
                 try:

@@ -18,6 +18,7 @@ import pytest
 
 from gateway.config import PlatformConfig
 from gateway.platforms.base import SendResult
+from gateway.topic_routing import TopicRouteRegistry
 
 
 def _install_fake_telegram(monkeypatch):
@@ -160,3 +161,30 @@ async def test_distinct_chat_ids_do_not_collide(adapter):
     adapter.edit_message.assert_not_awaited()
     assert adapter._status_message_ids[("chat-1", "lifecycle")] == "100"
     assert adapter._status_message_ids[("chat-2", "lifecycle")] == "200"
+
+
+@pytest.mark.asyncio
+async def test_strict_topics_have_independent_status_cache_entries(adapter):
+    """The same status key in Sol and ATLAS must never edit across topics."""
+    adapter._topic_route_registry = TopicRouteRegistry.from_config(
+        [
+            {"chat_id": "chat-1", "thread_id": 1, "profile": "sol"},
+            {"chat_id": "chat-1", "thread_id": 77, "profile": "atlas"},
+        ]
+    )
+    adapter.send.side_effect = [
+        SendResult(success=True, message_id="100"),
+        SendResult(success=True, message_id="200"),
+    ]
+
+    await adapter.send_or_update_status(
+        "chat-1", "lifecycle", "sol", metadata={"thread_id": "1"}
+    )
+    await adapter.send_or_update_status(
+        "chat-1", "lifecycle", "atlas", metadata={"thread_id": "77"}
+    )
+
+    assert adapter.send.await_count == 2
+    adapter.edit_message.assert_not_awaited()
+    assert adapter._status_message_ids[("chat-1", "1", "lifecycle")] == "100"
+    assert adapter._status_message_ids[("chat-1", "77", "lifecycle")] == "200"

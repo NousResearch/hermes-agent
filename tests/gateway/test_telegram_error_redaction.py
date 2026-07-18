@@ -75,6 +75,7 @@ async def test_disconnect_failure_redacts_token_in_log(monkeypatch, caplog):
     )
     adapter._release_platform_lock = lambda: None
     adapter._cancel_pending_delivery_tasks = AsyncMock()
+    adapter._topic_hooks.stop = AsyncMock()
 
     with caplog.at_level("WARNING"):
         await adapter.disconnect()
@@ -82,6 +83,7 @@ async def test_disconnect_failure_redacts_token_in_log(monkeypatch, caplog):
     logged = "\n".join(r.getMessage() for r in caplog.records)
     assert _SECRET_TOKEN not in logged
     assert "Error during Telegram disconnect" in logged
+    adapter._topic_hooks.stop.assert_awaited_once()
 
 
 @pytest.mark.asyncio

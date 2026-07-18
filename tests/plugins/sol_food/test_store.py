@@ -94,6 +94,32 @@ class TestLifecycle:
         assert stat.S_IMODE(os.stat(state_file).st_mode) == 0o600
 
     @pytest.mark.asyncio
+    async def test_atomic_state_publish_fsyncs_parent_after_replace(
+        self, tmp_path, clock, monkeypatch
+    ):
+        events = []
+        real_fsync = os.fsync
+        real_replace = os.replace
+
+        def tracked_fsync(fd):
+            mode = os.fstat(fd).st_mode
+            events.append("fsync_dir" if stat.S_ISDIR(mode) else "fsync_file")
+            return real_fsync(fd)
+
+        def tracked_replace(src, dst):
+            events.append("replace")
+            return real_replace(src, dst)
+
+        monkeypatch.setattr(os, "fsync", tracked_fsync)
+        monkeypatch.setattr(os, "replace", tracked_replace)
+        durable_store = FoodProposalStore(tmp_path / "durable", clock=clock)
+
+        await make_proposal(durable_store)
+
+        assert events.index("fsync_file") < events.index("replace")
+        assert events.index("replace") < events.index("fsync_dir")
+
+    @pytest.mark.asyncio
     async def test_ttl_boundary_minus_one_still_valid(self, store, clock):
         _proposal, tokens = await make_proposal(store)
         clock.now += FOOD_PROPOSAL_TTL_SECONDS - 1
@@ -123,6 +149,30 @@ class TestLifecycle:
         )
         assert outcome.kind == CallbackOutcome.KIND_DENIED
         assert outcome.reason_code == "food_store_expired"
+
+    @pytest.mark.asyncio
+    async def test_awaiting_commit_remains_active_after_ttl(self, store, clock):
+        proposal, tokens = await make_proposal(store)
+        proposal, _ = await store.edit_new_version(
+            proposal.proposal_id, candidates(1)
+        )
+        confirm = next(
+            token
+            for token, record in proposal.tokens.items()
+            if record["action"] == ACTION_CONFIRM and not record["consumed"]
+        )
+        consumed = await store.resolve_callback(
+            **resolve_kwargs(confirm, update_id=1999, message_id=None)
+        )
+        assert consumed.kind == CallbackOutcome.KIND_ACTION
+        clock.now += FOOD_PROPOSAL_TTL_SECONDS + 1
+
+        active = await store.active_proposal(OWNER, THREAD)
+        assert active is not None
+        assert active.awaiting_commit is True
+        with pytest.raises(ProposalError) as excinfo:
+            await make_proposal(store, update_id=2001)
+        assert excinfo.value.reason_code == "food_store_active_proposal_exists"
 
     @pytest.mark.asyncio
     async def test_expired_proposal_content_scrubbed(self, store, clock):
@@ -245,6 +295,37 @@ class TestReplayAndConsumption:
         )
         kinds = sorted(r.kind for r in results)
         assert kinds == [CallbackOutcome.KIND_ACTION, CallbackOutcome.KIND_DENIED]
+
+    @pytest.mark.asyncio
+    async def test_awaiting_commit_cannot_be_edited_under_store_lock(self, store):
+        proposal, tokens = await make_proposal(store)
+        await store.edit_new_version(proposal.proposal_id, [candidates(1)[0]])
+        proposal = await store.get(proposal.proposal_id)
+        confirm_token = next(
+            token
+            for token, record in proposal.tokens.items()
+            if (
+                record["action"] == ACTION_CONFIRM
+                and not record["consumed"]
+                and record["version"] == proposal.version
+            )
+        )
+        outcome = await store.resolve_callback(
+            **resolve_kwargs(confirm_token, message_id=None)
+        )
+        assert outcome.kind == CallbackOutcome.KIND_ACTION
+        before = await store.get(proposal.proposal_id)
+        before_version = before.version
+        before_hash = before.version_hash
+
+        with pytest.raises(ProposalError) as excinfo:
+            await store.edit_new_version(proposal.proposal_id, candidates(2))
+
+        assert excinfo.value.reason_code == "food_store_commit_pending"
+        after = await store.get(proposal.proposal_id)
+        assert after.awaiting_commit is True
+        assert after.version == before_version
+        assert after.version_hash == before_hash
 
     @pytest.mark.asyncio
     async def test_cancel_scrubs_content(self, store):

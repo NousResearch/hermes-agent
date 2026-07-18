@@ -141,9 +141,15 @@ def parse_profile_routes(raw: Optional[List[Dict[str, Any]]]) -> List[ProfileRou
                 name=name,
                 platform=platform,
                 profile=profile,
-                guild_id=entry.get("guild_id"),
-                chat_id=entry.get("chat_id"),
-                thread_id=entry.get("thread_id"),
+                guild_id=(
+                    str(entry["guild_id"]) if entry.get("guild_id") is not None else None
+                ),
+                chat_id=(
+                    str(entry["chat_id"]) if entry.get("chat_id") is not None else None
+                ),
+                thread_id=(
+                    str(entry["thread_id"]) if entry.get("thread_id") is not None else None
+                ),
                 enabled=entry.get("enabled", True),
             )
         )

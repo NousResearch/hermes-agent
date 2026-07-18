@@ -35,6 +35,7 @@ __all__ = [
     "TopicRoute",
     "RouteOrigin",
     "TopicRouteRegistry",
+    "validate_topic_persona_alignment",
 ]
 
 #: Telegram's non-deletable private "General" forum topic id. In the Sol
@@ -210,3 +211,64 @@ class TopicRouteRegistry:
 
     def __len__(self) -> int:
         return len(self._table)
+
+
+def validate_topic_persona_alignment(
+    registry: TopicRouteRegistry,
+    profile_routes: Iterable[Any],
+    *,
+    multiplex_profiles: bool,
+    platform: str = "telegram",
+) -> None:
+    """Require every strict route to select the same exact persona route.
+
+    The strict registry is the admission boundary, while ``profile_routes``
+    selects the profile HOME, prompt, session namespace, and tools.  Letting
+    those two independently configured layers drift would admit an update as
+    one profile but execute it under a different default profile. Strict mode
+    therefore requires multiplexing and one exact chat+thread profile route
+    with the same profile name for every admitted tuple.
+    """
+    if not multiplex_profiles:
+        raise ValueError("strict topic routing requires gateway.multiplex_profiles")
+
+    exact: Dict[Tuple[str, int], Any] = {}
+    for candidate in profile_routes:
+        if not getattr(candidate, "enabled", True):
+            continue
+        if getattr(candidate, "platform", None) != platform:
+            continue
+        # Telegram runtime selection treats every supplied discriminator as
+        # part of the route.  A candidate carrying ``guild_id`` can therefore
+        # never match a Telegram update, even when chat/thread happen to match.
+        if getattr(candidate, "guild_id", None) is not None:
+            continue
+        chat_id = getattr(candidate, "chat_id", None)
+        thread_id = getattr(candidate, "thread_id", None)
+        if chat_id is None or thread_id is None:
+            continue
+        try:
+            thread = int(thread_id)
+        except (TypeError, ValueError):
+            continue
+        # Profile routing compares discriminator strings at runtime.  Reject
+        # alternate numeric spellings (for example ``"01"``) here: treating
+        # them as thread 1 for startup validation would pass the alignment
+        # gate but fail to select the Sol profile for a real update carrying
+        # Telegram's canonical ``"1"`` value.
+        if isinstance(thread_id, bool) or str(thread_id) != str(thread):
+            continue
+        key = (str(chat_id), thread)
+        if key in exact:
+            raise ValueError("strict topic routing has duplicate exact profile route")
+        exact[key] = candidate
+
+    # Same-module access keeps the registry's deliberately tiny public lookup
+    # surface unchanged: consumers still cannot enumerate or recover routes.
+    for key in sorted(registry._table):
+        route = registry._table[key]
+        candidate = exact.get(route.key)
+        if candidate is None:
+            raise ValueError("strict topic routing missing exact profile route")
+        if getattr(candidate, "profile", None) != route.profile:
+            raise ValueError("strict topic routing profile mismatch")

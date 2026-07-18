@@ -51,7 +51,18 @@ REASON_STALE_VERSION = "food_store_stale_version"
 REASON_EXPIRED = "food_store_expired"
 REASON_ALREADY_RESOLVED = "food_store_already_resolved"
 REASON_NOT_PENDING = "food_store_not_pending"
+REASON_COMMIT_PENDING = "food_store_commit_pending"
 REASON_BAD_PRESENTATION = "food_store_bad_presentation"
+
+
+def _fsync_directory(path: Path) -> None:
+    """Commit rename/unlink metadata in ``path`` to durable storage."""
+    flags = os.O_RDONLY | getattr(os, "O_DIRECTORY", 0)
+    fd = os.open(path, flags)
+    try:
+        os.fsync(fd)
+    finally:
+        os.close(fd)
 
 
 class CallbackOutcome:
@@ -131,6 +142,7 @@ class FoodProposalStore:
             backup = self._file.with_suffix(".corrupt")
             try:
                 os.replace(self._file, backup)
+                _fsync_directory(self._dir)
             except OSError:
                 pass
             return
@@ -157,6 +169,7 @@ class FoodProposalStore:
         try:
             with os.fdopen(fd, "wb") as handle:
                 handle.write(blob)
+                os.fchmod(handle.fileno(), FOOD_CACHE_FILE_MODE)
                 handle.flush()
                 os.fsync(handle.fileno())
         except OSError:
@@ -166,7 +179,7 @@ class FoodProposalStore:
                 pass
             raise
         os.replace(tmp, self._file)
-        os.chmod(self._file, FOOD_CACHE_FILE_MODE)
+        _fsync_directory(self._dir)
 
     # ── internal upkeep (call under lock) ───────────────────────────────
     def _sweep_locked(self, now: float) -> bool:
@@ -202,7 +215,7 @@ class FoodProposalStore:
                 proposal.owner_chat_id == owner_chat_id
                 and proposal.thread_id == thread_id
                 and proposal.state is ProposalState.PENDING
-                and not proposal.expired(now)
+                and (proposal.awaiting_commit or not proposal.expired(now))
             ):
                 return proposal
         return None
@@ -214,6 +227,16 @@ class FoodProposalStore:
             if self._sweep_locked(now):
                 self._persist()
             return self._active_for_origin_locked(owner_chat_id, thread_id, now) is not None
+
+    async def active_proposal(
+        self, owner_chat_id: str, thread_id: int
+    ) -> Optional[FoodProposal]:
+        """Return the current owner+thread proposal for an explicit revision."""
+        async with self._lock:
+            now = self._clock()
+            if self._sweep_locked(now):
+                self._persist()
+            return self._active_for_origin_locked(owner_chat_id, thread_id, now)
 
     async def create(
         self,
@@ -277,6 +300,11 @@ class FoodProposalStore:
                 raise ProposalError(REASON_UNKNOWN_TOKEN)
             if proposal.state is not ProposalState.PENDING:
                 raise ProposalError(REASON_NOT_PENDING)
+            if proposal.awaiting_commit:
+                # A consumed Confirm owns an immutable envelope until its
+                # receipt verifies.  This check is inside the same store lock
+                # as the edit so a concurrent Confirm cannot race it.
+                raise ProposalError(REASON_COMMIT_PENDING)
             if proposal.expired(now):
                 raise ProposalError(REASON_EXPIRED)
             validate_candidates(candidates)

@@ -15,6 +15,7 @@ import pytest
 from hermes_cli.quick_commands import (
     QUICK_COMMAND_OUTPUT_MAX_BYTES,
     QuickCommandOutputError,
+    _posix_group_exists,
     _verified_process,
     communicate_bounded_async,
     run_bounded_argv,
@@ -24,6 +25,11 @@ from hermes_constants import reset_hermes_home_override, set_hermes_home_overrid
 
 def _minimal_test_env() -> dict[str, str]:
     return {"PATH": os.environ.get("PATH", "")}
+
+
+def test_posix_group_probe_is_safe_when_killpg_is_unavailable(monkeypatch):
+    monkeypatch.delattr(os, "killpg", raising=False)
+    assert _posix_group_exists(12345) is False
 
 
 def _successful_forking_command(

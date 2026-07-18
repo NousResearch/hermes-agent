@@ -45,6 +45,9 @@ __all__ = [
     "MediaDescriptor",
     "TopicPluginHook",
     "TopicHookRegistry",
+    "register_topic_hook_factory",
+    "clear_topic_hook_factories",
+    "create_topic_hook",
 ]
 
 # Stable value-free reason codes.
@@ -56,6 +59,71 @@ REASON_HOOK_DENIED = "topic_hook_denied"
 #: where supported, as a reply to the origin message); hooks cannot select
 #: any other destination.
 ReplyFn = Callable[[str], Awaitable[None]]
+TopicHookFactory = Callable[[], "TopicPluginHook"]
+
+
+@dataclass(frozen=True)
+class _FactoryRegistration:
+    owner: str
+    factory: TopicHookFactory
+
+
+# Process-global factory declarations are inert.  A factory is called only
+# when an operator explicitly lists its profile in
+# ``platforms.telegram.extra.topic_routing.hooks``.  This lets bundled plugins
+# advertise a topic integration without reading credentials, creating state,
+# or changing legacy gateways during plugin discovery.
+_TOPIC_HOOK_FACTORIES: Dict[str, _FactoryRegistration] = {}
+
+
+def clear_topic_hook_factories() -> None:
+    """Clear lazy declarations before an explicit full plugin rescan."""
+    _TOPIC_HOOK_FACTORIES.clear()
+
+
+def register_topic_hook_factory(
+    profile: str,
+    factory: TopicHookFactory,
+    *,
+    owner: str,
+) -> None:
+    """Register one lazy topic-hook factory for ``profile``.
+
+    A plugin owner may replace its own registration during an explicit plugin
+    rescan.  A different owner cannot claim the same profile.  Registration is
+    side-effect free: the factory is not called here.
+    """
+    if not isinstance(profile, str) or not profile.strip():
+        raise ValueError("topic hook factory requires a non-empty profile")
+    if not isinstance(owner, str) or not owner.strip():
+        raise ValueError("topic hook factory requires a non-empty owner")
+    if not callable(factory):
+        raise ValueError("topic hook factory must be callable")
+    profile = profile.strip()
+    owner = owner.strip()
+    existing = _TOPIC_HOOK_FACTORIES.get(profile)
+    if existing is not None and existing.owner != owner:
+        raise ValueError("duplicate topic hook factory profile")
+    _TOPIC_HOOK_FACTORIES[profile] = _FactoryRegistration(owner, factory)
+
+
+def create_topic_hook(profile: str, *, owner: str) -> "TopicPluginHook":
+    """Instantiate one explicitly enabled hook, failing closed.
+
+    The returned hook must bind to the requested profile.  Factories cannot
+    silently redirect an operator's configured namespace.
+    """
+    registration = _TOPIC_HOOK_FACTORIES.get(profile)
+    if registration is None:
+        raise ValueError("configured topic hook profile has no registered factory")
+    if registration.owner != owner:
+        raise ValueError("configured topic hook factory owner mismatch")
+    hook = registration.factory()
+    if not isinstance(hook, TopicPluginHook):
+        raise ValueError("topic hook factory returned an invalid hook")
+    if hook.profile != profile:
+        raise ValueError("topic hook factory profile mismatch")
+    return hook
 
 
 class HookDecision(enum.Enum):
@@ -87,7 +155,7 @@ class TopicPluginHook:
     """Base class for per-profile topic hooks.
 
     Subclasses set :attr:`profile` and :attr:`callback_prefixes` and
-    override any of the three ``on_*`` methods. Defaults are pass-through
+    override any of the ``on_*`` methods. Defaults are pass-through
     (CONTINUE), so a hook only owns what it explicitly implements.
     """
 
@@ -96,6 +164,12 @@ class TopicPluginHook:
 
     #: Callback-data prefixes owned by this hook (e.g. ``("sf1:",)``).
     callback_prefixes: Tuple[str, ...] = ()
+
+    async def start(self) -> None:
+        """Start background work after the owning adapter is connected."""
+
+    async def stop(self) -> None:
+        """Stop and await background work before the adapter disconnects."""
 
     async def on_message(
         self, route: TopicRoute, origin: RouteOrigin, text: str, reply: ReplyFn
@@ -109,6 +183,18 @@ class TopicPluginHook:
         media: MediaDescriptor,
         reply: ReplyFn,
     ) -> HookDecision:
+        return HookDecision.CONTINUE
+
+    async def on_media_downloaded(
+        self,
+        route: TopicRoute,
+        origin: RouteOrigin,
+        media: MediaDescriptor,
+        content: bytes,
+        caption: Optional[str],
+        reply: ReplyFn,
+    ) -> HookDecision:
+        """Inspect already bounded bytes after the pre-download gate."""
         return HookDecision.CONTINUE
 
     async def on_callback(
@@ -133,8 +219,11 @@ class TopicHookRegistry:
     def __init__(self) -> None:
         self._by_profile: Dict[str, TopicPluginHook] = {}
         self._by_prefix: Dict[str, TopicPluginHook] = {}
+        self._started = False
 
     def register(self, hook: TopicPluginHook) -> None:
+        if self._started:
+            raise RuntimeError("cannot register topic hook after lifecycle start")
         if not hook.profile or not isinstance(hook.profile, str):
             raise ValueError("topic hook requires a non-empty profile binding")
         if hook.profile in self._by_profile:
@@ -147,6 +236,35 @@ class TopicHookRegistry:
         self._by_profile[hook.profile] = hook
         for prefix in hook.callback_prefixes:
             self._by_prefix[prefix] = hook
+
+    async def start(self) -> None:
+        """Start each registered hook once, in registration order."""
+        if self._started:
+            return
+        started: List[TopicPluginHook] = []
+        try:
+            for hook in self._by_profile.values():
+                await hook.start()
+                started.append(hook)
+        except Exception:
+            for hook in reversed(started):
+                try:
+                    await hook.stop()
+                except Exception:
+                    logger.warning("[topic-hooks] %s", REASON_HOOK_ERROR)
+            raise
+        self._started = True
+
+    async def stop(self) -> None:
+        """Stop each started hook once, in reverse registration order."""
+        if not self._started:
+            return
+        self._started = False
+        for hook in reversed(tuple(self._by_profile.values())):
+            try:
+                await hook.stop()
+            except Exception:
+                logger.warning("[topic-hooks] %s", REASON_HOOK_ERROR)
 
     def hook_for(self, route: TopicRoute) -> Optional[TopicPluginHook]:
         return self._by_profile.get(route.profile)
@@ -199,6 +317,22 @@ class TopicHookRegistry:
             return HookDecision.DENY
         return await self._guarded(
             hook.on_callback(route, origin, callback_data, reply)
+        )
+
+    async def dispatch_media_downloaded(
+        self,
+        route: TopicRoute,
+        origin: RouteOrigin,
+        media: MediaDescriptor,
+        content: bytes,
+        caption: Optional[str],
+        reply: ReplyFn,
+    ) -> HookDecision:
+        hook = self._by_profile.get(route.profile)
+        if hook is None:
+            return HookDecision.CONTINUE
+        return await self._guarded(
+            hook.on_media_downloaded(route, origin, media, content, caption, reply)
         )
 
     @staticmethod

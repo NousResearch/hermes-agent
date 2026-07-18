@@ -45,6 +45,36 @@ ACP_REGISTRY_MANIFEST = REPO_ROOT / "acp_registry" / "agent.json"
 
 # Auto-extracted from noreply emails + manual overrides
 AUTHOR_MAP = {
+    # Exact identities carried by the long-lived personal deployment stack.
+    # These are attribution mappings only; they do not suppress the check.
+    "AllardQuek@users.noreply.github.com": "AllardQuek",
+    "DavidMetcalfe@users.noreply.github.com": "DavidMetcalfe",
+    "JiaDe-Wu@users.noreply.github.com": "JiaDe-Wu",
+    "abhinav11082001-stack@users.noreply.github.com": "abhinav11082001-stack",
+    "agent@agents-Mac-mini.local": "momomojo",  # upstream PR #43692 owner
+    "amethystani@users.noreply.github.com": "amethystani",
+    "entropidelic@users.noreply.github.com": "entropidelic",
+    "gigakun@agentmail.to": "gigakun3030",
+    "git@hode.co.uk": "okisdev",
+    "ilonagaja509-glitch@users.noreply.github.com": "ilonagaja509-glitch",
+    "in-liberty420@users.noreply.github.com": "in-liberty420",
+    "jakub.wolniewicz@gmail.com": "frizikk",
+    "jslizar@users.noreply.github.com": "jslizar",
+    "konsisumer@users.noreply.github.com": "konsisumer",
+    "luoyuctl@users.noreply.github.com": "luoyuctl",
+    "luyao618@users.noreply.github.com": "luyao618",
+    "magicray1217@users.noreply.github.com": "magicray1217",
+    "markvlcek@gmail.com": "MarkVLK",
+    "naqerl@users.noreply.github.com": "naqerl",
+    "pepelax@users.noreply.github.com": "pepelax",
+    "pingchesu@users.noreply.github.com": "pingchesu",
+    "pochi-gio@users.noreply.github.com": "pochi-gio",
+    "rames-jusso@users.noreply.github.com": "rames-jusso",
+    "redpiggy-cyber@users.noreply.github.com": "redpiggy-cyber",
+    "roadhero@users.noreply.github.com": "roadhero",
+    "s0673468@gmail.com": "s0673468",
+    "tekgnosis-net@users.noreply.github.com": "tekgnosis-net",
+    "vinoth12940@users.noreply.github.com": "vinoth12940",
     "41409874+2751738943@users.noreply.github.com": "2751738943",  # PR #54785 salvage (tui: post-turn completion ownership routing)
     "Burgunthy@users.noreply.github.com": "Burgunthy",  # PR #20096 salvage (gateway: profile-based routing for inbound messages)
     "75556242+webtecnica@users.noreply.github.com": "webtecnica",  # PR #63360 salvage (nous: restore inference-api base_url)

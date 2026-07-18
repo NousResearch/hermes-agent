@@ -92,6 +92,55 @@ When multiple routes match, the **most specific** one wins. Specificity is addit
 So a thread route (8) beats a channel route (4) beats a guild route (2) within the same server.
 If no route matches, the message uses the default/active profile.
 
+## Strict private Telegram topics
+
+An owner-private Telegram bot can opt into a stricter admission layer under
+`platforms.telegram.extra.topic_routing`. Unlike ordinary `profile_routes`, strict topic
+routing has no default, root-DM, lobby, or last-active fallback: the update must carry an
+exact registered `(chat_id, message_thread_id)` pair. Every strict route must also have an
+exact `profile_routes` entry selecting the same profile, and multiplexing must be enabled.
+
+```yaml
+gateway:
+  multiplex_profiles: true
+  profile_routes:
+    - {name: companion-topic, platform: telegram, chat_id: "123456789", thread_id: "1", profile: companion}
+    - {name: knowledge-topic, platform: telegram, chat_id: "123456789", thread_id: "77", profile: knowledge}
+    - {name: tutor-topic, platform: telegram, chat_id: "123456789", thread_id: "78", profile: tutor}
+
+platforms:
+  telegram:
+    extra:
+      topic_routing:
+        mode: strict
+        routes:
+          - {chat_id: "123456789", thread_id: 1, profile: companion}
+          - {chat_id: "123456789", thread_id: 77, profile: knowledge}
+          - {chat_id: "123456789", thread_id: 78, profile: tutor}
+        # Lazy plugin factories are inert unless explicitly enabled here.
+        hooks:
+          - {profile: companion, plugin: companion-actions}
+```
+
+Each `hooks` entry binds a route profile to the exact plugin id that owns its lazy factory.
+Hook state is resolved from that routed profile's home, even though the factory is
+instantiated by the default multiplex gateway. Once Telegram is connected, the adapter
+starts hook lifecycle work (including durable exact-envelope reconciliation) and awaits
+its stop hook before transport teardown.
+Plugin discovery only registers lazy factories; enabling a hook constructs it at adapter
+startup. An unknown, wrong-owner, duplicate,
+unrouted, misbound, or misconfigured hook fails startup. Omitting `hooks` leaves all plugin
+credentials and state untouched while the three isolated conversation profiles continue to
+route normally. Replies, media, callback actions, and receipts produced by a hook remain
+bound to the exact origin chat and thread, including explicit General topic id `1`.
+Status caches include that thread id, and a later edit or delete is accepted only for a
+message id recorded as created in the same exact strict origin during this gateway run.
+
+The bundled `sol-food` hook is one example: when explicitly bound to a strict route it
+uses `/food <description>` or one bounded photo to create a noncanonical proposal, then
+presents opaque origin-bound choices. Health remains the only canonical writer, and no
+write occurs before an authenticated Confirm callback.
+
 ## How it works at runtime
 
 1. An inbound message arrives at a platform adapter.

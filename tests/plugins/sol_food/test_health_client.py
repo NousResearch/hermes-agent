@@ -382,6 +382,7 @@ class TestRoundTrip:
         finally:
             server.close()
         assert excinfo.value.reason_code == reason
+        assert excinfo.value.retryable is True
 
     def test_receipt_identity_mismatch_fails(self, envelope):
         other = build_commit_envelope(
@@ -400,6 +401,7 @@ class TestRoundTrip:
         finally:
             server.close()
         assert excinfo.value.reason_code == "health_client_receipt_mismatch"
+        assert excinfo.value.retryable is True
 
     def test_failed_readback_blocks_ack_retryably(self, envelope):
         server = _Server(

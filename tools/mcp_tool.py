@@ -3479,6 +3479,18 @@ _SESSION_EXPIRED_MARKERS: tuple = (
     "connection closed",
     "broken pipe",
     "end of file",
+    # Generic JSON-RPC INVALID_PARAMS validation failure (see
+    # mcp/shared/session.py's incoming-request handler). A server that
+    # restarted mid-session (e.g. a redeploy) drops its server-side
+    # session state; the *next* request from a client still holding the
+    # old session fails request validation and comes back as this
+    # exact message, not one of the more specific "session expired"
+    # phrases above. Narrow substring match is intentional — this is
+    # only reached when _is_session_expired_error is asked to classify
+    # an actual raised exception, which is inherently already the
+    # unhappy path, so a broader net here is a acceptable tradeoff for
+    # not requiring a manual gateway restart after every server deploy.
+    "invalid request parameters",
 )
 
 

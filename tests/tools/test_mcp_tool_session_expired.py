@@ -82,6 +82,20 @@ def test_is_session_expired_rejects_unrelated_errors():
     assert _is_session_expired_error(RuntimeError("401 Unauthorized")) is False
 
 
+def test_is_session_expired_detects_invalid_request_parameters():
+    """A server that restarted mid-session (redeploy, pod rotation) drops
+    its server-side session state; the client's *next* request fails
+    JSON-RPC INVALID_PARAMS validation server-side (see
+    mcp/shared/session.py's incoming-request handler) and comes back as
+    this exact generic message -- not one of the more specific phrases
+    above. Studio North MCP incident, 2026-07-18: this was the literal
+    error text hit after every deploy, and it fell through unrecognized
+    before this marker was added, requiring a manual gateway restart."""
+    from tools.mcp_tool import _is_session_expired_error
+    assert _is_session_expired_error(RuntimeError("Invalid request parameters")) is True
+    assert _is_session_expired_error(RuntimeError("INVALID REQUEST PARAMETERS")) is True
+
+
 def test_is_session_expired_rejects_interrupted_error():
     """InterruptedError is the user-cancel signal — must never route
     through the session-reconnect path."""

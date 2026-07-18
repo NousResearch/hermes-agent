@@ -135,10 +135,8 @@ def test_current_user_turn_is_persisted_before_provider_call(agent):
     assert observed[0][0] == "persist"
     assert observed[1][0] == "provider"
     persisted_messages = observed[0][1]
-    assert persisted_messages[-1] == {
-        "role": "user",
-        "content": "new message that must survive a crash",
-    }
+    assert persisted_messages[-1]["role"] == "user"
+    assert persisted_messages[-1]["content"] == "new message that must survive a crash"
 
 
 class TestHTTP413Compression:
@@ -487,6 +485,29 @@ class TestHTTP413Compression:
             "role": "user",
             "content": "compressed summary",
         }
+
+    def test_context_length_ignores_internal_marker_removal_as_progress(self, agent):
+        """Private turn metadata cannot justify a context-overflow retry."""
+        err_400 = Exception("Error code: 400 - Please reduce the length of the messages")
+        err_400.status_code = 400
+        ok_resp = _mock_response(content="unexpected retry", finish_reason="stop")
+        agent.client.chat.completions.create.side_effect = [err_400, ok_resp]
+
+        with (
+            patch.object(agent, "_compress_context") as mock_compress,
+            patch.object(agent, "_persist_session"),
+            patch.object(agent, "_save_trajectory"),
+            patch.object(agent, "_cleanup_task_resources"),
+        ):
+            mock_compress.return_value = (
+                [{"role": "user", "content": "hello"}],
+                "compressed prompt",
+            )
+            result = agent.run_conversation("hello")
+
+        assert agent.client.chat.completions.create.call_count == 1
+        assert result["compression_exhausted"] is True
+        assert result["failed"] is True
 
     def test_413_cannot_compress_further(self, agent):
         """When compression can't reduce messages, return partial result."""

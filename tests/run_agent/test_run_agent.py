@@ -3976,6 +3976,52 @@ class TestHandleMaxIterations:
         assert messages[2]["tool_name"] == "execute_code"
         assert messages[1]["codex_reasoning_items"] == [{"id": "rs_1"}]
 
+    def test_summary_materializes_repaired_user_prefix_on_initial_and_retry(
+        self, agent
+    ):
+        from agent.agent_runtime_helpers import provider_visible_message_copy
+
+        agent.client.chat.completions.create.side_effect = [
+            _mock_response(content=""),
+            _mock_response(content="Recovered summary"),
+        ]
+        agent._cached_system_prompt = "You are helpful."
+        repaired_user = {
+            "role": "user",
+            "content": "current user input",
+            "_hermes_turn_id": "turn-probe",
+            "_hermes_repaired_user_prefix": "queued prior user input",
+        }
+        messages = [repaired_user, {"role": "assistant", "content": "Working."}]
+        expected_user_content = provider_visible_message_copy(repaired_user)["content"]
+
+        result = agent._handle_max_iterations(messages, 60)
+
+        assert result == "Recovered summary"
+        assert agent.client.chat.completions.create.call_count == 2
+        sent_payloads = [
+            call.kwargs["messages"]
+            for call in agent.client.chat.completions.create.call_args_list
+        ]
+        assert sent_payloads[0] == sent_payloads[1]
+        for sent_messages in sent_payloads:
+            serialized = json.dumps(sent_messages, ensure_ascii=False)
+            assert serialized.count("queued prior user input") == 1
+            assert serialized.count("current user input") == 1
+            assert (
+                sum(
+                    message.get("role") == "user"
+                    and message.get("content") == expected_user_content
+                    for message in sent_messages
+                )
+                == 1
+            )
+            assert not any(
+                isinstance(key, str) and key.startswith("_")
+                for message in sent_messages
+                for key in message
+            )
+
     def test_summary_omits_provider_preferences_for_non_openrouter(self, agent):
         agent.base_url = "https://api.openai.com/v1"
         agent._base_url_lower = agent.base_url.lower()
@@ -5561,17 +5607,16 @@ class TestRunConversation:
         forever without ever tripping the failure_limit circuit breaker
         (issue #23216 / #29747 gap 2).
 
-        As of #29747, the exhaustion path routes through
-        ``kanban_db._record_task_failure(outcome="timed_out")`` so the
-        ``consecutive_failures`` counter increments and the dispatcher's
-        ``failure_limit`` breaker eventually trips. The legacy
-        ``kanban_block`` call was replaced because blocked-outcome runs
-        bypass the failure counter.
+        The exhaustion path routes through
+        ``kanban_db.record_iteration_budget_exhaustion`` so a bounded handoff
+        is persisted and the configured retry/triage/block policy advances the
+        failure circuit without duplicate terminal events.
         """
         self._setup_agent(agent)
         agent.max_iterations = 2
 
         monkeypatch.setenv("HERMES_KANBAN_TASK", "t_test_task_123")
+        monkeypatch.setenv("HERMES_KANBAN_RUN_ID", "41")
 
         # Return a tool call for every iteration to exhaust the budget.
         tc = _mock_tool_call(name="web_search", arguments="{}", call_id="c1")
@@ -5586,13 +5631,13 @@ class TestRunConversation:
             tool_resp, tool_resp, summary_resp,
         ]
 
-        mock_record_failure = MagicMock(return_value=False)
+        mock_record_exhaustion = MagicMock(return_value="ready")
         mock_connect = MagicMock(return_value=MagicMock())
 
         with (
             patch("run_agent.handle_function_call", return_value="ok"),
-            patch("hermes_cli.kanban_db._record_task_failure",
-                  mock_record_failure),
+            patch("hermes_cli.kanban_db.record_iteration_budget_exhaustion",
+                  mock_record_exhaustion),
             patch("hermes_cli.kanban_db.connect", mock_connect),
             patch.object(agent, "_persist_session"),
             patch.object(agent, "_save_trajectory"),
@@ -5603,19 +5648,21 @@ class TestRunConversation:
         # The agent should have reported the task as not completed.
         assert result["completed"] is False
 
-        # _record_task_failure should have been called exactly once for
-        # the exhaustion event, with outcome="timed_out".
-        assert mock_record_failure.call_count == 1, (
-            f"Expected exactly 1 _record_task_failure call, "
-            f"got {mock_record_failure.call_count}. "
-            f"Calls: {mock_record_failure.call_args_list}"
+        # The exhaustion policy should run exactly once with the final handoff.
+        assert mock_record_exhaustion.call_count == 1, (
+            f"Expected exactly 1 budget exhaustion call, "
+            f"got {mock_record_exhaustion.call_count}. "
+            f"Calls: {mock_record_exhaustion.call_args_list}"
         )
-        call = mock_record_failure.call_args_list[0]
+        call = mock_record_exhaustion.call_args_list[0]
         # Positional: (conn, task_id, ...)
         assert call.args[1] == "t_test_task_123"
-        assert call.kwargs.get("outcome") == "timed_out"
-        assert call.kwargs.get("release_claim") is True
-        assert call.kwargs.get("end_run") is True
+        assert call.kwargs.get("expected_run_id") == 41
+        assert call.kwargs.get("partial_summary") == (
+            "Could not finish — budget exhausted."
+        )
+        assert call.kwargs.get("budget_used") == 2
+        assert call.kwargs.get("budget_max") == 2
         assert "Iteration budget exhausted" in call.kwargs.get("error", "")
 
     def test_no_kanban_block_when_not_in_kanban_mode(self, agent, monkeypatch):
@@ -5637,21 +5684,255 @@ class TestRunConversation:
             tool_resp, tool_resp, summary_resp,
         ]
 
-        mock_record_failure = MagicMock(return_value=False)
+        mock_record_exhaustion = MagicMock(return_value="ready")
 
         with (
             patch("run_agent.handle_function_call", return_value="ok"),
-            patch("hermes_cli.kanban_db._record_task_failure",
-                  mock_record_failure),
+            patch("hermes_cli.kanban_db.record_iteration_budget_exhaustion",
+                  mock_record_exhaustion),
             patch.object(agent, "_persist_session"),
             patch.object(agent, "_save_trajectory"),
             patch.object(agent, "_cleanup_task_resources"),
         ):
             agent.run_conversation("do stuff")
 
-        assert mock_record_failure.call_count == 0, (
-            "_record_task_failure should not be called outside kanban mode"
+        assert mock_record_exhaustion.call_count == 0, (
+            "budget exhaustion persistence should not run outside kanban mode"
         )
+
+    def test_kanban_budget_checkpoint_is_ephemeral_and_emitted_once(
+        self, agent, monkeypatch
+    ):
+        self._setup_agent(agent)
+        agent.max_iterations = 4
+        agent.valid_tool_names.update({"execute_code", "kanban_complete"})
+        monkeypatch.setenv("HERMES_KANBAN_TASK", "t_checkpoint_task")
+        monkeypatch.setenv("HERMES_KANBAN_RUN_ID", "17")
+
+        first_tc = _mock_tool_call(
+            name="execute_code", arguments="{}", call_id="c1"
+        )
+        second_tc = _mock_tool_call(
+            name="execute_code", arguments="{}", call_id="c2"
+        )
+        complete_tc = _mock_tool_call(
+            name="kanban_complete",
+            arguments='{"summary":"verified atomic completion"}',
+            call_id="c3",
+        )
+        first_tool_resp = _mock_response(
+            content="", finish_reason="tool_calls", tool_calls=[first_tc],
+        )
+        second_tool_resp = _mock_response(
+            content="", finish_reason="tool_calls", tool_calls=[second_tc],
+        )
+        complete_resp = _mock_response(
+            content="", finish_reason="tool_calls", tool_calls=[complete_tc],
+        )
+        final_resp = _mock_response(
+            content="verified atomic completion", finish_reason="stop",
+        )
+        agent.client.chat.completions.create.side_effect = [
+            first_tool_resp, second_tool_resp, complete_resp, final_resp,
+        ]
+
+        checkpoint = MagicMock(return_value=True)
+        fake_conn = MagicMock()
+        repair_shifted = False
+
+        def shift_prefix_during_checkpoint(_agent, messages):
+            nonlocal repair_shifted
+            if repair_shifted:
+                return 0
+            if any(
+                message.get("role") == "tool"
+                and message.get("tool_call_id") == "c2"
+                for message in messages
+            ):
+                messages.insert(0, {"role": "system", "content": "repaired-prefix"})
+                repair_shifted = True
+                return 1
+            return 0
+
+        with (
+            patch("run_agent.handle_function_call", return_value="ok"),
+            patch(
+                "agent.agent_runtime_helpers.repair_message_sequence_with_cursor",
+                side_effect=shift_prefix_during_checkpoint,
+            ),
+            patch("hermes_cli.kanban_db.connect", return_value=fake_conn),
+            patch(
+                "hermes_cli.kanban_db.record_iteration_budget_checkpoint",
+                checkpoint,
+            ),
+            patch.object(agent, "_persist_session"),
+            patch.object(agent, "_save_trajectory"),
+            patch.object(agent, "_cleanup_task_resources"),
+        ):
+            result = agent.run_conversation("finish one atomic kanban claim")
+
+        request_payloads = [
+            json.dumps(call.kwargs.get("messages", []), ensure_ascii=False)
+            for call in agent.client.chat.completions.create.call_args_list
+        ]
+        marker_positions = [
+            index
+            for index, payload in enumerate(request_payloads)
+            if "KANBAN_BUDGET_CHECKPOINT" in payload
+        ]
+        # The marker first appears on the previously unseen tool-result tail,
+        # then stays byte-stable for later calls so prompt caching is preserved.
+        assert marker_positions == [2, 3]
+        assert all(
+            request_payloads[index].count("KANBAN_BUDGET_CHECKPOINT") == 1
+            for index in marker_positions
+        )
+        third_messages = agent.client.chat.completions.create.call_args_list[2].kwargs[
+            "messages"
+        ]
+        fourth_messages = agent.client.chat.completions.create.call_args_list[3].kwargs[
+            "messages"
+        ]
+        third_checkpoint_result = next(
+            message["content"]
+            for message in third_messages
+            if message.get("tool_call_id") == "c2"
+        )
+        fourth_checkpoint_result = next(
+            message["content"]
+            for message in fourth_messages
+            if message.get("tool_call_id") == "c2"
+        )
+        assert third_checkpoint_result == fourth_checkpoint_result
+        assert "KANBAN_BUDGET_CHECKPOINT" in third_checkpoint_result
+        assert "KANBAN_BUDGET_CHECKPOINT" not in json.dumps(
+            result["messages"], ensure_ascii=False
+        )
+        checkpoint.assert_called_once()
+        assert checkpoint.call_args.kwargs == {
+            "expected_run_id": 17,
+            "budget_used": 3,
+            "budget_max": 4,
+        }
+        # execute_code-only calls refund IterationBudget, but the hard loop cap
+        # is API-call based; the checkpoint must use that same denominator.
+        assert agent.iteration_budget.used == 2
+        assert result["completed"] is True
+
+    def test_kanban_budget_checkpoint_survives_pre_api_compression(
+        self, agent, monkeypatch
+    ):
+        """Compression must not consume the one-shot checkpoint before send.
+
+        The pre-API pressure gate runs after the ephemeral request has been
+        assembled.  Compaction clones the live message dictionaries and then
+        restarts the iteration without calling the provider.  The current-turn
+        boundary therefore needs durable identity, and the checkpoint DB event
+        must not be committed until the post-compaction request is actually
+        about to run.
+        """
+        self._setup_agent(agent)
+        agent.max_iterations = 4
+        agent.compression_enabled = True
+        agent.valid_tool_names.update({"execute_code", "kanban_complete"})
+        monkeypatch.setenv("HERMES_KANBAN_TASK", "t_compressed_checkpoint")
+        monkeypatch.setenv("HERMES_KANBAN_RUN_ID", "23")
+
+        first_tc = _mock_tool_call(
+            name="execute_code", arguments="{}", call_id="compressed-c1"
+        )
+        second_tc = _mock_tool_call(
+            name="execute_code", arguments="{}", call_id="compressed-c2"
+        )
+        complete_tc = _mock_tool_call(
+            name="kanban_complete",
+            arguments='{"summary":"verified after compression"}',
+            call_id="compressed-c3",
+        )
+        agent.client.chat.completions.create.side_effect = [
+            _mock_response(content="", finish_reason="tool_calls", tool_calls=[first_tc]),
+            _mock_response(content="", finish_reason="tool_calls", tool_calls=[second_tc]),
+            _mock_response(content="", finish_reason="tool_calls", tool_calls=[complete_tc]),
+            _mock_response(content="verified after compression", finish_reason="stop"),
+        ]
+
+        # Trigger pressure only for the ephemeral pre-API payload that already
+        # contains the checkpoint marker. The persisted message list used by
+        # the post-tool gate never contains that marker, so this cannot
+        # accidentally exercise the wrong compression site.
+        compressed_once = False
+
+        def estimate_request(messages, **_kwargs):
+            payload = json.dumps(messages, ensure_ascii=False)
+            if "KANBAN_BUDGET_CHECKPOINT" in payload and not compressed_once:
+                return 999_999
+            return 1
+
+        def should_compress(tokens):
+            return tokens == 999_999
+
+        def clone_during_compression(messages, _system, **_kwargs):
+            nonlocal compressed_once
+            compressed_once = True
+            return [message.copy() for message in messages], "compressed-system"
+
+        checkpoint = MagicMock(return_value=True)
+        fake_conn = MagicMock()
+        with (
+            patch("run_agent.handle_function_call", return_value="ok"),
+            patch.object(
+                agent.context_compressor,
+                "should_compress",
+                side_effect=should_compress,
+            ),
+            patch(
+                "agent.conversation_loop.estimate_request_tokens_rough",
+                side_effect=estimate_request,
+            ),
+            patch.object(
+                agent,
+                "_compress_context",
+                side_effect=clone_during_compression,
+            ) as compress,
+            patch("hermes_cli.kanban_db.connect", return_value=fake_conn),
+            patch(
+                "hermes_cli.kanban_db.record_iteration_budget_checkpoint",
+                checkpoint,
+            ),
+            patch.object(agent, "_persist_session"),
+            patch.object(agent, "_save_trajectory"),
+            patch.object(agent, "_cleanup_task_resources"),
+        ):
+            result = agent.run_conversation(
+                "finish after compacting this turn",
+                conversation_history=[
+                    {"role": "user", "content": "queued prior user input"}
+                ],
+            )
+
+        assert compress.call_count == 1
+        request_payloads = [
+            json.dumps(call.kwargs.get("messages", []), ensure_ascii=False)
+            for call in agent.client.chat.completions.create.call_args_list
+        ]
+        marker_positions = [
+            index
+            for index, payload in enumerate(request_payloads)
+            if "KANBAN_BUDGET_CHECKPOINT" in payload
+        ]
+        assert marker_positions == [2, 3]
+        assert all(payload.count("KANBAN_BUDGET_CHECKPOINT") <= 1 for payload in request_payloads)
+        assert all("_hermes_turn_id" not in payload for payload in request_payloads)
+        assert "queued prior user input" in request_payloads[0]
+        assert "finish after compacting this turn" in request_payloads[0]
+        checkpoint.assert_called_once_with(
+            fake_conn,
+            "t_compressed_checkpoint",
+            expected_run_id=23,
+            budget_used=3,
+            budget_max=4,
+        )
+        assert result["completed"] is True
 
     # ── Output-cap retry: safe_out uses provider available_out + request estimate ──
 

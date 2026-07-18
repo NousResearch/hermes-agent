@@ -270,10 +270,13 @@ def test_pending_response_does_not_mask_later_terminal_exit(
 def test_pending_response_records_kanban_timeout(monkeypatch):
     monkeypatch.setattr("hermes_cli.plugins.invoke_hook", lambda *_a, **_kw: [])
     monkeypatch.setenv("HERMES_KANBAN_TASK", "task-123")
-    record = MagicMock(name="record_task_failure")
+    monkeypatch.setenv("HERMES_KANBAN_RUN_ID", "9")
+    record = MagicMock(name="record_iteration_budget_exhaustion")
     conn = SimpleNamespace(close=lambda: None)
     monkeypatch.setattr("hermes_cli.kanban_db.connect", lambda: conn)
-    monkeypatch.setattr("hermes_cli.kanban_db._record_task_failure", record)
+    monkeypatch.setattr(
+        "hermes_cli.kanban_db.record_iteration_budget_exhaustion", record
+    )
     agent = _LimitAgent()
 
     result = _finalize(
@@ -287,12 +290,12 @@ def test_pending_response_records_kanban_timeout(monkeypatch):
     record.assert_called_once_with(
         conn,
         "task-123",
+        expected_run_id=9,
         error=(
             "Iteration budget exhausted (60/60) — task could not complete "
             "within the allowed iterations"
         ),
-        outcome="timed_out",
-        release_claim=True,
-        end_run=True,
-        event_payload_extra={"budget_used": 60, "budget_max": 60},
+        partial_summary="composed report",
+        budget_used=60,
+        budget_max=60,
     )

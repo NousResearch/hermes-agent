@@ -287,6 +287,118 @@ _CTX_MAX_FIELD_BYTES    = 4 * 1024   # 4 KB per summary/error/metadata/result
 _CTX_MAX_BODY_BYTES     = 8 * 1024   # 8 KB per task.body (opening post)
 _CTX_MAX_COMMENT_BYTES  = 2 * 1024   # 2 KB per comment
 
+# Opt-in compact profile. Full mode above remains the compatibility default;
+# compact mode trades repeated prompt payload for explicit retrieval pointers.
+_CTX_COMPACT_MAX_PRIOR_ATTEMPTS = 1
+_CTX_COMPACT_MAX_COMMENTS = 6
+_CTX_COMPACT_MAX_PARENTS = 8
+_CTX_COMPACT_MAX_ATTACHMENTS = 8
+_CTX_COMPACT_MAX_ATTACHMENT_FIELD_BYTES = 512
+_CTX_COMPACT_MAX_TITLE_BYTES = 1024
+_CTX_COMPACT_MAX_IDENTITY_FIELD_BYTES = 512
+_CTX_COMPACT_MAX_AUTHOR_BYTES = 256
+_CTX_COMPACT_MAX_ROLE_HISTORY = 3
+_CTX_COMPACT_MAX_FIELD_BYTES = 2 * 1024
+_CTX_COMPACT_MAX_COMMENT_BYTES = 1 * 1024
+_CTX_COMPACT_MAX_TOTAL_BYTES = 48 * 1024
+_KANBAN_PARTIAL_SUMMARY_MAX_BYTES = 4 * 1024
+_HANDOFF_SECTION_RE = re.compile(
+    r"(?im)^(COMPLETED|CHANGED_FILES|TESTS|REMAINING|RESUME|INVARIANTS)\s*:\s*"
+)
+_HANDOFF_SECTION_LIMITS = {
+    "COMPLETED": 600,
+    "CHANGED_FILES": 400,
+    "TESTS": 500,
+    "REMAINING": 700,
+    "RESUME": 450,
+    "INVARIANTS": 600,
+}
+
+
+def _compact_worker_context_enabled(explicit: Optional[bool] = None) -> bool:
+    """Resolve the reversible worker-context profile.
+
+    ``None`` follows ``kanban.context_profile``. Invalid/missing config falls
+    back to full context so an optimization setting can never silently remove
+    evidence. Callers can always force either mode explicitly.
+    """
+    if explicit is not None:
+        return bool(explicit)
+    try:
+        from hermes_cli.config import load_config
+
+        cfg = load_config() or {}
+        value = str((cfg.get("kanban") or {}).get("context_profile", "full"))
+        return value.strip().lower() == "compact"
+    except Exception:
+        return False
+
+
+def _truncate_utf8(value: str, max_bytes: int, *, marker: str) -> str:
+    """Truncate text without splitting a UTF-8 code point."""
+    encoded = value.encode("utf-8")
+    if len(encoded) <= max_bytes:
+        return value
+    marker_bytes = marker.encode("utf-8")
+    keep = max(0, max_bytes - len(marker_bytes))
+    return encoded[:keep].decode("utf-8", errors="ignore") + marker
+
+
+def _normalize_partial_handoff_source(value: Optional[str]) -> Optional[str]:
+    """Return the unclassified source text bound by handoff metadata."""
+    raw = str(value or "").strip()
+    if not raw:
+        return None
+    if raw.startswith("[partial_unverified]"):
+        raw = raw[len("[partial_unverified]") :].lstrip()
+    return raw or None
+
+
+def _bounded_partial_handoff(
+    value: Optional[str],
+    *,
+    run_id: Optional[int] = None,
+) -> Optional[str]:
+    """Persist a typed, section-preserving exhaustion handoff within 4 KiB."""
+    raw = _normalize_partial_handoff_source(value)
+    if not raw:
+        return None
+
+    sections: dict[str, str] = {}
+    matches = list(_HANDOFF_SECTION_RE.finditer(raw))
+    for index, match in enumerate(matches):
+        end = matches[index + 1].start() if index + 1 < len(matches) else len(raw)
+        content = raw[match.end() : end].strip()
+        name = match.group(1).upper()
+        if content:
+            sections[name] = "\n".join(filter(None, (sections.get(name), content)))
+    if not matches:
+        sections["REMAINING"] = raw
+
+    digest = hashlib.sha256(raw.encode("utf-8")).hexdigest()
+    run_ref = str(run_id) if run_id is not None else "active"
+    lines = [
+        "[partial_unverified]",
+        "FORMAT: kanban_partial_handoff/v1",
+        f"FULL_HANDOFF_SHA256: {digest}",
+        "FULL_HANDOFF_REF: "
+        f"task_runs:{run_ref}.metadata.partial_summary_full",
+    ]
+    for name, limit in _HANDOFF_SECTION_LIMITS.items():
+        content = sections.get(name) or "not reported"
+        content = _truncate_utf8(
+            content,
+            limit,
+            marker="… [section truncated]",
+        )
+        lines.append(f"{name}: {content}")
+    text = "\n".join(lines)
+    return _truncate_utf8(
+        text,
+        _KANBAN_PARTIAL_SUMMARY_MAX_BYTES,
+        marker="\n… [handoff truncated]",
+    )
+
 
 def _relative_age(ts: Optional[int], now: Optional[int] = None) -> str:
     """Render the age of an epoch-seconds timestamp as a coarse, human-
@@ -859,6 +971,9 @@ class Task:
     project_id: Optional[str] = None
     result: Optional[str] = None
     idempotency_key: Optional[str] = None
+    review_contract: Optional[str] = None
+    review_postimage_sha256: Optional[str] = None
+    review_claims_sha256: Optional[str] = None
     # Unified non-success counter. Incremented on any of:
     #   * spawn failure (dispatcher couldn't launch the worker)
     #   * timed_out outcome (worker exceeded max_runtime_seconds)
@@ -948,6 +1063,17 @@ class Task:
             tenant=row["tenant"] if "tenant" in keys else None,
             result=row["result"] if "result" in keys else None,
             idempotency_key=row["idempotency_key"] if "idempotency_key" in keys else None,
+            review_contract=(
+                row["review_contract"] if "review_contract" in keys else None
+            ),
+            review_postimage_sha256=(
+                row["review_postimage_sha256"]
+                if "review_postimage_sha256" in keys else None
+            ),
+            review_claims_sha256=(
+                row["review_claims_sha256"]
+                if "review_claims_sha256" in keys else None
+            ),
             consecutive_failures=(
                 row["consecutive_failures"] if "consecutive_failures" in keys
                 # Pre-migration fallback: ``_migrate_add_optional_columns`` always
@@ -1117,6 +1243,12 @@ CREATE TABLE IF NOT EXISTS tasks (
     tenant               TEXT,
     result               TEXT,
     idempotency_key      TEXT,
+    -- Durable exact-review discriminator and canonical source hashes. Legacy
+    -- rows keep NULL and are never trusted solely because their generic
+    -- idempotency_key happens to use the reserved review:v1 namespace.
+    review_contract      TEXT,
+    review_postimage_sha256 TEXT,
+    review_claims_sha256 TEXT,
     -- Unified consecutive-failure counter. Incremented on spawn
     -- failure, timeout, or crash; reset only on successful completion.
     -- The circuit breaker in _record_task_failure trips when this
@@ -1868,6 +2000,24 @@ def _migrate_add_optional_columns(conn: sqlite3.Connection) -> None:
         _add_column_if_missing(
             conn, "tasks", "idempotency_key", "idempotency_key TEXT"
         )
+    if "review_contract" not in cols:
+        _add_column_if_missing(
+            conn, "tasks", "review_contract", "review_contract TEXT"
+        )
+    if "review_postimage_sha256" not in cols:
+        _add_column_if_missing(
+            conn,
+            "tasks",
+            "review_postimage_sha256",
+            "review_postimage_sha256 TEXT",
+        )
+    if "review_claims_sha256" not in cols:
+        _add_column_if_missing(
+            conn,
+            "tasks",
+            "review_claims_sha256",
+            "review_claims_sha256 TEXT",
+        )
     # ``idx_tasks_idempotency`` is created unconditionally below alongside
     # the other additive-column indexes — see the block after the
     # legacy-column migration. Creating it here too would be redundant.
@@ -2384,6 +2534,135 @@ def _canonical_assignee(assignee: Optional[str]) -> Optional[str]:
     return normalize_profile_name(assignee)
 
 
+_VALID_GRANULARITY_POLICIES = {"off", "warn", "triage", "allow"}
+
+
+def _resolve_granularity_policy(explicit: Optional[str]) -> tuple[str, bool, int]:
+    """Return ``(policy, invalid, max_turns)`` for task-scope preflight.
+
+    ``create_task`` is used by the CLI, model tools, dashboard API, and the
+    decomposer.  Resolving the policy here keeps every creation surface on the
+    same contract.  Invalid config is intentionally conservative but
+    compatibility-preserving: warn and record, never silently auto-triage.
+    """
+    raw = explicit
+    max_turns = 60
+    try:
+        from hermes_cli.config import load_config
+
+        cfg = load_config() or {}
+        kanban_cfg = cfg.get("kanban") or {}
+        agent_cfg = cfg.get("agent") or {}
+        max_turns = int(agent_cfg.get("max_turns") or 60)
+        if raw is None:
+            raw = kanban_cfg.get("granularity_guard", "warn")
+    except Exception:
+        if raw is None:
+            raw = "warn"
+    value = str(raw or "warn").strip().lower()
+    invalid = value not in _VALID_GRANULARITY_POLICIES
+    if invalid:
+        value = "warn"
+    return value, invalid, max(1, max_turns)
+
+
+_EXACT_REVIEW_CONTRACT = "exact_review_v1"
+_REVIEW_KEY_LINE_RE = re.compile(
+    r"^\s*REVIEW_KEY:\s*(?P<review_key>\S(?:.*\S)?)\s*$",
+    re.IGNORECASE | re.MULTILINE,
+)
+
+
+def _review_key_body_values(body: Optional[str]) -> list[str]:
+    """Return every structured REVIEW_KEY discriminator in a task body."""
+    return [
+        match.group("review_key")
+        for match in _REVIEW_KEY_LINE_RE.finditer(str(body or ""))
+    ]
+
+
+def _exact_review_identity(
+    review_key: str,
+    *,
+    body: Optional[str] = None,
+    idempotency_key: Optional[str] = None,
+    review_contract: Optional[str] = None,
+    review_postimage_sha256: Optional[str] = None,
+    review_claims_sha256: Optional[str] = None,
+    require_durable: bool = False,
+) -> tuple[str, str, str, str]:
+    """Validate every exact-review discriminator and return one identity."""
+    from hermes_cli.kanban_budget import canonical_review_idempotency_key
+
+    canonical_key = canonical_review_idempotency_key(review_key)
+    parts = canonical_key.split(":")
+    identity = canonical_key, _EXACT_REVIEW_CONTRACT, parts[2], parts[3]
+    body_values = _review_key_body_values(body)
+    if len(body_values) > 1:
+        raise ValueError("exact review body must contain at most one REVIEW_KEY line")
+    if body_values:
+        body_key = canonical_review_idempotency_key(body_values[0])
+        if body_key != canonical_key:
+            raise ValueError(
+                "REVIEW_KEY in exact review body conflicts with structured review_key"
+            )
+
+    supplied_identity = (
+        idempotency_key,
+        review_contract,
+        review_postimage_sha256,
+        review_claims_sha256,
+    )
+    if require_durable and any(value is None for value in supplied_identity):
+        raise ValueError("exact review durable identity contains NULL fields")
+    for label, supplied, expected in zip(
+        (
+            "idempotency_key",
+            "review_contract",
+            "review_postimage_sha256",
+            "review_claims_sha256",
+        ),
+        supplied_identity,
+        identity,
+    ):
+        if supplied is not None and str(supplied).strip().lower() != expected:
+            raise ValueError(f"exact review {label} conflicts with canonical identity")
+    return identity
+
+
+def _reusable_idempotency_incumbent(
+    rows: list[sqlite3.Row],
+    *,
+    exact_review_identity: Optional[tuple[str, str, str, str]] = None,
+) -> Optional[str]:
+    """Resolve one reusable incumbent, failing closed for exact reviews."""
+    if not rows:
+        return None
+    if exact_review_identity is not None:
+        canonical_key = exact_review_identity[0]
+        review_key = ":".join(canonical_key.split(":")[2:])
+        try:
+            if len(rows) != 1:
+                raise ValueError("multiple exact-review incumbents")
+            row = rows[0]
+            _exact_review_identity(
+                review_key,
+                body=row["body"],
+                idempotency_key=canonical_key,
+                review_contract=row["review_contract"],
+                review_postimage_sha256=row["review_postimage_sha256"],
+                review_claims_sha256=row["review_claims_sha256"],
+                require_durable=True,
+            )
+        except ValueError as exc:
+            raise ValueError(
+                "ambiguous legacy exact-review incumbent uses the reserved "
+                "idempotency key without one matching durable review contract "
+                "and canonical hashes"
+            ) from exc
+    return rows[0]["id"]
+
+
 def create_task(
     conn: sqlite3.Connection,
     *,
@@ -2408,6 +2687,8 @@ def create_task(
     session_id: Optional[str] = None,
     board: Optional[str] = None,
     project_id: Optional[str] = None,
+    granularity_policy: Optional[str] = None,
+    review_key: Optional[str] = None,
 ) -> str:
     """Create a new task and optionally link it under parent tasks.
 
@@ -2435,6 +2716,29 @@ def create_task(
     assignee = _canonical_assignee(assignee)
     if not title or not title.strip():
         raise ValueError("title is required")
+
+    exact_review_identity: Optional[tuple[str, str, str, str]] = None
+    review_contract: Optional[str] = None
+    review_postimage_sha256: Optional[str] = None
+    review_claims_sha256: Optional[str] = None
+    if review_key is not None:
+        if idempotency_key is not None:
+            raise ValueError(
+                "review_key and idempotency_key are mutually exclusive; "
+                "review_key already provides exact-postimage deduplication"
+            )
+        exact_review_identity = _exact_review_identity(review_key, body=body)
+        (
+            idempotency_key,
+            review_contract,
+            review_postimage_sha256,
+            review_claims_sha256,
+        ) = exact_review_identity
+    elif idempotency_key is not None and str(idempotency_key).startswith("review:v1:"):
+        raise ValueError(
+            "idempotency_key uses the reserved review namespace; pass review_key "
+            "with postimage and claims digests instead"
+        )
     if initial_status not in VALID_INITIAL_STATUSES:
         raise ValueError(
             f"initial_status must be one of {sorted(VALID_INITIAL_STATUSES)}"
@@ -2492,6 +2796,25 @@ def create_task(
 
     parents = tuple(p for p in parents if p)
 
+    from hermes_cli.kanban_budget import assess_task
+
+    resolved_granularity_policy, policy_invalid, assessment_max_turns = (
+        _resolve_granularity_policy(granularity_policy)
+    )
+    granularity_assessment = assess_task(
+        title,
+        body,
+        max_turns=assessment_max_turns,
+    )
+    auto_triaged = bool(
+        granularity_assessment.verdict == "split"
+        and resolved_granularity_policy == "triage"
+        and not triage
+        and initial_status != "blocked"
+    )
+    if auto_triaged:
+        triage = True
+
     # Normalise + validate skills: strip whitespace, drop empties, dedupe
     # (preserving order). Refuse commas inside a single name so we don't
     # invisibly splatter a comma-joined string into one argv slot — the
@@ -2537,20 +2860,26 @@ def create_task(
             )
         skills_list = cleaned
 
-    # Idempotency check — return the existing task instead of creating a
-    # duplicate. Done BEFORE entering write_txn to keep the fast path fast
-    # and to avoid holding a write lock during the lookup. Race is
-    # acceptable: two concurrent creators with the same key might both
-    # insert, at which point both rows exist but the next lookup stabilises.
+    # Idempotency fast path. The check is repeated inside the write
+    # transaction below so two connections racing on the same key
+    # cannot both insert after observing the same empty preimage.
+    def _reusable_incumbent(rows: list[sqlite3.Row]) -> Optional[str]:
+        return _reusable_idempotency_incumbent(
+            rows,
+            exact_review_identity=exact_review_identity,
+        )
+
     if idempotency_key:
-        row = conn.execute(
-            "SELECT id FROM tasks WHERE idempotency_key = ? "
+        incumbent_rows = conn.execute(
+            "SELECT id, body, review_contract, review_postimage_sha256, "
+            "review_claims_sha256 FROM tasks WHERE idempotency_key = ? "
             "AND status != 'archived' "
-            "ORDER BY created_at DESC LIMIT 1",
+            "ORDER BY created_at DESC, id DESC",
             (idempotency_key,),
-        ).fetchone()
-        if row:
-            return row["id"]
+        ).fetchall()
+        incumbent_id = _reusable_incumbent(incumbent_rows)
+        if incumbent_id is not None:
+            return incumbent_id
 
     now = int(time.time())
 
@@ -2579,6 +2908,17 @@ def create_task(
         task_id = _new_task_id()
         try:
             with write_txn(conn):
+                if idempotency_key:
+                    incumbent_rows = conn.execute(
+                        "SELECT id, body, review_contract, review_postimage_sha256, "
+                        "review_claims_sha256 FROM tasks WHERE idempotency_key = ? "
+                        "AND status != 'archived' "
+                        "ORDER BY created_at DESC, id DESC",
+                        (idempotency_key,),
+                    ).fetchall()
+                    incumbent_id = _reusable_incumbent(incumbent_rows)
+                    if incumbent_id is not None:
+                        return incumbent_id
                 # Determine task status from parent status, unless the caller
                 # parks it directly in blocked for human-ops review or in
                 # triage for a specifier.
@@ -2635,9 +2975,11 @@ def create_task(
                         id, title, body, assignee, status, priority,
                         created_by, created_at, workspace_kind, workspace_path,
                         branch_name, project_id, tenant, idempotency_key,
+                        review_contract, review_postimage_sha256,
+                        review_claims_sha256,
                         max_runtime_seconds,
                         skills, max_retries, goal_mode, goal_max_turns, session_id
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """,
                     (
                         task_id,
@@ -2654,6 +2996,9 @@ def create_task(
                         project_id,
                         tenant,
                         idempotency_key,
+                        review_contract,
+                        review_postimage_sha256,
+                        review_claims_sha256,
                         int(max_runtime_seconds) if max_runtime_seconds is not None else None,
                         json.dumps(skills_list) if skills_list is not None else None,
                         int(max_retries) if max_retries is not None else None,
@@ -2679,7 +3024,22 @@ def create_task(
                         "branch_name": branch_name,
                         "skills": list(skills_list) if skills_list else None,
                         "goal_mode": bool(goal_mode) or None,
+                        "review_contract": review_contract,
                     },
+                )
+                assessment_payload = granularity_assessment.to_dict()
+                assessment_payload.update(
+                    {
+                        "policy": resolved_granularity_policy,
+                        "policy_invalid": policy_invalid,
+                        "auto_triaged": auto_triaged,
+                    }
+                )
+                _append_event(
+                    conn,
+                    task_id,
+                    "granularity_assessed",
+                    assessment_payload,
                 )
             return task_id
         except sqlite3.IntegrityError:
@@ -5316,6 +5676,132 @@ def specify_triage_task(
     return True
 
 
+def claim_auto_decompose_attempt(
+    conn: sqlite3.Connection,
+    task_id: str,
+    *,
+    cause: str = "legacy",
+    generation: str = "task",
+) -> bool:
+    """Atomically reserve a bounded automatic decomposition attempt.
+
+    Claims are scoped by cause and generation so a later ``triage_once`` run is
+    not consumed by an older granularity attempt. A transient failure may be
+    explicitly released once via :func:`finish_auto_decompose_attempt`; the
+    second failure is terminal for that scope and prevents spend loops.
+    """
+    cause = str(cause or "").strip()
+    generation = str(generation or "").strip()
+    if not cause or len(cause) > 80:
+        raise ValueError("auto-decompose cause must be 1..80 characters")
+    if not generation or len(generation) > 160:
+        raise ValueError("auto-decompose generation must be 1..160 characters")
+    with write_txn(conn):
+        row = conn.execute(
+            "SELECT status FROM tasks WHERE id = ?",
+            (task_id,),
+        ).fetchone()
+        if row is None or row["status"] != "triage":
+            return False
+        scoped = [
+            event
+            for event in list_events(conn, task_id)
+            if event.kind.startswith("auto_decompose_")
+            and isinstance(event.payload, dict)
+            and event.payload.get("cause") == cause
+            and event.payload.get("generation") == generation
+        ]
+        attempts = sum(event.kind == "auto_decompose_attempted" for event in scoped)
+        releases = sum(event.kind == "auto_decompose_released" for event in scoped)
+        terminal = any(
+            event.kind in {"auto_decompose_completed", "auto_decompose_abandoned"}
+            for event in scoped
+        )
+        if terminal or attempts >= 2 or attempts > releases:
+            return False
+        _append_event(
+            conn,
+            task_id,
+            "auto_decompose_attempted",
+            {
+                "source": "gateway",
+                "cause": cause,
+                "generation": generation,
+                "attempt": attempts + 1,
+            },
+        )
+    return True
+
+
+def finish_auto_decompose_attempt(
+    conn: sqlite3.Connection,
+    task_id: str,
+    *,
+    cause: str,
+    generation: str,
+    success: bool,
+    transient: bool = False,
+) -> str:
+    """Close one claimed auto-decompose scope idempotently."""
+    cause = str(cause or "").strip()
+    generation = str(generation or "").strip()
+    with write_txn(conn):
+        scoped = [
+            event
+            for event in list_events(conn, task_id)
+            if event.kind.startswith("auto_decompose_")
+            and isinstance(event.payload, dict)
+            and event.payload.get("cause") == cause
+            and event.payload.get("generation") == generation
+        ]
+        attempts = sum(event.kind == "auto_decompose_attempted" for event in scoped)
+        releases = sum(event.kind == "auto_decompose_released" for event in scoped)
+        if any(event.kind == "auto_decompose_completed" for event in scoped):
+            return "completed"
+        if any(event.kind == "auto_decompose_abandoned" for event in scoped):
+            return "abandoned"
+        if attempts <= releases:
+            return "not_claimed"
+        payload = {
+            "source": "gateway",
+            "cause": cause,
+            "generation": generation,
+            "attempt": attempts,
+        }
+        if success:
+            _append_event(conn, task_id, "auto_decompose_completed", payload)
+            return "completed"
+        if transient and attempts < 2:
+            _append_event(conn, task_id, "auto_decompose_released", payload)
+            return "released"
+        payload["transient"] = bool(transient)
+        _append_event(conn, task_id, "auto_decompose_abandoned", payload)
+        return "abandoned"
+
+
+def auto_decompose_scope(
+    conn: sqlite3.Connection,
+    task_id: str,
+) -> tuple[str, str]:
+    """Bind an automatic attempt to the latest triage-producing evidence."""
+    for event in reversed(list_events(conn, task_id)):
+        if event.kind == "budget_triaged":
+            run_id = event.run_id
+            if run_id is None and isinstance(event.payload, dict):
+                run_id = event.payload.get("run_id")
+            return "budget_triage_once", f"run:{run_id or 'unknown'}"
+        if event.kind == "granularity_assessed" and isinstance(event.payload, dict):
+            digest = hashlib.sha256(
+                json.dumps(
+                    event.payload,
+                    sort_keys=True,
+                    separators=(",", ":"),
+                ).encode("utf-8")
+            ).hexdigest()
+            return "granularity", f"assessment:{digest}"
+    return "legacy", "task"
+
+
 def decompose_triage_task(
     conn: sqlite3.Connection,
     task_id: str,
@@ -5353,8 +5839,29 @@ def decompose_triage_task(
     """
     if not children:
         return None
+    if len(children) > 6:
+        raise ValueError("decomposition may contain at most 6 children")
+    root_state = conn.execute(
+        "SELECT status FROM tasks WHERE id = ?",
+        (task_id,),
+    ).fetchone()
+    if root_state is None or root_state["status"] != "triage":
+        return None
+    children = [dict(child) if isinstance(child, dict) else child for child in children]
     if root_assignee is not None:
         root_assignee = _canonical_assignee(root_assignee)
+
+    from hermes_cli.kanban_budget import (
+        assess_task,
+        incompatible_decomposition_family,
+    )
+
+    granularity_policy, policy_invalid, assessment_max_turns = (
+        _resolve_granularity_policy(None)
+    )
+    child_assessments = []
+    review_identities: list[Optional[tuple[str, str, str, str]]] = []
+    seen_review_keys: set[str] = set()
 
     # Pre-validate the children list shape outside the txn. Cheap checks
     # that don't need DB access. Bad input aborts before we touch the DB.
@@ -5374,6 +5881,110 @@ def decompose_triage_task(
                 )
             if p == idx:
                 raise ValueError(f"child[{idx}] cannot list itself as a parent")
+        kind = str(child.get("kind") or "work").strip().lower()
+        if kind not in {
+            "work",
+            "closure",
+            "review_scheduler",
+            "review",
+            "controller",
+            "activation",
+        }:
+            raise ValueError(f"child[{idx}].kind is invalid: {kind!r}")
+        child["kind"] = kind
+        assessment = assess_task(
+            str(title),
+            str(child.get("body") or ""),
+            max_turns=assessment_max_turns,
+        )
+        if assessment.verdict == "split":
+            raise ValueError(
+                f"child[{idx}] remains too broad after decomposition; "
+                "decompose it into atomic work before promotion"
+            )
+        incompatible_family = incompatible_decomposition_family(
+            kind,
+            assessment.action_families,
+        )
+        if incompatible_family is not None:
+            raise ValueError(
+                f"child[{idx}] has {incompatible_family} semantics incompatible "
+                f"with kind={kind!r}"
+            )
+        requires_human_activation = (
+            kind == "activation" or "activation" in assessment.action_families
+        )
+        child["requires_human_activation"] = requires_human_activation
+        raw_review_key = child.get("review_key")
+        review_identity = None
+        if kind == "review":
+            body = str(child.get("body") or "").strip()
+            review_identity = _exact_review_identity(
+                str(raw_review_key or ""),
+                body=body,
+                idempotency_key=child.get("idempotency_key"),
+                review_contract=child.get("review_contract"),
+                review_postimage_sha256=child.get("review_postimage_sha256"),
+                review_claims_sha256=child.get("review_claims_sha256"),
+            )
+            review_idempotency_key = review_identity[0]
+            if review_idempotency_key in seen_review_keys:
+                raise ValueError("duplicate review_key in decomposed children")
+            seen_review_keys.add(review_idempotency_key)
+            review_key = str(raw_review_key).strip().lower()
+            if not _review_key_body_values(body):
+                child["body"] = f"REVIEW_KEY: {review_key}\n\n{body}".rstrip()
+        elif raw_review_key not in (None, ""):
+            raise ValueError(
+                f"child[{idx}].review_key is allowed only for kind='review'"
+            )
+        body = str(child.get("body") or "").strip()
+        if kind == "review_scheduler" and not body.startswith(
+            "REVIEW_SCHEDULER_GATE:"
+        ):
+            child["body"] = (
+                "REVIEW_SCHEDULER_GATE: after closure, compute the immutable "
+                "postimage SHA-256 and claims SHA-256, then create or reuse the "
+                "keyed review. Do not claim the semantic review verdict.\n\n"
+                + body
+            ).rstrip()
+        elif kind == "controller" and not body.startswith("CONTROLLER_GATE:"):
+            child["body"] = (
+                "CONTROLLER_GATE: consume the completed keyed review's semantic "
+                "verdict. Never review your own input or release on scheduling "
+                "evidence alone.\n\n"
+                + body
+            ).rstrip()
+        if requires_human_activation:
+            body = str(child.get("body") or "").strip()
+            if not body.startswith("HUMAN_ACTIVATION_GATE:"):
+                child["body"] = (
+                    "HUMAN_ACTIVATION_GATE: PREPARE_ONLY. This shard must remain "
+                    "blocked until a human explicitly approves and unblocks the "
+                    "activation/deployment. Never self-approve.\n\n" + body
+                ).rstrip()
+        review_identities.append(review_identity)
+        child_assessments.append(assessment)
+
+    if len(children) < 2:
+        raise ValueError("decomposition must contain at least 2 children")
+
+    for idx, child in enumerate(children):
+        parent_kinds = {
+            children[parent_idx]["kind"]
+            for parent_idx in (child.get("parents") or [])
+        }
+        if (
+            child["kind"] in {"review", "review_scheduler"}
+            and "closure" not in parent_kinds
+        ):
+            raise ValueError(
+                f"child[{idx}] {child['kind']} must depend on a closure child"
+            )
+        if child["kind"] == "controller" and "review" not in parent_kinds:
+            raise ValueError(
+                f"child[{idx}] controller must depend directly on a keyed review child"
+            )
 
     # Detect cycles in the sibling parent graph (Kahn's topological sort).
     # link_tasks() calls _would_cycle() for every new edge; here we check
@@ -5407,6 +6018,7 @@ def decompose_triage_task(
     # _append_event calls.
     now = int(time.time())
     child_ids: list[str] = []
+    reused_review_statuses: dict[int, str] = {}
     with write_txn(conn):
         root_row = conn.execute(
             "SELECT id, status, tenant, workspace_kind, workspace_path "
@@ -5430,6 +6042,34 @@ def decompose_triage_task(
         # sees a coherent state, and recompute_ready() at the end
         # promotes parent-free children to 'ready'.
         for idx, child in enumerate(children):
+            review_identity = review_identities[idx]
+            review_idempotency_key = review_identity[0] if review_identity else None
+            if review_identity is not None:
+                existing_reviews = conn.execute(
+                    "SELECT id, status, body, review_contract, review_postimage_sha256, "
+                    "review_claims_sha256 FROM tasks WHERE idempotency_key = ? "
+                    "AND status != 'archived' ORDER BY created_at DESC, id DESC",
+                    (review_idempotency_key,),
+                ).fetchall()
+                existing_id = _reusable_idempotency_incumbent(
+                    existing_reviews,
+                    exact_review_identity=review_identity,
+                )
+                if existing_id is not None:
+                    existing_status = str(existing_reviews[0]["status"])
+                    child_ids.append(existing_id)
+                    reused_review_statuses[idx] = existing_status
+                    _append_event(
+                        conn,
+                        task_id,
+                        "review_reused",
+                        {
+                            "child_id": existing_id,
+                            "review_key": review_idempotency_key,
+                            "status": existing_status,
+                        },
+                    )
+                    continue
             new_id = _new_task_id()
             title = child["title"].strip()
             body = child.get("body")
@@ -5446,26 +6086,66 @@ def decompose_triage_task(
                 child_ws_path = root_ws_path
             else:
                 child_ws_path = None
+            requires_human_activation = bool(child.get("requires_human_activation"))
+            initial_status = "blocked" if requires_human_activation else "todo"
+            block_kind = "needs_input" if requires_human_activation else None
+            review_contract = review_identity[1] if review_identity else None
+            review_postimage_sha256 = review_identity[2] if review_identity else None
+            review_claims_sha256 = review_identity[3] if review_identity else None
             conn.execute(
                 "INSERT INTO tasks "
                 "(id, title, body, assignee, status, workspace_kind, "
-                " workspace_path, tenant, created_at, created_by) "
-                "VALUES (?, ?, ?, ?, 'todo', ?, ?, ?, ?, ?)",
+                " workspace_path, tenant, created_at, created_by, idempotency_key, "
+                " block_kind, review_contract, review_postimage_sha256, "
+                " review_claims_sha256) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                 (
                     new_id,
                     title,
                     body if isinstance(body, str) else None,
                     assignee,
+                    initial_status,
                     child_ws_kind,
                     child_ws_path,
                     tenant,
                     now,
                     (author or "decomposer"),
+                    review_idempotency_key,
+                    block_kind,
+                    review_contract,
+                    review_postimage_sha256,
+                    review_claims_sha256,
                 ),
             )
             _append_event(
                 conn, new_id, "created",
                 {"by": author or "decomposer", "from_decompose_of": task_id},
+            )
+            if requires_human_activation:
+                _append_event(
+                    conn,
+                    new_id,
+                    "blocked",
+                    {
+                        "reason": "human activation approval required",
+                        "kind": "needs_input",
+                        "source": "decomposer",
+                    },
+                )
+            assessment_payload = child_assessments[idx].to_dict()
+            assessment_payload.update(
+                {
+                    "policy": granularity_policy,
+                    "policy_invalid": policy_invalid,
+                    "auto_triaged": False,
+                    "source": "decomposer",
+                }
+            )
+            _append_event(
+                conn,
+                new_id,
+                "granularity_assessed",
+                assessment_payload,
             )
             child_ids.append(new_id)
 
@@ -5474,6 +6154,54 @@ def decompose_triage_task(
             for p_idx in child.get("parents") or []:
                 parent_id = child_ids[p_idx]
                 child_id = child_ids[idx]
+                reused_status = reused_review_statuses.get(idx)
+                if reused_status in {"running", "review", "done"}:
+                    # This exact reviewer already started or finished. Its
+                    # immutable input graph cannot acquire a new parent. Any
+                    # controller that consumes it must instead wait directly
+                    # on both the reused review and this graph's prerequisites.
+                    for controller_idx, controller in enumerate(children):
+                        if (
+                            controller.get("kind") != "controller"
+                            or idx not in (controller.get("parents") or [])
+                        ):
+                            continue
+                        controller_id = child_ids[controller_idx]
+                        if _would_cycle(conn, parent_id, controller_id):
+                            raise ValueError(
+                                f"link {parent_id}->{controller_id} would create a cycle"
+                            )
+                        inserted = conn.execute(
+                            "INSERT OR IGNORE INTO task_links (parent_id, child_id) "
+                            "VALUES (?, ?)",
+                            (parent_id, controller_id),
+                        )
+                        if inserted.rowcount:
+                            _append_event(
+                                conn,
+                                controller_id,
+                                "linked",
+                                {"parent": parent_id, "child": controller_id},
+                            )
+                    continue
+                if reused_status == "ready":
+                    parent_status_row = conn.execute(
+                        "SELECT status FROM tasks WHERE id = ?",
+                        (parent_id,),
+                    ).fetchone()
+                    if (
+                        parent_status_row is not None
+                        and parent_status_row["status"] != "done"
+                    ):
+                        conn.execute(
+                            "UPDATE tasks SET status = 'todo' "
+                            "WHERE id = ? AND status = 'ready'",
+                            (child_id,),
+                        )
+                if _would_cycle(conn, parent_id, child_id):
+                    raise ValueError(
+                        f"link {parent_id}->{child_id} would create a cycle"
+                    )
                 conn.execute(
                     "INSERT OR IGNORE INTO task_links (parent_id, child_id) "
                     "VALUES (?, ?)",
@@ -5489,6 +6217,8 @@ def decompose_triage_task(
         # link root under every child. Cycle-free because the root is
         # only ever a child here, never a parent of children.
         for cid in child_ids:
+            if _would_cycle(conn, cid, task_id):
+                raise ValueError(f"link {cid}->{task_id} would create a cycle")
             conn.execute(
                 "INSERT OR IGNORE INTO task_links (parent_id, child_id) "
                 "VALUES (?, ?)",
@@ -7029,6 +7759,11 @@ def _record_task_failure(
     force_trip: bool = False,
     release_claim: bool = False,
     end_run: bool = False,
+    partial_summary: Optional[str] = None,
+    trip_status: str = "blocked",
+    trip_event_kind: str = "gave_up",
+    require_running: bool = False,
+    expected_run_id: Optional[int] = None,
     event_payload_extra: Optional[dict] = None,
 ) -> bool:
     """Record a non-success outcome (spawn_failed / crashed / timed_out)
@@ -7039,8 +7774,8 @@ def _record_task_failure(
     through here so the ``consecutive_failures`` counter and the
     auto-block threshold stay consistent.
 
-    Returns True when the task was auto-blocked (counter reached
-    ``failure_limit``), False when it was just updated in place.
+    Returns True when the task tripped to ``blocked`` or ``triage``, False
+    when it was just updated in place.
 
     Modes:
 
@@ -7059,6 +7794,9 @@ def _record_task_failure(
     when the breaker trips, so callers can include outcome-specific
     context (e.g. pid on crash, elapsed on timeout).
 
+    ``require_running=True`` adds an in-transaction lifecycle guard for
+    finalizers whose earlier status read may race another terminal transition.
+
     Resolution order for the effective threshold:
       1. per-task ``max_retries`` if set (nothing else overrides)
       2. caller-supplied ``failure_limit`` (gateway passes the config
@@ -7074,18 +7812,47 @@ def _record_task_failure(
     ``max_retries`` override against the violation streak itself. The
     failure is still counted into ``consecutive_failures``.
     """
+    if trip_status not in {"blocked", "triage"}:
+        raise ValueError("trip_status must be 'blocked' or 'triage'")
+    if trip_event_kind not in {"gave_up", "budget_triaged", "blocked"}:
+        raise ValueError(
+            "trip_event_kind must be 'gave_up', 'budget_triaged', or 'blocked'"
+        )
+    raw_handoff = _normalize_partial_handoff_source(partial_summary)
+    bounded_handoff = _bounded_partial_handoff(
+        raw_handoff,
+        run_id=expected_run_id,
+    )
+    handoff_metadata = (
+        {
+            "partial_summary_format": "kanban_partial_handoff/v1",
+            "partial_summary_full": raw_handoff,
+            "partial_summary_sha256": hashlib.sha256(
+                raw_handoff.encode("utf-8")
+            ).hexdigest(),
+        }
+        if raw_handoff is not None
+        else {}
+    )
     if failure_limit is None:
         failure_limit = DEFAULT_FAILURE_LIMIT
     blocked = False
     with write_txn(conn):
         row = conn.execute(
-            "SELECT consecutive_failures, status, max_retries "
+            "SELECT consecutive_failures, status, max_retries, current_run_id "
             "FROM tasks WHERE id = ?", (task_id,),
         ).fetchone()
         if row is None:
             return False
         failures = int(row["consecutive_failures"]) + 1
         cur_status = row["status"]
+        # Budget finalization first inspects task state outside this helper for
+        # a useful return value, but a second finalizer can race that read. The
+        # transaction-local guard makes the lifecycle transition idempotent.
+        if require_running and cur_status != "running":
+            return False
+        if expected_run_id is not None and row["current_run_id"] != expected_run_id:
+            return False
 
         # Per-task override wins over both caller-supplied and default
         # thresholds. None (the common case) falls through.
@@ -7104,21 +7871,21 @@ def _record_task_failure(
             if release_claim:
                 # Spawn path: still running, also clear claim state.
                 conn.execute(
-                    "UPDATE tasks SET status = 'blocked', claim_lock = NULL, "
+                    "UPDATE tasks SET status = ?, claim_lock = NULL, "
                     "claim_expires = NULL, worker_pid = NULL, "
                     "consecutive_failures = ?, last_failure_error = ? "
                     "WHERE id = ? AND status IN ('running', 'ready')",
-                    (failures, error[:500], task_id),
+                    (trip_status, failures, error[:500], task_id),
                 )
             else:
                 # Timeout/crash path: task is already at ``ready``
                 # with claim cleared; just flip to blocked + update
                 # counter fields.
                 conn.execute(
-                    "UPDATE tasks SET status = 'blocked', "
+                    "UPDATE tasks SET status = ?, "
                     "consecutive_failures = ?, last_failure_error = ? "
                     "WHERE id = ? AND status IN ('ready', 'running')",
-                    (failures, error[:500], task_id),
+                    (trip_status, failures, error[:500], task_id),
                 )
             run_id = None
             if end_run:
@@ -7126,12 +7893,19 @@ def _record_task_failure(
                 run_id = _end_run(
                     conn, task_id,
                     outcome="gave_up", status="gave_up",
+                    summary=bounded_handoff,
                     error=error[:500],
                     metadata={
                         "failures": failures,
                         "trigger_outcome": outcome,
                         "effective_limit": effective_limit,
                         "limit_source": limit_source,
+                        **(dict(event_payload_extra) if event_payload_extra else {}),
+                        **handoff_metadata,
+                        **(
+                            {"partial_summary_saved": True}
+                            if bounded_handoff is not None else {}
+                        ),
                     },
                 )
             payload = {
@@ -7143,8 +7917,12 @@ def _record_task_failure(
             }
             if event_payload_extra:
                 payload.update(event_payload_extra)
+            if bounded_handoff is not None:
+                payload["partial_summary_saved"] = True
+            if trip_status != "blocked":
+                payload["routed_status"] = trip_status
             _append_event(
-                conn, task_id, "gave_up", payload, run_id=run_id,
+                conn, task_id, trip_event_kind, payload, run_id=run_id,
             )
             blocked = True
         else:
@@ -7171,16 +7949,184 @@ def _record_task_failure(
                 run_id = _end_run(
                     conn, task_id,
                     outcome=outcome, status=outcome,
+                    summary=bounded_handoff,
                     error=error[:500],
-                    metadata={"failures": failures},
+                    metadata={
+                        "failures": failures,
+                        **(dict(event_payload_extra) if event_payload_extra else {}),
+                        **handoff_metadata,
+                        **(
+                            {"partial_summary_saved": True}
+                            if bounded_handoff is not None else {}
+                        ),
+                    },
                 )
                 _append_event(
                     conn, task_id, outcome,
-                    {"error": error[:500], "failures": failures},
+                    {
+                        "error": error[:500],
+                        "failures": failures,
+                        **(dict(event_payload_extra) if event_payload_extra else {}),
+                        **(
+                            {"partial_summary_saved": True}
+                            if bounded_handoff is not None else {}
+                        ),
+                    },
                     run_id=run_id,
                 )
             # Timeout/crash path's caller already emitted its own event.
     return blocked
+
+
+_BUDGET_EXHAUSTION_POLICIES = {"retry", "block", "triage_once"}
+
+
+def record_iteration_budget_checkpoint(
+    conn: sqlite3.Connection,
+    task_id: str,
+    *,
+    expected_run_id: int,
+    budget_used: int,
+    budget_max: int,
+) -> bool:
+    """Record one durable, summary-free closure marker for the active run."""
+    used = max(0, int(budget_used))
+    maximum = max(0, int(budget_max))
+    with write_txn(conn):
+        row = conn.execute(
+            "SELECT status, current_run_id FROM tasks WHERE id = ?",
+            (task_id,),
+        ).fetchone()
+        if (
+            row is None
+            or row["status"] != "running"
+            or row["current_run_id"] != int(expected_run_id)
+        ):
+            return False
+        run_id = int(expected_run_id)
+        exists = conn.execute(
+            "SELECT 1 FROM task_events WHERE task_id = ? AND run_id = ? "
+            "AND kind = 'budget_checkpoint' LIMIT 1",
+            (task_id, run_id),
+        ).fetchone()
+        if exists is not None:
+            return False
+        _append_event(
+            conn,
+            task_id,
+            "budget_checkpoint",
+            {
+                "budget_used": used,
+                "budget_max": maximum,
+                "remaining": max(0, maximum - used),
+            },
+            run_id=run_id,
+        )
+    return True
+
+
+def _budget_exhaustion_policy(explicit: Optional[str] = None) -> str:
+    """Resolve the exhaustion policy; unknown values preserve legacy retry."""
+    if explicit is not None:
+        value = str(explicit).strip().lower()
+        return value if value in _BUDGET_EXHAUSTION_POLICIES else "retry"
+    try:
+        from hermes_cli.config import load_config
+
+        value = str(
+            load_config().get("kanban", {}).get(
+                "budget_exhaustion_policy", "retry"
+            )
+        ).strip().lower()
+        return value if value in _BUDGET_EXHAUSTION_POLICIES else "retry"
+    except Exception:
+        return "retry"
+
+
+def record_iteration_budget_exhaustion(
+    conn: sqlite3.Connection,
+    task_id: str,
+    *,
+    expected_run_id: int,
+    error: str,
+    partial_summary: Optional[str],
+    budget_used: int,
+    budget_max: int,
+    policy: Optional[str] = None,
+) -> str:
+    """Persist a compact handoff and apply one bounded exhaustion policy.
+
+    ``triage_once`` routes the first exhausted attempt to Triage and blocks a
+    repeated exhaustion, preventing recursive decompose/retry loops. ``retry``
+    is the backward-compatible default; ``block`` fails closed immediately.
+    Returns the task's resulting status.
+    """
+    resolved = _budget_exhaustion_policy(policy)
+    current = get_task(conn, task_id)
+    # A worker may have already called kanban_block/complete before the agent's
+    # own turn finalizer runs. Never increment the circuit breaker or append a
+    # second terminal event after that authoritative lifecycle transition.
+    if current is None:
+        return "missing"
+    if current.status != "running":
+        return current.status
+    if current.current_run_id != int(expected_run_id):
+        return "stale_run"
+
+    already_triaged = conn.execute(
+        "SELECT 1 FROM task_events WHERE task_id = ? AND kind = "
+        "'budget_triaged' LIMIT 1",
+        (task_id,),
+    ).fetchone() is not None
+    event_extra = {
+        "budget_used": int(budget_used),
+        "budget_max": int(budget_max),
+        "budget_exhaustion_policy": resolved,
+    }
+
+    if resolved == "triage_once" and not already_triaged:
+        _record_task_failure(
+            conn,
+            task_id,
+            error,
+            outcome="timed_out",
+            force_trip=True,
+            release_claim=True,
+            end_run=True,
+            partial_summary=partial_summary,
+            trip_status="triage",
+            trip_event_kind="budget_triaged",
+            require_running=True,
+            expected_run_id=int(expected_run_id),
+            event_payload_extra=event_extra,
+        )
+    else:
+        if resolved == "triage_once" and already_triaged:
+            event_extra["triage_once_repeat_blocked"] = True
+        sticky_budget_block = resolved in {"block", "triage_once"}
+        _record_task_failure(
+            conn,
+            task_id,
+            error,
+            outcome="timed_out",
+            force_trip=resolved in {"block", "triage_once"},
+            release_claim=True,
+            end_run=True,
+            partial_summary=partial_summary,
+            trip_event_kind="blocked" if sticky_budget_block else "gave_up",
+            require_running=True,
+            expected_run_id=int(expected_run_id),
+            event_payload_extra=event_extra,
+        )
+
+    task = get_task(conn, task_id)
+    if (
+        task is not None
+        and task.status == "running"
+        and task.current_run_id != int(expected_run_id)
+    ):
+        return "stale_run"
+    return task.status if task is not None else "missing"
 
 
 # Backward-compat alias. Old name is referenced from tests and possibly
@@ -8418,7 +9364,12 @@ def run_daemon(
 # Worker context builder (what a spawned worker sees)
 # ---------------------------------------------------------------------------
 
-def build_worker_context(conn: sqlite3.Connection, task_id: str) -> str:
+def build_worker_context(
+    conn: sqlite3.Connection,
+    task_id: str,
+    *,
+    compact: Optional[bool] = None,
+) -> str:
     """Return the full text a worker should read to understand its task.
 
     Order:
@@ -8438,9 +9389,22 @@ def build_worker_context(conn: sqlite3.Connection, task_id: str) -> str:
          collapsed).
 
     All caps exist so worker prompts stay bounded even on pathological
-    boards (retry-heavy tasks, comment storms). The per-field char cap
-    prevents a single 1 MB summary from dominating context.
+    boards (retry-heavy tasks, comment storms). Byte-based field and aggregate
+    caps prevent Unicode-heavy values or high fan-in metadata from dominating
+    compact context.
     """
+    compact_mode = _compact_worker_context_enabled(compact)
+    max_prior_attempts = (
+        _CTX_COMPACT_MAX_PRIOR_ATTEMPTS if compact_mode else _CTX_MAX_PRIOR_ATTEMPTS
+    )
+    max_comments = _CTX_COMPACT_MAX_COMMENTS if compact_mode else _CTX_MAX_COMMENTS
+    max_parents = _CTX_COMPACT_MAX_PARENTS if compact_mode else None
+    max_role_history = _CTX_COMPACT_MAX_ROLE_HISTORY if compact_mode else 5
+    field_limit = _CTX_COMPACT_MAX_FIELD_BYTES if compact_mode else _CTX_MAX_FIELD_BYTES
+    comment_limit = (
+        _CTX_COMPACT_MAX_COMMENT_BYTES if compact_mode else _CTX_MAX_COMMENT_BYTES
+    )
+
     task = get_task(conn, task_id)
     if not task:
         raise ValueError(f"unknown task {task_id}")
@@ -8450,23 +9414,102 @@ def build_worker_context(conn: sqlite3.Connection, task_id: str) -> str:
     # by the seconds it takes to build the block).
     _now = int(time.time())
 
-    def _cap(s: Optional[str], limit: int = _CTX_MAX_FIELD_BYTES) -> str:
-        """Truncate a string to `limit` chars with a visible ellipsis."""
+    def _cap(s: Optional[str], limit: Optional[int] = None) -> str:
+        """Use UTF-8 caps only in compact mode; preserve full-mode chars."""
         if not s:
             return ""
+        if limit is None:
+            limit = field_limit
         s = s.strip()
-        if len(s) <= limit:
+        if compact_mode:
+            return _truncate_utf8(s, int(limit), marker="… [field truncated]")
+        if len(s) <= int(limit):
             return s
-        return s[:limit] + f"… [truncated, {len(s) - limit} chars omitted]"
+        return s[: int(limit)] + f"… [truncated, {len(s) - int(limit)} chars omitted]"
+
+    def _metadata_context_lines(
+        metadata: Optional[dict],
+        *,
+        run_id: Optional[int],
+        owner_task_id: Optional[str] = None,
+    ) -> list[str]:
+        if not metadata:
+            return []
+        visible = dict(metadata)
+        context_ref = None
+        if compact_mode and "partial_summary_full" in visible:
+            source = str(visible.pop("partial_summary_full") or "")
+            digest = str(visible.get("partial_summary_sha256") or "")
+            actual_digest = hashlib.sha256(source.encode("utf-8")).hexdigest()
+            exact_recovery = bool(
+                source
+                and re.fullmatch(r"[0-9a-f]{64}", digest)
+                and digest == actual_digest
+                and run_id is not None
+            )
+            context_ref = {
+                "field": "partial_summary_full",
+                "integrity": "verified" if exact_recovery else "unverified",
+                "kind": "task_run_metadata",
+                "recover_with": (
+                    f"hermes kanban context {owner_task_id or task.id} "
+                    f"--run-id {run_id} "
+                    "--field partial_summary_full"
+                    if exact_recovery else None
+                ),
+                "run_id": run_id,
+                "sha256": digest if exact_recovery else None,
+            }
+        rendered: list[str] = []
+        if visible:
+            meta_str = json.dumps(visible, ensure_ascii=False, sort_keys=True)
+            rendered.append(f"_metadata_: `{_cap(meta_str)}`")
+        if context_ref is not None:
+            rendered.append(
+                "CONTEXT_REF: "
+                + json.dumps(
+                    context_ref,
+                    ensure_ascii=False,
+                    sort_keys=True,
+                    separators=(",", ":"),
+                )
+            )
+        return rendered
+
+    all_prior = [r for r in list_runs(conn, task_id) if r.ended_at is not None]
+    latest_durable_handoff = None
+    if compact_mode:
+        latest_durable_handoff = next(
+            (
+                run
+                for run in reversed(all_prior)
+                if isinstance(run.metadata, dict)
+                and "partial_summary_full" in run.metadata
+            ),
+            None,
+        )
+
+    def _identity(value: Optional[str]) -> str:
+        raw = value or ""
+        if compact_mode:
+            return _cap(raw, _CTX_COMPACT_MAX_IDENTITY_FIELD_BYTES)
+        return raw
 
     lines: list[str] = []
-    lines.append(f"# Kanban task {task.id}: {task.title}")
+    rendered_title = (
+        _cap(task.title, _CTX_COMPACT_MAX_TITLE_BYTES)
+        if compact_mode else task.title
+    )
+    lines.append(f"# Kanban task {task.id}: {rendered_title}")
     lines.append("")
-    lines.append(f"Assignee: {task.assignee or '(unassigned)'}")
-    lines.append(f"Status:   {task.status}")
+    lines.append(f"Assignee: {_identity(task.assignee) or '(unassigned)'}")
+    lines.append(f"Status:   {_identity(task.status)}")
     if task.tenant:
-        lines.append(f"Tenant:   {task.tenant}")
-    lines.append(f"Workspace: {task.workspace_kind} @ {task.workspace_path or '(unresolved)'}")
+        lines.append(f"Tenant:   {_identity(task.tenant)}")
+    lines.append(
+        f"Workspace: {_identity(task.workspace_kind)} @ "
+        f"{_identity(task.workspace_path) or '(unresolved)'}"
+    )
     if task.max_runtime_seconds is not None:
         terminal_timeout = _worker_terminal_timeout_env(
             task.max_runtime_seconds,
@@ -8477,12 +9520,86 @@ def build_worker_context(conn: sqlite3.Connection, task_id: str) -> str:
         if effective_terminal_timeout:
             lines.append(f"Terminal timeout: {effective_terminal_timeout}s")
     if task.branch_name:
-        lines.append(f"Branch:   {task.branch_name}")
+        lines.append(f"Branch:   {_identity(task.branch_name)}")
     lines.append("")
+
+    if compact_mode:
+        lines.append(
+            "> Compact context profile active. "
+            f"`hermes kanban context {task.id} --full` and "
+            f"`kanban_show(task_id=\"{task.id}\", full_context=true)` expose "
+            "the historical bounded profile. Exact full handoff sources use "
+            "the hash-bound recovery command carried in their CONTEXT_REF."
+        )
+        lines.append("")
+        compact_counts = {
+            "attachments": int(conn.execute(
+                "SELECT COUNT(*) FROM task_attachments WHERE task_id = ?",
+                (task_id,),
+            ).fetchone()[0]),
+            "attempts": int(conn.execute(
+                "SELECT COUNT(*) FROM task_runs "
+                "WHERE task_id = ? AND ended_at IS NOT NULL",
+                (task_id,),
+            ).fetchone()[0]),
+            "comments": int(conn.execute(
+                "SELECT COUNT(*) FROM task_comments WHERE task_id = ?",
+                (task_id,),
+            ).fetchone()[0]),
+            "parents": int(conn.execute(
+                "SELECT COUNT(*) FROM task_links WHERE child_id = ?",
+                (task_id,),
+            ).fetchone()[0]),
+        }
+        compact_omissions = {
+            "attachments": max(
+                0,
+                compact_counts["attachments"] - _CTX_COMPACT_MAX_ATTACHMENTS,
+            ),
+            "attempts": max(
+                0,
+                compact_counts["attempts"] - _CTX_COMPACT_MAX_PRIOR_ATTEMPTS,
+            ),
+            "comments": max(
+                0,
+                compact_counts["comments"] - _CTX_COMPACT_MAX_COMMENTS,
+            ),
+            "parents": max(
+                0,
+                compact_counts["parents"] - _CTX_COMPACT_MAX_PARENTS,
+            ),
+        }
+        if any(compact_omissions.values()):
+            lines.append("## Compact context manifest")
+            for label in ("attempts", "parents", "comments", "attachments"):
+                omitted_count = compact_omissions[label]
+                if omitted_count:
+                    lines.append(
+                        f"- {omitted_count} earlier {label} omitted; "
+                        "recover with full_context=true."
+                    )
+            lines.append("")
 
     if task.body and task.body.strip():
         lines.append("## Body")
         lines.append(_cap(task.body, _CTX_MAX_BODY_BYTES))
+        lines.append("")
+
+    # Priority-reserved compact block. It is emitted before attachments,
+    # parents, role history, and comments, while every field before it is
+    # byte-capped. Aggregate truncation therefore cannot starve the latest
+    # durable handoff or its hash-bound CONTEXT_REF.
+    if compact_mode and latest_durable_handoff is not None:
+        run = latest_durable_handoff
+        outcome = run.outcome or run.status
+        lines.append("## Latest durable handoff (priority-reserved)")
+        lines.append(f"### Run {run.id} — {_identity(outcome)}")
+        if run.summary and run.summary.strip():
+            lines.append(_cap(run.summary))
+        try:
+            lines.extend(_metadata_context_lines(run.metadata, run_id=run.id))
+        except Exception:
+            pass
         lines.append("")
 
     # Attachments — files uploaded to this task (PDFs, source docs,
@@ -8492,16 +9609,42 @@ def build_worker_context(conn: sqlite3.Connection, task_id: str) -> str:
     # as-is; remote backends need the kanban attachments dir mounted.
     attachments = list_attachments(conn, task_id)
     if attachments:
+        omitted_attachments = 0
+        if compact_mode and len(attachments) > _CTX_COMPACT_MAX_ATTACHMENTS:
+            omitted_attachments = len(attachments) - _CTX_COMPACT_MAX_ATTACHMENTS
+            attachments = attachments[-_CTX_COMPACT_MAX_ATTACHMENTS:]
         lines.append("## Attachments")
         lines.append(
             "Files attached to this task. Read them with the file/terminal "
             "tools at the absolute paths below:"
         )
+        if omitted_attachments:
+            lines.append(
+                f"_({omitted_attachments} earlier attachments omitted; "
+                "request full_context=true to recover the complete list.)_"
+            )
         for att in attachments:
             size_kb = max(1, (att.size + 1023) // 1024) if att.size else 0
             size_str = f", {size_kb} KB" if size_kb else ""
-            ctype = f", {att.content_type}" if att.content_type else ""
-            lines.append(f"- `{att.filename}`{ctype}{size_str} → `{att.stored_path}`")
+            if compact_mode:
+                filename = _cap(
+                    att.filename,
+                    _CTX_COMPACT_MAX_ATTACHMENT_FIELD_BYTES,
+                )
+                stored_path = _cap(
+                    att.stored_path,
+                    _CTX_COMPACT_MAX_ATTACHMENT_FIELD_BYTES,
+                )
+                content_type = _cap(
+                    att.content_type,
+                    _CTX_COMPACT_MAX_ATTACHMENT_FIELD_BYTES,
+                )
+            else:
+                filename = att.filename
+                stored_path = att.stored_path
+                content_type = att.content_type or ""
+            ctype = f", {content_type}" if content_type else ""
+            lines.append(f"- `{filename}`{ctype}{size_str} → `{stored_path}`")
         lines.append("")
 
     # Prior attempts — show closed runs so a retrying worker sees the
@@ -8509,24 +9652,28 @@ def build_worker_context(conn: sqlite3.Connection, task_id: str) -> str:
     # Cap at _CTX_MAX_PRIOR_ATTEMPTS most-recent closed runs; older
     # attempts get collapsed into a one-line marker so the worker knows
     # more exist without bloating the prompt.
-    all_prior = [r for r in list_runs(conn, task_id) if r.ended_at is not None]
     # list_runs returns ascending by started_at; "most recent" = last N
-    if len(all_prior) > _CTX_MAX_PRIOR_ATTEMPTS:
-        omitted = len(all_prior) - _CTX_MAX_PRIOR_ATTEMPTS
-        shown = all_prior[-_CTX_MAX_PRIOR_ATTEMPTS:]
+    if len(all_prior) > max_prior_attempts:
+        omitted = len(all_prior) - max_prior_attempts
+        shown = all_prior[-max_prior_attempts:]
         first_shown_idx = omitted + 1
     else:
         omitted = 0
         shown = all_prior
         first_shown_idx = 1
-    if shown:
+    shown_attempts = [
+        run
+        for run in shown
+        if latest_durable_handoff is None or run.id != latest_durable_handoff.id
+    ]
+    if shown_attempts:
         lines.append("## Prior attempts on this task")
         if omitted:
             lines.append(
                 f"_({omitted} earlier attempt{'s' if omitted != 1 else ''} "
-                f"omitted; showing most recent {len(shown)})_"
+                f"omitted; showing most recent {len(shown_attempts)})_"
             )
-        for offset, run in enumerate(shown):
+        for offset, run in enumerate(shown_attempts):
             idx = first_shown_idx + offset
             ts = time.strftime("%Y-%m-%d %H:%M", time.localtime(run.started_at))
             age = _relative_age(run.started_at, _now)
@@ -8540,8 +9687,9 @@ def build_worker_context(conn: sqlite3.Connection, task_id: str) -> str:
                 lines.append(f"_error_: {_cap(run.error)}")
             if run.metadata:
                 try:
-                    meta_str = json.dumps(run.metadata, ensure_ascii=False, sort_keys=True)
-                    lines.append(f"_metadata_: `{_cap(meta_str)}`")
+                    lines.extend(
+                        _metadata_context_lines(run.metadata, run_id=run.id)
+                    )
                 except Exception:
                     pass
             lines.append("")
@@ -8556,8 +9704,14 @@ def build_worker_context(conn: sqlite3.Connection, task_id: str) -> str:
     parent_ids = [r["parent_id"] for r in parent_rows]
 
     if parent_ids:
+        if max_parents is not None and len(parent_ids) > max_parents:
+            omitted_parent_ids = parent_ids[:-max_parents]
+            shown_parent_ids = parent_ids[-max_parents:]
+        else:
+            omitted_parent_ids = []
+            shown_parent_ids = parent_ids
         wrote_header = False
-        for pid in parent_ids:
+        for pid in shown_parent_ids:
             pt = get_task(conn, pid)
             if not pt or pt.status != "done":
                 continue
@@ -8574,6 +9728,18 @@ def build_worker_context(conn: sqlite3.Connection, task_id: str) -> str:
                     "current work and it's not recent, re-verify against the "
                     "source before acting on it as current._"
                 )
+                if omitted_parent_ids:
+                    omitted_digest = hashlib.sha256(
+                        "\n".join(omitted_parent_ids).encode("utf-8")
+                    ).hexdigest()[:16]
+                    sample_ids = omitted_parent_ids[:2] + omitted_parent_ids[-2:]
+                    lines.append(
+                        "_(Compact profile omitted full handoffs for "
+                        f"{len(omitted_parent_ids)} earlier parents; sample ids: "
+                        + ", ".join(sample_ids)
+                        + f"; id-list sha256 prefix: {omitted_digest}. "
+                        "Request full_context=true to recover them.)_"
+                    )
                 wrote_header = True
 
             # When did this parent's result get produced? Prefer the
@@ -8596,8 +9762,13 @@ def build_worker_context(conn: sqlite3.Connection, task_id: str) -> str:
 
             if run is not None and run.metadata:
                 try:
-                    meta_str = json.dumps(run.metadata, ensure_ascii=False, sort_keys=True)
-                    body_lines.append(f"_metadata_: `{_cap(meta_str)}`")
+                    body_lines.extend(
+                        _metadata_context_lines(
+                            run.metadata,
+                            run_id=run.id,
+                            owner_task_id=pid,
+                        )
+                    )
                 except Exception:
                     pass
             lines.extend(body_lines)
@@ -8615,11 +9786,11 @@ def build_worker_context(conn: sqlite3.Connection, task_id: str) -> str:
             "FROM task_runs r JOIN tasks t ON r.task_id = t.id "
             "WHERE r.profile = ? AND r.task_id != ? "
             "  AND r.outcome = 'completed' "
-            "ORDER BY r.ended_at DESC LIMIT 5",
+            f"ORDER BY r.ended_at DESC LIMIT {int(max_role_history)}",
             (task.assignee, task_id),
         ).fetchall()
         if role_rows:
-            lines.append(f"## Recent work by @{task.assignee}")
+            lines.append(f"## Recent work by @{_identity(task.assignee)}")
             for row in role_rows:
                 ts = time.strftime(
                     "%Y-%m-%d %H:%M", time.localtime(int(row["ended_at"]))
@@ -8627,17 +9798,22 @@ def build_worker_context(conn: sqlite3.Connection, task_id: str) -> str:
                 age = _relative_age(row["ended_at"], _now)
                 ts_disp = f"{ts}, {age}" if age else ts
                 s = (row["summary"] or "").strip().splitlines()
-                first = s[0][:200] if s else "(no summary)"
-                lines.append(f"- {row['id']} — {row['title']} ({ts_disp}): {first}")
+                if compact_mode:
+                    first = _cap(s[0], 512) if s else "(no summary)"
+                    role_title = _cap(str(row["title"]), 512)
+                else:
+                    first = s[0][:200] if s else "(no summary)"
+                    role_title = str(row["title"])
+                lines.append(f"- {row['id']} — {role_title} ({ts_disp}): {first}")
             lines.append("")
 
     # Comments: cap at the most-recent _CTX_MAX_COMMENTS so
     # comment-storm tasks don't blow out the worker's prompt. Older
     # comments summarised in a one-line marker like prior attempts.
     all_comments = list_comments(conn, task_id)
-    if len(all_comments) > _CTX_MAX_COMMENTS:
-        omitted_c = len(all_comments) - _CTX_MAX_COMMENTS
-        shown_c = all_comments[-_CTX_MAX_COMMENTS:]
+    if len(all_comments) > max_comments:
+        omitted_c = len(all_comments) - max_comments
+        shown_c = all_comments[-max_comments:]
     else:
         omitted_c = 0
         shown_c = all_comments
@@ -8659,11 +9835,23 @@ def build_worker_context(conn: sqlite3.Connection, task_id: str) -> str:
             # Defense-in-depth — the LLM-controlled author-forgery surface
             # was already closed in #22435. See #22452.
             safe_author = (c.author or "").replace("`", "")
+            if compact_mode:
+                safe_author = _cap(safe_author, _CTX_COMPACT_MAX_AUTHOR_BYTES)
             lines.append(f"comment from worker `{safe_author}` at {ts_disp}:")
-            lines.append(_cap(c.body, _CTX_MAX_COMMENT_BYTES))
+            lines.append(_cap(c.body, comment_limit))
             lines.append("")
 
-    return "\n".join(lines).rstrip() + "\n"
+    rendered = "\n".join(lines).rstrip() + "\n"
+    if compact_mode:
+        rendered = _truncate_utf8(
+            rendered,
+            _CTX_COMPACT_MAX_TOTAL_BYTES,
+            marker=(
+                "\n… [compact context truncated; recover omitted evidence with "
+                "the bounded full profile; exact handoffs use CONTEXT_REF]\n"
+            ),
+        )
+    return rendered
 
 
 # ---------------------------------------------------------------------------
@@ -9176,6 +10364,47 @@ def get_run(conn: sqlite3.Connection, run_id: int) -> Optional[Run]:
         "SELECT * FROM task_runs WHERE id = ?", (int(run_id),),
     ).fetchone()
     return Run.from_row(row) if row else None
+
+
+def read_run_metadata_field(
+    conn: sqlite3.Connection,
+    *,
+    task_id: str,
+    run_id: int,
+    field: str,
+) -> str:
+    """Return one integrity-checked, explicitly recoverable run field.
+
+    This is intentionally not a generic metadata reader. Compact worker context
+    may reference the full, unverified budget handoff stored in
+    ``partial_summary_full``; that one field is recoverable byte-for-byte only
+    when its sibling SHA-256 is present and matches. The task/run ownership check
+    prevents a reference for one task from being replayed against another.
+    """
+
+    if field != "partial_summary_full":
+        raise ValueError("field must be 'partial_summary_full'")
+    run = get_run(conn, run_id)
+    if run is None:
+        raise ValueError(f"run {int(run_id)} not found")
+    if run.task_id != task_id:
+        raise ValueError(f"run {int(run_id)} does not belong to task {task_id}")
+    metadata = run.metadata if isinstance(run.metadata, dict) else {}
+    value = metadata.get(field)
+    expected = metadata.get("partial_summary_sha256")
+    if not isinstance(value, str):
+        raise ValueError(f"run {int(run_id)} has no string field {field}")
+    if not isinstance(expected, str) or not re.fullmatch(r"[0-9a-f]{64}", expected):
+        raise ValueError(
+            f"run {int(run_id)} has no canonical partial_summary_sha256"
+        )
+    actual = hashlib.sha256(value.encode("utf-8")).hexdigest()
+    if actual != expected:
+        raise ValueError(
+            f"run {int(run_id)} {field} SHA-256 mismatch: "
+            f"expected {expected}, got {actual}"
+        )
+    return value
 
 
 def latest_run(conn: sqlite3.Connection, task_id: str) -> Optional[Run]:

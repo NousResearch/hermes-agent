@@ -15,6 +15,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 from agent.context_compressor import ContextCompressor
+from agent.iteration_budget import CURRENT_TURN_ID_KEY
 from agent.turn_context import TurnContext, build_turn_context
 from hermes_state import SessionDB
 
@@ -174,9 +175,61 @@ def test_returns_turn_context_with_user_message_appended():
     assert isinstance(ctx, TurnContext)
     assert ctx.user_message == "hello"
     # The user turn was appended and indexed.
-    assert ctx.messages[-1] == {"role": "user", "content": "hello"}
+    assert ctx.messages[-1]["role"] == "user"
+    assert ctx.messages[-1]["content"] == "hello"
+    assert ctx.messages[-1][CURRENT_TURN_ID_KEY] == ctx.turn_id
     assert ctx.current_turn_user_idx == len(ctx.messages) - 1
     assert ctx.active_system_prompt == "SYSTEM"
+
+
+def test_preflight_sizing_observes_only_provider_visible_messages():
+    agent = _FakeAgent()
+    agent.compression_enabled = True
+    agent.context_compressor = types.SimpleNamespace(
+        protect_first_n=2,
+        protect_last_n=2,
+        threshold_tokens=1,
+        last_prompt_tokens=0,
+        last_real_prompt_tokens=0,
+        context_length=1000,
+        should_defer_preflight_to_real_usage=lambda _tokens: False,
+        get_active_compression_failure_cooldown=lambda: None,
+        should_compress=MagicMock(side_effect=[True, False]),
+    )
+    setattr(
+        agent,
+        "_compress_context",
+        MagicMock(
+            side_effect=lambda messages, *_args, **_kwargs: (
+                [dict(message) for message in messages],
+                "SYSTEM",
+            )
+        ),
+    )
+    cheap_seen = []
+    request_seen = []
+
+    def cheap_spy(messages):
+        cheap_seen.append(messages)
+        return 100
+
+    request_values = iter((100, 50))
+
+    def request_spy(messages, **_kwargs):
+        request_seen.append(messages)
+        return next(request_values)
+
+    with (
+        patch("agent.turn_context.estimate_messages_tokens_rough", cheap_spy),
+        patch("agent.turn_context.estimate_request_tokens_rough", request_spy),
+    ):
+        ctx = _build(agent)
+
+    assert len(cheap_seen) == 1
+    assert len(request_seen) == 2
+    for observed in [*cheap_seen, *request_seen]:
+        assert all(not key.startswith("_") for message in observed for key in message)
+    assert CURRENT_TURN_ID_KEY in ctx.messages[-1]
 
 
 def test_applies_agent_side_effects():

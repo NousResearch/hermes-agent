@@ -1,0 +1,42 @@
+{
+  "benchmark": "kanban_worker_context_synthetic_v1",
+  "caveat": "Token counts are a transparent 4-UTF-8-bytes/token approximation; provider tokenizers and cache behavior vary.",
+  "compact": {
+    "approx_tokens_at_4_bytes_per_token": 12288,
+    "utf8_bytes": 49152
+  },
+  "contracts": {
+    "attempt_omission_marker_present": true,
+    "cli_recovery_marker_present": true,
+    "comment_omission_marker_present": true,
+    "compact_under_48k_utf8": true,
+    "compact_under_half_of_full": true,
+    "model_tool_recovery_marker_present": true,
+    "parent_omission_marker_present": true,
+    "task_body_preserved": true
+  },
+  "fixture": {
+    "comments": 40,
+    "parents": 20,
+    "prior_attempts": 8,
+    "task_body_chars": 8012
+  },
+  "full": {
+    "approx_tokens_at_4_bytes_per_token": 85217,
+    "utf8_bytes": 340866
+  },
+  "omissions": {
+    "comments": 34,
+    "parents": 12,
+    "prior_attempts": 7
+  },
+  "recovery": {
+    "cli": "hermes kanban context <task_id> --run-id <run_id> --field partial_summary_full",
+    "model_tool": "kanban_show(task_id=<task_id>, full_context=true)"
+  },
+  "savings": {
+    "approx_tokens_at_4_bytes_per_token": 72929,
+    "percent": 85.58,
+    "utf8_bytes": 291714
+  }
+}

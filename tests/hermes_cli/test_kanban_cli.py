@@ -91,6 +91,44 @@ def test_run_slash_create_and_list(kanban_home):
     assert "alice" in out
 
 
+def test_context_reads_exact_hash_bound_run_field(kanban_home, capsys):
+    source = "FULL_SOURCE:" + ("🧭" * 20_000) + ":SOURCE_TAIL_SENTINEL"
+    digest = __import__("hashlib").sha256(source.encode("utf-8")).hexdigest()
+    with kb.connect() as conn:
+        task_id = kb.create_task(conn, title="Recovery target")
+        cursor = conn.execute(
+            """INSERT INTO task_runs
+               (task_id, status, started_at, ended_at, outcome, metadata)
+               VALUES (?, 'done', 1, 2, 'completed', ?)""",
+            (task_id, json.dumps({
+                "partial_summary_full": source,
+                "partial_summary_sha256": digest,
+            })),
+        )
+        assert cursor.lastrowid is not None
+        run_id = int(cursor.lastrowid)
+        conn.commit()
+
+    args = argparse.Namespace(
+        task_id=task_id,
+        full=False,
+        run_id=run_id,
+        field="partial_summary_full",
+    )
+    assert kc._cmd_context(args) == 0
+    captured = capsys.readouterr()
+
+    assert captured.err == ""
+    assert captured.out == source
+    assert (
+        kc.run_slash(
+            f"context {task_id} --run-id {run_id} "
+            "--field partial_summary_full"
+        )
+        == source
+    )
+
+
 def test_run_slash_create_worktree_path_and_branch(kanban_home, tmp_path):
     target = tmp_path / ".worktrees" / "t6-wire"
     target_arg = target.as_posix()

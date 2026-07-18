@@ -400,6 +400,39 @@ def note_turn_persisted(agent):
     agent._inflight_turn_id = None
 
 
+REPAIRED_USER_PREFIX_KEY = "_hermes_repaired_user_prefix"
+
+
+def provider_visible_message_copy(message: Dict[str, Any]) -> Dict[str, Any]:
+    """Copy one message exactly as provider and local sizing may observe it."""
+    api_message = message.copy()
+    repaired_user_prefix = api_message.get(REPAIRED_USER_PREFIX_KEY)
+    if (
+        message.get("role") == "user"
+        and isinstance(repaired_user_prefix, str)
+        and repaired_user_prefix
+    ):
+        content = api_message.get("content", "")
+        if isinstance(content, str):
+            api_message["content"] = (
+                repaired_user_prefix + "\n\n" + content
+                if content
+                else repaired_user_prefix
+            )
+    for internal_key in [
+        key for key in api_message if isinstance(key, str) and key.startswith("_")
+    ]:
+        api_message.pop(internal_key, None)
+    return api_message
+
+
+def provider_visible_messages(
+    messages: List[Dict[str, Any]],
+) -> List[Dict[str, Any]]:
+    """Project an internal transcript into the provider-visible message shape."""
+    return [provider_visible_message_copy(message) for message in messages]
+
+
 def repair_message_sequence(agent, messages: List[Dict]) -> int:
     """Collapse malformed role-alternation left in the live history.
 
@@ -580,13 +613,31 @@ def repair_message_sequence(agent, messages: List[Dict]) -> int:
             new_content = msg.get("content", "")
             # Only merge plain-text content; leave multimodal (list)
             # content alone — collapsing image/audio blocks risks
-            # mangling the attachment structure.
+            # mangling the attachment structure. A marked current-turn user
+            # must remain the survivor: it owns the durable turn marker and
+            # its identity tells repair_message_sequence_with_cursor whether
+            # an unflushed input displaced a flushed row. Do not rewrite its
+            # transcript content after the crash-resilience persist, though:
+            # keep historical user text in private API-only metadata instead.
             if isinstance(prev_content, str) and isinstance(new_content, str):
-                prev["content"] = (
-                    (prev_content + "\n\n" + new_content)
-                    if prev_content and new_content
-                    else (prev_content or new_content)
-                )
+                from agent.iteration_budget import CURRENT_TURN_ID_KEY
+
+                if msg.get(CURRENT_TURN_ID_KEY):
+                    prefix_parts = [
+                        prev.get(REPAIRED_USER_PREFIX_KEY, ""),
+                        prev_content,
+                        msg.get(REPAIRED_USER_PREFIX_KEY, ""),
+                    ]
+                    msg[REPAIRED_USER_PREFIX_KEY] = "\n\n".join(
+                        part for part in prefix_parts if isinstance(part, str) and part
+                    )
+                    merged[-1] = msg
+                else:
+                    prev["content"] = (
+                        (prev_content + "\n\n" + new_content)
+                        if prev_content and new_content
+                        else (prev_content or new_content)
+                    )
                 repairs += 1
                 continue
         merged.append(msg)

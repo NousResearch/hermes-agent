@@ -61,7 +61,10 @@ They coexist: a kanban worker may call `delegate_task` internally during its run
   word "board" outside this docs section.
 - **Task** — a row with title, optional body, one assignee (a profile name), status (`triage | todo | ready | running | blocked | done | archived`), optional tenant namespace, optional idempotency key (dedup for retried automation).
 - **Link** — `task_links` row recording a parent → child dependency. The dispatcher promotes `todo → ready` when all parents are `done`.
-- **Comment** — the inter-agent protocol. Agents and humans append comments; when a worker is (re-)spawned it reads the full comment thread as part of its context.
+- **Comment** — the inter-agent protocol. Agents and humans append comments. The
+  default `full` context profile includes the bounded historical thread; the
+  opt-in `compact` profile includes the latest comments and an explicit full
+  recovery command instead of repeating the entire thread on every retry.
 - **Workspace** — the directory a worker operates in. Three kinds:
   - `scratch` (default) — fresh tmp dir under `~/.hermes/kanban/workspaces/<id>/` (or `~/.hermes/kanban/boards/<slug>/workspaces/<id>/` on non-default boards). **Deleted when the task completes** — scratch is ephemeral by design. Files explicitly declared through `kanban_complete(artifacts=[...])` are copied into durable per-task attachment storage before cleanup; existing deliverable paths in legacy completion summaries receive the same treatment. Other scratch files are removed. A missing declared scratch artifact keeps the task in-flight so the worker can correct the path and retry. Use `worktree:` or `dir:<path>` when the whole workspace should remain available. The first time a scratch workspace is created on an install, the dispatcher logs a warning and emits a `tip_scratch_workspace` event on the task (visible via `hermes kanban show <id>`).
   - `dir:<path>` — an existing shared directory (Obsidian vault, mail ops dir, per-account folder). **Must be an absolute path.** Relative paths like `dir:../tenants/foo/` are rejected at dispatch because they'd resolve against whatever CWD the dispatcher happens to be in, which is ambiguous and a confused-deputy escape vector. The path is otherwise trusted — it's your box, your filesystem, the worker runs with your uid. This is the trusted-local-user threat model; kanban is single-host by design. **Preserved on completion.**
@@ -533,6 +536,17 @@ The kanban board has two ways to handle a task you drop into the Triage column:
 
 **Auto (default)** — `kanban.auto_decompose: true`. The gateway-embedded dispatcher runs the **decomposer** on each tick, capped by `kanban.auto_decompose_per_tick` (default 3 tasks per tick) so a bulk-load of triage tasks doesn't burst-spend the auxiliary LLM. The decomposer uses the built-in decomposition prompt plus the `auxiliary.kanban_decomposer` model path, reads your installed profiles + their descriptions, and asks the LLM to produce a JSON task graph: which tasks to spawn, who they go to, and which depend on which. The original triage task becomes the parent of every leaf in the graph, so it stays alive until the whole graph completes - and then promotes back to `ready` so its assignee (`kanban.orchestrator_profile`, or the active default profile when unset) can judge completion and add more tasks if the work isn't done. This is the "drop a one-liner, walk away" flow.
 
+Fan-out is fail-closed: a graph must contain 2-6 children, and every child is
+reassessed as atomic before anything is inserted. A child that still needs
+splitting rejects the entire graph even when the board's general granularity
+policy is `warn`. Security-sensitive semantics must also match the declared
+child kind: exact-review work uses `review`/`review_scheduler`, release verdicts
+use `controller`, and any deploy, publish, rollout, send, submit, or other
+external-state change uses `activation`. Activation children are created
+`blocked` with `block_kind=needs_input` and remain PREPARE_ONLY until a human
+explicitly unblocks them; disguising those semantics as ordinary `work`
+rejects the whole decomposition without creating children.
+
 **Manual** — `kanban.auto_decompose: false`. Triage tasks stay in triage until you act. Click the **⚗ Decompose** button on a card, run `hermes kanban decompose <id>` (or `--all`), or use `/kanban decompose <id>` from a chat. This matches the pre-decomposer behavior of the board, useful when you want full control over what runs when.
 
 Flip between the two modes from the **Orchestration: Auto/Manual** pill at the top of the kanban page (emerald = Auto, muted gray = Manual), or by editing `config.yaml` directly. Both modes coexist with `hermes kanban specify` — that's still available as a single-task spec rewrite when you don't want fan-out.
@@ -661,6 +675,7 @@ hermes kanban create "<title>" [--body ...] [--assignee <profile>]
                                 [--workspace scratch|worktree|worktree:<path>|dir:<path>]
                                 [--branch <name>]
                                 [--priority N] [--triage] [--idempotency-key KEY]
+                                [--review-key POSTIMAGE_SHA256:CLAIMS_SHA256[:round-N]] [--allow-broad]
                                 [--max-runtime 30m|2h|1d|<seconds>]
                                 [--max-retries N]
                                 [--goal] [--goal-max-turns N]
@@ -706,7 +721,8 @@ hermes kanban notify-subscribe <id>                    # gateway bridge hook (us
 hermes kanban notify-list [<id>] [--json]
 hermes kanban notify-unsubscribe <id>
         --platform <name> --chat-id <id> [--thread-id <id>]
-hermes kanban context <id>                             # what a worker sees
+hermes kanban context <id> [--full]                    # bounded worker profile
+        [--run-id N --field partial_summary_full]      # exact hash-bound handoff
 hermes kanban specify [<id> | --all] [--tenant T]      # flesh out a triage-column idea
         [--author NAME] [--json]                       #   into a full spec and promote to todo
 hermes kanban gc [--event-retention-days N]            # workspaces + old events + old logs
@@ -716,6 +732,71 @@ hermes kanban gc [--event-retention-days N]            # workspaces + old events
 All commands are also available as a slash command in the interactive CLI and in the messaging gateway (see [`/kanban` slash command](#kanban-slash-command) below).
 
 `--max-retries` is a per-task circuit-breaker override for the dispatcher. `--max-retries 1` blocks the task on the first non-successful attempt, while `--max-retries 3` allows two retries and blocks on the third failure. Omit it to use `kanban.failure_limit` from `config.yaml`, then the built-in default.
+
+### Scope, context, and budget controls
+
+These controls reduce repeated model work without removing tools, tests, or
+review gates. Their defaults preserve lifecycle compatibility.
+
+| Config key | Default | What it does |
+|------------|---------|--------------|
+| `kanban.granularity_guard` | `warn` | Runs a deterministic, no-LLM scope assessment at task creation. `warn` records it only; `triage` routes cards classified `split` to Triage before dispatch. `--allow-broad` is an explicit, auditable per-card override. |
+| `kanban.context_profile` | `full` | `compact` keeps the task contract, priority-reserved latest durable handoff and `CONTEXT_REF`, plus bounded attachments/parent handoffs/comments within an aggregate 48 KiB UTF-8 worker-context budget. The compact `kanban_show` JSON envelope is independently capped at 48 KiB. `hermes kanban context <id> --full` and `kanban_show(full_context=true)` expose the historical bounded profile; exact handoff source recovery uses the command embedded in `CONTEXT_REF`. |
+| `kanban.budget_warning_ratio` | `0.75` | Records one `budget_checkpoint` event and adds one API-only, cache-stable closure marker to the latest previously unseen tool-result tail for the rest of that run. It does not mutate persisted conversation history or the cached system prompt. Invalid values fail safely to `0.75`. |
+| `kanban.budget_exhaustion_policy` | `retry` | `retry` preserves the existing breaker; `block` stops on the first exhausted run; `triage_once` stores a bounded `[partial_unverified]` handoff and routes the first exhaustion to Triage, then blocks a repeated exhaustion to prevent recursive retry/decomposition loops. |
+
+When `triage_once` routes a task back through decomposition, the existing
+decomposer call receives the persisted assessment and latest closed-attempt
+handoff. It is instructed to preserve completed work, put full-matrix testing
+in a closure child, and keep independent review and controller decisions in
+separate dependent cards. Each generated child receives its own deterministic
+scope assessment before insertion. A direct review child is accepted only with
+an exact postimage-and-claims key and must depend on closure. If closure has not
+yet produced that key, the decomposer emits a dependent review-scheduling gate
+instead; controllers can depend only on a real keyed review, never on scheduling
+evidence.
+
+The decomposer accepts two to six children, and every child must reassess as
+atomic even when the board's generic granularity policy is `warn`. A source card
+already classified `split` cannot be collapsed back to `fanout=false`; malformed
+output leaves the card in Triage without partial writes. Sensitive semantics are
+checked against the declared child kind. Review/controller mismatches are
+rejected; external state changes require `kind=activation` and are created as
+`blocked` with a `needs_input` human gate, never auto-promoted. Automatic
+decomposition claims are scoped to the triage cause and generation, so a later
+`triage_once` run is not consumed by an older granularity claim; transient
+auxiliary failures get one bounded retry.
+
+Use `--review-key <postimage-sha256>:<claims-sha256>` when creating an independent
+review card. Requests with the same exact
+postimage and claim contract reuse one non-archived card, including concurrent
+creators. A deliberate second review round remains possible with a distinct
+suffix such as `:round-2`. This deduplicates scheduling only: it never infers
+PASS, approval, or deployment.
+
+Exact-review identity is durable in the task row: an `exact_review_v1`
+discriminator and the canonical postimage and claims SHA-256 values accompany
+the reserved `review:v1:` idempotency key. A legacy or generic incumbent that
+has only the reserved key is ambiguous and fails closed instead of being reused.
+
+Reusing an exact review is status-aware. A `running`, `review`, or `done` review
+keeps its input parents immutable; a new controller waits directly on both that
+review and the new closure prerequisites. An unstarted `ready` review may accept
+the new closure parent and is demoted to `todo` until that parent completes.
+
+Budget-exhausted runs store a `kanban_partial_handoff/v1` summary capped at
+4 KiB UTF-8. The visible summary always retains `COMPLETED`, `CHANGED_FILES`,
+`TESTS`, `REMAINING`, `RESUME`, and `INVARIANTS`; the full source text is bound
+by SHA-256 and retained once in the run metadata for explicit recovery. It is
+always marked `[partial_unverified]` and never counts as a review verdict.
+Compact context does not reserialize that full source: it carries the bounded
+handoff plus a priority-reserved structured `CONTEXT_REF` containing task id,
+run id, field, SHA-256 and the exact read-only recovery command:
+`hermes kanban context <task-id> --run-id <run-id> --field partial_summary_full`.
+The command verifies that the run belongs to the task and that the recovered
+UTF-8 source matches the stored SHA-256 before emitting it byte-for-byte.
+The default `full` profile preserves the historical character-based field caps;
+UTF-8 byte and aggregate caps apply only to the opt-in compact profile.
 
 ### Concurrency, scheduling, and child promotion config
 

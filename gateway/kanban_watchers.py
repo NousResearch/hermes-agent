@@ -1171,6 +1171,26 @@ class GatewayKanbanWatchersMixin:
                     for tid in triage_ids:
                         if attempted >= auto_decompose_per_tick:
                             break
+                        try:
+                            with _kb.connect_closing() as _attempt_conn:
+                                cause, generation = _kb.auto_decompose_scope(
+                                    _attempt_conn,
+                                    tid,
+                                )
+                                reserved = _kb.claim_auto_decompose_attempt(
+                                    _attempt_conn,
+                                    tid,
+                                    cause=cause,
+                                    generation=generation,
+                                )
+                        except Exception:
+                            logger.exception(
+                                "kanban auto-decompose: attempt claim failed on %s",
+                                tid,
+                            )
+                            continue
+                        if not reserved:
+                            continue
                         attempted += 1
                         try:
                             outcome = _decomp.decompose_task(
@@ -1181,7 +1201,28 @@ class GatewayKanbanWatchersMixin:
                                 "kanban auto-decompose: decompose_task crashed on %s",
                                 tid,
                             )
+                            with _kb.connect_closing() as _finish_conn:
+                                _kb.finish_auto_decompose_attempt(
+                                    _finish_conn,
+                                    tid,
+                                    cause=cause,
+                                    generation=generation,
+                                    success=False,
+                                    transient=True,
+                                )
                             continue
+                        transient_failure = outcome.reason.startswith(
+                            ("LLM error:", "auxiliary client unavailable")
+                        )
+                        with _kb.connect_closing() as _finish_conn:
+                            _kb.finish_auto_decompose_attempt(
+                                _finish_conn,
+                                tid,
+                                cause=cause,
+                                generation=generation,
+                                success=outcome.ok,
+                                transient=transient_failure,
+                            )
                         if outcome.ok:
                             successes += 1
                             if outcome.fanout and outcome.child_ids:

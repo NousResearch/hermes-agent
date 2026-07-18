@@ -200,6 +200,9 @@ def test_connect_migrates_legacy_db_before_optional_column_indexes(tmp_path):
     assert "session_id" in task_columns
     assert "tenant" in task_columns
     assert "idempotency_key" in task_columns
+    assert "review_contract" in task_columns
+    assert "review_postimage_sha256" in task_columns
+    assert "review_claims_sha256" in task_columns
     assert "run_id" in event_columns
     # And their indexes — the regression scope of this test:
     assert "idx_tasks_session_id" in indexes

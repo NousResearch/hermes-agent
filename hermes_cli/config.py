@@ -2829,6 +2829,22 @@ DEFAULT_CONFIG = {
         # same task/profile (spawn_failed, timed_out, or crashed). Reassignment
         # resets the streak for the new profile.
         "failure_limit": 2,
+        # Deterministic task-scope preflight. ``warn`` records the assessment
+        # without changing lifecycle (backward compatible); ``triage`` routes
+        # cards classified as split to the existing decomposer before dispatch;
+        # ``off``/``allow`` keep intentional broad cards runnable.
+        "granularity_guard": "warn",
+        # Worker-context rendering profile. ``full`` preserves the historical
+        # caps. ``compact`` keeps the latest handoff and a bounded parent/comment
+        # envelope; operators can always request full context explicitly.
+        "context_profile": "full",
+        # Budget-exhaustion recovery. ``retry`` preserves the historical circuit
+        # breaker. ``block`` stops after the first exhausted run. ``triage_once``
+        # preserves a handoff and gives the decomposer one opportunity to shard.
+        "budget_exhaustion_policy": "retry",
+        # One API-only, cache-stable closure marker per Kanban run. Values
+        # outside [0.5, 1.0) fail safely to 0.75 at runtime.
+        "budget_warning_ratio": 0.75,
         # Worker stdout/stderr logs rotate at spawn time. Defaults preserve
         # the historical 2 MiB + one-backup behavior; long-running workers can
         # raise these to keep more early failure evidence.

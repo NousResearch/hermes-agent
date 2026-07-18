@@ -233,7 +233,7 @@ async def test_progress_suppressed_when_agent_is_interrupted(monkeypatch, tmp_pa
     )
     assert result["final_response"] == "interrupted"
 
-    rendered = " ".join(c["content"] for c in adapter.sent) + " " + " ".join(
+    rendered = " ".join(c["content"] for c in adapter.sent) + " ".join(
         c["content"] for c in adapter.edits
     )
 
@@ -249,3 +249,158 @@ async def test_progress_suppressed_when_agent_is_interrupted(monkeypatch, tmp_pa
             f"event '{leaked_query}' leaked into the UI after interrupt — "
             f"progress_callback / drain loop is not checking is_interrupted"
         )
+
+
+# ============================================================
+# Flood-control fallback regression
+# ============================================================
+#
+# Bug: when the progress bubble's edit call fails with a Telegram
+# flood-control error, the gateway's send_progress_messages()
+# handler used to "fall back" to a fresh adapter.send() in the
+# same chat. That fallback is exactly the burst pattern that
+# triggers the Telegram penalty in the first place — re-firing
+# it during the penalty window keeps the timer pinned at
+# "Retry in 7000+ seconds" and escalates the penalty by minutes
+# each tick.
+#
+# Fix: when the edit fails with a flood-control error, drop the
+# tick and let the per-chat send cooldown (added in
+# plugins/platforms/telegram/adapter.py) release the chat before
+# the next tick retries the edit. No fresh send() during the
+# penalty window.
+
+
+class FloodControlEditAdapter(ProgressCaptureAdapter):
+    """Adapter whose edit_message() fails with a Telegram flood-control
+    error for the first ``edit_failures_remaining`` calls, then
+    succeeds. Used to verify the progress handler does NOT call
+    send() as a fallback when the edit fails with flood-control.
+    """
+
+    def __init__(self, *args, edit_failures_remaining=3, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.edit_failures_remaining = edit_failures_remaining
+
+    async def edit_message(self, chat_id, message_id, content) -> SendResult:
+        self.edits.append({"message_id": message_id, "content": content})
+        if self.edit_failures_remaining > 0:
+            self.edit_failures_remaining -= 1
+            return SendResult(
+                success=False,
+                error="flood control exceeded. Retry in 7000 seconds",
+                retryable=False,
+            )
+        return SendResult(success=True, message_id=message_id)
+
+
+class FloodControlProgressAgent:
+    """Fires a handful of tool.started events so the progress consumer
+    has enough work to drain past the throttle interval and observe
+    the flood-edit failure."""
+
+    def __init__(self, **kwargs):
+        self.tool_progress_callback = kwargs.get("tool_progress_callback")
+        self.tools = []
+        self._interrupt_requested = False
+
+    @property
+    def is_interrupted(self) -> bool:
+        return self._interrupt_requested
+
+    def run_conversation(self, message, conversation_history=None, task_id=None):
+        for _ in range(3):
+            self.tool_progress_callback("tool.started", "web_search", "first hit", {})
+            time.sleep(0.05)
+        # Let the drain loop observe the flood-control edit failure
+        # and (under the fix) skip the fallback send. The 1.5s
+        # progress-edit throttle means we need at least that long.
+        time.sleep(2.0)
+        return {"final_response": "done", "messages": [], "api_calls": 1}
+
+
+@pytest.mark.asyncio
+async def test_progress_flood_control_does_not_trigger_fallback_send(
+    monkeypatch, tmp_path
+):
+    """When edit_message fails with a Telegram flood-control error, the
+    progress handler must NOT issue a fresh adapter.send() in the
+    same chat. Issuing one re-triggers the Telegram penalty and
+    extends it from minutes to hours. The fix is to drop the tick
+    and let the per-chat send cooldown release the chat.
+    """
+    adapter = FloodControlEditAdapter(edit_failures_remaining=3)
+    # Tiny cooldown so the test runs fast — the actual cooldown
+    # doesn't matter for this test, only that one is set.
+    adapter._send_cooldown_seconds = 0.05
+    adapter._send_cooldown_max_wait = 1.0
+    runner = _make_runner(adapter)
+
+    import importlib
+    gateway_run = importlib.import_module("gateway.run")
+
+    monkeypatch.setenv("HERMES_TOOL_PROGRESS_MODE", "all")
+
+    fake_dotenv = types.ModuleType("dotenv")
+    fake_dotenv.load_dotenv = lambda *args, **kwargs: None
+    monkeypatch.setitem(sys.modules, "dotenv", fake_dotenv)
+
+    fake_run_agent = types.ModuleType("run_agent")
+    fake_run_agent.AIAgent = FloodControlProgressAgent
+    monkeypatch.setitem(sys.modules, "run_agent", fake_run_agent)
+
+    monkeypatch.setattr(gateway_run, "_hermes_home", tmp_path)
+    monkeypatch.setattr(
+        gateway_run,
+        "_resolve_runtime_agent_kwargs",
+        lambda: {"api_key": "***"},
+    )
+
+    source = SessionSource(
+        platform=Platform.TELEGRAM,
+        chat_id="-1001",
+        chat_type="group",
+        thread_id="17585",
+    )
+    result = await runner._run_agent(
+        message="hi",
+        context_prompt="",
+        history=[],
+        source=source,
+        session_id="sess-flood",
+        session_key="agent:main:telegram:group:-1001:17585",
+    )
+
+    assert result["final_response"] == "done"
+
+    # The handler should have tried (and failed) at least one edit —
+    # the flood-control-failing edit_message is the signal we need
+    # to react to.
+    assert any("first hit" in e["content"] for e in adapter.edits), (
+        "expected at least one edit attempt against the progress bubble; "
+        "without it the flood-control path is not exercised"
+    )
+
+    # The fix: no fresh send() fallback on flood-control. Filter out
+    # any final-response send (which is unrelated to the progress
+    # path) — we only care about progress-driven fallback sends,
+    # which would appear with content matching the progress line.
+    #
+    # Note: a single progress send is EXPECTED here — the first
+    # progress bubble has to be sent (not edited) because no
+    # previous progress message exists yet. The bug we are
+    # regressing on is the SECOND and onward sends that the legacy
+    # code issued as a fallback when the edit hit flood control.
+    # With the fix, the edit failures drop the tick instead of
+    # firing a fresh send, so the count should stay at 1.
+    progress_sends = [s for s in adapter.sent if "first hit" in s["content"]]
+    assert len(progress_sends) <= 1, (
+        f"progress handler issued {len(progress_sends)} progress-bubble "
+        f"send(s) — at most 1 is expected (the initial bubble). "
+        f"Multiple sends here means the flood-control fallback bug "
+        f"is back: every extra send re-triggers Telegram's penalty "
+        f"and extends it from minutes to hours. "
+        f"Sent: {progress_sends!r}"
+    )
+
+

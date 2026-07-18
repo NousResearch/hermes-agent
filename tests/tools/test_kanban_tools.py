@@ -2730,33 +2730,28 @@ def test_attach_url_happy_path_public_host(worker_env, default_url_guard, monkey
 
 
 @pytest.fixture
-def orchestrator_env(monkeypatch, tmp_path):
+def orchestrator_env(monkeypatch, tmp_path, isolate_kanban_root):
     """Simulate an orchestrator profile: fresh isolated Kanban home, the
     ``kanban`` toolset enabled, and NO task-scope pin.
 
-    Mutation tests must not inherit a real board, so we explicitly clear the
-    HERMES_KANBAN_DB / HERMES_KANBAN_BOARD / HERMES_KANBAN_TASK pins and route
-    the connection at this test's temp home only.
+    Routes through the shared fail-closed
+    :func:`tests.conftest._isolate_kanban_root` helper (like ``worker_env``)
+    so EVERY mutation-capable Kanban path — the DB, workspaces, the
+    attachments root, and worker logs — is scrubbed of inherited pins and
+    asserted to live under ``tmp_path`` before any board state is created. A
+    stray ``HERMES_KANBAN_ATTACHMENTS_ROOT`` (or ``HERMES_KANBAN_DB`` /
+    ``HERMES_KANBAN_BOARD`` / ``HERMES_KANBAN_WORKSPACES_ROOT`` / …) pin left
+    in the environment can't route an orchestrator mutation — including an
+    attachment write — outside the temp root. The helper also clears the
+    task-scope pin, keeping this an orchestrator (no ``HERMES_KANBAN_TASK``)
+    context.
     """
-    home = tmp_path / ".hermes"
-    home.mkdir()
-    monkeypatch.setenv("HERMES_HOME", str(home))
+    home = isolate_kanban_root(tmp_path, monkeypatch)
     monkeypatch.setenv("HERMES_PROFILE", "test-orchestrator")
-    monkeypatch.delenv("HERMES_KANBAN_DB", raising=False)
-    monkeypatch.delenv("HERMES_KANBAN_BOARD", raising=False)
-    monkeypatch.delenv("HERMES_KANBAN_TASK", raising=False)
     monkeypatch.delenv("HERMES_SESSION_ID", raising=False)
-    from pathlib import Path as _Path
-    monkeypatch.setattr(_Path, "home", lambda: tmp_path)
 
     from hermes_cli import kanban_db as kb
-    kb._INITIALIZED_PATHS.clear()
-    # The board we mutate must resolve inside this test's temp home, never a
-    # live DB — the pins were scrubbed above.
     resolved_db = kb.kanban_db_path().resolve()
-    assert resolved_db.is_relative_to(home.resolve()), (
-        f"resolved kanban DB {resolved_db} escaped temp home {home}"
-    )
     kb.init_db()
     assert resolved_db.exists(), f"temp kanban DB not created at {resolved_db}"
     return home
@@ -3031,3 +3026,98 @@ def test_complete_triage_rejected_as_noncompletable(orchestrator_env):
         assert kb.get_task(conn, tid).status == "triage"
     finally:
         conn.close()
+
+
+@pytest.fixture
+def _orchestrator_env_with_leaked_attachments_pin(
+    request, monkeypatch, tmp_path_factory
+):
+    """Poison ``HERMES_KANBAN_ATTACHMENTS_ROOT``, THEN build ``orchestrator_env``.
+
+    Simulates a stray attachments-root pin leaked from a developer shell or a
+    dispatcher-spawned worker that survives into the orchestrator fixture's own
+    setup. The poison directory is created by ``tmp_path_factory`` so it is a
+    *sibling* of the per-test ``tmp_path`` — never underneath it.
+
+    The ordering guarantee — poison present *before* ``orchestrator_env`` runs
+    its fail-closed ``isolate_kanban_root`` scrub — is enforced here in code,
+    NOT by pytest argument-list position: the pin is set first, and only then
+    does ``request.getfixturevalue`` trigger ``orchestrator_env``'s setup. This
+    runs after conftest's autouse ``_hermetic_environment`` has blanked the var
+    (autouse fixtures set up first), so the pin genuinely reproduces one that
+    leaks past the hermetic layer. Returns the poison directory.
+    """
+    poison = tmp_path_factory.mktemp("leaked_attachments_root")
+    monkeypatch.setenv("HERMES_KANBAN_ATTACHMENTS_ROOT", str(poison))
+    # Trigger orchestrator_env only now — its isolate_kanban_root scrub must
+    # run WITH the poison present. getfixturevalue makes the order explicit so
+    # a future edit to a test's argument list cannot silently defeat the guard.
+    request.getfixturevalue("orchestrator_env")
+    return poison
+
+
+def test_orchestrator_attachment_stays_under_temp_root_despite_leaked_pin(
+    _orchestrator_env_with_leaked_attachments_pin, tmp_path
+):
+    """An orchestrator attachment write must land under the per-test temp
+    root even when ``HERMES_KANBAN_ATTACHMENTS_ROOT`` is poisoned to an
+    external location.
+
+    Behavior-level guard for the isolation contract: ``attachments_root`` is a
+    mutation-capable Kanban path, and a leaked pin has highest precedence in
+    ``kanban_db.attachments_root``. If the orchestrator fixture does not route
+    through the shared fail-closed ``isolate_kanban_root`` helper, the pin
+    survives and ``kanban_attach`` writes the blob outside ``tmp_path`` — a
+    unit test scribbling on a developer's real (or a foreign) attachments
+    tree. The fixed fixture scrubs the pin and asserts containment before the
+    board is created.
+    """
+    import base64
+    from pathlib import Path
+
+    from hermes_cli import kanban_db as kb
+    from tools import kanban_tools as kt
+
+    poison_root = _orchestrator_env_with_leaked_attachments_pin.resolve()
+    temp_root = tmp_path.resolve()
+    # Sanity: the poison location is genuinely outside the temp root, so a
+    # write landing there is a real escape, not a false alarm.
+    assert not poison_root.is_relative_to(temp_root)
+
+    conn = kb.connect()
+    try:
+        tid = kb.create_task(
+            conn, title="orchestrator card", assignee="factory"
+        )
+    finally:
+        conn.close()
+
+    content = b"orchestrator attachment bytes"
+    out = kt._handle_attach({
+        "task_id": tid,
+        "filename": "leak-check.txt",
+        "content_base64": base64.b64encode(content).decode(),
+        "content_type": "text/plain",
+    })
+    d = json.loads(out)
+    assert d.get("ok") is True, out
+
+    conn = kb.connect()
+    try:
+        atts = kb.list_attachments(conn, tid)
+        assert [a.filename for a in atts] == ["leak-check.txt"]
+        stored = Path(atts[0].stored_path).resolve()
+    finally:
+        conn.close()
+
+    # The blob must live under the per-test temp root, never the leaked pin.
+    assert stored.read_bytes() == content
+    assert stored.is_relative_to(temp_root), (
+        f"attachment {stored} escaped temp root {temp_root} "
+        f"(leaked pin {poison_root})"
+    )
+    assert not stored.is_relative_to(poison_root)
+    # Nothing should have been written into the poisoned external tree.
+    assert not any(poison_root.rglob("*")), (
+        f"attachment escaped into leaked pin dir {poison_root}"
+    )

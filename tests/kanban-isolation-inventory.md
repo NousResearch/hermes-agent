@@ -32,9 +32,11 @@ behavior — resolved paths / raising — never source text).
 
 ## Mutation-capable modules wired to `isolate_kanban_root`
 
-Each module's single shared setup fixture (`kanban_home` / `fresh_home` /
-`worker_env` / `isolated_kanban_home`) now routes through the guard, covering
-every test in that module without patching individual test functions.
+Each module's shared mutation setup fixture (for example, `kanban_home`,
+`fresh_home`, `worker_env`, or `isolated_kanban_home`) routes through the
+guard where it owns a common mutation path. Modules with deliberately inline
+temporary setup are called out below rather than being incorrectly described
+as using one shared fixture for every test.
 
 | Category | Module | Setup fixture |
 | --- | --- | --- |
@@ -63,7 +65,7 @@ every test in that module without patching individual test functions.
 | Plugins | `tests/plugins/test_kanban_attachments.py` | `kanban_home` |
 | Plugins | `tests/plugins/test_kanban_dashboard_plugin.py` | `kanban_home` |
 | Plugins | `tests/plugins/test_kanban_worker_runs.py` | `kanban_home` |
-| Tools | `tests/tools/test_kanban_tools.py` | `worker_env` (+ per-test guard use) |
+| Tools | `tests/tools/test_kanban_tools.py` | `worker_env`; `orchestrator_env`; `_make_goal_mode_worker_env`; direct goal-mode setup calls; `_orchestrator_env_with_leaked_attachments_pin` verifies attachment-root containment before it triggers `orchestrator_env` |
 | Tools | `tests/tools/test_kanban_redaction.py` | `worker_env` |
 
 ## Covered by Layer 1 only (intentionally not wired to the fixture guard)
@@ -85,5 +87,11 @@ fixture, by design:
   `test_kanban_worker_terminal_cwd.py`, and a handful of one-off setups inside
   `test_kanban_core_functionality.py` set `HERMES_HOME` under their own
   `tmp_path` directly (no shared fixture to wire).
+- **Tools module resolver/schema and board-routing setups** in
+  `test_kanban_tools.py`: `multi_board_env`, the schema-visibility tests, and
+  small inline board/task setups intentionally exercise explicit board or task
+  resolution. They use temporary paths or Layer 1 and are not represented as
+  shared fixture-guard coverage. `allow_private_urls` and `default_url_guard`
+  only control URL safety and do not create Kanban storage.
 - **`test_kanban_write_txn_busy_retry.py`**: uses in-memory `_FakeConn`
   objects, never touches an on-disk `kanban.db`; the guard is not applicable.

@@ -4826,6 +4826,67 @@ class TestCronContinuableSurfaceInChannel:
             "(no live adapter can seed a flat continuable session), not flatten"
         )
 
+    def test_in_channel_adapter_present_but_loop_not_running_preserves_origin_thread(self):
+        """Regression (review r3609147550): the thread_id clear must be scoped to
+        the FULL live-send condition (adapter present AND a running loop), not
+        just ``runtime_adapter is not None``. An adapter can be present while the
+        event loop is absent/not-running — then the live-send block that seeds
+        the flat continuable session (``_seed_cron_channel_session``) is SKIPPED
+        and delivery falls through to the standalone path. Clearing thread_id in
+        that case would flatten an UNSEEDED brief (no continuable session behind
+        it) and bypass the D6 capability check, so the standalone fallback must
+        keep the origin thread. Bites an unscoped clear AND a partial fix that
+        adds ``loop is not None`` but omits ``loop.is_running()``."""
+        from gateway.config import Platform
+
+        adapter = self._slack_adapter(supports_inchannel=True)
+        pconfig = MagicMock()
+        pconfig.enabled = True
+        pconfig.extra = {"cron_continuable_surface": "in_channel"}
+        mock_cfg = MagicMock()
+        mock_cfg.platforms = {Platform.SLACK: pconfig}
+
+        # Live adapter present, but the event loop is NOT running — the middle
+        # state between the live-send path and the no-adapter standalone path.
+        # ``runtime_adapter is not None`` is true here (so an unscoped clear
+        # would wrongly flatten); ``live_adapter_ready`` is false.
+        loop = MagicMock()
+        loop.is_running.return_value = False
+
+        with patch("gateway.config.load_gateway_config", return_value=mock_cfg), \
+             patch("cron.scheduler.load_config", return_value={"cron": {"wrap_response": False}}), \
+             patch("tools.send_message_tool._send_to_platform",
+                   new=AsyncMock(return_value={"success": True})) as send_mock:
+            job = {
+                "id": "brief-job",
+                "name": "Daily Brief",
+                "deliver": "origin",
+                # attach_to_session=True → mirror_this_target is True, so the
+                # (buggy) clear guard would actually fire without the loop gate.
+                "attach_to_session": True,
+                "origin": {
+                    "platform": "slack", "chat_id": "C123",
+                    "user_id": "U_HUMAN", "thread_id": "999.888",
+                },
+            }
+            _deliver_result(
+                job, "Here is today's brief.",
+                adapters={Platform.SLACK: adapter}, loop=loop,
+            )
+
+        # The live-send block never ran (loop not running): the flat session was
+        # never seeded and the adapter was never used to send.
+        adapter.send.assert_not_awaited()
+        adapter._session_store.get_or_create_session.assert_not_called()
+        # Standalone fallback must preserve the origin thread, not flatten.
+        send_mock.assert_called_once()
+        assert send_mock.call_args.kwargs.get("thread_id") == "999.888", (
+            "in_channel delivery with an adapter but no running loop must fall "
+            "back to the origin thread — the live-send block that seeds the flat "
+            "continuable session never ran, so flattening would leave an "
+            "unseeded brief"
+        )
+
     def test_thread_mode_default_still_opens_thread(self):
         """G1 regression: the default (thread) mode is byte-identical — the
         thread-open branch still fires when no surface key is set."""

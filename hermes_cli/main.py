@@ -1462,6 +1462,71 @@ def _termux_workspace_install_context(
     return ws_root, tuple(workspace_args)
 
 
+def _npm_lock_workspace_closure(packages: dict, start: str) -> Optional[set]:
+    """Package-map keys reachable from workspace ``start`` via npm resolution.
+
+    Returns ``None`` when ``start`` is absent from *packages* so callers fall
+    back to the full-lockfile comparison.
+
+    The launch install is scoped with ``npm install --workspace ui-tui`` (see
+    ``_make_tui_argv``), so only the ui-tui workspace's dependency closure is
+    written to the hidden ``.package-lock.json``.  The shared root
+    ``package-lock.json`` additionally lists every *other* workspace's deps
+    (``apps/desktop``, ``web``, …); comparing the two in full reports those
+    unrelated packages as "missing" and reinstalls on every launch (#66978).
+
+    Keys follow npm's v3 ``packages`` map (``""`` root, ``ui-tui`` /
+    ``apps/desktop`` workspace members, ``node_modules/<name>`` hoisted deps,
+    ``<dir>/node_modules/<name>`` nested deps).  Dependency names resolve to a
+    key by walking up ``node_modules`` ancestors, mirroring node resolution, and
+    workspace symlinks (``link: true``) are followed to their real entry so a
+    linked workspace's own deps join the closure.
+    """
+    if start not in packages:
+        return None
+
+    def resolve(from_key: str, dep: str) -> Optional[str]:
+        base = from_key
+        while True:
+            prefix = f"{base}/" if base else ""
+            candidate = f"{prefix}node_modules/{dep}"
+            if candidate in packages:
+                return candidate
+            if not base:
+                return None
+            base = base.rsplit("/", 1)[0] if "/" in base else ""
+
+    seen: set = set()
+    stack = [start]
+    while stack:
+        key = stack.pop()
+        if key in seen:
+            continue
+        seen.add(key)
+        entry = packages.get(key)
+        if not isinstance(entry, dict):
+            continue
+        # Workspace symlink (e.g. node_modules/@hermes/ink → ui-tui/packages/…):
+        # follow to the real package entry so its dependencies join the closure.
+        resolved = entry.get("resolved")
+        if entry.get("link") and isinstance(resolved, str) and resolved in packages:
+            stack.append(resolved)
+        # devDependencies are installed for the workspace being scoped (ui-tui's
+        # build toolchain), but not for transitive deps.
+        fields = ["dependencies", "optionalDependencies", "peerDependencies"]
+        if key == start:
+            fields.append("devDependencies")
+        for field in fields:
+            deps = entry.get(field)
+            if not isinstance(deps, dict):
+                continue
+            for dep in deps:
+                target = resolve(key, dep)
+                if target is not None:
+                    stack.append(target)
+    return seen
+
+
 def _tui_need_npm_install(root: Path) -> bool:
     """True when @hermes/ink is missing or node_modules is behind package-lock.json.
 
@@ -1523,8 +1588,26 @@ def _tui_need_npm_install(root: Path) -> bool:
     def comparable(pkg: dict) -> dict:
         return {k: v for k, v in pkg.items() if k not in _NPM_LOCK_RUNTIME_KEYS}
 
+    # In a shared workspace checkout the launch install is scoped to the ui-tui
+    # workspace, so only its dependency closure lands in the hidden lock.  Limit
+    # the comparison to that closure so unrelated workspace deps (apps/desktop,
+    # web, …) don't force a reinstall every launch (#66978).  Standalone /
+    # own-lockfile layouts (ws_root == root) do a full install, so keep the full
+    # comparison; a missing/unlocatable workspace falls back to it too.
+    closure: Optional[set] = None
+    if ws_root != root:
+        try:
+            workspace_key = root.relative_to(ws_root).as_posix()
+        except ValueError:
+            workspace_key = ""
+        if workspace_key:
+            closure = _npm_lock_workspace_closure(wanted, workspace_key)
+
     for name, pkg in wanted.items():
         if not name:
+            continue
+
+        if closure is not None and name not in closure:
             continue
 
         if not isinstance(pkg, dict):

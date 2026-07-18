@@ -123,6 +123,127 @@ def test_no_install_without_lockfile_when_ink_present(tmp_path: Path, main_mod) 
     assert main_mod._tui_need_npm_install(tmp_path) is False
 
 
+# ── workspace-scoped comparison (#66978) ────────────────────────────
+#
+# In a shared workspace checkout the launch install is scoped to the ui-tui
+# workspace, so only its dependency closure lands in the hidden lock while the
+# root lock lists every other workspace's deps too. The comparison must ignore
+# those unrelated packages instead of reinstalling on every launch.
+
+
+def _write_ws(root: Path, ws_lock: str, hidden_lock: str) -> Path:
+    """Lay out a workspace root + ui-tui member and return the ui-tui dir.
+
+    ``@hermes/ink`` and the marker live at the workspace root (hoisted);
+    ``ui-tui/`` has no lockfile of its own so ``_workspace_root`` treats the
+    parent as the workspace root and the launch scopes to ``--workspace ui-tui``.
+    """
+    (root / "package-lock.json").write_text(ws_lock)
+    _touch_ink(root)
+    (root / "node_modules" / ".package-lock.json").write_text(hidden_lock)
+    tui_dir = root / "ui-tui"
+    tui_dir.mkdir(parents=True, exist_ok=True)
+    # package.json (and no own lockfile) is what makes _workspace_root treat the
+    # parent as the workspace root and the launch scope to --workspace ui-tui.
+    (tui_dir / "package.json").write_text('{"name":"hermes-tui"}')
+    return tui_dir
+
+
+def test_no_install_when_only_other_workspace_deps_missing(tmp_path: Path, main_mod) -> None:
+    """Deps that belong to apps/desktop / web (never installed by the ui-tui
+    scoped install) must not trigger a reinstall on every launch (#66978)."""
+    tui_dir = _write_ws(
+        tmp_path,
+        '{"packages":{'
+        '"ui-tui":{"dependencies":{"foo":"1.0.0"}},'
+        '"node_modules/foo":{"version":"1.0.0"},'
+        '"apps/desktop":{"dependencies":{"desktop-only":"1.0.0"}},'
+        '"node_modules/desktop-only":{"version":"1.0.0"},'
+        '"apps/desktop/node_modules/nested":{"version":"1.0.0"}'
+        "}}",
+        '{"packages":{'
+        '"ui-tui":{"dependencies":{"foo":"1.0.0"}},'
+        '"node_modules/foo":{"version":"1.0.0"}'
+        "}}",
+    )
+    assert main_mod._tui_need_npm_install(tui_dir) is False
+
+
+def test_need_install_when_ui_tui_dep_missing_in_workspace_layout(tmp_path: Path, main_mod) -> None:
+    """A genuinely missing ui-tui dependency is still caught after scoping."""
+    tui_dir = _write_ws(
+        tmp_path,
+        '{"packages":{'
+        '"ui-tui":{"dependencies":{"foo":"1.0.0","bar":"1.0.0"}},'
+        '"node_modules/foo":{"version":"1.0.0"},'
+        '"node_modules/bar":{"version":"1.0.0"}'
+        "}}",
+        '{"packages":{'
+        '"ui-tui":{"dependencies":{"foo":"1.0.0","bar":"1.0.0"}},'
+        '"node_modules/foo":{"version":"1.0.0"}'
+        "}}",
+    )
+    assert main_mod._tui_need_npm_install(tui_dir) is True
+
+
+def test_need_install_when_linked_workspace_dep_missing(tmp_path: Path, main_mod) -> None:
+    """The closure follows workspace symlinks (@hermes/ink → ui-tui/packages/…)
+    so a linked workspace's own missing dep triggers a reinstall."""
+    tui_dir = _write_ws(
+        tmp_path,
+        '{"packages":{'
+        '"ui-tui":{"dependencies":{"@hermes/ink":"*"}},'
+        '"node_modules/@hermes/ink":{"link":true,"resolved":"ui-tui/packages/hermes-ink"},'
+        '"ui-tui/packages/hermes-ink":{"dependencies":{"inkdep":"1.0.0"}},'
+        '"node_modules/inkdep":{"version":"1.0.0"}'
+        "}}",
+        '{"packages":{'
+        '"ui-tui":{"dependencies":{"@hermes/ink":"*"}},'
+        '"node_modules/@hermes/ink":{"link":true,"resolved":"ui-tui/packages/hermes-ink"},'
+        '"ui-tui/packages/hermes-ink":{"dependencies":{"inkdep":"1.0.0"}}'
+        "}}",
+    )
+    assert main_mod._tui_need_npm_install(tui_dir) is True
+
+
+def test_need_install_when_closure_package_version_drifts(tmp_path: Path, main_mod) -> None:
+    """Version drift on an in-closure package still forces a reinstall."""
+    tui_dir = _write_ws(
+        tmp_path,
+        '{"packages":{'
+        '"ui-tui":{"dependencies":{"foo":"2.0.0"}},'
+        '"node_modules/foo":{"version":"2.0.0"}'
+        "}}",
+        '{"packages":{'
+        '"ui-tui":{"dependencies":{"foo":"2.0.0"}},'
+        '"node_modules/foo":{"version":"1.0.0"}'
+        "}}",
+    )
+    assert main_mod._tui_need_npm_install(tui_dir) is True
+
+
+def test_workspace_closure_includes_dev_deps_of_scoped_workspace(main_mod) -> None:
+    """ui-tui's devDependencies (esbuild/typescript build toolchain) are part of
+    the closure; a transitive package's devDependencies are not."""
+    packages = {
+        "ui-tui": {
+            "dependencies": {"foo": "1"},
+            "devDependencies": {"esbuild": "1"},
+        },
+        "node_modules/foo": {"devDependencies": {"foo-dev-only": "1"}},
+        "node_modules/esbuild": {},
+        "node_modules/foo-dev-only": {},
+    }
+    closure = main_mod._npm_lock_workspace_closure(packages, "ui-tui")
+    assert "node_modules/esbuild" in closure
+    assert "node_modules/foo-dev-only" not in closure
+
+
+def test_workspace_closure_returns_none_when_start_absent(main_mod) -> None:
+    """Missing workspace key → None so the caller falls back to full compare."""
+    assert main_mod._npm_lock_workspace_closure({"node_modules/foo": {}}, "ui-tui") is None
+
+
 def test_no_install_prebuilt_bundle_mode(tmp_path: Path, main_mod) -> None:
     """dist/entry.js present and no package-lock.json → prebuilt bundle, skip npm install."""
     _touch_tui_entry(tmp_path)

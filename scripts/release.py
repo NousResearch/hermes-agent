@@ -375,6 +375,7 @@ LEGACY_AUTHOR_MAP = {
     "290859878+synapsesx@users.noreply.github.com": "synapsesx",
     "157689911+itsflownium@users.noreply.github.com": "itsflownium",
     "dirtyren@users.noreply.github.com": "dirtyren",
+    "juniperbevensee@users.noreply.github.com": "juniperbevensee",
     "krowd3v@users.noreply.github.com": "krowd3v",
     "dfein38347g@users.noreply.github.com": "dfein38347g",
     "nicktaylor@TheWorldofNick-Lappy.local": "thegoodguysla",

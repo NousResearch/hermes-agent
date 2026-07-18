@@ -267,6 +267,10 @@ class _WsAbsoluteUriMiddleware:
                 scope = dict(scope)
                 scope["path"] = normalised_path
                 scope["raw_path"] = normalised_path.encode("ascii", "surrogateescape")
+                if parsed.query and not scope.get("query_string"):
+                    scope["query_string"] = parsed.query.encode(
+                        "ascii", "surrogateescape"
+                    )
                 _log.debug(
                     "websocket absolute-uri normalised peer=%s:%s from=%s to=%s",
                     *((scope.get("client") or ("?", "?"))[:2]),

@@ -1811,9 +1811,8 @@ class MCPServerTask:
         )
         headers[auth_key] = f"Bearer {token}"
         logger.info(
-            "MCP server '%s': bearer refreshed via bearer_refresh_cmd "
-            "(new token ends in '...%s')",
-            self.name, token[-6:] if len(token) >= 6 else "?",
+            "MCP server '%s': bearer refreshed via bearer_refresh_cmd",
+            self.name,
         )
         return True
 
@@ -2453,6 +2452,26 @@ class MCPServerTask:
                 # reconnect path (token expired mid-run). Idempotent
                 # under cooldown — if refresh just ran 60s ago without
                 # fixing things, falls through to normal retry logic.
+                #
+                # OPT-IN EXCEPTION to the initial-auth stop contract at
+                # `if not self._ready.is_set(): ... _is_auth_error(exc)`
+                # below (covered by test_initial_oauth_failure_does_not_retry).
+                # The stop-on-initial-401 policy exists to avoid looping
+                # a broken OAuth config through repeated browser prompts.
+                # A configured `bearer_refresh_cmd` is by construction a
+                # NON-interactive credential source (a shell command the
+                # operator wrote), so retrying a refresh-then-connect
+                # cycle carries none of that risk. Two safety rails
+                # preserve the original contract for the non-opt-in path
+                # and for pathological refresh commands:
+                #   1. If no cmd is configured, _refresh_bearer_via_command()
+                #      returns False immediately (no spawn) and we fall
+                #      through to the guard → stops as before.
+                #   2. If the cmd is configured but fails or returns a
+                #      bad token, it also returns False and we fall
+                #      through to the guard → stops as before.
+                # Verified by tests in
+                # tests/tools/test_mcp_bearer_refresh_cmd_run_loop.py.
                 if _is_auth_error(exc) and await self._refresh_bearer_via_command():
                     logger.info(
                         "MCP server '%s': bearer refreshed; retrying "

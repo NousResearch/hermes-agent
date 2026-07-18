@@ -2328,10 +2328,17 @@ class BasePlatformAdapter(ABC):
         Cheap, in-memory only: the next typing refresh renders the new text.
         No-op storage on adapters that never read ``_status_text``.
         """
+        # getattr-guard: many gateway tests build bare adapters via
+        # object.__new__() without running __init__ (see AGENTS.md pitfall
+        # on new __init__ attributes breaking tests).
+        store = getattr(self, "_status_text", None)
+        if store is None:
+            store = {}
+            self._status_text = store
         if text:
-            self._status_text[str(chat_id)] = text
+            store[str(chat_id)] = text
         else:
-            self._status_text.pop(str(chat_id), None)
+            store.pop(str(chat_id), None)
 
     # Whether this adapter can deliver an ASYNC notification back to the agent
     # AFTER a turn ends — i.e. wake a fresh turn to surface a background
@@ -3976,7 +3983,10 @@ class BasePlatformAdapter(ABC):
                 except Exception:
                     pass
             self._typing_paused.discard(chat_id)
-            self._status_text.pop(str(chat_id), None)
+            # getattr-guard: bare object.__new__() adapters in tests lack
+            # _status_text (same class of issue as _typing_paused, but that
+            # one is always present because those tests predate it).
+            getattr(self, "_status_text", {}).pop(str(chat_id), None)
 
     async def _stop_typing_refresh(
         self,

@@ -1618,15 +1618,15 @@ def _start_agent_build(sid: str, session: dict) -> None:
             # override is still active here.
             current["config_model_seen"] = _config_model_target()
 
-            try:
-                worker = _SlashWorker(
-                    key,
-                    getattr(agent, "model", _resolve_model()),
-                    profile_home=current.get("profile_home"),
-                )
-                _attach_worker(sid, current, worker)
-            except Exception:
-                pass
+            # No eager slash-worker pre-warm: slash.exec spawns one on demand
+            # (its error path already relies on that respawn to recover from a
+            # dead worker). Each worker child runs its own MCP discovery
+            # (#61891), so pre-warming one per session forks the full stdio
+            # MCP fleet — ~20 OS processes per retained session on a config
+            # with a few stdio servers — even for sessions that never run a
+            # worker-routed command. Sessions held by a live transport are
+            # never reaped, so with the desktop app open for days those
+            # fleets accumulate until the OS refuses new process spawns.
 
             try:
                 from tools.approval import (
@@ -3092,11 +3092,16 @@ def _tool_progress_enabled(sid: str) -> bool:
 
 def _restart_slash_worker(sid: str, session: dict):
     worker = session.get("slash_worker")
-    if worker:
-        try:
-            worker.close()
-        except Exception:
-            pass
+    # A session that never spawned a worker has nothing stale to replace —
+    # the next slash.exec builds one with the current session key/model.
+    # Spawning here would fork the per-worker stdio MCP fleet for sessions
+    # that never use worker-routed commands.
+    if worker is None:
+        return
+    try:
+        worker.close()
+    except Exception:
+        pass
     try:
         new_worker = _SlashWorker(
             session["session_key"],
@@ -5162,19 +5167,10 @@ def _init_session(
             except Exception:
                 logger.debug("failed to persist resumed session cwd", exc_info=True)
     _register_session_cwd(_sessions[sid])
-    try:
-        _attach_worker(
-            sid,
-            _sessions[sid],
-            _SlashWorker(
-                key,
-                getattr(agent, "model", _resolve_model()),
-                profile_home=_sessions[sid].get("profile_home"),
-            ),
-        )
-    except Exception:
-        # Defer hard-failure to slash.exec; chat still works without slash worker.
-        _sessions[sid]["slash_worker"] = None
+    # No eager slash-worker pre-warm — the session dict already carries
+    # slash_worker=None and slash.exec builds one on demand. See the
+    # deferred-build path in _start_agent_build for the full rationale
+    # (per-worker MCP fleets accumulating across retained sessions).
     try:
         from tools.approval import register_gateway_notify, load_permanent_allowlist
 

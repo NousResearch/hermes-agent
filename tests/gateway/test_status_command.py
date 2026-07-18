@@ -217,6 +217,80 @@ async def test_status_command_includes_live_agent_model_and_context():
 
 
 @pytest.mark.asyncio
+async def test_status_command_clamps_negative_context_used_from_live_agent():
+    """last_prompt_tokens == -1 (the compressor's "awaiting real usage"
+    sentinel right after a compression) must not be shown to the user as a
+    nonsensical negative token count."""
+    session_entry = SessionEntry(
+        session_key=build_session_key(_make_source()),
+        session_id="sess-1",
+        created_at=datetime.now(),
+        updated_at=datetime.now(),
+        platform=Platform.TELEGRAM,
+        chat_type="dm",
+        total_tokens=0,
+    )
+    runner = _make_runner(session_entry)
+    runner._session_db._db.get_session.return_value = {
+        "input_tokens": 1000,
+        "output_tokens": 250,
+        "cache_read_tokens": 0,
+        "cache_write_tokens": 0,
+        "reasoning_tokens": 0,
+        "model": "openai/gpt-test",
+    }
+    running_agent = SimpleNamespace(
+        model="openai/gpt-test",
+        provider="openai",
+        context_compressor=SimpleNamespace(
+            last_prompt_tokens=-1,
+            context_length=100_000,
+        ),
+        interrupt=MagicMock(),
+    )
+    runner._running_agents[build_session_key(_make_source())] = running_agent
+
+    result = await runner._handle_message(_make_event("/status"))
+
+    assert "Context:** -1" not in result
+    assert "**Context:** 0 / 100,000 (0%)" in result
+
+
+@pytest.mark.asyncio
+async def test_status_command_clamps_negative_persisted_context_used():
+    """The -1 sentinel can also be durably persisted into
+    session_entry.last_prompt_tokens (gateway/run.py's update_session call
+    after turn_finalizer.py builds the result dict) and must be clamped on
+    that fallback path too, not just when read from a live agent."""
+    session_entry = SessionEntry(
+        session_key=build_session_key(_make_source()),
+        session_id="sess-1",
+        created_at=datetime.now(),
+        updated_at=datetime.now(),
+        platform=Platform.TELEGRAM,
+        chat_type="dm",
+        total_tokens=0,
+        last_prompt_tokens=-1,
+    )
+    runner = _make_runner(session_entry)
+    runner._session_db._db.get_session.return_value = {
+        "input_tokens": 200,
+        "output_tokens": 121,
+        "cache_read_tokens": 0,
+        "cache_write_tokens": 0,
+        "reasoning_tokens": 0,
+    }
+
+    result = await runner._handle_message(_make_event("/status"))
+
+    # No context_total is available anywhere in this scenario, so with the
+    # sentinel correctly clamped to 0 (falsy), neither the "used/total" line
+    # nor the total-less "~{used} tokens" line should render at all -- before
+    # the fix, -1 is truthy and rendered as "**Context:** ~-1 tokens".
+    assert "**Context:**" not in result
+
+
+@pytest.mark.asyncio
 async def test_status_command_includes_persisted_model_and_context_when_agent_not_running(monkeypatch):
     session_entry = SessionEntry(
         session_key=build_session_key(_make_source()),

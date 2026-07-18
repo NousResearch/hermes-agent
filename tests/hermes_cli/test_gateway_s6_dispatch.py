@@ -378,6 +378,35 @@ def test_redirect_noop_on_host(monkeypatch: pytest.MonkeyPatch) -> None:
     assert gw._maybe_redirect_run_to_s6_supervision(_Args()) is False
 
 
+def test_redirect_validates_runtime_before_s6_start(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A mismatched deployment contract must not mutate the s6 service."""
+    from hermes_cli import gateway as gw
+
+    rec = _stub_s6(monkeypatch, on_s6=True)
+    calls: list[str] = []
+
+    def reject_runtime() -> None:
+        calls.append("validate-runtime")
+        raise RuntimeError("runtime mismatch")
+
+    monkeypatch.setattr(gw, "_require_runtime_code_root_match", reject_runtime)
+    monkeypatch.setattr(
+        gw.os,
+        "execvp",
+        lambda *_args: pytest.fail("execvp must not run after a runtime mismatch"),
+    )
+    monkeypatch.delenv("HERMES_S6_SUPERVISED_CHILD", raising=False)
+    monkeypatch.delenv("HERMES_GATEWAY_NO_SUPERVISE", raising=False)
+
+    with pytest.raises(RuntimeError, match="runtime mismatch"):
+        gw._maybe_redirect_run_to_s6_supervision(_Args())
+
+    assert calls == ["validate-runtime"]
+    assert rec.calls == []
+
+
 def test_redirect_fires_inside_s6_container(
     monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str],
 ) -> None:

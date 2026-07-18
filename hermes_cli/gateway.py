@@ -6647,6 +6647,11 @@ def _dispatch_via_service_manager_if_s6(
 
     if detect_service_manager() != "s6":
         return False
+    if action in ("start", "restart"):
+        # s6 lifecycle calls mutate supervised service state. Keep the guard at
+        # the dispatcher boundary so every caller, including `gateway run`'s
+        # transparent supervision redirect, fails closed before mutation.
+        _require_runtime_code_root_match()
     if profile is None:
         # _profile_suffix() returns the bare profile name for
         # HERMES_HOME=<root>/profiles/<name>, "" for the default root,
@@ -7035,6 +7040,11 @@ def _gateway_command_inner(args):
         system = getattr(args, "system", False)
         start_all = getattr(args, "all", False)
 
+        # Starting mutates the active deployment through s6, a platform service
+        # manager, or stale-process cleanup. Validate the configured runtime root
+        # before any of those paths so mismatches fail closed without mutation.
+        _require_runtime_code_root_match()
+
         # Phase 4: inside a container with s6, dispatch via the service
         # manager instead of falling through to systemd/launchd/windows.
         # `--all` isn't meaningful here (each profile has its own service
@@ -7212,12 +7222,11 @@ def _gateway_command_inner(args):
         restart_all = getattr(args, "all", False)
         service_configured = False
 
-        # ``--all`` has host-wide blast radius: s6 dispatch, service stop, and
-        # process sweeping can affect every profile. Validate before any of
-        # those mutations so an unusable deployment contract cannot take down
-        # otherwise-running gateways.
-        if restart_all:
-            _require_runtime_code_root_match()
+        # Every restart path mutates a running deployment: normal s6 dispatch
+        # and Windows restart can stop a supervised gateway just as ``--all``
+        # can. Validate before dispatching to any manager so a configured root
+        # mismatch always fails closed without service or process mutation.
+        _require_runtime_code_root_match()
 
         # Phase 4: inside a container with s6, dispatch via the service
         # manager (s6-svc -t restarts the supervised process). ``--all``

@@ -2182,6 +2182,57 @@ class TestGatewaySystemServiceRouting:
 
         assert calls == ["validate-runtime"]
 
+    def test_gateway_restart_validates_before_normal_s6_dispatch(
+        self, monkeypatch
+    ):
+        calls = []
+        monkeypatch.delenv("_HERMES_GATEWAY", raising=False)
+
+        def reject_runtime():
+            calls.append("validate-runtime")
+            raise RuntimeError("runtime mismatch")
+
+        monkeypatch.setattr(
+            gateway_cli, "_require_runtime_code_root_match", reject_runtime
+        )
+        monkeypatch.setattr(
+            gateway_cli,
+            "_dispatch_via_service_manager_if_s6",
+            lambda action: calls.append("s6-dispatch") or True,
+        )
+
+        with pytest.raises(RuntimeError, match="runtime mismatch"):
+            gateway_cli.gateway_command(
+                SimpleNamespace(gateway_command="restart", system=False, all=False)
+            )
+
+        assert calls == ["validate-runtime"]
+
+    def test_gateway_start_validates_before_normal_s6_dispatch(
+        self, monkeypatch
+    ):
+        calls = []
+
+        def reject_runtime():
+            calls.append("validate-runtime")
+            raise RuntimeError("runtime mismatch")
+
+        monkeypatch.setattr(
+            gateway_cli, "_require_runtime_code_root_match", reject_runtime
+        )
+        monkeypatch.setattr(
+            gateway_cli,
+            "_dispatch_via_service_manager_if_s6",
+            lambda action: calls.append("s6-dispatch") or True,
+        )
+
+        with pytest.raises(RuntimeError, match="runtime mismatch"):
+            gateway_cli.gateway_command(
+                SimpleNamespace(gateway_command="start", system=False, all=False)
+            )
+
+        assert calls == ["validate-runtime"]
+
     def test_gateway_restart_does_not_fallback_to_foreground_when_launchd_restart_fails(self, tmp_path, monkeypatch):
         plist_path = tmp_path / "ai.hermes.gateway.plist"
         plist_path.write_text("plist\n", encoding="utf-8")

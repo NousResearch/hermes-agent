@@ -101,7 +101,7 @@ def test_build_gateway_argv_uses_base_pythonw_for_uv_venv_launcher(monkeypatch, 
     monkeypatch.setattr(gateway, "PROJECT_ROOT", project)
     monkeypatch.setattr(gateway, "get_python_path", lambda: str(venv_python))
     monkeypatch.setattr(gateway, "_profile_arg", lambda hermes_home: "")
-    monkeypatch.setattr("hermes_cli.config.get_hermes_home", lambda: str(hermes_home))
+    monkeypatch.setattr("hermes_cli.config.get_hermes_home", lambda: hermes_home)
 
     argv, cwd, env_overlay = gateway_windows._build_gateway_argv()
 
@@ -139,7 +139,7 @@ def test_write_task_script_anchors_cmd_cd_at_hermes_home(monkeypatch, tmp_path):
     monkeypatch.setattr(gateway, "PROJECT_ROOT", project)
     monkeypatch.setattr(gateway, "get_python_path", lambda: str(python_exe))
     monkeypatch.setattr(gateway, "_profile_arg", lambda hermes_home: "")
-    monkeypatch.setattr("hermes_cli.config.get_hermes_home", lambda: str(hermes_home))
+    monkeypatch.setattr("hermes_cli.config.get_hermes_home", lambda: hermes_home)
     monkeypatch.setattr(gateway_windows, "get_task_script_path", lambda: script_path)
 
     written = gateway_windows._write_task_script()
@@ -148,6 +148,143 @@ def test_write_task_script_anchors_cmd_cd_at_hermes_home(monkeypatch, tmp_path):
     assert written == script_path
     assert f"cd /d {gateway_windows._quote_cmd_script_arg(str(hermes_home.resolve()))}" in content
     assert f"cd /d {gateway_windows._quote_cmd_script_arg(str(project))}" not in content
+
+
+def test_write_task_script_uses_configured_runtime_code_root(monkeypatch, tmp_path):
+    runtime_root = tmp_path / "runtime-root"
+    hermes_home = tmp_path / "hermes-home"
+    python_exe = runtime_root / "venv" / "Scripts" / "python.exe"
+    (runtime_root / "hermes_cli").mkdir(parents=True)
+    (runtime_root / "hermes_cli" / "main.py").write_text("", encoding="utf-8")
+    python_exe.parent.mkdir(parents=True)
+    python_exe.write_text("", encoding="utf-8")
+    hermes_home.mkdir()
+    script_path = tmp_path / "gateway.cmd"
+
+    monkeypatch.setattr(gateway_windows, "_assert_windows", lambda: None)
+    monkeypatch.setattr(gateway, "PROJECT_ROOT", runtime_root.resolve())
+    monkeypatch.setattr(gateway, "get_python_path", lambda: str(python_exe))
+    monkeypatch.setattr(gateway, "_profile_arg", lambda hermes_home: "")
+    monkeypatch.setattr(
+        gateway,
+        "read_raw_config",
+        lambda: {"runtime": {"code_root": str(runtime_root)}},
+    )
+    monkeypatch.setattr(gateway, "_path_is_temporary", lambda path: False)
+    monkeypatch.setattr("hermes_cli.config.get_hermes_home", lambda: str(hermes_home))
+    monkeypatch.setattr(gateway_windows, "get_task_script_path", lambda: script_path)
+
+    gateway_windows._write_task_script()
+    cmd_content = script_path.read_text(encoding="utf-8")
+    vbs_content = script_path.with_suffix(".vbs").read_text(encoding="utf-8")
+    runtime_dir = str(runtime_root.resolve())
+    home_dir = str(hermes_home.resolve())
+
+    assert f"cd /d {gateway_windows._quote_cmd_script_arg(runtime_dir)}" in cmd_content
+    assert f"cd /d {gateway_windows._quote_cmd_script_arg(home_dir)}" not in cmd_content
+    assert f"sh.CurrentDirectory = {gateway_windows._quote_vbs_string(runtime_dir)}" in vbs_content
+    assert f"sh.CurrentDirectory = {gateway_windows._quote_vbs_string(home_dir)}" not in vbs_content
+
+
+def test_build_gateway_argv_uses_configured_runtime_code_root(monkeypatch, tmp_path):
+    runtime_root = tmp_path / "runtime-root"
+    hermes_home = tmp_path / "hermes-home"
+    python_exe = runtime_root / "venv" / "Scripts" / "python.exe"
+    (runtime_root / "hermes_cli").mkdir(parents=True)
+    (runtime_root / "hermes_cli" / "main.py").write_text("", encoding="utf-8")
+    python_exe.parent.mkdir(parents=True)
+    python_exe.write_text("", encoding="utf-8")
+    hermes_home.mkdir()
+
+    monkeypatch.setattr(gateway_windows.sys, "platform", "win32")
+    monkeypatch.setattr(gateway, "PROJECT_ROOT", runtime_root.resolve())
+    monkeypatch.setattr(gateway, "get_python_path", lambda: str(python_exe))
+    monkeypatch.setattr(gateway, "_profile_arg", lambda hermes_home: "")
+    monkeypatch.setattr(
+        gateway,
+        "read_raw_config",
+        lambda: {"runtime": {"code_root": str(runtime_root)}},
+    )
+    monkeypatch.setattr(gateway, "_path_is_temporary", lambda path: False)
+    monkeypatch.setattr("hermes_cli.config.get_hermes_home", lambda: hermes_home)
+
+    _argv, cwd, _env_overlay = gateway_windows._build_gateway_argv()
+
+    assert cwd == str(runtime_root.resolve())
+    assert cwd != str(hermes_home.resolve())
+
+
+def test_windows_install_validates_runtime_before_any_mutation(monkeypatch):
+    calls = []
+
+    monkeypatch.setattr(gateway_windows, "_assert_windows", lambda: None)
+    monkeypatch.setattr(
+        gateway,
+        "_require_runtime_code_root_match",
+        lambda: calls.append("validate-runtime")
+        or (_ for _ in ()).throw(RuntimeError("runtime mismatch")),
+    )
+    monkeypatch.setattr(
+        gateway_windows,
+        "_prompt_install_choices",
+        lambda *args: calls.append("prompt") or (False, True),
+    )
+    monkeypatch.setattr(
+        gateway_windows,
+        "_write_task_script",
+        lambda: calls.append("write-launcher"),
+    )
+
+    with pytest.raises(RuntimeError, match="runtime mismatch"):
+        gateway_windows.install(start_now=False, start_on_login=True)
+
+    assert calls == ["validate-runtime"]
+
+
+def test_windows_start_validates_runtime_before_spawn(monkeypatch):
+    calls = []
+
+    monkeypatch.setattr(gateway_windows, "_assert_windows", lambda: None)
+    monkeypatch.setattr(
+        gateway,
+        "_require_runtime_code_root_match",
+        lambda: calls.append("validate-runtime")
+        or (_ for _ in ()).throw(RuntimeError("runtime mismatch")),
+    )
+    monkeypatch.setattr(
+        gateway_windows,
+        "_gateway_pids",
+        lambda: calls.append("inspect-pids") or [],
+    )
+    monkeypatch.setattr(
+        gateway_windows,
+        "_spawn_detached",
+        lambda: calls.append("spawn"),
+    )
+
+    with pytest.raises(RuntimeError, match="runtime mismatch"):
+        gateway_windows.start()
+
+    assert calls == ["validate-runtime"]
+
+
+def test_windows_restart_validates_runtime_before_stop(monkeypatch):
+    calls = []
+
+    monkeypatch.setattr(gateway_windows, "_assert_windows", lambda: None)
+    monkeypatch.setattr(
+        gateway,
+        "_require_runtime_code_root_match",
+        lambda: calls.append("validate-runtime")
+        or (_ for _ in ()).throw(RuntimeError("runtime mismatch")),
+    )
+    monkeypatch.setattr(gateway_windows, "stop", lambda: calls.append("stop"))
+    monkeypatch.setattr(gateway_windows, "start", lambda: calls.append("start"))
+
+    with pytest.raises(RuntimeError, match="runtime mismatch"):
+        gateway_windows.restart()
+
+    assert calls == ["validate-runtime"]
 
 
 def _arrange_startup_fallback(monkeypatch, tmp_path, running_pids):

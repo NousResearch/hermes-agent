@@ -518,6 +518,18 @@ class ResponsesApiTransport(ProviderTransport):
                 extra_body["prompt_cache_key"] = bounded
             else:
                 extra_body.pop("prompt_cache_key", None)
+        extra_headers = normalized.get("extra_headers")
+        if isinstance(extra_headers, dict):
+            extra_headers = dict(extra_headers)
+            for header_name in ("session_id", "x-client-request-id"):
+                if header_name not in extra_headers:
+                    continue
+                bounded = _bounded_prompt_cache_key(extra_headers[header_name])
+                if bounded:
+                    extra_headers[header_name] = bounded
+                else:
+                    extra_headers.pop(header_name, None)
+            normalized["extra_headers"] = extra_headers
         return normalized
 
     def map_finish_reason(self, raw_reason: str) -> str:

@@ -36,6 +36,21 @@ def _now() -> datetime:
 # ``HERMES_AUTO_CONTINUE_FRESHNESS`` at startup.
 _AUTO_CONTINUE_FRESHNESS_SECS_DEFAULT = 60 * 60
 
+# Exact active-run journal markers and safety pauses are durable lifecycle
+# state, not the legacy "recent activity" heuristic.  They must survive the
+# one-hour auto-continue freshness gate until the journal is delivered or the
+# user explicitly resumes/discards the run.
+DURABLE_RESUME_REASONS = frozenset(
+    {
+        "restart_interrupted_exact",
+        "waiting_recovered_process",
+        "side_effect_unknown",
+        "delivery_unknown",
+        "request_not_recorded",
+        "recovery_retry_limit",
+    }
+)
+
 
 def auto_continue_freshness_window() -> float:
     """Return the configured auto-continue freshness window in seconds.
@@ -1919,8 +1934,11 @@ class SessionStore:
         
         Works from the entry alone — no SessionSource needed.
         Used by the background expiry watcher to proactively flush memories.
-        Sessions with active background processes are never considered expired.
+        Sessions with durable recovery state or active background processes
+        are never considered expired.
         """
+        if entry.resume_pending and entry.resume_reason in DURABLE_RESUME_REASONS:
+            return False
         if self._has_active_processes_safe(entry.session_key, context="expiry"):
             logger.debug(
                 "Session %s not expired — active background processes",
@@ -2268,7 +2286,14 @@ class SessionStore:
             if _entry_for_checks.suspended:
                 _reset_reason = "suspended"
             elif _entry_for_checks.resume_pending:
-                _reset_reason = self._should_reset(_entry_for_checks, source)
+                _durable_resume = (
+                    _entry_for_checks.resume_reason in DURABLE_RESUME_REASONS
+                )
+                _reset_reason = (
+                    None
+                    if _durable_resume
+                    else self._should_reset(_entry_for_checks, source)
+                )
                 if not _reset_reason:
                     # Freshness-gate stale resume_pending zombies (#46934) —
                     # but honor an explicit ``session_reset.mode: none``: the
@@ -2280,7 +2305,7 @@ class SessionStore:
                         platform=source.platform,
                         session_type=source.chat_type,
                     )
-                    if _policy.mode != "none":
+                    if _policy.mode != "none" and not _durable_resume:
                         _fw = auto_continue_freshness_window()
                         _ref_time = (
                             _entry_for_checks.last_resume_marked_at
@@ -2615,10 +2640,10 @@ class SessionStore:
 
         Pruning is based on ``updated_at`` (last activity), not ``created_at``.
         A session that's been active within the window is kept regardless of
-        how old it is.  Entries marked ``suspended`` are kept — the user
-        explicitly paused them for later resume.  Entries held by an active
-        process (via has_active_processes_fn) are also kept so long-running
-        background work isn't orphaned.
+        how old it is.  Entries marked ``suspended`` or carrying durable
+        recovery state are kept until the user resolves them.  Entries held
+        by an active process (via has_active_processes_fn) are also kept so
+        long-running background work isn't orphaned.
 
         Pruning is functionally identical to a natural reset-policy expiry:
         the transcript in SQLite stays, but the session_key → session_id
@@ -2638,6 +2663,11 @@ class SessionStore:
             self._ensure_loaded_locked()
             for key, entry in list(self._entries.items()):
                 if entry.suspended:
+                    continue
+                if (
+                    entry.resume_pending
+                    and entry.resume_reason in DURABLE_RESUME_REASONS
+                ):
                     continue
                 # Never prune sessions with an active background process
                 # attached — the user may still be waiting on output.
@@ -2660,7 +2690,11 @@ class SessionStore:
             )
         return len(removed_keys)
 
-    def suspend_recently_active(self, max_age_seconds: int = 120) -> int:
+    def suspend_recently_active(
+        self,
+        max_age_seconds: int = 120,
+        exclude_session_keys: Optional[set[str]] = None,
+    ) -> int:
         """Mark recently-active sessions as resumable after an unexpected exit.
 
         Called on gateway startup after a crash or fast restart to preserve
@@ -2670,21 +2704,24 @@ class SessionStore:
         the next incoming message on the same session_key auto-resumes from
         the existing transcript.
 
-        Entries already flagged ``resume_pending=True`` are skipped.  Entries
-        explicitly ``suspended=True`` (from /stop or stuck-loop escalation)
-        are also skipped.  Terminal escalation for genuinely stuck sessions
-        is still handled by the existing ``.restart_failure_counts`` counter
-        (threshold 3), which runs after this method and sets ``suspended=True``.
+        Entries already flagged ``resume_pending=True``, explicitly suspended,
+        or named in *exclude_session_keys* are skipped.  Exact journal records
+        use that exclusion so this legacy heuristic cannot overwrite their
+        safety classification.  Terminal escalation for genuinely stuck
+        legacy sessions is still handled by ``.restart_failure_counts``.
 
         Returns the number of sessions marked resumable.
         """
         from datetime import timedelta
 
         cutoff = _now() - timedelta(seconds=max_age_seconds)
+        excluded = exclude_session_keys or set()
         count = 0
         with self._lock:
             self._ensure_loaded_locked()
             for entry in self._entries.values():
+                if entry.session_key in excluded:
+                    continue
                 if entry.resume_pending:
                     continue
                 if not entry.suspended and entry.updated_at >= cutoff:

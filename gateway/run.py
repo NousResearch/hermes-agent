@@ -39,6 +39,7 @@ import signal
 import tempfile
 import threading
 import time
+import uuid
 import sqlite3
 from collections import OrderedDict
 from contextvars import copy_context
@@ -771,6 +772,54 @@ def build_resume_recovery_note(
     silently abandoned behind a "restored" acknowledgement that goes
     nowhere (#57056).
     """
+    if reason in {
+        "side_effect_unknown",
+        "delivery_unknown",
+        "request_not_recorded",
+        "recovery_retry_limit",
+    }:
+        if reason == "side_effect_unknown":
+            incident = (
+                "a prior side-effecting tool may already have changed an external "
+                "system, but its result was lost"
+            )
+        elif reason == "delivery_unknown":
+            incident = (
+                "the prior assistant result was persisted, but its delivery state "
+                "is unknown"
+            )
+        elif reason == "request_not_recorded":
+            incident = "the triggering request was not durably recorded"
+        else:
+            incident = "automatic recovery was interrupted three times"
+        return (
+            f"[System note: Recovery was paused because {incident}. "
+            "The user has now sent a NEW explicit instruction. Address that new "
+            "instruction first, inspect the current external state before acting, "
+            "and do NOT blindly replay, recompute, or resend any old tool call or "
+            "assistant result whose outcome is uncertain.]"
+            + (f"\n\n{message}" if message else "")
+        )
+
+    if reason == "restart_interrupted_exact":
+        return (
+            "[System note: The previous turn was interrupted by a gateway crash. "
+            "The triggering user request and completed tool results are durable, "
+            "and recovery classified the remaining tail as safe. Continue the "
+            "interrupted task from the first unfinished read-only step. Do NOT "
+            "repeat tool calls whose results already appear in the history.]"
+            + (f"\n\n{message}" if message else "")
+        )
+
+    if reason == "waiting_recovered_process":
+        return (
+            "[System note: The gateway recovered a background process that owned "
+            "the interrupted turn. Continue from the current process status, "
+            "watcher event, or the user's NEW instruction. Inspect the process "
+            "state first and do NOT launch the old process or tool call again.]"
+            + (f"\n\n{message}" if message else "")
+        )
+
     reason_phrase = (
         "a gateway restart"
         if reason == "restart_timeout"
@@ -2013,6 +2062,7 @@ from gateway.config import (
 )
 from gateway.session import (
     AsyncSessionStore,
+    DURABLE_RESUME_REASONS,
     SessionEntry,
     SessionStore,
     SessionSource,
@@ -2023,6 +2073,16 @@ from gateway.session import (
     build_session_key,
     is_shared_multi_user_session,
     neutralize_untrusted_inline_text,
+)
+from gateway.recovery import (
+    RECOVERY_AUTO_RESUME,
+    RECOVERY_PAUSE_DELIVERY,
+    RECOVERY_PAUSE_INPUT,
+    RECOVERY_PAUSE_RETRY_LIMIT,
+    RECOVERY_PAUSE_SIDE_EFFECT,
+    RECOVERY_WAIT_FOR_PROCESS,
+    ActiveRunStore,
+    classify_active_run,
 )
 from gateway.delivery import DeliveryRouter, looks_like_telegram_private_chat_id
 from gateway.turn_lease import SessionTurnLeaseRegistry
@@ -3266,6 +3326,13 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         # Sync helpers keep using ``session_store`` directly; async gateway
         # handlers call this facade and await every operation.
         self._async_session_store = AsyncSessionStore(self.session_store)
+        self._active_run_store = ActiveRunStore(self.config.sessions_dir)
+        # A new process UUID is sufficient here: the journal only needs to
+        # deduplicate repeated reconnect/startup passes inside one gateway
+        # process, not identify an OS or machine boot.
+        self._recovery_boot_id = uuid.uuid4().hex
+        self._recovery_semaphore = asyncio.Semaphore(4)
+        self._recovery_pause_notified: set[tuple[str, str, str]] = set()
         self.delivery_router = DeliveryRouter(self.config)
         self._running = False
         self._gateway_loop: Optional[asyncio.AbstractEventLoop] = None
@@ -6878,7 +6945,10 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         except Exception:
             pass
 
-    def _suspend_stuck_loop_sessions(self) -> int:
+    def _suspend_stuck_loop_sessions(
+        self,
+        exclude_session_keys: Optional[set[str]] = None,
+    ) -> int:
         """Suspend sessions that have been active across too many restarts.
 
         Returns the number of sessions suspended.  Called on gateway startup
@@ -6897,7 +6967,12 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             return 0
 
         suspended = 0
-        stuck_keys = [k for k, v in counts.items() if v >= self._STUCK_LOOP_THRESHOLD]
+        excluded = exclude_session_keys or set()
+        stuck_keys = [
+            k
+            for k, v in counts.items()
+            if v >= self._STUCK_LOOP_THRESHOLD and k not in excluded
+        ]
 
         for session_key in stuck_keys:
             try:
@@ -7215,8 +7290,319 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
     # .clean_shutdown marker).  All three mean "the agent was mid-turn and
     # we killed it" — eligible for startup auto-resume.
     _AUTO_RESUME_REASONS = frozenset(
-        {"restart_timeout", "shutdown_timeout", "restart_interrupted"}
+        {
+            "restart_timeout",
+            "shutdown_timeout",
+            "restart_interrupted",
+            "restart_interrupted_exact",
+        }
     )
+
+    _RECOVERY_PAUSE_REASONS = frozenset(
+        {
+            "side_effect_unknown",
+            "delivery_unknown",
+            "request_not_recorded",
+            "recovery_retry_limit",
+        }
+    )
+
+    def _get_active_run_store(self) -> ActiveRunStore:
+        store = getattr(self, "_active_run_store", None)
+        if store is None:
+            store = ActiveRunStore(self.config.sessions_dir)
+            self._active_run_store = store
+        return store
+
+    async def _discard_active_run(
+        self,
+        session_key: str,
+        *,
+        run_id: Optional[str] = None,
+    ) -> bool:
+        store = getattr(self, "_active_run_store", None)
+        if not session_key or store is None:
+            return False
+        return await asyncio.to_thread(
+            store.discard,
+            session_key,
+            run_id=run_id,
+        )
+
+    async def _clear_resume_pending_after_explicit_discard(
+        self,
+        session_key: str,
+    ) -> bool:
+        """Best-effort clear for /stop and /new-compatible test stores."""
+        clear_resume_pending = getattr(
+            getattr(self, "session_store", None),
+            "clear_resume_pending",
+            None,
+        )
+        if not session_key or not callable(clear_resume_pending):
+            return False
+        try:
+            return bool(await asyncio.to_thread(clear_resume_pending, session_key))
+        except Exception:
+            logger.debug(
+                "Failed to clear recovery marker after explicit discard for %s",
+                session_key,
+                exc_info=True,
+            )
+            return False
+
+    async def _begin_active_run(
+        self,
+        *,
+        event: MessageEvent,
+        session_key: str,
+    ) -> Optional[str]:
+        """Persist ``executing`` after routing resolves and before agent work."""
+        if not isinstance(session_key, str) or not session_key:
+            return None
+        store = getattr(self, "_active_run_store", None)
+        if store is None:
+            # ``object.__new__(GatewayRunner)`` test scaffolds intentionally
+            # omit lifecycle components.  Real runners always initialize the
+            # store in __init__.
+            return None
+        trigger_message_id = (
+            getattr(event, "message_id", None)
+            or getattr(getattr(event, "source", None), "message_id", None)
+        )
+        recovery_run_id = getattr(event, "_hermes_recovery_run_id", None)
+        try:
+            record = await asyncio.to_thread(
+                store.begin,
+                session_key,
+                trigger_message_id=(
+                    str(trigger_message_id) if trigger_message_id else None
+                ),
+                recovery_run_id=(str(recovery_run_id) if recovery_run_id else None),
+            )
+        except Exception:
+            logger.warning(
+                "Failed to write active-run journal for %s",
+                session_key,
+                exc_info=True,
+            )
+            return None
+        try:
+            setattr(event, "_hermes_active_run_id", record.run_id)
+        except Exception:
+            pass
+        return record.run_id
+
+    async def _mark_active_run_response_ready(
+        self,
+        *,
+        session_key: str,
+        run_id: Optional[str],
+        source: SessionSource,
+        run_generation: int,
+    ) -> bool:
+        """Persist the delivery boundary and register the CAS cleanup hook."""
+        if not session_key or not run_id:
+            return False
+        try:
+            marked = await asyncio.to_thread(
+                self._get_active_run_store().mark_response_ready,
+                session_key,
+                run_id,
+            )
+        except Exception:
+            logger.warning(
+                "Failed to mark active run response-ready for %s",
+                session_key,
+                exc_info=True,
+            )
+            return False
+        if not marked:
+            return False
+
+        adapter = self._adapter_for_source(source)
+        if adapter is None or not hasattr(adapter, "register_post_delivery_callback"):
+            # Keep response_ready durable.  On restart this is classified as
+            # delivery-unknown instead of being recomputed or resent.
+            return True
+
+        async def _finish_delivered_run() -> None:
+            try:
+                finished = await asyncio.to_thread(
+                    self._get_active_run_store().finish,
+                    session_key,
+                    run_id,
+                )
+            except Exception:
+                logger.warning(
+                    "Failed to clear delivered active run for %s",
+                    session_key,
+                    exc_info=True,
+                )
+                return
+            if not finished:
+                return
+            self._clear_restart_failure_count(session_key)
+            try:
+                await self.async_session_store.clear_resume_pending(session_key)
+            except Exception:
+                logger.debug(
+                    "clear_resume_pending after delivery failed for %s",
+                    session_key,
+                    exc_info=True,
+                )
+
+        try:
+            adapter.register_post_delivery_callback(
+                session_key,
+                _finish_delivered_run,
+                generation=run_generation,
+            )
+        except Exception:
+            logger.warning(
+                "Failed to register active-run delivery cleanup for %s",
+                session_key,
+                exc_info=True,
+            )
+        return True
+
+    async def _prepare_active_run_recovery(self) -> set[str]:
+        """Classify exact crash-left runs before adapters start dispatching."""
+        store = self._get_active_run_store()
+        # This is a tiny sidecar (one metadata-only row per active session),
+        # not state.db.  Read it directly during single-threaded startup so a
+        # cold executor cannot delay the shutdown/restart race boundary.
+        records = store.snapshot()
+        exact_keys = {record.session_key for record in records}
+        self._exact_active_run_keys = exact_keys
+
+        # ``finish()`` and ``clear_resume_pending()`` live in separate durable
+        # stores.  If SIGKILL lands after the journal CAS-delete but before the
+        # routing flag is cleared, the remaining exact marker must never cause
+        # an untracked replay.  No journal means there is no run identity or
+        # phase to recover safely, so treat the marker as delivery cleanup that
+        # completed and clear only the stale routing flag.
+        with self.session_store._lock:  # noqa: SLF001 - startup reconciliation
+            self.session_store._ensure_loaded_locked()  # noqa: SLF001
+            stale_durable_keys = [
+                entry.session_key
+                for entry in self.session_store._entries.values()  # noqa: SLF001
+                if entry.resume_pending
+                and entry.resume_reason in DURABLE_RESUME_REASONS
+                and entry.session_key not in exact_keys
+            ]
+        for session_key in stale_durable_keys:
+            logger.warning(
+                "Clearing stale durable recovery marker for %s: active-run "
+                "journal record is missing",
+                session_key,
+            )
+            try:
+                await self.async_session_store.clear_resume_pending(session_key)
+            except Exception:
+                logger.warning(
+                    "Failed to clear stale durable recovery marker for %s",
+                    session_key,
+                    exc_info=True,
+                )
+
+        if not records:
+            return exact_keys
+
+        try:
+            from tools.process_registry import process_registry
+        except Exception:
+            process_registry = None
+
+        reason_for_disposition = {
+            RECOVERY_AUTO_RESUME: "restart_interrupted_exact",
+            RECOVERY_WAIT_FOR_PROCESS: "waiting_recovered_process",
+            RECOVERY_PAUSE_SIDE_EFFECT: "side_effect_unknown",
+            RECOVERY_PAUSE_DELIVERY: "delivery_unknown",
+            RECOVERY_PAUSE_INPUT: "request_not_recorded",
+            RECOVERY_PAUSE_RETRY_LIMIT: "recovery_retry_limit",
+        }
+        boot_id = getattr(self, "_recovery_boot_id", None)
+        if not boot_id:
+            boot_id = uuid.uuid4().hex
+            self._recovery_boot_id = boot_id
+
+        for original in records:
+            with self.session_store._lock:  # noqa: SLF001 - startup snapshot
+                self.session_store._ensure_loaded_locked()  # noqa: SLF001
+                entry = self.session_store._entries.get(original.session_key)  # noqa: SLF001
+            if entry is None or entry.origin is None or entry.suspended:
+                logger.warning(
+                    "Discarding orphan active-run record %s: routing entry is "
+                    "missing, unroutable, or explicitly suspended",
+                    original.session_key,
+                )
+                await asyncio.to_thread(
+                    store.discard,
+                    original.session_key,
+                    run_id=original.run_id,
+                )
+                exact_keys.discard(original.session_key)
+                continue
+
+            record = await asyncio.to_thread(
+                store.record_recovery_attempt,
+                original.session_key,
+                original.run_id,
+                boot_id,
+            )
+            if record is None:
+                continue
+            try:
+                transcript = await self.async_session_store.load_transcript(
+                    entry.session_id
+                )
+            except Exception as exc:
+                logger.warning(
+                    "Failed to load transcript for active-run recovery %s: %s",
+                    record.session_key,
+                    exc,
+                )
+                transcript = []
+            has_active_process = False
+            if process_registry is not None:
+                try:
+                    has_active_process = await asyncio.to_thread(
+                        process_registry.has_active_for_session,
+                        record.session_key,
+                    )
+                except Exception:
+                    logger.debug(
+                        "Active-process lookup failed during recovery for %s",
+                        record.session_key,
+                        exc_info=True,
+                    )
+            decision = classify_active_run(
+                record,
+                transcript,
+                has_active_process=has_active_process,
+            )
+            reason = reason_for_disposition[decision.disposition]
+            marked = await self.async_session_store.mark_resume_pending(
+                record.session_key,
+                reason,
+            )
+            if not marked:
+                logger.warning(
+                    "Could not mark exact active run %s for recovery (%s)",
+                    record.session_key,
+                    decision.disposition,
+                )
+                continue
+            logger.info(
+                "Classified active run %s (%s, attempt %d): %s",
+                record.session_key,
+                decision.disposition,
+                record.recovery_attempts,
+                decision.reason,
+            )
+        self._exact_active_run_keys = exact_keys
+        return exact_keys
 
     async def _run_startup_resume_event(
         self,
@@ -7224,87 +7610,178 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         event: MessageEvent,
         session_key: str,
     ) -> None:
-        """Dispatch one synthetic startup resume and wait for its agent turn.
-
-        ``BasePlatformAdapter.handle_message()`` returns after it installs the
-        adapter-level guard and spawns the background processing task.  Startup
-        restore needs a stronger boundary: inbound messages must stay queued
-        until the resumed agent turn itself has finished, otherwise a user
-        message can race the restore turn immediately after ``handle_message``
-        returns.
-        """
+        """Run one synthetic recovery under the fixed concurrency limit."""
+        semaphore = getattr(self, "_recovery_semaphore", None)
+        if semaphore is None:
+            semaphore = asyncio.Semaphore(4)
+            self._recovery_semaphore = semaphore
         try:
-            await adapter.handle_message(event)
-            session_tasks = getattr(adapter, "_session_tasks", {})
-            task = session_tasks.get(session_key) if isinstance(session_tasks, dict) else None
-            if task is not None:
-                await asyncio.shield(task)
+            async with semaphore:
+                # /stop or /new can discard a recovery while it waits for the
+                # semaphore.  Re-check both the preclaim and durable marker.
+                if self._running_agents.get(session_key) is not _AGENT_PENDING_SENTINEL:
+                    return
+                with self.session_store._lock:  # noqa: SLF001 - guarded read
+                    entry = self.session_store._entries.get(session_key)  # noqa: SLF001
+                    eligible = bool(
+                        entry
+                        and entry.resume_pending
+                        and not entry.suspended
+                        and entry.resume_reason in self._AUTO_RESUME_REASONS
+                    )
+                if not eligible:
+                    return
+                await adapter.handle_message(event)
+                session_tasks = getattr(adapter, "_session_tasks", {})
+                task = (
+                    session_tasks.get(session_key)
+                    if isinstance(session_tasks, dict)
+                    else None
+                )
+                if task is not None:
+                    await asyncio.shield(task)
         finally:
-            # _schedule_resume_pending_sessions pre-claims the runner slot
-            # before spawning this task.  If adapter.handle_message raises
-            # before _handle_message takes ownership, release that pre-claim;
-            # otherwise the real run's normal cleanup owns the slot.
             if self._running_agents.get(session_key) is _AGENT_PENDING_SENTINEL:
                 self._release_running_agent_state(session_key)
 
-    def _queue_startup_restore_event(self, event: MessageEvent) -> None:
-        queue = getattr(self, "_startup_restore_queue", None)
-        if queue is None:
-            queue = []
-            self._startup_restore_queue = queue
-        queue.append(event)
+    async def _send_recovery_pause_notification(
+        self,
+        *,
+        entry: Any,
+        run_id: str,
+    ) -> None:
+        reason = str(entry.resume_reason or "")
+        dedupe_key = (entry.session_key, run_id, reason)
+        notified = getattr(self, "_recovery_pause_notified", None)
+        if notified is None:
+            notified = set()
+            self._recovery_pause_notified = notified
         try:
-            source = event.source
-            logger.info(
-                "Queued inbound message during gateway startup restore: platform=%s chat=%s",
-                source.platform.value if source and source.platform else "unknown",
-                source.chat_id if source else "unknown",
-            )
-        except Exception:
-            pass
-
-    async def _drain_startup_restore_queue(self) -> int:
-        """Replay inbound messages queued while startup auto-resume ran."""
-        drained = 0
-        queue = getattr(self, "_startup_restore_queue", None)
-        if queue is None:
-            return 0
-        while queue:
-            event = queue.pop(0)
-            source = getattr(event, "source", None)
-            adapter = self._adapter_for_source(source)
-            if adapter is None:
-                logger.debug(
-                    "Dropping startup-restore queued message: adapter unavailable for %s",
-                    getattr(getattr(source, "platform", None), "value", None),
+            current_run = self._get_active_run_store().get(entry.session_key)
+            with self.session_store._lock:  # noqa: SLF001 - guarded read
+                self.session_store._ensure_loaded_locked()  # noqa: SLF001
+                current_entry = self.session_store._entries.get(  # noqa: SLF001
+                    entry.session_key
                 )
-                continue
-            # Mark this replay so _handle_message does not queue it again while
-            # the restore gate remains closed for any fresh inbound arrivals.
-            try:
-                setattr(event, "_hermes_startup_restore_replay", True)
-            except Exception:
-                pass
-            await adapter.handle_message(event)
-            drained += 1
-        return drained
+                still_paused = bool(
+                    current_entry
+                    and current_entry.resume_pending
+                    and current_entry.resume_reason == reason
+                )
+            if (
+                current_run is None
+                or current_run.run_id != run_id
+                or not still_paused
+                or entry.session_key in getattr(self, "_running_agents", {})
+            ):
+                return
+        except Exception:
+            logger.warning(
+                "Skipping stale recovery pause notification for %s",
+                entry.session_key,
+                exc_info=True,
+            )
+            return
+        source = entry.origin
+        adapter = self._adapter_for_source(source)
+        if adapter is None:
+            return
+        try:
+            if not self._is_user_authorized(source):
+                return
+        except Exception:
+            logger.warning(
+                "Skipping recovery pause notice for %s: authorization failed",
+                entry.session_key,
+            )
+            return
 
-    async def _finish_startup_restore(self) -> None:
-        """Wait for startup auto-resume, then release and drain inbound queue."""
-        tasks = list(getattr(self, "_startup_restore_tasks", []) or [])
-        if tasks:
-            results = await asyncio.gather(*tasks, return_exceptions=True)
-            for result in results:
-                if isinstance(result, Exception):
-                    logger.debug(
-                        "startup auto-resume task failed",
-                        exc_info=(type(result), result, result.__traceback__),
-                    )
-        self._startup_restore_tasks = []
-        drained = await self._drain_startup_restore_queue()
-        self._startup_restore_in_progress = False
-        if drained:
-            logger.info("Drained %d inbound message(s) queued during startup restore", drained)
+        notices = {
+            "side_effect_unknown": (
+                "⚠️ Recovery paused: a tool may already have changed an external "
+                "system, but its result was lost when the gateway stopped. I will "
+                "not replay it automatically. Check the external state, then send "
+                "a new explicit instruction."
+            ),
+            "delivery_unknown": (
+                "⚠️ Recovery paused: the prior answer was generated, but Hermes "
+                "cannot prove whether it was delivered. I will not recompute or "
+                "resend it automatically. Send a new instruction when ready."
+            ),
+            "request_not_recorded": (
+                "⚠️ Recovery paused: the triggering request was not durably "
+                "recorded before the gateway stopped. Please resend the request."
+            ),
+            "recovery_retry_limit": (
+                "⚠️ Automatic recovery was interrupted three times, so this "
+                "session is paused to prevent a restart loop. Inspect the current "
+                "state, then send a new explicit instruction."
+            ),
+        }
+        content = notices.get(reason)
+        if not content:
+            return
+        try:
+            result = await adapter.send(
+                source.chat_id,
+                content,
+                metadata=self._thread_metadata_for_source(source),
+            )
+            if result is not None and getattr(result, "success", True) is False:
+                return
+        except Exception:
+            logger.warning(
+                "Recovery pause notification failed for %s",
+                entry.session_key,
+                exc_info=True,
+            )
+            return
+        notified.add(dedupe_key)
+
+    def _schedule_recovery_pause_notifications(self, platform=None) -> int:
+        store = getattr(self, "_active_run_store", None)
+        if store is None:
+            return 0
+        try:
+            records = {record.session_key: record for record in store.snapshot()}
+            with self.session_store._lock:  # noqa: SLF001 - startup snapshot
+                self.session_store._ensure_loaded_locked()  # noqa: SLF001
+                entries = [
+                    entry
+                    for entry in self.session_store._entries.values()  # noqa: SLF001
+                    if entry.resume_pending
+                    and entry.resume_reason in self._RECOVERY_PAUSE_REASONS
+                    and entry.origin is not None
+                    and (platform is None or entry.origin.platform == platform)
+                    and entry.session_key in records
+                ]
+        except Exception as exc:
+            logger.warning("Failed to enumerate paused recovery sessions: %s", exc)
+            return 0
+
+        scheduled = 0
+        for entry in entries:
+            record = records[entry.session_key]
+            dedupe_key = (entry.session_key, record.run_id, entry.resume_reason)
+            if dedupe_key in getattr(self, "_recovery_pause_notified", set()):
+                continue
+            if entry.session_key in getattr(self, "_running_agents", {}):
+                continue
+            if self._adapter_for_source(entry.origin) is None:
+                continue
+            # Claim the boot-local notification before starting I/O so
+            # reconnect/startup passes cannot race duplicate sends.  There is
+            # intentionally no durable outbox or resend promise.
+            self._recovery_pause_notified.add(dedupe_key)
+            task = asyncio.create_task(
+                self._send_recovery_pause_notification(entry=entry, run_id=record.run_id)
+            )
+            background = getattr(self, "_background_tasks", None)
+            if background is not None:
+                background.add(task)
+                task.add_done_callback(background.discard)
+            scheduled += 1
+        return scheduled
 
     async def _redeliver_pending_obligations(self) -> int:
         """Redeliver final responses recorded in the delivery ledger by a
@@ -7435,6 +7912,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         agent is already running are skipped regardless, so a session
         scheduled at startup is never resumed a second time.
         """
+        self._schedule_recovery_pause_notifications(platform=platform)
         window = _auto_continue_freshness_window()
         try:
             with self.session_store._lock:  # noqa: SLF001 — snapshot under lock
@@ -7461,13 +7939,22 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         # is now in the loop). Defenses 1-2 cover the cron/CLI/terminal paths;
         # this catches every other SIGTERM source (e.g. a raw `terminal(
         # "launchctl kickstart ai.hermes.gateway")`).
-        if candidates:
+        legacy_candidates = [
+            entry
+            for entry in candidates
+            if entry.resume_reason != "restart_interrupted_exact"
+        ]
+        if legacy_candidates:
             try:
                 from gateway import restart_loop_guard as _rlg
 
                 _max_restarts, _window = self._restart_loop_guard_config()
                 if _rlg.check_and_record(_max_restarts, _window):
-                    return 0
+                    candidates = [
+                        entry
+                        for entry in candidates
+                        if entry.resume_reason == "restart_interrupted_exact"
+                    ]
             except Exception as exc:  # noqa: BLE001 — breaker must fail OPEN
                 logger.debug("Restart-loop guard check skipped: %s", exc)
 
@@ -7475,7 +7962,11 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         scheduled = 0
         for entry in candidates:
             marker = entry.last_resume_marked_at or entry.updated_at
-            if marker is not None and (now - marker).total_seconds() > window:
+            if (
+                entry.resume_reason not in DURABLE_RESUME_REASONS
+                and marker is not None
+                and (now - marker).total_seconds() > window
+            ):
                 continue
 
             # Already being resumed (e.g. scheduled at startup and still
@@ -7514,6 +8005,20 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 )
                 continue
 
+            store = getattr(self, "_active_run_store", None)
+            record = store.get(entry.session_key) if store is not None else None
+            if entry.resume_reason == "restart_interrupted_exact" and record is None:
+                # A durable exact marker without its CAS identity must never
+                # fall back to an untracked synthetic replay.  Startup
+                # reconciliation clears this crash-gap state; a reconnect
+                # pass in the meantime simply leaves it alone.
+                logger.warning(
+                    "Skipping exact auto-resume for %s: active-run journal "
+                    "record is missing",
+                    entry.session_key,
+                )
+                continue
+
             # Claim the session slot *before* spawning the task so that an
             # inbound message arriving between task creation and the task's
             # first await (where _process_message_background sets the real
@@ -7532,17 +8037,14 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 source=source,
                 internal=True,
             )
+            if record is not None:
+                setattr(event, "_hermes_recovery_run_id", record.run_id)
             task = asyncio.create_task(
                 self._run_startup_resume_event(adapter, event, entry.session_key)
             )
             self._background_tasks.add(task)
             task.add_done_callback(self._background_tasks.discard)
-            if getattr(self, "_startup_restore_in_progress", False):
-                tasks = getattr(self, "_startup_restore_tasks", None)
-                if tasks is None:
-                    tasks = []
-                    self._startup_restore_tasks = tasks
-                tasks.append(task)
+            task.add_done_callback(consume_detached_task_result)
             scheduled += 1
         if scheduled:
             logger.info(
@@ -7550,6 +8052,37 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 scheduled,
             )
         return scheduled
+
+    async def _start_recovery_consumers(self) -> None:
+        """Start recovered process/delegation watchers before session replay."""
+        try:
+            from tools.process_registry import process_registry
+
+            watchers = process_registry.pending_watchers
+            process_registry.pending_watchers = []
+            for i, watcher in enumerate(watchers):
+                self._spawn_supervised(
+                    lambda w=watcher: self._run_process_watcher(w),
+                    f"process_watcher:{watcher.get('session_id')}",
+                    restart=False,
+                )
+                logger.info(
+                    "Resumed watcher for recovered process %s",
+                    watcher.get("session_id"),
+                )
+                if i % 100 == 99:
+                    await asyncio.sleep(0)
+        except Exception as exc:
+            logger.error("Recovered watcher setup error: %s", exc)
+
+        self._spawn_supervised(
+            self._async_delegation_watcher,
+            "async_delegation_watcher",
+        )
+        # Let both consumer classes enter their loops before any synthetic
+        # session continuation can observe or recreate their work.
+        await asyncio.sleep(0)
+        self._schedule_resume_pending_sessions()
 
     def _startup_should_abort(self) -> bool:
         return (
@@ -7860,6 +8393,20 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         except Exception as e:
             logger.warning("Process checkpoint recovery: %s", e)
 
+        # Exact active-run records are authoritative across clean markers and
+        # age windows.  Classify them after process adoption (so active
+        # background work is visible) and before the legacy 120s heuristic.
+        try:
+            _exact_active_run_keys = await self._prepare_active_run_recovery()
+        except Exception as e:
+            logger.warning("Exact active-run recovery preparation failed: %s", e)
+            # Never fall back to the permissive 120-second heuristic for a
+            # run whose exact safety classification failed.  The preparation
+            # method snapshots these keys before any transcript/process work.
+            _exact_active_run_keys = set(
+                getattr(self, "_exact_active_run_keys", set()) or set()
+            )
+
         # Suspend sessions that were active when the gateway last exited.
         # This prevents stuck sessions from being blindly resumed on restart,
         # which can create an unrecoverable loop (#7536).  Suspended sessions
@@ -7878,7 +8425,9 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 pass
         else:
             try:
-                suspended = await self.async_session_store.suspend_recently_active()
+                suspended = await self.async_session_store.suspend_recently_active(
+                    exclude_session_keys=_exact_active_run_keys,
+                )
                 if suspended:
                     logger.info("Marked %d in-flight session(s) as resumable from previous run", suspended)
             except Exception as e:
@@ -7889,20 +8438,13 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         # history keeps causing the agent to hang).  Auto-suspend it so the
         # user gets a clean slate on the next message.
         try:
-            stuck = self._suspend_stuck_loop_sessions()
+            stuck = self._suspend_stuck_loop_sessions(
+                exclude_session_keys=_exact_active_run_keys,
+            )
             if stuck:
                 logger.warning("Auto-suspended %d stuck-loop session(s)", stuck)
         except Exception as e:
             logger.debug("Stuck-loop detection failed: %s", e)
-
-        # Serialize startup restore against inbound dispatch.  Platform
-        # adapters can begin receiving messages as soon as they connect, but
-        # restart-interrupted sessions are not auto-resumed until all startup
-        # wiring below completes.  Queue inbound messages until the resume
-        # pass runs and every synthetic resume turn has finished.
-        self._startup_restore_in_progress = True
-        self._startup_restore_queue = []
-        self._startup_restore_tasks = []
 
         connected_count = 0
         enabled_platform_count = 0
@@ -8077,7 +8619,6 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 pass
             self._exit_code = GATEWAY_FATAL_CONFIG_EXIT_CODE
             self._request_clean_exit(reason)
-            self._startup_restore_in_progress = False
             return True
         except Exception as e:
             logger.error("Secondary-profile adapter startup failed: %s", e, exc_info=True)
@@ -8116,7 +8657,6 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     pass
                 self._exit_code = GATEWAY_FATAL_CONFIG_EXIT_CODE
                 self._request_clean_exit(reason)
-                self._startup_restore_in_progress = False
                 return True
             if enabled_platform_count > 0:
                 if startup_retryable_errors:
@@ -8252,42 +8792,10 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             finally:
                 _clear_planned_restart_notification()
 
-        # Automatically continue fresh sessions that were interrupted by the
-        # previous gateway restart/shutdown.  The resume_pending flag is cleared
-        # by the normal successful-turn path, so a failed auto-resume remains
-        # visible for manual recovery on the next user message.
-        #
-        # Delivery-obligation redelivery runs FIRST: a session whose final
-        # response was generated but never confirmed-delivered has its answer
-        # in the ledger — redelivering it (and clearing resume_pending for
-        # that session) is strictly cheaper and more correct than re-running
-        # the whole turn.
-        await self._redeliver_pending_obligations()
-        self._schedule_resume_pending_sessions()
+        # Restore process/delegation consumers before synthesizing session
+        # continuations.  The helper also schedules the bounded recoveries.
+        await self._start_recovery_consumers()
         await self._finish_startup_restore()
-
-        # Drain any recovered process watchers (from crash recovery checkpoint)
-        try:
-            from tools.process_registry import process_registry
-            # Detach the current batch atomically: reassigning to a fresh list
-            # takes ownership of exactly the watchers present now, so any watcher
-            # appended concurrently during the yield below isn't silently dropped
-            # by a clear() on the shared list.
-            watchers = process_registry.pending_watchers
-            process_registry.pending_watchers = []
-            # Process in batches of 100 with event-loop yield points to avoid
-            # O(n^2) event-loop blocking when recovering thousands of watchers.
-            for i, watcher in enumerate(watchers):
-                self._spawn_supervised(
-                    lambda w=watcher: self._run_process_watcher(w),
-                    f"process_watcher:{watcher.get('session_id')}",
-                    restart=False,
-                )
-                logger.info("Resumed watcher for recovered process %s", watcher.get("session_id"))
-                if i % 100 == 99:
-                    await asyncio.sleep(0)
-        except Exception as e:
-            logger.error("Recovered watcher setup error: %s", e)
 
         # Start background session expiry watcher to finalize expired sessions
         self._spawn_supervised(self._session_expiry_watcher, "session_expiry_watcher")
@@ -8317,12 +8825,6 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         # destination platform's home channel, then forges a synthetic user
         # turn so the agent kicks off the new chat.
         self._spawn_supervised(self._handoff_watcher, "handoff_watcher")
-
-        # Start background async-delegation watcher — drains completion events
-        # from delegate_task(background=true) subagents and injects each
-        # result back into its originating session as a new turn, covering the
-        # idle case where the subagent finishes with no agent turn running.
-        self._spawn_supervised(self._async_delegation_watcher, "async_delegation_watcher")
 
         # Start the scale-to-zero idle watcher ONLY when this instance is opted
         # in (the NAS "Labs" HERMES_SCALE_TO_ZERO stamp), messaging is
@@ -10459,7 +10961,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         # are system-generated and must skip user authorization.
         is_internal = bool(getattr(event, "internal", False))
 
-        # Ignored-channel guard runs FIRST — before startup-restore queueing,
+        # Ignored-channel guard runs FIRST — before recovery dispatch,
         # plugin hooks, auth, and session setup — so a configured ignored
         # channel can never reach pairing/auth/session state (#51899).
         # getattr: bare test runners construct GatewayRunner via
@@ -10476,14 +10978,6 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 "Dropping Slack message from configured ignored channel %s",
                 getattr(source, "chat_id", None),
             )
-            return None
-
-        if (
-            getattr(self, "_startup_restore_in_progress", False)
-            and not is_internal
-            and not getattr(event, "_hermes_startup_restore_replay", False)
-        ):
-            self._queue_startup_restore_event(event)
             return None
 
         # scale-to-zero (Phase 0, 0.B/F13): stamp the gateway-scoped last-inbound
@@ -10598,6 +11092,43 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         # Otherwise control/session commands like /new or /help get silently
         # consumed as update answers instead of being dispatched normally.
         _quick_key = self._session_key_for_source(source)
+        try:
+            with self.session_store._lock:  # noqa: SLF001 - guarded read
+                self.session_store._ensure_loaded_locked()  # noqa: SLF001
+                _recovery_entry = self.session_store._entries.get(_quick_key)  # noqa: SLF001
+                _recovery_reason = (
+                    _recovery_entry.resume_reason
+                    if _recovery_entry is not None and _recovery_entry.resume_pending
+                    else None
+                )
+        except Exception:
+            _recovery_reason = None
+        if is_internal and _recovery_reason in self._RECOVERY_PAUSE_REASONS:
+            logger.info(
+                "Ignoring internal event for recovery-paused session %s (%s); "
+                "a new explicit user instruction is required",
+                _quick_key,
+                _recovery_reason,
+            )
+            return None
+        if not is_internal and _recovery_reason in DURABLE_RESUME_REASONS:
+            store = getattr(self, "_active_run_store", None)
+            paused_run = store.get(_quick_key) if store is not None else None
+            inbound_message_id = getattr(event, "message_id", None)
+            if (
+                paused_run is not None
+                and inbound_message_id
+                and paused_run.trigger_message_id
+                and str(inbound_message_id) == paused_run.trigger_message_id
+            ):
+                logger.info(
+                    "Ignoring redelivery of trigger message %s for recovering "
+                    "session %s; a new user event is required",
+                    inbound_message_id,
+                    _quick_key,
+                )
+                return None
+
         _update_prompts = getattr(self, "_update_prompt_pending", {})
         if _update_prompts.get(_quick_key):
             raw = (event.text or "").strip()
@@ -12606,6 +13137,14 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     await asyncio.to_thread(self._record_telegram_topic_binding, source, session_entry)
                 except Exception:
                     logger.debug("Failed to record Telegram topic binding", exc_info=True)
+
+        # The routing decision is now stable.  Persist an exact executing-run
+        # marker before hooks, transcript hygiene, or agent setup can be
+        # interrupted by SIGKILL.
+        active_run_id = await self._begin_active_run(
+            event=event,
+            session_key=session_key,
+        )
         # Capture and immediately consume was_auto_reset so it does not
         # re-fire on subsequent messages — preventing the cleanup from
         # wiping model/reasoning overrides set between turns (Closes #48031).
@@ -13498,6 +14037,9 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             session_key=session_key,
         )
         if message_text is None:
+            # Preprocessing intentionally consumed/refused the event; no agent
+            # response will cross the delivery callback boundary.
+            await self._discard_active_run(session_key, run_id=active_run_id)
             return
 
         # Capture the platform event time as message metadata and keep the
@@ -13666,24 +14208,6 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             # must include the first-turn `session_meta` marker row and the
             # compression session_id swap, both of which happen later.  See
             # the call site after the `update_session(...)` write.
-
-            # Successful turn — clear any stuck-loop counter for this session.
-            # This ensures the counter only accumulates across CONSECUTIVE
-            # restarts where the session was active (never completed).
-            #
-            # Also clear the resume_pending flag (set by drain-timeout
-            # shutdown) — the turn ran to completion, so recovery
-            # succeeded and subsequent messages should no longer receive
-            # the restart-interruption system note.
-            if session_key and _should_clear_resume_pending_after_turn(agent_result):
-                self._clear_restart_failure_count(session_key)
-                try:
-                    await self.async_session_store.clear_resume_pending(session_key)
-                except Exception as _e:
-                    logger.debug(
-                        "clear_resume_pending failed for %s: %s",
-                        session_key, _e,
-                    )
 
             # Normalize empty responses: surface errors, partial failures, and
             # the case where agent did work but returned no text. Fix for #18765.
@@ -14121,6 +14645,35 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 session_key, session_entry.session_id
             )
 
+            # Transcript persistence is complete.  Do not clear the journal
+            # here: the adapter's post-delivery callback owns the CAS delete,
+            # so a SIGKILL in the remaining delivery window leaves an explicit
+            # response_ready record that startup pauses instead of replaying.
+            if not agent_result.get("interrupted"):
+                _active_run_ready = await self._mark_active_run_response_ready(
+                    session_key=session_key,
+                    run_id=active_run_id,
+                    source=source,
+                    run_generation=run_generation,
+                )
+                if (
+                    not _active_run_ready
+                    and session_key
+                    and _should_clear_resume_pending_after_turn(agent_result)
+                ):
+                    # Journal I/O is deliberately fail-safe.  Preserve the
+                    # pre-journal success behavior if the tiny sidecar could
+                    # not be created or transitioned for this turn.
+                    self._clear_restart_failure_count(session_key)
+                    try:
+                        await self.async_session_store.clear_resume_pending(session_key)
+                    except Exception as _e:
+                        logger.debug(
+                            "clear_resume_pending fallback failed for %s: %s",
+                            session_key,
+                            _e,
+                        )
+
             # Intentional silence is a delivery decision, not a transcript
             # mutation.  The agent's [SILENT]/NO_REPLY assistant turn above is
             # still persisted in session history so later turns keep normal
@@ -14202,30 +14755,39 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             # inbound turn itself, so append the user message here once. If the
             # agent already reached its early turn-start persistence, the latest
             # transcript user row will match and we skip the duplicate.
+            _user_turn_persisted = False
             try:
                 if 'message_text' in locals() and message_text is not None and session_entry is not None:
                     _already_persisted = False
+                    _expected_user_content = (
+                        persist_user_message
+                        if persist_user_message is not None
+                        else message_text
+                    )
+                    _expected_message_id = (
+                        str(event.message_id)
+                        if getattr(event, "message_id", None)
+                        else None
+                    )
                     try:
                         _recent_transcript = await self.async_session_store.load_transcript(session_entry.session_id)
                     except Exception:
                         _recent_transcript = []
                     for _msg in reversed(_recent_transcript[-10:]):
                         if _msg.get("role") == "user":
-                            _expected_user_content = (
-                                persist_user_message
-                                if persist_user_message is not None
-                                else message_text
+                            _already_persisted = bool(
+                                _msg.get("content") == _expected_user_content
+                                and (
+                                    _expected_message_id is None
+                                    or str(_msg.get("message_id") or "")
+                                    == _expected_message_id
+                                )
                             )
-                            _already_persisted = (_msg.get("content") == _expected_user_content)
                             break
                     if not _already_persisted:
                         _user_entry = {
                             "role": "user",
-                            "content": (
-                                persist_user_message
-                                if persist_user_message is not None
-                                else message_text
-                            ),
+                            "content": _expected_user_content,
                             "timestamp": (
                                 persist_user_timestamp
                                 if persist_user_timestamp is not None
@@ -14238,8 +14800,32 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                             session_entry.session_id,
                             _user_entry,
                         )
+                        try:
+                            _recent_transcript = await self.async_session_store.load_transcript(
+                                session_entry.session_id
+                            )
+                        except Exception:
+                            _recent_transcript = []
+                        _already_persisted = any(
+                            _msg.get("role") == "user"
+                            and _msg.get("content") == _expected_user_content
+                            and (
+                                _expected_message_id is None
+                                or str(_msg.get("message_id") or "")
+                                == _expected_message_id
+                            )
+                            for _msg in _recent_transcript[-10:]
+                        )
+                    _user_turn_persisted = _already_persisted
             except Exception:
                 logger.debug("Failed to persist inbound user message after agent exception", exc_info=True)
+            if _user_turn_persisted:
+                await self._mark_active_run_response_ready(
+                    session_key=session_key,
+                    run_id=active_run_id,
+                    source=source,
+                    run_generation=run_generation,
+                )
             # Log full details server-side only; never expose raw exception
             # types or messages to end users (info-leakage risk).
             status_hint = ""
@@ -18646,6 +19232,8 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         """Interrupt the current run and clear queued session state consistently."""
         if not session_key:
             return
+        await self._discard_active_run(session_key)
+        await self._clear_resume_pending_after_explicit_discard(session_key)
         running_agent = self._running_agents.get(session_key)
         if running_agent and running_agent is not _AGENT_PENDING_SENTINEL:
             running_agent.interrupt(interrupt_reason)
@@ -21716,10 +22304,19 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     getattr(_resume_entry, "last_resume_marked_at", None),
                     window_secs=_freshness_window,
                 )
+            _resume_reason = (
+                getattr(_resume_entry, "resume_reason", None)
+                if _resume_entry is not None
+                else None
+            )
             _is_resume_pending = bool(
                 _resume_entry is not None
                 and getattr(_resume_entry, "resume_pending", False)
-                and (_interruption_is_fresh or _resume_mark_is_fresh)
+                and (
+                    _resume_reason in DURABLE_RESUME_REASONS
+                    or _interruption_is_fresh
+                    or _resume_mark_is_fresh
+                )
             )
             _has_fresh_tool_tail = bool(
                 agent_history
@@ -21728,7 +22325,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             )
 
             if _is_resume_pending:
-                _reason = getattr(_resume_entry, "resume_reason", None) or "restart_timeout"
+                _reason = _resume_reason or "restart_timeout"
                 _persist_user_message_override = message
                 # The empty-message case is the auto-resume startup turn
                 # synthesized by _schedule_resume_pending_sessions — there is

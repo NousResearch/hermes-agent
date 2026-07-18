@@ -7,6 +7,7 @@ import pytest
 
 from gateway.config import GatewayConfig, Platform, PlatformConfig
 from gateway.platforms.base import MessageEvent
+from gateway.recovery import ActiveRunStore
 from gateway.session import SessionEntry, SessionSource, build_session_key
 
 
@@ -107,6 +108,32 @@ async def test_reset_fires_reset_hook(mock_invoke_hook):
         and c.kwargs["new_session_id"] == "sess-new"
         for c in mock_invoke_hook.call_args_list
     )
+
+
+@pytest.mark.asyncio
+@patch("hermes_cli.plugins.invoke_hook")
+async def test_new_discards_active_run_journal(mock_invoke_hook, tmp_path):
+    runner = _make_runner()
+    session_key = next(iter(runner.session_store._entries))
+    runner._active_run_store = ActiveRunStore(tmp_path)
+    runner._active_run_store.begin(session_key, trigger_message_id="m1")
+
+    await runner._handle_reset_command(_make_event("/new"))
+
+    assert runner._active_run_store.get(session_key) is None
+
+
+@pytest.mark.asyncio
+async def test_stop_discards_active_run_journal(tmp_path):
+    runner = _make_runner()
+    session_key = next(iter(runner.session_store._entries))
+    runner._active_run_store = ActiveRunStore(tmp_path)
+    runner._active_run_store.begin(session_key, trigger_message_id="m1")
+
+    await runner._handle_stop_command(_make_event("/stop"))
+
+    assert runner._active_run_store.get(session_key) is None
+    runner.session_store.clear_resume_pending.assert_called_with(session_key)
 
 
 @pytest.mark.asyncio

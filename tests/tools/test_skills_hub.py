@@ -1231,6 +1231,33 @@ class TestCheckForSkillUpdates:
 
         assert bundle_content_hash(bundle) == content_hash(skill_dir)
 
+    def test_content_hash_orders_by_relative_posix_path(self, tmp_path):
+        from tools.skills_guard import content_hash
+
+        files = {
+            "SKILL.md": "# demo\n",
+            "lib/helper.py": "def help(): pass\n",
+            "lib-helper.py": "HELPER = True\n",
+        }
+        bundle = SkillBundle(
+            name="ordering-skill",
+            files=files,
+            source="github",
+            identifier="owner/repo/ordering-skill",
+            trust_level="community",
+        )
+        skill_dir = tmp_path / "ordering-skill"
+        for relative_path, content in files.items():
+            path = skill_dir / relative_path
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text(content)
+
+        paths = [path for path in skill_dir.rglob("*") if path.is_file()]
+        path_order = [path.relative_to(skill_dir).as_posix() for path in sorted(paths)]
+        posix_order = sorted(path.relative_to(skill_dir).as_posix() for path in paths)
+        assert path_order != posix_order
+        assert content_hash(skill_dir) == bundle_content_hash(bundle)
+
     def test_reports_update_when_remote_hash_differs(self):
         lock = MagicMock()
         lock.list_installed.return_value = [{

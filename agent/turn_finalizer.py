@@ -222,11 +222,25 @@ def finalize_turn(
         # holds regardless of which path produced it. (#43849 / #44100)
         if final_response and not interrupted:
             try:
-                _tail_role = messages[-1].get("role") if messages else None
+                _tail = messages[-1] if messages else None
             except Exception:
-                _tail_role = None
+                _tail = None
+            _tail_role = _tail.get("role") if isinstance(_tail, dict) else None
             if _tail_role != "assistant":
                 messages.append({"role": "assistant", "content": final_response})
+            elif _tail.get("tool_calls") and not (
+                _tail.get("content") if isinstance(_tail.get("content"), str) else ""
+            ).strip():
+                # The tail IS an assistant row, but a *pure tool-call turn*:
+                # tool_calls with no text of its own. It carries none of the
+                # delivered answer, so the role check alone leaves the invariant
+                # unmet — the user saw a response that never reached the
+                # transcript, and the next turn replays the user backlog and
+                # re-answers it (the very symptom this block was added for).
+                # Fill that row's empty content instead of appending, so the
+                # durable turn ends with the answer without disturbing the
+                # tool-call structure or creating an assistant→assistant pair.
+                _tail["content"] = final_response
 
         # The model has completed its request, so replace API-local
         # voice/model/skill guidance with the clean user input before writing the

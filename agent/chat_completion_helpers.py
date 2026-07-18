@@ -2049,6 +2049,26 @@ def handle_max_iterations(agent, messages: list, api_call_count: int) -> str:
                 summary_response = agent._anthropic_messages_create(_ant_kw)
                 _summary_result = _tsum.normalize_response(summary_response, strip_tool_prefix=agent._is_anthropic_oauth)
                 final_response = (_summary_result.content or "").strip()
+            elif agent.api_mode == "bedrock_converse":
+                # Bedrock has no OpenAI-style client (agent.client is None) —
+                # route the summary call through the same boto3 dispatch path
+                # the main loop uses instead of falling through to the
+                # OpenAI-client branch below, which raises a connection
+                # error with no api_key/base_url configured. See #90-iter
+                # "couldn't summarize" report.
+                _btsum = agent._get_transport()
+                _bregion = getattr(agent, "_bedrock_region", None) or "us-east-1"
+                _bguardrail = getattr(agent, "_bedrock_guardrail_config", None)
+                _bedrock_kwargs = _btsum.build_kwargs(
+                    model=agent.model, messages=api_messages, tools=None,
+                    max_tokens=agent.max_tokens or 4096, region=_bregion,
+                    guardrail_config=_bguardrail,
+                )
+                summary_response = _dispatch_nonstreaming_api_request(
+                    agent, _bedrock_kwargs, make_client=lambda reason: None,
+                )
+                _summary_result = _btsum.normalize_response(summary_response)
+                final_response = (_summary_result.content or "").strip()
             else:
                 summary_response = agent._ensure_primary_openai_client(reason="iteration_limit_summary").chat.completions.create(**summary_kwargs)
                 _summary_result = agent._get_transport().normalize_response(summary_response)
@@ -2078,6 +2098,22 @@ def handle_max_iterations(agent, messages: list, api_call_count: int) -> str:
                                 preserve_dots=agent._anthropic_preserve_dots())
                 retry_response = agent._anthropic_messages_create(_ant_kw2)
                 _retry_result = _tretry.normalize_response(retry_response, strip_tool_prefix=agent._is_anthropic_oauth)
+                final_response = (_retry_result.content or "").strip()
+            elif agent.api_mode == "bedrock_converse":
+                # Same fix as the primary attempt above — no OpenAI client
+                # exists for Bedrock agents, route through the transport.
+                _btretry = agent._get_transport()
+                _bregion2 = getattr(agent, "_bedrock_region", None) or "us-east-1"
+                _bguardrail2 = getattr(agent, "_bedrock_guardrail_config", None)
+                _bedrock_kwargs2 = _btretry.build_kwargs(
+                    model=agent.model, messages=api_messages, tools=None,
+                    max_tokens=agent.max_tokens or 4096, region=_bregion2,
+                    guardrail_config=_bguardrail2,
+                )
+                retry_response = _dispatch_nonstreaming_api_request(
+                    agent, _bedrock_kwargs2, make_client=lambda reason: None,
+                )
+                _retry_result = _btretry.normalize_response(retry_response)
                 final_response = (_retry_result.content or "").strip()
             else:
                 summary_kwargs = {

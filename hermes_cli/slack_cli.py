@@ -27,6 +27,7 @@ def _build_full_manifest(
     bot_name: str,
     bot_description: str,
     include_assistant: bool = True,
+    messaging_experience: str | None = None,
 ) -> dict:
     """Build a full Slack manifest merging display info + our slash list.
 
@@ -36,16 +37,23 @@ def _build_full_manifest(
     for a Hermes deployment — users can tweak them in the Slack UI after
     pasting.
 
-    When ``include_assistant`` is True (default) the manifest opts the app
-    into Slack's AI Assistant container: the ``assistant_view`` feature, the
-    ``assistant:write`` scope, and the ``assistant_thread_*`` events. Slack
-    then renders DMs as the right-hand Assistant split-pane, where every
-    exchange is a thread and bare slash commands are not delivered as normal
-    ``command`` events. Pass ``include_assistant=False`` (``--no-assistant``)
-    to omit those three pieces and get a flat DM surface where ``/help``,
-    ``/new``, etc. work inline.
+    By default, this keeps Hermes on Slack's older Assistant messaging
+    experience (``assistant_view``) for backward compatibility. Pass
+    ``messaging_experience="agent"`` (``--agent-view``) to emit Slack's Agent
+    messaging experience (``agent_view`` + ``app_home_opened``). Pass
+    ``include_assistant=False`` or ``messaging_experience="none"``
+    (``--no-assistant``) to omit Slack AI messaging features and get a flat DM
+    surface where ``/help``, ``/new``, etc. work inline.
     """
     from hermes_cli.commands import slack_app_manifest
+
+    if messaging_experience is None:
+        messaging_experience = "assistant" if include_assistant else "none"
+    messaging_experience = str(messaging_experience).strip().lower()
+    if messaging_experience not in {"assistant", "agent", "none"}:
+        raise ValueError(
+            "messaging_experience must be one of: assistant, agent, none"
+        )
 
     partial = slack_app_manifest()
     slashes = partial["features"]["slash_commands"]
@@ -89,7 +97,7 @@ def _build_full_manifest(
         "message.mpim",
     ]
 
-    if include_assistant:
+    if messaging_experience == "assistant":
         features["assistant_view"] = {
             "assistant_description": "Chat with Hermes in threads and DMs.",
         }
@@ -100,8 +108,18 @@ def _build_full_manifest(
                 "assistant_thread_started",
             ]
         )
-        bot_scopes.sort()
-        bot_events.sort()
+    elif messaging_experience == "agent":
+        features["agent_view"] = {
+            "agent_description": "Chat with Hermes in Slack Messages.",
+        }
+        bot_scopes.append("assistant:write")
+        # Slack includes current viewing context in Agent DM events only after
+        # this subscription is enabled; the adapter consumes that context to
+        # preserve the referred channel across the agent turn.
+        bot_events.extend(["app_context_changed", "app_home_opened"])
+
+    bot_scopes.sort()
+    bot_events.sort()
 
     return {
         "_metadata": {
@@ -147,17 +165,29 @@ def slack_manifest_command(args) -> int:
                       assistant:write scope, assistant_thread_* events) so
                       DMs render as a flat chat where bare slash commands
                       work inline instead of the Assistant thread pane.
+      --agent-view    Use Slack's Agent messaging experience (agent_view,
+                      app_home_opened + message.im) instead of the legacy
+                      Assistant messaging experience.
     """
     name = getattr(args, "name", None) or "Hermes"
     description = getattr(args, "description", None) or "Your Hermes agent on Slack"
-    include_assistant = not getattr(args, "no_assistant", False)
+    if getattr(args, "agent_view", False):
+        messaging_experience = "agent"
+    elif getattr(args, "no_assistant", False):
+        messaging_experience = "none"
+    else:
+        messaging_experience = "assistant"
 
     if getattr(args, "slashes_only", False):
         from hermes_cli.commands import slack_app_manifest
 
         manifest = slack_app_manifest()["features"]["slash_commands"]
     else:
-        manifest = _build_full_manifest(name, description, include_assistant=include_assistant)
+        manifest = _build_full_manifest(
+            name,
+            description,
+            messaging_experience=messaging_experience,
+        )
 
     payload = json.dumps(manifest, indent=2, ensure_ascii=False) + "\n"
 

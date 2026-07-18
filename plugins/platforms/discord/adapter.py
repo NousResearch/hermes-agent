@@ -4547,9 +4547,7 @@ class DiscordAdapter(BasePlatformAdapter):
         leave/rejoin can never disconnect or hijack the hand-established
         session. Suppression is deliberately left intact.
         """
-        self._voice_auto_join_targets.pop(int(guild_id), None)
-        self._clear_pending_auto_join(int(guild_id))
-        self._cancel_voice_auto_join_retry(int(guild_id))
+        self._drop_auto_follow_ownership(int(guild_id))
 
     def cancel_inflight_auto_join(self, guild_id: int) -> bool:
         """Cancel an in-flight auto-join on a MANUAL ``/voice leave``.
@@ -5105,7 +5103,13 @@ class DiscordAdapter(BasePlatformAdapter):
             if not restored:
                 # Rollback failed / unknown pre-move channel — deterministically
                 # tear the session down so it is never left on the wrong channel.
-                await self._leave_voice_channel_body(int(guild_id))
+                # Capture the owning text channel FIRST, then run the FULL
+                # profile-bound teardown (physical + maps + owner/target + the
+                # runner _on_voice_disconnect cleanup that clears persisted voice
+                # mode / auto-TTS) — still inside this run-to-completion unit, so it
+                # all completes before any cancellation propagates.
+                text_ch_id = self._voice_text_channels.get(int(guild_id))
+                await self._teardown_voice_session_body(int(guild_id), text_ch_id)
             return False
         self._reset_voice_timeout(int(guild_id))
         self._stamp_voice_owner_locked(int(guild_id), manual_owner, attempt_token)
@@ -5165,13 +5169,24 @@ class DiscordAdapter(BasePlatformAdapter):
         """
         if manual_owner:
             self._voice_session_owner[int(guild_id)] = VoiceSessionOwner.manual()
-            self._clear_pending_auto_join(int(guild_id))
-            targets = getattr(self, "_voice_auto_join_targets", None)
-            if isinstance(targets, dict):
-                targets.pop(int(guild_id), None)
-            self._cancel_voice_auto_join_retry(int(guild_id))
+            self._drop_auto_follow_ownership(int(guild_id))
         elif attempt_token is not None:
             self._voice_session_owner[int(guild_id)] = VoiceSessionOwner.auto(attempt_token)
+
+    def _drop_auto_follow_ownership(self, guild_id: int) -> None:
+        """Drop ALL auto-follow ownership for a guild — pending attempt slot,
+        tracked target, and the unattended retry task — in a single, lock-safe,
+        synchronous (no-await) step. Shared by the manual /voice-join takeover
+        (``clear_voice_auto_join_ownership`` and the manual owner stamp), so the
+        pending/target/retry clearing lives in exactly one place. Suppression is
+        deliberately left intact.
+        """
+        gid = int(guild_id)
+        targets = getattr(self, "_voice_auto_join_targets", None)
+        if isinstance(targets, dict):
+            targets.pop(gid, None)
+        self._clear_pending_auto_join(gid)
+        self._cancel_voice_auto_join_retry(gid)
 
     async def leave_voice_channel(self, guild_id: int) -> None:
         """Disconnect from the voice channel in a guild (cancellation-safe).

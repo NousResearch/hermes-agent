@@ -14528,10 +14528,11 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             #
             # Decide how to invoke join_voice_channel by INSPECTING ITS SIGNATURE
             # BEFORE the call — never by parsing a TypeError message and never by
-            # retrying a modern call tokenless (dropping attempt_token/manual_owner
-            # would bypass the ownership gate and let a stale attempt mutate a live
-            # session). An internal TypeError from a modern adapter therefore
-            # surfaces as a single failed call (handled by the outer except).
+            # retrying tokenless. The ownership gate lives in these kwargs, so a
+            # callable that does not accept BOTH manual_owner and attempt_token is
+            # FAILED CLOSED (a tokenless call would bypass the gate and let a stale
+            # attempt mutate a live session). An internal TypeError from a
+            # gate-aware adapter surfaces as a single failed call (outer except).
             _supports_gate_kwargs = True
             try:
                 _params = inspect.signature(adapter.join_voice_channel).parameters
@@ -14544,13 +14545,18 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             except (TypeError, ValueError):
                 # Not introspectable (e.g. a builtin) — assume the modern contract.
                 _supports_gate_kwargs = True
-            if _supports_gate_kwargs:
-                success = await adapter.join_voice_channel(
-                    voice_channel, manual_owner=bool(manual), attempt_token=attempt_token
+            if not _supports_gate_kwargs:
+                # Fail closed — do NOT invoke a legacy tokenless branch.
+                logger.warning(
+                    "join_voice_channel lacks the ownership-gate kwargs "
+                    "(manual_owner/attempt_token); refusing to join to avoid "
+                    "bypassing the ownership gate"
                 )
-            else:
-                # Genuinely legacy adapter without the gate kwargs — single call.
-                success = await adapter.join_voice_channel(voice_channel)
+                _restore_prior_wiring()
+                return "Failed to join voice channel: voice ownership gate unavailable."
+            success = await adapter.join_voice_channel(
+                voice_channel, manual_owner=bool(manual), attempt_token=attempt_token
+            )
         except Exception as e:
             logger.warning("Failed to join voice channel: %s", e)
             _restore_prior_wiring()

@@ -2487,11 +2487,18 @@ def cmd_chat(args):
     # Filter out None values
     kwargs = {k: v for k, v in kwargs.items() if v is not None}
 
-    try:
-        cli_main(**kwargs)
-    except ValueError as e:
-        print(f"Error: {e}")
-        sys.exit(1)
+    # A model request may remain completely silent for longer than the
+    # dispatcher's stale-heartbeat threshold. Keep dispatcher-spawned workers
+    # alive from a process-side daemon thread, independent of model chunks and
+    # tool calls. The context always stops the thread on normal return or error.
+    from agent.kanban_worker_heartbeat import worker_heartbeat_keepalive
+
+    with worker_heartbeat_keepalive():
+        try:
+            cli_main(**kwargs)
+        except ValueError as e:
+            print(f"Error: {e}")
+            sys.exit(1)
 
 
 def cmd_gateway(args):

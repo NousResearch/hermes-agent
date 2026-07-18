@@ -325,6 +325,67 @@ class TestChannelInfo:
 
 
 # ---------------------------------------------------------------------------
+# Action: set_default_auto_archive_duration
+# ---------------------------------------------------------------------------
+
+class TestSetDefaultAutoArchiveDuration:
+    @patch("tools.discord_tool._discord_request")
+    def test_updates_channel_default_to_supported_duration(self, mock_req, monkeypatch):
+        monkeypatch.setenv("DISCORD_BOT_TOKEN", "test-token")
+        mock_req.return_value = {
+            "id": "11", "name": "general", "type": 0,
+            "default_auto_archive_duration": 10080,
+        }
+
+        result = json.loads(discord_admin_handler(
+            action="set_default_auto_archive_duration",
+            channel_id="11",
+            auto_archive_duration=10080,
+        ))
+
+        assert result == {
+            "success": True,
+            "channel_id": "11",
+            "name": "general",
+            "default_auto_archive_duration": 10080,
+        }
+        mock_req.assert_called_once_with(
+            "PATCH", "/channels/11", "test-token",
+            body={"default_auto_archive_duration": 10080},
+        )
+
+    @patch("tools.discord_tool._discord_request")
+    def test_requires_explicit_duration(self, mock_req, monkeypatch):
+        monkeypatch.setenv("DISCORD_BOT_TOKEN", "test-token")
+
+        result = json.loads(discord_admin_handler(
+            action="set_default_auto_archive_duration",
+            channel_id="11",
+        ))
+
+        assert result == {
+            "error": (
+                "Missing required parameters for 'set_default_auto_archive_duration': "
+                "auto_archive_duration"
+            ),
+        }
+        mock_req.assert_not_called()
+
+    @patch("tools.discord_tool._discord_request")
+    def test_rejects_unsupported_duration_without_api_call(self, mock_req, monkeypatch):
+        monkeypatch.setenv("DISCORD_BOT_TOKEN", "test-token")
+
+        result = json.loads(discord_admin_handler(
+            action="set_default_auto_archive_duration",
+            channel_id="11",
+            auto_archive_duration=1000,
+        ))
+
+        assert "auto_archive_duration must be one of" in result["error"]
+        mock_req.assert_not_called()
+
+
+# ---------------------------------------------------------------------------
 # Action: list_roles
 # ---------------------------------------------------------------------------
 

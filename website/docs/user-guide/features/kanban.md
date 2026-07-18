@@ -296,8 +296,8 @@ parent, missing input, unmet capability) before unblocking, or raise
 | `kanban_block` | Stop work and route by why: `kind=dependency` (waits in `todo`, auto-resumes), `needs_input`/`capability`/`transient` (surface to a human). Repeated same-kind re-blocks auto-escalate to `triage`. | `reason` |
 | `kanban_heartbeat` | Signal liveness during long operations. Pure side-effect. | — |
 | `kanban_comment` | Append a durable note to the task thread. | `task_id`, `body` |
-| `kanban_create` | (Orchestrators) fan out into child tasks with an `assignee`, optional `parents`, `skills`, etc. | `title`, `assignee` |
-| `kanban_link` | (Orchestrators) add a `parent_id → child_id` dependency edge after the fact. | `parent_id`, `child_id` |
+| `kanban_create` | (Worker-visible; commonly used by orchestrators) fan out into child tasks with an `assignee`, optional `parents`, `skills`, etc. | `title`, `assignee` |
+| `kanban_link` | (Worker-visible; commonly used by orchestrators) add a `parent_id → child_id` dependency edge after the fact. | `parent_id`, `child_id` |
 | `kanban_unblock` | (Orchestrators) move a blocked task to `ready` when all parents are done, or `todo` while any parent remains open. | `task_id` |
 | `kanban_archive` | (Orchestrators) administratively retire a task — a stale `triage` idea, a duplicate, or abandoned work. **Not** the same as completing it (see below). | `task_id` |
 
@@ -338,7 +338,7 @@ kanban_create(
 kanban_complete(summary="decomposed into 2 research tasks + 1 writer; linked dependencies")
 ```
 
-The "(Orchestrators)" tools — `kanban_list`, `kanban_create`, `kanban_link`, `kanban_unblock`, `kanban_archive`, and `kanban_comment` on foreign tasks — are available through the same toolset; the convention (encoded in the auto-injected kanban guidance) is that worker profiles don't fan out or route unrelated work, and orchestrator profiles don't execute implementation work. Dispatcher-spawned workers are still task-scoped for destructive lifecycle operations and cannot mutate unrelated tasks. Board-routing tools that retire or reopen work — `kanban_list`, `kanban_unblock`, and `kanban_archive` — are strictly **orchestrator-only**: they are hidden from a worker's schema entirely, and if a worker reaches one anyway it is refused at runtime. A worker that wants to stop uses `kanban_complete` or `kanban_block` for *its own* task; retiring someone else's card is an orchestrator decision.
+The follow-up, dependency, and routing tools — `kanban_create` and `kanban_link` (worker-visible follow-up/dependency tools, commonly used by orchestrators but not orchestrator-only), plus `kanban_list`, `kanban_unblock`, `kanban_archive`, and `kanban_comment` on foreign tasks — are available through the same toolset; the convention (encoded in the auto-injected kanban guidance) is that worker profiles don't fan out or route unrelated work, and orchestrator profiles don't execute implementation work. Dispatcher-spawned workers are still task-scoped for destructive lifecycle operations and cannot mutate unrelated tasks. Board-routing tools that retire or reopen work — `kanban_list`, `kanban_unblock`, and `kanban_archive` — are strictly **orchestrator-only**: they are hidden from a worker's schema entirely, and if a worker reaches one anyway it is refused at runtime. A worker that wants to stop uses `kanban_complete` or `kanban_block` for *its own* task; retiring someone else's card is an orchestrator decision.
 
 ### Why tools instead of shelling to `hermes kanban`
 

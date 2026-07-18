@@ -707,3 +707,32 @@ class TestContinuousLoopSimulation:
         # The in-flight transcript was suppressed because we stopped mid-flight
         assert transcripts == []
         assert voice.is_continuous_active() is False
+
+
+class TestBeepsEnabled:
+    """Tests hermes_cli.voice._beeps_enabled() config parsing."""
+
+    def test_beeps_enabled_by_default(self, monkeypatch):
+        from hermes_cli.voice import _beeps_enabled
+
+        monkeypatch.setattr("hermes_cli.config.load_config", lambda: {"voice": {}})
+        assert _beeps_enabled() is True
+
+    @pytest.mark.parametrize("raw_value,expected", [
+        ("false", False),
+        ("0", False),
+        ("no", False),
+        ("off", False),
+        ("true", True),
+        ("1", True),
+        ("yes", True),
+        ("on", True),
+    ])
+    def test_quoted_values_parsed_correctly(self, monkeypatch, raw_value, expected):
+        from hermes_cli.voice import _beeps_enabled
+
+        monkeypatch.setattr(
+            "hermes_cli.config.load_config",
+            lambda: {"voice": {"beep_enabled": raw_value}},
+        )
+        assert _beeps_enabled() is expected

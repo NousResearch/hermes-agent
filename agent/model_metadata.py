@@ -543,7 +543,13 @@ def _is_known_provider_base_url(base_url: str) -> bool:
 
 
 def _endpoint_scoped_context_length(model: str, base_url: str) -> Optional[int]:
-    """Return metadata confirmed only for one provider endpoint."""
+    """Return metadata confirmed only for the Kimi Coding endpoint.
+
+    Kimi Coding serves K3 under the bare slug ``k3``, but users may also
+    configure or select the public-facing aliases ``kimi-k3`` and
+    ``kimi-k3-cot``. Only canonical ``https://api.kimi.com/coding`` endpoints
+    (legacy Moonshot keys do not serve K3) get the 1 Mi context window.
+    """
     normalized = _normalize_base_url(base_url)
     try:
         parsed = urlparse(normalized)
@@ -559,7 +565,7 @@ def _endpoint_scoped_context_length(model: str, base_url: str) -> Optional[int]:
         and parsed.path.rstrip("/") in {"/coding", "/coding/v1"}
         and not parsed.query
         and not parsed.fragment
-        and model.strip().lower() == "k3"
+        and model.strip().lower() in {"k3", "kimi-k3", "kimi-k3-cot"}
     ):
         return 1_048_576
     return None

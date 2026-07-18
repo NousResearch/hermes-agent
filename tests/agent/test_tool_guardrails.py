@@ -41,7 +41,7 @@ def test_default_config_is_soft_warning_only_with_hard_stop_disabled():
     assert cfg.exact_failure_warn_after == 2
     assert cfg.same_tool_failure_warn_after == 3
     assert cfg.no_progress_warn_after == 2
-    assert cfg.exact_failure_block_after == 5
+    assert cfg.exact_failure_block_after == 33
     assert cfg.same_tool_failure_halt_after == 8
     assert cfg.no_progress_block_after == 5
 

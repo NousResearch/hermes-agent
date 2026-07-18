@@ -63,3 +63,14 @@ def test_browser_test_respects_explicit_query_and_toolsets(monkeypatch):
     agent = agents[0]
     assert agent.kwargs["enabled_toolsets"] == ["browser", "web"]
     assert agent.prompts == ["open https://example.org"]
+
+
+def test_existing_positional_save_trajectories_argument_remains_compatible(monkeypatch):
+    agents = _patch_agent(monkeypatch)
+
+    run_agent.main(None, "", None, "", 10, None, None, False, True)
+
+    agent = agents[0]
+    assert agent.kwargs["save_trajectories"] is True
+    assert agent.kwargs["enabled_toolsets"] is None
+    assert "Python 3.13" in agent.prompts[0]

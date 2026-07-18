@@ -5430,11 +5430,11 @@ def main(
     enabled_toolsets: str = None,
     disabled_toolsets: str = None,
     list_tools: bool = False,
-    browser_test: bool = False,
     save_trajectories: bool = False,
     save_sample: bool = False,
     verbose: bool = False,
-    log_prefix_chars: int = 20
+    log_prefix_chars: int = 20,
+    browser_test: bool = False,
 ):
     """
     Main function for running the agent directly.
@@ -5450,11 +5450,11 @@ def main(
                               Multiple toolsets can be combined: "web,vision"
         disabled_toolsets (str): Comma-separated list of toolsets to disable (e.g., "terminal")
         list_tools (bool): Just list available tools and exit
-        browser_test (bool): Run a small browser smoke-test prompt using the browser toolset.
         save_trajectories (bool): Save conversation trajectories to JSONL files (appends to trajectory_samples.jsonl). Defaults to False.
         save_sample (bool): Save a single trajectory sample to a UUID-named JSONL file for inspection. Defaults to False.
         verbose (bool): Enable verbose logging for debugging. Defaults to False.
         log_prefix_chars (int): Number of characters to show in log previews for tool calls/responses. Defaults to 20.
+        browser_test (bool): Run a small browser smoke-test prompt using the browser toolset.
 
     Toolset Examples:
         - "research": Web search, extract, crawl + vision tools

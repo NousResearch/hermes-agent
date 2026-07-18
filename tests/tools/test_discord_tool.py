@@ -589,18 +589,20 @@ class TestRegistration:
         assert entry.requires_env == ["DISCORD_BOT_TOKEN"]
 
     def test_core_schema_actions(self):
-        """Core static schema should list only core actions."""
+        """Core static schema should list exactly the core actions."""
         from tools.registry import registry
+        from tools.discord_tool import _CORE_ACTION_NAMES
         entry = registry._tools["discord"]
         actions = set(entry.schema["parameters"]["properties"]["action"]["enum"])
-        assert actions == {"fetch_messages", "search_members", "create_thread"}
+        assert actions == set(_CORE_ACTION_NAMES)
 
     def test_admin_schema_actions(self):
         """Admin static schema should list only admin actions."""
         from tools.registry import registry
+        from tools.discord_tool import _CORE_ACTION_NAMES
         entry = registry._tools["discord_admin"]
         actions = set(entry.schema["parameters"]["properties"]["action"]["enum"])
-        expected_admin = set(_ACTIONS.keys()) - {"fetch_messages", "search_members", "create_thread"}
+        expected_admin = set(_ACTIONS.keys()) - set(_CORE_ACTION_NAMES)
         assert actions == expected_admin
 
     def test_all_actions_covered(self):

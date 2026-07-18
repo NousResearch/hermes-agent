@@ -306,6 +306,7 @@ class TestGatewayConfigRoundtrip:
             quick_commands={"limits": {"type": "exec", "command": "echo ok"}},
             group_sessions_per_user=False,
             thread_sessions_per_user=True,
+            systemd_watchdog_seconds=120,
         )
         d = config.to_dict()
         restored = GatewayConfig.from_dict(d)
@@ -316,6 +317,33 @@ class TestGatewayConfigRoundtrip:
         assert restored.quick_commands == {"limits": {"type": "exec", "command": "echo ok"}}
         assert restored.group_sessions_per_user is False
         assert restored.thread_sessions_per_user is True
+        assert restored.systemd_watchdog_seconds == 120
+
+    def test_systemd_watchdog_from_dict_disables_invalid_values(self):
+        invalid_values = [
+            None,
+            0,
+            -1,
+            True,
+            1.5,
+            float("nan"),
+            float("inf"),
+            "120.0",
+            "1e3",
+            "bad",
+            2_147_483_648,
+        ]
+
+        for raw in invalid_values:
+            config = GatewayConfig.from_dict({"systemd_watchdog_seconds": raw})
+            assert config.systemd_watchdog_seconds == 0
+
+    def test_systemd_watchdog_from_dict_accepts_nested_positive_integer(self):
+        config = GatewayConfig.from_dict(
+            {"gateway": {"systemd_watchdog_seconds": "45"}}
+        )
+
+        assert config.systemd_watchdog_seconds == 45
 
     def test_max_concurrent_sessions_from_dict_normalizes_disabled_values(self):
         assert GatewayConfig.from_dict({}).max_concurrent_sessions is None

@@ -68,6 +68,9 @@ MAX_PAYLOAD_BYTES = 128 * 1024 * 1024
 
 ACTIVATION_RECEIPT_SCHEMA = "muncho-owner-gate-storage-activation-receipt.v1"
 ACTIVATION_RESPONSE_SCHEMA = "muncho-owner-gate-storage-activation-response.v1"
+ACTIVATION_EVIDENCE_VALIDATION_SCHEMA = (
+    "muncho-owner-gate-activation-evidence-validation.v1"
+)
 RELEASE_LINEAGE_SCHEMA = "muncho-owner-gate-portable-release-lineage.v1"
 
 NETWORK_EVIDENCE_NAME = "network-evidence.json"
@@ -92,6 +95,8 @@ EVIDENCE_NAMES = (
 
 _REQUIRED_ACTIVATION_PAYLOADS = frozenset({
     "bin/muncho-owner-gate-activate-storage",
+    "bin/muncho-owner-gate-stage-activation-evidence",
+    "scripts/canary/owner_gate_activation_evidence_stager.py",
     "scripts/canary/owner_gate_activation_seal.py",
 })
 _REVISION = re.compile(r"^[0-9a-f]{40}$")
@@ -179,6 +184,7 @@ class _ReleaseAuthority:
 class _DerivedActivation:
     seal: Mapping[str, Any]
     snapshots: tuple[_FileSnapshot, ...]
+    fresh_through_unix: int
 
 
 def _canonical(value: Any) -> bytes:
@@ -806,12 +812,15 @@ def _derive_activation(
     )
     owner_probe = activation_owner_reauth.get("authenticated_probe")
     owner_issued = activation_owner_reauth.get("issued_at_unix")
+    owner_expires = activation_owner_reauth.get("expires_at_unix")
     if (
         not isinstance(owner_runtime, Mapping)
         or not isinstance(owner_probe, Mapping)
         or type(owner_issued) is not int
+        or type(owner_expires) is not int
         or owner_issued < post_time
         or owner_issued > now_unix
+        or owner_expires < owner_issued
         or owner_runtime.get("release_revision")
         != authority.release_revision
         or owner_probe.get("project_number")
@@ -966,7 +975,64 @@ def _derive_activation(
     return _DerivedActivation(
         seal=checked,
         snapshots=tuple(snapshots),
+        fresh_through_unix=min(
+            inert_time + foundation.PREFLIGHT_MAX_AGE_SECONDS,
+            post_time + foundation.PREFLIGHT_MAX_AGE_SECONDS,
+            owner_expires,
+        ),
     )
+
+
+def validate_activation_evidence_strict(
+    *,
+    release: Path,
+    evidence_root: Path,
+    now_unix: int,
+) -> Mapping[str, Any]:
+    """Validate an evidence bundle through the activation derivation boundary.
+
+    This public wrapper deliberately has no freshness waiver.  It derives the
+    exact prospective activation record, rechecks every release and evidence
+    snapshot, and returns only a non-authorizing validation summary.  It never
+    publishes the activation seal or any other file.
+    """
+
+    try:
+        derived = _derive_activation(
+            release=release,
+            evidence_root=evidence_root,
+            now_unix=now_unix,
+            enforce_fresh=True,
+        )
+        for snapshot in derived.snapshots:
+            snapshot.require_unchanged()
+        unsigned = {
+            "schema": ACTIVATION_EVIDENCE_VALIDATION_SCHEMA,
+            "release_revision": release.name,
+            "evidence_file_sha256": dict(
+                derived.seal["evidence_file_sha256"]
+            ),
+            "prospective_activation_seal_sha256": derived.seal[
+                "seal_sha256"
+            ],
+            "freshness_enforced": True,
+            "fresh_through_unix": derived.fresh_through_unix,
+            "activation_seal_published": False,
+            "cloud_mutation_performed": False,
+        }
+        result = {
+            **unsigned,
+            "validation_sha256": protocol.sha256_json(unsigned),
+        }
+        for snapshot in derived.snapshots:
+            snapshot.require_unchanged()
+        return result
+    except OwnerGateActivationSealError:
+        raise
+    except Exception:
+        raise OwnerGateActivationSealError(
+            "owner_gate_activation_internal_failure"
+        ) from None
 
 
 def _require_exact_file(
@@ -1563,6 +1629,7 @@ def main(argv: Sequence[str] | None = None) -> int:
 
 __all__ = [
     "ACTIVATION_EVIDENCE_BASE",
+    "ACTIVATION_EVIDENCE_VALIDATION_SCHEMA",
     "ACTIVATION_LOCK_PATH",
     "ACTIVATION_RECEIPT_BASE",
     "ACTIVATION_RECEIPT_SCHEMA",
@@ -1572,6 +1639,7 @@ __all__ = [
     "OwnerGateActivationSealError",
     "install_activation_seal",
     "main",
+    "validate_activation_evidence_strict",
 ]
 
 

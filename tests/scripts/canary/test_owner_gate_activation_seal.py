@@ -253,10 +253,15 @@ def _environment(
         source / "scripts/canary/owner_gate_activation_seal.py",
         b"VALUE = 'activation-author'\n",
     )
+    _write(
+        source / "scripts/canary/owner_gate_activation_evidence_stager.py",
+        b"VALUE = 'activation-evidence-stager'\n",
+    )
     monkeypatch.setattr(
         package,
         "ROOT_RUNTIME_FILES",
         (
+            "scripts/canary/owner_gate_activation_evidence_stager.py",
             "scripts/canary/owner_gate_activation_seal.py",
             "scripts/canary/passkey_v2_service.py",
         ),

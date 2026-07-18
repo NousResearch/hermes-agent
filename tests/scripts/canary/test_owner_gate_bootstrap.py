@@ -25,6 +25,72 @@ def _secure_test_directory(path: Path, *, mode: int = 0o700) -> None:
     os.chown(path, os.geteuid(), os.getegid())
 
 
+def test_activation_evidence_staging_receipt_directory_is_verified(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    production = Path(
+        "/var/lib/muncho-owner-gate/"
+        "activation-evidence-staging-receipts"
+    )
+    assert (production, 0, 0, 0o700) in (
+        bootstrap.IDENTITY_DIRECTORY_REQUIREMENTS
+    )
+
+    directory = tmp_path / "activation-evidence-staging-receipts"
+    _secure_test_directory(directory)
+    asset = tmp_path / "muncho-owner-gate.tmpfiles"
+    asset.write_text("fixed test asset\n", encoding="ascii")
+    monkeypatch.setattr(bootstrap, "IDENTITIES", ())
+    monkeypatch.setattr(
+        bootstrap,
+        "IDENTITY_DIRECTORY_REQUIREMENTS",
+        ((directory, os.geteuid(), os.getegid(), 0o700),),
+    )
+    monkeypatch.setattr(bootstrap, "_asset", lambda _release, _name: asset)
+
+    receipt = bootstrap.install_identities_and_directories(
+        tmp_path,
+        runner=lambda _command: b"",
+    )
+    assert receipt["directories"] == [{
+        "path": str(directory),
+        "uid": os.geteuid(),
+        "gid": os.getegid(),
+        "mode": "0700",
+    }]
+    assert bootstrap._revalidate_committed_phase(
+        "install_fixed_identities_and_directories",
+        receipt,
+        bundle=SimpleNamespace(),  # type: ignore[arg-type]
+        layout=bootstrap.PRODUCTION_LAYOUT,
+        runner=lambda _command: b"",
+        all_evidence={},
+    ) == receipt
+    with pytest.raises(
+        bootstrap.OwnerGateBootstrapError,
+        match="owner_gate_bootstrap_committed_phase_drift",
+    ):
+        bootstrap._revalidate_committed_phase(
+            "install_fixed_identities_and_directories",
+            {**receipt, "directories": []},
+            bundle=SimpleNamespace(),  # type: ignore[arg-type]
+            layout=bootstrap.PRODUCTION_LAYOUT,
+            runner=lambda _command: b"",
+            all_evidence={},
+        )
+
+    directory.chmod(0o755)
+    with pytest.raises(
+        bootstrap.OwnerGateBootstrapError,
+        match="owner_gate_bootstrap_directory_identity_invalid",
+    ):
+        bootstrap.install_identities_and_directories(
+            tmp_path,
+            runner=lambda _command: b"",
+        )
+
+
 def _exact_bytes_kill_worker(
     path: str,
     checkpoint: str,

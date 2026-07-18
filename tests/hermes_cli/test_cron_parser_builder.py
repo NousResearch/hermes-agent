@@ -55,6 +55,7 @@ def test_cron_create_options():
         "--name", "daily", "--deliver", "origin", "--repeat", "3",
         "--skill", "a", "--skill", "b", "--no-agent",
         "--workdir", "/tmp/x",
+        "--reasoning-effort", "high",
     ])
     assert ns.schedule == "0 9 * * *"
     assert ns.prompt == "daily task prompt"
@@ -64,6 +65,7 @@ def test_cron_create_options():
     assert ns.skills == ["a", "b"]
     assert ns.no_agent is True
     assert ns.workdir == "/tmp/x"
+    assert ns.reasoning_effort == "high"
 
 
 def test_cron_edit_no_agent_tristate():
@@ -72,6 +74,16 @@ def test_cron_edit_no_agent_tristate():
     assert parser.parse_args(["cron", "edit", "j", "--no-agent"]).no_agent is True
     assert parser.parse_args(["cron", "edit", "j", "--agent"]).no_agent is False
     assert parser.parse_args(["cron", "edit", "j"]).no_agent is None
+
+
+def test_cron_edit_reasoning_can_set_or_clear_override():
+    parser = _build()
+    assert parser.parse_args(
+        ["cron", "edit", "j", "--reasoning-effort", "ultra"]
+    ).reasoning_effort == "ultra"
+    assert parser.parse_args(
+        ["cron", "edit", "j", "--reasoning-effort", "inherit"]
+    ).reasoning_effort == "inherit"
 
 
 def test_cron_dispatch_func_is_injected_handler():

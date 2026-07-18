@@ -38,6 +38,7 @@ export interface CronEditorSaveValues {
   deliver: string
   name: string
   prompt: string
+  reasoningEffort: string
   schedule: string
 }
 
@@ -46,7 +47,8 @@ export function cronEditorUpdates(values: CronEditorSaveValues, options: { scrip
   const updates: CronJobUpdates = {
     deliver: values.deliver,
     name: values.name,
-    schedule: values.schedule.trim()
+    schedule: values.schedule.trim(),
+    reasoning_effort: values.reasoningEffort === 'inherit' ? null : values.reasoningEffort
   }
 
   const trimmedPrompt = values.prompt.trim()

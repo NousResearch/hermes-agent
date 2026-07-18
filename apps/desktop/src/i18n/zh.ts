@@ -1680,6 +1680,18 @@ export const zh: Translations = {
     promptPlaceholder: '总结我未读的 Slack 话题，并把前 5 条邮件发给我…',
     frequencyLabel: '频率',
     deliverLabel: '投递至',
+    reasoningLabel: '推理强度',
+    reasoningLabels: {
+      inherit: '继承模型或全局设置',
+      none: '关闭',
+      minimal: '最少',
+      low: '低',
+      medium: '中',
+      high: '高',
+      xhigh: '特高',
+      max: '最大',
+      ultra: '超强'
+    },
     customScheduleLabel: '自定义排程',
     customPlaceholder: '0 9 * * * 或 weekdays at 9am',
     customHint: 'Cron 表达式，或类似"每小时""工作日上午 9 点"的短语。',

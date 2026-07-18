@@ -19,6 +19,7 @@ function form(overrides: Partial<CronJobFormState> = {}): CronJobFormState {
     provider: "",
     model: "",
     base_url: "",
+    reasoning_effort: "",
     script: "",
     no_agent: false,
     context_from: "",
@@ -63,6 +64,7 @@ describe("buildCronJobPayload", () => {
       provider: null,
       model: null,
       base_url: null,
+      reasoning_effort: null,
       script: null,
       no_agent: false,
       context_from: null,
@@ -118,6 +120,18 @@ describe("cronJobFormFromJob", () => {
 
     expect(cronJobFormFromJob(job)).toMatchObject({
       schedule: "2026-02-03T14:00:00+08:00",
+    });
+  });
+
+  it("round-trips explicit and disabled reasoning overrides", () => {
+    expect(
+      cronJobFormFromJob({ id: "explicit", enabled: true, reasoning_effort: "xhigh" }),
+    ).toMatchObject({ reasoning_effort: "xhigh" });
+    expect(
+      cronJobFormFromJob({ id: "disabled", enabled: true, reasoning_effort: false }),
+    ).toMatchObject({ reasoning_effort: "none" });
+    expect(buildCronJobPayload(form({ reasoning_effort: "high" }))).toMatchObject({
+      reasoning_effort: "high",
     });
   });
 });

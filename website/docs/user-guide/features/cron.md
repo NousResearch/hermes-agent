@@ -49,7 +49,16 @@ hermes cron create "every 1h" "Use both skills and combine the result" \
   --skill blogwatcher \
   --skill maps \
   --name "Skill combo"
+hermes cron create "every 1d" "Summarize the daily report" \
+  --name "Daily report" \
+  --reasoning-effort high
 ```
+
+`--reasoning-effort` sets the reasoning level for that job only. Accepted
+values are `none`, `minimal`, `low`, `medium`, `high`, `xhigh`, `max`, and
+`ultra`. Jobs without an override keep using the model/global reasoning
+configuration. Clear an existing override with
+`hermes cron edit <job_id> --reasoning-effort inherit`.
 
 ### Through natural conversation
 
@@ -602,7 +611,21 @@ cronjob(action="run", job_id="...")
 cronjob(action="remove", job_id="...")
 ```
 
-For `update`, pass `skills=[]` to remove all attached skills.
+For `update`, pass `skills=[]` to remove all attached skills. Pass
+`reasoning_effort=null` to clear a per-job reasoning override, or `false` /
+`"none"` to disable reasoning explicitly for that job:
+
+```python
+cronjob(
+    action="update",
+    job_id="<job_id>",
+    reasoning_effort="high",
+)
+```
+
+The override affects scheduled runs and manual `run` actions equally. A
+script-only job with `no_agent=true` stores the field but does not start an
+agent or model call.
 
 ## Toolsets available to cron jobs
 

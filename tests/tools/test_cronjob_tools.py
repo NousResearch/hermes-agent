@@ -264,6 +264,53 @@ class TestUnifiedCronjobTool:
         assert listing["jobs"][0]["name"] == "Server Check"
         assert listing["jobs"][0]["state"] == "scheduled"
 
+    def test_reasoning_create_list_update_and_clear(self):
+        created = json.loads(
+            cronjob(
+                action="create",
+                prompt="Produce a synthetic result",
+                schedule="every 1h",
+                name="Synthetic reasoning tool job",
+                reasoning_effort="high",
+            )
+        )
+        assert created["success"] is True
+        assert created["job"]["reasoning_effort"] == "high"
+
+        listing = json.loads(cronjob(action="list"))
+        assert listing["jobs"][0]["reasoning_effort"] == "high"
+
+        disabled = json.loads(
+            cronjob(
+                action="update",
+                job_id=created["job_id"],
+                reasoning_effort=False,
+            )
+        )
+        assert disabled["job"]["reasoning_effort"] is False
+
+        cleared = json.loads(
+            cronjob(
+                action="update",
+                job_id=created["job_id"],
+                reasoning_effort=None,
+            )
+        )
+        assert cleared["job"]["reasoning_effort"] is None
+
+    def test_invalid_reasoning_value_returns_clear_tool_error(self):
+        result = json.loads(
+            cronjob(
+                action="create",
+                prompt="Produce a synthetic result",
+                schedule="every 1h",
+                reasoning_effort="turbo",
+            )
+        )
+        assert result["success"] is False
+        assert "Invalid cron reasoning_effort" in result["error"]
+        assert "none, minimal, low, medium, high, xhigh, max, ultra" in result["error"]
+
     def test_list_handles_partial_legacy_job_records(self):
         from cron.jobs import save_jobs
 

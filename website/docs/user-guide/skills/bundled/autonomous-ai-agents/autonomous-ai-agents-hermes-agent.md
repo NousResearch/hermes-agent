@@ -666,7 +666,8 @@ the `cronjob` tool, the `hermes cron` CLI (`list`, `add`, `edit`,
 
 - **Schedules:** duration (`"30m"`, `"2h"`), "every" phrase
   (`"every monday 9am"`), 5-field cron (`"0 9 * * *"`), or ISO timestamp.
-- **Per-job knobs:** `skills`, `model`/`provider` override, `script`
+- **Per-job knobs:** `skills`, `model`/`provider` override,
+  `reasoning_effort` (missing/null inherits global; `false` disables), `script`
   (pre-run data collection; `no_agent=True` makes the script the whole
   job), `context_from` (chain job A's output into job B), `workdir`
   (run in a specific dir with its `AGENTS.md` / `CLAUDE.md` loaded),

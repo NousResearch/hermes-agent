@@ -39,3 +39,13 @@ def test_cronjob_schema_required_array_unchanged():
     from tools.cronjob_tools import CRONJOB_SCHEMA
 
     assert CRONJOB_SCHEMA["parameters"]["required"] == ["action"]
+
+
+def test_cronjob_schema_exposes_per_job_reasoning_contract():
+    from tools.cronjob_tools import CRONJOB_SCHEMA
+
+    field = CRONJOB_SCHEMA["parameters"]["properties"]["reasoning_effort"]
+    assert field["type"] == ["string", "boolean", "null"]
+    assert "minimal, low, medium, high, xhigh, max, ultra" in field["description"]
+    assert "null" in field["description"]
+    assert "false" in field["description"]

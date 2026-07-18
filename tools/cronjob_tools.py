@@ -16,6 +16,8 @@ from hermes_constants import display_hermes_home
 
 logger = logging.getLogger(__name__)
 
+_UNSET = object()
+
 # Import from cron module (will be available when properly installed)
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
@@ -578,6 +580,7 @@ def _format_job(job: Dict[str, Any]) -> Dict[str, Any]:
         "model": job.get("model"),
         "provider": job.get("provider"),
         "base_url": job.get("base_url"),
+        "reasoning_effort": job.get("reasoning_effort"),
         "schedule": job.get("schedule_display") or "?",
         "repeat": _repeat_display(job),
         "deliver": job.get("deliver", "local"),
@@ -670,6 +673,7 @@ def cronjob(
     model: Optional[str] = None,
     provider: Optional[str] = None,
     base_url: Optional[str] = None,
+    reasoning_effort: Any = _UNSET,
     reason: Optional[str] = None,
     script: Optional[str] = None,
     context_from: Optional[Union[str, List[str]]] = None,
@@ -744,6 +748,9 @@ def cronjob(
                 model=_normalize_optional_job_value(model),
                 provider=_normalize_optional_job_value(provider),
                 base_url=_normalize_optional_job_value(base_url, strip_trailing_slash=True),
+                reasoning_effort=(
+                    None if reasoning_effort is _UNSET else reasoning_effort
+                ),
                 script=_normalize_optional_job_value(script),
                 context_from=context_from,
                 enabled_toolsets=enabled_toolsets or None,
@@ -875,6 +882,8 @@ def cronjob(
                 updates["provider"] = _normalize_optional_job_value(provider)
             if base_url is not None:
                 updates["base_url"] = _normalize_optional_job_value(base_url, strip_trailing_slash=True)
+            if reasoning_effort is not _UNSET:
+                updates["reasoning_effort"] = reasoning_effort
             # Re-validate the EFFECTIVE provider/base_url on EVERY update, not
             # only when this update supplies provider/base_url. A job persisted
             # before this guard (or written directly to the jobs store) may
@@ -1037,6 +1046,16 @@ Important safety rule: cron-run sessions should not recursively schedule more cr
                 },
                 "required": ["model"]
             },
+            "reasoning_effort": {
+                "type": ["string", "boolean", "null"],
+                "description": (
+                    "Optional per-job reasoning override. Accepted enabled levels: "
+                    "minimal, low, medium, high, xhigh, max, ultra. Use 'none' "
+                    "or false to disable reasoning explicitly. Omit on create/update "
+                    "to preserve the current setting; pass null on update to clear "
+                    "the override and inherit the per-model/global configuration."
+                ),
+            },
             "script": {
                 "type": "string",
                 "description": f"Optional path to a script that runs each tick. In the default mode its stdout is injected into the agent's prompt as context (data-collection / change-detection pattern). With no_agent=True, the script IS the job and its stdout is delivered verbatim (classic watchdog pattern). Relative paths resolve under {display_hermes_home()}/scripts/. ``.sh``/``.bash`` extensions run via bash, everything else via Python. On update, pass empty string to clear."
@@ -1134,6 +1153,11 @@ registry.register(
         model=_mo[1],
         provider=_mo[0] or args.get("provider"),
         base_url=args.get("base_url"),
+        reasoning_effort=(
+            args["reasoning_effort"]
+            if "reasoning_effort" in args
+            else _UNSET
+        ),
         reason=args.get("reason"),
         script=args.get("script"),
         context_from=args.get("context_from"),

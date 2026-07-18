@@ -46,6 +46,7 @@ import { PluginSlot } from "@/plugins";
 import { Segmented } from "@nous-research/ui/ui/components/segmented";
 import { AutomationBlueprints } from "@/components/AutomationBlueprints";
 import { cn, themedBody } from "@/lib/utils";
+import { EFFORT_OPTIONS } from "@/lib/reasoning-effort";
 
 function formatTime(iso?: string | null): string {
   if (!iso) return "—";
@@ -138,6 +139,7 @@ function emptyCronJobForm(): CronJobEditorState {
     provider: "",
     model: "",
     base_url: "",
+    reasoning_effort: "",
     script: "",
     no_agent: false,
     context_from: "",
@@ -246,14 +248,31 @@ function CronAdvancedFields({
           </div>
         </div>
 
-        <div className="grid gap-1">
-          <Label htmlFor={`${idPrefix}-base-url`}>Base URL override</Label>
-          <Input
-            id={`${idPrefix}-base-url`}
-            placeholder="https://api.example.com/v1"
-            value={form.base_url}
-            onChange={(e) => update("base_url", e.target.value)}
-          />
+        <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+          <div className="grid gap-1">
+            <Label htmlFor={`${idPrefix}-base-url`}>Base URL override</Label>
+            <Input
+              id={`${idPrefix}-base-url`}
+              placeholder="https://api.example.com/v1"
+              value={form.base_url}
+              onChange={(e) => update("base_url", e.target.value)}
+            />
+          </div>
+          <div className="grid gap-1">
+            <Label htmlFor={`${idPrefix}-reasoning`}>Reasoning effort</Label>
+            <Select
+              id={`${idPrefix}-reasoning`}
+              value={form.reasoning_effort}
+              onValueChange={(v) => update("reasoning_effort", v)}
+            >
+              <SelectOption value="">Inherit model/global setting</SelectOption>
+              {EFFORT_OPTIONS.map((option) => (
+                <SelectOption key={option.value} value={option.value}>
+                  {option.label}
+                </SelectOption>
+              ))}
+            </Select>
+          </div>
         </div>
 
         <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 items-end">
@@ -994,6 +1013,10 @@ export default function CronPage() {
           const jobKey = getJobKey(job);
           const mode = getJobMode(job);
           const modelDisplay = getModelDisplay(job);
+          const reasoningDisplay =
+            job.reasoning_effort === false
+              ? "none"
+              : asText(job.reasoning_effort);
           const toolsets = Array.isArray(job.enabled_toolsets)
             ? job.enabled_toolsets.filter(Boolean)
             : [];
@@ -1026,6 +1049,11 @@ export default function CronPage() {
                     {modelDisplay && (
                       <Badge tone="outline" title={modelDisplay}>
                         model
+                      </Badge>
+                    )}
+                    {reasoningDisplay && (
+                      <Badge tone="outline" title={`Reasoning: ${reasoningDisplay}`}>
+                        reasoning: {reasoningDisplay}
                       </Badge>
                     )}
                     {toolsets.length > 0 && (

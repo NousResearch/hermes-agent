@@ -1424,6 +1424,18 @@ export const ja = defineLocale({
     promptPlaceholder: '実行ごとにエージェントが行う内容は？',
     frequencyLabel: '頻度',
     deliverLabel: '配信先',
+    reasoningLabel: '推論強度',
+    reasoningLabels: {
+      inherit: 'モデルまたはグローバル設定を継承',
+      none: 'オフ',
+      minimal: '最小',
+      low: '低',
+      medium: '中',
+      high: '高',
+      xhigh: '特高',
+      max: '最大',
+      ultra: 'ウルトラ'
+    },
     customScheduleLabel: 'カスタムスケジュール',
     customPlaceholder: '0 9 * * * または weekdays at 9am',
     customHint: 'Cron 式、または「every hour」「weekdays at 9am」のようなフレーズ。',

@@ -3233,9 +3233,32 @@ def run_job(
             message = format_runtime_provider_error(exc)
             raise RuntimeError(message) from exc
 
-        reasoning_config = resolve_reasoning_config(
-            _cfg if isinstance(_cfg, dict) else {}, str(model)
-        )
+        # A valid job override wins for this run only. Missing/null and malformed
+        # hand-edited legacy values inherit the effective per-model/global policy
+        # for the model that actually survived provider-auth fallback.
+        reasoning_config = None
+        if "reasoning_effort" in job and job.get("reasoning_effort") is not None:
+            from cron.jobs import normalize_job_reasoning_effort
+            from hermes_constants import parse_reasoning_effort
+
+            try:
+                job_effort = normalize_job_reasoning_effort(
+                    job.get("reasoning_effort")
+                )
+            except ValueError as exc:
+                logger.warning(
+                    "Job '%s': ignoring invalid reasoning_effort and inheriting "
+                    "configured reasoning: %s",
+                    job_id,
+                    exc,
+                )
+            else:
+                reasoning_config = parse_reasoning_effort(job_effort)
+
+        if reasoning_config is None:
+            reasoning_config = resolve_reasoning_config(
+                _cfg if isinstance(_cfg, dict) else {}, str(model)
+            )
 
         # Provider/model-drift fail-closed guard (#44585).
         #

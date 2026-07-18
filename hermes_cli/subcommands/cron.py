@@ -10,6 +10,10 @@ from __future__ import annotations
 from typing import Callable
 
 from hermes_cli.subcommands._shared import add_accept_hooks_flag
+from hermes_constants import VALID_REASONING_EFFORTS
+
+
+_CRON_REASONING_CHOICES = ("none", *VALID_REASONING_EFFORTS)
 
 
 def build_cron_parser(subparsers, *, cmd_cron: Callable) -> None:
@@ -69,6 +73,11 @@ def build_cron_parser(subparsers, *, cmd_cron: Callable) -> None:
     cron_create.add_argument(
         "--workdir",
         help="Absolute path for the job to run from. Injects AGENTS.md / CLAUDE.md / .cursorrules from that directory and uses it as the cwd for terminal/file/code_exec tools. Omit to preserve old behaviour (no project context files).",
+    )
+    cron_create.add_argument(
+        "--reasoning-effort",
+        choices=_CRON_REASONING_CHOICES,
+        help="Override reasoning effort for this job only",
     )
 
     # cron edit
@@ -133,6 +142,11 @@ def build_cron_parser(subparsers, *, cmd_cron: Callable) -> None:
     cron_edit.add_argument(
         "--workdir",
         help="Absolute path for the job to run from (injects AGENTS.md etc. and sets terminal cwd). Pass empty string to clear.",
+    )
+    cron_edit.add_argument(
+        "--reasoning-effort",
+        choices=(*_CRON_REASONING_CHOICES, "inherit"),
+        help="Set the job reasoning override; 'inherit' clears it",
     )
 
     # lifecycle actions

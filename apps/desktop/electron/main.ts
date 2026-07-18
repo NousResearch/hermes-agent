@@ -6807,11 +6807,12 @@ async function startHermes() {
   }
 
   // Seed active-profile.json from legacy signals BEFORE the first
-  // primaryProfileKey() / primaryBackendIsRemote() read. Without this,
+  // profile-dependent read (`primaryBackendIsRemote()` on the next line, then
+  // `primaryProfileKey()` inside the connection IIFE below). Without this,
   // remote-mode users whose preference file is missing (first boot after
-  // update) resolve primaryProfileKey() to 'default' inside the connection
-  // IIFE below, then the remote branch returns and never runs the migration.
-  // Runs once; no-op when the preference file already exists.
+  // update) resolve primaryProfileKey() to 'default' inside the IIFE, then
+  // the remote branch returns and never runs the migration. Runs once;
+  // no-op when the preference file already exists.
   migrateActiveProfileIfMissing()
 
   const connectionAttempt = backendConnectionState.startAttempt()

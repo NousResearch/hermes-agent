@@ -226,7 +226,10 @@ jobs:
 
       - name: Collect timings and generate report
         env:
-          GITHUB_TOKEN: ${{ secrets.AUTOFIX_BOT_PAT }}
+          # Forks get no repo secrets (AUTOFIX_BOT_PAT is empty); fall back to
+          # the built-in read-only token so the timings API read still works
+          # there instead of hard-failing this advisory job on every fork PR.
+          GITHUB_TOKEN: ${{ secrets.AUTOFIX_BOT_PAT || github.token }}
         run: |
           python3 scripts/ci/timings_report.py \
             --baseline ci-timings-baseline.json \

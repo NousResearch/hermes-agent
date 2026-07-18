@@ -5337,12 +5337,22 @@ def resolve_provider_client(
         return None, None
 
     elif pconfig.auth_type == "vertex":
-        # Google Vertex AI — Gemini via the OpenAI-compatible endpoint with an
-        # OAuth2 bearer token (NOT a static key). We build a standard OpenAI
-        # client pointed at the runtime-computed Vertex base_url with a fresh
-        # token; no custom SDK or message translation needed.
+        # Google Vertex AI — dual path, mirroring the aws_sdk/bedrock branch:
+        #   - Claude models → AnthropicVertex SDK (Anthropic Messages over
+        #     rawPredict; prompt caching + thinking parity). The SDK holds the
+        #     google-auth Credentials OBJECT and self-refreshes tokens, so
+        #     long-lived gateways don't 401 after ~1h.
+        #   - Gemini + partner MaaS → OpenAI-compatible endpoint with a
+        #     short-lived OAuth2 bearer token (NOT a static key).
+        # Without the Claude arm, a vertex/claude-* slot in auxiliary.* or a
+        # MoA preset built an OpenAI client against the openapi endpoint and
+        # 404'd ("Malformed publisher model" / /v1/messages not found).
         try:
-            from agent.vertex_adapter import get_vertex_config, has_vertex_credentials
+            from agent.vertex_adapter import (
+                get_vertex_config,
+                has_vertex_credentials,
+                is_anthropic_vertex_model,
+            )
         except ImportError:
             logger.warning("resolve_provider_client: vertex requested but "
                            "google-auth not installed")
@@ -5353,14 +5363,50 @@ def resolve_provider_client(
                          "no GCP credentials found")
             return None, None
 
+        default_model = "google/gemini-3-flash-preview"
+        final_model = _normalize_resolved_model(model or default_model, provider) or default_model
+
+        if is_anthropic_vertex_model(final_model):
+            try:
+                from agent.vertex_adapter import get_vertex_anthropic_config
+                from agent.anthropic_adapter import build_anthropic_vertex_client
+            except ImportError as exc:
+                logger.warning("resolve_provider_client: vertex Claude "
+                               "requested but anthropic SDK unavailable: %s", exc)
+                return None, None
+            creds, project_id, region = get_vertex_anthropic_config()
+            if creds is None or not region:
+                logger.warning("resolve_provider_client: vertex Claude "
+                               "requested but could not resolve GCP credentials")
+                return None, None
+            try:
+                real_client = build_anthropic_vertex_client(
+                    project_id, region, credentials=creds,
+                )
+            except Exception as exc:
+                logger.warning("resolve_provider_client: cannot create "
+                               "AnthropicVertex client: %s", exc)
+                return None, None
+            # Strip any anthropic/ prefix; Vertex publisher IDs are bare
+            # (claude-fable-5, claude-sonnet-5, optionally @YYYYMMDD).
+            _vx_model = final_model
+            if _vx_model.lower().startswith("anthropic/"):
+                _vx_model = _vx_model[len("anthropic/"):]
+            client = AnthropicAuxiliaryClient(
+                real_client, _vx_model, api_key="vertex-oauth",
+                base_url="https://aiplatform.googleapis.com/v1",
+            )
+            logger.debug("resolve_provider_client: vertex anthropic (%s, %s)",
+                         _vx_model, region)
+            return (_to_async_client(client, _vx_model, is_vision=is_vision) if async_mode
+                    else (client, _vx_model))
+
         token, base_url = get_vertex_config()
         if not token or not base_url:
             logger.warning("resolve_provider_client: vertex requested but "
                            "could not mint token / resolve project")
             return None, None
 
-        default_model = "google/gemini-3-flash-preview"
-        final_model = _normalize_resolved_model(model or default_model, provider)
         try:
             from openai import OpenAI
             client = OpenAI(api_key=token, base_url=base_url)

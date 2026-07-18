@@ -222,6 +222,19 @@ HERMES_OVERLAYS: Dict[str, HermesOverlay] = {
         transport="bedrock_converse",
         auth_type="aws_sdk",
     ),
+    # Google Vertex AI — OAuth2 (service account / ADC), no static key.
+    # Transport is decided per-model at runtime (Claude → anthropic_messages
+    # via AnthropicVertex SDK; Gemini/MaaS → openai_chat), so the overlay
+    # records the default OpenAI-compat surface. Present here so
+    # get_provider("vertex") resolves and provider-preserving base_url
+    # forwarding (auxiliary tasks, MoA slots) doesn't collapse the provider
+    # to "custom" — which would rebuild a plain Anthropic client against
+    # aiplatform.googleapis.com and 404 on /v1/messages.
+    "vertex": HermesOverlay(
+        transport="openai_chat",
+        auth_type="vertex",
+        base_url_override="https://aiplatform.googleapis.com",
+    ),
 }
 
 

@@ -434,6 +434,20 @@ PROVIDER_REGISTRY: Dict[str, ProviderConfig] = {
         api_key_env_vars=(),
         base_url_env_var="BEDROCK_BASE_URL",
     ),
+    # Google Vertex AI — OAuth2 via service-account JSON / ADC, no static
+    # API key (mirrors bedrock's aws_sdk pattern). Registered here (not via
+    # the plugin auto-extend below, which only picks up api_key providers)
+    # so resolve_provider_client()'s auth_type == "vertex" branch is
+    # reachable for auxiliary tasks and MoA slots. Token/credential
+    # resolution lives in agent/vertex_adapter.py.
+    "vertex": ProviderConfig(
+        id="vertex",
+        name="Google Vertex AI",
+        auth_type="vertex",
+        inference_base_url="https://aiplatform.googleapis.com",
+        api_key_env_vars=(),
+        base_url_env_var="",
+    ),
     "azure-foundry": ProviderConfig(
         id="azure-foundry",
         name="Azure Foundry",

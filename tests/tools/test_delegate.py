@@ -76,6 +76,12 @@ class TestDelegateRequirements(unittest.TestCase):
         # capability-selection surface the model should not control.
         self.assertNotIn("toolsets", props)
         self.assertNotIn("toolsets", props["tasks"]["items"]["properties"])
+        # persona and timeout are exposed to the model — they are behavioral
+        # configuration, not capability-scoping decisions.
+        self.assertIn("persona", props["tasks"]["items"]["properties"])
+        self.assertIn("timeout", props["tasks"]["items"]["properties"])
+        self.assertEqual(props["tasks"]["items"]["properties"]["persona"]["type"], "string")
+        self.assertEqual(props["tasks"]["items"]["properties"]["timeout"]["type"], "number")
         # max_iterations is intentionally NOT exposed to the model — it's
         # config-authoritative via delegation.max_iterations so users get
         # predictable budgets.
@@ -154,6 +160,64 @@ class TestChildSystemPrompt(unittest.TestCase):
     def test_empty_context_ignored(self):
         prompt = _build_child_system_prompt("Do something", "  ")
         self.assertNotIn("CONTEXT", prompt)
+
+    def test_persona_injected_as_your_role_block(self):
+        """When persona is provided, it appears as a YOUR ROLE block."""
+        prompt = _build_child_system_prompt("Research X", persona="web researcher — focus on authoritative sources")
+        self.assertIn("YOUR ROLE", prompt)
+        self.assertIn("web researcher", prompt)
+        self.assertIn("authoritative sources", prompt)
+        self.assertIn("YOUR TASK", prompt)
+        self.assertIn("Research X", prompt)
+
+    def test_persona_appears_before_context(self):
+        """YOUR ROLE block should appear before CONTEXT in the prompt."""
+        prompt = _build_child_system_prompt("Fix bug", "Error log here", persona="senior engineer")
+        role_pos = prompt.index("YOUR ROLE")
+        context_pos = prompt.index("CONTEXT")
+        self.assertLess(role_pos, context_pos, "YOUR ROLE should appear before CONTEXT")
+
+    def test_persona_after_task_before_context(self):
+        """YOUR ROLE should appear after YOUR TASK and before CONTEXT."""
+        prompt = _build_child_system_prompt("Do thing", "Some context", persona="helper")
+        task_pos = prompt.index("YOUR TASK")
+        role_pos = prompt.index("YOUR ROLE")
+        context_pos = prompt.index("CONTEXT")
+        self.assertLess(task_pos, role_pos)
+        self.assertLess(role_pos, context_pos)
+
+    def test_empty_persona_ignored(self):
+        """Empty or whitespace-only persona should not add a YOUR ROLE block."""
+        prompt = _build_child_system_prompt("Do something", persona="  ")
+        self.assertNotIn("YOUR ROLE", prompt)
+
+    def test_none_persona_ignored(self):
+        """None persona should not add a YOUR ROLE block."""
+        prompt = _build_child_system_prompt("Do something", persona=None)
+        self.assertNotIn("YOUR ROLE", prompt)
+
+    def test_persona_stripped(self):
+        """Whitespace around persona should be stripped."""
+        prompt = _build_child_system_prompt("Do something", persona="  code reviewer  ")
+        self.assertIn("code reviewer", prompt)
+        self.assertNotIn("  code reviewer  ", prompt)
+
+    def test_persona_without_context(self):
+        """Persona works without context."""
+        prompt = _build_child_system_prompt("Research", persona="researcher")
+        self.assertIn("YOUR ROLE", prompt)
+        self.assertIn("researcher", prompt)
+        self.assertNotIn("CONTEXT", prompt)
+
+    def test_persona_with_context_and_workspace(self):
+        """Persona with context and workspace path."""
+        prompt = _build_child_system_prompt("Fix bug", "Error log", persona="debugger", workspace_path="/home/project")
+        self.assertIn("YOUR ROLE", prompt)
+        self.assertIn("debugger", prompt)
+        self.assertIn("CONTEXT", prompt)
+        self.assertIn("Error log", prompt)
+        self.assertIn("WORKSPACE", prompt)
+        self.assertIn("/home/project", prompt)
 
 
 class TestStripBlockedTools(unittest.TestCase):
@@ -549,6 +613,94 @@ class TestDelegateTask(unittest.TestCase):
         parent.tool_progress_callback.assert_not_called()
 
 
+
+    @patch("tools.delegate_tool._run_single_child")
+    def test_persona_passed_to_child(self, mock_run):
+        """Per-task persona is passed through to _build_child_agent."""
+        mock_run.return_value = {
+            "task_index": 0, "status": "completed",
+            "summary": "Done", "api_calls": 1, "duration_seconds": 1.0
+        }
+        parent = _make_mock_parent()
+        with patch("tools.delegate_tool._build_child_agent", wraps=_build_child_agent) as mock_build:
+            delegate_task(
+                tasks=[{"goal": "Research", "persona": "web researcher"}],
+                parent_agent=parent,
+            )
+            call_kwargs = mock_build.call_args[1]
+            self.assertEqual(call_kwargs.get("persona"), "web researcher")
+
+    @patch("tools.delegate_tool._run_single_child")
+    def test_timeout_passed_to_child(self, mock_run):
+        """Per-task timeout is passed through to _build_child_agent."""
+        mock_run.return_value = {
+            "task_index": 0, "status": "completed",
+            "summary": "Done", "api_calls": 1, "duration_seconds": 1.0
+        }
+        parent = _make_mock_parent()
+        with patch("tools.delegate_tool._build_child_agent", wraps=_build_child_agent) as mock_build:
+            delegate_task(
+                tasks=[{"goal": "Quick lookup", "timeout": 30}],
+                parent_agent=parent,
+            )
+            call_kwargs = mock_build.call_args[1]
+            self.assertEqual(call_kwargs.get("timeout"), 30)
+
+    @patch("tools.delegate_tool._run_single_child")
+    def test_persona_and_timeout_default_to_none(self, mock_run):
+        """Tasks without persona/timeout should default to None (backward compatible)."""
+        mock_run.return_value = {
+            "task_index": 0, "status": "completed",
+            "summary": "Done", "api_calls": 1, "duration_seconds": 1.0
+        }
+        parent = _make_mock_parent()
+        with patch("tools.delegate_tool._build_child_agent", wraps=_build_child_agent) as mock_build:
+            delegate_task(
+                tasks=[{"goal": "Plain task"}],
+                parent_agent=parent,
+            )
+            call_kwargs = mock_build.call_args[1]
+            self.assertIsNone(call_kwargs.get("persona"))
+            self.assertIsNone(call_kwargs.get("timeout"))
+
+    @patch("tools.delegate_tool._run_single_child")
+    def test_persona_and_timeout_in_batch(self, mock_run):
+        """Multiple tasks can each have different persona/timeout values."""
+        mock_run.side_effect = [
+            {"task_index": 0, "status": "completed", "summary": "A", "api_calls": 1, "duration_seconds": 1.0},
+            {"task_index": 1, "status": "completed", "summary": "B", "api_calls": 1, "duration_seconds": 1.0},
+        ]
+        parent = _make_mock_parent()
+        with patch("tools.delegate_tool._build_child_agent", wraps=_build_child_agent) as mock_build:
+            delegate_task(
+                tasks=[
+                    {"goal": "Research", "persona": "web researcher", "timeout": 30},
+                    {"goal": "Code review", "persona": "senior engineer", "timeout": 300},
+                ],
+                parent_agent=parent,
+            )
+            calls = mock_build.call_args_list
+            self.assertEqual(calls[0][1].get("persona"), "web researcher")
+            self.assertEqual(calls[0][1].get("timeout"), 30)
+            self.assertEqual(calls[1][1].get("persona"), "senior engineer")
+            self.assertEqual(calls[1][1].get("timeout"), 300)
+
+    @patch("tools.delegate_tool._run_single_child")
+    def test_single_task_mode_no_persona_or_timeout(self, mock_run):
+        """Single-task mode does not pass persona/timeout (no per-task fields)."""
+        mock_run.return_value = {
+            "task_index": 0, "status": "completed",
+            "summary": "Done", "api_calls": 1, "duration_seconds": 1.0
+        }
+        parent = _make_mock_parent()
+        with patch("tools.delegate_tool._build_child_agent", wraps=_build_child_agent) as mock_build:
+            delegate_task(
+                goal="Research X",
+                parent_agent=parent,
+            )
+            call_kwargs = mock_build.call_args[1]
+            self.assertIsNone(call_kwargs.get("persona"))
+            self.assertIsNone(call_kwargs.get("timeout"))
 class TestToolNamePreservation(unittest.TestCase):
     """Verify _last_resolved_tool_names is restored after subagent runs."""
 

@@ -643,16 +643,16 @@ def strip_think_blocks(agent, content: str) -> str:
     """Remove reasoning/thinking blocks from content, returning only visible text.
 
     Handles four cases:
-      1. Closed tag pairs (`` 执教… ``) — the common path when
+      1. Closed tag pairs (`` <think>… ``) — the common path when
          the provider emits complete reasoning blocks.
       2. Unterminated open tag at a block boundary (start of text or
          after a newline) — e.g. MiniMax M2.7 / NIM endpoints where the
          closing tag is dropped.  Everything from the open tag to end
          of string is stripped.  The block-boundary check mirrors
          ``gateway/stream_consumer.py``'s filter so models that mention
-         `` 执教`` in prose aren't over-stripped.
+         `` <think>`` in prose aren't over-stripped.
       3. Stray orphan open/close tags that slip through.
-      4. Tag variants: `` 执教``, ``<thinking>``, ``<reasoning>``,
+      4. Tag variants: `` <think>``, ``<thinking>``, ``<reasoning>``,
          ``<REASONING_SCRATCHPAD>``, ``<thought>`` (Gemma 4), all
          case-insensitive.
 
@@ -670,21 +670,6 @@ def strip_think_blocks(agent, content: str) -> str:
     after punctuation and carries a ``name="..."`` attribute) so prose
     mentions like "Use <function> in JavaScript" are preserved.
     """
-    # Defensive coercion: callers may pass multimodal content-parts lists
-    # (e.g. after vision turns or context compaction). Extract any text
-    # blocks and drop non-text parts before running regexes.
-    if isinstance(content, list):
-        parts = []
-        for part in content:
-            if isinstance(part, str):
-                parts.append(part)
-            elif isinstance(part, dict) and part.get("type") == "text":
-                text = part.get("text")
-                if isinstance(text, str):
-                    parts.append(text)
-        content = "\n".join(parts)
-    elif not isinstance(content, str):
-        content = str(content) if content is not None else ""
     if not content:
         return ""
     # Coerce non-string content to text before any regex runs.  Providers

@@ -24,7 +24,6 @@ import re
 import ssl
 import threading
 import time
-import traceback
 import uuid
 from typing import Any, Dict, List, Optional
 
@@ -78,6 +77,25 @@ logger = logging.getLogger(__name__)
 # cancelled while waiting on the provider. Surfaces (ACP, TUI) match on this
 # to treat it as cancellation metadata rather than assistant prose.
 INTERRUPT_WAITING_FOR_MODEL_PREFIX = "Operation interrupted: waiting for model response ("
+
+# Modules that indicate a deterministic local processing error when they
+# appear in an exception traceback WITHOUT any API-call module. Used by the
+# outer-loop error classifier to avoid retrying bugs that will fail
+# identically every time (e.g. TypeError from passing list content into a
+# regex helper).  IMPORTANT: do NOT include "conversation_loop" or
+# "run_agent" here — those are the container modules for the try/except
+# itself, so every exception passes through them, which would make
+# _hit_local always True and misclassify transient API/network errors as
+# non-retryable local bugs. (#66267)
+_LOCAL_PROCESSING_MODULES = frozenset({
+    "agent_runtime_helpers",
+    "message_content",
+    "message_sanitization",
+    "chat_completion_helpers",  # only local when NOT also an API-call module
+})
+_API_CALL_MODULES = frozenset({
+    "chat_completion_helpers",
+})
 
 
 def _image_error_max_dimension(error: Exception) -> Optional[int]:
@@ -5609,23 +5627,15 @@ def run_conversation(
             # local post-processing helpers and never entered the interruptible
             # API-call helpers, it is almost certainly a local processing bug.
             # (#66267)
-            _local_processing_modules = {
-                "agent_runtime_helpers",
-                "conversation_loop",
-                "message_content",
-                "run_agent",
-            }
-            _api_call_modules = {
-                "chat_completion_helpers",
-            }
+            tb_module_names: set[str] = set()
+            _tb = e.__traceback__
+            while _tb is not None:
+                _fname = os.path.splitext(os.path.basename(_tb.tb_frame.f_code.co_filename))[0]
+                tb_module_names.add(_fname)
+                _tb = _tb.tb_next
 
-            tb_stack = traceback.extract_tb(e.__traceback__)
-            tb_module_names = {
-                os.path.splitext(os.path.basename(frame.filename))[0]
-                for frame in tb_stack
-            }
-            _hit_local = bool(tb_module_names & _local_processing_modules)
-            _hit_api = bool(tb_module_names & _api_call_modules)
+            _hit_local = bool(tb_module_names & _LOCAL_PROCESSING_MODULES)
+            _hit_api = bool(tb_module_names & _API_CALL_MODULES)
 
             _is_local_processing_error = _hit_local and not _hit_api
 

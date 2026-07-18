@@ -61,6 +61,10 @@ _DISCORD_MAX_APP_COMMANDS = 100
 _DISCORD_SELECT_FIELD_LIMIT = 100
 _DISCORD_BUTTON_LABEL_LIMIT = 80
 _DISCORD_ELLIPSIS = "\u2026"
+# Default Discord attachment cap for DMs / channels without a guild boost
+# context. Guild channels expose the effective limit via
+# ``guild.filesize_limit`` (boost tier may raise it). See issue #50846.
+_DISCORD_DEFAULT_UPLOAD_LIMIT_BYTES = 25 * 1024 * 1024
 _DISCORD_NONCONVERSATIONAL_METADATA_KEYS = frozenset({
     "non_conversational",
     "non_conversational_history",
@@ -2590,6 +2594,20 @@ class DiscordAdapter(BasePlatformAdapter):
             continuation_message_ids=tuple(continuation_ids),
         )
 
+    @staticmethod
+    def _discord_upload_limit_bytes(channel: Any) -> int:
+        """Return the effective Discord attachment size limit for *channel*.
+
+        Prefer the guild's boost-aware ``filesize_limit`` when present; fall
+        back to the platform default for DMs / group DMs without a guild.
+        """
+        guild = getattr(channel, "guild", None)
+        if guild is not None:
+            limit = getattr(guild, "filesize_limit", None)
+            if isinstance(limit, int) and limit > 0:
+                return limit
+        return _DISCORD_DEFAULT_UPLOAD_LIMIT_BYTES
+
     async def _send_file_attachment(
         self,
         chat_id: str,
@@ -2601,6 +2619,10 @@ class DiscordAdapter(BasePlatformAdapter):
 
         Forum channels (type 15) get a new thread whose starter message
         carries the file — they reject direct POST /messages.
+
+        Oversized files are rejected *before* upload (issue #50846) so we
+        never burn a doomed ``413 Payload Too Large`` round-trip and the
+        user gets an explicit notice instead of a silent/ambiguous failure.
         """
         if not self._client:
             return SendResult(success=False, error="Not connected")
@@ -2612,6 +2634,39 @@ class DiscordAdapter(BasePlatformAdapter):
             return SendResult(success=False, error=f"Channel {chat_id} not found")
 
         filename = file_name or os.path.basename(file_path)
+
+        try:
+            file_size = os.path.getsize(file_path)
+        except OSError as exc:
+            return SendResult(success=False, error=f"Cannot stat file {filename}: {exc}")
+
+        limit = self._discord_upload_limit_bytes(channel)
+        if file_size > limit:
+            size_mb = file_size / (1024 * 1024)
+            limit_mb = limit / (1024 * 1024)
+            error = (
+                f"File too large for Discord upload: {filename} is "
+                f"{size_mb:.1f} MB (limit {limit_mb:.0f} MB)"
+            )
+            logger.warning("[%s] %s", self.name, error)
+            # Best-effort user-facing notice so delivery failure is not silent.
+            notice = (
+                f"⚠️ Could not attach `{filename}` — {size_mb:.1f} MB exceeds "
+                f"Discord's {limit_mb:.0f} MB upload limit for this channel. "
+                f"Compress the file or share a link instead."
+            )
+            try:
+                if not self._is_forum_parent(channel):
+                    await channel.send(content=notice)
+            except Exception:
+                logger.debug(
+                    "[%s] Failed to send oversized-file notice for %s",
+                    self.name,
+                    filename,
+                    exc_info=True,
+                )
+            return SendResult(success=False, error=error)
+
         with open(file_path, "rb") as fh:
             file = discord.File(fh, filename=filename)
             if self._is_forum_parent(channel):

@@ -94,11 +94,10 @@ class TestBuildToolTitle:
         title = build_tool_title("terminal", {"command": "ls -la /tmp"})
         assert "ls -la /tmp" in title
 
-    def test_terminal_title_truncates_long_command(self):
+    def test_terminal_title_preserves_long_command(self):
         long_cmd = "x" * 200
         title = build_tool_title("terminal", {"command": long_cmd})
-        assert len(title) < 120
-        assert "..." in title
+        assert title == f"terminal: {long_cmd}"
 
     def test_read_file_title(self):
         title = build_tool_title("read_file", {"path": "/etc/hosts"})

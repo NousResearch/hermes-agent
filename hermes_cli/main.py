@@ -9950,6 +9950,7 @@ def _cmd_update_impl(args, gateway_mode: bool):
         return
 
     # Fetch and pull
+    protected_checkout_finalized = False
     try:
 
         # Resolve the target branch up front so the fetch can be scoped to it.
@@ -10245,12 +10246,22 @@ def _cmd_update_impl(args, gateway_mode: bool):
         )
         commit_count = int(result.stdout.strip())
 
+        # A fork can be current against origin yet behind upstream. Detect a
+        # successful upstream fast-forward by SHA movement and route it through
+        # the full dependency/build/restart lifecycle rather than the no-op exit.
+        if commit_count == 0 and is_fork and branch == "main":
+            before_upstream_sync = _capture_head_sha(git_cmd, PROJECT_ROOT)
+            _sync_with_upstream_if_needed(git_cmd, PROJECT_ROOT)
+            after_upstream_sync = _capture_head_sha(git_cmd, PROJECT_ROOT)
+            if (
+                before_upstream_sync
+                and after_upstream_sync
+                and after_upstream_sync != before_upstream_sync
+            ):
+                commit_count = 1
+
         if commit_count == 0:
             _invalidate_update_cache()
-
-            # Even if origin is up to date, the fork may be behind upstream
-            if is_fork and branch == "main":
-                _sync_with_upstream_if_needed(git_cmd, PROJECT_ROOT)
 
             # Restore the exact original checkout before applying its stash.
             # Applying first can strand custom-branch edits on the update target.
@@ -10293,6 +10304,9 @@ def _cmd_update_impl(args, gateway_mode: bool):
                             input_fn=gw_input_fn,
                         )
                     auto_stash_ref = None
+
+            if protect_local_commits:
+                protected_checkout_finalized = True
 
             # A current checkout does NOT imply a healthy install: a previous
             # dependency sync may have failed partway (classic on Windows,
@@ -10454,6 +10468,10 @@ def _cmd_update_impl(args, gateway_mode: bool):
                     restored = _restore_protected_checkout(
                         restore_stash=rollback_tree_ok
                     )
+                    # This rollback path has made its one safe restoration
+                    # attempt. Never let the outer failure cleanup replay a
+                    # stash when the rollback tree could not be verified.
+                    protected_checkout_finalized = True
                     print()
                     if (
                         rollback_ref.returncode == 0
@@ -11735,6 +11753,7 @@ def _cmd_update_impl(args, gateway_mode: bool):
                 print(
                     f"  ℹ️  Local changes preserved in stash (ref: {auto_stash_ref})"
                 )
+            protected_checkout_finalized = True
 
         print()
         print("Tip: You can now select a provider and model:")
@@ -11754,6 +11773,34 @@ def _cmd_update_impl(args, gateway_mode: bool):
             else:
                 print(f"✗ Update failed: {e}")
             sys.exit(3 if protect_local_commits else 1)
+    finally:
+        if (
+            protect_local_commits
+            and not protected_checkout_finalized
+            and "_restore_protected_checkout" in locals()
+        ):
+            # Any failure after a successful pull (dependency install, build,
+            # migration, restart, etc.) must still return a custom/detached
+            # caller to its checkout and preserve/replay its local changes.
+            try:
+                restored = _restore_protected_checkout(
+                    prompt_user=False,
+                    allow_updated_target=True,
+                )
+                if not restored and auto_stash_ref is not None:
+                    print(
+                        f"  ℹ️  Local changes preserved in stash (ref: {auto_stash_ref})"
+                    )
+            except Exception as restore_exc:
+                logger.debug(
+                    "Protected checkout restoration after update failure failed: %s",
+                    restore_exc,
+                )
+                if auto_stash_ref is not None:
+                    print(
+                        f"  ℹ️  Local changes preserved in stash (ref: {auto_stash_ref})"
+                    )
+            protected_checkout_finalized = True
 
 
 def _coalesce_session_name_args(argv: list) -> list:

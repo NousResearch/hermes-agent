@@ -136,10 +136,18 @@ bound to the exact origin chat and thread, including explicit General topic id `
 Status caches include that thread id, and a later edit or delete is accepted only for a
 message id recorded as created in the same exact strict origin during this gateway run.
 
-The bundled `sol-food` hook is one example: when explicitly bound to a strict route it
-uses `/food <description>` or one bounded photo to create a noncanonical proposal, then
-presents opaque origin-bound choices. Health remains the only canonical writer, and no
-write occurs before an authenticated Confirm callback.
+Product-specific hooks are installed externally under `~/.hermes/plugins/`. For example,
+the private standalone `sol-food` plugin can be bound to a strict route to accept
+`/food <description>` or one bounded photo, create a noncanonical proposal, and present
+opaque origin-bound choices. Health remains the only canonical writer, and no write occurs
+before an authenticated Confirm callback. This core repository owns only the generic
+route, lifecycle, media, callback, and reply seams used by that external plugin.
+
+An external plugin must also be enabled before a `topic_routing.hooks` entry can bind its
+factory. After installing `sol-food`, run `hermes plugins enable sol-food` (equivalently,
+add `sol-food` to `plugins.enabled`) and verify it appears enabled before configuring the
+hook. Installation without this enable step intentionally fails startup with no registered
+factory instead of silently routing under the wrong behavior.
 
 ## How it works at runtime
 

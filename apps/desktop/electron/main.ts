@@ -7175,9 +7175,12 @@ function wireCommonWindowHandlers(win, { zoom = true }: { zoom?: boolean } = {})
     installZoomShortcuts(win)
     // Re-apply persisted zoom on show/restore/cross-display move (Windows can
     // drop webContents zoom after minimize or a monitor-scale change) and on
-    // first load (reloads / crash recovery).
+    // EVERY full load — not once. The crash-recovery path calls
+    // webContents.reload(), which fires did-finish-load again after a `once`
+    // listener is spent, so zoom was silently lost on renderer crash
+    // recovery and any in-place reload/navigation (#46429).
     installZoomReassertOnWindowEvents(win, () => restorePersistedZoomLevel(win))
-    win.webContents.once('did-finish-load', () => restorePersistedZoomLevel(win))
+    win.webContents.on('did-finish-load', () => restorePersistedZoomLevel(win))
   }
 
   installContextMenu(win)

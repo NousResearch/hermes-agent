@@ -302,7 +302,7 @@ def _is_negated(content: str, match: "re.Match", pattern_id: str) -> bool:
                 # Also confirm there's no sentence boundary (period, newline)
                 # between the negation and the match.
                 intervening = content[neg_m.end():match.start()]
-                if not re.search(r"[\.\n]", intervening):
+                if not re.search(r"[\.\n;]", intervening):
                     return True
     return False
 

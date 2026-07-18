@@ -6853,6 +6853,16 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
             return False
 
         from hermes_cli.main import _relative_time
+        # Stored session titles and previews are untrusted for display: a title
+        # or a preview (a snippet of stored message content) can carry raw
+        # CSI/OSC/control bytes — pasted content, gateway-origin text, or model
+        # output echoing an injected tool result — so a crafted session shown in
+        # this /resume list could clear the screen, retitle the window, move the
+        # cursor, or restyle the terminal. Scrub both before printing, matching
+        # the /resume + /status recap and /history replay paths. (Sanitizing
+        # first also keeps the column widths honest — an escape byte is no
+        # longer counted toward the padded field width.)
+        from tools.ansi_strip import sanitize_display_text as _sanitize_display_text
 
         _cli_visible_print()
         if reason == "history":
@@ -6863,8 +6873,8 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
         _cli_visible_print(f"  {'#':<3} {'Title':<32} {'Preview':<40} {'Last Active':<13} {'ID'}")
         _cli_visible_print(f"  {'─' * 3} {'─' * 32} {'─' * 40} {'─' * 13} {'─' * 24}")
         for idx, session in enumerate(sessions, start=1):
-            title = session.get("title") or "—"
-            preview = (session.get("preview") or "")[:38]
+            title = _sanitize_display_text(session.get("title") or "—")
+            preview = _sanitize_display_text(session.get("preview") or "")[:38]
             last_active = _relative_time(session.get("last_active"))
             _cli_visible_print(f"  {idx:<3} {title:<32} {preview:<40} {last_active:<13} {session['id']}")
         _cli_visible_print()

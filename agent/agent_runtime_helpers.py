@@ -2917,6 +2917,26 @@ def copy_reasoning_content_for_api(agent, source_msg: dict, api_msg: dict) -> No
 
     needs_thinking_pad = agent._needs_thinking_reasoning_pad()
 
+    def _strip_reasoning_replay() -> None:
+        """Keep stored reasoning out of providers that do not require replay.
+
+        The conversation history may retain reasoning for UI/session audit,
+        but replaying it into every subsequent Chat Completions request makes
+        long local runs carry a large hidden scratchpad forever. Providers
+        that enforce reasoning echo-back are handled by the pad/preserve paths
+        below; everyone else should see visible content + tools only.
+        """
+        for key in ("reasoning", "reasoning_content", "reasoning_details"):
+            api_msg.pop(key, None)
+        # Codex Responses has an explicit, bounded replay contract for its
+        # encrypted native items (including provider-side invalidation and
+        # retry). Removing those here bypasses that recovery and breaks tool
+        # continuation. The hidden-scratchpad guard targets chat-completions
+        # providers; preserve native Codex items on their owning transport.
+        if getattr(agent, "api_mode", None) != "codex_responses":
+            api_msg.pop("codex_reasoning_items", None)
+            api_msg.pop("codex_message_items", None)
+
     # 1. Explicit reasoning_content already set.
     #
     # When the active provider enforces the thinking-mode echo-back
@@ -2938,7 +2958,7 @@ def copy_reasoning_content_for_api(agent, source_msg: dict, api_msg: dict) -> No
     existing = source_msg.get("reasoning_content")
     if isinstance(existing, str):
         if not needs_thinking_pad:
-            api_msg.pop("reasoning_content", None)
+            _strip_reasoning_replay()
         elif existing == "":
             api_msg["reasoning_content"] = " "
         else:
@@ -2976,7 +2996,7 @@ def copy_reasoning_content_for_api(agent, source_msg: dict, api_msg: dict) -> No
         if needs_thinking_pad:
             api_msg["reasoning_content"] = normalized_reasoning
         else:
-            api_msg.pop("reasoning_content", None)
+            _strip_reasoning_replay()
         return
 
     # 4. DeepSeek / Kimi thinking mode: all assistant messages need
@@ -2993,7 +3013,7 @@ def copy_reasoning_content_for_api(agent, source_msg: dict, api_msg: dict) -> No
 
     # 5. reasoning_content was present but not a string (e.g. None after
     # context compaction).  Don't pass null to the API.
-    api_msg.pop("reasoning_content", None)
+    _strip_reasoning_replay()
 
 
 def reapply_reasoning_echo_for_provider(agent, api_messages: list) -> int:

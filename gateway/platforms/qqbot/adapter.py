@@ -278,8 +278,16 @@ class QQAdapter(BasePlatformAdapter):
     # Connection lifecycle
     # ------------------------------------------------------------------
 
-    async def connect(self) -> bool:
-        """Authenticate, obtain gateway URL, and open the WebSocket."""
+    async def connect(self, *, is_reconnect: bool = False) -> bool:
+        """Authenticate, obtain gateway URL, and open the WebSocket.
+
+        Args:
+            is_reconnect: True when called by the gateway reconnect loop.
+                QQAdapter has its own _reconnect() for WebSocket-level
+                reconnection, so this parameter is accepted for signature
+                compatibility but not used — the full connect() flow
+                (token refresh, gateway URL fetch, WS open) runs regardless.
+        """
         if not AIOHTTP_AVAILABLE:
             message = "QQ startup failed: aiohttp not installed"
             self._set_fatal_error("qq_missing_dependency", message, retryable=True)

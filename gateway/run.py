@@ -21149,6 +21149,60 @@ def _start_gateway_housekeeping(stop_event: threading.Event, adapters=None, loop
     logger.info("Gateway housekeeping stopped")
 
 
+async def _event_loop_watchdog_probe() -> float:
+    return time.monotonic()
+
+
+def _watchdog_env_number(name: str, default: float, cast):
+    try:
+        return cast(os.getenv(name, "").strip() or default)
+    except (TypeError, ValueError):
+        return cast(default)
+
+
+def _start_event_loop_watchdog(
+    stop_event: threading.Event,
+    loop: asyncio.AbstractEventLoop,
+    *,
+    interval: float = 60.0,
+    timeout: float = 30.0,
+    max_failures: int = 3,
+) -> None:
+    """Exit for supervisor recovery when the live loop stops dispatching work."""
+    interval, timeout, max_failures = max(interval, 1.0), max(timeout, 1.0), max(max_failures, 1)
+    failures = 0
+    while not stop_event.wait(interval):
+        future = safe_schedule_threadsafe(
+            _event_loop_watchdog_probe(), loop,
+            logger=logger,
+            log_message="Gateway event-loop watchdog scheduling error",
+            log_level=logging.WARNING,
+        )
+        reason = "scheduling failed"
+        if future is not None:
+            try:
+                future.result(timeout=timeout)
+                failures = 0
+                continue
+            except concurrent.futures.TimeoutError:
+                reason = "probe timed out before dispatch" if future.cancel() else "probe did not complete"
+            except Exception as exc:
+                reason = f"probe failed: {exc}"
+        failures += 1
+        logger.warning("Gateway event-loop watchdog failure %d/%d: %s", failures, max_failures, reason)
+        if failures >= max_failures:
+            logger.critical("Gateway event loop is unresponsive; exiting for service restart")
+            try:
+                from gateway.status import write_runtime_status
+                write_runtime_status(
+                    gateway_state="degraded",
+                    exit_reason="event_loop_watchdog_unresponsive",
+                )
+            except Exception:
+                pass
+            _exit_after_graceful_shutdown(GATEWAY_SERVICE_RESTART_EXIT_CODE)
+
+
 def _start_cron_ticker(stop_event: threading.Event, adapters=None, loop=None, interval: int = 60):
     """DEPRECATED shim — preserved for backward compatibility.
 
@@ -21692,6 +21746,21 @@ async def start_gateway(config: Optional[GatewayConfig] = None, replace: bool = 
         name="gateway-housekeeping",
     )
     housekeeping_thread.start()
+
+    loop_watchdog_thread: Optional[threading.Thread] = None
+    if os.getenv("HERMES_GATEWAY_LOOP_WATCHDOG", "").strip().lower() in {"1", "true", "yes", "on"}:
+        loop_watchdog_thread = threading.Thread(
+            target=_start_event_loop_watchdog,
+            args=(cron_stop, asyncio.get_running_loop()),
+            kwargs={
+                "interval": _watchdog_env_number("HERMES_GATEWAY_LOOP_WATCHDOG_INTERVAL", 60.0, float),
+                "timeout": _watchdog_env_number("HERMES_GATEWAY_LOOP_WATCHDOG_TIMEOUT", 30.0, float),
+                "max_failures": _watchdog_env_number("HERMES_GATEWAY_LOOP_WATCHDOG_FAILURES", 3, int),
+            },
+            daemon=True,
+            name="gateway-loop-watchdog",
+        )
+        loop_watchdog_thread.start()
     
     # Wait for shutdown
     await runner.wait_for_shutdown()
@@ -21730,6 +21799,7 @@ async def start_gateway(config: Optional[GatewayConfig] = None, replace: bool = 
     await _await_thread_exit(
         housekeeping_thread, timeout=_HOUSEKEEPING_SHUTDOWN_DRAIN_TIMEOUT
     )
+    await _await_thread_exit(loop_watchdog_thread, timeout=5.0)
 
     # Stop the planned-stop watcher (daemon=True so this is belt-and-suspenders).
     _planned_stop_watcher_stop.set()

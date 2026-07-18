@@ -774,6 +774,72 @@ def interruptible_api_call(agent, api_kwargs: dict):
 
 
 
+_MAX_KEEP_TOOL_RESULT_IMAGES = 3
+
+
+def _evict_old_screenshots_openai(
+    api_messages: list,
+    max_keep: int = _MAX_KEEP_TOOL_RESULT_IMAGES,
+) -> list:
+    """Keep only the most recent ``max_keep`` tool-result screenshots in a
+    chat.completions payload.
+
+    OpenAI-format counterpart of the Anthropic adapter's
+    ``_evict_old_screenshots`` (agent/anthropic_adapter.py): base64 images
+    cost ~1,465 tokens each and accumulate across computer-use tool calls.
+    Walk backward, keep the most recent N image-bearing tool results, and
+    replace image parts in older ones with a text placeholder.
+
+    Shared request-preparation helper: applied by the main conversation
+    loop's payload assembly AND by ``handle_max_iterations``'s summary
+    request below — the summary path hand-builds its own ``api_messages``
+    and calls ``chat.completions.create()`` directly, so without the shared
+    transform it would re-send every historical tool-result image.
+
+    On this wire format tool-result images are inline content parts on
+    ``role: "tool"`` messages (``image_url`` / ``input_image``), not nested
+    ``tool_result`` blocks — detection is shared with the compressor via
+    :func:`agent.context_compressor._is_image_part`.  Counting matches the
+    Anthropic adapter: each tool message containing at least one image
+    counts once, regardless of how many image parts it carries.
+
+    Scope also matches the Anthropic adapter: only tool results are
+    evicted.  Image parts on ``role: "user"`` messages (user uploads) are
+    left untouched.
+
+    Never mutates its input.  ``api_messages`` entries are shallow copies
+    whose ``content`` lists are shared with the stored conversation
+    history, so affected messages are replaced with new dicts holding new
+    content lists — the per-call payload shrinks while stored history
+    keeps its images (prompt-caching invariant: never mutate past context).
+    """
+    from agent.context_compressor import _is_image_part
+
+    result = list(api_messages)
+    image_result_count = 0
+    for idx in range(len(result) - 1, -1, -1):
+        msg = result[idx]
+        if not isinstance(msg, dict) or msg.get("role") != "tool":
+            continue
+        content = msg.get("content")
+        if not isinstance(content, list):
+            continue
+        if not any(_is_image_part(part) for part in content):
+            continue
+        image_result_count += 1
+        if image_result_count <= max_keep:
+            continue
+        result[idx] = {
+            **msg,
+            "content": [
+                part if not _is_image_part(part)
+                else {"type": "text", "text": "[screenshot removed to save context]"}
+                for part in content
+            ],
+        }
+    return result
+
+
 def build_api_kwargs(agent, api_messages: list) -> dict:
     """Build the keyword arguments dict for the active API mode."""
     tools_for_api = agent.tools
@@ -1730,6 +1796,12 @@ def handle_max_iterations(agent, messages: list, api_call_count: int) -> str:
         # Same safety net as the main loop: drop thinking-only assistant
         # turns so Anthropic-family providers don't 400 the summary call.
         api_messages = agent._drop_thinking_only_and_merge_users(api_messages)
+
+        # Same eviction as the main loop's payload assembly: this request
+        # re-sends the whole transcript, and without it every historical
+        # tool-result screenshot rides along one last time.
+        if agent.api_mode == "chat_completions":
+            api_messages = _evict_old_screenshots_openai(api_messages)
 
         summary_extra_body = {}
         try:

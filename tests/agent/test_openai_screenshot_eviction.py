@@ -15,7 +15,104 @@ from __future__ import annotations
 import copy
 from typing import Any, Dict, List
 
-from agent.conversation_loop import _evict_old_screenshots_openai
+from unittest.mock import MagicMock
+
+from agent.chat_completion_helpers import (
+    _evict_old_screenshots_openai,
+    handle_max_iterations,
+)
+
+
+def _image_tool_msg(call_id: str) -> Dict[str, Any]:
+    return {
+        "role": "tool",
+        "tool_call_id": call_id,
+        "content": [
+            {"type": "text", "text": f"screenshot {call_id}"},
+            {"type": "image_url", "image_url": {"url": f"data:image/png;base64,{call_id}"}},
+        ],
+    }
+
+
+class TestMaxIterationSummaryEviction:
+    """The max-iteration summary request builds its own api_messages and
+    calls chat.completions.create() directly, bypassing the main loop's
+    payload assembly — it must apply the same eviction or every historical
+    tool-result image rides along one last time."""
+
+    def test_summary_request_payload_is_evicted(self):
+        agent = MagicMock()
+        agent.api_mode = "chat_completions"
+        agent.max_iterations = 60
+        agent.model = "test-model"
+        agent.provider = "lmstudio"
+        agent._base_url_lower = "http://localhost:1234/v1"
+        agent._cached_system_prompt = "system"
+        agent.ephemeral_system_prompt = None
+        agent.prefill_messages = []
+        agent.max_tokens = None
+        agent.reasoning_config = None
+        agent._should_sanitize_tool_calls.return_value = False
+        agent._supports_reasoning_extra_body.return_value = False
+        agent._copy_reasoning_content_for_api.side_effect = lambda src, dst: None
+        agent._sanitize_api_messages.side_effect = lambda msgs: msgs
+        agent._drop_thinking_only_and_merge_users.side_effect = lambda msgs: msgs
+
+        captured: Dict[str, Any] = {}
+
+        def _create(**kwargs):
+            captured.update(kwargs)
+            response = MagicMock()
+            response.choices = [MagicMock()]
+            response.choices[0].message.content = "summary text"
+            return response
+
+        client = MagicMock()
+        client.chat.completions.create.side_effect = _create
+        agent._ensure_primary_openai_client.return_value = client
+        # The chat path normalizes the raw response through the transport.
+        _normalized = MagicMock()
+        _normalized.content = "summary text"
+        agent._get_transport.return_value.normalize_response.return_value = _normalized
+
+        messages = [{"role": "user", "content": "start"}]
+        for i in range(5):
+            messages.append({
+                "role": "assistant",
+                "content": None,
+                "tool_calls": [{
+                    "id": f"c{i}", "type": "function",
+                    "function": {"name": "browser_vision", "arguments": "{}"},
+                }],
+            })
+            messages.append(_image_tool_msg(f"c{i}"))
+
+        result = handle_max_iterations(agent, messages, api_call_count=60)
+
+        assert result == "summary text"
+        sent = captured["messages"]
+        tool_msgs = [
+            m for m in sent
+            if m.get("role") == "tool" and isinstance(m.get("content"), list)
+        ]
+        assert len(tool_msgs) == 5
+        with_images = [
+            m for m in tool_msgs
+            if any(p.get("type") in ("image_url", "input_image") for p in m["content"])
+        ]
+        placeholdered = [
+            m for m in tool_msgs
+            if any(
+                p.get("type") == "text" and "screenshot removed" in p.get("text", "")
+                for p in m["content"]
+            )
+        ]
+        # Anthropic-parity keep window: newest 3 keep their images, the
+        # 2 oldest are placeholdered.
+        assert len(with_images) == 3
+        assert len(placeholdered) == 2
+        # The two evicted messages are the OLDEST ones.
+        assert placeholdered == tool_msgs[:2]
 
 
 FAKE_PNG = "iVBORw0KGgo="

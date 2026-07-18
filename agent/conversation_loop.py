@@ -28,7 +28,6 @@ import uuid
 from typing import Any, Dict, List, Optional
 
 from agent.codex_responses_adapter import _summarize_user_message_for_log
-from agent.context_compressor import _is_image_part
 from agent.conversation_compression import conversation_history_after_compression
 from agent.display import KawaiiSpinner
 from agent.error_classifier import FailoverReason, classify_api_error
@@ -107,64 +106,6 @@ def _image_error_max_dimension(error: Exception) -> Optional[int]:
     if 512 <= max_dimension <= 8000:
         return max_dimension
     return None
-
-
-_MAX_KEEP_TOOL_RESULT_IMAGES = 3
-
-
-def _evict_old_screenshots_openai(
-    api_messages: List[Dict[str, Any]],
-    max_keep: int = _MAX_KEEP_TOOL_RESULT_IMAGES,
-) -> List[Dict[str, Any]]:
-    """Keep only the most recent ``max_keep`` tool-result screenshots in a
-    chat.completions payload.
-
-    OpenAI-format counterpart of the Anthropic adapter's
-    ``_evict_old_screenshots`` (agent/anthropic_adapter.py): base64 images
-    cost ~1,465 tokens each and accumulate across computer-use tool calls.
-    Walk backward, keep the most recent N image-bearing tool results, and
-    replace image parts in older ones with a text placeholder.
-
-    On this wire format tool-result images are inline content parts on
-    ``role: "tool"`` messages (``image_url`` / ``input_image``), not nested
-    ``tool_result`` blocks — detection is shared with the compressor via
-    :func:`agent.context_compressor._is_image_part`.  Counting matches the
-    Anthropic adapter: each tool message containing at least one image
-    counts once, regardless of how many image parts it carries.
-
-    Scope also matches the Anthropic adapter: only tool results are
-    evicted.  Image parts on ``role: "user"`` messages (user uploads) are
-    left untouched.
-
-    Never mutates its input.  ``api_messages`` entries are shallow copies
-    whose ``content`` lists are shared with the stored conversation
-    history, so affected messages are replaced with new dicts holding new
-    content lists — the per-call payload shrinks while stored history
-    keeps its images (prompt-caching invariant: never mutate past context).
-    """
-    result = list(api_messages)
-    image_result_count = 0
-    for idx in range(len(result) - 1, -1, -1):
-        msg = result[idx]
-        if not isinstance(msg, dict) or msg.get("role") != "tool":
-            continue
-        content = msg.get("content")
-        if not isinstance(content, list):
-            continue
-        if not any(_is_image_part(part) for part in content):
-            continue
-        image_result_count += 1
-        if image_result_count <= max_keep:
-            continue
-        result[idx] = {
-            **msg,
-            "content": [
-                part if not _is_image_part(part)
-                else {"type": "text", "text": "[screenshot removed to save context]"}
-                for part in content
-            ],
-        }
-    return result
 
 
 def _ollama_context_limit_error(agent: Any, request_tokens: int) -> Optional[str]:
@@ -1023,8 +964,11 @@ def run_conversation(
         # convert_messages_to_anthropic during format conversion, and other
         # modes are out of scope here.  Operates on the per-call copy
         # (returns new dicts for affected messages); the stored conversation
-        # history keeps its images.
+        # history keeps its images.  The helper is shared with
+        # handle_max_iterations' summary request, which builds its own
+        # payload outside this loop.
         if agent.api_mode == "chat_completions":
+            from agent.chat_completion_helpers import _evict_old_screenshots_openai
             api_messages = _evict_old_screenshots_openai(api_messages)
 
         # Calculate approximate request size for logging and pressure checks.

@@ -226,6 +226,12 @@ def load_hermes_dotenv(
 
     Behavior:
     - `~/.hermes/.env` overrides stale shell-exported values when present.
+    - profile-mode (`HERMES_HOME=~/.hermes/profiles/<name>`): the root
+      `~/.hermes/.env` is loaded as a non-override base first, then the
+      profile's own `.env` is loaded with override=True so profile values
+      win. This restores the "global config + per-profile overrides"
+      layering the multiplex path already enforces via ``set_secret_scope``;
+      see #61046.
     - project `.env` acts as a dev fallback and only fills missing values when
       the user env exists.
     - if no user env exists, the project `.env` also overrides stale shell vars.
@@ -236,11 +242,27 @@ def load_hermes_dotenv(
     user_env = home_path / ".env"
     project_env_path = Path(project_env) if project_env else None
 
+    # In profile mode the user-managed `~/.hermes/.env` lives one level up
+    # (the hermes root, not the profile subdir). Load it as a non-override
+    # base so profile values in the subsequent `user_env` load still win.
+    base_env = None
+    if home_path.parent.name == "profiles" and home_path.parent.parent:
+        base_env = home_path.parent.parent / ".env"
+
     # Fix corrupted .env files before python-dotenv parses them (#8908).
     if user_env.exists():
         _sanitize_env_file_if_needed(user_env)
+    if base_env is not None and base_env.exists():
+        _sanitize_env_file_if_needed(base_env)
     if project_env_path and project_env_path.exists():
         _sanitize_env_file_if_needed(project_env_path)
+
+    if base_env is not None and base_env.exists():
+        # Base layer: root ~/.hermes/.env fills in any keys the profile did
+        # not define. override=False so a later override=True on the profile
+        # .env still wins for keys the profile sets explicitly.
+        _load_dotenv_with_fallback(base_env, override=False)
+        loaded.append(base_env)
 
     if user_env.exists():
         _load_dotenv_with_fallback(user_env, override=True)

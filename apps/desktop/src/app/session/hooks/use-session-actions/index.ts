@@ -126,6 +126,10 @@ interface SessionActionsOptions {
 // (NOT in this set) still legitimately drops to a draft.
 const createdThisRun = new Set<string>()
 
+// How long we keep creatingSessionRef after create/fork navigate before giving up
+// if the router never lands on the pending stored id (stuck navigate / lost race).
+const CREATE_GUARD_RELEASE_MS = 3_000
+
 // Reflect a stored row's persisted token counts into the live usage atom
 // (total is derived, so callers can't drift it out of sync with input/output).
 function applyStoredUsage(stored: { input_tokens?: number | null; output_tokens?: number | null }) {
@@ -224,14 +228,56 @@ export function useSessionActions({
   // true until routedSessionId + selection both agree on this id ??clearing via
   // setTimeout(0) let use-route-resume resume the stale route as "stuck" (#66057).
   const pendingCreatedStoredSessionIdRef = useRef<string | null>(null)
+  // Route id at the moment we armed pending (often the stale previous session).
+  // Distinguishes "router still lagging on A" from "user navigated to C".
+  const pendingCreatedFromRouteRef = useRef<string | null>(null)
+  const pendingGuardTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null)
 
   const releaseCreatingSessionGuard = useCallback(() => {
+    if (pendingGuardTimeoutRef.current != null) {
+      clearTimeout(pendingGuardTimeoutRef.current)
+      pendingGuardTimeoutRef.current = null
+    }
+
     pendingCreatedStoredSessionIdRef.current = null
+    pendingCreatedFromRouteRef.current = null
     creatingSessionRef.current = false
   }, [creatingSessionRef])
 
-  // Drop the create/fork guard only once the router has caught up to the session
-  // we already selected. Refs/atoms lead; HashRouter can lag a tick.
+  // Arm the create/fork hold: keep creatingSessionRef until the route lands on
+  // `storedId`, the user leaves for another route, navigate throws, or the
+  // safety timeout fires (so a stuck router can't block resumes forever).
+  const armPendingCreatedSession = useCallback(
+    (storedId: string) => {
+      pendingCreatedStoredSessionIdRef.current = storedId
+      pendingCreatedFromRouteRef.current = routedSessionId
+
+      if (pendingGuardTimeoutRef.current != null) {
+        clearTimeout(pendingGuardTimeoutRef.current)
+      }
+
+      pendingGuardTimeoutRef.current = setTimeout(() => {
+        pendingGuardTimeoutRef.current = null
+
+        if (pendingCreatedStoredSessionIdRef.current === storedId) {
+          releaseCreatingSessionGuard()
+        }
+      }, CREATE_GUARD_RELEASE_MS)
+    },
+    [releaseCreatingSessionGuard, routedSessionId]
+  )
+
+  useEffect(
+    () => () => {
+      if (pendingGuardTimeoutRef.current != null) {
+        clearTimeout(pendingGuardTimeoutRef.current)
+      }
+    },
+    []
+  )
+
+  // Drop the create/fork guard once the router catches up ??or if the user
+  // navigates somewhere other than the pending id (left the pre-create route).
   useEffect(() => {
     const pending = pendingCreatedStoredSessionIdRef.current
 
@@ -240,6 +286,14 @@ export function useSessionActions({
     }
 
     if (routedSessionId === pending && selectedStoredSessionIdRef.current === pending) {
+      releaseCreatingSessionGuard()
+
+      return
+    }
+
+    const fromRoute = pendingCreatedFromRouteRef.current
+
+    if (routedSessionId !== fromRoute && routedSessionId !== pending) {
       releaseCreatingSessionGuard()
     }
   }, [
@@ -440,8 +494,14 @@ export function useSessionActions({
           // Hold creatingSessionRef until the route lands on `stored` (release
           // effect above). setTimeout(0) raced use-route-resume back onto the
           // previous session (#66057).
-          pendingCreatedStoredSessionIdRef.current = stored
-          navigate(sessionRoute(stored), { replace: true })
+          armPendingCreatedSession(stored)
+
+          try {
+            navigate(sessionRoute(stored), { replace: true })
+          } catch {
+            releaseCreatingSessionGuard()
+          }
+
           // Other windows (e.g. the main window when this is the pop-out) can't
           // see this session until they re-pull the shared list.
           broadcastSessionsChanged()
@@ -476,10 +536,12 @@ export function useSessionActions({
     },
     [
       activeSessionIdRef,
+      armPendingCreatedSession,
       creatingSessionRef,
       ensureSessionState,
       getRouteToken,
       navigate,
+      releaseCreatingSessionGuard,
       requestGateway,
       resetViewSync,
       selectedStoredSessionIdRef,
@@ -1160,6 +1222,9 @@ export function useSessionActions({
 
         return true
       } catch (err) {
+        // Navigate throw or earlier failure after arming pending ??never leave
+        // creatingSessionRef stuck true.
+        releaseCreatingSessionGuard()
         notifyError(err, copy.branchFailed)
 
         return false

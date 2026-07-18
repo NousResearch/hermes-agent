@@ -1406,6 +1406,7 @@ describe('createBackendSessionForSend workspace target', () => {
 describe('createBackendSessionForSend creatingSessionRef hold (#66057)', () => {
   afterEach(() => {
     cleanup()
+    vi.useRealTimers()
     $newChatProfile.set(null)
     $activeGatewayProfile.set('default')
     setCurrentCwd('')
@@ -1413,55 +1414,72 @@ describe('createBackendSessionForSend creatingSessionRef hold (#66057)', () => {
     vi.restoreAllMocks()
   })
 
+  function GuardHarness({
+    creatingSessionRef,
+    navigate,
+    onReady,
+    requestGateway,
+    routeId,
+    selectedStoredSessionIdRef
+  }: {
+    creatingSessionRef: MutableRefObject<boolean>
+    navigate: (...args: never[]) => unknown
+    onReady: (create: () => Promise<string | null>) => void
+    requestGateway: <T>(method: string, params?: Record<string, unknown>) => Promise<T>
+    routeId: null | string
+    selectedStoredSessionIdRef: MutableRefObject<null | string>
+  }) {
+    const ref = <T,>(value: T): MutableRefObject<T> => ({ current: value })
+    const actions = useSessionActions({
+      activeSessionId: null,
+      activeSessionIdRef: ref<string | null>(null),
+      busyRef: ref(false),
+      creatingSessionRef,
+      ensureSessionState: () => ({}) as ClientSessionState,
+      getRouteToken: () => 'token',
+      navigate: navigate as never,
+      requestGateway,
+      resetViewSync: vi.fn(),
+      routedSessionId: routeId,
+      runtimeIdByStoredSessionIdRef: ref(new Map<string, string>()),
+      selectedStoredSessionId: selectedStoredSessionIdRef.current,
+      selectedStoredSessionIdRef,
+      sessionStateByRuntimeIdRef: ref(new Map<string, ClientSessionState>()),
+      syncSessionStateToView: vi.fn(),
+      updateSessionState: () => ({}) as ClientSessionState
+    })
+
+    useEffect(() => {
+      onReady(() => actions.createBackendSessionForSend())
+    }, [actions, onReady])
+
+    return null
+  }
+
   it('keeps creatingSessionRef true until routedSessionId catches up to the created stored id', async () => {
     const creatingSessionRef: MutableRefObject<boolean> = { current: false }
     const selectedStoredSessionIdRef: MutableRefObject<null | string> = { current: null }
     const navigate = vi.fn()
-    let routedSessionId: null | string = null
+    let routedSessionId: null | string = 'session-A'
 
-    function GuardHarness({
-      onReady,
-      routeId
-    }: {
-      onReady: (create: () => Promise<string | null>) => void
-      routeId: null | string
-    }) {
-      const ref = <T,>(value: T): MutableRefObject<T> => ({ current: value })
-      const actions = useSessionActions({
-        activeSessionId: null,
-        activeSessionIdRef: ref<string | null>(null),
-        busyRef: ref(false),
-        creatingSessionRef,
-        ensureSessionState: () => ({}) as ClientSessionState,
-        getRouteToken: () => 'token',
-        navigate: navigate as never,
-        requestGateway: async method => {
-          if (method === 'session.create') {
-            return { session_id: 'rt-new', stored_session_id: 'stored-new' } as never
-          }
+    const requestGateway = async <T,>(method: string): Promise<T> => {
+      if (method === 'session.create') {
+        return { session_id: 'rt-new', stored_session_id: 'stored-new' } as T
+      }
 
-          return {} as never
-        },
-        resetViewSync: vi.fn(),
-        routedSessionId: routeId,
-        runtimeIdByStoredSessionIdRef: ref(new Map<string, string>()),
-        selectedStoredSessionId: selectedStoredSessionIdRef.current,
-        selectedStoredSessionIdRef,
-        sessionStateByRuntimeIdRef: ref(new Map<string, ClientSessionState>()),
-        syncSessionStateToView: vi.fn(),
-        updateSessionState: () => ({}) as ClientSessionState
-      })
-
-      useEffect(() => {
-        onReady(() => actions.createBackendSessionForSend())
-      }, [actions, onReady])
-
-      return null
+      return {} as T
     }
 
     let create: (() => Promise<string | null>) | null = null
     const { rerender } = render(
-      <GuardHarness onReady={fn => (create = fn)} routeId={routedSessionId} />
+      <GuardHarness
+        creatingSessionRef={creatingSessionRef}
+        navigate={navigate}
+        onReady={fn => (create = fn)}
+        requestGateway={requestGateway}
+        routeId={routedSessionId}
+        selectedStoredSessionIdRef={selectedStoredSessionIdRef}
+      />
     )
     await waitFor(() => expect(create).not.toBeNull())
 
@@ -1473,13 +1491,149 @@ describe('createBackendSessionForSend creatingSessionRef hold (#66057)', () => {
     expect(creatingSessionRef.current).toBe(true)
     expect(selectedStoredSessionIdRef.current).toBe('stored-new')
 
-    // Route still stale — guard must stay up.
-    rerender(<GuardHarness onReady={() => undefined} routeId={null} />)
+    // Route still stale on A — guard must stay up (not a user navigation away).
+    rerender(
+      <GuardHarness
+        creatingSessionRef={creatingSessionRef}
+        navigate={navigate}
+        onReady={() => undefined}
+        requestGateway={requestGateway}
+        routeId="session-A"
+        selectedStoredSessionIdRef={selectedStoredSessionIdRef}
+      />
+    )
     expect(creatingSessionRef.current).toBe(true)
 
     // Router catches up to the created stored id — release the guard.
     routedSessionId = 'stored-new'
-    rerender(<GuardHarness onReady={() => undefined} routeId={routedSessionId} />)
+    rerender(
+      <GuardHarness
+        creatingSessionRef={creatingSessionRef}
+        navigate={navigate}
+        onReady={() => undefined}
+        requestGateway={requestGateway}
+        routeId={routedSessionId}
+        selectedStoredSessionIdRef={selectedStoredSessionIdRef}
+      />
+    )
+    expect(creatingSessionRef.current).toBe(false)
+  })
+
+  it('clears creatingSessionRef when navigate throws', async () => {
+    const creatingSessionRef: MutableRefObject<boolean> = { current: false }
+    const selectedStoredSessionIdRef: MutableRefObject<null | string> = { current: null }
+    const navigate = vi.fn(() => {
+      throw new Error('navigate failed')
+    })
+
+    let create: (() => Promise<string | null>) | null = null
+    render(
+      <GuardHarness
+        creatingSessionRef={creatingSessionRef}
+        navigate={navigate}
+        onReady={fn => (create = fn)}
+        requestGateway={async method => {
+          if (method === 'session.create') {
+            return { session_id: 'rt-new', stored_session_id: 'stored-new' } as never
+          }
+
+          return {} as never
+        }}
+        routeId="session-A"
+        selectedStoredSessionIdRef={selectedStoredSessionIdRef}
+      />
+    )
+    await waitFor(() => expect(create).not.toBeNull())
+
+    await act(async () => {
+      await create!()
+    })
+
+    expect(navigate).toHaveBeenCalled()
+    expect(creatingSessionRef.current).toBe(false)
+  })
+
+  it('clears creatingSessionRef when the route moves to a different session than pending', async () => {
+    const creatingSessionRef: MutableRefObject<boolean> = { current: false }
+    const selectedStoredSessionIdRef: MutableRefObject<null | string> = { current: null }
+    const navigate = vi.fn()
+
+    const requestGateway = async <T,>(method: string): Promise<T> => {
+      if (method === 'session.create') {
+        return { session_id: 'rt-new', stored_session_id: 'stored-new' } as T
+      }
+
+      return {} as T
+    }
+
+    let create: (() => Promise<string | null>) | null = null
+    const { rerender } = render(
+      <GuardHarness
+        creatingSessionRef={creatingSessionRef}
+        navigate={navigate}
+        onReady={fn => (create = fn)}
+        requestGateway={requestGateway}
+        routeId="session-A"
+        selectedStoredSessionIdRef={selectedStoredSessionIdRef}
+      />
+    )
+    await waitFor(() => expect(create).not.toBeNull())
+
+    await act(async () => {
+      await create!()
+    })
+    expect(creatingSessionRef.current).toBe(true)
+
+    // User clicked another session while create navigate was still pending.
+    rerender(
+      <GuardHarness
+        creatingSessionRef={creatingSessionRef}
+        navigate={navigate}
+        onReady={() => undefined}
+        requestGateway={requestGateway}
+        routeId="session-C"
+        selectedStoredSessionIdRef={selectedStoredSessionIdRef}
+      />
+    )
+    expect(creatingSessionRef.current).toBe(false)
+  })
+
+  it('clears creatingSessionRef via safety timeout if the route never catches up', async () => {
+    const creatingSessionRef: MutableRefObject<boolean> = { current: false }
+    const selectedStoredSessionIdRef: MutableRefObject<null | string> = { current: null }
+    const navigate = vi.fn()
+
+    let create: (() => Promise<string | null>) | null = null
+    render(
+      <GuardHarness
+        creatingSessionRef={creatingSessionRef}
+        navigate={navigate}
+        onReady={fn => (create = fn)}
+        requestGateway={async method => {
+          if (method === 'session.create') {
+            return { session_id: 'rt-new', stored_session_id: 'stored-new' } as never
+          }
+
+          return {} as never
+        }}
+        routeId="session-A"
+        selectedStoredSessionIdRef={selectedStoredSessionIdRef}
+      />
+    )
+    await waitFor(() => expect(create).not.toBeNull())
+
+    // Arm the pending timeout under fake timers so we can advance deterministically.
+    vi.useFakeTimers()
+    await act(async () => {
+      await create!()
+    })
+    expect(creatingSessionRef.current).toBe(true)
+
+    // Route stays on A forever — safety timeout must drop the guard so resumes
+    // are not permanently blocked.
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(3_000)
+    })
     expect(creatingSessionRef.current).toBe(false)
   })
 })

@@ -53,7 +53,9 @@ jobs:
         id: classify
         uses: ./.github/actions/detect-changes
         with:
-          github-token: ${{ secrets.AUTOFIX_BOT_PAT }}
+          # Forks get no repo secrets (AUTOFIX_BOT_PAT is empty); fall back to
+          # the built-in read-only token so classification still works there.
+          github-token: ${{ secrets.AUTOFIX_BOT_PAT || github.token }}
 
   # ─────────────────────────────────────────────────────────────────────
   # Lane-gated sub-workflows. Each runs in parallel after detect finishes.

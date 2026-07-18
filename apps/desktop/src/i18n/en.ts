@@ -766,6 +766,10 @@ export const en: Translations = {
       noProviderKeys: 'No provider API keys available.',
       searchKeys: 'Search providers…',
       noKeysMatch: 'No providers match your search.',
+      localEndpoint: {
+        title: 'Local / custom endpoint',
+        description: 'Point Hermes at any OpenAI-compatible endpoint (Zyphra, vLLM, llama.cpp, Ollama, etc).'
+      },
       loading: 'Loading providers...'
     },
     sessions: {

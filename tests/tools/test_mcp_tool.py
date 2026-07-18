@@ -1,6 +1,7 @@
 """Tests for the MCP (Model Context Protocol) client support.
 
-All tests use mocks -- no real MCP servers or subprocesses are started.
+Tests use in-process fakes and mocks; one context-propagation regression uses
+the real background event loop. No external MCP servers or subprocesses start.
 """
 
 import asyncio
@@ -45,6 +46,23 @@ def _make_mock_server(name, session=None, tools=None):
     server.session = session
     server._tools = tools or []
     return server
+
+
+def _wait_for_real_mcp_loop(mcp_tool, timeout=5):
+    """Wait until the real MCP loop has processed a threadsafe callback."""
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        with mcp_tool._lock:
+            loop = mcp_tool._mcp_loop
+            loop_thread = mcp_tool._mcp_thread
+        if loop is not None and loop_thread is not None and loop.is_running():
+            ready = threading.Event()
+            loop.call_soon_threadsafe(ready.set)
+            if ready.wait(max(0, deadline - time.monotonic())):
+                return loop_thread
+            break
+        time.sleep(0.01)
+    pytest.fail("real MCP loop did not process a readiness callback")
 
 
 class TestFilterMCPChildren:
@@ -737,6 +755,507 @@ class TestToolHandler:
             mock_session.call_tool.assert_called_once_with("greet", arguments={"name": "world"})
         finally:
             _servers.pop("test_srv", None)
+
+    def test_forward_session_context_opt_in_adds_meta(self):
+        from gateway.session_context import clear_session_vars, set_session_vars
+        from tools.mcp_tool import (
+            _lock,
+            _make_tool_handler,
+            _servers,
+            _session_context_forwarding_servers,
+            sanitize_mcp_name_component,
+        )
+
+        mock_session = MagicMock()
+        mock_session.call_tool = AsyncMock(
+            return_value=_make_call_result("hello world", is_error=False)
+        )
+        server = _make_mock_server("crm_srv", session=mock_session)
+        safe_server_name = sanitize_mcp_name_component("crm_srv")
+        with _lock:
+            _servers["crm_srv"] = server
+            _session_context_forwarding_servers.add(safe_server_name)
+        tokens = set_session_vars(
+            platform="discord",
+            chat_id="channel-123",
+            thread_id="thread-456",
+            user_id="user-789",
+            session_key="agent:main:discord:thread:thread-456:thread-456",
+            session_id="20260705_191621_abcd",
+            message_id="message-999",
+        )
+
+        try:
+            handler = _make_tool_handler("crm_srv", "lookup_records", 120)
+            with self._patch_mcp_loop():
+                result = json.loads(handler({"task": "smoke"}))
+            assert result["result"] == "hello world"
+            mock_session.call_tool.assert_called_once_with(
+                "lookup_records",
+                arguments={"task": "smoke"},
+                meta={
+                    "com.nousresearch.hermes/platform": "discord",
+                    "com.nousresearch.hermes/session_id": "20260705_191621_abcd",
+                    "com.nousresearch.hermes/session_key": "agent:main:discord:thread:thread-456:thread-456",
+                    "com.nousresearch.hermes/chat_id": "channel-123",
+                    "com.nousresearch.hermes/thread_id": "thread-456",
+                    "com.nousresearch.hermes/user_id": "user-789",
+                    "com.nousresearch.hermes/message_id": "message-999",
+                },
+            )
+        finally:
+            clear_session_vars(tokens)
+            with _lock:
+                _servers.pop("crm_srv", None)
+                _session_context_forwarding_servers.discard(safe_server_name)
+
+    @pytest.mark.parametrize("redact_pii", [False, True])
+    def test_forward_redacted_profile_context_crosses_real_mcp_loop_boundary(
+        self,
+        tmp_path,
+        monkeypatch,
+        redact_pii,
+    ):
+        """A routed profile's pseudonyms reach tools/call on the real loop."""
+        from gateway.config import GatewayConfig, Platform
+        from gateway.platforms.base import MessageEvent
+        from gateway.run import GatewayRunner
+        from gateway.session import (
+            SessionContext,
+            SessionSource,
+            _hash_chat_id,
+            _hash_id,
+            _hash_message_id,
+            _hash_sender_id,
+            _hash_thread_id,
+        )
+        import tools.mcp_tool as mcp
+
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        secondary_home = tmp_path / "profiles" / "secondary"
+        secondary_home.mkdir(parents=True)
+        (secondary_home / "config.yaml").write_text(
+            f"privacy:\n  redact_pii: {str(redact_pii).lower()}\n",
+            encoding="utf-8",
+        )
+
+        phone = "15551234567"
+        raw_thread_id = f"+{phone}:support"
+        raw_message_id = "wamid.HBgLMTU1NTEyMzQ1NjcVAgASGBQzQjA5QzA3QTQx"
+        raw_session_key = f"agent:secondary:whatsapp_cloud:dm:{phone}"
+        source = SessionSource(
+            platform=Platform.WHATSAPP_CLOUD,
+            chat_id=phone,
+            user_id=phone,
+            thread_id=raw_thread_id,
+            profile="secondary",
+        )
+        event = MessageEvent(
+            text="hello from WhatsApp Cloud",
+            source=source,
+            message_id=raw_message_id,
+        )
+        context = SessionContext(
+            source=source,
+            connected_platforms=[Platform.WHATSAPP_CLOUD],
+            home_channels={},
+            session_key=raw_session_key,
+            session_id="20260716_120000_cloud",
+        )
+        runner = object.__new__(GatewayRunner)
+        runner.config = GatewayConfig(multiplex_profiles=True)
+        runner.adapters = {}
+        source = runner._source_with_trigger_message_id(event)
+        assert source.message_id == raw_message_id
+        context.source = source
+
+        server_name = "context_bridge"
+        safe_server_name = mcp.sanitize_mcp_name_component(server_name)
+        caller_thread_ident = threading.get_ident()
+        observed = {}
+
+        async def call_tool(tool_name, **kwargs):
+            observed["thread_ident"] = threading.get_ident()
+            observed["tool_name"] = tool_name
+            observed["kwargs"] = kwargs
+            return _make_call_result("boundary ok", is_error=False)
+
+        mock_session = MagicMock()
+        mock_session.call_tool = AsyncMock(side_effect=call_tool)
+        server = _make_mock_server(server_name, session=mock_session)
+
+        with mcp._lock:
+            saved_servers = dict(mcp._servers)
+            saved_forwarding = set(mcp._session_context_forwarding_servers)
+            mcp._servers.clear()
+            mcp._servers[server_name] = server
+            mcp._session_context_forwarding_servers.clear()
+            mcp._session_context_forwarding_servers.add(safe_server_name)
+
+        tokens = None
+        loop_thread = None
+        loop_thread_alive_after_stop = None
+        try:
+            tokens, policy = runner._bind_session_context_for_turn(context)
+            assert policy is redact_pii
+            mcp._ensure_mcp_loop()
+            loop_thread = _wait_for_real_mcp_loop(mcp)
+
+            handler = mcp._make_tool_handler(server_name, "lookup_records", 10)
+            result = json.loads(handler({"task": "boundary"}))
+
+            assert result["result"] == "boundary ok"
+            assert observed == {
+                "thread_ident": loop_thread.ident,
+                "tool_name": "lookup_records",
+                "kwargs": {
+                    "arguments": {"task": "boundary"},
+                    "meta": {
+                        "com.nousresearch.hermes/platform": "whatsapp_cloud",
+                        "com.nousresearch.hermes/session_id": "20260716_120000_cloud",
+                        "com.nousresearch.hermes/session_key": (
+                            f"session_{_hash_id(raw_session_key)}"
+                            if redact_pii else raw_session_key
+                        ),
+                        "com.nousresearch.hermes/chat_id": (
+                            _hash_chat_id(phone) if redact_pii else phone
+                        ),
+                        "com.nousresearch.hermes/thread_id": (
+                            _hash_thread_id(raw_thread_id)
+                            if redact_pii else raw_thread_id
+                        ),
+                        "com.nousresearch.hermes/user_id": (
+                            _hash_sender_id(phone) if redact_pii else phone
+                        ),
+                        "com.nousresearch.hermes/message_id": (
+                            _hash_message_id(raw_message_id)
+                            if redact_pii else raw_message_id
+                        ),
+                    },
+                },
+            }
+            assert observed["thread_ident"] != caller_thread_ident
+            if redact_pii:
+                forwarded = json.dumps(observed)
+                assert phone not in forwarded
+                assert raw_thread_id not in forwarded
+                assert raw_message_id not in forwarded
+        finally:
+            try:
+                if tokens is not None:
+                    runner._clear_session_env(tokens)
+            finally:
+                try:
+                    mcp._stop_mcp_loop()
+                finally:
+                    if loop_thread is not None:
+                        loop_thread_alive_after_stop = loop_thread.is_alive()
+                    with mcp._lock:
+                        mcp._servers.clear()
+                        mcp._servers.update(saved_servers)
+                        mcp._session_context_forwarding_servers.clear()
+                        mcp._session_context_forwarding_servers.update(saved_forwarding)
+
+        assert loop_thread_alive_after_stop is False
+
+    def test_forward_session_context_omits_meta_when_context_unbound(
+        self, monkeypatch
+    ):
+        import contextvars
+
+        from tools.mcp_tool import (
+            _lock,
+            _make_tool_handler,
+            _servers,
+            _session_context_forwarding_servers,
+            sanitize_mcp_name_component,
+        )
+
+        monkeypatch.setenv("HERMES_SESSION_ID", "other-session")
+        mock_session = MagicMock()
+        mock_session.call_tool = AsyncMock(
+            return_value=_make_call_result("hello world", is_error=False)
+        )
+        server = _make_mock_server("crm_srv", session=mock_session)
+        safe_server_name = sanitize_mcp_name_component("crm_srv")
+        with _lock:
+            _servers["crm_srv"] = server
+            _session_context_forwarding_servers.add(safe_server_name)
+
+        try:
+            handler = _make_tool_handler("crm_srv", "lookup_records", 120)
+            with self._patch_mcp_loop():
+                result = contextvars.Context().run(handler, {"query": "recent"})
+            assert json.loads(result)["result"] == "hello world"
+            mock_session.call_tool.assert_called_once_with(
+                "lookup_records",
+                arguments={"query": "recent"},
+            )
+        finally:
+            with _lock:
+                _servers.pop("crm_srv", None)
+                _session_context_forwarding_servers.discard(safe_server_name)
+
+    def test_forward_session_context_omits_all_empty_bound_context(
+        self, monkeypatch
+    ):
+        from gateway.session_context import clear_session_vars, set_session_vars
+        from tools.mcp_tool import _build_session_context_meta
+
+        monkeypatch.setenv("HERMES_SESSION_ID", "other-session")
+        tokens = set_session_vars()
+        try:
+            assert _build_session_context_meta() is None
+        finally:
+            clear_session_vars(tokens)
+
+    def test_session_context_meta_redacts_eligible_platform_without_mutating_context(self):
+        from gateway.session import (
+            _hash_chat_id,
+            _hash_id,
+            _hash_message_id,
+            _hash_sender_id,
+            _hash_thread_id,
+        )
+        from gateway.session_context import (
+            clear_session_vars,
+            get_session_env,
+            set_session_vars,
+        )
+        from tools.mcp_tool import _build_session_context_meta
+
+        raw_chat_id = "telegram:+15550101001"
+        raw_thread_id = "+15550101002:topic"
+        raw_user_id = "+15550101003"
+        raw_message_id = "message-public-1"
+        raw_session_key = (
+            "agent:main:telegram:dm:"
+            f"{raw_chat_id}:{raw_thread_id}:{raw_user_id}"
+        )
+        tokens = set_session_vars(
+            platform="telegram",
+            chat_id=raw_chat_id,
+            thread_id=raw_thread_id,
+            user_id=raw_user_id,
+            session_key=raw_session_key,
+            session_id="20260716_120000_abcd",
+            message_id=raw_message_id,
+            redact_pii=True,
+        )
+
+        try:
+            meta = _build_session_context_meta()
+            assert meta == {
+                "com.nousresearch.hermes/platform": "telegram",
+                "com.nousresearch.hermes/session_id": "20260716_120000_abcd",
+                "com.nousresearch.hermes/session_key": (
+                    f"session_{_hash_id(raw_session_key)}"
+                ),
+                "com.nousresearch.hermes/chat_id": _hash_chat_id(raw_chat_id),
+                "com.nousresearch.hermes/thread_id": _hash_thread_id(raw_thread_id),
+                "com.nousresearch.hermes/user_id": _hash_sender_id(raw_user_id),
+                "com.nousresearch.hermes/message_id": _hash_message_id(
+                    raw_message_id
+                ),
+            }
+            assert _build_session_context_meta() == meta
+
+            forwarded = json.dumps(meta)
+            for raw_identifier in (
+                raw_chat_id,
+                raw_thread_id,
+                raw_user_id,
+                raw_session_key,
+                raw_message_id,
+                "+15550101001",
+                "+15550101002",
+                "+15550101003",
+            ):
+                assert raw_identifier not in forwarded
+
+            # Routing still sees the original identifiers.
+            assert get_session_env("HERMES_SESSION_CHAT_ID") == raw_chat_id
+            assert get_session_env("HERMES_SESSION_THREAD_ID") == raw_thread_id
+            assert get_session_env("HERMES_SESSION_USER_ID") == raw_user_id
+            assert get_session_env("HERMES_SESSION_KEY") == raw_session_key
+            assert get_session_env("HERMES_SESSION_MESSAGE_ID") == raw_message_id
+        finally:
+            clear_session_vars(tokens)
+
+    def test_whatsapp_cloud_wamid_and_phone_metadata_are_pseudonymized(self):
+        from gateway.session import (
+            _hash_chat_id,
+            _hash_id,
+            _hash_message_id,
+            _hash_sender_id,
+            _hash_thread_id,
+        )
+        from gateway.session_context import clear_session_vars, set_session_vars
+        from tools.mcp_tool import _build_session_context_meta
+
+        wa_id = "15551234567"
+        raw_thread_id = f"+{wa_id}:support"
+        raw_message_id = "wamid.HBgLMTU1NTEyMzQ1NjcVAgASGBQzQjA5QzA3QTQx"
+        raw_session_key = f"agent:main:whatsapp_cloud:dm:{wa_id}"
+        tokens = set_session_vars(
+            platform="whatsapp_cloud",
+            chat_id=wa_id,
+            thread_id=raw_thread_id,
+            user_id=wa_id,
+            session_key=raw_session_key,
+            session_id="20260716_120000_cloud",
+            message_id=raw_message_id,
+            redact_pii=True,
+        )
+
+        try:
+            meta = _build_session_context_meta()
+            assert meta == {
+                "com.nousresearch.hermes/platform": "whatsapp_cloud",
+                "com.nousresearch.hermes/session_id": "20260716_120000_cloud",
+                "com.nousresearch.hermes/session_key": (
+                    f"session_{_hash_id(raw_session_key)}"
+                ),
+                "com.nousresearch.hermes/chat_id": _hash_chat_id(wa_id),
+                "com.nousresearch.hermes/thread_id": _hash_thread_id(
+                    raw_thread_id
+                ),
+                "com.nousresearch.hermes/user_id": _hash_sender_id(wa_id),
+                "com.nousresearch.hermes/message_id": _hash_message_id(
+                    raw_message_id
+                ),
+            }
+            forwarded = json.dumps(meta)
+            assert wa_id not in forwarded
+            assert raw_thread_id not in forwarded
+            assert raw_message_id not in forwarded
+        finally:
+            clear_session_vars(tokens)
+
+    @pytest.mark.parametrize(
+        ("redact_pii", "platform"),
+        [(False, "telegram"), (True, "discord")],
+        ids=["disabled", "ineligible-platform"],
+    )
+    def test_session_context_meta_keeps_raw_values_when_redaction_does_not_apply(
+        self, redact_pii, platform
+    ):
+        from gateway.session_context import clear_session_vars, set_session_vars
+        from tools.mcp_tool import _build_session_context_meta
+
+        tokens = set_session_vars(
+            platform=platform,
+            chat_id="raw-chat-id",
+            thread_id="raw-thread-id",
+            user_id="raw-user-id",
+            session_key="agent:main:raw-session-key",
+            session_id="raw-session-id",
+            message_id="raw-message-id",
+            redact_pii=redact_pii,
+        )
+        try:
+            assert _build_session_context_meta() == {
+                "com.nousresearch.hermes/platform": platform,
+                "com.nousresearch.hermes/session_id": "raw-session-id",
+                "com.nousresearch.hermes/session_key": "agent:main:raw-session-key",
+                "com.nousresearch.hermes/chat_id": "raw-chat-id",
+                "com.nousresearch.hermes/thread_id": "raw-thread-id",
+                "com.nousresearch.hermes/user_id": "raw-user-id",
+                "com.nousresearch.hermes/message_id": "raw-message-id",
+            }
+        finally:
+            clear_session_vars(tokens)
+
+    def test_session_context_meta_honors_plugin_pii_safe_capability(self, monkeypatch):
+        from gateway.platform_registry import platform_registry
+        from gateway.session import _hash_chat_id
+        from gateway.session_context import clear_session_vars, set_session_vars
+        from tools.mcp_tool import _build_session_context_meta
+
+        monkeypatch.setattr(
+            platform_registry,
+            "get",
+            lambda name: SimpleNamespace(pii_safe=name == "private_chat_plugin"),
+        )
+        tokens = set_session_vars(
+            platform="private_chat_plugin",
+            chat_id="plugin-chat-pii",
+            session_key="agent:main:private_chat_plugin:plugin-chat-pii",
+            session_id="session-public",
+            message_id="message-public",
+            redact_pii=True,
+        )
+        try:
+            meta = _build_session_context_meta()
+            assert meta is not None
+            assert (
+                meta["com.nousresearch.hermes/chat_id"]
+                == _hash_chat_id("plugin-chat-pii")
+            )
+            assert "plugin-chat-pii" not in json.dumps(meta)
+        finally:
+            clear_session_vars(tokens)
+
+    def test_session_context_meta_plugin_policy_lookup_failure_fails_closed(
+        self, monkeypatch, caplog
+    ):
+        from gateway.platform_registry import platform_registry
+        from gateway.session_context import clear_session_vars, set_session_vars
+        from tools.mcp_tool import _build_session_context_meta
+
+        def _raise_registry_error(_name):
+            raise RuntimeError("plugin registry unavailable")
+
+        monkeypatch.setattr(platform_registry, "get", _raise_registry_error)
+        raw_chat_id = "plugin-raw-chat-pii"
+        raw_user_id = "plugin-raw-user-pii"
+        tokens = set_session_vars(
+            platform="private_chat_plugin",
+            chat_id=raw_chat_id,
+            user_id=raw_user_id,
+            session_key=f"agent:main:private_chat_plugin:{raw_chat_id}:{raw_user_id}",
+            session_id="session-public",
+            message_id="message-public",
+            redact_pii=True,
+        )
+        try:
+            with caplog.at_level("WARNING"):
+                meta = _build_session_context_meta()
+            assert meta is None
+            assert raw_chat_id not in json.dumps(meta)
+            assert raw_user_id not in json.dumps(meta)
+            assert "omitting it to avoid exposing PII" in caplog.text
+        finally:
+            clear_session_vars(tokens)
+
+    def test_session_context_meta_redaction_failure_fails_closed(
+        self, monkeypatch, caplog
+    ):
+        from gateway.session_context import clear_session_vars, set_session_vars
+        from tools.mcp_tool import _build_session_context_meta
+
+        def _raise_redaction_error(_value):
+            raise RuntimeError("redaction unavailable")
+
+        monkeypatch.setattr(
+            "gateway.session._hash_chat_id",
+            _raise_redaction_error,
+        )
+        tokens = set_session_vars(
+            platform="telegram",
+            chat_id="raw-chat-pii",
+            user_id="raw-user-pii",
+            session_key="agent:main:telegram:raw-chat-pii:raw-user-pii",
+            session_id="session-public",
+            message_id="message-public",
+            redact_pii=True,
+        )
+        try:
+            with caplog.at_level("WARNING"):
+                assert _build_session_context_meta() is None
+            assert "omitting it to avoid exposing PII" in caplog.text
+        finally:
+            clear_session_vars(tokens)
 
     def test_mcp_error_result(self):
         from tools.mcp_tool import _make_tool_handler, _servers
@@ -1492,6 +2011,76 @@ class TestShutdown:
 
         _servers.clear()
         shutdown_mcp_servers()  # Should not raise
+
+    def test_shutdown_clears_forwarding_on_fast_path_before_stopping(self):
+        """An empty server set still clears the forwarding capability first."""
+        import tools.mcp_tool as mcp
+
+        def assert_forwarding_cleared():
+            assert mcp._session_context_forwarding_servers == set()
+
+        with patch.object(mcp, "_servers", {}), \
+             patch.object(mcp, "_session_context_forwarding_servers", {"crm_api"}), \
+             patch.object(mcp, "_stop_mcp_loop", side_effect=assert_forwarding_cleared) as stop_loop:
+            mcp.shutdown_mcp_servers()
+
+            assert mcp._session_context_forwarding_servers == set()
+            stop_loop.assert_called_once_with()
+
+    def test_shutdown_clears_forwarding_with_dead_loop_before_stopping(self):
+        """Forwarding is cleared even when no async shutdown can be scheduled."""
+        import tools.mcp_tool as mcp
+
+        server = _make_mock_server("crm-api", session=MagicMock())
+
+        def assert_forwarding_cleared():
+            assert mcp._session_context_forwarding_servers == set()
+
+        with patch.object(mcp, "_servers", {"crm-api": server}), \
+             patch.object(mcp, "_session_context_forwarding_servers", {"crm_api"}), \
+             patch.object(mcp, "_mcp_loop", None), \
+             patch.object(mcp, "_stop_mcp_loop", side_effect=assert_forwarding_cleared) as stop_loop:
+            mcp.shutdown_mcp_servers()
+
+            assert mcp._session_context_forwarding_servers == set()
+            stop_loop.assert_called_once_with()
+
+    def test_shutdown_clears_forwarding_on_normal_path_before_stopping(self):
+        """Normal async shutdown also clears forwarding before loop teardown."""
+        import tools.mcp_tool as mcp
+
+        server = MagicMock()
+        server.name = "crm-api"
+        server.shutdown = AsyncMock()
+        loop = MagicMock()
+        loop.is_running.return_value = True
+
+        class ImmediateFuture:
+            def __init__(self, coro):
+                self.coro = coro
+
+            def result(self, timeout):
+                assert timeout == 15
+                return asyncio.run(self.coro)
+
+        def schedule(coro, scheduled_loop, **_kwargs):
+            assert scheduled_loop is loop
+            return ImmediateFuture(coro)
+
+        def assert_forwarding_cleared():
+            assert mcp._session_context_forwarding_servers == set()
+
+        with patch.object(mcp, "_servers", {"crm-api": server}), \
+             patch.object(mcp, "_session_context_forwarding_servers", {"crm_api"}), \
+             patch.object(mcp, "_mcp_loop", loop), \
+             patch("agent.async_utils.safe_schedule_threadsafe", side_effect=schedule), \
+             patch.object(mcp, "_stop_mcp_loop", side_effect=assert_forwarding_cleared) as stop_loop:
+            mcp.shutdown_mcp_servers()
+
+            assert mcp._servers == {}
+            assert mcp._session_context_forwarding_servers == set()
+            server.shutdown.assert_awaited_once_with()
+            stop_loop.assert_called_once_with()
 
     def test_shutdown_clears_servers(self):
         """shutdown_mcp_servers calls shutdown() on each server and clears dict."""
@@ -4204,59 +4793,377 @@ class TestRegisterMcpServers:
         finally:
             _servers.pop("srv", None)
 
+    @pytest.mark.parametrize(
+        "ordered_names",
+        [
+            ("crm-api", "crm_api"),
+            ("crm_api", "crm-api"),
+        ],
+    )
+    def test_skips_fresh_sanitized_name_collision_group(
+        self,
+        ordered_names,
+        caplog,
+    ):
+        """Every member of a fresh collision group is rejected deterministically."""
+        import tools.mcp_tool as mcp
+
+        configs = {
+            "crm-api": {
+                "command": "echo",
+                "supports_parallel_tool_calls": True,
+                "forward_session_context": True,
+            },
+            "crm_api": {
+                "command": "echo",
+                "supports_parallel_tool_calls": False,
+                "forward_session_context": False,
+            },
+        }
+        ordered_configs = {name: configs[name] for name in ordered_names}
+
+        with patch.object(mcp, "_servers", {}), \
+             patch.object(mcp, "_server_connecting", set()), \
+             patch.object(mcp, "_server_connect_errors", {}), \
+             patch.object(mcp, "_parallel_safe_servers", set()), \
+             patch.object(mcp, "_session_context_forwarding_servers", set()), \
+             patch.object(mcp, "_MCP_AVAILABLE", True), \
+             patch.object(mcp, "_filter_suspicious_mcp_servers", side_effect=lambda value: value), \
+             patch.object(mcp, "_ensure_mcp_loop") as ensure_loop, \
+             patch.object(mcp, "_existing_tool_names", return_value=[]):
+            caplog.set_level("WARNING", logger="tools.mcp_tool")
+            assert mcp.register_mcp_servers(ordered_configs) == []
+
+            assert mcp._server_connecting == set()
+            assert mcp._parallel_safe_servers == set()
+            assert mcp._session_context_forwarding_servers == set()
+            ensure_loop.assert_not_called()
+
+        assert "names sanitize to the same component 'crm_api'" in caplog.text
+        assert "'crm-api', 'crm_api'" in caplog.text
+
+    @pytest.mark.parametrize("existing_location", ["servers", "connecting"])
+    def test_skips_incremental_sanitized_name_collision(
+        self,
+        existing_location,
+        caplog,
+    ):
+        """A new raw name cannot reuse an active or connecting name component."""
+        import tools.mcp_tool as mcp
+
+        existing_servers = {}
+        connecting_servers = set()
+        if existing_location == "servers":
+            existing_servers["crm-api"] = _make_mock_server(
+                "crm-api",
+                session=MagicMock(),
+            )
+        else:
+            connecting_servers.add("crm-api")
+
+        with patch.object(mcp, "_servers", existing_servers), \
+             patch.object(mcp, "_server_connecting", connecting_servers), \
+             patch.object(mcp, "_server_connect_errors", {}), \
+             patch.object(mcp, "_parallel_safe_servers", set()), \
+             patch.object(mcp, "_session_context_forwarding_servers", set()), \
+             patch.object(mcp, "_MCP_AVAILABLE", True), \
+             patch.object(mcp, "_filter_suspicious_mcp_servers", side_effect=lambda value: value), \
+             patch.object(mcp, "_ensure_mcp_loop") as ensure_loop, \
+             patch.object(mcp, "_existing_tool_names", return_value=[]):
+            caplog.set_level("WARNING", logger="tools.mcp_tool")
+            result = mcp.register_mcp_servers({
+                "crm_api": {
+                    "command": "echo",
+                    "supports_parallel_tool_calls": True,
+                    "forward_session_context": True,
+                },
+            })
+
+            assert result == []
+            assert mcp._server_connecting == connecting_servers
+            assert mcp._parallel_safe_servers == set()
+            assert mcp._session_context_forwarding_servers == set()
+            ensure_loop.assert_not_called()
+
+        assert "conflicts with existing server(s) 'crm-api'" in caplog.text
+
+    def test_disabled_collider_does_not_trigger_collision_warning(self, caplog):
+        """Disabled entries do not participate in sanitized-name collision checks."""
+        import tools.mcp_tool as mcp
+
+        live_server = _make_mock_server("crm-api", session=MagicMock())
+        with patch.object(mcp, "_servers", {"crm-api": live_server}), \
+             patch.object(mcp, "_server_connecting", set()), \
+             patch.object(mcp, "_server_connect_errors", {}), \
+             patch.object(mcp, "_parallel_safe_servers", set()), \
+             patch.object(mcp, "_session_context_forwarding_servers", set()), \
+             patch.object(mcp, "_MCP_AVAILABLE", True), \
+             patch.object(mcp, "_filter_suspicious_mcp_servers", side_effect=lambda value: value), \
+             patch.object(mcp, "_ensure_mcp_loop") as ensure_loop, \
+             patch.object(mcp, "_existing_tool_names", return_value=[]), \
+             patch.object(mcp, "_signal_reconnect") as signal_reconnect:
+            caplog.set_level("WARNING", logger="tools.mcp_tool")
+            result = mcp.register_mcp_servers({
+                "crm-api": {
+                    "command": "echo",
+                    "supports_parallel_tool_calls": False,
+                    "forward_session_context": False,
+                },
+                "crm_api": {
+                    "command": "echo",
+                    "enabled": False,
+                    "supports_parallel_tool_calls": True,
+                    "forward_session_context": True,
+                },
+            })
+
+            assert result == []
+            assert mcp._server_connecting == set()
+            assert mcp._parallel_safe_servers == set()
+            assert mcp._session_context_forwarding_servers == set()
+            signal_reconnect.assert_not_called()
+            ensure_loop.assert_not_called()
+
+        collision_warnings = [
+            record.getMessage()
+            for record in caplog.records
+            if (
+                "names sanitize to the same component" in record.getMessage()
+                or "sanitized component" in record.getMessage()
+            )
+        ]
+        assert collision_warnings == []
+
+    def test_disabled_existing_server_does_not_enable_capabilities(self):
+        """A disabled update cannot mutate a live server's capability opt-ins."""
+        import tools.mcp_tool as mcp
+
+        live_server = _make_mock_server("crm-api", session=MagicMock())
+        with patch.object(mcp, "_servers", {"crm-api": live_server}), \
+             patch.object(mcp, "_server_connecting", set()), \
+             patch.object(mcp, "_server_connect_errors", {}), \
+             patch.object(mcp, "_parallel_safe_servers", set()), \
+             patch.object(mcp, "_session_context_forwarding_servers", set()), \
+             patch.object(mcp, "_MCP_AVAILABLE", True), \
+             patch.object(mcp, "_filter_suspicious_mcp_servers", side_effect=lambda value: value), \
+             patch.object(mcp, "_ensure_mcp_loop") as ensure_loop, \
+             patch.object(mcp, "_run_on_mcp_loop") as run_on_loop, \
+             patch.object(mcp, "_existing_tool_names", return_value=[]), \
+             patch.object(mcp, "_signal_reconnect") as signal_reconnect:
+            result = mcp.register_mcp_servers({
+                "crm-api": {
+                    "command": "echo",
+                    "enabled": False,
+                    "supports_parallel_tool_calls": True,
+                    "forward_session_context": True,
+                },
+            })
+
+            assert result == []
+            assert mcp._server_connecting == set()
+            assert mcp._parallel_safe_servers == set()
+            assert mcp._session_context_forwarding_servers == set()
+            signal_reconnect.assert_not_called()
+            ensure_loop.assert_not_called()
+            run_on_loop.assert_not_called()
+
+    @pytest.mark.parametrize("existing_location", ["servers", "connecting"])
+    def test_incremental_collision_preserves_existing_capability_update(
+        self,
+        existing_location,
+        caplog,
+    ):
+        """An exact active or connecting entry remains accepted beside a collider."""
+        import tools.mcp_tool as mcp
+
+        existing_servers = {}
+        connecting_servers = set()
+        if existing_location == "servers":
+            existing_servers["crm-api"] = _make_mock_server(
+                "crm-api",
+                session=MagicMock(),
+            )
+        else:
+            connecting_servers.add("crm-api")
+
+        with patch.object(mcp, "_servers", existing_servers), \
+             patch.object(mcp, "_server_connecting", connecting_servers), \
+             patch.object(mcp, "_server_connect_errors", {}), \
+             patch.object(mcp, "_parallel_safe_servers", set()), \
+             patch.object(mcp, "_session_context_forwarding_servers", set()), \
+             patch.object(mcp, "_MCP_AVAILABLE", True), \
+             patch.object(mcp, "_filter_suspicious_mcp_servers", side_effect=lambda value: value), \
+             patch.object(mcp, "_ensure_mcp_loop") as ensure_loop, \
+             patch.object(mcp, "_run_on_mcp_loop") as run_on_loop, \
+             patch.object(mcp, "_existing_tool_names", return_value=[]):
+            caplog.set_level("WARNING", logger="tools.mcp_tool")
+            result = mcp.register_mcp_servers({
+                "crm-api": {
+                    "command": "echo",
+                    "supports_parallel_tool_calls": True,
+                    "forward_session_context": True,
+                },
+                "crm_api": {
+                    "command": "echo",
+                    "supports_parallel_tool_calls": False,
+                    "forward_session_context": False,
+                },
+            })
+
+            assert result == []
+            expected_connecting = {"crm-api"} if existing_location == "connecting" else set()
+            assert mcp._server_connecting == expected_connecting
+            assert mcp._parallel_safe_servers == {"crm_api"}
+            assert mcp._session_context_forwarding_servers == {"crm_api"}
+            ensure_loop.assert_not_called()
+            run_on_loop.assert_not_called()
+
+        collision_warnings = [
+            record.getMessage()
+            for record in caplog.records
+            if "sanitized component" in record.getMessage()
+        ]
+        assert len(collision_warnings) == 1
+        assert collision_warnings[0].startswith("Skipping MCP server 'crm_api'")
+
+    def test_capability_flags_are_removed_on_toggle(self):
+        """Both capability sets track true-to-false updates for accepted servers."""
+        import tools.mcp_tool as mcp
+
+        live_server = _make_mock_server("toggle_srv", session=MagicMock())
+        with patch.object(mcp, "_servers", {"toggle_srv": live_server}), \
+             patch.object(mcp, "_server_connecting", set()), \
+             patch.object(mcp, "_server_connect_errors", {}), \
+             patch.object(mcp, "_parallel_safe_servers", set()), \
+             patch.object(mcp, "_session_context_forwarding_servers", set()), \
+             patch.object(mcp, "_MCP_AVAILABLE", True), \
+             patch.object(mcp, "_filter_suspicious_mcp_servers", side_effect=lambda value: value), \
+             patch.object(mcp, "_existing_tool_names", return_value=[]):
+            enabled = {
+                "toggle_srv": {
+                    "command": "echo",
+                    "supports_parallel_tool_calls": True,
+                    "forward_session_context": True,
+                },
+            }
+            disabled = {
+                "toggle_srv": {
+                    "command": "echo",
+                    "supports_parallel_tool_calls": False,
+                    "forward_session_context": False,
+                },
+            }
+
+            assert mcp.register_mcp_servers(enabled) == []
+            assert mcp._parallel_safe_servers == {"toggle_srv"}
+            assert mcp._session_context_forwarding_servers == {"toggle_srv"}
+
+            assert mcp.register_mcp_servers(disabled) == []
+            assert mcp._parallel_safe_servers == set()
+            assert mcp._session_context_forwarding_servers == set()
+
     def test_connects_new_servers(self):
-        from tools.mcp_tool import register_mcp_servers, _servers, _ensure_mcp_loop
+        import tools.mcp_tool as mcp
 
         fake_config = {"my_server": {"command": "npx", "args": ["test"]}}
 
         async def fake_register(name, cfg):
             server = _make_mock_server(name)
             server._registered_tool_names = ["mcp__my_server__tool1"]
-            _servers[name] = server
+            with mcp._lock:
+                mcp._servers[name] = server
             return ["mcp__my_server__tool1"]
 
-        with patch("tools.mcp_tool._MCP_AVAILABLE", True), \
-             patch("tools.mcp_tool._discover_and_register_server", side_effect=fake_register), \
-             patch("tools.mcp_tool._existing_tool_names", return_value=["mcp__my_server__tool1"]):
-            _ensure_mcp_loop()
-            result = register_mcp_servers(fake_config)
+        try:
+            with patch.object(mcp, "_MCP_AVAILABLE", True), \
+                 patch.object(mcp, "_discover_and_register_server", side_effect=fake_register), \
+                 patch.object(mcp, "_existing_tool_names", return_value=["mcp__my_server__tool1"]):
+                mcp._ensure_mcp_loop()
+                _wait_for_real_mcp_loop(mcp)
+                result = mcp.register_mcp_servers(fake_config)
 
-        assert "mcp__my_server__tool1" in result
-        _servers.pop("my_server", None)
+            assert "mcp__my_server__tool1" in result
+        finally:
+            with mcp._lock:
+                mcp._servers.pop("my_server", None)
+                mcp._server_connecting.discard("my_server")
+            mcp._stop_mcp_loop()
+
+    def test_interrupted_discovery_allows_reregistration(self):
+        import tools.mcp_tool as mcp
+
+        servers, connecting = {}, set()
+        attempts = 0
+
+        async def fake_register(name, _cfg):
+            with mcp._lock:
+                servers[name] = _make_mock_server(name)
+            return []
+
+        def interrupt_then_run(coro_factory, timeout):
+            nonlocal attempts
+            attempts += 1
+            if attempts == 1:
+                raise InterruptedError("cancel discovery")
+            return asyncio.run(coro_factory())
+
+        config = {"retry_srv": {"command": "test"}}
+        with patch.object(mcp, "_servers", servers), \
+             patch.object(mcp, "_server_connecting", connecting), \
+             patch.object(mcp, "_server_connect_errors", {}), \
+             patch.object(mcp, "_MCP_AVAILABLE", True), \
+             patch.object(mcp, "_ensure_mcp_loop"), \
+             patch.object(mcp, "_run_on_mcp_loop", side_effect=interrupt_then_run), \
+             patch.object(mcp, "_discover_and_register_server", side_effect=fake_register), \
+             patch.object(mcp, "_existing_tool_names", return_value=[]):
+            with pytest.raises(InterruptedError, match="cancel discovery"):
+                mcp.register_mcp_servers(config)
+            assert connecting == set()
+            mcp.register_mcp_servers(config)
+
+        assert "retry_srv" in servers
+        assert attempts == 2
 
     def test_logs_summary_on_success(self):
-        from tools.mcp_tool import register_mcp_servers, _servers, _ensure_mcp_loop
+        import tools.mcp_tool as mcp
 
         fake_config = {"srv": {"command": "npx", "args": ["test"]}}
 
         async def fake_register(name, cfg):
             server = _make_mock_server(name)
             server._registered_tool_names = ["mcp__srv__t1", "mcp__srv__t2"]
-            _servers[name] = server
+            with mcp._lock:
+                mcp._servers[name] = server
             return ["mcp__srv__t1", "mcp__srv__t2"]
 
-        with patch("tools.mcp_tool._MCP_AVAILABLE", True), \
-             patch("tools.mcp_tool._discover_and_register_server", side_effect=fake_register), \
-             patch("tools.mcp_tool._existing_tool_names", return_value=["mcp__srv__t1", "mcp__srv__t2"]):
-            _ensure_mcp_loop()
+        try:
+            with patch.object(mcp, "_MCP_AVAILABLE", True), \
+                 patch.object(mcp, "_discover_and_register_server", side_effect=fake_register), \
+                 patch.object(mcp, "_existing_tool_names", return_value=["mcp__srv__t1", "mcp__srv__t2"]):
+                mcp._ensure_mcp_loop()
+                _wait_for_real_mcp_loop(mcp)
 
-            with patch("tools.mcp_tool.logger") as mock_logger:
-                register_mcp_servers(fake_config)
+                with patch.object(mcp, "logger") as mock_logger:
+                    mcp.register_mcp_servers(fake_config)
 
-                info_calls = [str(c) for c in mock_logger.info.call_args_list]
-                assert any("2 tool(s)" in c and "1 server(s)" in c for c in info_calls), (
-                    f"Summary should report 2 tools from 1 server, got: {info_calls}"
-                )
-
-        _servers.pop("srv", None)
+                    info_calls = [str(c) for c in mock_logger.info.call_args_list]
+                    assert any("2 tool(s)" in c and "1 server(s)" in c for c in info_calls), (
+                        f"Summary should report 2 tools from 1 server, got: {info_calls}"
+                    )
+        finally:
+            with mcp._lock:
+                mcp._servers.pop("srv", None)
+                mcp._server_connecting.discard("srv")
+            mcp._stop_mcp_loop()
 
 
 # ---------------------------------------------------------------------------
-# Tests for parallel tool call support (port from openai/codex#17667)
+# Per-server MCP capability opt-ins
 # ---------------------------------------------------------------------------
+
 
 class TestMcpParallelToolCalls:
-    """Tests for the supports_parallel_tool_calls config option."""
+    """Tests for per-server MCP capability configuration."""
 
     def test_is_mcp_tool_parallel_safe_non_mcp_tool(self):
         """Non-MCP tool names always return False."""
@@ -4388,7 +5295,7 @@ class TestMcpParallelToolCalls:
     def test_register_mcp_servers_tracks_parallel_flag(self):
         """register_mcp_servers populates _parallel_safe_servers from config."""
         from tools.mcp_tool import (
-            register_mcp_servers, _parallel_safe_servers, _lock,
+            register_mcp_servers, _parallel_safe_servers, _server_connecting, _lock,
             sanitize_mcp_name_component,
         )
         fake_config = {
@@ -4405,23 +5312,65 @@ class TestMcpParallelToolCalls:
                 # no supports_parallel_tool_calls key
             },
         }
-        with patch("tools.mcp_tool._MCP_AVAILABLE", True), \
-             patch("tools.mcp_tool._ensure_mcp_loop"), \
-             patch("tools.mcp_tool._run_on_mcp_loop"), \
-             patch("tools.mcp_tool._existing_tool_names", return_value=[]):
-            register_mcp_servers(fake_config)
+        try:
+            with patch("tools.mcp_tool._MCP_AVAILABLE", True), \
+                 patch("tools.mcp_tool._ensure_mcp_loop"), \
+                 patch("tools.mcp_tool._run_on_mcp_loop"), \
+                 patch("tools.mcp_tool._existing_tool_names", return_value=[]):
+                register_mcp_servers(fake_config)
 
-        with _lock:
-            assert sanitize_mcp_name_component("parallel_srv") in _parallel_safe_servers
-            assert sanitize_mcp_name_component("serial_srv") not in _parallel_safe_servers
-            assert sanitize_mcp_name_component("default_srv") not in _parallel_safe_servers
-            # Cleanup
-            _parallel_safe_servers.discard(sanitize_mcp_name_component("parallel_srv"))
+            with _lock:
+                assert sanitize_mcp_name_component("parallel_srv") in _parallel_safe_servers
+                assert sanitize_mcp_name_component("serial_srv") not in _parallel_safe_servers
+                assert sanitize_mcp_name_component("default_srv") not in _parallel_safe_servers
+        finally:
+            with _lock:
+                _parallel_safe_servers.discard(sanitize_mcp_name_component("parallel_srv"))
+                for server_name in fake_config:
+                    _server_connecting.discard(server_name)
+
+    def test_register_mcp_servers_tracks_forward_session_context_flag(self):
+        """register_mcp_servers populates session-context forwarding opt-ins."""
+        from tools.mcp_tool import (
+            register_mcp_servers,
+            _server_connecting,
+            _session_context_forwarding_servers,
+            _lock,
+            sanitize_mcp_name_component,
+        )
+        fake_config = {
+            "context-bridge": {
+                "command": "echo",
+                "forward_session_context": True,
+            },
+            "default_srv": {
+                "command": "echo",
+            },
+        }
+        safe_server_name = sanitize_mcp_name_component("context-bridge")
+        try:
+            with patch("tools.mcp_tool._MCP_AVAILABLE", True), \
+                 patch("tools.mcp_tool._ensure_mcp_loop"), \
+                 patch("tools.mcp_tool._run_on_mcp_loop"), \
+                 patch("tools.mcp_tool._existing_tool_names", return_value=[]):
+                register_mcp_servers(fake_config)
+
+            with _lock:
+                assert safe_server_name in _session_context_forwarding_servers
+                assert (
+                    sanitize_mcp_name_component("default_srv")
+                    not in _session_context_forwarding_servers
+                )
+        finally:
+            with _lock:
+                _session_context_forwarding_servers.discard(safe_server_name)
+                for server_name in fake_config:
+                    _server_connecting.discard(server_name)
 
     def test_register_mcp_servers_removes_parallel_flag_on_toggle(self):
         """Toggling supports_parallel_tool_calls to false removes server from the set."""
         from tools.mcp_tool import (
-            register_mcp_servers, _parallel_safe_servers, _lock,
+            register_mcp_servers, _parallel_safe_servers, _server_connecting, _lock,
             sanitize_mcp_name_component,
         )
 
@@ -4432,25 +5381,30 @@ class TestMcpParallelToolCalls:
                 "supports_parallel_tool_calls": True,
             },
         }
-        with patch("tools.mcp_tool._MCP_AVAILABLE", True), \
-             patch("tools.mcp_tool._ensure_mcp_loop"), \
-             patch("tools.mcp_tool._run_on_mcp_loop"), \
-             patch("tools.mcp_tool._existing_tool_names", return_value=[]):
-            register_mcp_servers(config_on)
-        with _lock:
-            assert sanitize_mcp_name_component("toggle_srv") in _parallel_safe_servers
+        try:
+            with patch("tools.mcp_tool._MCP_AVAILABLE", True), \
+                 patch("tools.mcp_tool._ensure_mcp_loop"), \
+                 patch("tools.mcp_tool._run_on_mcp_loop"), \
+                 patch("tools.mcp_tool._existing_tool_names", return_value=[]):
+                register_mcp_servers(config_on)
+            with _lock:
+                assert sanitize_mcp_name_component("toggle_srv") in _parallel_safe_servers
 
-        # Second registration: parallel disabled
-        config_off = {
-            "toggle_srv": {
-                "command": "echo",
-                "supports_parallel_tool_calls": False,
-            },
-        }
-        with patch("tools.mcp_tool._MCP_AVAILABLE", True), \
-             patch("tools.mcp_tool._ensure_mcp_loop"), \
-             patch("tools.mcp_tool._run_on_mcp_loop"), \
-             patch("tools.mcp_tool._existing_tool_names", return_value=[]):
-            register_mcp_servers(config_off)
-        with _lock:
-            assert sanitize_mcp_name_component("toggle_srv") not in _parallel_safe_servers
+            # Second registration: parallel disabled
+            config_off = {
+                "toggle_srv": {
+                    "command": "echo",
+                    "supports_parallel_tool_calls": False,
+                },
+            }
+            with patch("tools.mcp_tool._MCP_AVAILABLE", True), \
+                 patch("tools.mcp_tool._ensure_mcp_loop"), \
+                 patch("tools.mcp_tool._run_on_mcp_loop"), \
+                 patch("tools.mcp_tool._existing_tool_names", return_value=[]):
+                register_mcp_servers(config_off)
+            with _lock:
+                assert sanitize_mcp_name_component("toggle_srv") not in _parallel_safe_servers
+        finally:
+            with _lock:
+                _parallel_safe_servers.discard(sanitize_mcp_name_component("toggle_srv"))
+                _server_connecting.discard("toggle_srv")

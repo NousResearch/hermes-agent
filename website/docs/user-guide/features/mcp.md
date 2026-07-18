@@ -316,6 +316,7 @@ Hermes reads MCP config from `~/.hermes/config.yaml` under `mcp_servers`.
 | `max_lifetime_seconds` | number | Recycle a stdio server after this total age (`0` = never, default). Restarts transparently on next use. |
 | `enabled` | bool | If `false`, Hermes skips the server entirely |
 | `supports_parallel_tool_calls` | bool | If `true`, tools from this server may run concurrently |
+| `forward_session_context` | bool | If `true`, forward host-authored session metadata to this server's tool calls (default: `false`) |
 | `tools` | mapping | Per-server tool filtering and utility policy |
 
 ### Minimal stdio example
@@ -677,6 +678,56 @@ When `supports_parallel_tool_calls` is `true`, Hermes may execute multiple tools
 :::caution
 Only enable parallel calls for MCP servers whose tools are safe to run at the same time. If tools read and write shared state, files, databases, or external resources, review the read/write race conditions before enabling this setting.
 :::
+
+## Forwarding Session Context
+
+MCP servers do not receive chat, user, or session identifiers from Hermes by
+default. A trusted server that needs to correlate a tool call with its
+originating Hermes session can opt in explicitly:
+
+```yaml
+mcp_servers:
+  trusted_workflow:
+    url: "https://mcp.internal.example.com/mcp"
+    forward_session_context: true
+```
+
+For `tools/call`, Hermes can add host-authored request `_meta` under the
+reverse-DNS prefix `com.nousresearch.hermes/`. The seven fields are `platform`,
+`session_id`, `session_key`, `chat_id`, `thread_id`, `user_id`, and
+`message_id`; the model does not author them.
+
+Every field's task-local `ContextVar` must be bound. An individual value may
+be empty, but Hermes omits the entire session-context meta block if any field
+is unbound, all seven are empty, the routed profile's privacy policy is
+unavailable, or privacy eligibility or pseudonymization fails. Process
+environment variables are never used as an MCP metadata fallback. This
+setting covers only `tools/call`; MCP resource, prompt, and discovery
+operations carry no session identity.
+
+When the routed profile has `privacy.redact_pii: true` on an eligible
+platform, Hermes pseudonymizes `chat_id`, `user_id`, `session_key`, the
+complete `thread_id`, and `message_id` in the outgoing copy. WhatsApp Cloud is
+eligible, so its bound WAMID is pseudonymized too. `platform` and `session_id`
+stay raw, and task-local routing values are unchanged. If redaction is off or
+the platform is ineligible, all values stay raw. The deterministic, linkable
+values are pseudonyms, not anonymity.
+
+At message ingress, a non-empty event triggering ID is copied to the session
+source before binding; source-only adapter IDs remain valid. Synthetic goal
+continuations clear a previous triggering ID, while queued follow-ups rebind
+the new event's source and routed privacy policy.
+
+:::caution
+Enable this only for a server you trust with the resulting identifiers or
+pseudonyms. The default is `false`.
+:::
+
+This MCP setting is separate from subprocess environment propagation. Once a
+gateway session ID is bound, the existing environment bridge makes
+`HERMES_SESSION_ID` visible to gateway-spawned subprocesses whether or not any
+MCP server has `forward_session_context` enabled. MCP request `_meta` never
+reads that environment value.
 
 ## MCP Sampling Support
 

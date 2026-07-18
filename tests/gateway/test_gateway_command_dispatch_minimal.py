@@ -1,3 +1,4 @@
+import dataclasses
 from datetime import datetime
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
@@ -74,7 +75,7 @@ def _make_runner():
     runner._fallback_model = None
     runner._show_reasoning = False
     runner._is_user_authorized = lambda _source: True
-    runner._set_session_env = lambda _context: None
+    runner._set_session_env = lambda _context, **_kwargs: None
     runner._should_send_voice_reply = lambda *_args, **_kwargs: False
     runner._send_voice_reply = AsyncMock()
     runner._capture_gateway_honcho_if_configured = lambda *args, **kwargs: None
@@ -123,7 +124,7 @@ async def test_idle_queue_sends_payload_as_next_turn(command_text):
     assert result == {"final_response": "", "messages": []}
     assert captured["text"] == "do this next"
     assert captured["command"] is None
-    assert captured["source"] == _make_source()
+    assert captured["source"] == dataclasses.replace(_make_source(), message_id="m1")
     assert captured["key"] == build_session_key(_make_source())
     assert captured["generation"] == 1
     assert runner._running_agents == {}

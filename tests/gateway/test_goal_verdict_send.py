@@ -130,6 +130,7 @@ async def test_goal_verdict_continue_enqueues_continuation(hermes_home):
     routed through the adapter's pending-messages FIFO so the goal loop
     proceeds on the next turn."""
     runner, adapter, session_entry, src = _make_runner_with_adapter()
+    src.message_id = "wamid.PRIOR"
 
     from hermes_cli.goals import GoalManager
 
@@ -149,6 +150,9 @@ async def test_goal_verdict_continue_enqueues_continuation(hermes_home):
     assert "Continuing toward goal" in adapter.sends[0]["content"]
     # Continuation prompt enqueued for next turn
     assert adapter._pending_messages, "continuation prompt must be enqueued in pending_messages"
+    continuation = next(iter(adapter._pending_messages.values()))
+    assert continuation.message_id is None
+    assert continuation.source.message_id is None
 
 
 @pytest.mark.asyncio

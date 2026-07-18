@@ -1,12 +1,11 @@
-"""Regression tests for HERMES_HOME override propagation onto the MCP loop.
+"""Regression tests for the explicit HERMES_HOME MCP-loop contract.
 
-Tasks scheduled via run_coroutine_threadsafe are created inside the MCP
-event-loop thread, so they copy THAT thread's context — not the scheduling
-thread's. A per-request profile scope (dashboard ?profile= endpoints, e.g.
-the MCP "Test server" probe) would silently vanish for anything resolving
-get_hermes_home() inside the coroutine, most visibly OAuth token-store
-paths. _run_on_mcp_loop now wraps scheduled coroutines with the caller's
-override (mcp_tool._wrap_with_home_override).
+CPython's ``run_coroutine_threadsafe`` reaches ``call_soon_threadsafe``;
+the resulting Handle snapshots the scheduling thread's context, so ordinary
+ContextVars propagate into the Task created on the MCP loop. Hermes still
+wraps an active HERMES_HOME override explicitly because the selected profile
+controls storage and credential paths and is part of ``_run_on_mcp_loop``'s
+contract, rather than an incidental scheduler behavior.
 """
 import os
 

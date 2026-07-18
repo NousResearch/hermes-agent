@@ -7,6 +7,8 @@ from gateway.session import (
     _hash_id,
     _hash_sender_id,
     _hash_chat_id,
+    _hash_thread_id,
+    _hash_message_id,
 )
 from gateway.config import Platform, HomeChannel
 
@@ -37,6 +39,16 @@ class TestHashHelpers:
         result = _hash_chat_id("12345")
         assert len(result) == 12
         assert "12345" not in result
+
+    def test_hash_thread_id_hashes_entire_identifier(self):
+        result = _hash_thread_id("telegram:+15550101002:topic")
+        assert result.startswith("thread_")
+        assert "+15550101002" not in result
+
+    def test_hash_message_id_uses_message_namespace(self):
+        result = _hash_message_id("wamid.HBgLMTU1NTEyMzQ1Njc")
+        assert result.startswith("message_")
+        assert "wamid" not in result
 
 
 # ---------------------------------------------------------------------------

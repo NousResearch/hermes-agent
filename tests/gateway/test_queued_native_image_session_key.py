@@ -8,7 +8,16 @@ import pytest
 
 from gateway.config import Platform, PlatformConfig
 from gateway.platforms.base import BasePlatformAdapter, MessageEvent, MessageType, SendResult
-from gateway.session import SessionSource
+from gateway.session import (
+    SessionContext,
+    SessionSource,
+    _hash_message_id,
+    _hash_sender_id,
+)
+from gateway.session_context import (
+    get_session_env,
+    session_redact_pii_enabled,
+)
 
 
 _ONE_BY_ONE_PNG = base64.b64decode(
@@ -51,13 +60,24 @@ class CaptureAdapter(BasePlatformAdapter):
 
 class CaptureQueuedNativeImageAgent:
     calls = []
+    session_contexts = []
 
     def __init__(self, **kwargs):
         self.tools = []
         self.tool_progress_callback = kwargs.get("tool_progress_callback")
 
     def run_conversation(self, message, conversation_history=None, task_id=None):
+        from tools.mcp_tool import _build_session_context_meta
+
         type(self).calls.append(message)
+        type(self).session_contexts.append(
+            {
+                "user_id": get_session_env("HERMES_SESSION_USER_ID"),
+                "message_id": get_session_env("HERMES_SESSION_MESSAGE_ID"),
+                "redact_pii": session_redact_pii_enabled(),
+                "mcp_meta": _build_session_context_meta(),
+            }
+        )
         return {
             "final_response": f"done-{len(type(self).calls)}",
             "messages": [],
@@ -93,6 +113,7 @@ def _make_runner(adapter):
 @pytest.mark.asyncio
 async def test_queued_followup_uses_pending_event_session_key_for_native_images(monkeypatch, tmp_path):
     CaptureQueuedNativeImageAgent.calls = []
+    CaptureQueuedNativeImageAgent.session_contexts = []
 
     fake_dotenv = types.ModuleType("dotenv")
     fake_dotenv.load_dotenv = lambda *args, **kwargs: None
@@ -105,6 +126,10 @@ async def test_queued_followup_uses_pending_event_session_key_for_native_images(
     gateway_run = importlib.import_module("gateway.run")
     monkeypatch.setattr(gateway_run, "_hermes_home", tmp_path)
     monkeypatch.setattr(gateway_run, "_resolve_runtime_agent_kwargs", lambda: {"api_key": "***"})
+    (tmp_path / "config.yaml").write_text(
+        "privacy:\n  redact_pii: true\n",
+        encoding="utf-8",
+    )
 
     adapter = CaptureAdapter()
     runner = _make_runner(adapter)
@@ -116,12 +141,15 @@ async def test_queued_followup_uses_pending_event_session_key_for_native_images(
         platform=Platform.TELEGRAM,
         chat_id="-1001",
         chat_type="group",
+        user_id="first-user",
+        message_id="first-message",
     )
     pending_source = SessionSource(
         platform=Platform.TELEGRAM,
         chat_id="-1001",
         chat_type="group",
         thread_id="17585",
+        user_id="queued-user",
     )
 
     adapter._pending_messages["agent:main:telegram:group:-1001"] = MessageEvent(
@@ -133,14 +161,26 @@ async def test_queued_followup_uses_pending_event_session_key_for_native_images(
         message_id="queued-1",
     )
 
-    result = await runner._run_agent(
-        message="hello",
-        context_prompt="",
-        history=[],
+    initial_context = SessionContext(
         source=source,
-        session_id="sess-native-image-followup",
+        connected_platforms=[Platform.TELEGRAM],
+        home_channels={},
         session_key="agent:main:telegram:group:-1001",
+        session_id="sess-native-image-followup",
     )
+    tokens, policy = runner._bind_session_context_for_turn(initial_context)
+    assert policy is True
+    try:
+        result = await runner._run_agent(
+            message="hello",
+            context_prompt="",
+            history=[],
+            source=source,
+            session_id="sess-native-image-followup",
+            session_key="agent:main:telegram:group:-1001",
+        )
+    finally:
+        runner._clear_session_env(tokens)
 
     assert result["final_response"] == "done-2"
     assert len(CaptureQueuedNativeImageAgent.calls) == 2
@@ -149,3 +189,25 @@ async def test_queued_followup_uses_pending_event_session_key_for_native_images(
     assert queued_message[0]["type"] == "text"
     assert queued_message[0]["text"].startswith("describe this")
     assert any(part.get("type") == "image_url" for part in queued_message)
+    first_context, queued_context = CaptureQueuedNativeImageAgent.session_contexts
+    assert first_context["user_id"] == "first-user"
+    assert first_context["message_id"] == "first-message"
+    assert first_context["redact_pii"] is True
+    assert first_context["mcp_meta"]["com.nousresearch.hermes/user_id"] == (
+        _hash_sender_id("first-user")
+    )
+    assert first_context["mcp_meta"]["com.nousresearch.hermes/message_id"] == (
+        _hash_message_id("first-message")
+    )
+    assert queued_context["user_id"] == "queued-user"
+    assert queued_context["message_id"] == "queued-1"
+    assert queued_context["redact_pii"] is True
+    assert queued_context["mcp_meta"]["com.nousresearch.hermes/user_id"] == (
+        _hash_sender_id("queued-user")
+    )
+    assert queued_context["mcp_meta"]["com.nousresearch.hermes/message_id"] == (
+        _hash_message_id("queued-1")
+    )
+    assert get_session_env("HERMES_SESSION_USER_ID") == ""
+    assert get_session_env("HERMES_SESSION_MESSAGE_ID") == ""
+    assert session_redact_pii_enabled() is False

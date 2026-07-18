@@ -33,6 +33,7 @@ Example config::
         env:
           GITHUB_PERSONAL_ACCESS_TOKEN: "ghp_..."
         supports_parallel_tool_calls: true  # tools from this server may run concurrently
+        forward_session_context: false  # opt in only for a trusted server
       remote_api:
         url: "https://my-mcp-server.example.com/mcp"
         headers:
@@ -71,6 +72,22 @@ Features:
       sampling/createMessage (text and tool-use responses)
     - Parallel tool call opt-in: per-server ``supports_parallel_tool_calls``
       flag allows concurrent execution of tools from the same server
+    - Session context forwarding: per-server ``forward_session_context``
+      defaults to false. When enabled for a trusted server, the seven bound
+      gateway identity ContextVars are attached only to ``tools/call`` request
+      ``_meta`` under ``com.nousresearch.hermes/*``. An unbound value, an
+      all-empty identity, an unavailable privacy policy, or a failed privacy
+      transformation omits the entire meta block; values never fall back to
+      process environment variables. Resource, prompt, and discovery
+      operations carry no session identity.
+      With ``privacy.redact_pii`` enabled on an eligible platform, the outgoing
+      copy uses deterministic pseudonyms for chat/user IDs, the complete
+      thread and message IDs, and the session key; platform and session ID stay
+      raw. The task-local routing values remain raw. With redaction disabled or
+      on an ineligible platform, all seven values remain raw. These stable,
+      linkable values are pseudonyms, not anonymity. Independently of this MCP
+      opt-in, binding a gateway session ID exposes ``HERMES_SESSION_ID`` to
+      gateway-spawned subprocesses through the existing environment bridge.
 
 Architecture:
     A dedicated background event loop (_mcp_loop) runs in a daemon thread.
@@ -3640,6 +3657,22 @@ def _handle_session_expired_and_retry(
 # ``is_mcp_tool_parallel_safe()`` for the parallel-execution check in run_agent.
 _parallel_safe_servers: set = set()
 
+# Sanitized server names whose ``forward_session_context`` config is True.
+# These servers receive the current gateway invocation identity out-of-band via
+# MCP request ``_meta``. It is opt-in so third-party MCP servers never receive
+# chat/user/session identifiers unless explicitly configured.
+_session_context_forwarding_servers: set = set()
+
+_SESSION_CONTEXT_META_ENV_MAP = {
+    "com.nousresearch.hermes/platform": "HERMES_SESSION_PLATFORM",
+    "com.nousresearch.hermes/session_id": "HERMES_SESSION_ID",
+    "com.nousresearch.hermes/session_key": "HERMES_SESSION_KEY",
+    "com.nousresearch.hermes/chat_id": "HERMES_SESSION_CHAT_ID",
+    "com.nousresearch.hermes/thread_id": "HERMES_SESSION_THREAD_ID",
+    "com.nousresearch.hermes/user_id": "HERMES_SESSION_USER_ID",
+    "com.nousresearch.hermes/message_id": "HERMES_SESSION_MESSAGE_ID",
+}
+
 # Exact MCP tool-name provenance. MCP tool names are formatted as
 # ``mcp_{sanitized_server}_{sanitized_tool}``, which is ambiguous when server
 # names contain underscores (``mcp_a_b_tool`` could be server ``a`` + tool
@@ -3653,7 +3686,8 @@ _mcp_loop: Optional[asyncio.AbstractEventLoop] = None
 _mcp_thread: Optional[threading.Thread] = None
 
 # Protects _mcp_loop, _mcp_thread, _servers, MCP connection status maps,
-# _parallel_safe_servers, _mcp_tool_server_names, and _stdio_pids.
+# _parallel_safe_servers, _session_context_forwarding_servers,
+# _mcp_tool_server_names, and _stdio_pids.
 _lock = threading.Lock()
 
 # PIDs of stdio MCP server subprocesses.  Tracked so we can force-kill
@@ -3792,12 +3826,15 @@ def _ensure_mcp_loop():
 
 
 def _wrap_with_home_override(coro: "Coroutine") -> "Coroutine":
-    """Carry the caller's context-local HERMES_HOME override into ``coro``.
+    """Explicitly carry the caller's HERMES_HOME override into ``coro``.
 
     Returns ``coro`` unchanged when no override is active. Otherwise wraps
     it so the override is set inside the coroutine's own (task-local)
     context on the MCP loop and reset when it completes — concurrent calls
-    carrying different scopes don't interfere.
+    carrying different scopes don't interfere. CPython's scheduler already
+    propagates ordinary ContextVars here; this wrapper deliberately keeps
+    the selected profile home as part of ``_run_on_mcp_loop``'s contract
+    because it controls profile-scoped storage and credential paths.
     """
     try:
         from hermes_constants import (
@@ -3866,16 +3903,13 @@ def _run_on_mcp_loop(coro_or_factory, timeout: float = 30):
 
     coro = coro_or_factory() if callable(coro_or_factory) else coro_or_factory
 
-    # Propagate the context-local HERMES_HOME override onto the MCP loop.
-    # Tasks scheduled via run_coroutine_threadsafe are created INSIDE the
-    # loop thread, so they copy the loop thread's context — not the
-    # scheduling thread's. A per-request profile scope (the dashboard's
-    # ?profile= endpoints, e.g. the MCP "Test server" probe) would silently
-    # vanish here: OAuth token stores and any other get_hermes_home()
-    # resolution inside the coroutine would read the process home instead
-    # of the selected profile's. Re-establish the override inside the
-    # task's own context (task-local — concurrent calls carrying different
-    # scopes don't interfere). No-op when no override is active.
+    # run_coroutine_threadsafe reaches call_soon_threadsafe, whose Handle
+    # snapshots the scheduling thread's context; ordinary ContextVars thus
+    # propagate into the Task CPython creates on the MCP loop. Keep the
+    # HERMES_HOME wrapper anyway as an explicit profile-storage boundary:
+    # OAuth token paths and other get_hermes_home() resolution must follow
+    # the selected profile as part of this function's contract, independent
+    # of generic scheduler propagation details. No-op without an override.
     coro = _wrap_with_home_override(coro)
     coro = _wrap_with_dashboard_oauth_flow(coro)
 
@@ -4089,6 +4123,109 @@ def _mark_server_call_started(server: Any) -> None:
         mark_tool_call()
 
 
+def _build_session_context_meta() -> Optional[Dict[str, str]]:
+    """Build MCP host-plane metadata for the current gateway invocation.
+
+    The model only authors tool arguments. This metadata is attached by the
+    host at dispatch time and arrives at the MCP server as request ``_meta``.
+    Values come strictly from ``gateway.session_context`` ContextVars so
+    concurrent gateway turns never read another turn's process-global session
+    identifiers. An incomplete or empty context is not attested.
+    """
+    try:
+        from gateway.session_context import (
+            _UNSET,
+            _VAR_MAP,
+            session_redact_pii_enabled,
+        )
+    except Exception as exc:
+        logger.warning(
+            "Unable to read gateway session ContextVars; omitting MCP session metadata: %s",
+            exc,
+        )
+        return None
+
+    meta: Dict[str, str] = {}
+    for meta_key, env_name in _SESSION_CONTEXT_META_ENV_MAP.items():
+        var = _VAR_MAP.get(env_name)
+        if var is None:
+            logger.warning(
+                "Gateway session ContextVar %s is unavailable; omitting MCP session metadata",
+                env_name,
+            )
+            return None
+        value = var.get()
+        if value is _UNSET:
+            return None
+        meta[meta_key] = "" if value is None else str(value)
+    if not any(meta.values()):
+        return None
+
+    try:
+        redact_pii = session_redact_pii_enabled()
+    except Exception as exc:
+        logger.warning(
+            "Unable to read MCP session privacy policy; omitting metadata: %s",
+            exc,
+        )
+        return None
+
+    if redact_pii is None:
+        logger.warning(
+            "MCP session privacy policy is unavailable; omitting session metadata"
+        )
+        return None
+    if redact_pii is False:
+        return meta
+
+    # Preserve the raw ContextVars for routing and pseudonymize only this
+    # outgoing metadata copy. If an active privacy transformation cannot be
+    # completed, fail closed instead of forwarding a partially raw identity.
+    try:
+        from gateway.session import (
+            _hash_chat_id,
+            _hash_id,
+            _hash_message_id,
+            _hash_sender_id,
+            _hash_thread_id,
+            _is_pii_redaction_eligible,
+        )
+
+        platform_key = "com.nousresearch.hermes/platform"
+        if not _is_pii_redaction_eligible(meta[platform_key]):
+            return meta
+
+        redacted = dict(meta)
+        chat_key = "com.nousresearch.hermes/chat_id"
+        thread_key = "com.nousresearch.hermes/thread_id"
+        user_key = "com.nousresearch.hermes/user_id"
+        session_key = "com.nousresearch.hermes/session_key"
+        message_key = "com.nousresearch.hermes/message_id"
+        if redacted[chat_key]:
+            redacted[chat_key] = _hash_chat_id(redacted[chat_key])
+        if redacted[thread_key]:
+            redacted[thread_key] = _hash_thread_id(redacted[thread_key])
+        if redacted[user_key]:
+            redacted[user_key] = _hash_sender_id(redacted[user_key])
+        if redacted[session_key]:
+            redacted[session_key] = f"session_{_hash_id(redacted[session_key])}"
+        if redacted[message_key]:
+            redacted[message_key] = _hash_message_id(redacted[message_key])
+        return redacted
+    except Exception as exc:
+        logger.warning(
+            "Unable to redact MCP session metadata; omitting it to avoid exposing PII: %s",
+            exc,
+        )
+        return None
+
+
+def _should_forward_session_context(server_name: str) -> bool:
+    safe_name = sanitize_mcp_name_component(server_name)
+    with _lock:
+        return safe_name in _session_context_forwarding_servers
+
+
 def _make_tool_handler(server_name: str, tool_name: str, tool_timeout: float):
     """Return a sync handler that calls an MCP tool via the background loop.
 
@@ -4173,7 +4310,12 @@ def _make_tool_handler(server_name: str, tool_name: str, tool_timeout: float):
                 # it and detect the gateway platform / session for routing.
                 server._pending_call_context = contextvars.copy_context()
                 try:
-                    result = await server.session.call_tool(tool_name, arguments=args)
+                    call_kwargs = {"arguments": args}
+                    if _should_forward_session_context(server_name):
+                        session_meta = _build_session_context_meta()
+                        if session_meta is not None:
+                            call_kwargs["meta"] = session_meta
+                    result = await server.session.call_tool(tool_name, **call_kwargs)
                 finally:
                     server._pending_call_context = None
             # MCP CallToolResult has .content (list of content blocks) and .isError
@@ -5152,6 +5294,79 @@ async def _discover_and_register_server(name: str, config: dict) -> List[str]:
 # Public API
 # ---------------------------------------------------------------------------
 
+
+def _filter_mcp_registration_servers(
+    servers: Dict[str, dict],
+    existing_names: set[str],
+) -> Dict[str, dict]:
+    """Return enabled MCP configs whose sanitized names are unambiguous.
+
+    MCP server names become part of tool names after sanitization.  Two raw
+    names that sanitize to the same component would therefore share routing
+    and capability state.  Reject those entries before any registration
+    state is mutated.
+    """
+    enabled_servers: Dict[str, dict] = {}
+    for name, config in servers.items():
+        if not isinstance(config, dict):
+            logger.warning(
+                "Skipping MCP server '%s': configuration must be a mapping",
+                name,
+            )
+            continue
+        if not _parse_boolish(config.get("enabled", True), default=True):
+            continue
+        enabled_servers[name] = config
+
+    incoming_by_component: Dict[str, List[str]] = {}
+    for name in enabled_servers:
+        # Exact existing raw names are updates, not fresh registrations.  A
+        # new collider must not prevent an existing server's capability
+        # values from being updated by the same call.
+        if name in existing_names:
+            continue
+        component = sanitize_mcp_name_component(name)
+        incoming_by_component.setdefault(component, []).append(name)
+
+    rejected: set[str] = set()
+    for component, names in incoming_by_component.items():
+        if len(names) < 2:
+            continue
+        rejected.update(names)
+        logger.warning(
+            "Skipping MCP servers %s: names sanitize to the same component '%s'",
+            ", ".join(repr(name) for name in sorted(names)),
+            component,
+        )
+
+    existing_by_component: Dict[str, set[str]] = {}
+    for name in existing_names:
+        component = sanitize_mcp_name_component(name)
+        existing_by_component.setdefault(component, set()).add(name)
+
+    for name in enabled_servers:
+        if name in rejected:
+            continue
+        component = sanitize_mcp_name_component(name)
+        conflicting_names = existing_by_component.get(component, set()) - {name}
+        if not conflicting_names:
+            continue
+        rejected.add(name)
+        logger.warning(
+            "Skipping MCP server '%s': sanitized component '%s' conflicts "
+            "with existing server(s) %s",
+            name,
+            component,
+            ", ".join(repr(existing) for existing in sorted(conflicting_names)),
+        )
+
+    return {
+        name: config
+        for name, config in enabled_servers.items()
+        if name not in rejected
+    }
+
+
 def register_mcp_servers(servers: Dict[str, dict]) -> List[str]:
     """Connect to explicit MCP servers and register their tools.
 
@@ -5173,13 +5388,18 @@ def register_mcp_servers(servers: Dict[str, dict]) -> List[str]:
         logger.debug("No explicit MCP servers provided")
         return []
 
-    # Only attempt servers that aren't already connected and are enabled
-    # (enabled: false skips the server entirely without removing its config)
+    # Preflight the complete accepted set before mutating connection or
+    # capability state.  Disabled entries are ignored without disconnecting
+    # existing sessions.
     with _lock:
+        accepted_servers = _filter_mcp_registration_servers(
+            servers,
+            set(_servers) | set(_server_connecting),
+        )
         new_servers = {
             k: v
-            for k, v in servers.items()
-            if k not in _servers and _parse_boolish(v.get("enabled", True), default=True)
+            for k, v in accepted_servers.items()
+            if k not in _servers and k not in _server_connecting
         }
         # Cached entries with no live session are parked or mid-reconnect.
         # Their tools are deregistered, so nothing else can reach
@@ -5188,18 +5408,23 @@ def register_mcp_servers(servers: Dict[str, dict]) -> List[str]:
         # (#50170). Wake them now so their tools come back promptly.
         stale_cached = [
             _servers[k]
-            for k in servers
+            for k in accepted_servers
             if k in _servers and getattr(_servers[k], "session", None) is None
         ]
         _server_connecting.update(new_servers)
         for srv_name in new_servers:
             _server_connect_errors.pop(srv_name, None)
-        # Track which servers opt-in to parallel tool calls (idempotent).
-        for srv_name, srv_cfg in servers.items():
+        # Track per-server capability opt-ins (idempotent).
+        for srv_name, srv_cfg in accepted_servers.items():
+            safe_srv_name = sanitize_mcp_name_component(srv_name)
             if _parse_boolish(srv_cfg.get("supports_parallel_tool_calls", False), default=False):
-                _parallel_safe_servers.add(sanitize_mcp_name_component(srv_name))
+                _parallel_safe_servers.add(safe_srv_name)
             else:
-                _parallel_safe_servers.discard(sanitize_mcp_name_component(srv_name))
+                _parallel_safe_servers.discard(safe_srv_name)
+            if _parse_boolish(srv_cfg.get("forward_session_context", False), default=False):
+                _session_context_forwarding_servers.add(safe_srv_name)
+            else:
+                _session_context_forwarding_servers.discard(safe_srv_name)
 
     for srv in stale_cached:
         _signal_reconnect(srv)
@@ -5252,6 +5477,10 @@ def register_mcp_servers(servers: Dict[str, dict]) -> List[str]:
     try:
         _run_on_mcp_loop(_discover_all, timeout=120)
     finally:
+        with _lock:
+            for name in new_servers:
+                if name not in _servers:
+                    _server_connecting.discard(name)
         if _was_interrupted:
             _set_interrupt(True)
 
@@ -5706,6 +5935,8 @@ def shutdown_mcp_servers():
 
     # Fast path: nothing to shut down.
     if not servers_snapshot:
+        with _lock:
+            _session_context_forwarding_servers.clear()
         _stop_mcp_loop()
         return
 
@@ -5737,6 +5968,10 @@ def shutdown_mcp_servers():
             except BaseException as exc:
                 logger.debug("Error during MCP shutdown: %s", exc)
 
+    # Forwarding is a fail-closed capability: clear it even when the loop is
+    # already dead or the async shutdown could not be scheduled/completed.
+    with _lock:
+        _session_context_forwarding_servers.clear()
     _stop_mcp_loop()
 
 

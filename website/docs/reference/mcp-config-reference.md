@@ -34,6 +34,7 @@ mcp_servers:
     timeout: 120
     connect_timeout: 60
     supports_parallel_tool_calls: false
+    forward_session_context: false
     tools:
       include: []
       exclude: []
@@ -57,10 +58,70 @@ mcp_servers:
 | `timeout` | number | both | Tool call timeout in seconds (default: `300`) |
 | `connect_timeout` | number | both | Initial connection timeout in seconds (default: `60`) |
 | `supports_parallel_tool_calls` | bool | both | Allow tools from this server to run concurrently |
+| `forward_session_context` | bool | both | Forward host-authored session metadata to this server's tool calls (default: `false`) |
 | `skip_preflight` | bool | HTTP | Bypass the fail-fast content-type probe for valid Streamable HTTP endpoints whose HEAD/GET answers a non-MCP content type (default: `false`) |
 | `tools` | mapping | both | Filtering and utility-tool policy |
 | `auth` | string | HTTP | Authentication method. Set to `oauth` to enable OAuth 2.1 with PKCE |
 | `sampling` | mapping | both | Server-initiated LLM request policy (see MCP guide) |
+
+## Session context forwarding
+
+`forward_session_context` is `false` by default. Third-party servers do not
+receive chat, user, or session identifiers through this channel unless you
+explicitly enable it for that server.
+
+When enabled, Hermes can attach host-authored request `_meta` to MCP
+`tools/call` requests using exactly these reverse-DNS keys:
+
+- `com.nousresearch.hermes/platform`
+- `com.nousresearch.hermes/session_id`
+- `com.nousresearch.hermes/session_key`
+- `com.nousresearch.hermes/chat_id`
+- `com.nousresearch.hermes/thread_id`
+- `com.nousresearch.hermes/user_id`
+- `com.nousresearch.hermes/message_id`
+
+All seven gateway identity `ContextVar` values must be bound. An individual
+bound value may be empty, but Hermes omits the entire session-context meta
+block if any required value is unbound, all seven values are empty, the routed
+profile's privacy policy is unavailable, or privacy eligibility or
+pseudonymization fails. The values come only from the current turn's
+task-local context; process environment variables are never an MCP metadata
+fallback. Resource, prompt, and discovery operations do not carry this
+identity.
+
+The routed profile's `privacy.redact_pii` policy is read per turn. A missing
+configuration file or absent setting is a valid false policy; read, parse,
+managed-policy, or profile-resolution failures make the policy unavailable.
+When the privacy policy is unavailable, MCP metadata is omitted while the LLM
+session-context prompt keeps its historical fail-soft raw behavior.
+
+With `privacy.redact_pii: true` on an eligible platform, Hermes
+pseudonymizes `chat_id`, `user_id`, `session_key`, the complete `thread_id`,
+and `message_id` in the outgoing copy. `platform` and `session_id` remain raw.
+The deterministic helpers produce `user_<12hex>`, `thread_<12hex>`,
+`message_<12hex>`, and `session_<12hex>` values; `chat_id` uses the existing
+gateway chat hash. Built-in eligible platforms are WhatsApp, WhatsApp Cloud,
+Signal, Telegram, and BlueBubbles. With redaction disabled or on an
+ineligible platform, all seven values remain raw. Task-local routing values
+are never rewritten. These stable, linkable values are pseudonyms, not
+anonymity.
+
+At ingress, a non-empty event-level triggering ID is copied onto the session
+source before binding, while a source-only adapter ID remains valid. This
+includes WhatsApp Cloud WAMIDs. Synthetic goal continuations clear the prior
+triggering ID, and queued follow-ups rebind the new event's source and routed
+privacy policy before the next tool call.
+
+:::caution
+Enable session context forwarding only for a server you trust with the
+resulting identifiers or pseudonyms.
+:::
+
+Separately, binding a gateway session ID makes `HERMES_SESSION_ID` visible to
+gateway-spawned subprocesses through the existing environment bridge. That
+subprocess behavior is independent of the per-server MCP opt-in, and the
+environment value is never read as a source for MCP request `_meta`.
 
 ## `tools` policy keys
 

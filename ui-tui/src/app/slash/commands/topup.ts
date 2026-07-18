@@ -15,7 +15,8 @@ import type { BillingChargeOutcome, BillingOverlayCtx } from '../../interfaces.j
 import { patchOverlayState } from '../../overlayStore.js'
 import type { SlashCommand, SlashRunCtx } from '../types.js'
 
-const UNCONFIRMED_CHARGE_MESSAGE = '🟡 Your last charge’s outcome is unconfirmed — check your balance/history before retrying.'
+const UNCONFIRMED_CHARGE_MESSAGE =
+  '🟡 Your last charge’s outcome is unconfirmed — check your balance/history before retrying.'
 
 type Sys = (text: string) => void
 
@@ -76,7 +77,9 @@ const renderBillingError = (
       break
 
     case 'role_required':
-      sys('Adding funds needs someone with billing permissions (owner, admin, or finance admin), or manage this on the portal.')
+      sys(
+        'Adding funds needs someone with billing permissions (owner, admin, or finance admin), or manage this on the portal.'
+      )
 
       break
 
@@ -96,7 +99,9 @@ const renderBillingError = (
       break
 
     case 'auto_top_up_disabled_failures':
-      sys('Auto-reload was turned off after repeated charge failures. Fix the card issue, then re-enable it from /topup → Auto-reload.')
+      sys(
+        'Auto-reload was turned off after repeated charge failures. Fix the card issue, then re-enable it from /topup → Auto-reload.'
+      )
 
       break
 

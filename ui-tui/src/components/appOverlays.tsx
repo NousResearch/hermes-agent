@@ -57,7 +57,9 @@ export function PromptZone({
     const current = overlay.subscription
 
     const onPatch = (next: Partial<typeof current>) =>
-      patchOverlayState(prev => (prev.subscription ? { ...prev, subscription: { ...prev.subscription, ...next } } : prev))
+      patchOverlayState(prev =>
+        prev.subscription ? { ...prev, subscription: { ...prev.subscription, ...next } } : prev
+      )
 
     const onClose = () => patchOverlayState({ subscription: null })
 

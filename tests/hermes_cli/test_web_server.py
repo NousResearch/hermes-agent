@@ -1449,6 +1449,101 @@ class TestWebServerEndpoints:
         resp = self.client.patch("/api/sessions/no-fields", json={})
         assert resp.status_code == 400
 
+    def test_delete_session_routes_to_owning_profile_db(self):
+        """DELETE ?profile= must open the owning profile's state.db.
+
+        The desktop sidebar lists every profile's rows straight from disk,
+        while the serving process may be scoped to a *different* profile
+        (the sticky active_profile file is honored on a legacy launch).
+        Without the query param the delete looks up the session in the
+        wrong db and 404s — issue #44117.
+        """
+        from hermes_constants import get_hermes_home
+        from hermes_state import SessionDB
+
+        profile_home = get_hermes_home() / "profiles" / "worker-alpha"
+        profile_home.mkdir(parents=True)
+        pdb = SessionDB(db_path=profile_home / "state.db")
+        try:
+            pdb.create_session(session_id="profile-owned", source="cli")
+        finally:
+            pdb.close()
+
+        resp = self.client.delete("/api/sessions/profile-owned?profile=worker-alpha")
+        assert resp.status_code == 200
+        assert resp.json() == {"ok": True}
+
+        pdb = SessionDB(db_path=profile_home / "state.db")
+        try:
+            assert pdb.get_session("profile-owned") is None
+        finally:
+            pdb.close()
+
+    def test_delete_session_resolves_unique_id_prefix(self):
+        """DELETE resolves id prefixes like its GET/PATCH siblings."""
+        from hermes_state import SessionDB
+
+        db = SessionDB()
+        try:
+            db.create_session(session_id="20260611_080000_abcdef", source="cli")
+        finally:
+            db.close()
+
+        resp = self.client.delete("/api/sessions/20260611_080000_ab")
+        assert resp.status_code == 200
+
+        db = SessionDB()
+        try:
+            assert db.get_session("20260611_080000_abcdef") is None
+        finally:
+            db.close()
+
+    def test_delete_session_absent_is_idempotent(self):
+        # DELETE's contract is "ensure it's gone": an already-absent row is a
+        # success, not a 404 (the desktop restores the row on any error, which
+        # would resurrect a ghost). The owning-profile fix below targets the
+        # opposite case — a row that exists but lives in another profile's db.
+        resp = self.client.delete("/api/sessions/does-not-exist")
+        assert resp.status_code == 200
+        assert resp.json() == {"ok": True, "already_absent": True}
+
+    def test_archive_session_routes_to_owning_profile_db(self):
+        """PATCH archived with ``profile`` opens the owning profile's state.db.
+
+        Same #44117 failure mode as delete: without the profile in the body
+        the lookup hits the serving process's own db and 404s, even though
+        the row exists in the owning profile's db.
+        """
+        from hermes_constants import get_hermes_home
+        from hermes_state import SessionDB
+
+        profile_home = get_hermes_home() / "profiles" / "worker-beta"
+        profile_home.mkdir(parents=True)
+        pdb = SessionDB(db_path=profile_home / "state.db")
+        try:
+            pdb.create_session(session_id="profile-archived", source="cli")
+        finally:
+            pdb.close()
+
+        resp = self.client.patch(
+            "/api/sessions/profile-archived", json={"archived": True}
+        )
+        assert resp.status_code == 404
+
+        resp = self.client.patch(
+            "/api/sessions/profile-archived",
+            json={"archived": True, "profile": "worker-beta"},
+        )
+        assert resp.status_code == 200
+        assert resp.json()["archived"] is True
+
+        pdb = SessionDB(db_path=profile_home / "state.db")
+        try:
+            row = pdb.get_session("profile-archived")
+            assert row is not None and bool(row["archived"])
+        finally:
+            pdb.close()
+
     def test_profiles_sessions_tags_default_profile(self):
         """The cross-profile aggregator returns the default profile's rows
         tagged profile="default" (single-profile parity with /api/sessions)."""

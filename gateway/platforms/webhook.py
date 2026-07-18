@@ -997,7 +997,10 @@ class WebhookAdapter(BasePlatformAdapter):
             return _hmac_str_equal(gl_token, secret)
 
         # Gitea: X-Gitea-Signature = <hex HMAC-SHA256 of body>
-        # Gitea sends the raw hex digest (no sha256= prefix like GitHub)
+        # Gitea sends the raw hex digest (no sha256= prefix like GitHub).
+        # Modern Gitea also sends X-Hub-Signature-256 (GitHub-compatible),
+        # which is validated by the GitHub branch above; this branch is a
+        # fallback for Gitea configs that send X-Gitea-Signature alone.
         gitea_sig = request.headers.get("X-Gitea-Signature", "")
         if gitea_sig:
             expected = hmac.new(

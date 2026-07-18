@@ -289,9 +289,17 @@ export function useSlashCommand(deps: SlashCommandDeps) {
         // A profile is per-session now, so an existing thread can't change its
         // profile mid-stream; `/profile <name>` points the next new chat (and
         // the current empty draft) at that profile's backend.
-        profile: async ({ arg }) => {
+        profile: async ctx => {
+          const { arg } = ctx
           const target = arg.trim()
           const current = normalizeProfileKey($activeGatewayProfile.get())
+          const subcommand = target.split(/\s+/, 1)[0]?.toLowerCase()
+
+          if (subcommand && ['list', 'switch', 'use'].includes(subcommand)) {
+            await runExec(ctx)
+
+            return
+          }
 
           if (!target) {
             notify({ kind: 'success', message: copy.profileStatus(current) })

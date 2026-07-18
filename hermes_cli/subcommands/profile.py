@@ -25,6 +25,10 @@ def build_profile_parser(subparsers, *, cmd_profile: Callable) -> None:
         "use", help="Set sticky default profile"
     )
     profile_use.add_argument("profile_name", help="Profile name (or 'default')")
+    profile_switch = profile_subparsers.add_parser(
+        "switch", help="Set sticky default profile"
+    )
+    profile_switch.add_argument("profile_name", help="Profile name (or 'default')")
 
     profile_create = profile_subparsers.add_parser(
         "create", help="Create a new profile"

@@ -811,6 +811,7 @@ class HermesConsoleEngine:
                     ("info",),
                     ("create",),
                     ("use",),
+                    ("switch",),
                     ("describe",),
                     ("rename",),
                     ("delete",),
@@ -822,6 +823,7 @@ class HermesConsoleEngine:
                 {
                     ("create",),
                     ("use",),
+                    ("switch",),
                     ("describe",),
                     ("rename",),
                     ("delete",),
@@ -1509,15 +1511,9 @@ def _sessions_repair(_engine: HermesConsoleEngine, args: list[str]) -> str:
 
 
 def _profile_status(_engine: HermesConsoleEngine, args: list[str]) -> str:
-    _expect_no_args(args, "profile")
-    return _dispatch_extracted_subcommand(
-        root="profile",
-        fixed=(),
-        args=(),
-        module_name="hermes_cli.subcommands.profile",
-        builder_name="build_profile_parser",
-        main_handler_name="cmd_profile",
-    )
+    from hermes_cli.profile_slash import handle_profile_slash
+
+    return handle_profile_slash(args)
 
 
 def _cron_list(_engine: HermesConsoleEngine, args: list[str]) -> str:

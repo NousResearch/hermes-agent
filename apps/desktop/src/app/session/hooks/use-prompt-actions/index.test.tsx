@@ -386,6 +386,55 @@ describe('usePromptActions slash.exec dispatch payloads', () => {
     expect(renderedText).not.toContain('empty slash command')
   })
 
+  it('passes /profile switch through to the backend instead of treating switch as the profile name', async () => {
+    const calls: { method: string; params?: Record<string, unknown> }[] = []
+    const states: Record<string, unknown>[] = []
+
+    const requestGateway = vi.fn(async (method: string, params?: Record<string, unknown>) => {
+      calls.push({ method, params })
+
+      if (method === 'slash.exec') {
+        return { output: 'Default profile set to auditor.' } as never
+      }
+
+      return {} as never
+    })
+
+    let handle: HarnessHandle | null = null
+    render(
+      <Harness
+        onReady={h => (handle = h)}
+        onSeedState={s => states.push(s)}
+        refreshSessions={async () => undefined}
+        requestGateway={requestGateway}
+      />
+    )
+
+    await handle!.submitText('/profile switch auditor')
+
+    expect(calls).toEqual([
+      {
+        method: 'slash.exec',
+        params: {
+          command: 'profile switch auditor',
+          session_id: RUNTIME_SESSION_ID
+        }
+      }
+    ])
+
+    const renderedText = states
+      .flatMap(state => {
+        const messages = Array.isArray(state.messages)
+          ? (state.messages as Array<{ parts?: Array<{ text?: string }> }>)
+          : []
+
+        return messages.flatMap(message => (message.parts ?? []).map(part => part.text ?? ''))
+      })
+      .join('\n')
+
+    expect(renderedText).toContain('Default profile set to auditor.')
+  })
+
   it('restores a degenerate slash payload to the composer instead of losing it', async () => {
     setComposerDraft('')
 

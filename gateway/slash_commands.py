@@ -330,20 +330,30 @@ class GatewaySlashCommandsMixin:
         return EphemeralReply(f"{header}{_tip_line}")
 
     async def _handle_profile_command(self, event: MessageEvent) -> str:
-        """Handle /profile — show the profile serving this source and its home.
+        """Handle /profile — show the serving profile, list, or switch profiles.
 
-        On a multiplexed gateway the process-level active profile is always
-        the multiplexer's own (usually ``default``), so reporting it would
-        answer "default" in every chat regardless of which profile actually
-        serves the room/channel (``source.profile`` — stamped by the
-        ``/p/<profile>/`` URL prefix, a per-credential adapter, or a room→
-        profile map). When ``multiplex_profiles`` is on, report the stamped
-        profile and, like the scoped /reset banner (#59003), resolve the
-        displayed home under that profile's runtime scope. When multiplexing
-        is off (the default) the stamp is ignored — mirroring the gating in
-        ``_run_agent`` and ``_reset_notice_session_info`` — and the command
-        reports the active profile and default home, byte-identical to before.
+        Bare ``/profile`` preserves the source-aware status behavior required
+        by multiplexed gateways. Argument-bearing commands use this PR's
+        shared in-session handler for profile discovery and sticky-default
+        selection.
         """
+        import shlex
+
+        text = getattr(event, "text", "") or ""
+        try:
+            parts = shlex.split(text)
+        except ValueError:
+            parts = text.split()
+        args = parts[1:] if parts else []
+
+        if args:
+            from hermes_cli.profile_slash import handle_profile_slash
+
+            try:
+                return handle_profile_slash(args, markdown=True)
+            except (FileNotFoundError, ValueError) as exc:
+                return f"Error: {exc}"
+
         from hermes_constants import display_hermes_home
         from hermes_cli.profiles import get_active_profile_name
 
@@ -373,7 +383,6 @@ class GatewaySlashCommandsMixin:
             t("gateway.profile.header", profile=profile_name),
             t("gateway.profile.home", home=display),
         ]
-
         return "\n".join(lines)
 
     async def _handle_whoami_command(self, event: MessageEvent) -> str:

@@ -1146,6 +1146,16 @@ export interface Translations {
     cloneFromDesc: string
     cloneFromDefault: string
     cloneFromDefaultDesc: string
+    backendTarget: string
+    backendLocal: string
+    backendRemote: string
+    backendLocalDesc: string
+    backendRemoteDesc: string
+    remoteUrl: string
+    remoteUrlRequired: string
+    remoteToken: string
+    remoteTokenRequired: string
+    remoteTokenPlaceholder: string
     invalidName: (hint: string) => string
     nameRequired: string
     creating: string

@@ -11580,7 +11580,7 @@ def cmd_profile(args):
             print(f"{marker}{name:<15} {model:<28} {gw:<12} {alias:<12} {dist}")
         print()
 
-    elif action == "use":
+    elif action in {"use", "switch"}:
         name = args.profile_name
         try:
             set_active_profile(name)

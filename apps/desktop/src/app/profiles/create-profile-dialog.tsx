@@ -44,6 +44,9 @@ export function CreateProfileDialog({
   const [name, setName] = useState('')
   const [cloneFrom, setCloneFrom] = useState<null | string>('default')
   const [soul, setSoul] = useState('')
+  const [backendMode, setBackendMode] = useState<'local' | 'remote'>('local')
+  const [remoteUrl, setRemoteUrl] = useState('')
+  const [remoteToken, setRemoteToken] = useState('')
   const [status, setStatus] = useState<'done' | 'idle' | 'saving'>('idle')
   const [error, setError] = useState<null | string>(null)
 
@@ -55,19 +58,34 @@ export function CreateProfileDialog({
     setName('')
     setCloneFrom('default')
     setSoul('')
+    setBackendMode('local')
+    setRemoteUrl('')
+    setRemoteToken('')
     setError(null)
     setStatus('idle')
   }, [open])
 
   const trimmed = name.trim()
+  const trimmedRemoteUrl = remoteUrl.trim()
+  const trimmedRemoteToken = remoteToken.trim()
   const invalid = trimmed !== '' && !isValidProfileName(trimmed)
+  const invalidRemote = backendMode === 'remote' && !/^https?:\/\//i.test(trimmedRemoteUrl)
+  const missingRemoteToken = backendMode === 'remote' && !trimmedRemoteToken
   const busy = status === 'saving' || status === 'done'
 
   async function handleSubmit(event: React.FormEvent) {
     event.preventDefault()
 
-    if (!trimmed || invalid) {
-      setError(invalid ? p.invalidName(p.nameHint) : p.nameRequired)
+    if (!trimmed || invalid || invalidRemote || missingRemoteToken) {
+      setError(
+        invalid
+          ? p.invalidName(p.nameHint)
+          : invalidRemote
+            ? p.remoteUrlRequired
+            : missingRemoteToken
+              ? p.remoteTokenRequired
+            : p.nameRequired
+      )
 
       return
     }
@@ -80,6 +98,16 @@ export function CreateProfileDialog({
 
       if (soul.trim()) {
         await updateProfileSoul(trimmed, soul)
+      }
+
+      if (backendMode === 'remote') {
+        await window.hermesDesktop?.saveConnectionConfig?.({
+          mode: 'remote',
+          profile: trimmed,
+          remoteAuthMode: 'token',
+          remoteToken: trimmedRemoteToken || undefined,
+          remoteUrl: trimmedRemoteUrl
+        })
       }
 
       await onCreated?.(trimmed)
@@ -153,6 +181,60 @@ export function CreateProfileDialog({
             />
           </div>
 
+          <div className="grid gap-2 rounded-md border border-(--ui-stroke-tertiary) bg-(--ui-bg-quinary) p-3">
+              <div className="grid gap-1">
+                <label className="text-xs font-medium" htmlFor="new-profile-backend">
+                  {p.backendTarget}
+                </label>
+                <Select
+                  onValueChange={value => setBackendMode(value === 'remote' ? 'remote' : 'local')}
+                  value={backendMode}
+                >
+                  <SelectTrigger className="h-9 rounded-md" id="new-profile-backend">
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="local">{p.backendLocal}</SelectItem>
+                    <SelectItem value="remote">{p.backendRemote}</SelectItem>
+                  </SelectContent>
+                </Select>
+                <p className="text-xs text-muted-foreground">
+                  {backendMode === 'remote' ? p.backendRemoteDesc : p.backendLocalDesc}
+                </p>
+              </div>
+
+              {backendMode === 'remote' ? (
+                <div className="grid gap-2">
+                  <div className="grid gap-1.5">
+                    <label className="text-xs font-medium" htmlFor="new-profile-remote-url">
+                      {p.remoteUrl}
+                    </label>
+                    <Input
+                      aria-invalid={invalidRemote}
+                      id="new-profile-remote-url"
+                      onChange={event => setRemoteUrl(event.target.value)}
+                      placeholder="https://gateway.example.com/hermes"
+                      value={remoteUrl}
+                    />
+                  </div>
+                  <div className="grid gap-1.5">
+                    <label className="text-xs font-medium" htmlFor="new-profile-remote-token">
+                      {p.remoteToken}
+                    </label>
+                    <Input
+                      autoComplete="off"
+                      aria-invalid={missingRemoteToken}
+                      id="new-profile-remote-token"
+                      onChange={event => setRemoteToken(event.target.value)}
+                      placeholder={p.remoteTokenPlaceholder}
+                      type="password"
+                      value={remoteToken}
+                    />
+                  </div>
+                </div>
+              ) : null}
+          </div>
+
           {error && (
             <div className="flex items-start gap-2 rounded-md border border-destructive/30 bg-destructive/10 px-3 py-2 text-xs text-destructive">
               <AlertTriangle className="mt-0.5 size-3.5 shrink-0" />
@@ -164,7 +246,7 @@ export function CreateProfileDialog({
             <Button disabled={busy} onClick={onClose} type="button" variant="ghost">
               {t.common.cancel}
             </Button>
-            <Button disabled={busy || !trimmed || invalid} type="submit">
+            <Button disabled={busy || !trimmed || invalid || invalidRemote || missingRemoteToken} type="submit">
               <ActionStatus busy={p.creating} done={p.created} idle={p.createAction} state={status} />
             </Button>
           </DialogFooter>

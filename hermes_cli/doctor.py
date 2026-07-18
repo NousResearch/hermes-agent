@@ -2223,15 +2223,23 @@ def run_doctor(args):
                 anth_base = base.rstrip("/")
                 if anth_base.endswith("/v1"):
                     anth_base = anth_base[:-3].rstrip("/")
+                # Match the runtime Anthropic adapter contract for Azure
+                # Foundry: Authorization: Bearer <api-key> (see
+                # agent/anthropic_adapter.py _requires_bearer_auth ->
+                # auth_token, lines ~532-553/801-810), NOT x-api-key. Azure
+                # also requires an api-version query param, which the runtime
+                # supplies via the SDK's default_query (api-version=2025-04-15,
+                # per docs/guides/azure-foundry.md:247-248).
                 headers = {
-                    "x-api-key": key,
+                    "Authorization": f"Bearer {key}",
                     "anthropic-version": "2023-06-01",
                     "content-type": "application/json",
                     "User-Agent": _HERMES_USER_AGENT,
                 }
+                anth_params = {"api-version": "2025-04-15"}
                 # Prefer a cheap GET /v1/models when the gateway implements it
                 models_url = anth_base + "/v1/models"
-                r = httpx.get(models_url, headers=headers, timeout=10)
+                r = httpx.get(models_url, headers=headers, params=anth_params, timeout=10)
                 if r.status_code == 200:
                     return _ConnectivityResult(
                         pname,
@@ -2256,6 +2264,7 @@ def run_doctor(args):
                     mr = httpx.post(
                         anth_base + "/v1/messages",
                         headers=headers,
+                        params=anth_params,
                         json=payload,
                         timeout=15,
                     )

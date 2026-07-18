@@ -67,13 +67,13 @@ def test_run_doctor_azure_foundry_anthropic_endpoint_reports_healthy(
 
     calls: list[tuple] = []
 
-    def fake_get(url, headers=None, timeout=None):
-        calls.append(("GET", url, headers))
+    def fake_get(url, headers=None, params=None, timeout=None):
+        calls.append(("GET", url, headers, params))
         # Anthropic-style Foundry: /models is often missing
         return types.SimpleNamespace(status_code=404, text="not found")
 
-    def fake_post(url, headers=None, json=None, timeout=None):
-        calls.append(("POST", url, headers, json))
+    def fake_post(url, headers=None, params=None, json=None, timeout=None):
+        calls.append(("POST", url, headers, params, json))
         return types.SimpleNamespace(status_code=200, text="{}")
 
     import httpx
@@ -93,11 +93,14 @@ def test_run_doctor_azure_foundry_anthropic_endpoint_reports_healthy(
 
     assert "Azure Foundry" in out
     assert "HTTP 404" not in out
-    # Must have used x-api-key on the anthropic probe path
+    # Must use the runtime Anthropic adapter contract on the anthropic probe
+    # path: Authorization: Bearer <key> (not x-api-key) and the Azure-required
+    # api-version query param (agent/anthropic_adapter.py:532-553,801-810;
+    # docs/guides/azure-foundry.md:247-248).
     anth_calls = [c for c in calls if isinstance(c[1], str) and "/anthropic" in c[1]]
     assert anth_calls, f"expected anthropic endpoint probe, got {calls}"
     headers = anth_calls[0][2] or {}
-    assert headers.get("x-api-key") == "sk-foundry-test"
-    assert "Authorization" not in headers or not str(headers.get("Authorization", "")).startswith(
-        "Bearer sk-foundry"
-    )
+    params = anth_calls[0][3] or {}
+    assert headers.get("Authorization") == "Bearer sk-foundry-test"
+    assert "x-api-key" not in headers
+    assert params.get("api-version") == "2025-04-15"

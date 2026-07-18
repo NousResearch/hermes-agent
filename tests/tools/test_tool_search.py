@@ -536,3 +536,114 @@ class TestRegression_ToolsetScoping:
         # core tools are never deferrable
         assert "terminal" not in names
 
+
+
+# ---------------------------------------------------------------------------
+# Catalog listing (skills-style progressive disclosure)
+# ---------------------------------------------------------------------------
+
+
+class TestCatalogListing:
+    def test_config_defaults(self):
+        from tools.tool_search import ToolSearchConfig
+        cfg = ToolSearchConfig.from_raw(None)
+        assert cfg.listing == "auto"
+        assert cfg.listing_max_tokens == 4000
+        # legacy bool shapes keep defaults too
+        assert ToolSearchConfig.from_raw(True).listing == "auto"
+
+    def test_config_listing_off_and_clamp(self):
+        from tools.tool_search import ToolSearchConfig
+        cfg = ToolSearchConfig.from_raw({"listing": "off", "listing_max_tokens": 999999})
+        assert cfg.listing == "off"
+        assert cfg.listing_max_tokens == 20000
+        cfg2 = ToolSearchConfig.from_raw({"listing": "garbage", "listing_max_tokens": -5})
+        assert cfg2.listing == "auto"
+        assert cfg2.listing_max_tokens == 200
+
+    def test_short_desc_first_sentence_and_clip(self):
+        from tools.tool_search import _short_desc
+        assert _short_desc("Open an issue. Second sentence dropped.") == "Open an issue."
+        long = "word " * 40
+        s = _short_desc(long)
+        assert len(s) <= 61  # 60 + ellipsis char
+        assert s.endswith("…")
+        assert _short_desc("") == ""
+
+    def test_listing_grouped_and_deterministic(self):
+        from tools.tool_search import build_catalog_listing
+        defs = [
+            _td("zeta_tool", "Does zeta."),
+            _td("alpha_tool", "Does alpha."),
+        ]
+        a = build_catalog_listing(defs)
+        b = build_catalog_listing(list(reversed(defs)))
+        assert a == b  # byte-stable regardless of input order (cache safety)
+        assert a.index("alpha_tool") < a.index("zeta_tool")
+
+    def test_listing_budget_falls_back_to_names_then_none(self):
+        from tools.tool_search import build_catalog_listing
+        defs = [_td(f"tool_{i:03d}", "A tool that does something moderately verbose.")
+                for i in range(50)]
+        full = build_catalog_listing(defs, max_tokens=20000)
+        assert full is not None and "- tool_000:" in full
+        names_only = build_catalog_listing(defs, max_tokens=300)
+        assert names_only is not None
+        assert "- tool_000:" not in names_only  # descriptions dropped
+        assert "tool_000" in names_only
+        assert build_catalog_listing(defs, max_tokens=200) is None or "tool_000" in build_catalog_listing(defs, max_tokens=200)
+
+    def test_bridge_embeds_listing(self):
+        from tools.tool_search import bridge_tool_schemas
+        bridges = bridge_tool_schemas(5, listing="github tools (2):\n- a: x\n- b: y")
+        search = next(b for b in bridges if b["function"]["name"] == "tool_search")
+        assert "github tools (2)" in search["function"]["description"]
+        assert "do NOT claim it is unavailable" in search["function"]["description"]
+        # other bridges unchanged
+        bare = bridge_tool_schemas(5)
+        assert bare[1] == bridges[1] and bare[2] == bridges[2]
+
+    @staticmethod
+    def _register(name):
+        from tools.registry import registry
+
+        def _handler(args, task_id=None, **kw):
+            return json.dumps({"ok": True})
+
+        registry.register(
+            name=name,
+            handler=_handler,
+            schema=_td(name, "Deferred capability description.")["function"],
+            toolset="mcp-listingtest",
+        )
+
+    def test_assembly_embeds_listing_when_active(self):
+        from tools.tool_search import assemble_tool_defs, ToolSearchConfig
+        for i in range(30):
+            self._register(f"mcp_x_{i}")
+        defs = [_td("terminal", "Run shell")] + [
+            _td(f"mcp_x_{i}", "Deferred capability description.",
+                {"a": {"type": "string", "description": "x" * 200}})
+            for i in range(30)
+        ]
+        result = assemble_tool_defs(
+            defs, context_length=1000,
+            config=ToolSearchConfig.from_raw({"enabled": "on"}),
+        )
+        assert result.activated
+        search = next(t for t in result.tool_defs if t["function"]["name"] == "tool_search")
+        assert "mcp_x_0" in search["function"]["description"]
+        assert "listingtest tools (30):" in search["function"]["description"]
+
+    def test_assembly_listing_off_keeps_legacy_description(self):
+        from tools.tool_search import assemble_tool_defs, ToolSearchConfig
+        for i in range(30):
+            self._register(f"mcp_x_{i}")
+        defs = [_td(f"mcp_x_{i}", "Deferred.") for i in range(30)]
+        result = assemble_tool_defs(
+            defs, context_length=1000,
+            config=ToolSearchConfig.from_raw({"enabled": "on", "listing": "off"}),
+        )
+        assert result.activated
+        search = next(t for t in result.tool_defs if t["function"]["name"] == "tool_search")
+        assert "mcp_x_0" not in search["function"]["description"]

@@ -2,6 +2,9 @@
 
 from __future__ import annotations
 
+import os
+import platform
+import re
 import shutil
 import tarfile
 from pathlib import Path, PurePosixPath
@@ -17,9 +20,69 @@ PSUTIL_URL = (
 MARKER = 'LINUX = sys.platform.startswith("linux")'
 REPLACEMENT = 'LINUX = sys.platform.startswith(("linux", "android"))'
 
+_DEFAULT_ANDROID_API_LEVEL = 24
+_ANDROID_ABI_BY_MACHINE = {
+    "aarch64": "arm64_v8a",
+    "arm64": "arm64_v8a",
+    "armv7l": "armeabi_v7a",
+    "armv8l": "armeabi_v7a",
+    "arm": "armeabi_v7a",
+    "x86_64": "x86_64",
+    "amd64": "x86_64",
+    "i386": "x86",
+    "i486": "x86",
+    "i586": "x86",
+    "i686": "x86",
+    "x86": "x86",
+}
+_BDIST_WHEEL_SECTION_RE = re.compile(
+    r"(?ms)^\[bdist_wheel\]\s*\n(?P<body>.*?)(?=^\[|\Z)"
+)
+_PLAT_NAME_RE = re.compile(r"(?m)^plat_name\s*=.*$")
+
 
 class PsutilAndroidInstallError(RuntimeError):
     """Raised when the pinned psutil sdist is missing or unsafe."""
+
+
+def android_wheel_platform_tag(
+    *,
+    api_level: int | str | None = None,
+    machine: str | None = None,
+) -> str:
+    """Return the PEP 738 wheel platform tag for the current Termux target.
+
+    Termux packages target Android API 24 even when the phone itself runs a
+    newer Android release. Using the runtime API (for example 36) makes uv
+    reject a locally built wheel because its interpreter target is API 24.
+    ``HERMES_ANDROID_API_LEVEL`` is an explicit build-target override; the
+    generic ``ANDROID_API_LEVEL`` variable is intentionally ignored because
+    installers commonly populate it from ``getprop ro.build.version.sdk``.
+    """
+    raw_api_level = (
+        api_level
+        if api_level is not None
+        else os.environ.get("HERMES_ANDROID_API_LEVEL", _DEFAULT_ANDROID_API_LEVEL)
+    )
+    try:
+        normalized_api_level = int(raw_api_level)
+    except (TypeError, ValueError) as exc:
+        raise PsutilAndroidInstallError(
+            f"Invalid Android API level for wheel tag: {raw_api_level!r}"
+        ) from exc
+    if normalized_api_level < 21:
+        raise PsutilAndroidInstallError(
+            f"Android API level must be 21 or newer, got {normalized_api_level}"
+        )
+
+    normalized_machine = (machine or platform.machine()).strip().lower()
+    abi = _ANDROID_ABI_BY_MACHINE.get(normalized_machine)
+    if abi is None:
+        raise PsutilAndroidInstallError(
+            "Unsupported Android architecture for wheel tag: "
+            f"{normalized_machine or '<empty>'}"
+        )
+    return f"android_{normalized_api_level}_{abi}"
 
 
 def _normalize_member_parts(member_name: str) -> tuple[str, ...]:
@@ -64,13 +127,60 @@ def _safe_extract_tar_gz(archive: Path, destination: Path) -> None:
                 pass
 
 
-def prepare_patched_psutil_sdist(archive: Path, destination: Path) -> Path:
-    """Safely extract the pinned psutil sdist and patch it for Android."""
+def _configure_android_wheel_tag(src_root: Path, platform_tag: str) -> None:
+    """Make setuptools emit an Android wheel without leaking env into uv.
+
+    Exporting ``_PYTHON_HOST_PLATFORM`` around ``uv pip`` changes the platform
+    uv sees while inspecting the interpreter, which fails with ``Unknown
+    operating system: android_...``. A package-local ``bdist_wheel`` setting
+    affects only the wheel build and leaves uv's interpreter probe untouched.
+    """
+    setup_cfg = src_root / "setup.cfg"
+    try:
+        content = setup_cfg.read_text(encoding="utf-8") if setup_cfg.exists() else ""
+    except OSError as exc:
+        raise PsutilAndroidInstallError("Failed to read psutil setup.cfg") from exc
+
+    section_match = _BDIST_WHEEL_SECTION_RE.search(content)
+    if section_match is None:
+        separator = "" if not content else "\n" if content.endswith("\n") else "\n\n"
+        updated = (
+            f"{content}{separator}[bdist_wheel]\n"
+            f"plat_name = {platform_tag}\n"
+        )
+    else:
+        body = section_match.group("body")
+        if _PLAT_NAME_RE.search(body):
+            updated_body = _PLAT_NAME_RE.sub(
+                f"plat_name = {platform_tag}", body, count=1
+            )
+        else:
+            updated_body = f"plat_name = {platform_tag}\n{body}"
+        updated = (
+            content[: section_match.start("body")]
+            + updated_body
+            + content[section_match.end("body") :]
+        )
+
+    try:
+        setup_cfg.write_text(updated, encoding="utf-8")
+    except OSError as exc:
+        raise PsutilAndroidInstallError("Failed to write psutil setup.cfg") from exc
+
+
+def prepare_patched_psutil_sdist(
+    archive: Path,
+    destination: Path,
+    *,
+    platform_tag: str | None = None,
+) -> Path:
+    """Safely extract psutil and patch Android detection and wheel metadata."""
     _safe_extract_tar_gz(archive, destination)
 
     src_roots = sorted(
         (
-            path for path in destination.iterdir()
+            path
+            for path in destination.iterdir()
             if path.is_dir() and path.name.startswith("psutil-")
         ),
         key=lambda path: path.name,
@@ -105,4 +215,9 @@ def prepare_patched_psutil_sdist(archive: Path, destination: Path) -> Path:
         raise PsutilAndroidInstallError(
             f"Failed to write {common_py.relative_to(src_root)!s}"
         ) from exc
+
+    _configure_android_wheel_tag(
+        src_root,
+        platform_tag or android_wheel_platform_tag(),
+    )
     return src_root

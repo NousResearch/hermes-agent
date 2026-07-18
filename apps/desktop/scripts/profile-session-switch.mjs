@@ -10,7 +10,7 @@
 
 import { writeFileSync } from 'node:fs'
 
-const CDP_HTTP = 'http://127.0.0.1:9222'
+const CDP_HTTP = process.env.CDP_HTTP || 'http://127.0.0.1:9222'
 const A = process.argv[2]
 const B = process.argv[3]
 const ROUNDS = Number(process.argv[4] || 2)

@@ -134,6 +134,7 @@ import { performWindowControl, windowControlState } from './window-controls'
 import {
   computeWindowOptions,
   debounce,
+  maximizedBoundsCorrection,
   sanitizeWindowState,
   MIN_HEIGHT as WINDOW_MIN_HEIGHT,
   MIN_WIDTH as WINDOW_MIN_WIDTH
@@ -7408,6 +7409,25 @@ function closePetOverlay() {
   petOverlayWindow = null
 }
 
+// WSLg only: after a native maximize the frameless window can settle offset
+// from the display work area (gap at the top/left, content clipped bottom/right;
+// reported on WSLg 1.0.65). Snap it back onto the work area. maximizedBoundsCorrection
+// returns null when the window already fills the work area, so this is a no-op
+// wherever the native maximize is correct (plain Linux, most WSLg versions) and
+// cannot loop — one settled correction leaves bounds matching the work area.
+function correctWslgMaximizedGap(win) {
+  if (!IS_WSL || !win || win.isDestroyed()) {
+    return
+  }
+
+  const bounds = win.getBounds()
+  const corrected = maximizedBoundsCorrection(bounds, screen.getDisplayMatching(bounds).workArea)
+
+  if (corrected) {
+    win.setBounds(corrected)
+  }
+}
+
 function createWindow() {
   const icon = getAppIconPath()
   const savedWindowState = readWindowState()
@@ -7496,6 +7516,7 @@ function createWindow() {
   mainWindow.on('resized', schedulePersistWindowState)
   mainWindow.on('moved', schedulePersistWindowState)
   mainWindow.on('maximize', () => {
+    correctWslgMaximizedGap(mainWindow)
     schedulePersistWindowState()
     sendWindowStateChanged()
   })

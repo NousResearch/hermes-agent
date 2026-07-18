@@ -112,6 +112,27 @@ function computeWindowOptions(state, displays): WindowOptions {
   return opts
 }
 
+// Under WSLg's RAIL compositor a frameless window's native maximize can settle
+// offset from the display work area — a strip of desktop shows at the top/left
+// and the content is clipped bottom/right (reported on WSLg 1.0.65). Return the
+// work-area bounds to snap the window onto, or null when it already fills the
+// work area so we never fight a healthy compositor (plain Linux, most WSLg
+// versions) or loop on setBounds. Environment-dependent: a no-op wherever the
+// native maximize is already correct.
+function maximizedBoundsCorrection(bounds, workArea) {
+  if (!bounds || !workArea || !finite(workArea.x) || !finite(workArea.y) || !finite(workArea.width) || !finite(workArea.height)) {
+    return null
+  }
+
+  const fillsWorkArea =
+    bounds.x === workArea.x &&
+    bounds.y === workArea.y &&
+    bounds.width === workArea.width &&
+    bounds.height === workArea.height
+
+  return fillsWorkArea ? null : { x: workArea.x, y: workArea.y, width: workArea.width, height: workArea.height }
+}
+
 // Trailing debounce: collapse a burst of resize/move events (Linux fires many
 // mid-drag) into a single run `delayMs` after the last. `.flush()` runs now and
 // cancels the pending timer — used on close, before the window is gone.
@@ -140,6 +161,7 @@ export {
   debounce,
   DEFAULT_HEIGHT,
   DEFAULT_WIDTH,
+  maximizedBoundsCorrection,
   MIN_HEIGHT,
   MIN_VISIBLE,
   MIN_WIDTH,

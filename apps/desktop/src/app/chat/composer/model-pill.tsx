@@ -11,8 +11,10 @@ import { ChevronDown } from '@/lib/icons'
 import { formatModelStatusLabel } from '@/lib/model-status-label'
 import { cn } from '@/lib/utils'
 import {
+  $activeSessionId,
   $currentFastMode,
   $currentModel,
+  $currentModelSource,
   $currentProvider,
   $currentReasoningEffort,
   setModelPickerOpen
@@ -44,7 +46,16 @@ export function ModelPill({
   const currentProvider = useStore($currentProvider)
   const fastMode = useStore($currentFastMode)
   const reasoningEffort = useStore($currentReasoningEffort)
+  const modelSource = useStore($currentModelSource)
+  const activeSessionId = useStore($activeSessionId)
   const [open, setOpen] = useState(false)
+
+  // The composer pick is sticky: a manual selection is pinned and every NEW
+  // chat uses it instead of the Settings → Model default — silently, which has
+  // cost users real money on a forgotten paid-model pick (#62055). Surface the
+  // pin whenever a draft (no live session) is running on a manual override. A
+  // live session's footer reflects that session's model, so no badge there.
+  const pinnedOverride = !activeSessionId && modelSource === 'manual' && Boolean(currentModel.trim())
 
   // The model resolves a beat after the gateway/session comes up. Rather than
   // flash a literal "No model", show a quiet loader (inherits the pill text
@@ -57,6 +68,14 @@ export function ModelPill({
         <span className="truncate">{formatModelStatusLabel(currentModel, { fastMode, reasoningEffort })}</span>
       ) : (
         <GlyphSpinner className="opacity-50" spinner="braille" />
+      )}
+      {pinnedOverride && (
+        <span
+          aria-label={copy.modelPinned}
+          className="size-1 shrink-0 rounded-full bg-(--ui-accent)"
+          data-testid="model-pinned-dot"
+          role="img"
+        />
       )}
       <ChevronDown className="size-2.5 shrink-0 opacity-50" />
     </>
@@ -71,11 +90,15 @@ export function ModelPill({
       )
     : PILL
 
-  const title = currentProvider ? copy.modelTitle(currentProvider, currentModel || copy.modelNone) : copy.switchModel
+  const baseTitle = currentProvider
+    ? copy.modelTitle(currentProvider, currentModel || copy.modelNone)
+    : copy.switchModel
+
+  const title = pinnedOverride ? `${baseTitle} — ${copy.modelPinned}` : baseTitle
 
   if (!model.modelMenuContent) {
     return (
-      <Tip label={copy.openModelPicker} side="top">
+      <Tip label={pinnedOverride ? `${copy.openModelPicker} — ${copy.modelPinned}` : copy.openModelPicker} side="top">
         <Button
           aria-label={copy.openModelPicker}
           className={pillClass}

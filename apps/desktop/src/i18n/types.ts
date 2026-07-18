@@ -239,6 +239,7 @@ export interface Translations {
   keybinds: {
     title: string
     subtitle: (open: string) => string
+    search: string
     rebind: string
     reset: string
     resetAll: string
@@ -273,6 +274,7 @@ export interface Translations {
       providerApiKeys: string
       gateway: string
       apiKeys: string
+      keybinds: string
       keysTools: string
       keysSettings: string
       mcp: string
@@ -655,6 +657,10 @@ export interface Translations {
       noProviderKeys: string
       searchKeys: string
       noKeysMatch: string
+      localEndpoint: {
+        title: string
+        description: string
+      }
       loading: string
     }
     sessions: {
@@ -1381,6 +1387,7 @@ export interface Translations {
       finishedUnread: string
       backgroundRunning: string
       handoffOrigin: (platform: string) => string
+      ownedByProfile: (profile: string) => string
       renamed: string
       renameFailed: string
       renameTitle: string
@@ -1620,6 +1627,7 @@ export interface Translations {
     recommended: string
     connected: string
     featuredPitch: string
+    fireworksPitch: string
     openRouterPitch: string
     apiKeyOptions: Record<string, { short: string; description: string }>
     backToSignIn: string
@@ -1800,6 +1808,7 @@ export interface Translations {
       noModel: string
       switchModel: string
       openModelPicker: string
+      modelPinned: string
       modelTitle: (provider: string, model: string) => string
       providerModelTitle: (provider: string, model: string) => string
     }

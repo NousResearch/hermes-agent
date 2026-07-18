@@ -687,6 +687,10 @@ export interface ToolEnvVar {
   is_set: boolean
 }
 
+/** Server-computed readiness for a provider picker row. Absent on older
+ *  backends that predate the truthful-readiness endpoint. */
+export type ToolProviderStatus = 'ready' | 'needs_setup' | 'needs_auth' | 'needs_keys'
+
 export interface ToolProvider {
   name: string
   badge: string
@@ -697,6 +701,9 @@ export interface ToolProvider {
   /** True when this is the provider currently written to config (mirrors the
    *  CLI `hermes tools` active-provider detection). */
   is_active: boolean
+  /** Honest readiness computed server-side (keys ∧ Nous entitlement ∧
+   *  post-setup install state). Optional for older backends. */
+  status?: ToolProviderStatus
 }
 
 export interface ToolsetConfig {

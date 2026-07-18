@@ -819,6 +819,8 @@ export const en: Translations = {
       noProviderOptions: 'This toolset has no provider options — enable it and it works with your current setup.',
       noProviders: 'No providers are available for this toolset right now.',
       ready: 'Ready',
+      needsSignIn: 'Needs sign-in',
+      needsSetup: 'Needs setup',
       nousIncluded: 'Included with a Nous subscription — sign in to Nous Portal to activate.',
       noApiKeyRequired: 'No API key required.',
       postSetupHint: step =>

@@ -1,12 +1,11 @@
-import { useQueryClient } from '@tanstack/react-query'
-import { useCallback, useRef, useState } from 'react'
-
 import { refusalPolicy } from '@hermes/shared/billing-policy'
 import {
   driveChargeSettlement,
   SETTLEMENT_POLL_CAP_MS,
   SETTLEMENT_POLL_INTERVAL_MS
 } from '@hermes/shared/charge-settlement'
+import { useQueryClient } from '@tanstack/react-query'
+import { useCallback, useRef, useState } from 'react'
 
 import type { BillingApi, BillingRefusal } from './api'
 import { useBillingApi } from './api'
@@ -108,7 +107,6 @@ export async function pollChargeSettlement(
         retryFreshKey: true,
         title: 'Charge failed'
       }
-
     case 'ambiguous': {
       if (settlement.status && refusalPolicy(settlement.error).ambiguousMidPoll) {
         const refusal = observed.refusal ?? refusalFromStatus(settlement.error, settlement.status)
@@ -140,6 +138,7 @@ export async function pollChargeSettlement(
       }
 
     case 'cancelled':
+
     case 'timed_out':
       return timeoutOutcome(observed.status?.ok ? (observed.status.portal_url ?? opts.portalUrl) : opts.portalUrl)
   }

@@ -1,9 +1,6 @@
 import { describe, expect, it } from 'vitest'
 
-import type {
-  BillingStateResponse,
-  SubscriptionStateResponse
-} from './types'
+import type { BillingStateResponse, SubscriptionStateResponse } from './types'
 
 const fullBillingState = {
   auto_reload: {

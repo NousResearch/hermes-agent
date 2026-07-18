@@ -106,6 +106,7 @@ describe('deriveBillingView', () => {
       }),
       okSubscription(todaySubscriptionState)
     )
+
     const autoReload = view.accountRows.find(row => row.id === 'auto_reload')
 
     expect(autoReload?.caption).toContain('Mastercard ••4444')
@@ -127,6 +128,7 @@ describe('deriveBillingView', () => {
       }),
       okSubscription(todaySubscriptionState)
     )
+
     const autoReload = view.accountRows.find(row => row.id === 'auto_reload')
 
     expect(autoReload?.caption).toContain('a different card')

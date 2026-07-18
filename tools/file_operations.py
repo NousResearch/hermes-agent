@@ -1513,7 +1513,28 @@ class ShellFileOperations(FileOperations):
         write_result = self._atomic_write(path, content)
 
         if write_result.exit_code != 0:
-            return WriteResult(error=f"Failed to write file: {write_result.stdout}")
+            error_detail = write_result.stdout
+            # Fixed 2026-07-17: the terminal tool's own `_find_bash()` already
+            # detects this exact MSYS/Git-Bash spawn-failure class (Windows
+            # Mandatory ASLR breaking fork()) and has a targeted remediation
+            # command ready — but write_file's failure path never routed
+            # through it, so this class of crash surfaced as a raw, confusing
+            # MSYS dump instead of the actionable help message the terminal
+            # tool already produces for the identical failure. Best-effort:
+            # never let the diagnostic lookup itself mask the real error.
+            try:
+                from tools.environments.local import (
+                    _find_bash,
+                    _git_bash_aslr_help,
+                    _looks_like_msys_spawn_failure,
+                )
+                if _looks_like_msys_spawn_failure(error_detail):
+                    error_detail = (
+                        f"{error_detail}\n\n{_git_bash_aslr_help(_find_bash(), error_detail)}"
+                    )
+            except Exception:
+                pass
+            return WriteResult(error=f"Failed to write file: {error_detail}")
 
         # Get bytes written (wc -c is POSIX, works on Linux + macOS)
         stat_cmd = f"wc -c < {self._escape_shell_arg(path)} 2>/dev/null"

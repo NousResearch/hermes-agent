@@ -5,6 +5,7 @@ import ntpath
 import os
 import platform
 import re
+import shlex
 import shutil
 import signal
 import subprocess
@@ -613,6 +614,106 @@ def hermes_subprocess_env(*, inherit_credentials: bool = False) -> dict[str, str
     _inject_session_context_env(env)
 
     return env
+
+
+# Interpreters that, when they are the ENTIRE command (not mixed with any
+# other bash construct), get invoked directly instead of through
+# `bash -c`. See _direct_interpreter_argv() for why.
+_DIRECT_INTERPRETER_EXES = {
+    "powershell": "powershell.exe",
+    "powershell.exe": "powershell.exe",
+    "pwsh": "pwsh.exe",
+    "pwsh.exe": "pwsh.exe",
+}
+
+# Any of these appearing as a standalone TOKEN (post-tokenization, not a
+# raw substring — see _direct_interpreter_argv()) means the command is
+# genuinely mixing bash constructs with the interpreter call (e.g.
+# `cd /x && powershell ...`, or `powershell -Command "..."; echo done`) —
+# that still needs bash's own semantics, so _direct_interpreter_argv()
+# bails out and lets it fall through to the existing bash -c path.
+_BASH_CHAIN_TOKENS = ("&&", "||", ";", "|")
+
+
+def _strip_outer_quote(tok: str) -> str:
+    """Strip exactly one matching pair of outer quote characters, if present."""
+    if len(tok) >= 2 and tok[0] == tok[-1] and tok[0] in ('"', "'"):
+        return tok[1:-1]
+    return tok
+
+
+def _direct_interpreter_argv(cmd_string: str) -> "list[str] | None":
+    """Detect a command that is ONLY a direct PowerShell/pwsh invocation and
+    return a ready-to-exec argv list for it, or None if this command should
+    still go through bash -c.
+
+    Root cause this works around: `bash -c "<cmd_string>"` parses the
+    ENTIRE string as bash source, including expanding any $-prefixed
+    content inside double-quoted portions, BEFORE the target program
+    (powershell, here) ever sees it. `powershell -Command "...$_.Path..."`
+    never reaches PowerShell intact — bash substitutes its own `$_`
+    (last-argument special variable) first. Confirmed via three
+    independent hits in Hermes's own session logs 2026-07-17 22:00-22:04:
+    a `$_.Path` mangle, a `$var =` assignment mangle, and a
+    backslash-escaping failure via the execute_code -> hermes_tools.terminal()
+    RPC path (which proxies back to this exact function — terminal, write_file,
+    and execute_code's generated RPC stub all funnel through _run_bash()).
+
+    Deliberately narrow: only fires when the ENTIRE command is nothing but
+    the interpreter invocation — no leading `cd`, no `&&`/`;`/`|` chaining
+    another bash command onto it. Anything mixing real bash constructs
+    still needs bash's own semantics and falls through to the existing
+    path, byte-for-byte unchanged. That check runs on the TOKENIZED
+    output, not a raw substring search on the original string — a `|` or
+    `;` *inside* a quoted PowerShell payload (e.g. the extremely common
+    `Get-Process | Where-Object {...} | Format-Table`, or `$x = 1; Write-Host $x`)
+    is script text, not a bash operator, and must not trip this check. An
+    earlier version of this function did a raw substring search and would
+    have rejected that exact pipeline — caught by testing against real
+    PowerShell one-liners before shipping, not by inspection alone.
+
+    Tokenizes with shlex in NON-POSIX mode deliberately, not the (default)
+    POSIX mode: POSIX mode treats backslash as an escape character even
+    outside quotes, where it silently EATS the backslash and keeps only
+    the following character — verified empirically:
+    `pwsh -File C:\\Users\\bbask\\build.ps1` becomes
+    `['pwsh', '-File', 'C:Usersbbaskbuild.ps1']` under posix=True, silently
+    destroying the path. That's the exact bug class this function exists
+    to fix, so shipping it here would be self-defeating. Non-POSIX mode
+    doesn't treat backslash specially at all, so paths survive intact; it
+    does leave the surrounding quote characters attached to each token,
+    which is why every token is passed through _strip_outer_quote() after
+    splitting. Verified (empirically, not just by inspection) against
+    $_.Path, $env:VAR, single- and double-quoted Windows paths — including
+    a path with a trailing backslash immediately before the closing quote,
+    which POSIX mode fails to parse at all (ValueError: No closing
+    quotation) — and bare unquoted paths.
+    """
+    stripped = cmd_string.strip()
+    # A raw newline means multiple distinct command lines were joined —
+    # genuinely needs bash's line-at-a-time semantics, not a single direct
+    # exec. (Not folded into the tokenized _BASH_CHAIN_TOKENS check below:
+    # shlex treats newlines as ordinary whitespace, not a token of their
+    # own, so it wouldn't be caught there.)
+    if not stripped or "\n" in stripped:
+        return None
+    try:
+        tokens = shlex.split(stripped, posix=False)
+    except ValueError:
+        # Unbalanced quotes etc. — let bash's own error surface as before.
+        return None
+    if not tokens:
+        return None
+    # Checked on the tokenized output, not the raw string — see docstring.
+    if any(tok in _BASH_CHAIN_TOKENS for tok in tokens):
+        return None
+
+    tokens = [_strip_outer_quote(t) for t in tokens]
+    exe_name = _DIRECT_INTERPRETER_EXES.get(tokens[0].lower())
+    if exe_name is None:
+        return None
+    resolved = shutil.which(exe_name) or exe_name
+    return [resolved, *tokens[1:]]
 
 
 def _find_bash() -> str:
@@ -1333,18 +1434,28 @@ class LocalEnvironment(BaseEnvironment):
     def _run_bash(self, cmd_string: str, *, login: bool = False,
                   timeout: int = 120,
                   stdin_data: str | None = None) -> subprocess.Popen:
-        bash = _find_bash()
-        # For login-shell invocations (used by init_session to build the
-        # environment snapshot), prepend sources for the user's bashrc /
-        # custom init files so tools registered outside bash_profile
-        # (nvm, asdf, pyenv, …) end up on PATH in the captured snapshot.
-        # Non-login invocations are already sourcing the snapshot and
-        # don't need this.
-        if login:
-            init_files = _resolve_shell_init_files()
-            if init_files:
-                cmd_string = _prepend_shell_init(cmd_string, init_files)
-        args = [bash, "-l", "-c", cmd_string] if login else [bash, "-c", cmd_string]
+        # Fixed 2026-07-17: a command that is ONLY a direct PowerShell/pwsh
+        # invocation is executed directly, bypassing bash's own parser
+        # entirely — see _direct_interpreter_argv() for why. Login-shell
+        # invocations (init_session's environment-snapshot building) are
+        # never agent-authored PowerShell calls, so this check is skipped
+        # for them.
+        direct_argv = None if login else _direct_interpreter_argv(cmd_string)
+        if direct_argv is not None:
+            args = direct_argv
+        else:
+            bash = _find_bash()
+            # For login-shell invocations (used by init_session to build the
+            # environment snapshot), prepend sources for the user's bashrc /
+            # custom init files so tools registered outside bash_profile
+            # (nvm, asdf, pyenv, …) end up on PATH in the captured snapshot.
+            # Non-login invocations are already sourcing the snapshot and
+            # don't need this.
+            if login:
+                init_files = _resolve_shell_init_files()
+                if init_files:
+                    cmd_string = _prepend_shell_init(cmd_string, init_files)
+            args = [bash, "-l", "-c", cmd_string] if login else [bash, "-c", cmd_string]
         run_env = _make_run_env(self.env)
 
         # Recover when the cwd has been deleted out from under us — usually by

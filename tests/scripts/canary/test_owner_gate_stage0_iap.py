@@ -1,13 +1,17 @@
 from __future__ import annotations
 
+import base64
+import copy
 import hashlib
 import inspect
 import io
+import json
 import os
 import shlex
 import shutil
 import signal
 import subprocess
+from dataclasses import replace
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -19,6 +23,7 @@ from scripts.canary import owner_gate_foundation as foundation
 from scripts.canary import owner_gate_foundation_apply as foundation_apply
 from scripts.canary import owner_gate_foundation_journal as foundation_journal
 from scripts.canary import owner_gate_outer_stage0 as outer
+from scripts.canary import owner_gate_stage0 as cloud_stage0
 from scripts.canary import owner_gate_stage0_iap as transport_module
 from scripts.canary import owner_gate_trust as release_trust
 from tests.scripts.canary import test_owner_gate_foundation_apply as apply_fixture
@@ -45,6 +50,8 @@ def _foundation_journal_for_test(
 
 def _foundation_projection() -> transport_module._FoundationProjection:
     return transport_module._FoundationProjection(
+        foundation_source_revision=REVISION,
+        foundation_source_tree_oid=TREE,
         pre_foundation_authority_sha256="4" * 64,
         foundation_apply_receipt_sha256="5" * 64,
         project_ancestry_evidence_sha256="9" * 64,
@@ -222,14 +229,66 @@ class _KnownHosts:
         return f"compute.{INSTANCE_ID} ssh-ed25519 unused"
 
 
-def _streams(tmp_path: Path) -> tuple[
+def _package_manifest(
+    *,
+    release_revision: str = REVISION,
+    source_tree_oid: str = TREE,
+    changes: dict | None = None,
+) -> dict:
+    unsigned = {
+        key: None
+        for key in cloud_stage0.MANIFEST_FIELDS
+        if key != "package_sha256"
+    }
+    unsigned.update({
+        "schema": cloud_stage0.PACKAGE_SCHEMA,
+        "release_revision": release_revision,
+        "source_tree_oid": source_tree_oid,
+        "release_root": str(
+            cloud_stage0.RELEASE_BASE / release_revision
+        ),
+        "interpreter_sha256": "8" * 64,
+        "pre_foundation_authority_sha256": "4" * 64,
+        "foundation_apply_receipt_sha256": "5" * 64,
+        "project_ancestry_evidence_sha256": "9" * 64,
+        "project_ancestry_chain_sha256": "a" * 64,
+        "resource_ancestor_chain": ["organizations/123456789012"],
+        "activation_performed": False,
+        "cloud_mutation_performed": False,
+        "caller_self_hash_is_authority": False,
+        "bootstrap_pip": {
+            "filename": "pip-25.1.1-py3-none-any.whl",
+            "project": "pip",
+            "version": "25.1.1",
+            "sha256": "1" * 64,
+            "size": 123,
+        },
+    })
+    unsigned.update(changes or {})
+    result = {
+        **unsigned,
+        "package_sha256": outer.sha256_json(unsigned),
+    }
+    if changes and "package_sha256" in changes:
+        result["package_sha256"] = changes["package_sha256"]
+    return result
+
+
+def _streams(
+    tmp_path: Path,
+    *,
+    bundle_release_revision: str = REVISION,
+    kit_release_revision: str = REVISION,
+    kit_source_tree_oid: str = TREE,
+    package_changes: dict | None = None,
+) -> tuple[
     transport_module.PinnedExactTreeStream,
     transport_module.PinnedExactTreeStream,
 ]:
     kit_manifest = outer.build_manifest(
         ROOT,
-        release_revision=REVISION,
-        source_tree_oid=TREE,
+        release_revision=kit_release_revision,
+        source_tree_oid=kit_source_tree_oid,
     )
     kit_manifest_sha256 = hashlib.sha256(
         outer.canonical_json_bytes(kit_manifest)
@@ -238,8 +297,8 @@ def _streams(tmp_path: Path) -> tuple[
     outer.materialize_kit(
         ROOT,
         kit,
-        release_revision=REVISION,
-        source_tree_oid=TREE,
+        release_revision=kit_release_revision,
+        source_tree_oid=kit_source_tree_oid,
     )
     kit_stream_path = tmp_path / "kit.stream"
     kit_build = outer.write_tree_stream(
@@ -258,12 +317,20 @@ def _streams(tmp_path: Path) -> tuple[
     authority = bundle / "trust/release-trust.json"
     authority.write_bytes(b'{"signed":"later-stage0-verifies"}\n')
     authority.chmod(0o644)
+    package_manifest = bundle / "package-manifest.json"
+    package_manifest.write_bytes(
+        outer.canonical_json_bytes(_package_manifest(
+            release_revision=bundle_release_revision,
+            changes=package_changes,
+        ))
+    )
+    package_manifest.chmod(0o644)
     bundle_stream_path = tmp_path / "bundle.stream"
     bundle_build = outer.write_tree_stream(
         bundle,
         bundle_stream_path,
         purpose="owner-gate-bundle",
-        release_id=REVISION,
+        release_id=bundle_release_revision,
     )
     return (
         transport_module.PinnedExactTreeStream(
@@ -275,10 +342,93 @@ def _streams(tmp_path: Path) -> tuple[
         transport_module.PinnedExactTreeStream(
             bundle_stream_path,
             purpose="owner-gate-bundle",
-            release_id=REVISION,
+            release_id=bundle_release_revision,
             expected_manifest_sha256=bundle_build["stream_manifest_sha256"],
         ),
     )
+
+
+def _cloud_receipts() -> dict[str, dict]:
+    package_sha256 = _package_manifest()["package_sha256"]
+    verify_unsigned = {
+        "schema": "muncho-owner-gate-stage0-bundle-verification.v1",
+        "release_revision": REVISION,
+        "package_sha256": package_sha256,
+        "verified": True,
+        "incoming_payload_code_executed_before_verification": False,
+    }
+    preflight_unsigned = {
+        "schema": cloud_stage0.PREFLIGHT_SCHEMA,
+        "release_revision": REVISION,
+        "python_version": f"Python {cloud_stage0.PYTHON_VERSION}",
+        "python_sha256": "8" * 64,
+        "openssl_version": f"{cloud_stage0.OPENSSL_VERSION_PREFIX}fixture",
+        "openssl_ed25519_rawin_verified": True,
+        "systemd_version": "systemd 252 (252.42-1~deb12u1)",
+        "systemd_sysusers_available": True,
+        "systemd_tmpfiles_available": True,
+        "python_venv_available": True,
+        "python_venv_without_pip_available": True,
+        "bootstrap_pip_version": "25.1.1",
+        "bootstrap_pip_sha256": "1" * 64,
+        "executable_identities_sha256": "2" * 64,
+        "network_install_required": False,
+        "cloud_mutation_performed": False,
+        "activation_performed": False,
+    }
+    install_unsigned = {
+        "schema": "muncho-owner-gate-offline-install-receipt.v1",
+        "release_revision": REVISION,
+        "package_sha256": package_sha256,
+        "source_tree_oid": TREE,
+        "pre_foundation_authority_sha256": "4" * 64,
+        "foundation_apply_receipt_sha256": "5" * 64,
+        "project_ancestry_evidence_sha256": "9" * 64,
+        "project_ancestry_chain_sha256": "a" * 64,
+        "resource_ancestor_chain": ["organizations/123456789012"],
+        "installed_at_unix": 1_800_000_000,
+        "release_path": str(cloud_stage0.RELEASE_BASE / REVISION),
+        "release_tree_sha256": "3" * 64,
+        "transaction_prefix_sha256": "6" * 64,
+        "phase_evidence_sha256": {
+            name: f"{index:x}" * 64
+            for index, name in enumerate(
+                transport_module._INSTALL_PHASES_WITHOUT_RECEIPT,
+                start=1,
+            )
+        },
+        "authority_receipt_public_key_sha256": "7" * 64,
+        "authority_receipt_public_key_id": "b" * 64,
+        "credential_id_sha256": "c" * 64,
+        "executor_hosts_receipt_sha256": "d" * 64,
+        "current_release_selected": False,
+        "systemd_units_enabled": [],
+        "activation_performed": False,
+        "activation_seal_created": False,
+        "iam_binding_created": False,
+        "cloud_mutation_performed": False,
+        "caddy_cutover_performed": False,
+    }
+    return {
+        "cloud-verify": {
+            **verify_unsigned,
+            "receipt_sha256": outer.sha256_json(verify_unsigned),
+        },
+        "cloud-preflight": {
+            **preflight_unsigned,
+            "preflight_sha256": outer.sha256_json(preflight_unsigned),
+        },
+        "cloud-install": {
+            **install_unsigned,
+            "receipt_sha256": outer.sha256_json(install_unsigned),
+            "signer_key_id": "b" * 64,
+            "signature_ed25519_b64url": base64.urlsafe_b64encode(
+                b"s" * 64
+            )
+            .rstrip(b"=")
+            .decode("ascii"),
+        },
+    }
 
 
 def _transport(
@@ -286,6 +436,8 @@ def _transport(
     kit_stream: transport_module.PinnedExactTreeStream,
     bundle_stream: transport_module.PinnedExactTreeStream,
     wrong_receiver_receipt: bool = False,
+    cloud_stdout_overrides: dict[str, bytes] | None = None,
+    cloud_failure: str | None = None,
 ) -> tuple[
     transport_module.OwnerGateStage0IapTransport,
     list[tuple[tuple[str, ...], bytes]],
@@ -309,6 +461,7 @@ def _transport(
     )
     calls: list[tuple[tuple[str, ...], bytes]] = []
     foundation_projection = _foundation_projection()
+    cloud_receipts = _cloud_receipts()
 
     def exchange(
         argv,
@@ -355,6 +508,14 @@ def _transport(
                     receiver_self_sha256=sealer.sha256,
                 )
             ) + b"\n"
+        elif any(name in remote for name in cloud_receipts):
+            name = next(name for name in cloud_receipts if name in remote)
+            if name == cloud_failure:
+                return transport_module._ProcessResult(81, b"", b"failed\n")
+            stdout = (cloud_stdout_overrides or {}).get(
+                name,
+                outer.canonical_json_bytes(cloud_receipts[name]) + b"\n",
+            )
         else:
             stdout = b""
         return transport_module._ProcessResult(0, stdout, b"")
@@ -420,6 +581,374 @@ def test_fixed_iap_transport_materializes_and_receives_without_scp(
         Path(kit_stream.path).read_bytes(),
         Path(bundle_stream.path).read_bytes(),
     ]
+
+
+def _remote_commands(
+    calls: list[tuple[tuple[str, ...], bytes]],
+) -> list[list[str]]:
+    return [
+        shlex.split(
+            next(
+                item for item in argv if item.startswith("--command=")
+            ).removeprefix("--command=")
+        )[3:]
+        for argv, _payload in calls
+    ]
+
+
+def _cloud_operation_names(
+    calls: list[tuple[tuple[str, ...], bytes]],
+) -> list[str]:
+    return [
+        name
+        for command in _remote_commands(calls)
+        for name in ("cloud-verify", "cloud-preflight", "cloud-install")
+        if name in command
+    ]
+
+
+def test_composite_uses_exact_cloud_order_argv_and_returns_inert_terminal(
+    tmp_path: Path,
+) -> None:
+    kit_stream, bundle_stream = _streams(tmp_path)
+    transport, calls = _transport(
+        kit_stream=kit_stream,
+        bundle_stream=bundle_stream,
+    )
+    exchange = transport._stage0_exchange
+    cloud_stdout_bounds: list[int] = []
+
+    def bounded_exchange(argv, environment, input_source, **kwargs):
+        command = shlex.split(
+            next(
+                item for item in argv if item.startswith("--command=")
+            ).removeprefix("--command=")
+        )
+        if any(
+            name in command
+            for name in ("cloud-verify", "cloud-preflight", "cloud-install")
+        ):
+            cloud_stdout_bounds.append(kwargs["maximum_stdout_bytes"])
+        return exchange(argv, environment, input_source, **kwargs)
+
+    transport._stage0_exchange = bounded_exchange
+
+    terminal = transport.transport_and_install_inert_cloud_bundle(
+        kit_stream=kit_stream,
+        bundle_stream=bundle_stream,
+    )
+
+    runner = str(
+        outer.RELEASE_BASE
+        / kit_stream.release_id
+        / outer.TRUSTED_RUNNER
+    )
+    bundle = str(outer.BUNDLE_INCOMING_BASE / REVISION)
+    assert [
+        command
+        for command in _remote_commands(calls)
+        if any(
+            name in command
+            for name in ("cloud-verify", "cloud-preflight", "cloud-install")
+        )
+    ] == [
+        [
+            "/usr/bin/python3",
+            "-I",
+            "-B",
+            runner,
+            name,
+            "--bundle",
+            bundle,
+        ]
+        for name in ("cloud-verify", "cloud-preflight", "cloud-install")
+    ]
+    assert terminal["schema"] == (
+        transport_module.INERT_CLOUD_BUNDLE_TERMINAL_SCHEMA
+    )
+    assert terminal["operation_order"] == [
+        "transport_exact_stage0_and_bundle",
+        "cloud-verify",
+        "cloud-preflight",
+        "cloud-install",
+    ]
+    assert cloud_stdout_bounds == [
+        transport_module.MAX_CLOUD_RECEIPT_BYTES,
+    ] * 3
+    assert terminal["inert_cloud_bundle_installed"] is True
+    assert terminal["cloud_install_receipt"] == _cloud_receipts()[
+        "cloud-install"
+    ]
+    assert terminal["cloud_install_signature_framing_validated"] is True
+    assert (
+        terminal["cloud_install_signature_cryptographically_verified"]
+        is False
+    )
+    assert terminal["systemd_units_enabled"] == []
+    for field in (
+        "current_release_selected",
+        "service_activation_performed",
+        "activation_performed",
+        "activation_seal_created",
+        "iam_binding_created",
+        "caddy_cutover_performed",
+        "cloud_mutation_performed",
+        "cloud_control_plane_mutation_performed",
+    ):
+        assert terminal[field] is False
+    assert terminal["terminal_receipt_sha256"] == outer.sha256_json({
+        key: item
+        for key, item in terminal.items()
+        if key != "terminal_receipt_sha256"
+    })
+
+
+@pytest.mark.parametrize(
+    ("case", "expected"),
+    (
+        ("bundle-release", "owner_gate_stage0_stream_pair_invalid"),
+        ("kit-release", "owner_gate_stage0_stream_pair_invalid"),
+        ("tree", "owner_gate_stage0_stream_pair_invalid"),
+        ("foundation-release", "owner_gate_stage0_stream_pair_invalid"),
+        ("foundation-tree", "owner_gate_stage0_stream_pair_invalid"),
+        ("foundation", "owner_gate_stage0_stream_pair_invalid"),
+        ("self-hash", "owner_gate_stage0_stream_pair_invalid"),
+    ),
+)
+def test_composite_rejects_release_tree_lineage_or_self_hash_before_iap(
+    tmp_path: Path,
+    case: str,
+    expected: str,
+) -> None:
+    arguments: dict = {}
+    if case == "bundle-release":
+        arguments["bundle_release_revision"] = "c" * 40
+    elif case == "kit-release":
+        arguments["kit_release_revision"] = "c" * 40
+    elif case == "tree":
+        arguments["kit_source_tree_oid"] = "c" * 40
+    elif case == "foundation":
+        arguments["package_changes"] = {
+            "foundation_apply_receipt_sha256": "0" * 64,
+        }
+    elif case == "self-hash":
+        arguments["package_changes"] = {"package_sha256": "0" * 64}
+    kit_stream, bundle_stream = _streams(tmp_path, **arguments)
+    transport, calls = _transport(
+        kit_stream=kit_stream,
+        bundle_stream=bundle_stream,
+    )
+    if case == "foundation-release":
+        transport._foundation = replace(
+            transport._foundation,
+            foundation_source_revision="c" * 40,
+        )
+    elif case == "foundation-tree":
+        transport._foundation = replace(
+            transport._foundation,
+            foundation_source_tree_oid="c" * 40,
+        )
+
+    with pytest.raises(launcher.OwnerLauncherError, match=expected):
+        transport.transport_and_install_inert_cloud_bundle(
+            kit_stream=kit_stream,
+            bundle_stream=bundle_stream,
+        )
+
+    assert calls == []
+
+
+@pytest.mark.parametrize(
+    ("failed", "expected_operations"),
+    (
+        ("cloud-verify", ["cloud-verify"]),
+        ("cloud-preflight", ["cloud-verify", "cloud-preflight"]),
+        (
+            "cloud-install",
+            ["cloud-verify", "cloud-preflight", "cloud-install"],
+        ),
+    ),
+)
+def test_composite_cloud_failure_short_circuits_later_operations(
+    tmp_path: Path,
+    failed: str,
+    expected_operations: list[str],
+) -> None:
+    kit_stream, bundle_stream = _streams(tmp_path)
+    transport, calls = _transport(
+        kit_stream=kit_stream,
+        bundle_stream=bundle_stream,
+        cloud_failure=failed,
+    )
+
+    with pytest.raises(
+        launcher.OwnerLauncherError,
+        match=f"owner_gate_stage0_iap_{failed.replace('-', '_')}_failed",
+    ):
+        transport.transport_and_install_inert_cloud_bundle(
+            kit_stream=kit_stream,
+            bundle_stream=bundle_stream,
+        )
+
+    assert _cloud_operation_names(calls) == expected_operations
+
+
+@pytest.mark.parametrize(
+    ("case", "operation", "expected"),
+    (
+        (
+            "noncanonical",
+            "cloud-verify",
+            "owner_gate_stage0_cloud_verify_receipt_invalid",
+        ),
+        (
+            "schema",
+            "cloud-verify",
+            "owner_gate_stage0_cloud_verify_receipt_invalid",
+        ),
+        (
+            "hash",
+            "cloud-preflight",
+            "owner_gate_stage0_cloud_preflight_receipt_invalid",
+        ),
+        (
+            "bootstrap-version",
+            "cloud-preflight",
+            "owner_gate_stage0_cloud_preflight_receipt_invalid",
+        ),
+        (
+            "bootstrap-sha256",
+            "cloud-preflight",
+            "owner_gate_stage0_cloud_preflight_receipt_invalid",
+        ),
+        (
+            "lineage",
+            "cloud-install",
+            "owner_gate_stage0_cloud_install_receipt_invalid",
+        ),
+        (
+            "false-flag",
+            "cloud-install",
+            "owner_gate_stage0_cloud_install_receipt_invalid",
+        ),
+        (
+            "standard-base64-signature",
+            "cloud-install",
+            "owner_gate_stage0_cloud_install_receipt_invalid",
+        ),
+    ),
+)
+def test_composite_rejects_noncanonical_schema_hash_lineage_and_false_flag(
+    tmp_path: Path,
+    case: str,
+    operation: str,
+    expected: str,
+) -> None:
+    receipts = _cloud_receipts()
+    selected = copy.deepcopy(receipts[operation])
+    if case == "noncanonical":
+        stdout = json.dumps(selected, indent=2, sort_keys=True).encode() + b"\n"
+    else:
+        if case == "schema":
+            selected["schema"] = "wrong-schema"
+        elif case == "hash":
+            selected["preflight_sha256"] = "0" * 64
+        elif case == "bootstrap-version":
+            selected["bootstrap_pip_version"] = "25.1.2"
+        elif case == "bootstrap-sha256":
+            selected["bootstrap_pip_sha256"] = "f" * 64
+        elif case == "lineage":
+            selected["foundation_apply_receipt_sha256"] = "0" * 64
+        elif case == "standard-base64-signature":
+            selected["signature_ed25519_b64url"] = (
+                base64.b64encode(b"\xfb" * 64)
+                .rstrip(b"=")
+                .decode("ascii")
+            )
+        else:
+            selected["cloud_mutation_performed"] = True
+        if case in {
+            "schema",
+            "bootstrap-version",
+            "bootstrap-sha256",
+            "lineage",
+            "false-flag",
+            "standard-base64-signature",
+        }:
+            hash_field = (
+                "receipt_sha256"
+                if operation != "cloud-preflight"
+                else "preflight_sha256"
+            )
+            omitted = {hash_field}
+            if operation == "cloud-install":
+                omitted.update({
+                    "signer_key_id",
+                    "signature_ed25519_b64url",
+                })
+            selected[hash_field] = outer.sha256_json({
+                key: item
+                for key, item in selected.items()
+                if key not in omitted
+            })
+        stdout = outer.canonical_json_bytes(selected) + b"\n"
+    kit_stream, bundle_stream = _streams(tmp_path)
+    transport, calls = _transport(
+        kit_stream=kit_stream,
+        bundle_stream=bundle_stream,
+        cloud_stdout_overrides={operation: stdout},
+    )
+
+    with pytest.raises(launcher.OwnerLauncherError, match=expected):
+        transport.transport_and_install_inert_cloud_bundle(
+            kit_stream=kit_stream,
+            bundle_stream=bundle_stream,
+        )
+
+    expected_order = ["cloud-verify", "cloud-preflight", "cloud-install"]
+    assert _cloud_operation_names(calls) == expected_order[
+        : expected_order.index(operation) + 1
+    ]
+
+
+def test_composite_replay_returns_identical_terminal(tmp_path: Path) -> None:
+    kit_stream, bundle_stream = _streams(tmp_path)
+    transport, calls = _transport(
+        kit_stream=kit_stream,
+        bundle_stream=bundle_stream,
+    )
+
+    first = transport.transport_and_install_inert_cloud_bundle(
+        kit_stream=kit_stream,
+        bundle_stream=bundle_stream,
+    )
+    second = transport.transport_and_install_inert_cloud_bundle(
+        kit_stream=kit_stream,
+        bundle_stream=bundle_stream,
+    )
+
+    assert second == first
+    assert _cloud_operation_names(calls) == [
+        "cloud-verify",
+        "cloud-preflight",
+        "cloud-install",
+    ] * 2
+
+
+def test_composite_public_surface_has_only_two_fixed_streams_and_no_journal() -> None:
+    method = transport_module.OwnerGateStage0IapTransport.__dict__[
+        "transport_and_install_inert_cloud_bundle"
+    ]
+    parameters = inspect.signature(method).parameters
+
+    assert tuple(parameters) == ("self", "kit_stream", "bundle_stream")
+    assert parameters["kit_stream"].kind is inspect.Parameter.KEYWORD_ONLY
+    assert parameters["bundle_stream"].kind is inspect.Parameter.KEYWORD_ONLY
+    assert all(
+        name not in parameters
+        for name in ("operation", "path", "argv", "url", "journal")
+    )
+    assert "journal" not in inspect.getsource(method)
 
 
 def test_fixed_iap_transport_rejects_remote_receipt_drift(tmp_path: Path) -> None:

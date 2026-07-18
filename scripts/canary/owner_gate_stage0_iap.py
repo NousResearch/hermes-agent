@@ -10,6 +10,7 @@ mutation.
 
 from __future__ import annotations
 
+import base64
 import hashlib
 import io
 import json
@@ -32,12 +33,17 @@ from scripts.canary import full_canary_owner_launcher as launcher
 from scripts.canary import owner_gate_foundation_apply as foundation_apply
 from scripts.canary import owner_gate_outer_stage0 as outer
 from scripts.canary import owner_gate_pre_foundation as pre_foundation
+from scripts.canary import owner_gate_stage0 as cloud_stage0
 from scripts.canary import owner_gate_trust as release_trust
 
 
-TRANSPORT_RECEIPT_SCHEMA = "muncho-owner-gate-iap-stage0-transport.v1"
+TRANSPORT_RECEIPT_SCHEMA = "muncho-owner-gate-iap-stage0-transport.v2"
+INERT_CLOUD_BUNDLE_TERMINAL_SCHEMA = (
+    "muncho-owner-gate-inert-cloud-bundle-terminal.v1"
+)
 MAX_STDOUT_BYTES = 1024 * 1024
 MAX_STDERR_BYTES = 64 * 1024
+MAX_CLOUD_RECEIPT_BYTES = 256 * 1024
 MAX_SEALER_BYTES = 128 * 1024 * 1024
 MAX_STREAM_BYTES = (
     len(outer.TREE_STREAM_MAGIC)
@@ -47,6 +53,7 @@ MAX_STREAM_BYTES = (
 )
 _SHA256 = launcher._SHA256
 _REVISION = launcher._RELEASE_SHA
+_ED25519_SIGNATURE_B64URL = re.compile(r"^[A-Za-z0-9_-]{86}$")
 _FOLDER_RESOURCE = re.compile(r"^folders/[1-9][0-9]{5,30}$")
 _ORGANIZATION_RESOURCE = re.compile(
     r"^organizations/[1-9][0-9]{5,30}$"
@@ -99,12 +106,26 @@ class RawFoundationChainArtifacts:
 
 @dataclass(frozen=True)
 class _FoundationProjection:
+    foundation_source_revision: str
+    foundation_source_tree_oid: str
     pre_foundation_authority_sha256: str
     foundation_apply_receipt_sha256: str
     project_ancestry_evidence_sha256: str
     project_ancestry_chain_sha256: str
     resource_ancestor_chain: tuple[str, ...]
     interpreter_sha256: str
+
+
+@dataclass(frozen=True)
+class _BoundInertCloudBundle:
+    source_tree_oid: str
+    package_sha256: str
+    interpreter_sha256: str
+    bootstrap_pip_version: str
+    bootstrap_pip_sha256: str
+    kit_release_id: str
+    trusted_runner_path: str
+    bundle_path: str
 
 
 def _read_foundation_artifact(path: Path, *, maximum: int) -> bytes:
@@ -195,6 +216,8 @@ def _load_foundation_projection(
             for item in chain.foundation_a.ancestry_evidence.ordered_chain[1:]
         )
         projection = _FoundationProjection(
+            foundation_source_revision=chain.foundation_source_revision,
+            foundation_source_tree_oid=chain.foundation_source_tree_oid,
             pre_foundation_authority_sha256=(
                 chain.pre_foundation_authority_sha256
             ),
@@ -222,7 +245,9 @@ def _load_foundation_projection(
             "owner_gate_stage0_foundation_chain_invalid"
         ) from None
     if (
-        _SHA256.fullmatch(projection.pre_foundation_authority_sha256) is None
+        _REVISION.fullmatch(projection.foundation_source_revision) is None
+        or _REVISION.fullmatch(projection.foundation_source_tree_oid) is None
+        or _SHA256.fullmatch(projection.pre_foundation_authority_sha256) is None
         or _SHA256.fullmatch(projection.foundation_apply_receipt_sha256) is None
         or _SHA256.fullmatch(projection.project_ancestry_evidence_sha256) is None
         or _SHA256.fullmatch(projection.project_ancestry_chain_sha256) is None
@@ -858,6 +883,129 @@ def expected_seal_receipt(
     return {**unsigned, "receipt_sha256": outer.sha256_json(unsigned)}
 
 
+def _decode_canonical_mapping(
+    raw: bytes,
+    *,
+    maximum: int,
+    error_code: str,
+) -> Mapping[str, Any]:
+    if type(raw) is not bytes or not raw or len(raw) > maximum:
+        raise launcher.OwnerLauncherError(error_code)
+    try:
+        value = json.loads(
+            raw.decode("ascii", errors="strict"),
+            parse_constant=lambda _value: (_ for _ in ()).throw(ValueError()),
+        )
+        canonical = _canonical(value)
+    except (UnicodeError, TypeError, ValueError, json.JSONDecodeError):
+        raise launcher.OwnerLauncherError(error_code) from None
+    if not isinstance(value, dict) or canonical != raw:
+        raise launcher.OwnerLauncherError(error_code)
+    return value
+
+
+def _decode_canonical_stdout(
+    raw: bytes,
+    *,
+    error_code: str,
+) -> Mapping[str, Any]:
+    if (
+        type(raw) is not bytes
+        or not raw.endswith(b"\n")
+        or raw == b"\n"
+        or b"\n" in raw[:-1]
+    ):
+        raise launcher.OwnerLauncherError(error_code)
+    return _decode_canonical_mapping(
+        raw[:-1],
+        maximum=MAX_CLOUD_RECEIPT_BYTES,
+        error_code=error_code,
+    )
+
+
+def _validate_self_hash(
+    value: Mapping[str, Any],
+    *,
+    field: str,
+    error_code: str,
+) -> None:
+    digest = value.get(field)
+    unsigned = {key: item for key, item in value.items() if key != field}
+    if (
+        _SHA256.fullmatch(str(digest or "")) is None
+        or digest != outer.sha256_json(unsigned)
+    ):
+        raise launcher.OwnerLauncherError(error_code)
+
+
+_VERIFY_RECEIPT_FIELDS = frozenset({
+    "schema",
+    "release_revision",
+    "package_sha256",
+    "verified",
+    "incoming_payload_code_executed_before_verification",
+    "receipt_sha256",
+})
+_PREFLIGHT_RECEIPT_FIELDS = frozenset({
+    "schema",
+    "release_revision",
+    "python_version",
+    "python_sha256",
+    "openssl_version",
+    "openssl_ed25519_rawin_verified",
+    "systemd_version",
+    "systemd_sysusers_available",
+    "systemd_tmpfiles_available",
+    "python_venv_available",
+    "python_venv_without_pip_available",
+    "bootstrap_pip_version",
+    "bootstrap_pip_sha256",
+    "executable_identities_sha256",
+    "network_install_required",
+    "cloud_mutation_performed",
+    "activation_performed",
+    "preflight_sha256",
+})
+_INSTALL_PHASES_WITHOUT_RECEIPT = (
+    "reverify_bundle_and_runtime",
+    "install_fixed_identities_and_directories",
+    "generate_or_verify_authority_receipt_key",
+    "install_root_owned_configuration_units_firewall_and_hosts",
+    "bootstrap_and_verify_canonical_databases",
+    "seal_and_publish_immutable_release",
+)
+_INSTALL_RECEIPT_FIELDS = frozenset({
+    "schema",
+    "release_revision",
+    "package_sha256",
+    "source_tree_oid",
+    "pre_foundation_authority_sha256",
+    "foundation_apply_receipt_sha256",
+    "project_ancestry_evidence_sha256",
+    "project_ancestry_chain_sha256",
+    "resource_ancestor_chain",
+    "installed_at_unix",
+    "release_path",
+    "release_tree_sha256",
+    "transaction_prefix_sha256",
+    "phase_evidence_sha256",
+    "authority_receipt_public_key_sha256",
+    "authority_receipt_public_key_id",
+    "credential_id_sha256",
+    "executor_hosts_receipt_sha256",
+    "current_release_selected",
+    "systemd_units_enabled",
+    "activation_performed",
+    "activation_seal_created",
+    "iam_binding_created",
+    "cloud_mutation_performed",
+    "caddy_cutover_performed",
+    "receipt_sha256",
+    "signer_key_id",
+    "signature_ed25519_b64url",
+})
+
+
 class OwnerGateStage0IapTransport(launcher.OwnerGateIapTransport):
     """Fixed root bootstrap operations over the already pinned IAP identity."""
 
@@ -894,6 +1042,119 @@ class OwnerGateStage0IapTransport(launcher.OwnerGateIapTransport):
             release_sha
         )
         self._stage0_exchange = exchange or _bounded_process_exchange
+
+    def _bind_inert_cloud_bundle(
+        self,
+        *,
+        kit_stream: PinnedExactTreeStream,
+        bundle_stream: PinnedExactTreeStream,
+    ) -> _BoundInertCloudBundle:
+        error_code = "owner_gate_stage0_stream_pair_invalid"
+        if (
+            not isinstance(kit_stream, PinnedExactTreeStream)
+            or kit_stream.purpose != "outer-stage0-kit"
+            or _SHA256.fullmatch(kit_stream.release_id or "") is None
+            or kit_stream.manifest.get("release_id") != kit_stream.release_id
+            or not isinstance(bundle_stream, PinnedExactTreeStream)
+            or bundle_stream.purpose != "owner-gate-bundle"
+            or bundle_stream.release_id != self._release_sha
+            or bundle_stream.manifest.get("release_id") != self._release_sha
+        ):
+            raise launcher.OwnerLauncherError(error_code)
+        kit_manifest_raw = kit_stream.member("outer-stage0-manifest.json")
+        if _sha256(kit_manifest_raw) != kit_stream.release_id:
+            raise launcher.OwnerLauncherError(error_code)
+        try:
+            kit_manifest = outer.validate_manifest(
+                _decode_canonical_mapping(
+                    kit_manifest_raw,
+                    maximum=outer.MAX_MANIFEST_BYTES,
+                    error_code=error_code,
+                )
+            )
+        except (
+            UnicodeError,
+            ValueError,
+            json.JSONDecodeError,
+            outer.OwnerGateOuterStage0Error,
+        ):
+            raise launcher.OwnerLauncherError(error_code) from None
+        package_raw = bundle_stream.member("package-manifest.json")
+        package = _decode_canonical_mapping(
+            package_raw,
+            maximum=cloud_stage0.MAX_JSON_BYTES,
+            error_code=error_code,
+        )
+        if frozenset(package) != cloud_stage0.MANIFEST_FIELDS:
+            raise launcher.OwnerLauncherError(error_code)
+        _validate_self_hash(
+            package,
+            field="package_sha256",
+            error_code=error_code,
+        )
+        try:
+            bootstrap_pip = cloud_stage0._bootstrap_pip_artifact(package)
+        except cloud_stage0.OwnerGateStage0Error:
+            raise launcher.OwnerLauncherError(error_code) from None
+        source_tree_oid = package.get("source_tree_oid")
+        package_sha256 = package.get("package_sha256")
+        interpreter_sha256 = package.get("interpreter_sha256")
+        lineage = {
+            "pre_foundation_authority_sha256": (
+                self._foundation.pre_foundation_authority_sha256
+            ),
+            "foundation_apply_receipt_sha256": (
+                self._foundation.foundation_apply_receipt_sha256
+            ),
+            "project_ancestry_evidence_sha256": (
+                self._foundation.project_ancestry_evidence_sha256
+            ),
+            "project_ancestry_chain_sha256": (
+                self._foundation.project_ancestry_chain_sha256
+            ),
+            "resource_ancestor_chain": list(
+                self._foundation.resource_ancestor_chain
+            ),
+        }
+        if (
+            package.get("schema") != cloud_stage0.PACKAGE_SCHEMA
+            or package.get("release_revision") != self._release_sha
+            or self._foundation.foundation_source_revision
+            != self._release_sha
+            or self._foundation.foundation_source_tree_oid
+            != source_tree_oid
+            or _REVISION.fullmatch(str(source_tree_oid or "")) is None
+            or kit_manifest.get("source_release_revision")
+            != self._release_sha
+            or kit_manifest.get("source_tree_oid") != source_tree_oid
+            or _SHA256.fullmatch(str(package_sha256 or "")) is None
+            or interpreter_sha256 != self._foundation.interpreter_sha256
+            or package.get("release_root")
+            != str(cloud_stage0.RELEASE_BASE / self._release_sha)
+            or package.get("activation_performed") is not False
+            or package.get("cloud_mutation_performed") is not False
+            or package.get("caller_self_hash_is_authority") is not False
+            or any(package.get(name) != value for name, value in lineage.items())
+        ):
+            raise launcher.OwnerLauncherError(error_code)
+        kit_stream.assert_stable()
+        bundle_stream.assert_stable()
+        return _BoundInertCloudBundle(
+            source_tree_oid=str(source_tree_oid),
+            package_sha256=str(package_sha256),
+            interpreter_sha256=str(interpreter_sha256),
+            bootstrap_pip_version=str(bootstrap_pip["version"]),
+            bootstrap_pip_sha256=str(bootstrap_pip["sha256"]),
+            kit_release_id=kit_stream.release_id,
+            trusted_runner_path=str(
+                outer.RELEASE_BASE
+                / kit_stream.release_id
+                / outer.TRUSTED_RUNNER
+            ),
+            bundle_path=str(
+                outer.BUNDLE_INCOMING_BASE / bundle_stream.release_id
+            ),
+        )
 
     def _attest_remote_interpreter(self) -> Mapping[str, Any]:
         digest = self._foundation.interpreter_sha256
@@ -1060,11 +1321,13 @@ class OwnerGateStage0IapTransport(launcher.OwnerGateIapTransport):
             raise launcher.OwnerLauncherError("owner_gate_stage0_iap_argv_invalid")
         return argv
 
-    def _execute(
+    def _exchange_fixed_operation(
         self,
         operation: _FixedOperation,
         input_source: BinaryIO,
-    ) -> bytes:
+        *,
+        maximum_stdout_bytes: int = MAX_STDOUT_BYTES,
+    ) -> _ProcessResult:
         before = self._authority_snapshot()
         argv = self._root_argv(before, operation)
         environment = self._environment(before[0])
@@ -1074,7 +1337,7 @@ class OwnerGateStage0IapTransport(launcher.OwnerGateIapTransport):
                 environment,
                 input_source,
                 maximum_input_bytes=operation.maximum_input_bytes,
-                maximum_stdout_bytes=MAX_STDOUT_BYTES,
+                maximum_stdout_bytes=maximum_stdout_bytes,
                 maximum_stderr_bytes=MAX_STDERR_BYTES,
                 timeout_seconds=operation.timeout_seconds,
                 popen_factory=self._popen_factory,
@@ -1089,8 +1352,19 @@ class OwnerGateStage0IapTransport(launcher.OwnerGateIapTransport):
             not isinstance(result, _ProcessResult)
             or result.returncode != 0
             or result.stderr != b""
-            or result.stdout != operation.expected_stdout
         ):
+            raise launcher.OwnerLauncherError(
+                f"owner_gate_stage0_iap_{operation.name}_failed"
+            )
+        return result
+
+    def _execute(
+        self,
+        operation: _FixedOperation,
+        input_source: BinaryIO,
+    ) -> bytes:
+        result = self._exchange_fixed_operation(operation, input_source)
+        if result.stdout != operation.expected_stdout:
             raise launcher.OwnerLauncherError(
                 f"owner_gate_stage0_iap_{operation.name}_failed"
             )
@@ -1098,6 +1372,22 @@ class OwnerGateStage0IapTransport(launcher.OwnerGateIapTransport):
 
     def _execute_empty(self, operation: _FixedOperation) -> bytes:
         return self._execute(operation, io.BytesIO(b""))
+
+    def _execute_canonical_receipt(
+        self,
+        operation: _FixedOperation,
+        *,
+        error_code: str,
+    ) -> Mapping[str, Any]:
+        result = self._exchange_fixed_operation(
+            operation,
+            io.BytesIO(b""),
+            maximum_stdout_bytes=MAX_CLOUD_RECEIPT_BYTES,
+        )
+        return _decode_canonical_stdout(
+            result.stdout,
+            error_code=error_code,
+        )
 
     def _materialize_sealer(self, payload: bytes, sha256: str) -> str:
         if (
@@ -1291,24 +1581,265 @@ class OwnerGateStage0IapTransport(launcher.OwnerGateIapTransport):
         self._execute_empty(operation)
         return expected
 
+    def _validate_cloud_verify_receipt(
+        self,
+        value: Mapping[str, Any],
+        *,
+        binding: _BoundInertCloudBundle,
+    ) -> Mapping[str, Any]:
+        error_code = "owner_gate_stage0_cloud_verify_receipt_invalid"
+        if (
+            frozenset(value) != _VERIFY_RECEIPT_FIELDS
+            or value.get("schema")
+            != "muncho-owner-gate-stage0-bundle-verification.v1"
+            or value.get("release_revision") != self._release_sha
+            or value.get("package_sha256") != binding.package_sha256
+            or value.get("verified") is not True
+            or value.get("incoming_payload_code_executed_before_verification")
+            is not False
+        ):
+            raise launcher.OwnerLauncherError(error_code)
+        _validate_self_hash(
+            value,
+            field="receipt_sha256",
+            error_code=error_code,
+        )
+        return value
+
+    def _validate_cloud_preflight_receipt(
+        self,
+        value: Mapping[str, Any],
+        *,
+        binding: _BoundInertCloudBundle,
+    ) -> Mapping[str, Any]:
+        error_code = "owner_gate_stage0_cloud_preflight_receipt_invalid"
+        true_flags = (
+            "openssl_ed25519_rawin_verified",
+            "systemd_sysusers_available",
+            "systemd_tmpfiles_available",
+            "python_venv_available",
+            "python_venv_without_pip_available",
+        )
+        false_flags = (
+            "network_install_required",
+            "cloud_mutation_performed",
+            "activation_performed",
+        )
+        if (
+            frozenset(value) != _PREFLIGHT_RECEIPT_FIELDS
+            or value.get("schema") != cloud_stage0.PREFLIGHT_SCHEMA
+            or value.get("release_revision") != self._release_sha
+            or value.get("python_version")
+            != f"Python {cloud_stage0.PYTHON_VERSION}"
+            or value.get("python_sha256") != binding.interpreter_sha256
+            or not isinstance(value.get("openssl_version"), str)
+            or not value["openssl_version"].startswith(
+                cloud_stage0.OPENSSL_VERSION_PREFIX
+            )
+            or not isinstance(value.get("systemd_version"), str)
+            or not value["systemd_version"].startswith("systemd 252 ")
+            or value.get("bootstrap_pip_version")
+            != binding.bootstrap_pip_version
+            or value.get("bootstrap_pip_sha256")
+            != binding.bootstrap_pip_sha256
+            or _SHA256.fullmatch(
+                str(value.get("executable_identities_sha256", ""))
+            )
+            is None
+            or any(value.get(name) is not True for name in true_flags)
+            or any(value.get(name) is not False for name in false_flags)
+        ):
+            raise launcher.OwnerLauncherError(error_code)
+        _validate_self_hash(
+            value,
+            field="preflight_sha256",
+            error_code=error_code,
+        )
+        return value
+
+    def _validate_cloud_install_receipt(
+        self,
+        value: Mapping[str, Any],
+        *,
+        binding: _BoundInertCloudBundle,
+    ) -> Mapping[str, Any]:
+        error_code = "owner_gate_stage0_cloud_install_receipt_invalid"
+        phase_evidence = value.get("phase_evidence_sha256")
+        lineage = {
+            "pre_foundation_authority_sha256": (
+                self._foundation.pre_foundation_authority_sha256
+            ),
+            "foundation_apply_receipt_sha256": (
+                self._foundation.foundation_apply_receipt_sha256
+            ),
+            "project_ancestry_evidence_sha256": (
+                self._foundation.project_ancestry_evidence_sha256
+            ),
+            "project_ancestry_chain_sha256": (
+                self._foundation.project_ancestry_chain_sha256
+            ),
+            "resource_ancestor_chain": list(
+                self._foundation.resource_ancestor_chain
+            ),
+        }
+        digest_fields = (
+            "release_tree_sha256",
+            "transaction_prefix_sha256",
+            "authority_receipt_public_key_sha256",
+            "authority_receipt_public_key_id",
+            "credential_id_sha256",
+            "executor_hosts_receipt_sha256",
+        )
+        false_flags = (
+            "current_release_selected",
+            "activation_performed",
+            "activation_seal_created",
+            "iam_binding_created",
+            "cloud_mutation_performed",
+            "caddy_cutover_performed",
+        )
+        signature = value.get("signature_ed25519_b64url")
+        try:
+            signature_raw = base64.urlsafe_b64decode(
+                f"{signature}==".encode("ascii", errors="strict")
+            )
+        except (UnicodeError, ValueError):
+            signature_raw = b""
+        if (
+            frozenset(value) != _INSTALL_RECEIPT_FIELDS
+            or value.get("schema")
+            != "muncho-owner-gate-offline-install-receipt.v1"
+            or value.get("release_revision") != self._release_sha
+            or value.get("package_sha256") != binding.package_sha256
+            or value.get("source_tree_oid") != binding.source_tree_oid
+            or any(value.get(name) != expected for name, expected in lineage.items())
+            or type(value.get("installed_at_unix")) is not int
+            or value["installed_at_unix"] <= 0
+            or value.get("release_path")
+            != str(cloud_stage0.RELEASE_BASE / self._release_sha)
+            or any(
+                _SHA256.fullmatch(str(value.get(name, ""))) is None
+                for name in digest_fields
+            )
+            or not isinstance(phase_evidence, dict)
+            or frozenset(phase_evidence)
+            != frozenset(_INSTALL_PHASES_WITHOUT_RECEIPT)
+            or any(
+                _SHA256.fullmatch(str(phase_evidence.get(name, ""))) is None
+                for name in _INSTALL_PHASES_WITHOUT_RECEIPT
+            )
+            or value.get("systemd_units_enabled") != []
+            or any(value.get(name) is not False for name in false_flags)
+            or value.get("signer_key_id")
+            != value.get("authority_receipt_public_key_id")
+            or not isinstance(signature, str)
+            or _ED25519_SIGNATURE_B64URL.fullmatch(signature) is None
+            or len(signature_raw) != 64
+            or base64.urlsafe_b64encode(signature_raw)
+            .rstrip(b"=")
+            .decode("ascii")
+            != signature
+        ):
+            raise launcher.OwnerLauncherError(error_code)
+        unsigned = {
+            key: item
+            for key, item in value.items()
+            if key
+            not in {
+                "receipt_sha256",
+                "signer_key_id",
+                "signature_ed25519_b64url",
+            }
+        }
+        if (
+            _SHA256.fullmatch(str(value.get("receipt_sha256", ""))) is None
+            or value["receipt_sha256"] != outer.sha256_json(unsigned)
+        ):
+            raise launcher.OwnerLauncherError(error_code)
+        return value
+
+    def _run_cloud_verify(
+        self,
+        binding: _BoundInertCloudBundle,
+    ) -> Mapping[str, Any]:
+        value = self._execute_canonical_receipt(
+            _FixedOperation(
+                "cloud_verify",
+                (
+                    "/usr/bin/python3",
+                    "-I",
+                    "-B",
+                    binding.trusted_runner_path,
+                    "cloud-verify",
+                    "--bundle",
+                    binding.bundle_path,
+                ),
+                b"",
+                0,
+                self._timeout_seconds,
+            ),
+            error_code="owner_gate_stage0_cloud_verify_receipt_invalid",
+        )
+        return self._validate_cloud_verify_receipt(value, binding=binding)
+
+    def _run_cloud_preflight(
+        self,
+        binding: _BoundInertCloudBundle,
+    ) -> Mapping[str, Any]:
+        value = self._execute_canonical_receipt(
+            _FixedOperation(
+                "cloud_preflight",
+                (
+                    "/usr/bin/python3",
+                    "-I",
+                    "-B",
+                    binding.trusted_runner_path,
+                    "cloud-preflight",
+                    "--bundle",
+                    binding.bundle_path,
+                ),
+                b"",
+                0,
+                self._timeout_seconds,
+            ),
+            error_code="owner_gate_stage0_cloud_preflight_receipt_invalid",
+        )
+        return self._validate_cloud_preflight_receipt(value, binding=binding)
+
+    def _run_cloud_install(
+        self,
+        binding: _BoundInertCloudBundle,
+    ) -> Mapping[str, Any]:
+        value = self._execute_canonical_receipt(
+            _FixedOperation(
+                "cloud_install",
+                (
+                    "/usr/bin/python3",
+                    "-I",
+                    "-B",
+                    binding.trusted_runner_path,
+                    "cloud-install",
+                    "--bundle",
+                    binding.bundle_path,
+                ),
+                b"",
+                0,
+                self._timeout_seconds,
+            ),
+            error_code="owner_gate_stage0_cloud_install_receipt_invalid",
+        )
+        return self._validate_cloud_install_receipt(value, binding=binding)
+
     def transport_exact_stage0_and_bundle(
         self,
         *,
         kit_stream: PinnedExactTreeStream,
         bundle_stream: PinnedExactTreeStream,
     ) -> Mapping[str, Any]:
-        if (
-            not isinstance(kit_stream, PinnedExactTreeStream)
-            or kit_stream.purpose != "outer-stage0-kit"
-            or not isinstance(bundle_stream, PinnedExactTreeStream)
-            or bundle_stream.purpose != "owner-gate-bundle"
-            or kit_stream.manifest.get("release_id") != kit_stream.release_id
-            or bundle_stream.manifest.get("release_id")
-            != bundle_stream.release_id
-        ):
-            raise launcher.OwnerLauncherError(
-                "owner_gate_stage0_stream_pair_invalid"
-            )
+        binding = self._bind_inert_cloud_bundle(
+            kit_stream=kit_stream,
+            bundle_stream=bundle_stream,
+        )
         interpreter = self._attest_remote_interpreter()
         sealer_payload, sealer_sha256 = self._stage0_sealer_source.snapshot()
         sealer_path = self._materialize_sealer(sealer_payload, sealer_sha256)
@@ -1339,6 +1870,9 @@ class OwnerGateStage0IapTransport(launcher.OwnerGateIapTransport):
         unsigned = {
             "schema": TRANSPORT_RECEIPT_SCHEMA,
             "release_sha": self._release_sha,
+            "source_tree_oid": binding.source_tree_oid,
+            "package_sha256": binding.package_sha256,
+            "kit_release_id": binding.kit_release_id,
             "project": launcher.PROJECT,
             "zone": launcher.ZONE,
             "vm_name": self._VM_NAME,
@@ -1386,10 +1920,105 @@ class OwnerGateStage0IapTransport(launcher.OwnerGateIapTransport):
         }
         return {**unsigned, "receipt_sha256": outer.sha256_json(unsigned)}
 
+    def transport_and_install_inert_cloud_bundle(
+        self,
+        *,
+        kit_stream: PinnedExactTreeStream,
+        bundle_stream: PinnedExactTreeStream,
+    ) -> Mapping[str, Any]:
+        """Transfer and install the exact cloud bundle without activation."""
+
+        binding = self._bind_inert_cloud_bundle(
+            kit_stream=kit_stream,
+            bundle_stream=bundle_stream,
+        )
+        transport = self.transport_exact_stage0_and_bundle(
+            kit_stream=kit_stream,
+            bundle_stream=bundle_stream,
+        )
+        verify = self._run_cloud_verify(binding)
+        preflight = self._run_cloud_preflight(binding)
+        install = self._run_cloud_install(binding)
+        kit_stream.assert_stable()
+        bundle_stream.assert_stable()
+        if (
+            transport.get("release_sha") != self._release_sha
+            or transport.get("source_tree_oid") != binding.source_tree_oid
+            or transport.get("package_sha256") != binding.package_sha256
+            or transport.get("kit_release_id") != binding.kit_release_id
+            or transport.get("receipt_sha256")
+            != outer.sha256_json({
+                key: item
+                for key, item in transport.items()
+                if key != "receipt_sha256"
+            })
+        ):
+            raise launcher.OwnerLauncherError(
+                "owner_gate_stage0_transport_receipt_invalid"
+            )
+        unsigned = {
+            "schema": INERT_CLOUD_BUNDLE_TERMINAL_SCHEMA,
+            "release_sha": self._release_sha,
+            "source_tree_oid": binding.source_tree_oid,
+            "package_sha256": binding.package_sha256,
+            "kit_release_id": binding.kit_release_id,
+            "trusted_runner_path": binding.trusted_runner_path,
+            "bundle_path": binding.bundle_path,
+            "pre_foundation_authority_sha256": (
+                self._foundation.pre_foundation_authority_sha256
+            ),
+            "foundation_apply_receipt_sha256": (
+                self._foundation.foundation_apply_receipt_sha256
+            ),
+            "project_ancestry_evidence_sha256": (
+                self._foundation.project_ancestry_evidence_sha256
+            ),
+            "project_ancestry_chain_sha256": (
+                self._foundation.project_ancestry_chain_sha256
+            ),
+            "resource_ancestor_chain": list(
+                self._foundation.resource_ancestor_chain
+            ),
+            "operation_order": [
+                "transport_exact_stage0_and_bundle",
+                "cloud-verify",
+                "cloud-preflight",
+                "cloud-install",
+            ],
+            "transport_receipt_sha256": transport["receipt_sha256"],
+            "cloud_verify_receipt_sha256": verify["receipt_sha256"],
+            "cloud_preflight_receipt_sha256": preflight[
+                "preflight_sha256"
+            ],
+            "cloud_install_receipt_sha256": install["receipt_sha256"],
+            "cloud_install_receipt_file_sha256": _sha256(
+                _canonical(install)
+            ),
+            "cloud_install_receipt": dict(install),
+            "cloud_install_signature_framing_validated": True,
+            "cloud_install_signature_cryptographically_verified": False,
+            "inert_cloud_bundle_installed": True,
+            "host_filesystem_materialization_performed": True,
+            "current_release_selected": False,
+            "systemd_units_enabled": [],
+            "service_activation_performed": False,
+            "activation_performed": False,
+            "activation_seal_created": False,
+            "iam_binding_created": False,
+            "caddy_cutover_performed": False,
+            "cloud_mutation_performed": False,
+            "cloud_control_plane_mutation_performed": False,
+        }
+        return {
+            **unsigned,
+            "terminal_receipt_sha256": outer.sha256_json(unsigned),
+        }
+
 
 __all__ = [
     "MAX_STDERR_BYTES",
     "MAX_STDOUT_BYTES",
+    "INERT_CLOUD_BUNDLE_TERMINAL_SCHEMA",
     "OwnerGateStage0IapTransport",
     "PinnedExactTreeStream",
     "RawFoundationChainArtifacts",

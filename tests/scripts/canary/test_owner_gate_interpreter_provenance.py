@@ -17,6 +17,18 @@ RELEASE = "a" * 40
 NOW = 2_000_000_000
 IMAGE_ID = "1234567890123456789"
 PYTHON_SHA = "9" * 64
+REMOTE_PROBE_SCRIPT = " ".join((
+    "set -eu;",
+    "export LC_ALL=C;",
+    "/usr/bin/printf 'link='; /usr/bin/readlink -- /usr/bin/python3;",
+    "/usr/bin/printf 'linkstat='; /usr/bin/stat -c '%u|%g|%a|%h|%F' -- /usr/bin/python3;",
+    "/usr/bin/printf 'stat='; /usr/bin/stat -c '%u|%g|%a|%h|%F|%s' -- /usr/bin/python3.11;",
+    "/usr/bin/printf 'owner='; /usr/bin/dpkg-query -S /usr/bin/python3.11;",
+    "/usr/bin/printf 'package='; /usr/bin/dpkg-query -W -f='${db:Status-Abbrev}|${binary:Package}|${Version}|${Architecture}\\n' python3.11-minimal;",
+    "/usr/bin/dpkg --verify python3.11-minimal; /usr/bin/printf 'verify=clean\\n';",
+    "/usr/bin/printf 'version='; /usr/bin/python3.11 -I -S -B --version 2>&1;",
+    "/usr/bin/printf 'sha256='; /usr/bin/sha256sum -- /usr/bin/python3.11 | /usr/bin/cut -d' ' -f1;",
+))
 
 
 def _raw(value: object) -> bytes:
@@ -67,6 +79,7 @@ class _Runner:
         self.second_sha = second_sha
         self.bad_image = bad_image
         self.ssh_calls = 0
+        self.disk_describe_names: list[str] = []
 
     @staticmethod
     def _dry_run(argv: Sequence[str]) -> bytes:
@@ -77,6 +90,7 @@ class _Runner:
         remote = next(
             item.split("=", 1)[1] for item in argv if item.startswith("--command=")
         )
+        assert remote == shlex.join(("/bin/sh", "-c", REMOTE_PROBE_SCRIPT))
         flags = tuple(
             item.removeprefix("--ssh-flag=")
             for item in argv
@@ -103,7 +117,9 @@ class _Runner:
             *flags,
             f"{launcher.OS_LOGIN_USERNAME}@compute.{host.instance_id}",
             "--",
-            *remote.split(" "),
+            "/bin/sh",
+            "-c",
+            REMOTE_PROBE_SCRIPT,
         )
         return (shlex.join(expected) + "\n").encode()
 
@@ -129,7 +145,12 @@ class _Runner:
         if "instances" in args:
             name = args[args.index("describe") + 1]
             host = next(item for item in provenance.FIXED_HOSTS if item.name == name)
-            disk = f"{name}-boot"
+            disk = name
+            device = (
+                "persistent-disk-0"
+                if host == provenance.FIXED_HOSTS[1]
+                else disk
+            )
             value = {
                 "id": host.instance_id,
                 "name": name,
@@ -140,7 +161,7 @@ class _Runner:
                 "status": "RUNNING",
                 "disks": [{
                     "boot": True,
-                    "deviceName": disk,
+                    "deviceName": device,
                     "source": (
                         "https://www.googleapis.com/compute/v1/projects/"
                         f"{foundation.PROJECT}/zones/{foundation.ZONE}/disks/{disk}"
@@ -150,6 +171,7 @@ class _Runner:
             return provenance.CapturedCommand(0, _raw(value))
         if "disks" in args:
             name = args[args.index("describe") + 1]
+            self.disk_describe_names.append(name)
             zone = (
                 "https://www.googleapis.com/compute/v1/projects/"
                 f"{foundation.PROJECT}/zones/{foundation.ZONE}"
@@ -218,8 +240,124 @@ def test_instance_command_projects_attached_disks_with_list_slice() -> None:
     )
 
 
+def test_ssh_dry_run_keeps_remote_script_as_one_shell_argument() -> None:
+    host = provenance.FIXED_HOSTS[0]
+    known_hosts = _KnownHosts(expected_instance_id=host.instance_id)
+    argv = provenance._ssh_argv(
+        prefix=_Executable.prefix,
+        host=host,
+        account=owner_reauth.OWNER_ACCOUNT,
+        known_hosts=known_hosts,  # type: ignore[arg-type]
+    )
+    raw = _Runner._dry_run(argv)
+    observed = tuple(shlex.split(raw.decode().rstrip("\n"), posix=True))
+    remote = next(
+        item.split("=", 1)[1] for item in argv if item.startswith("--command=")
+    )
+
+    assert observed[-3:] == ("/bin/sh", "-c", REMOTE_PROBE_SCRIPT)
+    assert tuple(remote.split(" ")) != observed[-3:]
+    provenance._validate_ssh_dry_run(
+        raw,
+        argv=argv,
+        prefix=_Executable.prefix,
+        host=host,
+        known_hosts=known_hosts,  # type: ignore[arg-type]
+    )
+
+
+def test_instance_uses_source_resource_name_when_device_name_differs() -> None:
+    host = provenance.FIXED_HOSTS[1]
+    zone = (
+        "https://www.googleapis.com/compute/v1/projects/"
+        f"{foundation.PROJECT}/zones/{foundation.ZONE}"
+    )
+    source = f"{zone}/disks/{host.name}"
+
+    normalized, disk_name = provenance._validate_instance(
+        {
+            "id": host.instance_id,
+            "name": host.name,
+            "zone": zone,
+            "status": "RUNNING",
+            "disks": [{
+                "boot": True,
+                "deviceName": "persistent-disk-0",
+                "source": source,
+            }],
+        },
+        host=host,
+    )
+
+    assert disk_name == host.name
+    assert normalized["boot_disk"] == {
+        "deviceName": "persistent-disk-0",
+        "source": source,
+    }
+
+
+@pytest.mark.parametrize(
+    "source",
+    [
+        (
+            "https://www.googleapis.com/compute/v1/projects/other-project/zones/"
+            f"{foundation.ZONE}/disks/{launcher.VM_NAME}"
+        ),
+        (
+            "https://www.googleapis.com/compute/v1/projects/"
+            f"{foundation.PROJECT}/zones/other-zone/disks/{launcher.VM_NAME}"
+        ),
+        (
+            "https://www.googleapis.com/compute/v1/projects/"
+            f"{foundation.PROJECT}/zones/{foundation.ZONE}/disks/"
+        ),
+        (
+            "https://www.googleapis.com/compute/v1/projects/"
+            f"{foundation.PROJECT}/zones/{foundation.ZONE}/disks/"
+            f"{launcher.VM_NAME}/extra"
+        ),
+        (
+            "https://www.googleapis.com/compute/v1/projects/"
+            f"{foundation.PROJECT}/zones/{foundation.ZONE}/disks/"
+            f"{launcher.VM_NAME}?alt=json"
+        ),
+        (
+            "https://www.googleapis.com/compute/v1/projects/"
+            f"{foundation.PROJECT}/zones/{foundation.ZONE}/disks/"
+            f"{launcher.VM_NAME}#fragment"
+        ),
+    ],
+)
+def test_instance_rejects_noncanonical_disk_source(source: str) -> None:
+    host = provenance.FIXED_HOSTS[1]
+    zone = (
+        "https://www.googleapis.com/compute/v1/projects/"
+        f"{foundation.PROJECT}/zones/{foundation.ZONE}"
+    )
+
+    with pytest.raises(
+        provenance.OwnerGateInterpreterProvenanceError,
+        match="owner_gate_interpreter_instance_invalid",
+    ):
+        provenance._validate_instance(
+            {
+                "id": host.instance_id,
+                "name": host.name,
+                "zone": zone,
+                "status": "RUNNING",
+                "disks": [{
+                    "boot": True,
+                    "deviceName": "persistent-disk-0",
+                    "source": source,
+                }],
+            },
+            host=host,
+        )
+
+
 def test_two_fixed_hosts_bind_exact_image_package_and_digest() -> None:
-    evidence = _collect(_Runner())
+    runner = _Runner()
+    evidence = _collect(runner)
 
     assert evidence["interpreter_sha256"] == PYTHON_SHA
     assert evidence["image"]["id"] == IMAGE_ID
@@ -228,6 +366,18 @@ def test_two_fixed_hosts_bind_exact_image_package_and_digest() -> None:
         launcher.VM_INSTANCE_ID,
     ]
     assert evidence["package_version"] == "3.11.2-6+deb12u7"
+    assert runner.disk_describe_names == [
+        foundation.PRODUCTION_SOURCE_VM,
+        launcher.VM_NAME,
+    ] * 2
+    assert evidence["hosts"][1]["instance"]["boot_disk"] == {
+        "deviceName": "persistent-disk-0",
+        "source": (
+            "https://www.googleapis.com/compute/v1/projects/"
+            f"{foundation.PROJECT}/zones/{foundation.ZONE}/disks/{launcher.VM_NAME}"
+        ),
+    }
+    assert evidence["hosts"][1]["boot_disk"]["name"] == launcher.VM_NAME
     assert evidence["evidence_sha256"] == provenance._sha256(
         provenance._canonical({
             key: value for key, value in evidence.items() if key != "evidence_sha256"
@@ -302,12 +452,14 @@ def test_validator_rejects_expired_evidence() -> None:
 
 @pytest.mark.parametrize(
     "tamper",
-    ["host_instance_id", "boot_image_id", "probe_digest"],
+    ["host_instance_id", "boot_device_name", "boot_image_id", "probe_digest"],
 )
 def test_validator_rejects_rehashed_fixed_host_tamper(tamper: str) -> None:
     evidence = copy.deepcopy(_collect(_Runner()))
     if tamper == "host_instance_id":
         evidence["hosts"][0]["host"]["instance_id"] = "999"
+    elif tamper == "boot_device_name":
+        evidence["hosts"][0]["instance"]["boot_disk"]["deviceName"] = "INVALID"
     elif tamper == "boot_image_id":
         evidence["hosts"][0]["boot_disk"]["sourceImageId"] = "999"
     else:

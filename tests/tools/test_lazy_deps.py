@@ -27,7 +27,7 @@ class TestSpecSafety:
     @pytest.mark.parametrize("spec", [
         "mistralai>=2.3.0,<3",
         "elevenlabs>=1.0,<2",
-        "honcho-ai>=2.0.1,<3",
+        "honcho-ai>=2.2.0,<3",
         "boto3>=1.35.0,<2",
         "mautrix[encryption]>=0.20,<1",
         "google-api-python-client>=2.100,<3",
@@ -253,13 +253,13 @@ class TestIsSatisfiedVersionAware:
         monkeypatch.setattr(_md, "version", _version)
 
     def test_exact_pin_match_returns_true(self, monkeypatch):
-        self._fake_version(monkeypatch, {"honcho-ai": "2.0.1"})
-        assert ld._is_satisfied("honcho-ai==2.0.1") is True
+        self._fake_version(monkeypatch, {"honcho-ai": "2.2.0"})
+        assert ld._is_satisfied("honcho-ai==2.2.0") is True
 
     def test_exact_pin_mismatch_returns_false(self, monkeypatch):
-        # Installed 2.0.0, spec requires 2.0.1 → False (needs upgrade).
-        self._fake_version(monkeypatch, {"honcho-ai": "2.0.0"})
-        assert ld._is_satisfied("honcho-ai==2.0.1") is False
+        # Installed 2.1.2, spec requires 2.2.0 → False (needs upgrade).
+        self._fake_version(monkeypatch, {"honcho-ai": "2.1.2"})
+        assert ld._is_satisfied("honcho-ai==2.2.0") is False
 
     def test_range_within_returns_true(self, monkeypatch):
         self._fake_version(monkeypatch, {"slack-bolt": "1.27.0"})

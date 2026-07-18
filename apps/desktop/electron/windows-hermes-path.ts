@@ -111,21 +111,25 @@ export function getVenvSitePackagesEntries(
 
   const isWindows = opts.isWindows ?? process.platform === 'win32'
 
-  const directoryExists = opts.directoryExists ?? ((p: string) => {
-    try {
-      return fs.statSync(p).isDirectory()
-    } catch {
-      return false
-    }
-  })
+  const directoryExists =
+    opts.directoryExists ??
+    ((p: string) => {
+      try {
+        return fs.statSync(p).isDirectory()
+      } catch {
+        return false
+      }
+    })
 
-  const readFile = opts.readFile ?? ((p: string) => {
-    try {
-      return fs.readFileSync(p, 'utf8')
-    } catch {
-      return undefined
-    }
-  })
+  const readFile =
+    opts.readFile ??
+    ((p: string) => {
+      try {
+        return fs.readFileSync(p, 'utf8')
+      } catch {
+        return undefined
+      }
+    })
 
   if (isWindows) {
     const sitePackages = path.join(venvRoot, 'Lib', 'site-packages')

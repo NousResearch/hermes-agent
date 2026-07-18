@@ -156,11 +156,11 @@ def analyze_prompt(prompt: str) -> dict:
     suggestions = [f"Add: {r['description']}" for r in results if not r["passed"]]
 
     if score < 40:
-        verdict = "Zayif prompt, yeniden yazilmali"
+        verdict = "Weak prompt, should be rewritten"
     elif score < 60:
-        verdict = "Ortalama prompt, gelistirilmeli"
+        verdict = "Average prompt, needs improvement"
     elif score < 80:
-        verdict = "Iyi prompt, kucuk iyilestirmeler mumkun"
+        verdict = "Good prompt, minor improvements possible"
     else:
         verdict = "Strong prompt"
 
@@ -206,7 +206,7 @@ def generate_variations(prompt: str) -> list:
         r["passed"] for r in analysis["details"] if r["check"] == "Output Format"
     ):
         vars_list.append((
-            "Format Belirt",
+            "Specify Format",
             f"{prompt}\n\nProvide your response in a clear, structured format.",
         ))
 
@@ -217,7 +217,7 @@ def generate_variations(prompt: str) -> list:
         ))
 
     if not vars_list:
-        vars_list.append(("Orijinal (guclu)", prompt))
+        vars_list.append(("Original (strong)", prompt))
 
     return [{"style": v[0], "prompt": v[1]} for v in vars_list]
 

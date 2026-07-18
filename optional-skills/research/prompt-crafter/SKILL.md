@@ -1,57 +1,106 @@
 ---
 name: prompt-crafter
-description: Analyze, optimize, and generate AI prompts. Quality scoring across 8 dimensions, template library for common scenarios, variation generation for A/B testing. Improves prompt effectiveness using prompt engineering best practices.
+description: Analyze and improve AI prompts.
+version: 1.0.0
+author: Kewe63
+license: MIT
 platforms: [linux, macos, windows]
+metadata:
+  hermes:
+    tags: [prompts, prompt-engineering, llm, quality]
+    related_skills: [writing-plans, humanizer, technology-research]
+prerequisites:
+  commands: [python3]
 ---
 
-# Prompt Crafter
+# Prompt Crafter Skill
 
-Analyze and optimize prompts for AI models. Uses heuristic-based quality analysis with 8 critical dimensions. **No API keys required.**
+Analyze, score, and improve AI prompts with a heuristic 8-dimension quality
+check, generate variations for A/B testing, and pull reusable templates. No API
+key required — everything runs locally with the standard library.
 
-## Helper script
+## When to Use
 
-This skill includes `scripts/prompt_crafter.py` — a complete CLI tool.
+- You are drafting or reviewing a prompt and want an objective quality score
+  before sending it to a model.
+- You need several reworded variations of one prompt for A/B comparison.
+- You want a starting template (code review, ELI5, brainstorm) to adapt.
+
+Prefer `humanizer` when the goal is stripping AI-isms from prose; this skill
+targets the *structural* fitness of a prompt, not its voice.
+
+## Prerequisites
+
+- Python 3.10+ (stdlib only — `argparse`, `json`, `sys`).
+- No network, no API key.
+
+## How to Run
+
+Commands run via the bundled helper script. `${HERMES_SKILL_DIR}` is substituted
+at scan time by the skill loader; copy-paste the resolved path or run from inside
+the skill directory.
 
 ```bash
-# Analyze a prompt
-python3 SKILL_DIR/scripts/prompt_crafter.py analyze "You are a code reviewer..."
+# Score a prompt across 8 quality dimensions
+python3 "${HERMES_SKILL_DIR}/scripts/prompt_crafter.py" analyze "You are a code reviewer..."
 
 # List available templates
-python3 SKILL_DIR/scripts/prompt_crafter.py templates
+python3 "${HERMES_SKILL_DIR}/scripts/prompt_crafter.py" templates
 
-# Get a specific template
-python3 SKILL_DIR/scripts/prompt_crafter.py templates --name code-review
+# Show one template
+python3 "${HERMES_SKILL_DIR}/scripts/prompt_crafter.py" templates --name code-review
 
-# Generate prompt variations
-python3 SKILL_DIR/scripts/prompt_crafter.py variations "Explain quantum computing"
+# Generate improved variations of a prompt
+python3 "${HERMES_SKILL_DIR}/scripts/prompt_crafter.py" variations "Explain quantum computing"
+
+# Read the prompt from stdin instead of args
+echo "Summarize this article" | python3 "${HERMES_SKILL_DIR}/scripts/prompt_crafter.py" analyze
 ```
 
-## Commands
+## Quick Reference
 
-| Command | What it does | Example |
-|---------|-------------|---------|
-| `analyze` | Score prompt across 8 quality dimensions | `analyze "Explain X"` |
-| `templates` | List or show prompt templates | `templates --name brainstorm` |
-| `variations` | Generate improved variations | `variations "Do Y"` |
+| Command | Positional | Flags | Returns |
+|---------|-----------|-------|---------|
+| `analyze` | `<prompt...>` (or stdin) | — | `{word_count, quality_score, checks_passed, details[], suggestions[], verdict}` |
+| `templates` | — | `--name <id>` | one template or `available_templates[]` |
+| `variations` | `<prompt...>` (or stdin) | — | `{original, variations: [{style, prompt}]}` |
 
-## Quality Dimensions
+The 8 scored dimensions: Role/Persona, Context, Constraints, Examples (Few-shot),
+Output Format, Clear Goal, Tone/Style, Chain of Thought.
 
-1. **Role/Persona** — Clear role assignment (You are a...)
-2. **Context** — Background information before instructions
-3. **Constraints** — Boundaries (length, format rules, exclusions)
-4. **Examples (Few-shot)** — Sample inputs/outputs
-5. **Output Format** — Exact structure specified (JSON, markdown, etc.)
-6. **Clear Goal** — Specific, measurable objective
-7. **Tone/Style** — Communication style defined
-8. **Chain of Thought** — Step-by-step reasoning encouraged
+## Procedure
 
-## Templates
+1. Run `analyze` on the candidate prompt to get a 0–100 `quality_score` and the
+   list of `details[]` checks that failed.
+2. Read `suggestions[]` — each names a dimension to add.
+3. Run `variations` to auto-generate reworded versions that patch the missing
+   dimensions (role, format, constraints). Iterate until the score is ≥80.
+4. Use `templates --name <id>` as a structural starting point for a new prompt,
+   then re-run `analyze` to confirm the score.
 
-### code-review
-Senior engineer review with security, performance, and quality focus.
+## Pitfalls
 
-### explain-like-im-5
-Simplified explanations using analogies and everyday language.
+- The analyzer is heuristic, not semantic: it keys off surface cues (words like
+  "format", "step by step", "you are"). A technically weak prompt can still score
+  high if it uses the right vocabulary — treat the score as a checklist, not truth.
+- `variations` only adds a dimension if the analysis flagged it missing, so a
+  strong prompt returns a single `"Original (strong)"` entry rather than new ideas.
+- Template output is plain text, not JSON — pipe `templates --name <id>` through
+  `read_file`/`vision_analyze` rather than parsing it as structured data.
+- All input is read as-is; very long prompts are scored on word count thresholds
+  (context needs >30 words, clear goal >10 words), so tiny prompts auto-fail those
+  checks by design.
 
-### brainstorm
-Creative ideation with diverse perspectives and prioritization.
+## Verification
+
+Run the bundled tests (no network required — all logic is pure functions):
+
+```bash
+scripts/run_tests.sh tests/skills/test_prompt_crafter_skill.py -q
+```
+
+Spot-check a real call before quoting results to the user:
+
+```bash
+python3 "${HERMES_SKILL_DIR}/scripts/prompt_crafter.py" analyze "You are a helpful assistant that summarizes text." | head -20
+```

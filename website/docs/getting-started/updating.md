@@ -24,7 +24,7 @@ This pulls the latest code from `main`, updates dependencies, and prompts you to
 
 When you run `hermes update`, the following steps occur:
 
-1. **Pre-update snapshot** — a lightweight state snapshot is saved by default (covers pairing data, cron jobs, `config.yaml`, `.env`, `auth.json`, and other state files that get modified at runtime; individual files over 1 GiB are skipped so a large sessions DB never slows the update down). Controlled by `updates.pre_update_backup` (`quick` by default, `full` for a zip of all of `HERMES_HOME`, `off` to disable). Recoverable via the snapshot restore flow described under [Snapshots and rollback](../user-guide/checkpoints-and-rollback.md).
+1. **Pre-update snapshot** — a lightweight state snapshot is saved by default (covers pairing data, cron jobs, `config.yaml`, `.env`, `auth.json`, and other state files that get modified at runtime; individual files over 1 GiB are skipped so a large sessions DB never slows the update down). Controlled by `updates.pre_update_backup` (`quick` by default, `full` for a zip of all of `HERMES_HOME`, `off` to disable). Raise or remove the per-file skip with `updates.pre_update_snapshot_max_mb` (default `1024`; set `0` for no cap). Recoverable via the snapshot restore flow described under [Snapshots and rollback](../user-guide/checkpoints-and-rollback.md).
 2. **Git pull** — pulls the latest code from the `main` branch and updates submodules
 3. **Post-pull syntax validation + auto-rollback** — after the pull, Hermes compiles the eight critical files every `hermes` invocation imports at startup. If any fails to parse (e.g. an orphan merge-conflict marker, an accidentally truncated file), Hermes runs `git reset --hard <pre-pull-sha>` to roll the install back so your shell stays bootable. Re-run `hermes update` once the upstream fix lands.
 4. **Dependency install** — runs `uv pip install -e ".[all]"` to pick up new or changed dependencies
@@ -81,6 +81,22 @@ updates:
 ```
 
 `updates.pre_update_backup` is a single knob with three modes: `quick` (default — the lightweight state snapshot described above), `full` (the quick snapshot plus a complete `HERMES_HOME` zip; can add minutes on large homes), and `off` (no pre-update backup at all — `--no-backup` does the same for a single run). Legacy boolean values still work: `true` means `full`, `false` means `off`.
+
+The quick snapshot skips individual files larger than **1 GiB** by default so a multi-tens-of-GB `state.db` cannot stall `hermes update`. Override that ceiling with:
+
+```yaml
+# ~/.hermes/config.yaml
+updates:
+  pre_update_snapshot_max_mb: 4096   # allow up to 4 GiB per file (e.g. large state.db)
+  # pre_update_snapshot_max_mb: 0    # no per-file cap — copy everything in the quick set
+```
+
+- **Default:** `1024` (1 GiB), same as the historical hard-coded skip.
+- **Positive integer:** max file size in mebibytes before a path is skipped.
+- **`0` (or any ≤ 0):** disables the per-file cap so large DBs are included in the quick snapshot.
+- Unset / invalid values fall back to the 1 GiB default.
+
+This only affects the **quick** state snapshot’s per-file size filter. It does not replace other safety paths: full zip backups (`updates.pre_update_backup: full` / `hermes update --backup`) and post-pull syntax auto-rollback remain available independently.
 
 ### Windows: another `hermes.exe` is running
 

@@ -95,3 +95,72 @@ def test_run_pre_update_backup_passes_raised_cap(monkeypatch, tmp_path):
     assert out == "snap-test"
     assert seen.get("max_file_size") == 2048 << 20
     assert seen.get("label") == "pre-update"
+
+
+def test_run_pre_update_backup_zero_passes_none_cap(monkeypatch, tmp_path):
+    """End-to-end: config `0` must reach the backup wrapper as max_file_size=None.
+
+    The resolver returns 0 for "no cap", but the advertised behavior is that the
+    quick-snapshot wrapper copies state.db in full — i.e. it receives None, not 0.
+    """
+    from hermes_cli import main as cli_main
+    from hermes_cli import config as cfg_mod
+
+    home = tmp_path / ".hermes"
+    home.mkdir()
+    (home / "config.yaml").write_text(
+        "updates:\n  pre_update_backup: quick\n  pre_update_snapshot_max_mb: 0\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    monkeypatch.setattr(cfg_mod, "get_hermes_home", lambda: home)
+
+    seen = {}
+
+    import sys
+
+    class _B:
+        @staticmethod
+        def create_quick_snapshot(**kwargs):
+            seen.update(kwargs)
+            return "snap-none"
+
+    monkeypatch.setitem(sys.modules, "hermes_cli.backup", _B)
+
+    out = cli_main._run_pre_update_backup(Namespace(no_backup=False, backup=False))
+    assert out == "snap-none"
+    assert "max_file_size" in seen
+    assert seen["max_file_size"] is None
+    assert seen.get("label") == "pre-update"
+
+
+def test_run_pre_update_backup_zero_cap_passes_none(monkeypatch, tmp_path):
+    """Setting 0 disables the cap: wrapper must pass max_file_size=None."""
+    from hermes_cli import main as cli_main
+    from hermes_cli import config as cfg_mod
+    import sys
+
+    home = tmp_path / ".hermes"
+    home.mkdir()
+    (home / "config.yaml").write_text(
+        "updates:\n  pre_update_backup: quick\n  pre_update_snapshot_max_mb: 0\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    monkeypatch.setattr(cfg_mod, "get_hermes_home", lambda: home)
+
+    seen = {}
+
+    class _B:
+        @staticmethod
+        def create_quick_snapshot(**kwargs):
+            seen.update(kwargs)
+            return "snap-uncapped"
+
+    monkeypatch.setitem(sys.modules, "hermes_cli.backup", _B)
+
+    out = cli_main._run_pre_update_backup(Namespace(no_backup=False, backup=False))
+    assert out == "snap-uncapped"
+    assert "max_file_size" in seen
+    assert seen.get("max_file_size") is None
+    assert seen.get("label") == "pre-update"

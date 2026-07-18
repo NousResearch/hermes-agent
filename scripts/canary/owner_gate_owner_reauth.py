@@ -48,6 +48,7 @@ CAPTURE_TIMEOUT_SECONDS = 30.0
 MAX_CAPTURE_BYTES = 1024 * 1024
 
 _SHA256 = re.compile(r"^[0-9a-f]{64}$")
+_GIT_OID = re.compile(r"^[0-9a-f]{40}$")
 _NUMERIC_ID = re.compile(r"^[1-9][0-9]{5,30}$")
 _B64URL = re.compile(r"^[A-Za-z0-9_-]{86}$")
 _SDK_ROOT = re.compile(r"^/[^\x00\r\n]{1,1023}/google-cloud-sdk$")
@@ -141,6 +142,10 @@ def _sha256(value: bytes) -> str:
 
 def _sha256_json(value: Any) -> str:
     return _sha256(_canonical(value))
+
+
+def _exact_text_fullmatch(pattern: re.Pattern[str], value: Any) -> bool:
+    return type(value) is str and pattern.fullmatch(value) is not None
 
 
 def _strict_mapping(
@@ -467,7 +472,7 @@ def _validate_sealed_runtime_identity(
         "bootstrap_receipt_file_sha256",
     )
     source_tree_oid = identity.get("owner_support_source_tree_oid")
-    if re.fullmatch(r"[0-9a-f]{40}", expected_release_revision or "") is None:
+    if not _exact_text_fullmatch(_GIT_OID, expected_release_revision):
         _error("owner_gate_owner_reauth_runtime_invalid")
     if (
         identity.get("schema")
@@ -477,13 +482,11 @@ def _validate_sealed_runtime_identity(
         != _sha256_json(list(prefix))
         or any(type(identity.get(field)) is not int or identity[field] <= 0 for field in count_fields)
         or any(
-            type(identity.get(field)) is not str
-            or _SHA256.fullmatch(identity[field]) is None
+            not _exact_text_fullmatch(_SHA256, identity.get(field))
             for field in sha_fields
         )
-        or not isinstance(source_tree_oid, str)
-        or re.fullmatch(r"[0-9a-f]{40}", source_tree_oid) is None
-        or not isinstance(identity.get("python_version"), str)
+        or not _exact_text_fullmatch(_GIT_OID, source_tree_oid)
+        or type(identity.get("python_version")) is not str
         or not identity["python_version"]
         or digest != _sha256_json(unsigned)
     ):
@@ -698,7 +701,7 @@ def _validate_body(value: Any, *, now_unix: int | None) -> Mapping[str, Any]:
         body.get("schema") != RECEIPT_SCHEMA
         or body.get("purpose") != RECEIPT_PURPOSE
         or any(
-            _SHA256.fullmatch(str(runtime.get(field, ""))) is None
+            not _exact_text_fullmatch(_SHA256, runtime.get(field))
             for field in (
                 "command_prefix_sha256",
                 "python_executable_sha256",
@@ -707,16 +710,15 @@ def _validate_body(value: Any, *, now_unix: int | None) -> Mapping[str, Any]:
                 "closed_environment_sha256",
             )
         )
-        or re.fullmatch(
-            r"[0-9a-f]{40}",
-            str(runtime.get("release_revision", "")),
+        or not _exact_text_fullmatch(
+            _GIT_OID,
+            runtime.get("release_revision"),
         )
-        is None
-        or _SHA256.fullmatch(
-            str(runtime.get("sealed_runtime_identity_sha256", ""))
+        or not _exact_text_fullmatch(
+            _SHA256,
+            runtime.get("sealed_runtime_identity_sha256"),
         )
-        is None
-        or _SDK_ROOT.fullmatch(str(runtime.get("sdk_root", ""))) is None
+        or not _exact_text_fullmatch(_SDK_ROOT, runtime.get("sdk_root"))
         or runtime.get("configuration") != GCLOUD_CONFIGURATION
         or runtime.get("account") != OWNER_ACCOUNT
         or runtime.get("project") != PROJECT
@@ -727,21 +729,23 @@ def _validate_body(value: Any, *, now_unix: int | None) -> Mapping[str, Any]:
         or started <= 0
         or completed < started
         or completed - started > MAX_INTERACTIVE_DURATION_SECONDS
-        or _SHA256.fullmatch(str(reauth.get("command_sha256", ""))) is None
+        or not _exact_text_fullmatch(
+            _SHA256,
+            reauth.get("command_sha256"),
+        )
         or reauth.get("interactive_tty_verified") is not True
         or reauth.get("access_token_requested") is not False
         or reauth.get("credential_material_captured") is not False
-        or _SHA256.fullmatch(str(probe.get("command_sha256", ""))) is None
-        or _SHA256.fullmatch(str(probe.get("output_sha256", ""))) is None
+        or not _exact_text_fullmatch(_SHA256, probe.get("command_sha256"))
+        or not _exact_text_fullmatch(_SHA256, probe.get("output_sha256"))
         or probe.get("project_id") != PROJECT
-        or _NUMERIC_ID.fullmatch(str(probe.get("project_number", "")))
-        is None
+        or not _exact_text_fullmatch(_NUMERIC_ID, probe.get("project_number"))
         or type(issued) is not int
         or type(expires) is not int
         or issued < completed
         or expires <= issued
         or expires - issued > MAX_RECEIPT_TTL_SECONDS
-        or _SHA256.fullmatch(str(body.get("signer_key_id", ""))) is None
+        or not _exact_text_fullmatch(_SHA256, body.get("signer_key_id"))
     ):
         _error("owner_gate_owner_reauth_receipt_invalid")
     if now_unix is not None and (

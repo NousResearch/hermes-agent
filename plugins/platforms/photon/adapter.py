@@ -882,9 +882,20 @@ class PhotonAdapter(BasePlatformAdapter):
                 )
         except httpx.RequestError:
             return  # nothing listening — the normal case
-        pids = self._find_listener_pids(self._sidecar_port)
-        stale = [pid for pid in pids if self._pid_is_sidecar(pid)]
-        foreign = [pid for pid in pids if pid not in stale]
+        # Off the event loop: _find_listener_pids shells out to `lsof`
+        # (timeout=5s) and _pid_is_sidecar runs a `ps` per candidate pid
+        # (timeout=5s each), so this inspection can hold the loop for
+        # 5 + 5·N seconds. _reap_stale_sidecar is awaited from
+        # _start_sidecar, which runs on every reconnect — exactly when a
+        # crashed gateway left an orphan behind — so the stall lands on a
+        # live gateway that is still serving every other platform. One hop
+        # covers the whole inspection instead of N+1 round trips.
+        def _inspect():
+            found = self._find_listener_pids(self._sidecar_port)
+            mine = [pid for pid in found if self._pid_is_sidecar(pid)]
+            return mine, [pid for pid in found if pid not in mine]
+
+        stale, foreign = await asyncio.to_thread(_inspect)
         if not stale:
             raise RuntimeError(
                 f"port {self._sidecar_port} is in use by another process "

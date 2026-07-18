@@ -188,3 +188,50 @@ async def test_start_sidecar_spawns_with_stdin_pipe(
     assert kwargs["env"]["PHOTON_SIDECAR_WATCH_STDIN"] == "1"
     assert spawned["patch_kwargs"]["creationflags"] == hidden_flags
     assert kwargs["creationflags"] == hidden_flags
+
+
+@pytest.mark.asyncio
+async def test_reap_inspects_listeners_off_the_event_loop(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Listener inspection must not block the shared gateway event loop.
+
+    ``_find_listener_pids`` shells out to ``lsof`` (timeout=5s) and
+    ``_pid_is_sidecar`` runs a ``ps`` per candidate pid (timeout=5s each), so
+    inline this holds the loop for 5 + 5·N seconds. ``_reap_stale_sidecar`` is
+    awaited from ``_start_sidecar``, which runs on every reconnect — exactly
+    when a crashed gateway left an orphan — so the stall lands on a live
+    gateway still serving every other platform.
+    """
+    import threading
+
+    adapter = _make_adapter(monkeypatch)
+    monkeypatch.setattr(photon_adapter.sys, "platform", "linux")
+    monkeypatch.setattr(photon_adapter.httpx, "AsyncClient", _ProbeClient)
+
+    main_thread = threading.current_thread()
+    seen: Dict[str, Any] = {}
+
+    def _fake_find(port: int) -> List[int]:
+        seen["find"] = threading.current_thread()
+        return [4242]
+
+    def _fake_is_sidecar(pid: int) -> bool:
+        seen["ps"] = threading.current_thread()
+        return True
+
+    monkeypatch.setattr(adapter, "_find_listener_pids", _fake_find)
+    monkeypatch.setattr(adapter, "_pid_is_sidecar", _fake_is_sidecar)
+    monkeypatch.setattr(adapter, "_pid_alive", lambda pid: False)
+    _capture_kills(monkeypatch)
+
+    await adapter._reap_stale_sidecar()
+
+    assert seen.get("find") is not None, "lsof lookup never ran"
+    assert seen.get("ps") is not None, "ps check never ran"
+    for label in ("find", "ps"):
+        assert seen[label] is not main_thread, (
+            f"{label} ran on the event-loop thread; the listener inspection "
+            "must be dispatched via asyncio.to_thread so a 5s lsof/ps spawn "
+            "can't freeze every other platform on the gateway loop"
+        )

@@ -29,6 +29,30 @@ class TestBaseUrlIsPrivate:
     def test_classification(self, url, expected):
         assert base_url_is_private(url) is expected
 
+    def test_public_hostname_resolving_to_private_is_private(self):
+        """Key-leak guard: a public-looking https hostname that RESOLVES to a
+        LAN IP must be treated as private so the real cloud key is withheld."""
+        with patch("socket.getaddrinfo",
+                   return_value=[(2, 1, 6, "", ("192.168.178.155", 443))]):
+            assert base_url_is_private("https://sneaky.example.com/v1") is True
+
+    def test_hostname_resolving_to_public_stays_public(self):
+        with patch("socket.getaddrinfo",
+                   return_value=[(2, 1, 6, "", ("8.8.8.8", 443))]):
+            assert base_url_is_private("https://real-proxy.example.com/v1") is False
+
+    def test_resolution_failure_is_non_private_failsafe(self):
+        with patch("socket.getaddrinfo", side_effect=OSError("nxdomain")):
+            assert base_url_is_private("https://transient.example.com/v1") is False
+
+    def test_any_private_answer_trips_the_guard(self):
+        # Mixed answers: one public, one private → private wins (fail-safe).
+        with patch("socket.getaddrinfo", return_value=[
+            (2, 1, 6, "", ("93.184.216.34", 443)),
+            (2, 1, 6, "", ("10.1.2.3", 443)),
+        ]):
+            assert base_url_is_private("https://rebind.example.com/v1") is True
+
 
 class TestResolveProviderKey:
     def test_private_target_drops_env_cloud_key(self):

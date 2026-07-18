@@ -596,6 +596,8 @@ def _format_job(job: Dict[str, Any]) -> Dict[str, Any]:
         result["no_agent"] = True
     if job.get("enabled_toolsets"):
         result["enabled_toolsets"] = job["enabled_toolsets"]
+    if job.get("memory_enabled"):
+        result["memory_enabled"] = True
     if job.get("workdir"):
         result["workdir"] = job["workdir"]
     return result
@@ -1089,6 +1091,10 @@ Important safety rule: cron-run sessions should not recursively schedule more cr
                 "type": "boolean",
                 "description": "When True, this job becomes CONTINUABLE: the user can reply to its delivery and the agent has the brief in context instead of asking 'what is that?'. On thread-capable platforms (Telegram topics, Discord/Slack threads) a dedicated thread is opened for the job and its replies; on DM-only platforms (WhatsApp/Signal) the brief is mirrored into the origin DM session. Use this for conversational recurring jobs the user will reply to — daily briefings, reminders that kick off follow-up work. Leave unset for fire-and-forget alerts/watchdogs. Overrides the global cron.mirror_delivery config for this one job. Only the origin chat is touched (never fan-out targets); no effect when deliver='local'."
             },
+            "memory_enabled": {
+                "type": "boolean",
+                "description": "When True, this job's session will have access to the persistent memory tool (default: False for cron to avoid polluting user memory). Use when a cron job needs to read or write durable facts across runs."
+            },
         },
         "required": ["action"]
     }
@@ -1144,6 +1150,7 @@ registry.register(
         enabled_toolsets=args.get("enabled_toolsets"),
         workdir=args.get("workdir"),
         no_agent=args.get("no_agent"),
+        memory_enabled=args.get("memory_enabled"),
         task_id=kw.get("task_id"),
     ))(),
     check_fn=check_cronjob_requirements,

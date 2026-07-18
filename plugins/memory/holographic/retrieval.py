@@ -52,18 +52,23 @@ class FactRetriever:
         min_trust: float = 0.3,
         limit: int = 10,
     ) -> list[dict]:
-        """Hybrid search: FTS5 candidates → Jaccard rerank → trust weighting.
+        """Hybrid search: FTS5 candidates (facts + wiki) → Jaccard rerank → trust weighting.
 
         Pipeline:
-        1. FTS5 search: Get limit*3 candidates from SQLite full-text search
-        2. Jaccard boost: Token overlap between query and fact content
+        1. FTS5 search: Get limit*3 candidates from facts_fts AND wiki_fts
+        2. Jaccard boost: Token overlap between query and fact/wiki content
         3. Trust weighting: final_score = relevance * trust_score
         4. Temporal decay (optional): decay = 0.5^(age_days / half_life)
 
         Returns list of dicts with fact data + 'score' field, sorted by score desc.
+        Wiki results include 'source': 'wiki' and 'content' from summary.
         """
         # Stage 1: Get FTS5 candidates (more than limit for reranking headroom)
         candidates = self._fts_candidates(query, category, min_trust, limit * 3)
+
+        # Also search wiki pages
+        wiki_hits = self._wiki_candidates(query, limit * 2)
+        candidates.extend(wiki_hits)
 
         if not candidates:
             return []
@@ -542,6 +547,98 @@ class FactRetriever:
             fact.pop("fts_rank_raw", None)
             fact["fts_rank"] = raw_rank / max_rank  # normalize to [0, 1]
             results.append(fact)
+
+        return results
+
+    def _wiki_candidates(
+        self,
+        query: str,
+        limit: int,
+    ) -> list[dict]:
+        """Search wiki_pages via wiki_fts and return results in fact-compatible format.
+
+        Wiki results are normalized to look like facts so the reranking pipeline
+        can process them uniformly. Key mappings:
+        - page_id → fact_id
+        - summary → content
+        - quality/5.0 → trust_score (quality 3 → 0.6, quality 5 → 1.0)
+        - page_type → category
+        - source='wiki' marker for callers to distinguish
+
+        Uses FTS5 for English tokens and LIKE fallback for CJK queries.
+        """
+        conn = self.store._conn
+
+        # Check if wiki_fts table exists
+        try:
+            conn.execute("SELECT 1 FROM wiki_fts LIMIT 0")
+        except Exception:
+            return []
+
+        match_query = self._sanitize_fts_query(query)
+        rows = []
+
+        # FTS5 search
+        sql = """
+            SELECT wp.page_id, wp.title, wp.summary, wp.quality,
+                   wp.page_type, wp.topics, wp.keywords, wp.slug,
+                   wp.date, wiki_fts.rank as fts_rank_raw
+            FROM wiki_fts
+            JOIN wiki_pages wp ON wp.page_id = wiki_fts.rowid
+            WHERE wiki_fts MATCH ?
+            ORDER BY wiki_fts.rank
+            LIMIT ?
+        """
+        try:
+            rows = conn.execute(sql, [match_query, limit]).fetchall()
+        except Exception:
+            pass
+
+        # LIKE fallback for CJK / short queries with no FTS hits
+        if not rows and len(query) >= 2:
+            like_sql = """
+                SELECT page_id, title, summary, quality,
+                       page_type, topics, keywords, slug, date,
+                       0.0 as fts_rank_raw
+                FROM wiki_pages
+                WHERE summary LIKE ? OR title LIKE ? OR topics LIKE ?
+                LIMIT ?
+            """
+            like_param = f"%{query}%"
+            try:
+                rows = conn.execute(
+                    like_sql, [like_param, like_param, like_param, limit]
+                ).fetchall()
+            except Exception:
+                return []
+
+        if not rows:
+            return []
+
+        raw_ranks = [abs(row["fts_rank_raw"] if row["fts_rank_raw"] else 0.5) for row in rows]
+        max_rank = max(raw_ranks) if raw_ranks else 1.0
+        max_rank = max(max_rank, 1e-6)
+
+        results = []
+        for row, raw_rank in zip(rows, raw_ranks):
+            quality = row["quality"] or 3
+            wiki = {
+                "fact_id": f"wiki_{row['page_id']}",
+                "content": row["summary"] or row["title"],
+                "category": row["page_type"],
+                "tags": f"wiki:{row['slug']}, {row['topics'] or ''}",
+                "trust_score": quality / 5.0,
+                "retrieval_count": 0,
+                "helpful_count": 0,
+                "created_at": row["date"],
+                "updated_at": row["date"],
+                "fts_rank": raw_rank / max_rank,
+                "source": "wiki",
+                "wiki_slug": row["slug"],
+                "wiki_title": row["title"],
+                "wiki_quality": quality,
+            }
+            results.append(wiki)
 
         return results
 

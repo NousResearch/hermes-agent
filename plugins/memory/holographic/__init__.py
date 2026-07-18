@@ -179,6 +179,17 @@ class HolographicMemoryProvider(MemoryProvider):
             hrr_dim=hrr_dim,
         )
         self._session_id = session_id
+        self._session_title = ""
+        self._session_source = kwargs.get("platform", "")
+        self._wiki_builder = None
+        self._wiki_thread = None
+        self._wiki_thread_lock = __import__("threading").Lock()
+        # Initialize wiki builder if auto_wiki is enabled
+        if self._config.get("auto_wiki", True):
+            from .wiki_builder import WikiBuilder
+            self._wiki_builder = WikiBuilder(self._store, self._config)
+            # Process any leftover pending items from previous runs
+            self._schedule_wiki_build()
 
     def system_prompt_block(self) -> str:
         if not self._store:
@@ -235,11 +246,60 @@ class HolographicMemoryProvider(MemoryProvider):
         return tool_error(f"Unknown tool: {tool_name}")
 
     def on_session_end(self, messages: List[Dict[str, Any]]) -> None:
-        if not self._config.get("auto_extract", False):
-            return
         if not self._store or not messages:
             return
-        self._auto_extract_facts(messages)
+        # Enqueue for wiki processing (non-blocking)
+        try:
+            self._store.enqueue_wiki_pending(
+                session_id=self._session_id,
+                messages=messages,
+                title=self._session_title,
+                source=self._session_source,
+            )
+            logger.debug("Enqueued session %s for wiki processing", self._session_id)
+            # Trigger background processing
+            self._schedule_wiki_build()
+        except Exception as e:
+            logger.debug("Wiki enqueue failed: %s", e)
+        # Also run legacy auto-extract if configured
+        if self._config.get("auto_extract", False):
+            self._auto_extract_facts(messages)
+
+    def on_session_switch(self, new_session_id: str, **kwargs) -> None:
+        """Capture session title for wiki page generation."""
+        self._session_id = new_session_id
+        self._session_title = kwargs.get("title", "") or ""
+
+    def _schedule_wiki_build(self) -> None:
+        """Start a background thread to process wiki pending queue."""
+        if not self._wiki_builder:
+            return
+        with self._wiki_thread_lock:
+            # Don't start a new thread if one is already running
+            if self._wiki_thread and self._wiki_thread.is_alive():
+                return
+            import threading
+            self._wiki_thread = threading.Thread(
+                target=self._wiki_build_worker,
+                daemon=True,
+                name="wiki-builder",
+            )
+            self._wiki_thread.start()
+
+    def _wiki_build_worker(self) -> None:
+        """Background worker: process pending wiki jobs + maintenance."""
+        try:
+            count = self._wiki_builder.process_pending()
+            if count:
+                logger.info("WikiBuilder processed %d sessions", count)
+            # Run maintenance (capacity gate, audit, index, export)
+            report = self._wiki_builder.run_maintenance()
+            if report.get("capacity", {}).get("compressed"):
+                logger.info("WikiBuilder: MEMORY.md/USER.md compressed")
+            if report.get("export", {}).get("exported"):
+                logger.info("WikiBuilder: exported %d .md files", report["export"]["exported"])
+        except Exception as e:
+            logger.error("WikiBuilder worker failed: %s", e)
 
     def on_memory_write(self, action: str, target: str, content: str) -> None:
         """Mirror built-in memory writes as facts."""
@@ -251,12 +311,11 @@ class HolographicMemoryProvider(MemoryProvider):
                 logger.debug("Holographic memory_write mirror failed: %s", e)
 
     def shutdown(self) -> None:
-        # Release the shared SQLite connection deterministically on the
-        # caller's thread. Dropping the reference alone leaves fd finalization
-        # to GC, which keeps the connection (and its write lock) alive on a
-        # long-running gateway and prolongs the "database is locked" contention
-        # this store's shared-connection refcounting is meant to eliminate.
-        # close() is idempotent and refcount-guarded, so siblings stay safe.
+        # Stop wiki builder thread
+        self._wiki_builder = None
+        if self._wiki_thread and self._wiki_thread.is_alive():
+            self._wiki_thread.join(timeout=5.0)
+        # Release shared SQLite connection
         if self._store is not None:
             try:
                 self._store.close()

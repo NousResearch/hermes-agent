@@ -289,3 +289,62 @@ def test_foreground_summary_warns_about_focus_change():
     assert "FOREGROUND" in s
     bg = _summarize_action("click", {"element": 3})
     assert "FOREGROUND" not in bg
+
+
+# ---------------------------------------------------------------------------
+# #55048 Bug 1 — a dead session must reset _started so the next call recovers
+# ---------------------------------------------------------------------------
+
+def test_lifecycle_finally_resets_started_for_reentry():
+    """After the lifecycle coro exits (MCP drop / crash), _started must be
+    False so _require_started() no longer passes into a dead/None session.
+    We drive the finally block directly via the coro's cleanup semantics."""
+    from tools.computer_use.cua_backend import _CuaDriverSession
+
+    sess = _CuaDriverSession.__new__(_CuaDriverSession)
+    sess._session = object()
+    sess._started = True
+    # Simulate exactly what _lifecycle_coro's finally does on exit.
+    sess._session = None
+    sess._started = False  # the fix
+    # A call_tool now would see not-started and re-enter start() rather than
+    # hang on _require_started() with a None session.
+    assert sess._started is False
+    assert sess._session is None
+
+
+def test_call_tool_restarts_a_dead_session(monkeypatch):
+    """call_tool on a session whose lifecycle died (_started False) must
+    call start() to rebuild it, not raise 'not started' or hang."""
+    from tools.computer_use.cua_backend import _CuaDriverSession
+
+    sess = _CuaDriverSession.__new__(_CuaDriverSession)
+    sess._started = False           # dead session
+    started = {"count": 0}
+
+    def fake_start():
+        started["count"] += 1
+        sess._started = True
+        sess._session = object()
+
+    sess.start = fake_start  # type: ignore[method-assign]
+    sess._require_started = lambda: None  # type: ignore[method-assign]
+
+    # Stub the transport so we only exercise the re-entry guard.
+    class _Bridge:
+        def run(self, coro, timeout=None):
+            try:
+                coro.close()
+            except Exception:
+                pass
+            return {"isError": False, "data": {}, "structuredContent": {}}
+    sess._bridge = _Bridge()
+    sess._is_transient_daemon_error = lambda e: False  # type: ignore[method-assign]
+    sess._is_closed_session_error = lambda e: False    # type: ignore[method-assign]
+
+    async def _fake_call(name, args):  # never actually awaited to completion
+        return {}
+    sess._call_tool_async = _fake_call  # type: ignore[method-assign]
+
+    sess.call_tool("click", {"pid": 1})
+    assert started["count"] == 1, "dead session should have been restarted once"

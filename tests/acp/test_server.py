@@ -339,9 +339,10 @@ class TestSessionOps:
         assert update.used == 25_000
 
     @pytest.mark.asyncio
-    async def test_cancel_sets_event(self, agent):
+    async def test_running_cancel_sets_event(self, agent):
         resp = await agent.new_session(cwd=".")
         state = agent.session_manager.get_session(resp.session_id)
+        state.is_running = True
         assert not state.cancel_event.is_set()
         await agent.cancel(session_id=resp.session_id)
         assert state.cancel_event.is_set()

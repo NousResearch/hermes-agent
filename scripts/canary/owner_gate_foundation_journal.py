@@ -69,13 +69,39 @@ class FoundationApplyJournal:
         _root: Path = DEFAULT_JOURNAL_ROOT,
         _owner_uid: int = OWNER_UID,
         _owner_gid: int = OWNER_GID,
+        _artifact_names: frozenset[str] | None = None,
     ) -> None:
+        if _artifact_names is not None and (
+            not isinstance(_artifact_names, frozenset)
+            or not _artifact_names
+            or len(_artifact_names) > 64
+            or any(
+                not isinstance(name, str)
+                or re.fullmatch(r"[a-z][a-z0-9-]{0,63}", name) is None
+                for name in _artifact_names
+            )
+        ):
+            raise RuntimeError(
+                "owner_gate_foundation_journal_artifact_set_invalid"
+            )
         self._root = _root
         self._owner_uid = _owner_uid
         self._owner_gid = _owner_gid
+        self._artifact_names = _artifact_names
         self._active_lease: (
             tuple[str, int, Path, tuple[int, int]] | None
         ) = None
+
+    def _artifact_name_valid(self, name: str) -> bool:
+        if self._artifact_names is not None:
+            return name in self._artifact_names
+        return _artifact_name_valid(name)
+
+    @property
+    def _maximum_inventory_entries(self) -> int:
+        if self._artifact_names is not None:
+            return 2 * len(self._artifact_names)
+        return 2 * (9 * 8 + len(_FIXED_ARTIFACTS))
 
     @property
     def root(self) -> Path:
@@ -276,8 +302,11 @@ class FoundationApplyJournal:
         entries = os.listdir(root)
         names = [self._entry_name(entry) for entry in entries]
         if (
-            any(name is None or not _artifact_name_valid(name) for name in names)
-            or len(entries) > 2 * (9 * 8 + len(_FIXED_ARTIFACTS))
+            any(
+                name is None or not self._artifact_name_valid(name)
+                for name in names
+            )
+            or len(entries) > self._maximum_inventory_entries
         ):
             raise RuntimeError(
                 "owner_gate_foundation_journal_inventory_invalid"
@@ -448,7 +477,7 @@ class FoundationApplyJournal:
         transaction_id: str,
         name: str,
     ) -> dict[str, Any] | None:
-        if not _artifact_name_valid(name):
+        if not self._artifact_name_valid(name):
             raise RuntimeError(
                 "owner_gate_foundation_journal_artifact_name_invalid"
             )
@@ -469,7 +498,7 @@ class FoundationApplyJournal:
     ) -> dict[str, Any] | None:
         """Read one final artifact without recovery or any filesystem write."""
 
-        if not _artifact_name_valid(name):
+        if not self._artifact_name_valid(name):
             raise RuntimeError(
                 "owner_gate_foundation_journal_artifact_name_invalid"
             )
@@ -514,7 +543,7 @@ class FoundationApplyJournal:
         name: str,
         value: Mapping[str, Any],
     ) -> dict[str, Any]:
-        if not _artifact_name_valid(name):
+        if not self._artifact_name_valid(name):
             raise RuntimeError(
                 "owner_gate_foundation_journal_artifact_name_invalid"
             )

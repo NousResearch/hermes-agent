@@ -18,12 +18,27 @@ from cryptography.exceptions import InvalidSignature
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PublicKey
 
 from scripts.canary import owner_gate_foundation as foundation
+from scripts.canary import owner_gate_production_ingress_contract as ingress
 
 
 CLOUD_OBSERVATION_SCHEMA = "muncho-owner-gate-cloud-observation.v1"
-HOST_OBSERVATION_SCHEMA = "muncho-owner-gate-host-observation.v1"
-PREFLIGHT_SCHEMA = "muncho-owner-gate-inert-preflight.v1"
-POST_IAM_PREFLIGHT_SCHEMA = "muncho-owner-gate-post-iam-preflight.v1"
+HOST_OBSERVATION_SCHEMA = "muncho-owner-gate-host-observation.v2"
+PREFLIGHT_SCHEMA = "muncho-owner-gate-inert-preflight.v2"
+POST_IAM_PREFLIGHT_SCHEMA = "muncho-owner-gate-post-iam-preflight.v2"
+HOST_OBSERVATION_FRESHNESS_SECONDS = 60
+HOST_RELEASE_ENTRYPOINTS = (
+    "muncho-owner-gate-intake",
+    "muncho-passkey-v2-web",
+    "muncho-passkey-v2-authority",
+    "muncho-passkey-v2-executor",
+    "muncho-owner-gate-cloud-observation-signer",
+    "muncho-host-observation-attestor",
+)
+HOST_OBSERVATION_DISPATCHER_SCHEMAS = (
+    "muncho-storage-growth-trusted-attestation-request.v1",
+    "muncho-owner-gate-attached-sa-permission-probe-request.v1",
+    "muncho-owner-gate-host-observation-frame.v1",
+)
 
 WEB_UID = 29101
 AUTHORITY_UID = 29102
@@ -279,8 +294,20 @@ def _verify_attestation(
     return key_id
 
 
-def read_only_cloud_requests() -> tuple[Mapping[str, str], ...]:
-    """Return the complete read-only REST inventory; never execute it locally."""
+def read_only_cloud_requests(
+    *,
+    plan: foundation.OwnerGateFoundationPlan | None = None,
+    project_resource_name: str | None = None,
+    resource_ancestor_chain: Sequence[str] = (),
+    connector_regions: Sequence[str] = (),
+) -> tuple[Mapping[str, str], ...]:
+    """Return the complete fixed read-only REST inventory.
+
+    The optional release plan and signed resource-ancestor chain extend the
+    static inventory with the exact custom-role definitions and ancestor IAM
+    policies needed by the production cloud observation author.  This helper
+    only describes requests; it never acquires a credential or executes one.
+    """
 
     project = foundation.PROJECT
     zone = foundation.ZONE
@@ -288,10 +315,52 @@ def read_only_cloud_requests() -> tuple[Mapping[str, str], ...]:
     compute = "https://compute.googleapis.com/compute/v1"
     iam = "https://iam.googleapis.com/v1"
     crm = "https://cloudresourcemanager.googleapis.com/v1"
+    crm_v3 = "https://cloudresourcemanager.googleapis.com/v3"
     vpcaccess = "https://vpcaccess.googleapis.com/v1"
+    organization_role: str | None = None
+    resource_chain: tuple[str, ...] = ()
+    if plan is not None:
+        if (
+            type(plan) is not foundation.OwnerGateFoundationPlan
+            or not plan.spec.final_release_bound
+            or plan.spec.project != project
+            or not isinstance(resource_ancestor_chain, Sequence)
+            or isinstance(resource_ancestor_chain, (str, bytes))
+            or not resource_ancestor_chain
+            or re.fullmatch(r"projects/[1-9][0-9]{5,30}", project_resource_name or "")
+            is None
+            or any(not isinstance(item, str) for item in resource_ancestor_chain)
+            or resource_ancestor_chain[-1] != plan.spec.organization_resource
+            or any(
+                re.fullmatch(r"folders/[1-9][0-9]{5,30}", item) is None
+                for item in resource_ancestor_chain[:-1]
+            )
+        ):
+            raise OwnerGatePreflightError("owner_gate_cloud_request_inventory_invalid")
+        organization_role = plan.spec.ancestor_read_only_iam_role
+        resource_chain = (
+            str(project_resource_name),
+            *tuple(resource_ancestor_chain),
+        )
+    elif resource_ancestor_chain or project_resource_name is not None:
+        raise OwnerGatePreflightError("owner_gate_cloud_request_inventory_invalid")
+    if (
+        not isinstance(connector_regions, Sequence)
+        or isinstance(connector_regions, (str, bytes))
+        or len(connector_regions) > 100
+        or len(connector_regions) != len(set(connector_regions))
+        or any(
+            not isinstance(item, str)
+            or re.fullmatch(r"[a-z]+(?:-[a-z0-9]+)+[0-9]", item) is None
+            for item in connector_regions
+        )
+    ):
+        raise OwnerGatePreflightError("owner_gate_cloud_request_inventory_invalid")
     paths = (
+        f"{compute}/projects/{project}",
         f"{compute}/projects/{project}/zones/{zone}/instances/{foundation.PRODUCTION_SOURCE_VM}",
         f"{compute}/projects/{project}/zones/{zone}/instances/{foundation.VM_NAME}",
+        f"{compute}/projects/{project}/zones/{zone}/disks/{foundation.VM_NAME}",
         f"{compute}/projects/{project}/zones/{zone}/instances/{foundation.VM_NAME}/getEffectiveFirewalls",
         f"{compute}/projects/{project}/zones/{zone}/instances/{foundation.TARGET_INSTANCE}",
         f"{compute}/projects/{project}/zones/{zone}/disks/{foundation.TARGET_DISK}",
@@ -300,82 +369,87 @@ def read_only_cloud_requests() -> tuple[Mapping[str, str], ...]:
         f"{compute}/projects/{project}/global/networks/{foundation.NETWORK_NAME}",
         f"{compute}/projects/{project}/global/routes",
         f"{compute}/projects/{project}/global/addresses",
-        f"{vpcaccess}/projects/{project}/locations/{region}/connectors",
+        f"{vpcaccess}/projects/{project}/locations?pageSize=100",
+        *(
+            f"{vpcaccess}/projects/{project}/locations/{item}/connectors?pageSize=100"
+            for item in connector_regions
+        ),
         f"{compute}/projects/{project}/global/firewalls/allow-iap-ssh",
         f"{compute}/projects/{project}/global/firewalls/muncho-owner-gate-web-from-production",
         f"{compute}/projects/{project}/global/firewalls",
         f"{iam}/projects/{project}/serviceAccounts/{foundation.SERVICE_ACCOUNT_NAME}%40{project}.iam.gserviceaccount.com",
-        f"{iam}/projects/{project}/serviceAccounts/{foundation.SERVICE_ACCOUNT_NAME}%40{project}.iam.gserviceaccount.com/keys",
+        (
+            f"{iam}/projects/{project}/serviceAccounts/"
+            f"{foundation.SERVICE_ACCOUNT_NAME}%40{project}.iam.gserviceaccount.com/"
+            "keys?keyTypes=USER_MANAGED"
+        ),
+        f"{iam}/projects/{project}/roles/{foundation.READ_ONLY_IAM_ROLE_ID}",
         f"{iam}/projects/{project}/roles/{foundation.MUTATION_ROLE_ID}",
+        *((f"{iam}/{organization_role}",) if organization_role is not None else ()),
+        *(f"{crm_v3}/{resource}" for resource in resource_chain),
     )
-    service_account_resource = (
+    encoded_service_account_resource = (
         f"projects/{project}/serviceAccounts/"
-        f"{foundation.SERVICE_ACCOUNT_NAME}@{project}.iam.gserviceaccount.com"
+        f"{foundation.SERVICE_ACCOUNT_NAME}%40{project}.iam.gserviceaccount.com"
     )
     return (
         *({"method": "GET", "url": path} for path in paths),
         {
             "method": "POST",
             "url": (
-                f"{compute}/projects/{project}/zones/{zone}/instances/"
-                f"{foundation.TARGET_INSTANCE}/testIamPermissions"
+                f"{iam}/{encoded_service_account_resource}:getIamPolicy"
+                "?options.requestedPolicyVersion=3"
             ),
-            "body": foundation.canonical_json_bytes({
-                "permissions": list(INSTANCE_PERMISSION_PROBE)
-            }).decode("ascii"),
+            "body": "{}",
         },
-        {
-            "method": "POST",
-            "url": (
-                f"{compute}/projects/{project}/zones/{zone}/disks/"
-                f"{foundation.TARGET_DISK}/testIamPermissions"
-            ),
-            "body": foundation.canonical_json_bytes({
-                "permissions": list(DISK_PERMISSION_PROBE)
-            }).decode("ascii"),
-        },
-        {
-            "method": "POST",
-            "url": f"{iam}/{service_account_resource}:testIamPermissions",
-            "body": foundation.canonical_json_bytes({
-                "permissions": list(SERVICE_ACCOUNT_PERMISSION_PROBE)
-            }).decode("ascii"),
-        },
-        {
-            "method": "POST",
-            "url": f"{crm}/projects/{project}:testIamPermissions",
-            "body": foundation.canonical_json_bytes({
-                "permissions": list(PROJECT_PERMISSION_PROBE)
-            }).decode("ascii"),
-        },
-        {
-            "method": "POST",
-            "url": f"{crm}/projects/{project}:getIamPolicy",
-            "body": '{"options":{"requestedPolicyVersion":3}}',
-        },
+        *(
+            {
+                "method": "POST",
+                "url": f"{crm_v3}/{resource}:getIamPolicy",
+                "body": '{"options":{"requestedPolicyVersion":3}}',
+            }
+            for resource in resource_chain
+        ),
+        *(
+            (
+                {
+                    "method": "POST",
+                    "url": f"{crm}/projects/{project}:getIamPolicy",
+                    "body": '{"options":{"requestedPolicyVersion":3}}',
+                },
+            )
+            if plan is None
+            else ()
+        ),
     )
 
 
-def _validate_cloud(
+def _validate_cloud_unsigned(
     raw: Mapping[str, Any],
     *,
     plan_sha256: str,
-    public_key: Ed25519PublicKey,
-    expected_public_key_id: str,
     mutation_binding_present: bool,
-) -> str:
-    _strict(raw, {
-        "schema", "collected_at_unix", "plan_sha256", "project", "zone",
-        "source", "subnet", "instance", "service_account", "iam", "firewalls",
-        "targets", "collector", "credential_values_read", "report_sha256",
-        "attestation",
-    }, "cloud_observation")
-    _verify_seal(raw, label="cloud_observation")
-    key_id = _verify_attestation(
+) -> None:
+    _strict(
         raw,
-        public_key=public_key,
-        expected_public_key_id=expected_public_key_id,
-        label="cloud_observation",
+        {
+            "schema",
+            "collected_at_unix",
+            "plan_sha256",
+            "project",
+            "zone",
+            "source",
+            "subnet",
+            "instance",
+            "service_account",
+            "iam",
+            "firewalls",
+            "targets",
+            "release_binding",
+            "collector",
+            "credential_values_read",
+        },
+        "cloud_observation",
     )
     if (
         raw["schema"] != CLOUD_OBSERVATION_SCHEMA
@@ -386,14 +460,99 @@ def _validate_cloud(
         or isinstance(raw["collected_at_unix"], bool)
         or raw["collected_at_unix"] <= 0
         or raw["credential_values_read"] is not False
-        or raw["collector"] != "trusted_read_only_rest"
+        or raw["collector"] != "owner_read_only_rest_remote_executor_attested"
     ):
         raise OwnerGatePreflightError("owner_gate_cloud_observation_invalid")
 
-    source = _strict(raw["source"], {
-        "name", "numeric_id", "internal_ip", "service_account", "network",
-        "subnetwork",
-    }, "cloud_source")
+    release_binding = _strict(
+        raw["release_binding"],
+        {
+            "phase",
+            "release_revision",
+            "source_tree_oid",
+            "package_sha256",
+            "package_inventory_sha256",
+            "pre_foundation_authority_sha256",
+            "foundation_apply_receipt_sha256",
+            "project_ancestry_evidence_sha256",
+            "project_ancestry_chain_sha256",
+            "resource_ancestor_chain",
+            "terminal_receipt_sha256",
+            "host_observation_report_sha256",
+            "host_observation_binding_sha256",
+            "production_ingress_observation_sha256",
+            "attached_sa_permission_probe_report_sha256",
+            "cloud_signer_provisioning_receipt_sha256",
+            "cloud_signer_readiness_sha256",
+            "host_signer_provisioning_receipt_sha256",
+            "host_signer_readiness_sha256",
+            "effective_permission_probe_sha256",
+        },
+        "cloud_release_binding",
+    )
+    expected_phase = "post_iam" if mutation_binding_present else "inert"
+    digest_fields = (
+        "package_sha256",
+        "package_inventory_sha256",
+        "pre_foundation_authority_sha256",
+        "foundation_apply_receipt_sha256",
+        "project_ancestry_evidence_sha256",
+        "project_ancestry_chain_sha256",
+        "terminal_receipt_sha256",
+        "host_observation_report_sha256",
+        "host_observation_binding_sha256",
+        "production_ingress_observation_sha256",
+        "attached_sa_permission_probe_report_sha256",
+        "cloud_signer_provisioning_receipt_sha256",
+        "cloud_signer_readiness_sha256",
+        "host_signer_provisioning_receipt_sha256",
+        "host_signer_readiness_sha256",
+        "effective_permission_probe_sha256",
+    )
+    ancestor_chain = release_binding["resource_ancestor_chain"]
+    if (
+        release_binding["phase"] != expected_phase
+        or type(release_binding["production_ingress_observation_sha256"])
+        is not str
+        or re.fullmatch(r"[0-9a-f]{40}", str(release_binding["release_revision"]))
+        is None
+        or re.fullmatch(r"[0-9a-f]{40}", str(release_binding["source_tree_oid"]))
+        is None
+        or any(
+            _SHA256.fullmatch(str(release_binding[name])) is None
+            for name in digest_fields
+        )
+        or not isinstance(ancestor_chain, list)
+        or not ancestor_chain
+        or len(ancestor_chain) != len(set(ancestor_chain))
+        or re.fullmatch(
+            r"organizations/[1-9][0-9]{5,30}",
+            str(ancestor_chain[-1]),
+        )
+        is None
+        or any(
+            re.fullmatch(r"folders/[1-9][0-9]{5,30}", str(item)) is None
+            for item in ancestor_chain[:-1]
+        )
+        or release_binding["effective_permission_probe_sha256"]
+        != foundation.sha256_json(
+            expected_effective_permission_probe(mutation_binding_present)
+        )
+    ):
+        raise OwnerGatePreflightError("owner_gate_cloud_release_binding_invalid")
+
+    source = _strict(
+        raw["source"],
+        {
+            "name",
+            "numeric_id",
+            "internal_ip",
+            "service_account",
+            "network",
+            "subnetwork",
+        },
+        "cloud_source",
+    )
     if (
         source["name"] != foundation.PRODUCTION_SOURCE_VM
         or source["numeric_id"] != foundation.PRODUCTION_SOURCE_VM_ID
@@ -408,10 +567,19 @@ def _validate_cloud(
     ):
         raise OwnerGatePreflightError("owner_gate_cloud_source_invalid")
 
-    subnet = _strict(raw["subnet"], {
-        "name", "network", "cidr", "private_google_access", "stack_type",
-        "overlap_count", "route_inventory_sha256",
-    }, "cloud_subnet")
+    subnet = _strict(
+        raw["subnet"],
+        {
+            "name",
+            "network",
+            "cidr",
+            "private_google_access",
+            "stack_type",
+            "overlap_count",
+            "route_inventory_sha256",
+        },
+        "cloud_subnet",
+    )
     if (
         subnet["name"] != foundation.OWNER_GATE_SUBNET_NAME
         or subnet["cidr"] != foundation.OWNER_GATE_SUBNET_CIDR
@@ -425,13 +593,29 @@ def _validate_cloud(
     ):
         raise OwnerGatePreflightError("owner_gate_cloud_subnet_invalid")
 
-    instance = _strict(raw["instance"], {
-        "name", "numeric_id", "status", "network", "subnetwork", "internal_ip",
-        "access_config_count", "service_accounts", "oauth_scopes", "tags",
-        "shielded_secure_boot", "shielded_vtpm", "shielded_integrity_monitoring",
-        "serial_port_enabled", "project_ssh_keys_blocked", "os_login_enabled",
-        "startup_script_present",
-    }, "cloud_instance")
+    instance = _strict(
+        raw["instance"],
+        {
+            "name",
+            "numeric_id",
+            "status",
+            "network",
+            "subnetwork",
+            "internal_ip",
+            "access_config_count",
+            "service_accounts",
+            "oauth_scopes",
+            "tags",
+            "shielded_secure_boot",
+            "shielded_vtpm",
+            "shielded_integrity_monitoring",
+            "serial_port_enabled",
+            "project_ssh_keys_blocked",
+            "os_login_enabled",
+            "startup_script_present",
+        },
+        "cloud_instance",
+    )
     try:
         internal_ip = ipaddress.ip_address(instance["internal_ip"])
         owner_network = ipaddress.ip_network(
@@ -470,11 +654,19 @@ def _validate_cloud(
     ):
         raise OwnerGatePreflightError("owner_gate_cloud_instance_invalid")
 
-    service_account = _strict(raw["service_account"], {
-        "email", "disabled", "user_managed_key_count", "project_roles",
-        "effective_sensitive_permissions", "effective_permissions_probe_verified",
-        "effective_permission_probe",
-    }, "cloud_service_account")
+    service_account = _strict(
+        raw["service_account"],
+        {
+            "email",
+            "disabled",
+            "user_managed_key_count",
+            "project_roles",
+            "effective_sensitive_permissions",
+            "effective_permissions_probe_verified",
+            "effective_permission_probe",
+        },
+        "cloud_service_account",
+    )
     if (
         service_account["email"]
         != f"{foundation.SERVICE_ACCOUNT_NAME}@{foundation.PROJECT}.iam.gserviceaccount.com"
@@ -490,18 +682,28 @@ def _validate_cloud(
             ),
         ])
         or service_account["effective_sensitive_permissions"]
-        != (sorted(foundation.EXECUTION_PERMISSIONS) if mutation_binding_present else [])
+        != (
+            sorted(foundation.EXECUTION_PERMISSIONS) if mutation_binding_present else []
+        )
         or service_account["effective_permissions_probe_verified"] is not True
         or service_account["effective_permission_probe"]
         != expected_effective_permission_probe(mutation_binding_present)
     ):
         raise OwnerGatePreflightError("owner_gate_cloud_service_account_invalid")
 
-    iam = _strict(raw["iam"], {
-        "custom_role_permissions", "mutation_binding_present", "forbidden_roles",
-        "condition_expression", "read_only_role_permissions",
-        "read_only_binding_present", "ancestor_read_only_permissions",
-    }, "cloud_iam")
+    iam = _strict(
+        raw["iam"],
+        {
+            "custom_role_permissions",
+            "mutation_binding_present",
+            "forbidden_roles",
+            "condition_expression",
+            "read_only_role_permissions",
+            "read_only_binding_present",
+            "ancestor_read_only_permissions",
+        },
+        "cloud_iam",
+    )
     if (
         iam["custom_role_permissions"] != sorted(foundation.EXECUTION_PERMISSIONS)
         or iam["mutation_binding_present"] is not mutation_binding_present
@@ -515,33 +717,54 @@ def _validate_cloud(
     ):
         raise OwnerGatePreflightError("owner_gate_cloud_iam_invalid")
 
-    firewalls = _strict(raw["firewalls"], {
-        "iap", "private_web", "public_owner_gate_rules",
-        "effective_inventory_sha256", "effective_firewall_probe_verified",
-    }, "cloud_firewalls")
-    iap = _strict(firewalls["iap"], {
-        "name", "source_ranges", "target_tags", "tcp_ports", "enabled",
-    }, "cloud_iap_firewall")
-    private_web = _strict(firewalls["private_web"], {
-        "name", "source_service_accounts", "target_service_accounts", "tcp_ports",
-        "enabled", "logging",
-    }, "cloud_web_firewall")
-    expected_executor_sa = (
-        f"{foundation.SERVICE_ACCOUNT_NAME}@{foundation.PROJECT}.iam.gserviceaccount.com"
+    firewalls = _strict(
+        raw["firewalls"],
+        {
+            "iap",
+            "private_web",
+            "public_owner_gate_rules",
+            "effective_inventory_sha256",
+            "effective_firewall_probe_verified",
+        },
+        "cloud_firewalls",
     )
+    iap = _strict(
+        firewalls["iap"],
+        {
+            "name",
+            "source_ranges",
+            "target_tags",
+            "tcp_ports",
+            "enabled",
+        },
+        "cloud_iap_firewall",
+    )
+    private_web = _strict(
+        firewalls["private_web"],
+        {
+            "name",
+            "source_service_accounts",
+            "target_service_accounts",
+            "tcp_ports",
+            "enabled",
+            "logging",
+        },
+        "cloud_web_firewall",
+    )
+    expected_executor_sa = f"{foundation.SERVICE_ACCOUNT_NAME}@{foundation.PROJECT}.iam.gserviceaccount.com"
     if (
-        iap != {
+        iap
+        != {
             "name": "allow-iap-ssh",
             "source_ranges": [foundation.IAP_SOURCE_RANGE],
             "target_tags": [foundation.IAP_NETWORK_TAG],
             "tcp_ports": [22],
             "enabled": True,
         }
-        or private_web != {
+        or private_web
+        != {
             "name": "muncho-owner-gate-web-from-production",
-            "source_service_accounts": [
-                foundation.PRODUCTION_SOURCE_SERVICE_ACCOUNT
-            ],
+            "source_service_accounts": [foundation.PRODUCTION_SOURCE_SERVICE_ACCOUNT],
             "target_service_accounts": [expected_executor_sa],
             "tcp_ports": [foundation.WEB_LISTEN_PORT],
             "enabled": True,
@@ -553,10 +776,17 @@ def _validate_cloud(
     ):
         raise OwnerGatePreflightError("owner_gate_cloud_firewall_invalid")
 
-    targets = _strict(raw["targets"], {
-        "instance_name", "instance_numeric_id", "disk_name", "disk_numeric_id",
-        "boot_device_name",
-    }, "cloud_targets")
+    targets = _strict(
+        raw["targets"],
+        {
+            "instance_name",
+            "instance_numeric_id",
+            "disk_name",
+            "disk_numeric_id",
+            "boot_device_name",
+        },
+        "cloud_targets",
+    )
     if targets != {
         "instance_name": foundation.TARGET_INSTANCE,
         "instance_numeric_id": foundation.TARGET_INSTANCE_ID,
@@ -565,6 +795,56 @@ def _validate_cloud(
         "boot_device_name": foundation.TARGET_BOOT_DEVICE,
     }:
         raise OwnerGatePreflightError("owner_gate_cloud_targets_invalid")
+    return None
+
+
+def _validate_cloud(
+    raw: Mapping[str, Any],
+    *,
+    plan_sha256: str,
+    public_key: Ed25519PublicKey,
+    expected_public_key_id: str,
+    mutation_binding_present: bool,
+) -> str:
+    _strict(
+        raw,
+        {
+            "schema",
+            "collected_at_unix",
+            "plan_sha256",
+            "project",
+            "zone",
+            "source",
+            "subnet",
+            "instance",
+            "service_account",
+            "iam",
+            "firewalls",
+            "targets",
+            "release_binding",
+            "collector",
+            "credential_values_read",
+            "report_sha256",
+            "attestation",
+        },
+        "cloud_observation",
+    )
+    _verify_seal(raw, label="cloud_observation")
+    key_id = _verify_attestation(
+        raw,
+        public_key=public_key,
+        expected_public_key_id=expected_public_key_id,
+        label="cloud_observation",
+    )
+    _validate_cloud_unsigned(
+        {
+            key: value
+            for key, value in raw.items()
+            if key not in {"report_sha256", "attestation"}
+        },
+        plan_sha256=plan_sha256,
+        mutation_binding_present=mutation_binding_present,
+    )
     return key_id
 
 
@@ -578,10 +858,14 @@ def _validate_host(
     mutation_binding_present: bool,
 ) -> str:
     _strict(raw, {
-        "schema", "collected_at_unix", "plan_sha256", "release", "identities",
+        "schema", "phase", "collected_at_unix", "completed_at_unix",
+        "fresh_through_unix", "plan_sha256",
+        "production_ingress_observation_sha256",
+        "observation_binding_sha256", "release", "identities",
         "sockets", "units", "filesystem_boundaries", "metadata_firewall",
         "sqlite", "migration", "webauthn", "request_intake", "executor",
-        "old_v1", "caddy", "secret_material_recorded", "report_sha256",
+        "effective_permission_probe",
+        "secret_material_recorded", "report_sha256",
         "attestation",
     }, "host_observation")
     _verify_seal(raw, label="host_observation")
@@ -593,22 +877,51 @@ def _validate_host(
     )
     if (
         raw["schema"] != HOST_OBSERVATION_SCHEMA
+        or raw["phase"]
+        != ("post_iam" if mutation_binding_present else "inert")
         or raw["plan_sha256"] != plan_sha256
+        or type(raw["production_ingress_observation_sha256"]) is not str
+        or _SHA256.fullmatch(
+            str(raw["production_ingress_observation_sha256"])
+        )
+        is None
+        or _SHA256.fullmatch(
+            str(raw["observation_binding_sha256"])
+        ) is None
         or not isinstance(raw["collected_at_unix"], int)
+        or isinstance(raw["collected_at_unix"], bool)
         or raw["collected_at_unix"] <= 0
+        or not isinstance(raw["completed_at_unix"], int)
+        or isinstance(raw["completed_at_unix"], bool)
+        or raw["completed_at_unix"] < raw["collected_at_unix"]
+        or raw["fresh_through_unix"]
+        != raw["collected_at_unix"] + HOST_OBSERVATION_FRESHNESS_SECONDS
+        or raw["completed_at_unix"] > raw["fresh_through_unix"]
         or raw["secret_material_recorded"] is not False
     ):
         raise OwnerGatePreflightError("owner_gate_host_observation_invalid")
 
     release = _strict(raw["release"], {
-        "revision", "root", "uid", "gid", "mode", "immutable", "package_sha256",
-        "package_inventory_sha256",
+        "revision", "source_tree_oid", "root", "uid", "gid", "mode", "immutable",
+        "package_sha256", "package_inventory_sha256",
+        "pre_foundation_authority_sha256", "foundation_apply_receipt_sha256",
+        "project_ancestry_evidence_sha256", "project_ancestry_chain_sha256",
+        "resource_ancestor_chain",
+        "install_receipt_sha256", "install_receipt_file_sha256",
+        "cloud_signer_provisioning_receipt_sha256",
+        "cloud_signer_readiness_sha256",
+        "host_signer_provisioning_receipt_sha256",
+        "host_signer_readiness_sha256",
+        "attached_sa_permission_probe_report_sha256",
         "offline_wheelhouse_verified", "network_install_performed", "entrypoints",
+        "observation_dispatcher_schemas",
         "python_version", "python_executable", "python_executable_sha256",
         "python_hash_revalidated_by_sha256sum",
     }, "host_release")
     if (
         release["revision"] != spec.release_revision
+        or re.fullmatch(r"[0-9a-f]{40}", str(release["source_tree_oid"]))
+        is None
         or release["root"] != str(spec.release_root)
         or release["uid"] != 0
         or release["gid"] != 0
@@ -617,6 +930,26 @@ def _validate_host(
         or not _SHA256.fullmatch(str(release["package_sha256"]))
         or release["package_inventory_sha256"]
         != spec.package_inventory_sha256
+        or any(
+            _SHA256.fullmatch(str(release[name])) is None
+            for name in (
+                "pre_foundation_authority_sha256",
+                "foundation_apply_receipt_sha256",
+                "project_ancestry_evidence_sha256",
+                "project_ancestry_chain_sha256",
+                "install_receipt_sha256",
+                "install_receipt_file_sha256",
+                "cloud_signer_provisioning_receipt_sha256",
+                "cloud_signer_readiness_sha256",
+                "host_signer_provisioning_receipt_sha256",
+                "host_signer_readiness_sha256",
+                "attached_sa_permission_probe_report_sha256",
+            )
+        )
+        or not isinstance(release["resource_ancestor_chain"], list)
+        or not release["resource_ancestor_chain"]
+        or len(release["resource_ancestor_chain"])
+        != len(set(release["resource_ancestor_chain"]))
         or release["offline_wheelhouse_verified"] is not True
         or release["network_install_performed"] is not False
         or release["python_version"] != "3.11.2"
@@ -625,12 +958,9 @@ def _validate_host(
         or release["python_executable_sha256"] != spec.interpreter_sha256
         or release["python_hash_revalidated_by_sha256sum"] is not True
         or sorted(release["entrypoints"])
-        != sorted((
-            "muncho-owner-gate-intake",
-            "muncho-passkey-v2-web",
-            "muncho-passkey-v2-authority",
-            "muncho-passkey-v2-executor",
-        ))
+        != sorted(HOST_RELEASE_ENTRYPOINTS)
+        or release["observation_dispatcher_schemas"]
+        != list(HOST_OBSERVATION_DISPATCHER_SCHEMAS)
     ):
         raise OwnerGatePreflightError("owner_gate_host_release_invalid")
 
@@ -786,11 +1116,6 @@ def _validate_host(
         "uid": EXECUTOR_UID,
         "mutation_iam_binding_present": mutation_binding_present,
         "activation_seal_present": False,
-        "activation_seal_required_for_mutation_only": True,
-        "activation_seal_exact_contract_verified": True,
-        "activation_seal_expected_uid": 0,
-        "activation_seal_expected_gid": EXECUTOR_UID,
-        "activation_seal_expected_mode": "0440",
         "authorization_receipt_signature_self_verified": True,
         "receipt_action_binding_self_verified": True,
         "local_gcloud_present": False,
@@ -804,22 +1129,143 @@ def _validate_host(
         "receipt_public_key_mode": "0444",
     }:
         raise OwnerGatePreflightError("owner_gate_host_executor_invalid")
-    if raw["old_v1"] != {
-        "unit": "muncho-passkey-stepup.service",
-        "active": False,
-        "masked": True,
-        "trusted_for_v2": False,
-    }:
-        raise OwnerGatePreflightError("owner_gate_host_old_v1_invalid")
-    if raw["caddy"] != {
-        "public_origin": "https://auth.lomliev.com",
-        "still_on_current_host": True,
-        "private_v2_upstream_active": False,
-        "config_validated": True,
+    if raw["effective_permission_probe"] != expected_effective_permission_probe(
+        mutation_binding_present
+    ):
+        raise OwnerGatePreflightError(
+            "owner_gate_host_effective_permission_probe_invalid"
+        )
+    return key_id
+
+
+def _validate_cross_observation_binding(
+    cloud_observation: Mapping[str, Any],
+    host_observation: Mapping[str, Any],
+    *,
+    mutation_binding_present: bool,
+) -> None:
+    binding = cloud_observation["release_binding"]
+    release = host_observation["release"]
+    expected_phase = "post_iam" if mutation_binding_present else "inert"
+    shared_release_fields = (
+        ("release_revision", "revision"),
+        ("source_tree_oid", "source_tree_oid"),
+        ("package_sha256", "package_sha256"),
+        ("package_inventory_sha256", "package_inventory_sha256"),
+        (
+            "pre_foundation_authority_sha256",
+            "pre_foundation_authority_sha256",
+        ),
+        (
+            "foundation_apply_receipt_sha256",
+            "foundation_apply_receipt_sha256",
+        ),
+        (
+            "project_ancestry_evidence_sha256",
+            "project_ancestry_evidence_sha256",
+        ),
+        (
+            "project_ancestry_chain_sha256",
+            "project_ancestry_chain_sha256",
+        ),
+        ("resource_ancestor_chain", "resource_ancestor_chain"),
+        (
+            "attached_sa_permission_probe_report_sha256",
+            "attached_sa_permission_probe_report_sha256",
+        ),
+        (
+            "cloud_signer_provisioning_receipt_sha256",
+            "cloud_signer_provisioning_receipt_sha256",
+        ),
+        (
+            "cloud_signer_readiness_sha256",
+            "cloud_signer_readiness_sha256",
+        ),
+        (
+            "host_signer_provisioning_receipt_sha256",
+            "host_signer_provisioning_receipt_sha256",
+        ),
+        (
+            "host_signer_readiness_sha256",
+            "host_signer_readiness_sha256",
+        ),
+    )
+    if (
+        binding["phase"] != expected_phase
+        or host_observation["phase"] != expected_phase
+        or binding["host_observation_report_sha256"]
+        != host_observation["report_sha256"]
+        or binding["host_observation_binding_sha256"]
+        != host_observation["observation_binding_sha256"]
+        or binding["production_ingress_observation_sha256"]
+        != host_observation["production_ingress_observation_sha256"]
+        or any(
+            binding[cloud_name] != release[host_name]
+            for cloud_name, host_name in shared_release_fields
+        )
+        or binding["effective_permission_probe_sha256"]
+        != foundation.sha256_json(host_observation["effective_permission_probe"])
+    ):
+        raise OwnerGatePreflightError("owner_gate_observation_cross_binding_invalid")
+
+
+def _validate_production_ingress_observation(
+    production_ingress_observation: Mapping[str, Any],
+    *,
+    plan: foundation.OwnerGateFoundationPlan,
+    phase: str,
+    release_public_key: Ed25519PublicKey,
+    cloud_observation: Mapping[str, Any],
+    host_observation: Mapping[str, Any],
+    now_unix: int,
+) -> Mapping[str, Any]:
+    try:
+        envelope = ingress.validate_signed_production_ingress_observation(
+            production_ingress_observation,
+            phase=phase,
+            release_revision=plan.spec.release_revision,
+            plan_sha256=plan.sha256,
+            release_public_key=release_public_key,
+            now_unix=now_unix,
+        )
+    except ingress.ProductionIngressObservationError as exc:
+        raise OwnerGatePreflightError(
+            "owner_gate_production_ingress_observation_invalid"
+        ) from exc
+    envelope_sha256 = envelope["envelope_sha256"]
+    cloud_digest = cloud_observation["release_binding"][
+        "production_ingress_observation_sha256"
+    ]
+    host_digest = host_observation["production_ingress_observation_sha256"]
+    if envelope_sha256 != cloud_digest or envelope_sha256 != host_digest:
+        raise OwnerGatePreflightError(
+            "owner_gate_production_ingress_cross_binding_invalid"
+        )
+    observation = envelope["observation"]
+    old_v1 = observation["old_v1"]
+    caddy = observation["caddy"]
+    facts = {
+        "production_ingress_observation_sha256": envelope_sha256,
+        "old_v1_masked": (
+            old_v1["load_state"] == "masked"
+            and old_v1["active_state"] == "inactive"
+            and old_v1["unit_file_state"] == "masked"
+            and old_v1["fragment_path"] == "/dev/null"
+            and old_v1["permanent_mask_target"] == "/dev/null"
+        ),
+        "caddy_cutover_performed": caddy["private_v2_upstream_active"],
+        "rollback_mode": caddy["rollback_mode"],
+    }
+    if facts != {
+        "production_ingress_observation_sha256": envelope_sha256,
+        "old_v1_masked": True,
+        "caddy_cutover_performed": False,
         "rollback_mode": "pre_migration_v1_only",
     }:
-        raise OwnerGatePreflightError("owner_gate_host_caddy_invalid")
-    return key_id
+        raise OwnerGatePreflightError(
+            "owner_gate_production_ingress_safety_facts_invalid"
+        )
+    return facts
 
 
 def build_preflight_report(
@@ -827,15 +1273,13 @@ def build_preflight_report(
     plan: foundation.OwnerGateFoundationPlan,
     cloud_observation: Mapping[str, Any],
     host_observation: Mapping[str, Any],
+    production_ingress_observation: Mapping[str, Any],
     cloud_collector_public_key: Ed25519PublicKey,
     host_collector_public_key: Ed25519PublicKey,
+    release_public_key: Ed25519PublicKey,
     now_unix: int,
 ) -> Mapping[str, Any]:
-    if (
-        not isinstance(now_unix, int)
-        or isinstance(now_unix, bool)
-        or now_unix <= 0
-    ):
+    if not isinstance(now_unix, int) or isinstance(now_unix, bool) or now_unix <= 0:
         raise OwnerGatePreflightError("owner_gate_preflight_time_invalid")
     expected_cloud_key_id = plan.spec.cloud_collector_public_key_id
     expected_host_key_id = plan.spec.host_collector_public_key_id
@@ -863,6 +1307,20 @@ def build_preflight_report(
         expected_public_key_id=expected_host_key_id,
         mutation_binding_present=False,
     )
+    _validate_cross_observation_binding(
+        cloud_observation,
+        host_observation,
+        mutation_binding_present=False,
+    )
+    production_ingress_facts = _validate_production_ingress_observation(
+        production_ingress_observation,
+        plan=plan,
+        phase="inert",
+        release_public_key=release_public_key,
+        cloud_observation=cloud_observation,
+        host_observation=host_observation,
+        now_unix=now_unix,
+    )
     for observed in (cloud_observation, host_observation):
         collected = observed["collected_at_unix"]
         if (
@@ -870,12 +1328,18 @@ def build_preflight_report(
             or now_unix - collected > foundation.PREFLIGHT_MAX_AGE_SECONDS
         ):
             raise OwnerGatePreflightError("owner_gate_preflight_stale")
+    if (
+        host_observation["completed_at_unix"] > now_unix
+        or host_observation["fresh_through_unix"] < now_unix
+    ):
+        raise OwnerGatePreflightError("owner_gate_preflight_stale")
     unsigned = {
         "schema": PREFLIGHT_SCHEMA,
         "plan_sha256": plan.sha256,
         "release_revision": plan.spec.release_revision,
         "cloud_observation_sha256": cloud_observation["report_sha256"],
         "host_observation_sha256": host_observation["report_sha256"],
+        **production_ingress_facts,
         "cloud_collector_public_key_id": cloud_key_id,
         "host_collector_public_key_id": host_key_id,
         "receipt_public_key_sha256": host_observation["executor"][
@@ -889,8 +1353,6 @@ def build_preflight_report(
         "atomic_single_use_ready": True,
         "request_intake_ready": True,
         "metadata_uid_firewall_ready": True,
-        "old_v1_masked": True,
-        "caddy_cutover_performed": False,
         "mutation_iam_binding_present": False,
         "executor_activation_seal_present": False,
         "inert_noop_security_smoke_ready": True,
@@ -906,8 +1368,10 @@ def build_post_iam_preflight_report(
     plan: foundation.OwnerGateFoundationPlan,
     cloud_observation: Mapping[str, Any],
     host_observation: Mapping[str, Any],
+    production_ingress_observation: Mapping[str, Any],
     cloud_collector_public_key: Ed25519PublicKey,
     host_collector_public_key: Ed25519PublicKey,
+    release_public_key: Ed25519PublicKey,
     now_unix: int,
 ) -> Mapping[str, Any]:
     if not isinstance(now_unix, int) or isinstance(now_unix, bool) or now_unix <= 0:
@@ -938,16 +1402,39 @@ def build_post_iam_preflight_report(
         expected_public_key_id=expected_host_key_id,
         mutation_binding_present=True,
     )
+    _validate_cross_observation_binding(
+        cloud_observation,
+        host_observation,
+        mutation_binding_present=True,
+    )
+    production_ingress_facts = _validate_production_ingress_observation(
+        production_ingress_observation,
+        plan=plan,
+        phase="post_iam",
+        release_public_key=release_public_key,
+        cloud_observation=cloud_observation,
+        host_observation=host_observation,
+        now_unix=now_unix,
+    )
     for observed in (cloud_observation, host_observation):
         collected = observed["collected_at_unix"]
-        if collected > now_unix or now_unix - collected > foundation.PREFLIGHT_MAX_AGE_SECONDS:
+        if (
+            collected > now_unix
+            or now_unix - collected > foundation.PREFLIGHT_MAX_AGE_SECONDS
+        ):
             raise OwnerGatePreflightError("owner_gate_preflight_stale")
+    if (
+        host_observation["completed_at_unix"] > now_unix
+        or host_observation["fresh_through_unix"] < now_unix
+    ):
+        raise OwnerGatePreflightError("owner_gate_preflight_stale")
     unsigned = {
         "schema": POST_IAM_PREFLIGHT_SCHEMA,
         "plan_sha256": plan.sha256,
         "release_revision": plan.spec.release_revision,
         "cloud_observation_sha256": cloud_observation["report_sha256"],
         "host_observation_sha256": host_observation["report_sha256"],
+        **production_ingress_facts,
         "cloud_collector_public_key_id": cloud_key_id,
         "host_collector_public_key_id": host_key_id,
         "receipt_public_key_sha256": host_observation["executor"][

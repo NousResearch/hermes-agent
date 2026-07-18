@@ -122,6 +122,7 @@ def test_publish_is_canonical_immutable_and_idempotent(tmp_path: Path) -> None:
     assert artifact.stat().st_mode & 0o777 == 0o600
 
 
+@pytest.mark.live_system_guard_bypass
 def test_sigkill_mid_write_discards_only_unpublished_scratch(
     tmp_path: Path,
 ) -> None:
@@ -151,6 +152,7 @@ def test_sigkill_mid_write_discards_only_unpublished_scratch(
         child.close()
 
 
+@pytest.mark.live_system_guard_bypass
 @pytest.mark.parametrize("link_final", [False, True])
 def test_sigkill_recovers_each_durable_no_replace_checkpoint(
     tmp_path: Path,
@@ -185,6 +187,7 @@ def test_sigkill_recovers_each_durable_no_replace_checkpoint(
         child.close()
 
 
+@pytest.mark.live_system_guard_bypass
 def test_concurrent_process_is_excluded_and_sigkill_releases_lease(
     tmp_path: Path,
 ) -> None:

@@ -3,7 +3,7 @@
 
 The root entrypoint accepts one canonical public frame on stdin and no
 arguments.  It derives every destination from its installed release, validates
-the eight documents through the activation-seal contract with strict
+the ten documents through the activation-seal contract with strict
 freshness, and publishes one immutable evidence directory plus one immutable
 self-hashed staging receipt.  It has no Cloud client, IAM writer, service
 starter, Caddy capability, or activation-seal publication path.

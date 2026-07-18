@@ -1043,13 +1043,24 @@ def verify_bundle(root: Path, *, expected_uid: int = 0) -> VerifiedBundle:
     try:
         direct_iam_identity = direct_iam.decode_canonical(
             direct_iam_raw,
+            release_revision=str(authority["foundation_source_revision"]),
         )
     except direct_iam.DirectIamIdentityAuthorityError as exc:
         raise OwnerGateBootstrapError(
             "owner_gate_bootstrap_direct_iam_identity_authority_invalid"
         ) from None
     if (
-        direct_iam_identity["pre_foundation_authority_sha256"]
+        authority["foundation_source_revision"]
+        != manifest["foundation_source_revision"]
+        or authority["foundation_source_tree_oid"]
+        != manifest["foundation_source_tree_oid"]
+        or authority["foundation_source_revision"]
+        == manifest["release_revision"]
+        or direct_iam_identity["release_revision"]
+        != authority["foundation_source_revision"]
+        or direct_iam_identity["release_revision"]
+        != manifest["foundation_source_revision"]
+        or direct_iam_identity["pre_foundation_authority_sha256"]
         != authority["pre_foundation_authority_sha256"]
         or direct_iam_identity["pre_foundation_authority_sha256"]
         != manifest["pre_foundation_authority_sha256"]

@@ -14,6 +14,7 @@ import subprocess
 from dataclasses import replace
 from pathlib import Path
 from types import SimpleNamespace
+from typing import Any, Mapping, TypedDict
 
 import pytest
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
@@ -23,17 +24,89 @@ from scripts.canary import owner_gate_foundation as foundation
 from scripts.canary import owner_gate_foundation_apply as foundation_apply
 from scripts.canary import owner_gate_foundation_journal as foundation_journal
 from scripts.canary import owner_gate_outer_stage0 as outer
+from scripts.canary import owner_gate_preflight as owner_preflight
 from scripts.canary import owner_gate_stage0 as cloud_stage0
 from scripts.canary import owner_gate_stage0_iap as transport_module
 from scripts.canary import owner_gate_trust as release_trust
 from tests.scripts.canary import test_owner_gate_foundation_apply as apply_fixture
 from tests.scripts.canary import test_owner_gate_pre_foundation as foundation_fixture
+from tests.scripts.canary import test_owner_gate_preflight as preflight_fixture
 
 
 ROOT = Path(__file__).parents[3]
 REVISION = "a" * 40
 TREE = "b" * 40
+FOUNDATION_REVISION = "c" * 40
+FOUNDATION_TREE = "d" * 40
+PRODUCTION_INGRESS_OBSERVATION_SHA256 = "9" * 64
 INSTANCE_ID = "1234567890123456789"
+
+
+class _HostRequestValues(TypedDict):
+    phase: str
+    plan_sha256: str
+    production_ingress_observation_sha256: str
+    collected_at_unix: int
+    cloud_install_receipt: Mapping[str, Any]
+    cloud_receipt: Mapping[str, Any]
+    cloud_readiness: Mapping[str, Any]
+    host_receipt: Mapping[str, Any]
+    host_readiness: Mapping[str, Any]
+
+
+@pytest.fixture(autouse=True)
+def _decode_embedded_direct_iam_authority(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def decode(
+        raw: bytes,
+        *,
+        release_revision: str | None = None,
+    ) -> dict:
+        try:
+            value = json.loads(raw.decode("ascii", errors="strict"))
+        except (UnicodeError, ValueError, json.JSONDecodeError):
+            raise transport_module.direct_iam.DirectIamIdentityAuthorityError(
+                "direct_iam_identity_authority_invalid"
+            ) from None
+        if (
+            not isinstance(value, dict)
+            or set(value)
+            != {
+                "schema",
+                "release_revision",
+                "pre_foundation_authority_sha256",
+                "foundation_apply_receipt_sha256",
+                "resource_ancestor_chain",
+            }
+            or value.get("schema")
+            != "muncho-owner-gate-direct-iam-identity-authority.v1"
+            or foundation.canonical_json_bytes(value) != raw
+            or (
+                release_revision is not None
+                and value.get("release_revision") != release_revision
+            )
+        ):
+            raise transport_module.direct_iam.DirectIamIdentityAuthorityError(
+                "direct_iam_identity_authority_invalid"
+            )
+        return value
+
+    monkeypatch.setattr(
+        transport_module.direct_iam,
+        "decode_canonical",
+        decode,
+    )
+
+
+def _direct_iam_authority_raw() -> bytes:
+    return foundation.canonical_json_bytes({
+        "schema": "muncho-owner-gate-direct-iam-identity-authority.v1",
+        "release_revision": FOUNDATION_REVISION,
+        "pre_foundation_authority_sha256": "4" * 64,
+        "foundation_apply_receipt_sha256": "5" * 64,
+        "resource_ancestor_chain": ["organizations/123456789012"],
+    })
 
 
 def _foundation_journal_for_test(
@@ -50,15 +123,150 @@ def _foundation_journal_for_test(
 
 def _foundation_projection() -> transport_module._FoundationProjection:
     return transport_module._FoundationProjection(
-        foundation_source_revision=REVISION,
-        foundation_source_tree_oid=TREE,
+        foundation_source_revision=FOUNDATION_REVISION,
+        foundation_source_tree_oid=FOUNDATION_TREE,
         pre_foundation_authority_sha256="4" * 64,
         foundation_apply_receipt_sha256="5" * 64,
         project_ancestry_evidence_sha256="9" * 64,
         project_ancestry_chain_sha256="a" * 64,
         resource_ancestor_chain=("organizations/123456789012",),
         interpreter_sha256="8" * 64,
+        owner_reauthentication_receipt_sha256="7" * 64,
     )
+
+
+def _attached_sa_probe_fixture(
+    *,
+    completed_at_unix: int = preflight_fixture.NOW,
+) -> tuple[dict, dict[str, object], Ed25519PrivateKey]:
+    network_key = Ed25519PrivateKey.generate()
+    cloud_key = Ed25519PrivateKey.generate()
+    host_key = Ed25519PrivateKey.generate()
+    plan = preflight_fixture._plan(network_key, cloud_key, host_key)
+    projection = _foundation_projection()
+    binding = transport_module._BoundInertCloudBundle(
+        source_tree_oid=TREE,
+        package_sha256="3" * 64,
+        interpreter_sha256="8" * 64,
+        bootstrap_pip_version="25.1.1",
+        bootstrap_pip_sha256="b" * 64,
+        kit_release_id="c" * 64,
+        trusted_runner_path="/opt/muncho-owner-gate/runner",
+        bundle_path="/opt/muncho-owner-gate/bundle",
+    )
+    install_receipt = {"receipt_sha256": "c" * 64}
+    cloud_receipt = {"receipt_sha256": "d" * 64}
+    cloud_readiness = {"readiness_sha256": "e" * 64}
+    host_receipt = {"receipt_sha256": "f" * 64}
+    host_readiness = {"readiness_sha256": "0" * 64}
+    request = transport_module.OwnerGateStage0IapTransport._host_request(
+        schema=transport_module._ATTACHED_SA_REQUEST_SCHEMA,
+        phase="inert",
+        plan_sha256=plan.sha256,
+        production_ingress_observation_sha256=(
+            PRODUCTION_INGRESS_OBSERVATION_SHA256
+        ),
+        collected_at_unix=preflight_fixture.NOW,
+        cloud_install_receipt=install_receipt,
+        cloud_receipt=cloud_receipt,
+        cloud_readiness=cloud_readiness,
+        host_receipt=host_receipt,
+        host_readiness=host_readiness,
+    )
+    unsigned = {
+        "schema": transport_module._ATTACHED_SA_PROBE_SCHEMA,
+        "phase": "inert",
+        "collected_at_unix": preflight_fixture.NOW,
+        "completed_at_unix": completed_at_unix,
+        "fresh_through_unix": (
+            preflight_fixture.NOW
+            + owner_preflight.HOST_OBSERVATION_FRESHNESS_SECONDS
+        ),
+        "release_revision": REVISION,
+        "plan_sha256": plan.sha256,
+        "observation_binding_sha256": request[
+            "observation_binding_sha256"
+        ],
+        "attached_request_sha256": request["request_sha256"],
+        "source_tree_oid": binding.source_tree_oid,
+        "package_sha256": binding.package_sha256,
+        "package_inventory_sha256": plan.spec.package_inventory_sha256,
+        "pre_foundation_authority_sha256": (
+            projection.pre_foundation_authority_sha256
+        ),
+        "foundation_apply_receipt_sha256": (
+            projection.foundation_apply_receipt_sha256
+        ),
+        "project_ancestry_evidence_sha256": (
+            projection.project_ancestry_evidence_sha256
+        ),
+        "project_ancestry_chain_sha256": (
+            projection.project_ancestry_chain_sha256
+        ),
+        "resource_ancestor_chain": list(
+            projection.resource_ancestor_chain
+        ),
+        "install_receipt_sha256": install_receipt["receipt_sha256"],
+        "cloud_signer_provisioning_receipt_sha256": cloud_receipt[
+            "receipt_sha256"
+        ],
+        "cloud_signer_readiness_sha256": cloud_readiness[
+            "readiness_sha256"
+        ],
+        "host_signer_provisioning_receipt_sha256": host_receipt[
+            "receipt_sha256"
+        ],
+        "host_signer_readiness_sha256": host_readiness[
+            "readiness_sha256"
+        ],
+        "runtime_instance_numeric_id": INSTANCE_ID,
+        "runtime_service_account_email": (
+            f"{foundation.SERVICE_ACCOUNT_NAME}@{foundation.PROJECT}."
+            "iam.gserviceaccount.com"
+        ),
+        "runtime_service_account_unique_id": "123456789012345678901",
+        "metadata_scopes": list(foundation.OWNER_GATE_OAUTH_SCOPES),
+        "effective_permission_probe": (
+            owner_preflight.expected_effective_permission_probe(False)
+        ),
+        "target_instance_numeric_id": foundation.TARGET_INSTANCE_ID,
+        "target_disk_numeric_id": foundation.TARGET_DISK_ID,
+        "numeric_targets_reverified": False,
+        "inherited_bindings_evaluated": True,
+        "conditional_bindings_evaluated": True,
+        "metadata_token_acquired": True,
+        "metadata_token_wiped": True,
+        "owner_credential_values_read": False,
+    }
+    report = {
+        **unsigned,
+        "report_sha256": foundation.sha256_json(unsigned),
+    }
+    signature = host_key.sign(foundation.canonical_json_bytes(report))
+    probe = {
+        **report,
+        "attestation": {
+            "schema": "muncho-owner-gate-observation-attestation.v1",
+            "public_key_id": preflight_fixture._key_id(host_key),
+            "signature_ed25519_b64url": base64.urlsafe_b64encode(signature)
+            .rstrip(b"=")
+            .decode("ascii"),
+        },
+    }
+    validation: dict[str, object] = {
+        "request": request,
+        "release_revision": REVISION,
+        "plan": plan,
+        "binding": binding,
+        "foundation_projection": projection,
+        "cloud_install_receipt": install_receipt,
+        "cloud_receipt": cloud_receipt,
+        "cloud_readiness": cloud_readiness,
+        "host_receipt": host_receipt,
+        "host_readiness": host_readiness,
+        "host_public_key": host_key.public_key(),
+    }
+    return probe, validation, host_key
 
 
 def _decode_foundation_a(
@@ -244,6 +452,8 @@ def _package_manifest(
         "schema": cloud_stage0.PACKAGE_SCHEMA,
         "release_revision": release_revision,
         "source_tree_oid": source_tree_oid,
+        "foundation_source_revision": FOUNDATION_REVISION,
+        "foundation_source_tree_oid": FOUNDATION_TREE,
         "release_root": str(
             cloud_stage0.RELEASE_BASE / release_revision
         ),
@@ -253,6 +463,9 @@ def _package_manifest(
         "project_ancestry_evidence_sha256": "9" * 64,
         "project_ancestry_chain_sha256": "a" * 64,
         "resource_ancestor_chain": ["organizations/123456789012"],
+        "direct_iam_identity_authority_sha256": hashlib.sha256(
+            _direct_iam_authority_raw()
+        ).hexdigest(),
         "activation_performed": False,
         "cloud_mutation_performed": False,
         "caller_self_hash_is_authority": False,
@@ -317,6 +530,11 @@ def _streams(
     authority = bundle / "trust/release-trust.json"
     authority.write_bytes(b'{"signed":"later-stage0-verifies"}\n')
     authority.chmod(0o644)
+    direct_iam_authority = (
+        bundle / "trust/direct-iam-identity-authority.json"
+    )
+    direct_iam_authority.write_bytes(_direct_iam_authority_raw())
+    direct_iam_authority.chmod(0o644)
     package_manifest = bundle / "package-manifest.json"
     package_manifest.write_bytes(
         outer.canonical_json_bytes(_package_manifest(
@@ -666,6 +884,12 @@ def test_composite_uses_exact_cloud_order_argv_and_returns_inert_terminal(
     assert terminal["schema"] == (
         transport_module.INERT_CLOUD_BUNDLE_TERMINAL_SCHEMA
     )
+    assert terminal["release_sha"] == REVISION
+    assert terminal["source_tree_oid"] == TREE
+    assert transport._foundation.foundation_source_revision == (
+        FOUNDATION_REVISION
+    )
+    assert transport._foundation.foundation_source_tree_oid == FOUNDATION_TREE
     assert terminal["operation_order"] == [
         "transport_exact_stage0_and_bundle",
         "cloud-verify",
@@ -711,7 +935,10 @@ def test_composite_uses_exact_cloud_order_argv_and_returns_inert_terminal(
         ("tree", "owner_gate_stage0_stream_pair_invalid"),
         ("foundation-release", "owner_gate_stage0_stream_pair_invalid"),
         ("foundation-tree", "owner_gate_stage0_stream_pair_invalid"),
+        ("signed-foundation-release", "owner_gate_stage0_stream_pair_invalid"),
+        ("signed-foundation-tree", "owner_gate_stage0_stream_pair_invalid"),
         ("foundation", "owner_gate_stage0_stream_pair_invalid"),
+        ("direct-digest", "owner_gate_stage0_stream_pair_invalid"),
         ("self-hash", "owner_gate_stage0_stream_pair_invalid"),
     ),
 )
@@ -727,9 +954,21 @@ def test_composite_rejects_release_tree_lineage_or_self_hash_before_iap(
         arguments["kit_release_revision"] = "c" * 40
     elif case == "tree":
         arguments["kit_source_tree_oid"] = "c" * 40
+    elif case == "signed-foundation-release":
+        arguments["package_changes"] = {
+            "foundation_source_revision": "e" * 40,
+        }
+    elif case == "signed-foundation-tree":
+        arguments["package_changes"] = {
+            "foundation_source_tree_oid": "f" * 40,
+        }
     elif case == "foundation":
         arguments["package_changes"] = {
             "foundation_apply_receipt_sha256": "0" * 64,
+        }
+    elif case == "direct-digest":
+        arguments["package_changes"] = {
+            "direct_iam_identity_authority_sha256": "0" * 64,
         }
     elif case == "self-hash":
         arguments["package_changes"] = {"package_sha256": "0" * 64}
@@ -741,12 +980,12 @@ def test_composite_rejects_release_tree_lineage_or_self_hash_before_iap(
     if case == "foundation-release":
         transport._foundation = replace(
             transport._foundation,
-            foundation_source_revision="c" * 40,
+            foundation_source_revision=REVISION,
         )
     elif case == "foundation-tree":
         transport._foundation = replace(
             transport._foundation,
-            foundation_source_tree_oid="c" * 40,
+            foundation_source_tree_oid="e" * 40,
         )
 
     with pytest.raises(launcher.OwnerLauncherError, match=expected):
@@ -755,6 +994,25 @@ def test_composite_rejects_release_tree_lineage_or_self_hash_before_iap(
             bundle_stream=bundle_stream,
         )
 
+    assert calls == []
+
+
+def test_final_bundle_keeps_distinct_signed_foundation_tree(
+    tmp_path: Path,
+) -> None:
+    kit_stream, bundle_stream = _streams(tmp_path)
+    transport, calls = _transport(
+        kit_stream=kit_stream,
+        bundle_stream=bundle_stream,
+    )
+    binding = transport._bind_inert_cloud_bundle(
+        kit_stream=kit_stream,
+        bundle_stream=bundle_stream,
+    )
+
+    assert binding.source_tree_oid == TREE
+    assert transport._foundation.foundation_source_tree_oid == FOUNDATION_TREE
+    assert transport._foundation.foundation_source_tree_oid != TREE
     assert calls == []
 
 
@@ -951,6 +1209,293 @@ def test_composite_public_surface_has_only_two_fixed_streams_and_no_journal() ->
     assert "journal" not in inspect.getsource(method)
 
 
+def test_owner_gate_observation_composite_and_target_signer_surfaces_are_exact() -> (
+    None
+):
+    composite = transport_module.OwnerGateStage0IapTransport.__dict__[
+        "collect_owner_gate_host_observation"
+    ]
+    signer = transport_module.OwnerGateStage0IapTransport.__dict__[
+        "_sign_owner_gate_cloud_observation_on_target"
+    ]
+
+    assert tuple(inspect.signature(composite).parameters) == (
+        "self",
+        "phase",
+        "plan",
+        "final_network_evidence",
+        "final_network_collector_public_key",
+        "production_ingress_observation_sha256",
+        "kit_stream",
+        "bundle_stream",
+    )
+    assert tuple(inspect.signature(signer).parameters) == (
+        "self",
+        "phase",
+        "unsigned_observation",
+        "terminal_binding",
+    )
+    for method in (composite, signer):
+        parameters = inspect.signature(method).parameters
+        assert all(
+            parameter.kind is inspect.Parameter.KEYWORD_ONLY
+            for name, parameter in parameters.items()
+            if name != "self"
+        )
+        assert all(
+            name not in parameters
+            for name in ("command", "path", "signer", "token", "receipt")
+        )
+
+
+def test_host_observation_handoff_is_opaque_and_factory_bound() -> None:
+    with pytest.raises(
+        launcher.OwnerLauncherError,
+        match="owner_gate_host_observation_handoff_factory_required",
+    ):
+        transport_module.OwnerGateHostObservationHandoff()
+
+    value = transport_module.OwnerGateHostObservationHandoff._create(
+        terminal_receipt={"terminal": True},
+        host_observation={"host": True},
+    )
+    assert value._marker is transport_module._HOST_OBSERVATION_HANDOFF_MARKER
+
+
+def test_mutable_observation_frame_is_explicitly_wiped() -> None:
+    frame = bytearray(b"one-use-request-frame")
+    reader = transport_module._MutableFrameReader(frame)
+    assert reader.read(7) == b"one-use"
+    assert reader.read() == b"-request-frame"
+    transport_module._wipe(frame)
+    assert frame == bytearray(len(frame))
+
+
+def test_composite_rejects_stale_signed_final_network_evidence_before_iap(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    network_key = Ed25519PrivateKey.generate()
+    cloud_key = Ed25519PrivateKey.generate()
+    host_key = Ed25519PrivateKey.generate()
+    collected_at_unix = (
+        preflight_fixture.NOW
+        - foundation.PREFLIGHT_MAX_AGE_SECONDS
+        - 1
+    )
+    network_key_id = preflight_fixture._key_id(network_key)
+    final_network_evidence = foundation.ProductionNetworkEvidence.from_mapping(
+        preflight_fixture._signed_network_evidence(
+            network_key,
+            collected_at=collected_at_unix,
+        ),
+        public_key=network_key.public_key(),
+        expected_public_key_id=network_key_id,
+        now_unix=collected_at_unix,
+    )
+    plan = foundation.build_plan(
+        spec=foundation.OwnerGateSpec(
+            release_revision=REVISION,
+            boot_image_self_link=preflight_fixture.IMAGE,
+            package_inventory_sha256="5" * 64,
+            interpreter_sha256="8" * 64,
+            network_collector_public_key_id=network_key_id,
+            organization_id="123456789012",
+            ancestry_evidence_sha256="9" * 64,
+            cloud_collector_public_key_id=(
+                preflight_fixture._key_id(cloud_key)
+            ),
+            host_collector_public_key_id=(
+                preflight_fixture._key_id(host_key)
+            ),
+        ),
+        network_evidence=final_network_evidence,
+        network_collector_public_key=network_key.public_key(),
+        now_unix=collected_at_unix,
+    )
+    kit_stream, bundle_stream = _streams(tmp_path)
+    transport, calls = _transport(
+        kit_stream=kit_stream,
+        bundle_stream=bundle_stream,
+    )
+    monkeypatch.setattr(
+        transport_module.time,
+        "time",
+        lambda: float(preflight_fixture.NOW),
+    )
+
+    with pytest.raises(
+        launcher.OwnerLauncherError,
+        match="owner_gate_host_observation_input_invalid",
+    ):
+        transport.collect_owner_gate_host_observation(
+            phase="inert",
+            plan=plan,
+            final_network_evidence=final_network_evidence,
+            final_network_collector_public_key=network_key.public_key(),
+            production_ingress_observation_sha256=(
+                PRODUCTION_INGRESS_OBSERVATION_SHA256
+            ),
+            kit_stream=kit_stream,
+            bundle_stream=bundle_stream,
+        )
+
+    assert calls == []
+
+
+def test_host_request_variants_share_one_exact_observation_binding() -> None:
+    values: _HostRequestValues = {
+        "phase": "inert",
+        "plan_sha256": "1" * 64,
+        "production_ingress_observation_sha256": (
+            PRODUCTION_INGRESS_OBSERVATION_SHA256
+        ),
+        "collected_at_unix": 1_800_000_000,
+        "cloud_install_receipt": {"receipt_sha256": "2" * 64},
+        "cloud_receipt": {"receipt_sha256": "3" * 64},
+        "cloud_readiness": {"readiness_sha256": "4" * 64},
+        "host_receipt": {"receipt_sha256": "5" * 64},
+        "host_readiness": {"readiness_sha256": "6" * 64},
+    }
+    host = transport_module.OwnerGateStage0IapTransport._host_request(
+        schema="muncho-owner-gate-host-observation-request.v1",
+        **values,
+    )
+    probe = transport_module.OwnerGateStage0IapTransport._host_request(
+        schema=("muncho-owner-gate-attached-sa-permission-probe-request.v1"),
+        **values,
+    )
+
+    assert host["observation_binding_sha256"] == probe["observation_binding_sha256"]
+    assert host["request_sha256"] != probe["request_sha256"]
+    assert (
+        host["production_ingress_observation_sha256"]
+        == PRODUCTION_INGRESS_OBSERVATION_SHA256
+    )
+    assert set(host) == {
+        "schema",
+        "phase",
+        "collected_at_unix",
+        "plan_sha256",
+        "production_ingress_observation_sha256",
+        "cloud_install_receipt",
+        "cloud_signer_provisioning_receipt_sha256",
+        "cloud_signer_readiness_sha256",
+        "host_signer_provisioning_receipt_sha256",
+        "host_signer_readiness_sha256",
+        "observation_binding_sha256",
+        "request_sha256",
+    }
+
+
+def test_host_request_rejects_malformed_production_ingress_digest() -> None:
+    with pytest.raises(
+        launcher.OwnerLauncherError,
+        match="owner_gate_host_observation_request_invalid",
+    ):
+        transport_module.OwnerGateStage0IapTransport._host_request(
+            schema="muncho-owner-gate-host-observation-request.v1",
+            phase="inert",
+            plan_sha256="1" * 64,
+            production_ingress_observation_sha256="not-a-digest",
+            collected_at_unix=1_800_000_000,
+            cloud_install_receipt={"receipt_sha256": "2" * 64},
+            cloud_receipt={"receipt_sha256": "3" * 64},
+            cloud_readiness={"readiness_sha256": "4" * 64},
+            host_receipt={"receipt_sha256": "5" * 64},
+            host_readiness={"readiness_sha256": "6" * 64},
+        )
+
+
+def test_attached_sa_probe_pair_accepts_advancing_signed_completion_time() -> (
+    None
+):
+    first, validation, host_key = _attached_sa_probe_fixture()
+    second = copy.deepcopy(first)
+    second["completed_at_unix"] = preflight_fixture.NOW + 1
+    unsigned = {
+        name: item
+        for name, item in second.items()
+        if name not in {"report_sha256", "attestation"}
+    }
+    report = {
+        **unsigned,
+        "report_sha256": foundation.sha256_json(unsigned),
+    }
+    signature = host_key.sign(foundation.canonical_json_bytes(report))
+    second = {
+        **report,
+        "attestation": {
+            **second["attestation"],
+            "signature_ed25519_b64url": base64.urlsafe_b64encode(signature)
+            .rstrip(b"=")
+            .decode("ascii"),
+        },
+    }
+
+    assert transport_module._select_stable_attached_sa_probe(
+        first,
+        second,
+        **validation,
+    ) == second
+
+
+@pytest.mark.parametrize("corruption", ("signature", "self_hash"))
+def test_attached_sa_probe_pair_rejects_invalid_second_attestation(
+    corruption: str,
+) -> None:
+    first, validation, _host_key = _attached_sa_probe_fixture()
+    second = copy.deepcopy(first)
+    if corruption == "signature":
+        signature = second["attestation"]["signature_ed25519_b64url"]
+        second["attestation"]["signature_ed25519_b64url"] = (
+            ("A" if signature[0] != "A" else "B") + signature[1:]
+        )
+    else:
+        second["report_sha256"] = "f" * 64
+
+    with pytest.raises(
+        launcher.OwnerLauncherError,
+        match="owner_gate_attached_sa_probe_invalid",
+    ):
+        transport_module._select_stable_attached_sa_probe(
+            first,
+            second,
+            **validation,
+        )
+
+
+def test_cloud_observation_signer_uses_only_fixed_target_executor_command() -> None:
+    transport = _minimal_transport(transport_module._ProcessResult(0, b"", b""))
+    transport._release_sha = REVISION
+    argv = transport._cloud_observation_signer_argv(transport._authority_snapshot())
+    command = next(
+        item.removeprefix("--command=")
+        for item in argv
+        if item.startswith("--command=")
+    )
+    release = f"/opt/muncho-owner-gate/releases/{REVISION}"
+
+    assert tuple(shlex.split(command)) == (
+        "/usr/bin/sudo",
+        "--non-interactive",
+        "--user=muncho-storage-executor",
+        "--",
+        "/usr/bin/env",
+        "-i",
+        f"{release}/venv/bin/python",
+        "-I",
+        "-B",
+        f"{release}/bin/muncho-owner-gate-cloud-observation-signer",
+    )
+    assert (
+        "--command"
+        not in inspect.signature(
+            transport._sign_owner_gate_cloud_observation_on_target
+        ).parameters
+    )
+
+
 def test_fixed_iap_transport_rejects_remote_receipt_drift(tmp_path: Path) -> None:
     kit_stream, bundle_stream = _streams(tmp_path)
     transport, _calls = _transport(
@@ -1143,6 +1688,36 @@ def test_transport_actual_init_accepts_only_raw_fixed_journal_foundation(
             host_identity=_HostIdentity(),
             known_hosts=_KnownHosts(),
         )
+
+
+def test_historical_successful_foundation_loads_after_original_freshness_expires(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    artifacts, chain = _prepare_foundation_artifacts(tmp_path, monkeypatch)
+    late_wall_clock = (
+        foundation_fixture.NOW
+        + foundation.PREFLIGHT_MAX_AGE_SECONDS
+        + 10_000
+    )
+    monkeypatch.setattr(
+        transport_module.time,
+        "time",
+        lambda: float(late_wall_clock),
+    )
+
+    projection = transport_module._load_foundation_projection(artifacts)
+
+    assert projection.foundation_source_revision == (
+        chain.foundation_source_revision
+    )
+    assert projection.foundation_source_tree_oid == chain.foundation_source_tree_oid
+    assert projection.pre_foundation_authority_sha256 == (
+        chain.pre_foundation_authority_sha256
+    )
+    assert transport_module._SHA256.fullmatch(
+        projection.foundation_apply_receipt_sha256
+    )
 
 
 def test_transport_rejects_tampered_raw_foundation_before_iap(

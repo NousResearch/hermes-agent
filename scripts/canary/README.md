@@ -284,7 +284,7 @@ owner_gate_author_and_apply.py \
   author-and-apply
 ```
 
-This is the sole production operation. It derives the release revision and
+This is the sole production Foundation operation. It derives the release revision and
 source tree only from the sealed owner-support path and manifest, loads the
 fixed pinned release/network keys and trusted gcloud runtime, performs the
 interactive owner gcloud reauthentication, collects the fixed interpreter,
@@ -308,6 +308,76 @@ rejects any conflicting failure terminal, validates the nested signed apply
 receipt, and returns the opaque `ValidatedFoundationApplyChain` capability.
 There is no caller-selected journal path, raw receipt, output path, or semantic
 field in this handoff.
+
+### Inert owner-gate HOST/CLOUD observation
+
+The first combined inert observation is a separate exact action on the
+release-bound full owner launcher. It does not replay the Foundation operation
+and accepts no evidence, key, plan, journal, stream, output, or remote-command
+argument. Package preparation remains separate and must publish exactly these
+owner-owned, mode-`0400`, single-link regular files below an owner-owned
+mode-`0700` release directory:
+
+```text
+~/.hermes/owner-gate-inert-observation-inputs/<release-sha>/
+  stream-pins.json
+  outer-stage0.tree-stream
+  owner-gate-bundle.tree-stream
+```
+
+`stream-pins.json` is canonical JSON with the exact schema
+`muncho-owner-gate-inert-observation-input-pins.v1`, the release SHA, the
+outer-stage0 kit release ID, both tree-manifest SHA-256 digests, and its own
+`pins_sha256`. It also pins both complete stream SHA-256 digests, so a
+same-size payload substitution is rejected before credentials or IAP. The
+launcher derives every path and filename from the reviewed
+release; symlinks, extra links, wrong owners or modes, changed files, and
+caller-selected alternatives fail closed. It resolves the one
+cryptographically validated successful outer Foundation transaction, then
+loads Foundation B only through
+`load_validated_foundation_apply_chain(foundation_a)`.
+
+After the two streams and pins have been prepared, run:
+
+```bash
+/Users/emillomliev/.local/share/uv/python/\
+cpython-3.11.15-macos-aarch64-none/bin/python3.11 \
+  -I -S -B -X pycache_prefix=/var/empty/muncho-canary \
+  /absolute/clean/hermes-agent/scripts/canary/full_canary_owner_launcher.py \
+  --release-sha <exact-40-character-release-sha> \
+  --observe-owner-gate-inert
+```
+
+The action runs one fixed stage-zero composite, obtains the signed HOST report
+and attached-service-account permission probe, authors the read-only Cloud
+snapshot, sends only that canonical unsigned Cloud report to the fixed target
+UID-29103 signer, and immediately consumes the opaque bound pair in the inert
+preflight. It atomically publishes the exact activation-ready objects below the
+fixed owner-only append-only namespace; there is no output-path or filename
+argument:
+
+```text
+~/.hermes/owner-gate-inert-observation-evidence/<release-sha>/inert/
+  <evidence-set-sha256>/
+    inert-cloud-observation.json
+    inert-host-observation.json
+    inert-preflight.json
+    receipt.json
+```
+
+The transaction directory is mode `0500`; its four single-link files are mode
+`0400`. Every evidence digest is bound into the self-hashed receipt and the
+evidence-set directory name. Files and directories are fsynced before one
+atomic no-replace publication. A partial `.pending` transaction, an unexpected
+name, wrong ownership or mode, link alias, substitution, or conflicting fresh
+transaction requires manual reconciliation and is never silently removed.
+A valid fresh transaction is revalidated from its signed observations and
+replayed byte-for-byte without another IAP collection; valid stale history is
+retained and a new transaction is collected.
+
+Stdout is only the compact canonical secret-free receipt and digest inventory,
+not the three evidence documents. It never contains an access token, private
+key, generic command, or mutable pair.
 
 ## Later host/runtime gates
 

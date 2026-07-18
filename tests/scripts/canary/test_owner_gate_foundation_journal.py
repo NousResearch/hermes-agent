@@ -168,6 +168,7 @@ def test_partial_pending_is_preserved_and_fails_closed(
     assert not (root / "s0-operation.json").exists()
 
 
+@pytest.mark.live_system_guard_bypass
 @pytest.mark.parametrize(
     ("name", "link_final"),
     [("s1-intent", False), ("s2-intent", True)],
@@ -208,6 +209,7 @@ def test_sigkill_recovers_each_durable_pending_publication_crash_point(
         child.close()
 
 
+@pytest.mark.live_system_guard_bypass
 def test_two_processes_block_and_sigkill_releases_full_transaction_lease(
     tmp_path: Path,
 ) -> None:

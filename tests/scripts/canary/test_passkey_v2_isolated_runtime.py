@@ -79,6 +79,11 @@ def test_passkey_v2_suites_run_under_exact_isolated_runtime(
                 repository
                 / "tests/scripts/canary/test_passkey_v2_executor_e2e.py"
             ),
+            str(
+                repository
+                / "tests/scripts/canary/"
+                "test_owner_gate_host_observation_isolated_runtime.py"
+            ),
             "-q",
         ],
         cwd=repository,
@@ -94,6 +99,9 @@ def test_passkey_v2_suites_run_under_exact_isolated_runtime(
         project / "runtime_contract_suite.py",
         repository / "tests/scripts/canary/test_passkey_v2_security.py",
         repository / "tests/scripts/canary/test_passkey_v2_executor_e2e.py",
+        repository
+        / "tests/scripts/canary/"
+        "test_owner_gate_host_observation_isolated_runtime.py",
     ):
         relative = suite.relative_to(repository)
         progress = [

@@ -32,7 +32,7 @@ from scripts.canary import owner_gate_trust as trust
 from scripts.canary import direct_iam_identity_authority as direct_iam
 
 
-PACKAGE_SCHEMA = "muncho-owner-gate-offline-package.v1"
+PACKAGE_SCHEMA = "muncho-owner-gate-offline-package.v2"
 WHEELHOUSE_SCHEMA = "muncho-owner-gate-offline-wheelhouse.v1"
 RUNTIME_LOCK_SCHEMA = "muncho-owner-gate-runtime-wheel-lock.v1"
 RUNTIME_LOCK_RELATIVE = "ops/muncho/owner-gate/runtime-wheel-lock.json"
@@ -48,6 +48,7 @@ REQUIRED_ENTRYPOINTS = (
     "bin/muncho-owner-gate-bootstrap",
     "bin/muncho-owner-gate-install",
     "bin/muncho-owner-gate-intake",
+    "bin/muncho-owner-gate-cloud-observation-signer",
     "bin/muncho-owner-gate-stage-activation-evidence",
     "bin/muncho-cloud-trusted-signer-provision",
     "bin/muncho-host-offline-runtime-bootstrap",
@@ -69,6 +70,8 @@ ROOT_RUNTIME_FILES = (
     "scripts/canary/passkey_v2_storage_growth.py",
     "scripts/canary/storage_growth_contract.py",
     "scripts/canary/owner_gate_firewall_readiness.py",
+    "scripts/canary/owner_gate_cloud_observation_signer.py",
+    "scripts/canary/owner_gate_host_observation_producer.py",
     "scripts/canary/storage_growth_trusted_collector.py",
     "scripts/canary/trusted_signer_provisioning.py",
     "scripts/canary/trusted_signer_stage0.py",
@@ -81,6 +84,7 @@ REQUIRED_ASSET_FILES = (
     "ops/muncho/owner-gate/bin/muncho-owner-gate-bootstrap",
     "ops/muncho/owner-gate/bin/muncho-owner-gate-install",
     "ops/muncho/owner-gate/bin/muncho-owner-gate-intake",
+    "ops/muncho/owner-gate/bin/muncho-owner-gate-cloud-observation-signer",
     "ops/muncho/owner-gate/bin/muncho-owner-gate-stage-activation-evidence",
     "ops/muncho/owner-gate/bin/muncho-cloud-trusted-signer-provision",
     "ops/muncho/owner-gate/bin/muncho-host-offline-runtime-bootstrap",
@@ -154,6 +158,8 @@ PACKAGE_INVENTORY_FIELDS = frozenset({
     "schema",
     "release_revision",
     "source_tree_oid",
+    "foundation_source_revision",
+    "foundation_source_tree_oid",
     "release_root",
     "release_owner",
     "release_directory_mode",
@@ -224,6 +230,8 @@ class PackageSpec:
     wheelhouse_root: Path
     wheelhouse_manifest: Mapping[str, Any]
     interpreter_sha256: str
+    foundation_source_revision: str
+    foundation_source_tree_oid: str
     trust_manifest_path: Path | None = None
     trust_public_key_path: Path | None = None
     network_collector_public_key_path: Path | None = None
@@ -239,6 +247,11 @@ class PackageSpec:
     def validate(self) -> None:
         if (
             _REVISION.fullmatch(self.release_revision or "") is None
+            or _REVISION.fullmatch(self.foundation_source_revision or "")
+            is None
+            or _REVISION.fullmatch(self.foundation_source_tree_oid or "")
+            is None
+            or self.foundation_source_revision == self.release_revision
             or not self.source_root.is_absolute()
             or not self.wheelhouse_root.is_absolute()
             or ".." in self.source_root.parts
@@ -282,7 +295,11 @@ def _verify_clean_git_source(source_root: Path) -> tuple[str, str]:
                 stderr=subprocess.PIPE,
                 check=False,
                 timeout=30,
-                env={"PATH": "/usr/bin:/bin", "LC_ALL": "C"},
+                env={
+                    "PATH": "/usr/bin:/bin",
+                    "LC_ALL": "C",
+                    "TMPDIR": "/tmp",
+                },
             )
         except (OSError, subprocess.SubprocessError):
             raise OwnerGatePackageError(
@@ -339,7 +356,11 @@ def _run_git_raw(
             stderr=subprocess.PIPE,
             check=False,
             timeout=30,
-            env={"PATH": "/usr/bin:/bin", "LC_ALL": "C"},
+            env={
+                "PATH": "/usr/bin:/bin",
+                "LC_ALL": "C",
+                "TMPDIR": "/tmp",
+            },
         )
     except (OSError, subprocess.SubprocessError):
         raise OwnerGatePackageError(
@@ -1234,7 +1255,17 @@ def build_inventory(spec: PackageSpec) -> Mapping[str, Any]:
             expected_uid=os.geteuid(),  # windows-footgun: ok — POSIX owner boundary
             allowed_modes=frozenset({0o400, 0o440, 0o444}),
         )
-        direct_iam_authority = direct_iam.decode_canonical(direct_iam_raw)
+        direct_iam_authority = direct_iam.decode_canonical(
+            direct_iam_raw,
+            release_revision=spec.foundation_source_revision,
+        )
+        if (
+            direct_iam_authority.get("release_revision")
+            != spec.foundation_source_revision
+        ):
+            raise direct_iam.DirectIamIdentityAuthorityError(
+                "direct_iam_identity_authority_release_invalid"
+            )
     except (
         OSError,
         trust.OwnerGateTrustError,
@@ -1293,6 +1324,8 @@ def build_inventory(spec: PackageSpec) -> Mapping[str, Any]:
         "schema": PACKAGE_SCHEMA,
         "release_revision": spec.release_revision,
         "source_tree_oid": source_tree_oid,
+        "foundation_source_revision": spec.foundation_source_revision,
+        "foundation_source_tree_oid": spec.foundation_source_tree_oid,
         "release_root": str(spec.release_root),
         "release_owner": "root:root",
         "release_directory_mode": "0555",
@@ -1409,6 +1442,12 @@ def validate_authorized_manifest(
         != authority.get("project_ancestry_chain_sha256")
         or manifest.get("resource_ancestor_chain")
         != authority.get("resource_ancestor_chain")
+        or manifest.get("foundation_source_revision")
+        != authority.get("foundation_source_revision")
+        or manifest.get("foundation_source_tree_oid")
+        != authority.get("foundation_source_tree_oid")
+        or manifest.get("foundation_source_revision")
+        == manifest.get("release_revision")
         or manifest.get("caller_self_hash_is_authority") is not False
     ):
         raise OwnerGatePackageError("owner_gate_package_manifest_invalid")
@@ -1683,6 +1722,8 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument("--wheelhouse-root", type=Path, required=True)
     parser.add_argument("--wheelhouse-manifest", type=Path, required=True)
     parser.add_argument("--interpreter-sha256", required=True)
+    parser.add_argument("--foundation-source-revision", required=True)
+    parser.add_argument("--foundation-source-tree-oid", required=True)
     parser.add_argument("--trust-manifest", type=Path, required=True)
     parser.add_argument("--trust-public-key", type=Path, required=True)
     parser.add_argument(
@@ -1708,6 +1749,8 @@ def main(argv: Sequence[str] | None = None) -> int:
         wheelhouse_root=arguments.wheelhouse_root,
         wheelhouse_manifest=_load_json(arguments.wheelhouse_manifest),
         interpreter_sha256=arguments.interpreter_sha256,
+        foundation_source_revision=arguments.foundation_source_revision,
+        foundation_source_tree_oid=arguments.foundation_source_tree_oid,
         trust_manifest_path=arguments.trust_manifest,
         trust_public_key_path=arguments.trust_public_key,
         network_collector_public_key_path=(

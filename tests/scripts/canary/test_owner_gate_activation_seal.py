@@ -21,6 +21,7 @@ from scripts.canary import owner_gate_foundation as foundation
 from scripts.canary import owner_gate_owner_reauth as owner_reauth
 from scripts.canary import owner_gate_package as package
 from scripts.canary import owner_gate_preflight as preflight
+from scripts.canary import owner_gate_production_ingress_observation as production_ingress
 from scripts.canary import owner_gate_trust as trust
 from scripts.canary import passkey_v2_protocol as protocol
 from scripts.canary import passkey_v2_service as service
@@ -31,6 +32,8 @@ from tests.scripts.canary.test_owner_gate_foundation import (
     _signed_network_evidence,
 )
 from tests.scripts.canary.test_owner_gate_package import (
+    FOUNDATION_REVISION,
+    FOUNDATION_TREE_OID,
     _source,
     _trusted_spec,
     _wheelhouse,
@@ -65,6 +68,7 @@ def _host_for_release(
     *,
     iam: bool,
     package_manifest: Mapping[str, Any],
+    production_ingress_sha256: str,
 ) -> Mapping[str, Any]:
     original = _host(plan, key, iam=iam)
     body = {
@@ -84,7 +88,231 @@ def _host_for_release(
         "python_executable_sha256": package_manifest["interpreter_sha256"],
     })
     body["release"] = release
+    body["production_ingress_observation_sha256"] = (
+        production_ingress_sha256
+    )
     return _attest(body, key)
+
+
+def _cloud_for_release(
+    plan: foundation.OwnerGateFoundationPlan,
+    key: Ed25519PrivateKey,
+    *,
+    iam: bool,
+    host_observation: Mapping[str, Any],
+) -> Mapping[str, Any]:
+    original = _cloud(plan, key, iam=iam)
+    body = {
+        name: value
+        for name, value in original.items()
+        if name not in {"report_sha256", "attestation"}
+    }
+    binding = dict(body["release_binding"])
+    release = host_observation["release"]
+    for cloud_name, host_name in (
+        ("release_revision", "revision"),
+        ("source_tree_oid", "source_tree_oid"),
+        ("package_sha256", "package_sha256"),
+        ("package_inventory_sha256", "package_inventory_sha256"),
+        (
+            "pre_foundation_authority_sha256",
+            "pre_foundation_authority_sha256",
+        ),
+        (
+            "foundation_apply_receipt_sha256",
+            "foundation_apply_receipt_sha256",
+        ),
+        (
+            "project_ancestry_evidence_sha256",
+            "project_ancestry_evidence_sha256",
+        ),
+        (
+            "project_ancestry_chain_sha256",
+            "project_ancestry_chain_sha256",
+        ),
+        ("resource_ancestor_chain", "resource_ancestor_chain"),
+        (
+            "attached_sa_permission_probe_report_sha256",
+            "attached_sa_permission_probe_report_sha256",
+        ),
+        (
+            "cloud_signer_provisioning_receipt_sha256",
+            "cloud_signer_provisioning_receipt_sha256",
+        ),
+        ("cloud_signer_readiness_sha256", "cloud_signer_readiness_sha256"),
+        (
+            "host_signer_provisioning_receipt_sha256",
+            "host_signer_provisioning_receipt_sha256",
+        ),
+        ("host_signer_readiness_sha256", "host_signer_readiness_sha256"),
+    ):
+        binding[cloud_name] = release[host_name]
+    binding["host_observation_report_sha256"] = host_observation[
+        "report_sha256"
+    ]
+    binding["host_observation_binding_sha256"] = host_observation[
+        "observation_binding_sha256"
+    ]
+    binding["production_ingress_observation_sha256"] = host_observation[
+        "production_ingress_observation_sha256"
+    ]
+    binding["effective_permission_probe_sha256"] = foundation.sha256_json(
+        host_observation["effective_permission_probe"]
+    )
+    body["release_binding"] = binding
+    return _attest(body, key)
+
+
+def _production_ingress_envelope(
+    *,
+    phase: str,
+    plan: foundation.OwnerGateFoundationPlan,
+    release_key: Ed25519PrivateKey,
+) -> Mapping[str, Any]:
+    collected = NOW - 2
+    observation_unsigned = {
+        "schema": production_ingress.OBSERVATION_SCHEMA,
+        "phase": phase,
+        "release_revision": REVISION,
+        "plan_sha256": plan.sha256,
+        "target": {
+            "project": production_ingress.PROJECT,
+            "zone": production_ingress.ZONE,
+            "vm": production_ingress.VM_NAME,
+            "instance_id": production_ingress.INSTANCE_ID,
+        },
+        "collected_at_unix": collected,
+        "completed_at_unix": collected,
+        "fresh_through_unix": (
+            collected + production_ingress.FRESHNESS_SECONDS
+        ),
+        "old_v1": {
+            "unit": production_ingress.OLD_V1_UNIT,
+            "load_state": "masked",
+            "active_state": "inactive",
+            "sub_state": "dead",
+            "unit_file_state": "masked",
+            "fragment_path": production_ingress.OLD_V1_MASK_TARGET,
+            "drop_in_paths": [],
+            "permanent_mask_path": str(
+                production_ingress.OLD_V1_MASK_PATH
+            ),
+            "permanent_mask_target": production_ingress.OLD_V1_MASK_TARGET,
+            "mask_uid": production_ingress.EXPECTED_ROOT_UID,
+            "mask_gid": production_ingress.EXPECTED_ROOT_GID,
+            "trusted_for_v2": False,
+        },
+        "caddy": {
+            "unit": production_ingress.CADDY_UNIT,
+            "load_state": "loaded",
+            "active_state": "active",
+            "sub_state": "running",
+            "unit_file_state": "enabled",
+            "fragment_path": production_ingress.CADDY_UNIT_FRAGMENT,
+            "drop_in_paths": [],
+            "main_pid": 4242,
+            "exec_start_argv": [
+                "/usr/bin/caddy",
+                "run",
+                "--environ",
+                "--config",
+                str(production_ingress.CADDYFILE_PATH),
+            ],
+            "config_path": str(production_ingress.CADDYFILE_PATH),
+            "config_uid": production_ingress.EXPECTED_ROOT_UID,
+            "config_gid": production_ingress.EXPECTED_ROOT_GID,
+            "config_mode": f"{production_ingress.CADDYFILE_MODE:04o}",
+            "config_size": 128,
+            "public_origin": production_ingress.PUBLIC_ORIGIN,
+            "auth_host_route_count": 1,
+            "reverse_proxy_handler_count": 1,
+            "reverse_proxy_upstream_count": 1,
+            "still_on_current_host": True,
+            "private_v2_upstream_active": False,
+            "process_executable": "/usr/bin/caddy",
+            "process_cmdline": [
+                "/usr/bin/caddy",
+                "run",
+                "--environ",
+                "--config",
+                str(production_ingress.CADDYFILE_PATH),
+            ],
+            "admin_endpoint": "127.0.0.1:2019",
+            "live_route_projection_sha256": foundation.sha256_json({
+                "auth_host_route_count": 1,
+                "reverse_proxy_handler_count": 1,
+                "reverse_proxy_upstream_count": 1,
+                "still_on_current_host": True,
+                "private_v2_upstream_active": False,
+            }),
+            "effective_unit_inventory_closed": True,
+            "active_process_stable": True,
+            "admin_listener_owned_by_main_pid": True,
+            "live_config_matches_adapted_config": True,
+            "double_live_config_projection_identical": True,
+            "config_validated": True,
+            "stable_nofollow_config_verified": True,
+            "double_adapt_projection_identical": True,
+            "rollback_mode": "pre_migration_v1_only",
+        },
+        "collector_authority": (
+            "production_root_read_only_fixed_projection"
+        ),
+        "caller_selected_input_accepted": False,
+        "cloud_mutation_performed": False,
+        "service_mutation_performed": False,
+        "secret_material_recorded": False,
+        "secret_digest_recorded": False,
+    }
+    observation = {
+        **observation_unsigned,
+        "report_sha256": hashlib.sha256(
+            production_ingress._canonical(observation_unsigned)
+        ).hexdigest(),
+    }
+    envelope_unsigned = {
+        "schema": production_ingress.ENVELOPE_SCHEMA,
+        "phase": phase,
+        "release_revision": REVISION,
+        "plan_sha256": plan.sha256,
+        "observation": observation,
+        "observer_report_sha256": observation["report_sha256"],
+        "transport_authority": {
+            "kind": "pinned_owner_gcloud_iap_ssh_read_only",
+            "project": production_ingress.PROJECT,
+            "zone": production_ingress.ZONE,
+            "vm": production_ingress.VM_NAME,
+            "instance_id": production_ingress.INSTANCE_ID,
+            "known_hosts_file_sha256": "1" * 64,
+            "observer_source_sha256": "2" * 64,
+            "instance_authorization_sha256": "3" * 64,
+            "project_authorization_sha256": "4" * 64,
+            "oslogin_authorization_sha256": "5" * 64,
+        },
+        "signed_at_unix": collected,
+        "fresh_through_unix": observation["fresh_through_unix"],
+        "signer_key_id": hashlib.sha256(
+            release_key.public_key().public_bytes_raw()
+        ).hexdigest(),
+        "secret_material_recorded": False,
+        "secret_digest_recorded": False,
+    }
+    signature = release_key.sign(
+        production_ingress.SIGNATURE_DOMAIN
+        + production_ingress._canonical(envelope_unsigned)
+    )
+    signed = {
+        **envelope_unsigned,
+        "signature_ed25519_b64url": base64.urlsafe_b64encode(signature)
+        .rstrip(b"=")
+        .decode("ascii"),
+    }
+    return {
+        **signed,
+        "envelope_sha256": hashlib.sha256(
+            production_ingress._canonical(signed)
+        ).hexdigest(),
+    }
 
 
 def _activation_owner_reauth_receipt(
@@ -123,8 +351,8 @@ def _activation_owner_reauth_receipt(
         },
         "interactive_reauthentication": {
             "method": "gcloud_auth_login_force_interactive",
-            "started_at_unix": NOW - 2,
-            "completed_at_unix": NOW - 1,
+            "started_at_unix": issued_at_unix - 2,
+            "completed_at_unix": issued_at_unix - 1,
             "command_sha256": "7" * 64,
             "interactive_tty_verified": True,
             "access_token_requested": False,
@@ -160,6 +388,12 @@ def _release_trust_manifest(
         "fork_repository": trust.FORK_REPOSITORY,
         "release_revision": inventory["release_revision"],
         "source_tree_oid": inventory["source_tree_oid"],
+        "foundation_source_revision": inventory[
+            "foundation_source_revision"
+        ],
+        "foundation_source_tree_oid": inventory[
+            "foundation_source_tree_oid"
+        ],
         "package_inventory_sha256": foundation.sha256_json(inventory),
         "boot_image_self_link": IMAGE,
         "collector_public_key_ids": dict(collector_ids),
@@ -346,10 +580,16 @@ def _environment(
     )
     trust_raw = foundation.canonical_json_bytes(trust_manifest)
     public_raw = release_key.public_key().public_bytes_raw()
+    release_key_id = hashlib.sha256(public_raw).hexdigest()
     monkeypatch.setattr(
         trust,
         "PINNED_RELEASE_TRUST_PUBLIC_KEY_SHA256",
-        hashlib.sha256(public_raw).hexdigest(),
+        release_key_id,
+    )
+    monkeypatch.setattr(
+        activation.production_ingress,
+        "PINNED_RELEASE_TRUST_PUBLIC_KEY_SHA256",
+        release_key_id,
     )
     unsigned_manifest = {
         **inventory,
@@ -427,40 +667,74 @@ def _environment(
         network_collector_public_key=collector_private["network"].public_key(),
         now_unix=NOW - 2,
     )
-    inert_cloud = _cloud(plan, collector_private["cloud"], iam=False)
-    post_cloud = _cloud(plan, collector_private["cloud"], iam=True)
+    inert_ingress = _production_ingress_envelope(
+        phase="inert",
+        plan=plan,
+        release_key=release_key,
+    )
+    post_ingress = _production_ingress_envelope(
+        phase="post_iam",
+        plan=plan,
+        release_key=release_key,
+    )
     inert_host = _host_for_release(
         plan,
         collector_private["host"],
         iam=False,
         package_manifest=package_manifest,
+        production_ingress_sha256=inert_ingress["envelope_sha256"],
     )
     post_host = _host_for_release(
         plan,
         collector_private["host"],
         iam=True,
         package_manifest=package_manifest,
+        production_ingress_sha256=post_ingress["envelope_sha256"],
+    )
+    inert_cloud = _cloud_for_release(
+        plan,
+        collector_private["cloud"],
+        iam=False,
+        host_observation=inert_host,
+    )
+    post_cloud = _cloud_for_release(
+        plan,
+        collector_private["cloud"],
+        iam=True,
+        host_observation=post_host,
     )
     inert = preflight.build_preflight_report(
         plan=plan,
+        production_ingress_observation=inert_ingress,
+        release_public_key=release_key.public_key(),
         cloud_observation=inert_cloud,
         host_observation=inert_host,
         cloud_collector_public_key=collector_private["cloud"].public_key(),
         host_collector_public_key=collector_private["host"].public_key(),
-        now_unix=NOW,
+        now_unix=NOW - 1,
     )
     post = preflight.build_post_iam_preflight_report(
         plan=plan,
+        production_ingress_observation=post_ingress,
+        release_public_key=release_key.public_key(),
         cloud_observation=post_cloud,
         host_observation=post_host,
         cloud_collector_public_key=collector_private["cloud"].public_key(),
         host_collector_public_key=collector_private["host"].public_key(),
-        now_unix=NOW,
+        now_unix=NOW - 1,
     )
     for name, value in (
+        (
+            activation.INERT_PRODUCTION_INGRESS_OBSERVATION_NAME,
+            inert_ingress,
+        ),
         (activation.INERT_CLOUD_OBSERVATION_NAME, inert_cloud),
         (activation.INERT_HOST_OBSERVATION_NAME, inert_host),
         (activation.INERT_PREFLIGHT_NAME, inert),
+        (
+            activation.POST_IAM_PRODUCTION_INGRESS_OBSERVATION_NAME,
+            post_ingress,
+        ),
         (activation.POST_IAM_CLOUD_OBSERVATION_NAME, post_cloud),
         (activation.POST_IAM_HOST_OBSERVATION_NAME, post_host),
         (activation.POST_IAM_PREFLIGHT_NAME, post),
@@ -504,6 +778,13 @@ def test_exact_evidence_authors_installs_and_replays_service_seal(
 ) -> None:
     environment = _environment(tmp_path, monkeypatch)
     assert not environment["seal"].exists()
+    assert environment["manifest"]["foundation_source_revision"] != REVISION
+    assert environment["manifest"]["foundation_source_revision"] == (
+        FOUNDATION_REVISION
+    )
+    assert environment["manifest"]["foundation_source_tree_oid"] == (
+        FOUNDATION_TREE_OID
+    )
     first = _install(environment)
     assert first["disposition"] == "installed"
     state = environment["seal"].stat()
@@ -574,6 +855,56 @@ def test_stale_or_tampered_evidence_never_creates_seal(
     tampered.chmod(0o444)
     environment["evidence_root"].chmod(0o500)
     with pytest.raises(activation.OwnerGateActivationSealError):
+        _install(environment)
+    assert not environment["seal"].exists()
+
+
+@pytest.mark.parametrize(
+    "name",
+    (
+        activation.INERT_PRODUCTION_INGRESS_OBSERVATION_NAME,
+        activation.POST_IAM_PRODUCTION_INGRESS_OBSERVATION_NAME,
+    ),
+)
+def test_tampered_phase_specific_production_ingress_never_creates_seal(
+    name: str,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    environment = _environment(tmp_path, monkeypatch)
+    path = environment["evidence_root"] / name
+    value = protocol.decode_canonical_json(path.read_bytes())
+    value["envelope_sha256"] = "0" * 64
+    environment["evidence_root"].chmod(0o700)
+    path.chmod(0o644)
+    path.write_bytes(foundation.canonical_json_bytes(value))
+    path.chmod(0o444)
+    environment["evidence_root"].chmod(0o500)
+
+    with pytest.raises(
+        activation.OwnerGateActivationSealError,
+        match="owner_gate_activation_evidence_invalid",
+    ):
+        _install(environment)
+    assert not environment["seal"].exists()
+
+
+def test_foundation_source_package_tamper_never_creates_seal(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    environment = _environment(tmp_path, monkeypatch)
+    manifest_path = environment["release"] / "package-manifest.json"
+    manifest = protocol.decode_canonical_json(manifest_path.read_bytes())
+    manifest["foundation_source_tree_oid"] = "0" * 40
+    manifest_path.chmod(0o644)
+    manifest_path.write_bytes(foundation.canonical_json_bytes(manifest))
+    manifest_path.chmod(0o444)
+
+    with pytest.raises(
+        activation.OwnerGateActivationSealError,
+        match="owner_gate_activation_package_invalid",
+    ):
         _install(environment)
     assert not environment["seal"].exists()
 
@@ -681,7 +1012,10 @@ def test_expired_activation_owner_reauth_never_creates_seal(
     assert not environment["seal"].exists()
 
 
-@pytest.mark.parametrize("mismatch", ("wrong_project", "issued_before_post"))
+@pytest.mark.parametrize(
+    "mismatch",
+    ("wrong_project", "issued_before_post", "issued_equal_post"),
+)
 def test_critical_owner_reauthentication_mismatch_never_activates(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -703,9 +1037,10 @@ def test_critical_owner_reauthentication_mismatch_never_activates(
                     if mismatch == "wrong_project"
                     else environment["project_number"]
                 ),
-                issued_at_unix=(
-                    NOW - 1 if mismatch == "issued_before_post" else NOW
-                ),
+                issued_at_unix={
+                    "issued_before_post": NOW - 2,
+                    "issued_equal_post": NOW - 1,
+                }.get(mismatch, NOW),
             )
         )
     )
@@ -776,6 +1111,7 @@ def test_concurrent_replays_and_interrupted_hardlink_cleanup_are_exact(
     assert environment["seal"].stat().st_nlink == 1
 
 
+@pytest.mark.live_system_guard_bypass
 def test_sigkill_after_fsynced_record_never_leaves_authority_without_truth(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

@@ -4,12 +4,15 @@ import base64
 import copy
 import hashlib
 import json
+from typing import cast
 
 import pytest
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 
 from scripts.canary import owner_gate_foundation as foundation
 from scripts.canary import owner_gate_preflight as preflight
+from scripts.canary import owner_gate_production_ingress_contract as ingress
+from scripts.canary import owner_gate_trust as trust
 from tests.scripts.canary.test_owner_gate_foundation import (
     IMAGE,
     NOW,
@@ -20,6 +23,255 @@ from tests.scripts.canary.test_owner_gate_foundation import (
 
 def _key_id(key: Ed25519PrivateKey) -> str:
     return hashlib.sha256(key.public_key().public_bytes_raw()).hexdigest()
+
+
+RELEASE_KEY = Ed25519PrivateKey.from_private_bytes(b"\x17" * 32)
+RELEASE_KEY_ID = _key_id(RELEASE_KEY)
+
+
+@pytest.fixture(autouse=True)
+def _pin_release_key(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(
+        trust,
+        "PINNED_RELEASE_TRUST_PUBLIC_KEY_SHA256",
+        RELEASE_KEY_ID,
+    )
+    monkeypatch.setattr(
+        ingress,
+        "PINNED_RELEASE_TRUST_PUBLIC_KEY_SHA256",
+        RELEASE_KEY_ID,
+    )
+
+
+def _production_ingress_envelope(plan, *, iam: bool) -> dict:
+    phase = "post_iam" if iam else "inert"
+    collected_at_unix = NOW - 1
+    fresh_through_unix = collected_at_unix + ingress.FRESHNESS_SECONDS
+    observation_body = {
+        "schema": ingress.OBSERVATION_SCHEMA,
+        "phase": phase,
+        "release_revision": plan.spec.release_revision,
+        "plan_sha256": plan.sha256,
+        "target": {
+            "project": ingress.PROJECT,
+            "zone": ingress.ZONE,
+            "vm": ingress.VM_NAME,
+            "instance_id": ingress.INSTANCE_ID,
+        },
+        "collected_at_unix": collected_at_unix,
+        "completed_at_unix": collected_at_unix,
+        "fresh_through_unix": fresh_through_unix,
+        "old_v1": {
+            "unit": ingress.OLD_V1_UNIT,
+            "load_state": "masked",
+            "active_state": "inactive",
+            "sub_state": "dead",
+            "unit_file_state": "masked",
+            "fragment_path": ingress.OLD_V1_MASK_TARGET,
+            "drop_in_paths": [],
+            "permanent_mask_path": str(ingress.OLD_V1_MASK_PATH),
+            "permanent_mask_target": ingress.OLD_V1_MASK_TARGET,
+            "mask_uid": ingress.EXPECTED_ROOT_UID,
+            "mask_gid": ingress.EXPECTED_ROOT_GID,
+            "trusted_for_v2": False,
+        },
+        "caddy": {
+            "unit": ingress.CADDY_UNIT,
+            "load_state": "loaded",
+            "active_state": "active",
+            "sub_state": "running",
+            "unit_file_state": "enabled",
+            "fragment_path": ingress.CADDY_UNIT_FRAGMENT,
+            "drop_in_paths": [],
+            "main_pid": 4242,
+            "exec_start_argv": [
+                "/usr/bin/caddy",
+                "run",
+                "--environ",
+                "--config",
+                str(ingress.CADDYFILE_PATH),
+            ],
+            "config_path": str(ingress.CADDYFILE_PATH),
+            "config_uid": ingress.EXPECTED_ROOT_UID,
+            "config_gid": ingress.EXPECTED_ROOT_GID,
+            "config_mode": f"{ingress.CADDYFILE_MODE:04o}",
+            "config_size": 512,
+            "public_origin": ingress.PUBLIC_ORIGIN,
+            "auth_host_route_count": 1,
+            "reverse_proxy_handler_count": 1,
+            "reverse_proxy_upstream_count": 1,
+            "still_on_current_host": True,
+            "private_v2_upstream_active": False,
+            "process_executable": "/usr/bin/caddy",
+            "process_cmdline": [
+                "/usr/bin/caddy",
+                "run",
+                "--environ",
+                "--config",
+                str(ingress.CADDYFILE_PATH),
+            ],
+            "admin_endpoint": "127.0.0.1:2019",
+            "live_route_projection_sha256": foundation.sha256_json({
+                "auth_host_route_count": 1,
+                "reverse_proxy_handler_count": 1,
+                "reverse_proxy_upstream_count": 1,
+                "still_on_current_host": True,
+                "private_v2_upstream_active": False,
+            }),
+            "effective_unit_inventory_closed": True,
+            "active_process_stable": True,
+            "admin_listener_owned_by_main_pid": True,
+            "live_config_matches_adapted_config": True,
+            "double_live_config_projection_identical": True,
+            "config_validated": True,
+            "stable_nofollow_config_verified": True,
+            "double_adapt_projection_identical": True,
+            "rollback_mode": "pre_migration_v1_only",
+        },
+        "collector_authority": "production_root_read_only_fixed_projection",
+        "caller_selected_input_accepted": False,
+        "cloud_mutation_performed": False,
+        "service_mutation_performed": False,
+        "secret_material_recorded": False,
+        "secret_digest_recorded": False,
+    }
+    observation = {
+        **observation_body,
+        "report_sha256": foundation.sha256_json(observation_body),
+    }
+    envelope_unsigned = {
+        "schema": ingress.ENVELOPE_SCHEMA,
+        "phase": phase,
+        "release_revision": plan.spec.release_revision,
+        "plan_sha256": plan.sha256,
+        "observation": observation,
+        "observer_report_sha256": observation["report_sha256"],
+        "transport_authority": {
+            "kind": "pinned_owner_gcloud_iap_ssh_read_only",
+            "project": ingress.PROJECT,
+            "zone": ingress.ZONE,
+            "vm": ingress.VM_NAME,
+            "instance_id": ingress.INSTANCE_ID,
+            "known_hosts_file_sha256": "1" * 64,
+            "observer_source_sha256": "2" * 64,
+            "instance_authorization_sha256": "3" * 64,
+            "project_authorization_sha256": "4" * 64,
+            "oslogin_authorization_sha256": "5" * 64,
+        },
+        "signed_at_unix": collected_at_unix,
+        "fresh_through_unix": fresh_through_unix,
+        "signer_key_id": RELEASE_KEY_ID,
+        "secret_material_recorded": False,
+        "secret_digest_recorded": False,
+    }
+    signed = {
+        **envelope_unsigned,
+        "signature_ed25519_b64url": base64.urlsafe_b64encode(
+            RELEASE_KEY.sign(
+                ingress.SIGNATURE_DOMAIN
+                + ingress._canonical(envelope_unsigned)
+            )
+        )
+        .rstrip(b"=")
+        .decode("ascii"),
+    }
+    return {
+        **signed,
+        "envelope_sha256": hashlib.sha256(
+            ingress._canonical(signed)
+        ).hexdigest(),
+    }
+
+
+def _production_ingress_kwargs(plan, *, iam: bool) -> dict:
+    return {
+        "production_ingress_observation": _production_ingress_envelope(
+            plan,
+            iam=iam,
+        ),
+        "release_public_key": RELEASE_KEY.public_key(),
+    }
+
+
+def _resign_production_ingress_envelope(
+    envelope: dict,
+    signing_key: Ed25519PrivateKey,
+) -> dict:
+    unsigned = {
+        key: copy.deepcopy(value)
+        for key, value in envelope.items()
+        if key not in {"signature_ed25519_b64url", "envelope_sha256"}
+    }
+    signed = {
+        **unsigned,
+        "signature_ed25519_b64url": base64.urlsafe_b64encode(
+            signing_key.sign(
+                ingress.SIGNATURE_DOMAIN + ingress._canonical(unsigned)
+            )
+        )
+        .rstrip(b"=")
+        .decode("ascii"),
+    }
+    return {
+        **signed,
+        "envelope_sha256": hashlib.sha256(
+            ingress._canonical(signed)
+        ).hexdigest(),
+    }
+
+
+def _substitute_production_ingress_binding(
+    envelope: dict,
+    *,
+    field: str,
+    value: str,
+) -> dict:
+    substituted = copy.deepcopy(envelope)
+    substituted[field] = value
+    substituted["observation"][field] = value
+    observation_unsigned = {
+        key: item
+        for key, item in substituted["observation"].items()
+        if key != "report_sha256"
+    }
+    substituted["observation"]["report_sha256"] = foundation.sha256_json(
+        observation_unsigned
+    )
+    substituted["observer_report_sha256"] = substituted["observation"][
+        "report_sha256"
+    ]
+    return _resign_production_ingress_envelope(substituted, RELEASE_KEY)
+
+
+def _build_with_production_ingress(
+    plan,
+    cloud_key: Ed25519PrivateKey,
+    host_key: Ed25519PrivateKey,
+    *,
+    iam: bool,
+    envelope: dict,
+    release_public_key=None,
+    now_unix: int = NOW,
+):
+    build = (
+        preflight.build_post_iam_preflight_report
+        if iam
+        else preflight.build_preflight_report
+    )
+    return build(
+        plan=plan,
+        cloud_observation=_cloud(plan, cloud_key, iam=iam),
+        host_observation=_host(plan, host_key, iam=iam),
+        production_ingress_observation=envelope,
+        cloud_collector_public_key=cloud_key.public_key(),
+        host_collector_public_key=host_key.public_key(),
+        release_public_key=(
+            RELEASE_KEY.public_key()
+            if release_public_key is None
+            else release_public_key
+        ),
+        now_unix=now_unix,
+    )
 
 
 def _plan(
@@ -68,9 +320,7 @@ def _attest(body: dict, key: Ed25519PrivateKey) -> dict:
 
 
 def _cloud(plan, key, *, iam: bool) -> dict:
-    executor_sa = (
-        f"{foundation.SERVICE_ACCOUNT_NAME}@{foundation.PROJECT}.iam.gserviceaccount.com"
-    )
+    executor_sa = f"{foundation.SERVICE_ACCOUNT_NAME}@{foundation.PROJECT}.iam.gserviceaccount.com"
     body = {
         "schema": preflight.CLOUD_OBSERVATION_SCHEMA,
         "collected_at_unix": NOW - 1,
@@ -187,7 +437,35 @@ def _cloud(plan, key, *, iam: bool) -> dict:
             "disk_numeric_id": foundation.TARGET_DISK_ID,
             "boot_device_name": foundation.TARGET_BOOT_DEVICE,
         },
-        "collector": "trusted_read_only_rest",
+        "release_binding": {
+            "phase": "post_iam" if iam else "inert",
+            "release_revision": REVISION,
+            "source_tree_oid": "a" * 40,
+            "package_sha256": "3" * 64,
+            "package_inventory_sha256": "5" * 64,
+            "pre_foundation_authority_sha256": "7" * 64,
+            "foundation_apply_receipt_sha256": "8" * 64,
+            "project_ancestry_evidence_sha256": "9" * 64,
+            "project_ancestry_chain_sha256": "a" * 64,
+            "resource_ancestor_chain": [plan.spec.organization_resource],
+            "terminal_receipt_sha256": "e" * 64,
+            "host_observation_report_sha256": _host(
+                plan, Ed25519PrivateKey.generate(), iam=iam
+            )["report_sha256"],
+            "host_observation_binding_sha256": "4" * 64,
+            "production_ingress_observation_sha256": (
+                _production_ingress_envelope(plan, iam=iam)["envelope_sha256"]
+            ),
+            "attached_sa_permission_probe_report_sha256": "3" * 64,
+            "cloud_signer_provisioning_receipt_sha256": "f" * 64,
+            "cloud_signer_readiness_sha256": "0" * 64,
+            "host_signer_provisioning_receipt_sha256": "1" * 64,
+            "host_signer_readiness_sha256": "2" * 64,
+            "effective_permission_probe_sha256": foundation.sha256_json(
+                preflight.expected_effective_permission_probe(iam)
+            ),
+        },
+        "collector": "owner_read_only_rest_remote_executor_attested",
         "credential_values_read": False,
     }
     return _attest(body, key)
@@ -196,10 +474,18 @@ def _cloud(plan, key, *, iam: bool) -> dict:
 def _host(plan, key, *, iam: bool) -> dict:
     body = {
         "schema": preflight.HOST_OBSERVATION_SCHEMA,
+        "phase": "post_iam" if iam else "inert",
         "collected_at_unix": NOW - 1,
+        "completed_at_unix": NOW - 1,
+        "fresh_through_unix": NOW + 59,
         "plan_sha256": plan.sha256,
+        "production_ingress_observation_sha256": (
+            _production_ingress_envelope(plan, iam=iam)["envelope_sha256"]
+        ),
+        "observation_binding_sha256": "4" * 64,
         "release": {
             "revision": REVISION,
+            "source_tree_oid": "a" * 40,
             "root": f"/opt/muncho-owner-gate/releases/{REVISION}",
             "uid": 0,
             "gid": 0,
@@ -207,6 +493,18 @@ def _host(plan, key, *, iam: bool) -> dict:
             "immutable": True,
             "package_sha256": "3" * 64,
             "package_inventory_sha256": "5" * 64,
+            "pre_foundation_authority_sha256": "7" * 64,
+            "foundation_apply_receipt_sha256": "8" * 64,
+            "project_ancestry_evidence_sha256": "9" * 64,
+            "project_ancestry_chain_sha256": "a" * 64,
+            "resource_ancestor_chain": [plan.spec.organization_resource],
+            "install_receipt_sha256": "c" * 64,
+            "install_receipt_file_sha256": "d" * 64,
+            "cloud_signer_provisioning_receipt_sha256": "f" * 64,
+            "cloud_signer_readiness_sha256": "0" * 64,
+            "host_signer_provisioning_receipt_sha256": "1" * 64,
+            "host_signer_readiness_sha256": "2" * 64,
+            "attached_sa_permission_probe_report_sha256": "3" * 64,
             "offline_wheelhouse_verified": True,
             "network_install_performed": False,
             "entrypoints": [
@@ -214,6 +512,13 @@ def _host(plan, key, *, iam: bool) -> dict:
                 "muncho-passkey-v2-web",
                 "muncho-passkey-v2-authority",
                 "muncho-passkey-v2-executor",
+                "muncho-owner-gate-cloud-observation-signer",
+                "muncho-host-observation-attestor",
+            ],
+            "observation_dispatcher_schemas": [
+                "muncho-storage-growth-trusted-attestation-request.v1",
+                "muncho-owner-gate-attached-sa-permission-probe-request.v1",
+                "muncho-owner-gate-host-observation-frame.v1",
             ],
             "python_version": "3.11.2",
             "python_executable": (
@@ -223,13 +528,38 @@ def _host(plan, key, *, iam: bool) -> dict:
             "python_hash_revalidated_by_sha256sum": True,
         },
         "identities": {
-            "web": {"name": "muncho-passkey-web", "uid": 29101, "gid": 29101, "shell": "/usr/sbin/nologin"},
-            "authority": {"name": "muncho-passkey-authority", "uid": 29102, "gid": 29102, "shell": "/usr/sbin/nologin"},
-            "executor": {"name": "muncho-storage-executor", "uid": 29103, "gid": 29103, "shell": "/usr/sbin/nologin"},
+            "web": {
+                "name": "muncho-passkey-web",
+                "uid": 29101,
+                "gid": 29101,
+                "shell": "/usr/sbin/nologin",
+            },
+            "authority": {
+                "name": "muncho-passkey-authority",
+                "uid": 29102,
+                "gid": 29102,
+                "shell": "/usr/sbin/nologin",
+            },
+            "executor": {
+                "name": "muncho-storage-executor",
+                "uid": 29103,
+                "gid": 29103,
+                "shell": "/usr/sbin/nologin",
+            },
         },
         "sockets": {
-            "web_authority": {"path": str(foundation.PASSKEY_AUTHORITY_SOCKET), "uid": 29102, "gid": 29101, "mode": "0660"},
-            "authority_executor": {"path": str(foundation.PRIVILEGED_EXECUTOR_SOCKET), "uid": 29103, "gid": 29102, "mode": "0660"},
+            "web_authority": {
+                "path": str(foundation.PASSKEY_AUTHORITY_SOCKET),
+                "uid": 29102,
+                "gid": 29101,
+                "mode": "0660",
+            },
+            "authority_executor": {
+                "path": str(foundation.PRIVILEGED_EXECUTOR_SOCKET),
+                "uid": 29103,
+                "gid": 29102,
+                "mode": "0660",
+            },
         },
         "units": copy.deepcopy(preflight.EXPECTED_UNIT_PROPERTIES),
         "filesystem_boundaries": {
@@ -310,11 +640,6 @@ def _host(plan, key, *, iam: bool) -> dict:
             "uid": 29103,
             "mutation_iam_binding_present": iam,
             "activation_seal_present": False,
-            "activation_seal_required_for_mutation_only": True,
-            "activation_seal_exact_contract_verified": True,
-            "activation_seal_expected_uid": 0,
-            "activation_seal_expected_gid": 29103,
-            "activation_seal_expected_mode": "0440",
             "authorization_receipt_signature_self_verified": True,
             "receipt_action_binding_self_verified": True,
             "local_gcloud_present": False,
@@ -327,14 +652,9 @@ def _host(plan, key, *, iam: bool) -> dict:
             "receipt_public_key_owner": "root:root",
             "receipt_public_key_mode": "0444",
         },
-        "old_v1": {"unit": "muncho-passkey-stepup.service", "active": False, "masked": True, "trusted_for_v2": False},
-        "caddy": {
-            "public_origin": "https://auth.lomliev.com",
-            "still_on_current_host": True,
-            "private_v2_upstream_active": False,
-            "config_validated": True,
-            "rollback_mode": "pre_migration_v1_only",
-        },
+        "effective_permission_probe": (
+            preflight.expected_effective_permission_probe(iam)
+        ),
         "secret_material_recorded": False,
     }
     return _attest(body, key)
@@ -351,6 +671,7 @@ def test_signed_inert_and_post_iam_preflights_are_distinct() -> None:
         host_observation=_host(plan, host_key, iam=False),
         cloud_collector_public_key=cloud_key.public_key(),
         host_collector_public_key=host_key.public_key(),
+        **_production_ingress_kwargs(plan, iam=False),
         now_unix=NOW,
     )
     post = preflight.build_post_iam_preflight_report(
@@ -359,15 +680,161 @@ def test_signed_inert_and_post_iam_preflights_are_distinct() -> None:
         host_observation=_host(plan, host_key, iam=True),
         cloud_collector_public_key=cloud_key.public_key(),
         host_collector_public_key=host_key.public_key(),
+        **_production_ingress_kwargs(plan, iam=True),
         now_unix=NOW,
     )
     assert inert["schema"] == preflight.PREFLIGHT_SCHEMA
     assert inert["mutation_iam_binding_present"] is False
+    assert inert["old_v1_masked"] is True
+    assert inert["caddy_cutover_performed"] is False
+    assert inert["rollback_mode"] == "pre_migration_v1_only"
+    assert inert["production_ingress_observation_sha256"] == (
+        _production_ingress_envelope(plan, iam=False)["envelope_sha256"]
+    )
     assert post["schema"] == preflight.POST_IAM_PREFLIGHT_SCHEMA
+    assert post["old_v1_masked"] is True
+    assert post["caddy_cutover_performed"] is False
+    assert post["rollback_mode"] == "pre_migration_v1_only"
+    assert post["production_ingress_observation_sha256"] == (
+        _production_ingress_envelope(plan, iam=True)["envelope_sha256"]
+    )
     assert post["effective_permissions_exact_for_fixed_probe_set"] is True
     assert len(post["effective_permission_probe_sha256"]) == 64
     assert post["operation_permission_absent"] is True
     assert post["executor_activation_seal_present"] is False
+
+
+@pytest.mark.parametrize("iam", (False, True))
+@pytest.mark.parametrize("field", ("phase", "release_revision", "plan_sha256"))
+def test_preflight_rejects_substituted_production_ingress_binding(
+    iam: bool,
+    field: str,
+) -> None:
+    network_key = Ed25519PrivateKey.generate()
+    cloud_key = Ed25519PrivateKey.generate()
+    host_key = Ed25519PrivateKey.generate()
+    plan = _plan(network_key, cloud_key, host_key)
+    values = {
+        "phase": "inert" if iam else "post_iam",
+        "release_revision": "f" * 40,
+        "plan_sha256": "e" * 64,
+    }
+    envelope = _substitute_production_ingress_binding(
+        _production_ingress_envelope(plan, iam=iam),
+        field=field,
+        value=values[field],
+    )
+
+    with pytest.raises(
+        preflight.OwnerGatePreflightError,
+        match="owner_gate_production_ingress_observation_invalid",
+    ):
+        _build_with_production_ingress(
+            plan,
+            cloud_key,
+            host_key,
+            iam=iam,
+            envelope=envelope,
+        )
+
+
+@pytest.mark.parametrize("iam", (False, True))
+def test_preflight_rejects_invalid_production_ingress_signature_and_key(
+    iam: bool,
+) -> None:
+    network_key = Ed25519PrivateKey.generate()
+    cloud_key = Ed25519PrivateKey.generate()
+    host_key = Ed25519PrivateKey.generate()
+    attacker = Ed25519PrivateKey.generate()
+    plan = _plan(network_key, cloud_key, host_key)
+    envelope = _production_ingress_envelope(plan, iam=iam)
+    forged = _resign_production_ingress_envelope(envelope, attacker)
+
+    with pytest.raises(
+        preflight.OwnerGatePreflightError,
+        match="owner_gate_production_ingress_observation_invalid",
+    ):
+        _build_with_production_ingress(
+            plan,
+            cloud_key,
+            host_key,
+            iam=iam,
+            envelope=forged,
+        )
+    with pytest.raises(
+        preflight.OwnerGatePreflightError,
+        match="owner_gate_production_ingress_observation_invalid",
+    ):
+        _build_with_production_ingress(
+            plan,
+            cloud_key,
+            host_key,
+            iam=iam,
+            envelope=envelope,
+            release_public_key=attacker.public_key(),
+        )
+
+
+@pytest.mark.parametrize("iam", (False, True))
+def test_preflight_rejects_stale_or_incomplete_production_ingress_envelope(
+    iam: bool,
+) -> None:
+    network_key = Ed25519PrivateKey.generate()
+    cloud_key = Ed25519PrivateKey.generate()
+    host_key = Ed25519PrivateKey.generate()
+    plan = _plan(network_key, cloud_key, host_key)
+    envelope = _production_ingress_envelope(plan, iam=iam)
+
+    with pytest.raises(
+        preflight.OwnerGatePreflightError,
+        match="owner_gate_production_ingress_observation_invalid",
+    ):
+        _build_with_production_ingress(
+            plan,
+            cloud_key,
+            host_key,
+            iam=iam,
+            envelope=envelope,
+            now_unix=NOW + ingress.FRESHNESS_SECONDS,
+        )
+    incomplete = copy.deepcopy(envelope)
+    incomplete.pop("observation")
+    with pytest.raises(
+        preflight.OwnerGatePreflightError,
+        match="owner_gate_production_ingress_observation_invalid",
+    ):
+        _build_with_production_ingress(
+            plan,
+            cloud_key,
+            host_key,
+            iam=iam,
+            envelope=incomplete,
+        )
+
+
+@pytest.mark.parametrize("iam", (False, True))
+def test_preflight_rejects_valid_envelope_not_cross_bound_to_host_and_cloud(
+    iam: bool,
+) -> None:
+    network_key = Ed25519PrivateKey.generate()
+    cloud_key = Ed25519PrivateKey.generate()
+    host_key = Ed25519PrivateKey.generate()
+    plan = _plan(network_key, cloud_key, host_key)
+    substituted = _production_ingress_envelope(plan, iam=iam)
+    substituted["transport_authority"]["known_hosts_file_sha256"] = "9" * 64
+    substituted = _resign_production_ingress_envelope(substituted, RELEASE_KEY)
+
+    with pytest.raises(
+        preflight.OwnerGatePreflightError,
+        match="owner_gate_production_ingress_cross_binding_invalid",
+    ):
+        _build_with_production_ingress(
+            plan,
+            cloud_key,
+            host_key,
+            iam=iam,
+            envelope=substituted,
+        )
 
 
 def test_attacker_collector_key_is_rejected() -> None:
@@ -383,7 +850,168 @@ def test_attacker_collector_key_is_rejected() -> None:
             host_observation=_host(plan, host_key, iam=False),
             cloud_collector_public_key=attacker.public_key(),
             host_collector_public_key=host_key.public_key(),
+            **_production_ingress_kwargs(plan, iam=False),
             now_unix=NOW,
+        )
+
+
+def test_individually_valid_cloud_and_host_from_different_runs_are_rejected() -> None:
+    network_key = Ed25519PrivateKey.generate()
+    cloud_key = Ed25519PrivateKey.generate()
+    host_key = Ed25519PrivateKey.generate()
+    plan = _plan(network_key, cloud_key, host_key)
+    cloud = _cloud(plan, cloud_key, iam=False)
+    matching_host = _host(plan, host_key, iam=False)
+    other_host_body = {
+        name: copy.deepcopy(item)
+        for name, item in matching_host.items()
+        if name not in {"report_sha256", "attestation"}
+    }
+    other_host_body["observation_binding_sha256"] = "b" * 64
+    other_host = _attest(other_host_body, host_key)
+
+    preflight._validate_cloud(
+        cloud,
+        plan_sha256=plan.sha256,
+        public_key=cloud_key.public_key(),
+        expected_public_key_id=cast(
+            str, plan.spec.cloud_collector_public_key_id
+        ),
+        mutation_binding_present=False,
+    )
+    preflight._validate_host(
+        other_host,
+        spec=plan.spec,
+        plan_sha256=plan.sha256,
+        public_key=host_key.public_key(),
+        expected_public_key_id=cast(str, plan.spec.host_collector_public_key_id),
+        mutation_binding_present=False,
+    )
+    with pytest.raises(
+        preflight.OwnerGatePreflightError,
+        match="owner_gate_observation_cross_binding_invalid",
+    ):
+        preflight.build_preflight_report(
+            plan=plan,
+            cloud_observation=cloud,
+            host_observation=other_host,
+            cloud_collector_public_key=cloud_key.public_key(),
+            host_collector_public_key=host_key.public_key(),
+            **_production_ingress_kwargs(plan, iam=False),
+            now_unix=NOW,
+        )
+
+
+@pytest.mark.parametrize("iam", (False, True))
+def test_cross_binding_rejects_different_production_ingress_observations(
+    iam: bool,
+) -> None:
+    network_key = Ed25519PrivateKey.generate()
+    cloud_key = Ed25519PrivateKey.generate()
+    host_key = Ed25519PrivateKey.generate()
+    plan = _plan(network_key, cloud_key, host_key)
+    cloud = _cloud(plan, cloud_key, iam=iam)
+    host = _host(plan, host_key, iam=iam)
+    host_body = {
+        name: copy.deepcopy(item)
+        for name, item in host.items()
+        if name not in {"report_sha256", "attestation"}
+    }
+    host_body["production_ingress_observation_sha256"] = "c" * 64
+    substituted_host = _attest(host_body, host_key)
+
+    preflight._validate_cloud(
+        cloud,
+        plan_sha256=plan.sha256,
+        public_key=cloud_key.public_key(),
+        expected_public_key_id=cast(
+            str, plan.spec.cloud_collector_public_key_id
+        ),
+        mutation_binding_present=iam,
+    )
+    preflight._validate_host(
+        substituted_host,
+        spec=plan.spec,
+        plan_sha256=plan.sha256,
+        public_key=host_key.public_key(),
+        expected_public_key_id=cast(str, plan.spec.host_collector_public_key_id),
+        mutation_binding_present=iam,
+    )
+    build = (
+        preflight.build_post_iam_preflight_report
+        if iam
+        else preflight.build_preflight_report
+    )
+    with pytest.raises(
+        preflight.OwnerGatePreflightError,
+        match="owner_gate_observation_cross_binding_invalid",
+    ):
+        build(
+            plan=plan,
+            cloud_observation=cloud,
+            host_observation=substituted_host,
+            cloud_collector_public_key=cloud_key.public_key(),
+            host_collector_public_key=host_key.public_key(),
+            **_production_ingress_kwargs(plan, iam=iam),
+            now_unix=NOW,
+        )
+
+
+@pytest.mark.parametrize(
+    "surface",
+    ("cloud-missing", "cloud-malformed", "host-missing", "host-malformed"),
+)
+def test_production_ingress_observation_digest_is_required_and_strict(
+    surface: str,
+) -> None:
+    network_key = Ed25519PrivateKey.generate()
+    cloud_key = Ed25519PrivateKey.generate()
+    host_key = Ed25519PrivateKey.generate()
+    plan = _plan(network_key, cloud_key, host_key)
+    if surface.startswith("cloud"):
+        cloud = _cloud(plan, cloud_key, iam=False)
+        unsigned = {
+            name: copy.deepcopy(item)
+            for name, item in cloud.items()
+            if name not in {"report_sha256", "attestation"}
+        }
+        if surface.endswith("missing"):
+            unsigned["release_binding"].pop(
+                "production_ingress_observation_sha256"
+            )
+        else:
+            unsigned["release_binding"][
+                "production_ingress_observation_sha256"
+            ] = "not-a-digest"
+        with pytest.raises(preflight.OwnerGatePreflightError):
+            preflight._validate_cloud_unsigned(
+                unsigned,
+                plan_sha256=plan.sha256,
+                mutation_binding_present=False,
+            )
+        return
+
+    host = _host(plan, host_key, iam=False)
+    host_body = {
+        name: copy.deepcopy(item)
+        for name, item in host.items()
+        if name not in {"report_sha256", "attestation"}
+    }
+    if surface.endswith("missing"):
+        host_body.pop("production_ingress_observation_sha256")
+    else:
+        host_body["production_ingress_observation_sha256"] = "not-a-digest"
+    changed = _attest(host_body, host_key)
+    with pytest.raises(preflight.OwnerGatePreflightError):
+        preflight._validate_host(
+            changed,
+            spec=plan.spec,
+            plan_sha256=plan.sha256,
+            public_key=host_key.public_key(),
+            expected_public_key_id=cast(
+                str, plan.spec.host_collector_public_key_id
+            ),
+            mutation_binding_present=False,
         )
 
 
@@ -406,6 +1034,7 @@ def test_public_ingress_or_wrong_disk_id_is_rejected() -> None:
             host_observation=_host(plan, host_key, iam=False),
             cloud_collector_public_key=cloud_key.public_key(),
             host_collector_public_key=host_key.public_key(),
+            **_production_ingress_kwargs(plan, iam=False),
             now_unix=NOW,
         )
 
@@ -415,20 +1044,7 @@ def test_read_only_inventory_uses_post_for_iam_and_effective_firewalls() -> None
     assert requests[-1]["method"] == "POST"
     assert requests[-1]["url"].endswith(":getIamPolicy")
     assert requests[-1]["body"] == '{"options":{"requestedPolicyVersion":3}}'
-    permission_probes = [
-        item for item in requests if "testIamPermissions" in item["url"]
-    ]
-    assert all(item["method"] == "POST" for item in permission_probes)
-    observed_permission_sets = {
-        tuple(json.loads(item["body"])["permissions"])
-        for item in permission_probes
-    }
-    assert observed_permission_sets == {
-        preflight.INSTANCE_PERMISSION_PROBE,
-        preflight.DISK_PERMISSION_PROBE,
-        preflight.SERVICE_ACCOUNT_PERMISSION_PROBE,
-        preflight.PROJECT_PERMISSION_PROBE,
-    }
+    assert not any("testIamPermissions" in item["url"] for item in requests)
     assert any("getEffectiveFirewalls" in item["url"] for item in requests)
     assert all("gcloud" not in repr(item) for item in requests)
 
@@ -453,6 +1069,7 @@ def test_effective_permission_claim_requires_inherited_probe_proof() -> None:
             host_observation=_host(plan, host_key, iam=False),
             cloud_collector_public_key=cloud_key.public_key(),
             host_collector_public_key=host_key.public_key(),
+            **_production_ingress_kwargs(plan, iam=False),
             now_unix=NOW,
         )
 
@@ -499,6 +1116,7 @@ def test_host_release_is_bound_to_exact_signed_plan_authority(
             host_observation=_attest(body, host_key),
             cloud_collector_public_key=cloud_key.public_key(),
             host_collector_public_key=host_key.public_key(),
+            **_production_ingress_kwargs(plan, iam=False),
             now_unix=NOW,
         )
 
@@ -533,6 +1151,7 @@ def test_host_unit_exact_identity_command_and_network_are_required(
             host_observation=_attest(body, host_key),
             cloud_collector_public_key=cloud_key.public_key(),
             host_collector_public_key=host_key.public_key(),
+            **_production_ingress_kwargs(plan, iam=False),
             now_unix=NOW,
         )
 
@@ -552,7 +1171,28 @@ def test_host_unit_rejects_unrequested_extra_property() -> None:
             host_observation=_attest(body, host_key),
             cloud_collector_public_key=cloud_key.public_key(),
             host_collector_public_key=host_key.public_key(),
+            **_production_ingress_kwargs(plan, iam=False),
             now_unix=NOW,
+        )
+
+
+def test_host_observation_must_be_consumed_before_signed_freshness_deadline() -> None:
+    network_key = Ed25519PrivateKey.generate()
+    cloud_key = Ed25519PrivateKey.generate()
+    host_key = Ed25519PrivateKey.generate()
+    plan = _plan(network_key, cloud_key, host_key)
+    with pytest.raises(
+        preflight.OwnerGatePreflightError,
+        match="owner_gate_preflight_stale",
+    ):
+        preflight.build_preflight_report(
+            plan=plan,
+            cloud_observation=_cloud(plan, cloud_key, iam=False),
+            host_observation=_host(plan, host_key, iam=False),
+            cloud_collector_public_key=cloud_key.public_key(),
+            host_collector_public_key=host_key.public_key(),
+            **_production_ingress_kwargs(plan, iam=False),
+            now_unix=NOW + 60,
         )
 
 
@@ -580,5 +1220,6 @@ def test_observation_rejects_noncanonical_ed25519_encoding() -> None:
             host_observation=_host(plan, host_key, iam=False),
             cloud_collector_public_key=cloud_key.public_key(),
             host_collector_public_key=host_key.public_key(),
+            **_production_ingress_kwargs(plan, iam=False),
             now_unix=NOW,
         )

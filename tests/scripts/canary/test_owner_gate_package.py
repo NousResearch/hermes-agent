@@ -25,6 +25,8 @@ from scripts.canary import direct_iam_identity_authority as direct_iam
 
 ROOT = Path(__file__).parents[3]
 REVISION = "a" * 40
+FOUNDATION_REVISION = "f" * 40
+FOUNDATION_TREE_OID = "e" * 40
 
 
 def test_package_formatted_traceback_suppresses_raw_cause(tmp_path: Path) -> None:
@@ -47,6 +49,21 @@ def test_bootstrap_append_only_journal_is_in_root_runtime_inventory() -> None:
     assert (
         "scripts/canary/owner_gate_bootstrap_journal.py"
         in package.ROOT_RUNTIME_FILES
+    )
+
+
+def test_target_cloud_observation_signer_is_in_exact_offline_package() -> None:
+    assert (
+        "bin/muncho-owner-gate-cloud-observation-signer"
+        in package.REQUIRED_ENTRYPOINTS
+    )
+    assert (
+        "scripts/canary/owner_gate_cloud_observation_signer.py"
+        in package.ROOT_RUNTIME_FILES
+    )
+    assert (
+        "ops/muncho/owner-gate/bin/muncho-owner-gate-cloud-observation-signer"
+        in package.REQUIRED_ASSET_FILES
     )
 
 
@@ -91,6 +108,53 @@ def test_activation_evidence_stager_is_in_exact_release_closure(
     assert runtime in closure
     assert "scripts/canary/owner_gate_activation_seal.py" in closure
     assert "scripts/canary/passkey_v2_protocol.py" in closure
+    assert (
+        "scripts/canary/owner_gate_production_ingress_contract.py" in closure
+    )
+
+
+def test_ingress_contract_does_not_pull_owner_transports_into_preflight_closure(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def local_blob(
+        source_root: Path,
+        release_revision: str,
+        relative: str,
+        *,
+        required: bool,
+    ):
+        assert source_root == ROOT
+        assert release_revision == REVISION
+        selected = source_root / relative
+        if not selected.is_file():
+            if required:
+                raise package.OwnerGatePackageError(
+                    "owner_gate_package_git_object_missing"
+                )
+            return None
+        raw = selected.read_bytes()
+        mode = "100755" if selected.stat().st_mode & 0o111 else "100644"
+        return raw, mode
+
+    monkeypatch.setattr(package, "_git_blob", local_blob)
+    monkeypatch.setattr(
+        package,
+        "ROOT_RUNTIME_FILES",
+        ("scripts/canary/owner_gate_production_ingress_contract.py",),
+    )
+    closure = package.resolve_runtime_source_closure(
+        ROOT,
+        release_revision=REVISION,
+    )
+    assert (
+        "scripts/canary/owner_gate_production_ingress_contract.py" in closure
+    )
+    assert (
+        "scripts/canary/owner_gate_production_ingress_observation.py"
+        not in closure
+    )
+    assert "scripts/canary/full_canary_owner_launcher.py" not in closure
+    assert "scripts/canary/production_cutover_owner_launcher.py" not in closure
 
 
 def test_activation_evidence_staging_receipts_have_exact_tmpfiles_identity() -> None:
@@ -444,6 +508,8 @@ def _git_race_spec(
             wheelhouse_root=wheelhouse,
             wheelhouse_manifest={"manifest_sha256": "c" * 64},
             interpreter_sha256="d" * 64,
+            foundation_source_revision=FOUNDATION_REVISION,
+            foundation_source_tree_oid=FOUNDATION_TREE_OID,
             direct_iam_identity_authority_path=direct,
         ),
         source / "runtime.py",
@@ -467,7 +533,7 @@ def _trusted_spec(
     )
     authority_unsigned = {
         "schema": direct_iam.SCHEMA,
-        "release_revision": REVISION,
+        "release_revision": FOUNDATION_REVISION,
         "project_id": foundation.PROJECT,
         "project_number": direct_iam.PROJECT_NUMBER,
         "owner_gate_vm_name": foundation.VM_NAME,
@@ -583,6 +649,8 @@ def _trusted_spec(
         wheelhouse_root=wheel_root,
         wheelhouse_manifest=wheel_manifest,
         interpreter_sha256="9" * 64,
+        foundation_source_revision=FOUNDATION_REVISION,
+        foundation_source_tree_oid=FOUNDATION_TREE_OID,
         direct_iam_identity_authority_path=authority_path,
     )
     inventory = package.build_inventory(spec)
@@ -610,6 +678,12 @@ def _trusted_spec(
         "fork_repository": trust.FORK_REPOSITORY,
         "release_revision": REVISION,
         "source_tree_oid": "b" * 40,
+        "foundation_source_revision": inventory[
+            "foundation_source_revision"
+        ],
+        "foundation_source_tree_oid": inventory[
+            "foundation_source_tree_oid"
+        ],
         "package_inventory_sha256": foundation.sha256_json(inventory),
         "boot_image_self_link": (
             "projects/debian-cloud/global/images/"
@@ -713,9 +787,62 @@ def test_package_hashes_complete_runtime_closure_and_entrypoints(
     assert manifest["network_install_required"] is False
     assert manifest["interpreter_version"] == "3.11.2"
     assert manifest["source_tree_oid"] == "b" * 40
+    assert manifest["foundation_source_revision"] == FOUNDATION_REVISION
+    assert manifest["foundation_source_tree_oid"] == FOUNDATION_TREE_OID
+    assert (
+        manifest["foundation_source_revision"]
+        != manifest["release_revision"]
+    )
     assert manifest["caller_self_hash_is_authority"] is False
     assert manifest["activation_performed"] is False
     assert manifest["cloud_mutation_performed"] is False
+
+
+def test_package_spec_rejects_foundation_equal_to_final_release(
+    tmp_path: Path,
+) -> None:
+    source = tmp_path / "source"
+    wheelhouse = tmp_path / "wheelhouse"
+    source.mkdir()
+    wheelhouse.mkdir()
+    spec = package.PackageSpec(
+        source_root=source,
+        release_revision=REVISION,
+        wheelhouse_root=wheelhouse,
+        wheelhouse_manifest={},
+        interpreter_sha256="9" * 64,
+        foundation_source_revision=REVISION,
+        foundation_source_tree_oid=FOUNDATION_TREE_OID,
+    )
+
+    with pytest.raises(
+        package.OwnerGatePackageError,
+        match="owner_gate_package_spec_invalid",
+    ):
+        spec.validate()
+
+
+def test_inventory_rejects_direct_iam_foundation_revision_tamper(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    spec, _runtime = _git_race_spec(tmp_path, monkeypatch)
+    monkeypatch.setattr(
+        package.direct_iam,
+        "decode_canonical",
+        lambda *_args, **_kwargs: {
+            "release_revision": "0" * 40,
+            "pre_foundation_authority_sha256": "a" * 64,
+            "foundation_apply_receipt_sha256": "b" * 64,
+            "resource_ancestor_chain": ["organizations/123456789012"],
+        },
+    )
+
+    with pytest.raises(
+        package.OwnerGatePackageError,
+        match="owner_gate_package_direct_iam_identity_authority_invalid",
+    ):
+        package.build_inventory(spec)
 
 
 @pytest.mark.parametrize(
@@ -723,6 +850,8 @@ def test_package_hashes_complete_runtime_closure_and_entrypoints(
     (
         "pre_foundation_authority_sha256",
         "foundation_apply_receipt_sha256",
+        "foundation_source_revision",
+        "foundation_source_tree_oid",
         "resource_ancestor_chain",
     ),
 )
@@ -730,6 +859,8 @@ def test_release_trust_rejects_foundation_chain_inventory_drift(field: str) -> N
     inventory = {
         "release_revision": REVISION,
         "source_tree_oid": "b" * 40,
+        "foundation_source_revision": FOUNDATION_REVISION,
+        "foundation_source_tree_oid": FOUNDATION_TREE_OID,
         "interpreter_sha256": "9" * 64,
         "direct_iam_identity_authority_sha256": "8" * 64,
         "pre_foundation_authority_sha256": "a" * 64,
@@ -739,6 +870,8 @@ def test_release_trust_rejects_foundation_chain_inventory_drift(field: str) -> N
     authority = {
         "release_revision": REVISION,
         "source_tree_oid": "b" * 40,
+        "foundation_source_revision": FOUNDATION_REVISION,
+        "foundation_source_tree_oid": FOUNDATION_TREE_OID,
         "package_inventory_sha256": foundation.sha256_json(inventory),
         "interpreter_image": {"interpreter_sha256": "9" * 64},
         "direct_iam_identity_authority_sha256": "8" * 64,
@@ -750,7 +883,14 @@ def test_release_trust_rejects_foundation_chain_inventory_drift(field: str) -> N
     drifted[field] = (
         ["organizations/999999999999"]
         if field == "resource_ancestor_chain"
-        else "d" * 64
+        else (
+            "0" * 40
+            if field in {
+                "foundation_source_revision",
+                "foundation_source_tree_oid",
+            }
+            else "d" * 64
+        )
     )
     authority["package_inventory_sha256"] = foundation.sha256_json(drifted)
 
@@ -1197,6 +1337,8 @@ def test_inventory_rejects_duplicate_source_relative_payload(
         wheelhouse_root=wheel_root,
         wheelhouse_manifest=wheel_manifest,
         interpreter_sha256="9" * 64,
+        foundation_source_revision=FOUNDATION_REVISION,
+        foundation_source_tree_oid=FOUNDATION_TREE_OID,
         direct_iam_identity_authority_path=_stub_direct_authority(
             tmp_path, monkeypatch
         ),
@@ -1237,6 +1379,8 @@ def test_inventory_rejects_duplicate_release_relative_payload(
         wheelhouse_root=wheel_root,
         wheelhouse_manifest=wheel_manifest,
         interpreter_sha256="9" * 64,
+        foundation_source_revision=FOUNDATION_REVISION,
+        foundation_source_tree_oid=FOUNDATION_TREE_OID,
         direct_iam_identity_authority_path=_stub_direct_authority(
             tmp_path, monkeypatch
         ),

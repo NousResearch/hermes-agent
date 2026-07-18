@@ -130,14 +130,31 @@ def _bound_validation_result(
     }
 
 
-def test_exact_eight_file_bundle_is_staged_without_activation(
+def _expected_fresh_through(environment: Mapping[str, Any]) -> int:
+    evidence = environment["evidence"]
+    return min(
+        evidence[activation.INERT_PREFLIGHT_NAME]["observed_at_unix"]
+        + foundation.PREFLIGHT_MAX_AGE_SECONDS,
+        evidence[activation.POST_IAM_PREFLIGHT_NAME]["observed_at_unix"]
+        + foundation.PREFLIGHT_MAX_AGE_SECONDS,
+        evidence[
+            activation.INERT_PRODUCTION_INGRESS_OBSERVATION_NAME
+        ]["fresh_through_unix"],
+        evidence[
+            activation.POST_IAM_PRODUCTION_INGRESS_OBSERVATION_NAME
+        ]["fresh_through_unix"],
+        evidence[activation.ACTIVATION_OWNER_REAUTH_NAME]["expires_at_unix"],
+    )
+
+
+def test_exact_ten_file_bundle_is_staged_without_activation(
     environment: Mapping[str, Any],
 ) -> None:
     response = _stage(environment)
     assert response["disposition"] == "installed"
     assert response["staging_state"] == "complete"
     assert response["activation_evidence_fresh_through_unix"] == (
-        NOW + foundation.PREFLIGHT_MAX_AGE_SECONDS
+        _expected_fresh_through(environment)
     )
     _assert_false_boundaries(response)
     assert not os.path.lexists(environment["seal"])
@@ -170,7 +187,7 @@ def test_exact_eight_file_bundle_is_staged_without_activation(
     assert receipt["staging_state"] == "complete"
     assert receipt["bundle_sha256"] == environment["frame"]["bundle_sha256"]
     assert receipt["activation_evidence_fresh_through_unix"] == (
-        NOW + foundation.PREFLIGHT_MAX_AGE_SECONDS
+        _expected_fresh_through(environment)
     )
     assert receipt["receipt_sha256"] == protocol.sha256_json({
         name: value
@@ -226,7 +243,7 @@ def test_strict_validation_cryptographically_binds_evidence_deadline(
 @pytest.mark.parametrize(
     "now_unix",
     (
-        NOW - 1,
+        NOW - 2,
         NOW + foundation.PREFLIGHT_MAX_AGE_SECONDS + 1,
     ),
     ids=("future_evidence", "stale_evidence"),
@@ -570,8 +587,11 @@ def test_production_size_slow_validation_stays_available_within_deadline(
     environment: Mapping[str, Any],
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    production_file = b"x" * stager.MAX_FILE_BYTES
-    assert len(production_file) * len(activation.EVIDENCE_NAMES) == (
+    production_file = b"x" * (
+        stager.MAX_BUNDLE_BYTES // len(activation.EVIDENCE_NAMES)
+    )
+    assert len(production_file) <= stager.MAX_FILE_BYTES
+    assert len(production_file) * len(activation.EVIDENCE_NAMES) <= (
         stager.MAX_BUNDLE_BYTES
     )
     clock = iter((NOW, NOW + 300))

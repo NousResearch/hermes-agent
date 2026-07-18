@@ -25,7 +25,7 @@ from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PublicKey
 from scripts.canary import owner_gate_foundation as foundation
 
 
-TRUST_SCHEMA = "muncho-owner-gate-release-trust.v1"
+TRUST_SCHEMA = "muncho-owner-gate-release-trust.v2"
 FORK_REPOSITORY = "lomliev/hermes-agent"
 ATTESTATION_PURPOSE = "muncho_owner_gate_exact_offline_release_supply_chain"
 
@@ -136,6 +136,8 @@ def _validate_unsigned(value: Mapping[str, Any]) -> None:
         "fork_repository",
         "release_revision",
         "source_tree_oid",
+        "foundation_source_revision",
+        "foundation_source_tree_oid",
         "package_inventory_sha256",
         "boot_image_self_link",
         "collector_public_key_ids",
@@ -161,6 +163,16 @@ def _validate_unsigned(value: Mapping[str, Any]) -> None:
         or value.get("fork_repository") != FORK_REPOSITORY
         or _REVISION.fullmatch(str(value.get("release_revision", ""))) is None
         or _TREE_OID.fullmatch(str(value.get("source_tree_oid", ""))) is None
+        or _REVISION.fullmatch(
+            str(value.get("foundation_source_revision", ""))
+        )
+        is None
+        or _TREE_OID.fullmatch(
+            str(value.get("foundation_source_tree_oid", ""))
+        )
+        is None
+        or value.get("foundation_source_revision")
+        == value.get("release_revision")
         or _SHA256.fullmatch(
             str(value.get("package_inventory_sha256", ""))
         ) is None
@@ -265,6 +277,37 @@ def load_pinned_release_trust(
         expected_uid=expected_uid,
         allowed_modes=frozenset({0o400, 0o440, 0o444}),
     )
+    return decode_pinned_release_trust(
+        manifest_raw=manifest_raw,
+        public_key_raw=public_key_raw,
+    )
+
+
+def decode_pinned_release_trust(
+    *,
+    manifest_raw: bytes,
+    public_key_raw: bytes,
+) -> Mapping[str, Any]:
+    """Verify canonical trust bytes already protected by a fixed outer stream.
+
+    Filesystem callers should keep using :func:`load_pinned_release_trust` so
+    its immutable-file checks remain part of their boundary.  This decoder is
+    for release transports which have already pinned the complete byte stream
+    and therefore must not materialize caller-selected temporary files merely
+    to reuse the same cryptographic trust contract.
+    """
+
+    if (
+        type(manifest_raw) is not bytes
+        or not 0 < len(manifest_raw) <= _MAX_MANIFEST_BYTES
+        or type(public_key_raw) is not bytes
+    ):
+        raise OwnerGateTrustError("owner_gate_trust_manifest_invalid")
+    if (
+        _SHA256.fullmatch(PINNED_RELEASE_TRUST_PUBLIC_KEY_SHA256 or "")
+        is None
+    ):
+        raise OwnerGateTrustError("owner_gate_trust_anchor_unconfigured")
     if (
         hashlib.sha256(public_key_raw).hexdigest()
         != PINNED_RELEASE_TRUST_PUBLIC_KEY_SHA256
@@ -281,6 +324,8 @@ def load_pinned_release_trust(
         "fork_repository",
         "release_revision",
         "source_tree_oid",
+        "foundation_source_revision",
+        "foundation_source_tree_oid",
         "package_inventory_sha256",
         "boot_image_self_link",
         "collector_public_key_ids",
@@ -334,6 +379,10 @@ def verify_inventory_authority(
     if (
         trust.get("release_revision") != inventory.get("release_revision")
         or trust.get("source_tree_oid") != inventory.get("source_tree_oid")
+        or trust.get("foundation_source_revision")
+        != inventory.get("foundation_source_revision")
+        or trust.get("foundation_source_tree_oid")
+        != inventory.get("foundation_source_tree_oid")
         or trust.get("package_inventory_sha256")
         != foundation.sha256_json(inventory)
         or trust.get("interpreter_image", {}).get("interpreter_sha256")

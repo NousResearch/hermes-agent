@@ -9,9 +9,15 @@ import json
 import os
 import stat
 import subprocess
+import sys
 import time
 from pathlib import Path
 from typing import Any, Callable, Mapping, Sequence
+
+
+_RELEASE_ROOT = str(Path(__file__).resolve(strict=True).parents[2])
+if _RELEASE_ROOT not in sys.path:
+    sys.path.insert(0, _RELEASE_ROOT)
 
 from scripts.canary import owner_gate_foundation as foundation
 

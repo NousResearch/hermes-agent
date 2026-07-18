@@ -1337,6 +1337,10 @@ def skill_manage(
 
     Returns JSON string with results.
     """
+    name_error = _validate_name(name)
+    if name_error:
+        return tool_error(name_error, success=False)
+
     preflight = _background_review_preflight(action, name)
     if preflight is not None:
         return json.dumps(preflight, ensure_ascii=False)

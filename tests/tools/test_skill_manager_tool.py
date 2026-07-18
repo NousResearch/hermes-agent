@@ -600,6 +600,21 @@ class TestSkillManageDispatcher:
         assert result["success"] is False
         assert "does not exist" in result["error"]
 
+    @pytest.mark.parametrize(
+        "action",
+        ["create", "edit", "patch", "delete", "write_file", "remove_file"],
+    )
+    @pytest.mark.parametrize("name", ["", None, "UPPERCASE"])
+    def test_invalid_name_rejected_at_entry(self, action, name):
+        with patch("tools.skill_manager_tool._background_review_preflight") as preflight, \
+             patch("tools.skill_manager_tool._apply_skill_write_gate") as write_gate:
+            result = json.loads(skill_manage(action=action, name=name))
+
+        assert result["success"] is False
+        assert "name" in result["error"].lower()
+        preflight.assert_not_called()
+        write_gate.assert_not_called()
+
     def test_background_review_delete_refuses_bundled_even_with_absorbed_into(self, tmp_path):
         from tools.skill_provenance import (
             BACKGROUND_REVIEW,

@@ -239,6 +239,59 @@ class TestResolveActiveContextLength:
             },
         )]
 
+    def test_resolves_named_custom_provider_base_url_before_context_lookup(self, monkeypatch):
+        custom_providers = [{
+            "provider_key": "together",
+            "name": "together",
+            "base_url": "https://api.together.xyz/v1",
+            "models": {"meta-llama/Llama-3.3-70B-Instruct-Turbo": {"context_length": 131072}},
+        }]
+        calls = []
+
+        monkeypatch.setattr(
+            "hermes_cli.config.load_config",
+            lambda: {
+                "model": {
+                    "default": "meta-llama/Llama-3.3-70B-Instruct-Turbo",
+                    "provider": "custom:together",
+                },
+                "providers": {
+                    "together": {
+                        "base_url": "https://api.together.xyz/v1",
+                        "models": {
+                            "meta-llama/Llama-3.3-70B-Instruct-Turbo": {
+                                "context_length": 131072,
+                            }
+                        },
+                    }
+                },
+            },
+        )
+        monkeypatch.setattr(
+            "hermes_cli.config.get_compatible_custom_providers",
+            lambda cfg: custom_providers,
+        )
+
+        def fake_get_model_context_length(model, **kwargs):
+            calls.append((model, kwargs))
+            return 131072
+
+        monkeypatch.setattr(
+            "agent.model_metadata.get_model_context_length",
+            fake_get_model_context_length,
+        )
+
+        assert _resolve_active_context_length() == 131072
+        assert calls == [(
+            "meta-llama/Llama-3.3-70B-Instruct-Turbo",
+            {
+                "base_url": "https://api.together.xyz/v1",
+                "config_context_length": None,
+                "provider": "custom:together",
+                "custom_providers": custom_providers,
+            },
+        )]
+
 
 # =========================================================================
 # Agent loop tools

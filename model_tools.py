@@ -558,6 +558,11 @@ def _resolve_active_context_length() -> int:
         custom_providers = get_compatible_custom_providers(cfg)
         if provider and not base_url:
             provider_lower = provider.lower()
+            provider_lookup_key = (
+                provider_lower.removeprefix("custom:")
+                if provider_lower.startswith("custom:")
+                else provider_lower
+            )
             for entry in custom_providers:
                 if not isinstance(entry, dict):
                     continue
@@ -565,7 +570,7 @@ def _resolve_active_context_length() -> int:
                     str(entry.get("name") or "").strip().lower(),
                     str(entry.get("provider_key") or "").strip().lower(),
                 }
-                if provider_lower not in entry_names:
+                if provider_lower not in entry_names and provider_lookup_key not in entry_names:
                     continue
                 base_url = (entry.get("base_url") or "").strip()
                 if config_context_length is None:

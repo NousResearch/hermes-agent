@@ -1683,6 +1683,30 @@ def list_authenticated_providers(
             live = [current_model]
         curated["lmstudio"] = live
 
+    # Custom endpoint (Ollama, vLLM, llama.cpp, etc.) — probe /v1/models
+    # when CUSTOM_BASE_URL is set.
+    if "custom" not in curated and (
+        os.environ.get("CUSTOM_BASE_URL") or current_provider.strip().lower() == "custom"
+    ):
+        from hermes_cli.models import probe_openai_compatible_models
+        custom_base = (
+            os.environ.get("CUSTOM_BASE_URL")
+            or (current_base_url if current_provider.strip().lower() == "custom" and current_base_url else None)
+            or ""
+        )
+        if custom_base:
+            try:
+                live = probe_openai_compatible_models(
+                    api_key=os.environ.get("CUSTOM_API_KEY", ""),
+                    base_url=custom_base,
+                    timeout=1.5,
+                )
+            except Exception:
+                live = []
+            if not live and current_provider.strip().lower() == "custom" and current_model:
+                live = [current_model]
+            curated["custom"] = live or []
+
     # --- 1. Check Hermes-mapped providers ---
     from hermes_cli.models import _AGGREGATOR_PROVIDERS as _AGG_PROVIDERS
     from hermes_cli.providers import ALIASES as _PROVIDER_ALIAS_TABLE
@@ -2009,9 +2033,14 @@ def list_authenticated_providers(
         if not _cp_has_creds:
             continue
 
+        # Custom endpoints are discovered above from their configured
+        # OpenAI-compatible /v1/models URL. Never run their model ID through
+        # the generic models.dev cache: it can return unrelated public models.
+        if _cp.slug == "custom":
+            _cp_model_ids = curated.get("custom", [])
         # For bedrock, use live discovery so the list reflects the active
         # region (eu.*, us.*, ap.*) instead of the hardcoded us.* static list.
-        if _cp_config and getattr(_cp_config, "auth_type", "") == "aws_sdk":
+        elif _cp_config and getattr(_cp_config, "auth_type", "") == "aws_sdk":
             try:
                 _ids = cached_provider_model_ids(_cp.slug)
                 _cp_model_ids = _ids if _ids else curated.get(_cp.slug, [])

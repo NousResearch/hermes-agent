@@ -34,6 +34,7 @@ Substrate facts (verified May 2026):
 from __future__ import annotations
 
 from dataclasses import dataclass, replace
+import os
 from typing import Optional
 
 
@@ -82,7 +83,12 @@ def load_picker_context() -> ConfigContext:
     Replaces the inline 17-LOC config-slice that ``web_server.py`` and
     ``tui_gateway/server.py`` (×2 sites) used to do.
     """
-    from hermes_cli.config import get_compatible_custom_providers, load_config
+    from hermes_cli.config import get_compatible_custom_providers, load_config, load_env
+
+    # The desktop model picker is long-lived; refresh its process environment
+    # from .env before provider discovery so newly saved API-key settings are
+    # immediately visible without restarting the server.
+    os.environ.update(load_env())
 
     cfg = load_config()
     model_cfg = cfg.get("model", {})

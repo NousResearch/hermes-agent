@@ -1139,6 +1139,7 @@ def _resolve_openrouter_runtime(
         api_key_candidates = [
             explicit_api_key,
             (cfg_api_key if use_config_base_url else ""),
+            (_getenv("CUSTOM_API_KEY")     if requested_norm == "custom"          else ""),
             (_getenv("OLLAMA_API_KEY")     if _is_ollama_url                       else ""),
             (_getenv("OPENAI_API_KEY")     if (_is_openai_url or _is_openai_azure) else ""),
             (_getenv("OPENROUTER_API_KEY") if _is_openrouter_url                   else ""),

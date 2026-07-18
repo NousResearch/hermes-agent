@@ -3565,6 +3565,20 @@ OPTIONAL_ENV_VARS = {
         "category": "provider",
         "advanced": True,
     },
+    "CUSTOM_BASE_URL": {
+        "description": "Custom endpoint base URL (Ollama, vLLM, llama.cpp, or any OpenAI-compatible server)",
+        "prompt": "Custom endpoint base URL",
+        "url": None,
+        "password": False,
+        "category": "provider",
+    },
+    "CUSTOM_API_KEY": {
+        "description": "Custom endpoint API key (optional, only if the endpoint requires auth)",
+        "prompt": "Custom endpoint API key",
+        "url": None,
+        "password": True,
+        "category": "provider",
+    },
     "GLM_API_KEY": {
         "description": "Z.AI / GLM API key (also recognized as ZAI_API_KEY / Z_AI_API_KEY)",
         "prompt": "Z.AI / GLM API key",

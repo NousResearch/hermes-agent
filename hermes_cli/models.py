@@ -1056,6 +1056,7 @@ CANONICAL_PROVIDERS: list[ProviderEntry] = [
     ProviderEntry("moa",            "Mixture of Agents",        "Mixture of Agents (named presets; aggregator acts after reference models)"),
     ProviderEntry("novita",         "NovitaAI",                 "NovitaAI (Cloud: Model API, Agent Sandbox, GPU Cloud)"),
     ProviderEntry("lmstudio",       "LM Studio",                "LM Studio (Local desktop app with built-in model server)"),
+    ProviderEntry("custom",         "Custom Endpoint",           "Custom Endpoint (Ollama, vLLM, llama.cpp, or any OpenAI-compatible server)"),
     ProviderEntry("anthropic",      "Anthropic",                "Anthropic (Claude models via API key or Claude Code)"),
     ProviderEntry("openai-codex",   "OpenAI Codex",             "OpenAI Codex (Codex CLI via ChatGPT subscription or API key)"),
     ProviderEntry("openai-api",     "OpenAI API",               "OpenAI API (api.openai.com, API key)"),
@@ -3203,6 +3204,41 @@ def fetch_lmstudio_models(
     """
     models = probe_lmstudio_models(api_key=api_key, base_url=base_url, timeout=timeout)
     return models or []
+
+def probe_openai_compatible_models(
+    api_key: str = "",
+    base_url: str = "",
+    timeout: float = 5.0,
+) -> list[str] | None:
+    """Probe an OpenAI-compatible /v1/models endpoint (Ollama, vLLM, etc.)."""
+    import urllib.request
+    url = base_url.strip().rstrip("/")
+    if not url:
+        return None
+    if url.endswith("/v1"):
+        url = url + "/models"
+    elif not url.endswith("/models"):
+        url = url + "/v1/models"
+    headers = {"Content-Type": "application/json"}
+    if api_key:
+        headers["Authorization"] = f"Bearer {api_key}"
+    request = urllib.request.Request(url, headers=headers)
+    try:
+        with urllib.request.urlopen(request, timeout=timeout) as resp:
+            payload = json.loads(resp.read().decode())
+    except Exception:
+        return None
+    data = payload.get("data") if isinstance(payload, dict) else None
+    if not isinstance(data, list):
+        return None
+    keys: list[str] = []
+    for item in data:
+        if not isinstance(item, dict):
+            continue
+        key = str(item.get("id") or "").strip()
+        if key and key not in keys:
+            keys.append(key)
+    return keys
 
 
 def ensure_lmstudio_model_loaded(

@@ -178,6 +178,12 @@ export const PROVIDER_GROUPS: ProviderPrefix[] = [
     priority: 17
   },
   {
+    prefix: 'CUSTOM_',
+    name: '自定义端点',
+    description: 'Ollama、vLLM、llama.cpp 或其他 OpenAI 兼容服务',
+    priority: 18
+  },
+  {
     prefix: 'STEPFUN_',
     name: 'StepFun',
     description: 'StepFun Step Plan coding models',

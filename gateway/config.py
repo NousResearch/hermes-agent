@@ -130,49 +130,6 @@ def _coerce_optional_positive_int(value: Any, key: str) -> Optional[int]:
     return parsed
 
 
-_SYSTEMD_WATCHDOG_MAX_SECONDS = 2_147_483_647
-
-
-def coerce_systemd_watchdog_seconds(
-    value: Any, key: str = "gateway.systemd_watchdog_seconds"
-) -> int:
-    """Return a bounded positive watchdog interval or zero when disabled.
-
-    Runtime and service generation share this normalization so a value can
-    never enable ``Type=notify`` while disabling application heartbeats.
-    """
-    if value is None:
-        return 0
-    if isinstance(value, bool):
-        logger.warning("Ignoring invalid %s (expected a positive integer)", key)
-        return 0
-    if isinstance(value, int):
-        parsed = value
-    elif isinstance(value, str):
-        raw = value.strip()
-        if not raw or not raw.isascii() or not raw.isdecimal():
-            logger.warning("Ignoring invalid %s (expected a positive integer)", key)
-            return 0
-        try:
-            parsed = int(raw, 10)
-        except (TypeError, ValueError, OverflowError):
-            logger.warning("Ignoring invalid %s (expected a positive integer)", key)
-            return 0
-    else:
-        logger.warning("Ignoring invalid %s (expected a positive integer)", key)
-        return 0
-    if parsed == 0:
-        return 0
-    if not 0 < parsed <= _SYSTEMD_WATCHDOG_MAX_SECONDS:
-        logger.warning(
-            "Ignoring invalid %s (expected an integer from 1 to %d)",
-            key,
-            _SYSTEMD_WATCHDOG_MAX_SECONDS,
-        )
-        return 0
-    return parsed
-
-
 def _coerce_dict(value: Any) -> Dict[str, Any]:
     """Return *value* when it is a mapping, otherwise an empty dict."""
     return value if isinstance(value, dict) else {}
@@ -557,12 +514,18 @@ class PlatformConfig:
     # - "all": All chunks in multi-part replies thread to user's message
     reply_to_mode: str = "first"
 
-    # Whether the gateway is allowed to send "♻️ Gateway online" /
-    # "♻ Gateway restarted" lifecycle notifications on this platform.
-    # Default True preserves prior behavior. Set False on platforms used
-    # by end users (e.g. Slack) where operator-flavored restart pings are
-    # noise; keep True for back-channels where the operator wants them.
+    # Whether the gateway is allowed to broadcast lifecycle notifications to
+    # active sessions and configured home channels on this platform. This does
+    # not control the precise completion reply to a chat-originated /restart;
+    # use restart_requester_notification for that independent surface.
     gateway_restart_notification: bool = True
+
+    # Whether a chat-originated /restart gets a completion reply in the exact
+    # chat/topic that issued it. Independent from broadcast lifecycle pings so
+    # operators can keep gateway_restart_notification=False while still
+    # confirming the command to its requester. Terminal/service restarts never
+    # create a requester marker and therefore do not use this setting.
+    restart_requester_notification: bool = True
 
     # Whether the gateway shows a "typing…" / "is thinking…" status indicator
     # while the agent processes a message on this platform. Default True
@@ -585,6 +548,7 @@ class PlatformConfig:
             "extra": self.extra,
             "reply_to_mode": self.reply_to_mode,
             "gateway_restart_notification": self.gateway_restart_notification,
+            "restart_requester_notification": self.restart_requester_notification,
             "typing_indicator": self.typing_indicator,
         }
         if self.token:
@@ -615,6 +579,10 @@ class PlatformConfig:
         if _grn is None:
             _grn = extra.get("gateway_restart_notification")
 
+        _rrn = data.get("restart_requester_notification")
+        if _rrn is None:
+            _rrn = extra.get("restart_requester_notification")
+
         # typing_indicator mirrors gateway_restart_notification: it may arrive
         # top-level or bridged into extra by the shared-key loop in
         # load_gateway_config(), so check both.
@@ -636,6 +604,7 @@ class PlatformConfig:
             home_channel=home_channel,
             reply_to_mode=data.get("reply_to_mode", "first"),
             gateway_restart_notification=_coerce_bool(_grn, True),
+            restart_requester_notification=_coerce_bool(_rrn, True),
             typing_indicator=_coerce_bool(_typing, True),
             channel_overrides=channel_overrides,
             extra=extra,
@@ -811,10 +780,6 @@ class GatewayConfig:
     # gateway behaves exactly as before — single HERMES_HOME, no profile stamping.
     multiplex_profiles: bool = False
 
-    # Opt-in systemd event-loop watchdog. Zero preserves Type=simple and
-    # disables sd_notify at runtime.
-    systemd_watchdog_seconds: int = 0
-
     # Unauthorized DM policy
     unauthorized_dm_behavior: str = "pair"  # "pair" or "ignore"
 
@@ -832,11 +797,6 @@ class GatewayConfig:
     # different profiles. See gateway/profile_routing.py. Each entry is a
     # dict with: name, platform, profile, and optional guild_id/chat_id/thread_id.
     profile_routes: list = field(default_factory=list)
-
-    def __post_init__(self) -> None:
-        self.systemd_watchdog_seconds = coerce_systemd_watchdog_seconds(
-            self.systemd_watchdog_seconds
-        )
 
     def get_connected_platforms(self) -> List[Platform]:
         """Return list of platforms that are enabled and configured."""
@@ -941,7 +901,6 @@ class GatewayConfig:
             "thread_sessions_per_user": self.thread_sessions_per_user,
             "max_concurrent_sessions": self.max_concurrent_sessions,
             "multiplex_profiles": self.multiplex_profiles,
-            "systemd_watchdog_seconds": self.systemd_watchdog_seconds,
             "unauthorized_dm_behavior": self.unauthorized_dm_behavior,
             "streaming": self.streaming.to_dict(),
             "session_store_max_age_days": self.session_store_max_age_days,
@@ -1004,15 +963,6 @@ class GatewayConfig:
         thread_sessions_per_user = data.get("thread_sessions_per_user")
         multiplex_profiles = data.get("multiplex_profiles")
         nested_gateway = data.get("gateway") if isinstance(data.get("gateway"), dict) else {}
-        if "systemd_watchdog_seconds" in data:
-            systemd_watchdog_raw = data.get("systemd_watchdog_seconds")
-            systemd_watchdog_key = "systemd_watchdog_seconds"
-        else:
-            systemd_watchdog_raw = nested_gateway.get("systemd_watchdog_seconds")
-            systemd_watchdog_key = "gateway.systemd_watchdog_seconds"
-        systemd_watchdog_seconds = coerce_systemd_watchdog_seconds(
-            systemd_watchdog_raw, systemd_watchdog_key
-        )
         if multiplex_profiles is None and isinstance(nested_gateway, dict):
             # Also honor gateway.multiplex_profiles written by
             # ``hermes config set gateway.multiplex_profiles true``.
@@ -1072,7 +1022,6 @@ class GatewayConfig:
             group_sessions_per_user=_coerce_bool(group_sessions_per_user, True),
             thread_sessions_per_user=_coerce_bool(thread_sessions_per_user, False),
             multiplex_profiles=_coerce_bool(multiplex_profiles, False),
-            systemd_watchdog_seconds=systemd_watchdog_seconds,
             max_concurrent_sessions=max_concurrent_sessions,
             unauthorized_dm_behavior=unauthorized_dm_behavior,
             streaming=StreamingConfig.from_dict(data.get("streaming", {})),
@@ -1208,10 +1157,6 @@ def load_gateway_config() -> GatewayConfig:
                     gw_data["multiplex_profiles"] = gateway_section["multiplex_profiles"]
                 if "max_concurrent_sessions" in gateway_section:
                     gw_data["max_concurrent_sessions"] = gateway_section["max_concurrent_sessions"]
-                if "systemd_watchdog_seconds" in gateway_section:
-                    gw_data["systemd_watchdog_seconds"] = gateway_section[
-                        "systemd_watchdog_seconds"
-                    ]
 
             if "max_concurrent_sessions" in yaml_cfg:
                 gw_data["max_concurrent_sessions"] = yaml_cfg["max_concurrent_sessions"]
@@ -1390,6 +1335,8 @@ def load_gateway_config() -> GatewayConfig:
                         bridged["channel_prompts"] = channel_prompts
                 if "gateway_restart_notification" in platform_cfg:
                     bridged["gateway_restart_notification"] = platform_cfg["gateway_restart_notification"]
+                if "restart_requester_notification" in platform_cfg:
+                    bridged["restart_requester_notification"] = platform_cfg["restart_requester_notification"]
                 if "typing_indicator" in platform_cfg:
                     bridged["typing_indicator"] = platform_cfg["typing_indicator"]
                 has_channel_overrides = "channel_overrides" in platform_cfg

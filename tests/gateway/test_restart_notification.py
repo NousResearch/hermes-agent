@@ -584,15 +584,10 @@ async def test_send_home_channel_startup_notification_default_flag_true(
 
 
 @pytest.mark.asyncio
-async def test_send_restart_notification_skipped_when_flag_disabled(
+async def test_send_restart_notification_uses_requester_flag_independently(
     tmp_path, monkeypatch
 ):
-    """The /restart originator's notification also honors the per-platform flag.
-
-    Slack used by end users → flag off → no "Gateway restarted" message even
-    when an end user accidentally triggers /restart. The marker file is still
-    cleaned up so the notification doesn't leak into the next boot.
-    """
+    """Broadcast opt-out must not suppress the exact /restart requester."""
     monkeypatch.setattr(gateway_run, "_hermes_home", tmp_path)
 
     notify_path = tmp_path / ".restart_notify.json"
@@ -603,6 +598,32 @@ async def test_send_restart_notification_skipped_when_flag_disabled(
 
     runner, adapter = make_restart_runner()
     runner.config.platforms[Platform.TELEGRAM].gateway_restart_notification = False
+    runner.config.platforms[Platform.TELEGRAM].restart_requester_notification = True
+    adapter.send = AsyncMock(return_value=SendResult(success=True, message_id="m-1"))
+
+    delivered_target = await runner._send_restart_notification()
+
+    assert delivered_target == ("telegram", "42", None)
+    adapter.send.assert_awaited_once()
+    assert not notify_path.exists()
+
+
+@pytest.mark.asyncio
+async def test_send_restart_notification_skipped_when_requester_flag_disabled(
+    tmp_path, monkeypatch
+):
+    """The dedicated requester flag can silence chat-originated completion pings."""
+    monkeypatch.setattr(gateway_run, "_hermes_home", tmp_path)
+
+    notify_path = tmp_path / ".restart_notify.json"
+    notify_path.write_text(json.dumps({
+        "platform": "telegram",
+        "chat_id": "42",
+    }))
+
+    runner, adapter = make_restart_runner()
+    runner.config.platforms[Platform.TELEGRAM].gateway_restart_notification = True
+    runner.config.platforms[Platform.TELEGRAM].restart_requester_notification = False
     adapter.send = AsyncMock()
 
     delivered_target = await runner._send_restart_notification()

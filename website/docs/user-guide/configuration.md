@@ -1699,6 +1699,26 @@ For separate natural mid-turn assistant updates without progressive token editin
 The master `streaming.enabled` switch is `false` by default — nothing streams until you flip it. Once enabled, streaming is decided **per platform**: Telegram ships with `display.platforms.telegram.streaming: true` (streams) and Discord with `display.platforms.discord.streaming: false` (does not). So after enabling streaming, Telegram streams out of the box and Discord stays on whole-message replies until you change its toggle. You can adjust these per-platform switches from the dashboard's **Channels** toggles or directly in `~/.hermes/config.yaml`.
 :::
 
+## Gateway Restart Notifications
+
+Restart notifications have two independent per-platform controls:
+
+```yaml
+telegram:
+  # Broadcast lifecycle messages to active sessions and the configured home
+  # channel. This includes startup messages after terminal/service restarts.
+  gateway_restart_notification: false
+
+  # Reply only to the exact chat/topic that issued /restart after the gateway
+  # comes back. Terminal/service restarts have no requester and send nothing.
+  restart_requester_notification: true
+```
+
+This combination is useful when operators want `/restart` to confirm success
+to its requester without broadcasting restart messages to other users. Set
+`restart_requester_notification: false` as well to make chat-originated
+restarts completely silent after startup.
+
 ## Group Chat Session Isolation
 
 Limit how many chat sessions can actively be open across CLI, TUI/dashboard,

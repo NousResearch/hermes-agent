@@ -2275,7 +2275,10 @@ class MCPServerTask:
         # elsewhere, matching existing killpg-based cleanup's platform scope.
         # Applied AFTER the OSV preflight so the check inspects the real
         # package, not the watchdog wrapper.
-        command, args = _wrap_command_with_watchdog(command, args)
+        # Some commands (e.g. uvx) break under the watchdog wrapper (#66423);
+        # allow per-server opt-out via `disable_watchdog: true` in config.
+        if not config.get("disable_watchdog", False):
+            command, args = _wrap_command_with_watchdog(command, args)
 
         server_params = StdioServerParameters(
             command=command,

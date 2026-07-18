@@ -2445,6 +2445,9 @@ DEFAULT_CONFIG = {
         #                     never crammed into a chat bubble), apply with
         #                     /skills approve <id> or drop with /skills reject <id>.
         "write_approval": False,
+        # Skill names disabled for this profile. Keep this in DEFAULT_CONFIG so
+        # `hermes config set skills.disabled '[...]'` preserves the list type.
+        "disabled": [],
     },
 
     # Curator — background skill maintenance.
@@ -8436,7 +8439,7 @@ def set_config_value(key: str, value: str):
     # retain the historical best-effort coercion behavior.
     coerced_value: Any = value
     default_value = _default_value_for_key(key)
-    if isinstance(default_value, list) or value.lstrip().startswith("["):
+    if isinstance(default_value, list):
         try:
             parsed_value = fast_safe_load(value)
         except Exception:

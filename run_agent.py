@@ -4828,6 +4828,18 @@ class AIAgent:
         if visible:
             return visible
         content = assistant_msg.get("content")
+        if isinstance(content, list):
+            # Multimodal content blocks (e.g. text+image parts) — flatten to
+            # visible text only. Non-text parts (images, tool blocks) are
+            # dropped since interim delivery only ever surfaces prose.
+            parts = []
+            for block in content:
+                if isinstance(block, dict):
+                    if block.get("type") in ("text", "output_text") and block.get("text"):
+                        parts.append(block["text"])
+                elif isinstance(block, str):
+                    parts.append(block)
+            content = "\n\n".join(parts)
         return self._strip_think_blocks(content or "").strip()
 
     def _interim_text_was_delivered(self, text: str) -> bool:

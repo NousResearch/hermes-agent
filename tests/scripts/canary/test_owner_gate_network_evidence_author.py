@@ -340,7 +340,12 @@ class _Configuration:
 
 def _runtime(tmp_path: Path) -> tuple[_Executable, _Configuration]:
     python = tmp_path / "python" / "bin" / "python3"
-    module = tmp_path / "google-cloud-sdk" / "lib" / "gcloud.py"
+    module = (
+        tmp_path
+        / f"google-cloud-sdk-{reauth.launcher._GCLOUD_SDK_VERSION}"
+        / "lib"
+        / "gcloud.py"
+    )
     python.parent.mkdir(parents=True)
     module.parent.mkdir(parents=True)
     python.write_bytes(b"#!/bin/sh\nexit 0\n")

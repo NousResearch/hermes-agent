@@ -10,7 +10,7 @@ import {
 } from '@/lib/session-source'
 import { setCronJobs } from '@/store/cron'
 import { $pinnedSessionIds, $sessionsLimit, bumpSessionsLimit, SIDEBAR_SESSIONS_PAGE_SIZE } from '@/store/layout'
-import { ALL_PROFILES, normalizeProfileKey } from '@/store/profile'
+import { $activeProfile, ALL_PROFILES, normalizeProfileKey } from '@/store/profile'
 import {
   $messagingSessions,
   $selectedStoredSessionId,
@@ -74,6 +74,7 @@ interface UseSessionListActionsArgs {
  *  wires into the sidebar and refresh effects. */
 export function useSessionListActions({ profileScope }: UseSessionListActionsArgs) {
   const refreshSessionsRequestRef = useRef(0)
+  const messagingRefreshRequestRef = useRef<Promise<void> | null>(null)
 
   // Cron-job sessions as their own list (latest N). Independent of the recents
   // page so the two never compete for slots. Cheap + bounded. Kept (even though
@@ -95,23 +96,43 @@ export function useSessionListActions({ profileScope }: UseSessionListActionsArg
   // local recents so each platform renders a self-managed section and never
   // competes with local chats for the recents page budget. One combined fetch
   // seeds every platform; the sidebar splits the rows per source.
-  const refreshMessagingSessions = useCallback(async () => {
-    try {
-      const result = await listAllProfileSessions(MESSAGING_SECTION_LIMIT, 1, 'exclude', 'recent', 'all', {
-        excludeSources: MESSAGING_EXCLUDED_SOURCES
-      })
-
-      // Drop any non-messaging source the broad exclude didn't catch (custom
-      // sources) — those stay in local recents, not a platform section.
-      const rows = result.sessions.filter(s => isMessagingSource(s.source))
-
-      setMessagingSessions(prev => (sameCronSignature(prev, rows) ? prev : rows))
-      // Hit the cap → at least one platform may have more on disk than loaded,
-      // so platform sections offer their own per-platform "load more".
-      setMessagingTruncated(result.sessions.length >= MESSAGING_SECTION_LIMIT)
-    } catch {
-      // Non-fatal: the messaging sections just stay empty/stale.
+  const refreshMessagingSessions = useCallback((): Promise<void> => {
+    if (messagingRefreshRequestRef.current) {
+      return messagingRefreshRequestRef.current
     }
+
+    const request = (async () => {
+      try {
+        // Messaging belongs to the server profile the desktop backend is running
+        // as. Asking that backend for `all` fans one routine sidebar refresh out
+        // across every configured profile (and every profile persistence pool),
+        // even though the window cannot receive those other gateways' live turns.
+        const profile = normalizeProfileKey($activeProfile.get())
+        const result = await listAllProfileSessions(MESSAGING_SECTION_LIMIT, 1, 'exclude', 'recent', profile, {
+          excludeSources: MESSAGING_EXCLUDED_SOURCES
+        })
+
+        // Drop any non-messaging source the broad exclude didn't catch (custom
+        // sources) — those stay in local recents, not a platform section.
+        const rows = result.sessions.filter(s => isMessagingSource(s.source))
+
+        setMessagingSessions(prev => (sameCronSignature(prev, rows) ? prev : rows))
+        // Hit the cap → at least one platform may have more on disk than loaded,
+        // so platform sections offer their own per-platform "load more".
+        setMessagingTruncated(result.sessions.length >= MESSAGING_SECTION_LIMIT)
+      } catch {
+        // Non-fatal: the messaging sections just stay empty/stale.
+      }
+    })()
+
+    messagingRefreshRequestRef.current = request
+    void request.finally(() => {
+      if (messagingRefreshRequestRef.current === request) {
+        messagingRefreshRequestRef.current = null
+      }
+    })
+
+    return request
   }, [])
 
   // Page a single platform's section independently (mirrors the per-profile
@@ -120,8 +141,9 @@ export function useSessionListActions({ profileScope }: UseSessionListActionsArg
   const loadMoreMessagingForPlatform = useCallback(async (platform: string) => {
     const inPlatform = (s: SessionInfo) => normalizeSessionSource(s.source) === platform
     const loaded = $messagingSessions.get().filter(inPlatform).length
+    const profile = normalizeProfileKey($activeProfile.get())
 
-    const result = await listAllProfileSessions(loaded + SIDEBAR_SESSIONS_PAGE_SIZE, 1, 'exclude', 'recent', 'all', {
+    const result = await listAllProfileSessions(loaded + SIDEBAR_SESSIONS_PAGE_SIZE, 1, 'exclude', 'recent', profile, {
       source: platform
     })
 

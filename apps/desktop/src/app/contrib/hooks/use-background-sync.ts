@@ -9,7 +9,7 @@ import type { GatewayRequester } from '../types'
 // the background gateway (Telegram, WeChat, Discord, …) — neither signals the
 // desktop websocket, so poll the bounded lists while the app is visible.
 const CRON_POLL_INTERVAL_MS = 30_000
-const MESSAGING_POLL_INTERVAL_MS = 10_000
+const MESSAGING_POLL_INTERVAL_MS = 15_000
 const ACTIVE_MESSAGING_SESSION_POLL_INTERVAL_MS = 5_000
 
 interface BackgroundSyncParams {
@@ -36,10 +36,12 @@ function visiblePoll(intervalMs: number, tick: () => void): () => void {
   }
 
   const intervalId = window.setInterval(run, intervalMs)
+  window.addEventListener('focus', run)
   document.addEventListener('visibilitychange', run)
 
   return () => {
     window.clearInterval(intervalId)
+    window.removeEventListener('focus', run)
     document.removeEventListener('visibilitychange', run)
   }
 }

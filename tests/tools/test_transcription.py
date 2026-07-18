@@ -217,7 +217,8 @@ class TestTranscribeLocal:
         assert result["success"] is True
         assert "initial_prompt" not in mock_model.transcribe.call_args.kwargs
 
-    def test_accepts_null_local_config(self, tmp_path):
+    def test_accepts_null_local_config(self, monkeypatch, tmp_path):
+        monkeypatch.delenv("HERMES_LOCAL_STT_LANGUAGE", raising=False)
         audio_file = tmp_path / "test.ogg"
         audio_file.write_bytes(b"fake audio")
 

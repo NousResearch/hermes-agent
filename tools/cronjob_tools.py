@@ -345,6 +345,39 @@ def _local_delivery_notice(job: Dict[str, Any], user_deliver: Optional[str]) -> 
     )
 
 
+def _creation_admission_warnings(job: Dict[str, Any]) -> List[str]:
+    """Return actionable warnings for costly or noisy cron job shapes.
+
+    These are warnings rather than hard failures because both shapes can be
+    intentional: an agent job may deliberately follow the configured default
+    model, and a standing digest may deliberately deliver to its origin forever.
+    Surfacing the risks in the create response lets the caller make that choice
+    explicitly instead of discovering it later via fleet lint alerts.
+    """
+    warnings: List[str] = []
+    if not job.get("no_agent") and not (job.get("model") and job.get("provider")):
+        warnings.append(
+            "Warning: this LLM cron does not explicitly pin both model and provider; "
+            "it follows the configured default inference route (with drift snapshots) "
+            "and may consume primary-model rates. Set both model and provider when "
+            "creating or updating the job."
+        )
+
+    repeat_times = (job.get("repeat") or {}).get("times")
+    schedule_kind = (job.get("schedule") or {}).get("kind")
+    if (
+        job.get("deliver") == "origin"
+        and schedule_kind != "once"
+        and repeat_times is None
+    ):
+        warnings.append(
+            "Warning: this recurring deliver='origin' cron has no finite repeat cap; "
+            "it can append to the originating conversation indefinitely. Set "
+            "repeat=N, or make the job self-pause/remove and verify that behavior."
+        )
+    return warnings
+
+
 def _repeat_display(job: Dict[str, Any]) -> str:
     times = (job.get("repeat") or {}).get("times")
     completed = (job.get("repeat") or {}).get("completed", 0)
@@ -804,6 +837,9 @@ def cronjob(
             _local_notice = _local_delivery_notice(job, _normalize_deliver_param(deliver))
             if _local_notice:
                 _create_message = f"{_create_message} {_local_notice}"
+            _admission_warnings = _creation_admission_warnings(job)
+            if _admission_warnings:
+                _create_message = f"{_create_message} {' '.join(_admission_warnings)}"
             return json.dumps(
                 {
                     "success": True,
@@ -816,6 +852,7 @@ def cronjob(
                     "deliver": job.get("deliver", "local"),
                     "next_run_at": job["next_run_at"],
                     "job": _format_job(job),
+                    "warnings": _admission_warnings,
                     "message": _create_message,
                 },
                 indent=2,
@@ -1009,8 +1046,22 @@ def cronjob(
             if not updates:
                 return tool_error("No updates provided.", success=False)
             updated = update_job(job_id, updates)
+            if not updated:
+                return tool_error(f"Failed to update cron job '{job_id}'.", success=False)
             _notify_provider_jobs_changed_safe()
-            return json.dumps({"success": True, "job": _format_job(updated)}, indent=2)
+            _admission_warnings = _creation_admission_warnings(updated)
+            _update_message = f"Cron job '{updated['name']}' updated."
+            if _admission_warnings:
+                _update_message = f"{_update_message} {' '.join(_admission_warnings)}"
+            return json.dumps(
+                {
+                    "success": True,
+                    "job": _format_job(updated),
+                    "warnings": _admission_warnings,
+                    "message": _update_message,
+                },
+                indent=2,
+            )
 
         return tool_error(f"Unknown cron action '{action}'", success=False)
 

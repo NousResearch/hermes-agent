@@ -264,6 +264,96 @@ class TestUnifiedCronjobTool:
         assert listing["jobs"][0]["name"] == "Server Check"
         assert listing["jobs"][0]["state"] == "scheduled"
 
+    def test_create_warns_about_unpinned_llm_and_immortal_origin(self):
+        created = json.loads(
+            cronjob(
+                action="create",
+                prompt="Install Paperless when ingest finishes",
+                schedule="30 9,15,21 * * *",
+                deliver="origin",
+            )
+        )
+
+        assert created["success"] is True
+        assert len(created["warnings"]) == 2
+        assert any("model and provider" in warning for warning in created["warnings"])
+        assert any("finite repeat cap" in warning for warning in created["warnings"])
+        assert all(warning in created["message"] for warning in created["warnings"])
+
+    def test_create_has_no_admission_warnings_when_pinned_and_finite(self):
+        created = json.loads(
+            cronjob(
+                action="create",
+                prompt="Install Paperless when ingest finishes",
+                schedule="30 9,15,21 * * *",
+                repeat=12,
+                deliver="origin",
+                model="gpt-5.6-sol",
+                provider="openai-codex",
+            )
+        )
+
+        assert created["success"] is True
+        assert created["warnings"] == []
+        assert "Warning:" not in created["message"]
+
+    def test_create_can_emit_only_unpinned_llm_warning(self):
+        created = json.loads(
+            cronjob(
+                action="create",
+                prompt="Check status",
+                schedule="every 1h",
+                repeat=3,
+                deliver="local",
+            )
+        )
+
+        assert len(created["warnings"]) == 1
+        assert "model and provider" in created["warnings"][0]
+
+    def test_create_can_emit_only_immortal_origin_warning(self):
+        created = json.loads(
+            cronjob(
+                action="create",
+                prompt="Daily briefing",
+                schedule="0 8 * * *",
+                deliver="origin",
+                model="gpt-5.6-sol",
+                provider="openai-codex",
+            )
+        )
+
+        assert len(created["warnings"]) == 1
+        assert "finite repeat cap" in created["warnings"][0]
+
+    def test_update_warns_when_it_introduces_both_unsafe_shapes(self):
+        created = json.loads(
+            cronjob(
+                action="create",
+                prompt="Check status",
+                schedule="every 1h",
+                repeat=3,
+                deliver="local",
+                model="gpt-5.6-sol",
+                provider="openai-codex",
+            )
+        )
+
+        updated = json.loads(
+            cronjob(
+                action="update",
+                job_id=created["job_id"],
+                deliver="origin",
+                repeat=0,
+                model="",
+                provider="",
+            )
+        )
+
+        assert updated["success"] is True
+        assert len(updated["warnings"]) == 2
+        assert all(warning in updated["message"] for warning in updated["warnings"])
+
     def test_list_handles_partial_legacy_job_records(self):
         from cron.jobs import save_jobs
 

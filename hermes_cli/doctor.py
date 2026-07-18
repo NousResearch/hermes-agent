@@ -105,6 +105,100 @@ def _has_provider_env_config(content: str) -> bool:
     return any(key in content for key in _PROVIDER_ENV_HINTS)
 
 
+# Curated base of provider env-var names the gateway reads from ~/.hermes/.env
+# at startup (see gateway/run.py).  A key set in the user's interactive shell
+# but never written to .env causes /model to switch successfully (the /v1/models
+# probe on opencode-go does not require auth) while the next chat call returns
+# 401 -- the failure mode in #36915.  This tuple is the seed for
+# _dotenv_required_provider_keys(), which unions it with the API-key names
+# declared in hermes_cli.auth.PROVIDER_REGISTRY so first-party providers added
+# there (e.g. Google AI Studio's GOOGLE_API_KEY / GEMINI_API_KEY) are covered
+# without editing this list.  It is kept as an explicit fallback (and to retain
+# non-*_API_KEY names like ANTHROPIC_TOKEN / HF_TOKEN that the registry filter
+# drops).  Not covered: providers a user defines only in config via
+# providers.*.key_env -- those live in config.yaml, not the registry.
+_DOTENV_REQUIRED_PROVIDER_KEYS: tuple[str, ...] = (
+    "OPENAI_API_KEY",
+    "ANTHROPIC_API_KEY",
+    "ANTHROPIC_TOKEN",
+    "OPENROUTER_API_KEY",
+    "OPENCODE_ZEN_API_KEY",
+    "OPENCODE_GO_API_KEY",
+    "DEEPSEEK_API_KEY",
+    "GLM_API_KEY",
+    "ZAI_API_KEY",
+    "Z_AI_API_KEY",
+    "KIMI_API_KEY",
+    "KIMI_CN_API_KEY",
+    "MINIMAX_API_KEY",
+    "MINIMAX_CN_API_KEY",
+    "DASHSCOPE_API_KEY",
+    "KILOCODE_API_KEY",
+    "GMI_API_KEY",
+    "ARCEEAI_API_KEY",
+    "STEPFUN_API_KEY",
+    "HF_TOKEN",
+    "AI_GATEWAY_API_KEY",
+    "NVIDIA_API_KEY",
+    "XIAOMI_API_KEY",
+    "TOKENHUB_API_KEY",
+)
+
+
+def _dotenv_required_provider_keys() -> tuple[str, ...]:
+    """Return the provider API-key env-var names to check for shell/.env drift.
+
+    Derived from hermes_cli.auth.PROVIDER_REGISTRY so first-party providers are
+    covered without maintaining a parallel list: the *_API_KEY names declared by
+    each provider are unioned with the curated
+    _DOTENV_REQUIRED_PROVIDER_KEYS base.  The *_API_KEY suffix filter keeps the
+    derivation to provider credentials and excludes shared git/OAuth tokens
+    (GITHUB_TOKEN, GH_TOKEN, CLAUDE_CODE_OAUTH_TOKEN) that are commonly exported
+    in the shell for unrelated reasons; the curated base still carries the
+    non-suffixed provider keys (ANTHROPIC_TOKEN, HF_TOKEN).  Falls back to the
+    curated base alone if the registry import fails.
+    """
+    keys = set(_DOTENV_REQUIRED_PROVIDER_KEYS)
+    try:
+        from hermes_cli.auth import PROVIDER_REGISTRY
+        for provider in PROVIDER_REGISTRY.values():
+            for name in getattr(provider, "api_key_env_vars", ()):
+                if name.endswith("_API_KEY"):
+                    keys.add(name)
+    except Exception:
+        pass
+    return tuple(sorted(keys))
+
+
+def _shell_env_dotenv_mismatches() -> list[str]:
+    """Return provider env vars set in the shell but missing from ~/.hermes/.env.
+
+    The gateway (launchd / systemd unit) does not inherit the user's
+    interactive shell env; it reads ~/.hermes/.env instead.  A key
+    exported in the shell but never written to .env is invisible to the
+    gateway and produces HTTP 401 on the first chat call after /model
+    switches providers (the symptom in #36915).
+
+    Returns a list of env var names where os.environ is non-empty but
+    load_env() does not contain the same name.  Comparison is
+    case-sensitive (env var names are conventionally uppercase).
+    """
+    try:
+        from hermes_cli.config import load_env
+        dotenv_vars = load_env()
+    except Exception:
+        return []
+    mismatches: list[str] = []
+    for name in _dotenv_required_provider_keys():
+        shell_val = os.environ.get(name, "").strip()
+        if not shell_val:
+            continue
+        dotenv_val = str(dotenv_vars.get(name, "") or "").strip()
+        if not dotenv_val:
+            mismatches.append(name)
+    return mismatches
+
+
 def _honcho_is_configured_for_doctor() -> bool:
     """Return True when Honcho is configured, even if this process has no active session."""
     try:
@@ -730,7 +824,33 @@ def run_doctor(args):
             else:
                 check_info("Run 'hermes setup' to create one")
                 issues.append("Run 'hermes setup' to create .env")
-    
+
+    # Surface provider keys set in the user's interactive shell but
+    # missing from .env.  The gateway process (launchd / systemd)
+    # does not inherit shell env, so any key only in the shell is
+    # invisible to the gateway and produces HTTP 401 on the first
+    # chat call after a /model switch.  See #36915.  Fires
+    # regardless of whether .env exists; if it doesn't, every
+    # shell-set provider key is a mismatch.
+    try:
+        mismatches = _shell_env_dotenv_mismatches()
+    except Exception:
+        mismatches = []
+    if mismatches:
+        _shown = ", ".join(mismatches[:5])
+        _extra = f" (+{len(mismatches) - 5} more)" if len(mismatches) > 5 else ""
+        check_warn(
+            f"{len(mismatches)} provider key(s) set in shell but missing from .env: {_shown}{_extra}",
+            "(the gateway process won't see these keys)",
+        )
+        issues.append(
+            "Provider API keys are set in your shell but not in "
+            f"{_DHH}/.env.  The gateway (launchd / systemd) reads .env, "
+            "not the shell env, so it will return HTTP 401 on chat calls.  "
+            "Run 'hermes setup' to write the missing keys to .env, or "
+            "append them manually."
+        )
+
     # Check ~/.hermes/config.yaml (primary) or project cli-config.yaml (fallback)
     config_path = HERMES_HOME / 'config.yaml'
     if config_path.exists():

@@ -381,7 +381,17 @@ def _background_review_write_guard(
         # `created_by: "agent"` marker.
         usage_data = skill_usage.load_usage()
         usage_rec = usage_data.get(name)
-        if isinstance(usage_rec, dict) and not skill_usage._is_curator_managed_record(usage_rec):
+        if not isinstance(usage_rec, dict):
+            return {
+                "success": False,
+                "error": (
+                    f"Refusing background curator {action} for skill '{name}': "
+                    "agent ownership cannot be verified because no valid usage "
+                    "record exists. Manually authored or untracked skills are "
+                    "off-limits to autonomous curation."
+                ),
+            }
+        if not skill_usage._is_curator_managed_record(usage_rec):
             return {
                 "success": False,
                 "error": (
@@ -392,7 +402,15 @@ def _background_review_write_guard(
                 ),
             }
     except Exception:
-        logger.debug("owned skill guard lookup failed for %s", name, exc_info=True)
+        logger.warning("owned skill guard lookup failed for %s", name, exc_info=True)
+        return {
+            "success": False,
+            "error": (
+                f"Refusing background curator {action} for skill '{name}': "
+                "agent ownership could not be verified because the provenance "
+                "record is unavailable or unreadable."
+            ),
+        }
     return None
 
 

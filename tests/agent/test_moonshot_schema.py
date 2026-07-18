@@ -235,8 +235,13 @@ class TestToolListSanitizer:
         ]
         out = sanitize_moonshot_tools(tools)
         assert out[0]["function"]["parameters"]["properties"]["q"]["type"] == "string"
-        # Second tool already clean — should be structurally equivalent
-        assert out[1]["function"]["parameters"] == {"type": "object", "properties": {}}
+        # Second tool already clean — Moonshot now requires required:[] on
+        # every object schema (#66835), so the sanitized form carries it.
+        assert out[1]["function"]["parameters"] == {
+            "type": "object",
+            "properties": {},
+            "required": [],
+        }
 
     def test_empty_list_is_passthrough(self):
         assert sanitize_moonshot_tools([]) == []
@@ -445,4 +450,53 @@ class TestUnionTypeList:
         sort = out["properties"]["sort"]
         assert sort["type"] == "string"
         assert sort["enum"] == ["asc", "desc"]
-        assert params["properties"]["sort"]["type"] == ["string", "null"]
+
+    def test_empty_properties_gets_required_array(self):
+        """Object schema with properties:{} but no required → Moonshot 400s
+        unless required:[] is injected (#66835)."""
+        params = {"type": "object", "properties": {}}
+        out = sanitize_moonshot_tool_parameters(params)
+        assert out["required"] == []
+
+    def test_object_without_required_key_gets_required_array(self):
+        """An object property lacking `required` must gain an empty array."""
+        params = {
+            "type": "object",
+            "properties": {
+                "filter": {"type": "object", "properties": {"field": {"type": "string"}}},
+            },
+        }
+        out = sanitize_moonshot_tool_parameters(params)
+        assert out["required"] == []
+        # Nested object also gets required:[]
+        assert out["properties"]["filter"]["required"] == []
+
+    def test_existing_required_list_preserved_when_valid(self):
+        """A well-formed required list is kept untouched."""
+        params = {
+            "type": "object",
+            "properties": {"query": {"type": "string"}},
+            "required": ["query"],
+        }
+        out = sanitize_moonshot_tool_parameters(params)
+        assert out["required"] == ["query"]
+
+    def test_dangling_required_entries_pruned(self):
+        """required entries not present in properties are dropped (#66835)."""
+        params = {
+            "type": "object",
+            "properties": {"query": {"type": "string"}},
+            "required": ["query", "missing_field"],
+        }
+        out = sanitize_moonshot_tool_parameters(params)
+        assert out["required"] == ["query"]
+
+    def test_non_list_required_coerced_to_empty(self):
+        """A non-list required (e.g. a string or dict) is reset to []."""
+        params = {
+            "type": "object",
+            "properties": {"query": {"type": "string"}},
+            "required": "query",
+        }
+        out = sanitize_moonshot_tool_parameters(params)
+        assert out["required"] == []

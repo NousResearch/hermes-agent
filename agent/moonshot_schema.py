@@ -130,6 +130,23 @@ def _repair_schema(node: Any, is_schema: bool = True) -> Any:
             else:
                 repaired.pop("enum")
 
+    # Rule 4 (#66835): Moonshot requires EVERY object schema to carry an
+    # explicit ``required`` array — even when empty. Standard JSON Schema
+    # allows omitting it (the value is then unconstrained), but Moonshot
+    # 400s with "required must be an array" on object schemas lacking it.
+    # Object = a node with type "object" OR a ``properties`` map. We also
+    # prune any ``required`` entry that is not a real property, to guard
+    # against dangling references left by upstream schemas.
+    if repaired.get("type") == "object" or "properties" in repaired:
+        req = repaired.get("required")
+        if not isinstance(req, list):
+            repaired["required"] = []
+        else:
+            props = repaired.get("properties") or {}
+            pruned = [r for r in req if r in props]
+            if len(pruned) != len(req):
+                repaired["required"] = pruned
+
     return repaired
 
 

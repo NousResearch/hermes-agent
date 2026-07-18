@@ -148,18 +148,42 @@ def wait_for_response(clarify_id: str, timeout: float) -> Optional[str]:
 # =========================================================================
 
 def resolve_gateway_clarify(clarify_id: str, response: str) -> bool:
-    """Unblock the agent thread waiting on ``clarify_id``.
+    """Unblock the agent thread waiting on ``clarify_id`` exactly once.
 
-    Returns True if an entry was found and resolved, False otherwise
-    (already resolved, expired, or never existed).
+    Returns True only for the first resolver. Button callbacks and typed
+    replies can arrive on different threads, so response + event are mutated
+    while holding the same lock used by every resolver.
     """
     with _lock:
         entry = _entries.get(clarify_id)
-        if entry is None:
+        if entry is None or entry.event.is_set():
             return False
-    entry.response = str(response) if response is not None else ""
-    entry.event.set()
-    return True
+        entry.response = str(response) if response is not None else ""
+        entry.event.set()
+        return True
+
+
+def resolve_gateway_choice(
+    clarify_id: str,
+    choice_index: int,
+) -> tuple[bool, Optional[str]]:
+    """Atomically resolve a canonical registered choice by zero-based index.
+
+    Platform callbacks carry only ``clarify_id`` + an index. Looking up the
+    value server-side prevents clients from substituting arbitrary responses.
+    """
+    with _lock:
+        entry = _entries.get(clarify_id)
+        if entry is None or entry.event.is_set() or not entry.choices:
+            return False, None
+        if isinstance(choice_index, bool) or not isinstance(choice_index, int):
+            return False, None
+        if not 0 <= choice_index < len(entry.choices):
+            return False, None
+        choice = str(entry.choices[choice_index])
+        entry.response = choice
+        entry.event.set()
+        return True, choice
 
 
 def get_pending_for_session(
@@ -221,7 +245,7 @@ def mark_awaiting_text(clarify_id: str) -> bool:
     """
     with _lock:
         entry = _entries.get(clarify_id)
-        if entry is None:
+        if entry is None or entry.event.is_set() or entry.awaiting_text:
             return False
         entry.awaiting_text = True
         return True

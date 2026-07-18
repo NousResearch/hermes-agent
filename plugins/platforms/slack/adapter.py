@@ -85,6 +85,21 @@ class _ThreadContextCache:
     parent_text: str = ""  # Raw text of the thread parent (for reply_to_text injection)
 
 
+@dataclass
+class _SlackClarifyPrompt:
+    """Server-side binding for one interactive Slack clarify prompt."""
+
+    clarify_id: str
+    choices: Tuple[str, ...]
+    session_key: str
+    team_id: str
+    channel_id: str
+    thread_ts: str
+    message_ts: str
+    created_at: float = field(default_factory=time.monotonic)
+    awaiting_text: bool = False
+
+
 def check_slack_requirements() -> bool:
     """Check if Slack dependencies are available.
 
@@ -456,6 +471,10 @@ class SlackAdapter(BasePlatformAdapter):
         # Track pending approval message_ts → resolved flag to prevent
         # double-clicks on approval buttons.
         self._approval_resolved: Dict[str, bool] = {}
+        # Active Slack clarify prompts are bound server-side to their exact
+        # workspace/channel/thread/message. Button values carry only an ID +
+        # canonical choice index and cannot substitute arbitrary responses.
+        self._clarify_prompts: Dict[str, _SlackClarifyPrompt] = {}
         # Track timestamps of messages sent by the bot so we can respond
         # to thread replies even without an explicit @mention.
         self._bot_message_ts: set = set()
@@ -1215,6 +1234,10 @@ class SlackAdapter(BasePlatformAdapter):
                 "hermes_confirm_cancel",
             ):
                 self._app.action(_action_id)(self._handle_slash_confirm_action)
+
+            self._app.action("hermes_clarify_choice")(
+                self._handle_clarify_action
+            )
 
             self._app.action("hermes_feedback")(self._handle_feedback_action)
 
@@ -3782,6 +3805,308 @@ class SlackAdapter(BasePlatformAdapter):
             )
 
         await self.handle_message(msg_event)
+
+    # ----- Clarify choice buttons (Block Kit) -----
+
+    def _prune_clarify_prompts(self) -> None:
+        """Expire abandoned prompt bindings and cap adapter memory."""
+        try:
+            from tools.clarify_gateway import get_clarify_timeout
+
+            ttl = max(float(get_clarify_timeout()) + 60.0, 60.0)
+        except Exception:
+            ttl = 3660.0
+        cutoff = time.monotonic() - ttl
+        for clarify_id, prompt in list(self._clarify_prompts.items()):
+            if prompt.created_at < cutoff:
+                self._clarify_prompts.pop(clarify_id, None)
+        if len(self._clarify_prompts) > 1024:
+            oldest = sorted(
+                self._clarify_prompts.values(), key=lambda prompt: prompt.created_at
+            )[: len(self._clarify_prompts) - 1024]
+            for prompt in oldest:
+                self._clarify_prompts.pop(prompt.clarify_id, None)
+
+    async def send_clarify(
+        self,
+        chat_id: str,
+        question: str,
+        choices: Optional[list],
+        clarify_id: str,
+        session_key: str,
+        metadata: Optional[Dict[str, Any]] = None,
+    ) -> SendResult:
+        """Render a bound multiple-choice clarify prompt as Slack buttons."""
+        if not choices or len(choices) > 4:
+            return await super().send_clarify(
+                chat_id=chat_id,
+                question=question,
+                choices=choices,
+                clarify_id=clarify_id,
+                session_key=session_key,
+                metadata=metadata,
+            )
+        if not self._app:
+            return SendResult(success=False, error="Not connected")
+
+        team_id = (
+            self._metadata_team_id(metadata)
+            or self._channel_team.get(chat_id, "")
+        )
+        if not team_id:
+            logger.warning(
+                "[Slack] Cannot send clarify prompt: workspace is unresolved for %s",
+                chat_id,
+            )
+            return SendResult(
+                success=False,
+                error="Slack workspace could not be resolved for clarify prompt",
+            )
+        client = self._team_clients.get(team_id)
+        if client is None:
+            logger.warning(
+                "[Slack] Cannot send clarify prompt: workspace %s is not connected",
+                team_id,
+            )
+            return SendResult(
+                success=False,
+                error=f"Slack workspace {team_id} is not connected",
+            )
+
+        # Slack caps button values at 2,000 characters. Clarify IDs are
+        # normally short random tokens, but fail over safely if a caller
+        # supplies an oversized value rather than posting invalid blocks.
+        value_probe = json.dumps(
+            {"id": str(clarify_id), "other": True},
+            separators=(",", ":"),
+        )
+        if len(value_probe) > 2000 or len(value_probe.encode("utf-8")) > 2000:
+            return await super().send_clarify(
+                chat_id=chat_id,
+                question=question,
+                choices=choices,
+                clarify_id=clarify_id,
+                session_key=session_key,
+                metadata=metadata,
+            )
+
+        self._prune_clarify_prompts()
+        canonical_choices = tuple(str(choice) for choice in choices)
+        elements = []
+        for index, choice in enumerate(canonical_choices):
+            value = json.dumps(
+                {"id": str(clarify_id), "index": index},
+                separators=(",", ":"),
+            )
+            label = choice.strip() or f"Option {index + 1}"
+            elements.append({
+                "type": "button",
+                "text": {
+                    "type": "plain_text",
+                    "text": label[:75],
+                    "emoji": True,
+                },
+                "action_id": "hermes_clarify_choice",
+                "value": value,
+            })
+        elements.append({
+            "type": "button",
+            "text": {
+                "type": "plain_text",
+                "text": "Other (type answer)",
+                "emoji": True,
+            },
+            "action_id": "hermes_clarify_choice",
+            "value": json.dumps(
+                {"id": str(clarify_id), "other": True},
+                separators=(",", ":"),
+            ),
+        })
+
+        question_text = str(question or "").strip()
+        option_lines = "\n".join(
+            f"{index + 1}. {choice}"
+            for index, choice in enumerate(canonical_choices)
+        )
+        section_text = f"❓ {question_text}\n\n{option_lines}"
+        if len(section_text) > 3000:
+            section_text = section_text[:2997] + "..."
+        blocks = [
+            {
+                "type": "section",
+                "text": {"type": "mrkdwn", "text": section_text},
+            },
+            {
+                "type": "actions",
+                "block_id": f"hermes_clarify_{str(clarify_id)[:200]}",
+                "elements": elements,
+            },
+        ]
+        thread_ts = self._resolve_thread_ts(None, metadata)
+        kwargs: Dict[str, Any] = {
+            "channel": chat_id,
+            "text": question_text or "Choose an option",
+            "blocks": blocks,
+        }
+        if thread_ts:
+            kwargs["thread_ts"] = thread_ts
+
+        try:
+            result = await client.chat_postMessage(**kwargs)
+            message_ts = str(result.get("ts") or "")
+            if not message_ts:
+                return SendResult(
+                    success=False, error="Slack did not return a message timestamp"
+                )
+            self._clarify_prompts[str(clarify_id)] = _SlackClarifyPrompt(
+                clarify_id=str(clarify_id),
+                choices=canonical_choices,
+                session_key=str(session_key),
+                team_id=str(team_id),
+                channel_id=str(chat_id),
+                thread_ts=str(thread_ts or ""),
+                message_ts=message_ts,
+            )
+            return SendResult(
+                success=True, message_id=message_ts, raw_response=result
+            )
+        except Exception as e:
+            logger.error("[Slack] send_clarify failed: %s", e, exc_info=True)
+            return SendResult(success=False, error=str(e))
+
+    async def _handle_clarify_action(self, ack, body, action) -> None:
+        """Resolve an authorized, origin-bound Slack clarify choice once."""
+        await ack()
+
+        team_id = self._event_team_id({}, body)
+        message = body.get("message") or {}
+        message_ts = str(message.get("ts") or "")
+        thread_ts = str(message.get("thread_ts") or "")
+        channel_id = str((body.get("channel") or {}).get("id") or "")
+        user = body.get("user") or {}
+        user_id = str(user.get("id") or "")
+        user_name = str(user.get("name") or user_id or "unknown")
+        if not team_id or not message_ts or not channel_id or not user_id:
+            logger.warning("[Slack] Clarify callback missing required routing fields")
+            return
+        client = self._team_clients.get(team_id)
+        if client is None:
+            logger.warning(
+                "[Slack] Ignoring clarify callback for disconnected workspace %s",
+                team_id,
+            )
+            return
+        if not self._is_interactive_user_authorized(
+            user_id,
+            channel_id=channel_id,
+            user_name=user_name,
+            team_id=team_id,
+        ):
+            logger.warning(
+                "[Slack] Unauthorized clarify click by %s (%s) - ignoring",
+                user_name,
+                user_id,
+            )
+            return
+
+        try:
+            payload = json.loads(str(action.get("value") or ""))
+        except (TypeError, ValueError, json.JSONDecodeError):
+            logger.warning("[Slack] Malformed clarify button value")
+            return
+        if not isinstance(payload, dict):
+            return
+        clarify_id = payload.get("id")
+        if not isinstance(clarify_id, str) or not clarify_id:
+            return
+
+        self._prune_clarify_prompts()
+        prompt = self._clarify_prompts.get(clarify_id)
+        if prompt is None or prompt.awaiting_text:
+            return
+        if (
+            prompt.team_id != team_id
+            or prompt.channel_id != channel_id
+            or prompt.message_ts != message_ts
+            or prompt.thread_ts != thread_ts
+        ):
+            logger.warning("[Slack] Clarify callback origin binding mismatch")
+            return
+
+        decision_text = "This question was already answered or has expired."
+        if payload.get("other") is True and set(payload) == {"id", "other"}:
+            from tools.clarify_gateway import mark_awaiting_text
+
+            if mark_awaiting_text(clarify_id):
+                prompt.awaiting_text = True
+                decision_text = (
+                    f"✏️ {user_name} chose Other — reply with your answer."
+                )
+            else:
+                self._clarify_prompts.pop(clarify_id, None)
+        elif set(payload) == {"id", "index"}:
+            index = payload.get("index")
+            if isinstance(index, bool) or not isinstance(index, int):
+                return
+            if not 0 <= index < len(prompt.choices):
+                return
+            from tools.clarify_gateway import resolve_gateway_choice
+
+            resolved, canonical_choice = resolve_gateway_choice(clarify_id, index)
+            self._clarify_prompts.pop(clarify_id, None)
+            if resolved and canonical_choice is not None:
+                decision_text = f"✅ {user_name} selected: {canonical_choice}"
+        else:
+            return
+
+        original_text = ""
+        for block in message.get("blocks") or []:
+            if block.get("type") == "section":
+                original_text = str((block.get("text") or {}).get("text") or "")
+                break
+        updated_blocks = [
+            {
+                "type": "section",
+                "text": {
+                    "type": "mrkdwn",
+                    "text": original_text[:3000] or "Clarification prompt",
+                },
+            },
+            {
+                "type": "context",
+                "elements": [{
+                    "type": "plain_text",
+                    "text": decision_text[:2000],
+                    "emoji": True,
+                }],
+            },
+        ]
+        try:
+            await client.chat_update(
+                channel=channel_id,
+                ts=message_ts,
+                text=decision_text,
+                blocks=updated_blocks,
+            )
+        except Exception as e:
+            logger.warning("[Slack] Failed to update clarify prompt: %s", e)
+            # Resolution/text-capture state is already authoritative. If Slack
+            # refuses the in-place update, post an explicit status message via
+            # the exact bound workspace client so stale-looking buttons cannot
+            # leave the user without instructions.
+            fallback_kwargs: Dict[str, Any] = {
+                "channel": channel_id,
+                "text": decision_text,
+            }
+            if prompt.thread_ts:
+                fallback_kwargs["thread_ts"] = prompt.thread_ts
+            try:
+                await client.chat_postMessage(**fallback_kwargs)
+            except Exception as fallback_error:
+                logger.error(
+                    "[Slack] Failed to post clarify status fallback: %s",
+                    fallback_error,
+                )
 
     # ----- Approval button support (Block Kit) -----
 

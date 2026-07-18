@@ -312,6 +312,11 @@ render as interactive buttons. When buttons can't be delivered and
 Hermes falls back to a text prompt, the prompt instructs you to reply
 with `!approve` / `!deny` — the form that works inside threads.
 
+Multiple-choice questions from the `clarify` tool also render as native
+Block Kit buttons, including an **Other (type answer)** option. A selection
+resumes the same agent run in the same thread; open-ended questions and
+choices exceeding Slack's Block Kit limits automatically fall back to text.
+
 ### Advanced: emit only the slash-commands array
 
 If you maintain your Slack manifest by hand and just want the slash

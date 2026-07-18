@@ -71,6 +71,13 @@ from hermes_cli.plugins import (  # noqa: E402
 )
 
 
+def _close_coro_task(coro):
+    """Mock create_task without leaking an unawaited coroutine."""
+    if asyncio.iscoroutine(coro):
+        coro.close()
+    return MagicMock()
+
+
 # ---------------------------------------------------------------------------
 # PluginContext.register_slack_action_handler — input validation + queuing
 # ---------------------------------------------------------------------------
@@ -248,7 +255,7 @@ def _connect_with_recording_app(
          patch("gateway.status.acquire_scoped_lock", return_value=(True, None)), \
          patch("gateway.status.release_scoped_lock"), \
          patch("hermes_cli.plugins.get_plugin_manager", return_value=fake_mgr), \
-         patch("asyncio.create_task"):
+         patch("asyncio.create_task", side_effect=_close_coro_task):
         result = asyncio.run(adapter.connect())
 
     return result, registered_actions
@@ -414,10 +421,11 @@ class TestSlackAdapterPluginActionWiring:
              patch("gateway.status.release_scoped_lock"), \
              patch("hermes_cli.plugins.get_plugin_manager",
                    side_effect=RuntimeError("plugins broken")), \
-             patch("asyncio.create_task"):
+             patch("asyncio.create_task", side_effect=_close_coro_task):
             result = asyncio.run(adapter.connect())
 
         assert result is True
         # Built-ins still wired even when plugin loader failed.
         action_ids = [aid for aid, _cb in registered_actions]
         assert "hermes_approve_once" in action_ids
+        assert "hermes_clarify_choice" in action_ids

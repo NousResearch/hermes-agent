@@ -124,6 +124,56 @@ class TestClarifyPrimitive:
 
         assert cm.resolve_gateway_clarify("nope", "anything") is False
 
+    def test_second_resolver_cannot_overwrite_first_response(self):
+        """Button/text races are consume-once; the first valid answer wins."""
+        from tools import clarify_gateway as cm
+
+        cm.register("once", "sk-once", "Pick", ["A", "B"])
+        assert cm.resolve_gateway_clarify("once", "A") is True
+        assert cm.resolve_gateway_clarify("once", "B") is False
+        assert cm.wait_for_response("once", timeout=0.1) == "A"
+
+    def test_choice_index_resolves_canonical_server_side_value(self):
+        from tools import clarify_gateway as cm
+
+        cm.register("choice", "sk-choice", "Pick", ["First", "Second"])
+        resolved, value = cm.resolve_gateway_choice("choice", 1)
+        assert (resolved, value) == (True, "Second")
+        assert cm.wait_for_response("choice", timeout=0.1) == "Second"
+
+    def test_choice_index_rejects_out_of_range_and_already_resolved(self):
+        from tools import clarify_gateway as cm
+
+        cm.register("choice-bad", "sk-choice-bad", "Pick", ["First"])
+        assert cm.resolve_gateway_choice("choice-bad", 9) == (False, None)
+        assert cm.resolve_gateway_choice("choice-bad", 0) == (True, "First")
+        assert cm.resolve_gateway_choice("choice-bad", 0) == (False, None)
+
+    def test_mark_awaiting_text_rejects_resolved_entry(self):
+        from tools import clarify_gateway as cm
+
+        cm.register("other-race", "sk-other-race", "Pick", ["A"])
+        assert cm.resolve_gateway_clarify("other-race", "A") is True
+        assert cm.mark_awaiting_text("other-race") is False
+
+    def test_concurrent_resolvers_only_one_wins(self):
+        from tools import clarify_gateway as cm
+
+        cm.register("race", "sk-race", "Pick", ["A", "B"])
+        barrier = threading.Barrier(3)
+
+        def resolve(value):
+            barrier.wait()
+            return cm.resolve_gateway_clarify("race", value)
+
+        with ThreadPoolExecutor(2) as pool:
+            futures = [pool.submit(resolve, "A"), pool.submit(resolve, "B")]
+            barrier.wait()
+            results = [future.result(timeout=2) for future in futures]
+
+        assert sorted(results) == [False, True]
+        assert cm.wait_for_response("race", timeout=0.1) in {"A", "B"}
+
     def test_resolve_after_wait_completes_is_noop(self):
         """A late resolve on a finished entry doesn't blow up."""
         from tools import clarify_gateway as cm

@@ -73,8 +73,10 @@ def test_removed_alias_disappears(monkeypatch):
     _fake_load(monkeypatch, {})  # user removed it
     ms._ensure_direct_aliases()
     assert "gone" not in ms.DIRECT_ALIASES
-    # Builtins survive.
-    assert "gpt-5.5" in ms.DIRECT_ALIASES
+    # Any built-in direct aliases survive the prune (don't hardcode a specific
+    # builtin id — the set can change over time; assert the contract instead).
+    for builtin_key in ms._BUILTIN_DIRECT_ALIASES:
+        assert builtin_key in ms.DIRECT_ALIASES
 
 
 def test_degraded_read_retains_last_known_good(monkeypatch, caplog):

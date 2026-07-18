@@ -86,7 +86,7 @@ No model/network calls.
 Steps:
 
 1. Build minimal envelope payload (no raw conversation history).
-2. Validate size cap (default 256 KiB envelope; oversize -> error+drop or compact metadata-only envelope).
+2. Validate size cap (frozen defaults: soft `64 KiB`, hard `128 KiB`; oversize -> compact metadata-only envelope with explicit `envelope_oversize` reason).
 3. Write `spool/pending/.tmp-<uuid>.json`.
 4. `flush + fsync(tmp)`.
 5. `os.replace(tmp, pending/<ts>-<uuid>.json)`.
@@ -195,21 +195,38 @@ sequenceDiagram
   Worker->>Spool: delete processing envelope
 ```
 
+## Frozen operational thresholds (Q1 C3 remediation; defaults for T8)
+
+These values are now frozen to prevent ad hoc implementation drift. They are intentionally conservative and may be overridden by config in T8, but these defaults are the required baseline for implementation and test parity.
+
+| Domain | Frozen default | Why conservative | Configurability target | Acceptance tests |
+|---|---|---|---|---|
+| Envelope payload cap | `envelope_soft_bytes=64 KiB`, `envelope_hard_bytes=128 KiB` | Keeps post-turn capture bounded for hook p95 < 10ms and prevents transcript-like blobs from entering storage | `truth_ledger.capture.envelope_soft_bytes`, `truth_ledger.capture.envelope_hard_bytes` | TL-STOR-001, TL-STOR-008 |
+| Canonical record cap | `ledger_record_hard_bytes=64 KiB` per JSONL line | Protects append latency and avoids oversized replay records | `truth_ledger.ledger.record_hard_bytes` | TL-STOR-009 |
+| Spool queue bounds | soft: `pending_count<=5000` and `pending+processing_bytes<=256 MiB`; hard: `count<=8000` or `bytes<=384 MiB` | Prevents unbounded disk growth while leaving enough headroom for transient outages | `truth_ledger.spool.soft_count`, `truth_ledger.spool.soft_bytes`, `truth_ledger.spool.hard_count`, `truth_ledger.spool.hard_bytes` | TL-STOR-008, TL-STOR-010 |
+| Overflow behavior | At soft cap, shed oldest pending to dead-letter (`queue_overflow`); at hard cap, reject new capture envelope to diagnostic-only drop (`queue_hard_cap`) while preserving chat fail-open | Preserves service responsiveness and explicit audit trail under pressure | `truth_ledger.spool.overflow_policy` | TL-STOR-010 |
+| Projection update strategy | SQLite projection/index mutates per indexed event; `views/current.jsonl` refreshed atomically in batches (`max 100 events` or `30s`, whichever first) and fully rebuildable from ledger | Prioritizes determinism and correctness over write amplification while keeping derived view freshness bounded | `truth_ledger.projection.refresh_every_events`, `truth_ledger.projection.refresh_every_seconds` | TL-STOR-011, TL-STOR-004 |
+| Ambiguity probe depth | `tail_probe_max_records=4096` OR `tail_probe_max_bytes=8 MiB` (whichever reached first); if miss, run bounded full-file scan before retry/dead-letter | Ensures crash-window ambiguity resolution without unbounded tail scans | `truth_ledger.recovery.tail_probe_max_records`, `truth_ledger.recovery.tail_probe_max_bytes` | TL-STOR-003, TL-STOR-005 |
+| Retry/backoff/dead-letter | `max_attempts=6`, base `500ms`, exponential `2^attempt`, full jitter, delay cap `60s`; dead-letter after max attempts or explicit permanent class | Bounded retry pressure prevents lock storms and queue amplification | `truth_ledger.retry.max_attempts`, `truth_ledger.retry.base_delay_ms`, `truth_ledger.retry.max_delay_ms` | TL-STOR-006 |
+| Lock/timeout behavior | append lock timeout `200ms`; rebuild lock timeout `2s`; SQLite busy timeout `250ms`; processing stale-claim timeout `15m` | Short lock waits avoid cascading contention and preserve throughput under load | `truth_ledger.lock.append_timeout_ms`, `truth_ledger.lock.rebuild_timeout_ms`, `truth_ledger.sqlite.busy_timeout_ms`, `truth_ledger.spool.processing_stale_seconds` | TL-STOR-001, TL-STOR-006, TL-STOR-012 |
+| Rotation/retention | Ledger rotates monthly; ledger auto-delete disabled by default (manual retention policy required); dead-letter retained `30d` before archive review; error logs retain `30d` | Keeps append-only history intact by default and avoids silent evidence loss | `truth_ledger.ledger.retention_days` (`null` default), `truth_ledger.dead_letter.retention_days`, `truth_ledger.errors.retention_days` | TL-STOR-013 |
+| Fail-open degradation | If capture write fails: skip capture, emit sanitized diagnostic, rate-limit duplicate diagnostics to 1/min per code; never block user response. If worker/index unavailable: continue capture path, defer projection freshness | Protects user-facing latency and availability while preserving observability | `truth_ledger.fail_open.diagnostic_rate_limit_seconds` | TL-STOR-007 |
+
 ## Retry, backoff, jitter, and dead letters
 
-Retry policy (bounded):
+Frozen retry policy:
 
-- `max_attempts = 8`
-- Base delay: 1s
+- `max_attempts = 6`
+- Base delay: `500ms`
 - Backoff: exponential (`2^attempt`)
 - Jitter: full jitter in `[0, delay]`
-- Max delay cap: 5m
+- Max delay cap: `60s`
 
 Error classes:
 
-- Transient: `SQLITE_BUSY`, lock timeout, temporary IO error -> retry.
+- Transient: `SQLITE_BUSY`, append/rebuild lock timeout, temporary IO error -> retry.
 - Permanent: schema-invalid event payload, policy denial, identity hard-fail -> dead letter.
-- Ambiguous crash: recovered via journal phase and ledger probe before retry.
+- Ambiguous crash: recovered via journal phase and bounded ledger probe before retry/dead-letter.
 
 Dead-letter payload includes:
 
@@ -220,9 +237,11 @@ Dead-letter payload includes:
 
 - Ledger files rotate monthly (`YYYY-MM.jsonl`).
 - Active write target derived from `occurred_at` UTC month.
-- `spool/pending` and `spool/processing` are bounded by count/bytes (e.g., 10k envelopes or 512 MiB soft cap).
-- Exceeding soft cap triggers load-shed policy: keep newest, route oldest to dead letter with `queue_overflow` reason.
-- Derived artifacts (`index.sqlite`, `current.jsonl`) may be deleted and rebuilt.
+- `spool/pending` and `spool/processing` follow frozen queue bounds in the table above.
+- Exceeding soft cap triggers oldest-pending shedding to dead letter with `queue_overflow` reason.
+- Exceeding hard cap rejects new capture envelopes with diagnostic-only `queue_hard_cap` reason.
+- Derived artifacts (`index.sqlite`, `current.jsonl`) remain disposable and rebuildable.
+- Ledger auto-delete is disabled by default to preserve append-only history; any retention delete requires explicit config opt-in.
 
 ## Partial-tail and corruption recovery
 
@@ -233,6 +252,11 @@ On startup/rebuild:
 3. On first malformed terminal fragment, quarantine suffix to `errors/corrupt-tail-<file>-<ts>.jsonl`.
 4. Continue from valid prefix only.
 5. Rebuild index/projection deterministically from accepted lines.
+
+Bounded ambiguity probe policy for journal phase gaps:
+
+- Probe tail up to `4096` records or `8 MiB`, whichever reached first.
+- If event not found, perform one bounded full-file scan of the active ledger file before deciding retry/dead-letter.
 
 Never mutate canonical valid prefix; quarantine corrupt suffix separately.
 
@@ -282,18 +306,20 @@ These results justify the selected primitives for T3.
 
 ## Proposed executable test cases for T8/Q2
 
-1. Multi-process concurrent append with lock contention; assert no malformed lines.
-2. Duplicate callback replay with same `event_key`; assert one indexed logical event.
-3. Kill between append and index commit; restart recovery should converge to `indexed` once.
-4. Kill during `current.jsonl` write; assert old/new whole-file validity, never partial JSON line.
-5. Inject malformed tail; assert quarantine and deterministic rebuild from valid prefix.
-6. Force `SQLITE_BUSY`; assert bounded retries + jitter + eventual success/dead-letter.
-7. Permission-denied on spool path; assert fail-open response and sanitized error event.
-8. Queue overflow cap; assert bounded storage and explicit dead-letter reason.
+1. TL-STOR-001: Multi-process concurrent append with lock contention; assert no malformed lines and append lock timeout handling (`200ms`).
+2. TL-STOR-002: Duplicate callback replay with same `event_key`; assert one indexed logical event.
+3. TL-STOR-003: Kill between append and index commit; restart recovery should converge to `indexed` once via bounded ambiguity probe.
+4. TL-STOR-004: Kill during `current.jsonl` write; assert old/new whole-file validity, never partial JSON line; verify batch refresh boundaries (`<=100 events` or `30s`).
+5. TL-STOR-005: Inject malformed tail plus phase ambiguity; assert quarantine, `4096-record/8MiB` tail probe behavior, and deterministic rebuild from valid prefix.
+6. TL-STOR-006: Force `SQLITE_BUSY`/lock timeout; assert `max_attempts=6`, bounded backoff (`500ms` base, `60s` cap), and eventual success/dead-letter.
+7. TL-STOR-007: Permission-denied on spool path; assert fail-open response and sanitized, rate-limited diagnostic behavior.
+8. TL-STOR-008: Envelope oversize (`>128 KiB`) and soft oversize (`64-128 KiB`) cases; assert compact metadata behavior and no raw transcript persistence.
+9. TL-STOR-009: Record oversize (`>64 KiB`) rejected with policy classification; assert no malformed ledger append.
+10. TL-STOR-010: Queue soft/hard cap pressure (`5000/8000`, `256/384 MiB`); assert oldest-shed and hard-cap reject semantics with explicit reasons.
+11. TL-STOR-011: Projection strategy checks; assert SQLite is authoritative per event and `current.jsonl` remains rebuildable/disposable.
+12. TL-STOR-012: Stale processing claim (`>15m`) requeue behavior and idempotent reprocessing.
+13. TL-STOR-013: Rotation/retention defaults; assert monthly rotation and no implicit ledger deletion without explicit opt-in.
 
-## Open implementation decisions for Q1 sign-off
+## Closed Q1 decisions (C3)
 
-1. Exact envelope soft/hard caps and overflow policy thresholds.
-2. Whether to maintain incremental `current.jsonl` writes or always rebuild from index snapshots.
-3. Ledger probe depth strategy for phase ambiguity (`tail window` vs per-file sparse offset index).
-4. Cross-platform lock adapter selection for Windows portability.
+Q1 C3 operational threshold decisions are now frozen in this document and mapped to TL-STOR-001..013. The remaining implementation choice is limited to Windows lock adapter specifics, which does not change any frozen threshold values above.

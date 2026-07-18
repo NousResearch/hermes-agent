@@ -14451,6 +14451,236 @@ async def run_toolset_post_setup(
 
 
 # ---------------------------------------------------------------------------
+# Terminal execution backend picker — the GUI counterpart of terminal.backend
+# in config.yaml. Each row carries a fast, defensive health probe (Docker
+# daemon reachable, SSH host configured, Modal/Daytona credentials present) so
+# the Capabilities panel can render Ready / Needs setup guidance instead of a
+# bare enum (issues #57738 / #63783). Probes must never raise — a probe
+# failure renders as a status, not a 500.
+# ---------------------------------------------------------------------------
+
+# Table-driven backend metadata — kept in sync with the dispatch ladder in
+# tools/terminal_tool.py::_create_environment and the terminal.backend enum
+# surfaced in the desktop raw-config settings.
+_TERMINAL_BACKENDS: List[Dict[str, str]] = [
+    {
+        "name": "local",
+        "label": "Local",
+        "description": "Run commands directly on this machine. No isolation.",
+    },
+    {
+        "name": "docker",
+        "label": "Docker",
+        "description": "Run commands in an isolated Docker container with a persistent workspace.",
+    },
+    {
+        "name": "singularity",
+        "label": "Singularity / Apptainer",
+        "description": "Run commands in a Singularity/Apptainer container (HPC-friendly, rootless).",
+    },
+    {
+        "name": "modal",
+        "label": "Modal",
+        "description": "Run commands in a Modal cloud sandbox.",
+    },
+    {
+        "name": "daytona",
+        "label": "Daytona",
+        "description": "Run commands in a Daytona cloud sandbox.",
+    },
+    {
+        "name": "ssh",
+        "label": "SSH",
+        "description": "Run commands on a remote host over SSH.",
+    },
+]
+
+_TERMINAL_BACKEND_NAMES = {row["name"] for row in _TERMINAL_BACKENDS}
+
+
+def _terminal_cfg_value(terminal_cfg: dict, key: str, env_var: str) -> str:
+    """Read a terminal.* setting from config.yaml, falling back to its env var."""
+    value = terminal_cfg.get(key)
+    if value is not None and str(value).strip():
+        return str(value).strip()
+    try:
+        from hermes_cli.config import get_env_value
+
+        return (get_env_value(env_var) or "").strip()
+    except Exception:
+        return ""
+
+
+def _probe_docker_backend() -> tuple:
+    if not shutil.which("docker"):
+        return (
+            "needs_setup",
+            "Docker CLI not found — install Docker Desktop or docker-ce.",
+        )
+    try:
+        proc = subprocess.run(
+            ["docker", "info", "--format", "{{.ServerVersion}}"],
+            capture_output=True,
+            text=True,
+            timeout=2,
+        )
+        if proc.returncode == 0:
+            return ("ready", "")
+        return (
+            "needs_setup",
+            "Docker daemon not reachable — start Docker and retry.",
+        )
+    except subprocess.TimeoutExpired:
+        return ("needs_setup", "Docker daemon not responding (timed out).")
+    except Exception as exc:
+        return ("unavailable", f"Docker probe failed: {exc}")
+
+
+def _probe_singularity_backend() -> tuple:
+    if shutil.which("singularity") or shutil.which("apptainer"):
+        return ("ready", "")
+    return (
+        "needs_setup",
+        "Neither singularity nor apptainer found on PATH.",
+    )
+
+
+def _probe_ssh_backend(terminal_cfg: dict) -> tuple:
+    host = _terminal_cfg_value(terminal_cfg, "ssh_host", "TERMINAL_SSH_HOST")
+    user = _terminal_cfg_value(terminal_cfg, "ssh_user", "TERMINAL_SSH_USER")
+    missing = []
+    if not host:
+        missing.append("terminal.ssh_host")
+    if not user:
+        missing.append("terminal.ssh_user")
+    if missing:
+        return (
+            "needs_setup",
+            f"Set {' and '.join(missing)} in config.yaml (or the matching TERMINAL_SSH_* env vars).",
+        )
+    return ("ready", f"{user}@{host}")
+
+
+def _probe_modal_backend() -> tuple:
+    try:
+        from tools.tool_backend_helpers import has_direct_modal_credentials
+
+        if has_direct_modal_credentials():
+            return ("ready", "")
+    except Exception:
+        pass
+    try:
+        from hermes_cli.config import get_env_value
+
+        if get_env_value("MODAL_TOKEN_ID") and get_env_value("MODAL_TOKEN_SECRET"):
+            return ("ready", "")
+    except Exception:
+        pass
+    return (
+        "needs_setup",
+        "Modal credentials not found — set MODAL_TOKEN_ID and MODAL_TOKEN_SECRET (or run `modal setup`).",
+    )
+
+
+def _probe_daytona_backend() -> tuple:
+    try:
+        from hermes_cli.config import get_env_value
+
+        if get_env_value("DAYTONA_API_KEY"):
+            return ("ready", "")
+    except Exception:
+        pass
+    return ("needs_setup", "Set DAYTONA_API_KEY to use the Daytona backend.")
+
+
+def _probe_terminal_backend(name: str, terminal_cfg: dict) -> tuple:
+    """Return ``(status, detail)`` for one backend. Never raises."""
+    try:
+        if name == "local":
+            return ("ready", "")
+        if name == "docker":
+            return _probe_docker_backend()
+        if name == "singularity":
+            return _probe_singularity_backend()
+        if name == "ssh":
+            return _probe_ssh_backend(terminal_cfg)
+        if name == "modal":
+            return _probe_modal_backend()
+        if name == "daytona":
+            return _probe_daytona_backend()
+        return ("unavailable", f"Unknown backend: {name}")
+    except Exception as exc:  # pragma: no cover — belt-and-braces guard
+        return ("unavailable", f"Probe failed: {exc}")
+
+
+@app.get("/api/tools/terminal/backends")
+async def get_terminal_backends(profile: Optional[str] = None):
+    """Terminal execution backend rows with health probes for the picker panel.
+
+    Returns ``{active, backends: [{name, label, description, active, status,
+    detail}]}`` where ``status`` is ``ready`` / ``needs_setup`` /
+    ``unavailable`` and ``detail`` carries setup guidance for non-ready rows.
+    Probes are fast (<~2s each) and defensive — a probe failure surfaces as a
+    status, never an error response.
+    """
+    with _profile_scope(profile):
+        config = load_config()
+        terminal_cfg = config.get("terminal")
+        if not isinstance(terminal_cfg, dict):
+            terminal_cfg = {}
+        active = str(terminal_cfg.get("backend") or "local").strip().lower()
+        if active not in _TERMINAL_BACKEND_NAMES:
+            active = "local"
+
+        backends = []
+        for row in _TERMINAL_BACKENDS:
+            status, detail = _probe_terminal_backend(row["name"], terminal_cfg)
+            backends.append({
+                "name": row["name"],
+                "label": row["label"],
+                "description": row["description"],
+                "active": row["name"] == active,
+                "status": status,
+                "detail": detail,
+            })
+    return {"active": active, "backends": backends}
+
+
+class TerminalBackendSelect(BaseModel):
+    backend: str
+    profile: Optional[str] = None
+
+
+@app.put("/api/tools/terminal/backend")
+async def select_terminal_backend(
+    body: TerminalBackendSelect, profile: Optional[str] = None
+):
+    """Persist ``terminal.backend`` in config.yaml.
+
+    Validates against the known backend set (the same enum the raw-config
+    settings row exposes). Selecting a backend that still needs setup is
+    allowed — the picker shows guidance instead of blocking, matching the CLI.
+    """
+    backend = (body.backend or "").strip().lower()
+    if backend not in _TERMINAL_BACKEND_NAMES:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Unknown terminal backend: {body.backend!r}. "
+            f"Use one of: {', '.join(sorted(_TERMINAL_BACKEND_NAMES))}",
+        )
+
+    with _profile_scope(body.profile or profile):
+        config = load_config()
+        terminal_cfg = config.setdefault("terminal", {})
+        if not isinstance(terminal_cfg, dict):
+            terminal_cfg = {}
+            config["terminal"] = terminal_cfg
+        terminal_cfg["backend"] = backend
+        save_config(config)
+    return {"ok": True, "backend": backend}
+
+
+# ---------------------------------------------------------------------------
 # Computer Use (cua-driver) — cross-platform readiness + macOS permission grant
 #
 # cua-driver runs on macOS, Windows, and Linux. The desktop card reflects

@@ -5007,6 +5007,165 @@ class TestNewEndpoints:
         )
         assert resp.status_code == 400
 
+    # -- Terminal execution backend picker ---------------------------------
+
+    def test_get_terminal_backends_shape_and_local_ready(self, monkeypatch):
+        """GET .../backends returns one row per backend; local is always ready."""
+        import hermes_cli.web_server as web_server
+
+        monkeypatch.setattr(web_server.shutil, "which", lambda name: None)
+
+        resp = self.client.get("/api/tools/terminal/backends")
+        assert resp.status_code == 200
+        body = resp.json()
+        names = [row["name"] for row in body["backends"]]
+        assert names == ["local", "docker", "singularity", "modal", "daytona", "ssh"]
+        assert body["active"] in set(names)
+        for row in body["backends"]:
+            assert row["status"] in {"ready", "needs_setup", "unavailable"}
+            assert isinstance(row["label"], str) and row["label"]
+            assert isinstance(row["description"], str)
+            assert isinstance(row["detail"], str)
+            assert isinstance(row["active"], bool)
+        local = body["backends"][0]
+        assert local["status"] == "ready"
+        # Exactly one backend is flagged active, matching the summary field.
+        active_rows = [r["name"] for r in body["backends"] if r["active"]]
+        assert active_rows == [body["active"]]
+
+    def test_terminal_docker_probe_missing_cli(self, monkeypatch):
+        """No docker binary on PATH -> needs_setup with install guidance."""
+        import hermes_cli.web_server as web_server
+
+        monkeypatch.setattr(web_server.shutil, "which", lambda name: None)
+
+        body = self.client.get("/api/tools/terminal/backends").json()
+        docker = next(r for r in body["backends"] if r["name"] == "docker")
+        assert docker["status"] == "needs_setup"
+        assert "not found" in docker["detail"]
+
+    def test_terminal_docker_probe_daemon_down(self, monkeypatch):
+        """docker CLI present but daemon unreachable -> needs_setup."""
+        import subprocess as subprocess_mod
+        import hermes_cli.web_server as web_server
+
+        monkeypatch.setattr(
+            web_server.shutil,
+            "which",
+            lambda name: "/usr/bin/docker" if name == "docker" else None,
+        )
+        monkeypatch.setattr(
+            web_server.subprocess,
+            "run",
+            lambda cmd, **kw: subprocess_mod.CompletedProcess(cmd, 1, stdout="", stderr="daemon down"),
+        )
+
+        body = self.client.get("/api/tools/terminal/backends").json()
+        docker = next(r for r in body["backends"] if r["name"] == "docker")
+        assert docker["status"] == "needs_setup"
+        assert "daemon" in docker["detail"].lower()
+
+    def test_terminal_docker_probe_daemon_ready(self, monkeypatch):
+        """docker CLI + reachable daemon -> ready."""
+        import subprocess as subprocess_mod
+        import hermes_cli.web_server as web_server
+
+        monkeypatch.setattr(
+            web_server.shutil,
+            "which",
+            lambda name: "/usr/bin/docker" if name in {"docker", "singularity"} else None,
+        )
+        monkeypatch.setattr(
+            web_server.subprocess,
+            "run",
+            lambda cmd, **kw: subprocess_mod.CompletedProcess(cmd, 0, stdout="27.0\n", stderr=""),
+        )
+
+        body = self.client.get("/api/tools/terminal/backends").json()
+        rows = {r["name"]: r for r in body["backends"]}
+        assert rows["docker"]["status"] == "ready"
+        # singularity resolves via which() too
+        assert rows["singularity"]["status"] == "ready"
+
+    def test_terminal_probe_failure_is_a_status_not_a_500(self, monkeypatch):
+        """A probe that raises must surface as a status row, never an error."""
+        import hermes_cli.web_server as web_server
+
+        monkeypatch.setattr(
+            web_server.shutil,
+            "which",
+            lambda name: "/usr/bin/docker" if name == "docker" else None,
+        )
+
+        def boom(cmd, **kw):
+            raise OSError("exec format error")
+
+        monkeypatch.setattr(web_server.subprocess, "run", boom)
+
+        resp = self.client.get("/api/tools/terminal/backends")
+        assert resp.status_code == 200
+        docker = next(r for r in resp.json()["backends"] if r["name"] == "docker")
+        assert docker["status"] == "unavailable"
+        assert "probe failed" in docker["detail"].lower()
+
+    def test_terminal_ssh_probe_reports_missing_keys(self, monkeypatch):
+        """SSH without host/user config lists the missing terminal.* keys."""
+        import hermes_cli.web_server as web_server
+
+        monkeypatch.setattr(web_server.shutil, "which", lambda name: None)
+
+        body = self.client.get("/api/tools/terminal/backends").json()
+        ssh = next(r for r in body["backends"] if r["name"] == "ssh")
+        assert ssh["status"] == "needs_setup"
+        assert "terminal.ssh_host" in ssh["detail"]
+
+    def test_terminal_ssh_probe_ready_when_configured(self, monkeypatch):
+        """SSH host + user in config.yaml -> ready."""
+        import hermes_cli.web_server as web_server
+        from hermes_cli.config import load_config, save_config
+
+        monkeypatch.setattr(web_server.shutil, "which", lambda name: None)
+        config = load_config()
+        config.setdefault("terminal", {})
+        config["terminal"]["ssh_host"] = "devbox.example.com"
+        config["terminal"]["ssh_user"] = "hermes"
+        save_config(config)
+
+        body = self.client.get("/api/tools/terminal/backends").json()
+        ssh = next(r for r in body["backends"] if r["name"] == "ssh")
+        assert ssh["status"] == "ready"
+        assert "hermes@devbox.example.com" in ssh["detail"]
+
+    def test_select_terminal_backend_persists_config(self, monkeypatch):
+        """PUT .../backend writes terminal.backend and the list reflects it."""
+        import hermes_cli.web_server as web_server
+
+        monkeypatch.setattr(web_server.shutil, "which", lambda name: None)
+
+        resp = self.client.put(
+            "/api/tools/terminal/backend", json={"backend": "docker"}
+        )
+        assert resp.status_code == 200
+        assert resp.json() == {"ok": True, "backend": "docker"}
+
+        from hermes_cli.config import load_config
+        assert load_config()["terminal"]["backend"] == "docker"
+
+        body = self.client.get("/api/tools/terminal/backends").json()
+        assert body["active"] == "docker"
+        docker = next(r for r in body["backends"] if r["name"] == "docker")
+        assert docker["active"] is True
+        # Selecting a needs-setup backend is allowed; the row still carries
+        # its guidance detail.
+        assert docker["status"] == "needs_setup"
+
+    def test_select_terminal_backend_unknown_returns_400(self):
+        resp = self.client.put(
+            "/api/tools/terminal/backend", json={"backend": "kubernetes"}
+        )
+        assert resp.status_code == 400
+        assert "Unknown terminal backend" in resp.json()["detail"]
+
     def test_get_toolset_models_no_catalog_toolset(self):
         """Toolsets without a model catalog report has_models: false."""
         resp = self.client.get("/api/tools/toolsets/web/models")

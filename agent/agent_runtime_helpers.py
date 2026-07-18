@@ -2193,6 +2193,7 @@ def plan_cache_sections_for_destination(
 
 
 def anthropic_prompt_cache_policy(
+    agent,
     *,
     provider: Optional[str] = None,
     base_url: Optional[str] = None,

@@ -175,40 +175,46 @@ class TestDelegateSeedsChildRecord:
 
 
 class TestCommandCwdReadsTheRecord:
-    """_resolve_command_cwd: workdir > session record > default. Nothing else."""
+    """_resolve_command_cwd: workdir > authoritative session cwd > env.cwd > default."""
 
     def test_record_beats_default(self):
-        tt.record_session_cwd("sess-a", "/my/worktree")
-        resolved = tt._resolve_command_cwd(
-            workdir=None,
-            default_cwd="/config/default",
-            session_key="sess-a",
-        )
-        assert resolved == "/my/worktree"
+        from agent.runtime_cwd import set_authoritative_session_cwd, reset_authoritative_session_cwd
+        tokens = set_authoritative_session_cwd("/my/worktree")
+        try:
+            resolved = tt._resolve_command_cwd(
+                workdir=None,
+                default_cwd="/config/default",
+            )
+            assert resolved == "/my/worktree"
+        finally:
+            reset_authoritative_session_cwd(tokens)
 
     def test_workdir_still_beats_the_record(self):
-        tt.record_session_cwd("sess-a", "/my/worktree")
-        resolved = tt._resolve_command_cwd(
-            workdir="/explicit/place",
-            default_cwd="/config/default",
-            session_key="sess-a",
-        )
-        assert resolved == "/explicit/place"
+        from agent.runtime_cwd import set_authoritative_session_cwd, reset_authoritative_session_cwd
+        tokens = set_authoritative_session_cwd("/my/worktree")
+        try:
+            resolved = tt._resolve_command_cwd(
+                workdir="/explicit/place",
+                default_cwd="/config/default",
+            )
+            assert resolved == "/explicit/place"
+        finally:
+            reset_authoritative_session_cwd(tokens)
 
     def test_no_record_falls_back_to_default(self):
         resolved = tt._resolve_command_cwd(
             workdir=None,
             default_cwd="/config/default",
-            session_key="sess-a",
         )
         assert resolved == "/config/default"
 
     def test_other_sessions_record_is_not_consulted(self):
+        # Without an authoritative ContextVar set, a bare call falls back to
+        # default_cwd regardless of what record_session_cwd wrote.
         tt.record_session_cwd("sess-b", "/other/worktree")
         resolved = tt._resolve_command_cwd(
             workdir=None,
             default_cwd="/config/default",
-            session_key="sess-a",
         )
         assert resolved == "/config/default"
 

@@ -2500,7 +2500,7 @@ def terminal_tool(
                         command=command,
                         cwd=effective_cwd,
                         task_id=effective_task_id,
-                        env=env,
+                        session_key=session_key,
                         env_vars=env.env if hasattr(env, 'env') else None,
                         use_pty=effective_pty,
                     )
@@ -2748,10 +2748,16 @@ def terminal_tool(
 
             while retry_count <= max_retries:
                 try:
+                    prev_owner = getattr(env, "cwd_owner", "")
+                    if not prev_owner:
+                        prev_owner = None
+                    if hasattr(env, "cwd_owner"):
+                        env.cwd_owner = session_key
                     command_cwd = _resolve_command_cwd(
                         workdir=workdir,
                         default_cwd=cwd,
                         env=env,
+                        prev_owner=prev_owner,
                     )
                     execute_kwargs = {
                         "timeout": effective_timeout,

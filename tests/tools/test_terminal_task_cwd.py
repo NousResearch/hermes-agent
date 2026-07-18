@@ -213,7 +213,7 @@ def test_registering_cwd_override_updates_session_record(monkeypatch):
     # … and the session record — what commands actually resolve against — too.
     assert terminal_tool.get_session_cwd(task_id) == "/workspace/new"
     assert terminal_tool._resolve_command_cwd(
-        workdir=None, default_cwd="/workspace/config", session_key=task_id
+        workdir=None, default_cwd="/workspace/config", env=fake_env
     ) == "/workspace/new"
 
 
@@ -289,13 +289,13 @@ def test_stale_env_cwd_from_different_session_is_ignored(monkeypatch):
 
 
 def test_same_session_recorded_cwd_survives_across_commands(monkeypatch):
-    """In-session `cd` state survives: the record written by one command is
+    """In-session `cd` state survives: the env cwd set by one command is
     used by the next command in the same session."""
     calls = []
 
     class FakeEnv:
         env = {}
-        cwd = "/workspace/deep"
+        cwd = "/workspace/config"
 
         def execute(self, command, **kwargs):
             calls.append((command, kwargs))
@@ -316,14 +316,15 @@ def test_same_session_recorded_cwd_survives_across_commands(monkeypatch):
         lambda command, env_type, **kwargs: {"approved": True},
     )
 
-    # First command runs in the config cwd (no record yet) and afterwards
-    # mirrors the env's post-command cwd into the session record.
+    # First command runs in the config cwd (env.cwd matches default).
     result = json.loads(terminal_tool.terminal_tool(command="pwd", task_id=task_id))
     assert result["exit_code"] == 0
     assert calls[0] == ("pwd", {"timeout": 60, "cwd": "/workspace/config", "bounded_capture": True})
-    assert terminal_tool.get_session_cwd(task_id) == "/workspace/deep"
 
-    # Second command in the same session trusts the record.
+    # Simulate a `cd /workspace/deep` by updating the env cwd.
+    env.cwd = "/workspace/deep"
+
+    # Second command in the same session trusts the live env cwd.
     result = json.loads(terminal_tool.terminal_tool(command="pwd", task_id=task_id))
     assert result["exit_code"] == 0
     assert calls[1] == ("pwd", {"timeout": 60, "cwd": "/workspace/deep", "bounded_capture": True})

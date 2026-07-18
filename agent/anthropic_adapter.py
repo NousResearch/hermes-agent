@@ -241,13 +241,19 @@ def _resolve_anthropic_messages_max_tokens(
 
 
 def _supports_adaptive_thinking(model: str) -> bool:
-    """Return True for Claude models that use adaptive thinking (4.6+).
+    """Return True for Claude models that use adaptive thinking (4.6+) and
+    MiniMax M3 (which uses Anthropic-format adaptive thinking too).
 
     Defaults *unknown* Claude models to adaptive (the modern contract) and
     only returns False for the explicit legacy list of older Claude families
     that require manual budget-based thinking. Non-Claude Anthropic-Messages
-    models (minimax, qwen3, …) return False so they keep the manual path.
+    models (qwen3, GLM, …) return False so they keep the manual path;
+    MiniMax M3 is the documented exception because the M3 Anthropic endpoint
+    accepts ``thinking.type=adaptive`` (and silently ignores the manual
+    ``enabled+budget_tokens`` shape that M2.x uses).
     """
+    if _is_minimax_m3(model):
+        return True
     if not _is_claude_model(model):
         return False
     m = model.lower()
@@ -574,6 +580,16 @@ def _is_minimax_anthropic_endpoint(base_url: str | None) -> bool:
     return normalized.startswith(
         ("https://api.minimax.io/anthropic", "https://api.minimaxi.com/anthropic")
     )
+
+
+def _is_minimax_m3(model: str | None) -> bool:
+    """Return True for MiniMax M3 (MiniMax-M3, minimax/minimax-m3, ...).
+
+    Unlike the M2.x family, M3's Anthropic endpoint requires thinking to be
+    enabled: a request that omits the thinking parameter comes back empty
+    (``content: null``, 1 output token). So M3 defaults thinking on.
+    """
+    return "minimax-m3" in (str(model or "")).lower()
 
 
 def _is_azure_anthropic_endpoint(base_url: str | None) -> bool:
@@ -2645,6 +2661,11 @@ def build_anthropic_kwargs(
     # request "summarized" so the reasoning blocks stay populated — matching
     # 4.6 behavior and preserving the activity-feed UX during long tool runs.
     _is_kimi_coding = _is_kimi_family_endpoint(base_url, model)
+    # M3 returns an empty response unless thinking is enabled, so default it on
+    # when the caller expressed no preference. An explicit {"enabled": False}
+    # still disables it below.
+    if reasoning_config is None and _is_minimax_m3(model):
+        reasoning_config = {"enabled": True}
     if reasoning_config and isinstance(reasoning_config, dict) and not _is_kimi_coding:
         if reasoning_config.get("enabled") is not False and "haiku" not in model.lower():
             effort = str(reasoning_config.get("effort", "medium")).lower()

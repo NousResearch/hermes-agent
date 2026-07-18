@@ -5,8 +5,9 @@ shared slash-command pipeline (`/model` in CLI/gateway/Telegram) historically
 only looked at `providers:`.
 """
 
-import hermes_cli.providers as providers_mod
 import pytest
+
+import hermes_cli.providers as providers_mod
 from hermes_cli.model_switch import list_authenticated_providers, switch_model
 from hermes_cli.providers import resolve_provider_full
 from providers.base import ProviderProfile
@@ -48,21 +49,20 @@ def _install_unit_test_provider_profile(monkeypatch) -> ProviderProfile:
     from hermes_cli import auth as auth_mod
 
     monkeypatch.setattr(provider_registry, "get_provider_profile", fake_get_provider_profile)
-    monkeypatch.setitem(
-        auth_mod.PROVIDER_REGISTRY,
-        profile.name,
-        auth_mod.ProviderConfig(
-            id=profile.name,
-            name=profile.display_name,
-            auth_type="api_key",
-            inference_base_url=profile.base_url,
-            api_key_env_vars=("UTPP_API_KEY",),
-            base_url_env_var="UTPP_BASE_URL",
-            extra={"api_mode": profile.api_mode},
-        ),
-    )
-    for alias in profile.aliases:
-        monkeypatch.setitem(auth_mod.PROVIDER_REGISTRY, alias, auth_mod.PROVIDER_REGISTRY[profile.name])
+    monkeypatch.setattr(provider_registry, "list_providers", lambda: [profile])
+
+    # Exercise the real auto-registration bridge, then re-apply its result
+    # through monkeypatch so the synthetic provider cannot leak into later tests.
+    before = dict(auth_mod.PROVIDER_REGISTRY)
+    getattr(auth_mod, "_extend_registry_from_provider_plugins")()
+    registered = {
+        name: auth_mod.PROVIDER_REGISTRY[name]
+        for name in (profile.name, *profile.aliases)
+    }
+    auth_mod.PROVIDER_REGISTRY.clear()
+    auth_mod.PROVIDER_REGISTRY.update(before)
+    for name, config in registered.items():
+        monkeypatch.setitem(auth_mod.PROVIDER_REGISTRY, name, config)
     return profile
 
 
@@ -83,8 +83,55 @@ def test_provider_profile_alias_resolves_through_cli_provider_identity(monkeypat
     assert resolved.source == "provider-profile"
 
 
+@pytest.mark.parametrize(
+    ("auth_type", "env_vars"),
+    [("none", ()), ("api_key", ())],
+)
+def test_profile_identity_requires_auth_bridge_eligibility(
+    monkeypatch, auth_type, env_vars
+):
+    """CLI identity must not expose profiles the auth bridge cannot register."""
+    import providers as provider_registry
+
+    profile = ProviderProfile(
+        name="unit-test-unregistered-profile",
+        base_url="https://unregistered.example/v1",
+        api_mode="chat_completions",
+        auth_type=auth_type,
+        env_vars=env_vars,
+    )
+    monkeypatch.setattr(
+        provider_registry,
+        "get_provider_profile",
+        lambda name: profile if name == profile.name else None,
+    )
+
+    assert resolve_provider_full(profile.name) is None
+
+
+def test_explicit_user_provider_precedes_plugin_profile(monkeypatch):
+    """A config.yaml provider with the same ID remains the explicit override."""
+    profile = _install_unit_test_provider_profile(monkeypatch)
+
+    resolved = resolve_provider_full(
+        profile.aliases[0],
+        user_providers={
+            profile.name: {
+                "name": "Explicit Unit Provider",
+                "base_url": "https://override.example/v1",
+                "api_key_env_vars": ["OVERRIDE_API_KEY"],
+            }
+        },
+    )
+
+    assert resolved is not None
+    assert resolved.name == "Explicit Unit Provider"
+    assert resolved.base_url == "https://override.example/v1"
+    assert resolved.source == "user-config"
+
+
 def test_normalize_provider_does_not_trigger_profile_discovery(monkeypatch):
-    """Hot-path normalization should stay cheap; get_provider handles profiles."""
+    """Hot-path normalization stays cheap; the full resolver handles profiles."""
     import agent.models_dev as models_dev
     import providers as provider_registry
 
@@ -121,7 +168,7 @@ def test_switch_model_accepts_explicit_provider_profile_alias(monkeypatch):
     """Explicit /model --provider should accept ProviderProfile aliases."""
     profile = _install_unit_test_provider_profile(monkeypatch)
     monkeypatch.setattr(
-        "hermes_cli.auth.resolve_api_key_provider_credentials",
+        "hermes_cli.runtime_provider.resolve_api_key_provider_credentials",
         lambda provider: {"api_key": "profile-key", "base_url": profile.base_url, "source": "test"},
     )
     monkeypatch.setattr("hermes_cli.models.validate_requested_model", lambda *a, **k: _MOCK_VALIDATION)
@@ -139,7 +186,7 @@ def test_switch_model_accepts_explicit_provider_profile_alias(monkeypatch):
         custom_providers=[],
     )
 
-    assert result.success is True
+    assert result.success is True, result.error_message
     assert result.target_provider == profile.name
     assert result.provider_label == profile.display_name
     assert result.new_model == "unit-profile-model"

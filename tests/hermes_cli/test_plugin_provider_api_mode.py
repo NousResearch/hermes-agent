@@ -138,6 +138,27 @@ def test_explicit_api_key_route_honors_declared_api_mode(
     assert runtime["base_url"] == PLUGIN_BASE_URL
 
 
+def test_explicit_api_key_route_ignores_other_provider_persisted_mode(
+    registered_plugin_provider,
+):
+    """A stale mode for another provider must not override this profile."""
+    from hermes_cli.runtime_provider import _resolve_explicit_runtime
+
+    runtime = _resolve_explicit_runtime(
+        provider=PLUGIN_NAME,
+        requested_provider=PLUGIN_NAME,
+        model_cfg={
+            "provider": "other-provider",
+            "api_mode": "codex_responses",
+        },
+        explicit_api_key="sk-explicit-test",
+    )
+
+    assert runtime is not None
+    assert runtime["api_mode"] == "anthropic_messages"
+    assert runtime["base_url"] == PLUGIN_BASE_URL
+
+
 def test_pooled_route_honors_declared_api_mode(registered_plugin_provider):
     """Pooled-credential route (_resolve_runtime_from_pool_entry)."""
     from hermes_cli.runtime_provider import _resolve_runtime_from_pool_entry
@@ -177,6 +198,46 @@ def test_persisted_config_api_mode_still_wins(registered_plugin_provider):
     )
 
     assert runtime["api_mode"] == "chat_completions"
+
+
+def test_persisted_alias_api_mode_wins_on_all_api_key_routes(
+    registered_plugin_provider, monkeypatch
+):
+    """A registered alias belongs to the same provider family on every route."""
+    import hermes_cli.runtime_provider as runtime_mod
+
+    model_cfg = {
+        "provider": PLUGIN_ALIAS,
+        "api_mode": "chat_completions",
+    }
+    entry = SimpleNamespace(
+        runtime_base_url=PLUGIN_BASE_URL,
+        base_url=PLUGIN_BASE_URL,
+        runtime_api_key="«redacted:sk-…»",
+        access_token="«redacted:sk-…»",
+    )
+
+    pooled = runtime_mod._resolve_runtime_from_pool_entry(
+        provider=PLUGIN_NAME,
+        entry=entry,
+        requested_provider=PLUGIN_NAME,
+        model_cfg=model_cfg,
+    )
+    explicit = runtime_mod._resolve_explicit_runtime(
+        provider=PLUGIN_NAME,
+        requested_provider=PLUGIN_NAME,
+        model_cfg=model_cfg,
+        explicit_api_key="«redacted:sk-…»",
+    )
+
+    monkeypatch.setenv(PLUGIN_ENV_VAR, "«redacted:sk-…»")
+    monkeypatch.setattr(runtime_mod, "_get_model_config", lambda: model_cfg)
+    no_pool = runtime_mod.resolve_runtime_provider(requested=PLUGIN_NAME)
+
+    assert pooled["api_mode"] == "chat_completions"
+    assert explicit is not None
+    assert explicit["api_mode"] == "chat_completions"
+    assert no_pool["api_mode"] == "chat_completions"
 
 
 def test_url_detection_still_wins_over_declared_profile(

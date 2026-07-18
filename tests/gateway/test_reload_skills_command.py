@@ -79,7 +79,7 @@ def _make_runner():
     runner._fallback_model = None
     runner._show_reasoning = False
     runner._is_user_authorized = lambda _source: True
-    runner._set_session_env = lambda _context: None
+    runner._set_session_env = lambda _context, **_kwargs: None
     runner._should_send_voice_reply = lambda *_args, **_kwargs: False
     # Use the real _session_key_for_source binding so the key matches what
     # the agent-loop consumer will look up later.

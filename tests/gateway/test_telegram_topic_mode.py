@@ -140,7 +140,7 @@ def _make_runner(session_db=None):
         group_sessions_per_user=getattr(runner.config, "group_sessions_per_user", True),
         thread_sessions_per_user=getattr(runner.config, "thread_sessions_per_user", False),
     )
-    runner._set_session_env = lambda _context: None
+    runner._set_session_env = lambda _context, **_kwargs: None
     runner._should_send_voice_reply = lambda *_args, **_kwargs: False
     runner._send_voice_reply = AsyncMock()
     runner._capture_gateway_honcho_if_configured = lambda *args, **kwargs: None

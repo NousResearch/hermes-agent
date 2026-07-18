@@ -1845,6 +1845,42 @@ def transcribe_audio(file_path: str, model: Optional[str] = None) -> Dict[str, A
     }
 
 
+def transcribe_audio_local_fallback(
+    file_path: str,
+    model: Optional[str] = None,
+) -> Dict[str, Any]:
+    """Try an already-installed local STT backend without changing config.
+
+    This is intended for passive inbound-media recovery after the configured
+    provider has failed. It deliberately does not lazy-install dependencies or
+    fall through to another cloud provider.
+    """
+    error = _validate_audio_file(file_path)
+    if error:
+        return error
+
+    stt_config = _load_stt_config()
+    local_cfg = stt_config.get("local") or {}
+    local_model = model or local_cfg.get("model", DEFAULT_LOCAL_MODEL)
+
+    if _HAS_FASTER_WHISPER:
+        return _transcribe_local(
+            file_path,
+            _normalize_local_model(local_model),
+        )
+    if _has_local_command():
+        return _transcribe_local_command(
+            file_path,
+            _normalize_local_command_model(local_model),
+        )
+    return {
+        "success": False,
+        "transcript": "",
+        "error": "No installed local STT backend is available.",
+        "provider": "local",
+    }
+
+
 def _resolve_openai_audio_client_config() -> tuple[str, str]:
     """Return direct OpenAI audio config or a managed gateway fallback."""
     stt_config = _load_stt_config()

@@ -1436,6 +1436,15 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
             body = data.get("body", "")
             if data.get("isGroup"):
                 body = self._clean_bot_mention_text(body, data)
+            if (
+                msg_type == MessageType.VOICE
+                and cached_urls
+                and str(body).strip().lower() == "[ptt received]"
+            ):
+                # The bridge synthesizes this placeholder for captionless voice
+                # notes. The cached audio is the real payload; retaining the
+                # placeholder makes the agent answer it as if it were user text.
+                body = ""
 
             # If this is a reply, keep the quoted message in structured fields
             # only. GatewayRunner._prepare_inbound_message_text owns rendering

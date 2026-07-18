@@ -344,6 +344,35 @@ class TestBridgeEventMetadata:
         assert event.raw_message["quotedRemoteJid"] == "15551234567@s.whatsapp.net"
         assert event.raw_message["hasQuotedMessage"] is True
 
+    @pytest.mark.asyncio
+    async def test_captionless_voice_note_drops_bridge_placeholder(self, tmp_path, monkeypatch):
+        adapter = _make_adapter()
+        voice_path = tmp_path / "aud_voice.ogg"
+        voice_path.write_bytes(b"fake audio")
+        monkeypatch.setattr(
+            "plugins.platforms.whatsapp.adapter._is_allowed_bridge_path",
+            lambda path: path == str(voice_path),
+        )
+        data = {
+            "messageId": "voice-msg",
+            "chatId": "15551234567@s.whatsapp.net",
+            "senderId": "15551234567@s.whatsapp.net",
+            "senderName": "Tester",
+            "chatName": "Tester",
+            "isGroup": False,
+            "body": "[ptt received]",
+            "hasMedia": True,
+            "mediaType": "ptt",
+            "mime": "audio/ogg",
+            "mediaUrls": [str(voice_path)],
+        }
+
+        event = await adapter._build_message_event(data)
+
+        assert event is not None
+        assert event.text == ""
+        assert event.media_urls == [str(voice_path)]
+
 
 # ---------------------------------------------------------------------------
 # display_config tier classification

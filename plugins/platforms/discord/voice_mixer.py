@@ -145,13 +145,26 @@ class MixerChild:
         return samples
 
 
-class VoiceMixer:
+try:
+    from discord import AudioSource as _AudioSource
+except Exception:  # discord.py not installed (type-check / non-Discord envs)
+    class _AudioSource:  # type: ignore[no-redef]
+        """Minimal stand-in for discord.AudioSource when discord.py is not installed.
+
+        Allows VoiceMixer to subclass _AudioSource in environments where
+        discord.py is absent (type-checking, non-Discord test envs) without
+        raising ImportError at import time.
+        """
+        pass
+
+
+class VoiceMixer(_AudioSource):
     """A continuous ``discord.AudioSource`` that mixes N child streams.
 
     Use :meth:`set_ambient` to install/replace the looping idle bed and
     :meth:`play_speech` to layer a one-shot clip over it (ducking the ambient
-    while it plays).  Both are safe to call from the asyncio loop thread while
-    discord.py drains :meth:`read` from its sender thread.
+    while it plays).  Both are safe to call from the asyncio event loop thread
+    while discord.py drains :meth:`read` from its sender thread.
     """
 
     # discord.AudioSource subclasses set is_opus()==False to receive PCM.

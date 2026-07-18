@@ -118,7 +118,12 @@ def _build_padded_rtp_packet(
 
 def _make_voice_receiver(secret_key, dave_session=None, bot_ssrc=9999,
                          allowed_user_ids=None, members=None):
-    """Create a VoiceReceiver with real secret key."""
+    """Create a VoiceReceiver with real secret key.
+
+    VAD energy threshold is set to 0 so that silence/test packets are
+    always buffered — these tests exercise the crypto/codec/buffer
+    pipeline, not VAD classification.
+    """
     vc = MagicMock()
     vc._connection.secret_key = list(secret_key)
     vc._connection.dave_session = dave_session
@@ -129,7 +134,8 @@ def _make_voice_receiver(secret_key, dave_session=None, bot_ssrc=9999,
     vc.user = SimpleNamespace(id=bot_ssrc)
     vc.channel = MagicMock()
     vc.channel.members = members or []
-    receiver = VoiceReceiver(vc, allowed_user_ids=allowed_user_ids)
+    receiver = VoiceReceiver(vc, allowed_user_ids=allowed_user_ids,
+                             vad_energy_threshold=0)
     receiver.start()
     return receiver
 
@@ -209,7 +215,12 @@ class TestRealNaClWithDAVE:
     """NaCl decrypt + DAVE passthrough scenarios with real crypto."""
 
     def test_dave_unknown_ssrc_passthrough(self):
-        """DAVE enabled but SSRC unknown → skip DAVE, buffer audio."""
+        """DAVE enabled but SSRC unknown → packet discarded (not buffered).
+
+        When DAVE is enabled and the SSRC has no user mapping, the receiver
+        discards the packet to avoid buffering DAVE-encrypted garbage that
+        would corrupt the first utterance. The packet is NOT buffered.
+        """
         key = _make_secret_key()
         dave = MagicMock()  # DAVE session present but SSRC not mapped
         receiver = _make_voice_receiver(key, dave_session=dave)
@@ -219,9 +230,8 @@ class TestRealNaClWithDAVE:
 
         # DAVE decrypt not called (SSRC unknown)
         dave.decrypt.assert_not_called()
-        # Audio still buffered via passthrough
-        assert 100 in receiver._buffers
-        assert len(receiver._buffers[100]) > 0
+        # Packet discarded — not buffered
+        assert 100 not in receiver._buffers
 
     def test_dave_unencrypted_error_passthrough(self):
         """DAVE raises 'Unencrypted' → use NaCl-decrypted data as-is."""
@@ -289,18 +299,23 @@ class TestRTPPaddingStrip:
         assert bytes(recv_plain._buffers[100]) == bytes(recv_padded._buffers[100])
 
     def test_padding_with_dave_passthrough(self):
-        """Padding stripped before DAVE → passthrough buffers cleanly."""
+        """Padding stripped before DAVE → SSRC unmapped → packet discarded.
+
+        When DAVE is enabled and SSRC is unmapped, the packet is discarded
+        after padding stripping (DAVE unknown-SSRC guard). Verifies padding
+        is stripped before the DAVE check, not that audio is buffered.
+        """
         key = _make_secret_key()
         opus_silence = b"\xf8\xff\xfe"
-        dave = MagicMock()  # SSRC unmapped → DAVE skipped, passthrough used
+        dave = MagicMock()  # SSRC unmapped → DAVE skipped, packet discarded
         receiver = _make_voice_receiver(key, dave_session=dave)
 
         packet = _build_padded_rtp_packet(key, opus_silence, pad_len=4, ssrc=100)
         receiver._on_packet(packet)
 
         dave.decrypt.assert_not_called()
-        assert 100 in receiver._buffers
-        assert len(receiver._buffers[100]) > 0
+        # Packet discarded (DAVE + unknown SSRC) — not buffered
+        assert 100 not in receiver._buffers
 
     def test_invalid_padding_length_zero_dropped(self):
         """Declared pad_len=0 is invalid (RFC requires count includes itself)."""
@@ -382,6 +397,7 @@ class TestFullVoiceFlow:
 
         # Simulate silence by setting last_packet_time in the past
         receiver._last_packet_time[100] = time.monotonic() - 3.0
+        receiver._last_speech_time[100] = time.monotonic() - 3.0
 
         completed = receiver.check_silence()
         assert len(completed) == 1
@@ -408,6 +424,8 @@ class TestFullVoiceFlow:
             receiver._on_packet(packet)
 
         receiver._last_packet_time[100] = time.monotonic() - 3.0
+
+        receiver._last_speech_time[100] = time.monotonic() - 3.0
 
         completed = receiver.check_silence()
         assert len(completed) == 1
@@ -509,6 +527,8 @@ class TestSPEAKINGHook:
             receiver._on_packet(packet)
 
         receiver._last_packet_time[100] = time.monotonic() - 3.0
+
+        receiver._last_speech_time[100] = time.monotonic() - 3.0
         completed = receiver.check_silence()
         assert len(completed) == 1
         assert completed[0][0] == 42
@@ -536,6 +556,8 @@ class TestAuthFiltering:
             receiver._on_packet(packet)
 
         receiver._last_packet_time[100] = time.monotonic() - 3.0
+
+        receiver._last_speech_time[100] = time.monotonic() - 3.0
         completed = receiver.check_silence()
         assert len(completed) == 1
         assert completed[0][0] == 42
@@ -560,6 +582,8 @@ class TestAuthFiltering:
             receiver._on_packet(packet)
 
         receiver._last_packet_time[100] = time.monotonic() - 3.0
+
+        receiver._last_speech_time[100] = time.monotonic() - 3.0
         completed = receiver.check_silence()
         assert len(completed) == 0
 
@@ -581,6 +605,8 @@ class TestAuthFiltering:
             receiver._on_packet(packet)
 
         receiver._last_packet_time[100] = time.monotonic() - 3.0
+
+        receiver._last_speech_time[100] = time.monotonic() - 3.0
         completed = receiver.check_silence()
         # Auto-mapped to sole non-bot member
         assert len(completed) == 1
@@ -628,6 +654,8 @@ class TestRejoinFlow:
             receiver2._on_packet(packet)
 
         receiver2._last_packet_time[200] = time.monotonic() - 3.0
+
+        receiver2._last_speech_time[200] = time.monotonic() - 3.0
         completed = receiver2.check_silence()
         assert len(completed) == 1
         assert completed[0][0] == 42
@@ -660,6 +688,8 @@ class TestRejoinFlow:
             receiver2._on_packet(packet)
 
         receiver2._last_packet_time[300] = time.monotonic() - 3.0
+
+        receiver2._last_speech_time[300] = time.monotonic() - 3.0
         completed = receiver2.check_silence()
         assert len(completed) == 1
         assert completed[0][0] == 42
@@ -756,6 +786,7 @@ class TestEchoPreventionFlow:
 
         assert len(receiver._buffers[100]) > 0
         receiver._last_packet_time[100] = time.monotonic() - 3.0
+        receiver._last_speech_time[100] = time.monotonic() - 3.0
         completed = receiver.check_silence()
         assert len(completed) == 1
         assert completed[0][0] == 42

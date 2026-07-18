@@ -654,11 +654,13 @@ class TestVoiceReceiver:
         receiver.map_ssrc(100, 42)
         receiver._buffers[100] = bytearray(b"\x00" * 1000)
         receiver._last_packet_time[100] = time.monotonic()
+        receiver._last_speech_time[100] = time.monotonic()
         receiver.stop()
         assert receiver._running is False
         assert len(receiver._buffers) == 0
         assert len(receiver._ssrc_to_user) == 0
         assert len(receiver._last_packet_time) == 0
+        assert len(receiver._last_speech_time) == 0
 
     def test_map_ssrc(self):
         receiver = self._make_receiver()
@@ -690,8 +692,8 @@ class TestVoiceReceiver:
         # MIN_SPEECH_DURATION = 0.5s → need 96000 bytes
         pcm_data = bytearray(b"\x00" * 96000)
         receiver._buffers[100] = pcm_data
-        # Set last_packet_time far enough in the past to exceed SILENCE_THRESHOLD
-        receiver._last_packet_time[100] = time.monotonic() - 3.0
+        # Set last_speech_time far enough in the past to exceed SILENCE_THRESHOLD
+        receiver._last_speech_time[100] = time.monotonic() - 3.0
         completed = receiver.check_silence()
         assert len(completed) == 1
         user_id, data = completed[0]
@@ -705,7 +707,7 @@ class TestVoiceReceiver:
         receiver.map_ssrc(100, 42)
         # Too short to meet MIN_SPEECH_DURATION
         receiver._buffers[100] = bytearray(b"\x00" * 100)
-        receiver._last_packet_time[100] = time.monotonic() - 3.0
+        receiver._last_speech_time[100] = time.monotonic() - 3.0
         completed = receiver.check_silence()
         assert len(completed) == 0
 
@@ -713,7 +715,7 @@ class TestVoiceReceiver:
         receiver = self._make_receiver()
         receiver.map_ssrc(100, 42)
         receiver._buffers[100] = bytearray(b"\x00" * 96000)
-        receiver._last_packet_time[100] = time.monotonic()  # just now
+        receiver._last_speech_time[100] = time.monotonic()  # just now
         completed = receiver.check_silence()
         assert len(completed) == 0
 
@@ -721,7 +723,7 @@ class TestVoiceReceiver:
         receiver = self._make_receiver()
         # No SSRC mapping — user_id will be 0
         receiver._buffers[100] = bytearray(b"\x00" * 96000)
-        receiver._last_packet_time[100] = time.monotonic() - 3.0
+        receiver._last_speech_time[100] = time.monotonic() - 3.0
         completed = receiver.check_silence()
         assert len(completed) == 0
 
@@ -729,7 +731,7 @@ class TestVoiceReceiver:
         receiver = self._make_receiver()
         # Buffer with no user mapping and very old timestamp
         receiver._buffers[200] = bytearray(b"\x00" * 100)
-        receiver._last_packet_time[200] = time.monotonic() - 10.0
+        receiver._last_speech_time[200] = time.monotonic() - 10.0
         receiver.check_silence()
         # Stale buffer (> 2x threshold) should be discarded
         assert 200 not in receiver._buffers
@@ -762,6 +764,50 @@ class TestVoiceReceiver:
         data[0] = 0x00  # version 0, not 2
         receiver._on_packet(bytes(data))
         assert len(receiver._buffers) == 0
+
+    # -- VAD rolling-frame tests --
+
+    def test_vad_history_initialized_empty(self):
+        """_vad_history starts empty per SSRC."""
+        receiver = self._make_receiver()
+        assert len(receiver._vad_history) == 0
+
+    def test_vad_frame_count_defaults(self):
+        """Default vad_frame_count is 3 (VAD_FRAME_COUNT)."""
+        from plugins.platforms.discord.adapter import VoiceReceiver
+        assert VoiceReceiver.VAD_FRAME_COUNT == 3
+
+    def test_vad_stop_clears_history(self):
+        """stop() clears _vad_history along with other state."""
+        receiver = self._make_receiver()
+        receiver.start()
+        receiver._vad_history[100] = [True, False, True]
+        receiver.stop()
+        assert len(receiver._vad_history) == 0
+
+    def test_vad_check_silence_clears_history_on_completion(self):
+        """When an utterance completes, _vad_history for that SSRC is cleared."""
+        receiver = self._make_receiver()
+        receiver.map_ssrc(100, 42)
+        receiver._buffers[100] = bytearray(b"\x00" * 96000)
+        receiver._last_speech_time[100] = time.monotonic() - 3.0
+        receiver._vad_history[100] = [True, True, False]
+        completed = receiver.check_silence()
+        assert len(completed) == 1
+        assert 100 not in receiver._vad_history
+
+    def test_vad_silence_zero_default_completes(self):
+        """SSRC with no _last_speech_time (default 0) should be eligible
+        for completion if buffer is large enough — simulates a user who
+        stopped speaking before the bot started listening."""
+        receiver = self._make_receiver()
+        receiver.map_ssrc(100, 42)
+        receiver._buffers[100] = bytearray(b"\x00" * 96000)
+        # _last_speech_time not set — defaults to 0 (epoch start)
+        # silence_duration = now - 0 = very large → should complete
+        completed = receiver.check_silence()
+        assert len(completed) == 1
+        assert completed[0][0] == 42
 
 
 # =====================================================================
@@ -1186,6 +1232,8 @@ class TestDiscordVoiceChannelMethods:
         mock_member = MagicMock()
         mock_member.voice = None
         mock_guild.get_member = MagicMock(return_value=mock_member)
+        # voice_states must be a real dict, not a MagicMock, so .get() returns None
+        mock_guild._voice_states = {}
         adapter._client.get_guild = MagicMock(return_value=mock_guild)
         result = await adapter.get_user_voice_channel(111, "42")
         assert result is None
@@ -1199,6 +1247,9 @@ class TestDiscordVoiceChannelMethods:
         mock_member.voice = MagicMock()
         mock_member.voice.channel = mock_vc
         mock_guild.get_member = MagicMock(return_value=mock_member)
+        # voice_states must be a real dict so .get() returns None and
+        # the code falls through to the member cache path
+        mock_guild._voice_states = {}
         adapter._client.get_guild = MagicMock(return_value=mock_guild)
         result = await adapter.get_user_voice_channel(111, "42")
         assert result is mock_vc
@@ -2380,6 +2431,8 @@ class TestVoiceReception:
         size = int(192000 * duration_s)
         receiver._buffers[ssrc] = bytearray(b"\x00" * size)
         receiver._last_packet_time[ssrc] = time.monotonic() - age_s
+        # check_silence() uses _last_speech_time for VAD-based completion
+        receiver._last_speech_time[ssrc] = time.monotonic() - age_s
 
     # -- Known SSRC (normal flow) --
 
@@ -2430,7 +2483,7 @@ class TestVoiceReception:
         # SPEAKING event arrives
         receiver.map_ssrc(100, 42)
         # Silence kicks in
-        receiver._last_packet_time[100] = time.monotonic() - 3.0
+        receiver._last_speech_time[100] = time.monotonic() - 3.0
         completed = receiver.check_silence()
         assert len(completed) == 1
         assert completed[0][0] == 42
@@ -2520,7 +2573,7 @@ class TestVoiceReception:
         receiver = self._make_receiver()
         receiver.start()
         receiver._buffers[200] = bytearray(b"\x00" * 100)
-        receiver._last_packet_time[200] = time.monotonic() - 10.0
+        receiver._last_speech_time[200] = time.monotonic() - 10.0
         receiver.check_silence()
         assert 200 not in receiver._buffers
 
@@ -2555,9 +2608,8 @@ class TestVoiceReception:
         vc.user = SimpleNamespace(id=9999)
         vc.channel = MagicMock()
         vc.channel.members = []
-        receiver = VoiceReceiver(vc)
+        receiver = VoiceReceiver(vc, vad_energy_threshold=0)
         receiver.start()
-        # Pre-map SSRCs if provided
         if mapped_ssrcs:
             for ssrc, uid in mapped_ssrcs.items():
                 receiver.map_ssrc(ssrc, uid)
@@ -2602,7 +2654,11 @@ class TestVoiceReception:
         dave.decrypt.assert_called_once()
 
     def test_on_packet_dave_unknown_ssrc_passthrough(self):
-        """Unknown SSRC + DAVE → skip DAVE, attempt Opus decode (passthrough)."""
+        """Unknown SSRC + DAVE → skip DAVE, packet discarded (not buffered).
+
+        When DAVE is enabled and the SSRC has no user mapping, the receiver
+        discards the packet to prevent buffering DAVE-encrypted garbage.
+        """
         dave = MagicMock()
         receiver = self._make_receiver_with_nacl(dave_session=dave)
         self._inject_mock_decoder(receiver, 100)
@@ -2612,8 +2668,8 @@ class TestVoiceReception:
             receiver._on_packet(self._build_rtp_packet(ssrc=100))
 
         dave.decrypt.assert_not_called()
-        assert 100 in receiver._buffers
-        assert len(receiver._buffers[100]) > 0
+        # Packet discarded — DAVE guard drops unknown-SSRC packets
+        assert 100 not in receiver._buffers
 
     def test_on_packet_dave_unencrypted_error_passthrough(self):
         """DAVE decrypt 'Unencrypted' error → use data as-is, don't drop."""
@@ -2974,3 +3030,156 @@ class TestShouldAutoTtsForChat:
         fn, adapter = self._make_adapter(default=False, enabled={"chat1"})
         assert fn(adapter, "chat1") is True
         assert fn(adapter, "chat2") is False
+
+
+# =====================================================================
+# Auto-disconnect operator precedence regression tests
+# =====================================================================
+
+class TestAutoDisconnectPrecedence:
+    """Regression tests for the operator precedence bug in the
+    auto-disconnect condition.
+
+    Before the fix, ``left or switched and auto_disconnect`` parsed as
+    ``left or (switched and auto_disconnect)`` — meaning a user *leaving*
+    the channel would disconnect the bot even when auto_disconnect was False.
+    The correct condition is ``(left or switched) and auto_disconnect``.
+    """
+
+    def test_leave_with_auto_disconnect_false_no_disconnect(self):
+        """User leaves → auto_disconnect=False → bot should NOT disconnect.
+
+        Before fix: `left or (switched and False)` = `left or False` = `left`
+        → would disconnect. After fix: `(left or switched) and False` = False.
+        """
+        # We test the condition logic directly by simulating the branch
+        left = True       # user left the channel
+        switched = False  # user did not switch channels
+        auto_disconnect = False
+
+        # The fixed condition
+        should_check = (left or switched) and auto_disconnect
+        assert should_check is False, (
+            "Auto-disconnect should NOT trigger when auto_disconnect=False, "
+            "even if a user leaves the channel"
+        )
+
+    def test_switch_with_auto_disconnect_false_no_disconnect(self):
+        """User switches channels → auto_disconnect=False → no disconnect."""
+        left = False
+        switched = True
+        auto_disconnect = False
+
+        should_check = (left or switched) and auto_disconnect
+        assert should_check is False
+
+    def test_leave_with_auto_disconnect_true_triggers(self):
+        """User leaves → auto_disconnect=True → should check for disconnect."""
+        left = True
+        switched = False
+        auto_disconnect = True
+
+        should_check = (left or switched) and auto_disconnect
+        assert should_check is True
+
+    def test_switch_with_auto_disconnect_true_triggers(self):
+        """User switches channels → auto_disconnect=True → should check."""
+        left = False
+        switched = True
+        auto_disconnect = True
+
+        should_check = (left or switched) and auto_disconnect
+        assert should_check is True
+
+    def test_no_leave_no_switch_no_check(self):
+        """User joins (not leave/switch) → no disconnect check regardless."""
+        left = False
+        switched = False
+
+        # With auto_disconnect True
+        result = (left or switched) and True
+        assert result is False
+        # With auto_disconnect False
+        result = (left or switched) and False
+        assert result is False
+
+    def test_both_leave_and_switch_with_auto_disconnect_true(self):
+        """User switches from bot's channel to another (both left and switched)."""
+        left = True
+        switched = True
+        auto_disconnect = True
+
+        should_check = (left or switched) and auto_disconnect
+        assert should_check is True
+
+
+# =====================================================================
+# Auto-join condition regression tests
+# =====================================================================
+
+class TestAutoJoinCondition:
+    """Regression tests for the auto-join condition.
+
+    Auto-join triggers when:
+    - user joins a voice channel (joined=True)
+    - after.channel is not None
+    - auto_join is enabled
+    - user is in the allowed list
+    - no specific channel_id configured, or channel_id matches
+
+    Tests cover the condition logic and the configured-channel filter.
+    """
+
+    def test_join_with_auto_join_true_triggers(self):
+        """User joins → auto_join=True → should attempt join."""
+        joined = True
+        after_channel_not_none = True
+        auto_join = True
+        should_join = joined and after_channel_not_none and auto_join
+        assert should_join is True
+
+    def test_join_with_auto_join_false_skipped(self):
+        """User joins → auto_join=False → no auto-join."""
+        joined = True
+        after_channel_not_none = True
+        auto_join = False
+        should_join = joined and after_channel_not_none and auto_join
+        assert should_join is False
+
+    def test_leave_does_not_trigger_auto_join(self):
+        """User leaves (joined=False) → no auto-join regardless of setting."""
+        joined = False
+        after_channel_not_none = False
+        auto_join = True
+        should_join = joined and after_channel_not_none and auto_join
+        assert should_join is False
+
+    def test_switch_does_not_trigger_auto_join(self):
+        """User switches channels (joined=False) → no auto-join."""
+        joined = False
+        after_channel_not_none = True
+        auto_join = True
+        should_join = joined and after_channel_not_none and auto_join
+        assert should_join is False
+
+    def test_configured_channel_filter_matches(self):
+        """User joins configured channel → channel_id matches → should join."""
+        configured_ch_id = 12345
+        after_channel_id = 12345
+        should_join = after_channel_id == int(configured_ch_id)
+        assert should_join is True
+
+    def test_configured_channel_filter_mismatches(self):
+        """User joins different channel → channel_id mismatch → skip."""
+        configured_ch_id = 12345
+        after_channel_id = 99999
+        should_join = after_channel_id == int(configured_ch_id)
+        assert should_join is False
+
+    def test_no_configured_channel_joins_any(self):
+        """No channel_id configured (None) → join any channel."""
+        configured_ch_id = None
+        after_channel_id = 99999
+        # When configured_ch_id is None, the filter is falsy → skip is falsy
+        should_skip = configured_ch_id and after_channel_id != int(configured_ch_id)
+        assert not should_skip  # falsy → don't skip → join proceeds

@@ -87,7 +87,7 @@ describe('DialogContent close button', () => {
     )
 
     const closeButton = screen.getByRole('button', { name: /close/i })
-    fireEvent.focus(closeButton)
+    closeButton.focus()
 
     await waitFor(
       () => {

@@ -317,6 +317,11 @@ _PROVIDER_MODELS: dict[str, list[str]] = {
         "moonshotai/kimi-k2.6",
         "minimaxai/minimax-m3",
     ],
+    "cerebras": [
+        "gpt-oss-120b",
+        "zai-glm-4.7",
+        "gemma-4-31b",
+    ],
     "kimi-coding": [
         "kimi-k2.7-code",
         "kimi-k2.6",

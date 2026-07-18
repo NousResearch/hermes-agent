@@ -137,9 +137,33 @@ def _sealed_identity(prefix: tuple[str, ...]) -> dict:
         "owner_support_tree_bytes": 50,
         "owner_support_tree_sha256": "5" * 64,
         "owner_support_manifest_sha256": "6" * 64,
+        "owner_support_source_tree_oid": "b" * 40,
         "bootstrap_receipt_file_sha256": "7" * 64,
     }
     return {**unsigned, "identity_sha256": foundation.sha256_json(unsigned)}
+
+
+@pytest.mark.parametrize("source_tree_oid", ("a" * 39, "A" * 40, "g" * 40))
+def test_sealed_identity_rejects_invalid_source_tree_oid(
+    tmp_path: Path,
+    source_tree_oid: str,
+) -> None:
+    executable, _configuration = _runtime(tmp_path)
+    identity = _sealed_identity(executable.prefix)
+    identity["owner_support_source_tree_oid"] = source_tree_oid
+    unsigned = dict(identity)
+    unsigned.pop("identity_sha256")
+    identity["identity_sha256"] = foundation.sha256_json(unsigned)
+
+    with pytest.raises(
+        reauth.OwnerGateOwnerReauthError,
+        match="owner_gate_owner_reauth_runtime_invalid",
+    ):
+        reauth._validate_sealed_runtime_identity(
+            identity,
+            expected_release_revision=REVISION,
+            prefix=executable.prefix,
+        )
 
 
 def _receipt(tmp_path: Path) -> tuple[dict, _Runner]:

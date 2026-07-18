@@ -98,6 +98,7 @@ _SEALED_RUNTIME_FIELDS = frozenset({
     "owner_support_tree_bytes",
     "owner_support_tree_sha256",
     "owner_support_manifest_sha256",
+    "owner_support_source_tree_oid",
     "bootstrap_receipt_file_sha256",
     "identity_sha256",
 })
@@ -475,6 +476,11 @@ def _validate_sealed_runtime_identity(
         != _sha256_json(list(prefix))
         or any(type(identity.get(field)) is not int or identity[field] <= 0 for field in count_fields)
         or any(_SHA256.fullmatch(str(identity.get(field, ""))) is None for field in sha_fields)
+        or re.fullmatch(
+            r"[0-9a-f]{40}",
+            str(identity.get("owner_support_source_tree_oid", "")),
+        )
+        is None
         or not isinstance(identity.get("python_version"), str)
         or not identity["python_version"]
         or digest != _sha256_json(unsigned)

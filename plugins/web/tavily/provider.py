@@ -19,6 +19,7 @@ Env vars::
 
     TAVILY_API_KEY=...           # https://app.tavily.com/home (required)
     TAVILY_BASE_URL=...          # optional override of https://api.tavily.com
+    WEB_SEARCH_PROXY=...         # optional proxy URL for HTTP requests
 """
 
 from __future__ import annotations
@@ -54,7 +55,8 @@ def _tavily_request(endpoint: str, payload: Dict[str, Any]) -> Dict[str, Any]:
     url = f"{base_url}/{endpoint.lstrip('/')}"
     logger.info("Tavily %s request to %s", endpoint, url)
 
-    response = httpx.post(url, json=payload, timeout=60)
+    proxy = os.getenv("WEB_SEARCH_PROXY")
+    response = httpx.post(url, json=payload, timeout=60, proxy=proxy)
     response.raise_for_status()
     return response.json()
 

@@ -48,8 +48,33 @@ class TestKnownPrefixes:
         assert "xapp-1" in result
 
     def test_google_api_key(self):
-        result = redact_sensitive_text("AIzaSyB-abc123def456ghi789jklmno012345")
+        result = redact_sensitive_text("«redacted:AIza…»")
         assert "abc123def456" not in result
+
+    def test_google_gemini_aq_bare_key(self):
+        # Bare Gemini authorization key with newer AQ. prefix must be redacted (issue #66920).
+        key = "AQ." + "B" * 48
+        assert redact_sensitive_text(key, force=True) != key
+        assert "AQ." + "B" * 48 not in redact_sensitive_text(key, force=True)
+
+    def test_google_gemini_aq_labeled_key(self):
+        # Labeled form GEMINI_API_KEY=AQ.... must still redact (covered by env detector too).
+        key = "AQ." + "B" * 48
+        assigned = "GEMINI_API_KEY=" + key
+        result = redact_sensitive_text(assigned, force=True)
+        assert "GEMINI_API_KEY=" + key != result
+
+    def test_google_gemini_aq_short_unprefixed(self):
+        # Short AQ.-like substrings (40+ requirement) should NOT redact, avoiding false positives.
+        from agent.redact import redact_sensitive_text as _r
+        short = "AQ." + "B" * 10
+        assert _r(short, force=True) == short
+
+    def test_google_gemini_aq_in_prose_unchanged(self):
+        # Prose like "AQ. variable" should not be touched — bare word "AQ." is not a key.
+        from agent.redact import redact_sensitive_text as _r
+        prose = "AQ. is a placeholder variable."
+        assert _r(prose, force=True) == prose
 
     def test_perplexity_key(self):
         result = redact_sensitive_text("pplx-abcdef123456789012345")

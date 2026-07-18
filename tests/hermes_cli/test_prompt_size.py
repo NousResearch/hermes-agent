@@ -2,6 +2,7 @@
 
 import json
 import sys
+from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
@@ -9,6 +10,7 @@ import pytest
 from hermes_cli.prompt_size import (
     _SKILLS_BLOCK_RE,
     _build_inspection_agent,
+    _compute_skills_breakdown,
     compute_prompt_breakdown,
     render_breakdown,
 )
@@ -153,6 +155,94 @@ def test_skills_block_regex_matches_tagged_block():
     assert m is not None
     assert m.group(0).startswith("<available_skills>")
     assert m.group(0).endswith("</available_skills>")
+
+
+def test_toolsets_breakdown_reconciles_and_sorted(isolated_home):
+    """Per-toolset schema bytes attribute every tool exactly once.
+
+    Each resolved tool belongs to one registry toolset, so the grand total of
+    per-toolset json bytes equals the whole-array total minus JSON framing
+    (``2 * count`` bytes: brackets + ``", "`` separators between items).
+    """
+    data = compute_prompt_breakdown("cli")
+    toolsets = data["toolsets_breakdown"]
+    assert toolsets  # CLI always resolves at least terminal + file
+    for ts in toolsets:
+        assert set(ts) >= {"toolset", "tool_count", "json_bytes"}
+        assert ts["tool_count"] >= 1
+        assert ts["json_bytes"] > 0
+    # Sorted largest-first.
+    byte_sizes = [ts["json_bytes"] for ts in toolsets]
+    assert byte_sizes == sorted(byte_sizes, reverse=True)
+    # Every tool attributed to exactly one toolset.
+    assert sum(ts["tool_count"] for ts in toolsets) == data["tools"]["count"]
+    # Bytes reconcile to the existing whole-array total.
+    grand = sum(ts["json_bytes"] for ts in toolsets)
+    assert grand == data["tools"]["json_bytes"] - 2 * data["tools"]["count"]
+
+
+def test_skills_breakdown_shape_sorted_and_attributed(isolated_home):
+    """Per-skill breakdown reports index-line + on-disk SKILL.md bytes.
+
+    Seeded before the first build (skills prompt is cached per-process).
+    """
+    _seed_skill(isolated_home, "small-skill", "short desc")
+    _seed_skill(isolated_home, "big-skill", "a much longer description " * 20)
+    data = compute_prompt_breakdown("cli")
+    skills = data["skills_breakdown"]
+    names = {s["name"] for s in skills}
+    assert {"small-skill", "big-skill"} <= names
+    for s in skills:
+        assert set(s) >= {"name", "index_line_bytes", "skill_md_bytes", "path"}
+        assert s["index_line_bytes"] > 0
+    # Sorted largest-first by on-disk SKILL.md size.
+    md_sizes = [s["skill_md_bytes"] or 0 for s in skills]
+    assert md_sizes == sorted(md_sizes, reverse=True)
+    # On-disk bytes match the real file; big-skill's SKILL.md is the larger.
+    by_name = {s["name"]: s for s in skills}
+    big = by_name["big-skill"]
+    assert big["path"] and Path(big["path"]).stat().st_size == big["skill_md_bytes"]
+    assert big["skill_md_bytes"] > by_name["small-skill"]["skill_md_bytes"]
+    # Per-skill index lines are a subset of the whole <available_skills> block,
+    # so they never exceed it (on-disk SKILL.md bytes are separate and don't).
+    assert sum(s["index_line_bytes"] for s in skills) <= data["skills_index"]["bytes"]
+
+
+def test_skills_breakdown_unmapped_name_is_none():
+    """A skill line with no matching SKILL.md on disk reports None, not a crash."""
+    block = (
+        "<available_skills>\n"
+        "  demo:\n"
+        "    - phantom-skill: not on disk\n"
+        "</available_skills>\n"
+    )
+    entries = _compute_skills_breakdown(block)
+    assert len(entries) == 1
+    assert entries[0]["name"] == "phantom-skill"
+    assert entries[0]["skill_md_bytes"] is None
+    assert entries[0]["path"] == ""
+    assert entries[0]["index_line_bytes"] > 0
+
+
+def test_skills_breakdown_parses_namespaced_names():
+    """Namespaced names (``ns:skill``) survive the ``name: desc`` split."""
+    block = (
+        "<available_skills>\n"
+        "  plugins:\n"
+        "    - codex:rescue: rescue helper\n"
+        "</available_skills>\n"
+    )
+    entries = _compute_skills_breakdown(block)
+    assert [e["name"] for e in entries] == ["codex:rescue"]
+
+
+def test_render_includes_per_component_tables(isolated_home):
+    """The rendered report gains the two new sorted tables (additive)."""
+    _seed_skill(isolated_home, "demo-skill", "a demo skill")
+    data = compute_prompt_breakdown("cli")
+    out = render_breakdown(data)
+    assert "Toolsets by size" in out
+    assert "Skills by size" in out
 
 
 def test_render_breakdown_is_plain_text(isolated_home):

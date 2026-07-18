@@ -9671,6 +9671,543 @@ def _preserve_local_update_commits(git_cmd, repo_root) -> bool:
     return result.returncode == 0 and result.stdout.strip().lower() == "true"
 
 
+def _git_update_commit_sha(
+    git_cmd: list[str], repo_root: Path, ref: str
+) -> Optional[str]:
+    """Resolve *ref* to a commit without raising out of the update flow."""
+    result = subprocess.run(
+        git_cmd + ["rev-parse", "--verify", f"{ref}^{{commit}}"],
+        cwd=repo_root,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    if result.returncode != 0:
+        return None
+    sha = result.stdout.strip()
+    return sha or None
+
+
+def _git_update_merge_base(
+    git_cmd: list[str], repo_root: Path, left: str, right: str
+) -> Optional[str]:
+    result = subprocess.run(
+        git_cmd + ["merge-base", left, right],
+        cwd=repo_root,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    if result.returncode != 0:
+        return None
+    merge_base = result.stdout.strip()
+    return merge_base or None
+
+
+def _first_git_error(result: subprocess.CompletedProcess) -> str:
+    text = (result.stderr or result.stdout or "").strip()
+    return text.splitlines()[0] if text else f"git exited {result.returncode}"
+
+
+def _ensure_update_merge_base(
+    git_cmd: list[str],
+    repo_root: Path,
+    branch: str,
+    original_head: str,
+    target_sha: str,
+) -> dict:
+    """Return a stable merge base, deepening an official shallow clone.
+
+    The remote target is pinned by the caller.  Every history fetch verifies
+    that ``origin/<branch>`` still resolves to that exact commit; a moving
+    boundary is an abort condition, never a reason to rebase a different
+    target than the one whose update was counted.
+    """
+    outcome = {"merge_base": None, "error": None, "fetch_steps": []}
+    merge_base = _git_update_merge_base(
+        git_cmd, repo_root, original_head, target_sha
+    )
+    if merge_base:
+        outcome["merge_base"] = merge_base
+        return outcome
+
+    shallow = subprocess.run(
+        git_cmd + ["rev-parse", "--is-shallow-repository"],
+        cwd=repo_root,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    if shallow.returncode != 0:
+        outcome["error"] = f"Could not inspect repository depth: {_first_git_error(shallow)}"
+        return outcome
+    if shallow.stdout.strip().lower() != "true":
+        outcome["error"] = (
+            "No merge base exists between the local checkout and the pinned "
+            "upstream target; histories are unrelated. No reset or rebase was attempted."
+        )
+        return outcome
+
+    fetch_steps: list[tuple[str, list[str]]] = [
+        ("--deepen=32", ["fetch", "--deepen=32", "origin", branch]),
+        ("--deepen=128", ["fetch", "--deepen=128", "origin", branch]),
+        ("--deepen=512", ["fetch", "--deepen=512", "origin", branch]),
+        ("--deepen=2048", ["fetch", "--deepen=2048", "origin", branch]),
+    ]
+
+    for label, args in fetch_steps:
+        fetch = subprocess.run(
+            git_cmd + args,
+            cwd=repo_root,
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        outcome["fetch_steps"].append(label)
+        if fetch.returncode != 0:
+            outcome["error"] = f"History repair failed at {label}: {_first_git_error(fetch)}"
+            return outcome
+        current_target = _git_update_commit_sha(
+            git_cmd, repo_root, f"origin/{branch}"
+        )
+        if current_target != target_sha:
+            outcome["error"] = (
+                f"UpdaterBoundaryChanged: origin/{branch} moved while history "
+                "was being repaired. Retry the update against a fresh pinned target."
+            )
+            return outcome
+        merge_base = _git_update_merge_base(
+            git_cmd, repo_root, original_head, target_sha
+        )
+        if merge_base:
+            outcome["merge_base"] = merge_base
+            return outcome
+
+        depth_state = subprocess.run(
+            git_cmd + ["rev-parse", "--is-shallow-repository"],
+            cwd=repo_root,
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        if depth_state.returncode == 0 and depth_state.stdout.strip().lower() != "true":
+            break
+
+    depth_state = subprocess.run(
+        git_cmd + ["rev-parse", "--is-shallow-repository"],
+        cwd=repo_root,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    if depth_state.returncode == 0 and depth_state.stdout.strip().lower() == "true":
+        fetch = subprocess.run(
+            git_cmd + ["fetch", "--unshallow", "origin", branch],
+            cwd=repo_root,
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        outcome["fetch_steps"].append("--unshallow")
+        if fetch.returncode != 0:
+            outcome["error"] = f"History repair failed at --unshallow: {_first_git_error(fetch)}"
+            return outcome
+        current_target = _git_update_commit_sha(
+            git_cmd, repo_root, f"origin/{branch}"
+        )
+        if current_target != target_sha:
+            outcome["error"] = (
+                f"UpdaterBoundaryChanged: origin/{branch} moved while history "
+                "was being repaired. Retry the update against a fresh pinned target."
+            )
+            return outcome
+        merge_base = _git_update_merge_base(
+            git_cmd, repo_root, original_head, target_sha
+        )
+        if merge_base:
+            outcome["merge_base"] = merge_base
+            return outcome
+
+    outcome["error"] = (
+        "No merge base exists after bounded history repair. "
+        "No reset or rebase was attempted."
+    )
+    return outcome
+
+
+def _git_update_operation_paths(git_cmd: list[str], repo_root: Path) -> list[str]:
+    """List active merge/rebase/sequencer state paths for update verification."""
+    active: list[str] = []
+    for name in (
+        "rebase-apply",
+        "rebase-merge",
+        "MERGE_HEAD",
+        "CHERRY_PICK_HEAD",
+        "REVERT_HEAD",
+        "sequencer",
+    ):
+        resolved = subprocess.run(
+            git_cmd + ["rev-parse", "--git-path", name],
+            cwd=repo_root,
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        if resolved.returncode != 0 or not resolved.stdout.strip():
+            continue
+        path = Path(resolved.stdout.strip())
+        if not path.is_absolute():
+            path = repo_root / path
+        if path.exists():
+            active.append(name)
+    return active
+
+
+def _create_update_recovery_ref(
+    git_cmd: list[str], repo_root: Path, branch: str, pre_update_sha: str
+) -> Optional[str]:
+    branch_key = "".join(
+        ch if ch.isalnum() or ch in {"-", "_"} else "-" for ch in branch
+    )[:40]
+    token = f"{_time.time_ns()}-{os.getpid()}"
+    recovery_ref = f"refs/hermes/update-recovery/{branch_key}-{token}"
+    created = subprocess.run(
+        git_cmd + ["update-ref", recovery_ref, pre_update_sha],
+        cwd=repo_root,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    return recovery_ref if created.returncode == 0 else None
+
+
+def _delete_update_recovery_ref(
+    git_cmd: list[str], repo_root: Path, recovery_ref: Optional[str]
+) -> bool:
+    if not recovery_ref:
+        return True
+    if not recovery_ref.startswith("refs/hermes/update-recovery/"):
+        return False
+    deleted = subprocess.run(
+        git_cmd + ["update-ref", "-d", recovery_ref],
+        cwd=repo_root,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    return deleted.returncode == 0
+
+
+def _restore_original_update_checkout(
+    git_cmd: list[str],
+    repo_root: Path,
+    original_branch: str,
+    original_head: str,
+) -> bool:
+    current_head = _git_update_commit_sha(git_cmd, repo_root, "HEAD")
+    current_branch_result = subprocess.run(
+        git_cmd + ["rev-parse", "--abbrev-ref", "HEAD"],
+        cwd=repo_root,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    current_branch = current_branch_result.stdout.strip()
+    if current_head == original_head and current_branch == original_branch:
+        return True
+
+    checkout_args = (
+        ["checkout", "--detach", original_head]
+        if original_branch == "HEAD"
+        else ["checkout", original_branch]
+    )
+    checkout = subprocess.run(
+        git_cmd + checkout_args,
+        cwd=repo_root,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    if checkout.returncode != 0:
+        return False
+    return (
+        _git_update_commit_sha(git_cmd, repo_root, "HEAD") == original_head
+        and not _git_update_operation_paths(git_cmd, repo_root)
+    )
+
+
+def _prepare_update_checkout_for_stash(
+    git_cmd: list[str],
+    repo_root: Path,
+    *,
+    original_branch: str,
+    original_head: str,
+    updated_branch: str,
+    update_succeeded: bool,
+) -> bool:
+    """Put the worktree on the checkout that owns the pending autostash.
+
+    A successful update that started on the target branch must remain on the
+    new target HEAD.  A no-op, failure, feature-branch, or detached-HEAD run
+    instead returns to the exact original commit before applying the stash.
+    """
+    if update_succeeded and original_branch == updated_branch:
+        current_branch = subprocess.run(
+            git_cmd + ["rev-parse", "--abbrev-ref", "HEAD"],
+            cwd=repo_root,
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        if current_branch.returncode != 0:
+            return False
+        if current_branch.stdout.strip() != updated_branch:
+            checkout = subprocess.run(
+                git_cmd + ["checkout", updated_branch],
+                cwd=repo_root,
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+            if checkout.returncode != 0:
+                return False
+        return (
+            _git_update_commit_sha(git_cmd, repo_root, "HEAD") is not None
+            and not _git_update_operation_paths(git_cmd, repo_root)
+        )
+
+    return _restore_original_update_checkout(
+        git_cmd, repo_root, original_branch, original_head
+    )
+
+
+def _rollback_pinned_git_update(
+    git_cmd: list[str],
+    repo_root: Path,
+    *,
+    branch: str,
+    pre_update_sha: str,
+    recovery_ref: str,
+    original_branch: str,
+    original_head: str,
+) -> bool:
+    """Restore the exact pre-update branch/HEAD and clear operation state."""
+    if _git_update_commit_sha(git_cmd, repo_root, recovery_ref) != pre_update_sha:
+        return False
+
+    active_operations = _git_update_operation_paths(git_cmd, repo_root)
+    active_rebase = any(
+        name in active_operations for name in ("rebase-apply", "rebase-merge")
+    )
+    if active_rebase:
+        abort = subprocess.run(
+            git_cmd + ["rebase", "--abort"],
+            cwd=repo_root,
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        if abort.returncode != 0:
+            return False
+    elif active_operations:
+        # This updater only starts a rebase.  An unrelated merge, cherry-pick,
+        # revert, or sequencer state must never be force-cleared here.
+        return False
+
+    if _git_update_operation_paths(git_cmd, repo_root):
+        return False
+
+    current_branch_result = subprocess.run(
+        git_cmd + ["rev-parse", "--abbrev-ref", "HEAD"],
+        cwd=repo_root,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    if current_branch_result.returncode != 0:
+        return False
+    if current_branch_result.stdout.strip() != branch:
+        checkout = subprocess.run(
+            git_cmd + ["checkout", branch],
+            cwd=repo_root,
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        if checkout.returncode != 0:
+            return False
+
+    if _git_update_commit_sha(git_cmd, repo_root, branch) != pre_update_sha:
+        # ``--keep`` refuses rather than overwriting local work.  A hard reset
+        # (or checkout -f) could delete an ignored/untracked in-the-way path
+        # that was intentionally outside the updater's autostash.
+        reset = subprocess.run(
+            git_cmd + ["reset", "--keep", recovery_ref],
+            cwd=repo_root,
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        if reset.returncode != 0:
+            return False
+    if _git_update_commit_sha(git_cmd, repo_root, branch) != pre_update_sha:
+        return False
+    if not _restore_original_update_checkout(
+        git_cmd, repo_root, original_branch, original_head
+    ):
+        return False
+    if _git_update_operation_paths(git_cmd, repo_root):
+        return False
+    status = subprocess.run(
+        git_cmd + ["status", "--porcelain", "--untracked-files=all"],
+        cwd=repo_root,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    return status.returncode == 0 and not status.stdout.strip()
+
+
+def _apply_pinned_git_update(
+    git_cmd: list[str],
+    repo_root: Path,
+    *,
+    branch: str,
+    pre_update_sha: str,
+    target_sha: str,
+    merge_base: Optional[str],
+    preserve_local_commits: bool,
+    original_branch: str,
+    original_head: str,
+) -> dict:
+    """Apply exactly *target_sha*, preserving only merge-base..OriginalHEAD."""
+    outcome = {
+        "success": False,
+        "safe_to_restore_stash": False,
+        "recovery_ref": None,
+        "used_rebase": False,
+        "error": None,
+    }
+    current_branch = subprocess.run(
+        git_cmd + ["rev-parse", "--abbrev-ref", "HEAD"],
+        cwd=repo_root,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    if (
+        current_branch.returncode != 0
+        or current_branch.stdout.strip() != branch
+        or _git_update_commit_sha(git_cmd, repo_root, "HEAD") != pre_update_sha
+    ):
+        outcome["error"] = "Local branch changed after the update target was pinned."
+        return outcome
+
+    if _git_update_commit_sha(git_cmd, repo_root, f"origin/{branch}") != target_sha:
+        outcome["safe_to_restore_stash"] = True
+        outcome["error"] = (
+            f"UpdaterBoundaryChanged: origin/{branch} no longer matches the "
+            "pinned update target. No Git mutation was attempted."
+        )
+        return outcome
+
+    recovery_ref = _create_update_recovery_ref(
+        git_cmd, repo_root, branch, pre_update_sha
+    )
+    outcome["recovery_ref"] = recovery_ref
+    if not recovery_ref:
+        outcome["safe_to_restore_stash"] = True
+        outcome["error"] = "Could not create the update recovery ref; no update was attempted."
+        return outcome
+
+    fast_forward = subprocess.run(
+        git_cmd + ["merge", "--ff-only", target_sha],
+        cwd=repo_root,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    if fast_forward.returncode != 0:
+        if preserve_local_commits:
+            if not merge_base:
+                outcome["safe_to_restore_stash"] = True
+                outcome["error"] = "No merge base was provided; no rebase was attempted."
+                return outcome
+            rebase = subprocess.run(
+                git_cmd
+                + ["rebase", "--onto", target_sha, merge_base, branch],
+                cwd=repo_root,
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+            outcome["used_rebase"] = True
+            if rebase.returncode != 0:
+                safe = _rollback_pinned_git_update(
+                    git_cmd,
+                    repo_root,
+                    branch=branch,
+                    pre_update_sha=pre_update_sha,
+                    recovery_ref=recovery_ref,
+                    original_branch=original_branch,
+                    original_head=original_head,
+                )
+                outcome["safe_to_restore_stash"] = safe
+                outcome["error"] = (
+                    "Local update patches conflict with the pinned upstream target: "
+                    f"{_first_git_error(rebase)}"
+                )
+                return outcome
+        else:
+            reset = subprocess.run(
+                git_cmd + ["reset", "--hard", target_sha],
+                cwd=repo_root,
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+            if reset.returncode != 0:
+                safe = _rollback_pinned_git_update(
+                    git_cmd,
+                    repo_root,
+                    branch=branch,
+                    pre_update_sha=pre_update_sha,
+                    recovery_ref=recovery_ref,
+                    original_branch=original_branch,
+                    original_head=original_head,
+                )
+                outcome["safe_to_restore_stash"] = safe
+                outcome["error"] = f"Pinned reset failed: {_first_git_error(reset)}"
+                return outcome
+
+    verify_target = subprocess.run(
+        git_cmd + ["merge-base", "--is-ancestor", target_sha, "HEAD"],
+        cwd=repo_root,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    if verify_target.returncode != 0 or _git_update_operation_paths(
+        git_cmd, repo_root
+    ):
+        safe = _rollback_pinned_git_update(
+            git_cmd,
+            repo_root,
+            branch=branch,
+            pre_update_sha=pre_update_sha,
+            recovery_ref=recovery_ref,
+            original_branch=original_branch,
+            original_head=original_head,
+        )
+        outcome["safe_to_restore_stash"] = safe
+        outcome["error"] = "Pinned update verification failed after Git mutation."
+        return outcome
+
+    outcome["success"] = True
+    outcome["safe_to_restore_stash"] = True
+    return outcome
+
+
 def cmd_update(args):
     """Update Hermes Agent to the latest version.
 
@@ -9875,8 +10412,10 @@ def _cmd_update_impl(args, gateway_mode: bool):
             _resume_windows_gateways_after_update(_windows_gateway_resume)
             sys.exit(2)
 
-    # Try git-based update first, fall back to ZIP download on Windows
-    # when git file I/O is broken (antivirus, NTFS filter drivers, etc.)
+    # A checkout without Git metadata can still use the Windows ZIP updater.
+    # Once a Git update starts, however, errors never fall through to ZIP:
+    # overwriting source after a stash/rebase/dependency failure can destroy
+    # the exact local state the recovery logic is preserving.
     use_zip_update = False
     git_dir = PROJECT_ROOT / ".git"
 
@@ -9943,7 +10482,14 @@ def _cmd_update_impl(args, gateway_mode: bool):
             _resume_windows_gateways_after_update(_windows_gateway_resume)
         return
 
-    # Fetch and pull
+    # Fetch and pull. Lifecycle variables are initialized outside the try so
+    # the single failure boundary can safely restore any pre-mutation stash.
+    auto_stash_ref: Optional[str] = None
+    stash_handled = True
+    branch: Optional[str] = None
+    current_branch: Optional[str] = None
+    original_checkout_sha: Optional[str] = None
+    recovery_ref: Optional[str] = None
     try:
 
         # Resolve the target branch up front so the fetch can be scoped to it.
@@ -9986,6 +10532,12 @@ def _cmd_update_impl(args, gateway_mode: bool):
             check=True,
         )
         current_branch = result.stdout.strip()
+        original_checkout_sha = _git_update_commit_sha(
+            git_cmd, PROJECT_ROOT, "HEAD"
+        )
+        if original_checkout_sha is None:
+            print("✗ Could not pin the original checkout before updating.")
+            sys.exit(1)
 
         # If user is on a different branch than the update target, switch
         # to the target. When the target is "main" this is the historical
@@ -10019,10 +10571,18 @@ def _cmd_update_impl(args, gateway_mode: bool):
                     text=True,
                 )
                 if track_result.returncode != 0:
-                    # Restore the user's prior branch + stash before bailing
-                    # so we don't leave them stranded in a weird state.
-                    if auto_stash_ref is not None:
-                        _restore_stashed_changes(
+                    # Restore the exact original checkout before touching the
+                    # stash; a failed checkout -B may otherwise leave HEAD on
+                    # a different branch than the work represented by it.
+                    checkout_safe = _restore_original_update_checkout(
+                        git_cmd,
+                        PROJECT_ROOT,
+                        current_branch,
+                        original_checkout_sha,
+                    )
+                    stash_restored = auto_stash_ref is None
+                    if auto_stash_ref is not None and checkout_safe:
+                        stash_restored = _restore_stashed_changes(
                             git_cmd,
                             PROJECT_ROOT,
                             auto_stash_ref,
@@ -10032,9 +10592,17 @@ def _cmd_update_impl(args, gateway_mode: bool):
                     print(f"✗ Branch '{branch}' does not exist locally or on origin.")
                     if track_result.stderr.strip():
                         print(f"  {track_result.stderr.strip().splitlines()[0]}")
+                    if auto_stash_ref is not None and (
+                        not checkout_safe or not stash_restored
+                    ):
+                        print(
+                            f"  Local changes remain preserved in stash {auto_stash_ref}."
+                        )
                     sys.exit(1)
         else:
             auto_stash_ref = _stash_local_changes_if_needed(git_cmd, PROJECT_ROOT)
+
+        stash_handled = auto_stash_ref is None
 
         prompt_for_restore = (
             auto_stash_ref is not None
@@ -10042,9 +10610,78 @@ def _cmd_update_impl(args, gateway_mode: bool):
             and (gateway_mode or (sys.stdin.isatty() and sys.stdout.isatty()))
         )
 
+        preserve_local_commits = _preserve_local_update_commits(
+            git_cmd, PROJECT_ROOT
+        )
+        pinned_target_sha: Optional[str] = None
+        pinned_pre_update_sha: Optional[str] = None
+        pinned_merge_base: Optional[str] = None
+        if preserve_local_commits:
+            pinned_target_sha = _git_update_commit_sha(
+                git_cmd, PROJECT_ROOT, f"origin/{branch}"
+            )
+            pinned_pre_update_sha = _git_update_commit_sha(
+                git_cmd, PROJECT_ROOT, "HEAD"
+            )
+            if not pinned_target_sha or not pinned_pre_update_sha:
+                checkout_safe = _restore_original_update_checkout(
+                    git_cmd,
+                    PROJECT_ROOT,
+                    current_branch,
+                    original_checkout_sha,
+                )
+                if auto_stash_ref is not None and checkout_safe:
+                    _restore_stashed_changes(
+                        git_cmd,
+                        PROJECT_ROOT,
+                        auto_stash_ref,
+                        prompt_user=False,
+                        input_fn=gw_input_fn,
+                    )
+                print("✗ Could not pin the local and upstream update commits.")
+                sys.exit(1)
+
+            base_result = _ensure_update_merge_base(
+                git_cmd,
+                PROJECT_ROOT,
+                branch,
+                pinned_pre_update_sha,
+                pinned_target_sha,
+            )
+            pinned_merge_base = base_result["merge_base"]
+            if not pinned_merge_base:
+                checkout_safe = _restore_original_update_checkout(
+                    git_cmd,
+                    PROJECT_ROOT,
+                    current_branch,
+                    original_checkout_sha,
+                )
+                stash_restored = auto_stash_ref is None
+                if auto_stash_ref is not None and checkout_safe:
+                    stash_restored = _restore_stashed_changes(
+                        git_cmd,
+                        PROJECT_ROOT,
+                        auto_stash_ref,
+                        prompt_user=False,
+                        input_fn=gw_input_fn,
+                    )
+                print(f"✗ {base_result['error']}")
+                if auto_stash_ref is not None and (
+                    not checkout_safe or not stash_restored
+                ):
+                    print(
+                        f"  Local changes remain preserved in stash {auto_stash_ref}."
+                    )
+                sys.exit(1)
+
         # Check if there are updates
+        update_range = (
+            f"{pinned_pre_update_sha}..{pinned_target_sha}"
+            if preserve_local_commits
+            else f"HEAD..origin/{branch}"
+        )
         result = subprocess.run(
-            git_cmd + ["rev-list", f"HEAD..origin/{branch}", "--count"],
+            git_cmd + ["rev-list", update_range, "--count"],
             cwd=PROJECT_ROOT,
             capture_output=True,
             text=True,
@@ -10059,23 +10696,32 @@ def _cmd_update_impl(args, gateway_mode: bool):
             if is_fork and branch == "main":
                 _sync_with_upstream_if_needed(git_cmd, PROJECT_ROOT)
 
-            # Restore stash and switch back to original branch if we moved
-            if auto_stash_ref is not None:
-                _restore_stashed_changes(
+            # The stash belongs to the checkout on which it was created.  Go
+            # back there first; applying it to the update target can conflict
+            # or silently move feature-branch work onto main.
+            checkout_ready = _prepare_update_checkout_for_stash(
+                git_cmd,
+                PROJECT_ROOT,
+                original_branch=current_branch,
+                original_head=original_checkout_sha,
+                updated_branch=branch,
+                update_succeeded=False,
+            )
+            stash_restored = auto_stash_ref is None
+            if auto_stash_ref is not None and checkout_ready:
+                stash_restored = _restore_stashed_changes(
                     git_cmd,
                     PROJECT_ROOT,
                     auto_stash_ref,
                     prompt_user=prompt_for_restore,
                     input_fn=gw_input_fn,
                 )
-            if current_branch not in {branch, "HEAD"}:
-                subprocess.run(
-                    git_cmd + ["checkout", current_branch],
-                    cwd=PROJECT_ROOT,
-                    capture_output=True,
-                    text=True,
-                    check=False,
-                )
+            if not checkout_ready or not stash_restored:
+                print("✗ Could not restore the original checkout after the update check.")
+                if auto_stash_ref is not None:
+                    print(f"  Local changes remain preserved in stash {auto_stash_ref}.")
+                _resume_windows_gateways_after_update(_windows_gateway_resume)
+                sys.exit(1)
 
             # A current checkout does NOT imply a healthy install: a previous
             # dependency sync may have failed partway (classic on Windows,
@@ -10134,50 +10780,54 @@ def _cmd_update_impl(args, gateway_mode: bool):
 
         print("→ Pulling updates...")
         update_succeeded = False
+        git_state_safe = False
+        recovery_ref: Optional[str] = None
         # Capture the pre-pull SHA so we can auto-roll-back if the new code
         # has a syntax error in a critical-path file (PR #28452 incident:
         # orphan merge-conflict markers in hermes_cli/config.py bricked
         # every user who ran ``hermes update`` for the 7 minutes between
         # the bad commit and the fix landing).
-        pre_pull_sha = _capture_head_sha(git_cmd, PROJECT_ROOT)
+        pre_pull_sha = (
+            pinned_pre_update_sha
+            if preserve_local_commits
+            else _capture_head_sha(git_cmd, PROJECT_ROOT)
+        )
         try:
-            pull_result = subprocess.run(
-                git_cmd + ["pull", "--ff-only", "origin", branch],
-                cwd=PROJECT_ROOT,
-                capture_output=True,
-                text=True,
-            )
-            if pull_result.returncode != 0:
-                # ff-only failed — local and remote have diverged. Managed
-                # downstream installs may carry a deliberately-maintained
-                # local patch stack. Rebase that stack when the install-local
-                # guard is enabled; fail closed on conflicts so an update can
-                # never silently delete the fix that launched it.
-                if _preserve_local_update_commits(git_cmd, PROJECT_ROOT):
-                    print(
-                        "  ⚠ Fast-forward not possible. Preserving local commits "
-                        "and rebasing them onto the update..."
-                    )
-                    rebase_result = subprocess.run(
-                        git_cmd + ["rebase", f"origin/{branch}"],
-                        cwd=PROJECT_ROOT,
-                        capture_output=True,
-                        text=True,
-                    )
-                    if rebase_result.returncode != 0:
-                        subprocess.run(
-                            git_cmd + ["rebase", "--abort"],
-                            cwd=PROJECT_ROOT,
-                            capture_output=True,
-                            text=True,
-                            check=False,
+            if preserve_local_commits:
+                print(
+                    "  Preserving the pinned local patch stack across the update..."
+                )
+                pinned_update = _apply_pinned_git_update(
+                    git_cmd,
+                    PROJECT_ROOT,
+                    branch=branch,
+                    pre_update_sha=pinned_pre_update_sha,
+                    target_sha=pinned_target_sha,
+                    merge_base=pinned_merge_base,
+                    preserve_local_commits=True,
+                    original_branch=current_branch,
+                    original_head=original_checkout_sha,
+                )
+                recovery_ref = pinned_update["recovery_ref"]
+                git_state_safe = pinned_update["safe_to_restore_stash"]
+                if not pinned_update["success"]:
+                    print(f"✗ {pinned_update['error']}")
+                    if recovery_ref:
+                        print(f"  Recovery ref: {recovery_ref}")
+                    if not git_state_safe:
+                        print(
+                            "  Automatic rollback could not be fully verified; "
+                            "no further Git mutation will be attempted."
                         )
-                        print("✗ Local update patches conflict with the new version.")
-                        print("  Update stopped without discarding local commits.")
-                        if rebase_result.stderr.strip():
-                            print(f"  {rebase_result.stderr.strip().splitlines()[0]}")
-                        sys.exit(1)
-                else:
+                    sys.exit(1)
+            else:
+                pull_result = subprocess.run(
+                    git_cmd + ["pull", "--ff-only", "origin", branch],
+                    cwd=PROJECT_ROOT,
+                    capture_output=True,
+                    text=True,
+                )
+                if pull_result.returncode != 0:
                     # Historical managed-install behavior for upstream history
                     # rewrites: local working changes are already stashed, so
                     # reset to match the remote exactly.
@@ -10220,20 +10870,40 @@ def _cmd_update_impl(args, gateway_mode: bool):
                 if pre_pull_sha:
                     print()
                     print(f"→ Rolling back to {pre_pull_sha[:10]}...")
-                    rollback_result = subprocess.run(
-                        git_cmd + ["reset", "--hard", pre_pull_sha],
-                        cwd=PROJECT_ROOT,
-                        capture_output=True,
-                        text=True,
-                    )
-                    if rollback_result.returncode == 0:
+                    if preserve_local_commits and recovery_ref:
+                        rollback_ok = _rollback_pinned_git_update(
+                            git_cmd,
+                            PROJECT_ROOT,
+                            branch=branch,
+                            pre_update_sha=pre_pull_sha,
+                            recovery_ref=recovery_ref,
+                            original_branch=current_branch,
+                            original_head=original_checkout_sha,
+                        )
+                        rollback_error = ""
+                    else:
+                        rollback_result = subprocess.run(
+                            git_cmd + ["reset", "--hard", pre_pull_sha],
+                            cwd=PROJECT_ROOT,
+                            capture_output=True,
+                            text=True,
+                        )
+                        rollback_ok = rollback_result.returncode == 0
+                        rollback_error = rollback_result.stderr.strip()
+                    git_state_safe = rollback_ok
+                    if rollback_ok:
                         print("  ✓ Rollback complete — your install is unchanged.")
                         print("  Try ``hermes update`` again later once a fix lands.")
                     else:
                         print("  ✗ Rollback failed. Recover manually with:")
-                        print(f"    cd {PROJECT_ROOT} && git reset --hard {pre_pull_sha}")
-                        if rollback_result.stderr.strip():
-                            print(f"    ({rollback_result.stderr.strip().splitlines()[0]})")
+                        if recovery_ref:
+                            print(f"    Recovery ref: {recovery_ref}")
+                        else:
+                            print(
+                                f"    cd {PROJECT_ROOT} && git reset --hard {pre_pull_sha}"
+                            )
+                        if rollback_error:
+                            print(f"    ({rollback_error.splitlines()[0]})")
                 else:
                     print()
                     print("  Could not capture pre-pull SHA — recover manually with:")
@@ -10241,11 +10911,35 @@ def _cmd_update_impl(args, gateway_mode: bool):
                 sys.exit(1)
 
             update_succeeded = True
+            git_state_safe = True
         finally:
+            checkout_ready = False
+            if update_succeeded or git_state_safe:
+                checkout_ready = _prepare_update_checkout_for_stash(
+                    git_cmd,
+                    PROJECT_ROOT,
+                    original_branch=current_branch,
+                    original_head=original_checkout_sha,
+                    updated_branch=branch,
+                    update_succeeded=update_succeeded,
+                )
+
+            stash_handled = auto_stash_ref is None
             if auto_stash_ref is not None:
-                # Don't attempt stash restore if the code update itself failed —
-                # working tree is in an unknown state.
-                if not update_succeeded:
+                if not checkout_ready:
+                    print(
+                        f"  ℹ️  Local changes preserved in stash (ref: {auto_stash_ref})"
+                    )
+                    print("  Restore manually after returning to the original checkout.")
+                elif not update_succeeded and git_state_safe:
+                    stash_handled = _restore_stashed_changes(
+                        git_cmd,
+                        PROJECT_ROOT,
+                        auto_stash_ref,
+                        prompt_user=False,
+                        input_fn=gw_input_fn,
+                    )
+                elif not update_succeeded:
                     print(
                         f"  ℹ️  Local changes preserved in stash (ref: {auto_stash_ref})"
                     )
@@ -10254,19 +10948,50 @@ def _cmd_update_impl(args, gateway_mode: bool):
                     # Non-interactive update + user opted into discarding local
                     # source edits (updates.non_interactive_local_changes:
                     # discard). Throw the stash away instead of re-applying it.
-                    _discard_stashed_changes(
+                    stash_handled = _discard_stashed_changes(
                         git_cmd,
                         PROJECT_ROOT,
                         auto_stash_ref,
                     )
                 else:
-                    _restore_stashed_changes(
+                    stash_handled = _restore_stashed_changes(
                         git_cmd,
                         PROJECT_ROOT,
                         auto_stash_ref,
                         prompt_user=prompt_for_restore,
                         input_fn=gw_input_fn,
                     )
+
+            if recovery_ref:
+                if (
+                    not update_succeeded
+                    and git_state_safe
+                    and checkout_ready
+                    and stash_handled
+                ):
+                    if not _delete_update_recovery_ref(
+                        git_cmd, PROJECT_ROOT, recovery_ref
+                    ):
+                        print(f"  ⚠ Could not remove recovery ref {recovery_ref}.")
+                    else:
+                        recovery_ref = None
+                elif not update_succeeded:
+                    print(f"  Recovery ref retained: {recovery_ref}")
+
+            if update_succeeded and not checkout_ready:
+                update_succeeded = False
+                print("✗ Update completed, but the original checkout could not be restored.")
+                if recovery_ref:
+                    print(f"  Recovery ref retained: {recovery_ref}")
+                sys.exit(1)
+
+        if auto_stash_ref is not None and not stash_handled:
+            print("✗ Update stopped because local changes could not be restored safely.")
+            print(f"  Local changes remain preserved in stash {auto_stash_ref}.")
+            if recovery_ref:
+                print(f"  Recovery ref retained: {recovery_ref}")
+            _resume_windows_gateways_after_update(_windows_gateway_resume)
+            sys.exit(1)
 
         _invalidate_update_cache()
 
@@ -11458,19 +12183,56 @@ def _cmd_update_impl(args, gateway_mode: bool):
         else:
             _kill_stale_dashboard_processes()
 
+        # Keep the recovery ref through dependency, desktop-build, migration,
+        # and restart stages.  A late failure must never trigger a second
+        # source-update path, and the pinned pre-update commit remains an
+        # explicit recovery anchor until all critical work has completed.
+        if recovery_ref and update_succeeded and stash_handled:
+            if _delete_update_recovery_ref(git_cmd, PROJECT_ROOT, recovery_ref):
+                recovery_ref = None
+            else:
+                print()
+                print(f"  ⚠ Could not remove recovery ref {recovery_ref}.")
+
         print()
         print("Tip: You can now select a provider and model:")
         print("  hermes model              # Select provider and model")
 
     except subprocess.CalledProcessError as e:
-        if sys.platform == "win32":
-            print(f"⚠ Git update failed: {e}")
-            print("→ Falling back to ZIP download...")
-            print()
-            _update_via_zip(args)
-        else:
-            print(f"✗ Update failed: {e}")
-            sys.exit(1)
+        # Never reinterpret a dependency/build/post-pull failure as a Git
+        # failure and then overwrite the checkout with a ZIP.  Restore only a
+        # still-pending autostash whose original checkout can be verified.
+        if (
+            auto_stash_ref is not None
+            and not stash_handled
+            and current_branch is not None
+            and original_checkout_sha is not None
+        ):
+            checkout_ready = _prepare_update_checkout_for_stash(
+                git_cmd,
+                PROJECT_ROOT,
+                original_branch=current_branch,
+                original_head=original_checkout_sha,
+                updated_branch=branch or current_branch,
+                update_succeeded=False,
+            )
+            if checkout_ready:
+                stash_handled = _restore_stashed_changes(
+                    git_cmd,
+                    PROJECT_ROOT,
+                    auto_stash_ref,
+                    prompt_user=False,
+                    input_fn=gw_input_fn,
+                )
+
+        print(f"✗ Update failed (exit {e.returncode}).")
+        print("  No ZIP fallback was attempted; the checkout was not overwritten.")
+        if auto_stash_ref is not None and not stash_handled:
+            print(f"  Local changes remain preserved in stash {auto_stash_ref}.")
+        if recovery_ref:
+            print(f"  Recovery ref retained: {recovery_ref}")
+        _resume_windows_gateways_after_update(_windows_gateway_resume)
+        sys.exit(1)
 
 
 def _coalesce_session_name_args(argv: list) -> list:

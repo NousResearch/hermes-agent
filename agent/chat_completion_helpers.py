@@ -2570,6 +2570,7 @@ def interruptible_streaming_api_call(agent, api_kwargs: dict, *, on_first_delta=
 
     first_delta_fired = {"done": False}
     deltas_were_sent = {"yes": False}  # Track if any deltas were fired (for fallback)
+    provider_tool_in_flight = {"yes": False}
     # Wall-clock timestamp of the last real streaming chunk.  The outer
     # poll loop uses this to detect stale connections that keep receiving
     # SSE keep-alive pings but no actual data.
@@ -2593,7 +2594,9 @@ def interruptible_streaming_api_call(agent, api_kwargs: dict, *, on_first_delta=
     def _start_stream_attempt() -> int:
         with stream_attempt_lock:
             stream_attempt_state["current"] += 1
-            return int(stream_attempt_state["current"])
+            attempt_id = int(stream_attempt_state["current"])
+        provider_tool_in_flight["yes"] = False
+        return attempt_id
 
     def _cancel_current_stream_attempt(reason: str) -> None:
         with stream_attempt_lock:
@@ -2754,16 +2757,35 @@ def interruptible_streaming_api_call(agent, api_kwargs: dict, *, on_first_delta=
             _writer_token["value"] = claim_stream_writer(agent)
 
         def _accept_stream_chunk(_chunk: Any) -> bool:
+            # A stale-attempt fence can win while Relay is handing an
+            # already-received tool-call chunk back to Hermes. Preserve only
+            # the fact that a tool call was in flight so retry policy does not
+            # misclassify the attempt as a partial text response. The chunk
+            # itself is still rejected below and never reaches callbacks.
+            try:
+                choices = getattr(_chunk, "choices", None)
+                delta = getattr(choices[0], "delta", None) if choices else None
+                if getattr(delta, "tool_calls", None):
+                    provider_tool_in_flight["yes"] = True
+            except Exception:
+                pass
+            if not _stream_attempt_is_active(stream_attempt_id):
+                return False
             token = _writer_token["value"]
-            if token is None or stream_writer_is_current(agent, token):
-                return True
-            logger.warning(
-                "Streaming attempt superseded by a newer stream; stopping "
-                "consumption to preserve the single-writer invariant "
-                "(model=%s).",
-                api_kwargs.get("model", "unknown"),
-            )
-            return False
+            if token is not None and not stream_writer_is_current(agent, token):
+                logger.warning(
+                    "Streaming attempt superseded by a newer stream; stopping "
+                    "consumption to preserve the single-writer invariant "
+                    "(model=%s).",
+                    api_kwargs.get("model", "unknown"),
+                )
+                return False
+            # Record provider activity before Relay processes the chunk. This
+            # prevents the stale watchdog from cancelling a live stream while
+            # an interceptor or codec is still handling an already-received
+            # event.
+            last_chunk_time["t"] = time.time()
+            return True
 
         def _relay_final_response() -> dict[str, Any]:
             tool_calls = [tool_calls_acc[index] for index in sorted(tool_calls_acc)]
@@ -3376,7 +3398,7 @@ def interruptible_streaming_api_call(agent, api_kwargs: dict, *, on_first_delta=
                     if deltas_were_sent["yes"]:
                         _partial_tool_in_flight = bool(
                             result.get("partial_tool_names")
-                        )
+                        ) or provider_tool_in_flight["yes"]
                         _is_sse_conn_err_preview = False
                         if not _is_timeout and not _is_conn_err:
                             from openai import APIError as _APIError

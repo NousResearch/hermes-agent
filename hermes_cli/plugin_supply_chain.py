@@ -6,9 +6,11 @@ plugin code, reads environment/configuration files, or performs network access.
 
 from __future__ import annotations
 
+import errno
 import json
 import os
 import re
+import stat
 import tempfile
 from dataclasses import asdict, dataclass
 from pathlib import Path, PurePosixPath
@@ -16,6 +18,7 @@ from typing import Any, Mapping
 from urllib.parse import urlsplit
 
 LOCK_FILENAME = ".hermes-plugin-lock.json"
+MAX_LOCK_BYTES = 64 * 1024
 _CAPABILITY_WARNING = "CAPABILITY_REPORT_IS_NOT_SECURITY_AUDIT"
 _FULL_COMMIT_SHA = re.compile(r"[0-9a-f]{40}\Z")
 _PROVENANCE_FIELDS = {
@@ -106,11 +109,25 @@ def _validate_subdir(value: object) -> str | None:
 def _validate_source_url(value: object) -> str:
     if not isinstance(value, str) or not value:
         raise ValueError("provenance source_url must be a non-empty string")
-    parsed = urlsplit(value)
-    if parsed.username is not None or parsed.password is not None:
-        raise ValueError("provenance source_url must not contain credentials")
-    if parsed.query or parsed.fragment:
-        raise ValueError("provenance source_url must not contain a query or fragment")
+    if "://" in value:
+        parsed = urlsplit(value)
+        if parsed.query or parsed.fragment:
+            raise ValueError("provenance source_url must not contain a query or fragment")
+        if parsed.password is not None or (
+            parsed.username is not None
+            and not (parsed.scheme.lower() == "ssh" and parsed.username == "git")
+        ):
+            raise ValueError("provenance source_url must not contain credentials")
+    elif "@" in value:
+        if (
+            re.fullmatch(r"git@[^\s@:/?#]+:[^\s?#]+", value) is None
+            or value.count("@") != 1
+        ):
+            raise ValueError("provenance source_url contains unsafe or malformed userinfo")
+    else:
+        parsed = urlsplit(value)
+        if parsed.query or parsed.fragment:
+            raise ValueError("provenance source_url must not contain a query or fragment")
     return value
 
 
@@ -156,6 +173,7 @@ def write_provenance_lock(
             prefix=f"{LOCK_FILENAME}.",
             delete=False,
         ) as temporary:
+            os.chmod(temporary.name, 0o600)
             temporary.write(payload)
             temporary.flush()
             os.fsync(temporary.fileno())
@@ -172,14 +190,46 @@ def read_provenance_lock(
 ) -> PluginProvenance | None:
     """Read a lock, returning ``None`` only when absent and rejecting bad data."""
     lock_path = _lock_path(plugin_dir)
-    if not lock_path.exists():
-        return None
-    if not lock_path.is_file() or lock_path.is_symlink():
-        raise ValueError("provenance lock must be a regular file")
+    flags = os.O_RDONLY
+    nofollow = getattr(os, "O_NOFOLLOW", 0)
+    flags |= nofollow
     try:
-        data = json.loads(lock_path.read_text(encoding="utf-8"))
+        before = None if nofollow else lock_path.lstat()
+        if before is not None and stat.S_ISLNK(before.st_mode):
+            raise ValueError("provenance lock must be a regular file")
+        descriptor = os.open(lock_path, flags)
+    except FileNotFoundError:
+        return None
+    except OSError as exc:
+        if exc.errno == errno.ENOENT:
+            return None
+        raise ValueError("provenance lock is malformed or unreadable") from exc
+
+    try:
+        metadata = os.fstat(descriptor)
+        if not stat.S_ISREG(metadata.st_mode):
+            raise ValueError("provenance lock must be a regular file")
+        if before is not None and (
+            stat.S_ISLNK(before.st_mode)
+            or (before.st_dev, before.st_ino) != (metadata.st_dev, metadata.st_ino)
+        ):
+            raise ValueError("provenance lock must be a regular file")
+        chunks: list[bytes] = []
+        remaining = MAX_LOCK_BYTES + 1
+        while remaining:
+            chunk = os.read(descriptor, remaining)
+            if not chunk:
+                break
+            chunks.append(chunk)
+            remaining -= len(chunk)
+        payload = b"".join(chunks)
+        if len(payload) > MAX_LOCK_BYTES:
+            raise ValueError("provenance lock is malformed or unreadable")
+        data = json.loads(payload.decode("utf-8"))
     except (OSError, UnicodeError, json.JSONDecodeError) as exc:
         raise ValueError("provenance lock is malformed or unreadable") from exc
+    finally:
+        os.close(descriptor)
     if not isinstance(data, dict):
         raise ValueError("provenance lock must contain a JSON object")
     return _validated_provenance(data)

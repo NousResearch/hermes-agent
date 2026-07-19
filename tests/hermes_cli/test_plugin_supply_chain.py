@@ -2,12 +2,15 @@ from __future__ import annotations
 
 import dataclasses
 import json
+import os
+import stat
 from pathlib import Path
 
 import pytest
 
 from hermes_cli.plugin_supply_chain import (
     LOCK_FILENAME,
+    MAX_LOCK_BYTES,
     PluginCapabilityReport,
     PluginProvenance,
     build_capability_report,
@@ -188,3 +191,78 @@ def test_write_provenance_lock_rejects_credentials_and_traversal(tmp_path: Path)
         )
     with pytest.raises(ValueError):
         write_provenance_lock(tmp_path, _provenance(subdir="plugin/../secret"))
+
+
+@pytest.mark.parametrize(
+    "source_url",
+    [
+        "git@github.com:owner/repo.git",
+        "ssh://git@github.com/owner/repo.git",
+    ],
+)
+def test_provenance_lock_accepts_conventional_git_transport_identity(
+    tmp_path: Path, source_url: str
+) -> None:
+    provenance = _provenance(source_url=source_url)
+
+    write_provenance_lock(tmp_path, provenance)
+
+    assert read_provenance_lock(tmp_path) == provenance
+
+
+@pytest.mark.parametrize(
+    "source_url",
+    [
+        "TOKEN@github.com:owner/repo.git",
+        "oauth2:SECRET@gitlab.example.com:owner/repo.git",
+        "git@@github.com:owner/repo.git",
+        "git@:owner/repo.git",
+        "git@github.com:",
+        "git@github.com/owner/repo.git",
+        "git@github.com:owner/repo.git?token=secret",
+        "git@github.com:owner/repo.git#secret",
+        "git@github.com:owner/repo git",
+        "https://token@github.com/owner/repo.git",
+        "ssh://other@github.com/owner/repo.git",
+        "ssh://git:secret@github.com/owner/repo.git",
+    ],
+)
+def test_write_provenance_lock_rejects_credential_or_malformed_remote(
+    tmp_path: Path, source_url: str
+) -> None:
+    with pytest.raises(ValueError, match="source_url"):
+        write_provenance_lock(tmp_path, _provenance(source_url=source_url))
+
+
+@pytest.mark.parametrize(
+    "source_url",
+    [
+        "TOKEN@github.com:owner/repo.git",
+        "oauth2:SECRET@gitlab.example.com:owner/repo.git",
+        "git@@github.com:owner/repo.git",
+        "git@:owner/repo.git",
+        "git@github.com:",
+    ],
+)
+def test_read_provenance_lock_rejects_credential_or_malformed_scp_remote(
+    tmp_path: Path, source_url: str
+) -> None:
+    data = dataclasses.asdict(_provenance(source_url=source_url))
+    (tmp_path / LOCK_FILENAME).write_text(json.dumps(data), encoding="utf-8")
+
+    with pytest.raises(ValueError, match="source_url"):
+        read_provenance_lock(tmp_path)
+
+
+def test_read_provenance_lock_rejects_oversized_real_file(tmp_path: Path) -> None:
+    (tmp_path / LOCK_FILENAME).write_bytes(b" " * (MAX_LOCK_BYTES + 1))
+
+    with pytest.raises(ValueError, match="malformed or unreadable"):
+        read_provenance_lock(tmp_path)
+
+
+@pytest.mark.skipif(os.name != "posix", reason="POSIX permission bits only")
+def test_write_provenance_lock_is_owner_only(tmp_path: Path) -> None:
+    lock_path = write_provenance_lock(tmp_path, _provenance())
+
+    assert stat.S_IMODE(lock_path.stat().st_mode) == 0o600

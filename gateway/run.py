@@ -1921,6 +1921,7 @@ from gateway.session import (
     neutralize_untrusted_inline_text,
 )
 from gateway.delivery import DeliveryRouter, looks_like_telegram_private_chat_id
+from gateway.turn_lease import SessionTurnLeaseRegistry
 from gateway.authz_mixin import GatewayAuthorizationMixin
 from gateway.kanban_watchers import GatewayKanbanWatchersMixin
 from gateway.slash_commands import GatewaySlashCommandsMixin
@@ -3152,6 +3153,17 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         self._running_agents: Dict[str, Any] = {}
         self._running_agents_ts: Dict[str, float] = {}  # start timestamp per session
         self._active_session_leases: Dict[str, Any] = {}
+        # Per-SESSION_ID turn lease (#64934): serializes the
+        # [load history → run → flush] region when two ROUTING KEYS resolve
+        # to one session_id (switch_session's many-to-one mapping). The
+        # routing-key guards above cannot see that overlap. Acquired in
+        # _handle_message_with_agent after session resolution is final,
+        # released via _release_turn_lease in the same method's finally.
+        self._turn_leases = SessionTurnLeaseRegistry()
+        # Tokens for held turn leases, keyed by (routing key, run generation)
+        # so release is granted per-turn and a stale unwind can never free a
+        # newer turn's lease (#28686 ownership lesson).
+        self._turn_lease_tokens: Dict[tuple, Any] = {}
         self._pending_messages: Dict[str, str] = {}  # Queued messages during interrupt
         # Last successfully-resolved (non-empty) model, keyed by session. Used
         # as a fallback when a fresh config read transiently returns an empty
@@ -11371,6 +11383,10 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             # inside _run_agent returns False, and the old sentinel-only check here
             # missed the leftover real agent — locking the session out forever (#28686).
             self._release_running_agent_state(_quick_key)
+            # Turn lease (#64934): release THIS turn's lease token — keyed by
+            # (routing key, run generation) so this unwind can only ever free
+            # the lease its own turn acquired, never a newer turn's.
+            self._release_turn_lease(_quick_key, _run_generation)
 
     def _restore_moa_one_shot(self, event: "MessageEvent", quick_key: str) -> None:
         """Revert a ``/moa <prompt>`` one-shot model override after its turn.
@@ -12182,6 +12198,33 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     )
             except Exception as e:
                 logger.warning("[Gateway] Failed to auto-load skill(s) %s: %s", _skill_names, e)
+
+        # ── Turn lease (#64934) ────────────────────────────────────────
+        # Session resolution is FINAL here (get_or_create → async-delegation
+        # pinning → topic tip-walk switch_session are all above). Serialize
+        # the [load history → run → flush] region per resolved SESSION_ID:
+        # when a second routing key is mapped to this same session_id, its
+        # turn waits here for the previous turn's flush instead of loading a
+        # stale history base and interleaving transcript writes. Same-key
+        # messages never reach this point mid-turn (adapter + runner guards
+        # hold them), so the lock is uncontended outside the alias-key route.
+        # Fail-open: on timeout the token comes back degraded and the turn
+        # proceeds unserialized (never a wedged session). Released in
+        # _handle_message's finally via _release_turn_lease — granted per
+        # (routing key, run generation) so a stale unwind can't release a
+        # newer turn's lease.
+        _lease_registry = getattr(self, "_turn_leases", None)
+        if _lease_registry is not None:
+            _lease_token = await _lease_registry.acquire(
+                session_entry.session_id,
+                owner_key=_quick_key,
+                generation=run_generation,
+                timeout=_float_env("HERMES_AGENT_TIMEOUT", 1800),
+            )
+            if _lease_token is not None:
+                if not hasattr(self, "_turn_lease_tokens"):
+                    self._turn_lease_tokens = {}
+                self._turn_lease_tokens[(_quick_key, run_generation)] = _lease_token
 
         # Load conversation history from transcript
         history = await self.async_session_store.load_transcript(session_entry.session_id)
@@ -17458,6 +17501,32 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         # _persist_active_agents).
         self._persist_active_agents()
         return True
+
+    def _release_turn_lease(self, session_key: str, run_generation: int) -> bool:
+        """Release the turn lease acquired by (``session_key``, ``run_generation``).
+
+        Companion to the acquisition in ``_handle_message_with_agent``
+        (#64934). The token map is keyed by (routing key, run generation), so
+        this can only ever free the lease its own turn acquired — a stale
+        unwind whose generation was bumped by /stop or /new pops ITS token,
+        and the registry's identity check refuses it if a newer turn already
+        holds the lease. Idempotent and safe for bare test runners built via
+        ``object.__new__`` (getattr defaults).
+        """
+        if not session_key:
+            return False
+        tokens = getattr(self, "_turn_lease_tokens", None)
+        registry = getattr(self, "_turn_leases", None)
+        if tokens is None or registry is None:
+            return False
+        token = tokens.pop((session_key, run_generation), None)
+        if token is None:
+            return False
+        try:
+            return registry.release(token)
+        except Exception:
+            logger.debug("Failed to release turn lease", exc_info=True)
+            return False
 
     def _clear_session_boundary_security_state(self, session_key: str) -> None:
         """Clear per-session control state that must not survive a boundary switch."""

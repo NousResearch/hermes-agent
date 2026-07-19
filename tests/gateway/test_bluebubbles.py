@@ -1,6 +1,7 @@
 """Tests for the BlueBubbles iMessage gateway adapter."""
 import asyncio
 import json
+from unittest.mock import AsyncMock
 
 import pytest
 
@@ -382,6 +383,8 @@ class TestBlueBubblesUpdatedMessageHandling:
             handled.append(event)
 
         monkeypatch.setattr(adapter, "handle_message", fake_handle_message)
+        download_attachment = AsyncMock(return_value="/tmp/duplicate-sensitive-media.png")
+        monkeypatch.setattr(adapter, "_download_attachment", download_attachment)
 
         response = await self._dispatch(
             adapter,
@@ -394,12 +397,16 @@ class TestBlueBubblesUpdatedMessageHandling:
                     "chats": [{"guid": "any;-;user@example.com"}],
                     "dateEdited": None,
                     "dateRetracted": None,
+                    "attachments": [
+                        {"guid": "duplicate-attachment", "mimeType": "image/png"}
+                    ],
                 },
             },
         )
 
         assert response.status == 200
         assert handled == []
+        download_attachment.assert_not_awaited()
 
     @pytest.mark.asyncio
     async def test_updated_message_edit_forwards_before_after_context(self, monkeypatch):

@@ -1067,6 +1067,14 @@ class BlueBubblesAdapter(BasePlatformAdapter):
         if is_tapback:
             text = tapback_text
 
+        message_id = self._message_id_for_record(record)
+        is_update_notification = False
+        if event_type == "updated-message" and not is_tapback:
+            text = self._classify_updated_message(record, message_id, text) or ""
+            if not text:
+                return web.Response(text="ok")
+            is_update_notification = True
+
         # --- Inbound attachment handling ---
         attachments = record.get("attachments") or []
         media_urls: List[str] = []
@@ -1103,14 +1111,7 @@ class BlueBubblesAdapter(BasePlatformAdapter):
             text = "(attachment)"
         # --- End attachment handling ---
 
-        message_id = self._message_id_for_record(record)
-        is_update_notification = False
-        if event_type == "updated-message" and not is_tapback:
-            text = self._classify_updated_message(record, message_id, text) or ""
-            if not text:
-                return web.Response(text="ok")
-            is_update_notification = True
-        elif not is_tapback:
+        if event_type != "updated-message" and not is_tapback:
             self._remember_message_text(message_id, text)
 
         chat_guid = self._value(

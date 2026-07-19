@@ -945,13 +945,23 @@ def test_run_now_records_health_failure_after_update(tmp_path, monkeypatch, caps
     from hermes_cli import backup
     from hermes_cli import main as hm
 
-    monkeypatch.setattr(hm, "_get_update_check_result", lambda **_kw: {"update_available": True, "latest_version": "new"})
+    monkeypatch.setattr(
+        hm,
+        "_get_update_check_result",
+        lambda **_kw: {
+            "update_available": True,
+            "latest_version": "new",
+            "install_method": "git",
+            "latest_sha": "newsha",
+        },
+    )
     monkeypatch.setattr(
         backup,
         "create_pre_update_backup",
         lambda: hermes_home / "backups" / "pre-update.zip",
     )
     monkeypatch.setattr(hm, "cmd_update", lambda _args: None)
+    monkeypatch.setattr(update_auto, "_verify_expected_sha", lambda _sha: (True, "ok"))
     monkeypatch.setattr(update_auto, "_current_version", lambda: "old")
     monkeypatch.setattr(update_auto, "_verify_health", lambda: (False, "gateway startup failed"))
 
@@ -1002,6 +1012,43 @@ def test_run_now_does_not_report_success_when_managed_update_returns_normally(
     data = _read_status(hermes_home)
     assert data["status"] == update_auto.STATUS_UPDATE_FAILED
     assert "managed" in data["error"].lower()
+
+
+def test_run_now_does_not_report_success_when_update_returns_without_applying(
+    tmp_path, monkeypatch
+):
+    hermes_home = tmp_path / "home"
+    monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+
+    from hermes_cli import backup
+    from hermes_cli import main as hm
+
+    monkeypatch.setattr(
+        hm,
+        "_get_update_check_result",
+        lambda **_kw: {
+            "update_available": True,
+            "current_version": "oldsha",
+            "latest_version": "newsha",
+            "behind": 1,
+        },
+    )
+    monkeypatch.setattr(
+        backup,
+        "create_pre_update_backup",
+        lambda: hermes_home / "backups" / "pre-update.zip",
+    )
+    monkeypatch.setattr(hm, "cmd_update", lambda _args: None)
+    monkeypatch.setattr(update_auto, "_current_version", lambda: "oldsha")
+    monkeypatch.setattr(update_auto, "_verify_health", lambda: (True, "ok"))
+
+    with pytest.raises(SystemExit) as exc:
+        update_auto.cmd_auto_run_now(_args())
+
+    assert exc.value.code == update_auto.EXIT_UPDATE_FAILED
+    data = _read_status(hermes_home)
+    assert data["status"] == update_auto.STATUS_UPDATE_FAILED
+    assert "without applying" in data["error"]
 
 
 def test_verify_health_treats_operator_stopped_gateway_as_informational(monkeypatch):

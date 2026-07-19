@@ -936,6 +936,23 @@ def _cmd_auto_run_now_locked(args) -> None:
             expected_sha=str(expected_sha) if expected_sha else None,
         )
 
+        # ``cmd_update`` intentionally returns normally for some no-op paths,
+        # including the managed-install guard.  The preflight check said an
+        # update was available, so a normal return is not proof that anything
+        # changed when there is no commit SHA to verify.  Require observable
+        # version movement before recording success.
+        current_version = _current_version()
+        if not expected_sha and (
+            previous_version is None
+            or current_version is None
+            or current_version == previous_version
+        ):
+            raise AutoUpdateError(
+                STATUS_UPDATE_FAILED,
+                "update command returned normally without applying the checked update",
+                EXIT_UPDATE_FAILED,
+            )
+
         ok, detail = _verify_health()
         if not ok:
             raise AutoUpdateError(
@@ -944,7 +961,6 @@ def _cmd_auto_run_now_locked(args) -> None:
                 EXIT_HEALTH_FAILED,
             )
 
-        current_version = _current_version()
         payload = _status_payload(
             status=STATUS_SUCCESS,
             last_run_at=started_at,

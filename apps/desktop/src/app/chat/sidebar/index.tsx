@@ -26,7 +26,7 @@ import { useContributions } from '@/contrib/react/use-contributions'
 import { searchSessions, type SessionInfo, type SessionSearchResult } from '@/hermes'
 import { useI18n } from '@/i18n'
 import { comboTokens } from '@/lib/keybinds/combo'
-import { profileColor } from '@/lib/profile-color'
+import { profileColor, resolveProfileColor } from '@/lib/profile-color'
 import { sessionMatchesSearch } from '@/lib/session-search'
 import { normalizeSessionSource, sessionSourceLabel } from '@/lib/session-source'
 import { cn } from '@/lib/utils'
@@ -62,7 +62,7 @@ import {
   toggleSidebarMessagingOpen,
   unpinSession
 } from '@/store/layout'
-import { $newChatProfile, $profiles, $profileScope, ALL_PROFILES, normalizeProfileKey } from '@/store/profile'
+import { $newChatProfile, $profileColors, $profiles, $profileScope, ALL_PROFILES, normalizeProfileKey } from '@/store/profile'
 import {
   $activeProjectId,
   $projects,
@@ -293,6 +293,7 @@ export function ChatSidebar({
   // tab, else the main selection — so it stays 1:1 with whatever tab is active.
   const selectedSessionId = useStore($focusedStoredSessionId)
   const sessions = useStore($sessions)
+  const profileColors = useStore($profileColors)
   const cronSessions = useStore($cronSessions)
   const cronJobs = useStore($cronJobs)
   const messagingSessions = useStore($messagingSessions)
@@ -881,23 +882,74 @@ export function ChatSidebar({
       bySource.set(sourceId, list)
     }
 
-    return [...bySource.entries()]
-      .map(([sourceId, list]) => {
-        const ordered = [...list].sort((a, b) => sessionTime(b) - sessionTime(a))
-        const known = messagingPlatformTotals[sourceId]
-        const total = Math.max(ordered.length, known ?? 0)
+    // Fold sub-sources that share a display label into one section (photon +
+    // bluebubbles both render as "iMessage"), so a single platform never splits
+    // into two identical rows and its count reads the COMBINED total. The
+    // representative sourceId (avatar, toggle key, per-platform load-more) is the
+    // sub-source with the most loaded rows.
+    interface Agg {
+      hasMore: boolean
+      label: string
+      repRows: number
+      sessions: SessionInfo[]
+      sourceId: string
+      total: number
+    }
+    const byLabel = new Map<string, Agg>()
 
-        return {
-          // Known exact total → more exist iff total exceeds loaded; otherwise
-          // the seed fetch was capped, so assume more until a per-platform load
-          // resolves the count.
-          hasMore: known != null ? known > ordered.length : messagingTruncated,
-          label: sessionSourceLabel(sourceId) ?? sourceId,
-          sessions: ordered,
-          sourceId,
-          total
+    for (const [sourceId, list] of bySource) {
+      const label = sessionSourceLabel(sourceId) ?? sourceId
+      const known = messagingPlatformTotals[sourceId]
+      const subTotal = Math.max(list.length, known ?? 0)
+      const subHasMore = known != null ? known > list.length : messagingTruncated
+      const existing = byLabel.get(label)
+
+      if (existing) {
+        existing.sessions.push(...list)
+        existing.total += subTotal
+        existing.hasMore = existing.hasMore || subHasMore
+
+        if (list.length > existing.repRows) {
+          existing.repRows = list.length
+          existing.sourceId = sourceId
         }
-      })
+      } else {
+        byLabel.set(label, {
+          hasMore: subHasMore,
+          label,
+          repRows: list.length,
+          sessions: [...list],
+          sourceId,
+          total: subTotal
+        })
+      }
+    }
+
+    // A platform can have a real total but ZERO rows in the shared window (e.g.
+    // photon's threads aged out behind busier platforms). When a sibling section
+    // shares its label, fold that resolved total in so the count reads the true
+    // combined figure (iMessage 14, not 3) with a load-more to pull the rest.
+    for (const [sourceId, known] of Object.entries(messagingPlatformTotals)) {
+      if (bySource.has(sourceId) || !known) {
+        continue
+      }
+
+      const existing = byLabel.get(sessionSourceLabel(sourceId) ?? sourceId)
+
+      if (existing) {
+        existing.total += known
+        existing.hasMore = true
+      }
+    }
+
+    return [...byLabel.values()]
+      .map(group => ({
+        hasMore: group.hasMore,
+        label: group.label,
+        sessions: [...group.sessions].sort((a, b) => sessionTime(b) - sessionTime(a)),
+        sourceId: group.sourceId,
+        total: group.total
+      }))
       .sort((a, b) => sessionTime(b.sessions[0]) - sessionTime(a.sessions[0]))
   }, [messagingSessions, messagingPlatformTotals, messagingTruncated])
 
@@ -914,7 +966,7 @@ export function ChatSidebar({
       const key = normalizeProfileKey(session.profile)
 
       const group = groups.get(key) ?? {
-        color: profileColor(key),
+        color: resolveProfileColor(key, profileColors),
         id: key,
         label: key,
         mode: 'profile',
@@ -941,6 +993,7 @@ export function ChatSidebar({
   }, [
     showAllProfiles,
     agentSessions,
+    profileColors,
     loadMoreForProfileGroup,
     onLoadMoreProfileSessions,
     profileLoadMorePending,

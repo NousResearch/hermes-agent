@@ -866,9 +866,13 @@ export function testMessagingPlatform(platformId: string): Promise<MessagingPlat
   })
 }
 
-export function getCronJobs(): Promise<CronJob[]> {
+// Cron jobs are per-profile on disk. `profile` scopes the list to one profile's
+// jobs; 'all' aggregates across every profile (the backend default). The desktop
+// passes the active profile scope so the cron count matches the rest of the app
+// (recents/messaging) instead of always summing all profiles' jobs.
+export function getCronJobs(profile: 'all' | (string & {}) = 'all'): Promise<CronJob[]> {
   return window.hermesDesktop.api<CronJob[]>({
-    path: '/api/cron/jobs',
+    path: `/api/cron/jobs?profile=${encodeURIComponent(profile)}`,
     timeoutMs: STARTUP_REQUEST_TIMEOUT_MS
   })
 }

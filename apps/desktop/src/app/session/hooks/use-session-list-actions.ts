@@ -109,6 +109,42 @@ export function useSessionListActions({ profileScope }: UseSessionListActionsArg
       // Hit the cap → at least one platform may have more on disk than loaded,
       // so platform sections offer their own per-platform "load more".
       setMessagingTruncated(result.sessions.length >= MESSAGING_SECTION_LIMIT)
+
+      // The combined window above shares MESSAGING_SECTION_LIMIT row-slots across
+      // every platform, so per-platform loaded counts UNDER-report a busy one
+      // (telegram shows however many of its threads fit, not its real total).
+      // Resolve each present platform's true cross-profile total with a cheap
+      // count-only fetch so the sidebar labels read truth on first paint — not
+      // only after a manual per-platform "load more". iMessage is split across
+      // two source ids (photon + bluebubbles) that share one display label, so
+      // resolve BOTH whenever either appears, letting the UI fold them into one
+      // combined (14-not-3) section even when one half aged out of the window.
+      const present = new Set(
+        rows.map(s => normalizeSessionSource(s.source)).filter((s): s is string => Boolean(s))
+      )
+      if (present.has('photon') || present.has('bluebubbles')) {
+        present.add('photon')
+        present.add('bluebubbles')
+      }
+      const totals = await Promise.all(
+        [...present].map(async source => {
+          try {
+            const r = await listAllProfileSessions(1, 1, 'exclude', 'recent', 'all', { source })
+            return [source, r.total ?? 0] as const
+          } catch {
+            return [source, 0] as const
+          }
+        })
+      )
+      setMessagingPlatformTotals(prev => {
+        const next = { ...prev }
+        for (const [source, total] of totals) {
+          if (total > 0) {
+            next[source] = total
+          }
+        }
+        return next
+      })
     } catch {
       // Non-fatal: the messaging sections just stay empty/stale.
     }
@@ -142,13 +178,13 @@ export function useSessionListActions({ profileScope }: UseSessionListActionsArg
   // next-run/state fresh as the scheduler advances them.
   const refreshCronJobs = useCallback(async () => {
     try {
-      const jobs = await getCronJobs()
+      const jobs = await getCronJobs(profileScope === ALL_PROFILES ? 'all' : profileScope)
 
       setCronJobs(jobs)
     } catch {
       // Non-fatal: the cron section just keeps its last-known jobs.
     }
-  }, [])
+  }, [profileScope])
 
   const refreshSessions = useCallback(async () => {
     const requestId = refreshSessionsRequestRef.current + 1

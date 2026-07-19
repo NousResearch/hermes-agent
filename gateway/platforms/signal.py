@@ -260,6 +260,7 @@ class SignalAdapter(BasePlatformAdapter):
     # so streaming suppresses the visible cursor instead of leaving a stale tofu
     # square behind in chat clients when edit attempts fail.
     SUPPORTS_MESSAGE_EDITING = False
+    splits_long_messages = True  # send() chunks via truncate_message()
 
     def __init__(self, config: PlatformConfig):
         super().__init__(config, Platform.SIGNAL)
@@ -1063,6 +1064,77 @@ class SignalAdapter(BasePlatformAdapter):
         await self._stop_typing_indicator(chat_id)
 
         plain_text, text_styles = self._markdown_to_signal(content)
+
+        # Message exceeds Signal's character limit — split into chunks
+        if len(plain_text) > MAX_MESSAGE_LENGTH:
+            logger.info("[Signal] Message (%d chars) exceeds limit, splitting", len(plain_text))
+            chunks = self.truncate_message(plain_text, MAX_MESSAGE_LENGTH)
+            any_failed = False
+
+            # Track cumulative body offsets to remap text style positions.
+            # truncate_message() appends " (N/M)" to each chunk; strip that to
+            # recover the body text, then measure body lengths in UTF-16 code
+            # units (matching the Signal protocol).  Also account for extra
+            # fence text added by truncate_message() mid-code-block.
+            total = len(chunks)
+            body_offsets_u16: list[tuple[int, int]] = []
+            cumulative = 0
+            raw_bodies: list[str] = []
+            for chunk_idx, chunk in enumerate(chunks):
+                body = chunk.rsplit(f" ({chunk_idx + 1}/{total})", 1)[0] if total > 1 else chunk
+                body_u16 = len(body.encode("utf-16-le")) // 2
+                body_offsets_u16.append((cumulative, cumulative + body_u16))
+                cumulative += body_u16
+                raw_bodies.append(body)
+
+            # Parse text style strings into structured tuples
+            parsed_styles: list[tuple[int, int, str]] = []
+            for s in (text_styles or []):
+                parts = s.split(":", 2)
+                if len(parts) == 3:
+                    try:
+                        parsed_styles.append((int(parts[0]), int(parts[1]), parts[2]))
+                    except ValueError:
+                        pass
+
+            for i, chunk in enumerate(chunks):
+                # Filter styles to this chunk's range and rebase offsets
+                start_u16, end_u16 = body_offsets_u16[i]
+                chunk_styles: list[str] = []
+                for ps_start, ps_len, ps_type in parsed_styles:
+                    if ps_start >= start_u16 and ps_start + ps_len <= end_u16:
+                        rebased_start = ps_start - start_u16
+                        chunk_styles.append(f"{rebased_start}:{ps_len}:{ps_type}")
+
+                params: Dict[str, Any] = {
+                    "account": self.account,
+                    "message": chunk,
+                }
+                if chunk_styles:
+                    if len(chunk_styles) == 1:
+                        params["textStyle"] = chunk_styles[0]
+                    else:
+                        params["textStyles"] = chunk_styles
+                if chat_id.startswith("group:"):
+                    params["groupId"] = chat_id[6:]
+                else:
+                    params["recipient"] = [await self._resolve_recipient(chat_id)]
+
+                result = await self._rpc("send", params)
+                if result is not None:
+                    success, err_msg = self._validate_send_result(result)
+                    if success:
+                        self._track_sent_timestamp(result)
+                    else:
+                        any_failed = True
+                        logger.warning("[Signal] Chunk %d/%d send failed: %s", i + 1, len(chunks), err_msg)
+                else:
+                    any_failed = True
+                    logger.warning("[Signal] Chunk %d/%d RPC returned None", i + 1, len(chunks))
+
+            if any_failed:
+                return SendResult(success=False, error="One or more chunks failed to send")
+            return SendResult(success=True, message_id=None)
 
         params: Dict[str, Any] = {
             "account": self.account,

@@ -334,6 +334,16 @@ already-published complete candidate or final artifact and must not construct
 new live gcloud capabilities. Preserve every transaction and Foundation journal
 unchanged, then create, review, and merge a fresh successor release revision.
 
+Treat the successful Foundation terminal, immutable handoff copy, temporary
+administrator-binding removal, absence check, and direct-IAM invocation as one
+timed sequence. Prepare the owner-only handoff directory and the exact copy,
+mode, byte-comparison, removal, and invocation commands before starting the
+Foundation operation. After its terminal succeeds, perform only those mandatory
+steps and start the direct-IAM author immediately; do not spend the remaining
+owner-reauthentication lifetime on unrelated inspection. The copies, mode and
+byte-identity checks, and confirmed binding absence remain mandatory and may
+not be skipped to save time.
+
 `success.json` is a signed journal transition wrapper, not a raw foundation
 apply receipt.  Downstream owner gates must not copy it, loosen its mode, or
 extract `.receipt` with `jq`.  They receive the opaque

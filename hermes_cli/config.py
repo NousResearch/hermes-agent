@@ -1670,6 +1670,14 @@ DEFAULT_CONFIG = {
             "timeout": 30,
             "extra_body": {},
             "reasoning_effort": "",  # per-task thinking level: none|minimal|low|medium|high|xhigh|max|ultra (empty = provider default)
+            # Auto-reload MCP connections when config.yaml's mcp_servers section
+            # changes at runtime (default on, matches pre-#1474 behaviour).
+            # Set to False to stop the automatic reload: every automatic reload
+            # rebuilds the agent tool surface and INVALIDATES the provider
+            # prompt cache (the next message re-sends the full input prefix),
+            # which is expensive on long-context / high-reasoning models.
+            # MCP servers can still be reloaded manually via /reload-mcp.
+            "auto_reload_on_config_change": True,
         },
         "title_generation": {
             "enabled": True,

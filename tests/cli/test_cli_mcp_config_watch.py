@@ -4,11 +4,14 @@ from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 
-def _make_cli(tmp_path, mcp_servers=None):
+def _make_cli(tmp_path, mcp_servers=None, extra_config=None):
     """Create a minimal HermesCLI instance with mocked config."""
     import cli as cli_mod
     obj = object.__new__(cli_mod.HermesCLI)
-    obj.config = {"mcp_servers": mcp_servers or {}}
+    cfg = {"mcp_servers": mcp_servers or {}}
+    if extra_config:
+        cfg.update(extra_config)
+    obj.config = cfg
     obj._agent_running = False
     obj._last_config_check = 0.0
     obj._config_mcp_servers = mcp_servers or {}
@@ -101,3 +104,35 @@ class TestMCPConfigWatch:
             obj._check_config_mcp_changes()  # should not raise
 
         obj._reload_mcp.assert_not_called()
+
+    def test_optout_disables_auto_reload(self, tmp_path, capsys):
+        """When mcp.auto_reload_on_config_change is False, a changed
+        mcp_servers section must NOT trigger an automatic reload — but the
+        change is still detected and the user is told how to apply it.
+
+        This protects the provider prompt cache: every automatic reload
+        rebuilds the agent tool surface and invalidates cached prefixes.
+        """
+        import yaml
+        obj, cfg_file = _make_cli(
+            tmp_path,
+            mcp_servers={},
+        )
+
+        # Simulate a changed mcp_servers section
+        cfg_file.write_text(yaml.dump({"mcp_servers": {"github": {"url": "https://mcp.github.com"}}}))
+        obj._config_mtime = 0.0  # force stale mtime
+
+        # Opt out via the loaded config (the watcher reads load_config(),
+        # not obj.config, so we patch the loader).
+        mocked_cfg = {"mcp": {"auto_reload_on_config_change": False}}
+        with patch("hermes_cli.config.get_config_path", return_value=cfg_file), \
+             patch("hermes_cli.config.load_config", return_value=mocked_cfg):
+            obj._check_config_mcp_changes()
+
+        obj._reload_mcp.assert_not_called()
+
+        out = capsys.readouterr().out
+        assert "reload skipped" in out
+        assert "/reload-mcp" in out
+        assert "prompt cache" in out

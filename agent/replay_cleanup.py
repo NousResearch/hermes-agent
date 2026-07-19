@@ -201,6 +201,106 @@ def sanitize_replay_history(
     return strip_dangling_tool_call_tail(strip_interrupted_tool_tails(agent_history))
 
 
+# ----------------------------------------------------------------------
+# Hidden-reasoning-only incomplete tail expiry
+# ----------------------------------------------------------------------
+
+# Prefix of agent/conversation_loop.py::_CODEX_INCOMPLETE_NUDGE. Matched by
+# prefix here (rather than imported) so replay_cleanup does not import
+# conversation_loop and create a cycle. A regression test guards drift.
+_CODEX_INCOMPLETE_NUDGE_PREFIX = (
+    "[System: Your previous response contained only internal reasoning and"
+)
+
+
+def _has_visible_text(content: Any) -> bool:
+    """Return True if ``content`` carries any user-visible text.
+
+    Accepts a plain string or the structured parts list (``{"type": "text",
+    "text": ...}`` / bare strings) that vision and post-compaction turns use.
+    """
+    if isinstance(content, str):
+        return bool(content.strip())
+    if isinstance(content, list):
+        for part in content:
+            if isinstance(part, dict):
+                if part.get("type") == "text" and str(part.get("text", "")).strip():
+                    return True
+            elif isinstance(part, str) and part.strip():
+                return True
+        return False
+    return bool(content)
+
+
+def _is_hidden_reasoning_incomplete_assistant(msg: Any) -> bool:
+    """Return True for a hidden-reasoning-only incomplete assistant turn.
+
+    That is: an ``assistant`` message with ``finish_reason == "incomplete"``,
+    no ``tool_calls`` (a tool-call turn is handled by the tool-tail strippers,
+    not erased here), and no user-visible text (only hidden reasoning). This is
+    the exact shape a Codex continuation-retry-exhausted turn leaves in the
+    live ``_session_messages``.
+    """
+    if not isinstance(msg, dict) or msg.get("role") != "assistant":
+        return False
+    if msg.get("finish_reason") != "incomplete":
+        return False
+    if msg.get("tool_calls"):
+        return False
+    return not _has_visible_text(msg.get("content"))
+
+
+def _is_codex_incomplete_nudge(msg: Any) -> bool:
+    """Return True for a gateway-injected Codex "produce your final answer" nudge."""
+    return (
+        isinstance(msg, dict)
+        and msg.get("role") == "user"
+        and isinstance(msg.get("content"), str)
+        and msg["content"].startswith(_CODEX_INCOMPLETE_NUDGE_PREFIX)
+    )
+
+
+def strip_incomplete_reasoning_tail(
+    agent_history: List[Dict[str, Any]],
+) -> List[Dict[str, Any]]:
+    """Strip a trailing hidden-reasoning-only incomplete assistant tail.
+
+    When a Codex turn exhausts its continuation retries it ends with an
+    assistant message that has ``finish_reason == "incomplete"`` and only
+    hidden reasoning (no visible answer, no tool call). The gateway
+    deliberately keeps that turn OUT of the persisted transcript, but the
+    cached agent still holds it in its live ``_session_messages``. When the FTS
+    write-corruption guard resurrects the live transcript because disk
+    persistence lagged, that poisoned tail is replayed to the provider and
+    seeds another incomplete continuation loop (the hidden-reasoning-only
+    incomplete loop reported for the Discord/Mac gateway).
+
+    Remove that tail (and the interleaved ``_CODEX_INCOMPLETE_NUDGE`` user
+    messages that only exist to prod it) so provider continuation resumes from
+    the last real turn, matching the state the persisted transcript already
+    represents. A visible partial answer (any content) or a completed turn is
+    never stripped, so genuine recovered context in the true FTS-corruption
+    case survives. Returns the same list object when there is nothing to strip.
+    """
+    if not agent_history:
+        return agent_history
+    end = len(agent_history)
+    while end > 0:
+        msg = agent_history[end - 1]
+        if _is_hidden_reasoning_incomplete_assistant(msg) or _is_codex_incomplete_nudge(msg):
+            end -= 1
+            continue
+        break
+    if end == len(agent_history):
+        return agent_history
+    logger.warning(
+        "Stripping hidden-reasoning-only incomplete assistant tail from replay "
+        "history (%d message(s)) so provider continuation does not loop",
+        len(agent_history) - end,
+    )
+    return agent_history[:end]
+
+
 # ──────────────────────────────────────────────────────────────────────
 # Stale dangerous-confirmation text expiry (#59607)
 # ──────────────────────────────────────────────────────────────────────

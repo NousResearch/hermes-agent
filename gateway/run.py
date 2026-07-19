@@ -1122,6 +1122,7 @@ from agent.replay_cleanup import (  # noqa: E402
     is_interrupted_tool_result as _is_interrupted_tool_result,
     strip_interrupted_tool_tails as _strip_interrupted_tool_tails,
     strip_dangling_tool_call_tail as _strip_dangling_tool_call_tail,
+    strip_incomplete_reasoning_tail as _strip_incomplete_reasoning_tail,
     strip_stale_dangerous_confirmations as _strip_stale_dangerous_confirmations,
     is_dangerous_confirmation as _is_dangerous_confirmation,
 )
@@ -20531,6 +20532,12 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     # dangerous confirmation can't slip through this path
                     # either. Idempotent; messages without timestamps are
                     # untouched.
+                    # Also drop a trailing hidden-reasoning-only incomplete
+                    # assistant tail: a retry-exhausted Codex turn is
+                    # suppressed from disk but lingers in live
+                    # _session_messages, so this guard would otherwise
+                    # resurrect it and loop provider continuation forever.
+                    _selected = _strip_incomplete_reasoning_tail(_selected)
                     agent_history = _strip_stale_dangerous_confirmations(
                         _selected, now=time.time()
                     )

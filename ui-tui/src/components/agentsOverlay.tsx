@@ -726,9 +726,9 @@ export function AgentsOverlay({ gw, initialHistoryIndex = 0, onClose, t }: Agent
     })
       .then(raw => {
         const r = asRpcResult<SubagentSteerResponse>(raw)
-        setFlash(r?.accepted ? `steered ${target.item.id}` : `not running: ${target.item.id}`)
+        setFlash(r?.accepted ? `instruction queued for ${target.item.id}` : `not running: ${target.item.id}`)
       })
-      .catch(() => setFlash(`steer failed: ${target.item.id}`))
+      .catch(() => setFlash(`instruction failed: ${target.item.id}`))
   }
 
   const killOne = (id: string) =>
@@ -736,16 +736,16 @@ export function AgentsOverlay({ gw, initialHistoryIndex = 0, onClose, t }: Agent
       interrupt(id)
         .then(raw => {
           const r = asRpcResult<SubagentInterruptResponse>(raw)
-          setFlash(r?.found ? `killing ${id}` : `not found: ${id}`)
+          setFlash(r?.found ? `stopping ${id}` : `not found: ${id}`)
         })
-        .catch(() => setFlash(`kill failed: ${id}`))
+        .catch(() => setFlash(`stop failed: ${id}`))
     })
 
   const killSubtree = (node: SubagentNode) =>
     guardLive(() => {
       const ids = [node.item.id, ...descendantIds(node)]
       ids.forEach(id => interrupt(id).catch(() => {}))
-      setFlash(`killing subtree · ${ids.length} node${ids.length === 1 ? '' : 's'}`)
+      setFlash(`stopping subtree · ${ids.length} node${ids.length === 1 ? '' : 's'}`)
     })
 
   const togglePause = () =>
@@ -754,7 +754,7 @@ export function AgentsOverlay({ gw, initialHistoryIndex = 0, onClose, t }: Agent
         .then(raw => {
           const r = asRpcResult<DelegationPauseResponse>(raw)
           applyDelegationStatus({ paused: r?.paused })
-          setFlash(r?.paused ? 'spawning paused' : 'spawning resumed')
+          setFlash(r?.paused ? 'new subagent spawning paused · running agents continue' : 'new subagent spawning resumed')
         })
         .catch(() => setFlash('pause failed'))
     })
@@ -787,7 +787,7 @@ export function AgentsOverlay({ gw, initialHistoryIndex = 0, onClose, t }: Agent
       if (key.escape) {
         setSteerTarget(null)
         setSteerText('')
-        setFlash('steer cancelled')
+        setFlash('instruction cancelled')
       }
 
       return
@@ -822,7 +822,7 @@ export function AgentsOverlay({ gw, initialHistoryIndex = 0, onClose, t }: Agent
       return killSubtree(selected)
     }
 
-    if (ch === 'e' && selected) {
+    if (ch === 'i' && selected) {
       return guardLive(() => {
         if (selected.item.status !== 'running') {
           setFlash(`not running: ${selected.item.id}`)
@@ -935,7 +935,7 @@ export function AgentsOverlay({ gw, initialHistoryIndex = 0, onClose, t }: Agent
 
   const controlsHint = replayMode
     ? ' · controls locked'
-    : ` · e steer · x kill · X subtree · p ${delegation.paused ? 'resume' : 'pause'}`
+    : ` · i instruct · x stop · X stop subtree · p ${delegation.paused ? 'resume spawns' : 'pause spawns'}`
 
   // ── Rendering ──────────────────────────────────────────────────────
 
@@ -1000,7 +1000,7 @@ export function AgentsOverlay({ gw, initialHistoryIndex = 0, onClose, t }: Agent
 
         {steerTarget ? (
           <Box flexDirection="column">
-            <Text color={t.color.label}>Steer {steerTarget.item.id}</Text>
+            <Text color={t.color.label}>New instruction for {steerTarget.item.id}</Text>
             <Box>
               <Text color={t.color.label}>{'> '}</Text>
               <TextInput

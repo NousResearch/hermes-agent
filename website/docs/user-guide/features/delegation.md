@@ -30,6 +30,43 @@ delegate_task(tasks=[
 ])
 ```
 
+## Control Running Subagents
+
+`delegate_task` can also inspect, redirect, or stop subagents while they are
+running. The API calls these actions `status`, `steer`, and `interrupt`.
+
+First list the active children that the current agent is allowed to control:
+
+```python
+delegate_task(action="status")
+```
+
+The result includes each live child's stable `subagent_id` and recent activity.
+Use that ID to redirect one child without stopping it:
+
+```python
+delegate_task(
+    action="steer",
+    subagent_id="<id from status>",
+    instruction="Stop editing the API client and focus on reproducing the timeout."
+)
+```
+
+Or request that only that child stop:
+
+```python
+delegate_task(action="interrupt", subagent_id="<id from status>")
+```
+
+`steer` queues the instruction for the child's next model iteration.
+`interrupt` requests a cooperative stop, so it may not be instantaneous while
+the child is inside a model or tool call.
+
+Model-originated controls are scoped to the caller's top-level delegation tree.
+An agent can coordinate children and sibling branches in that tree, but it
+cannot inspect or control a subagent from another delegation tree. The trusted
+TUI operator controls described below are not model-scoped.
+
 ## How Subagent Context Works
 
 :::warning Critical: Subagents Know Nothing
@@ -213,8 +250,17 @@ The TUI ships a `/agents` overlay (alias `/tasks`) that turns recursive `delegat
 
 - Live tree view of running and recently-finished subagents, grouped by parent
 - Per-branch cost, token, and file-touched rollups
-- Kill and pause controls — cancel a specific subagent mid-flight without interrupting its siblings
+- Instruct a selected running subagent with `i`
+- Stop one selected subagent with `x`, or its entire subtree with `X`
+- Pause or resume new spawning with `p`; children already running continue
 - Post-hoc review: step through each subagent's turn-by-turn history even after they've returned to the parent
+
+| Key | Action |
+|-----|--------|
+| `i` | Enter a new instruction for the selected running subagent |
+| `x` | Stop the selected subagent |
+| `X` | Stop the selected subagent and all of its descendants |
+| `p` | Pause or resume new subagent spawning; running subagents are unaffected |
 
 The classic CLI just prints `/agents` as a text summary; the TUI is where the overlay shines. See [TUI — Slash commands](/user-guide/tui#slash-commands).
 

@@ -951,6 +951,18 @@ def interruptible_api_call(agent, api_kwargs: dict):
         _reset_stale_streak(agent)
     return result["response"]
 
+def _resolve_anthropic_model_family(agent) -> Optional[str]:
+    custom_providers = getattr(agent, "_custom_providers", None)
+    if not isinstance(custom_providers, list):
+        return None
+
+    from hermes_cli.config import get_custom_provider_anthropic_model_family
+
+    return get_custom_provider_anthropic_model_family(
+        model=agent.model,
+        base_url=agent.base_url,
+        custom_providers=custom_providers,
+    )
 
 
 def build_api_kwargs(agent, api_messages: list) -> dict:
@@ -977,6 +989,7 @@ def build_api_kwargs(agent, api_messages: list) -> dict:
             base_url=getattr(agent, "_anthropic_base_url", None),
             fast_mode=(agent.request_overrides or {}).get("speed") == "fast",
             drop_context_1m_beta=bool(getattr(agent, "_oauth_1m_beta_disabled", False)),
+            anthropic_model_family=_resolve_anthropic_model_family(agent),
         )
 
     # AWS Bedrock native Converse API — bypasses the OpenAI client entirely.
@@ -2042,10 +2055,22 @@ def handle_max_iterations(agent, messages: list, api_call_count: int) -> str:
 
             if agent.api_mode == "anthropic_messages":
                 _tsum = agent._get_transport()
-                _ant_kw = _tsum.build_kwargs(model=agent.model, messages=api_messages, tools=None,
-                               max_tokens=agent.max_tokens, reasoning_config=agent.reasoning_config,
-                               is_oauth=agent._is_anthropic_oauth,
-                               preserve_dots=agent._anthropic_preserve_dots())
+                _ant_kw = _tsum.build_kwargs(
+                    model=agent.model,
+                    messages=api_messages,
+                    tools=None,
+                    max_tokens=agent.max_tokens,
+                    reasoning_config=agent.reasoning_config,
+                    is_oauth=agent._is_anthropic_oauth,
+                    preserve_dots=agent._anthropic_preserve_dots(),
+                    context_length=getattr(
+                        getattr(agent, "context_compressor", None),
+                        "context_length",
+                        None,
+                    ),
+                    base_url=getattr(agent, "_anthropic_base_url", None),
+                    anthropic_model_family=_resolve_anthropic_model_family(agent),
+                )
                 summary_response = agent._anthropic_messages_create(_ant_kw)
                 _summary_result = _tsum.normalize_response(summary_response, strip_tool_prefix=agent._is_anthropic_oauth)
                 final_response = (_summary_result.content or "").strip()
@@ -2072,10 +2097,22 @@ def handle_max_iterations(agent, messages: list, api_call_count: int) -> str:
                 final_response = (_cnr_retry.content or "").strip()
             elif agent.api_mode == "anthropic_messages":
                 _tretry = agent._get_transport()
-                _ant_kw2 = _tretry.build_kwargs(model=agent.model, messages=api_messages, tools=None,
-                                is_oauth=agent._is_anthropic_oauth,
-                                max_tokens=agent.max_tokens, reasoning_config=agent.reasoning_config,
-                                preserve_dots=agent._anthropic_preserve_dots())
+                _ant_kw2 = _tretry.build_kwargs(
+                    model=agent.model,
+                    messages=api_messages,
+                    tools=None,
+                    is_oauth=agent._is_anthropic_oauth,
+                    max_tokens=agent.max_tokens,
+                    reasoning_config=agent.reasoning_config,
+                    preserve_dots=agent._anthropic_preserve_dots(),
+                    context_length=getattr(
+                        getattr(agent, "context_compressor", None),
+                        "context_length",
+                        None,
+                    ),
+                    base_url=getattr(agent, "_anthropic_base_url", None),
+                    anthropic_model_family=_resolve_anthropic_model_family(agent),
+                )
                 retry_response = agent._anthropic_messages_create(_ant_kw2)
                 _retry_result = _tretry.normalize_response(retry_response, strip_tool_prefix=agent._is_anthropic_oauth)
                 final_response = (_retry_result.content or "").strip()

@@ -59,6 +59,7 @@ class AnthropicTransport(ProviderTransport):
             base_url: str | None
             fast_mode: bool
             drop_context_1m_beta: bool
+            anthropic_model_family: str | None
         """
         from agent.anthropic_adapter import build_anthropic_kwargs
 
@@ -75,6 +76,7 @@ class AnthropicTransport(ProviderTransport):
             base_url=params.get("base_url"),
             fast_mode=params.get("fast_mode", False),
             drop_context_1m_beta=params.get("drop_context_1m_beta", False),
+            anthropic_model_family=params.get("anthropic_model_family"),
         )
 
     def normalize_response(self, response: Any, **kwargs) -> NormalizedResponse:

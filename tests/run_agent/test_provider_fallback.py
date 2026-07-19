@@ -211,6 +211,58 @@ class TestFallbackChainAdvancement:
             assert agent._try_activate_fallback() is True
             assert agent.api_mode == "anthropic_messages"
 
+    def test_anthropic_fallback_request_uses_fallback_opaque_family(self):
+        base_url = "https://fallback.example/anthropic"
+        agent = _make_agent(
+            fallback_model={
+                "provider": "custom",
+                "model": "ep-fable",
+                "base_url": base_url,
+            }
+        )
+        agent._custom_providers = [
+            {
+                "base_url": base_url,
+                "models": {
+                    "ep-fable": {
+                        "anthropic_model_family": "claude-fable-5",
+                    },
+                },
+            }
+        ]
+        agent.reasoning_config = {"enabled": True, "effort": "xhigh"}
+        agent.max_tokens = 4096
+
+        with (
+            patch(
+                "agent.auxiliary_client.resolve_provider_client",
+                return_value=(
+                    _mock_client(base_url=base_url, api_key="fallback-key"),
+                    "ep-fable",
+                ),
+            ),
+            patch(
+                "agent.anthropic_adapter.build_anthropic_client",
+                return_value=MagicMock(),
+            ),
+            patch(
+                "hermes_cli.model_normalize.normalize_model_for_provider",
+                side_effect=lambda model, provider: model,
+            ),
+        ):
+            assert agent._try_activate_fallback() is True
+
+        kwargs = agent._build_api_kwargs(
+            [{"role": "user", "content": "hi"}],
+        )
+        assert agent.api_mode == "anthropic_messages"
+        assert kwargs["model"] == "ep-fable"
+        assert kwargs["thinking"] == {
+            "type": "adaptive",
+            "display": "summarized",
+        }
+        assert kwargs["output_config"] == {"effort": "xhigh"}
+
 
 # ── Pool-rotation vs fallback gating (#11314) ────────────────────────────
 

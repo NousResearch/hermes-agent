@@ -93,7 +93,7 @@ def build_system_prompt_append(
     Hermes' own prompt composer is bypassed on this runtime; this is its
     replacement, built from the SAME native builders (W2 composer parity):
 
-      1. Operator persona/soul file (HERMES_CLAUDE_SDK_APPEND_FILE) —
+      1. Operator persona/soul file (agent.claude_agent_sdk.append_file) —
          identity lives here.
       2. Session line — the native volatile-tier format (date-only for
          prefix-cache stability) + session id / model / provider.
@@ -114,14 +114,18 @@ def build_system_prompt_append(
     """
     blocks: list[str] = []
 
-    soul_path = os.environ.get("HERMES_CLAUDE_SDK_APPEND_FILE", "").strip()
+    # Lazy import: keeps this module free of an import cycle with the session
+    # module while reusing its single reader for the provider config block.
+    from agent.transports.claude_agent_sdk_session import _provider_config
+
+    soul_path = str(_provider_config().get("append_file") or "").strip()
     if soul_path:
         soul = _read_capped(soul_path)
         if soul:
             blocks.append(soul)
         else:
             logger.warning(
-                "HERMES_CLAUDE_SDK_APPEND_FILE=%s is set but unreadable/empty",
+                "agent.claude_agent_sdk.append_file=%s is set but unreadable/empty",
                 soul_path,
             )
 

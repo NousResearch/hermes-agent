@@ -141,13 +141,14 @@ def _provider_config() -> dict:
         return {}
 
 
-def _provider_flag(config_key: str, env_var: str, default: bool = False) -> bool:
-    """Behavioral flag: config.yaml is the operator interface
-    (`agent.claude_agent_sdk.<key>`); the env var remains as an explicit
-    deployment override (systemd drop-ins) and wins when set."""
-    env = os.environ.get(env_var, "").strip().lower()
-    if env:
-        return env in ("1", "true", "yes")
+def _provider_flag(config_key: str, default: bool = False) -> bool:
+    """Behavioural flag read from `agent.claude_agent_sdk.<key>` in config.yaml.
+
+    config.yaml is the ONLY interface. AGENTS.md keeps non-secret behavioural
+    settings out of `HERMES_*` environment variables, so there is deliberately
+    no env override here — a deployment sets the key in config.yaml.
+    Canonical defaults live in `hermes_cli/config.py::DEFAULT_CONFIG`.
+    """
     value = _provider_config().get(config_key, default)
     if isinstance(value, str):
         return value.strip().lower() in ("1", "true", "yes")
@@ -246,9 +247,7 @@ class ClaudeAgentSdkSession:
         # Hard rule, enforced fail-closed: this provider exists to bill the
         # Claude SUBSCRIPTION. If a metered ANTHROPIC_API_KEY is present the
         # underlying CLI would silently prefer it — refuse to start instead.
-        allow_metered = _provider_flag(
-            "allow_metered_key", "HERMES_CLAUDE_SDK_ALLOW_API_KEY"
-        )
+        allow_metered = _provider_flag("allow_metered_key")
         for metered_var in ("ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN"):
             if os.environ.get(metered_var) and not allow_metered:
                 raise RuntimeError(
@@ -256,8 +255,7 @@ class ClaudeAgentSdkSession:
                     "is set, which would silently switch billing from the "
                     "Claude subscription to metered API usage. Unset it, or "
                     "set agent.claude_agent_sdk.allow_metered_key: true in "
-                    "config.yaml (env override HERMES_CLAUDE_SDK_ALLOW_API_KEY=1) "
-                    "to explicitly allow it."
+                    "config.yaml to explicitly allow it."
                 )
         if self._client_factory is None:
             ok, msg = check_claude_sdk_available()
@@ -510,9 +508,8 @@ class ClaudeAgentSdkSession:
         if self._resume_session_id:
             fields["resume"] = self._resume_session_id
         # Default OFF (upstream-conservative): partial messages only when the
-        # operator opts in via agent.claude_agent_sdk.streaming in config.yaml
-        # (or the HERMES_CLAUDE_SDK_STREAMING deployment override).
-        if _provider_flag("streaming", "HERMES_CLAUDE_SDK_STREAMING"):
+        # operator opts in via agent.claude_agent_sdk.streaming in config.yaml.
+        if _provider_flag("streaming"):
             fields["include_partial_messages"] = True
         return fields
 

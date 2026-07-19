@@ -27,6 +27,21 @@ from agent.transports.claude_sdk_event_projector import (
 )
 
 
+@pytest.fixture(autouse=True)
+def _isolate_provider_config(monkeypatch):
+    """Every `agent.claude_agent_sdk` flag now resolves from config.yaml only.
+
+    Without this, `_provider_config()` reads the DEVELOPER'S REAL config.yaml:
+    a machine with `allow_metered_key: true` set would silently invert the
+    metered-billing refusal assertions, and a real `append_file` would leak into
+    the system-prompt tests. Default to an empty block; tests that care patch
+    `load_config_readonly` themselves (the last patch wins).
+    """
+    import hermes_cli.config as cfg
+
+    monkeypatch.setattr(cfg, "load_config_readonly", lambda *a, **k: {}, raising=False)
+
+
 # ---------- SDK stand-in types (duck-typed by class NAME) ----------
 
 
@@ -359,7 +374,6 @@ class TestSession:
         # The hard rule enforced at the front door: a present metered key
         # must abort the REAL runtime startup path, never silently rebill.
         monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-api03-fake")
-        monkeypatch.delenv("HERMES_CLAUDE_SDK_ALLOW_API_KEY", raising=False)
         session = ClaudeAgentSdkSession(cwd="/tmp")  # no factory → real path
         turn = session.run_turn("hi")
         assert turn.should_retire
@@ -541,7 +555,6 @@ class TestMcpEnvMinimal:
         # Validator C5: the CLI also honors ANTHROPIC_AUTH_TOKEN (bearer,
         # typically metered/proxy) — same fail-closed class as the API key.
         monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
-        monkeypatch.delenv("HERMES_CLAUDE_SDK_ALLOW_API_KEY", raising=False)
         monkeypatch.setenv("ANTHROPIC_AUTH_TOKEN", "fake-bearer")
         session = ClaudeAgentSdkSession(cwd="/tmp")  # no factory → real path
         turn = session.run_turn("hi")
@@ -555,7 +568,6 @@ class TestMcpEnvMinimal:
         import hermes_cli.config as cfg
 
         monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-api03-fake")
-        monkeypatch.delenv("HERMES_CLAUDE_SDK_ALLOW_API_KEY", raising=False)
         monkeypatch.setattr(
             cfg,
             "load_config_readonly",
@@ -826,17 +838,19 @@ class TestInterruptRoutesToSdkSession:
 
 
 class TestStreaming:
-    def test_partial_messages_option_env_gated(self, monkeypatch):
+    def test_env_var_cannot_enable_streaming(self, monkeypatch):
+        # AGENTS.md:102-107 keeps behavioural settings out of HERMES_* env
+        # vars. The old HERMES_CLAUDE_SDK_STREAMING override is gone, so
+        # setting it must have NO effect — config.yaml is the only interface.
         monkeypatch.setenv("HERMES_CLAUDE_SDK_STREAMING", "1")
         session, holder = _make_session(script=[ResultMessage(result="ok")])
         try:
             session.run_turn("ping")
         finally:
             session.close()
-        assert holder["client"].options["include_partial_messages"] is True
+        assert "include_partial_messages" not in holder["client"].options
 
-    def test_option_absent_by_default(self, monkeypatch):
-        monkeypatch.delenv("HERMES_CLAUDE_SDK_STREAMING", raising=False)
+    def test_option_absent_by_default(self):
         session, holder = _make_session(script=[ResultMessage(result="ok")])
         try:
             session.run_turn("ping")
@@ -849,7 +863,6 @@ class TestStreaming:
         # agent.claude_agent_sdk.streaming turns the option on without any env.
         import hermes_cli.config as cfg
 
-        monkeypatch.delenv("HERMES_CLAUDE_SDK_STREAMING", raising=False)
         monkeypatch.setattr(
             cfg,
             "load_config_readonly",
@@ -862,9 +875,10 @@ class TestStreaming:
             session.close()
         assert holder["client"].options["include_partial_messages"] is True
 
-    def test_env_override_wins_over_config(self, monkeypatch):
-        # The env var stays as the deployment override (systemd drop-ins)
-        # and wins in BOTH directions — an explicit "0" beats config true.
+    def test_env_var_cannot_disable_config_streaming(self, monkeypatch):
+        # The mirror of the test above: an explicit env "0" must NOT be able to
+        # veto config.yaml either. Together the pair pins the override as fully
+        # inert in both directions, so it cannot creep back in unnoticed.
         import hermes_cli.config as cfg
 
         monkeypatch.setenv("HERMES_CLAUDE_SDK_STREAMING", "0")
@@ -878,7 +892,7 @@ class TestStreaming:
             session.run_turn("ping")
         finally:
             session.close()
-        assert "include_partial_messages" not in holder["client"].options
+        assert holder["client"].options["include_partial_messages"] is True
 
     def test_deltas_reach_callback_and_never_the_transcript(self):
         got = []
@@ -1275,12 +1289,24 @@ class TestSystemPromptAppend:
             (memories / "MEMORY.md").write_text(memory)
         if user is not None:
             (memories / "USER.md").write_text(user)
+        import hermes_cli.config as cfg
+
+        append_file = ""
         if soul is not None:
             soul_file = tmp_path / "SOUL.md"
             soul_file.write_text(soul)
-            monkeypatch.setenv("HERMES_CLAUDE_SDK_APPEND_FILE", str(soul_file))
-        else:
-            monkeypatch.delenv("HERMES_CLAUDE_SDK_APPEND_FILE", raising=False)
+            append_file = str(soul_file)
+        # config.yaml is the only interface for the persona file
+        # (agent.claude_agent_sdk.append_file); the old env var is gone.
+        # Patching unconditionally also isolates the suite from a developer's
+        # real config.yaml, which would otherwise leak a live append_file in.
+        monkeypatch.setattr(
+            cfg,
+            "load_config_readonly",
+            lambda *a, **k: {
+                "agent": {"claude_agent_sdk": {"append_file": append_file}}
+            },
+        )
         monkeypatch.setenv("HERMES_HOME", str(hermes_home))
         return hermes_home
 
@@ -1460,7 +1486,6 @@ class TestSystemPromptAppend:
         hermes_home = tmp_path / "hermes"
         (hermes_home / "memories").mkdir(parents=True)
         (hermes_home / "USER.md").write_text("stale root copy")
-        monkeypatch.delenv("HERMES_CLAUDE_SDK_APPEND_FILE", raising=False)
         monkeypatch.setenv("HERMES_HOME", str(hermes_home))
         assert "stale root copy" not in (build_system_prompt_append() or "")
 
@@ -1484,7 +1509,6 @@ class TestSystemPromptAppend:
         # brand-new box still gets guidance, so the brain knows its tools.
         from agent.claude_sdk_runtime import build_system_prompt_append
 
-        monkeypatch.delenv("HERMES_CLAUDE_SDK_APPEND_FILE", raising=False)
         monkeypatch.setenv("HERMES_HOME", str(tmp_path))  # empty dir
         out = build_system_prompt_append()
         assert out is not None

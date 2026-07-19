@@ -781,6 +781,9 @@ agent:
   #   # start while a metered ANTHROPIC_API_KEY / ANTHROPIC_AUTH_TOKEN could
   #   # silently take over billing. Set true to explicitly allow that.
   #   allow_metered_key: false
+  #   # Optional operator persona/soul file appended to the system prompt
+  #   # ("" = none).
+  #   append_file: ""
 
   # Inactivity timeout for gateway agent runs (seconds, 0 = unlimited).
   # The agent can run indefinitely when actively calling tools or receiving

@@ -27,6 +27,7 @@ import {
   Info,
   KeyRound,
   Layers3,
+  LayoutDashboard,
   MessageCircle,
   Monitor,
   Moon,
@@ -64,10 +65,12 @@ import { type ThemeMode, useTheme } from '@/themes/context'
 import { isUserTheme, resolveTheme } from '@/themes/user-themes'
 
 import {
+  ADMIN_ROUTE,
   AGENTS_ROUTE,
   ARTIFACTS_ROUTE,
   COMMAND_CENTER_ROUTE,
   CRON_ROUTE,
+  KANBAN_ROUTE,
   MESSAGING_ROUTE,
   NEW_CHAT_ROUTE,
   PROFILES_ROUTE,
@@ -449,6 +452,22 @@ export function CommandPalette() {
             id: 'nav-artifacts',
             label: cc.nav.artifacts.title,
             run: go(ARTIFACTS_ROUTE)
+          },
+          {
+            action: 'nav.admin',
+            icon: LayoutDashboard,
+            id: 'nav-admin',
+            keywords: ['admin', 'config', 'keys', 'mcp', 'channels', 'settings', 'management'],
+            label: 'Admin',
+            run: go(ADMIN_ROUTE)
+          },
+          {
+            action: 'nav.kanban',
+            icon: Layers3,
+            id: 'nav-kanban',
+            keywords: ['kanban', 'board', 'tasks', 'workers', 'multi-agent'],
+            label: 'Kanban board',
+            run: go(KANBAN_ROUTE)
           },
           {
             action: 'nav.cron',

@@ -100,7 +100,9 @@ import { $focusedStoredSessionId, $workingSessionIds, type SplitDir } from '@/st
 
 import {
   type AppView,
+  ADMIN_ROUTE,
   ARTIFACTS_ROUTE,
+  KANBAN_ROUTE,
   MESSAGING_ROUTE,
   SIDEBAR_NAV_AREA,
   type SidebarNavContribution,
@@ -167,6 +169,20 @@ const SIDEBAR_NAV: SidebarNavItem[] = [
     icon: props => <Codicon name="files" {...props} />,
     route: ARTIFACTS_ROUTE,
     keybindActionId: 'nav.artifacts'
+  },
+  {
+    id: 'admin',
+    label: '',
+    icon: props => <Codicon name="settings" {...props} />,
+    route: ADMIN_ROUTE,
+    keybindActionId: 'nav.admin'
+  },
+  {
+    id: 'kanban',
+    label: '',
+    icon: props => <Codicon name="project" {...props} />,
+    route: KANBAN_ROUTE,
+    keybindActionId: 'nav.kanban'
   }
 ]
 
@@ -1105,6 +1121,8 @@ export function ChatSidebar({
                   (item.id === 'skills' && currentView === 'skills') ||
                   (item.id === 'messaging' && currentView === 'messaging') ||
                   (item.id === 'artifacts' && currentView === 'artifacts') ||
+                  (item.id === 'admin' && currentView === 'admin') ||
+                  (item.id === 'kanban' && currentView === 'kanban') ||
                   // Contributed rows light up at their own route.
                   (Boolean(item.route) && pathname === item.route)
 

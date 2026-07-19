@@ -1489,7 +1489,10 @@ updates:
 #     access_token_env: BWS_ACCESS_TOKEN   # bootstrap token, sourced from .env
 #     project_id: ""                       # UUID of the BSM project to sync
 #     server_url: ""                       # "" = US Cloud; EU/self-hosted URL otherwise
-#     cache_ttl_seconds: 300               # 0 disables caching
+#     cache_ttl_seconds: 300               # 0 disables fresh caching
+#     encrypted_cache:                     # optional encrypted stale fallback
+#       enabled: false
+#       max_stale_seconds: 0               # 0 disables stale fallback
 #     override_existing: true              # BSM values win over existing env
 #     auto_install: true                   # lazy-download bws into ~/.hermes/bin
 #

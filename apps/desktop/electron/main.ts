@@ -106,6 +106,7 @@ import { createLinkTitleWindow, guardLinkTitleSession, readLinkTitleWindowTitle 
 import { ensureMainWindow } from './main-window-lifecycle'
 import { serializeJsonBody, setJsonRequestHeaders } from './oauth-net-request'
 import { decideProfileDeleteAction, profileNameFromDeleteRequest, resolveRouteProfile } from './profile-delete-routing'
+import { fetchPrimaryProfileSessions } from './profile-session-routing'
 import {
   buildSessionWindowUrl,
   chatWindowWebPreferences,
@@ -8231,12 +8232,7 @@ async function fetchProfilesSessionSlice(searchParams, remoteProfiles) {
       return remoteSessionList(requested, searchParams)
     }
 
-    const primary = await ensureBackend(null)
-
-    return fetchJson(`${primary.baseUrl}/api/profiles/sessions?${searchParams}`, primary.token, {
-      method: 'GET',
-      timeoutMs: DEFAULT_FETCH_TIMEOUT_MS
-    }).catch(() => ({ sessions: [], total: 0, profile_totals: {} }))
+    return fetchPrimaryProfileSessions(searchParams, fetchJsonForProfile)
   }
 
   return mergeRemoteProfileSessions(searchParams, remoteProfiles)
@@ -8251,12 +8247,7 @@ async function mergeRemoteProfileSessions(searchParams, remoteProfiles) {
   const offset = Math.max(0, Number(searchParams.get('offset')) || 0)
   const order = searchParams.get('order') === 'created' ? 'started_at' : 'last_active'
 
-  const primary = await ensureBackend(null)
-
-  const base = (await fetchJson(`${primary.baseUrl}/api/profiles/sessions?${searchParams}`, primary.token, {
-    method: 'GET',
-    timeoutMs: DEFAULT_FETCH_TIMEOUT_MS
-  }).catch(() => ({ sessions: [], total: 0, profile_totals: {} }))) as any
+  const base = (await fetchPrimaryProfileSessions(searchParams, fetchJsonForProfile)) as any
 
   // Over-fetch each remote from offset 0 (limit+offset rows) so the merged window
   // is correct for this page — mirrors the primary's per-profile over-fetch.

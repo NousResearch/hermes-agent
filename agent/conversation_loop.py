@@ -4583,6 +4583,21 @@ def run_conversation(
                 interim_has_reasoning = bool(interim_msg.get("reasoning", "").strip()) if isinstance(interim_msg.get("reasoning"), str) else False
                 interim_has_codex_reasoning = bool(interim_msg.get("codex_reasoning_items"))
                 interim_has_codex_message_items = bool(interim_msg.get("codex_message_items"))
+                interim_has_tool_calls = bool(getattr(assistant_message, "tool_calls", None))
+
+                # A "reasoning-only" incomplete response carries neither a
+                # visible answer nor a tool call — only internal (plain or
+                # encrypted) reasoning.  Track its consecutive streak apart
+                # from the aggregate incomplete count: encrypted reasoning
+                # items *do* replay, so a bare retry is byte-identical and the
+                # model deterministically repeats the stall.  Visible/replayable
+                # partial progress resets the local no-progress streak while the
+                # turn-wide iteration budget stays the hard bound (#67321).
+                is_reasoning_only = not interim_has_content and not interim_has_tool_calls
+                if is_reasoning_only:
+                    agent._codex_reasoning_only_streak += 1
+                else:
+                    agent._codex_reasoning_only_streak = 0
 
                 if (
                     interim_has_content
@@ -4636,7 +4651,48 @@ def run_conversation(
                         messages.append(interim_msg)
                         agent._emit_interim_assistant_message(interim_msg)
 
-                if agent._codex_incomplete_retries < 3:
+                # Recovery ladder for a reasoning-only stall (#67321):
+                #   streak 1 → replay the provider state once
+                #   streak 2 → append an explicit continuation nudge
+                #   streak 3 → hand the turn to the configured fallback provider
+                # Replay + nudge alone cannot dislodge an encrypted reasoning
+                # loop, so after the third consecutive reasoning-only response
+                # switch backends instead of exhausting the retry budget on a
+                # deterministic repeat.
+                if is_reasoning_only and agent._codex_reasoning_only_streak >= 3:
+                    if agent._try_activate_fallback(reason=FailoverReason.incomplete_response):
+                        # The failover rewrites the Model:/Provider: identity on
+                        # _cached_system_prompt; refresh the in-flight system
+                        # message so the next iteration ships the new identity.
+                        # Crossing to a non-Codex provider also drops the opaque
+                        # replay state from the wire (see the
+                        # drop_codex_reasoning_items gate in the message builder).
+                        active_system_prompt = _sync_failover_system_message(
+                            agent, api_messages, active_system_prompt
+                        )
+                        # If the triggering response consumed the turn budget,
+                        # grant exactly one bounded grace call so the fallback
+                        # actually runs instead of the loop exiting first.
+                        if (
+                            api_call_count >= agent.max_iterations
+                            or agent.iteration_budget.remaining <= 0
+                        ):
+                            agent._budget_grace_call = True
+                        agent._codex_incomplete_retries = 0
+                        agent._codex_reasoning_only_streak = 0
+                        if not agent.quiet_mode:
+                            agent._vprint(f"{agent.log_prefix}↻ Codex reasoning-only stall after 3 attempts — activating fallback provider")
+                        agent._emit_wait_notice(
+                            "↻ model stuck on internal reasoning — switching to fallback provider"
+                        )
+                        agent._session_messages = messages
+                        continue
+                    # No fallback configured/available — fall through to the
+                    # terminal sentinel below (preserves prior behavior).
+
+                elif agent._codex_incomplete_retries < 3 or (
+                    is_reasoning_only and agent._codex_reasoning_only_streak < 3
+                ):
                     # When the interim message has nothing the Responses
                     # input converter will replay (no visible content, no
                     # encrypted reasoning items, no replayable message
@@ -4646,13 +4702,19 @@ def run_conversation(
                     # (observed with grok-4.20 on xai-oauth, whose
                     # reasoning items lack encrypted_content).  Append a
                     # user-role nudge so the retry actually differs and
-                    # explicitly asks for the final answer.
+                    # explicitly asks for the final answer.  Encrypted
+                    # reasoning items *do* replay, so a bare retry is still
+                    # byte-identical; nudge those too once the state has
+                    # already been replayed once (streak >= 2).
                     interim_replayable = (
                         interim_has_content
                         or interim_has_codex_reasoning
                         or interim_has_codex_message_items
                     )
-                    if not interim_replayable:
+                    should_nudge = (not interim_replayable) or (
+                        is_reasoning_only and agent._codex_reasoning_only_streak >= 2
+                    )
+                    if should_nudge:
                         _last_msg = messages[-1] if messages else None
                         _already_nudged = (
                             isinstance(_last_msg, dict)
@@ -4691,6 +4753,7 @@ def run_conversation(
                     continue
 
                 agent._codex_incomplete_retries = 0
+                agent._codex_reasoning_only_streak = 0
                 agent._persist_session(messages, conversation_history)
                 return {
                     "final_response": "Codex response remained incomplete after 3 continuation attempts",

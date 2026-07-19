@@ -3562,3 +3562,187 @@ def test_run_conversation_codex_no_nudge_for_replayable_interim(monkeypatch):
         and "only internal reasoning" in str(item.get("content"))
         for item in replay_input
     )
+
+
+# ── #67321: reasoning-only stall → nudge → fallback recovery ladder ──────────
+#
+# The merged nudge (#, xai-oauth grok-4.20) only fires when a reasoning-only
+# interim has NOTHING to replay (plain-text reasoning, no encrypted_content).
+# When the reasoning items DO carry encrypted_content they replay byte-for-byte,
+# so a bare retry keeps the model in the same reasoning-only state and the turn
+# dies with "remained incomplete after 3 continuation attempts". These tests
+# cover the encrypted case: nudge after the state has replayed once, then hand
+# the turn to the configured fallback provider, with a bounded grace call when
+# the triggering response consumed the iteration budget.
+
+
+def _spy_fallback(agent, monkeypatch, *, returns=True):
+    """Record every _try_activate_fallback call without swapping the client.
+
+    Returning True keeps ``agent.api_mode`` on ``codex_responses`` so the
+    post-switch response still parses through the Codex path — the loop-control
+    contract (streak → semantic reason → recover) is what these tests assert;
+    the real cross-protocol client swap and the drop_codex_reasoning_items
+    sanitization are exercised by the provider-router / message-builder suites.
+    """
+    calls = []
+
+    def _fake(reason=None):
+        calls.append(reason)
+        return returns
+
+    monkeypatch.setattr(agent, "_try_activate_fallback", _fake)
+    return calls
+
+
+def test_codex_encrypted_reasoning_only_nudges_after_replaying_once(monkeypatch):
+    """Encrypted reasoning-only responses replay unchanged, so a bare retry is
+    byte-identical. After the state has replayed once (streak 2) an explicit
+    continuation nudge must be appended even though the interim IS replayable."""
+    agent = _build_agent(monkeypatch)
+    requests = []
+    responses = [
+        _codex_reasoning_only_response(encrypted_content="enc_a"),
+        _codex_reasoning_only_response(encrypted_content="enc_b"),
+        _codex_message_response("Final answer."),
+    ]
+
+    def _fake_api_call(api_kwargs):
+        requests.append(api_kwargs)
+        return responses.pop(0)
+
+    monkeypatch.setattr(agent, "_interruptible_api_call", _fake_api_call)
+
+    result = agent.run_conversation("think hard then answer")
+
+    assert result["completed"] is True
+    assert result["final_response"] == "Final answer."
+    # The first continuation (request index 1) replays the encrypted state
+    # verbatim — no nudge yet. The second continuation (index 2) carries the
+    # nudge because replay alone did not dislodge the stall.
+    def _nudges(req):
+        return [
+            item for item in req["input"]
+            if isinstance(item, dict)
+            and item.get("role") == "user"
+            and "only internal reasoning" in str(item.get("content"))
+        ]
+
+    assert _nudges(requests[1]) == []
+    assert len(_nudges(requests[2])) == 1
+
+
+def test_codex_reasoning_only_streak_activates_fallback(monkeypatch):
+    """After the third consecutive reasoning-only response, the turn is handed
+    to the configured fallback with the semantic ``incomplete_response`` reason
+    instead of exhausting the retry budget on a deterministic repeat."""
+    from agent.error_classifier import FailoverReason
+
+    agent = _build_agent(monkeypatch)
+    calls = _spy_fallback(agent, monkeypatch)
+    responses = [
+        _codex_reasoning_only_response(encrypted_content="enc_a"),
+        _codex_reasoning_only_response(encrypted_content="enc_b"),
+        _codex_reasoning_only_response(encrypted_content="enc_c"),
+        _codex_message_response("Recovered by fallback."),
+    ]
+    monkeypatch.setattr(agent, "_interruptible_api_call", lambda k: responses.pop(0))
+
+    result = agent.run_conversation("keep thinking")
+
+    assert result["completed"] is True
+    assert result["final_response"] == "Recovered by fallback."
+    assert calls == [FailoverReason.incomplete_response]
+
+
+def test_codex_reasoning_only_no_fallback_returns_sentinel(monkeypatch):
+    """When no fallback is configured the ladder still terminates with the
+    existing incomplete sentinel — no regression, no infinite loop."""
+    agent = _build_agent(monkeypatch)
+    # No fallback chain on the default agent, so the real _try_activate_fallback
+    # returns False and the loop must fall through to the terminal sentinel.
+    responses = [
+        _codex_reasoning_only_response(encrypted_content="enc_a"),
+        _codex_reasoning_only_response(encrypted_content="enc_b"),
+        _codex_reasoning_only_response(encrypted_content="enc_c"),
+    ]
+    calls = {"n": 0}
+
+    def _fake_api_call(api_kwargs):
+        calls["n"] += 1
+        return responses.pop(0)
+
+    monkeypatch.setattr(agent, "_interruptible_api_call", _fake_api_call)
+
+    result = agent.run_conversation("keep thinking forever")
+
+    assert result["completed"] is False
+    assert "remained incomplete after 3 continuation attempts" in result["error"]
+    # Exactly three API calls: the fallback attempt fails and we stop, we do
+    # not keep replaying past the streak threshold.
+    assert calls["n"] == 3
+
+
+def test_codex_visible_partial_resets_reasoning_only_streak(monkeypatch):
+    """A visible partial (incomplete-with-content) response resets the local
+    no-progress streak. A later encrypted reasoning-only streak must reach its
+    OWN threshold even though the aggregate incomplete counter is already >= 3
+    (the mixed-partial variant that previously died early)."""
+    from agent.error_classifier import FailoverReason
+
+    agent = _build_agent(monkeypatch)
+    agent.max_iterations = 6
+    agent.iteration_budget = run_agent.IterationBudget(6)
+    calls = _spy_fallback(agent, monkeypatch)
+    responses = [
+        _codex_incomplete_message_response("Partial visible progress."),
+        _codex_reasoning_only_response(encrypted_content="enc_a"),
+        _codex_reasoning_only_response(encrypted_content="enc_b"),
+        _codex_reasoning_only_response(encrypted_content="enc_c"),
+        _codex_message_response("Recovered."),
+    ]
+    monkeypatch.setattr(agent, "_interruptible_api_call", lambda k: responses.pop(0))
+
+    result = agent.run_conversation("partial then stall")
+
+    assert result["completed"] is True
+    assert result["final_response"] == "Recovered."
+    # The reasoning-only streak (not the aggregate counter, already at 3 by the
+    # second reasoning-only response) is what drives the fallback.
+    assert calls == [FailoverReason.incomplete_response]
+
+
+def test_codex_reasoning_only_fallback_grace_call_when_budget_consumed(monkeypatch):
+    """If the third reasoning-only response consumes the last iteration, the
+    loop would normally exit before the fallback runs. A single bounded grace
+    call must be granted so the fallback provider actually gets to answer."""
+    from agent.error_classifier import FailoverReason
+
+    agent = _build_agent(monkeypatch)
+    agent.max_iterations = 3
+    agent.iteration_budget = run_agent.IterationBudget(3)
+    calls = _spy_fallback(agent, monkeypatch)
+    responses = [
+        _codex_reasoning_only_response(encrypted_content="enc_a"),
+        _codex_reasoning_only_response(encrypted_content="enc_b"),
+        _codex_reasoning_only_response(encrypted_content="enc_c"),
+        _codex_message_response("Fallback answered on the grace call."),
+    ]
+    api_calls = {"n": 0}
+
+    def _fake_api_call(api_kwargs):
+        api_calls["n"] += 1
+        return responses.pop(0)
+
+    monkeypatch.setattr(agent, "_interruptible_api_call", _fake_api_call)
+
+    result = agent.run_conversation("stall right at the budget edge")
+
+    assert result["completed"] is True
+    assert result["final_response"] == "Fallback answered on the grace call."
+    assert calls == [FailoverReason.incomplete_response]
+    # Three budgeted calls + exactly one grace call.
+    assert api_calls["n"] == 4
+    # The grace flag was consumed, not left armed for the next turn.
+    assert agent._budget_grace_call is False
+

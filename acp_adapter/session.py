@@ -170,6 +170,8 @@ class SessionState:
     runtime_lock: Any = field(default_factory=Lock)
     current_prompt_text: str = ""
     interrupted_prompt_text: str = ""
+    # ACP client-provided MCP servers for this session (re-applied after agent rebuilds).
+    mcp_servers: List[Any] = field(default_factory=list)
 
 
 class SessionManager:

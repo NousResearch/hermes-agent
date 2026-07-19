@@ -130,6 +130,11 @@ docs/superpowers/*
 # treat it as a local edit and autostash it on every run (#38529).
 .hermes-bootstrap-complete
 
+# Installer install-method marker written into the managed checkout root.
+# It is runtime state, never a code change; ignore it so `hermes update`
+# does not autostash it on every run (#66189).
+/.install_method
+
 # Persistent dev sandbox dir (scripts/dev-sandbox.sh --persistent)
 .hermes-sandbox/
 

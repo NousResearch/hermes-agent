@@ -54,10 +54,11 @@
     const catalog = t && t.achievements && t.achievements.catalog;
     const copy = catalog && catalog[achievement.id];
     const category = localizedCategory(t, achievement.category);
+    const hiddenSecret = achievement.state === "secret";
     if (!copy && category === achievement.category) return achievement;
     return Object.assign({}, achievement, {
-      name: (copy && copy.name) || achievement.name,
-      description: (copy && copy.description) || achievement.description,
+      name: hiddenSecret ? achievement.name : (copy && copy.name) || achievement.name,
+      description: hiddenSecret ? tx(t, "guide.secret_body", achievement.description) : (copy && copy.description) || achievement.description,
       category: category,
     });
   }

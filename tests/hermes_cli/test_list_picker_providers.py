@@ -293,3 +293,59 @@ def test_current_custom_endpoint_passthrough_marks_current_row(monkeypatch):
     assert row["slug"] == "custom:ollama"
     assert row["is_current"] is True
     assert row["models"] == ["glm-5.1", "qwen3"]
+
+
+def test_user_provider_live_models_merge_configured_models(monkeypatch):
+    """Live /models discovery should not hide manually configured model ids."""
+    monkeypatch.setattr("agent.models_dev.fetch_models_dev", lambda: {})
+    monkeypatch.setattr("agent.models_dev.PROVIDER_TO_MODELS_DEV", {})
+    monkeypatch.setattr("hermes_cli.providers.HERMES_OVERLAYS", {})
+    monkeypatch.setattr("hermes_cli.models.fetch_api_models",
+                        lambda *a, **kw: ["configured-model", "live-model"])
+
+    result = model_switch.list_authenticated_providers(
+        user_providers={
+            "relay": {
+                "name": "Relay",
+                "base_url": "https://relay.example/v1",
+                "api_key": "key",
+                "models": {
+                    "configured-model": {},
+                    "manual-only-model": {},
+                },
+            },
+        },
+        custom_providers=[],
+        max_models=50,
+    )
+
+    row = next(p for p in result if p["slug"] == "relay")
+    assert row["models"] == ["configured-model", "manual-only-model", "live-model"]
+    assert row["total_models"] == 3
+
+
+def test_custom_provider_live_models_merge_configured_models(monkeypatch):
+    """Grouped custom providers keep config-only ids alongside live discovery."""
+    monkeypatch.setattr("agent.models_dev.fetch_models_dev", lambda: {})
+    monkeypatch.setattr("agent.models_dev.PROVIDER_TO_MODELS_DEV", {})
+    monkeypatch.setattr("hermes_cli.providers.HERMES_OVERLAYS", {})
+    monkeypatch.setattr("hermes_cli.models.fetch_api_models",
+                        lambda *a, **kw: ["configured-model", "live-model"])
+
+    result = model_switch.list_authenticated_providers(
+        user_providers={},
+        custom_providers=[
+            {
+                "name": "Private Relay",
+                "base_url": "https://relay.example/v1",
+                "api_key": "key",
+                "model": "configured-model",
+                "models": {"manual-only-model": {}},
+            },
+        ],
+        max_models=50,
+    )
+
+    row = next(p for p in result if p["slug"] == "custom:private-relay")
+    assert row["models"] == ["configured-model", "manual-only-model", "live-model"]
+    assert row["total_models"] == 3

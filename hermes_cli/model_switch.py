@@ -2085,6 +2085,18 @@ def list_authenticated_providers(
     # produces two picker rows: one bare-slug ("openrouter") from section 3
     # and one "custom:openrouter" from section 4, both labelled identically.
     _section3_emitted_pairs: set = set()
+
+    def _merge_model_ids(configured: list[str], live: list[str]) -> list[str]:
+        """Merge configured and live-discovered model ids without reordering config."""
+        merged: list[str] = []
+        seen: set[str] = set()
+        for model_id in [*(configured or []), *(live or [])]:
+            if not model_id or model_id in seen:
+                continue
+            merged.append(model_id)
+            seen.add(model_id)
+        return merged
+
     if user_providers and isinstance(user_providers, dict):
         for ep_name, ep_cfg in user_providers.items():
             if not isinstance(ep_cfg, dict):
@@ -2168,7 +2180,7 @@ def list_authenticated_providers(
                         headers=_extra_headers_from_config(ep_cfg) or None,
                     )
                     if live_models:
-                        models_list = live_models
+                        models_list = _merge_model_ids(models_list, live_models)
                 except Exception:
                     pass
 
@@ -2404,9 +2416,9 @@ def list_authenticated_providers(
             # the Telegram/Discord picker should do the same for parity.
             # Live-discovery policy:
             # - With an api_key, the user has explicitly opted into the
-            #   endpoint and live /models is the source of truth — replace
-            #   the (possibly partial) ``models:`` subset configured for
-            #   context-length overrides with the full live catalog.
+            #   endpoint. Merge live /models results with the configured
+            #   model list so manual/private ids are not hidden just because
+            #   an aggregator omits them from discovery.
             #   This is the Bifrost / aggregator-gateway case.
             # - Without an api_key but with an explicit ``models:`` list,
             #   the user is narrowing a public endpoint to a specific subset
@@ -2445,8 +2457,8 @@ def list_authenticated_providers(
                         headers=grp.get("extra_headers") or None,
                     )
                     if live_models:
-                        grp["models"] = live_models
-                        grp["total_models"] = len(live_models)
+                        grp["models"] = _merge_model_ids(grp["models"], live_models)
+                        grp["total_models"] = len(grp["models"])
                 except Exception:
                     pass
             results.append({

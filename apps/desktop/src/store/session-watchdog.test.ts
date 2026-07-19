@@ -78,7 +78,7 @@ describe('session status transitions', () => {
     expect($attentionSessionIds.get()).toContain('s1')
   })
 
-  it('marks a background session unread when its turn finishes', () => {
+  it('does not infer unread from a background working transition', () => {
     $selectedStoredSessionId.set('other-session')
 
     const working = state({ busy: true, storedSessionId: 's1' })
@@ -87,7 +87,9 @@ describe('session status transitions', () => {
     const idle = { ...working, busy: false }
     publishSessionState('rt1', idle)
 
-    expect($unreadFinishedSessionIds.get()).toEqual(['s1'])
+    // Only terminal message producers know whether a completion was actually
+    // rendered off-screen. A busy→idle status snapshot cannot infer unread.
+    expect($unreadFinishedSessionIds.get()).toEqual([])
   })
 
   it('does NOT mark unread when the finishing session is the active one', () => {

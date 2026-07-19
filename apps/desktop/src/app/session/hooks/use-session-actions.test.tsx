@@ -1149,12 +1149,12 @@ describe('resumeSession warm-cache mapping integrity', () => {
     expect(methods).toContain('session.activate')
     expect(methods).not.toContain('session.resume')
     expect(getSessionMessages).toHaveBeenCalledWith('stored-A', undefined)
-    expect(runtimeIdByStoredSessionIdRef.current.get('stored-A')).toBe('rt-A')
+    expect(runtimeIdByStoredSessionIdRef.current.get(sessionScopeKey('default', 'stored-A'))).toBe('rt-A')
   })
 
   it('repairs an idle warm cache from a divergent equal-length persisted transcript', async () => {
     const runtimeIdByStoredSessionIdRef: MutableRefObject<Map<string, string>> = {
-      current: new Map([['stored-A', 'rt-A']])
+      current: new Map([[sessionScopeKey('default', 'stored-A'), 'rt-A']])
     }
 
     const state = clientState('stored-A')
@@ -1229,7 +1229,7 @@ describe('resumeSession warm-cache mapping integrity', () => {
 
   it('keeps a warm runtime and optimistic turn on a transient activation timeout', async () => {
     const runtimeIdByStoredSessionIdRef: MutableRefObject<Map<string, string>> = {
-      current: new Map([['stored-A', 'rt-A']])
+      current: new Map([[sessionScopeKey('default', 'stored-A'), 'rt-A']])
     }
 
     const state = clientState('stored-A')

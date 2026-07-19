@@ -577,7 +577,6 @@ export function useGatewayBoot({
           return
         }
 
-
         setDesktopBootStep({
           phase: 'renderer.config',
           message: translateNow('boot.steps.loadingSettings'),

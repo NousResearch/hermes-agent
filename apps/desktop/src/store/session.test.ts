@@ -408,6 +408,19 @@ describe('working session snapshot reconciliation', () => {
     expect($workingSessionIds.get()).not.toContain('local-working')
   })
 
+  it('expires colliding working scopes independently', () => {
+    setSessionWorking('shared', true, 'alpha')
+    vi.advanceTimersByTime(60 * 1000)
+    setSessionWorking('shared', true, 'beta')
+
+    vi.advanceTimersByTime(7 * 60 * 1000)
+    expect($workingSessionIds.get()).toContain('shared')
+    expect($workingSessionProfiles.get().shared).toEqual(['beta'])
+
+    vi.advanceTimersByTime(60 * 1000)
+    expect($workingSessionIds.get()).not.toContain('shared')
+  })
+
   it('does not resurrect a session that finished after the snapshot request started', () => {
     setSessionWorking('finished-after-request', true, 'work')
     const revision = sessionWorkingSnapshotRevision()

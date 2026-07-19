@@ -3,8 +3,8 @@ import type { MutableRefObject } from 'react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { $queuedPromptsBySession, enqueueQueuedPrompt, getQueuedPrompts } from '@/store/composer-queue'
+import { sessionScopeKey, setSessionWorking, setWorkingSessionIds } from '@/store/session'
 import { clearAllSessionStates } from '@/store/session-states'
-import { $workingSessionIds, sessionScopeKey, setSessionWorking, setWorkingSessionIds } from '@/store/session'
 
 import { useBackgroundQueueDrain } from './use-background-queue-drain'
 import type { SubmitTextOptions } from './use-prompt-actions/utils'

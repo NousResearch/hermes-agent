@@ -6,6 +6,7 @@ import {
   clearAllSessionUnread,
   clearSessionLineageAliases,
   setActiveSessionId,
+  setAttentionSessionIds,
   setCronSessions,
   setFreshDraftReady,
   setMessages,
@@ -16,7 +17,8 @@ import {
   setSessionProfileTotals,
   setSessions,
   setSessionsLoading,
-  setSessionsTotal
+  setSessionsTotal,
+  setWorkingSessionIds
 } from '@/store/session'
 import { clearAllSessionStates } from '@/store/session-states'
 import { clearAllSubagents } from '@/store/subagents'
@@ -46,10 +48,12 @@ export function wipeSessionListsForGatewaySwitch(): void {
   setMessagingSessions([])
   setMessagingPlatformTotals({})
   setMessagingTruncated(false)
-  // Clearing $sessionStates automatically clears $workingSessionIds and
-  // $attentionSessionIds (they're computed from it). Unread state is separate,
-  // revisioned cross-window state, so reset it through its owning API.
+  // Clear both the runtime-derived state and the profile-scoped mirrors fed by
+  // reconnect snapshots. Unread is separate revisioned cross-window state, so
+  // reset it through its owning API.
   clearAllSessionStates()
+  setWorkingSessionIds([])
+  setAttentionSessionIds([])
   clearAllSessionUnread()
   clearSessionLineageAliases()
   clearAllSubagents()

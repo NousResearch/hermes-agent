@@ -59,8 +59,10 @@ describe('useSessionStateCache — stored-id rotation provenance', () => {
       previousStoredSessionId: 'stored-A',
       runtimeSessionId: 'runtime-A'
     })
-    expect(cache.runtimeIdByStoredSessionIdRef.current.has('stored-A')).toBe(false)
-    expect(cache.runtimeIdByStoredSessionIdRef.current.get('stored-A-next')).toBe('runtime-A')
+    expect(cache.runtimeIdByStoredSessionIdRef.current.has(sessionScopeKey('default', 'stored-A'))).toBe(false)
+    expect(cache.runtimeIdByStoredSessionIdRef.current.get(sessionScopeKey('default', 'stored-A-next'))).toBe(
+      'runtime-A'
+    )
   })
 
   it('does not publish a foreground-navigation event for a background runtime rotation', () => {
@@ -77,8 +79,10 @@ describe('useSessionStateCache — stored-id rotation provenance', () => {
     })
 
     expect($activeSessionStoredIdRotation.get()).toBeNull()
-    expect(cache.runtimeIdByStoredSessionIdRef.current.has('stored-A')).toBe(false)
-    expect(cache.runtimeIdByStoredSessionIdRef.current.get('stored-A-next')).toBe('runtime-A')
+    expect(cache.runtimeIdByStoredSessionIdRef.current.has(sessionScopeKey('default', 'stored-A'))).toBe(false)
+    expect(cache.runtimeIdByStoredSessionIdRef.current.get(sessionScopeKey('default', 'stored-A-next'))).toBe(
+      'runtime-A'
+    )
   })
 })
 

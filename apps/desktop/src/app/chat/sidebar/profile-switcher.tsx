@@ -74,8 +74,8 @@ import { DeleteProfileDialog } from '../../profiles/delete-profile-dialog'
 import { RenameProfileDialog } from '../../profiles/rename-profile-dialog'
 import { PROFILES_ROUTE } from '../../routes'
 
-import { useProfilePrewarm } from './use-profile-prewarm'
 import { deriveProfileActivityByProfile, type ProfileActivity, profileActivityPriority } from './profile-activity'
+import { useProfilePrewarm } from './use-profile-prewarm'
 
 const RAIL_GAP = 4 // px — matches gap-1 between squares.
 

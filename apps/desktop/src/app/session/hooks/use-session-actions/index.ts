@@ -274,7 +274,14 @@ export function useSessionActions({
     if (routedStoredSessionId === storedIdRotation.previousStoredSessionId) {
       navigate(sessionRoute(storedIdRotation.nextStoredSessionId), { replace: true })
     }
-  }, [activeSessionIdRef, getRoutedStoredSessionId, navigate, selectedStoredSessionIdRef, storedIdRotation])
+  }, [
+    activeSessionIdRef,
+    getRoutedStoredSessionId,
+    navigate,
+    runtimeIdByStoredSessionIdRef,
+    selectedStoredSessionIdRef,
+    storedIdRotation
+  ])
 
   const startFreshSessionDraft = useCallback(
     (options: boolean | FreshSessionDraftOptions = false) => {

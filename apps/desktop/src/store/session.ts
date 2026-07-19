@@ -357,6 +357,8 @@ export const $workingSessionProfiles = atom<Record<string, string[]>>({})
 let workingSessionMutationRevision = 0
 const workingSessionScopeRevisions = new Map<string, number>()
 const workingSessionUnscopedRevisions = new Map<string, number>()
+const SESSION_WORKING_WATCHDOG_TIMEOUT_MS = 8 * 60 * 1000
+const workingSessionWatchdogs = new Map<string, ReturnType<typeof setTimeout>>()
 export const $activeSessionId = atom<string | null>(null)
 export const $selectedStoredSessionId = atom<string | null>(null)
 export interface ActiveSessionStoredIdRotation {
@@ -465,6 +467,7 @@ export const setWorkingSessionIds = (next: Updater<string[]>) => {
   $workingSessionProfiles.set(nextProfiles)
   $workingSessionIds.set(resolved)
 }
+
 export const setActiveSessionId = (next: Updater<string | null>) => updateAtom($activeSessionId, next)
 export const setActiveSessionStoredIdRotation = (next: Updater<ActiveSessionStoredIdRotation | null>) =>
   updateAtom($activeSessionStoredIdRotation, next)
@@ -1008,6 +1011,35 @@ export function reconcileProfileWorkingSessions(
   return true
 }
 
+function clearSessionWorkingWatchdog(sessionId: string, scope: string): void {
+  const key = sessionScopeKey(scope, sessionId)
+  const existing = workingSessionWatchdogs.get(key)
+
+  if (existing) {
+    clearTimeout(existing)
+    workingSessionWatchdogs.delete(key)
+  }
+}
+
+/** Snapshot-only activity has no runtime `$sessionStates` entry to own its
+ * liveness timer. Keep a narrow profile-scoped watchdog for this UI mirror;
+ * runtime-backed turns still use the authoritative watchdog in session-states. */
+function armSessionWorkingWatchdog(sessionId: string, profile: null | string | undefined, scope: string): void {
+  clearSessionWorkingWatchdog(sessionId, scope)
+
+  const key = sessionScopeKey(scope, sessionId)
+
+  const timer = setTimeout(() => {
+    workingSessionWatchdogs.delete(key)
+
+    if (($workingSessionProfiles.get()[sessionId] ?? []).includes(scope)) {
+      setSessionWorking(sessionId, false, profile)
+    }
+  }, SESSION_WORKING_WATCHDOG_TIMEOUT_MS)
+
+  workingSessionWatchdogs.set(key, timer)
+}
+
 export function setSessionWorking(sessionId: string | null | undefined, working: boolean, profile?: null | string) {
   if (!sessionId) {
     return
@@ -1022,6 +1054,18 @@ export function setSessionWorking(sessionId: string | null | undefined, working:
     : profile === undefined
       ? []
       : previousScopes.filter(candidate => candidate !== scope)
+
+  if (working) {
+    armSessionWorkingWatchdog(sessionId, profile, scope)
+  } else if (profile === undefined) {
+    for (const previousScope of previousScopes) {
+      clearSessionWorkingWatchdog(sessionId, previousScope)
+    }
+
+    clearSessionWorkingWatchdog(sessionId, UNKNOWN_SESSION_PROFILE_SCOPE)
+  } else {
+    clearSessionWorkingWatchdog(sessionId, scope)
+  }
 
   $workingSessionProfiles.set(
     nextScopes.length

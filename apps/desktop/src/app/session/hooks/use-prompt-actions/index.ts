@@ -514,7 +514,6 @@ export function usePromptActions({
   )
 
   const cancelRun = useCallback(async () => {
-
     // Read from the ref, not the closure-captured `activeSessionId`. The
     // actions bag is a stable ref mutated in place (Object.assign on each
     // ContribWiring render), and ChatRoutesSurface is memoized on that stable

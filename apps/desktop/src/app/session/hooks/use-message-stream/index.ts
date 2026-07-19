@@ -60,7 +60,6 @@ interface QueuedStreamDeltas {
 
 export function useMessageStream({
   activeSessionIdRef,
-  currentView = 'chat',
   hydrateFromStoredSession,
   queryClient,
   refreshHermesConfig,
@@ -560,7 +559,7 @@ export function useMessageStream({
         title: translateNow('notifications.native.turnDoneTitle')
       })
     },
-    [currentView, hydrateFromStoredSession, scheduleSessionsRefresh, updateSessionState]
+    [hydrateFromStoredSession, scheduleSessionsRefresh, updateSessionState]
   )
 
   const failAssistantMessage = useCallback(

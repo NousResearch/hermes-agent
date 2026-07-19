@@ -34,8 +34,8 @@ import json
 import logging
 import os
 import platform
+import secrets
 import shlex
-import signal
 import socket
 import subprocess
 import sys
@@ -45,7 +45,9 @@ import time
 import uuid
 
 _IS_WINDOWS = platform.system() == "Windows"
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
+
+from tools.thread_context import propagate_context_to_thread
 
 # Availability gate.  On Windows we fall back to loopback TCP for the
 # sandbox RPC transport (AF_UNIX is unreliable on Windows Python) — see
@@ -73,15 +75,98 @@ DEFAULT_MAX_TOOL_CALLS = 50
 MAX_STDOUT_BYTES = 50_000    # 50 KB
 MAX_STDERR_BYTES = 10_000    # 10 KB
 
+
+def _assemble_stdout_result(
+    head: bytes,
+    tail: bytes = b"",
+    *,
+    total_bytes: Optional[int] = None,
+) -> Tuple[str, Dict[str, Any]]:
+    """Build display stdout plus explicit truncation metadata.
+
+    The agent receives execute_code results as JSON. A textual truncation
+    marker can be missed or later re-truncated by a client layer, so keep the
+    marker for humans and also expose byte counts for deterministic handling.
+    """
+    captured = head + tail
+    total = len(captured) if total_bytes is None else max(total_bytes, len(captured))
+    truncated = total > len(captured)
+    omitted = max(0, total - len(captured))
+
+    if truncated:
+        stdout_text = (
+            head.decode("utf-8", errors="replace")
+            + f"\n\n... [OUTPUT TRUNCATED - {omitted:,} bytes omitted "
+            f"out of {total:,} total] ...\n\n"
+            + tail.decode("utf-8", errors="replace")
+        )
+    else:
+        stdout_text = captured.decode("utf-8", errors="replace")
+
+    metadata: Dict[str, Any] = {
+        "stdout_truncated": truncated,
+        "stdout_bytes_captured": len(captured),
+        "stdout_bytes_total": total,
+        "stdout_bytes_omitted": omitted,
+    }
+    if truncated:
+        metadata["warning"] = (
+            "execute_code stdout was truncated; the script did run, but only "
+            "the captured head/tail output is included. Re-run only with "
+            "narrower output if the omitted data is required."
+        )
+    return stdout_text, metadata
+
+
+def _truncate_stdout_text(stdout_text: str) -> Tuple[str, Dict[str, Any]]:
+    """Cap a complete stdout string by bytes using the same head/tail policy."""
+    stdout_bytes = stdout_text.encode("utf-8", errors="replace")
+    if len(stdout_bytes) <= MAX_STDOUT_BYTES:
+        return _assemble_stdout_result(stdout_bytes)
+
+    head_bytes = int(MAX_STDOUT_BYTES * 0.4)
+    tail_bytes = MAX_STDOUT_BYTES - head_bytes
+    return _assemble_stdout_result(
+        stdout_bytes[:head_bytes],
+        stdout_bytes[-tail_bytes:],
+        total_bytes=len(stdout_bytes),
+    )
+
 # Environment variable scrubbing rules (shared between the local + remote
 # backends).  Secret-substring block is applied first; anything left must
-# match either a safe prefix or, on Windows, an OS-essential name.
+# match a safe prefix, the operational HERMES_ allowlist, or (on Windows) an
+# OS-essential name.
+#
+# NB: the broad "HERMES_" prefix was deliberately removed (#27303) — it leaked
+# HERMES_*-named config that lacks a secret substring (e.g. HERMES_BASE_URL,
+# HERMES_KANBAN_DB, HERMES_*_WEBHOOK).  The child only needs the few
+# location/profile vars in _HERMES_CHILD_ALLOWED below; HERMES_RPC_SOCKET /
+# HERMES_RPC_DIR / TZ / HOME are injected explicitly after scrubbing.
 _SAFE_ENV_PREFIXES = ("PATH", "HOME", "USER", "LANG", "LC_", "TERM",
                       "TMPDIR", "TMP", "TEMP", "SHELL", "LOGNAME",
-                      "XDG_", "PYTHONPATH", "VIRTUAL_ENV", "CONDA",
-                      "HERMES_")
+                      "XDG_", "PYTHONPATH", "VIRTUAL_ENV", "CONDA")
 _SECRET_SUBSTRINGS = ("KEY", "TOKEN", "SECRET", "PASSWORD", "CREDENTIAL",
-                      "PASSWD", "AUTH")
+                      "PASSWD", "AUTH", "DSN", "WEBHOOK",
+                      # Abbreviations that appear in real-world credential
+                      # variable names but were previously undetected:
+                      # CREDS (CREDENTIALS abbreviated), BEARER
+                      # (Authorization: Bearer tokens), APIKEY (written
+                      # without an underscore). "PASS" is intentionally NOT
+                      # added — it false-positives on legitimate non-secret
+                      # vars (BYPASS_CACHE, COMPASS_DIR, PASSENGER_HOST) while
+                      # PASSWORD/PASSWD already cover the credential cases.
+                      "CREDS", "BEARER", "APIKEY")
+
+# Operational HERMES_* vars the child legitimately needs by exact name — these
+# are non-secret runtime-location flags (the same set hermes_cli treats as the
+# runtime location) that repo-root modules a sandbox script imports may read at
+# import time.  None match _SECRET_SUBSTRINGS.
+_HERMES_CHILD_ALLOWED = frozenset({
+    "HERMES_HOME",
+    "HERMES_PROFILE",
+    "HERMES_CONFIG",
+    "HERMES_ENV",
+})
 
 # Windows-only: a handful of variables are required by the OS/CRT itself.
 # Without them, even stdlib calls like ``socket.socket()`` fail with
@@ -120,9 +205,10 @@ def _scrub_child_env(source_env, is_passthrough=None, is_windows=None):
 
     Rules (order matters):
       1. Passthrough vars (skill- or config-declared) always pass.
-      2. Secret-substring names (KEY/TOKEN/etc.) are blocked.
+      2. Secret-substring names (KEY/TOKEN/DSN/WEBHOOK/etc.) are blocked.
       3. Names matching a safe prefix pass.
-      4. On Windows, a small OS-essential allowlist passes by exact name
+      4. Operational HERMES_* vars (_HERMES_CHILD_ALLOWED) pass by exact name.
+      5. On Windows, a small OS-essential allowlist passes by exact name
          — without these the child can't even create a socket or spawn a
          subprocess.
 
@@ -139,6 +225,14 @@ def _scrub_child_env(source_env, is_passthrough=None, is_windows=None):
         is_windows = _IS_WINDOWS
 
     scrubbed = {}
+    # Non-secret HERMES_* vars dropped by the tightened allowlist (#27303). The
+    # broad "HERMES_" prefix used to pass these through; now only the
+    # operational set does. The drop is intentional (those vars can carry
+    # config like HERMES_KANBAN_DB / HERMES_BASE_URL), but a sandbox script
+    # that imports a repo module reading one at import time would otherwise see
+    # it silently unset. Surface the drop once so the behavior change is
+    # diagnosable and points at the env_passthrough opt-in escape hatch.
+    _dropped_hermes = []
     for k, v in source_env.items():
         if is_passthrough(k):
             scrubbed[k] = v
@@ -148,8 +242,25 @@ def _scrub_child_env(source_env, is_passthrough=None, is_windows=None):
         if any(k.startswith(p) for p in _SAFE_ENV_PREFIXES):
             scrubbed[k] = v
             continue
+        if k in _HERMES_CHILD_ALLOWED:
+            scrubbed[k] = v
+            continue
         if is_windows and k.upper() in _WINDOWS_ESSENTIAL_ENV_VARS:
             scrubbed[k] = v
+            continue
+        if k.startswith("HERMES_"):
+            # Non-secret (secrets were already dropped above) and not in any
+            # allowlist — a deliberately-dropped HERMES_* var.
+            _dropped_hermes.append(k)
+    if _dropped_hermes:
+        logger.debug(
+            "execute_code: dropped %d non-allowlisted HERMES_* var(s) from the "
+            "sandbox child env (%s). This is intentional hardening (#27303); if "
+            "a sandbox script legitimately needs one, declare it via "
+            "env_passthrough in the skill/config so it passes by explicit opt-in.",
+            len(_dropped_hermes),
+            ", ".join(sorted(_dropped_hermes)),
+        )
     return scrubbed
 
 
@@ -157,21 +268,6 @@ def check_sandbox_requirements() -> bool:
     """Code execution sandbox requires a POSIX OS for Unix domain sockets."""
     if not SANDBOX_AVAILABLE:
         return False
-
-    try:
-        from tools.terminal_tool import (
-            _check_vercel_sandbox_requirements,
-            _get_env_config,
-        )
-
-        config = _get_env_config()
-    except Exception:
-        logger.debug("Could not resolve terminal config for execute_code availability", exc_info=True)
-        return False
-
-    if config.get("env_type") == "vercel_sandbox":
-        return _check_vercel_sandbox_requirements(config)
-
     return True
 
 
@@ -190,9 +286,9 @@ _TOOL_STUBS = {
     ),
     "web_extract": (
         "web_extract",
-        "urls: list",
-        '"""Extract content from URLs. Returns dict with results list of {url, title, content, error}."""',
-        '{"urls": urls}',
+        "urls: list, char_limit: int = None",
+        '"""Extract content from URLs (no LLM summarization). Returns dict with results list of {url, title, content, error}. Pages over char_limit (default 15000) are head+tail truncated with the full text stored on disk; the content footer gives the path. content is markdown."""',
+        '{"urls": urls, "char_limit": char_limit}',
     ),
     "read_file": (
         "read_file",
@@ -202,9 +298,9 @@ _TOOL_STUBS = {
     ),
     "write_file": (
         "write_file",
-        "path: str, content: str",
-        '"""Write content to a file (always overwrites). Returns dict with status."""',
-        '{"path": path, "content": content}',
+        "path: str, content: str, cross_profile: bool = False",
+        '"""Write content to a file (always overwrites). Returns dict with status. cross_profile=True opts out of the cross-Hermes-profile soft guard."""',
+        '{"path": path, "content": content, "cross_profile": cross_profile}',
     ),
     "search_files": (
         "search_files",
@@ -214,9 +310,9 @@ _TOOL_STUBS = {
     ),
     "patch": (
         "patch",
-        'path: str = None, old_string: str = None, new_string: str = None, replace_all: bool = False, mode: str = "replace", patch: str = None',
-        '"""Targeted find-and-replace (mode="replace") or V4A multi-file patches (mode="patch"). Returns dict with status."""',
-        '{"path": path, "old_string": old_string, "new_string": new_string, "replace_all": replace_all, "mode": mode, "patch": patch}',
+        'path: str = None, old_string: str = None, new_string: str = None, replace_all: bool = False, mode: str = "replace", patch: str = None, cross_profile: bool = False',
+        '"""Targeted find-and-replace (mode="replace") or V4A multi-file patches (mode="patch"). Returns dict with status. cross_profile=True opts out of the cross-Hermes-profile soft guard."""',
+        '{"path": path, "old_string": old_string, "new_string": new_string, "replace_all": replace_all, "mode": mode, "patch": patch, "cross_profile": cross_profile}',
     ),
     "terminal": (
         "terminal",
@@ -343,7 +439,11 @@ def _connect():
 
 def _call(tool_name, args):
     """Send a tool call to the parent process and return the parsed result."""
-    request = json.dumps({"tool": tool_name, "args": args}) + "\\n"
+    request = json.dumps({
+        "tool": tool_name,
+        "args": args,
+        "token": os.environ.get("HERMES_RPC_TOKEN", ""),
+    }) + "\\n"
     with _call_lock:
         conn = _connect()
         conn.sendall(request.encode())
@@ -396,7 +496,12 @@ def _call(tool_name, args):
     # non-ASCII chars in tool args when encoding them as JSON.
     tmp = req_file + ".tmp"
     with open(tmp, "w", encoding="utf-8") as f:
-        json.dump({"tool": tool_name, "args": args, "seq": seq}, f)
+        json.dump({
+            "tool": tool_name,
+            "args": args,
+            "seq": seq,
+            "token": os.environ.get("HERMES_RPC_TOKEN", ""),
+        }, f)
     os.rename(tmp, req_file)
 
     # Wait for response with adaptive polling
@@ -443,6 +548,8 @@ def _rpc_server_loop(
     tool_call_counter: list,   # mutable [int] so the thread can increment
     max_tool_calls: int,
     allowed_tools: frozenset,
+    stop_event: threading.Event,
+    rpc_token: str,
 ):
     """
     Accept one client connection and dispatch tool-call requests until
@@ -452,8 +559,15 @@ def _rpc_server_loop(
 
     conn = None
     try:
-        server_sock.settimeout(5)
-        conn, _ = server_sock.accept()
+        server_sock.settimeout(0.05)
+        while not stop_event.is_set():
+            try:
+                conn, _ = server_sock.accept()
+                break
+            except socket.timeout:
+                continue
+        if conn is None:
+            return
         conn.settimeout(300)
 
         buf = b""
@@ -478,6 +592,16 @@ def _rpc_server_loop(
                     request = json.loads(line.decode())
                 except (json.JSONDecodeError, UnicodeDecodeError) as exc:
                     resp = tool_error(f"Invalid RPC request: {exc}")
+                    conn.sendall((resp + "\n").encode())
+                    continue
+
+                if not rpc_token or not secrets.compare_digest(
+                    # Compare as bytes: compare_digest raises TypeError on a
+                    # str with non-ASCII characters, and the token comes from
+                    # sandbox-script-supplied JSON.
+                    str(request.get("token") or "").encode(), rpc_token.encode()
+                ):
+                    resp = json.dumps({"error": "Unauthorized RPC request"})
                     conn.sendall((resp + "\n").encode())
                     continue
 
@@ -612,15 +736,15 @@ def _get_or_create_env(task_id: str):
         cwd = overrides.get("cwd") or config["cwd"]
 
         container_config = None
-        if env_type in {"docker", "singularity", "modal", "daytona", "vercel_sandbox"}:
+        if env_type in {"docker", "singularity", "modal", "daytona"}:
             container_config = {
                 "container_cpu": config.get("container_cpu", 1),
                 "container_memory": config.get("container_memory", 5120),
                 "container_disk": config.get("container_disk", 51200),
                 "container_persistent": config.get("container_persistent", True),
-                "vercel_runtime": config.get("vercel_runtime", ""),
                 "docker_volumes": config.get("docker_volumes", []),
                 "docker_run_as_host_user": config.get("docker_run_as_host_user", False),
+                "docker_network": config.get("docker_network", True),
             }
 
         ssh_config = None
@@ -705,6 +829,7 @@ def _rpc_poll_loop(
     max_tool_calls: int,
     allowed_tools: frozenset,
     stop_event: threading.Event,
+    rpc_token: str,
 ):
     """Poll the remote filesystem for tool call requests and dispatch them.
 
@@ -755,6 +880,16 @@ def _rpc_poll_loop(
                 except (json.JSONDecodeError, ValueError):
                     logger.debug("Malformed RPC request in %s", req_file)
                     # Remove bad request to avoid infinite retry
+                    env.execute(f"rm -f {quoted_req_file}", cwd="/", timeout=5)
+                    continue
+
+                if not rpc_token or not secrets.compare_digest(
+                    # Compare as bytes: compare_digest raises TypeError on a
+                    # str with non-ASCII characters, and the token comes from
+                    # sandbox-script-supplied JSON.
+                    str(request.get("token") or "").encode(), rpc_token.encode()
+                ):
+                    logger.debug("Unauthorized RPC request in %s", req_file)
                     env.execute(f"rm -f {quoted_req_file}", cwd="/", timeout=5)
                     continue
 
@@ -897,6 +1032,8 @@ def _execute_remote(
             f"mkdir -p {quoted_rpc_dir}", cwd="/", timeout=10,
         )
 
+        rpc_token = secrets.token_urlsafe(32)
+
         # Generate and ship files
         tools_src = generate_hermes_tools_module(
             list(sandbox_tools), transport="file",
@@ -904,13 +1041,15 @@ def _execute_remote(
         _ship_file_to_remote(env, f"{sandbox_dir}/hermes_tools.py", tools_src)
         _ship_file_to_remote(env, f"{sandbox_dir}/script.py", code)
 
-        # Start RPC polling thread
+        # Wrapped so the thread inherits the turn's approval context + callbacks
+        # (see tools.thread_context) — else sandbox RPC tool calls lose approval
+        # routing (#33057).
         rpc_thread = threading.Thread(
-            target=_rpc_poll_loop,
+            target=propagate_context_to_thread(_rpc_poll_loop),
             args=(
                 env, f"{sandbox_dir}/rpc", effective_task_id,
                 tool_call_log, tool_call_counter, max_tool_calls,
-                sandbox_tools, stop_event,
+                sandbox_tools, stop_event, rpc_token,
             ),
             daemon=True,
         )
@@ -919,11 +1058,12 @@ def _execute_remote(
         # Build environment variable prefix for the script
         env_prefix = (
             f"HERMES_RPC_DIR={shlex.quote(f'{sandbox_dir}/rpc')} "
+            f"HERMES_RPC_TOKEN={shlex.quote(rpc_token)} "
             f"PYTHONDONTWRITEBYTECODE=1"
         )
         tz = os.getenv("HERMES_TIMEZONE", "").strip()
         if tz:
-            env_prefix += f" TZ={tz}"
+            env_prefix += f" TZ={shlex.quote(tz)}"
 
         # Execute the script on the remote backend
         logger.info("Executing code on %s backend (task %s)...",
@@ -933,7 +1073,7 @@ def _execute_remote(
             timeout=timeout,
         )
 
-        stdout_text = script_result.get("output", "")
+        stdout_text = script_result.get("output", "") or ""
         exit_code = script_result.get("returncode", -1)
         status = "success"
 
@@ -975,35 +1115,27 @@ def _execute_remote(
 
     # --- Post-process output (same as local path) ---
 
-    # Truncate stdout to cap
-    if len(stdout_text) > MAX_STDOUT_BYTES:
-        head_bytes = int(MAX_STDOUT_BYTES * 0.4)
-        tail_bytes = MAX_STDOUT_BYTES - head_bytes
-        head = stdout_text[:head_bytes]
-        tail = stdout_text[-tail_bytes:]
-        omitted = len(stdout_text) - len(head) - len(tail)
-        stdout_text = (
-            head
-            + f"\n\n... [OUTPUT TRUNCATED - {omitted:,} chars omitted "
-            f"out of {len(stdout_text):,} total] ...\n\n"
-            + tail
-        )
+    stdout_text, stdout_metadata = _truncate_stdout_text(stdout_text)
 
     # Strip ANSI escape sequences
     from tools.ansi_strip import strip_ansi
     stdout_text = strip_ansi(stdout_text)
 
-    # Redact secrets
+    # Redact secrets. code_file=True: execute_code output is code-execution
+    # output that often echoes source/config — skip false-positive ENV/JSON/
+    # f-string-template redaction while still masking real credentials.
     from agent.redact import redact_sensitive_text
-    stdout_text = redact_sensitive_text(stdout_text)
+    stdout_text = redact_sensitive_text(stdout_text, code_file=True)
 
     # Build response
     result: Dict[str, Any] = {
         "status": status,
         "output": stdout_text,
+        "exit_code": exit_code,
         "tool_calls_made": tool_call_counter[0],
         "duration_seconds": duration,
     }
+    result.update(stdout_metadata)
 
     if status == "timeout":
         timeout_msg = f"Script timed out after {timeout}s and was killed."
@@ -1064,8 +1196,39 @@ def execute_code(
         return tool_error("No code provided.")
 
     # Dispatch: remote backends use file-based RPC, local uses UDS
-    from tools.terminal_tool import _get_env_config
-    env_type = _get_env_config()["env_type"]
+    from tools.terminal_tool import _get_env_config, _docker_has_host_access
+    _env_config = _get_env_config()
+    env_type = _env_config["env_type"]
+
+    # execute_code runs arbitrary Python (subprocess/os.system/...) that never
+    # passes through terminal()/DANGEROUS_PATTERNS, so guard the whole script
+    # here before either dispatch path spawns it. Runs synchronously in the
+    # caller (tool-executor) thread, which holds the session context (#30882).
+    # A Docker sandbox with host bind mounts is no longer isolated, so its
+    # script does not get the container fast-path.
+    from tools.approval import check_execute_code_guard
+    _guard = check_execute_code_guard(
+        code, env_type,
+        has_host_access=_docker_has_host_access(_env_config),
+    )
+    if not _guard.get("approved", False):
+        return json.dumps({
+            "status": "error",
+            "error": _guard.get("message") or "execute_code blocked by approval guard.",
+            "tool_calls_made": 0,
+            "duration_seconds": 0,
+        }, ensure_ascii=False)
+
+    # Clean interrupt slate for a user-approved script before EITHER dispatch
+    # path spawns it: drop a stale bit that landed on this thread during the
+    # blocking approval-wait so it can't kill the just-approved run on the first
+    # poll (local _wait_for_process loop, or remote/ssh env.execute which routes
+    # through the same poll loop).  A genuine post-clear interrupt re-sets the
+    # bit and is still caught downstream.
+    if _guard.get("user_approved"):
+        from tools.interrupt import clear_current_thread_interrupt
+        clear_current_thread_interrupt()
+
     if env_type != "local":
         return _execute_remote(code, task_id, enabled_tools)
 
@@ -1112,6 +1275,7 @@ def execute_code(
     tool_call_counter = [0]  # mutable so the RPC thread can increment
     exec_start = time.monotonic()
     server_sock = None
+    stop_event = threading.Event()
 
     try:
         # Write the auto-generated hermes_tools module.
@@ -1133,6 +1297,7 @@ def execute_code(
             f.write(code)
 
         # --- Start RPC server ---
+        rpc_token = secrets.token_urlsafe(32)
         # Two transports:
         #   POSIX: AF_UNIX stream socket on sock_path, chmod 0600 for
         #   owner-only access.  Filesystem permissions gate the socket.
@@ -1152,11 +1317,14 @@ def execute_code(
             os.chmod(sock_path, 0o600)
         server_sock.listen(1)
 
+        # Wrapped so the thread inherits the turn's approval context + callbacks
+        # (see tools.thread_context) — else gateway sandbox tool calls silently
+        # auto-approve dangerous commands (#33057, #30882).
         rpc_thread = threading.Thread(
-            target=_rpc_server_loop,
+            target=propagate_context_to_thread(_rpc_server_loop),
             args=(
                 server_sock, task_id, tool_call_log,
-                tool_call_counter, max_tool_calls, sandbox_tools,
+                tool_call_counter, max_tool_calls, sandbox_tools, stop_event, rpc_token,
             ),
             daemon=True,
         )
@@ -1174,6 +1342,7 @@ def execute_code(
         # or spawn a subprocess.  See ``_scrub_child_env`` for the rules.
         child_env = _scrub_child_env(os.environ)
         child_env["HERMES_RPC_SOCKET"] = rpc_endpoint
+        child_env["HERMES_RPC_TOKEN"] = rpc_token
         child_env["PYTHONDONTWRITEBYTECODE"] = "1"
         # Force UTF-8 for the child's stdio and default file encoding.
         #
@@ -1213,12 +1382,8 @@ def execute_code(
             child_env["TZ"] = _tz_name
         child_env.pop("HERMES_TIMEZONE", None)
 
-        # Per-profile HOME isolation: redirect system tool configs into
-        # {HERMES_HOME}/home/ when that directory exists.
-        from hermes_constants import get_subprocess_home
-        _profile_home = get_subprocess_home()
-        if _profile_home:
-            child_env["HOME"] = _profile_home
+        from hermes_constants import apply_subprocess_home_env
+        apply_subprocess_home_env(child_env)
 
         # Resolve interpreter + CWD based on execute_code mode.
         #   - strict : today's behavior (sys.executable + tmpdir CWD).
@@ -1227,7 +1392,7 @@ def execute_code(
         # Env scrubbing and tool whitelist apply identically in both modes.
         _mode = _get_execution_mode()
         _child_python = _resolve_child_python(_mode)
-        _child_cwd = _resolve_child_cwd(_mode, tmpdir)
+        _child_cwd = _resolve_child_cwd(_mode, tmpdir, task_id=task_id or "")
         _script_path = os.path.join(tmpdir, "script.py")
 
         proc = subprocess.Popen(
@@ -1237,7 +1402,7 @@ def execute_code(
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
             stdin=subprocess.DEVNULL,
-            preexec_fn=None if _IS_WINDOWS else os.setsid,
+            start_new_session=True,
             creationflags=subprocess.CREATE_NO_WINDOW if _IS_WINDOWS else 0,
         )
 
@@ -1321,48 +1486,51 @@ def execute_code(
             "last_touch": time.monotonic(),
             "start": exec_start,
         }
+        try:
+            from tools.environments.base import touch_activity_if_due
+        except Exception:
+            touch_activity_if_due = None
+        poll_interval = 0.005
         while proc.poll() is None:
             if _is_interrupted():
                 _kill_process_group(proc)
                 status = "interrupted"
                 break
-            if time.monotonic() > deadline:
+            now = time.monotonic()
+            if now > deadline:
                 _kill_process_group(proc, escalate=True)
                 status = "timeout"
                 break
             # Periodic activity touch so the gateway's inactivity timeout
             # doesn't kill the agent during long code execution (#10807).
+            if touch_activity_if_due is not None:
+                try:
+                    touch_activity_if_due(_activity_state, "execute_code running")
+                except Exception:
+                    pass
             try:
-                from tools.environments.base import touch_activity_if_due
-                touch_activity_if_due(_activity_state, "execute_code running")
-            except Exception:
+                proc.wait(timeout=min(poll_interval, max(0.0, deadline - now)))
+            except subprocess.TimeoutExpired:
                 pass
-            time.sleep(0.2)
+            poll_interval = min(0.2, poll_interval * 1.5)
 
         # Wait for readers to finish draining
         stdout_reader.join(timeout=3)
         stderr_reader.join(timeout=3)
 
-        stdout_head = b"".join(stdout_head_chunks).decode("utf-8", errors="replace")
-        stdout_tail = b"".join(stdout_tail_chunks).decode("utf-8", errors="replace")
         stderr_text = b"".join(stderr_chunks).decode("utf-8", errors="replace")
 
-        # Assemble stdout with head+tail truncation
-        total_stdout = stdout_total_bytes[0]
-        if total_stdout > MAX_STDOUT_BYTES and stdout_tail:
-            omitted = total_stdout - len(stdout_head) - len(stdout_tail)
-            truncated_notice = (
-                f"\n\n... [OUTPUT TRUNCATED - {omitted:,} chars omitted "
-                f"out of {total_stdout:,} total] ...\n\n"
-            )
-            stdout_text = stdout_head + truncated_notice + stdout_tail
-        else:
-            stdout_text = stdout_head + stdout_tail
+        stdout_text, stdout_metadata = _assemble_stdout_result(
+            b"".join(stdout_head_chunks),
+            b"".join(stdout_tail_chunks),
+            total_bytes=stdout_total_bytes[0],
+        )
 
         exit_code = proc.returncode if proc.returncode is not None else -1
         duration = round(time.monotonic() - exec_start, 2)
 
         # Wait for RPC thread to finish
+        stop_event.set()
         server_sock.close()  # break accept() so thread exits promptly
         server_sock = None  # prevent double close in finally
         rpc_thread.join(timeout=3)
@@ -1377,17 +1545,21 @@ def execute_code(
         # The sandbox env-var filter (lines 434-454) blocks os.environ access,
         # but scripts can still read secrets from disk (e.g. open('~/.hermes/.env')).
         # This ensures leaked secrets never enter the model context.
+        # code_file=True: this is code-execution output — skip false-positive
+        # ENV/JSON/f-string-template redaction; real credentials still masked.
         from agent.redact import redact_sensitive_text
-        stdout_text = redact_sensitive_text(stdout_text)
-        stderr_text = redact_sensitive_text(stderr_text)
+        stdout_text = redact_sensitive_text(stdout_text, code_file=True)
+        stderr_text = redact_sensitive_text(stderr_text, code_file=True)
 
         # Build response
         result: Dict[str, Any] = {
             "status": status,
             "output": stdout_text,
+            "exit_code": exit_code,
             "tool_calls_made": tool_call_counter[0],
             "duration_seconds": duration,
         }
+        result.update(stdout_metadata)
 
         if status == "timeout":
             timeout_msg = f"Script timed out after {timeout}s and was killed."
@@ -1570,6 +1742,7 @@ def _is_usable_python(python_path: str) -> bool:
             timeout=5,
             capture_output=True,
             creationflags=subprocess.CREATE_NO_WINDOW if _IS_WINDOWS else 0,
+            stdin=subprocess.DEVNULL,
         )
         return result.returncode == 0
     except (OSError, subprocess.TimeoutExpired, subprocess.SubprocessError):
@@ -1619,17 +1792,43 @@ def _resolve_child_python(mode: str) -> str:
     return sys.executable
 
 
-def _resolve_child_cwd(mode: str, staging_dir: str) -> str:
+def _resolve_child_cwd(mode: str, staging_dir: str, task_id: str = "") -> str:
     """Resolve the working directory for the execute_code subprocess.
 
     - ``strict``: the staging tmpdir (today's behavior).
-    - ``project``: the session's TERMINAL_CWD (same as the terminal tool), or
-      ``os.getcwd()`` if TERMINAL_CWD is unset or doesn't point at a real dir.
-      Falls back to the staging tmpdir as a last resort so we never invoke
-      Popen with a nonexistent cwd.
+    - ``project``: the session's own cwd — its per-session cwd record
+      (written after every completed terminal command), then the raw
+      per-session cwd override registered via ``session.cwd.set`` /
+      ``register_task_env_overrides``, then the session's TERMINAL_CWD
+      (same as the terminal tool), or ``os.getcwd()`` if none points at a
+      real dir. Falls back to the staging tmpdir as a last resort so we
+      never invoke Popen with a nonexistent cwd.
+
+    This mirrors the resolution ladder file tools and the terminal use
+    (record → registered override → TERMINAL_CWD), so all file-writing
+    paths within a session agree on the working directory. (#56047)
     """
     if mode != "project":
         return staging_dir
+    if task_id:
+        # 1. The session's cwd record — IS the session's `cd` state.
+        try:
+            from tools.terminal_tool import get_session_cwd
+
+            recorded = get_session_cwd(task_id)
+        except Exception:
+            recorded = None
+        if recorded and os.path.isdir(recorded):
+            return recorded
+        # 2. Registered workspace override (session.cwd.set → gateway/TUI/ACP).
+        try:
+            from tools.file_tools import _registered_task_cwd_override
+
+            session_cwd = _registered_task_cwd_override(task_id)
+        except Exception:
+            session_cwd = None
+        if session_cwd and os.path.isdir(session_cwd):
+            return session_cwd
     raw = os.environ.get("TERMINAL_CWD", "").strip()
     if raw:
         expanded = os.path.expanduser(raw)
@@ -1652,8 +1851,9 @@ _TOOL_DOC_LINES = [
      "  web_search(query: str, limit: int = 5) -> dict\n"
      "    Returns {\"data\": {\"web\": [{\"url\", \"title\", \"description\"}, ...]}}"),
     ("web_extract",
-     "  web_extract(urls: list[str]) -> dict\n"
-     "    Returns {\"results\": [{\"url\", \"title\", \"content\", \"error\"}, ...]} where content is markdown"),
+     "  web_extract(urls: list[str], char_limit: int = None) -> dict\n"
+     "    Returns {\"results\": [{\"url\", \"title\", \"content\", \"error\"}, ...]} where content is markdown.\n"
+     "    No LLM summarization. Pages over char_limit (default 15000) are head+tail truncated; full text stored on disk (path in the content footer)."),
     ("read_file",
      "  read_file(path: str, offset: int = 1, limit: int = 500) -> dict\n"
      "    Lines are 1-indexed. Returns {\"content\": \"...\", \"total_lines\": N}"),

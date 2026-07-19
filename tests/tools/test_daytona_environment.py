@@ -2,7 +2,7 @@
 
 import threading
 from types import SimpleNamespace
-from unittest.mock import MagicMock, patch, PropertyMock
+from unittest.mock import MagicMock
 
 import pytest
 
@@ -413,3 +413,30 @@ class TestEnsureSandboxReady:
         env._sandbox.state = "started"
         env._ensure_sandbox_ready()
         env._sandbox.start.assert_not_called()
+
+
+# ---------------------------------------------------------------------------
+# Sync safety: shell-metacharacter quoting
+# ---------------------------------------------------------------------------
+
+class TestSyncSafety:
+    def test_single_upload_quotes_parent_path(self, make_env, tmp_path):
+        """A remote path with shell metacharacters must be quoted, not injected."""
+        env = make_env()
+        env._sandbox.process.exec.reset_mock()
+
+        host_file = tmp_path / "token.txt"
+        host_file.write_text("secret", encoding="utf-8")
+        remote_path = "/root/.hermes/skills/evil; touch /tmp/daytona-owned/file.txt"
+
+        env._daytona_upload(str(host_file), remote_path)
+
+        mkdir_cmd = env._sandbox.process.exec.call_args_list[0][0][0]
+        # The whole parent dir is a single quoted argument — the ';' cannot
+        # break out into a second command.
+        assert mkdir_cmd == (
+            "mkdir -p '/root/.hermes/skills/evil; touch /tmp/daytona-owned'"
+        )
+        assert "; touch" not in mkdir_cmd.replace(
+            "'/root/.hermes/skills/evil; touch /tmp/daytona-owned'", ""
+        )

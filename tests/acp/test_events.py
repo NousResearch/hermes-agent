@@ -9,7 +9,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 import acp
-from acp.schema import AgentPlanUpdate, ToolCallStart, ToolCallProgress, AgentThoughtChunk, AgentMessageChunk
+from acp.schema import AgentPlanUpdate
 
 from acp_adapter.events import (
     _build_plan_update_from_todo_result,
@@ -410,8 +410,8 @@ class TestSendUpdate:
 
         assert created["coro"] is not None
         assert created["coro"].cr_frame is None
-        # Only count warnings about THIS test's coroutine; other tests in the
-        # same xdist worker (or stdlib mock internals) may emit unrelated
+        # Only count warnings about THIS test's coroutine; other tests
+        #  may emit unrelated
         # "coroutine was never awaited" warnings that bleed through.
         runtime_warnings = [
             w for w in caught

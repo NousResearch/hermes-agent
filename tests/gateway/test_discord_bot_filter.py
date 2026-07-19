@@ -1,9 +1,9 @@
 """Tests for Discord bot message filtering (DISCORD_ALLOW_BOTS)."""
 
-import asyncio
 import os
+import re
 import unittest
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import MagicMock
 
 
 def _make_author(*, bot: bool = False, is_self: bool = False):
@@ -41,7 +41,37 @@ def _make_message(*, author=None, content="hello", mentions=None, is_dm=False):
 class TestDiscordBotFilter(unittest.TestCase):
     """Test the DISCORD_ALLOW_BOTS filtering logic."""
 
-    def _run_filter(self, message, allow_bots="none", client_user=None):
+    @staticmethod
+    def _self_is_explicitly_mentioned(message, client_user):
+        """Mirror adapter._self_is_explicitly_mentioned: resolved or raw mention."""
+        if not client_user:
+            return False
+        if client_user in message.mentions:
+            return True
+        raw_ids = {
+            m.group(1)
+            for m in re.finditer(r"<@!?(\d+)>", getattr(message, "content", "") or "")
+        }
+        return str(client_user.id) in raw_ids
+
+    @staticmethod
+    def _self_is_raw_mentioned(message, client_user):
+        """Mirror adapter._self_is_raw_mentioned: raw inline token only."""
+        if not client_user:
+            return False
+        raw_ids = {
+            m.group(1)
+            for m in re.finditer(r"<@!?(\d+)>", getattr(message, "content", "") or "")
+        }
+        return str(client_user.id) in raw_ids
+
+    def _run_filter(
+        self,
+        message,
+        allow_bots="none",
+        client_user=None,
+        bots_require_inline_mention=False,
+    ):
         """Simulate the on_message filter logic and return whether message was accepted."""
         # Replicate the exact filter logic from discord.py on_message
         if message.author == client_user:
@@ -52,8 +82,13 @@ class TestDiscordBotFilter(unittest.TestCase):
             if allow == "none":
                 return False
             elif allow == "mentions":
-                if not client_user or client_user not in message.mentions:
+                if not self._self_is_explicitly_mentioned(message, client_user):
                     return False
+            if (
+                bots_require_inline_mention
+                and not self._self_is_raw_mentioned(message, client_user)
+            ):
+                return False
             # "all" falls through
         
         return True  # message accepted
@@ -97,6 +132,77 @@ class TestDiscordBotFilter(unittest.TestCase):
         bot = _make_author(bot=True)
         msg = _make_message(author=bot, mentions=[our_user])
         self.assertTrue(self._run_filter(msg, "mentions", our_user))
+
+    def test_allow_bots_mentions_accepts_with_raw_content_mention(self):
+        """Raw <@!ID> mention counts even when message.mentions is empty."""
+        our_user = _make_author(is_self=True)
+        bot = _make_author(bot=True)
+        msg = _make_message(author=bot, content=f"<@!{our_user.id}> relay", mentions=[])
+        self.assertTrue(self._run_filter(msg, "mentions", our_user))
+
+    def test_inline_mention_requirement_off_preserves_reply_ping_behavior(self):
+        """Default behavior: resolved reply-ping mentions still admit bot messages."""
+        our_user = _make_author(is_self=True)
+        bot = _make_author(bot=True)
+        msg = _make_message(author=bot, content="reply-ping only", mentions=[our_user])
+
+        self.assertTrue(
+            self._run_filter(
+                msg,
+                "all",
+                our_user,
+                bots_require_inline_mention=False,
+            )
+        )
+
+    def test_inline_mention_requirement_rejects_reply_ping_only(self):
+        """Opt-in guard rejects bot messages where only Discord's reply-ping mentions us."""
+        our_user = _make_author(is_self=True)
+        bot = _make_author(bot=True)
+        msg = _make_message(author=bot, content="reply-ping only", mentions=[our_user])
+
+        self.assertFalse(
+            self._run_filter(
+                msg,
+                "all",
+                our_user,
+                bots_require_inline_mention=True,
+            )
+        )
+
+    def test_inline_mention_requirement_accepts_body_mention(self):
+        """Opt-in guard still admits intentional inline cross-bot mentions."""
+        our_user = _make_author(is_self=True)
+        bot = _make_author(bot=True)
+        msg = _make_message(
+            author=bot,
+            content=f"<@{our_user.id}> intentional handoff",
+            mentions=[our_user],
+        )
+
+        self.assertTrue(
+            self._run_filter(
+                msg,
+                "all",
+                our_user,
+                bots_require_inline_mention=True,
+            )
+        )
+
+    def test_inline_mention_requirement_does_not_affect_humans(self):
+        """The opt-in guard only applies to bot-authored messages."""
+        human = _make_author(bot=False)
+        our_user = _make_author(is_self=True)
+        msg = _make_message(author=human, content="human reply-ping", mentions=[our_user])
+
+        self.assertTrue(
+            self._run_filter(
+                msg,
+                "none",
+                our_user,
+                bots_require_inline_mention=True,
+            )
+        )
 
     def test_default_is_none(self):
         """Default behavior (no env var) should be 'none'."""

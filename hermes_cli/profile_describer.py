@@ -28,13 +28,13 @@ from __future__ import annotations
 
 import json
 import logging
-import os
 import re
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Optional
 
 from hermes_cli import profiles as profiles_mod
+from agent.skill_utils import is_excluded_skill_path
 
 logger = logging.getLogger(__name__)
 
@@ -109,8 +109,7 @@ def _collect_skills(profile_dir: Path) -> list[str]:
         return []
     names: list[str] = []
     for md in skills_dir.rglob("SKILL.md"):
-        path_str = str(md)
-        if "/.hub/" in path_str or "/.git/" in path_str:
+        if is_excluded_skill_path(md):
             continue
         try:
             rel = md.relative_to(skills_dir)
@@ -201,7 +200,7 @@ def describe_profile(
     skill_list = "\n".join(f"  - {n}" for n in skill_names) or "  (no skills installed)"
     skill_count = sum(
         1 for _ in (profile_dir / "skills").rglob("SKILL.md")
-        if "/.hub/" not in str(_) and "/.git/" not in str(_)
+        if not is_excluded_skill_path(_)
     ) if (profile_dir / "skills").is_dir() else 0
 
     # Read model + provider from the profile's config.
@@ -211,22 +210,10 @@ def describe_profile(
         model, provider = None, None
 
     try:
-        from agent.auxiliary_client import (  # type: ignore
-            get_auxiliary_extra_body,
-            get_text_auxiliary_client,
-        )
+        from agent.auxiliary_client import call_llm  # type: ignore
     except Exception as exc:
         logger.debug("describe: auxiliary client import failed: %s", exc)
         return DescribeOutcome(canon, False, "auxiliary client unavailable")
-
-    try:
-        client, aux_model = get_text_auxiliary_client("profile_describer")
-    except Exception as exc:
-        logger.debug("describe: get_text_auxiliary_client failed: %s", exc)
-        return DescribeOutcome(canon, False, "auxiliary client unavailable")
-
-    if client is None or not aux_model:
-        return DescribeOutcome(canon, False, "no auxiliary client configured")
 
     user_msg = _USER_TEMPLATE.format(
         name=canon,
@@ -238,8 +225,11 @@ def describe_profile(
     )
 
     try:
-        resp = client.chat.completions.create(
-            model=aux_model,
+        # Route through call_llm so auxiliary.profile_describer.* config
+        # (provider/model/base_url, extra_body, reasoning_effort, retries)
+        # all apply — the direct-create path dropped extra_body (#35566).
+        resp = call_llm(
+            task="profile_describer",
             messages=[
                 {"role": "system", "content": _SYSTEM_PROMPT},
                 {"role": "user", "content": user_msg},
@@ -247,7 +237,6 @@ def describe_profile(
             temperature=0.3,
             max_tokens=400,
             timeout=timeout or 60,
-            extra_body=get_auxiliary_extra_body() or None,
         )
     except Exception as exc:
         logger.info("describe: API call failed for %s (%s)", canon, exc)

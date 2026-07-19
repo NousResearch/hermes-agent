@@ -229,11 +229,11 @@ IDs.
 | `hermes send` | ✅ | ✅ | No (bot-token) | Everything below |
 | Raw `curl` to each platform | Each scripted separately | Manual | No | Critical watchdogs |
 | `cron` job with `--deliver` | ✅ | ✅ | No | Scheduled agent tasks |
-| `send_message` agent tool | ✅ | ✅ | No | Inside an agent loop |
 
 `hermes send` is intentionally the simplest possible surface. If you need
-an agent to decide what to say, use the `send_message` tool from within a
-chat or cron job. If you need a scheduled run with LLM-generated content,
+an agent to decide what to say, schedule a cron job — the agent's final
+response is auto-delivered to the configured `deliver:` target (the agent
+no longer fires messages itself). If you need a scheduled run with LLM-generated content,
 use `cronjob(action='create', prompt=...)` with `deliver='telegram:...'`.
 If you just need to pipe a raw string, reach for `hermes send`.
 
@@ -241,9 +241,9 @@ If you just need to pipe a raw string, reach for `hermes send`.
 
 ## Related
 
-- [Automate Anything with Cron](/docs/guides/automate-with-cron) —
+- [Automate Anything with Cron](/guides/automate-with-cron) —
   scheduled jobs whose output auto-delivers to any platform.
-- [Gateway Internals](/docs/developer-guide/gateway-internals) —
+- [Gateway Internals](/developer-guide/gateway-internals) —
   the delivery router that `hermes send` shares with cron delivery.
-- [Messaging Platform Setup](/docs/user-guide/messaging/) —
+- [Messaging Platform Setup](/user-guide/messaging/) —
   one-time configuration for each platform.

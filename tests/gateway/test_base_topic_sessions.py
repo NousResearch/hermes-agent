@@ -15,11 +15,12 @@ from gateway.session import SessionSource, build_session_key
 class DummyTelegramAdapter(BasePlatformAdapter):
     def __init__(self):
         super().__init__(PlatformConfig(enabled=True, token="fake-token"), Platform.TELEGRAM)
+        self._busy_text_mode = ""
         self.sent = []
         self.typing = []
         self.processing_hooks = []
 
-    async def connect(self) -> bool:
+    async def connect(self, *, is_reconnect: bool = False) -> bool:
         return True
 
     async def disconnect(self) -> None:
@@ -39,6 +40,9 @@ class DummyTelegramAdapter(BasePlatformAdapter):
     async def send_typing(self, chat_id: str, metadata=None) -> None:
         self.typing.append({"chat_id": chat_id, "metadata": metadata})
         return None
+
+    async def stop_typing(self, chat_id: str, metadata=None) -> None:
+        self.typing.append({"chat_id": chat_id, "stopped": True, "metadata": metadata})
 
     async def get_chat_info(self, chat_id: str):
         return {"id": chat_id}
@@ -142,6 +146,11 @@ class TestBasePlatformTopicSessions:
                 "metadata": {"thread_id": "17585"},
             }
         ]
+        assert {
+            "chat_id": "-1001",
+            "stopped": True,
+            "metadata": {"thread_id": "17585"},
+        } in adapter.typing
         assert adapter.processing_hooks == [
             ("start", "1"),
             ("complete", "1", ProcessingOutcome.SUCCESS),

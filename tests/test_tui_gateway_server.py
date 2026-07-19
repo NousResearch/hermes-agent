@@ -3719,7 +3719,7 @@ def test_session_title_get_falls_back_to_pending_when_db_read_throws(monkeypatch
             raise RuntimeError("db temporarily locked")
 
     server._sessions["sid"] = _session(pending_title="queued title")
-    monkeypatch.setattr(server, "_get_db", lambda: _FakeDB())
+    monkeypatch.setattr(server, "_open_session_db", lambda _home: _FakeDB())
     try:
         resp = server.handle_request({
             "id": "1",
@@ -3748,7 +3748,7 @@ def test_session_title_get_retries_persist_for_pending_title(monkeypatch):
 
     db = _FakeDB()
     server._sessions["sid"] = _session(pending_title="queued title")
-    monkeypatch.setattr(server, "_get_db", lambda: db)
+    monkeypatch.setattr(server, "_open_session_db", lambda _home: db)
     try:
         resp = server.handle_request({
             "id": "1",
@@ -3778,7 +3778,7 @@ def test_session_title_get_retries_pending_even_when_db_has_title(monkeypatch):
 
     db = _FakeDB()
     server._sessions["sid"] = _session(pending_title="queued title")
-    monkeypatch.setattr(server, "_get_db", lambda: db)
+    monkeypatch.setattr(server, "_open_session_db", lambda _home: db)
     try:
         resp = server.handle_request({
             "id": "1",

@@ -71,33 +71,39 @@ def _get_user_plugins_dir() -> Optional[Path]:
         return None
 
 
-def _is_memory_provider_dir(path: Path) -> bool:
-    """Heuristic: does *path* look like a memory provider plugin?
-
-    Checks for ``register_memory_provider`` or ``MemoryProvider`` in the
-    ``__init__.py`` source.  Cheap text scan — no import needed.
-
-    Pip-installed packages often put their module in a subdirectory
-    (e.g. plugins/mimir/hermes_mimir/__init__.py instead of
-    plugins/mimir/__init__.py).  Probe subdirectories when the root
-    ``__init__.py`` is missing.
-    """
-    init_file = path / "__init__.py"
-    if not init_file.exists():
-        for sub in sorted(path.iterdir()):
-            if not sub.is_dir() or sub.name.startswith("."):
-                continue
-            sub_init = sub / "__init__.py"
-            if sub_init.exists():
-                init_file = sub_init
-                break
-        else:
-            return False
+def _source_looks_like_memory_provider(init_file: Path) -> bool:
+    """Return whether an initializer advertises a memory-provider entry point."""
     try:
         source = init_file.read_text(errors="replace")[:8192]
         return "register_memory_provider" in source or "MemoryProvider" in source
     except Exception:
         return False
+
+
+def _resolve_package_entry(path: Path) -> Optional[Tuple[Path, Path]]:
+    """Return ``(initializer, package_dir)`` for a memory-provider package.
+
+    A pip-installed plugin may place its package below the advertised plugin
+    directory.  Only descend into a subdirectory when its initializer actually
+    advertises a memory provider; vendored packages must not win by sort order.
+    """
+    init_file = path / "__init__.py"
+    if init_file.exists() and _source_looks_like_memory_provider(init_file):
+        return init_file, path
+
+    if not init_file.exists():
+        for sub in sorted(path.iterdir()):
+            if not sub.is_dir() or sub.name.startswith("."):
+                continue
+            sub_init = sub / "__init__.py"
+            if sub_init.exists() and _source_looks_like_memory_provider(sub_init):
+                return sub_init, sub
+    return None
+
+
+def _is_memory_provider_dir(path: Path) -> bool:
+    """Return whether *path* contains a memory-provider package."""
+    return _resolve_package_entry(path) is not None
 
 
 def _iter_provider_dirs() -> List[Tuple[str, Path]]:
@@ -241,25 +247,10 @@ def _load_provider_from_dir(provider_dir: Path) -> Optional["MemoryProvider"]:
     # collide with bundled providers in sys.modules.
     _is_bundled = _MEMORY_PLUGINS_DIR in provider_dir.parents or provider_dir.parent == _MEMORY_PLUGINS_DIR
     module_name = f"plugins.memory.{name}" if _is_bundled else f"{_USER_NAMESPACE}.{name}"
-    init_file = provider_dir / "__init__.py"
-
-    # Pip-installed packages often put their module in a subdirectory
-    # (e.g. plugins/mimir/hermes_mimir/__init__.py instead of
-    # plugins/mimir/__init__.py).  Probe subdirectories when the root
-    # __init__.py is missing.
-    if not init_file.exists():
-        for sub in sorted(provider_dir.iterdir()):
-            if not sub.is_dir() or sub.name.startswith("."):
-                continue
-            sub_init = sub / "__init__.py"
-            if sub_init.exists():
-                init_file = sub_init
-                # submodule_search_locations should include the subdirectory
-                # so relative imports inside the plugin resolve correctly
-                provider_dir = sub
-                break
-        else:
-            return None
+    entry = _resolve_package_entry(provider_dir)
+    if entry is None:
+        return None
+    init_file, provider_dir = entry
 
     # Check if already loaded.  A synthetic package shell registered by
     # discover_plugin_cli_commands() for relative-import support has no

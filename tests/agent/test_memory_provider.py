@@ -606,6 +606,42 @@ class TestUserInstalledProviderDiscovery:
         assert p is not None
         assert p.name == "nestedimpl"
 
+    def test_rootless_provider_skips_non_provider_subpackage(self, tmp_path, monkeypatch):
+        """Rootless packages resolve the subdirectory that defines a provider."""
+        from plugins.memory import (
+            discover_memory_providers,
+            find_provider_dir,
+            list_memory_provider_names,
+            load_memory_provider,
+        )
+        plugin_dir = tmp_path / "plugins" / "mimir"
+        (plugin_dir / "aaa_vendor").mkdir(parents=True)
+        (plugin_dir / "aaa_vendor" / "__init__.py").write_text("VALUE = 1\n")
+        impl_dir = plugin_dir / "hermes_mimir"
+        impl_dir.mkdir()
+        (impl_dir / "__init__.py").write_text(
+            "from agent.memory_provider import MemoryProvider\n"
+            "class MimirProvider(MemoryProvider):\n"
+            "    @property\n"
+            "    def name(self): return 'mimir'\n"
+            "    def is_available(self): return True\n"
+            "    def initialize(self, **kw): pass\n"
+            "    def sync_turn(self, *a, **kw): pass\n"
+            "    def get_tool_schemas(self): return []\n"
+            "    def handle_tool_call(self, *a, **kw): return '{}'\n"
+        )
+        monkeypatch.setattr(
+            "plugins.memory._get_user_plugins_dir",
+            lambda: tmp_path / "plugins",
+        )
+
+        assert find_provider_dir("mimir") == plugin_dir
+        assert "mimir" in list_memory_provider_names()
+        assert dict((name, available) for name, _desc, available in discover_memory_providers())["mimir"]
+        provider = load_memory_provider("mimir")
+        assert provider is not None
+        assert provider.name == "mimir"
+
 
 class TestUserInstalledProviderCli:
     """CLI commands of user-installed providers must be discoverable.

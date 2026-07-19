@@ -326,7 +326,7 @@ class WebSocketRelayTransport:
         self._reader: Optional[asyncio.Task[None]] = None
         self._inbound: Optional[InboundHandler] = None
         self._descriptor: Optional[CapabilityDescriptor] = None
-        self._descriptor_handler: Optional[Callable[[CapabilityDescriptor], Any]] = None
+        self._descriptor_handler: Optional[Callable[[CapabilityDescriptor], None]] = None
         self._descriptor_ready: asyncio.Future[CapabilityDescriptor] | None = None
         # requestId -> future awaiting the matching outbound_result.
         self._pending: Dict[str, asyncio.Future[Dict[str, Any]]] = {}
@@ -352,9 +352,9 @@ class WebSocketRelayTransport:
 
     def set_descriptor_handler(
         self,
-        handler: Callable[[CapabilityDescriptor], Any],
+        handler: Callable[[CapabilityDescriptor], None],
     ) -> None:
-        """Observe every negotiated descriptor, including reconnects."""
+        """Observe every negotiated descriptor via a synchronous callback."""
         self._descriptor_handler = handler
 
     async def _dial_and_start(self) -> None:
@@ -713,10 +713,6 @@ class WebSocketRelayTransport:
         if ftype == "descriptor":
             descriptor = CapabilityDescriptor.from_json(json.dumps(frame.get("descriptor", {})))
             self._descriptor = descriptor
-            if self._descriptor_handler is not None:
-                result = self._descriptor_handler(descriptor)
-                if asyncio.iscoroutine(result):
-                    await result
             # Phase 7 Unit 7d-B: a received descriptor means the WS upgrade auth
             # passed and the connector accepted us — record that we've handshaked
             # at least once, so a LATER 4401 close is read as a revocation
@@ -724,6 +720,19 @@ class WebSocketRelayTransport:
             self._handshake_succeeded = True
             if self._descriptor_ready is not None and not self._descriptor_ready.done():
                 self._descriptor_ready.set_result(descriptor)
+            if self._descriptor_handler is not None:
+                try:
+                    result = self._descriptor_handler(descriptor)
+                    if asyncio.iscoroutine(result):
+                        # The callback is deliberately synchronous: awaiting it
+                        # in the sole reader could deadlock on a future frame.
+                        result.close()
+                        logger.warning("relay descriptor handler must be synchronous; result ignored")
+                except Exception:
+                    # Descriptor adoption is advisory to the adapter surface.
+                    # Never sacrifice the authenticated handshake/read loop if a
+                    # callback regresses; the transport's descriptor stays valid.
+                    logger.warning("relay descriptor handler failed", exc_info=True)
         elif ftype == "inbound":
             if self._inbound is not None:
                 event = _event_from_wire(frame.get("event", {}))

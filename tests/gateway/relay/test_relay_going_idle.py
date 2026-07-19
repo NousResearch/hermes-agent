@@ -112,6 +112,21 @@ async def test_go_idle_awaits_ack(server):
 
 
 @pytest.mark.asyncio
+async def test_descriptor_handler_failure_does_not_block_handshake():
+    t = WebSocketRelayTransport("ws://127.0.0.1:1", "discord", "appShared")
+    t._descriptor_ready = asyncio.get_running_loop().create_future()
+
+    def broken_handler(_descriptor):
+        raise RuntimeError("boom")
+
+    t.set_descriptor_handler(broken_handler)
+    await t._handle_frame(json.dumps({"type": "descriptor", "descriptor": DESCRIPTOR}))
+
+    descriptor = await asyncio.wait_for(t.handshake(), timeout=0.1)
+    assert descriptor.supports_edit is True
+
+
+@pytest.mark.asyncio
 async def test_go_idle_returns_false_on_timeout(server):
     # A server that never acks going_idle -> go_idle returns False (caller closes anyway).
     async def no_ack(ws, frame):

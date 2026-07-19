@@ -52,7 +52,7 @@ export NOTION_API_TOKEN=$NOTION_API_KEY      # ntn reads NOTION_API_TOKEN
 export NOTION_KEYRING=0                       # don't try to use the OS keychain
 ```
 
-Add those exports to your shell profile, or keep them in Bitwarden Secrets Manager / `${HERMES_HOME:-~/.hermes}/.env` so every session inherits them.
+Map `NOTION_API_TOKEN` from the Bitwarden-injected `NOTION_API_KEY` in your shell profile or local environment. Keep `NOTION_KEYRING=0` in your shell profile or `${HERMES_HOME:-~/.hermes}/.env`; it is a non-secret setting.
 
 ### 3. Choose path at runtime
 

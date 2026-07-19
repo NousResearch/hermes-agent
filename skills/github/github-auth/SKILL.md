@@ -195,7 +195,7 @@ gh auth status
 
 When `gh` is not available, you can still access the full GitHub API using `curl` with a personal access token. This is how the other GitHub skills implement their fallbacks.
 
-If Hermes is using Bitwarden Secrets Manager, keep `GITHUB_TOKEN` there and let it inject into the environment at startup; the `~/.hermes/.env` branch below is only for local-only setups.
+If Hermes is using Bitwarden Secrets Manager, keep `GITHUB_TOKEN` there and let it inject into the environment at startup; the `${HERMES_HOME:-~/.hermes}/.env` branch below is only for local-only setups.
 
 ### Setting the Token for API Calls
 

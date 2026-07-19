@@ -5,9 +5,18 @@ version: 0.1.0
 platforms: [linux, macos, windows]
 author: Hermes Agent (adapted from ShinMegamiBoson/OpenPlanter, MIT)
 required_environment_variables:
-  - COURTLISTENER_TOKEN
-  - OPENCORPORATES_API_TOKEN
-  - SENATE_LDA_TOKEN
+  - name: COURTLISTENER_TOKEN
+    prompt: "CourtListener API token"
+    required_for: "authenticated CourtListener requests"
+    optional: true
+  - name: OPENCORPORATES_API_TOKEN
+    prompt: "OpenCorporates API token"
+    required_for: "OpenCorporates API access"
+    optional: true
+  - name: SENATE_LDA_TOKEN
+    prompt: "Senate LDA API token"
+    required_for: "higher Senate LDA rate limits"
+    optional: true
 metadata:
   hermes:
     tags: [osint, investigation, public-records, sec, sanctions, corporate-registry, property, courts, due-diligence, journalism]

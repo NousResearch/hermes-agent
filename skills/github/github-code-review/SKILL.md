@@ -23,7 +23,7 @@ Perform code reviews on local changes before pushing, or review open PRs on GitH
 ## Prerequisites
 
 - Authenticated with GitHub (see `github-auth` skill)
-- If Hermes is using Bitwarden Secrets Manager, `GITHUB_TOKEN` will already be injected into the environment at startup; the `~/.hermes/.env` fallback below is only for local-only setups.
+- If Hermes is using Bitwarden Secrets Manager, `GITHUB_TOKEN` will already be injected into the environment at startup; the `${HERMES_HOME:-~/.hermes}/.env` fallback below is only for local-only setups.
 - Inside a git repository
 
 ### Setup (for PR interactions)

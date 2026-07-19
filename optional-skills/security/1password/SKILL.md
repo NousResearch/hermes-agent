@@ -46,7 +46,7 @@ Use this skill when the user wants secrets managed through 1Password instead of 
 
 ### Service Account (recommended for Hermes)
 
-Set `OP_SERVICE_ACCOUNT_TOKEN` in Bitwarden Secrets Manager (preferred) or `${HERMES_HOME:-~/.hermes}/.env` (the skill will prompt for this on first load).
+Set `OP_SERVICE_ACCOUNT_TOKEN` in Bitwarden Secrets Manager (preferred) or `${HERMES_HOME:-~/.hermes}/.env` when using the service-account flow.
 No desktop app needed. Supports `op read`, `op inject`, `op run`.
 
 ```bash

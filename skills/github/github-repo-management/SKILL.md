@@ -23,7 +23,7 @@ Create, clone, fork, configure, and manage GitHub repositories. Each section sho
 ## Prerequisites
 
 - Authenticated with GitHub (see `github-auth` skill)
-- If Hermes is using Bitwarden Secrets Manager, `GITHUB_TOKEN` will already be injected into the environment at startup; the `~/.hermes/.env` fallback below is only for local-only setups.
+- If Hermes is using Bitwarden Secrets Manager, `GITHUB_TOKEN` will already be injected into the environment at startup; the `${HERMES_HOME:-~/.hermes}/.env` fallback below is only for local-only setups.
 
 ### Setup
 

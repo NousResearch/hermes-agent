@@ -6,7 +6,10 @@ author: Hermes Agent
 license: MIT
 platforms: [linux, macos, windows]
 required_environment_variables:
-  - PARALLEL_API_KEY
+  - name: PARALLEL_API_KEY
+    prompt: "Parallel API key"
+    required_for: "API-key authentication"
+    optional: true
 metadata:
   hermes:
     tags: [Research, Web, Search, Deep-Research, Enrichment, CLI]

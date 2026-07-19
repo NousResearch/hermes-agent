@@ -122,11 +122,18 @@ async def test_explicit_qq_group_trigger_injects_reply_required_note_into_contex
     result = await runner._handle_message(event)
 
     assert result == "收到，你继续说。"
+    # Volatile group-reply note rides the per-turn sidecar (api_content), not
+    # the pinned session context prompt — so turn1→turn2 system bytes stay stable.
+    session_key = runner.session_store.get_or_create_session.return_value.session_key
+    notes = "\n\n".join(
+        getattr(runner, "_pending_turn_sidecar_notes", {}).get(session_key, [])
+    )
+    assert "explicitly addressed you" in notes
+    assert "Do not return [[NO_REPLY]]" in notes
+    assert "empty response" in notes
+    assert "bot_mention" in notes
     context_prompt = runner._run_agent.await_args.kwargs["context_prompt"]
-    assert "explicitly addressed you" in context_prompt
-    assert "Do not return [[NO_REPLY]]" in context_prompt
-    assert "empty response" in context_prompt
-    assert "bot_mention" in context_prompt
+    assert "explicitly addressed you" not in context_prompt
 
 
 @pytest.mark.asyncio
@@ -258,9 +265,14 @@ async def test_generic_explicit_group_metadata_gets_visible_fallback_outside_qq(
     result = await runner._handle_message(event)
 
     assert result == "刚才这轮没吐出正文，但消息我收到了。你再发一遍，或者我继续接着干。"
+    session_key = runner.session_store.get_or_create_session.return_value.session_key
+    notes = "\n\n".join(
+        getattr(runner, "_pending_turn_sidecar_notes", {}).get(session_key, [])
+    )
+    assert "explicitly addressed you" in notes
+    assert "reply_to_bot" in notes
     context_prompt = runner._run_agent.await_args.kwargs["context_prompt"]
-    assert "explicitly addressed you" in context_prompt
-    assert "reply_to_bot" in context_prompt
+    assert "explicitly addressed you" not in context_prompt
 
 
 @pytest.mark.asyncio

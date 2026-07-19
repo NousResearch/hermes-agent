@@ -40,11 +40,14 @@ Safety properties:
 Known limits (deliberate, flagged on #64934):
 
 - A CLI process sharing the session via CLI-continuity is outside any
-  in-process lock — that pair needs a DB-level lease (separate design).
-- Mid-turn compression rotation leaves a small alias window: the tip-walk can
-  resolve a fresh child id while the parent-holding turn is still in flight.
-  The mid-turn binding-sync sites are the right place to alias the lease in a
-  follow-up.
+  in-process lock — that pair needs a DB-level lease (separate design,
+  tracked in #67442).
+
+Mid-turn compression rotation is handled: :meth:`SessionTurnLeaseRegistry.rebind`
+follows the held lease to the rotated session_id, and the gateway calls it at
+both rotation sites (session-hygiene pre-compression and the agent-result
+session_id swap). The alias window that existed before rebind was wired is
+closed.
 """
 
 import asyncio
@@ -98,18 +101,31 @@ class TurnLeaseToken:
 
 
 class _SessionLease:
-    __slots__ = ("lock", "holder", "acquired_at", "last_used")
+    __slots__ = ("lock", "holder", "acquired_at", "last_used", "waiters")
 
     def __init__(self) -> None:
         self.lock = asyncio.Lock()
         self.holder: Optional[TurnLeaseToken] = None
         self.acquired_at = 0.0
         self.last_used = time.time()
+        # Count of tasks parked in acquire()'s ``await`` for this lease.
+        # ``asyncio.Lock.release()`` clears ``_locked`` and only *schedules*
+        # the queued waiter's wake-up — the waiter sets ``_locked = True`` a
+        # loop iteration later. In that window ``holder is None`` and
+        # ``lock.locked()`` is False, so without this counter ``idle`` would
+        # briefly report an evictable lease that in fact has a turn queued
+        # behind it (audit by @hansai-art on #67401). Evicting it there would
+        # strand the woken waiter on an unregistered lease while the next
+        # acquire() mints a fresh unlocked one — two live holders on one
+        # session, exactly what this registry prevents.
+        self.waiters = 0
 
     @property
     def idle(self) -> bool:
-        """True when this lease can be evicted: nobody holds or awaits it."""
-        return self.holder is None and not self.lock.locked()
+        """True when this lease can be evicted: nobody holds, holds the lock,
+        or is parked waiting to acquire it. The ``waiters`` term is what makes
+        this predicate self-correct rather than dependent on eviction order."""
+        return self.holder is None and not self.lock.locked() and self.waiters == 0
 
 
 class SessionTurnLeaseRegistry:
@@ -187,6 +203,11 @@ class SessionTurnLeaseRegistry:
                 time.time() - lease.acquired_at if lease.acquired_at else -1.0,
             )
 
+        # Mark this task as parked on the lease for the whole await, so a
+        # concurrent eviction pass (fired from another session's acquire on
+        # the same event loop) can never drop a lease with a turn queued
+        # behind it — see ``_SessionLease.waiters``.
+        lease.waiters += 1
         try:
             await asyncio.wait_for(lease.lock.acquire(), timeout=wait)
         except asyncio.TimeoutError:
@@ -206,6 +227,8 @@ class SessionTurnLeaseRegistry:
             )
             token.degraded = True
             return token
+        finally:
+            lease.waiters -= 1
 
         lease.holder = token
         lease.acquired_at = time.time()

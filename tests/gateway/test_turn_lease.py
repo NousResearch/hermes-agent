@@ -208,6 +208,47 @@ def test_registry_bounded_and_never_evicts_live_lease():
     _run(scenario())
 
 
+def test_lease_with_queued_waiter_is_not_idle_or_evicted():
+    """A lease reports non-idle while a turn is parked waiting to acquire it,
+    even in the window right after the holder releases (before the waiter's
+    wake-up runs). Guards the waiter-blind eviction hole from @hansai-art's
+    #67401 audit: without the waiters term the woken waiter would be stranded
+    on an unregistered lease while the next acquire mints a fresh one."""
+
+    async def scenario():
+        registry = SessionTurnLeaseRegistry(max_entries=1)  # forces eviction
+
+        a = await registry.acquire("S", owner_key="A", generation=1, timeout=5)
+
+        # B parks waiting for S (A still holds it).
+        b_task = asyncio.ensure_future(
+            registry.acquire("S", owner_key="B", generation=2, timeout=5)
+        )
+        await asyncio.sleep(0)  # let B reach the await
+        assert registry._leases["S"].waiters == 1
+        assert not registry._leases["S"].idle
+
+        # Release A. Now holder is None and lock may read unlocked before B's
+        # wake-up runs — but waiters==1 keeps idle False.
+        registry.release(a)
+        assert not registry._leases["S"].idle
+
+        # An eviction pass fired by a *different* session's acquire (cap=1)
+        # must NOT drop S while B is queued behind it.
+        c = await registry.acquire("OTHER", owner_key="C", generation=1, timeout=5)
+        assert "S" in registry._leases, "contended lease was wrongly evicted"
+
+        # B resumes and takes the lease under the still-registered entry.
+        b = await asyncio.wait_for(b_task, timeout=5)
+        assert b is not None and not b.degraded
+        assert registry._leases["S"].holder is b
+
+        registry.release(b)
+        registry.release(c)
+
+    _run(scenario())
+
+
 # ---------------------------------------------------------------------------
 # Mid-turn rotation rebind
 # ---------------------------------------------------------------------------

@@ -24,6 +24,7 @@ from pathlib import Path
 
 import pytest
 
+from hermes_cli import project_runtime_registration as runtime
 from hermes_cli.project_finalization_contract import (
     ensure_project_finalization_schema,
     create_project_finalization,
@@ -150,7 +151,6 @@ def test_v2_to_v3_route_authority_migration_is_additive_and_marked():
         # The v3 migration must create only the new route-authority table and
         # advance metadata transactionally.
         ensure_project_finalization_schema(conn)
-        conn.execute("DROP TABLE project_finalization_notification_routes")
         conn.execute(
             """
             CREATE TABLE kanban_notify_subs (
@@ -185,9 +185,16 @@ def test_v2_to_v3_route_authority_migration_is_additive_and_marked():
         )
         conn.execute(
             """
+            INSERT INTO project_finalization_members
+                (board_id, root_task_id, generation, task_id, membership_kind, required, created_at)
+            VALUES ('v2-board', 'v2-root', 7, 'v2-required', 'required', 1, 701)
+            """
+        )
+        conn.execute(
+            """
             INSERT INTO kanban_notify_subs
                 (task_id, platform, chat_id, thread_id, user_id, notifier_profile)
-            VALUES ('v2-root', 'telegram', '-100-v2-route', '77', 'v2-user', 'v2-profile')
+            VALUES ('v2-required', 'telegram', '-100-v2-route', '77', 'v2-user', 'v2-profile')
             """
         )
         conn.execute(
@@ -198,6 +205,25 @@ def test_v2_to_v3_route_authority_migration_is_additive_and_marked():
             "WHERE key='migration'"
         )
 
+        # This is the pre-migration runtime fallback: root GC has already
+        # removed the source subscription, but the generation's required task
+        # still carries the exact hash-bound route.
+        legacy_destination = runtime.resolve_project_telegram_destination(
+            conn, board_id="v2-board", root_task_id="v2-root", generation=7
+        )
+        assert legacy_destination.status == runtime.DESTINATION_FOUND
+        assert legacy_destination.route_identity == route_identity
+        assert len(
+            runtime._resolve_route_rows(
+                conn,
+                board_id="v2-board",
+                root_task_id="v2-root",
+                generation=7,
+                identities=(route_identity,),
+            )
+        ) == 1
+
+        conn.execute("DROP TABLE project_finalization_notification_routes")
         ensure_project_finalization_schema(conn)
 
         columns = {
@@ -220,6 +246,20 @@ def test_v2_to_v3_route_authority_migration_is_additive_and_marked():
             """
         ).fetchone()
         assert tuple(route) == (7, "-100-v2-route", "77", route_identity, 701)
+        destination = runtime.resolve_project_telegram_destination(
+            conn, board_id="v2-board", root_task_id="v2-root", generation=7
+        )
+        assert destination.status == runtime.DESTINATION_FOUND
+        assert destination.route_identity == route_identity
+        copier_rows = runtime._resolve_route_rows(
+            conn,
+            board_id="v2-board",
+            root_task_id="v2-root",
+            generation=7,
+            identities=(route_identity,),
+        )
+        assert len(copier_rows) == 1
+        assert copier_rows[0]["chat_id"] == "-100-v2-route"
     finally:
         _close_and_unlink(conn, path)
 

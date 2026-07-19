@@ -1072,13 +1072,62 @@ def _ensure_notification_route_triggers(conn: sqlite3.Connection) -> None:
         conn.execute(statement)
 
 
+def _hash_bound_generation_route(
+    conn: sqlite3.Connection,
+    *,
+    board_id: str,
+    root_task_id: str,
+    generation: int,
+    expected_identity: str | None,
+) -> sqlite3.Row | None:
+    """Return one deterministic matching route from a legacy generation.
+
+    The legacy notifier is mutable per task, so only its stable hash binding
+    is authority. Metadata is deliberately used solely as deterministic copier
+    data after equivalent route triples have been deduplicated.
+    """
+
+    rows = conn.execute(
+        """
+        SELECT s.task_id, s.platform, s.chat_id, s.thread_id,
+               s.user_id, s.notifier_profile
+          FROM kanban_notify_subs AS s
+         WHERE s.platform='telegram'
+           AND s.task_id IN (
+               SELECT ?
+               UNION
+               SELECT task_id
+                 FROM project_finalization_members
+                WHERE board_id=? AND root_task_id=? AND generation=?
+           )
+         ORDER BY s.task_id, s.platform, s.chat_id, s.thread_id,
+                  COALESCE(s.user_id, ''), COALESCE(s.notifier_profile, '')
+        """,
+        (root_task_id, board_id, root_task_id, generation),
+    ).fetchall()
+    matches: dict[tuple[str, str, str], sqlite3.Row] = {}
+    for row in rows:
+        thread_id = row["thread_id"] or ""
+        canonical = json.dumps(
+            (row["platform"], row["chat_id"], thread_id),
+            ensure_ascii=True,
+            separators=(",", ":"),
+        )
+        identity = "subscription:sha256:" + hashlib.sha256(
+            canonical.encode("utf-8")
+        ).hexdigest()
+        if identity == expected_identity:
+            matches.setdefault((row["platform"], row["chat_id"], thread_id), row)
+    return next(iter(matches.values())) if len(matches) == 1 else None
+
+
 def _backfill_admitted_notification_routes(conn: sqlite3.Connection) -> None:
-    """Copy only unambiguous legacy root routes into v3 route authority.
+    """Copy only one exact legacy generation route into v3 route authority.
 
     A v2 admission stored a hash binding but sourced the actual destination
-    from the normal notifier row.  On upgrade, preserve that destination only
-    when the live root row is singular and reproduces the stored binding.
-    Ambiguity and mismatches remain deliberately un-routable.
+    from normal notifier rows. On upgrade, preserve that destination only when
+    exactly one route triple across the root and generation members reproduces
+    the stored binding. Ambiguity and mismatches remain un-routable.
     """
 
     tables = {
@@ -1102,29 +1151,16 @@ def _backfill_admitted_notification_routes(conn: sqlite3.Connection) -> None:
         """
     ).fetchall()
     for project in projects:
-        rows = conn.execute(
-            """
-            SELECT platform, chat_id, thread_id, user_id, notifier_profile
-              FROM kanban_notify_subs
-             WHERE task_id=? AND platform='telegram'
-             ORDER BY chat_id, thread_id
-            """,
-            (project["root_task_id"],),
-        ).fetchall()
-        if len(rows) != 1:
-            continue
-        route = rows[0]
-        thread_id = route["thread_id"] or ""
-        canonical = json.dumps(
-            (route["platform"], route["chat_id"], thread_id),
-            ensure_ascii=True,
-            separators=(",", ":"),
+        route = _hash_bound_generation_route(
+            conn,
+            board_id=project["board_id"],
+            root_task_id=project["root_task_id"],
+            generation=int(project["generation"]),
+            expected_identity=project["notification_route_identity"],
         )
-        identity = "subscription:sha256:" + hashlib.sha256(
-            canonical.encode("utf-8")
-        ).hexdigest()
-        if identity != project["notification_route_identity"]:
+        if route is None:
             continue
+        thread_id = route["thread_id"] or ""
         conn.execute(
             """
             INSERT INTO project_finalization_notification_routes (
@@ -1141,7 +1177,7 @@ def _backfill_admitted_notification_routes(conn: sqlite3.Connection) -> None:
                 thread_id,
                 route["user_id"],
                 route["notifier_profile"],
-                identity,
+                project["notification_route_identity"],
                 project["created_at"],
             ),
         )

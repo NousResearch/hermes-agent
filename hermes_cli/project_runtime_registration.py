@@ -236,18 +236,16 @@ def resolve_project_telegram_destination(
                 route_identity=identity,
             )
 
-        # A project admitted before the additive route migration can still be
-        # replayed while its original root subscription survives.  Its next
-        # explicit admission replay records the immutable authority row.
-        rows = conn.execute(
-            """
-            SELECT platform, chat_id, thread_id
-              FROM kanban_notify_subs
-             WHERE task_id = ? AND platform = 'telegram'
-             ORDER BY chat_id, thread_id
-            """,
-            (root_task_id,),
-        ).fetchall()
+        # A project admitted before the additive route migration can recover
+        # from the root notifier's normal GC only when exactly one root or
+        # generation-member route reproduces the stored authority hash.
+        rows = _hash_bound_generation_route_rows(
+            conn,
+            board_id=board_id,
+            root_task_id=root_task_id,
+            generation=generation,
+            expected_identity=project_row["notification_route_identity"],
+        )
         if len(rows) != 1:
             return ProjectTelegramDestination(
                 status=DESTINATION_MISSING,
@@ -256,11 +254,6 @@ def resolve_project_telegram_destination(
         row = rows[0]
         thread_id = row["thread_id"] or None
         identity = notification_route_identity("telegram", row["chat_id"], thread_id)
-        if identity != project_row["notification_route_identity"]:
-            return ProjectTelegramDestination(
-                status=DESTINATION_MISSING,
-                reason="admitted_telegram_destination_changed",
-            )
         return ProjectTelegramDestination(
             status=DESTINATION_FOUND,
             platform="telegram",
@@ -1385,6 +1378,50 @@ def _project_task_ids(
     return tuple(sorted(ids))
 
 
+def _hash_bound_generation_route_rows(
+    conn: sqlite3.Connection,
+    *,
+    board_id: str,
+    root_task_id: str,
+    generation: int,
+    expected_identity: str | None,
+) -> tuple[sqlite3.Row, ...]:
+    """Find one exact legacy route across root and generation members.
+
+    Equivalent route triples are deduplicated before choosing the first
+    deterministic copier-metadata row.  User and profile metadata is never
+    part of route authority.
+    """
+
+    rows = conn.execute(
+        """
+        SELECT s.task_id, s.platform, s.chat_id, s.thread_id,
+               s.user_id, s.notifier_profile
+          FROM kanban_notify_subs AS s
+         WHERE s.platform='telegram'
+           AND s.task_id IN (
+               SELECT ?
+               UNION
+               SELECT task_id
+                 FROM project_finalization_members
+                WHERE board_id=? AND root_task_id=? AND generation=?
+           )
+         ORDER BY s.task_id, s.platform, s.chat_id, s.thread_id,
+                  COALESCE(s.user_id, ''), COALESCE(s.notifier_profile, '')
+        """,
+        (root_task_id, board_id, root_task_id, generation),
+    ).fetchall()
+    matches: dict[tuple[str, str, str], sqlite3.Row] = {}
+    for row in rows:
+        thread_id = row["thread_id"] or ""
+        identity = notification_route_identity(
+            row["platform"], row["chat_id"], thread_id or None
+        )
+        if identity == expected_identity:
+            matches.setdefault((row["platform"], row["chat_id"], thread_id), row)
+    return tuple(matches[key] for key in sorted(matches)) if len(matches) == 1 else ()
+
+
 def _persist_admitted_telegram_route(
     conn: sqlite3.Connection,
     *,
@@ -1496,6 +1533,18 @@ def _resolve_route_rows(
             ):
                 raise ValueError("notification route identity is not durable project state")
             return tuple(durable_rows)
+        legacy_rows = _hash_bound_generation_route_rows(
+            conn,
+            board_id=board_id,
+            root_task_id=root_task_id,
+            generation=generation,
+            expected_identity=project_row["notification_route_identity"],
+        )
+        if len(legacy_rows) != 1 or requested != {
+            project_row["notification_route_identity"]
+        }:
+            raise ValueError("notification route identity is not durable project state")
+        return legacy_rows
     task_ids = _project_task_ids(
         conn,
         board_id=board_id,

@@ -17,6 +17,7 @@ from hermes_cli.project_finalization_contract import (
     get_project_finalization,
     list_project_members,
     record_checker_verdict,
+    register_project_member,
 )
 from hermes_cli.project_repair_router import (
     REGISTRATION_ALREADY_EXISTS,
@@ -31,6 +32,7 @@ from hermes_cli.project_runtime_registration import (
     DESTINATION_MISSING,
     AtomicCheckerRegistration,
     CheckerRegistrationAction,
+    _resolve_route_rows,
     checker_registration_identity,
     notification_route_identity,
     register_project_checker,
@@ -543,3 +545,79 @@ def test_destination_resolution_returns_explicit_missing_result(board):
     assert result.reason == "project_generation_missing"
     assert result.chat_id is None
     assert result.route_identity is None
+
+
+def test_admitted_legacy_member_route_fallback_fails_closed_on_mismatch_and_ambiguity(
+    board, monkeypatch
+):
+    project, _, failed, checker, route = _setup_project(board)
+    board.execute(
+        """
+        UPDATE project_finalizations
+           SET admission_key='legacy-admitted', checker_profile='checker-terra',
+               notification_route_identity=?
+         WHERE board_id=? AND root_task_id=? AND generation=?
+        """,
+        (route, project.board_id, project.root_task_id, project.generation),
+    )
+    assert kb.remove_notify_sub(
+        board,
+        task_id=project.root_task_id,
+        platform="telegram",
+        chat_id="-100-secret",
+        thread_id="42",
+    )
+    kb.add_notify_sub(
+        board,
+        task_id=checker,
+        platform="telegram",
+        chat_id="-100-mismatch",
+        thread_id="42",
+    )
+
+    missing = resolve_project_telegram_destination(
+        board,
+        board_id=project.board_id,
+        root_task_id=project.root_task_id,
+        generation=project.generation,
+    )
+    assert missing.status == DESTINATION_MISSING
+    with pytest.raises(ValueError, match="not durable project state"):
+        _resolve_route_rows(
+            board,
+            board_id=project.board_id,
+            root_task_id=project.root_task_id,
+            generation=project.generation,
+            identities=(route,),
+        )
+
+    # A hash collision is not accepted as an excuse to choose between two
+    # distinct destinations. Simulate the identity collision at the boundary
+    # to pin the fail-closed branch without relying on an actual SHA-256 one.
+    kb.add_notify_sub(
+        board,
+        task_id=failed,
+        platform="telegram",
+        chat_id="-100-second",
+        thread_id="42",
+    )
+    register_project_member(
+        board,
+        board_id=project.board_id,
+        root_task_id=project.root_task_id,
+        generation=project.generation,
+        task_id=failed,
+        membership_kind="support",
+        required=False,
+    )
+    monkeypatch.setattr(
+        "hermes_cli.project_runtime_registration.notification_route_identity",
+        lambda *_args, **_kwargs: route,
+    )
+    ambiguous = resolve_project_telegram_destination(
+        board,
+        board_id=project.board_id,
+        root_task_id=project.root_task_id,
+        generation=project.generation,
+    )
+    assert ambiguous.status == DESTINATION_MISSING

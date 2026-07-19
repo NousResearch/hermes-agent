@@ -1,7 +1,8 @@
 import { asText, normalize } from '@/lib/text'
 import type { ConfigFieldSchema, HermesConfigRecord, ToolsetInfo } from '@/types/hermes'
 
-import { BUILTIN_PERSONALITIES, ENUM_OPTIONS, PROVIDER_GROUPS, SECTIONS } from './constants'
+import type { NumberBounds } from './constants'
+import { BUILTIN_PERSONALITIES, ENUM_OPTIONS, NUMBER_BOUNDS, PROVIDER_GROUPS, SECTIONS } from './constants'
 
 // Canonical implementations live in @/lib/text; re-exported here so the many
 // settings/capabilities call sites keep their import path.
@@ -257,6 +258,59 @@ function commandProviderNames(config: HermesConfigRecord, section: 'tts' | 'stt'
   }
 
   return [...names]
+}
+
+// Resolve the effective numeric bounds for a `type: 'number'` field.
+// Backend-supplied bounds on the schema win; otherwise fall back to the
+// desktop-declared NUMBER_BOUNDS. Only finite numbers are carried through,
+// so an unbounded field yields `{}` and renders exactly as before.
+export function resolveNumberBounds(
+  schemaKey: string,
+  schema?: Pick<ConfigFieldSchema, 'max' | 'min' | 'step'>
+): NumberBounds {
+  const declared = NUMBER_BOUNDS[schemaKey]
+
+  const pick = (fromSchema: number | undefined, fallback: number | undefined) =>
+    typeof fromSchema === 'number' && Number.isFinite(fromSchema)
+      ? fromSchema
+      : typeof fallback === 'number' && Number.isFinite(fallback)
+        ? fallback
+        : undefined
+
+  const bounds: NumberBounds = {}
+  const min = pick(schema?.min, declared?.min)
+  const max = pick(schema?.max, declared?.max)
+  const step = pick(schema?.step, declared?.step)
+
+  if (min !== undefined) {
+    bounds.min = min
+  }
+
+  if (max !== undefined) {
+    bounds.max = max
+  }
+
+  if (step !== undefined) {
+    bounds.step = step
+  }
+
+  return bounds
+}
+
+// Clamp a value into `[min, max]` when either edge is declared. A field with
+// no bounds is returned unchanged.
+export function clampToBounds(n: number, bounds: NumberBounds): number {
+  let v = n
+
+  if (typeof bounds.min === 'number' && v < bounds.min) {
+    v = bounds.min
+  }
+
+  if (typeof bounds.max === 'number' && v > bounds.max) {
+    v = bounds.max
+  }
+
+  return v
 }
 
 export function enumOptionsFor(

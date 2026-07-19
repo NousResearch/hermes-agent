@@ -22,10 +22,12 @@ import { CONTROL_TEXT, EMPTY_SELECT_VALUE, FIELD_DESCRIPTIONS, FIELD_LABELS } fr
 import { FallbackModelsField } from './fallback-models-field'
 import { fieldCopyForSchemaKey } from './field-copy'
 import {
+  clampToBounds,
   enumOptionsFor,
   getNested,
   isExternalMemoryProvider,
   prettyName,
+  resolveNumberBounds,
   sectionFieldEntries,
   setNested
 } from './helpers'
@@ -152,18 +154,27 @@ function ConfigField({
   }
 
   if (schema.type === 'number') {
+    const bounds = resolveNumberBounds(schemaKey, schema)
+
     return row(
       <Input
         className={CONTROL_TEXT}
+        max={bounds.max}
+        min={bounds.min}
         onChange={e => {
           const raw = e.target.value
           const n = raw === '' ? 0 : Number(raw)
 
           if (!Number.isNaN(n)) {
-            onChange(n)
+            // Clamp here too: a bare `min`/`max` on a number input only blocks
+            // the spinner, not typed out-of-range values (#65703). The empty
+            // input's 0 fallback needs it as well, for a field whose minimum
+            // is positive (e.g. compression.target_ratio).
+            onChange(clampToBounds(n, bounds))
           }
         }}
         placeholder={c.notSet}
+        step={bounds.step}
         type="number"
         value={value === undefined || value === null ? '' : String(value)}
       />

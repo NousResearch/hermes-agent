@@ -4,10 +4,12 @@ import type { HermesConfigRecord } from '@/types/hermes'
 
 import { defineFieldCopy, fieldCopyForSchemaKey, schemaKeyToFieldCopyKey } from './field-copy'
 import {
+  clampToBounds,
   enumOptionsFor,
   getNested,
   isExternalMemoryProvider,
   providerGroup,
+  resolveNumberBounds,
   sectionFieldEntries,
   setNested,
   stripToolsetLabel,
@@ -332,6 +334,73 @@ describe('settings helpers', () => {
 
     it('hides declared keys absent from both schema and config', () => {
       expect(sectionFieldEntries({}, {}).get('memory') ?? []).toHaveLength(0)
+    })
+  })
+
+  describe('resolveNumberBounds', () => {
+    it('declares bounds for the compression ratio fields (#65703)', () => {
+      expect(resolveNumberBounds('compression.threshold')).toEqual({ min: 0, max: 1, step: 0.05 })
+    })
+
+    it('bounds target_ratio to the runtime-enforced 0.10-0.80 window', () => {
+      // agent/context_compressor.py: max(0.10, min(summary_target_ratio, 0.80))
+      expect(resolveNumberBounds('compression.target_ratio')).toEqual({ min: 0.1, max: 0.8, step: 0.05 })
+    })
+
+    it('returns empty bounds for an unbounded field so it renders unchanged', () => {
+      expect(resolveNumberBounds('memory.memory_char_limit')).toEqual({})
+    })
+
+    it('lets backend-supplied schema bounds win over the declared fallback', () => {
+      expect(resolveNumberBounds('compression.threshold', { min: 0.1, max: 0.9, step: 0.01 })).toEqual({
+        min: 0.1,
+        max: 0.9,
+        step: 0.01
+      })
+    })
+
+    it('falls back to declared bounds for edges the schema omits', () => {
+      expect(resolveNumberBounds('compression.threshold', { max: 0.8 })).toEqual({
+        min: 0,
+        max: 0.8,
+        step: 0.05
+      })
+    })
+
+    it('ignores non-finite schema bounds', () => {
+      expect(resolveNumberBounds('compression.threshold', { min: Number.NaN, max: Infinity })).toEqual({
+        min: 0,
+        max: 1,
+        step: 0.05
+      })
+    })
+  })
+
+  describe('clampToBounds', () => {
+    it('clamps below min and above max', () => {
+      const bounds = { min: 0, max: 1 }
+
+      expect(clampToBounds(-0.5, bounds)).toBe(0)
+      expect(clampToBounds(1.5, bounds)).toBe(1)
+    })
+
+    it('leaves in-range values untouched', () => {
+      expect(clampToBounds(0.5, { min: 0, max: 1 })).toBe(0.5)
+    })
+
+    it('applies only the declared edge when the other is absent', () => {
+      expect(clampToBounds(-3, { min: 0 })).toBe(0)
+      expect(clampToBounds(-3, { max: 10 })).toBe(-3)
+    })
+
+    it('returns the value unchanged when no bounds are declared', () => {
+      expect(clampToBounds(42, {})).toBe(42)
+    })
+
+    it('raises the empty-input 0 fallback to a positive minimum', () => {
+      // The number field writes 0 when the input is cleared; for a field with
+      // min > 0 that value is itself out of range and must be clamped.
+      expect(clampToBounds(0, resolveNumberBounds('compression.target_ratio'))).toBe(0.1)
     })
   })
 })

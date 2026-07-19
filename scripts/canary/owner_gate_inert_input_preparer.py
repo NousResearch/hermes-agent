@@ -24,7 +24,7 @@ import re
 import stat
 from contextlib import contextmanager
 from pathlib import Path
-from typing import Any, Iterator, Mapping, Never, Protocol
+from typing import Any, Iterator, Mapping, Never, Protocol, Sequence
 
 from scripts.canary import full_canary_owner_launcher as launcher
 from scripts.canary import owner_gate_foundation as foundation
@@ -223,6 +223,91 @@ def _read_regular(
             os.close(descriptor)
 
 
+def _owner_stage0_signature_runner(argv: Sequence[str]) -> bytes:
+    """Verify stage-zero's exact Ed25519 request in the sealed owner runtime."""
+
+    if (
+        len(argv) != 13
+        or not all(isinstance(item, str) for item in argv)
+        or tuple(argv[:7]) != (
+            str(stage0.OPENSSL),
+            "pkeyutl",
+            "-verify",
+            "-pubin",
+            "-keyform",
+            "DER",
+            "-inkey",
+        )
+        or tuple(argv[8:10]) != ("-rawin", "-in")
+        or argv[11] != "-sigfile"
+    ):
+        raise stage0.OwnerGateStage0Error(
+            "owner_gate_stage0_signature_invalid"
+        )
+    key_path = Path(argv[7])
+    message_path = Path(argv[10])
+    signature_path = Path(argv[12])
+    paths = (key_path, message_path, signature_path)
+    if (
+        any(not path.is_absolute() or ".." in path.parts for path in paths)
+        or len({path.parent for path in paths}) != 1
+        or (key_path.name, message_path.name, signature_path.name)
+        != ("public.der", "message.bin", "signature.bin")
+    ):
+        raise stage0.OwnerGateStage0Error(
+            "owner_gate_stage0_signature_invalid"
+        )
+    try:
+        key_der = _read_regular(
+            key_path,
+            maximum=len(stage0._SPKI_ED25519_PREFIX) + 32,
+            modes=frozenset({0o600}),
+            code="owner_gate_inert_input_bundle_invalid",
+        )
+        message = _read_regular(
+            message_path,
+            maximum=stage0.MAX_JSON_BYTES,
+            modes=frozenset({0o600}),
+            code="owner_gate_inert_input_bundle_invalid",
+        )
+        signature = _read_regular(
+            signature_path,
+            maximum=64,
+            modes=frozenset({0o600}),
+            code="owner_gate_inert_input_bundle_invalid",
+        )
+    except launcher.OwnerLauncherError:
+        raise stage0.OwnerGateStage0Error(
+            "owner_gate_stage0_signature_invalid"
+        ) from None
+    if (
+        len(key_der) != len(stage0._SPKI_ED25519_PREFIX) + 32
+        or not key_der.startswith(stage0._SPKI_ED25519_PREFIX)
+        or len(signature) != 64
+    ):
+        raise stage0.OwnerGateStage0Error(
+            "owner_gate_stage0_signature_invalid"
+        )
+    try:
+        from cryptography.exceptions import InvalidSignature
+        from cryptography.hazmat.primitives.asymmetric.ed25519 import (
+            Ed25519PublicKey,
+        )
+    except ImportError:
+        raise stage0.OwnerGateStage0Error(
+            "owner_gate_stage0_signature_invalid"
+        ) from None
+    try:
+        Ed25519PublicKey.from_public_bytes(
+            key_der[len(stage0._SPKI_ED25519_PREFIX):]
+        ).verify(signature, message)
+    except (InvalidSignature, ValueError):
+        raise stage0.OwnerGateStage0Error(
+            "owner_gate_stage0_signature_invalid"
+        ) from None
+    return b"Signature Verified Successfully\n"
+
+
 def _fixed_release_source(
     release_revision: str,
     runtime: SealedOwnerSupportRuntime,
@@ -386,6 +471,7 @@ def _fixed_bundle(
         manifest = stage0.verify_bundle_stage0(
             bundle,
             expected_uid=os.geteuid(),  # windows-footgun: ok
+            runner=_owner_stage0_signature_runner,
         )
     except stage0.OwnerGateStage0Error as exc:
         _error("owner_gate_inert_input_bundle_invalid", exc)

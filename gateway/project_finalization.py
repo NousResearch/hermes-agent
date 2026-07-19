@@ -12,6 +12,7 @@ import json
 import sqlite3
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
+from pathlib import Path
 from typing import Any, Awaitable, Callable, Mapping
 
 from hermes_cli import kanban_db as kb
@@ -35,6 +36,7 @@ from hermes_cli.project_delivery_ledger import (
 )
 from hermes_cli.project_failure_envelope import record_failure_envelope
 from hermes_cli.project_final_artifacts import (
+    ProjectFinalArtifacts,
     ProjectFinalizationSnapshot,
     publish_project_final_artifacts,
 )
@@ -68,6 +70,7 @@ from hermes_cli.project_runtime_registration import (
 
 DeliveryCallable = Callable[[str, str, str | None, str], Awaitable[Mapping[str, Any]]]
 ConnectionFactory = Callable[[], sqlite3.Connection]
+MAX_TERMINAL_MESSAGE_CHARS = 512
 
 
 @dataclass(frozen=True)
@@ -248,8 +251,11 @@ class ProjectFinalizationService:
         if not self._owns_lock(current, now):
             return result.plus(skipped=1)
         snapshot = self._artifact_snapshot(conn, current, evaluation, outcome)
-        publish_project_final_artifacts(conn, snapshot)
-        destination = self._destination(conn, current)
+        published = publish_project_final_artifacts(conn, snapshot)
+        durable = get_project_finalization(conn, board_id=current.board_id, root_task_id=current.root_task_id, generation=current.generation)
+        if durable is None:
+            raise ValueError("project finalization disappeared after artifact publication")
+        destination = self._destination(conn, durable)
         if destination.status != DESTINATION_FOUND:
             # No route is safe to infer. Persist a terminal technical outcome only
             # for non-success states; success remains nonterminal until delivery.
@@ -258,7 +264,8 @@ class ProjectFinalizationService:
                 return result.plus(terminalized=1)
             return result.plus(skipped=1)
         message_kind = f"project_{outcome.lower()}"
-        delivered = await self._deliver_once(conn, current, destination, message_kind, outcome, now)
+        terminal_message = self._terminal_message(durable, outcome, published)
+        delivered = await self._deliver_once(conn, durable, destination, message_kind, terminal_message, now)
         if delivered == DELIVERY_AMBIGUOUS:
             return result.plus(ambiguous=1)
         if delivered == DELIVERY_RETRY_SCHEDULED:
@@ -274,7 +281,28 @@ class ProjectFinalizationService:
             schedule_project_cleanup(conn, board_id=current.board_id, root_task_id=current.root_task_id, generation=current.generation, cleanup_after=cleanup_after)
         return result.plus(delivered=1, terminalized=1)
 
-    async def _deliver_once(self, conn: sqlite3.Connection, current: Any, destination: Any, message_kind: str, outcome: str, now: int) -> str:
+    def _terminal_message(self, current: Any, outcome: str, published: ProjectFinalArtifacts) -> str:
+        artifact_names = (
+            Path(published.report_path).name,
+            Path(published.manifest_path).name,
+            Path(published.usage_summary_path).name,
+        )
+        if any(not name for name in artifact_names):
+            raise ValueError("published artifact is missing a relative name")
+        checker_verdict = current.checker_verdict or "NOT_RECORDED"
+        message = "\n".join(
+            (
+                f"Result: {outcome}",
+                f"Root: {current.root_task_id}",
+                f"Checker: {checker_verdict}",
+                f"Artifacts: {', '.join(artifact_names)}",
+            )
+        )
+        if len(message) > MAX_TERMINAL_MESSAGE_CHARS:
+            raise ValueError("terminal message exceeds the bounded delivery contract")
+        return message
+
+    async def _deliver_once(self, conn: sqlite3.Connection, current: Any, destination: Any, message_kind: str, terminal_message: str, now: int) -> str:
         kwargs = dict(board_id=current.board_id, root_task_id=current.root_task_id, generation=current.generation, platform=destination.platform, destination_reference=destination.chat_id, thread_reference=destination.thread_id, message_kind=message_kind)
         latest = get_latest_delivery_attempt(conn, **{key: value for key, value in kwargs.items() if key != "thread_reference"})
         if latest is not None:
@@ -294,7 +322,7 @@ class ProjectFinalizationService:
             attempt = create_delivery_attempt(conn, attempt_number=1 if latest is None else latest.attempt_number, delivery_state="pending", **kwargs)
         mark_delivery_attempt_attempting(conn, attempt_number=attempt.attempt_number, now=now, **{key: value for key, value in kwargs.items() if key != "thread_reference"})
         try:
-            receipt = await self._deliver(destination.platform, destination.chat_id, destination.thread_id, f"Project {current.root_task_id} generation {current.generation}: {outcome}")
+            receipt = await self._deliver(destination.platform, destination.chat_id, destination.thread_id, terminal_message)
         except Exception as exc:
             mark_delivery_attempt_ambiguous(conn, attempt_number=attempt.attempt_number, redacted_error=f"delivery exception: {type(exc).__name__}", now=now, **{key: value for key, value in kwargs.items() if key != "thread_reference"})
             return DELIVERY_AMBIGUOUS

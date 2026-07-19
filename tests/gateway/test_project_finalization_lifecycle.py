@@ -38,8 +38,8 @@ def _task(conn, title):
     return kb.create_task(conn, title=title, assignee="builder-gptterra", workspace_kind="dir", workspace_path="C:/repo")
 
 
-def _setup(conn, *, complete_checker=False, verdict=None, subscription=True):
-    root = _task(conn, "root")
+def _setup(conn, *, complete_checker=False, verdict=None, subscription=True, root_title="root"):
+    root = _task(conn, root_title)
     checker = _task(conn, "checker")
     project = create_project_finalization(conn, board_id="default", root_task_id=root, final_checker_task_id=checker, repair_budget=1)
     kb.complete_task(conn, root, result="implementation done")
@@ -105,6 +105,40 @@ def test_pass_gates_artifacts_accepted_delivery_terminalization_and_cleanup_sche
     assert project.final_report_path and project.manifest_path and project.cleanup_after
     assert attempt.provider_message_id == "m-1"
     assert len(receipts) == 1
+
+
+def test_terminal_provider_payload_uses_durable_contract_and_excludes_private_data(board):
+    private_task_text = "PRIVATE project prompt must not leave Hermes"
+    root, _, _ = _setup(
+        board,
+        complete_checker=True,
+        verdict="PASS",
+        root_title=private_task_text,
+    )
+    service, receipts = _service()
+
+    result = _run(service)
+
+    assert result.delivered == result.terminalized == 1
+    assert receipts[0] == (
+        "telegram",
+        "-100-test",
+        "4",
+        "\n".join(
+            (
+                "Result: COMPLETE",
+                f"Root: {root}",
+                "Checker: PASS",
+                "Artifacts: final-report.md, manifest.json, usage-summary.json",
+            )
+        ),
+    )
+    provider_payload = receipts[0][3]
+    assert private_task_text not in provider_payload
+    assert "-100-test" not in provider_payload
+    assert "C:/repo" not in provider_payload
+    assert "action" not in provider_payload.lower()
+    assert len(provider_payload) <= 512
 
 
 def test_repairable_checker_failure_routes_one_durable_repair(board):
@@ -186,6 +220,15 @@ def test_blocked_checker_publishes_terminal_artifacts_and_delivers_once(board):
     assert project.terminal_outcome == "BLOCKED"
     assert project.final_report_path and project.manifest_path
     assert len(receipts) == 1
+    assert receipts[0][3] == "\n".join(
+        (
+            "Result: BLOCKED",
+            f"Root: {root}",
+            "Checker: FAIL_TERMINAL",
+            "Artifacts: final-report.md, manifest.json, usage-summary.json",
+        )
+    )
+    assert "Checker: PASS" not in receipts[0][3]
 
 
 def test_ambiguous_receipt_is_persisted_without_blind_resend(board):

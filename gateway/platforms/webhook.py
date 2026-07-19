@@ -8,7 +8,7 @@ source or to another configured platform.
 Configuration lives in config.yaml under platforms.webhook.extra.routes.
 Each route defines:
   - events: which event types to accept (header-based filtering)
-  - secret: HMAC secret for signature validation (REQUIRED)
+  - secret: webhook secret for signature or token validation (REQUIRED)
   - prompt: template string formatted with the webhook payload
   - skills: optional list of skills to load for the agent
   - deliver: where to send the response (github_comment, telegram, etc.)
@@ -19,7 +19,7 @@ Each route defines:
     and sub-second delivery matter more than agent reasoning.
 
 Security:
-  - HMAC secret is required per route (validated at startup)
+  - A webhook secret is required per route (validated at startup)
   - Rate limiting per route (fixed-window, configurable)
   - Idempotency cache prevents duplicate agent runs on webhook retries
   - Body size limits checked before reading payload
@@ -134,9 +134,14 @@ def _hmac_str_equal(provided: str, expected: str) -> bool:
     webhook endpoint, so a single non-ASCII byte would otherwise raise out of
     the request handler and return a 500 instead of rejecting the request.
     Comparing as UTF-8 bytes keeps the constant-time guarantee while making a
-    hostile header fail closed with a clean rejection.
+    hostile header fail closed with a clean rejection. ``aiohttp`` decodes raw
+    non-UTF-8 header bytes with ``surrogateescape``; ``surrogatepass`` keeps the
+    conversion total for those attacker-controlled values instead of raising.
     """
-    return hmac.compare_digest(provided.encode(), expected.encode())
+    return hmac.compare_digest(
+        provided.encode("utf-8", "surrogatepass"),
+        expected.encode("utf-8", "surrogatepass"),
+    )
 
 
 def check_webhook_requirements() -> bool:
@@ -224,7 +229,7 @@ class WebhookAdapter(BasePlatformAdapter):
             secret = route.get("secret", self._global_secret)
             if not secret:
                 raise ValueError(
-                    f"[webhook] Route '{name}' has no HMAC secret. "
+                    f"[webhook] Route '{name}' has no webhook secret. "
                     f"Set 'secret' on the route or globally. "
                     f"For testing without auth, set secret to '{_INSECURE_NO_AUTH}'."
                 )
@@ -465,7 +470,7 @@ class WebhookAdapter(BasePlatformAdapter):
                 if not effective_secret:
                     logger.warning(
                         "[webhook] Dynamic route '%s' skipped: 'secret' is "
-                        "missing or empty. Set a valid HMAC secret, or use "
+                        "missing or empty. Set a valid webhook secret, or use "
                         "'%s' to explicitly disable auth (testing only).",
                         k,
                         _INSECURE_NO_AUTH,
@@ -586,11 +591,11 @@ class WebhookAdapter(BasePlatformAdapter):
         secret = route_config.get("secret", self._global_secret)
         if not secret:
             logger.error(
-                "[webhook] Route %s has no HMAC secret; refusing request",
+                "[webhook] Route %s has no webhook secret; refusing request",
                 route_name,
             )
             return web.json_response(
-                {"error": "Webhook route is missing an HMAC secret"},
+                {"error": "Webhook route is missing a webhook secret"},
                 status=403,
             )
         if secret != _INSECURE_NO_AUTH:

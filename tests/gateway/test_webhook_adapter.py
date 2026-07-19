@@ -1,7 +1,7 @@
 """Unit tests for the generic webhook platform adapter.
 
 Covers:
-- HMAC signature validation (GitHub, GitLab, generic)
+- Signature and token validation (GitHub, GitLab, generic, Bearer)
 - Prompt rendering with dot-notation template variables
 - Event type filtering
 - HTTP handler behaviour (404, 202, health)
@@ -177,6 +177,12 @@ class TestValidateSignature:
         """Hostile non-ASCII Bearer input must fail closed instead of raising."""
         adapter = _make_adapter()
         req = _mock_request(headers={"Authorization": "Bearer tökén"})
+        assert adapter._validate_signature(req, b"{}", "correct") is False
+
+    def test_surrogateescaped_bearer_token_rejects_without_raising(self):
+        """Raw non-UTF-8 header bytes decoded by aiohttp must fail closed."""
+        adapter = _make_adapter()
+        req = _mock_request(headers={"Authorization": "Bearer \udcff"})
         assert adapter._validate_signature(req, b"{}", "correct") is False
 
     def test_validate_no_signature_with_secret_rejects(self):
@@ -995,6 +1001,39 @@ class TestHTTPHandling:
             assert resp.status == 404
 
     @pytest.mark.asyncio
+    async def test_raw_non_utf8_bearer_header_returns_401(self):
+        """Invalid raw header bytes are rejected instead of crashing with 500."""
+        routes = {"raw": {"secret": "correct", "prompt": "x"}}
+        adapter = _make_adapter(routes=routes)
+        adapter.handle_message = AsyncMock()
+        server = TestServer(_create_app(adapter))
+        await server.start_server()
+        writer = None
+        try:
+            reader, writer = await asyncio.open_connection(server.host, server.port)
+            body = b"{}"
+            request = (
+                b"POST /webhooks/raw HTTP/1.1\r\n"
+                + f"Host: {server.host}:{server.port}\r\n".encode()
+                + b"Content-Type: application/json\r\n"
+                + b"Authorization: Bearer \xff\r\n"
+                + b"Content-Length: 2\r\n"
+                + b"Connection: close\r\n\r\n"
+                + body
+            )
+            writer.write(request)
+            await writer.drain()
+            response = await reader.read()
+            assert response.split(b"\r\n", 1)[0] == b"HTTP/1.1 401 Unauthorized"
+        finally:
+            if writer is not None:
+                writer.close()
+                await writer.wait_closed()
+            await server.close()
+
+        adapter.handle_message.assert_not_called()
+
+    @pytest.mark.asyncio
     async def test_webhook_handler_returns_202(self):
         """Valid request returns 202 Accepted."""
         routes = {"test": {"secret": _INSECURE_NO_AUTH, "prompt": "hi"}}
@@ -1011,7 +1050,7 @@ class TestHTTPHandling:
 
     @pytest.mark.asyncio
     async def test_route_without_secret_rejects_unsigned_request(self):
-        """Missing HMAC secret must fail closed even if connect() was bypassed."""
+        """Missing webhook secret must fail closed even if connect() was bypassed."""
         routes = {"test": {"prompt": "hi"}}
         adapter = _make_adapter(routes=routes, secret="")
         adapter.handle_message = AsyncMock()
@@ -1021,7 +1060,7 @@ class TestHTTPHandling:
             resp = await cli.post("/webhooks/test", json={"data": "value"})
             assert resp.status == 403
             data = await resp.json()
-            assert data["error"] == "Webhook route is missing an HMAC secret"
+            assert data["error"] == "Webhook route is missing a webhook secret"
 
         adapter.handle_message.assert_not_called()
 

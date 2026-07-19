@@ -1070,6 +1070,38 @@ def test_stable_local_signing_identity_falls_back_to_adhoc():
         assert cli_main._stable_local_signing_identity() == "-"
 
 
+@pytest.mark.parametrize(
+    ("identity", "expected_sign_arg"),
+    [
+        ("Developer ID Application: Hermes Local Signing", "Developer ID Application: Hermes Local Signing"),
+        ("-", "-"),
+    ],
+)
+def test_relaunchable_fixup_signs_with_selected_identity(
+    tmp_path, monkeypatch, identity, expected_sign_arg
+):
+    monkeypatch.setattr(cli_main.sys, "platform", "darwin")
+    monkeypatch.delenv("CSC_LINK", raising=False)
+    monkeypatch.delenv("APPLE_SIGNING_IDENTITY", raising=False)
+
+    desktop_dir = tmp_path / "apps" / "desktop"
+    exe = desktop_dir / "release" / "mac-arm64" / "Hermes.app" / "Contents" / "MacOS" / "Hermes"
+    exe.parent.mkdir(parents=True)
+    exe.write_bytes(b"")
+    app = exe.parents[2]
+
+    calls = []
+    with patch("hermes_cli.main.shutil.which", return_value="/usr/bin/codesign"), \
+         patch("hermes_cli.main._stable_local_signing_identity", return_value=identity), \
+         patch("hermes_cli.main.subprocess.run", side_effect=lambda cmd, **kw: calls.append(cmd)):
+        cli_main._desktop_macos_relaunchable_fixup(desktop_dir)
+
+    assert calls == [
+        ["xattr", "-cr", str(app)],
+        ["/usr/bin/codesign", "--force", "--deep", "--sign", expected_sign_arg, str(app)],
+    ]
+
+
 # --- desktop.* launch options (config.yaml) -------------------------------
 
 

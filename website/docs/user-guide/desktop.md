@@ -112,6 +112,30 @@ The app checks for updates in the background and offers a one-click update when 
 
 The [manual update process](https://hermes-agent.nousresearch.com/docs/getting-started/updating) also works with the GUI.
 
+### Keeping macOS permissions across updates
+
+Locally built desktop apps are re-signed **ad-hoc** after every self-update. An ad-hoc signature's Designated Requirement is just a hash of that exact build, so macOS TCC treats each update as a brand-new app and re-asks for permissions you already granted (Files and Folders, external volumes, microphone).
+
+To keep grants across updates, create a persistent local signing certificate once. The updater automatically prefers a keychain identity named `Hermes Local Signing` over ad-hoc:
+
+```bash
+mkdir -p ~/.hermes/signing && cd ~/.hermes/signing
+openssl req -new -x509 -days 3650 -nodes -newkey rsa:2048 \
+  -keyout hermes-sign.key -out hermes-sign.pem \
+  -subj "/CN=Developer ID Application: Hermes Local Signing" \
+  -addext "keyUsage=critical,digitalSignature" \
+  -addext "extendedKeyUsage=critical,codeSigning" \
+  -addext "basicConstraints=critical,CA:false"
+openssl pkcs12 -export -legacy -out hermes-sign.p12 -inkey hermes-sign.key \
+  -in hermes-sign.pem -passout pass:hermeslocal -name "Hermes Local Signing"
+security import hermes-sign.p12 -k ~/Library/Keychains/login.keychain-db \
+  -P hermeslocal -T /usr/bin/codesign
+security add-trusted-cert -p codeSign -k ~/Library/Keychains/login.keychain-db hermes-sign.pem
+chmod 600 hermes-sign.key hermes-sign.p12
+```
+
+macOS asks for the permissions one final time after the first update signed with the new identity; from then on they persist. This is opt-in: without the certificate, updates keep today's ad-hoc behavior. A real `CSC_LINK` / `APPLE_SIGNING_IDENTITY` setup always takes precedence.
+
 ## Uninstalling
 
 Open **Settings → About → Danger zone** and pick how much to remove:
@@ -251,6 +275,8 @@ rm -rf "$HOME/.hermes/hermes-agent/venv"
 # Reset a stuck macOS microphone prompt
 tccutil reset Microphone com.nousresearch.hermes
 ```
+
+If macOS re-asks for already-granted permissions after every update, see [Keeping macOS permissions across updates](#keeping-macos-permissions-across-updates).
 
 ### "Build desktop app" stuck on Electron download
 

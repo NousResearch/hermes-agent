@@ -7,6 +7,7 @@ don't see an unexplained "credentials ✓" line when their .env is empty.
 
 from __future__ import annotations
 
+import os
 import sys
 from pathlib import Path
 
@@ -24,10 +25,14 @@ from hermes_cli import env_loader  # noqa: E402
 def _reset_sources():
     """Each test starts with a clean source map and applied-home guard."""
     env_loader._SECRET_SOURCES.clear()
-    env_loader.reset_secret_source_cache()
+    env_loader._SECRET_OWNERSHIP.clear()
+    env_loader._PENDING_SECRET_OWNERSHIP.clear()
+    env_loader._APPLIED_HOMES.clear()
     yield
     env_loader._SECRET_SOURCES.clear()
-    env_loader.reset_secret_source_cache()
+    env_loader._SECRET_OWNERSHIP.clear()
+    env_loader._PENDING_SECRET_OWNERSHIP.clear()
+    env_loader._APPLIED_HOMES.clear()
 
 
 def test_get_secret_source_returns_none_for_untracked_var():
@@ -126,6 +131,95 @@ def test_apply_external_secret_sources_noop_when_disabled(tmp_path, monkeypatch)
     env_loader._apply_external_secret_sources(tmp_path)
 
     assert env_loader.get_secret_source("ANTHROPIC_API_KEY") is None
+
+
+def test_bitwarden_backend_failure_output_is_safe_and_startup_continues(
+    tmp_path, monkeypatch, capsys, caplog
+):
+    access_token = "BWS-ENV-TOKEN-SENTINEL"
+    stdout_sentinel = "BWS-ENV-STDOUT-SENTINEL"
+    stderr_sentinel = "BWS-ENV-STDERR-SENTINEL"
+    fetched_value = "BWS-ENV-VALUE-SENTINEL"
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    monkeypatch.setenv("BWS_ACCESS_TOKEN", access_token)
+    (tmp_path / "config.yaml").write_text(
+        "secrets:\n"
+        "  bitwarden:\n"
+        "    enabled: true\n"
+        "    project_id: test-project\n"
+        "    access_token_env: BWS_ACCESS_TOKEN\n"
+        "    cache_ttl_seconds: 0\n"
+        "    auto_install: false\n",
+        encoding="utf-8",
+    )
+
+    import agent.secret_sources.bitwarden as bw_module
+
+    monkeypatch.setattr(bw_module, "find_bws", lambda **_kw: Path("/fake/bws"))
+    monkeypatch.setattr(
+        bw_module.subprocess,
+        "run",
+        lambda *a, **kw: bw_module.subprocess.CompletedProcess(
+            args=a[0],
+            returncode=1,
+            stdout=f"{stdout_sentinel} {fetched_value}",
+            stderr=f"{stderr_sentinel} {access_token}",
+        ),
+    )
+
+    from agent.secret_sources import registry as reg_module
+
+    reg_module._reset_registry_for_tests()
+    env_loader._apply_external_secret_sources(tmp_path)
+
+    captured = capsys.readouterr()
+    user_and_log_output = captured.out + captured.err + caplog.text
+    assert "Bitwarden secret fetch failed" in user_and_log_output
+    assert "hermes secrets bitwarden setup" in user_and_log_output
+    for sentinel in (access_token, stdout_sentinel, stderr_sentinel, fetched_value):
+        assert sentinel not in user_and_log_output
+
+
+def test_bitwarden_fetch_exception_is_safe_and_startup_continues(
+    tmp_path, monkeypatch, capsys, caplog
+):
+    access_token = "BWS-EXC-TOKEN-SENTINEL"
+    fetched_value = "BWS-EXC-VALUE-SENTINEL"
+    exception_sentinel = "BWS-EXCEPTION-SENTINEL"
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    monkeypatch.setenv("BWS_ACCESS_TOKEN", access_token)
+    (tmp_path / "config.yaml").write_text(
+        "secrets:\n"
+        "  bitwarden:\n"
+        "    enabled: true\n"
+        "    project_id: test-project\n"
+        "    access_token_env: BWS_ACCESS_TOKEN\n"
+        "    auto_install: false\n",
+        encoding="utf-8",
+    )
+
+    import agent.secret_sources.bitwarden as bw_module
+
+    monkeypatch.setattr(bw_module, "find_bws", lambda **_kw: Path("/fake/bws"))
+
+    def _raise_fetch_error(**_kwargs):
+        raise RuntimeError(
+            f"{exception_sentinel}: {access_token} {fetched_value}"
+        )
+
+    monkeypatch.setattr(bw_module, "fetch_bitwarden_secrets", _raise_fetch_error)
+
+    from agent.secret_sources import registry as reg_module
+
+    reg_module._reset_registry_for_tests()
+    env_loader._apply_external_secret_sources(tmp_path)
+
+    captured = capsys.readouterr()
+    user_and_log_output = captured.out + captured.err + caplog.text
+    assert "Bitwarden secret fetch failed" in user_and_log_output
+    assert "hermes secrets bitwarden setup" in user_and_log_output
+    for sentinel in (access_token, fetched_value, exception_sentinel):
+        assert sentinel not in user_and_log_output
 
 
 def test_apply_external_secret_sources_dedupes_within_process(tmp_path, monkeypatch):
@@ -275,3 +369,250 @@ def test_apply_external_secret_sources_bad_ttl_does_not_crash(tmp_path, monkeypa
 
     # Coerced to the 300s default rather than raising ValueError.
     assert captured["cache_ttl_seconds"] == 300
+
+
+def _configure_bitwarden_refresh(home: Path) -> None:
+    (home / "config.yaml").write_text(
+        "secrets:\n"
+        "  bitwarden:\n"
+        "    enabled: true\n"
+        "    project_id: refresh-project\n"
+        "    access_token_env: BWS_ACCESS_TOKEN\n"
+        "    cache_ttl_seconds: 0\n"
+        "    override_existing: false\n"
+        "    auto_install: false\n",
+        encoding="utf-8",
+    )
+
+
+def _install_bitwarden_fetch_sequence(monkeypatch, outcomes):
+    import agent.secret_sources.bitwarden as bw_module
+
+    remaining = iter(outcomes)
+    monkeypatch.setattr(bw_module, "find_bws", lambda **_kw: Path("/fake/bws"))
+
+    def _fetch(**_kwargs):
+        outcome = next(remaining)
+        if isinstance(outcome, Exception):
+            raise outcome
+        return dict(outcome), []
+
+    monkeypatch.setattr(bw_module, "fetch_bitwarden_secrets", _fetch)
+
+
+def test_refresh_rotates_source_owned_value(tmp_path, monkeypatch):
+    key = "HERMES_TEST_ROTATING_SECRET"
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    monkeypatch.setenv("BWS_ACCESS_TOKEN", "test-bootstrap-token")
+    monkeypatch.delenv(key, raising=False)
+    _configure_bitwarden_refresh(tmp_path)
+    _install_bitwarden_fetch_sequence(
+        monkeypatch,
+        [{key: "first-vault-value"}, {key: "second-vault-value"}],
+    )
+
+    from agent.secret_sources import registry as reg_module
+
+    reg_module._reset_registry_for_tests()
+    env_loader._apply_external_secret_sources(tmp_path)
+    assert os.environ[key] == "first-vault-value"
+
+    env_loader.reset_secret_source_cache()
+    env_loader._apply_external_secret_sources(tmp_path)
+
+    assert os.environ[key] == "second-vault-value"
+    assert env_loader.get_secret_source(key) == "bitwarden"
+
+
+def test_refresh_removes_source_owned_value_missing_from_successful_fetch(
+    tmp_path, monkeypatch
+):
+    key = "HERMES_TEST_REMOVED_SECRET"
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    monkeypatch.setenv("BWS_ACCESS_TOKEN", "test-bootstrap-token")
+    monkeypatch.delenv(key, raising=False)
+    _configure_bitwarden_refresh(tmp_path)
+    _install_bitwarden_fetch_sequence(
+        monkeypatch,
+        [{key: "removed-vault-value"}, {}],
+    )
+
+    from agent.secret_sources import registry as reg_module
+
+    reg_module._reset_registry_for_tests()
+    env_loader._apply_external_secret_sources(tmp_path)
+    assert os.environ[key] == "removed-vault-value"
+
+    env_loader.reset_secret_source_cache()
+    env_loader._apply_external_secret_sources(tmp_path)
+
+    assert key not in os.environ
+    assert env_loader.get_secret_source(key) is None
+
+
+def test_refresh_tracks_sanitized_source_value_for_later_removal(
+    tmp_path, monkeypatch
+):
+    key = "HERMES_TEST_REMOVED_API_KEY"
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    monkeypatch.setenv("BWS_ACCESS_TOKEN", "test-bootstrap-token")
+    monkeypatch.delenv(key, raising=False)
+    _configure_bitwarden_refresh(tmp_path)
+    _install_bitwarden_fetch_sequence(
+        monkeypatch,
+        [{key: "source—value"}, {}],
+    )
+
+    env_loader.load_hermes_dotenv(hermes_home=tmp_path)
+    assert os.environ[key] == "sourcevalue"
+
+    env_loader.reset_secret_source_cache()
+    env_loader.load_hermes_dotenv(hermes_home=tmp_path)
+
+    assert key not in os.environ
+    assert env_loader.get_secret_source(key) is None
+
+
+def test_refresh_failure_retains_previous_known_good_source_value(
+    tmp_path, monkeypatch
+):
+    key = "HERMES_TEST_RETAINED_SECRET"
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    monkeypatch.setenv("BWS_ACCESS_TOKEN", "test-bootstrap-token")
+    monkeypatch.delenv(key, raising=False)
+    _configure_bitwarden_refresh(tmp_path)
+    _install_bitwarden_fetch_sequence(
+        monkeypatch,
+        [{key: "known-good-vault-value"}, RuntimeError("backend unavailable")],
+    )
+
+    from agent.secret_sources import registry as reg_module
+
+    reg_module._reset_registry_for_tests()
+    env_loader._apply_external_secret_sources(tmp_path)
+    env_loader.reset_secret_source_cache()
+    env_loader._apply_external_secret_sources(tmp_path)
+
+    assert os.environ[key] == "known-good-vault-value"
+    assert env_loader.get_secret_source(key) == "bitwarden"
+
+
+def test_refresh_does_not_delete_later_shell_replacement(tmp_path, monkeypatch):
+    key = "HERMES_TEST_SHELL_REPLACEMENT"
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    monkeypatch.setenv("BWS_ACCESS_TOKEN", "test-bootstrap-token")
+    monkeypatch.delenv(key, raising=False)
+    _configure_bitwarden_refresh(tmp_path)
+    _install_bitwarden_fetch_sequence(
+        monkeypatch,
+        [{key: "vault-value"}, {key: "rotated-vault-value"}],
+    )
+
+    from agent.secret_sources import registry as reg_module
+
+    reg_module._reset_registry_for_tests()
+    env_loader._apply_external_secret_sources(tmp_path)
+    os.environ[key] = "later-shell-value"
+
+    env_loader.reset_secret_source_cache()
+    env_loader._apply_external_secret_sources(tmp_path)
+
+    assert os.environ[key] == "later-shell-value"
+    assert env_loader.get_secret_source(key) is None
+
+
+def test_refresh_does_not_delete_later_dotenv_replacement(tmp_path, monkeypatch):
+    key = "HERMES_TEST_DOTENV_REPLACEMENT"
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    monkeypatch.setenv("BWS_ACCESS_TOKEN", "test-bootstrap-token")
+    monkeypatch.delenv(key, raising=False)
+    _configure_bitwarden_refresh(tmp_path)
+    _install_bitwarden_fetch_sequence(
+        monkeypatch,
+        [{key: "vault-value"}, {}],
+    )
+
+    from agent.secret_sources import registry as reg_module
+
+    reg_module._reset_registry_for_tests()
+    env_loader._apply_external_secret_sources(tmp_path)
+    (tmp_path / ".env").write_text(f"{key}=later-dotenv-value\n", encoding="utf-8")
+
+    env_loader.reset_secret_source_cache()
+    env_loader.load_hermes_dotenv(hermes_home=tmp_path)
+
+    assert os.environ[key] == "later-dotenv-value"
+    assert env_loader.get_secret_source(key) is None
+
+
+def test_refresh_source_collision_still_uses_first_winner(tmp_path, monkeypatch):
+    key = "HERMES_TEST_COLLIDING_SECRET"
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    monkeypatch.setenv("BWS_ACCESS_TOKEN", "test-bootstrap-token")
+    monkeypatch.setenv("OP_SERVICE_ACCOUNT_TOKEN", "test-op-token")
+    monkeypatch.delenv(key, raising=False)
+    (tmp_path / "config.yaml").write_text(
+        "secrets:\n"
+        "  sources: [bitwarden, onepassword]\n"
+        "  bitwarden:\n"
+        "    enabled: true\n"
+        "    project_id: refresh-project\n"
+        "    override_existing: false\n"
+        "    auto_install: false\n"
+        "  onepassword:\n"
+        "    enabled: true\n"
+        "    override_existing: false\n"
+        "    env:\n"
+        f"      {key}: op://Private/Test/credential\n",
+        encoding="utf-8",
+    )
+    _install_bitwarden_fetch_sequence(
+        monkeypatch,
+        [
+            {key: "first-bitwarden-value"},
+            {key: "second-bitwarden-value"},
+            {key: "third-bitwarden-value"},
+        ],
+    )
+
+    import agent.secret_sources.onepassword as op_module
+
+    op_values = iter(
+        (
+            "first-onepassword-value",
+            "second-onepassword-value",
+            RuntimeError("onepassword unavailable"),
+        )
+    )
+    monkeypatch.setattr(op_module, "find_op", lambda *_a, **_kw: Path("/fake/op"))
+
+    def _fetch_onepassword(**_kw):
+        value = next(op_values)
+        if isinstance(value, Exception):
+            raise value
+        return {key: value}, []
+
+    monkeypatch.setattr(
+        op_module,
+        "fetch_onepassword_secrets",
+        _fetch_onepassword,
+    )
+
+    from agent.secret_sources import registry as reg_module
+
+    reg_module._reset_registry_for_tests()
+    env_loader._apply_external_secret_sources(tmp_path)
+    assert os.environ[key] == "first-onepassword-value"
+    assert env_loader.get_secret_source(key) == "onepassword"
+
+    env_loader.reset_secret_source_cache()
+    env_loader._apply_external_secret_sources(tmp_path)
+
+    assert os.environ[key] == "second-onepassword-value"
+    assert env_loader.get_secret_source(key) == "onepassword"
+
+    env_loader.reset_secret_source_cache()
+    env_loader._apply_external_secret_sources(tmp_path)
+
+    assert os.environ[key] == "second-onepassword-value"
+    assert env_loader.get_secret_source(key) == "onepassword"

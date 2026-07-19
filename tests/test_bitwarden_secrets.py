@@ -51,6 +51,24 @@ def hermes_home(tmp_path, monkeypatch):
     return home
 
 
+def test_find_bws_auto_install_failure_redacts_exception(
+    tmp_path, monkeypatch, caplog
+):
+    leaked = "installer-exception-secret-sentinel"
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    monkeypatch.delenv("BWS_BINARY", raising=False)
+    monkeypatch.setattr(bw.shutil, "which", lambda _name: None)
+
+    def _fail_install():
+        raise RuntimeError(leaked)
+
+    monkeypatch.setattr(bw, "install_bws", _fail_install)
+
+    assert bw.find_bws(install_if_missing=True) is None
+    assert "bws auto-install failed" in caplog.text
+    assert leaked not in caplog.text
+
+
 # ---------------------------------------------------------------------------
 # _platform_asset_name
 # ---------------------------------------------------------------------------
@@ -309,25 +327,71 @@ def test_fetch_skips_invalid_env_names(monkeypatch, tmp_path):
     assert len(warnings) == 3
 
 
-def test_fetch_auth_failure(monkeypatch, tmp_path):
+def test_fetch_failure_redacts_backend_output_and_access_token(monkeypatch, tmp_path):
     fake_binary = tmp_path / "bws"
     fake_binary.write_text("")
+
+    access_token = "BWS-ACCESS-TOKEN-SENTINEL"
+    stdout_sentinel = "BWS-STDOUT-SENTINEL"
+    stderr_sentinel = "BWS-STDERR-SENTINEL"
+    fetched_value = "BWS-FETCHED-VALUE-SENTINEL"
 
     monkeypatch.setattr(
         bw.subprocess,
         "run",
         lambda *a, **kw: mock.Mock(
-            returncode=1, stdout="", stderr="Error: invalid access token"
+            returncode=1,
+            stdout=f"{stdout_sentinel} {fetched_value}",
+            stderr=f"{stderr_sentinel} {access_token}",
         ),
     )
 
-    with pytest.raises(RuntimeError, match="invalid access token"):
+    with pytest.raises(RuntimeError) as exc_info:
         bw.fetch_bitwarden_secrets(
-            access_token="0.bad",
+            access_token=access_token,
             project_id="p",
             binary=fake_binary,
             use_cache=False,
         )
+
+    message = str(exc_info.value)
+    assert "Bitwarden secret fetch failed" in message
+    assert "hermes secrets bitwarden setup" in message
+    for sentinel in (access_token, stdout_sentinel, stderr_sentinel, fetched_value):
+        assert sentinel not in message
+
+
+def test_source_classifies_auth_failure_without_surfacing_backend_output(
+    tmp_path, monkeypatch
+):
+    leaked = "remote-secret-that-must-not-leak"
+    monkeypatch.setenv("BWS_ACCESS_TOKEN", "super-secret-token")
+    monkeypatch.setattr(bw, "find_bws", lambda **_kw: Path("/fake/bws"))
+    monkeypatch.setattr(
+        bw.subprocess,
+        "run",
+        lambda *_a, **_kw: subprocess.CompletedProcess(
+            args=["bws"],
+            returncode=1,
+            stdout=leaked,
+            stderr=f"401 Unauthorized: {leaked}",
+        ),
+    )
+
+    result = bw.BitwardenSource().fetch(
+        {
+            "enabled": True,
+            "project_id": "project-id",
+            "cache_ttl_seconds": 0,
+            "auto_install": False,
+        },
+        tmp_path,
+    )
+
+    assert result.error_kind == bw.ErrorKind.AUTH_FAILED
+    assert result.error is not None
+    assert leaked not in result.error
+    assert "super-secret-token" not in result.error
 
 
 def test_fetch_timeout(monkeypatch, tmp_path):
@@ -351,22 +415,26 @@ def test_fetch_timeout(monkeypatch, tmp_path):
 def test_fetch_non_json(monkeypatch, tmp_path):
     fake_binary = tmp_path / "bws"
     fake_binary.write_text("")
+    leaked = "non-json-secret-output-sentinel"
 
     monkeypatch.setattr(
         bw.subprocess,
         "run",
         lambda *a, **kw: mock.Mock(
-            returncode=0, stdout="not json at all", stderr=""
+            returncode=0, stdout=leaked, stderr=""
         ),
     )
 
-    with pytest.raises(RuntimeError, match="non-JSON"):
+    with pytest.raises(RuntimeError, match="non-JSON") as exc_info:
         bw.fetch_bitwarden_secrets(
             access_token="0.t",
             project_id="p",
             binary=fake_binary,
             use_cache=False,
         )
+
+    assert exc_info.value.__cause__ is None
+    assert leaked not in str(exc_info.value)
 
 
 def test_fetch_cache_hits(monkeypatch, tmp_path):
@@ -587,13 +655,21 @@ def test_apply_never_overrides_bootstrap_token(monkeypatch, tmp_path):
 
 
 def test_apply_swallows_fetch_errors(monkeypatch, tmp_path):
-    """A fetch failure produces an error, NOT an exception."""
-    monkeypatch.setenv("BWS_ACCESS_TOKEN", "0.t")
+    """A fetch failure produces a safe error, NOT an exception."""
+    access_token = "BWS-APPLY-TOKEN-SENTINEL"
+    fetched_value = "BWS-APPLY-VALUE-SENTINEL"
+    exception_sentinel = "BWS-APPLY-EXCEPTION-SENTINEL"
+    monkeypatch.setenv("BWS_ACCESS_TOKEN", access_token)
     fake_binary = tmp_path / "bws"
     fake_binary.write_text("")
     monkeypatch.setattr(
-        bw.subprocess, "run",
-        lambda *a, **kw: mock.Mock(returncode=1, stdout="", stderr="bad token"),
+        bw,
+        "fetch_bitwarden_secrets",
+        mock.Mock(
+            side_effect=RuntimeError(
+                f"{exception_sentinel}: {access_token} {fetched_value}"
+            )
+        ),
     )
     monkeypatch.setattr(bw, "find_bws", lambda **kw: fake_binary)
 
@@ -601,7 +677,10 @@ def test_apply_swallows_fetch_errors(monkeypatch, tmp_path):
         enabled=True, project_id="p", auto_install=False,
     )
     assert not result.ok
-    assert "bad token" in result.error
+    assert "Bitwarden secret fetch failed" in result.error
+    assert "hermes secrets bitwarden setup" in result.error
+    for sentinel in (access_token, fetched_value, exception_sentinel):
+        assert sentinel not in result.error
 
 
 # ---------------------------------------------------------------------------

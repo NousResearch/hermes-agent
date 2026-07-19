@@ -37,6 +37,11 @@ _WARNED_UTF32_PATHS: set[str] = set()
 # the .env case and they don't know Bitwarden is wired up).
 _SECRET_SOURCES: dict[str, str] = {}
 
+# Full source-ownership metadata for refreshes. Only cryptographic value
+# fingerprints are retained globally; raw secret values remain in os.environ.
+_SECRET_OWNERSHIP: dict[str, object] = {}
+_PENDING_SECRET_OWNERSHIP: dict[str, object] = {}
+
 # HERMES_HOME paths we've already pulled external secrets for during this
 # process.  ``load_hermes_dotenv()`` is called at module-import time from
 # several hot modules (cli.py, hermes_cli/main.py, run_agent.py,
@@ -71,6 +76,8 @@ def reset_secret_source_cache() -> None:
     that want to refresh after a config change.
     """
     _APPLIED_HOMES.clear()
+    _PENDING_SECRET_OWNERSHIP.update(_SECRET_OWNERSHIP)
+    _SECRET_OWNERSHIP.clear()
     _SECRET_SOURCES.clear()
 
 
@@ -403,30 +410,42 @@ def _apply_external_secret_sources(home_path: Path) -> None:
         cfg = _load_secrets_config(home_path)
     except Exception:  # noqa: BLE001 — config errors must not block startup
         return
-    if not cfg:
+    if not cfg and not _PENDING_SECRET_OWNERSHIP:
         return
 
     try:
-        from agent.secret_sources.registry import apply_all
+        from agent.secret_sources.registry import (
+            _fingerprint_secret_value,
+            apply_all,
+        )
     except ImportError:
         return
 
     try:
-        report = apply_all(cfg, home_path)
+        report = apply_all(
+            cfg,
+            home_path,
+            previous_ownership=_PENDING_SECRET_OWNERSHIP,
+        )
     except Exception:  # noqa: BLE001 — belt-and-braces; apply_all shouldn't raise
         return
 
-    if report.applied_any:
+    if any(src.applied for src in report.sources):
         # Re-run the ASCII sanitization pass: vault values are
         # user-supplied and might have the same copy-paste corruption as
         # a manually edited .env (see #6843).
         _sanitize_loaded_credentials()
-        # Remember where each var came from so setup / `hermes model`
-        # flows can label detected credentials with "(from Bitwarden)" /
-        # "(from 1Password)" — otherwise users see "credentials ✓" with
-        # no hint the value came from a vault rather than .env.
-        for name, applied in report.provenance.items():
-            _SECRET_SOURCES[name] = applied.source
+
+    _SECRET_SOURCES.clear()
+    _SECRET_OWNERSHIP.clear()
+    for name, applied in report.provenance.items():
+        current = os.environ.get(name)
+        if current is None:
+            continue
+        applied.value_fingerprint = _fingerprint_secret_value(current)
+        _SECRET_SOURCES[name] = applied.source
+        _SECRET_OWNERSHIP[name] = applied
+    _PENDING_SECRET_OWNERSHIP.clear()
 
     for src in report.sources:
         if src.applied:

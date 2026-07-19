@@ -1745,7 +1745,78 @@ class TestRunJobSessionPersistence:
         assert success is True
         assert error is None
         # reset MUST precede the reload, else _APPLIED_HOMES no-ops the re-pull.
-        assert call_order[:2] == ["reset", "load"], call_order
+        reset_index = call_order.index("reset")
+        assert call_order[reset_index : reset_index + 2] == ["reset", "load"], call_order
+
+    def test_run_job_drops_removed_source_secret_between_runs(
+        self, tmp_path, monkeypatch
+    ):
+        """A long-lived scheduler must not retain a remotely deleted key."""
+        key = "HERMES_TEST_CRON_REMOTE_SECRET"
+        job = {"id": "bsm-refresh-job", "name": "bsm-refresh", "prompt": "hello"}
+        fake_db = MagicMock()
+        seen = []
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        monkeypatch.setenv("BWS_ACCESS_TOKEN", "test-bootstrap-token")
+        monkeypatch.delenv(key, raising=False)
+        (tmp_path / "config.yaml").write_text(
+            "secrets:\n"
+            "  bitwarden:\n"
+            "    enabled: true\n"
+            "    project_id: cron-project\n"
+            "    cache_ttl_seconds: 0\n"
+            "    override_existing: false\n"
+            "    auto_install: false\n",
+            encoding="utf-8",
+        )
+
+        import agent.secret_sources.bitwarden as bw_module
+        from agent.secret_sources.base import FetchResult
+        from agent.secret_sources import registry as reg_module
+        from hermes_cli import env_loader
+
+        results = iter(({key: "first-remote-value"}, {}))
+        monkeypatch.setattr(
+            bw_module.BitwardenSource,
+            "fetch",
+            lambda _self, _config, _hermes_home: FetchResult(
+                secrets=dict(next(results))
+            ),
+        )
+        reg_module._reset_registry_for_tests()
+        env_loader._SECRET_SOURCES.clear()
+        env_loader._SECRET_OWNERSHIP.clear()
+        env_loader._PENDING_SECRET_OWNERSHIP.clear()
+        env_loader._APPLIED_HOMES.clear()
+
+        class FakeAgent:
+            def __init__(self, *args, **kwargs):
+                pass
+
+            def run_conversation(self, *args, **kwargs):
+                seen.append(os.environ.get(key))
+                return {"final_response": "ok"}
+
+        with patch("cron.scheduler._hermes_home", tmp_path), \
+             patch("cron.scheduler._resolve_origin", return_value=None), \
+             patch("hermes_state.SessionDB", return_value=fake_db), \
+             patch(
+                 "hermes_cli.runtime_provider.resolve_runtime_provider",
+                 return_value={
+                     "api_key": "***",
+                     "base_url": "https://example.invalid/v1",
+                     "provider": "openrouter",
+                     "api_mode": "chat_completions",
+                 },
+             ), \
+             patch("tools.mcp_tool.discover_mcp_tools", return_value=[]), \
+             patch("run_agent.AIAgent", FakeAgent):
+            first = run_job(job)
+            second = run_job(job)
+
+        assert first[0] is True
+        assert second[0] is True
+        assert seen == ["first-remote-value", None]
 
     def test_run_job_clears_stale_auto_delivery_thread_id_between_jobs(self, tmp_path, monkeypatch):
         jobs = [

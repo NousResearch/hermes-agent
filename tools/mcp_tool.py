@@ -3982,7 +3982,7 @@ def _filter_suspicious_mcp_servers(servers: Dict[str, dict]) -> Dict[str, dict]:
     return safe_servers
 
 
-def _load_mcp_config() -> Dict[str, dict]:
+def _load_mcp_config(*, refresh_env: bool = False) -> Dict[str, dict]:
     """Read ``mcp_servers`` from the Hermes config file.
 
     Returns a dict of ``{server_name: server_config}`` or empty dict.
@@ -4002,7 +4002,12 @@ def _load_mcp_config() -> Dict[str, dict]:
         # Load Hermes env first so any ${VAR} placeholders in config.yaml
         # expand against BSM/.env values rather than stale shell state.
         try:
-            from hermes_cli.env_loader import load_hermes_dotenv
+            from hermes_cli.env_loader import (
+                load_hermes_dotenv,
+                reset_secret_source_cache,
+            )
+            if refresh_env:
+                reset_secret_source_cache()
             load_hermes_dotenv()
         except Exception:
             pass
@@ -5280,11 +5285,14 @@ def register_mcp_servers(servers: Dict[str, dict]) -> List[str]:
     return _existing_tool_names()
 
 
-def discover_mcp_tools() -> List[str]:
+def discover_mcp_tools(*, refresh_env: bool = False) -> List[str]:
     """Entry point: load config, connect to MCP servers, register tools.
 
     Called from ``model_tools`` after ``discover_builtin_tools()``. Safe to call even when
     the ``mcp`` package is not installed (returns empty list).
+
+    ``refresh_env`` is for explicit reload commands; startup and cron paths
+    already load the environment before discovery.
 
     Idempotent for already-connected servers. If some servers failed on a
     previous call, only the missing ones are retried.
@@ -5296,7 +5304,11 @@ def discover_mcp_tools() -> List[str]:
         logger.debug("MCP SDK not available -- skipping MCP tool discovery")
         return []
 
-    servers = _load_mcp_config()
+    servers = (
+        _load_mcp_config(refresh_env=True)
+        if refresh_env
+        else _load_mcp_config()
+    )
     if not servers:
         logger.debug("No MCP servers configured")
         return []

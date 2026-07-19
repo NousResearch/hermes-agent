@@ -147,6 +147,48 @@ class TestLoadMCPConfig:
         assert call_order == ["dotenv", "config"]
         assert result["remote"]["headers"]["Authorization"] == "Bearer bws-secret"
 
+    def test_explicit_refresh_reloads_rotated_secret_before_expansion(
+        self, monkeypatch
+    ):
+        monkeypatch.delenv("TEST_MCP_ROTATING_TOKEN", raising=False)
+        values = iter(("first-secret", "second-secret"))
+        call_order = []
+
+        def fake_reset():
+            call_order.append("reset")
+
+        def fake_load_hermes_dotenv(*, hermes_home=None, project_env=None):
+            call_order.append("dotenv")
+            monkeypatch.setenv("TEST_MCP_ROTATING_TOKEN", next(values))
+            return []
+
+        config = {
+            "mcp_servers": {
+                "remote": {
+                    "url": "https://example.invalid/mcp",
+                    "headers": {
+                        "Authorization": "Bearer ${TEST_MCP_ROTATING_TOKEN}",
+                    },
+                }
+            }
+        }
+
+        with patch(
+            "hermes_cli.env_loader.reset_secret_source_cache",
+            side_effect=fake_reset,
+        ), patch(
+            "hermes_cli.env_loader.load_hermes_dotenv",
+            side_effect=fake_load_hermes_dotenv,
+        ), patch("hermes_cli.config.load_config", return_value=config):
+            from tools.mcp_tool import _load_mcp_config
+
+            first = _load_mcp_config(refresh_env=True)
+            second = _load_mcp_config(refresh_env=True)
+
+        assert call_order == ["reset", "dotenv", "reset", "dotenv"]
+        assert first["remote"]["headers"]["Authorization"] == "Bearer first-secret"
+        assert second["remote"]["headers"]["Authorization"] == "Bearer second-secret"
+
     def test_mcp_servers_not_dict_returns_empty(self):
         """mcp_servers set to non-dict value -> empty dict."""
         with patch("hermes_cli.config.load_config", return_value={"mcp_servers": "invalid"}):

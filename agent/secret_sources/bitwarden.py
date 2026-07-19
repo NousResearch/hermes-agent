@@ -74,6 +74,23 @@ _BWS_CHECKSUM_NAME = f"bws-sha256-checksums-{_BWS_VERSION}.txt"
 _BWS_DOWNLOAD_TIMEOUT = 60
 _BWS_RUN_TIMEOUT = 30
 
+
+def _safe_fetch_error(detail: str = "") -> str:
+    """Return an actionable error that never includes backend output."""
+    suffix = f" ({detail})" if detail else ""
+    return (
+        f"Bitwarden secret fetch failed{suffix}. Check the access token, "
+        "project, and network, or run `hermes secrets bitwarden setup`."
+    )
+
+
+class _BwsFetchFailure(RuntimeError):
+    """Sanitized BWS failure carrying non-secret classification metadata."""
+
+    def __init__(self, detail: str, error_kind: ErrorKind) -> None:
+        super().__init__(_safe_fetch_error(detail))
+        self.error_kind = error_kind
+
 # In-process cache so repeated load_hermes_dotenv() calls (CLI startup,
 # gateway hot-reload, test suites) don't re-fetch from BSM.
 _CacheKey = Tuple[str, str, str]  # (access_token_fingerprint, project_id, server_url)
@@ -146,8 +163,10 @@ def find_bws(*, install_if_missing: bool = False) -> Optional[Path]:
     if install_if_missing:
         try:
             return install_bws()
-        except Exception as exc:  # noqa: BLE001 — never block startup
-            logger.warning("bws auto-install failed: %s", exc)
+        except Exception:  # noqa: BLE001 — never block startup
+            logger.warning(
+                "bws auto-install failed; run `hermes secrets bitwarden setup`"
+            )
             return None
     return None
 
@@ -441,18 +460,22 @@ def _run_bws_list(
             stdin=subprocess.DEVNULL,
         )
     except subprocess.TimeoutExpired as exc:
-        raise RuntimeError(
-            f"bws timed out after {_BWS_RUN_TIMEOUT}s fetching secrets"
+        raise _BwsFetchFailure(
+            f"timed out after {_BWS_RUN_TIMEOUT}s", ErrorKind.TIMEOUT
         ) from exc
     except OSError as exc:
-        raise RuntimeError(f"failed to invoke bws: {exc}") from exc
+        raise _BwsFetchFailure(
+            "failed to invoke bws", ErrorKind.BINARY_MISSING
+        ) from exc
 
     if proc.returncode != 0:
-        # bws writes auth/network errors to stderr in plain English.
-        # Strip ANSI just in case and surface the first 200 chars.
-        err = (proc.stderr or proc.stdout or "").strip().replace("\x1b", "")
-        raise RuntimeError(
-            f"bws exited {proc.returncode}: {err[:200]}"
+        # Treat both streams as secret-bearing.  Some CLI failures include
+        # request material or returned values, so never copy either stream
+        # into exceptions, logs, or user-facing output.
+        backend_output = f"{proc.stderr or ''}\n{proc.stdout or ''}"
+        raise _BwsFetchFailure(
+            f"bws exited {proc.returncode}",
+            _classify_bws_error(backend_output),
         )
 
     raw = proc.stdout.strip()
@@ -461,8 +484,12 @@ def _run_bws_list(
 
     try:
         payload = json.loads(raw)
-    except json.JSONDecodeError as exc:
-        raise RuntimeError(f"bws returned non-JSON output: {exc}") from exc
+    except json.JSONDecodeError:
+        # Suppress the decoder exception as well as its message: the
+        # exception retains the entire secret-bearing stdout in ``doc``.
+        raise _BwsFetchFailure(
+            "bws returned non-JSON output", ErrorKind.INTERNAL
+        ) from None
 
     if not isinstance(payload, list):
         raise RuntimeError(
@@ -536,7 +563,11 @@ def apply_bitwarden_secrets(
         )
         return result
 
-    binary = find_bws(install_if_missing=auto_install)
+    try:
+        binary = find_bws(install_if_missing=auto_install)
+    except Exception:  # noqa: BLE001 — startup path must not raise or leak
+        result.error = _safe_fetch_error("bws binary unavailable")
+        return result
     result.binary_path = binary
     if binary is None:
         result.error = (
@@ -554,8 +585,8 @@ def apply_bitwarden_secrets(
             server_url=server_url,
             home_path=home_path,
         )
-    except RuntimeError as exc:
-        result.error = str(exc)
+    except Exception:  # noqa: BLE001 — source failures must not block startup
+        result.error = _safe_fetch_error()
         return result
 
     result.secrets = secrets
@@ -663,7 +694,12 @@ class BitwardenSource(SecretSource):
             return result
 
         auto_install = bool(cfg.get("auto_install", True))
-        binary = find_bws(install_if_missing=auto_install)
+        try:
+            binary = find_bws(install_if_missing=auto_install)
+        except Exception:  # noqa: BLE001 — startup path must not raise or leak
+            result.error = _safe_fetch_error("bws binary unavailable")
+            result.error_kind = ErrorKind.BINARY_MISSING
+            return result
         result.binary_path = binary
         if binary is None:
             result.error = (
@@ -687,9 +723,13 @@ class BitwardenSource(SecretSource):
                 server_url=str(cfg.get("server_url", "") or "").strip(),
                 home_path=home_path,
             )
-        except RuntimeError as exc:
-            result.error = str(exc)
-            result.error_kind = _classify_bws_error(str(exc))
+        except Exception as exc:  # noqa: BLE001 — never leak backend exception text
+            result.error = _safe_fetch_error()
+            result.error_kind = (
+                exc.error_kind
+                if isinstance(exc, _BwsFetchFailure)
+                else _classify_bws_error(str(exc))
+            )
             return result
 
         result.secrets = secrets

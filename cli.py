@@ -10257,7 +10257,7 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
             shutdown_mcp_servers()
 
             # Reconnect (reads config.yaml fresh)
-            new_tools = discover_mcp_tools()
+            new_tools = discover_mcp_tools(refresh_env=True)
 
             # Compute what changed
             with _lock:

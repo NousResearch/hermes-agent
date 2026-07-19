@@ -28,10 +28,12 @@ third-party backends ship as standalone plugin repos implementing
 from __future__ import annotations
 
 import concurrent.futures
+import hashlib
+import hmac
 import logging
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Dict, List, Optional
+from typing import Dict, List, Mapping, Optional, Tuple
 
 from agent.secret_sources.base import (
     SECRET_SOURCE_API_VERSION,
@@ -57,6 +59,7 @@ class AppliedVar:
     source: str          # SecretSource.name
     shape: str           # "mapped" | "bulk"
     overrode_env: bool   # replaced a pre-existing .env/shell value
+    value_fingerprint: str = ""
 
 
 @dataclass
@@ -84,6 +87,11 @@ class ApplyReport:
     @property
     def applied_any(self) -> bool:
         return bool(self.provenance)
+
+
+def _fingerprint_secret_value(value: str) -> str:
+    """Fingerprint a secret without retaining another plaintext copy."""
+    return hashlib.sha256(value.encode("utf-8")).hexdigest()
 
 
 # ---------------------------------------------------------------------------
@@ -275,8 +283,12 @@ def _ordered_enabled_sources(secrets_cfg: dict) -> List[SecretSource]:
     return enabled
 
 
-def apply_all(secrets_cfg: dict, home_path: Path,
-              environ: Optional[Dict[str, str]] = None) -> ApplyReport:
+def apply_all(
+    secrets_cfg: dict,
+    home_path: Path,
+    environ: Optional[Dict[str, str]] = None,
+    previous_ownership: Optional[Mapping[str, AppliedVar]] = None,
+) -> ApplyReport:
     """Fetch from every enabled source and apply the merged result to env.
 
     ``environ`` defaults to ``os.environ``; injectable for tests.
@@ -299,8 +311,6 @@ def apply_all(secrets_cfg: dict, home_path: Path,
 
     secrets_cfg = secrets_cfg if isinstance(secrets_cfg, dict) else {}
     enabled = _ordered_enabled_sources(secrets_cfg)
-    if not enabled:
-        return report
 
     # Mapped sources outrank bulk sources regardless of list order:
     # an explicit VAR→ref binding is stronger intent than a project dump.
@@ -321,6 +331,20 @@ def apply_all(secrets_cfg: dict, home_path: Path,
         except Exception:  # noqa: BLE001
             pass
 
+    # Values still matching a prior source fingerprint are not shell/.env
+    # inputs. Remove them temporarily so a successful refresh can rotate or
+    # delete them under the normal precedence rules. Raw values live only in
+    # this local scope and are restored when their owning source fails.
+    refresh_candidates: Dict[str, Tuple[str, AppliedVar]] = {}
+    for var, prior in (previous_ownership or {}).items():
+        current = env.get(var)
+        if current is None or not prior.value_fingerprint:
+            continue
+        current_fingerprint = _fingerprint_secret_value(current)
+        if hmac.compare_digest(current_fingerprint, prior.value_fingerprint):
+            refresh_candidates[var] = (current, prior)
+            env.pop(var, None)
+
     # Apply phase — sequential, first-wins, fully attributed.
     claimed: Dict[str, str] = {}  # var → source name that won it
     for source, cfg, result in fetches:
@@ -329,6 +353,16 @@ def apply_all(secrets_cfg: dict, home_path: Path,
                           result=result)
         report.sources.append(sr)
         if not result.ok:
+            # A failed source retains its previous known-good values at its
+            # normal precedence position. Earlier successful sources still
+            # win; later sources see these names as claimed and cannot replace
+            # the fallback merely because its owner was temporarily offline.
+            for var, (value, prior) in refresh_candidates.items():
+                if prior.source != source.name or var in claimed or var in env:
+                    continue
+                env[var] = value
+                claimed[var] = source.name
+                report.provenance[var] = prior
             continue
 
         try:
@@ -365,6 +399,7 @@ def apply_all(secrets_cfg: dict, home_path: Path,
                 source=source.name,
                 shape=source.shape,
                 overrode_env=existed,
+                value_fingerprint=_fingerprint_secret_value(value),
             )
 
     return report

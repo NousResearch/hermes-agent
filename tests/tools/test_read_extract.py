@@ -15,6 +15,7 @@ import os
 import tempfile
 import unittest
 import zipfile
+from unittest.mock import patch
 
 from tools.read_extract import (
     ExtractionError,
@@ -51,8 +52,16 @@ def _write_xlsx(path, *, workbook, rels, shared, sheets):
             z.writestr(part, xml)
 
 
+def _write_pptx(path, slides):
+    with zipfile.ZipFile(path, "w") as z:
+        z.writestr("[Content_Types].xml", "<Types/>")
+        for index, xml in enumerate(slides, start=1):
+            z.writestr(f"ppt/slides/slide{index}.xml", xml)
+
+
 _NS_W = "http://schemas.openxmlformats.org/wordprocessingml/2006/main"
 _NS_S = "http://schemas.openxmlformats.org/spreadsheetml/2006/main"
+_NS_A = "http://schemas.openxmlformats.org/drawingml/2006/main"
 
 
 # ---------------------------------------------------------------------------
@@ -64,6 +73,7 @@ class TestIsExtractable(unittest.TestCase):
         self.assertTrue(is_extractable_document("a.ipynb"))
         self.assertTrue(is_extractable_document("/x/B.DOCX"))
         self.assertTrue(is_extractable_document("report.xlsx"))
+        self.assertTrue(is_extractable_document("slides.pptx"))
 
     def test_unrecognized_extensions(self):
         self.assertFalse(is_extractable_document("a.py"))
@@ -168,6 +178,20 @@ class TestDocxExtraction(unittest.TestCase):
         with self.assertRaises(ExtractionError):
             extract_document_text(p)
 
+    def test_archive_member_budget_is_enforced(self):
+        p = os.path.join(self.tmp, "oversized.docx")
+        _write_docx(p, self._doc("<w:p><w:r><w:t>text</w:t></w:r></w:p>"))
+        with patch("tools.read_extract.MAX_ARCHIVE_MEMBER_BYTES", 8):
+            with self.assertRaisesRegex(ExtractionError, "member is too large"):
+                extract_document_text(p)
+
+    def test_archive_member_count_budget_is_enforced(self):
+        p = os.path.join(self.tmp, "many.docx")
+        _write_docx(p, self._doc("<w:p><w:r><w:t>text</w:t></w:r></w:p>"))
+        with patch("tools.read_extract.MAX_ARCHIVE_MEMBERS", 1):
+            with self.assertRaisesRegex(ExtractionError, "too many archive members"):
+                extract_document_text(p)
+
     def test_missing_document_xml_raises(self):
         p = os.path.join(self.tmp, "nodoc.docx")
         with zipfile.ZipFile(p, "w") as z:
@@ -175,6 +199,39 @@ class TestDocxExtraction(unittest.TestCase):
         with self.assertRaises(ExtractionError):
             extract_document_text(p)
 
+
+# ---------------------------------------------------------------------------
+# PowerPoint presentations (.pptx)
+# ---------------------------------------------------------------------------
+
+class TestPptxExtraction(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.mkdtemp(prefix="rex_pptx_")
+
+    def tearDown(self):
+        import shutil
+        shutil.rmtree(self.tmp, ignore_errors=True)
+
+    @staticmethod
+    def _slide(*texts):
+        runs = "".join(f"<a:r><a:t>{text}</a:t></a:r>" for text in texts)
+        return f'<p:sld xmlns:p="urn:p" xmlns:a="{_NS_A}"><p:cSld>{runs}</p:cSld></p:sld>'
+
+    def test_slide_text_and_order(self):
+        p = os.path.join(self.tmp, "deck.pptx")
+        _write_pptx(p, [self._slide("First"), self._slide("Second", "Detail")])
+
+        text = extract_document_text(p)
+
+        self.assertIn("Slide 1", text)
+        self.assertIn("Second", text)
+        self.assertLess(text.index("First"), text.index("Second"))
+
+    def test_empty_deck_raises(self):
+        p = os.path.join(self.tmp, "empty.pptx")
+        _write_pptx(p, [self._slide("")])
+        with self.assertRaisesRegex(ExtractionError, "no extractable slide text"):
+            extract_document_text(p)
 
 # ---------------------------------------------------------------------------
 # Excel workbooks (.xlsx) — #10740

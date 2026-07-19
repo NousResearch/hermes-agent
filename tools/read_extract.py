@@ -1,6 +1,6 @@
 """Stdlib document-to-text extraction for ``read_file``.
 
-Supports Jupyter notebooks, DOCX, and XLSX without adding hard dependencies.
+Supports Jupyter notebooks, DOCX, PPTX, and XLSX without adding hard dependencies.
 Malformed documents raise :class:`ExtractionError`; callers can then fall back to
 normal text/binary handling.
 """
@@ -10,17 +10,24 @@ from __future__ import annotations
 import json
 import posixpath
 import zipfile
+from contextlib import contextmanager
 from pathlib import Path
+from typing import Iterator
 from xml.etree import ElementTree as ET
 
 __all__ = ["EXTRACTABLE_EXTENSIONS", "ExtractionError", "extract_document_text", "is_extractable_document"]
 
-EXTRACTABLE_EXTENSIONS = frozenset({".ipynb", ".docx", ".xlsx"})
+EXTRACTABLE_EXTENSIONS = frozenset({".ipynb", ".docx", ".pptx", ".xlsx"})
 MAX_XLSX_BYTES = 50 * 1024 * 1024
+MAX_ARCHIVE_INPUT_BYTES = 32 * 1024 * 1024
+MAX_ARCHIVE_MEMBERS = 4096
+MAX_ARCHIVE_MEMBER_BYTES = 32 * 1024 * 1024
+MAX_ARCHIVE_TOTAL_BYTES = 128 * 1024 * 1024
 _MAX_XLSX_ROWS_PER_SHEET = 5000
 _MAX_XLSX_COLS = 256
 
 _NS_W = "http://schemas.openxmlformats.org/wordprocessingml/2006/main"
+_NS_A = "http://schemas.openxmlformats.org/drawingml/2006/main"
 _NS_S = "http://schemas.openxmlformats.org/spreadsheetml/2006/main"
 _NS_REL = "http://schemas.openxmlformats.org/officeDocument/2006/relationships"
 _NS_PKG_REL = "http://schemas.openxmlformats.org/package/2006/relationships"
@@ -45,6 +52,8 @@ def extract_document_text(path: str) -> str:
         return _extract_notebook(path)
     if ext == ".docx":
         return _extract_docx(path)
+    if ext == ".pptx":
+        return _extract_pptx(path)
     if ext == ".xlsx":
         return _extract_xlsx(path)
     raise ExtractionError(f"Unsupported document type: {path!r}")
@@ -104,12 +113,45 @@ def _zip_xml(zf: zipfile.ZipFile, name: str) -> ET.Element:
         raise ExtractionError(f"Malformed XML in {name}: {exc}") from exc
 
 
-def _extract_docx(path: str) -> str:
+@contextmanager
+def _bounded_zip(path: str, kind: str) -> Iterator[zipfile.ZipFile]:
+    """Open an OOXML archive after enforcing compressed and expanded budgets."""
+    try:
+        input_bytes = Path(path).stat().st_size
+    except OSError as exc:
+        raise ExtractionError(str(exc)) from exc
+    if input_bytes > MAX_ARCHIVE_INPUT_BYTES:
+        raise ExtractionError(
+            f"{kind} exceeds the {MAX_ARCHIVE_INPUT_BYTES}-byte input limit"
+        )
+
     try:
         with zipfile.ZipFile(path) as zf:
-            root = _zip_xml(zf, "word/document.xml")
+            members = zf.infolist()
+            if len(members) > MAX_ARCHIVE_MEMBERS:
+                raise ExtractionError(
+                    f"{kind} has too many archive members ({len(members)})"
+                )
+            total_bytes = 0
+            for member in members:
+                if member.file_size > MAX_ARCHIVE_MEMBER_BYTES:
+                    raise ExtractionError(
+                        f"{kind} archive member is too large: {member.filename}"
+                    )
+                total_bytes += member.file_size
+                if total_bytes > MAX_ARCHIVE_TOTAL_BYTES:
+                    raise ExtractionError(
+                        f"{kind} exceeds the {MAX_ARCHIVE_TOTAL_BYTES}-byte expanded limit"
+                    )
+            yield zf
     except zipfile.BadZipFile as exc:
-        raise ExtractionError(f"Not a valid DOCX: {exc}") from exc
+        raise ExtractionError(f"Not a valid {kind}: {exc}") from exc
+
+
+def _extract_docx(path: str) -> str:
+    try:
+        with _bounded_zip(path, "DOCX") as zf:
+            root = _zip_xml(zf, "word/document.xml")
     except OSError as exc:
         raise ExtractionError(str(exc)) from exc
 
@@ -130,9 +172,37 @@ def _extract_docx(path: str) -> str:
     return "\n".join(lines).rstrip("\n") + "\n"
 
 
+def _extract_pptx(path: str) -> str:
+    try:
+        with _bounded_zip(path, "PPTX") as zf:
+            slide_parts: list[tuple[int, str]] = []
+            for name in zf.namelist():
+                if not name.startswith("ppt/slides/slide") or not name.endswith(".xml"):
+                    continue
+                stem = Path(name).stem
+                suffix = stem.removeprefix("slide")
+                if suffix.isdigit():
+                    slide_parts.append((int(suffix), name))
+
+            out: list[str] = []
+            text_tag = f"{{{_NS_A}}}t"
+            for index, name in sorted(slide_parts):
+                root = _zip_xml(zf, name)
+                pieces = [node.text or "" for node in root.iter(text_tag)]
+                text = "\n".join(piece for piece in pieces if piece.strip())
+                if text:
+                    out.extend((f"# ── Slide {index} ──", text, ""))
+    except OSError as exc:
+        raise ExtractionError(str(exc)) from exc
+
+    if not out:
+        raise ExtractionError("PPTX contains no extractable slide text")
+    return "\n".join(out).rstrip("\n") + "\n"
+
+
 def _extract_xlsx(path: str) -> str:
     try:
-        with zipfile.ZipFile(path) as zf:
+        with _bounded_zip(path, "XLSX") as zf:
             names = set(zf.namelist())
             shared = _shared_strings(zf, names)
             sheets = _workbook_sheets(zf)
@@ -153,8 +223,6 @@ def _extract_xlsx(path: str) -> str:
                 if not rows:
                     out.append("(empty)")
                 out.append("")
-    except zipfile.BadZipFile as exc:
-        raise ExtractionError(f"Not a valid XLSX: {exc}") from exc
     except OSError as exc:
         raise ExtractionError(str(exc)) from exc
 

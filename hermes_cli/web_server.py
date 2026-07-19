@@ -12498,6 +12498,7 @@ async def add_credential_pool_entry(body: CredentialPoolAdd):
         load_pool,
         PooledCredential,
         AUTH_TYPE_API_KEY,
+        CUSTOM_POOL_PREFIX,
         SOURCE_MANUAL,
     )
 
@@ -12519,6 +12520,23 @@ async def add_credential_pool_entry(body: CredentialPoolAdd):
             access_token=api_key,
         )
         pool.add_entry(entry)
+        # Re-adding a credential is an explicit re-engagement signal: lift
+        # every suppression for this provider so a source deleted earlier
+        # (via DELETE below or `hermes auth remove`) can seed again.
+        # Mirrors the `hermes auth add` behaviour in auth_commands.py.
+        if not provider.startswith(CUSTOM_POOL_PREFIX):
+            try:
+                from hermes_cli.auth import (
+                    _load_auth_store,
+                    unsuppress_credential_source,
+                )
+                suppressed = _load_auth_store().get("suppressed_sources", {})
+                for src in list(suppressed.get(provider, []) or []):
+                    unsuppress_credential_source(provider, src)
+            except Exception:
+                _log.exception("unsuppress after pool add failed (non-fatal)")
+    except HTTPException:
+        raise
     except Exception as exc:
         _log.exception("POST /api/credentials/pool failed")
         raise HTTPException(status_code=400, detail=str(exc)) from exc
@@ -12527,8 +12545,20 @@ async def add_credential_pool_entry(body: CredentialPoolAdd):
 
 @app.delete("/api/credentials/pool/{provider}/{index}")
 async def remove_credential_pool_entry(provider: str, index: int):
-    """Remove a pool entry.  ``index`` is 1-based (matches the list response)."""
+    """Remove a pool entry.  ``index`` is 1-based (matches the list response).
+
+    Removal must be sticky (#55217): ``load_pool()`` re-seeds entries from
+    their backing source (.env var, OAuth singleton file, custom-provider
+    config) on every call, so deleting only the pool row silently reverts on
+    the next dashboard refresh.  We dispatch through the same RemovalStep
+    registry the CLI ``hermes auth remove`` uses: each source cleans up its
+    external state and suppresses ``(provider, source)`` so the seeders skip
+    it.  Manual entries have no registered step — nothing external to clean,
+    no suppression needed (they aren't re-seeded).
+    """
     from agent.credential_pool import load_pool
+    from agent.credential_sources import find_removal_step
+    from hermes_cli.auth import suppress_credential_source
 
     provider = (provider or "").strip().lower()
     try:
@@ -12539,7 +12569,36 @@ async def remove_credential_pool_entry(provider: str, index: int):
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     if removed is None:
         raise HTTPException(status_code=404, detail="No pool entry at that index")
-    return {"ok": True, "provider": provider, "count": len(pool.entries())}
+
+    cleaned: List[str] = []
+    hints: List[str] = []
+    step = find_removal_step(provider, removed.source or "")
+    if step is not None:
+        try:
+            result = step.remove_fn(provider, removed)
+            cleaned = list(result.cleaned)
+            hints = list(result.hints)
+            if result.suppress:
+                suppress_credential_source(provider, removed.source)
+        except Exception:
+            # Cleanup is best-effort, but suppression is the actual bug fix —
+            # without it the entry resurrects on the next load_pool().  Apply
+            # it even when source-specific cleanup blew up.
+            _log.exception(
+                "credential source cleanup failed for %s/%s; suppressing anyway",
+                provider, removed.source,
+            )
+            try:
+                suppress_credential_source(provider, removed.source)
+            except Exception:
+                _log.exception("suppress_credential_source failed")
+    return {
+        "ok": True,
+        "provider": provider,
+        "count": len(pool.entries()),
+        "cleaned": cleaned,
+        "hints": hints,
+    }
 
 
 # ---------------------------------------------------------------------------

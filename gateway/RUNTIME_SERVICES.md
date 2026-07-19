@@ -9,7 +9,7 @@ direct imports): `run.py`, mixins, routers, platforms, and their transitive
 | **WIRED** | Reachable from production gateway code |
 | **removed** | Truly unwired parallel paths deleted in the 清屎山 pass |
 
-## WIRED (21)
+## WIRED (22)
 
 | Module | Notes |
 |--------|--------|
@@ -17,6 +17,7 @@ direct imports): `run.py`, mixins, routers, platforms, and their transitive
 | `agent_turn_preflight_runtime_service` | Post-bootstrap pre-agent: hygiene + notes + message stage |
 | `agent_turn_finish_runtime_service` | Post-`_run_agent` success: normalize, transcript, exhaust reset, voice/media |
 | `agent_turn_error_runtime_service` | `_handle_message_with_agent` except: typing stop, crash persist, status copy |
+| `inbound_message_runtime_service` | Shared inbound text prep (vision/STT/docs/reply/@); runner methods thin-delegate |
 | `auto_vision_runtime_service` | `run.py` |
 | `busy_followup_runtime_service` | `run.py` |
 | `direct_shortcut_runtime_service` | turn-start + busy path |

@@ -72,7 +72,7 @@ import { PetGenerateOverlay } from '../pet-generate/pet-generate-overlay'
 import { FileActionDialogs } from '../right-sidebar/file-actions'
 import { RemoteFolderPicker } from '../right-sidebar/files/remote-picker'
 import { PersistentTerminal } from '../right-sidebar/terminal/persistent'
-import { CRON_ROUTE, routeSessionId, sessionRoute, SETTINGS_ROUTE, syncWorkspaceIsPage } from '../routes'
+import { appViewForPath, CRON_ROUTE, routeSessionId, sessionRoute, SETTINGS_ROUTE, syncWorkspaceIsPage } from '../routes'
 import { SessionPickerOverlay } from '../session-picker-overlay'
 import { SessionSwitcher } from '../session-switcher'
 import { useBackgroundQueueDrain } from '../session/hooks/use-background-queue-drain'
@@ -750,9 +750,14 @@ export function ContribWiring({ children }: { children: ReactNode }) {
     onRemoveAttachment: id => void composer.removeAttachment(id),
     onRestoreToMessage: restoreToMessage,
     // Already on screen (open tile, or the main session)? Jump to its tab;
-    // otherwise load it into main.
+    // otherwise load it into main. When we're on a non-Chat page (Plugins,
+    // Artifacts, etc.) the "already selected" path in focusOpenSession only
+    // focuses the workspace pane without navigating — force the route change
+    // so clicking the most-recent session actually switches back to Chat (#66875).
     onResumeSession: sessionId => {
       if (!focusOpenSession(sessionId)) {
+        navigate(sessionRoute(sessionId))
+      } else if (appViewForPath(location.pathname) !== 'chat') {
         navigate(sessionRoute(sessionId))
       }
     },

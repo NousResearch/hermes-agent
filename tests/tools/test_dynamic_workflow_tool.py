@@ -194,6 +194,37 @@ def test_dispatch_ready_uses_delegate_task_background(monkeypatch):
     assert result["workflow"]["nodes"][0]["status"] == "dispatched"
 
 
+def test_dispatch_ready_applies_completion_called_before_delegate_returns(monkeypatch):
+    def fake_delegate_task(**kwargs):
+        kwargs["_completion_callback"](
+            {
+                "delegation_id": "deleg_instant",
+                "status": "completed",
+                "summary": "Instant terminal result",
+            }
+        )
+        return json.dumps({"status": "dispatched", "delegation_id": "deleg_instant"})
+
+    from tools import delegate_tool
+
+    monkeypatch.setattr(delegate_tool, "delegate_task", fake_delegate_task)
+    result = _call(
+        {
+            "action": "create",
+            "workflow_id": "wf_instant",
+            "objective": "Keep instant completion",
+            "dispatch_ready": True,
+            "nodes": [{"node_id": "worker", "goal": "Finish immediately"}],
+        },
+        parent_agent=object(),
+    )
+
+    node = result["workflow"]["nodes"][0]
+    assert result["dispatched"] == [{"node_id": "worker", "delegation_id": "deleg_instant"}]
+    assert node["status"] == "completed"
+    assert node["summary"] == "Instant terminal result"
+
+
 def test_create_rejects_per_node_toolset_override():
     result = _call(
         {

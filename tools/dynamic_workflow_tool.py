@@ -420,14 +420,28 @@ def _dispatch_ready(workflow: Dict[str, Any], parent_agent: Any, max_dispatch: i
     for node_id in _ready_node_ids(workflow)[:max_dispatch]:
         node = workflow["nodes"][node_id]
         from tools import delegate_tool
+        pre_dispatch_completions: List[Dict[str, Any]] = []
 
-        def _on_complete(record: Dict[str, Any], *, _node_id: str = node_id) -> None:
+        def _on_complete(
+            record: Dict[str, Any],
+            *,
+            _node_id: str = node_id,
+            _node: Dict[str, Any] = node,
+            _pre_dispatch_completions: List[Dict[str, Any]] = pre_dispatch_completions,
+        ) -> None:
             with _workflows_lock:
                 key = (workflow["scope"], workflow["workflow_id"])
                 current = _workflows.get(key)
                 if current is not workflow:
                     return
                 current_node = current["nodes"].get(_node_id)
+                if (
+                    current_node is _node
+                    and current_node.get("status") == "pending"
+                    and current_node.get("delegation_id") is None
+                ):
+                    _pre_dispatch_completions.append(dict(record))
+                    return
                 if current_node and _apply_async_record(current_node, record):
                     current["updated_at"] = _now()
 
@@ -450,6 +464,10 @@ def _dispatch_ready(workflow: Dict[str, Any], parent_agent: Any, max_dispatch: i
             node["dispatched_at"] = _now()
             node["updated_at"] = _now()
             dispatched.append({"node_id": node_id, "delegation_id": parsed["delegation_id"]})
+            for record in pre_dispatch_completions:
+                if _apply_async_record(node, record):
+                    workflow["updated_at"] = _now()
+                    break
         else:
             errors.append({"node_id": node_id, "error": parsed.get("error") or parsed})
 

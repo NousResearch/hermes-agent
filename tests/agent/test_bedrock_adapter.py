@@ -326,8 +326,10 @@ class TestConvertMessagesToConverse:
         from agent.bedrock_adapter import convert_messages_to_converse
         messages = [{"role": "user", "content": ""}]
         system, msgs = convert_messages_to_converse(messages)
-        # Empty string should get a space placeholder
-        assert msgs[0]["content"][0]["text"].strip() != "" or msgs[0]["content"][0]["text"] == " "
+        # Empty string must get a NON-whitespace placeholder — Converse rejects
+        # empty/whitespace-only text blocks (must contain non-whitespace text).
+        placeholder = msgs[0]["content"][0]["text"]
+        assert placeholder.strip() != ""
 
     def test_image_data_url_converted(self):
         from agent.bedrock_adapter import convert_messages_to_converse
@@ -359,6 +361,142 @@ class TestConvertMessagesToConverse:
         assert len(system) == 2
         assert system[0]["text"] == "Rule 1"
         assert system[1]["text"] == "Rule 2"
+
+
+def _iter_converse_text_blocks(node):
+    """Yield every ``text`` value emitted anywhere in a Converse payload.
+
+    Walks system blocks, message content blocks, and nested toolResult
+    content so the whitespace invariant can be asserted recursively.
+    """
+    if isinstance(node, dict):
+        for key, value in node.items():
+            if key == "text":
+                yield value
+            else:
+                yield from _iter_converse_text_blocks(value)
+    elif isinstance(node, list):
+        for item in node:
+            yield from _iter_converse_text_blocks(item)
+
+
+class TestConverseNoWhitespaceOnlyTextBlocks:
+    """Bedrock's Converse API rejects empty/whitespace-only text blocks with
+    ``ValidationException: text content blocks must contain non-whitespace
+    text``. No emitted text block — including nested tool results — may be
+    blank. Ref: issue #9486, PR #64858."""
+
+    def _assert_all_text_nonblank(self, system, msgs):
+        texts = list(_iter_converse_text_blocks(system)) + list(
+            _iter_converse_text_blocks(msgs)
+        )
+        # There must be at least one text block (or the walk is vacuous), and
+        # every one must be a non-whitespace string.
+        for text in texts:
+            assert isinstance(text, str), f"non-string text block: {text!r}"
+            assert text.strip() != "", f"whitespace-only text block: {text!r}"
+
+    def test_empty_and_whitespace_user_content(self):
+        from agent.bedrock_adapter import convert_messages_to_converse
+
+        for content in ("", "   ", "\n\t ", None):
+            system, msgs = convert_messages_to_converse(
+                [{"role": "user", "content": content}]
+            )
+            self._assert_all_text_nonblank(system, msgs)
+
+    def test_whitespace_only_list_parts_dropped(self):
+        from agent.bedrock_adapter import convert_messages_to_converse
+
+        messages = [{
+            "role": "user",
+            "content": [
+                {"type": "text", "text": "   "},
+                {"type": "text", "text": "\n"},
+                "  ",
+                {"type": "text", "text": "real content"},
+            ],
+        }]
+        system, msgs = convert_messages_to_converse(messages)
+        self._assert_all_text_nonblank(system, msgs)
+        # The one real block survives; the blanks are dropped.
+        user_texts = [
+            b["text"] for b in msgs[0]["content"] if "text" in b
+        ]
+        assert user_texts == ["real content"]
+
+    def test_all_blank_list_parts_get_placeholder(self):
+        from agent.bedrock_adapter import convert_messages_to_converse
+
+        messages = [{
+            "role": "user",
+            "content": [{"type": "text", "text": " "}, {"type": "text", "text": ""}],
+        }]
+        system, msgs = convert_messages_to_converse(messages)
+        self._assert_all_text_nonblank(system, msgs)
+
+    def test_empty_tool_result(self):
+        from agent.bedrock_adapter import convert_messages_to_converse
+
+        for result in ("", "   ", None):
+            messages = [
+                {"role": "user", "content": "run it"},
+                {"role": "tool", "tool_call_id": "t1", "content": result},
+            ]
+            system, msgs = convert_messages_to_converse(messages)
+            self._assert_all_text_nonblank(system, msgs)
+            # The tool result block itself must be non-blank.
+            tool_texts = [
+                inner["text"]
+                for m in msgs
+                for block in m["content"]
+                if "toolResult" in block
+                for inner in block["toolResult"]["content"]
+                if "text" in inner
+            ]
+            assert tool_texts and all(t.strip() for t in tool_texts)
+
+    def test_empty_assistant_content(self):
+        from agent.bedrock_adapter import convert_messages_to_converse
+
+        messages = [
+            {"role": "user", "content": "hi"},
+            {"role": "assistant", "content": ""},
+            {"role": "user", "content": "still there?"},
+        ]
+        system, msgs = convert_messages_to_converse(messages)
+        self._assert_all_text_nonblank(system, msgs)
+
+    def test_whitespace_system_message(self):
+        from agent.bedrock_adapter import convert_messages_to_converse
+
+        messages = [
+            {"role": "system", "content": [
+                {"type": "text", "text": "   "},
+                {"type": "text", "text": "Be concise."},
+                "  ",
+            ]},
+            {"role": "user", "content": "hi"},
+        ]
+        system, msgs = convert_messages_to_converse(messages)
+        self._assert_all_text_nonblank(system, msgs)
+        assert [b["text"] for b in (system or [])] == ["Be concise."]
+
+    def test_non_string_text_part_does_not_raise(self):
+        """A non-string ``text`` payload must be filtered, not crash on .strip()."""
+        from agent.bedrock_adapter import convert_messages_to_converse
+
+        messages = [{
+            "role": "user",
+            "content": [
+                {"type": "text", "text": None},
+                {"type": "text", "text": 123},
+                {"type": "text", "text": "ok"},
+            ],
+        }]
+        system, msgs = convert_messages_to_converse(messages)
+        self._assert_all_text_nonblank(system, msgs)
+        assert [b["text"] for b in msgs[0]["content"] if "text" in b] == ["ok"]
 
 
 # ---------------------------------------------------------------------------
@@ -1305,22 +1443,25 @@ class TestIsAnthropicBedrockModel:
 
 
 class TestEmptyTextBlockFix:
-    """Test that empty text blocks are replaced with space placeholders."""
+    """Empty/whitespace-only content is replaced with a NON-whitespace
+    placeholder. Bedrock's Converse API rejects text blocks that are empty or
+    whitespace-only ("must contain non-whitespace text"), so a single space
+    is not a valid placeholder. Ref: PR #64858."""
 
-    def test_none_content_gets_space(self):
+    def test_none_content_gets_nonblank_placeholder(self):
         from agent.bedrock_adapter import _convert_content_to_converse
         blocks = _convert_content_to_converse(None)
-        assert blocks[0]["text"] == " "
+        assert blocks[0]["text"].strip() != ""
 
-    def test_empty_string_gets_space(self):
+    def test_empty_string_gets_nonblank_placeholder(self):
         from agent.bedrock_adapter import _convert_content_to_converse
         blocks = _convert_content_to_converse("")
-        assert blocks[0]["text"] == " "
+        assert blocks[0]["text"].strip() != ""
 
-    def test_whitespace_only_gets_space(self):
+    def test_whitespace_only_gets_nonblank_placeholder(self):
         from agent.bedrock_adapter import _convert_content_to_converse
         blocks = _convert_content_to_converse("   ")
-        assert blocks[0]["text"] == " "
+        assert blocks[0]["text"].strip() != ""
 
     def test_real_text_preserved(self):
         from agent.bedrock_adapter import _convert_content_to_converse

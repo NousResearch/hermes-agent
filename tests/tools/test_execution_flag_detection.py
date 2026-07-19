@@ -78,9 +78,6 @@ def test_real_binaries_execute_leading_dash_program_payload(
             argv = ["script", "-q", "/dev/null", *argv]
         else:
             argv = ["script", "-qec", shlex.join(argv), "/dev/null"]
-    elif sys.platform == "darwin" and tool == "sort":
-        assert argv[-2:] == ["--compress-program", "-payload-marker"]
-        argv[-1] = str(payload)
 
     subprocess.run(argv, input=input_text, text=True, capture_output=True, env=env, timeout=20)
 

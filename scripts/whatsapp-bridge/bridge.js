@@ -26,7 +26,7 @@ import pino from 'pino';
 import path from 'path';
 import { mkdirSync, readFileSync, existsSync, readdirSync, unlinkSync } from 'fs';
 import { fileURLToPath } from 'url';
-import { randomBytes, createHash } from 'crypto';
+import { randomBytes, createHash, timingSafeEqual } from 'crypto';
 import { execFileSync } from 'child_process';
 import { tmpdir } from 'os';
 import qrcode from 'qrcode-terminal';
@@ -801,6 +801,42 @@ app.use((req, res, next) => {
   next();
 });
 
+// Shared-secret authentication — defends against same-host cross-origin abuse.
+// The Host pin above only stops DNS rebinding: a page loaded in a browser ON
+// THIS MACHINE talks to the bridge with an honest `Host: localhost`, so it
+// sails through — and a bare cross-origin GET /messages destructively drains
+// the inbound queue (splice), no CORS read access required.
+//
+// When the spawning adapter provides HERMES_BRIDGE_TOKEN, every request must
+// carry the same value in the X-Bridge-Token header. Browsers cannot attach a
+// custom header cross-origin without a CORS preflight, and the bridge never
+// answers preflights, so same-host browser pages are locked out while the
+// adapter (which sets the header explicitly) keeps working.
+//
+// Unset/empty HERMES_BRIDGE_TOKEN preserves the historical open behaviour so
+// bridges launched outside the Hermes adapter keep working unchanged. The
+// Hermes adapter always generates and passes a token, so managed installs are
+// effectively fail-closed.
+const BRIDGE_TOKEN = (process.env.HERMES_BRIDGE_TOKEN || '').trim();
+
+function bridgeTokenMatches(presented, expected) {
+  // Hash both sides so timingSafeEqual always gets equal-length buffers —
+  // it throws on length mismatch — and the comparison stays constant-time
+  // without leaking the expected token's length.
+  const a = createHash('sha256').update(String(presented)).digest();
+  const b = createHash('sha256').update(String(expected)).digest();
+  return timingSafeEqual(a, b);
+}
+
+app.use((req, res, next) => {
+  if (!BRIDGE_TOKEN) return next();
+  const presented = String(req.headers['x-bridge-token'] || '');
+  if (!presented || !bridgeTokenMatches(presented, BRIDGE_TOKEN)) {
+    return res.status(401).json({ error: 'Missing or invalid X-Bridge-Token' });
+  }
+  return next();
+});
+
 // Poll for new messages (long-poll style)
 app.get('/messages', (req, res) => {
   const msgs = messageQueue.splice(0, messageQueue.length);
@@ -1098,6 +1134,11 @@ if (PAIR_ONLY) {
   app.listen(PORT, '127.0.0.1', () => {
     console.log(`🌉 WhatsApp bridge listening on port ${PORT} (mode: ${WHATSAPP_MODE})`);
     console.log(`📁 Session stored in: ${SESSION_DIR}`);
+    if (BRIDGE_TOKEN) {
+      console.log(`🔑 HTTP API auth enabled — requests must send X-Bridge-Token.`);
+    } else {
+      console.log(`⚠️  HERMES_BRIDGE_TOKEN not set — HTTP API is unauthenticated (legacy mode).`);
+    }
     if (ALLOWED_USERS.size > 0) {
       console.log(`🔒 Allowed users: ${Array.from(ALLOWED_USERS).join(', ')}`);
     } else if (WHATSAPP_MODE === 'self-chat') {

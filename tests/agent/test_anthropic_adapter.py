@@ -1603,16 +1603,32 @@ class TestBuildAnthropicKwargs:
             assert _forbids_sampling_params(m) is False, m
 
     def test_non_claude_anthropic_models_use_manual_path(self):
-        """Non-Claude Anthropic-Messages models (minimax, qwen3, kimi) must not
-        be misclassified as adaptive by the default-to-modern rule."""
+        """Non-Claude Anthropic-Messages models (minimax, qwen3, glm) must not
+        be misclassified as adaptive by the default-to-modern rule. Kimi is
+        the deliberate exception — see test_kimi_family_uses_adaptive_path."""
         from agent.anthropic_adapter import (
             _supports_adaptive_thinking,
             _supports_xhigh_effort,
             _forbids_sampling_params,
         )
-        for m in ("minimax-m2", "qwen3-max", "moonshotai/kimi-k2.5", "glm-4.6"):
+        for m in ("minimax-m2", "qwen3-max", "glm-4.6"):
             assert _supports_adaptive_thinking(m) is False, m
             assert _supports_xhigh_effort(m) is False, m
+            assert _forbids_sampling_params(m) is False, m
+
+    def test_kimi_family_uses_adaptive_path(self):
+        """Kimi / Moonshot models use adaptive thinking: their
+        Anthropic-compatible endpoints accept thinking.type="adaptive" +
+        output_config.effort including xhigh. Sampling params stay untouched
+        (the 4.7+ sampling ban is a Claude-only contract)."""
+        from agent.anthropic_adapter import (
+            _supports_adaptive_thinking,
+            _supports_xhigh_effort,
+            _forbids_sampling_params,
+        )
+        for m in ("moonshotai/kimi-k2.5", "kimi-0714-preview", "k2-thinking"):
+            assert _supports_adaptive_thinking(m) is True, m
+            assert _supports_xhigh_effort(m) is True, m
             assert _forbids_sampling_params(m) is False, m
 
     def test_fast_mode_omitted_for_unsupported_model(self):

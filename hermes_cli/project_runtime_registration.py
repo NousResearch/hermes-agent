@@ -1449,6 +1449,47 @@ def _canonical_sealed_evidence_for_event(
     )
 
 
+def sealed_project_checker_evidence_for_submission(
+    conn: sqlite3.Connection,
+    *,
+    board_id: str,
+    task_id: str,
+) -> tuple[dict[str, object], ...] | None:
+    """Return immutable evidence for a current sealed checker submission.
+
+    Public worker tools intentionally accept only short, human-reviewable
+    evidence records. An admitted sealed project additionally needs the
+    task-bound attachment identities held by the database. Resolve those
+    identities here instead of asking the worker to manufacture fields that
+    the public tool schema forbids. The verdict registrar still validates the
+    checker authority and candidate freshness atomically.
+    """
+    row = conn.execute(
+        """
+        SELECT *
+          FROM project_finalizations
+         WHERE board_id = ?
+           AND final_checker_task_id = ?
+           AND admission_key IS NOT NULL
+           AND terminal_outcome IS NULL
+           AND terminal_candidate_snapshot_version IS NULL
+        """,
+        (board_id, task_id),
+    ).fetchone()
+    if row is None:
+        raise ValueError("task is not the current admitted project checker")
+    if not bool(row["sealed_evidence_required"]):
+        return None
+    candidate = row["checker_candidate_snapshot_version"]
+    if not isinstance(candidate, str) or not candidate:
+        raise ValueError("checker sealed evidence candidate is missing")
+    return _canonical_sealed_evidence_for_event(
+        conn,
+        row,
+        candidate_snapshot_version=candidate,
+    )
+
+
 def _validate_sealed_evidence(
     conn: sqlite3.Connection,
     project_row: sqlite3.Row,
@@ -2351,6 +2392,7 @@ __all__ = [
     "register_project_checker",
     "register_project_repair",
     "record_project_checker_evidence",
+    "sealed_project_checker_evidence_for_submission",
     "validate_project_checker_evidence",
     "resolve_project_telegram_destination",
     "submit_project_checker_verdict",

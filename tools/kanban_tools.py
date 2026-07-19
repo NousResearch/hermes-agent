@@ -751,19 +751,31 @@ def _handle_submit_project_verdict(args: dict, **kw) -> str:
     if not worker_profile:
         return tool_error("HERMES_PROFILE is required for a checker verdict")
     try:
-        from hermes_cli.project_runtime_registration import submit_project_checker_verdict
+        from hermes_cli.project_runtime_registration import (
+            sealed_project_checker_evidence_for_submission,
+            submit_project_checker_verdict,
+        )
 
         kb, conn = _connect(board=args.get("board"))
         try:
+            board_id = args.get("board") or kb.get_current_board()
+            # The public schema deliberately excludes task-bound hashes and
+            # paths. Reconstruct canonical sealed evidence inside the trusted
+            # process before the strict registrar validates it.
+            sealed_evidence = sealed_project_checker_evidence_for_submission(
+                conn,
+                board_id=board_id,
+                task_id=task_id,
+            )
             recorded = submit_project_checker_verdict(
                 conn,
-                board_id=args.get("board") or kb.get_current_board(),
+                board_id=board_id,
                 task_id=task_id,
                 run_id=run_id,
                 worker_profile=worker_profile,
                 verdict=verdict,
                 reason=reason,
-                evidence=evidence,
+                evidence=sealed_evidence if sealed_evidence is not None else evidence,
                 summary=summary,
             )
             return _ok(

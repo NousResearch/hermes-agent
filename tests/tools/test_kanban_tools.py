@@ -159,6 +159,74 @@ def test_project_verdict_schema_is_checker_scoped_and_structured():
     assert evidence["items"]["required"] == ["kind", "reference", "summary"]
 
 
+def test_project_verdict_handler_reconstructs_sealed_evidence(monkeypatch):
+    """The public schema stays narrow while sealed identities stay internal."""
+    from types import SimpleNamespace
+
+    from hermes_cli import project_runtime_registration as runtime
+    from tools import kanban_tools as kt
+
+    task_id = "t_checker"
+    sealed = (
+        {
+            "kind": "file",
+            "reference": "R3-ROOT-EVIDENCE.md",
+            "summary": "sealed task attachment",
+            "task_id": "t_root",
+            "path": "R3-ROOT-EVIDENCE.md",
+            "sha256": "a" * 64,
+            "candidate_snapshot_version": "sha256:candidate",
+            "file_set": ["R3-ROOT-EVIDENCE.md"],
+            "manifest_sha256": "b" * 64,
+        },
+    )
+    captured: dict[str, object] = {}
+
+    class FakeBoard:
+        @staticmethod
+        def get_current_board() -> str:
+            return "sealed-board"
+
+    class FakeConnection:
+        def close(self) -> None:
+            return None
+
+    def fake_sealed(conn, *, board_id, task_id):
+        assert board_id == "sealed-board"
+        assert task_id == "t_checker"
+        return sealed
+
+    def fake_submit(conn, **kwargs):
+        captured.update(kwargs)
+        return SimpleNamespace(disposition="recorded")
+
+    monkeypatch.setenv("HERMES_KANBAN_TASK", task_id)
+    monkeypatch.setenv("HERMES_KANBAN_RUN_ID", "7")
+    monkeypatch.setenv("HERMES_PROFILE", "checker-terra")
+    monkeypatch.setattr(kt, "_connect", lambda *, board=None: (FakeBoard(), FakeConnection()))
+    monkeypatch.setattr(runtime, "sealed_project_checker_evidence_for_submission", fake_sealed)
+    monkeypatch.setattr(runtime, "submit_project_checker_verdict", fake_submit)
+
+    result = json.loads(
+        kt._handle_submit_project_verdict(
+            {
+                "verdict": "PASS",
+                "reason": "required checks passed",
+                "evidence": [
+                    {
+                        "kind": "test",
+                        "reference": "scripts/run_tests.sh tests/example.py",
+                        "summary": "example passed",
+                    }
+                ],
+            }
+        )
+    )
+
+    assert result["verdict"] == "PASS"
+    assert captured["evidence"] == sealed
+
+
 # ---------------------------------------------------------------------------
 # Handler happy paths
 # ---------------------------------------------------------------------------

@@ -62,9 +62,54 @@ describe('sessionConversationIdentity', () => {
         ?.threadId
     ).toBeNull()
   })
+
+  it('prefers an external messaging origin over a local handoff source', () => {
+    const identity = sessionConversationIdentity(
+      session({
+        id: 'handoff',
+        source: 'tui',
+        origin_json: JSON.stringify({ platform: 'telegram', chat_id: 'chat', thread_id: 'topic' })
+      })
+    )
+
+    expect(identity?.platform).toBe('telegram')
+    expect(identity?.chatId).toBe('chat')
+    expect(identity?.threadId).toBe('topic')
+  })
 })
 
 describe('buildMessagingGroups', () => {
+  it('keeps local handoff continuations in their external messaging platform group', () => {
+    const bound = {
+      alias: 'Bound handoff',
+      chat_id: 'chat',
+      created_at: 0,
+      platform: 'telegram',
+      project_id: 'p_1',
+      target_key: '',
+      thread_id: 'topic',
+      updated_at: 0
+    }
+    const groups = buildMessagingGroups({
+      projects: [project(bound)],
+      projectProfile: 'default',
+      platformTotals: {},
+      truncated: false,
+      sessions: [
+        session({
+          id: 'handoff',
+          source: 'tui',
+          origin_json: JSON.stringify({ platform: 'telegram', chat_id: 'chat', thread_id: 'topic' })
+        })
+      ]
+    })
+
+    expect(groups).toHaveLength(1)
+    expect(groups[0].sourceId).toBe('telegram')
+    expect(groups[0].conversations[0].topics[0].label).toBe('Bound handoff')
+    expect(groups[0].conversations[0].topics[0].sessions.map(item => item.id)).toEqual(['handoff'])
+  })
+
   it('groups by platform, profile, chat, and topic with deterministic label priority', () => {
     const bound = {
       alias: 'Bound alias',

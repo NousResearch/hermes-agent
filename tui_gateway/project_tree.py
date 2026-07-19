@@ -455,7 +455,10 @@ def _session_conversation_target(session: dict) -> Optional[tuple[str, str, Opti
         except (TypeError, ValueError):
             origin = None
         if isinstance(origin, dict):
-            platform = platform or _normalize_text(origin.get("platform")).lower()
+            # A Desktop/TUI continuation keeps the messaging origin while its
+            # live source becomes local. Prefer that external origin so the
+            # continuation still matches the messaging Project binding.
+            platform = _normalize_text(origin.get("platform")).lower() or platform
             chat_id = chat_id or _normalize_text(origin.get("chat_id"))
             thread_id = thread_id if thread_id is not None else _normalize_thread(origin.get("thread_id"))
 

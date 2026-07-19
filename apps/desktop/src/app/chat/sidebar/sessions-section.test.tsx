@@ -119,6 +119,29 @@ describe('SidebarSessionsSection messaging conversations', () => {
     expect(screen.getByTestId('session-legacy')).not.toBeNull()
   })
 
+  it('exposes conversation and topic disclosure state', () => {
+    const { container } = renderSection({ messagingConversations: conversations([session('topic')]) })
+    const ownerDocument = container.ownerDocument
+
+    const conversationToggle = screen.getByRole('button', { name: 'Team chat' })
+    const topicToggle = screen.getByRole('button', { name: 'Release topic' })
+    const conversationContentId = conversationToggle.getAttribute('aria-controls')
+    const topicContentId = topicToggle.getAttribute('aria-controls')
+
+    expect(conversationToggle.getAttribute('aria-expanded')).toBe('true')
+    expect(topicToggle.getAttribute('aria-expanded')).toBe('true')
+    expect(ownerDocument.getElementById(conversationContentId ?? '')).not.toBeNull()
+    expect(ownerDocument.getElementById(topicContentId ?? '')).not.toBeNull()
+
+    fireEvent.click(topicToggle)
+    expect(topicToggle.getAttribute('aria-expanded')).toBe('false')
+    expect(ownerDocument.getElementById(topicContentId ?? '')).toBeNull()
+
+    fireEvent.click(conversationToggle)
+    expect(conversationToggle.getAttribute('aria-expanded')).toBe('false')
+    expect(ownerDocument.getElementById(conversationContentId ?? '')).toBeNull()
+  })
+
   it('gives the project and alias controls accessible names', () => {
     renderSection({
       messagingConversations: conversations([session('topic')], true),

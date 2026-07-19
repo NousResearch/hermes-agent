@@ -67,7 +67,10 @@ export function conversationTargetKey(platform: string, chatId: string, threadId
 
 export function sessionConversationIdentity(session: SessionInfo): null | SessionConversationIdentity {
   const origin = parseOrigin(session.origin_json)
-  const platform = normalizeSessionSource(session.source) || normalizeSessionSource(originString(origin, 'platform'))
+  // A Desktop/TUI continuation keeps the messaging origin while its live
+  // source becomes local. Prefer that external origin so it remains grouped
+  // with, and bound to, the original messaging topic.
+  const platform = normalizeSessionSource(originString(origin, 'platform')) || normalizeSessionSource(session.source)
   const chatId = normalizeText(session.chat_id) || normalizeText(originString(origin, 'chat_id'))
 
   if (!platform || !chatId) {
@@ -126,14 +129,14 @@ export function buildMessagingGroups(params: {
   const byPlatform = new Map<string, { identified: SessionInfo[]; flat: SessionInfo[] }>()
 
   for (const session of params.sessions) {
-    const sourceId = normalizeSessionSource(session.source)
+    const identity = sessionConversationIdentity(session)
+    const sourceId = identity?.platform || normalizeSessionSource(session.source)
 
     if (!sourceId) {
       continue
     }
 
     const bucket = byPlatform.get(sourceId) ?? { identified: [], flat: [] }
-    const identity = sessionConversationIdentity(session)
     bucket[identity ? 'identified' : 'flat'].push(session)
     byPlatform.set(sourceId, bucket)
   }

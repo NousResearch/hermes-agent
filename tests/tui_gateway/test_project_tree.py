@@ -340,6 +340,22 @@ def test_explicit_conversation_binding_claims_cwdless_session():
     assert groups[0]["sessions"] == [bound]
 
 
+def test_conversation_binding_claims_local_handoff_from_messaging_origin():
+    project = _project("p_topic", "Topic Project", [], conversation_bindings=[_binding("p_topic", alias="Ops")])
+    handoff = _session(
+        None,
+        source="tui",
+        origin_json='{"platform":"telegram","chat_id":"chat","thread_id":"thread"}',
+    )
+
+    tree = pt.build_tree([project], [handoff], [], resolve=None, hydrate=True)
+    node = next(p for p in tree["projects"] if p["id"] == "p_topic")
+
+    assert tree["scoped_session_ids"] == [handoff["id"]]
+    assert node["sessionCount"] == 1
+    assert node["repos"][0]["id"] == "conversation::telegram::chat"
+
+
 def test_conversation_binding_dedupes_session_that_also_matches_folder():
     project = _project(
         "p_topic",

@@ -702,6 +702,29 @@ class TestBlueBubblesVoiceSend:
         assert captured["files"]["attachment"][0] == "Audio Message.caf"
         assert captured["files"]["attachment"][2] == "audio/x-caf"
 
+    @pytest.mark.asyncio
+    async def test_send_voice_returns_failure_when_preparation_raises(
+        self, monkeypatch, tmp_path
+    ):
+        adapter = _make_adapter(monkeypatch)
+        audio_path = tmp_path / "voice.mp3"
+        audio_path.write_bytes(b"mp3fake")
+        monkeypatch.setattr(adapter, "client", object())
+
+        async def fake_resolve_chat_guid(chat_id):
+            return "iMessage;-;user@example.com"
+
+        def fail_preparation(file_path, filename=None):
+            raise OSError("temporary file unavailable")
+
+        monkeypatch.setattr(adapter, "_resolve_chat_guid", fake_resolve_chat_guid)
+        monkeypatch.setattr(adapter, "_prepare_voice_attachment", fail_preparation)
+
+        result = await adapter.send_voice("user@example.com", str(audio_path))
+
+        assert result.success is False
+        assert result.error == "temporary file unavailable"
+
     def test_prepare_voice_attachment_transcodes_non_caf_audio_to_caf(self, monkeypatch, tmp_path):
         adapter = _make_adapter(monkeypatch)
         source = tmp_path / "voice.m4a"

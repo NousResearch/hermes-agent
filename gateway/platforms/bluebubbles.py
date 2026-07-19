@@ -760,21 +760,26 @@ class BlueBubblesAdapter(BasePlatformAdapter):
         if not guid:
             return SendResult(success=False, error=f"Chat not found: {chat_id}")
 
-        if is_audio_message:
-            preparation_task = asyncio.create_task(
-                asyncio.to_thread(self._prepare_voice_attachment, file_path, filename)
-            )
-            try:
-                prepared = await asyncio.shield(preparation_task)
-            except asyncio.CancelledError:
-                preparation_task.add_done_callback(self._cleanup_cancelled_preparation)
-                raise
-        else:
-            prepared = _PreparedAttachment(
-                path=file_path,
-                filename=filename or os.path.basename(file_path),
-                content_type=_attachment_content_type(filename or os.path.basename(file_path)),
-            )
+        try:
+            if is_audio_message:
+                preparation_task = asyncio.create_task(
+                    asyncio.to_thread(self._prepare_voice_attachment, file_path, filename)
+                )
+                try:
+                    prepared = await asyncio.shield(preparation_task)
+                except asyncio.CancelledError:
+                    preparation_task.add_done_callback(self._cleanup_cancelled_preparation)
+                    raise
+            else:
+                prepared = _PreparedAttachment(
+                    path=file_path,
+                    filename=filename or os.path.basename(file_path),
+                    content_type=_attachment_content_type(filename or os.path.basename(file_path)),
+                )
+        except asyncio.CancelledError:
+            raise
+        except Exception as e:
+            return SendResult(success=False, error=str(e))
         try:
             with open(prepared.path, "rb") as f:
                 files = {"attachment": (prepared.filename, f, prepared.content_type)}

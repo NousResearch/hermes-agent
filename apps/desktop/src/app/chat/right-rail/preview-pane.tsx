@@ -1,12 +1,14 @@
 import { useStore } from '@nanostores/react'
-import type { PointerEvent as ReactPointerEvent } from 'react'
+import type { FormEvent, PointerEvent as ReactPointerEvent } from 'react'
 import { useCallback, useEffect, useRef, useState } from 'react'
 
 import type { SetTitlebarToolGroup, TitlebarTool } from '@/app/shell/titlebar-controls'
+import { TooltipIconButton } from '@/components/assistant-ui/tooltip-icon-button'
+import { Input } from '@/components/ui/input'
 import { Tip } from '@/components/ui/tooltip'
 import { type Translations, useI18n } from '@/i18n'
 import { isDesktopFsRemoteMode } from '@/lib/desktop-fs'
-import { Bug } from '@/lib/icons'
+import { ArrowUpRight, Bug, ChevronLeft, ChevronRight, RefreshCw } from '@/lib/icons'
 import { cn } from '@/lib/utils'
 import { notify, notifyError } from '@/store/notifications'
 import { $previewServerRestart, failPreviewServerRestart, type PreviewTarget } from '@/store/preview'
@@ -23,9 +25,14 @@ import { type ConsoleEntry, createPreviewConsoleState } from './preview-console-
 import { LocalFilePreview, PreviewEmptyState } from './preview-file'
 
 type PreviewWebview = HTMLElement & {
+  canGoBack?: () => boolean
+  canGoForward?: () => boolean
   closeDevTools?: () => void
   getURL?: () => string
+  goBack?: () => void
+  goForward?: () => void
   isDevToolsOpened?: () => boolean
+  loadURL?: (url: string) => Promise<void> | void
   openDevTools?: () => void
   reload?: () => void
   reloadIgnoringCache?: () => void
@@ -47,6 +54,16 @@ interface PreviewLoadErrorState {
 
 const FILE_RELOAD_DEBOUNCE_MS = 200
 const SERVER_RESTART_TIMEOUT_MS = 45_000
+
+function normalizeWebAddress(raw: string): string | null {
+  try {
+    const url = new URL(raw.trim())
+
+    return url.protocol === 'http:' || url.protocol === 'https:' ? url.href : null
+  } catch {
+    return null
+  }
+}
 
 function loadErrorTitle(error: PreviewLoadErrorState, copy: Translations['preview']['web']): string {
   const description = error.description.toLowerCase()
@@ -140,6 +157,9 @@ export function PreviewPane({
   const previewServerRestart = useStore($previewServerRestart)
   const consoleHeight = useStore(consoleState.$height)
   const consoleOpen = useStore(consoleState.$open)
+  const [address, setAddress] = useState(target.url)
+  const [canGoBack, setCanGoBack] = useState(false)
+  const [canGoForward, setCanGoForward] = useState(false)
   const [currentUrl, setCurrentUrl] = useState(target.url)
   const [devtoolsOpen, setDevtoolsOpen] = useState(false)
   const [loading, setLoading] = useState(true)
@@ -154,6 +174,16 @@ export function PreviewPane({
   const restartingServer =
     previewServerRestart?.status === 'running' &&
     (previewServerRestart.url === target.url || previewServerRestart.url === currentUrl)
+
+  const normalizedAddress = normalizeWebAddress(address)
+  const addressInvalid = address.trim().length > 0 && !normalizedAddress
+
+  const syncNavigationState = useCallback(() => {
+    const webview = webviewRef.current
+
+    setCanGoBack(Boolean(webview?.canGoBack?.()))
+    setCanGoForward(Boolean(webview?.canGoForward?.()))
+  }, [])
 
   const startConsoleResize = useCallback(
     (event: ReactPointerEvent<HTMLDivElement>) => {
@@ -220,6 +250,51 @@ export function PreviewPane({
       webviewRef.current?.reload?.()
     }
   }, [isWebPreview])
+
+  const goBack = useCallback(() => {
+    const webview = webviewRef.current
+
+    if (!webview?.canGoBack?.() || !webview.goBack) {
+      return
+    }
+
+    webview.goBack()
+    syncNavigationState()
+  }, [syncNavigationState])
+
+  const goForward = useCallback(() => {
+    const webview = webviewRef.current
+
+    if (!webview?.canGoForward?.() || !webview.goForward) {
+      return
+    }
+
+    webview.goForward()
+    syncNavigationState()
+  }, [syncNavigationState])
+
+  const navigateToAddress = useCallback(
+    (event: FormEvent<HTMLFormElement>) => {
+      event.preventDefault()
+
+      if (!normalizedAddress) {
+        return
+      }
+
+      const webview = webviewRef.current
+
+      setLoadError(null)
+      setCurrentUrl(normalizedAddress)
+      setAddress(normalizedAddress)
+
+      if (webview?.loadURL) {
+        void Promise.resolve(webview.loadURL(normalizedAddress)).catch(() => undefined)
+      } else {
+        webview?.setAttribute('src', normalizedAddress)
+      }
+    },
+    [normalizedAddress]
+  )
 
   const appendConsoleEntry = useCallback(
     (entry: Omit<ConsoleEntry, 'id'>) => {
@@ -501,6 +576,9 @@ export function PreviewPane({
 
     host.replaceChildren()
     webviewRef.current = null
+    setAddress(target.url)
+    setCanGoBack(false)
+    setCanGoForward(false)
     setCurrentUrl(target.url)
     setDevtoolsOpen(false)
     setLoadError(null)
@@ -551,7 +629,10 @@ export function PreviewPane({
       if (detail.url) {
         setLoadError(null)
         setCurrentUrl(detail.url)
+        setAddress(detail.url)
       }
+
+      syncNavigationState()
     }
 
     const onFail = (event: Event) => {
@@ -580,7 +661,11 @@ export function PreviewPane({
     }
 
     const onStart = () => setLoading(true)
-    const onStop = () => setLoading(false)
+
+    const onStop = () => {
+      setLoading(false)
+      syncNavigationState()
+    }
 
     webview.addEventListener('console-message', onConsole)
     webview.addEventListener('did-fail-load', onFail)
@@ -600,7 +685,7 @@ export function PreviewPane({
       webview.removeEventListener('did-stop-loading', onStop)
       webview.remove()
     }
-  }, [appendConsoleEntry, consoleState, copy, isWebPreview, target.url])
+  }, [appendConsoleEntry, consoleState, copy, isWebPreview, syncNavigationState, target.url])
 
   return (
     <aside className="relative flex h-full w-full min-w-0 flex-col overflow-hidden bg-transparent text-muted-foreground">
@@ -620,6 +705,35 @@ export function PreviewPane({
               </Tip>
             </div>
           </div>
+        )}
+
+        {target.kind === 'url' && (
+          <form
+            aria-label={copy.navigate}
+            className="flex shrink-0 items-center gap-0.5 border-b border-(--ui-stroke-tertiary) px-1 py-1"
+            onSubmit={navigateToAddress}
+          >
+            <TooltipIconButton disabled={!canGoBack} onClick={goBack} tooltip={copy.goBack} type="button">
+              <ChevronLeft />
+            </TooltipIconButton>
+            <TooltipIconButton disabled={!canGoForward} onClick={goForward} tooltip={copy.goForward} type="button">
+              <ChevronRight />
+            </TooltipIconButton>
+            <Input
+              aria-invalid={addressInvalid || undefined}
+              aria-label={copy.address}
+              inputMode="url"
+              onChange={event => setAddress(event.target.value)}
+              size="xs"
+              value={address}
+            />
+            <TooltipIconButton disabled={!normalizedAddress} tooltip={copy.navigate} type="submit">
+              <ArrowUpRight />
+            </TooltipIconButton>
+            <TooltipIconButton onClick={reloadPreview} tooltip={copy.reload} type="button">
+              <RefreshCw />
+            </TooltipIconButton>
+          </form>
         )}
 
         <div

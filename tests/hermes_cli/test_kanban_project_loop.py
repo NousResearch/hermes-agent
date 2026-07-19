@@ -339,6 +339,85 @@ def test_goal_complete_is_the_only_successful_terminal_close(tmp_path, monkeypat
         assert state.last_decision == "goal_complete"
 
 
+def test_terminal_project_loop_cannot_be_reconfigured_or_reconciled(tmp_path, monkeypatch):
+    path = _board(tmp_path, monkeypatch)
+    with kb.connect(path) as conn:
+        verify = _configured_loop(conn, tmp_path)
+        assert kb.complete_task(conn, verify, outcome="stop")
+        replacement = kb.create_task(conn, title="replacement Verify")
+
+        try:
+            kb.configure_project_loop(
+                conn,
+                project_key="expert-rollout",
+                goal="silently reopen",
+                acceptance_criteria=["must not happen"],
+                verify_task_id=replacement,
+                max_rounds=3,
+                max_tasks=12,
+            )
+        except ValueError as exc:
+            assert "terminal loops cannot be reconfigured" in str(exc)
+        else:  # pragma: no cover
+            raise AssertionError("terminal project loop was reconfigured")
+
+        try:
+            kb.reconcile_project_loop(
+                conn,
+                project_key="expert-rollout",
+                verify_task_id=verify,
+                decision="continue_bounded",
+                next_steps=_three_blockers(),
+                _receipt_task_id="late-reconcile",
+            )
+        except ValueError as exc:
+            assert "only active loops can reconcile" in str(exc)
+        else:  # pragma: no cover
+            raise AssertionError("terminal project loop continued")
+
+
+def test_archiving_current_verify_stops_loop_and_clears_control_reference(
+    tmp_path, monkeypatch
+):
+    path = _board(tmp_path, monkeypatch)
+    with kb.connect(path) as conn:
+        verify = _configured_loop(conn, tmp_path)
+        assert kb.archive_task(conn, verify)
+
+        state = kb.get_project_loop(conn, "expert-rollout")
+        assert state.status == "stopped"
+        assert state.current_verify_task_id is None
+        assert "control task archived" in state.stop_reason
+
+
+def test_failed_repeat_archive_does_not_mutate_terminal_loop(tmp_path, monkeypatch):
+    path = _board(tmp_path, monkeypatch)
+    with kb.connect(path) as conn:
+        verify = _configured_loop(conn, tmp_path)
+        assert kb.archive_task(conn, verify)
+        before = kb.get_project_loop(conn, "expert-rollout")
+
+        assert not kb.archive_task(conn, verify)
+        assert kb.get_project_loop(conn, "expert-rollout") == before
+
+
+def test_deleting_current_owner_gate_stops_loop_and_cleans_relations(
+    tmp_path, monkeypatch
+):
+    path = _board(tmp_path, monkeypatch)
+    with kb.connect(path) as conn:
+        gate = _create_owner_gate(conn, tmp_path)
+        assert kb.delete_task(conn, gate)
+
+        state = kb.get_project_loop(conn, "expert-rollout")
+        assert state.status == "stopped"
+        assert state.current_owner_gate_task_id is None
+        assert "control task deleted" in state.stop_reason
+        assert conn.execute(
+            "SELECT COUNT(*) FROM project_loop_tasks WHERE task_id = ?", (gate,)
+        ).fetchone()[0] == 0
+
+
 def test_ordinary_card_does_not_pay_project_loop_tax(tmp_path, monkeypatch):
     path = _board(tmp_path, monkeypatch)
     with kb.connect(path) as conn:

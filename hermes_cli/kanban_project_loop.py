@@ -55,6 +55,13 @@ def configure_project_loop(
         raise ValueError(f"unknown verify task: {verify_task_id}")
     now = int(time.time())
     with kb.write_txn(conn):
+        existing = conn.execute(
+            "SELECT status FROM project_loops WHERE project_key = ?", (key,)
+        ).fetchone()
+        if existing and existing["status"] in {"complete", "stopped"}:
+            raise ValueError(
+                f"project loop {key} is {existing['status']}; terminal loops cannot be reconfigured"
+            )
         conn.execute(
             "INSERT INTO project_loops "
             "(project_key, goal, acceptance_criteria, status, max_rounds, max_tasks, "
@@ -215,6 +222,10 @@ def reconcile_project_loop(
         if state.current_verify_task_id != verify_task_id:
             raise ValueError(
                 f"{verify_task_id} is not the current Verify card for {project_key}"
+            )
+        if _owner_gate_task_id is None and state.status != "active":
+            raise ValueError(
+                f"project loop {project_key} is {state.status}; only active loops can reconcile Verify decisions"
             )
         if _owner_gate_task_id is not None and (
             state.status != "owner_gate"
@@ -461,7 +472,8 @@ def reconcile_from_completion(
     if outcome not in kb.VALID_PROJECT_LOOP_DECISIONS:
         return
     row = conn.execute(
-        "SELECT project_key FROM project_loops WHERE current_verify_task_id = ?",
+        "SELECT project_key FROM project_loops "
+        "WHERE current_verify_task_id = ? AND status = 'active'",
         (task_id,),
     ).fetchone()
     if row is None:

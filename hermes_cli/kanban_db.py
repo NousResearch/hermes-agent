@@ -4173,10 +4173,6 @@ def claim_review_task(
     Returns the claimed ``Task`` on success, ``None`` if the task was
     already claimed (or is not in ``review`` status).
 
-    Unlike ``claim_task`` (which handles ``ready -> running``), this
-    does NOT check parent dependencies — the task already passed that
-    gate on its original ``todo -> ready -> running`` transition.
-
     Creates a new run entry so the review agent's lifecycle is tracked
     independently from the original worker run.
     """
@@ -4188,15 +4184,27 @@ def claim_review_task(
             "SELECT review_input_fingerprint, review_last_fingerprint FROM tasks "
             "WHERE id = ? AND status = 'review'", (task_id,),
         ).fetchone()
-        if review_row is not None:
-            current = review_row["review_input_fingerprint"]
-            previous = review_row["review_last_fingerprint"]
-            if current is not None and current == previous:
-                _append_event(
-                    conn, task_id, "review_waiting",
-                    {"reason": "input_fingerprint_unchanged", "fingerprint": current},
-                )
-                return None
+        if review_row is None:
+            return None
+        undone = unsatisfied_parent_dependencies(conn, task_id)
+        if undone:
+            conn.execute(
+                "UPDATE tasks SET status = 'todo' "
+                "WHERE id = ? AND status = 'review'",
+                (task_id,),
+            )
+            _append_event(
+                conn, task_id, "claim_rejected", {"reason": "parents_not_done"}
+            )
+            return None
+        current = review_row["review_input_fingerprint"]
+        previous = review_row["review_last_fingerprint"]
+        if current is not None and current == previous:
+            _append_event(
+                conn, task_id, "review_waiting",
+                {"reason": "input_fingerprint_unchanged", "fingerprint": current},
+            )
+            return None
         conflict = _claim_conflict(conn, task_id)
         if conflict:
             _append_event(
@@ -6159,6 +6167,39 @@ def decompose_triage_task(
     return child_ids
 
 
+def _detach_project_loop_control_task(
+    conn: sqlite3.Connection, task_id: str, *, action: str
+) -> None:
+    """Fail closed when a current Verify/owner-gate card leaves the board."""
+    rows = conn.execute(
+        "SELECT project_key, status FROM project_loops "
+        "WHERE current_verify_task_id = ? OR current_owner_gate_task_id = ?",
+        (task_id, task_id),
+    ).fetchall()
+    if not rows:
+        return
+    now = int(time.time())
+    for row in rows:
+        was_active = row["status"] not in {"complete", "stopped"}
+        reason = f"current project-loop control task {action}: {task_id}"
+        conn.execute(
+            "UPDATE project_loops SET "
+            "status = CASE WHEN status IN ('complete', 'stopped') THEN status ELSE 'stopped' END, "
+            "current_verify_task_id = CASE WHEN current_verify_task_id = ? THEN NULL ELSE current_verify_task_id END, "
+            "current_owner_gate_task_id = CASE WHEN current_owner_gate_task_id = ? THEN NULL ELSE current_owner_gate_task_id END, "
+            "last_decision = CASE WHEN status IN ('complete', 'stopped') THEN last_decision ELSE 'stop' END, "
+            "stop_reason = CASE WHEN status IN ('complete', 'stopped') THEN stop_reason ELSE ? END, "
+            "updated_at = ? WHERE project_key = ?",
+            (task_id, task_id, reason, now, row["project_key"]),
+        )
+        _append_event(
+            conn,
+            task_id,
+            "project_loop_control_detached",
+            {"project_key": row["project_key"], "action": action, "loop_stopped": was_active},
+        )
+
+
 def archive_task(conn: sqlite3.Connection, task_id: str) -> bool:
     with write_txn(conn):
         cur = conn.execute(
@@ -6169,6 +6210,7 @@ def archive_task(conn: sqlite3.Connection, task_id: str) -> bool:
         )
         if cur.rowcount != 1:
             return False
+        _detach_project_loop_control_task(conn, task_id, action="archived")
         # If archive happened while a run was still in flight (e.g. user
         # archived a running task from the dashboard), close that run with
         # outcome='reclaimed' so attempt history isn't orphaned.
@@ -6199,6 +6241,12 @@ def delete_archived_task(conn: sqlite3.Connection, task_id: str) -> bool:
         ).fetchone()
         if not row or row["status"] != "archived":
             return False
+        _detach_project_loop_control_task(conn, task_id, action="deleted")
+        conn.execute("DELETE FROM project_loop_tasks WHERE task_id = ?", (task_id,))
+        conn.execute(
+            "DELETE FROM project_loop_reconciliations WHERE verify_task_id = ?",
+            (task_id,),
+        )
         conn.execute(
             "DELETE FROM task_links WHERE parent_id = ? OR child_id = ?",
             (task_id, task_id),
@@ -6222,9 +6270,15 @@ def delete_task(conn: sqlite3.Connection, task_id: str) -> bool:
     if the task was not found.
     """
     with write_txn(conn):
-        cur = conn.execute("DELETE FROM tasks WHERE id = ?", (task_id,))
-        if cur.rowcount != 1:
+        if conn.execute("SELECT 1 FROM tasks WHERE id = ?", (task_id,)).fetchone() is None:
             return False
+        _detach_project_loop_control_task(conn, task_id, action="deleted")
+        conn.execute("DELETE FROM project_loop_tasks WHERE task_id = ?", (task_id,))
+        conn.execute(
+            "DELETE FROM project_loop_reconciliations WHERE verify_task_id = ?",
+            (task_id,),
+        )
+        cur = conn.execute("DELETE FROM tasks WHERE id = ?", (task_id,))
         conn.execute("DELETE FROM task_links WHERE parent_id = ? OR child_id = ?", (task_id, task_id))
         conn.execute("DELETE FROM task_comments WHERE task_id = ?", (task_id,))
         conn.execute("DELETE FROM task_events WHERE task_id = ?", (task_id,))

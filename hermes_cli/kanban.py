@@ -332,6 +332,10 @@ def build_parser(parent_subparsers: argparse._SubParsersAction) -> argparse.Argu
     p_create.add_argument("--assignee", default=None, help="Profile name to assign")
     p_create.add_argument("--parent", action="append", default=[],
                           help="Parent task id (repeatable)")
+    p_create.add_argument(
+        "--parent-outcome", action="append", default=[], metavar="PARENT=OUTCOME",
+        help="Required completion outcome for a parent (repeatable)",
+    )
     p_create.add_argument("--workspace", default="scratch",
                           help="scratch | worktree | worktree:<path> | dir:<path> "
                                "(default: scratch)")
@@ -348,6 +352,12 @@ def build_parser(parent_subparsers: argparse._SubParsersAction) -> argparse.Argu
     p_create.add_argument("--idempotency-key", default=None,
                           help="Dedup key. If a non-archived task with this key exists, "
                                "its id is returned instead of creating a duplicate.")
+    p_create.add_argument("--implementation-claim-key", default=None,
+                          help="Mutual-exclusion key for one implementation mainline")
+    p_create.add_argument("--output-root", default=None,
+                          help="Writable output root guarded by claim mutual exclusion")
+    p_create.add_argument("--review-input-fingerprint", default=None,
+                          help="Fingerprint that must change before Review can rerun")
     p_create.add_argument("--max-runtime", default=None,
                           help="Per-task runtime cap. Accepts seconds (300) or "
                                "durations (90s, 30m, 2h, 1d). When exceeded, "
@@ -1437,6 +1447,17 @@ def _cmd_create(args: argparse.Namespace) -> int:
             file=sys.stderr,
         )
         return 2
+    parent_outcomes: dict[str, list[str]] = {}
+    for raw in getattr(args, "parent_outcome", None) or ():
+        parent_id, sep, outcome = str(raw).partition("=")
+        parent_id, outcome = parent_id.strip(), outcome.strip()
+        if not sep or not parent_id or not outcome:
+            print(
+                "kanban: --parent-outcome must be PARENT=OUTCOME",
+                file=sys.stderr,
+            )
+            return 2
+        parent_outcomes.setdefault(parent_id, []).append(outcome)
     with kb.connect_closing() as conn:
         task_id = kb.create_task(
             conn,
@@ -1451,6 +1472,7 @@ def _cmd_create(args: argparse.Namespace) -> int:
             tenant=args.tenant,
             priority=args.priority,
             parents=tuple(args.parent or ()),
+            parent_outcomes=parent_outcomes or None,
             triage=bool(getattr(args, "triage", False)),
             idempotency_key=getattr(args, "idempotency_key", None),
             max_runtime_seconds=max_runtime,
@@ -1459,6 +1481,9 @@ def _cmd_create(args: argparse.Namespace) -> int:
             goal_mode=bool(getattr(args, "goal_mode", False)),
             goal_max_turns=getattr(args, "goal_max_turns", None),
             initial_status=getattr(args, "initial_status", "running"),
+            implementation_claim_key=getattr(args, "implementation_claim_key", None),
+            output_root=getattr(args, "output_root", None),
+            review_input_fingerprint=getattr(args, "review_input_fingerprint", None),
         )
         task = kb.get_task(conn, task_id)
     if getattr(args, "json", False):

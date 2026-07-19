@@ -50,6 +50,36 @@ def test_review_requires_changed_input_fingerprint(tmp_path, monkeypatch):
     assert kb.get_task(conn, task_id).current_run_id != run_id
 
 
+def test_review_claim_rechecks_conditional_parent_dependencies(tmp_path, monkeypatch):
+    conn = _conn(tmp_path, monkeypatch)
+    parent = kb.create_task(conn, title="implementation", assignee="worker")
+    review = kb.create_task(
+        conn,
+        title="review",
+        assignee="reviewer",
+        parents=[parent],
+        parent_outcomes={parent: ["review_required"]},
+    )
+    conn.execute("UPDATE tasks SET status='review' WHERE id=?", (review,))
+    conn.commit()
+
+    assert kb.claim_review_task(conn, review, claimer="reviewer:1") is None
+    assert kb.get_task(conn, review).status == "todo"
+    assert kb.list_runs(conn, review) == []
+    event = kb.list_events(conn, review)[-1]
+    assert event.kind == "claim_rejected"
+    assert event.payload["reason"] == "parents_not_done"
+
+
+def test_non_review_claim_attempt_does_not_emit_parent_rejection(tmp_path, monkeypatch):
+    conn = _conn(tmp_path, monkeypatch)
+    parent = kb.create_task(conn, title="parent")
+    child = kb.create_task(conn, title="child", parents=[parent])
+
+    assert kb.claim_review_task(conn, child, claimer="reviewer:1") is None
+    assert [event.kind for event in kb.list_events(conn, child)] == ["created"]
+
+
 def test_findings_merge_into_one_bounded_repair(tmp_path, monkeypatch):
     conn = _conn(tmp_path, monkeypatch)
     first = kb.create_or_merge_bounded_repair(

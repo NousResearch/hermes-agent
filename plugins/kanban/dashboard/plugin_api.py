@@ -602,12 +602,16 @@ class CreateTaskBody(BaseModel):
     workspace_kind: str = "scratch"
     workspace_path: Optional[str] = None
     parents: list[str] = Field(default_factory=list)
+    parent_outcomes: Optional[dict[str, list[str]]] = None
     triage: bool = False
     idempotency_key: Optional[str] = None
     max_runtime_seconds: Optional[int] = None
     skills: Optional[list[str]] = None
     goal_mode: bool = False
     goal_max_turns: Optional[int] = None
+    implementation_claim_key: Optional[str] = None
+    output_root: Optional[str] = None
+    review_input_fingerprint: Optional[str] = None
 
 
 @router.post("/tasks")
@@ -626,12 +630,16 @@ def create_task(payload: CreateTaskBody, board: Optional[str] = Query(None)):
             tenant=payload.tenant,
             priority=payload.priority,
             parents=payload.parents,
+            parent_outcomes=payload.parent_outcomes,
             triage=payload.triage,
             idempotency_key=payload.idempotency_key,
             max_runtime_seconds=payload.max_runtime_seconds,
             skills=payload.skills,
             goal_mode=payload.goal_mode,
             goal_max_turns=payload.goal_max_turns,
+            implementation_claim_key=payload.implementation_claim_key,
+            output_root=payload.output_root,
+            review_input_fingerprint=payload.review_input_fingerprint,
         )
         task = kanban_db.get_task(conn, task_id)
         body: dict[str, Any] = {"task": _task_dict(task) if task else None}
@@ -815,6 +823,7 @@ class UpdateTaskBody(BaseModel):
     # complete --summary ... --metadata ...``.
     summary: Optional[str] = None
     metadata: Optional[dict] = None
+    outcome: Optional[str] = None
 
 
 @router.patch("/tasks/{task_id}")
@@ -847,6 +856,7 @@ def update_task(task_id: str, payload: UpdateTaskBody, board: Optional[str] = Qu
                     result=payload.result,
                     summary=payload.summary,
                     metadata=payload.metadata,
+                    outcome=payload.outcome,
                 )
             elif s == "blocked":
                 ok = kanban_db.block_task(conn, task_id, reason=payload.block_reason)
@@ -1102,6 +1112,7 @@ def add_comment(task_id: str, payload: CommentBody, board: Optional[str] = Query
 class LinkBody(BaseModel):
     parent_id: str
     child_id: str
+    when_outcomes: Optional[list[str]] = None
 
 
 @router.post("/links")
@@ -1109,7 +1120,12 @@ def add_link(payload: LinkBody, board: Optional[str] = Query(None)):
     board = _resolve_board(board)
     conn = _conn(board=board)
     try:
-        kanban_db.link_tasks(conn, payload.parent_id, payload.child_id)
+        kwargs = (
+            {"when_outcomes": payload.when_outcomes}
+            if payload.when_outcomes is not None
+            else {}
+        )
+        kanban_db.link_tasks(conn, payload.parent_id, payload.child_id, **kwargs)
         return {"ok": True}
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
@@ -1145,6 +1161,7 @@ class BulkTaskBody(BaseModel):
     result: Optional[str] = None
     summary: Optional[str] = None
     metadata: Optional[dict] = None
+    outcome: Optional[str] = None
     reclaim_first: bool = False
 
 
@@ -1181,6 +1198,7 @@ def bulk_update(payload: BulkTaskBody, board: Optional[str] = Query(None)):
                             result=payload.result,
                             summary=payload.summary,
                             metadata=payload.metadata,
+                            outcome=payload.outcome,
                         )
                     elif s == "blocked":
                         ok = kanban_db.block_task(conn, tid)

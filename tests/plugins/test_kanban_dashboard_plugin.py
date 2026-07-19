@@ -752,6 +752,56 @@ def test_add_link_legacy_payload_preserves_existing_condition(client):
         ] == ["bounded_rework"]
 
 
+def test_dashboard_conditional_create_link_and_completion_contract(client):
+    parent = client.post(
+        "/api/plugins/kanban/tasks", json={"title": "implementation"}
+    ).json()["task"]
+    child = client.post(
+        "/api/plugins/kanban/tasks",
+        json={
+            "title": "review",
+            "parents": [parent["id"]],
+            "parent_outcomes": {parent["id"]: ["review_required"]},
+            "implementation_claim_key": "goal:demo:review",
+            "output_root": "/tmp/demo-output",
+            "review_input_fingerprint": "sha256:abc",
+        },
+    ).json()["task"]
+
+    with kb.connect() as conn:
+        stored = kb.get_task(conn, child["id"])
+        assert stored.implementation_claim_key == "goal:demo:review"
+        assert stored.output_root.endswith("/tmp/demo-output")
+        assert stored.review_input_fingerprint == "sha256:abc"
+        assert kb.unsatisfied_parent_dependencies(conn, child["id"])[0][
+            "when_outcomes"
+        ] == ["review_required"]
+
+    completed = client.patch(
+        f"/api/plugins/kanban/tasks/{parent['id']}",
+        json={"status": "done", "outcome": "review_required"},
+    )
+    assert completed.status_code == 200
+    assert completed.json()["task"]["completion_outcome"] == "review_required"
+
+    alternate = client.post(
+        "/api/plugins/kanban/tasks", json={"title": "alternate"}
+    ).json()["task"]
+    linked = client.post(
+        "/api/plugins/kanban/links",
+        json={
+            "parent_id": parent["id"],
+            "child_id": alternate["id"],
+            "when_outcomes": ["bounded_rework"],
+        },
+    )
+    assert linked.status_code == 200
+    with kb.connect() as conn:
+        assert kb.unsatisfied_parent_dependencies(conn, alternate["id"])[0][
+            "when_outcomes"
+        ] == ["bounded_rework"]
+
+
 def test_add_link_cycle_rejected(client):
     a = client.post("/api/plugins/kanban/tasks", json={"title": "a"}).json()["task"]
     b = client.post("/api/plugins/kanban/tasks", json={"title": "b"}).json()["task"]
@@ -1186,6 +1236,35 @@ def test_bulk_status_done_forwards_completion_summary(client):
             assert run.metadata == {"source": "dashboard"}
     finally:
         conn.close()
+
+
+def test_bulk_status_done_forwards_outcome_and_unlocks_conditional_children(client):
+    parent = client.post(
+        "/api/plugins/kanban/tasks", json={"title": "implementation"}
+    ).json()["task"]
+    child = client.post(
+        "/api/plugins/kanban/tasks",
+        json={
+            "title": "review",
+            "parents": [parent["id"]],
+            "parent_outcomes": {parent["id"]: ["review_required"]},
+        },
+    ).json()["task"]
+
+    response = client.post(
+        "/api/plugins/kanban/tasks/bulk",
+        json={
+            "ids": [parent["id"]],
+            "status": "done",
+            "outcome": "review_required",
+        },
+    )
+
+    assert response.status_code == 200
+    assert response.json()["results"] == [{"id": parent["id"], "ok": True}]
+    with kb.connect() as conn:
+        assert kb.get_task(conn, parent["id"]).completion_outcome == "review_required"
+        assert kb.get_task(conn, child["id"]).status == "ready"
 
 
 def test_bulk_status_running_rejected(client):

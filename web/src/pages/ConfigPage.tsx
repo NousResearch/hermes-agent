@@ -41,10 +41,7 @@ import { getNestedValue, setNestedValue } from "@/lib/nested";
 import { useToast } from "@nous-research/ui/hooks/use-toast";
 import { Toast } from "@nous-research/ui/ui/components/toast";
 import { AutoField } from "@/components/AutoField";
-import {
-  DelegationModelProviderField,
-  isDelegationModelPickerKey,
-} from "@/components/DelegationModelProviderField";
+import { DelegationModelProviderField } from "@/components/DelegationModelProviderField";
 import { Button } from "@nous-research/ui/ui/components/button";
 import { ListItem } from "@nous-research/ui/ui/components/list-item";
 import { Spinner } from "@nous-research/ui/ui/components/spinner";
@@ -443,7 +440,7 @@ export default function ConfigPage() {
                   )
                 }}
               />
-            ) : isDelegationModelPickerKey(key) ? (
+            ) : key === "delegation.provider" ? (
               /* `delegation.provider` is rendered inside the picker above.
                  This branch exists so the AutoField for this key doesn't
                  render a duplicate free-text input below it. */

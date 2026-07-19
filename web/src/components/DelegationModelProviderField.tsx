@@ -60,7 +60,9 @@ export function DelegationModelProviderField({
   useEffect(() => {
     let cancelled = false;
 
-    setIsLoading(true);
+    // `isLoading` is initialized to `true`, so no explicit `setIsLoading(true)`
+    // call here — keeps the effect purely about the async fetch and avoids
+    // the `set-state-in-effect` lint rule.
     api
       .getModelOptions()
       .then((res) => {
@@ -204,15 +206,5 @@ export function DelegationModelProviderField({
         </>
       )}
     </div>
-  );
-}
-
-/**
- * Render the picker only on the `delegation.model` row — the `provider` row
- * is collapsed into the picker to avoid two controls for one logical field.
- */
-export function isDelegationModelPickerKey(schemaKey: string): boolean {
-  return (
-    schemaKey === "delegation.model" || schemaKey === "delegation.provider"
   );
 }

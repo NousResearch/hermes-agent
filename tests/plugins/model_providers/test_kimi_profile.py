@@ -148,3 +148,59 @@ class TestKimiFullKwargsIntegration:
         kwargs = self._build(kimi_profile, None)
         assert "reasoning_effort" not in kwargs
         assert kwargs["extra_body"] == {"thinking": {"type": "enabled"}}
+
+    def test_codex_only_assistant_is_absent_from_wire(self, kimi_profile):
+        from agent.transports.chat_completions import ChatCompletionsTransport
+
+        kwargs = ChatCompletionsTransport().build_kwargs(
+            model="kimi-k2-turbo-preview",
+            messages=[
+                {"role": "user", "content": "ping"},
+                {
+                    "role": "assistant",
+                    "content": "",
+                    "codex_message_items": [{"type": "message"}],
+                },
+                {"role": "user", "content": "pong"},
+            ],
+            tools=None,
+            provider_profile=kimi_profile,
+            base_url="https://api.moonshot.ai/v1",
+            provider_name="kimi-coding",
+        )
+
+        assert kwargs["messages"] == [
+            {"role": "user", "content": "ping\n\npong"}
+        ]
+
+    def test_non_text_assistant_payloads_remain_on_wire(self, kimi_profile):
+        from agent.transports.chat_completions import ChatCompletionsTransport
+
+        messages = [
+            {
+                "role": "assistant",
+                "content": "",
+                "tool_calls": [
+                    {
+                        "id": "call-1",
+                        "type": "function",
+                        "function": {"name": "status", "arguments": "{}"},
+                    }
+                ],
+            },
+            {
+                "role": "assistant",
+                "content": None,
+                "reasoning_content": "checking",
+            },
+        ]
+        kwargs = ChatCompletionsTransport().build_kwargs(
+            model="kimi-k2-turbo-preview",
+            messages=messages,
+            tools=None,
+            provider_profile=kimi_profile,
+            base_url="https://api.moonshot.ai/v1",
+            provider_name="kimi-coding",
+        )
+
+        assert kwargs["messages"] == messages

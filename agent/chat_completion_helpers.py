@@ -1966,6 +1966,14 @@ def handle_max_iterations(agent, messages: list, api_call_count: int) -> str:
         # turns so Anthropic-family providers don't 400 the summary call.
         api_messages = agent._drop_thinking_only_and_merge_users(api_messages)
 
+        # This path calls chat.completions.create() directly and therefore
+        # bypasses ChatCompletionsTransport.build_kwargs(). Internal fields may
+        # already have been stripped from an otherwise empty assistant row.
+        if agent.api_mode == "chat_completions":
+            from agent.transports.chat_completions import _drop_null_assistant_messages
+
+            api_messages = _drop_null_assistant_messages(api_messages)
+
         summary_extra_body = {}
         try:
             from agent.auxiliary_client import _fixed_temperature_for_model, OMIT_TEMPERATURE as _OMIT_TEMP

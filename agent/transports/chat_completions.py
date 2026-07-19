@@ -128,6 +128,89 @@ def _model_consumes_thought_signature(model: Any) -> bool:
     return "gemini" in m or "gemma" in m
 
 
+def _drop_null_assistant_messages(
+    messages: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    """Drop assistant rows that have no provider-visible payload.
+
+    Internal fields such as ``codex_message_items`` can be the only content on
+    an assistant row. ``convert_messages()`` correctly strips those fields,
+    but strict Chat Completions providers then reject the resulting empty row.
+    Preserve rows that still carry tool calls, reasoning, or non-text content.
+    """
+
+    def _content_is_empty(content: Any) -> bool:
+        if content is None:
+            return True
+        if isinstance(content, str):
+            return not content.strip()
+        if not isinstance(content, list):
+            return False
+
+        for block in content:
+            if not isinstance(block, dict):
+                if block:
+                    return False
+                continue
+            block_type = block.get("type")
+            if block_type in {"text", "input_text", "output_text"}:
+                if str(block.get("text") or "").strip():
+                    return False
+            else:
+                # Images, audio, and unknown provider blocks are real payloads.
+                return False
+        return True
+
+    def _is_null_assistant(message: dict[str, Any]) -> bool:
+        if message.get("role") != "assistant":
+            return False
+        if not _content_is_empty(message.get("content")):
+            return False
+        if message.get("tool_calls"):
+            return False
+        return not any(
+            message.get(field)
+            for field in ("reasoning", "reasoning_content", "reasoning_details")
+        )
+
+    kept = [
+        message
+        for message in messages
+        if not (isinstance(message, dict) and _is_null_assistant(message))
+    ]
+    if len(kept) == len(messages):
+        return messages
+
+    # Removing an assistant row can make two user turns adjacent. Merge them
+    # on the per-call copy to preserve strict provider role alternation.
+    merged: list[dict[str, Any]] = []
+    for message in kept:
+        previous = merged[-1] if merged else None
+        if (
+            isinstance(previous, dict)
+            and isinstance(message, dict)
+            and previous.get("role") == "user"
+            and message.get("role") == "user"
+        ):
+            previous_content = previous.get("content", "")
+            current_content = message.get("content", "")
+            previous_copy = dict(previous)
+            if isinstance(previous_content, str) and isinstance(current_content, str):
+                separator = "\n\n" if previous_content and current_content else ""
+                previous_copy["content"] = (
+                    previous_content + separator + current_content
+                )
+            elif isinstance(previous_content, list) and isinstance(current_content, list):
+                previous_copy["content"] = list(previous_content) + list(current_content)
+            else:
+                merged.append(message)
+                continue
+            merged[-1] = previous_copy
+        else:
+            merged.append(message)
+    return merged
+
+
 class ChatCompletionsTransport(ProviderTransport):
     """Transport for api_mode='chat_completions'.
 
@@ -332,6 +415,9 @@ class ChatCompletionsTransport(ProviderTransport):
         # Pass model so the Gemini thought_signature (extra_content) is kept for
         # Gemini targets and stripped for strict non-Gemini providers.
         sanitized = self.convert_messages(messages, model=model)
+        # Internal Codex fields may have been the assistant row's only payload.
+        # Drop such rows only after conversion so the final wire shape is valid.
+        sanitized = _drop_null_assistant_messages(sanitized)
 
         # ── Provider profile: single-path when present ──────────────────
         _profile = params.get("provider_profile")

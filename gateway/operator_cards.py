@@ -251,8 +251,16 @@ class OperatorCard:
         }
 
 
-def render_operator_card_text(card: OperatorCard, *, max_length: int = 2000) -> str:
-    """Render a compact Markdown fallback shared by non-rich platforms."""
+def render_operator_card_text(
+    card: OperatorCard,
+    *,
+    max_length: int | None = 2000,
+) -> str:
+    """Render a compact Markdown fallback shared by non-rich platforms.
+
+    Passing ``None`` returns the complete fallback so an adapter with native
+    message chunking can preserve every field and link across messages.
+    """
     emoji, severity_label = _SEVERITY_DISPLAY[card.severity]
     lines = [f"{emoji} **{severity_label} — {card.title}**", card.summary]
     lines.extend(f"{field.label}: {field.value}" for field in card.fields)
@@ -263,7 +271,7 @@ def render_operator_card_text(card: OperatorCard, *, max_length: int = 2000) -> 
         lines.append(f"Links: {links}")
 
     rendered = "\n".join(lines)
-    if len(rendered) <= max_length:
+    if max_length is None or len(rendered) <= max_length:
         return rendered
     if max_length <= 0:
         return ""

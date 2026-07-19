@@ -42,7 +42,10 @@ def _ensure_discord_mock():
 
 _ensure_discord_mock()
 
-from plugins.platforms.discord.adapter import DiscordAdapter  # noqa: E402
+from plugins.platforms.discord.adapter import (  # noqa: E402
+    DiscordAdapter,
+    _derive_forum_thread_name,
+)
 
 
 @pytest.mark.asyncio
@@ -329,7 +332,8 @@ async def test_send_bounds_contract_valid_but_oversized_card_to_discord_limits(m
 
     # The card is delivered (safe fallback), not dropped by a Discord 400.
     assert result.success is True
-    embed = channel.send.await_args.kwargs["embed"]
+    first_send = channel.send.await_args_list[0]
+    embed = first_send.kwargs["embed"]
     # Per-field invariants.
     assert all(len(field["value"]) <= 1024 for field in embed.fields)
     assert all(0 < len(field["name"]) <= 256 for field in embed.fields)
@@ -338,7 +342,46 @@ async def test_send_bounds_contract_valid_but_oversized_card_to_discord_limits(m
     total += sum(len(field["name"]) + len(field["value"]) for field in embed.fields)
     assert total <= 6000
     # The full card still reaches the operator via the plaintext content.
-    assert channel.send.await_args.kwargs["content"].startswith("🟡")
+    assert first_send.kwargs["content"].startswith("🟡")
+    assert "https://example.com/" in "".join(
+        call.kwargs["content"] for call in channel.send.await_args_list
+    )
+
+
+@pytest.mark.asyncio
+async def test_send_chunks_full_operator_card_fallback_without_losing_trailing_links(monkeypatch):
+    adapter = DiscordAdapter(PlatformConfig(enabled=True, token="***"))
+    channel = SimpleNamespace(
+        send=AsyncMock(return_value=SimpleNamespace(id=7010)),
+        fetch_message=AsyncMock(),
+    )
+    adapter._client = SimpleNamespace(
+        get_channel=lambda _chat_id: channel,
+        fetch_channel=AsyncMock(),
+    )
+    monkeypatch.setattr(_discord_mod, "Embed", _FakeEmbed)
+
+    payload = _operator_card_payload()
+    payload["fields"] = [
+        {"label": f"Field {index}", "value": str(index) * 1024}
+        for index in range(3)
+    ]
+    trailing_url = "https://example.com/operator-card-tail"
+    payload["links"] = [{"label": "Trailing link", "url": trailing_url}]
+
+    result = await adapter.send(
+        "555",
+        "ignored",
+        metadata={"operator_card": payload},
+    )
+
+    assert result.success is True
+    assert channel.send.await_count >= 2
+    sent_chunks = [call.kwargs["content"] for call in channel.send.await_args_list]
+    assert all(len(chunk) <= adapter.MAX_MESSAGE_LENGTH for chunk in sent_chunks)
+    assert trailing_url in "".join(sent_chunks)
+    assert "embed" in channel.send.await_args_list[0].kwargs
+    assert all("embed" not in call.kwargs for call in channel.send.await_args_list[1:])
 
 
 # ---------------------------------------------------------------------------
@@ -404,6 +447,15 @@ async def test_send_to_forum_creates_thread_post():
     assert result.success is True
     assert result.message_id == "500"
     forum_channel.create_thread.assert_awaited_once()
+
+
+def test_forum_thread_name_obeys_discord_utf16_limit_for_astral_text():
+    title = "🚀" * 60
+
+    thread_name = _derive_forum_thread_name(title)
+
+    assert thread_name == "🚀" * 50
+    assert len(thread_name.encode("utf-16-le")) // 2 <= 100
 
 
 @pytest.mark.asyncio

@@ -2935,7 +2935,7 @@ class DiscordAdapter(BasePlatformAdapter):
                 operator_card = OperatorCard.from_mapping(metadata["operator_card"])
                 content = render_operator_card_text(
                     operator_card,
-                    max_length=self.MAX_MESSAGE_LENGTH,
+                    max_length=None,
                 )
                 operator_card_embed = _build_operator_card_embed(operator_card)
                 severity_label = _DISCORD_OPERATOR_CARD_SEVERITY_LABELS[
@@ -8959,13 +8959,13 @@ def _probe_is_forum_cached(chat_id: str) -> Optional[bool]:
 
 
 def _derive_forum_thread_name(message: str) -> str:
-    """Derive a thread name from the first line of the message, capped at 100 chars."""
+    """Derive a thread name within Discord's 100 UTF-16-unit limit."""
     first_line = message.strip().split("\n", 1)[0].strip()
     # Strip common markdown heading prefixes
     first_line = first_line.lstrip("#").strip()
     if not first_line:
         first_line = "New Post"
-    return first_line[:100]
+    return _truncate_discord_component_text(first_line, 100)
 
 
 def _standalone_sanitize_error(text) -> str:

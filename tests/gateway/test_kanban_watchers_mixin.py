@@ -7,9 +7,15 @@ that GatewayRunner picks them up via the MRO (behavior-neutral relocation).
 
 from __future__ import annotations
 
+import asyncio
 import inspect
 
-from gateway.kanban_watchers import GatewayKanbanWatchersMixin
+from gateway.config import GatewayConfig, Platform
+from gateway.delivery import DeliveryRouter, DeliveryTarget
+from gateway.kanban_watchers import (
+    GatewayKanbanWatchersMixin,
+    _project_finalizer_delivery_receipt,
+)
 
 KANBAN_METHODS = [
     "_kanban_notifier_watcher",
@@ -26,8 +32,11 @@ def test_mixin_defines_kanban_methods():
         assert hasattr(GatewayKanbanWatchersMixin, m), f"mixin missing {m}"
 
 
-def test_gateway_runner_inherits_mixin():
+def test_gateway_runner_inherits_mixin(tmp_path, monkeypatch):
     # Import here so a heavy gateway import only happens if the first test passed.
+    # The repository runner deliberately clears the normal Windows home vars.
+    monkeypatch.setenv("USERPROFILE", str(tmp_path))
+    monkeypatch.setenv("LOCALAPPDATA", str(tmp_path))
     from gateway.run import GatewayRunner
 
     assert issubclass(GatewayRunner, GatewayKanbanWatchersMixin)
@@ -43,6 +52,41 @@ def test_watcher_loops_are_coroutines():
     # The two long-running watchers are async loops.
     assert inspect.iscoroutinefunction(GatewayKanbanWatchersMixin._kanban_notifier_watcher)
     assert inspect.iscoroutinefunction(GatewayKanbanWatchersMixin._kanban_dispatcher_watcher)
+
+
+def test_project_finalizer_normalizes_delivery_router_send_result(tmp_path, monkeypatch):
+    # The repository's clean-env runner removes Windows' home variables.  Set
+    # the provider cache root before importing the real production result type.
+    monkeypatch.setenv("LOCALAPPDATA", str(tmp_path))
+    from gateway.platforms.base import SendResult
+
+    class TelegramAdapter:
+        async def send(self, chat_id, content, metadata=None):
+            return SendResult(success=True, message_id="telegram-message-42")
+
+    target = DeliveryTarget(
+        platform=Platform.TELEGRAM,
+        chat_id="canary-chat",
+        is_explicit=True,
+    )
+    router = DeliveryRouter(
+        GatewayConfig(),
+        adapters={Platform.TELEGRAM: TelegramAdapter()},
+    )
+
+    results = asyncio.run(
+        router.deliver(
+            "Result: COMPLETE",
+            [target],
+            metadata={"source": "project_finalizer"},
+        )
+    )
+    receipt = results[target.to_string()]
+
+    assert isinstance(receipt["result"], SendResult)
+    assert _project_finalizer_delivery_receipt(receipt) == {
+        "provider_message_id": "telegram-message-42"
+    }
 
 
 def test_singleton_dispatcher_lock_is_exclusive(tmp_path):

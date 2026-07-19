@@ -25,6 +25,33 @@ from agent.i18n import t
 logger = logging.getLogger("gateway.run")
 
 
+def _project_finalizer_delivery_receipt(receipt: Mapping[str, Any]) -> dict[str, Any]:
+    """Normalize a DeliveryRouter receipt for the finalization ledger.
+
+    Platform adapters return ``SendResult`` objects in production, while some
+    older adapters and tests return mappings.  The finalizer needs the durable
+    provider message ID from either shape before it can terminalize delivery.
+    """
+    if not receipt.get("success"):
+        return {
+            "rejected": True,
+            "error": receipt.get("error", "delivery rejected"),
+        }
+
+    provider_result = receipt.get("result")
+    if isinstance(provider_result, Mapping):
+        candidates = (provider_result.get("message_id"), provider_result.get("id"))
+    else:
+        candidates = (
+            getattr(provider_result, "message_id", None),
+            getattr(provider_result, "id", None),
+        )
+    message_id = next((value for value in candidates if value is not None), None)
+    if message_id is not None:
+        return {"provider_message_id": str(message_id)}
+    return {}
+
+
 def _resolve_auto_decompose_settings(
     load_config: Callable[[], Any],
 ) -> "tuple[bool, int]":
@@ -151,14 +178,7 @@ class GatewayKanbanWatchersMixin:
                         async def _route() -> Mapping[str, Any]:
                             results = await self.delivery_router.deliver(content, [target], metadata={"source": "project_finalizer"})
                             receipt = results.get(target.to_string(), {})
-                            if not receipt.get("success"):
-                                return {"rejected": True, "error": receipt.get("error", "delivery rejected")}
-                            provider_result = receipt.get("result")
-                            if isinstance(provider_result, Mapping):
-                                message_id = provider_result.get("message_id") or provider_result.get("id")
-                                if message_id is not None:
-                                    return {"provider_message_id": str(message_id)}
-                            return {}
+                            return _project_finalizer_delivery_receipt(receipt)
 
                         # The lifecycle executes in a worker thread; delivery is
                         # marshalled back through the gateway's existing event-loop

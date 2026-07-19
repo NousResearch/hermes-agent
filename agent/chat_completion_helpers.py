@@ -2998,6 +2998,40 @@ def interruptible_streaming_api_call(agent, api_kwargs: dict, *, on_first_delta=
                 _dropped_tool_names=_dropped_names or None,
             )
 
+        # Text-only stream drop: the upstream closed the connection (or the
+        # SSE stream simply ended) with no finish_reason after delivering
+        # text content but no tool calls.  Without this guard the partial
+        # text is silently stamped finish_reason="stop" and the turn ends as
+        # if complete — the model's intended next step is lost (#32086).
+        _text_only_dropped_no_finish = (
+            finish_reason is None
+            and content_parts
+            and not tool_calls_acc
+        )
+        if _text_only_dropped_no_finish:
+            logger.warning(
+                "Stream ended with no finish_reason after delivering text "
+                "with no tool calls; treating as a mid-stream drop."
+            )
+            full_reasoning = "".join(reasoning_parts) or None
+            mock_message = SimpleNamespace(
+                role=role,
+                content=full_content,
+                tool_calls=None,
+                reasoning_content=full_reasoning,
+            )
+            mock_choice = SimpleNamespace(
+                index=0,
+                message=mock_message,
+                finish_reason=FINISH_REASON_LENGTH,
+            )
+            return SimpleNamespace(
+                id=PARTIAL_STREAM_STUB_ID,
+                model=model_name,
+                choices=[mock_choice],
+                usage=usage_obj,
+            )
+
         effective_finish_reason = finish_reason or "stop"
         if has_truncated_tool_args:
             effective_finish_reason = "length"

@@ -1330,8 +1330,13 @@ class HonchoMemoryProvider(MemoryProvider):
 
         Messages exceeding the Honcho API limit (default 25k chars) are
         split into multiple messages with continuation markers.
+
+        Honors saveMessages: false — the provider then never persists raw
+        turns to Honcho (read/tools paths stay fully functional).
         """
         if self._cron_skipped:
+            return
+        if not getattr(self._config, "save_messages", True):
             return
         if self._recall_mode == "tools" and not self._session_ready():
             return
@@ -1379,6 +1384,8 @@ class HonchoMemoryProvider(MemoryProvider):
             return
         if self._cron_skipped:
             return
+        if not getattr(self._config, "save_messages", True):
+            return
         if self._recall_mode == "tools" and not self._session_ready():
             return
         if not self._session_ready():
@@ -1397,6 +1404,8 @@ class HonchoMemoryProvider(MemoryProvider):
     def on_session_end(self, messages: List[Dict[str, Any]]) -> None:
         """Flush all pending messages to Honcho on session end."""
         if self._cron_skipped:
+            return
+        if not getattr(self._config, "save_messages", True):
             return
         if not self._manager:
             return

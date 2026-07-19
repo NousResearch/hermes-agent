@@ -206,16 +206,35 @@ def test_background_and_main_agent_paths_call_refresh():
     """
     from pathlib import Path
 
-    source = (
-        Path(__file__).resolve().parent.parent.parent / "gateway" / "run.py"
-    ).read_text(encoding="utf-8")
-    assert "fallback_model=self._refresh_fallback_model()" in source
-    assert source.count("fallback_model=self._refresh_fallback_model()") >= 2
+    root = Path(__file__).resolve().parent.parent.parent
+    # Foreground path promoted to agent_run_runtime_service; background may
+    # still live on gateway/run.py. Search both.
+    sources = [
+        (root / "gateway" / "run.py").read_text(encoding="utf-8"),
+        (root / "gateway" / "agent_run_runtime_service.py").read_text(encoding="utf-8"),
+    ]
+    combined = "\n".join(sources)
+    refresh_markers = (
+        "fallback_model=self._refresh_fallback_model()",
+        "fallback_model=runner._refresh_fallback_model()",
+    )
+    refresh_count = sum(combined.count(m) for m in refresh_markers)
+    assert refresh_count >= 2, (
+        f"expected >=2 fallback_model=*_refresh_fallback_model() sites, got {refresh_count}"
+    )
     # The cached-agent reuse path (the load-bearing fix for a long-lived
     # session in a running gateway) must apply the refreshed chain.
-    assert "self._apply_fallback_chain_to_agent(" in source
+    apply_markers = (
+        "self._apply_fallback_chain_to_agent(",
+        "runner._apply_fallback_chain_to_agent(",
+    )
+    assert any(m in combined for m in apply_markers)
     # The stale startup-snapshot form must not remain at create sites.
-    assert "fallback_model=self._fallback_model," not in source
+    stale = (
+        "fallback_model=self._fallback_model,",
+        "fallback_model=runner._fallback_model,",
+    )
+    assert all(s not in combined for s in stale)
 
 
 def test_load_fallback_model_static_unchanged_contract(tmp_path, monkeypatch):

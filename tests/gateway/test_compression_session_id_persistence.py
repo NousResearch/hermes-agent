@@ -101,19 +101,27 @@ def test_every_post_compression_session_id_assignment_persists():
     would compress correctly, the gateway would update its in-memory
     session_id, then drop it on next gateway restart.
     """
-    source = inspect.getsource(gateway_run)
-    assignments = _session_id_assignments_followed_by_save(source)
+    # Production assignment sites span the promoted turn services, not only
+    # gateway/run.py (agent-run / finish / preflight extracts).
+    from gateway import agent_run_runtime_service as agent_run_svc
+    from gateway import agent_turn_finish_runtime_service as finish_svc
+    from gateway import agent_turn_preflight_runtime_service as preflight_svc
+
+    modules = (gateway_run, agent_run_svc, finish_svc, preflight_svc)
+    assignments = []
+    for mod in modules:
+        assignments.extend(_session_id_assignments_followed_by_save(inspect.getsource(mod)))
     assert assignments, (
-        "No ``session_entry.session_id = ...`` assignments found in gateway/run.py — "
-        "either the structure changed or the AST walker is broken."
+        "No ``session_entry.session_id = ...`` assignments found in gateway run "
+        "path modules — either the structure changed or the AST walker is broken."
     )
     missing = [lineno for lineno, saved in assignments if not saved]
     assert not missing, (
-        f"{len(missing)} ``session_entry.session_id = ...`` site(s) in gateway/run.py "
-        f"are not followed by ``session_store._save()`` within the same block "
-        f"(lines: {missing}). Every post-compression session_id update must persist "
-        f"or the next turn loads the pre-compression transcript and triggers an "
-        f"infinite compression loop. See issue #29335."
+        f"{len(missing)} ``session_entry.session_id = ...`` site(s) in gateway "
+        f"run-path modules are not followed by ``session_store._save()`` within "
+        f"the same block (lines: {missing}). Every post-compression session_id "
+        f"update must persist or the next turn loads the pre-compression "
+        f"transcript and triggers an infinite compression loop. See issue #29335."
     )
 
 

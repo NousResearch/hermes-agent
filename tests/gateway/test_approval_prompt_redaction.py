@@ -118,9 +118,12 @@ class TestApprovalCommandWiring:
         )
 
     def test_chat_platform_path_redacts_before_send(self):
-        import gateway.run as run
+        # Nested notify lives in the extracted agent-run production body.
+        import gateway.agent_run_runtime_service as agent_run
 
-        self._assert_redacts_then_uses(run, "_approval_notify_sync", "send_exec_approval")
+        self._assert_redacts_then_uses(
+            agent_run, "_approval_notify_sync", "send_exec_approval"
+        )
 
     def test_sse_api_path_redacts_before_enqueue(self):
         from gateway.platforms import api_server
@@ -131,9 +134,9 @@ class TestApprovalCommandWiring:
         """The gateway must not drop the backend's one-operation UI contract."""
         import ast
         import inspect
-        import gateway.run as run
+        import gateway.agent_run_runtime_service as agent_run
 
-        tree = ast.parse(inspect.getsource(run))
+        tree = ast.parse(inspect.getsource(agent_run))
         notify = next(
             node for node in ast.walk(tree)
             if isinstance(node, ast.FunctionDef) and node.name == "_approval_notify_sync"

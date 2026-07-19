@@ -64,7 +64,9 @@ def _invoke_main(
 
     slash_worker.main()
 
-    responses = [json.loads(line) for line in fake_stdout.getvalue().splitlines() if line.strip()]
+    responses = [
+        json.loads(line) for line in fake_stdout.getvalue().splitlines() if line.strip()
+    ]
     return calls, mock_cli, responses
 
 

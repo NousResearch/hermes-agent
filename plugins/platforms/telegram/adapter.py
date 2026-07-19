@@ -8371,8 +8371,11 @@ class TelegramAdapter(BasePlatformAdapter):
         """Return the gateway session key used by text/photo batching."""
         from gateway.session import build_session_key
 
+        source = getattr(event, "source", None)
+        if source is None:
+            return ""
         return build_session_key(
-            event.source,
+            source,
             group_sessions_per_user=self.config.extra.get("group_sessions_per_user", True),
             thread_sessions_per_user=self.config.extra.get("thread_sessions_per_user", False),
         )
@@ -8380,6 +8383,8 @@ class TelegramAdapter(BasePlatformAdapter):
     def _track_media_download_start(self, event: MessageEvent) -> str:
         """Mark a Telegram media download that may belong to a nearby text turn."""
         session_key = self._event_session_key(event)
+        if not session_key:
+            return ""
         counts = getattr(self, "_media_downloads_in_progress_by_session", None)
         if counts is None:
             counts = {}
@@ -8624,14 +8629,14 @@ class TelegramAdapter(BasePlatformAdapter):
 
         # Download voice/audio messages to cache for STT transcription
         if msg.voice:
+            allowed, note = self._telegram_media_size_allowed(msg.voice, "voice message")
+            if not allowed:
+                event.text = self._append_observed_note(event.text, note or "")
+                logger.info("[Telegram] Skipped oversized user voice (size=%s)", getattr(msg.voice, "file_size", None))
+                await self.handle_message(event)
+                return
             audio_download_session_key = self._track_media_download_start(event)
             try:
-                allowed, note = self._telegram_media_size_allowed(msg.voice, "voice message")
-                if not allowed:
-                    event.text = self._append_observed_note(event.text, note or "")
-                    logger.info("[Telegram] Skipped oversized user voice (size=%s)", getattr(msg.voice, "file_size", None))
-                    await self.handle_message(event)
-                    return
                 file_obj = await msg.voice.get_file()
                 audio_bytes = await file_obj.download_as_bytearray()
                 cached_path = cache_audio_from_bytes(bytes(audio_bytes), ext=".ogg")
@@ -8644,14 +8649,14 @@ class TelegramAdapter(BasePlatformAdapter):
             finally:
                 self._track_media_download_done(audio_download_session_key)
         elif msg.audio:
+            allowed, note = self._telegram_media_size_allowed(msg.audio, "audio file")
+            if not allowed:
+                event.text = self._append_observed_note(event.text, note or "")
+                logger.info("[Telegram] Skipped oversized user audio (size=%s)", getattr(msg.audio, "file_size", None))
+                await self.handle_message(event)
+                return
             audio_download_session_key = self._track_media_download_start(event)
             try:
-                allowed, note = self._telegram_media_size_allowed(msg.audio, "audio file")
-                if not allowed:
-                    event.text = self._append_observed_note(event.text, note or "")
-                    logger.info("[Telegram] Skipped oversized user audio (size=%s)", getattr(msg.audio, "file_size", None))
-                    await self.handle_message(event)
-                    return
                 file_obj = await msg.audio.get_file()
                 audio_bytes = await file_obj.download_as_bytearray()
                 cached_path = cache_audio_from_bytes(bytes(audio_bytes), ext=".mp3")
@@ -8665,14 +8670,14 @@ class TelegramAdapter(BasePlatformAdapter):
                 self._track_media_download_done(audio_download_session_key)
 
         elif msg.video:
+            allowed, note = self._telegram_media_size_allowed(msg.video, "video file")
+            if not allowed:
+                event.text = self._append_observed_note(event.text, note or "")
+                logger.info("[Telegram] Skipped oversized user video (size=%s)", getattr(msg.video, "file_size", None))
+                await self.handle_message(event)
+                return
             video_download_session_key = self._track_media_download_start(event)
             try:
-                allowed, note = self._telegram_media_size_allowed(msg.video, "video file")
-                if not allowed:
-                    event.text = self._append_observed_note(event.text, note or "")
-                    logger.info("[Telegram] Skipped oversized user video (size=%s)", getattr(msg.video, "file_size", None))
-                    await self.handle_message(event)
-                    return
                 file_obj = await msg.video.get_file()
                 video_bytes = await file_obj.download_as_bytearray()
                 ext = ".mp4"

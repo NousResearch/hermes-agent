@@ -10061,10 +10061,16 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
         # agent tool surface and INVALIDATES the provider prompt cache (the
         # next message re-sends the full input prefix, which is expensive on
         # long-context / high-reasoning models).
+        #
+        # The toggle lives under ``auxiliary.mcp.auto_reload_on_config_change``
+        # in DEFAULT_CONFIG (same section as the MCP aux-task provider
+        # settings), so resolve it through that path, not a top-level ``mcp``
+        # key that does not exist in the loaded config shape.
         try:
             from hermes_cli.config import load_config as _load_cfg
             _cfg = _load_cfg()
-            _mcp = _cfg.get("mcp") if isinstance(_cfg, dict) else None
+            _aux = _cfg.get("auxiliary") if isinstance(_cfg, dict) else None
+            _mcp = _aux.get("mcp") if isinstance(_aux, dict) else None
             _auto = _mcp.get("auto_reload_on_config_change", True) if isinstance(_mcp, dict) else True
         except Exception:
             _auto = True

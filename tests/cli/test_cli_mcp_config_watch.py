@@ -106,12 +106,17 @@ class TestMCPConfigWatch:
         obj._reload_mcp.assert_not_called()
 
     def test_optout_disables_auto_reload(self, tmp_path, capsys):
-        """When mcp.auto_reload_on_config_change is False, a changed
+        """When auxiliary.mcp.auto_reload_on_config_change is False, a changed
         mcp_servers section must NOT trigger an automatic reload — but the
         change is still detected and the user is told how to apply it.
 
         This protects the provider prompt cache: every automatic reload
         rebuilds the agent tool surface and invalidates cached prefixes.
+
+        The toggle lives under ``auxiliary.mcp`` in DEFAULT_CONFIG (alongside
+        the MCP aux-task provider settings), so the mocked config must mirror
+        that shape — a top-level ``mcp`` key does not exist in the loaded
+        config and the watcher resolves through ``auxiliary.mcp``.
         """
         import yaml
         obj, cfg_file = _make_cli(
@@ -124,8 +129,9 @@ class TestMCPConfigWatch:
         obj._config_mtime = 0.0  # force stale mtime
 
         # Opt out via the loaded config (the watcher reads load_config(),
-        # not obj.config, so we patch the loader).
-        mocked_cfg = {"mcp": {"auto_reload_on_config_change": False}}
+        # not obj.config, so we patch the loader).  Match the real shape:
+        # DEFAULT_CONFIG["auxiliary"]["mcp"]["auto_reload_on_config_change"].
+        mocked_cfg = {"auxiliary": {"mcp": {"auto_reload_on_config_change": False}}}
         with patch("hermes_cli.config.get_config_path", return_value=cfg_file), \
              patch("hermes_cli.config.load_config", return_value=mocked_cfg):
             obj._check_config_mcp_changes()
@@ -136,3 +142,33 @@ class TestMCPConfigWatch:
         assert "reload skipped" in out
         assert "/reload-mcp" in out
         assert "prompt cache" in out
+
+    def test_optout_path_is_auxiliary_mcp_not_top_level(self, tmp_path, capsys):
+        """Regression guard: the opt-out toggle lives under
+        ``auxiliary.mcp.auto_reload_on_config_change`` in DEFAULT_CONFIG,
+        NOT under a top-level ``mcp`` key.
+
+        A config that sets ONLY ``mcp.auto_reload_on_config_change: false``
+        (top-level, wrong path) must NOT disable the reload — otherwise the
+        watcher is reading the wrong key and the declared default never
+        takes effect at runtime.  This test pins the config-path contract
+        so a future regression to ``_cfg.get("mcp")`` is caught.
+        """
+        import yaml
+        obj, cfg_file = _make_cli(
+            tmp_path,
+            mcp_servers={},
+        )
+
+        cfg_file.write_text(yaml.dump({"mcp_servers": {"github": {"url": "https://mcp.github.com"}}}))
+        obj._config_mtime = 0.0
+
+        # Wrong shape: top-level "mcp" (not where DEFAULT_CONFIG puts the
+        # toggle).  The watcher must NOT honour this, so a reload is expected.
+        wrong_shape_cfg = {"mcp": {"auto_reload_on_config_change": False}}
+        with patch("hermes_cli.config.get_config_path", return_value=cfg_file), \
+             patch("hermes_cli.config.load_config", return_value=wrong_shape_cfg):
+            obj._check_config_mcp_changes()
+
+        # Reload happened because the wrong-path opt-out is ignored.
+        obj._reload_mcp.assert_called()

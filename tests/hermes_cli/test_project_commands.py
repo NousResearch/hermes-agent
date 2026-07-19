@@ -5,6 +5,7 @@ import argparse
 from datetime import datetime, timezone
 import hashlib
 import json
+from pathlib import Path
 import sqlite3
 
 import pytest
@@ -26,7 +27,12 @@ from hermes_cli.project_finalization_contract import (
 
 
 @pytest.fixture
-def board(tmp_path):
+def board(tmp_path, monkeypatch):
+    home = tmp_path / ".hermes"
+    home.mkdir()
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    monkeypatch.setenv("LOCALAPPDATA", str(tmp_path))
     conn = kb.connect(db_path=tmp_path / "kanban.db")
     try:
         yield conn

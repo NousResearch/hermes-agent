@@ -125,6 +125,7 @@ def test_stream_uses_rewritten_request_and_post_intercept_chunks(relay_turn):
 
     assert captured_requests[0]["temperature"] == 0.25
     assert chunks[0].choices[0].delta.content == "HELLO"
+    assert stream.output_modified is True
     assert turn.logical_llm_calls == {}
 
 
@@ -302,6 +303,7 @@ def test_stream_defers_logical_success_for_response_validation(relay_turn):
     )
 
     assert list(stream) == [{"delta": "pending-validation"}]
+    assert stream.output_modified is False
     assert "request-stream-defer" in turn.logical_llm_calls
 
     relay_llm.complete_logical_call("request-stream-defer", outcome="success")

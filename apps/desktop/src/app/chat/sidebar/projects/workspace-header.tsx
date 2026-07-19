@@ -176,7 +176,7 @@ export function StartWorkButton({
       <Tip label={label ?? p.startWork}>
         <button
           aria-label={label ?? p.startWork}
-          className="grid size-4 shrink-0 place-items-center rounded-sm bg-transparent text-(--ui-text-quaternary) opacity-0 transition-opacity hover:bg-(--ui-control-hover-background) hover:text-foreground group-hover/section:opacity-100 focus-visible:opacity-100"
+          className="grid size-4 shrink-0 place-items-center rounded-sm bg-transparent text-(--ui-text-quaternary) opacity-0 transition-opacity hover:bg-(--ui-control-hover-background) hover:text-foreground group-hover/section:opacity-100 group-hover/workspace:opacity-100 focus-visible:opacity-100"
           onClick={() => setOpen(true)}
           type="button"
         >

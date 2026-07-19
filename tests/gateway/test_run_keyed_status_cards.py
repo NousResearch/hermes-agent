@@ -471,3 +471,93 @@ async def test_attachment_only_final_explicitly_terminalizes_status_card():
             },
         }
     ]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "batch_result",
+    [
+        pytest.param(None, id="legacy-none"),
+        pytest.param(
+            SendResult(success=True, delivered_attachment_count=0),
+            id="explicit-zero",
+        ),
+    ],
+)
+async def test_unconfirmed_image_only_final_does_not_terminalize_status_card(
+    batch_result,
+):
+    adapter = _FinalDeliveryAdapter()
+    adapter.send_multiple_images = AsyncMock(return_value=batch_result)
+
+    async def handler(event):
+        event._status_key = "task_run:message:42"
+        return "![report](https://example.com/report.png)"
+
+    async def hold_typing(_chat_id, interval=2.0, metadata=None):
+        await asyncio.Event().wait()
+
+    adapter.set_message_handler(handler)
+    adapter._keep_typing = hold_typing
+    event = MessageEvent(
+        text="Send the report",
+        source=SessionSource(
+            platform=Platform.DISCORD,
+            chat_id="555",
+            chat_type="thread",
+            thread_id="777",
+        ),
+        message_id="42",
+    )
+
+    await adapter._process_message_background(
+        event,
+        build_session_key(event.source),
+    )
+
+    adapter.send_multiple_images.assert_awaited_once()
+    assert adapter.sent == []
+
+
+@pytest.mark.asyncio
+async def test_partial_image_only_final_uses_confirmed_delivery_count():
+    adapter = _FinalDeliveryAdapter()
+    adapter.send_multiple_images = AsyncMock(
+        return_value=SendResult(
+            success=True,
+            message_id="attachment-1",
+            delivered_attachment_count=1,
+        )
+    )
+
+    async def handler(event):
+        event._status_key = "task_run:message:42"
+        return "\n".join(
+            [
+                "![first](https://example.com/first.png)",
+                "![second](https://example.com/second.png)",
+            ]
+        )
+
+    async def hold_typing(_chat_id, interval=2.0, metadata=None):
+        await asyncio.Event().wait()
+
+    adapter.set_message_handler(handler)
+    adapter._keep_typing = hold_typing
+    event = MessageEvent(
+        text="Send the reports",
+        source=SessionSource(
+            platform=Platform.DISCORD,
+            chat_id="555",
+            chat_type="thread",
+            thread_id="777",
+        ),
+        message_id="42",
+    )
+
+    await adapter._process_message_background(
+        event,
+        build_session_key(event.source),
+    )
+
+    assert adapter.sent[0]["content"] == "Attachment delivered."

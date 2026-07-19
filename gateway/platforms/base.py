@@ -1926,6 +1926,30 @@ class SendResult:
     # ``None`` (unset / not classified).  Producers should set this via
     # :func:`classify_send_error`.
     error_kind: Optional[str] = None
+    # Native batch attachment transports set this to the number of
+    # attachments they can confirm reached the platform.  Keeping the field
+    # after all pre-existing fields preserves positional construction, while
+    # the default keeps older/custom adapters source-compatible.
+    delivered_attachment_count: int = 0
+
+
+def confirmed_attachment_delivery_count(result: Any) -> int:
+    """Return the number of attachments a batch result confirms as delivered.
+
+    ``send_multiple_images`` historically returned ``None``.  Keep that call
+    shape harmless for third-party adapters, but never promote an ambiguous
+    legacy return into terminal status.  Migrated batch transports expose an
+    explicit positive count on ``SendResult``.
+    """
+    if not getattr(result, "success", False):
+        return 0
+    count = getattr(result, "delivered_attachment_count", 0)
+    if isinstance(count, bool):
+        return 0
+    try:
+        return max(0, int(count))
+    except (TypeError, ValueError):
+        return 0
 
 
 # Machine-readable send-failure categories.  Kept platform-neutral so every
@@ -3329,7 +3353,7 @@ class BasePlatformAdapter(ABC):
         images: List[Tuple[str, str]],
         metadata: Optional[Dict[str, Any]] = None,
         human_delay: float = 0.0,
-    ) -> None:
+    ) -> SendResult:
         """Send a batch of images.
 
         Accepts ``http(s)://``, ``file://`` URIs in the first tuple
@@ -3344,6 +3368,9 @@ class BasePlatformAdapter(ABC):
         """
         from urllib.parse import unquote as _unquote
 
+        delivered_attachment_count = 0
+        last_message_id: Optional[str] = None
+        delivery_errors: List[str] = []
         for image_url, alt_text in images:
             if human_delay > 0:
                 await asyncio.sleep(human_delay)
@@ -3375,10 +3402,29 @@ class BasePlatformAdapter(ABC):
                         caption=alt_text if alt_text else None,
                         metadata=metadata,
                     )
-                if not img_result.success:
+                if img_result.success:
+                    delivered_attachment_count += 1
+                    last_message_id = img_result.message_id or last_message_id
+                else:
                     logger.error("[%s] Failed to send image: %s", self.name, img_result.error)
+                    if img_result.error:
+                        delivery_errors.append(img_result.error)
             except Exception as img_err:
                 logger.error("[%s] Error sending image: %s", self.name, img_err, exc_info=True)
+                delivery_errors.append(str(img_err))
+
+        success = delivered_attachment_count > 0
+        return SendResult(
+            success=success,
+            message_id=last_message_id,
+            error=(
+                None
+                if success
+                else "; ".join(delivery_errors)
+                or "No image attachments were delivered"
+            ),
+            delivered_attachment_count=delivered_attachment_count,
+        )
 
     async def send_image(
         self,
@@ -5292,8 +5338,9 @@ class BasePlatformAdapter(ABC):
                             metadata=_final_thread_metadata,
                             human_delay=human_delay,
                         )
-                        if batch_result is None or getattr(batch_result, "success", False):
-                            _attachment_deliveries += len(images)
+                        _attachment_deliveries += (
+                            confirmed_attachment_delivery_count(batch_result)
+                        )
                     except Exception as batch_err:
                         logger.warning("[%s] Error batching images: %s", self.name, batch_err, exc_info=True)
 
@@ -5336,8 +5383,9 @@ class BasePlatformAdapter(ABC):
                             metadata=_final_thread_metadata,
                             human_delay=human_delay,
                         )
-                        if batch_result is None or getattr(batch_result, "success", False):
-                            _attachment_deliveries += len(_batch)
+                        _attachment_deliveries += (
+                            confirmed_attachment_delivery_count(batch_result)
+                        )
                     except Exception as batch_err:
                         logger.warning("[%s] Error batching images: %s", self.name, batch_err, exc_info=True)
 

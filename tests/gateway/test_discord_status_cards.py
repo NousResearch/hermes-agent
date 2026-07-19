@@ -8,8 +8,9 @@ from unittest.mock import AsyncMock, Mock
 
 import pytest
 
-from gateway.config import PlatformConfig
-from gateway.platforms.base import SendResult
+from gateway.config import Platform, PlatformConfig
+from gateway.platforms.base import MessageEvent, SendResult
+from gateway.session import SessionSource, build_session_key
 from gateway.stream_consumer import GatewayStreamConsumer, StreamConsumerConfig
 from plugins.platforms.discord.adapter import DiscordAdapter
 
@@ -571,6 +572,77 @@ async def test_stream_edit_and_base_final_share_one_real_discord_message(
             "final": True,
         }
     ]
+
+
+@pytest.mark.asyncio
+async def test_failed_image_only_final_keeps_real_card_and_receipt_nonterminal(
+    tmp_path, monkeypatch
+):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    monkeypatch.setattr(
+        "plugins.platforms.discord.adapter._build_operator_card_embed",
+        lambda card: {"kind": card.card_type},
+    )
+    monkeypatch.setattr(
+        "plugins.platforms.discord.adapter.is_safe_url",
+        lambda _url: False,
+    )
+    instance = DiscordAdapter(PlatformConfig(enabled=True, token="***"))
+    record_response = Mock()
+    instance._record_discord_response = record_response
+    retained = SimpleNamespace(id=7001, edit=AsyncMock())
+    thread = SimpleNamespace(
+        send=AsyncMock(return_value=retained),
+        fetch_message=AsyncMock(return_value=retained),
+    )
+    instance._client = SimpleNamespace(
+        get_channel=lambda channel_id: thread if channel_id in {555, 777} else None,
+        fetch_channel=AsyncMock(),
+    )
+
+    await instance.send(
+        "555",
+        "Working",
+        metadata={
+            "thread_id": "777",
+            "status_key": "task_run:message:42",
+        },
+    )
+    record_response.reset_mock()
+    retained.edit.reset_mock()
+
+    async def handler(event):
+        event._status_key = "task_run:message:42"
+        return "![report](https://example.com/blocked.png)"
+
+    async def hold_typing(_chat_id, interval=2.0, metadata=None):
+        await asyncio.Event().wait()
+
+    instance.set_message_handler(handler)
+    instance._keep_typing = hold_typing
+    event = MessageEvent(
+        text="Send the report",
+        source=SessionSource(
+            platform=Platform.DISCORD,
+            chat_id="555",
+            chat_type="thread",
+            thread_id="777",
+        ),
+        message_id="42",
+    )
+
+    await instance._process_message_background(
+        event,
+        build_session_key(event.source),
+    )
+
+    retained.edit.assert_not_awaited()
+    terminal_receipts = [
+        call.kwargs
+        for call in record_response.call_args_list
+        if call.kwargs.get("final")
+    ]
+    assert terminal_receipts == []
 
 
 @pytest.mark.asyncio

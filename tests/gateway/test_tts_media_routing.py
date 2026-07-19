@@ -181,6 +181,79 @@ async def test_streamed_media_only_final_terminalizes_keyed_status_card(
 
 
 @pytest.mark.asyncio
+async def test_streamed_unconfirmed_image_only_final_stays_nonterminal(
+    tmp_path, monkeypatch
+):
+    event = _event(thread_id="topic-1", platform=Platform.DISCORD)
+    event._status_key = "task_run:message:msg-1"
+    image_file = _allowed_media_path(tmp_path, monkeypatch, "report.png")
+    adapter = SimpleNamespace(
+        name="test",
+        extract_media=BasePlatformAdapter.extract_media,
+        extract_images=BasePlatformAdapter.extract_images,
+        extract_local_files=BasePlatformAdapter.extract_local_files,
+        send_voice=AsyncMock(),
+        send_document=AsyncMock(),
+        send_multiple_images=AsyncMock(return_value=None),
+        send_video=AsyncMock(),
+        _send_with_retry=AsyncMock(
+            return_value=SendResult(success=True, message_id="status")
+        ),
+    )
+
+    await GatewayRunner._deliver_media_from_response(
+        _fake_runner({"thread_id": "topic-1"}, reply_anchor="msg-1"),
+        f"MEDIA:{image_file}",
+        event,
+        adapter,
+    )
+
+    adapter.send_multiple_images.assert_awaited_once()
+    adapter._send_with_retry.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_streamed_partial_image_batch_uses_confirmed_delivery_count(
+    tmp_path, monkeypatch
+):
+    event = _event(thread_id="topic-1", platform=Platform.DISCORD)
+    event._status_key = "task_run:message:msg-1"
+    first = _allowed_media_path(tmp_path, monkeypatch, "first.png")
+    second = first.with_name("second.png")
+    second.write_bytes(b"media")
+    adapter = SimpleNamespace(
+        name="test",
+        extract_media=BasePlatformAdapter.extract_media,
+        extract_images=BasePlatformAdapter.extract_images,
+        extract_local_files=BasePlatformAdapter.extract_local_files,
+        send_voice=AsyncMock(),
+        send_document=AsyncMock(),
+        send_multiple_images=AsyncMock(
+            return_value=SendResult(
+                success=True,
+                message_id="attachment-1",
+                delivered_attachment_count=1,
+            )
+        ),
+        send_video=AsyncMock(),
+        _send_with_retry=AsyncMock(
+            return_value=SendResult(success=True, message_id="status")
+        ),
+    )
+
+    await GatewayRunner._deliver_media_from_response(
+        _fake_runner({"thread_id": "topic-1"}, reply_anchor="msg-1"),
+        f"MEDIA:{first}\nMEDIA:{second}",
+        event,
+        adapter,
+    )
+
+    assert adapter._send_with_retry.await_args.kwargs["content"] == (
+        "Attachment delivered."
+    )
+
+
+@pytest.mark.asyncio
 async def test_streaming_delivery_routes_telegram_flac_media_tag_to_document_sender(tmp_path, monkeypatch):
     event = _event(thread_id="topic-1")
     media_file = _allowed_media_path(tmp_path, monkeypatch, "speech.flac")

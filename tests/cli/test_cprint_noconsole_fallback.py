@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import io
 import sys
+import types
 from types import SimpleNamespace
 
 import pytest
@@ -128,6 +129,120 @@ def test_cprint_pt_print_failure_falls_back_to_stripped_plain_print(
 
     out = capsys.readouterr().out
     assert out == "bold status\n"
+    assert "\x1b[" not in out
+
+
+# ---------------------------------------------------------------------------
+# _emit_pt_or_plain: the single guarded emission point
+# ---------------------------------------------------------------------------
+
+
+def test_emit_pt_or_plain_uses_prompt_toolkit_on_success(monkeypatch):
+    pt_calls = []
+    monkeypatch.setattr(cli, "_pt_print", lambda x: pt_calls.append(x))
+    monkeypatch.setattr(cli, "_PT_ANSI", lambda t: ("ANSI", t))
+
+    cli._emit_pt_or_plain("hi")
+
+    assert pt_calls == [("ANSI", "hi")]
+
+
+def test_emit_pt_or_plain_degrades_to_stripped_plain(monkeypatch, capsys):
+    def _no_console(_):
+        raise OSError("No Windows console found. Are you running cmd.exe?")
+
+    monkeypatch.setattr(cli, "_pt_print", _no_console)
+
+    cli._emit_pt_or_plain("\x1b[1mstatus\x1b[0m")
+
+    out = capsys.readouterr().out
+    assert out == "status\n"
+    assert "\x1b[" not in out
+
+
+# ---------------------------------------------------------------------------
+# Active-application renderer failures (detection miss: isatty True, no console)
+# ---------------------------------------------------------------------------
+
+
+def _install_active_app(monkeypatch, loop, *, running_loop):
+    """Wire up a running prompt_toolkit app whose loop is ``loop``.
+
+    ``running_loop`` is what ``asyncio.get_running_loop()`` returns inside
+    ``_cprint`` — pass ``loop`` to take the same-thread branch, or a
+    different object to take the cross-thread scheduling branch.
+    """
+    fake_asyncio = types.ModuleType("asyncio")
+    fake_asyncio.get_running_loop = lambda: running_loop
+    fake_asyncio.ensure_future = lambda coro: None
+    monkeypatch.setitem(sys.modules, "asyncio", fake_asyncio)
+
+    fake_app = SimpleNamespace(_is_running=True, loop=loop)
+    fake_pt_app = types.ModuleType("prompt_toolkit.application")
+    fake_pt_app.get_app_or_none = lambda: fake_app
+
+    def _run_in_terminal(func, **kw):
+        func()  # PT executes the emission synchronously in this fake
+        return None
+
+    fake_pt_app.run_in_terminal = _run_in_terminal
+    monkeypatch.setitem(sys.modules, "prompt_toolkit.application", fake_pt_app)
+
+
+def test_cprint_active_app_same_loop_renderer_failure_degrades(monkeypatch, capsys):
+    """Same-thread active-app arm: renderer failure falls back to plain print."""
+
+    def _no_console(_):
+        raise OSError("No Windows console found. Are you running cmd.exe?")
+
+    monkeypatch.setattr(cli, "_pt_print", _no_console)
+
+    class FakeLoop:
+        def is_running(self):
+            return True
+
+        def call_soon_threadsafe(self, cb, *a):
+            raise AssertionError("same-thread path must not schedule")
+
+    loop = FakeLoop()
+    _install_active_app(monkeypatch, loop, running_loop=loop)
+
+    cli._cprint("\x1b[31msame-loop status\x1b[0m")
+
+    out = capsys.readouterr().out
+    assert out == "same-loop status\n"
+    assert "\x1b[" not in out
+
+
+def test_cprint_active_app_cross_thread_renderer_failure_degrades(monkeypatch, capsys):
+    """Cross-thread arm: renderer failure inside run_in_terminal degrades."""
+
+    def _no_console(_):
+        raise OSError("No Windows console found. Are you running cmd.exe?")
+
+    monkeypatch.setattr(cli, "_pt_print", _no_console)
+
+    scheduled = []
+
+    class FakeLoop:
+        def is_running(self):
+            return True
+
+        def call_soon_threadsafe(self, cb, *a):
+            scheduled.append(cb)
+
+    loop = FakeLoop()
+    # running_loop differs from the app loop → cross-thread branch.
+    other = SimpleNamespace(is_running=lambda: True)
+    _install_active_app(monkeypatch, loop, running_loop=other)
+
+    cli._cprint("\x1b[32mcross-thread status\x1b[0m")
+
+    assert len(scheduled) == 1
+    scheduled[0]()  # run the scheduled callback → run_in_terminal → emit
+
+    out = capsys.readouterr().out
+    assert out == "cross-thread status\n"
     assert "\x1b[" not in out
 
 

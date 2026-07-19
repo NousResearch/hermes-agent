@@ -151,6 +151,156 @@ def test_project_child_dispatch_rejects_post_create_worktrees_symlink_swap(
         conn.close()
 
 
+@pytest.mark.parametrize("git_remove_fails", [False, True])
+def test_project_child_materialization_cleans_up_parent_symlink_swap(
+    monkeypatch,
+    tmp_path,
+    git_remove_fails,
+):
+    """A final-syscall parent swap must not leave any escaped worktree state."""
+    conn = kb.connect(db_path=tmp_path / "kanban.db")
+    try:
+        source, repo, project_id = _create_materialized_source(
+            conn,
+            monkeypatch,
+            tmp_path,
+            tenant="tenant-a",
+        )
+        _set_profile(monkeypatch, tmp_path / "profiles" / "worker", "worker")
+        child_id = kb.create_task(
+            conn,
+            title="race-hardened child",
+            assignee="worker",
+            project_id=project_id,
+            project_source_task_id=source.id,
+            tenant="tenant-a",
+        )
+        source_path = repo / ".worktrees" / source.id
+        _git(repo, "worktree", "remove", "--force", str(source_path))
+
+        attacker = _init_repo(tmp_path / "attacker")
+        attacker_worktrees = attacker / ".worktrees"
+        attacker_worktrees.mkdir()
+        relocated_worktrees = tmp_path / "relocated-legit-worktrees"
+        original_run = kb.subprocess.run
+        swapped = False
+        forced_remove_failure = False
+
+        def _swap_before_git_worktree_add(command, *args, **kwargs):
+            nonlocal forced_remove_failure, swapped
+            command_parts = [str(part) for part in command]
+            if not swapped and "worktree" in command_parts and "add" in command_parts:
+                worktrees = repo / ".worktrees"
+                worktrees.rename(relocated_worktrees)
+                worktrees.symlink_to(attacker_worktrees, target_is_directory=True)
+                swapped = True
+            elif (
+                git_remove_fails
+                and swapped
+                and not forced_remove_failure
+                and "worktree" in command_parts
+                and "remove" in command_parts
+            ):
+                forced_remove_failure = True
+                return subprocess.CompletedProcess(
+                    command,
+                    1,
+                    stdout="",
+                    stderr="forced worktree-remove failure",
+                )
+            return original_run(command, *args, **kwargs)
+
+        monkeypatch.setattr(kb.subprocess, "run", _swap_before_git_worktree_add)
+        spawned: list[Path] = []
+        result = kb.dispatch_once(
+            conn,
+            spawn_fn=lambda _task, workspace: spawned.append(workspace) or os.getpid(),
+            failure_limit=3,
+        )
+
+        child = kb.get_task(conn, child_id)
+        assert child is not None
+        assert swapped is True
+        assert forced_remove_failure is git_remove_fails
+        assert result.spawned == []
+        assert spawned == []
+        assert child.status == "ready"
+        assert child.last_failure_error is not None
+        assert not (attacker_worktrees / child_id).exists()
+        assert not (relocated_worktrees / child_id).exists()
+        registered = _git(repo, "worktree", "list", "--porcelain").stdout
+        assert str(attacker_worktrees / child_id) not in registered
+        assert str(relocated_worktrees / child_id) not in registered
+        assert child.branch_name is not None
+        branch_probe = subprocess.run(
+            [
+                "git",
+                "-C",
+                str(repo),
+                "show-ref",
+                "--verify",
+                "--quiet",
+                f"refs/heads/{child.branch_name}",
+            ],
+            check=False,
+        )
+        assert branch_probe.returncode == 1
+    finally:
+        conn.close()
+
+
+def test_project_child_materialization_fails_closed_without_fd_pinning(
+    monkeypatch,
+    tmp_path,
+):
+    """Platforms without descriptor-pinned paths must not silently downgrade."""
+    conn = kb.connect(db_path=tmp_path / "kanban.db")
+    try:
+        source, repo, project_id = _create_materialized_source(
+            conn,
+            monkeypatch,
+            tmp_path,
+            tenant="tenant-a",
+        )
+        _set_profile(monkeypatch, tmp_path / "profiles" / "worker", "worker")
+        child_id = kb.create_task(
+            conn,
+            title="unsupported-platform child",
+            assignee="worker",
+            project_id=project_id,
+            project_source_task_id=source.id,
+            tenant="tenant-a",
+        )
+        monkeypatch.setattr(
+            kb,
+            "_supports_fd_pinned_worktree_routing",
+            lambda: False,
+            raising=False,
+        )
+
+        child = kb.get_task(conn, child_id)
+        assert child is not None
+        with pytest.raises(RuntimeError, match="descriptor-pinned"):
+            kb.resolve_workspace(child)
+        assert not (repo / ".worktrees" / child_id).exists()
+        assert child.branch_name is not None
+        branch_probe = subprocess.run(
+            [
+                "git",
+                "-C",
+                str(repo),
+                "show-ref",
+                "--verify",
+                "--quiet",
+                f"refs/heads/{child.branch_name}",
+            ],
+            check=False,
+        )
+        assert branch_probe.returncode == 1
+    finally:
+        conn.close()
+
+
 @pytest.mark.parametrize("dangling", [False, True])
 def test_project_child_dispatch_rejects_post_create_workspace_symlink(
     monkeypatch,

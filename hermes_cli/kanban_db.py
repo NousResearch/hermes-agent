@@ -79,6 +79,7 @@ import random
 import secrets
 import shutil
 import sqlite3
+import stat
 import subprocess
 import sys
 import threading
@@ -6068,6 +6069,324 @@ def _ensure_git_worktree(repo_root: Path, target: Path, branch_name: str) -> Non
         )
 
 
+def _directory_fd_matches_path(fd: int, path: Path) -> bool:
+    """Return whether ``path`` still names the directory pinned by ``fd``."""
+    try:
+        fd_stat = os.fstat(fd)
+        path_stat = os.stat(path, follow_symlinks=False)
+    except OSError:
+        return False
+    return (
+        stat.S_ISDIR(fd_stat.st_mode)
+        and stat.S_ISDIR(path_stat.st_mode)
+        and (fd_stat.st_dev, fd_stat.st_ino) == (path_stat.st_dev, path_stat.st_ino)
+    )
+
+
+def _fd_filesystem_path(fd: int) -> Optional[Path]:
+    """Return a subprocess-usable path for an inherited POSIX descriptor."""
+    for base in (Path("/proc/self/fd"), Path("/dev/fd")):
+        candidate = base / str(fd)
+        if candidate.exists():
+            return candidate
+    return None
+
+
+def _supports_fd_pinned_worktree_routing() -> bool:
+    """Return whether this platform can keep project routes descriptor-pinned."""
+    return os.name == "posix" and all(
+        hasattr(os, name) for name in ("O_DIRECTORY", "O_NOFOLLOW")
+    )
+
+
+def _cleanup_pinned_project_worktree(
+    repo_fd_path: Path,
+    target_fd_path: Path,
+    *,
+    pass_fds: tuple[int, ...],
+    branch_name: str,
+    delete_branch: bool,
+) -> None:
+    """Rollback and verify a rejected pinned worktree materialisation."""
+    try:
+        materialized_path = target_fd_path.resolve(strict=True)
+    except (OSError, RuntimeError):
+        materialized_path = None
+
+    remove_errors: list[str] = []
+    for _attempt in range(3):
+        result = subprocess.run(
+            [
+                "git",
+                "-C",
+                str(repo_fd_path),
+                "worktree",
+                "remove",
+                "--force",
+                str(target_fd_path),
+            ],
+            capture_output=True,
+            text=True,
+            timeout=60,
+            check=False,
+            pass_fds=pass_fds,
+        )
+        if result.returncode == 0:
+            break
+        remove_errors.append(
+            (result.stderr or result.stdout or "unknown error").strip()
+        )
+
+    if delete_branch:
+        branch_errors: list[str] = []
+        for _attempt in range(3):
+            result = subprocess.run(
+                ["git", "-C", str(repo_fd_path), "branch", "-D", branch_name],
+                capture_output=True,
+                text=True,
+                timeout=30,
+                check=False,
+                pass_fds=pass_fds,
+            )
+            if result.returncode == 0:
+                break
+            branch_errors.append(
+                (result.stderr or result.stdout or "unknown error").strip()
+            )
+    else:
+        branch_errors = []
+
+    registered = subprocess.run(
+        ["git", "-C", str(repo_fd_path), "worktree", "list", "--porcelain"],
+        capture_output=True,
+        text=True,
+        timeout=30,
+        check=False,
+        pass_fds=pass_fds,
+    )
+    cleanup_failures: list[str] = []
+    if registered.returncode != 0:
+        cleanup_failures.append(
+            "could not verify worktree registration: "
+            + (registered.stderr or registered.stdout or "unknown error").strip()
+        )
+    elif materialized_path is not None:
+        normalized_target = os.path.abspath(str(materialized_path))
+        registered_paths = {
+            os.path.abspath(line.removeprefix("worktree "))
+            for line in (registered.stdout or "").splitlines()
+            if line.startswith("worktree ")
+        }
+        if normalized_target in registered_paths:
+            cleanup_failures.append(
+                f"worktree remains registered at {materialized_path}"
+            )
+    if materialized_path is not None and (materialized_path / ".git").exists():
+        cleanup_failures.append(f"worktree checkout remains at {materialized_path}")
+
+    if delete_branch:
+        branch_probe = subprocess.run(
+            [
+                "git",
+                "-C",
+                str(repo_fd_path),
+                "show-ref",
+                "--verify",
+                "--quiet",
+                f"refs/heads/{branch_name}",
+            ],
+            capture_output=True,
+            text=True,
+            timeout=30,
+            check=False,
+            pass_fds=pass_fds,
+        )
+        if branch_probe.returncode == 0:
+            cleanup_failures.append(f"new branch remains registered: {branch_name}")
+        elif branch_probe.returncode != 1:
+            cleanup_failures.append(f"could not verify branch cleanup: {branch_name}")
+
+    if cleanup_failures:
+        detail = "; ".join(cleanup_failures)
+        command_errors = [*remove_errors, *branch_errors]
+        if command_errors:
+            detail += "; cleanup command errors: " + " | ".join(command_errors)
+        raise RuntimeError(f"secure project worktree cleanup failed: {detail}")
+
+
+def _materialize_project_worktree(
+    task: Task,
+    repo_root: Path,
+    branch_name: str,
+) -> Path:
+    """Pin, materialize, and validate a project task worktree.
+
+    Project routes are security boundaries. Validating lexical paths before
+    ``git worktree add`` leaves a TOCTOU window in which ``.worktrees`` can be
+    renamed and replaced by a symlink. On POSIX, pin the repository, parent,
+    and reserved target by descriptor and make Git use those descriptors. A
+    concurrent rename therefore cannot redirect Git into an attacker repo. If
+    canonical names stop identifying the pinned directories, remove the new
+    worktree and branch before rejecting dispatch.
+    """
+    expected = repo_root / ".worktrees" / task.id
+    if not _supports_fd_pinned_worktree_routing():
+        raise RuntimeError(
+            "secure project worktree materialization requires descriptor-pinned "
+            "POSIX filesystem paths; refusing an unsafe platform fallback"
+        )
+
+    directory_flags = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW
+    repo_fd = os.open(repo_root, directory_flags)
+    worktrees_fd: Optional[int] = None
+    target_fd: Optional[int] = None
+    target_created = False
+    branch_created = False
+    try:
+        if not _directory_fd_matches_path(repo_fd, repo_root):
+            raise ValueError(f"project task {task.id} repo-root trust anchor changed")
+        try:
+            os.mkdir(".worktrees", mode=0o700, dir_fd=repo_fd)
+        except FileExistsError:
+            pass
+        worktrees_fd = os.open(".worktrees", directory_flags, dir_fd=repo_fd)
+        worktrees_path = repo_root / ".worktrees"
+        if not _directory_fd_matches_path(worktrees_fd, worktrees_path):
+            raise ValueError(
+                f"project task {task.id} .worktrees directory is symlinked or redirected"
+            )
+        try:
+            os.mkdir(task.id, mode=0o700, dir_fd=worktrees_fd)
+            target_created = True
+        except FileExistsError as exc:
+            raise ValueError(
+                f"project task {task.id} workspace appeared during materialization"
+            ) from exc
+        target_fd = os.open(task.id, directory_flags, dir_fd=worktrees_fd)
+        if not _directory_fd_matches_path(target_fd, expected):
+            raise ValueError(f"project task {task.id} workspace route changed")
+
+        repo_fd_path = _fd_filesystem_path(repo_fd)
+        target_fd_path = _fd_filesystem_path(target_fd)
+        if repo_fd_path is None or target_fd_path is None:
+            raise RuntimeError(
+                "secure project worktree descriptor paths are unavailable"
+            )
+        pass_fds = (repo_fd, worktrees_fd, target_fd)
+        branch_probe = subprocess.run(
+            [
+                "git",
+                "-C",
+                str(repo_fd_path),
+                "show-ref",
+                "--verify",
+                "--quiet",
+                f"refs/heads/{branch_name}",
+            ],
+            capture_output=True,
+            text=True,
+            timeout=30,
+            check=False,
+            pass_fds=pass_fds,
+        )
+        if branch_probe.returncode not in {0, 1}:
+            stderr = (branch_probe.stderr or branch_probe.stdout or "").strip()
+            raise RuntimeError(
+                f"git branch validation failed for {branch_name}: {stderr}"
+            )
+        branch_created = branch_probe.returncode == 1
+        if branch_created:
+            command = [
+                "git",
+                "-C",
+                str(repo_fd_path),
+                "worktree",
+                "add",
+                "-b",
+                branch_name,
+                str(target_fd_path),
+                "HEAD",
+            ]
+        else:
+            command = [
+                "git",
+                "-C",
+                str(repo_fd_path),
+                "worktree",
+                "add",
+                str(target_fd_path),
+                branch_name,
+            ]
+        result = subprocess.run(
+            command,
+            capture_output=True,
+            text=True,
+            timeout=60,
+            check=False,
+            pass_fds=pass_fds,
+        )
+        if result.returncode != 0:
+            stderr = (result.stderr or result.stdout or "").strip()
+            _cleanup_pinned_project_worktree(
+                repo_fd_path,
+                target_fd_path,
+                pass_fds=pass_fds,
+                branch_name=branch_name,
+                delete_branch=branch_created,
+            )
+            raise RuntimeError(
+                f"git worktree add failed for {expected} on branch {branch_name}: {stderr}"
+            )
+
+        try:
+            if not (
+                _directory_fd_matches_path(repo_fd, repo_root)
+                and _directory_fd_matches_path(worktrees_fd, worktrees_path)
+                and _directory_fd_matches_path(target_fd, expected)
+            ):
+                raise ValueError(
+                    f"project task {task.id} canonical route changed during materialization"
+                )
+            resolved = _validate_project_worktree(task, repo_root)
+            if not (
+                _directory_fd_matches_path(repo_fd, repo_root)
+                and _directory_fd_matches_path(worktrees_fd, worktrees_path)
+                and _directory_fd_matches_path(target_fd, resolved)
+            ):
+                raise ValueError(
+                    f"project task {task.id} canonical route changed during validation"
+                )
+            return resolved
+        except Exception as exc:
+            try:
+                _cleanup_pinned_project_worktree(
+                    repo_fd_path,
+                    target_fd_path,
+                    pass_fds=pass_fds,
+                    branch_name=branch_name,
+                    delete_branch=branch_created,
+                )
+            except Exception as cleanup_exc:
+                raise RuntimeError(
+                    f"project task {task.id} route rejection could not be rolled back: "
+                    f"{cleanup_exc}"
+                ) from exc
+            raise
+    finally:
+        # Remove a pre-Git empty reservation using the pinned parent descriptor,
+        # never a replacement at the lexical path.
+        if target_created and worktrees_fd is not None:
+            try:
+                os.rmdir(task.id, dir_fd=worktrees_fd)
+            except OSError:
+                pass
+        if target_fd is not None:
+            os.close(target_fd)
+        if worktrees_fd is not None:
+            os.close(worktrees_fd)
+        os.close(repo_fd)
+
+
 def _resolve_worktree_workspace(
     task: Task, *, board: Optional[str] = None
 ) -> tuple[Path, str]:
@@ -6106,30 +6425,14 @@ def _resolve_worktree_workspace(
             resolved = _validate_project_worktree(task, repo_root)
             return resolved, branch_name
 
-        worktrees_dir = repo_root / ".worktrees"
-        if worktrees_dir.is_symlink():
-            raise ValueError(
-                f"project task {task.id} .worktrees directory is symlinked or redirected"
-            )
-        if worktrees_dir.exists():
-            if (
-                not worktrees_dir.is_dir()
-                or worktrees_dir.resolve(strict=True) != worktrees_dir
-            ):
-                raise ValueError(
-                    f"project task {task.id} .worktrees directory is symlinked or redirected"
-                )
-        else:
-            worktrees_dir.mkdir()
-        # Revalidate immediately before invoking git so a stale/swapped repo
+        # Revalidate immediately before pinning the route so a stale/swapped repo
         # anchor cannot be used merely because it passed at task creation time.
         if _validated_project_repo_anchor(
             task.project_repo_root,
             context=f"project task {task.id} repo root",
         ) != repo_root:
             raise ValueError(f"project task {task.id} repo-root trust anchor changed")
-        _ensure_git_worktree(repo_root, expected, branch_name)
-        resolved = _validate_project_worktree(task, repo_root)
+        resolved = _materialize_project_worktree(task, repo_root, branch_name)
         return resolved, branch_name
 
     if not task.workspace_path:

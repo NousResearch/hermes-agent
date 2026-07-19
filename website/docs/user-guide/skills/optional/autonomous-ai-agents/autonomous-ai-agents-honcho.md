@@ -266,7 +266,7 @@ The agent has 5 bidirectional Honcho tools (hidden in `context` recall mode):
 | `honcho_search` | No | low | Fetch specific past facts to reason over yourself — raw excerpts, no synthesis |
 | `honcho_context` | No | low | Full session context snapshot: summary, representation, card, recent messages |
 | `honcho_reasoning` | Yes | medium–high | Natural language question synthesized by Honcho's dialectic engine |
-| `honcho_conclude` | No | minimal | Write or delete a persistent fact; pass `peer: "ai"` for AI self-knowledge |
+| `honcho_conclude` | No | minimal | Create, list/search, or delete persistent conclusions; creation returns an ID for immediate deletion |
 
 ### `honcho_profile`
 Read or update a peer card — curated key facts (name, role, preferences, communication style). Pass `card: [...]` to update; omit to read. No LLM call.
@@ -281,7 +281,7 @@ Full session context snapshot from Honcho — session summary, peer representati
 Natural language question answered by Honcho's dialectic reasoning engine (LLM call on Honcho's backend). Higher cost, higher quality. Pass `reasoning_level` to control depth: `minimal` (fast/cheap) → `low` → `medium` → `high` → `max` (thorough). Omit to use the configured default (`low`). Use for synthesized understanding of the user's patterns, goals, or current state.
 
 ### `honcho_conclude`
-Write or delete a persistent conclusion about a peer. Pass `conclusion: "..."` to create. Pass `delete_id: "..."` to remove a conclusion (for PII removal — Honcho self-heals incorrect conclusions over time, so deletion is only needed for PII). You MUST pass exactly one of the two.
+Create, list/search, or delete a persistent conclusion about a peer. You MUST pass exactly one of `conclusion: "..."`, `list: true`, or `delete_id: "..."`. A successful creation returns `conclusion_id`; pass it directly as `delete_id` for immediate deletion. To find an older conclusion, use `list: true` and optionally `query: "..."`, then pass a returned `id` as `delete_id`. Deletion is for PII removal — Honcho self-heals incorrect conclusions over time, so write a corrected conclusion instead for non-PII corrections.
 
 ### Bidirectional peer targeting
 
@@ -296,9 +296,10 @@ honcho_profile                        # read user's card
 honcho_profile peer="ai"              # read AI peer's card
 honcho_reasoning query="What does this user care about most?"
 honcho_reasoning query="What are my interaction patterns?" peer="ai" reasoning_level="medium"
-honcho_conclude conclusion="Prefers terse answers"
+honcho_conclude conclusion="Prefers terse answers"  # response includes conclusion_id
 honcho_conclude conclusion="I tend to over-explain code" peer="ai"
-honcho_conclude delete_id="abc123"    # PII removal
+honcho_conclude list=true query="terse answers"  # returns older conclusions with ids
+honcho_conclude delete_id="abc123"  # use an id from creation or list; PII removal only
 ```
 
 ## Agent Usage Patterns

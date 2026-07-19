@@ -208,7 +208,12 @@ CONCLUDE_SCHEMA = {
             },
             "delete_id": {
                 "type": "string",
-                "description": "Conclusion ID to delete for PII removal. Provide this when deleting a conclusion. Do not send it together with conclusion or list. Get this id from a prior `list` call — never guess it.",
+                "description": (
+                    "Conclusion ID to delete for PII removal. Provide this when deleting a "
+                    "conclusion. Do not send it together with conclusion or list. Use the "
+                    "`conclusion_id` from a successful creation response or an ID returned "
+                    "by `list=true`; never guess an ID."
+                ),
             },
             "list": {
                 "type": "boolean",

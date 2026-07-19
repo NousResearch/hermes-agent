@@ -226,7 +226,9 @@ When Honcho is active as the memory provider, five tools become available:
 | `honcho_search` | Semantic search over context — raw excerpts, no LLM synthesis |
 | `honcho_context` | Full session context — summary, representation, card, recent messages |
 | `honcho_reasoning` | Synthesized answer from Honcho's LLM — pass `reasoning_level` (minimal/low/medium/high/max) to control depth |
-| `honcho_conclude` | Create or delete conclusions — pass `conclusion` to create, `delete_id` to remove (PII only) |
+| `honcho_conclude` | Create, list/search, or delete conclusions; creation returns an ID for immediate deletion |
+
+A successful `honcho_conclude` create returns `conclusion_id`, which can be passed directly as `delete_id`. For an older conclusion, call `honcho_conclude` with `list=true` and optionally `query`, then use a returned `id`. Deletion remains intended for PII removal; for a non-PII correction, write a corrected conclusion and let Honcho reconcile the contradiction.
 
 ## CLI Commands
 

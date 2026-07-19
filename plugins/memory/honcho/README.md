@@ -129,7 +129,7 @@ Five bidirectional tools. All accept an optional `peer` parameter (`"user"` or `
 | `honcho_search` | No | Cross-session message search (hybrid semantic + keyword, ranked excerpts; 800 tok default, 2000 max) |
 | `honcho_context` | No | Full session context: summary, representation, card, messages |
 | `honcho_reasoning` | Yes | LLM-synthesized answer via dialectic `.chat()` |
-| `honcho_conclude` | No | Write, list/search, or delete persistent conclusions (list surfaces the ids delete needs) |
+| `honcho_conclude` | No | Write, list/search, or delete persistent conclusions (creation returns an ID immediately; list surfaces IDs for older conclusions) |
 
 Tool visibility depends on `recallMode`: hidden in `context` mode, always present in `tools` and `hybrid`.
 

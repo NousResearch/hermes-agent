@@ -2,6 +2,7 @@ import type { ThreadMessageLike } from '@assistant-ui/react'
 
 import { dedupeGeneratedImageEchoesInParts } from '@/lib/generated-images'
 import { mediaDisplayLabel, mediaMarkdownHref } from '@/lib/media'
+import { redactSensitiveText, redactSensitiveValue } from '@/lib/secret-redaction'
 import { normalize } from '@/lib/text'
 import { parseTodos } from '@/lib/todos'
 import type { SessionMessage, UsageStats } from '@/types/hermes'
@@ -94,7 +95,7 @@ export function textPart(text: string): ChatMessagePart {
 }
 
 export function reasoningPart(text: string): ChatMessagePart {
-  return { type: 'reasoning', text }
+  return { type: 'reasoning', text: redactSensitiveText(text) }
 }
 
 const MEDIA_LINE_RE = /(^|\n)[\t ]*[`"']?MEDIA:\s*(?<line>`[^`\n]+`|"[^"\n]+"|'[^'\n]+'|\S+)[`"']?[\t ]*(\n|$)/g
@@ -126,7 +127,7 @@ export function renderMediaTags(text: string): string {
 }
 
 export function assistantTextPart(text: string): ChatMessagePart {
-  return textPart(renderMediaTags(text))
+  return textPart(renderMediaTags(redactSensitiveText(text)))
 }
 
 export function chatMessageText(message: ChatMessage): string {
@@ -180,7 +181,7 @@ function displayContentForMessage(role: SessionMessage['role'], content: unknown
   const textContent = textFromUnknown(content)
 
   if (role !== 'user') {
-    return textContent
+    return redactSensitiveText(textContent)
   }
 
   const marker = textContent.match(ATTACHED_CONTEXT_MARKER_RE)
@@ -219,7 +220,11 @@ function appendStreamPart(
     const part = next[i]
 
     if (part.type === type) {
-      next[i] = { ...part, text: `${(part as { text: string }).text}${delta}` } as ChatMessagePart
+      const nextText = `${(part as { text: string }).text}${delta}`
+      next[i] = {
+        ...part,
+        text: type === 'reasoning' ? redactSensitiveText(nextText) : nextText
+      } as ChatMessagePart
 
       return { index: i, parts: next }
     }
@@ -253,12 +258,11 @@ export function appendAssistantTextPart(parts: ChatMessagePart[], delta: string)
   const mayContainMedia =
     delta.includes('MEDIA:') || delta.includes('DIA:') || delta.includes('EDIA:') || delta.includes('IA:')
 
-  if (mayContainMedia || part.text.includes('MEDIA:')) {
-    const rendered = renderMediaTags(part.text)
+  const redacted = redactSensitiveText(part.text)
+  const rendered = mayContainMedia || redacted.includes('MEDIA:') ? renderMediaTags(redacted) : redacted
 
-    if (rendered !== part.text) {
-      next[index] = { ...part, text: rendered }
-    }
+  if (rendered !== part.text) {
+    next[index] = { ...part, text: rendered }
   }
 
   return next
@@ -428,13 +432,13 @@ function toolArgs(payload: GatewayEventPayload | undefined, prevArgs?: unknown):
   const prev = parseMaybeJsonObject(prevArgs)
   const eventArgs = liveToolArgs(payload)
 
-  return {
+  return redactSensitiveValue({
     ...prev,
     ...eventArgs,
     ...(payload?.context ? { context: payload.context } : {}),
     ...(payload?.preview ? { preview: payload.preview } : {}),
     ...carryTodos(payload, prevArgs)
-  }
+  }) as Record<string, unknown>
 }
 
 function toolResult(
@@ -444,7 +448,7 @@ function toolResult(
 ): Record<string, unknown> {
   const parsedResult = parseMaybeJsonObject(payload?.result)
 
-  return {
+  return redactSensitiveValue({
     ...parsedResult,
     ...(payload?.inline_diff ? { inline_diff: payload.inline_diff } : {}),
     ...(payload?.summary ? { summary: payload.summary } : {}),
@@ -453,7 +457,7 @@ function toolResult(
     ...(payload?.duration_s !== undefined ? { duration_s: payload.duration_s } : {}),
     ...carryTodos(payload, prevResult, prevArgs),
     ...(payload?.error ? { error: payload.error } : {})
-  }
+  }) as Record<string, unknown>
 }
 
 export function upsertToolPart(
@@ -553,7 +557,7 @@ function liveToolArgs(payload: GatewayEventPayload | undefined): Record<string, 
 
 function parseStoredToolResult(content: unknown): unknown {
   if (content && typeof content === 'object') {
-    return content
+    return redactSensitiveValue(content)
   }
 
   const textContent = textFromUnknown(content)
@@ -563,9 +567,9 @@ function parseStoredToolResult(content: unknown): unknown {
   }
 
   try {
-    return JSON.parse(textContent)
+    return redactSensitiveValue(JSON.parse(textContent))
   } catch {
-    return textContent
+    return redactSensitiveText(textContent)
   }
 }
 
@@ -578,7 +582,10 @@ function toolPartFromStoredCall(call: unknown, fallbackIndex: number): ChatMessa
     row.name || row.tool_name || fn?.name || (recordFromUnknown(row.input)?.name as string | undefined) || 'tool'
   )
 
-  const args = firstNonEmptyObject(fn?.arguments, row.arguments, row.args, row.input)
+  const args = redactSensitiveValue(firstNonEmptyObject(fn?.arguments, row.arguments, row.args, row.input)) as Record<
+    string,
+    unknown
+  >
 
   return {
     type: 'tool-call',
@@ -654,7 +661,7 @@ function applyStoredToolResultToParts(parts: ChatMessagePart[], toolMessage: Ses
 
 function storedToolMessagePart(toolMessage: SessionMessage, fallbackIndex: number): ChatMessagePart {
   const name = toolMessage.tool_name || toolMessage.name || 'tool'
-  const context = textFromUnknown(toolMessage.context || toolMessage.text || toolMessage.content || '')
+  const context = redactSensitiveText(textFromUnknown(toolMessage.context || toolMessage.text || toolMessage.content || ''))
   const args = context ? { context } : {}
 
   return {

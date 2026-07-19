@@ -3104,6 +3104,10 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         # accounts are configured (this dict is empty). Populated by
         # _start_account_adapters().
         self._account_adapters: Dict[Platform, Dict[str, BasePlatformAdapter]] = {}
+        # Named-account adapters queued for background reconnection, keyed by
+        # (Platform, account name) — the account-dimension mirror of
+        # _failed_platforms (#8287).
+        self._failed_account_adapters: Dict[tuple, Dict[str, Any]] = {}
         self._warn_if_docker_media_delivery_is_risky()
         _gateway_runner_ref = _weakref.ref(self)
 
@@ -4332,12 +4336,78 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         except Exception:
             logger.debug("Failed to sync gateway session model metadata", exc_info=True)
 
+    async def _handle_account_adapter_fatal_error(
+        self, adapter: BasePlatformAdapter, account_name: str
+    ) -> None:
+        """Account-dimension mirror of ``_handle_adapter_fatal_error`` (#8287).
+
+        Same contract, scoped to ``_account_adapters[platform][account]``:
+        stale-owner guard against the account's own registry slot, pop +
+        disconnect, and retryable failures queued for background
+        reconnection under a ``(platform, account)`` key. An account's death
+        never touches the default slot and never triggers the all-platforms-
+        down shutdown logic — the default adapter (or other accounts) may
+        still be healthy.
+        """
+        platform = adapter.platform
+        registry = self._account_adapters.get(platform) or {}
+        existing = registry.get(account_name)
+        if existing is not None and existing is not adapter:
+            logger.debug(
+                "Ignoring stale fatal error from a superseded %s account %r "
+                "adapter instance: %s",
+                platform.value, account_name,
+                adapter.fatal_error_code or "unknown",
+            )
+            return
+
+        logger.error(
+            "Fatal %s adapter error (account %r, %s): %s",
+            platform.value, account_name,
+            adapter.fatal_error_code or "unknown",
+            adapter.fatal_error_message or "unknown error",
+        )
+        self._update_platform_runtime_status(
+            f"{platform.value}@{account_name}",
+            platform_state="retrying" if adapter.fatal_error_retryable else "fatal",
+            error_code=adapter.fatal_error_code,
+            error_message=adapter.fatal_error_message,
+        )
+
+        if existing is adapter:
+            registry.pop(account_name, None)
+            if not registry:
+                self._account_adapters.pop(platform, None)
+            await self._safe_adapter_disconnect(adapter, platform)
+
+        if adapter.fatal_error_retryable:
+            key = (platform, account_name)
+            if key not in self._failed_account_adapters:
+                self._failed_account_adapters[key] = {
+                    "config": adapter.config,
+                    "attempts": 0,
+                    "next_retry": time.monotonic(),
+                }
+                logger.info(
+                    "%s account %r queued for background reconnection",
+                    platform.value, account_name,
+                )
+
     async def _handle_adapter_fatal_error(self, adapter: BasePlatformAdapter) -> None:
         """React to an adapter failure after startup.
 
         If the error is retryable (e.g. network blip, DNS failure), queue the
         platform for background reconnection instead of giving up permanently.
         """
+        # Named-account adapters (#8287) live in _account_adapters, not the
+        # platform slot: without this branch the stale-owner guard below
+        # would see the DEFAULT adapter occupying the slot and silently
+        # ignore a dying account — no reconnect, no status, no log.
+        _account_name = getattr(adapter, "account_name", None)
+        if _account_name:
+            await self._handle_account_adapter_fatal_error(adapter, _account_name)
+            return
+
         # Snapshot the current owner of this platform slot before doing
         # anything else. If it's neither this adapter nor empty, a different
         # adapter has already taken over (e.g. this is a delayed notification
@@ -4386,6 +4456,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             # the same object twice.
             self.adapters.pop(adapter.platform, None)
             self.delivery_router.adapters = self.adapters
+            self.delivery_router.account_adapters = self._account_adapters
             # A half-closed transport can wedge an adapter's native close()
             # indefinitely. Reuse the shutdown-path timeout so this runtime
             # fatal handler always reaches the reconnect queue.
@@ -7843,6 +7914,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         if await self._abort_startup_if_shutdown_requested():
             return True
         self.delivery_router.adapters = self.adapters
+        self.delivery_router.account_adapters = self._account_adapters
         self._wire_teams_pipeline_runtime()
 
         self._running = True
@@ -8571,6 +8643,74 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 continue
 
             now = time.monotonic()
+
+            # Named-account reconnects (#8287): independent of the platform
+            # pass below — an account's retry cadence mirrors a platform's,
+            # but success re-registers into _account_adapters, never the
+            # default slot.
+            for _acct_key in list(self._failed_account_adapters.keys()):
+                if not self._running:
+                    return
+                _acct_platform, _acct_name = _acct_key
+                _acct_info = self._failed_account_adapters[_acct_key]
+                if _acct_info.get("paused") or now < _acct_info["next_retry"]:
+                    continue
+                _acct_attempt = _acct_info["attempts"] + 1
+                logger.info(
+                    "Reconnecting %s account %r (attempt %d)...",
+                    _acct_platform.value, _acct_name, _acct_attempt,
+                )
+                _acct_adapter = None
+                try:
+                    _acct_adapter = self._create_adapter(
+                        _acct_platform, _acct_info["config"]
+                    )
+                    if not _acct_adapter:
+                        logger.warning(
+                            "Reconnect %s account %r: adapter creation "
+                            "returned None, removing from retry queue",
+                            _acct_platform.value, _acct_name,
+                        )
+                        del self._failed_account_adapters[_acct_key]
+                        continue
+                    _acct_adapter.account_name = _acct_name
+                    self._wire_account_adapter(_acct_adapter)
+                    _acct_ok = await self._connect_adapter_with_timeout(
+                        _acct_adapter, _acct_platform
+                    )
+                except Exception as _acct_exc:
+                    logger.warning(
+                        "Reconnect %s account %r failed: %s",
+                        _acct_platform.value, _acct_name, _acct_exc,
+                    )
+                    _acct_ok = False
+                if _acct_ok:
+                    self._account_adapters.setdefault(_acct_platform, {})[
+                        _acct_name
+                    ] = _acct_adapter
+                    self._sync_voice_mode_state_to_adapter(_acct_adapter)
+                    del self._failed_account_adapters[_acct_key]
+                    self._update_platform_runtime_status(
+                        f"{_acct_platform.value}@{_acct_name}",
+                        platform_state="connected",
+                        error_code=None,
+                        error_message=None,
+                    )
+                    logger.info(
+                        "✓ %s reconnected (account %r)",
+                        _acct_platform.value, _acct_name,
+                    )
+                else:
+                    if _acct_adapter is not None:
+                        await self._safe_adapter_disconnect(
+                            _acct_adapter, _acct_platform
+                        )
+                    _acct_info["attempts"] = _acct_attempt
+                    # Same capped exponential backoff as the platform pass.
+                    _acct_info["next_retry"] = now + min(
+                        30 * (2 ** min(_acct_attempt, 6)), 1800
+                    )
+
             for platform in list(self._failed_platforms.keys()):
                 if not self._running:
                     return
@@ -8629,6 +8769,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                         self.adapters[platform] = adapter
                         self._sync_voice_mode_state_to_adapter(adapter)
                         self.delivery_router.adapters = self.adapters
+                        self.delivery_router.account_adapters = self._account_adapters
                         del self._failed_platforms[platform]
                         self._update_platform_runtime_status(
                             platform.value,
@@ -9768,6 +9909,18 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             extra=merged_extra,
         )
 
+    def _wire_account_adapter(self, adapter: BasePlatformAdapter) -> None:
+        """Wire a named-account adapter's handlers — identical to a default
+        adapter's wiring in the startup loop (#8287). Shared by account
+        startup and account reconnect so the two can never drift."""
+        adapter.set_message_handler(self._handle_message)
+        adapter.set_fatal_error_handler(self._handle_adapter_fatal_error)
+        adapter.set_session_store(self.session_store)
+        adapter.set_busy_session_handler(self._handle_active_session_busy_message)
+        adapter.set_topic_recovery_fn(self._recover_telegram_topic_thread_id)
+        adapter.set_authorization_check(self._make_adapter_auth_check(adapter.platform))
+        adapter._busy_text_mode = self._busy_text_mode
+
     async def _start_account_adapters(
         self, platform: Platform, platform_config: "PlatformConfig"
     ) -> int:
@@ -9809,13 +9962,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 )
                 continue
             adapter.account_name = account_name
-            adapter.set_message_handler(self._handle_message)
-            adapter.set_fatal_error_handler(self._handle_adapter_fatal_error)
-            adapter.set_session_store(self.session_store)
-            adapter.set_busy_session_handler(self._handle_active_session_busy_message)
-            adapter.set_topic_recovery_fn(self._recover_telegram_topic_thread_id)
-            adapter.set_authorization_check(self._make_adapter_auth_check(adapter.platform))
-            adapter._busy_text_mode = self._busy_text_mode
+            self._wire_account_adapter(adapter)
             logger.info("Connecting to %s (account %r)...", platform.value, account_name)
             try:
                 success = await self._connect_adapter_with_timeout(adapter, platform)

@@ -23,6 +23,10 @@ import logging
 import os
 from typing import Any, Dict, List, Optional
 
+from agent.skill_authoring_guidance import (
+    AUTHORING_SKILL_NAME,
+    load_bundled_skill_authoring_guidance,
+)
 from agent.thread_scoped_output import thread_scoped_silence
 
 logger = logging.getLogger(__name__)
@@ -161,6 +165,47 @@ def _digest_history(messages_snapshot: List[Dict], tail: int = 24) -> List[Dict]
         ),
     }
     return [digest] + keep
+
+
+def _attach_authoring_skill(
+    prompt: str,
+    *,
+    review_skills: bool,
+    platform: Optional[str] = None,
+) -> str:
+    """Attach current authoring guidance only to skill-writing reviews."""
+    if not review_skills:
+        return prompt
+    try:
+        guidance = load_bundled_skill_authoring_guidance(platform=platform)
+    except Exception:
+        guidance = None
+    if not guidance:
+        return prompt
+    parts = [
+        f"{prompt}\n\n"
+        "[Current bundled skill-authoring guidance]\n"
+        "The following v2 files were read directly from bundled source for "
+        "this review. Treat it as authoritative for any skill create, patch, "
+        "edit, or support-file write; do not modify the bundled guidance "
+        "itself. It is raw text, not preprocessed output.\n\n"
+        f"<bundled-skill name=\"{AUTHORING_SKILL_NAME}\">\n"
+        f"{guidance.skill_content.rstrip()}\n"
+        "</bundled-skill>"
+    ]
+    if guidance.contract_content:
+        parts.append(
+            "<bundled-authoring-contract>\n"
+            f"{guidance.contract_content.rstrip()}\n"
+            "</bundled-authoring-contract>"
+        )
+    else:
+        parts.append(
+            "[Authoring contract fallback] The linked contract is unavailable. "
+            "Follow the skill body, do not infer missing schemas or runtime "
+            "claims, and skip a write whose safety cannot be validated."
+        )
+    return "\n\n".join(parts)
 
 
 # Review-prompt strings — used by ``spawn_background_review_thread`` to build
@@ -974,6 +1019,11 @@ def spawn_background_review_thread(
         prompt = getattr(agent, "_MEMORY_REVIEW_PROMPT", _MEMORY_REVIEW_PROMPT)
     else:
         prompt = getattr(agent, "_SKILL_REVIEW_PROMPT", _SKILL_REVIEW_PROMPT)
+    prompt = _attach_authoring_skill(
+        prompt,
+        review_skills=review_skills,
+        platform=getattr(agent, "platform", None),
+    )
 
     def _target() -> None:
         _run_review_in_thread(agent, messages_snapshot, prompt)
@@ -985,6 +1035,7 @@ __all__ = [
     "_MEMORY_REVIEW_PROMPT",
     "_SKILL_REVIEW_PROMPT",
     "_COMBINED_REVIEW_PROMPT",
+    "_attach_authoring_skill",
     "spawn_background_review_thread",
     "summarize_background_review_actions",
     "build_memory_write_metadata",

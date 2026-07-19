@@ -1,25 +1,42 @@
 """Tests for /learn — open-ended skill distillation.
 
 Covers the shared prompt builder (agent.learn_prompt.build_learn_prompt) and
-the slash-command registry wiring. /learn has no engine and no model tool: it
-builds a standards-guided prompt that the live agent runs as a normal turn, so
-these are the load-bearing behavior contracts.
+the slash-command registry wiring. /learn has no separate engine: it loads the
+bundled authoring guidance and builds a prompt that the live agent runs as a
+normal turn, so these are the load-bearing behavior contracts.
 """
 
-from agent.learn_prompt import build_learn_prompt, _AUTHORING_STANDARDS
+import pytest
+
+import agent.learn_prompt as learn_prompt
+from agent.skill_authoring_guidance import SkillAuthoringGuidance
+from agent.learn_prompt import (
+    _FALLBACK_AUTHORING_GUIDANCE,
+    build_learn_prompt,
+)
+
+
+_TEST_AUTHORING_GUIDANCE = "LOADED HERMES AUTHORING SKILL AND CONTRACT"
 
 
 class TestBuildLearnPrompt:
+    @pytest.fixture(autouse=True)
+    def _stub_runtime_guidance(self, monkeypatch):
+        # Prompt-shape tests should not depend on a developer's active profile.
+        monkeypatch.setattr(
+            learn_prompt,
+            "_load_authoring_guidance",
+            lambda: _TEST_AUTHORING_GUIDANCE,
+        )
+
     def test_embeds_the_user_request_verbatim(self):
         req = "the REST client in ~/projects/acme-sdk, focus on auth"
         prompt = build_learn_prompt(req)
         assert req in prompt
 
-    def test_always_includes_the_authoring_standards(self):
-        # The standards are what make distilled skills match house style;
-        # they must travel with every prompt regardless of input.
+    def test_always_includes_runtime_authoring_guidance(self):
         for req in ["", "a url https://x/y", "what we just did"]:
-            assert _AUTHORING_STANDARDS in build_learn_prompt(req)
+            assert _TEST_AUTHORING_GUIDANCE in build_learn_prompt(req)
 
     def test_instructs_saving_via_skill_manage_not_a_raw_file(self):
         prompt = build_learn_prompt("learn the thing")
@@ -59,26 +76,95 @@ class TestBuildLearnPrompt:
     def test_whitespace_only_request_is_treated_as_empty(self):
         assert build_learn_prompt("   \n  ") == build_learn_prompt("")
 
-    def test_description_length_rule_is_in_the_standards(self):
-        # The single most-violated rule must be explicit in the prompt.
-        assert "60" in _AUTHORING_STANDARDS
+    def test_requires_discovery_before_an_authoring_decision(self):
+        prompt = build_learn_prompt("learn the thing")
+        discovery = prompt.index("inspect the installed library")
+        decision = prompt.index("Choose exactly one decision")
+        assert discovery < decision
+        for outcome in ("UPDATE", "CREATE", "CONSOLIDATE", "SKIP"):
+            assert outcome in prompt
+        assert "Do not default to creation." in prompt
+        assert "(action=\"create\")" not in prompt
 
-    def test_teaches_the_full_hardline_standards(self):
-        # description length — otherwise distilled skills miss platform gating,
-        # author credit, and the tool-framing table. Lock the coverage in.
-        std = _AUTHORING_STANDARDS.lower()
-        # #1 description: the count-and-trim self-check (the reported bug).
-        assert "count" in std and "60" in std
-        # #3 platforms gating against OS-bound primitives.
-        assert "platforms" in std
-        # author is always the literal Hermes, never the host/OS identity (#52368).
-        assert "author: always the literal value `hermes`" in std
-        assert "never fill it from the host" in std
-        # #2 Hermes-tool framing names the wrapped tools, not shell utilities.
-        for tool in ("read_file", "search_files", "patch", "write_file"):
-            assert tool in std
-        # #6 scripts/references/templates layout.
-        assert "scripts/" in _AUTHORING_STANDARDS
+    def test_skip_is_explicitly_non_mutating(self):
+        prompt = build_learn_prompt("learn the thing")
+        assert "A SKIP decision performs no write." in prompt
+
+
+class TestLoadAuthoringGuidance:
+    def test_formats_distinct_skill_and_contract_payloads(self, monkeypatch):
+        monkeypatch.setattr(
+            learn_prompt,
+            "load_bundled_skill_authoring_guidance",
+            lambda: SkillAuthoringGuidance(
+                skill_content="V2 SKILL BODY",
+                contract_content="V2 CONTRACT",
+            ),
+        )
+
+        guidance = learn_prompt._load_authoring_guidance()
+
+        assert "V2 SKILL BODY" in guidance
+        assert "V2 CONTRACT" in guidance
+
+    def test_missing_bundled_skill_uses_safe_fallback(self, monkeypatch):
+        monkeypatch.setattr(
+            learn_prompt,
+            "load_bundled_skill_authoring_guidance",
+            lambda: None,
+        )
+
+        assert (
+            learn_prompt._load_authoring_guidance()
+            == _FALLBACK_AUTHORING_GUIDANCE
+        )
+
+    def test_skill_read_failure_uses_safe_fallback(self, monkeypatch):
+        def fail(*args, **kwargs):
+            raise OSError("unreadable")
+
+        monkeypatch.setattr(
+            learn_prompt,
+            "load_bundled_skill_authoring_guidance",
+            fail,
+        )
+
+        assert (
+            learn_prompt._load_authoring_guidance()
+            == _FALLBACK_AUTHORING_GUIDANCE
+        )
+
+    def test_contract_failure_keeps_skill_and_adds_fallback(self, monkeypatch):
+        monkeypatch.setattr(
+            learn_prompt,
+            "load_bundled_skill_authoring_guidance",
+            lambda: SkillAuthoringGuidance(
+                skill_content="V2 SKILL BODY",
+                contract_content=None,
+            ),
+        )
+
+        guidance = learn_prompt._load_authoring_guidance()
+
+        assert "V2 SKILL BODY" in guidance
+        assert _FALLBACK_AUTHORING_GUIDANCE in guidance
+
+    def test_fallback_preserves_minimum_v2_contract(self):
+        fallback = _FALLBACK_AUTHORING_GUIDANCE
+        for decision in ("update", "create", "consolidate", "skip"):
+            assert decision in fallback
+        assert "at most 60 characters" in fallback
+        assert "human contributor first" in fallback
+        for section in (
+            "When to Use",
+            "Prerequisites",
+            "How to Run",
+            "Quick Reference",
+            "Procedure",
+            "Pitfalls",
+            "Verification",
+        ):
+            assert section in fallback
 
 
 class TestLearnRegistryWiring:

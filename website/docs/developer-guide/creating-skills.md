@@ -8,45 +8,62 @@ description: "How to create skills for Hermes Agent — SKILL.md format, guideli
 
 Skills are the preferred way to add new capabilities to Hermes Agent. They're easier to create than tools, require no code changes to the agent, and can be shared with the community.
 
-## Should it be a Skill or a Tool?
+Treat a skill as maintained procedural knowledge, not as a one-off prompt. Before adding one, search the installed skills, both in-repo skill trees, and the Skills Hub. If an existing skill already owns the same trigger and outcome, update it instead of creating a competing sibling.
+
+## Should it be a Skill, Plugin, or Tool?
 
 Make it a **Skill** when:
 - The capability can be expressed as instructions + shell commands + existing tools
 - It wraps an external CLI or API that the agent can call via `terminal` or `web_extract`
-- It doesn't need custom Python integration or API key management baked into the agent
+- Any secrets can be declared with `required_environment_variables` and the workflow does not need a custom auth lifecycle
 - Examples: arXiv search, git workflows, Docker management, PDF processing, email via CLI tools
 
-Make it a **Tool** when:
-- It requires end-to-end integration with API keys, auth flows, or multi-component configuration
-- It needs custom processing logic that must execute precisely every time
-- It handles binary data, streaming, or real-time events
-- Examples: browser automation, TTS, vision analysis
+Put repeated deterministic processing in the skill's `scripts/` directory.
+When the capability needs structured runtime I/O, a managed auth lifecycle,
+binary or streaming data, or real-time events, prefer an MCP server, plugin, or
+service-gated tool. Add a new core model tool only when the capability is
+fundamental to nearly every user and cannot be reached through existing tools.
+
+## Decide Whether to Create or Update
+
+1. **Search first.** Use `skills_list` to survey installed skills and `skill_view` to read likely matches. In a checkout, use `search_files` across `skills/` and `optional-skills/`; use `hermes skills search <query>` for Hub candidates. Read two or three peers in the closest category before deciding.
+2. **Update when the intent overlaps.** Extend an existing skill when it already covers the same trigger class, tool, or outcome. Use a targeted patch for a small correction and a full rewrite only for a genuine overhaul. Remove stale or superseded wording instead of layering another version of the same rule.
+3. **Create when the behavior is distinct.** A new skill needs a clear trigger boundary, a reusable procedure, and a verification step that do not fit an existing skill. Avoid a narrow sibling when an umbrella skill can absorb the workflow cleanly.
+
+`skill_manage(action="create")` always creates a user-local skill under the active profile's `$HERMES_HOME/skills/`; it does **not** create source files in this repository. For an in-repo contribution, use Hermes file tools such as `write_file` and `patch` in the checkout.
+
+## Choose the Destination
+
+| Destination | Use it for | Authoring and distribution |
+|---|---|---|
+| Bundled: `skills/<category>/<name>/` | Broad workflows useful to most Hermes users | Edit the repository source. It ships and is seeded into user profiles by default. |
+| Official optional: `optional-skills/<category>/<name>/` | Official but niche, paid-service, platform-specific, heavyweight, or dependency-heavy workflows | Edit the repository source. Users install it with `hermes skills install official/<category>/<name>`. |
+| User-local: `$HERMES_HOME/skills/[<category>/]<name>/` | Personal procedures, private workflows, and prototypes | Let Hermes call `skill_manage(action="create")`, or edit the active profile directly. The default home is `~/.hermes`, but profiles can use another root. |
+| External Hub or standalone repository | Community, organization-specific, or third-party integrations that should not be maintained in the Hermes core repository | Author in its own repository and publish through the Skills Hub or a tap. Installation copies it into `$HERMES_HOME/skills/`. |
+
+Heavy or niche skills do not become bundled merely because their implementation is polished. Likewise, do not commit a personal skill to `skills/` only to make it discoverable locally.
 
 ## Skill Directory Structure
 
-Bundled skills live in `skills/` organized by category. Official optional skills use the same structure in `optional-skills/`:
+All four destinations use the same self-contained layout:
 
 ```text
-skills/
-├── research/
-│   └── arxiv/
-│       ├── SKILL.md              # Required: main instructions
-│       └── scripts/              # Optional: helper scripts
-│           └── search_arxiv.py
-├── productivity/
-│   └── ocr-and-documents/
-│       ├── SKILL.md
-│       ├── scripts/
-│       └── references/
-└── ...
+<skill-root>/[<category>/]<skill-name>/
+├── SKILL.md              # Required: compact instructions
+├── scripts/              # Optional: deterministic helpers
+├── references/           # Optional: detail loaded on demand
+├── templates/            # Optional: reusable text/config templates
+└── assets/               # Optional: files used in produced output
 ```
+
+Create only the directories the skill needs. Keep detailed or branch-specific material in `references/`, but keep the core workflow in `SKILL.md`. Do not add auxiliary `README.md`, changelog, or installation-guide files that Hermes will not use.
 
 ## SKILL.md Format
 
 ```markdown
 ---
 name: my-skill
-description: Brief description (shown in skill search results)
+description: "Diagnose service failures with a repeatable workflow."
 version: 1.0.0
 author: Your Name
 license: MIT
@@ -78,18 +95,24 @@ required_environment_variables:          # Optional — env vars the skill needs
     required_for: "API access"
 ---
 
-# Skill Title
+# API Incident Triage Skill
 
-Brief intro.
+State in two or three sentences what the skill does and what is outside its scope.
 
 ## When to Use
-Trigger conditions — when should the agent load this skill?
+List positive triggers and important counter-triggers.
+
+## Prerequisites
+List required Hermes toolsets, MCP servers, credentials, platforms, and setup.
+
+## How to Run
+Show the primary invocation path using Hermes-native tools.
 
 ## Quick Reference
-Table of common commands or API calls.
+Summarize the few commands or decisions used most often.
 
 ## Procedure
-Step-by-step instructions the agent follows.
+Give ordered steps with checkable completion criteria.
 
 ## Pitfalls
 Known failure modes and how to handle them.
@@ -97,6 +120,12 @@ Known failure modes and how to handle them.
 ## Verification
 How the agent confirms it worked.
 ```
+
+The body order above is the merge standard for every new or modernized bundled, optional, or contributed skill: `# <Skill> Skill`, a two-to-three-sentence introduction, then `When to Use`, `Prerequisites`, `How to Run`, `Quick Reference`, `Procedure`, `Pitfalls`, and `Verification`.
+
+:::warning Description hardline
+The runtime validator accepts descriptions up to 1024 characters for backward compatibility. Repository review is stricter: `description` must be **60 characters or fewer**, contain one sentence, end with a period, state the capability rather than the implementation, avoid marketing words, and not repeat the skill name. The description is present in skill listings before the body loads, so keep all trigger-critical wording there and put detail in the body.
+:::
 
 ### Platform-Specific Skills
 
@@ -265,17 +294,33 @@ See the `skills/productivity/google-workspace/SKILL.md` for a complete example u
 
 ## Skill Guidelines
 
-### No External Dependencies
+### Use Hermes-Native Tools
 
-Prefer stdlib Python, curl, and existing Hermes tools (`web_extract`, `terminal`, `read_file`). If a dependency is needed, document installation steps in the skill.
+Tool names in `SKILL.md` prose must be native Hermes tools or tools from an MCP server named in `## Prerequisites`. Prefer `search_files` over `find` or `ls`, `read_file` over `cat`, `head`, or `tail`, and `patch` over `sed` or `awk`. Use `write_file` for new files, `terminal` to execute a bundled helper, `web_extract` for URL content, and tools such as `browser_navigate`, `vision_analyze`, or `delegate_task` only when that capability is actually required.
+
+Do not copy tool names from another agent framework and assume Hermes provides them. If the workflow requires an MCP server, name it and document its setup. Keep third-party CLIs and non-trivial shell pipelines behind a helper in `scripts/` where practical; invoke that helper through `terminal` instead of making ad hoc shell construction the skill's primary interaction surface.
+
+### Minimize External Dependencies
+
+Prefer standard-library helpers and existing Hermes tools. If a dependency is necessary, declare it in `## Prerequisites`, provide a repeatable setup path, audit `platforms:` against its real OS support, and test the failure shown when it is absent.
+
+For repository contributions, keep any required `.env.example` addition inside a clearly delimited block owned by the skill. Do not reformat or refresh unrelated entries while adding the skill's credentials.
+
+### Credit the Human Contributor
+
+Put the human contributor's real name and GitHub handle first in `author`; Hermes Agent can be a secondary collaborator. If Hermes drafted the skill, do not replace the human contributor's credit with the tool's name.
 
 ### Progressive Disclosure
 
-Put the most common workflow first. Edge cases and advanced usage go at the bottom. This keeps token usage low for common tasks.
+Put the common path and decision points in `SKILL.md`; move detailed APIs, schemas, and branch-specific material into directly linked files under `references/`. Aim for about 100 lines for a simple skill and 200 for a complex one. The main file should remain usable without loading every reference.
+
+### Keep One Source of Truth
+
+State each rule once, next to the step it controls. On update, remove the wording that the new instruction replaces, prune obsolete examples and references, and verify that related skills still resolve. Repeated guidance drifts and consumes context; a shorter, sharper update is usually better than an appended caveat.
 
 ### Include Helper Scripts
 
-For XML/JSON parsing or complex logic, include helper scripts in `scripts/` — don't expect the LLM to write parsers inline every time.
+For XML/JSON parsing or other non-trivial deterministic logic, include and test a helper in `scripts/` instead of asking the model to recreate it inline. Reference it with `${HERMES_SKILL_DIR}/scripts/<name>` so the installed location does not matter.
 
 ### Deliver media as documents (`[[as_document]]`)
 
@@ -320,24 +365,89 @@ skills:
 
 Snippets run with the skill directory as their working directory, and output is capped at 4000 characters. Failures (timeouts, non-zero exits) show up as a short `[inline-shell error: ...]` marker instead of breaking the whole skill.
 
-### Test It
+## Validate, Test, and Forward-Test
 
-Run the skill and verify the agent follows the instructions correctly:
+Treat these as three different checks. A valid file can still contain a broken helper, and a tested helper can still produce a skill that agents do not follow reliably.
+
+### 1. Validate the Contract
+
+For an in-repo skill, validate frontmatter, naming, the 60-character description hardline, and modern section order. This standalone check mirrors the relevant merge requirements while the runtime validator remains backward-compatible with older skills:
 
 ```bash
-hermes chat --toolsets skills -q "Use the X skill to do Y"
+python3 - skills/<category>/<name>/SKILL.md <<'PY'
+from pathlib import Path
+import re
+import sys
+import yaml
+
+path = Path(sys.argv[1])
+text = path.read_text(encoding="utf-8")
+assert text.startswith("---"), "frontmatter must start at byte 0"
+end = re.search(r"\n---\s*\n", text[3:])
+assert end, "frontmatter is not closed"
+frontmatter = yaml.safe_load(text[3 : 3 + end.start()])
+assert isinstance(frontmatter, dict)
+assert frontmatter["name"] == path.parent.name
+assert re.fullmatch(r"[a-z0-9][a-z0-9-]*", frontmatter["name"])
+description = str(frontmatter["description"])
+assert len(description) <= 60, len(description)
+assert description.endswith(".")
+body = text[3 + end.end() :]
+sections = [
+    "## When to Use", "## Prerequisites", "## How to Run",
+    "## Quick Reference", "## Procedure", "## Pitfalls", "## Verification",
+]
+positions = [body.find(section) for section in sections]
+assert all(position >= 0 for position in positions), positions
+assert positions == sorted(positions), positions
+PY
 ```
 
-## Where Should the Skill Live?
+Also audit `platforms:` against imports and commands in `scripts/`, confirm declared Hermes tools/toolsets exist, and check that every `metadata.hermes.related_skills` entry resolves in the intended distribution.
 
-Bundled skills (in `skills/`) ship with every Hermes install. They should be **broadly useful to most users**:
+### 2. Test Deterministic Behavior
 
-- Document handling, web research, common dev workflows, system administration
-- Used regularly by a wide range of people
+Put skill tests in `tests/skills/test_<skill>_skill.py`. Use standard-library modules, pytest, and `unittest.mock`; do not make live network calls. Test helper scripts directly, plus any regression-prone metadata or output contract:
 
-If your skill is official and useful but not universally needed (e.g., a paid service integration, a heavyweight dependency), put it in **`optional-skills/`** — it ships with the repo, is discoverable via `hermes skills browse` (labeled "official"), and installs with built-in trust.
+```bash
+scripts/run_tests.sh tests/skills/test_<skill>_skill.py -q
+```
 
-If your skill is specialized, community-contributed, or niche, it's better suited for a **Skills Hub** — upload it to a registry and share it via `hermes skills install`.
+Run the helper itself on a representative fixture as well. A mocked unit test is not enough for file I/O, subprocess, path, or platform behavior.
+
+### 3. Forward-Test the Instructions
+
+Use a fresh Hermes session that resolves the edited skill, then give it a realistic task and raw input rather than a review prompt or the expected answer:
+
+```bash
+hermes chat --toolsets skills,file,terminal -q \
+  "Use the <skill-name> skill to <solve a realistic task>."
+```
+
+Add the other toolsets declared by the skill to the example command. For repository source, point a disposable test profile's `skills.external_dirs` at the checkout's `skills/` or `optional-skills/` root, or sync the source into that profile before running the command. Do not assume the current long-lived session has reloaded a changed skill.
+
+For a complex skill, repeat the forward test in independent fresh sessions. Include the primary success path, a realistic failure path, and a nearby request that should remain outside the skill's scope. Check whether Hermes selects the skill from its description, reads only the references it needs, uses valid native tools, follows the procedure, and performs the documented verification. Tighten the skill and rerun the same class of task when any of those checks fails.
+
+## Create and Update with Hermes
+
+For skills resolved by the active profile:
+
+- Create with `skill_manage(action="create", name=..., content=..., category=...)`. Supply the complete `SKILL.md`; creation always targets `$HERMES_HOME/skills/` and fails on a name collision anywhere Hermes can discover.
+- Prefer `skill_manage(action="patch", ...)` for a focused correction. Read the current file first and include enough unique surrounding text.
+- Use `skill_manage(action="edit", ...)` only for a full rewrite, and supply the complete updated `SKILL.md`.
+- Add or replace supporting files with `skill_manage(action="write_file", ...)`; paths must be under `references/`, `templates/`, `scripts/`, or `assets/`.
+
+The update actions locate an existing user-created, bundled, Hub-installed, or configured external-directory skill and edit that resolved copy. Updating an installed copy does not update its upstream repository. For bundled or official optional source contributions, edit `skills/` or `optional-skills/` in the checkout with `patch` and `write_file`. Do not use `skill_manage(action="create")`: it targets the active profile, not the repository. Keep the source, its focused tests, and any generated documentation changes in the same contribution.
+
+### Generated Skill Documentation
+
+Pages under `website/docs/user-guide/skills/bundled/` and `website/docs/user-guide/skills/optional/` are generated from the corresponding `SKILL.md` files. Do not edit those pages directly. After changing an in-repo skill, regenerate the pages and catalogs from the repository root:
+
+```bash
+python3 website/scripts/generate-skill-docs.py
+```
+
+Review the generated diff, but continue to make content corrections in the source `SKILL.md`.
 
 ## Blueprints: skills that are also automations
 

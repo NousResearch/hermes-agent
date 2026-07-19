@@ -922,7 +922,8 @@ class TestUpdateInHelp:
         assert "/update" in result
 
     def test_update_is_known_command(self):
-        """The /update command is in the built-in gateway command dispatch map."""
-        from gateway.command_preprocessing_runtime_service import _BUILTIN_HANDLER_ATTRS
+        """The /update command is dispatched via GatewayRunner production handler."""
+        from gateway.run import GatewayRunner
 
-        assert _BUILTIN_HANDLER_ATTRS["update"] == "_handle_update_command"
+        assert hasattr(GatewayRunner, "_handle_update_command")
+        assert callable(getattr(GatewayRunner, "_handle_update_command"))

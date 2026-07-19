@@ -221,6 +221,7 @@ def test_auto_vision_degraded_note_for_local_cache_does_not_suggest_tool_loop():
 
 
 @pytest.mark.asyncio
+@pytest.mark.skip(reason="foreground_turn_runtime_service removed (was DEAD parallel path)")
 async def test_foreground_turn_image_only_falls_back_to_degraded_note_when_enrichment_returns_empty(
     monkeypatch,
 ):
@@ -968,6 +969,7 @@ def test_auto_vision_prunes_expired_and_old_cache_entries(monkeypatch):
 
 
 @pytest.mark.asyncio
+@pytest.mark.skip(reason="foreground_turn_runtime_service removed (was DEAD parallel path)")
 async def test_shared_thread_image_only_turn_uses_shared_auto_vision_enrichment():
     """Foreground prep should enrich image-only turns via auto-vision path."""
     from gateway.foreground_turn_runtime_service import prepare_gateway_foreground_message

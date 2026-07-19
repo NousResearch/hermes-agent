@@ -632,6 +632,129 @@ def test_notify_claim_is_single_owner_and_rewindable(kanban_home):
         conn2.close()
 
 
+def test_project_summary_notifier_claim_suppresses_member_and_cannot_replay(
+    kanban_home,
+):
+    from hermes_cli.project_finalization_contract import (
+        create_project_finalization,
+        register_project_member,
+    )
+
+    conn = kb.connect()
+    try:
+        root = kb.create_task(conn, title="project root", assignee="worker")
+        checker = kb.create_task(conn, title="project checker", assignee="checker")
+        repair = kb.create_task(conn, title="project repair", assignee="worker")
+        kb.add_notify_sub(
+            conn,
+            task_id=repair,
+            platform="telegram",
+            chat_id="project-chat",
+        )
+        create_project_finalization(
+            conn,
+            board_id="project-board",
+            root_task_id=root,
+            final_checker_task_id=checker,
+        )
+        register_project_member(
+            conn,
+            board_id="project-board",
+            root_task_id=root,
+            generation=1,
+            task_id=repair,
+            membership_kind="repair",
+            required=False,
+        )
+        with kb.write_txn(conn):
+            conn.execute(
+                "UPDATE project_finalizations SET admission_key = ? "
+                "WHERE board_id = ? AND root_task_id = ? AND generation = 1",
+                ("admission:sha256:test", "project-board", root),
+            )
+            kb._append_event(conn, repair, kind="crashed")
+
+        old_cursor, cursor, events, suppressed = kb.claim_notifier_events_for_sub(
+            conn,
+            task_id=repair,
+            platform="telegram",
+            chat_id="project-chat",
+            kinds=["crashed"],
+        )
+
+        assert suppressed is True
+        assert [event.kind for event in events] == ["crashed"]
+        assert cursor > old_cursor
+        sub = kb.list_notify_subs(conn, repair)[0]
+        assert int(sub["last_event_id"]) == cursor
+
+        replay_old, replay_cursor, replay_events, replay_suppressed = (
+            kb.claim_notifier_events_for_sub(
+                conn,
+                task_id=repair,
+                platform="telegram",
+                chat_id="project-chat",
+                kinds=["crashed"],
+            )
+        )
+        assert (replay_old, replay_cursor) == (cursor, cursor)
+        assert replay_events == []
+        assert replay_suppressed is False
+    finally:
+        conn.close()
+
+
+@pytest.mark.parametrize(
+    ("admission_key", "notification_policy"),
+    ((None, "project_summary"), ("admission:sha256:test", "verbose")),
+)
+def test_notifier_claim_preserves_non_admitted_or_non_summary_delivery(
+    kanban_home,
+    admission_key,
+    notification_policy,
+):
+    from hermes_cli.project_finalization_contract import create_project_finalization
+
+    conn = kb.connect()
+    try:
+        root = kb.create_task(conn, title="control root", assignee="worker")
+        checker = kb.create_task(conn, title="control checker", assignee="checker")
+        kb.add_notify_sub(
+            conn,
+            task_id=root,
+            platform="telegram",
+            chat_id="control-chat",
+        )
+        create_project_finalization(
+            conn,
+            board_id="control-board",
+            root_task_id=root,
+            final_checker_task_id=checker,
+            notification_policy=notification_policy,
+        )
+        if admission_key is not None:
+            with kb.write_txn(conn):
+                conn.execute(
+                    "UPDATE project_finalizations SET admission_key = ? "
+                    "WHERE board_id = ? AND root_task_id = ? AND generation = 1",
+                    (admission_key, "control-board", root),
+                )
+        kb._append_event(conn, root, kind="crashed")
+
+        _, _, events, suppressed = kb.claim_notifier_events_for_sub(
+            conn,
+            task_id=root,
+            platform="telegram",
+            chat_id="control-chat",
+            kinds=["crashed"],
+        )
+
+        assert [event.kind for event in events] == ["crashed"]
+        assert suppressed is False
+    finally:
+        conn.close()
+
+
 # ---------------------------------------------------------------------------
 # GC + retention
 # ---------------------------------------------------------------------------

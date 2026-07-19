@@ -1,10 +1,19 @@
 import asyncio
+import os
 from pathlib import Path
+from unittest.mock import patch
 
+import pytest
 
 from gateway.config import Platform
-from gateway.run import GatewayRunner
 from hermes_cli import kanban_db as kb
+
+
+@pytest.fixture(autouse=True)
+def _isolated_windows_home(tmp_path, monkeypatch):
+    # scripts/run_tests.sh intentionally removes Windows home variables.
+    # Keep Path.home() consumers inside the per-test temporary directory.
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
 
 
 class RecordingAdapter:
@@ -31,16 +40,30 @@ async def _run_one_notifier_tick(monkeypatch, runner):
         runner._running = False
         await real_sleep(0)
 
-    monkeypatch.setattr(asyncio, "sleep", fake_sleep)
-    await runner._kanban_notifier_watcher(interval=1)
+    with monkeypatch.context() as scoped:
+        scoped.setattr(asyncio, "sleep", fake_sleep)
+        await runner._kanban_notifier_watcher(interval=1)
 
 
 def _make_runner(adapter):
+    GatewayRunner = _gateway_runner_class()
+
     runner = GatewayRunner.__new__(GatewayRunner)
     runner._running = True
     runner.adapters = {Platform.TELEGRAM: adapter}
     runner._kanban_sub_fail_counts = {}
     return runner
+
+
+def _gateway_runner_class():
+    # The canonical runner deliberately clears Windows home variables. Import
+    # gateway.run under the already-isolated per-test HERMES_HOME instead of
+    # letting Path.home() fail during module initialization.
+    isolated_home = Path(os.environ["HERMES_HOME"]).parent
+    with patch.object(Path, "home", return_value=isolated_home):
+        from gateway.run import GatewayRunner
+
+    return GatewayRunner
 
 
 def _create_completed_subscription(summary="done once"):
@@ -52,6 +75,21 @@ def _create_completed_subscription(summary="done once"):
         return tid
     finally:
         conn.close()
+
+
+def _project_contract():
+    return {
+        "version": 1,
+        "scope": "normal notifier project-summary suppression",
+        "allowed_files": ["src/**"],
+        "forbidden_files": [],
+        "base_commit": "a" * 40,
+        "required_evidence": ["focused notifier test"],
+        "required_commands": ["scripts/run_tests.sh"],
+        "allow_child_creation": False,
+        "forbidden_git_actions": ["push"],
+        "notification_verified": True,
+    }
 
 
 def _unseen_terminal_events(tid):
@@ -105,12 +143,103 @@ def test_kanban_notifier_claim_prevents_second_watcher_send(tmp_path, monkeypatc
     assert adapter2.sent == []
 
 
+def test_admitted_project_summary_suppresses_normal_notifier_and_replay(
+    tmp_path,
+    monkeypatch,
+):
+    from hermes_cli import project_runtime_registration as runtime
+
+    db_path = tmp_path / "project-summary.db"
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    monkeypatch.setenv("HERMES_KANBAN_DB", str(db_path))
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
+    monkeypatch.setattr(runtime, "profile_exists", lambda profile: profile == "checker-terra")
+    kb.init_db()
+
+    conn = kb.connect()
+    try:
+        root = kb.create_task(
+            conn,
+            title="admitted project root",
+            assignee="builder-sol",
+            workspace_kind="dir",
+            workspace_path=str(workspace),
+        )
+        kb.add_notify_sub(
+            conn,
+            task_id=root,
+            platform="telegram",
+            chat_id="project-chat",
+        )
+        kb.set_task_contract(conn, root, _project_contract())
+        admitted = runtime.admit_existing_project(
+            conn,
+            board_id="project-summary",
+            root_task_id=root,
+            required_task_ids=(root,),
+            checker_profile="checker-terra",
+            now=100,
+        )
+        assert admitted.admission_key
+        kb._append_event(conn, root, kind="crashed")
+    finally:
+        conn.close()
+
+    adapter = RecordingAdapter()
+    asyncio.run(_run_one_notifier_tick(monkeypatch, _make_runner(adapter)))
+
+    assert adapter.sent == []
+    conn = kb.connect()
+    try:
+        sub = kb.list_notify_subs(conn, root)[0]
+        first_cursor = int(sub["last_event_id"])
+        crash_event_id = conn.execute(
+            "SELECT id FROM task_events WHERE task_id = ? AND kind = 'crashed'",
+            (root,),
+        ).fetchone()["id"]
+        assert first_cursor >= int(crash_event_id)
+    finally:
+        conn.close()
+
+    # A fresh watcher sees the advanced cursor and cannot replay the event.
+    asyncio.run(_run_one_notifier_tick(monkeypatch, _make_runner(adapter)))
+    assert adapter.sent == []
+    conn = kb.connect()
+    try:
+        assert int(kb.list_notify_subs(conn, root)[0]["last_event_id"]) == first_cursor
+        task_before_completion = kb.get_task(conn, root)
+        assert task_before_completion is not None
+        assert kb.complete_task(conn, root, summary="root complete"), (
+            f"unexpected pre-completion status: {task_before_completion.status}"
+        )
+    finally:
+        conn.close()
+
+    # Completion is also silent, while the normal terminal cleanup still
+    # removes the task subscription. The durable finalizer route is separate.
+    asyncio.run(_run_one_notifier_tick(monkeypatch, _make_runner(adapter)))
+    assert adapter.sent == []
+    conn = kb.connect()
+    try:
+        assert kb.list_notify_subs(conn, root) == []
+        route_count = conn.execute(
+            "SELECT COUNT(*) FROM project_finalization_notification_routes "
+            "WHERE board_id = ? AND root_task_id = ? AND generation = 1",
+            ("project-summary", root),
+        ).fetchone()[0]
+        assert route_count == 1
+    finally:
+        conn.close()
+
+
 def test_kanban_notifier_rewinds_claim_if_adapter_disconnects(tmp_path, monkeypatch):
     db_path = tmp_path / "adapter-disconnect.db"
     monkeypatch.setenv("HERMES_KANBAN_DB", str(db_path))
     kb.init_db()
     tid = _create_completed_subscription()
 
+    GatewayRunner = _gateway_runner_class()
     runner = GatewayRunner.__new__(GatewayRunner)
     runner._running = True
     runner.adapters = DisconnectedAdapters({Platform.TELEGRAM: RecordingAdapter()})
@@ -266,6 +395,7 @@ def test_notifier_owning_profile_adapter_no_default_fallback(tmp_path, monkeypat
 
     default_adapter = RecordingAdapter()
     other_adapter = RecordingAdapter()
+    GatewayRunner = _gateway_runner_class()
     runner = GatewayRunner.__new__(GatewayRunner)
     runner._running = True
     # Default profile has a telegram adapter …

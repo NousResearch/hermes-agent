@@ -1180,6 +1180,46 @@ def test_repairable_verdict_rotates_authority_and_fresh_checker_can_pass(
     assert terminal.terminal_outcome == "COMPLETE"
     assert terminal.checker_verdict == "PASS"
     assert len(deliveries) == 1
+
+    # Every copied ordinary task route would have produced an additional
+    # Kanban notification without the project-summary suppression boundary.
+    # Claim through the production notifier API after finalization to prove
+    # root, implementation, replaced checker, repair, and fresh checker events
+    # are all consumed silently and cannot replay beside the one summary.
+    suppressed_task_ids = set()
+    terminal_kinds = (
+        "completed",
+        "blocked",
+        "gave_up",
+        "crashed",
+        "timed_out",
+        "status",
+        "archived",
+        "unblocked",
+    )
+    for task_id in (root, implementation, first_checker, repair_id, second_checker):
+        subscriptions = kb.list_notify_subs(conn, task_id)
+        assert len(subscriptions) == 1
+        sub = subscriptions[0]
+        _, _, normal_events, suppressed = kb.claim_notifier_events_for_sub(
+            conn,
+            task_id=task_id,
+            platform=sub["platform"],
+            chat_id=sub["chat_id"],
+            thread_id=sub["thread_id"],
+            kinds=terminal_kinds,
+        )
+        assert normal_events
+        assert suppressed is True
+        suppressed_task_ids.add(task_id)
+    assert suppressed_task_ids == {
+        root,
+        implementation,
+        first_checker,
+        repair_id,
+        second_checker,
+    }
+
     all_events = [
         event
         for task in kb.list_tasks(conn, include_archived=True)

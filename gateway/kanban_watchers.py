@@ -425,7 +425,7 @@ class GatewayKanbanWatchersMixin:
                                         sub.get("task_id"), platform or "<missing>",
                                     )
                                     continue
-                                old_cursor, cursor, events = _kb.claim_unseen_events_for_sub(
+                                old_cursor, cursor, events, suppressed = _kb.claim_notifier_events_for_sub(
                                     conn,
                                     task_id=sub["task_id"],
                                     platform=sub["platform"],
@@ -436,6 +436,21 @@ class GatewayKanbanWatchersMixin:
                                 if not events:
                                     continue
                                 task = _kb.get_task(conn, sub["task_id"])
+                                if suppressed:
+                                    logger.debug(
+                                        "kanban notifier: suppressed %d normal event(s) for admitted project-summary member %s on board %s cursor %s→%s",
+                                        len(events), sub["task_id"], slug, old_cursor, cursor,
+                                    )
+                                    deliveries.append({
+                                        "sub": sub,
+                                        "old_cursor": old_cursor,
+                                        "cursor": cursor,
+                                        "events": events,
+                                        "task": task,
+                                        "board": slug,
+                                        "suppressed": True,
+                                    })
+                                    continue
                                 logger.debug(
                                     "kanban notifier: claimed %d event(s) for %s on board %s cursor %s→%s",
                                     len(events), sub["task_id"], slug, old_cursor, cursor,
@@ -457,6 +472,16 @@ class GatewayKanbanWatchersMixin:
                     sub = d["sub"]
                     task = d["task"]
                     board_slug = d.get("board")
+                    if d.get("suppressed"):
+                        # The atomic claim already advanced the cursor. Preserve
+                        # normal terminal subscription cleanup, but skip every
+                        # outward notifier side effect; the project finalizer's
+                        # durable route owns the single project summary.
+                        if task and task.status in {"done", "archived"}:
+                            await asyncio.to_thread(
+                                self._kanban_unsub, sub, board_slug,
+                            )
+                        continue
                     platform_str = (sub["platform"] or "").lower()
                     try:
                         plat = _Platform(platform_str)

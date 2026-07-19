@@ -10190,6 +10190,43 @@ def unseen_events_for_sub(
     return max_id, out
 
 
+def _claim_unseen_events_for_sub_unlocked(
+    conn: sqlite3.Connection,
+    *,
+    task_id: str,
+    platform: str,
+    chat_id: str,
+    thread_id: Optional[str] = None,
+    kinds: Optional[Iterable[str]] = None,
+) -> tuple[int, int, list[Event]]:
+    """Claim unseen events while the caller holds a write transaction."""
+    row = conn.execute(
+        "SELECT last_event_id FROM kanban_notify_subs "
+        "WHERE task_id = ? AND platform = ? AND chat_id = ? AND thread_id = ?",
+        (task_id, platform, chat_id, thread_id or ""),
+    ).fetchone()
+    if row is None:
+        return 0, 0, []
+    old_cursor = int(row["last_event_id"])
+    new_cursor, events = unseen_events_for_sub(
+        conn,
+        task_id=task_id,
+        platform=platform,
+        chat_id=chat_id,
+        thread_id=thread_id,
+        kinds=kinds,
+    )
+    if not events:
+        return old_cursor, old_cursor, []
+    conn.execute(
+        "UPDATE kanban_notify_subs SET last_event_id = ? "
+        "WHERE task_id = ? AND platform = ? AND chat_id = ? AND thread_id = ? "
+        "AND last_event_id = ?",
+        (int(new_cursor), task_id, platform, chat_id, thread_id or "", int(old_cursor)),
+    )
+    return old_cursor, new_cursor, events
+
+
 def claim_unseen_events_for_sub(
     conn: sqlite3.Connection,
     *,
@@ -10214,15 +10251,40 @@ def claim_unseen_events_for_sub(
     failed before any terminal unsubscribe removed the row.
     """
     with write_txn(conn):
-        row = conn.execute(
-            "SELECT last_event_id FROM kanban_notify_subs "
-            "WHERE task_id = ? AND platform = ? AND chat_id = ? AND thread_id = ?",
-            (task_id, platform, chat_id, thread_id or ""),
-        ).fetchone()
-        if row is None:
-            return 0, 0, []
-        old_cursor = int(row["last_event_id"])
-        new_cursor, events = unseen_events_for_sub(
+        return _claim_unseen_events_for_sub_unlocked(
+            conn,
+            task_id=task_id,
+            platform=platform,
+            chat_id=chat_id,
+            thread_id=thread_id,
+            kinds=kinds,
+        )
+
+
+def claim_notifier_events_for_sub(
+    conn: sqlite3.Connection,
+    *,
+    task_id: str,
+    platform: str,
+    chat_id: str,
+    thread_id: Optional[str] = None,
+    kinds: Optional[Iterable[str]] = None,
+) -> tuple[int, int, list[Event], bool]:
+    """Claim normal-notifier events and detect finalizer-owned delivery.
+
+    For a member of an admitted ``project_summary`` project, the project
+    finalizer owns the only outward notification.  The normal notifier still
+    claims and advances past the task events so they cannot replay after a
+    gateway restart, but the returned ``suppressed`` flag tells the watcher to
+    skip text, artifact, and synthetic-wake delivery.
+
+    Membership and the cursor claim are read under the same IMMEDIATE write
+    transaction.  Admission and notification therefore have a deterministic
+    order: a claim after admission is suppressed, while a claim that commits
+    first remains ordinary pre-admission behavior.
+    """
+    with write_txn(conn):
+        old_cursor, new_cursor, events = _claim_unseen_events_for_sub_unlocked(
             conn,
             task_id=task_id,
             platform=platform,
@@ -10231,14 +10293,23 @@ def claim_unseen_events_for_sub(
             kinds=kinds,
         )
         if not events:
-            return old_cursor, old_cursor, []
-        conn.execute(
-            "UPDATE kanban_notify_subs SET last_event_id = ? "
-            "WHERE task_id = ? AND platform = ? AND chat_id = ? AND thread_id = ? "
-            "AND last_event_id = ?",
-            (int(new_cursor), task_id, platform, chat_id, thread_id or "", int(old_cursor)),
-        )
-        return old_cursor, new_cursor, events
+            return old_cursor, new_cursor, events, False
+        suppress_normal_delivery = conn.execute(
+            """
+            SELECT 1
+              FROM project_finalization_members AS member
+              JOIN project_finalizations AS project
+                ON project.board_id = member.board_id
+               AND project.root_task_id = member.root_task_id
+               AND project.generation = member.generation
+             WHERE member.task_id = ?
+               AND project.admission_key IS NOT NULL
+               AND project.notification_policy = 'project_summary'
+             LIMIT 1
+            """,
+            (task_id,),
+        ).fetchone() is not None
+        return old_cursor, new_cursor, events, suppress_normal_delivery
 
 
 def advance_notify_cursor(

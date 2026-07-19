@@ -83,7 +83,10 @@ def _resolve_base_url(config_value: Any = "") -> str:
 
     Supports self-hosted Supermemory servers (e.g. http://localhost:6767).
     """
-    raw = str(config_value or "").strip() or os.environ.get("SUPERMEMORY_BASE_URL", "").strip()
+    raw = (
+        str(config_value or "").strip()
+        or os.environ.get("SUPERMEMORY_BASE_URL", "").strip()
+    )
     return (raw or _DEFAULT_BASE_URL).rstrip("/") or _DEFAULT_BASE_URL
 
 
@@ -274,8 +277,8 @@ def _is_trivial_message(text: str) -> bool:
 
 
 class _SupermemoryClient:
-    def __init__(self, api_key: str, timeout: float, container_tag: str, search_mode: str = "hybrid",
-                 base_url: str = ""):
+    def __init__(self, api_key: str, timeout: float, container_tag: str,
+                 search_mode: str = "hybrid", base_url: str = ""):
         # Lazy-install the supermemory SDK on demand. ensure() honors
         # security.allow_lazy_installs (default true) and, on a sealed Docker
         # venv, redirects the install to the durable target. On failure we
@@ -294,7 +297,7 @@ class _SupermemoryClient:
         self._container_tag = container_tag
         self._search_mode = search_mode if search_mode in _VALID_SEARCH_MODES else _DEFAULT_SEARCH_MODE
         self._timeout = timeout
-        self._base_url = (base_url or _DEFAULT_BASE_URL).rstrip("/") or _DEFAULT_BASE_URL
+        self._base_url = _resolve_base_url(base_url)
         self._client = Supermemory(
             api_key=api_key,
             base_url=self._base_url,
@@ -423,6 +426,7 @@ def _resolve_container_tag_for_setup(hermes_home: str, *, identity: str = "defau
 
 def _probe_supermemory_connection(api_key: str, hermes_home: str, *, identity: str = "default") -> dict:
     config = _load_supermemory_config(hermes_home)
+    base_url = _resolve_base_url(config["base_url"])
     status = {
         "ok": False,
         "error": "",
@@ -445,6 +449,7 @@ def _probe_supermemory_connection(api_key: str, hermes_home: str, *, identity: s
             timeout=config["api_timeout"],
             container_tag=status["container_tag"],
             search_mode=config["search_mode"],
+            base_url=base_url,
         )
         profile = client.get_profile()
         facts = [

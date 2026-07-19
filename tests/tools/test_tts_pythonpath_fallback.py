@@ -1,7 +1,7 @@
 """Regression tests for #53259.
 
-When TTS packages (edge-tts, elevenlabs, mistralai) installed outside the
-venv but importable on sys.path (e.g. via PYTHONPATH, Docker layered
+When TTS/STT packages (edge-tts, elevenlabs, mistralai) installed outside
+the venv but importable on sys.path (e.g. via PYTHONPATH, Docker layered
 filesystems), the lazy-import helpers must fall through to the raw import
 instead of re-raising lazy_deps.ensure() failures as ImportError.
 
@@ -101,3 +101,47 @@ class TestMistralPythonpathFallback:
             from tools.tts_tool import _import_mistral_client
             with pytest.raises(ImportError):
                 _import_mistral_client()
+
+
+# ── STT: _transcribe_mistral fallthrough ───────────────────────────────────
+
+
+class TestMistralSttPythonpathFallback:
+    def test_transcribe_mistral_falls_through_on_lazy_deps_failure(
+        self, tmp_path,
+    ):
+        """FeatureUnavailable from ensure('stt.mistral') must not block
+        transcription when mistralai is importable via PYTHONPATH."""
+        from tools.transcription_tools import _transcribe_mistral
+
+        audio_file = tmp_path / "audio.wav"
+        audio_file.write_bytes(b"fake-audio")
+
+        mock_client_cls = MagicMock()
+        mock_result = MagicMock()
+        mock_result.text = "hello world"
+        mock_client_cls.return_value.__enter__ = MagicMock(
+            return_value=MagicMock(
+                audio=MagicMock(
+                    transcriptions=MagicMock(
+                        complete=MagicMock(return_value=mock_result),
+                    ),
+                ),
+            ),
+        )
+        mock_client_cls.return_value.__exit__ = MagicMock(return_value=False)
+
+        mock_mistralai = MagicMock()
+        mock_mistralai.Mistral = mock_client_cls
+
+        with patch.dict(sys.modules, {
+            "mistralai": mock_mistralai,
+            "mistralai.client": mock_mistralai,
+        }), patch("tools.lazy_deps.ensure",
+                  side_effect=FeatureUnavailable("stt.mistral", (), "test")), \
+             patch("tools.transcription_tools.get_env_value",
+                   return_value="test-key"):
+            result = _transcribe_mistral(str(audio_file), "mistral-large-latest")
+
+        assert result["success"] is True
+        assert result["transcript"] == "hello world"

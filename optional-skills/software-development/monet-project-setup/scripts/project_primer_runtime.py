@@ -81,9 +81,10 @@ _SECRET_KEY = re.compile(
     r"(?i)(?:^|[_-])(password|passwd|secret|token|api[_-]?key|private[_-]?key|cookies?|authorization|credentials?)(?:$|[_-])"
 )
 _SECRET_VALUE_PATTERNS = (
-    re.compile(r"-----BEGIN (?:RSA |EC |OPENSSH )?PRIVATE KEY-----"),
+    re.compile(r"-----BEGIN [A-Z0-9 ]*PRIVATE KEY(?: BLOCK)?-----"),
     re.compile(r"\bgh[opusr]_[A-Za-z0-9_]{20,}\b"),
     re.compile(r"\bgithub_pat_[A-Za-z0-9_]{20,}\b"),
+    re.compile(r"\beyJ[A-Za-z0-9_-]{8,}\.eyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\b"),
     re.compile(r"\bxox[baprs]-[A-Za-z0-9-]{20,}\b"),
     re.compile(r"\bsk-(?:proj-|ant-)?[A-Za-z0-9_-]{20,}\b"),
     re.compile(r"\bAKIA[0-9A-Z]{16}\b"),
@@ -533,29 +534,47 @@ def _validate_http_url(value: str) -> str:
     return value
 
 
-def _reject_secret_material(value: Any, *, path: tuple[str, ...] = ()) -> None:
+_CAMEL_BOUNDARY = re.compile(r"(?<=[a-z0-9])(?=[A-Z])")
+
+
+def _reject_secret_material(
+    value: Any,
+    *,
+    path: tuple[str, ...] = (),
+    allow_slot_metadata: bool = True,
+) -> None:
     """Reject credential-looking material anywhere in a Primer.
 
-    Secret slot metadata is allowed. Values are not. Strict Pydantic models
-    already reject unknown ``token``/``password`` fields; this second layer
-    catches credentials pasted into notes, URLs, resource references, or other
-    nominally safe strings.
+    Secret slot metadata is allowed in schema-validated Primer data. Values
+    are not. Key names are matched on snake_case, kebab-case, and camelCase
+    boundaries; a secret-named key whose value is null carries nothing and is
+    allowed. Strict Pydantic models already reject unknown ``token``/
+    ``password`` fields; this second layer catches credentials pasted into
+    notes, URLs, resource references, or other nominally safe strings.
     """
 
     if isinstance(value, dict):
         for key, child in value.items():
             # These schema fields describe secret *requirements* and are safe.
-            if _SECRET_KEY.search(str(key)) and key not in {
-                "secret_slots",
-                "source_environment_variable",
-            }:
+            if (
+                child is not None
+                and _SECRET_KEY.search(_CAMEL_BOUNDARY.sub("_", str(key)))
+                and not (
+                    allow_slot_metadata
+                    and key in {"secret_slots", "source_environment_variable"}
+                )
+            ):
                 location = ".".join((*path, str(key)))
                 raise ValueError(f"credential field is not allowed at {location}")
-            _reject_secret_material(child, path=(*path, str(key)))
+            _reject_secret_material(
+                child, path=(*path, str(key)), allow_slot_metadata=allow_slot_metadata
+            )
         return
     if isinstance(value, list):
         for index, child in enumerate(value):
-            _reject_secret_material(child, path=(*path, str(index)))
+            _reject_secret_material(
+                child, path=(*path, str(index)), allow_slot_metadata=allow_slot_metadata
+            )
         return
     if not isinstance(value, str):
         return
@@ -563,6 +582,21 @@ def _reject_secret_material(value: Any, *, path: tuple[str, ...] = ()) -> None:
         if pattern.search(value):
             location = ".".join(path) or "Primer"
             raise ValueError(f"credential-like value is not allowed at {location}")
+
+
+def reject_secret_material(
+    value: Any, *, label: str, allow_slot_metadata: bool = False
+) -> None:
+    """Reject credential-like keys or values anywhere in parsed JSON data.
+
+    Package members other than ``primer.json`` bypass Pydantic validation, so
+    verifiers must run every parsed member through this scan before reporting
+    ``containsSecrets: false``. Pass ``allow_slot_metadata=True`` only for
+    data derived from a schema-validated Primer, where ``secret_slots``
+    describes requirements rather than carrying values.
+    """
+
+    _reject_secret_material(value, path=(label,), allow_slot_metadata=allow_slot_metadata)
 
 
 def load_project_primer(value: str | bytes | Path | dict[str, Any]) -> ProjectPrimer:

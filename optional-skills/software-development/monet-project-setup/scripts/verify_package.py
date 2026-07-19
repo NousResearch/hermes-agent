@@ -4,15 +4,20 @@
 from __future__ import annotations
 
 import argparse
+import base64
 import json
 import re
 import struct
 import sys
 import zipfile
+import zlib
 from pathlib import Path, PurePosixPath
 from urllib.parse import urlparse
 
-from project_primer_runtime import load_project_primer  # type: ignore[import-not-found]
+from project_primer_runtime import (  # type: ignore[import-not-found]
+    load_project_primer,
+    reject_secret_material,
+)
 
 MAX_TOTAL_BYTES = 600_000_000
 MAX_PACKAGE_BYTES = MAX_TOTAL_BYTES
@@ -37,18 +42,82 @@ def _safe_member(info: zipfile.ZipInfo) -> bool:
         and info.file_size <= MAX_MEMBER_BYTES
         and not is_symlink
         and not (info.flag_bits & 0x1)
+        and not info.comment
     )
 
 
-def _png_dimensions(archive: zipfile.ZipFile, member: str) -> tuple[int, int]:
-    with archive.open(member) as stream:
-        header = stream.read(24)
-    if len(header) != 24 or header[:8] != PNG_SIGNATURE or header[12:16] != b"IHDR":
+_DISALLOWED_PNG_CHUNKS = {b"tEXt", b"zTXt", b"iTXt"}
+
+
+def _verify_png_member(archive: zipfile.ZipFile, member: str) -> tuple[int, int]:
+    """Require a structurally sound PNG with no text chunks or trailing bytes.
+
+    Screenshots are binary members the JSON secret scan never sees, so the
+    classic smuggling channels (data after IEND, tEXt/zTXt/iTXt chunks) are
+    rejected outright and the raw bytes are scanned for credential patterns.
+    """
+
+    data = archive.read(member)
+    if len(data) < 45 or data[:8] != PNG_SIGNATURE:
         raise ValueError(f"Preview screenshot is not a PNG: {member}")
-    width, height = struct.unpack(">II", header[16:24])
-    if width == 0 or height == 0 or width * height > 100_000_000:
-        raise ValueError(f"Preview screenshot dimensions are unsafe: {member}")
+    width = height = 0
+    offset = 8
+    first = True
+    ended = False
+    while offset < len(data):
+        if ended or offset + 12 > len(data):
+            raise ValueError(f"Preview screenshot has trailing or malformed data: {member}")
+        (length,) = struct.unpack(">I", data[offset : offset + 4])
+        chunk_type = data[offset + 4 : offset + 8]
+        body_end = offset + 8 + length
+        if body_end + 4 > len(data):
+            raise ValueError(f"Preview screenshot has trailing or malformed data: {member}")
+        body = data[offset + 8 : body_end]
+        (crc,) = struct.unpack(">I", data[body_end : body_end + 4])
+        if zlib.crc32(chunk_type + body) & 0xFFFFFFFF != crc:
+            raise ValueError(f"Preview screenshot fails its PNG integrity check: {member}")
+        if first:
+            if chunk_type != b"IHDR" or length != 13:
+                raise ValueError(f"Preview screenshot is not a PNG: {member}")
+            width, height = struct.unpack(">II", body[:8])
+            if width == 0 or height == 0 or width * height > 100_000_000:
+                raise ValueError(f"Preview screenshot dimensions are unsafe: {member}")
+            first = False
+        elif chunk_type in _DISALLOWED_PNG_CHUNKS:
+            raise ValueError(f"Preview screenshot carries embedded text metadata: {member}")
+        if chunk_type == b"IEND":
+            ended = True
+        offset = body_end + 4
+    if first or not ended:
+        raise ValueError(f"Preview screenshot is not a PNG: {member}")
+    reject_secret_material(data.decode("latin-1"), label=member)
     return width, height
+
+
+def _reject_embedded_config(project: dict) -> None:
+    """Decode the base64 JSON blobs the builder writes and scan their content."""
+
+    def scan(value: object, label: str, *, allow_slot_metadata: bool) -> None:
+        if value is None:
+            return
+        if not isinstance(value, str):
+            raise ValueError(f"{label} must be base64 JSON.")
+        try:
+            decoded = json.loads(base64.b64decode(value, validate=True))
+        except ValueError:
+            raise ValueError(f"{label} is not decodable base64 JSON.") from None
+        reject_secret_material(decoded, label=label, allow_slot_metadata=allow_slot_metadata)
+
+    scan(project.get("sourcesJSON"), "project.json.sourcesJSON", allow_slot_metadata=False)
+    connectors = project.get("connectors")
+    if isinstance(connectors, list):
+        for index, connector in enumerate(connectors):
+            if isinstance(connector, dict):
+                scan(
+                    connector.get("configJSON"),
+                    f"project.json.connectors.{index}.configJSON",
+                    allow_slot_metadata=True,
+                )
 
 
 def _configured_hosts(primer: object) -> set[str]:
@@ -68,6 +137,7 @@ def _verify_preview(
     if PREVIEW_VERSION_JSON not in names:
         raise ValueError("Agent Preview Pack is missing its version metadata.")
     version = json.loads(archive.read(PREVIEW_VERSION_JSON))
+    reject_secret_material(version, label=PREVIEW_VERSION_JSON)
     if version.get("captureKind") != "agent-preview":
         raise ValueError("Agent Preview Pack has the wrong capture provenance.")
     if version.get("capturedWith") not in {"chromium", "chrome", "edge", "firefox", "webkit"}:
@@ -103,7 +173,7 @@ def _verify_preview(
         screenshot = f"versions/hermes-preview/pages/{slug}.png"
         if screenshot not in names:
             raise ValueError(f"Agent Preview screenshot is missing: {slug}.png")
-        _png_dimensions(archive, screenshot)
+        _verify_png_member(archive, screenshot)
         allowed.add(screenshot)
 
     if names != allowed:
@@ -121,6 +191,8 @@ def verify(path: Path) -> dict[str, object]:
         raise ValueError("Monet project package exceeds the safe compressed size limit.")
 
     with zipfile.ZipFile(path) as archive:
+        if archive.comment:
+            raise ValueError("Monet project package must not carry an archive comment.")
         infos = archive.infolist()
         if len(infos) > MAX_MEMBERS:
             raise ValueError("Monet project package contains too many members.")
@@ -132,8 +204,13 @@ def verify(path: Path) -> dict[str, object]:
         if not BASE_MEMBERS.issubset(names):
             raise ValueError("Monet project package is missing required metadata.")
 
+        # Every JSON member is scanned so the reported "containsSecrets": false
+        # reflects inspection of this file, not trust in how it was built.
         manifest = json.loads(archive.read("manifest.json"))
+        reject_secret_material(manifest, label="manifest.json")
         project = json.loads(archive.read("project.json"))
+        reject_secret_material(project, label="project.json")
+        _reject_embedded_config(project)
         primer = load_project_primer(archive.read("primer.json"))
         version_count = manifest.get("versionCount")
         preview_label: str | None = None

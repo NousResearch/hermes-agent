@@ -19,7 +19,7 @@ contain sensitive data even when the package JSON contains no credential.
 - Environment-variable values.
 - `.env`, credential, cookie, session, SSH, signing, or private-key contents.
 - Authorization headers or URLs containing `user:password@host`.
-- GitHub/Vercel/Google/Slack/OpenAI/Anthropic/provider tokens.
+- GitHub, Vercel, Google, Slack, AI-provider, or any other API tokens.
 - Commands, scripts, JS snippets, pre/post hooks, or installer instructions in
   machine-executable fields.
 - Raw HTML, response bodies, browser storage, network traces, source maps, or

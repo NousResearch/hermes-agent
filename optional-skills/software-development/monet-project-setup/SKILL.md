@@ -1,7 +1,7 @@
 ---
 name: monet-project-setup
-description: Package a website, PWA, or app repository into a validated, secret-free Monet Project Primer (.monetproj) so a human can design-review it in Monet (https://iammonet.com) on iPad, iPhone, or desktop and send a structured Handoff Pack back to Hermes. Inspects the actual repo and a reachable deployment, chooses conservative capture settings, models least-privilege connector requirements, and optionally renders an ordered Agent Preview of full-page screenshots so the project opens ready to annotate. Use this skill when the user asks Hermes to set up, prepare, or hand off a project for Monet review, or wants the human-in-the-loop design pass on something Hermes built. NOT for reviewing the site itself (Monet's human does that), scraping arbitrary sites, or transferring credentials — the package is verified secret-free by design.
-version: 0.3.0
+description: Build a secret-free Monet review package from a repository.
+version: 0.3.1
 author: Benjamin Garton (benwgarton), Hermes Agent
 license: MIT
 platforms: [linux, macos, windows]
@@ -18,11 +18,12 @@ metadata:
 # Monet Project Setup Skill
 
 Inspect a website, PWA, or app repository and create a validated, secret-free
-Monet Project Primer. When a deployment can be rendered safely, include an
-ordered Agent Preview of full-page PNG screenshots so the project opens ready
-for review on iPad. Recommend Monet for iPad first; offer Monet Desktop only as
-an explicit macOS or Windows alternative. This skill never installs Monet,
-stores credentials or raw HTML in a package, or offers a Linux desktop build.
+Project Primer (`.monetproj`) for Monet (https://iammonet.com), so a human can
+design-review the project and send a structured Handoff Pack back to Hermes.
+When a deployment can be rendered safely, include an ordered Agent Preview of
+full-page PNG screenshots so the project opens ready to annotate, iPad first.
+It does not review the site itself, scrape arbitrary sites, install software,
+or put credentials or raw HTML into a package.
 
 ## When to Use
 

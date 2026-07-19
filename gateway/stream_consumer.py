@@ -255,6 +255,12 @@ class GatewayStreamConsumer:
         return meta or None
 
     @property
+    def _has_keyed_status(self) -> bool:
+        return bool(
+            isinstance(self.metadata, dict) and self.metadata.get("status_key")
+        )
+
+    @property
     def already_sent(self) -> bool:
         """True if at least one message was sent or edited during the run."""
         return self._already_sent
@@ -678,6 +684,7 @@ class GatewayStreamConsumer:
                     if (
                         _len_fn(self._accumulated) > _safe_limit
                         and self._message_id is None
+                        and not self._has_keyed_status
                     ):
                         # No existing message to edit (first message or after a
                         # segment break).  Use truncate_message — the same
@@ -721,6 +728,7 @@ class GatewayStreamConsumer:
                         _len_fn(self._accumulated) > _safe_limit
                         and self._message_id is not None
                         and self._edit_supported
+                        and not self._has_keyed_status
                     ):
                         _cp_budget = _custom_unit_to_cp(
                             self._accumulated, _safe_limit, _len_fn,
@@ -828,7 +836,11 @@ class GatewayStreamConsumer:
                                 # not duplicate the visible prefix.
                                 await self._send_fallback_final(self._accumulated)
                         elif not self._already_sent:
-                            self._final_response_sent = await self._send_or_edit(self._accumulated)
+                            self._final_response_sent = await self._send_or_edit(
+                                self._accumulated,
+                                finalize=True,
+                                is_turn_final=True,
+                            )
                             if self._final_response_sent:
                                 self._final_content_delivered = True
                     return
@@ -1074,6 +1086,32 @@ class GatewayStreamConsumer:
                 return
 
         raw_limit = getattr(self.adapter, "MAX_MESSAGE_LENGTH", 4096)
+        if self._has_keyed_status:
+            # A keyed Discord fallback replaces the retained card. Sending
+            # pre-split chunks with the same key would edit each chunk over the
+            # previous one and leave only the tail visible. Give the adapter
+            # the complete answer once so its terminal overflow splitter owns
+            # the existing-message edit plus continuation messages.
+            result = await self.adapter.send(
+                chat_id=self.chat_id,
+                content=final_text,
+                metadata=self._metadata_for_send(final=True),
+            )
+            if result.success:
+                if result.message_id:
+                    self._message_id = str(result.message_id)
+                    self._track_preview_ids_from_result(result)
+                self._already_sent = True
+                self._final_response_sent = True
+                self._final_content_delivered = True
+                self._last_sent_text = final_text
+                self._fallback_prefix = ""
+                self._fallback_preserve_partial_messages = False
+            else:
+                self._final_response_sent = False
+                self._final_content_delivered = False
+            return
+
         _len_fn: "Callable[[str], int]" = (
             self.adapter.message_len_fn
             if isinstance(self.adapter, _BasePlatformAdapter)
@@ -1725,7 +1763,11 @@ class GatewayStreamConsumer:
                     # their streaming UI can transition out of the in-
                     # progress state.  Everyone else short-circuits.
                     if text == self._last_sent_text and not (
-                        finalize and self._adapter_requires_finalize
+                        finalize
+                        and (
+                            self._adapter_requires_finalize
+                            or (is_turn_final and self._has_keyed_status)
+                        )
                     ):
                         return True
                     # Fresh-final for long-lived previews: when finalizing

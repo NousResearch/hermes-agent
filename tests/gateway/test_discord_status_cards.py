@@ -10,6 +10,7 @@ import pytest
 
 from gateway.config import PlatformConfig
 from gateway.platforms.base import SendResult
+from gateway.stream_consumer import GatewayStreamConsumer, StreamConsumerConfig
 from plugins.platforms.discord.adapter import DiscordAdapter
 
 
@@ -140,6 +141,32 @@ async def test_terminal_result_replaces_retained_card_as_plaintext(adapter):
 
 
 @pytest.mark.asyncio
+async def test_late_running_update_cannot_downgrade_terminal_card(adapter):
+    adapter.send.return_value = SendResult(success=True, message_id="7001")
+    adapter.edit_message.return_value = SendResult(success=True, message_id="7001")
+
+    await adapter.send_or_update_status(
+        "555", "run-1", "Working", metadata={"thread_id": "777"}
+    )
+    terminal = await adapter.send_or_update_status(
+        "555",
+        "run-1",
+        "Complete final result",
+        metadata={"thread_id": "777", "status_terminal": True},
+    )
+    late = await adapter.send_or_update_status(
+        "555", "run-1", "Still working", metadata={"thread_id": "777"}
+    )
+
+    assert terminal.message_id == late.message_id == "7001"
+    adapter.send.assert_awaited_once()
+    adapter.edit_message.assert_awaited_once()
+    assert adapter._status_message_terminal == {
+        ("555", "777", "run-1"): True,
+    }
+
+
+@pytest.mark.asyncio
 async def test_edit_failure_sends_exactly_one_fresh_plaintext_final_and_recaches(adapter):
     adapter.send.side_effect = [
         SendResult(success=True, message_id="7001"),
@@ -260,6 +287,7 @@ async def test_status_identity_cache_evicts_oldest_inactive_runs(adapter):
     assert set(adapter._status_message_ids) == expected_keys
     assert set(adapter._status_message_fingerprints) == expected_keys
     assert set(adapter._status_message_locks) == expected_keys
+    assert set(adapter._status_message_terminal) == expected_keys
     assert adapter._status_message_users == {}
 
 
@@ -306,6 +334,7 @@ async def test_failed_new_status_does_not_retain_an_orphan_lock(adapter):
     assert adapter._status_message_ids == {}
     assert adapter._status_message_fingerprints == {}
     assert adapter._status_message_locks == {}
+    assert adapter._status_message_terminal == {}
     assert adapter._status_message_users == {}
 
 
@@ -476,3 +505,98 @@ async def test_gateway_style_running_edit_refreshes_embed_in_routed_thread(
     assert retained.edit.await_args.kwargs["content"].startswith(
         "🔵 **Info — Task running**"
     )
+
+
+@pytest.mark.asyncio
+async def test_keyed_consumer_fresh_oversized_final_preserves_all_chunks(
+    tmp_path,
+    monkeypatch,
+):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    instance = DiscordAdapter(PlatformConfig(enabled=True, token="***"))
+    sent = []
+
+    async def send_message(**kwargs):
+        message = SimpleNamespace(id=7001 + len(sent), edit=AsyncMock())
+        sent.append((kwargs, message))
+        return message
+
+    thread = SimpleNamespace(
+        id=777,
+        send=AsyncMock(side_effect=send_message),
+        fetch_message=AsyncMock(),
+    )
+    instance._client = SimpleNamespace(
+        get_channel=lambda channel_id: thread if channel_id == 777 else None,
+        fetch_channel=AsyncMock(),
+    )
+    final_text = "A" * 2200 + "B" * 2200
+    consumer = GatewayStreamConsumer(
+        adapter=instance,
+        chat_id="555",
+        config=StreamConsumerConfig(cursor="", buffer_only=True),
+        metadata={"thread_id": "777", "status_key": "task_run:message:42"},
+    )
+    consumer.on_delta(final_text)
+    consumer.finish()
+
+    await consumer.run()
+
+    assert consumer.final_response_sent is True
+    assert len(sent) >= 2
+    assert sent[0][0]["content"].startswith("A" * 100)
+    assert "B" * 100 in sent[-1][0]["content"]
+    assert all(message.edit.await_count == 0 for _kwargs, message in sent)
+
+
+@pytest.mark.asyncio
+async def test_keyed_consumer_fallback_oversized_final_preserves_all_chunks(
+    tmp_path,
+    monkeypatch,
+):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    monkeypatch.setattr(
+        "plugins.platforms.discord.adapter._build_operator_card_embed",
+        lambda card: {"kind": card.card_type},
+    )
+    instance = DiscordAdapter(PlatformConfig(enabled=True, token="***"))
+    sent = []
+
+    async def send_message(**kwargs):
+        message = SimpleNamespace(id=7001 + len(sent), edit=AsyncMock())
+        sent.append((kwargs, message))
+        return message
+
+    thread = SimpleNamespace(
+        id=777,
+        send=AsyncMock(side_effect=send_message),
+        fetch_message=AsyncMock(),
+    )
+    instance._client = SimpleNamespace(
+        get_channel=lambda channel_id: thread if channel_id == 777 else None,
+        fetch_channel=AsyncMock(),
+    )
+    running = await instance.send(
+        "555",
+        "Working",
+        metadata={"thread_id": "777", "status_key": "task_run:message:42"},
+    )
+    retained = sent[0][1]
+    thread.fetch_message.return_value = retained
+    final_text = "A" * 2200 + "B" * 2200
+    consumer = GatewayStreamConsumer(
+        adapter=instance,
+        chat_id="555",
+        config=StreamConsumerConfig(cursor=""),
+        metadata={"thread_id": "777", "status_key": "task_run:message:42"},
+    )
+    consumer._message_id = running.message_id
+    consumer._fallback_final_send = True
+
+    await consumer._send_fallback_final(final_text)
+
+    assert consumer.final_response_sent is True
+    assert retained.edit.await_count == 1
+    assert retained.edit.await_args.kwargs["content"].startswith("A" * 100)
+    assert len(sent) >= 2
+    assert "B" * 100 in sent[-1][0]["content"]

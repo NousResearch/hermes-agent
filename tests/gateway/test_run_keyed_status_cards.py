@@ -131,6 +131,104 @@ async def test_stream_terminal_metadata_is_copied_not_shared_with_heartbeat():
     ]
 
 
+@pytest.mark.asyncio
+async def test_identical_empty_cursor_final_still_terminalizes_keyed_card():
+    calls = []
+
+    class _Adapter:
+        async def edit_message(
+            self,
+            chat_id,
+            message_id,
+            content,
+            *,
+            finalize=False,
+            metadata=None,
+        ):
+            calls.append(
+                {
+                    "chat_id": chat_id,
+                    "message_id": message_id,
+                    "content": content,
+                    "finalize": finalize,
+                    "metadata": metadata,
+                }
+            )
+            return SendResult(success=True, message_id=message_id)
+
+    final_text = "Complete final result " * 40
+    consumer = GatewayStreamConsumer(
+        adapter=_Adapter(),
+        chat_id="555",
+        config=StreamConsumerConfig(cursor=""),
+        metadata={"thread_id": "777", "status_key": "task_run:message:42"},
+    )
+    consumer._message_id = "7001"
+    consumer._last_sent_text = final_text
+
+    delivered = await consumer._send_or_edit(
+        final_text,
+        finalize=True,
+        is_turn_final=True,
+    )
+
+    assert delivered is True
+    assert calls == [
+        {
+            "chat_id": "555",
+            "message_id": "7001",
+            "content": final_text,
+            "finalize": True,
+            "metadata": {
+                "thread_id": "777",
+                "status_key": "task_run:message:42",
+                "status_terminal": True,
+            },
+        }
+    ]
+
+
+@pytest.mark.asyncio
+async def test_recovered_done_send_keeps_terminal_metadata():
+    calls = []
+
+    class _Adapter:
+        async def send(self, chat_id, content, reply_to=None, metadata=None):
+            calls.append(metadata)
+            if len(calls) == 1:
+                return SendResult(success=False, error="temporary")
+            return SendResult(success=True, message_id="7001")
+
+    consumer = GatewayStreamConsumer(
+        adapter=_Adapter(),
+        chat_id="555",
+        config=StreamConsumerConfig(cursor="", buffer_only=True),
+        metadata={"thread_id": "777", "status_key": "task_run:message:42"},
+    )
+    consumer.on_delta("Complete final result")
+    consumer.finish()
+
+    await consumer.run()
+
+    assert consumer.final_response_sent is True
+    assert calls == [
+        {
+            "thread_id": "777",
+            "status_key": "task_run:message:42",
+            "expect_edits": True,
+            "notify": True,
+            "status_terminal": True,
+        },
+        {
+            "thread_id": "777",
+            "status_key": "task_run:message:42",
+            "expect_edits": True,
+            "notify": True,
+            "status_terminal": True,
+        },
+    ]
+
+
 class _FinalDeliveryAdapter(BasePlatformAdapter):
     def __init__(self):
         super().__init__(

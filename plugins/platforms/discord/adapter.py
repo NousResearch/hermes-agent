@@ -1019,6 +1019,7 @@ class DiscordAdapter(BasePlatformAdapter):
         self._status_message_fingerprints: Dict[tuple[str, str, str], str] = {}
         self._status_message_locks: Dict[tuple[str, str, str], asyncio.Lock] = {}
         self._status_message_users: Dict[tuple[str, str, str], int] = {}
+        self._status_message_terminal: Dict[tuple[str, str, str], bool] = {}
         # Persistent typing indicator loops per channel (DMs don't reliably
         # show the standard typing gateway event for bots)
         self._typing_tasks: Dict[str, asyncio.Task] = {}
@@ -3218,6 +3219,8 @@ class DiscordAdapter(BasePlatformAdapter):
         key: tuple[str, str, str],
         message_id: str,
         fingerprint: str,
+        *,
+        terminal: bool = False,
     ) -> None:
         """Cache one identity and evict the oldest inactive status runs.
 
@@ -3229,6 +3232,8 @@ class DiscordAdapter(BasePlatformAdapter):
         self._status_message_fingerprints.pop(key, None)
         self._status_message_ids[key] = message_id
         self._status_message_fingerprints[key] = fingerprint
+        if terminal:
+            self._status_message_terminal[key] = True
 
         while len(self._status_message_ids) > self._STATUS_MESSAGE_CACHE_LIMIT:
             evict_key = next(
@@ -3246,6 +3251,7 @@ class DiscordAdapter(BasePlatformAdapter):
             self._status_message_fingerprints.pop(evict_key, None)
             self._status_message_locks.pop(evict_key, None)
             self._status_message_users.pop(evict_key, None)
+            self._status_message_terminal.pop(evict_key, None)
 
     async def send_or_update_status(
         self,
@@ -3293,10 +3299,24 @@ class DiscordAdapter(BasePlatformAdapter):
                 )
                 cached_id = self._status_message_ids.get(key)
                 if (
+                    not terminal
+                    and cached_id is not None
+                    and self._status_message_terminal.get(key)
+                ):
+                    # Final delivery is monotonic. A late progress callback or
+                    # heartbeat must never turn the complete plaintext answer
+                    # back into a running operator card.
+                    return SendResult(success=True, message_id=cached_id)
+                if (
                     cached_id is not None
                     and self._status_message_fingerprints.get(key) == fingerprint
                 ):
-                    self._cache_status_message(key, cached_id, fingerprint)
+                    self._cache_status_message(
+                        key,
+                        cached_id,
+                        fingerprint,
+                        terminal=terminal,
+                    )
                     return SendResult(success=True, message_id=cached_id)
 
                 edit_failed = False
@@ -3310,7 +3330,12 @@ class DiscordAdapter(BasePlatformAdapter):
                     )
                     if result.success:
                         retained_id = str(result.message_id or cached_id)
-                        self._cache_status_message(key, retained_id, fingerprint)
+                        self._cache_status_message(
+                            key,
+                            retained_id,
+                            fingerprint,
+                            terminal=terminal,
+                        )
                         return result
                     edit_failed = True
                     self._status_message_ids.pop(key, None)
@@ -3359,6 +3384,7 @@ class DiscordAdapter(BasePlatformAdapter):
                         key,
                         str(result.message_id),
                         fingerprint,
+                        terminal=terminal,
                     )
                 return result
         finally:
@@ -3375,6 +3401,7 @@ class DiscordAdapter(BasePlatformAdapter):
                 and remaining_users == 0
             ):
                 self._status_message_locks.pop(key, None)
+                self._status_message_terminal.pop(key, None)
 
     async def _send_with_retry(
         self,
@@ -3561,11 +3588,14 @@ class DiscordAdapter(BasePlatformAdapter):
             # send. Route those updates back through the keyed lifecycle so
             # heartbeat, stream finalization, and BasePlatformAdapter's final
             # delivery share the same lock, fingerprint, and fallback policy.
+            routed_metadata = dict(metadata or {})
+            if finalize and "status_terminal" not in routed_metadata:
+                routed_metadata["status_terminal"] = True
             return await self.send_or_update_status(
                 chat_id,
                 str(status_key),
                 content,
-                metadata=metadata,
+                metadata=routed_metadata,
             )
         if not self._client:
             return SendResult(success=False, error="Not connected")

@@ -19129,6 +19129,12 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             # Adapter doesn't support deletion — silently disable.
             _cleanup_progress = False
             _cleanup_adapter = None
+        if _task_run_status_key:
+            # Discord's progress/status/heartbeat identity is retained and
+            # becomes the terminal answer. Registering that message for the
+            # temporary-bubble cleanup would delete the completed response.
+            _cleanup_progress = False
+            _cleanup_adapter = None
         _cleanup_msg_ids: List[str] = []
         # First-touch onboarding latch: fires at most once per run, even if
         # several tools exceed the threshold.

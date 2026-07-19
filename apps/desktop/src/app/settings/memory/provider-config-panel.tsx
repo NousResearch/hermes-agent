@@ -7,8 +7,9 @@ import { SlidersHorizontal } from '@/lib/icons'
 import { notifyError } from '@/store/notifications'
 import type { MemoryProviderConfig, MemoryProviderField } from '@/types/hermes'
 
-import { FieldControl, FieldTitle } from './field-control'
 import { ListRow, LoadingState, Pill } from '../primitives'
+
+import { FieldControl, FieldTitle } from './field-control'
 import { ProviderConfigModal } from './provider-config-modal'
 
 // Inline fields only: the compact panel must never re-write modal-owned keys.
@@ -55,6 +56,7 @@ export function ProviderConfigPanel({ provider }: { provider: string }) {
 
       try {
         await saveMemoryProviderConfig(provider, { [field.key]: value })
+
         if (field.kind === 'secret') {
           setValues(current => ({ ...current, [field.key]: '' }))
           setConfig(
@@ -92,6 +94,7 @@ export function ProviderConfigPanel({ provider }: { provider: string }) {
         </div>
       )
     }
+
     return <LoadingState label="Loading memory provider settings..." />
   }
 

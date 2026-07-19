@@ -260,6 +260,77 @@ class TestExtractText:
         assert text == "spoken text"
         assert reply_text == "quoted"
 
+    def test_extracts_direct_appmsg_article_fields(self):
+        from plugins.platforms.wecom.adapter import WeComAdapter
+
+        body = {
+            "msgtype": "appmsg",
+            "appmsg": {
+                "title": "Quarterly update",
+                "digest": "Latest data and evidence",
+                "url": "https://example.com/article",
+            },
+        }
+
+        text, reply_text = WeComAdapter._extract_text(body)
+
+        assert text == (
+            "Quarterly update\n"
+            "Latest data and evidence\n"
+            "https://example.com/article"
+        )
+        assert reply_text is None
+
+    def test_extracts_quoted_appmsg_article_fields(self):
+        from plugins.platforms.wecom.adapter import WeComAdapter
+
+        body = {
+            "msgtype": "text",
+            "text": {"content": "Please analyze this article"},
+            "quote": {
+                "msgtype": "appmsg",
+                "appmsg": {
+                    "title": "Quarterly update",
+                    "description": "Latest data and evidence",
+                    "content_url": "https://example.com/article",
+                },
+            },
+        }
+
+        text, reply_text = WeComAdapter._extract_text(body)
+
+        assert text == "Please analyze this article"
+        assert reply_text == (
+            "Quarterly update\n"
+            "Latest data and evidence\n"
+            "https://example.com/article"
+        )
+
+    @pytest.mark.asyncio
+    async def test_extracts_media_from_quoted_appmsg(self):
+        from plugins.platforms.wecom.adapter import WeComAdapter
+
+        adapter = WeComAdapter(PlatformConfig(enabled=True))
+        adapter._cache_media = AsyncMock(
+            return_value=("/tmp/quoted.pdf", "application/pdf")
+        )
+        body = {
+            "msgtype": "text",
+            "text": {"content": "Review this"},
+            "quote": {
+                "msgtype": "appmsg",
+                "appmsg": {"file": {"url": "https://example.com/quoted.pdf"}},
+            },
+        }
+
+        paths, media_types = await adapter._extract_media(body)
+
+        adapter._cache_media.assert_awaited_once_with(
+            "file", {"url": "https://example.com/quoted.pdf"}
+        )
+        assert paths == ["/tmp/quoted.pdf"]
+        assert media_types == ["application/pdf"]
+
 
 class TestCallbackDispatch:
     @pytest.mark.asyncio

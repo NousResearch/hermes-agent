@@ -6409,8 +6409,11 @@ def migrate_config(interactive: bool = True, quiet: bool = False) -> Dict[str, A
         from toolsets import validate_toolset
         from hermes_cli.toolset_validation import validate_platform_toolsets
 
+        _raw_cfg_for_validation = read_raw_config()
         ts_warnings = validate_platform_toolsets(
-            read_raw_config().get("platform_toolsets"), validate_toolset
+            _raw_cfg_for_validation.get("platform_toolsets"),
+            validate_toolset,
+            _raw_cfg_for_validation.get("known_plugin_toolsets"),
         )
         for w in ts_warnings:
             results["warnings"].append(w)

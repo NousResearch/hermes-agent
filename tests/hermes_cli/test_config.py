@@ -2240,3 +2240,59 @@ class TestCodexAppServerAutoConfig:
             assert raw["compression"]["codex_app_server_auto"] == "hermes"
 
 
+
+
+class TestPlatformToolsetValidationWiring:
+    """migrate_config() must forward known_plugin_toolsets into
+    validate_platform_toolsets(), so a disabled plugin is reported as such
+    instead of falling back to the generic unknown-toolset warning.
+
+    The helper's own branches are covered in test_toolset_validation.py; this
+    guards the production wiring in hermes_cli/config.py, where dropping the
+    third argument would silently restore the generic warning.
+    """
+
+    def test_migrate_config_reports_disabled_plugin_toolset(self, tmp_path):
+        (tmp_path / "config.yaml").write_text(
+            yaml.safe_dump(
+                {
+                    "_config_version": DEFAULT_CONFIG["_config_version"],
+                    "platform_toolsets": {"cli": ["hermes-cli", "weather-tools"]},
+                    "known_plugin_toolsets": {"cli": ["weather-tools"]},
+                }
+            ),
+            encoding="utf-8",
+        )
+
+        with patch.dict(os.environ, {"HERMES_HOME": str(tmp_path)}):
+            results = migrate_config(interactive=False, quiet=True)
+
+        plugin_warnings = [
+            w
+            for w in results["warnings"]
+            if "weather-tools" in w and "plugin" in w
+        ]
+        assert len(plugin_warnings) == 1
+        # The typo guess is wrong advice for a disabled plugin.
+        assert "did you mean" not in plugin_warnings[0]
+
+    def test_migrate_config_still_reports_unknown_toolset_as_typo(self, tmp_path):
+        """Without a known_plugin_toolsets entry, the same bogus name keeps the
+        generic unknown-toolset warning — the cross-list check is what
+        distinguishes them, not the name itself."""
+        (tmp_path / "config.yaml").write_text(
+            yaml.safe_dump(
+                {
+                    "_config_version": DEFAULT_CONFIG["_config_version"],
+                    "platform_toolsets": {"cli": ["hermes-cli", "weather-tools"]},
+                }
+            ),
+            encoding="utf-8",
+        )
+
+        with patch.dict(os.environ, {"HERMES_HOME": str(tmp_path)}):
+            results = migrate_config(interactive=False, quiet=True)
+
+        assert any(
+            "unknown toolset 'weather-tools'" in w for w in results["warnings"]
+        )

@@ -71,8 +71,9 @@ def execute(
             )
         )
     except BaseException as exc:
-        if callback_error is not None and _relay_wrapped_callback_error(
-            exc, callback_error
+        if (
+            callback_error is not None
+            and relay_runtime._is_relay_wrapped_callback_error(exc, callback_error)
         ):
             raise callback_error
         raise
@@ -82,6 +83,139 @@ def execute(
         return raw_response["value"]
     _complete_logical(logical, outcome="success")
     return managed
+
+
+async def execute_async(
+    request: dict[str, Any],
+    callback: Callable[[dict[str, Any]], Any],
+    *,
+    session_id: str,
+    name: str,
+    model_name: str,
+    metadata: dict[str, Any] | None = None,
+) -> Any:
+    """Run one asynchronous physical provider attempt through Relay."""
+    runtime, session, parent = _execution_context(session_id)
+    if runtime is None or session is None:
+        return await callback(request)
+    logical = _logical_parent(runtime, session, parent, metadata)
+    parent = logical[1] if logical is not None else parent
+
+    relay_request_body = _relay_request_body(request, metadata)
+    relay_request = runtime.relay.LLMRequest({}, relay_request_body)
+    raw_response: dict[str, Any] = {}
+    callback_error: BaseException | None = None
+
+    async def invoke(next_request: Any) -> Any:
+        nonlocal callback_error
+        try:
+            final_request = _provider_request(
+                request,
+                next_request,
+                relay_request_body=relay_request_body,
+                metadata=metadata,
+            )
+            raw = await callback(final_request)
+        except BaseException as exc:
+            callback_error = exc
+            raise
+        raw_response["value"] = raw
+        raw_response["json"] = _jsonable(raw)
+        return raw_response["json"]
+
+    try:
+        managed = await runtime.run_in_session_async(
+            session,
+            runtime.relay.llm.execute,
+            name,
+            relay_request,
+            invoke,
+            handle=parent,
+            metadata=_jsonable(metadata or {}),
+            model_name=model_name,
+            codec=_codec(runtime.relay, metadata),
+            response_codec=_codec(runtime.relay, metadata),
+        )
+    except BaseException as exc:
+        if (
+            callback_error is not None
+            and relay_runtime._is_relay_wrapped_callback_error(exc, callback_error)
+        ):
+            raise callback_error
+        raise
+
+    _complete_logical(logical, outcome="success")
+    if "value" in raw_response and _json_equal(managed, raw_response["json"]):
+        return raw_response["value"]
+    return managed
+
+
+def execute_current(
+    request: dict[str, Any],
+    callback: Callable[[dict[str, Any]], Any],
+    *,
+    name: str,
+    model_name: str,
+    metadata: dict[str, Any] | None = None,
+) -> Any:
+    """Run a provider attempt under the inherited Hermes turn when present."""
+    turn = relay_runtime.current_turn()
+    if turn is None:
+        return callback(request)
+    return execute(
+        request,
+        callback,
+        session_id=turn.lease.session_id,
+        name=name,
+        model_name=model_name,
+        metadata=metadata,
+    )
+
+
+async def execute_current_async(
+    request: dict[str, Any],
+    callback: Callable[[dict[str, Any]], Any],
+    *,
+    name: str,
+    model_name: str,
+    metadata: dict[str, Any] | None = None,
+) -> Any:
+    """Run an async provider attempt under the inherited turn when present."""
+    turn = relay_runtime.current_turn()
+    if turn is None:
+        return await callback(request)
+    return await execute_async(
+        request,
+        callback,
+        session_id=turn.lease.session_id,
+        name=name,
+        model_name=model_name,
+        metadata=metadata,
+    )
+
+
+def stream_current(
+    request: dict[str, Any],
+    stream_factory: Callable[[dict[str, Any]], Any],
+    *,
+    name: str,
+    model_name: str,
+    finalizer: Callable[[], Any],
+    metadata: dict[str, Any] | None = None,
+) -> Any:
+    """Run a provider stream under the inherited Hermes turn when present."""
+    turn = relay_runtime.current_turn()
+    if turn is None:
+        return stream_factory(request)
+    return stream(
+        request,
+        stream_factory,
+        session_id=turn.lease.session_id,
+        name=name,
+        model_name=model_name,
+        finalizer=finalizer,
+        metadata=metadata,
+    )
 
 
 def stream(
@@ -262,8 +396,9 @@ class ManagedLlmStream(Iterator[Any]):
         except BaseException as exc:
             callback_error = self._callback_error
             self.close()
-            if callback_error is not None and _relay_wrapped_callback_error(
-                exc, callback_error
+            if (
+                callback_error is not None
+                and relay_runtime._is_relay_wrapped_callback_error(exc, callback_error)
             ):
                 raise callback_error
             raise
@@ -500,6 +635,12 @@ def _provider_request(
         for key, value in original.items():
             if key not in relay_request_body and value is None:
                 final.setdefault(key, value)
+            elif (
+                key in relay_request_body
+                and key in final
+                and _json_equal(final[key], relay_request_body[key])
+            ):
+                final[key] = value
         _restore_provider_message_extensions(original, final)
     headers = getattr(request, "headers", None)
     if isinstance(headers, dict) and headers:
@@ -655,20 +796,6 @@ def _json_equal(left: Any, right: Any) -> bool:
         ) == json.dumps(_jsonable(right), sort_keys=True, separators=(",", ":"))
     except (TypeError, ValueError):
         return False
-
-
-def _relay_wrapped_callback_error(
-    exc: BaseException,
-    callback_error: BaseException,
-) -> bool:
-    if exc is callback_error:
-        return True
-    expected_suffix = f"{callback_error.__class__.__name__}: {callback_error}"
-    return (
-        isinstance(exc, RuntimeError)
-        and str(exc).startswith("internal error: ")
-        and str(exc).endswith(expected_suffix)
-    )
 
 
 def _run_awaitable(value: Any) -> Any:

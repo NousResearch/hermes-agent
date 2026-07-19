@@ -359,6 +359,52 @@ def test_author_builds_only_schema_canonical_bytes_and_binds_chain() -> None:
     assert value["authority_sha256"] == foundation.sha256_json(unsigned)
 
 
+def test_predefined_role_legacy_permission_names_are_canonical() -> None:
+    facts = copy.deepcopy(_live_facts())
+    legacy_permissions = [
+        "cloudonefs.isiloncloud.com/clusters.create",
+        "cloudvolumesgcp-api.netapp.com/activeDirectories.list",
+    ]
+    facts["roles"]["roles/owner"]["includedPermissions"] = legacy_permissions
+
+    value = authority_schema.decode_canonical(
+        _build(facts), release_revision=REVISION
+    )
+
+    definitions = value["external_gcp_admin_trust_root"][
+        "allowed_residual_role_definitions"
+    ]
+    assert definitions[0]["included_permissions"] == sorted(
+        legacy_permissions
+    )
+
+
+@pytest.mark.parametrize(
+    "permission",
+    [
+        "/clusters.create",
+        "cloudonefs.isiloncloud.com/",
+        "cloudonefs.isiloncloud.com//clusters.create",
+        "cloudonefs.isiloncloud.com/clusters/create",
+        "cloudonefs.isiloncloud.com:clusters.create",
+        "cloudonefs.isiloncloud.com/clusters create",
+        "cloudonefs.isiloncloud.com/clusters\ncreate",
+        "p" * 257,
+    ],
+)
+def test_malformed_legacy_permission_names_remain_rejected(
+    permission: str,
+) -> None:
+    facts = copy.deepcopy(_live_facts())
+    facts["roles"]["roles/owner"]["includedPermissions"] = [permission]
+
+    with pytest.raises(
+        author.DirectIamIdentityAuthorError,
+        match="^direct_iam_identity_author_output_invalid$",
+    ):
+        _build(facts)
+
+
 def test_large_residual_role_inventory_fits_bounded_canonical_authority(
 ) -> None:
     facts = copy.deepcopy(_live_facts())

@@ -36,7 +36,19 @@ UI_VIEW_SCHEMA = "muncho-dangerous-action-passkey-ui-view.v2"
 MINIMUM_TTL_SECONDS = 30
 MAXIMUM_TTL_SECONDS = 300
 MAXIMUM_JSON_BYTES = 1024 * 1024
+# Only the owner-authorized full-IAM evidence path may consume this larger
+# budget.  Generic protocol decoders deliberately retain the one MiB default.
+MAXIMUM_AUTHORITY_JSON_BYTES = 8 * 1024 * 1024
 MAXIMUM_ACTION_PAYLOAD_BYTES = 512 * 1024
+FULL_IAM_ACTION_PAYLOAD_SCHEMA = (
+    "muncho-passkey-v2-storage-growth-action.v1"
+)
+# The approval view renders the full-IAM payload both directly and inside the
+# exact action envelope.  Reserve one MiB for the envelope, service response,
+# and mechanical facts; exact encoded render size is checked before storage.
+MAXIMUM_FULL_IAM_ACTION_PAYLOAD_BYTES = (
+    MAXIMUM_AUTHORITY_JSON_BYTES - 1024 * 1024
+) // 2
 DANGEROUS_TOTP_ENABLED = False
 GENESIS_JOURNAL_HEAD_SHA256 = "0" * 64
 EXECUTION_WINDOW_SECONDS = 3600
@@ -496,7 +508,12 @@ def validate_action_envelope(value: Any) -> Mapping[str, Any]:
     payload = value.get("action_payload")
     if not isinstance(payload, Mapping) or not payload:
         raise PasskeyV2ProtocolError("passkey_v2_action_payload_invalid")
-    if len(canonical_json_bytes(payload)) > MAXIMUM_ACTION_PAYLOAD_BYTES:
+    maximum_payload_bytes = (
+        MAXIMUM_FULL_IAM_ACTION_PAYLOAD_BYTES
+        if payload.get("schema") == FULL_IAM_ACTION_PAYLOAD_SCHEMA
+        else MAXIMUM_ACTION_PAYLOAD_BYTES
+    )
+    if len(canonical_json_bytes(payload)) > maximum_payload_bytes:
         raise PasskeyV2ProtocolError("passkey_v2_action_payload_too_large")
     if value.get("action_payload_sha256") != sha256_json(payload):
         raise PasskeyV2ProtocolError("passkey_v2_action_payload_hash_invalid")
@@ -949,10 +966,9 @@ def validate_authorization_receipt(
     return {**signed, "receipt_sha256": receipt_sha}
 
 
-def build_ui_view(envelope: Mapping[str, Any]) -> Mapping[str, Any]:
-    """Return the exact, non-truncated values a passkey UI must render."""
-
-    action = validate_action_envelope(envelope)
+def _build_ui_view_from_action(
+    action: Mapping[str, Any],
+) -> Mapping[str, Any]:
     payload_json = canonical_json_bytes(action["action_payload"]).decode("utf-8")
     envelope_json = canonical_json_bytes(action).decode("utf-8")
     return {
@@ -984,6 +1000,13 @@ def build_ui_view(envelope: Mapping[str, Any]) -> Mapping[str, Any]:
         "totp_available_for_dangerous_action": False,
         "values_are_complete_and_untruncated": True,
     }
+
+
+def build_ui_view(envelope: Mapping[str, Any]) -> Mapping[str, Any]:
+    """Return the exact, non-truncated values a passkey UI must render."""
+
+    action = validate_action_envelope(envelope)
+    return _build_ui_view_from_action(action)
 
 
 def validate_ui_headers(headers: Mapping[str, str]) -> None:

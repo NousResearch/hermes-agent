@@ -106,11 +106,11 @@ def test_embedded_foundation_identity_is_bound_to_final_release_package(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     package_manifest = _package()
-    reads: list[tuple[Path, frozenset[int]]] = []
+    reads: list[tuple[Path, int, frozenset[int]]] = []
     decode_revisions: list[str | None] = []
 
     def read(path: Path, **kwargs: Any) -> bytes:
-        reads.append((path, kwargs["modes"]))
+        reads.append((path, kwargs["maximum"], kwargs["modes"]))
         return DIRECT_IAM_RAW
 
     def decode(
@@ -138,6 +138,7 @@ def test_embedded_foundation_identity_is_bound_to_final_release_package(
         producer.OWNER_RELEASE_BASE
         / REVISION
         / "trust/direct-iam-identity-authority.json",
+        direct_iam.MAX_BYTES,
         frozenset({0o444}),
     )]
     assert decode_revisions == [None, FOUNDATION_REVISION]

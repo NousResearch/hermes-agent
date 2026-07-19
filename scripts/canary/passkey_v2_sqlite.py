@@ -70,6 +70,11 @@ _EXECUTION_EVENT_KINDS = frozenset({
     "postflight_complete",
     "completed",
 }) | _REPEATED_EXECUTION_EVENT_KINDS
+_FULL_IAM_EXECUTION_EVENT_KINDS = frozenset({
+    "post_resize_observation_accepted",
+    "post_stop_observation_accepted",
+    "post_start_observation_accepted",
+})
 _ONLINE_EXECUTION_SEQUENCE = (
     "opened",
     "resize_intent",
@@ -111,6 +116,14 @@ def _execution_sequence_is_legal(kinds: tuple[str, ...]) -> bool:
         _ONLINE_EXECUTION_SEQUENCE,
         _REBOOT_EXECUTION_SEQUENCE,
     ))
+
+
+def _execution_event_json_limit(event_kind: str) -> int:
+    return (
+        protocol.MAXIMUM_AUTHORITY_JSON_BYTES
+        if event_kind in _FULL_IAM_EXECUTION_EVENT_KINDS
+        else protocol.MAXIMUM_JSON_BYTES
+    )
 
 
 def _execution_event_id(
@@ -796,11 +809,18 @@ class PasskeyV2AuthorityDatabase(_Database):
         if row is None:
             raise PasskeyV2SqliteDenied("passkey_v2_request_unknown")
         documents: list[Mapping[str, Any] | None] = []
-        for raw in row:
+        for index, raw in enumerate(row):
             if raw is None:
                 documents.append(None)
                 continue
-            value = protocol.decode_canonical_json(bytes(raw))
+            value = protocol.decode_canonical_json(
+                bytes(raw),
+                maximum_bytes=(
+                    protocol.MAXIMUM_AUTHORITY_JSON_BYTES
+                    if index == 0
+                    else protocol.MAXIMUM_JSON_BYTES
+                ),
+            )
             if not isinstance(value, Mapping):
                 raise PasskeyV2SqliteError("passkey_v2_request_state_invalid")
             documents.append(dict(value))
@@ -1853,7 +1873,10 @@ class PasskeyV2ExecutorDatabase(_Database):
             ).fetchone()
             if existing is not None:
                 connection.rollback()
-                stored = protocol.decode_canonical_json(bytes(existing[0]))
+                stored = protocol.decode_canonical_json(
+                    bytes(existing[0]),
+                    maximum_bytes=_execution_event_json_limit(event_kind),
+                )
                 if (
                     not isinstance(stored, Mapping)
                     or stored.get("event_payload") != dict(event_payload)
@@ -1868,7 +1891,10 @@ class PasskeyV2ExecutorDatabase(_Database):
             ).fetchall()
             prior_events: list[Mapping[str, Any]] = []
             for row in prior_for_request:
-                prior_event = protocol.decode_canonical_json(bytes(row[1]))
+                prior_event = protocol.decode_canonical_json(
+                    bytes(row[1]),
+                    maximum_bytes=_execution_event_json_limit(str(row[0])),
+                )
                 if not isinstance(prior_event, Mapping):
                     raise PasskeyV2SqliteError(
                         "passkey_v2_execution_ledger_invalid"
@@ -1971,6 +1997,11 @@ class PasskeyV2ExecutorDatabase(_Database):
                 "created_at_unix": now_unix,
             }
             event = {**unsigned, "event_head_sha256": protocol.sha256_json(unsigned)}
+            event_raw = protocol.canonical_json_bytes(event)
+            if len(event_raw) > _execution_event_json_limit(event_kind):
+                raise PasskeyV2SqliteDenied(
+                    "passkey_v2_execution_event_too_large"
+                )
             connection.execute(
                 "INSERT INTO execution_events(sequence,event_id,transaction_id,"
                 "authorization_request_id,event_kind,prior_event_head_sha256,"
@@ -1984,7 +2015,7 @@ class PasskeyV2ExecutorDatabase(_Database):
                     event_kind,
                     prior_head,
                     event["event_head_sha256"],
-                    protocol.canonical_json_bytes(event),
+                    event_raw,
                     now_unix,
                 ),
             )
@@ -2261,7 +2292,14 @@ class PasskeyV2ExecutorDatabase(_Database):
             request_id = str(row[0])
             transaction_id = str(row[1])
             values = [
-                protocol.decode_canonical_json(bytes(row[index]))
+                protocol.decode_canonical_json(
+                    bytes(row[index]),
+                    maximum_bytes=(
+                        protocol.MAXIMUM_AUTHORITY_JSON_BYTES
+                        if index == 8
+                        else protocol.MAXIMUM_JSON_BYTES
+                    ),
+                )
                 for index in range(7, 12)
             ]
             authorization, envelope, receipt, challenge, grant = values
@@ -2373,7 +2411,10 @@ class PasskeyV2ExecutorDatabase(_Database):
             transaction_id = str(row[2])
             request_id = str(row[3])
             event_kind = str(row[4])
-            event = protocol.decode_canonical_json(bytes(row[7]))
+            event = protocol.decode_canonical_json(
+                bytes(row[7]),
+                maximum_bytes=_execution_event_json_limit(event_kind),
+            )
             if (
                 not isinstance(event, Mapping)
                 or transaction_id not in transactions

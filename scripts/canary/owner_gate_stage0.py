@@ -41,6 +41,7 @@ PINNED_RELEASE_TRUST_PUBLIC_KEY_SHA256 = (
     "302bd03b449a4f46476d9d2dc8026acedaca17334154ba2cf8ba2a68c72992a0"
 )
 MAX_JSON_BYTES = 4 * 1024 * 1024
+MAX_DIRECT_IAM_BYTES = 8 * 1024 * 1024
 MAX_PAYLOAD_BYTES = 128 * 1024 * 1024
 OPENSSL = Path("/usr/bin/openssl")
 PYTHON = Path("/usr/bin/python3")
@@ -2501,7 +2502,7 @@ def _verify_manifest_and_payloads(
         raise OwnerGateStage0Error("owner_gate_stage0_migration_invalid")
     direct_iam = _read_regular(
         root / "trust/direct-iam-identity-authority.json",
-        maximum=MAX_JSON_BYTES,
+        maximum=MAX_DIRECT_IAM_BYTES,
         expected_uid=expected_uid,
         allowed_modes=frozenset({0o400, 0o440, 0o444}),
     )

@@ -195,6 +195,7 @@ def _root_with_sensitive_binding(
 def _request(
     checkpoint: str = "source",
     *,
+    transaction_id: str = TRANSACTION,
     prior_head: str = PRIOR_HEAD,
     attempt_sequence: int = 1,
     issued_at: int = NOW,
@@ -206,7 +207,7 @@ def _request(
         "post_start": "await_post_start",
     }[checkpoint]
     binding = evidence.observation_request_binding_sha256(
-        transaction_id=TRANSACTION,
+        transaction_id=transaction_id,
         checkpoint=checkpoint,
         prior_event_head_sha256=prior_head,
         release_sha=RELEASE,
@@ -214,7 +215,7 @@ def _request(
     )
     collection_context = {
         "schema": "muncho-storage-growth-collection-context.v1",
-        "transaction_id": TRANSACTION,
+        "transaction_id": transaction_id,
         "checkpoint": checkpoint,
         "prior_event_head_sha256": prior_head,
         "release_sha": RELEASE,
@@ -228,14 +229,14 @@ def _request(
     }
     unsigned = {
         "schema": "muncho-storage-growth-observation-request.v1",
-        "transaction_id": TRANSACTION,
+        "transaction_id": transaction_id,
         "checkpoint": checkpoint,
         "canonical_state": canonical_state,
         "prior_event_head_sha256": prior_head,
         "request_binding_sha256": binding,
         "observation_nonce_sha256": evidence.observation_nonce_sha256(
             request_binding_sha256=binding,
-            transaction_id=TRANSACTION,
+            transaction_id=transaction_id,
             checkpoint=checkpoint,
         ),
         "collection_attempt_id": protocol.sha256_json(attempt_identity),
@@ -2019,6 +2020,191 @@ def test_stdin_is_one_bounded_canonical_newline_frame(raw: bytes) -> None:
         collector.TrustedObservationError, match="stdin_frame_invalid"
     ):
         collector._read_canonical_line(io.BytesIO(raw))
+
+
+def test_live_sized_full_iam_projection_crosses_bounded_frame(
+    tmp_path: Path,
+) -> None:
+    from scripts.canary import passkey_v2_storage_growth as storage
+    from scripts.canary import passkey_v2_service as service
+
+    report = _source_report(collected_at=NOW - 1)
+    transaction_id = storage.transaction_id_for_observation(report)
+    request = _request(transaction_id=transaction_id)
+    project, ancestors, policies, roles, account = _iam_raw_inputs()
+    first_permissions = [
+        f"legacy-a.example.com/resources.permission{index:05d}"
+        for index in range(12_000)
+    ]
+    second_permissions = [
+        f"legacy-b.example.com/resources.permission{index:05d}"
+        for index in range(12_000)
+    ]
+    external_role = _external_sensitive_role_resource()
+    external_role["includedPermissions"] = first_permissions
+    second_external_role = {
+        "name": "roles/owner",
+        "title": "Owner",
+        "description": "Pinned external owner authority",
+        "includedPermissions": second_permissions,
+        "stage": "GA",
+        "deleted": False,
+        "etag": "external-owner-role-etag",
+    }
+    policies[-1]["bindings"].append({
+        "role": second_external_role["name"],
+        "members": ["user:second-owner@example.test"],
+    })
+    external_root = _external_gcp_admin_trust_root()
+    for definition in external_root["allowed_residual_role_definitions"]:
+        if definition["name"] == EXTERNAL_SENSITIVE_ROLE:
+            definition["included_permissions"] = first_permissions
+            break
+    else:  # pragma: no cover - fixture contract
+        raise AssertionError("external role definition missing")
+    external_root["allowed_residual_bindings"].append({
+        "resource": ANCESTOR_CHAIN[-1],
+        "role": second_external_role["name"],
+        "members": ["user:second-owner@example.test"],
+        "condition": None,
+    })
+    external_root["allowed_residual_bindings"].sort(
+        key=protocol.canonical_json_bytes
+    )
+    external_root["allowed_residual_role_definitions"].append({
+        "name": second_external_role["name"],
+        "title": second_external_role["title"],
+        "description": second_external_role["description"],
+        "included_permissions": second_permissions,
+        "stage": "GA",
+        "deleted": False,
+        "etag": second_external_role["etag"],
+    })
+    external_root["allowed_residual_role_definitions"].sort(
+        key=lambda item: item["name"]
+    )
+    projection = _build_trusted_iam_projection_from_raw(
+        report,
+        request,
+        project=project,
+        ancestors=ancestors,
+        policies=policies,
+        roles=roles,
+        account=account,
+        additional_policy_roles=[external_role, second_external_role],
+        external_gcp_admin_trust_root=external_root,
+    )
+    frame = collector.build_attestation_request(
+        request,
+        report,
+        role="host",
+        trusted_iam_projection=projection,
+        now_unix=NOW,
+    )
+    raw = protocol.canonical_json_bytes(frame)
+
+    assert protocol.MAXIMUM_JSON_BYTES < len(raw) <= collector.MAX_FRAME_BYTES
+    checked = collector._read_canonical_line(io.BytesIO(raw + b"\n"))
+    assert protocol.canonical_json_bytes(checked) == raw
+    output = io.BytesIO()
+    collector._write_canonical_line(output, checked)
+    assert output.getvalue() == raw + b"\n"
+
+    class LiveSizedCloudReader:
+        def collect(
+            self,
+            _observation: Mapping[str, Any],
+            _request: Mapping[str, Any],
+            _now_unix: int,
+        ) -> tuple[Mapping[str, Any], Mapping[str, Any]]:
+            return copy.deepcopy(_cloud_projection(report)), copy.deepcopy(
+                projection
+            )
+
+    cloud_key = Ed25519PrivateKey.generate()
+    host_key = Ed25519PrivateKey.generate()
+    cloud_frame = collector.build_attestation_request(
+        request, report, role="cloud", now_unix=NOW
+    )
+    cloud = collector.run_cloud_attestor(
+        cloud_frame,
+        config=_config(tmp_path, "cloud", cloud_key),
+        facts_reader=LiveSizedCloudReader(),
+        now_unix=NOW,
+    )
+    host = collector.run_host_attestor(
+        frame,
+        config=_config(tmp_path, "host", host_key),
+        facts_reader=HostReader(report),
+        now_unix=NOW,
+    )
+    bundle = collector.combine_trusted_attestations(
+        observation_request=request,
+        refreshed_observation_request=request,
+        candidate_observation=report,
+        cloud_response=cloud,
+        cloud_public_key=cloud_key.public_key(),
+        host_response=host,
+        host_public_key=host_key.public_key(),
+        now_unix=NOW,
+    )
+    action = storage.build_storage_growth_envelope(
+        source_preflight=bundle,
+        transaction_id=transaction_id,
+        stage="intent",
+        release_sha=RELEASE,
+        authority_manifest_sha256="1" * 64,
+        authority_host_receipt_sha256="2" * 64,
+        prior_authoritative_receipt_sha256="3" * 64,
+        prior_event_head_sha256=PRIOR_HEAD,
+        issued_at_unix=NOW,
+    )
+    payload_raw = protocol.canonical_json_bytes(action["action_payload"])
+    envelope_raw = protocol.canonical_json_bytes(action)
+    assert (
+        protocol.MAXIMUM_FULL_IAM_ACTION_PAYLOAD_BYTES // 8
+        < len(payload_raw)
+        <= protocol.MAXIMUM_FULL_IAM_ACTION_PAYLOAD_BYTES
+    )
+    assert (
+        protocol.MAXIMUM_JSON_BYTES
+        < len(envelope_raw)
+        <= protocol.MAXIMUM_AUTHORITY_JSON_BYTES
+    )
+    rendered = service._render_authority_action(action)
+    render_response_raw = protocol.canonical_json_bytes(
+        service.build_service_response("render", rendered)
+    ) + b"\n"
+    assert len(render_response_raw) <= service.MAX_AUTHORITY_FRAME_BYTES + 1
+
+
+def test_full_iam_consumers_share_one_protocol_frame_budget() -> None:
+    from scripts.canary import direct_iam_identity_authority as direct_iam
+    from scripts.canary import full_canary_owner_launcher as owner_launcher
+    from scripts.canary import owner_gate_stage0 as stage0
+    from scripts.canary import passkey_v2_service as service
+    from scripts.canary import passkey_v2_storage_growth as storage
+
+    assert {
+        collector.MAX_FRAME_BYTES,
+        service.MAX_AUTHORITY_FRAME_BYTES,
+        owner_launcher.CanaryHostObservationAttestorTransport._MAX_FRAME_BYTES,
+        owner_launcher.OwnerGateIapTransport._MAX_FRAME_BYTES,
+        owner_launcher.OwnerGateIapTransport._MAX_RESPONSE_BYTES,
+        stage0.MAX_DIRECT_IAM_BYTES,
+        direct_iam.MAX_BYTES,
+    } == {protocol.MAXIMUM_AUTHORITY_JSON_BYTES}
+    assert service.MAX_FRAME_BYTES == protocol.MAXIMUM_JSON_BYTES
+    assert service.MAX_EXECUTOR_CONFIG_BYTES == 4 * 1024 * 1024
+    assert owner_launcher.OwnerGateIapTransport._DEFAULT_FRAME_BYTES == (
+        protocol.MAXIMUM_JSON_BYTES
+    )
+    assert owner_launcher.OwnerGateIapTransport._DEFAULT_RESPONSE_BYTES == (
+        protocol.MAXIMUM_JSON_BYTES
+    )
+    assert storage.STORAGE_ACTION_SCHEMA == (
+        protocol.FULL_IAM_ACTION_PAYLOAD_SCHEMA
+    )
 
 
 def test_fixed_once_entrypoint_emits_one_canonical_response_line(

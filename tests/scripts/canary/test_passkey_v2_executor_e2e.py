@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import base64
+import io
 import json
 import os
 import socket
@@ -389,8 +390,14 @@ class DirectExecutorClient:
         self.operations: list[str] = []
 
     def call(
-        self, operation: str, document: Mapping[str, Any]
+        self,
+        operation: str,
+        document: Mapping[str, Any],
+        *,
+        maximum_request_bytes: int | None = None,
+        maximum_response_bytes: int | None = None,
     ) -> Mapping[str, Any]:
+        del maximum_request_bytes, maximum_response_bytes
         self.operations.append(operation)
         return service.handle_executor_frame(
             service.build_service_frame(operation, document),
@@ -411,8 +418,14 @@ class ForbiddenAuthorityClient:
         self.calls: list[str] = []
 
     def call(
-        self, operation: str, _document: Mapping[str, Any]
+        self,
+        operation: str,
+        _document: Mapping[str, Any],
+        *,
+        maximum_request_bytes: int | None = None,
+        maximum_response_bytes: int | None = None,
     ) -> Mapping[str, Any]:
+        del maximum_request_bytes, maximum_response_bytes
         self.calls.append(operation)
         raise AssertionError("read-only reconciliation touched authority")
 
@@ -422,8 +435,14 @@ class RecordingAuthorityClient:
         self.calls: list[tuple[str, Mapping[str, Any]]] = []
 
     def call(
-        self, operation: str, document: Mapping[str, Any]
+        self,
+        operation: str,
+        document: Mapping[str, Any],
+        *,
+        maximum_request_bytes: int | None = None,
+        maximum_response_bytes: int | None = None,
     ) -> Mapping[str, Any]:
+        del maximum_request_bytes, maximum_response_bytes
         self.calls.append((operation, dict(document)))
         return {"request_created": True}
 
@@ -1506,6 +1525,54 @@ def test_repeated_attempt_cannot_precede_or_escape_matching_intent(
         )
 
 
+def test_execution_event_size_is_checked_before_persistence(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    cloud = ed25519.Ed25519PrivateKey.generate()
+    host = ed25519.Ed25519PrivateKey.generate()
+    executor, action, challenge, grant, receipt = _authority_and_executor(
+        tmp_path, cloud_key=cloud, host_key=host
+    )
+    executor.claim_execution(
+        receipt=receipt,
+        envelope=action,
+        grant=grant,
+        challenge=challenge,
+        now_unix=NOW + 3,
+    )
+    payload = {
+        "stage": "resize",
+        "requested_operation": "resize_exact_disk_40_to_80",
+        "observation_bundle_sha256": action["action_payload"][
+            "source_preflight"
+        ]["bundle_sha256"],
+        "live_before_sha256": SHA,
+        "gce_request_id": service.StorageGrowthComputeExecutor._gce_request_id(
+            action["transaction_id"], "resize"
+        ),
+        "activation_seal_sha256": "5" * 64,
+        "firewall_readiness_receipt_sha256": "6" * 64,
+    }
+    with monkeypatch.context() as bounded:
+        bounded.setattr(
+            database,
+            "_execution_event_json_limit",
+            lambda kind: 1
+            if kind == "resize_intent"
+            else protocol.MAXIMUM_JSON_BYTES,
+        )
+        with pytest.raises(database.PasskeyV2SqliteDenied, match="event_too_large"):
+            executor.append_execution_event(
+                request_id=action["request_id"],
+                event_kind="resize_intent",
+                event_payload=payload,
+                now_unix=NOW + 4,
+            )
+    state = executor.read_transaction_state(action["transaction_id"])
+    assert [event["event_kind"] for event in state["events"]] == ["opened"]
+
+
 def test_real_unix_socket_fragmentation_bounds_peer_uid_and_isolation(
 ) -> None:
     short_directory = tempfile.TemporaryDirectory(
@@ -1523,25 +1590,46 @@ def test_real_unix_socket_fragmentation_bounds_peer_uid_and_isolation(
     ) -> Mapping[str, Any]:
         frame = service.validate_service_frame(value)
         peer_uids.append(peer_uid)
+        if frame["document"].get("force_oversized_response") is True:
+            return service.build_service_response(
+                frame["operation"],
+                {"padding": "x" * (service.MAX_FRAME_BYTES + 1)},
+            )
+        document = {"peer_uid": peer_uid}
+        if frame["document"].get("return_large_context") is True:
+            document["trusted_iam_projection"] = "p" * (
+                trusted_collector.MAX_HTTP_BODY_BYTES + 64 * 1024
+            )
         return service.build_service_response(
-            frame["operation"], {"peer_uid": peer_uid}
+            frame["operation"], document
         )
 
-    def serve_three() -> None:
+    def serve_seven() -> None:
         try:
-            for _index in range(3):
+            for _index in range(7):
                 connection, _address = listener.accept()
                 with connection:
-                    service._handle_service_connection(connection, handler)
+                    service._handle_service_connection(
+                        connection,
+                        handler,
+                        large_request_operations=frozenset({
+                            "verify_observation"
+                        }),
+                        large_response_operations=frozenset({"context"}),
+                    )
         except BaseException as exc:
             failures.append(exc)
         finally:
             listener.close()
 
-    thread = threading.Thread(target=serve_three, daemon=True)
+    thread = threading.Thread(target=serve_seven, daemon=True)
     thread.start()
 
-    def exchange(parts: list[bytes]) -> Mapping[str, Any]:
+    def exchange(
+        parts: list[bytes],
+        *,
+        maximum_response_bytes: int = protocol.MAXIMUM_JSON_BYTES,
+    ) -> Mapping[str, Any]:
         connection = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
         connection.settimeout(5.0)
         try:
@@ -1558,7 +1646,10 @@ def test_real_unix_socket_fragmentation_bounds_peer_uid_and_isolation(
         finally:
             connection.close()
         assert response.endswith(b"\n")
-        decoded = protocol.decode_canonical_json(bytes(response[:-1]))
+        decoded = protocol.decode_canonical_json(
+            bytes(response[:-1]),
+            maximum_bytes=maximum_response_bytes,
+        )
         assert isinstance(decoded, Mapping)
         return decoded
 
@@ -1570,7 +1661,75 @@ def test_real_unix_socket_fragmentation_bounds_peer_uid_and_isolation(
         fragmented, expected_operation="health"
     )["peer_uid"] == os.getuid()
 
-    oversized = exchange([b"x" * (service.MAX_FRAME_BYTES + 2)])
+    live_sized_frame = protocol.canonical_json_bytes(
+        service.build_service_frame(
+            "verify_observation",
+            {
+                "trusted_iam_projection": "p" * (
+                    trusted_collector.MAX_HTTP_BODY_BYTES + 64 * 1024
+                )
+            },
+        )
+    ) + b"\n"
+    assert (
+        trusted_collector.MAX_HTTP_BODY_BYTES
+        < len(live_sized_frame)
+        <= service.MAX_AUTHORITY_FRAME_BYTES + 1
+    )
+    live_sized = exchange([
+        live_sized_frame[:65_537],
+        live_sized_frame[65_537:],
+    ])
+    live_sized_document = service.validate_service_response(
+        live_sized, expected_operation="verify_observation"
+    )
+    assert live_sized_document["peer_uid"] == os.getuid()
+
+    large_response_frame = protocol.canonical_json_bytes(
+        service.build_service_frame(
+            "context", {"return_large_context": True}
+        )
+    ) + b"\n"
+    large_response = exchange(
+        [large_response_frame],
+        maximum_response_bytes=service.MAX_AUTHORITY_FRAME_BYTES,
+    )
+    large_response_document = service.validate_service_response(
+        large_response,
+        expected_operation="context",
+    )
+    assert large_response_document["trusted_iam_projection"].startswith("p")
+    assert len(protocol.canonical_json_bytes(large_response)) > (
+        trusted_collector.MAX_HTTP_BODY_BYTES
+    )
+
+    generic_large_frame = protocol.canonical_json_bytes(
+        service.build_service_frame(
+            "health",
+            {
+                "trusted_iam_projection": "p" * (
+                    trusted_collector.MAX_HTTP_BODY_BYTES + 64 * 1024
+                )
+            },
+        )
+    ) + b"\n"
+    generic_large = exchange([generic_large_frame])
+    assert generic_large["ok"] is False
+    assert generic_large["operation"] == "rejected"
+
+    oversized_response_frame = protocol.canonical_json_bytes(
+        service.build_service_frame(
+            "health", {"force_oversized_response": True}
+        )
+    ) + b"\n"
+    oversized_response = exchange([oversized_response_frame])
+    assert oversized_response["ok"] is False
+    assert oversized_response["operation"] == "rejected"
+    assert oversized_response["document"] == {"error": "request_rejected"}
+
+    oversized = exchange([
+        b"x" * (service.MAX_AUTHORITY_FRAME_BYTES + 2)
+    ])
     assert oversized["ok"] is False
     assert oversized["document"] == {"error": "request_rejected"}
 
@@ -1579,8 +1738,175 @@ def test_real_unix_socket_fragmentation_bounds_peer_uid_and_isolation(
     thread.join(timeout=5.0)
     assert not thread.is_alive()
     assert failures == []
-    assert peer_uids == [os.getuid(), os.getuid()]
+    assert peer_uids == [
+        os.getuid(),
+        os.getuid(),
+        os.getuid(),
+        os.getuid(),
+        os.getuid(),
+    ]
     short_directory.cleanup()
+
+
+def test_executor_config_has_a_separate_full_iam_size_budget(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    value = {
+        "schema": "muncho-owner-gate-executor-config.v1",
+        "direct_iam_external_gcp_admin_trust_root": {
+            "allowed_residual_role_definitions": [{
+                "included_permissions": [
+                    "p" * (trusted_collector.MAX_HTTP_BODY_BYTES + 64 * 1024)
+                ]
+            }]
+        },
+    }
+    live_sized_raw = protocol.canonical_json_bytes(value)
+    selected_raw = live_sized_raw
+    observed_maxima: list[int] = []
+
+    def read_config(
+        _path: Path,
+        *,
+        maximum: int,
+        **_kwargs: Any,
+    ) -> tuple[bytes, Any]:
+        observed_maxima.append(maximum)
+        return selected_raw, type(
+            "Metadata", (), {"st_uid": 0, "st_mode": 0o100444}
+        )()
+
+    monkeypatch.setattr(service, "_read_regular_file", read_config)
+    fields = frozenset(value)
+
+    assert service._load_config(
+        service.EXECUTOR_CONFIG,
+        exact_path=service.EXECUTOR_CONFIG,
+        schema=value["schema"],
+        fields=fields,
+    ) == value
+    assert observed_maxima == [service.MAX_EXECUTOR_CONFIG_BYTES]
+
+    with pytest.raises(
+        service.PasskeyV2ServiceError,
+        match="^passkey_v2_service_json_size_invalid$",
+    ):
+        service._load_config(
+            service.WEB_CONFIG,
+            exact_path=service.WEB_CONFIG,
+            schema=value["schema"],
+            fields=fields,
+        )
+    assert observed_maxima[-1] == service.MAX_CONFIG_BYTES
+
+    selected_raw = b"x" * (service.MAX_EXECUTOR_CONFIG_BYTES + 1)
+    with pytest.raises(
+        service.PasskeyV2ServiceError,
+        match="^passkey_v2_service_json_size_invalid$",
+    ):
+        service._load_config(
+            service.EXECUTOR_CONFIG,
+            exact_path=service.EXECUTOR_CONFIG,
+            schema=value["schema"],
+            fields=fields,
+        )
+
+
+def test_unix_client_generic_frame_exact_limit_and_plus_one(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    response = service.build_service_response("health", {"healthy": True})
+    response_raw = protocol.canonical_json_bytes(response) + b"\n"
+    sent: list[bytes] = []
+
+    class Socket:
+        def __init__(self) -> None:
+            self._responses = [response_raw, b""]
+
+        def settimeout(self, _timeout: float) -> None:
+            pass
+
+        def connect(self, _path: str) -> None:
+            pass
+
+        def sendall(self, raw: bytes) -> None:
+            sent.append(raw)
+
+        def shutdown(self, _direction: int) -> None:
+            pass
+
+        def recv(self, _maximum: int) -> bytes:
+            return self._responses.pop(0)
+
+        def close(self) -> None:
+            pass
+
+    monkeypatch.setattr(service.socket, "socket", lambda *_args: Socket())
+    empty = service.build_service_frame("health", {"padding": ""})
+    empty_raw = protocol.canonical_json_bytes(empty) + b"\n"
+    padding = "x" * (
+        service.MAX_FRAME_BYTES + 1 - len(empty_raw)
+    )
+    exact_document = {"padding": padding}
+    exact_raw = protocol.canonical_json_bytes(
+        service.build_service_frame("health", exact_document)
+    ) + b"\n"
+    assert len(exact_raw) == service.MAX_FRAME_BYTES + 1
+
+    client = service.UnixServiceClient(Path("/fixed/socket"))
+    assert client.call("health", exact_document) == {"healthy": True}
+    assert sent == [exact_raw]
+
+    with pytest.raises(
+        service.PasskeyV2ServiceError,
+        match="^passkey_v2_service_frame_oversized$",
+    ):
+        client.call("health", {"padding": padding + "x"})
+    with pytest.raises(
+        service.PasskeyV2ServiceError,
+        match="^passkey_v2_service_frame_limit_invalid$",
+    ):
+        client.call(
+            "health",
+            {},
+            maximum_request_bytes=service.MAX_AUTHORITY_FRAME_BYTES,
+        )
+
+
+def test_iap_intake_never_writes_an_oversized_response(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    unsigned = {
+        "schema": storage.REMOTE_FRAME_SCHEMA,
+        "operation": "preflight",
+        "release_sha": RELEASE,
+        "document": {},
+    }
+    frame = {**unsigned, "frame_sha256": protocol.sha256_json(unsigned)}
+    stdin = type(
+        "Input",
+        (),
+        {"buffer": io.BytesIO(protocol.canonical_json_bytes(frame))},
+    )()
+    output = io.BytesIO()
+    stdout = type("Output", (), {"buffer": output})()
+    monkeypatch.setattr(service.sys, "stdin", stdin)
+    monkeypatch.setattr(service.sys, "stdout", stdout)
+    monkeypatch.setattr(service, "_release_revision", lambda: RELEASE)
+    monkeypatch.setattr(
+        service,
+        "handle_intake_frame",
+        lambda *_args, **_kwargs: {
+            "padding": "x" * (service.MAX_FRAME_BYTES + 1)
+        },
+    )
+
+    with pytest.raises(
+        service.PasskeyV2ServiceError,
+        match="^passkey_v2_intake_response_oversized$",
+    ):
+        service.intake_main([])
+    assert output.getvalue() == b""
 
 
 def test_unix_client_uses_fixed_long_mutation_deadline() -> None:

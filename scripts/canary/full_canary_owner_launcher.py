@@ -438,6 +438,8 @@ _ADMIN_PASSWORD_MAX_UTF8 = 4096
 _DISCORD_TOKEN_MAX_BYTES = 4096
 _HTTP_RESPONSE_MAX_BYTES = 2 * 1024 * 1024
 _CANARY_IAM_JSON_MAX_BYTES = 8 * 1024 * 1024
+_STOPPED_RELEASE_REMOTE_INPUT_MAX_BYTES = _CANARY_IAM_JSON_MAX_BYTES + 1
+_STOPPED_RELEASE_REMOTE_OUTPUT_MAX_BYTES = _CANARY_IAM_JSON_MAX_BYTES + 1
 _HTTP_TIMEOUT_SECONDS = 30.0
 _OPERATION_TIMEOUT_SECONDS = 180.0
 _GATE_MAX_FUTURE_SECONDS = 900
@@ -15952,9 +15954,14 @@ class IapStoppedReleaseTransport(IapCoordinatorTransport):
         if (
             not isinstance(input_bytes, bytes)
             or not input_bytes
+            or not 0 < maximum_input_bytes <= (
+                _STOPPED_RELEASE_REMOTE_INPUT_MAX_BYTES
+            )
             or len(input_bytes) > maximum_input_bytes
             or not 0 < timeout_seconds <= 2_400
-            or not 0 < maximum_output_bytes <= _HTTP_RESPONSE_MAX_BYTES
+            or not 0 < maximum_output_bytes <= (
+                _STOPPED_RELEASE_REMOTE_OUTPUT_MAX_BYTES
+            )
         ):
             raise OwnerLauncherError("stopped_release_remote_input_invalid")
         authorization_before = self._authorization_snapshot(account)
@@ -18707,7 +18714,7 @@ class StorageGrowthHostAttestorBoundary(Protocol):
 class CanaryHostObservationAttestorTransport:
     """One fixed root-only canary signer command over pinned IAP stdin."""
 
-    _MAX_FRAME_BYTES = 1024 * 1024
+    _MAX_FRAME_BYTES = _CANARY_IAM_JSON_MAX_BYTES
 
     def __init__(
         self,
@@ -18826,8 +18833,18 @@ class OwnerGateIapTransport:
     _AUTHORITY_USER = "muncho-passkey-authority"
     _REMOTE_PYTHON = "/opt/muncho-owner-gate/current/venv/bin/python"
     _REMOTE_INTAKE = "/opt/muncho-owner-gate/current/bin/muncho-owner-gate-intake"
-    _MAX_FRAME_BYTES = 1024 * 1024
-    _MAX_RESPONSE_BYTES = 1024 * 1024
+    _DEFAULT_FRAME_BYTES = 1024 * 1024
+    _DEFAULT_RESPONSE_BYTES = 1024 * 1024
+    _MAX_FRAME_BYTES = _CANARY_IAM_JSON_MAX_BYTES
+    _MAX_RESPONSE_BYTES = _CANARY_IAM_JSON_MAX_BYTES
+    _FULL_IAM_REQUEST_OPERATIONS = frozenset({
+        "execute_or_recover",
+        "request_initial",
+        "request_resume",
+    })
+    _FULL_IAM_RESPONSE_OPERATIONS = frozenset({
+        "attest_cloud_observation",
+    })
     _ENVIRONMENT_KEYS = frozenset({
         "HOME",
         "CLOUDSDK_CONFIG",
@@ -19171,7 +19188,11 @@ class OwnerGateIapTransport:
         argv: tuple[str, ...],
         environment: Mapping[str, str],
         frame: bytes,
+        *,
+        maximum_response_bytes: int,
     ) -> bytes:
+        if not 0 < maximum_response_bytes <= self._MAX_RESPONSE_BYTES:
+            raise OwnerLauncherError("owner_gate_iap_response_limit_invalid")
         try:
             process = self._popen_factory(
                 argv,
@@ -19238,7 +19259,7 @@ class OwnerGateIapTransport:
                             ) from None
                         if chunk:
                             output.extend(chunk)
-                            if len(output) > self._MAX_RESPONSE_BYTES:
+                            if len(output) > maximum_response_bytes:
                                 raise OwnerLauncherError(
                                     "owner_gate_iap_response_oversized"
                                 )
@@ -19288,22 +19309,69 @@ class OwnerGateIapTransport:
             raise OwnerLauncherError("owner_gate_iap_frame_invalid") from None
         if _canonical_bytes(frame) != canonical_frame:
             raise OwnerLauncherError("owner_gate_iap_frame_invalid")
+        operation = frame.get("operation")
+        unsigned_frame = {
+            key: value
+            for key, value in frame.items()
+            if key != "frame_sha256"
+        }
+        valid_frame = (
+            set(frame) == {
+                "schema",
+                "operation",
+                "release_sha",
+                "document",
+                "frame_sha256",
+            }
+            and frame.get("schema")
+            == "muncho-passkey-v2-owner-gate-frame.v1"
+            and frame.get("release_sha") == self._release_sha
+            and isinstance(frame.get("document"), Mapping)
+            and isinstance(operation, str)
+            and frame.get("frame_sha256")
+            == hashlib.sha256(_canonical_bytes(unsigned_frame)).hexdigest()
+        )
+        large_request = (
+            valid_frame
+            and operation in self._FULL_IAM_REQUEST_OPERATIONS
+        )
+        large_response = (
+            valid_frame
+            and operation in self._FULL_IAM_RESPONSE_OPERATIONS
+        )
+        maximum_frame_bytes = (
+            self._MAX_FRAME_BYTES
+            if large_request
+            else self._DEFAULT_FRAME_BYTES
+        )
+        maximum_response_bytes = (
+            self._MAX_RESPONSE_BYTES
+            if large_response
+            else self._DEFAULT_RESPONSE_BYTES
+        )
+        if len(canonical_frame) > maximum_frame_bytes:
+            raise OwnerLauncherError("owner_gate_iap_frame_invalid")
 
         before = self._authority_snapshot()
         argv = self._argv(before)
         environment = self._environment(before[0])
         try:
-            response = self._bounded_exchange(argv, environment, canonical_frame)
+            response = self._bounded_exchange(
+                argv,
+                environment,
+                canonical_frame,
+                maximum_response_bytes=maximum_response_bytes,
+            )
         finally:
             after = self._authority_snapshot()
             if after != before:
                 raise OwnerLauncherError("owner_gate_iap_authority_changed")
-        if len(response) > self._MAX_RESPONSE_BYTES or response.endswith(b"\n"):
+        if len(response) > maximum_response_bytes or response.endswith(b"\n"):
             raise OwnerLauncherError("owner_gate_iap_response_invalid")
         try:
             decoded = _decode_json_object(
                 response,
-                maximum=self._MAX_RESPONSE_BYTES,
+                maximum=maximum_response_bytes,
             )
         except OwnerLauncherError:
             raise OwnerLauncherError("owner_gate_iap_response_invalid") from None
@@ -19426,7 +19494,12 @@ class OwnerGateIapTransport:
             "release_revision": self._release_sha,
         })
         try:
-            response = self._bounded_exchange(argv, environment, request)
+            response = self._bounded_exchange(
+                argv,
+                environment,
+                request,
+                maximum_response_bytes=self._DEFAULT_RESPONSE_BYTES,
+            )
         finally:
             after = self._authority_snapshot()
             if after != before:
@@ -19434,7 +19507,7 @@ class OwnerGateIapTransport:
         if (
             not response.endswith(b"\n")
             or b"\n" in response[:-1]
-            or len(response) > self._MAX_RESPONSE_BYTES
+            or len(response) > self._DEFAULT_RESPONSE_BYTES
         ):
             raise OwnerLauncherError(
                 "owner_gate_activation_iap_response_invalid"
@@ -19442,7 +19515,7 @@ class OwnerGateIapTransport:
         try:
             decoded = _decode_json_object(
                 response[:-1],
-                maximum=self._MAX_RESPONSE_BYTES,
+                maximum=self._DEFAULT_RESPONSE_BYTES,
             )
         except OwnerLauncherError:
             raise OwnerLauncherError(

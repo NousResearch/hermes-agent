@@ -514,7 +514,14 @@ class ProductionStorageGrowthBoundary:
         }
         frame = {**unsigned, "frame_sha256": protocol.sha256_json(unsigned)}
         raw = self._transport.invoke_owner_gate(protocol.canonical_json_bytes(frame))
-        value = protocol.decode_canonical_json(raw)
+        value = protocol.decode_canonical_json(
+            raw,
+            maximum_bytes=(
+                protocol.MAXIMUM_AUTHORITY_JSON_BYTES
+                if operation == "attest_cloud_observation"
+                else protocol.MAXIMUM_JSON_BYTES
+            ),
+        )
         if not isinstance(value, Mapping):
             raise PasskeyV2StorageBoundaryError("passkey_v2_remote_response_invalid")
         response = dict(value)

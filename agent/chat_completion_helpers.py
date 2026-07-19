@@ -2418,6 +2418,7 @@ def interruptible_streaming_api_call(agent, api_kwargs: dict, *, on_first_delta=
                             else "primary"
                         ),
                     },
+                    defer_logical_completion=True,
                 )
                 streamed_response = stream_converse_with_callbacks(
                     {"stream": stream},
@@ -2805,6 +2806,7 @@ def interruptible_streaming_api_call(agent, api_kwargs: dict, *, on_first_delta=
                     else "primary"
                 ),
             },
+            defer_logical_completion=True,
         )
         for chunk in stream:
             last_chunk_time["t"] = time.time()
@@ -3220,6 +3222,7 @@ def interruptible_streaming_api_call(agent, api_kwargs: dict, *, on_first_delta=
                     else "primary"
                 ),
             },
+            defer_logical_completion=True,
         )
         try:
             for event in stream:

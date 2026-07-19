@@ -126,9 +126,33 @@ export function setTreePaneHidden(paneId: string, hidden: boolean) {
 
   $hiddenTreePanes.set(next)
 
-  // Unhiding is an intent to SEE the pane — front it in its group.
+  // Reactive unhides (e.g. `bindPaneVisibility('files', $hasWorkspace)`) are
+  // state-driven, not user intent — opening the side or fronting the tab in
+  // response to an environmental flag change would clobber an explicit user
+  // collapse (Cmd+J) and silently re-open the rail after every session create.
+  // Callers that want user-intent semantics (open the side, front the tab)
+  // must call `revealTreePane` explicitly. We still front the pane in its
+  // group so it's visible the next time the column is shown.
   if (!hidden) {
-    revealTreePane(paneId)
+    frontPaneInGroup(paneId)
+  }
+}
+
+/** Make `paneId` the active tab in its group without touching side collapse
+ *  or zone-minimized state — the safe "make it visible next time the column
+ *  is shown" primitive that reactive unhides need. */
+function frontPaneInGroup(paneId: string) {
+  const tree = $layoutTree.get()
+  const group = tree ? findGroupOfPane(tree, paneId) : null
+
+  if (!tree || !group || group.active === paneId) {
+    return
+  }
+
+  const next = setActivePaneOp(tree, group.id, paneId)
+
+  if (next !== tree) {
+    commit(next)
   }
 }
 

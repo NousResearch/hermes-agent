@@ -20,6 +20,7 @@ from types import SimpleNamespace
 
 import pytest
 
+from tools.environments import local as local_mod
 from tools.environments.local import LocalEnvironment
 
 
@@ -48,8 +49,14 @@ def _process_group_snapshot(pgid: int) -> str:
     ).stdout.strip()
 
 
-def _wait_for_pgid_exit(pgid: int, timeout: float = 10.0) -> bool:
-    """Wait for a process group to disappear under loaded xdist hosts."""
+def _wait_for_pgid_exit(pgid: int, timeout: float = 60.0) -> bool:
+    """Wait for a process group to disappear under loaded xdist hosts.
+
+    The cleanup chain is: SIGTERM → 3s TimeoutStopSec → SIGKILL → reap.
+    Under heavy xdist load (40 parallel workers, 6-shard CI), the full
+    sequence can exceed 10s. Default timeout is generous to avoid CI
+    flakes; in practice the wait returns in <1s on quiet hosts.
+    """
     deadline = time.monotonic() + timeout
     while time.monotonic() < deadline:
         if not _pgid_still_alive(pgid):
@@ -90,6 +97,32 @@ def test_kill_process_uses_cached_pgid_if_wrapper_already_exited(monkeypatch):
     assert killpg_calls == [(67890, signal.SIGTERM), (67890, 0)]
 
 
+def test_kill_process_uses_windows_tree_kill(monkeypatch):
+    """Windows must kill the whole Bash process tree, not just the wrapper."""
+    env = object.__new__(LocalEnvironment)
+    terminate_calls = []
+    waits = []
+    killed = []
+
+    def fake_terminate(pid, *, force=False):
+        terminate_calls.append((pid, force))
+
+    proc = SimpleNamespace(
+        pid=12345,
+        kill=lambda: killed.append(True),
+        wait=lambda timeout=None: waits.append(timeout),
+    )
+
+    monkeypatch.setattr(local_mod, "_IS_WINDOWS", True)
+    monkeypatch.setattr("gateway.status.terminate_pid", fake_terminate)
+
+    env._kill_process(proc)
+
+    assert terminate_calls == [(12345, True)]
+    assert waits == [2.0]
+    assert killed == []
+
+
 def test_wait_for_process_kills_subprocess_on_keyboardinterrupt():
     """When KeyboardInterrupt arrives mid-poll, the subprocess group must be
     killed before the exception is re-raised."""
@@ -117,7 +150,7 @@ def test_wait_for_process_kills_subprocess_on_keyboardinterrupt():
         # does init_session() (one spawn) before the real command, so we need
         # to wait until a sleep 30 is visible.  Use pgrep-style lookup via
         # /proc to find the bash process running our sleep.
-        deadline = time.monotonic() + 5.0
+        deadline = time.monotonic() + 20.0  # generous: init_session + spawn dilate under CI load
         target_pid = None
         while time.monotonic() < deadline:
             # Walk our children and grand-children to find one running 'sleep 30'
@@ -155,7 +188,6 @@ def test_wait_for_process_kills_subprocess_on_keyboardinterrupt():
         # way CPython's signal machinery would.  We use ctypes.PyThreadState_SetAsyncExc
         # which is how signal delivery to non-main threads is simulated.
         import ctypes
-        import sys as _sys
         # py-thread-state exception targets need the ident, not the Thread
         tid = t.ident
         assert tid is not None
@@ -166,9 +198,11 @@ def test_wait_for_process_kills_subprocess_on_keyboardinterrupt():
         assert ret == 1, f"SetAsyncExc returned {ret}, expected 1"
 
         # Give the worker a moment to: hit the exception at the next poll,
-        # run the except-block cleanup (_kill_process), and exit.
-        t.join(timeout=5.0)
-        assert not t.is_alive(), "worker didn't exit within 5 s of the interrupt"
+        # run the except-block cleanup (_kill_process), and exit.  Under
+        # xdist load the SIGTERM → 3s wait → SIGKILL chain can take longer
+        # than 5s before the worker's join() returns; bumped to 15s.
+        t.join(timeout=30.0)
+        assert not t.is_alive(), "worker didn't exit within 30 s of the interrupt"
 
         # The critical assertion: the subprocess GROUP must be dead.  Not
         # just the bash wrapper — the 'sleep 30' child too. Under xdist load,

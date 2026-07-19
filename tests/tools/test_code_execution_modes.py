@@ -125,12 +125,18 @@ class TestResolveChildPython(unittest.TestCase):
     def test_project_with_no_venv_falls_back(self):
         """Project mode without VIRTUAL_ENV or CONDA_PREFIX → sys.executable."""
         env = {k: v for k, v in os.environ.items()
-               if k not in ("VIRTUAL_ENV", "CONDA_PREFIX")}
+               if k not in {"VIRTUAL_ENV", "CONDA_PREFIX"}}
         with patch.dict(os.environ, env, clear=True):
             self.assertEqual(_resolve_child_python("project"), sys.executable)
 
     def test_project_with_virtualenv_picks_venv_python(self):
         """Project mode + VIRTUAL_ENV pointing at a real venv → that python."""
+        if sys.platform == "win32":
+            pytest.skip(
+                "Creates symlinks and assumes POSIX venv layout (bin/python). "
+                "Windows venvs use Scripts/python.exe and symlink creation "
+                "requires elevated privileges (WinError 1314)."
+            )
         import tempfile, pathlib
         with tempfile.TemporaryDirectory() as td:
             fake_venv = pathlib.Path(td)
@@ -154,6 +160,12 @@ class TestResolveChildPython(unittest.TestCase):
 
     def test_project_prefers_virtualenv_over_conda(self):
         """If both VIRTUAL_ENV and CONDA_PREFIX are set, VIRTUAL_ENV wins."""
+        if sys.platform == "win32":
+            pytest.skip(
+                "Creates symlinks and assumes POSIX venv layout (bin/python). "
+                "Windows venvs use Scripts/python.exe and symlink creation "
+                "requires elevated privileges (WinError 1314)."
+            )
         import tempfile, pathlib
         with tempfile.TemporaryDirectory() as ve_td, tempfile.TemporaryDirectory() as conda_td:
             ve = pathlib.Path(ve_td)
@@ -208,6 +220,69 @@ class TestResolveChildCwd(unittest.TestCase):
         with patch.dict(os.environ, {"TERMINAL_CWD": "~"}):
             self.assertEqual(_resolve_child_cwd("project", "/tmp/staging"), home)
 
+    def test_project_prefers_registered_task_cwd_override(self):
+        import tempfile
+        import tools.terminal_tool as terminal_tool
+
+        with tempfile.TemporaryDirectory() as td:
+            task_id = "session-cwd-test"
+            with patch.dict(os.environ, {"TERMINAL_CWD": "/does/not/exist"}):
+                with patch.object(terminal_tool, "_task_env_overrides", {}, create=False):
+                    terminal_tool.register_task_env_overrides(task_id, {"cwd": td})
+                    self.assertEqual(_resolve_child_cwd("project", "/tmp/staging", task_id=task_id), td)
+
+    def test_project_prefers_session_cwd_record_over_override(self):
+        """The session's cwd RECORD (its live `cd` state) outranks the
+        registration-time workspace override — same ladder as file tools
+        and the terminal, so a `cd` before execute_code is honored."""
+        import tempfile
+        import tools.terminal_tool as terminal_tool
+
+        with tempfile.TemporaryDirectory() as reg, tempfile.TemporaryDirectory() as cded:
+            task_id = "session-record-test"
+            with patch.dict(os.environ, {"TERMINAL_CWD": "/does/not/exist"}):
+                with patch.object(terminal_tool, "_task_env_overrides", {}, create=False), \
+                     patch.object(terminal_tool, "_session_cwd", {}, create=False):
+                    terminal_tool.register_task_env_overrides(task_id, {"cwd": reg})
+                    # Simulate a later `cd`: post-command tracking rewrites the record.
+                    terminal_tool.record_session_cwd(task_id, cded)
+                    self.assertEqual(
+                        _resolve_child_cwd("project", "/tmp/staging", task_id=task_id), cded
+                    )
+
+    def test_project_uses_session_cwd_record_without_any_override(self):
+        """A session that only `cd`'d (no session.cwd.set registration) still
+        resolves to its recorded directory."""
+        import tempfile
+        import tools.terminal_tool as terminal_tool
+
+        with tempfile.TemporaryDirectory() as cded:
+            task_id = "record-only-test"
+            with patch.dict(os.environ, {"TERMINAL_CWD": "/does/not/exist"}):
+                with patch.object(terminal_tool, "_task_env_overrides", {}, create=False), \
+                     patch.object(terminal_tool, "_session_cwd", {}, create=False):
+                    terminal_tool.record_session_cwd(task_id, cded)
+                    self.assertEqual(
+                        _resolve_child_cwd("project", "/tmp/staging", task_id=task_id), cded
+                    )
+
+    def test_project_stale_record_falls_through_to_override(self):
+        """A recorded directory that no longer exists is skipped; the
+        registered override is the next rung."""
+        import tempfile
+        import tools.terminal_tool as terminal_tool
+
+        with tempfile.TemporaryDirectory() as reg:
+            task_id = "stale-record-test"
+            with patch.dict(os.environ, {"TERMINAL_CWD": "/does/not/exist"}):
+                with patch.object(terminal_tool, "_task_env_overrides", {}, create=False), \
+                     patch.object(terminal_tool, "_session_cwd", {}, create=False):
+                    terminal_tool.register_task_env_overrides(task_id, {"cwd": reg})
+                    terminal_tool.record_session_cwd(task_id, "/deleted/dir/gone")
+                    self.assertEqual(
+                        _resolve_child_cwd("project", "/tmp/staging", task_id=task_id), reg
+                    )
+
 
 # ---------------------------------------------------------------------------
 # Schema description
@@ -257,7 +332,15 @@ class TestModeAwareSchema(unittest.TestCase):
 # Integration: what actually happens when execute_code runs per mode
 # ---------------------------------------------------------------------------
 
-@pytest.mark.skipif(sys.platform == "win32", reason="execute_code is POSIX-only")
+@pytest.mark.skipif(
+    sys.platform == "win32",
+    reason=(
+        "Assumes POSIX venv layout (bin/python) and symlink creation "
+        "privileges.  execute_code itself works on Windows — these "
+        "integration tests just haven't been ported to the Scripts/"
+        "python.exe layout yet."
+    ),
+)
 class TestExecuteCodeModeIntegration(unittest.TestCase):
     """End-to-end: verify the subprocess actually runs where we expect."""
 
@@ -295,6 +378,28 @@ class TestExecuteCodeModeIntegration(unittest.TestCase):
                 os.path.realpath(result["output"].strip()),
                 os.path.realpath(td),
             )
+
+    def test_project_mode_uses_registered_session_cwd_override(self):
+        """Project mode must honor session.cwd.set-style overrides even when
+        TERMINAL_CWD is absent or points elsewhere."""
+        import tempfile
+        import tools.terminal_tool as terminal_tool
+
+        with tempfile.TemporaryDirectory() as td:
+            task_id = "session-cwd-test"
+            with patch.dict(os.environ, {"TERMINAL_CWD": "/does/not/exist"}):
+                with patch.object(terminal_tool, "_task_env_overrides", {}, create=False):
+                    terminal_tool.register_task_env_overrides(task_id, {"cwd": td})
+                    with _mock_mode("project"):
+                        with patch("model_tools.handle_function_call", side_effect=_mock_handle_function_call):
+                            raw = execute_code(
+                                code="import os; print(os.getcwd())",
+                                task_id=task_id,
+                                enabled_tools=list(SANDBOX_ALLOWED_TOOLS),
+                            )
+            result = json.loads(raw)
+            self.assertEqual(result["status"], "success")
+            self.assertEqual(os.path.realpath(result["output"].strip()), os.path.realpath(td))
 
     def test_project_mode_interpreter_is_venv_python(self):
         """Project mode: sys.executable inside the child is the venv's python
@@ -351,7 +456,15 @@ class TestExecuteCodeModeIntegration(unittest.TestCase):
 # changes CWD + interpreter, not the security posture.
 # ---------------------------------------------------------------------------
 
-@pytest.mark.skipif(sys.platform == "win32", reason="execute_code is POSIX-only")
+@pytest.mark.skipif(
+    sys.platform == "win32",
+    reason=(
+        "Assumes POSIX venv layout (bin/python) and symlink creation "
+        "privileges.  execute_code itself works on Windows — these "
+        "integration tests just haven't been ported to the Scripts/"
+        "python.exe layout yet."
+    ),
+)
 class TestSecurityInvariantsAcrossModes(unittest.TestCase):
 
     def _run(self, code, mode):

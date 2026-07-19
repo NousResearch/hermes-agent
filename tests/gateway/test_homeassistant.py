@@ -14,9 +14,10 @@ from gateway.config import (
     Platform,
     PlatformConfig,
 )
-from gateway.platforms.homeassistant import (
+from plugins.platforms.homeassistant.adapter import (
     HomeAssistantAdapter,
     check_ha_requirements,
+    validate_ha_config,
 )
 
 
@@ -26,18 +27,42 @@ from gateway.platforms.homeassistant import (
 
 
 class TestCheckRequirements:
-    def test_returns_false_without_token(self, monkeypatch):
+    def test_returns_true_without_token_when_aiohttp_available(self, monkeypatch):
         monkeypatch.delenv("HASS_TOKEN", raising=False)
-        assert check_ha_requirements() is False
+        assert check_ha_requirements() is True
 
     def test_returns_true_with_token(self, monkeypatch):
         monkeypatch.setenv("HASS_TOKEN", "test-token")
         assert check_ha_requirements() is True
 
-    @patch("gateway.platforms.homeassistant.AIOHTTP_AVAILABLE", False)
+    @patch("plugins.platforms.homeassistant.adapter.AIOHTTP_AVAILABLE", False)
     def test_returns_false_without_aiohttp(self, monkeypatch):
         monkeypatch.setenv("HASS_TOKEN", "test-token")
         assert check_ha_requirements() is False
+
+    def test_validate_config_accepts_platform_token(self, monkeypatch):
+        monkeypatch.delenv("HASS_TOKEN", raising=False)
+        config = PlatformConfig(enabled=True, token="config-token")
+        assert validate_ha_config(config) is True
+
+    def test_validate_config_rejects_missing_token(self, monkeypatch):
+        monkeypatch.delenv("HASS_TOKEN", raising=False)
+        config = PlatformConfig(enabled=True, token="")
+        assert validate_ha_config(config) is False
+
+
+class TestValidateConfig:
+    def test_returns_false_without_token_in_config_or_env(self, monkeypatch):
+        monkeypatch.delenv("HASS_TOKEN", raising=False)
+        assert validate_ha_config(PlatformConfig(enabled=True)) is False
+
+    def test_returns_true_with_token_in_env(self, monkeypatch):
+        monkeypatch.setenv("HASS_TOKEN", "test-token")
+        assert validate_ha_config(PlatformConfig(enabled=True)) is True
+
+    def test_returns_true_with_token_in_config(self, monkeypatch):
+        monkeypatch.delenv("HASS_TOKEN", raising=False)
+        assert validate_ha_config(PlatformConfig(enabled=True, token="cfg-token")) is True
 
 
 # ---------------------------------------------------------------------------
@@ -504,7 +529,7 @@ class TestSendViaRestApi:
         adapter = _make_adapter()
         mock_session = self._mock_aiohttp_session(200)
 
-        with patch("gateway.platforms.homeassistant.aiohttp") as mock_aiohttp:
+        with patch("plugins.platforms.homeassistant.adapter.aiohttp") as mock_aiohttp:
             mock_aiohttp.ClientSession = MagicMock(return_value=mock_session)
             mock_aiohttp.ClientTimeout = lambda total: total
 
@@ -523,7 +548,7 @@ class TestSendViaRestApi:
         adapter = _make_adapter()
         mock_session = self._mock_aiohttp_session(401, "Unauthorized")
 
-        with patch("gateway.platforms.homeassistant.aiohttp") as mock_aiohttp:
+        with patch("plugins.platforms.homeassistant.adapter.aiohttp") as mock_aiohttp:
             mock_aiohttp.ClientSession = MagicMock(return_value=mock_session)
             mock_aiohttp.ClientTimeout = lambda total: total
 
@@ -538,7 +563,7 @@ class TestSendViaRestApi:
         mock_session = self._mock_aiohttp_session(200)
         long_message = "x" * 10000
 
-        with patch("gateway.platforms.homeassistant.aiohttp") as mock_aiohttp:
+        with patch("plugins.platforms.homeassistant.adapter.aiohttp") as mock_aiohttp:
             mock_aiohttp.ClientSession = MagicMock(return_value=mock_session)
             mock_aiohttp.ClientTimeout = lambda total: total
 
@@ -554,7 +579,7 @@ class TestSendViaRestApi:
         adapter._ws = AsyncMock()  # Simulate an active WS
         mock_session = self._mock_aiohttp_session(200)
 
-        with patch("gateway.platforms.homeassistant.aiohttp") as mock_aiohttp:
+        with patch("plugins.platforms.homeassistant.adapter.aiohttp") as mock_aiohttp:
             mock_aiohttp.ClientSession = MagicMock(return_value=mock_session)
             mock_aiohttp.ClientTimeout = lambda total: total
 

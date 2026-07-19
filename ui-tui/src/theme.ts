@@ -6,6 +6,8 @@ export interface ThemeColors {
   muted: string
   completionBg: string
   completionCurrentBg: string
+  completionMetaBg: string
+  completionMetaCurrentBg: string
 
   label: string
   ok: string
@@ -145,11 +147,7 @@ function rgbToHsl(red: number, green: number, blue: number): [number, number, nu
   const saturation = lightness > 0.5 ? delta / (2 - max - min) : delta / (max + min)
 
   const hue =
-    max === rn
-      ? (gn - bn) / delta + (gn < bn ? 6 : 0)
-      : max === gn
-        ? (bn - rn) / delta + 2
-        : (rn - gn) / delta + 4
+    max === rn ? (gn - bn) / delta + (gn < bn ? 6 : 0) : max === gn ? (bn - rn) / delta + 2 : (rn - gn) / delta + 4
 
   return [hue / 6, saturation, lightness]
 }
@@ -225,9 +223,10 @@ function normalizeAnsiForeground(color: string): string {
   const richAnsi = richEightBitColorNumber(rgb[0], rgb[1], rgb[2])
   const richRgb = xtermEightBitRgb(richAnsi)
 
-  const ansi = relativeLuminance(richRgb[0], richRgb[1], richRgb[2]) > ANSI_LIGHT_MAX_LUMINANCE
-    ? bestReadableAnsiColor(rgb[0], rgb[1], rgb[2])
-    : richAnsi
+  const ansi =
+    relativeLuminance(richRgb[0], richRgb[1], richRgb[2]) > ANSI_LIGHT_MAX_LUMINANCE
+      ? bestReadableAnsiColor(rgb[0], rgb[1], rgb[2])
+      : richAnsi
 
   return `ansi256(${ansi})`
 }
@@ -264,8 +263,10 @@ export const DARK_THEME: Theme = {
     // new value sits ~60% luminance — readable without losing the "muted /
     // secondary" semantic.  Field labels still use `label` (65%) which
     // stays brighter so hierarchy holds.
-    completionBg: '#FFFFFF',
-    completionCurrentBg: mix('#FFFFFF', '#FFBF00', 0.25),
+    completionBg: '#1a1a2e',
+    completionCurrentBg: '#333355',
+    completionMetaBg: '#1a1a2e',
+    completionMetaCurrentBg: '#333355',
 
     label: '#DAA520',
     ok: '#4caf50',
@@ -312,6 +313,8 @@ export const LIGHT_THEME: Theme = {
     muted: '#7A5A0F',
     completionBg: '#F5F5F5',
     completionCurrentBg: mix('#F5F5F5', '#A0651C', 0.25),
+    completionMetaBg: '#F5F5F5',
+    completionMetaCurrentBg: mix('#F5F5F5', '#A0651C', 0.25),
 
     label: '#7A5A0F',
     ok: '#2E7D32',
@@ -517,57 +520,74 @@ export function fromSkin(
 ): Theme {
   const d = DEFAULT_THEME
   const c = (k: string) => colors[k]
+  const hasSkinColors = Object.keys(colors).length > 0
 
   const accent = c('ui_accent') ?? c('banner_accent') ?? d.color.accent
   const bannerAccent = c('banner_accent') ?? c('banner_title') ?? d.color.accent
   const muted = c('banner_dim') ?? d.color.muted
   const completionBg = c('completion_menu_bg') ?? d.color.completionBg
 
-  return normalizeThemeForAnsiLightTerminal({
-    color: {
-      primary: c('ui_primary') ?? c('banner_title') ?? d.color.primary,
-      accent,
-      border: c('ui_border') ?? c('banner_border') ?? d.color.border,
-      text: c('ui_text') ?? c('banner_text') ?? d.color.text,
-      muted,
-      completionBg,
-      completionCurrentBg: c('completion_menu_current_bg') ?? mix(completionBg, bannerAccent, 0.25),
+  const completionCurrentBg =
+    c('completion_menu_current_bg') ??
+    (hasSkinColors ? mix(completionBg, bannerAccent, 0.25) : d.color.completionCurrentBg)
 
-      label: c('ui_label') ?? d.color.label,
-      ok: c('ui_ok') ?? d.color.ok,
-      error: c('ui_error') ?? d.color.error,
-      warn: c('ui_warn') ?? d.color.warn,
+  const completionMetaBg = c('completion_menu_meta_bg') ?? completionBg
+  const completionMetaCurrentBg = c('completion_menu_meta_current_bg') ?? completionCurrentBg
 
-      prompt: c('prompt') ?? c('banner_text') ?? d.color.prompt,
-      sessionLabel: c('session_label') ?? muted,
-      sessionBorder: c('session_border') ?? muted,
+  return normalizeThemeForAnsiLightTerminal(
+    {
+      color: {
+        primary: c('ui_primary') ?? c('banner_title') ?? d.color.primary,
+        accent,
+        border: c('ui_border') ?? c('banner_border') ?? d.color.border,
+        text: c('ui_text') ?? c('banner_text') ?? d.color.text,
+        muted,
+        completionBg,
+        completionCurrentBg,
+        completionMetaBg,
+        completionMetaCurrentBg,
 
-      statusBg: d.color.statusBg,
-      statusFg: d.color.statusFg,
-      statusGood: c('ui_ok') ?? d.color.statusGood,
-      statusWarn: c('ui_warn') ?? d.color.statusWarn,
-      statusBad: d.color.statusBad,
-      statusCritical: d.color.statusCritical,
-      selectionBg: c('selection_bg') ?? d.color.selectionBg,
+        label: c('ui_label') ?? d.color.label,
+        ok: c('ui_ok') ?? d.color.ok,
+        error: c('ui_error') ?? d.color.error,
+        warn: c('ui_warn') ?? d.color.warn,
 
-      diffAdded: d.color.diffAdded,
-      diffRemoved: d.color.diffRemoved,
-      diffAddedWord: d.color.diffAddedWord,
-      diffRemovedWord: d.color.diffRemovedWord,
-      shellDollar: c('shell_dollar') ?? d.color.shellDollar
+        prompt: c('prompt') ?? c('banner_text') ?? d.color.prompt,
+        sessionLabel: c('session_label') ?? muted,
+        sessionBorder: c('session_border') ?? muted,
+
+        statusBg: d.color.statusBg,
+        statusFg: d.color.statusFg,
+        statusGood: c('ui_ok') ?? d.color.statusGood,
+        statusWarn: c('ui_warn') ?? d.color.statusWarn,
+        statusBad: d.color.statusBad,
+        statusCritical: d.color.statusCritical,
+        selectionBg:
+          c('selection_bg') ??
+          c('completion_menu_current_bg') ??
+          (hasSkinColors ? completionCurrentBg : d.color.selectionBg),
+
+        diffAdded: d.color.diffAdded,
+        diffRemoved: d.color.diffRemoved,
+        diffAddedWord: d.color.diffAddedWord,
+        diffRemovedWord: d.color.diffRemovedWord,
+        shellDollar: c('shell_dollar') ?? d.color.shellDollar
+      },
+
+      brand: {
+        name: branding.agent_name ?? d.brand.name,
+        icon: d.brand.icon,
+        prompt: cleanPromptSymbol(branding.prompt_symbol, d.brand.prompt),
+        welcome: branding.welcome ?? d.brand.welcome,
+        goodbye: branding.goodbye ?? d.brand.goodbye,
+        tool: toolPrefix || d.brand.tool,
+        helpHeader: branding.help_header ?? (helpHeader || d.brand.helpHeader)
+      },
+
+      bannerLogo,
+      bannerHero
     },
-
-    brand: {
-      name: branding.agent_name ?? d.brand.name,
-      icon: d.brand.icon,
-      prompt: cleanPromptSymbol(branding.prompt_symbol, d.brand.prompt),
-      welcome: branding.welcome ?? d.brand.welcome,
-      goodbye: branding.goodbye ?? d.brand.goodbye,
-      tool: toolPrefix || d.brand.tool,
-      helpHeader: branding.help_header ?? (helpHeader || d.brand.helpHeader)
-    },
-
-    bannerLogo,
-    bannerHero
-  }, process.env, DEFAULT_LIGHT_MODE)
+    process.env,
+    DEFAULT_LIGHT_MODE
+  )
 }

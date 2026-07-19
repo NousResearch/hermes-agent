@@ -101,7 +101,7 @@ def _load_plugin_config() -> dict:
         return {}
     try:
         import yaml
-        with open(config_path) as f:
+        with open(config_path, encoding="utf-8-sig") as f:
             all_config = yaml.safe_load(f) or {}
         return cfg_get(all_config, "plugins", "hermes-memory-store", default={}) or {}
     except Exception:
@@ -136,11 +136,11 @@ class HolographicMemoryProvider(MemoryProvider):
             import yaml
             existing = {}
             if config_path.exists():
-                with open(config_path) as f:
+                with open(config_path, encoding="utf-8-sig") as f:
                     existing = yaml.safe_load(f) or {}
             existing.setdefault("plugins", {})
             existing["plugins"]["hermes-memory-store"] = values
-            with open(config_path, "w") as f:
+            with open(config_path, "w", encoding="utf-8") as f:
                 yaml.dump(existing, f, default_flow_style=False)
         except Exception:
             pass
@@ -251,6 +251,17 @@ class HolographicMemoryProvider(MemoryProvider):
                 logger.debug("Holographic memory_write mirror failed: %s", e)
 
     def shutdown(self) -> None:
+        # Release the shared SQLite connection deterministically on the
+        # caller's thread. Dropping the reference alone leaves fd finalization
+        # to GC, which keeps the connection (and its write lock) alive on a
+        # long-running gateway and prolongs the "database is locked" contention
+        # this store's shared-connection refcounting is meant to eliminate.
+        # close() is idempotent and refcount-guarded, so siblings stay safe.
+        if self._store is not None:
+            try:
+                self._store.close()
+            except Exception as e:
+                logger.debug("Holographic shutdown close() failed: %s", e)
         self._store = None
         self._retriever = None
 

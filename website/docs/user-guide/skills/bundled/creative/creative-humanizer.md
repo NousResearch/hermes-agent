@@ -19,6 +19,7 @@ Humanize text: strip AI-isms and add real voice.
 | Version | `2.5.1` |
 | Author | Siqi Chen (@blader, https://github.com/blader/humanizer), ported by Hermes Agent |
 | License | MIT |
+| Platforms | linux, macos, windows |
 | Tags | `writing`, `editing`, `humanize`, `anti-ai-slop`, `voice`, `prose`, `text` |
 | Related skills | [`songwriting-and-ai-music`](/docs/user-guide/skills/bundled/creative/creative-songwriting-and-ai-music) |
 

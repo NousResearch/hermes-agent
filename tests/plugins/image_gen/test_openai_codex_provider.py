@@ -9,8 +9,8 @@ endpoint.
 from __future__ import annotations
 
 import importlib
+import json
 from pathlib import Path
-from types import SimpleNamespace
 
 import pytest
 
@@ -31,24 +31,6 @@ _PNG_HEX = (
 def _b64_png() -> str:
     import base64
     return base64.b64encode(bytes.fromhex(_PNG_HEX)).decode()
-
-
-class _FakeStream:
-    def __init__(self, events, final_response):
-        self._events = list(events)
-        self._final = final_response
-
-    def __enter__(self):
-        return self
-
-    def __exit__(self, exc_type, exc, tb):
-        return False
-
-    def __iter__(self):
-        return iter(self._events)
-
-    def get_final_response(self):
-        return self._final
 
 
 @pytest.fixture(autouse=True)
@@ -127,22 +109,7 @@ class TestGenerate:
 
     def test_generate_uses_codex_stream_path(self, provider, monkeypatch, tmp_path):
         monkeypatch.setattr(codex_plugin, "_read_codex_access_token", lambda: "codex-token")
-
-        output_item = SimpleNamespace(
-            type="image_generation_call",
-            status="generating",
-            id="ig_test",
-            result=_b64_png(),
-        )
-        done_event = SimpleNamespace(type="response.output_item.done", item=output_item)
-        final_response = SimpleNamespace(output=[], status="completed", output_text="")
-
-        fake_client = SimpleNamespace(
-            responses=SimpleNamespace(
-                stream=lambda **kwargs: _FakeStream([done_event], final_response)
-            )
-        )
-        monkeypatch.setattr(codex_plugin, "_build_codex_client", lambda: fake_client)
+        monkeypatch.setattr(codex_plugin, "_collect_image_b64", lambda *a, **kw: _b64_png())
 
         result = provider.generate("a cat", aspect_ratio="landscape")
 
@@ -163,25 +130,21 @@ class TestGenerate:
 
         captured = {}
 
-        def _stream(**kwargs):
-            captured.update(kwargs)
-            output_item = SimpleNamespace(
-                type="image_generation_call",
-                status="generating",
-                id="ig_test",
-                result=_b64_png(),
-            )
-            done_event = SimpleNamespace(type="response.output_item.done", item=output_item)
-            final_response = SimpleNamespace(output=[], status="completed", output_text="")
-            return _FakeStream([done_event], final_response)
+        def _collect(token, *, prompt, size, quality, input_images=None):
+            captured.update(codex_plugin._build_responses_payload(
+                prompt=prompt,
+                size=size,
+                quality=quality,
+                input_images=input_images,
+            ))
+            return _b64_png()
 
-        fake_client = SimpleNamespace(responses=SimpleNamespace(stream=_stream))
-        monkeypatch.setattr(codex_plugin, "_build_codex_client", lambda: fake_client)
+        monkeypatch.setattr(codex_plugin, "_collect_image_b64", _collect)
 
         result = provider.generate("a cat", aspect_ratio="portrait")
         assert result["success"] is True
 
-        assert captured["model"] == "gpt-5.4"
+        assert captured["model"] == "gpt-5.5"
         assert captured["store"] is False
         assert captured["input"][0]["type"] == "message"
         assert captured["input"][0]["role"] == "user"
@@ -199,88 +162,236 @@ class TestGenerate:
         assert tool["background"] == "opaque"
         assert tool["partial_images"] == 1
 
-    def test_partial_image_event_used_when_done_missing(self, provider, monkeypatch):
-        """If the stream never emits output_item.done, fall back to the
-        partial_image event so users at least get the latest preview frame."""
+    def test_capabilities_advertise_image_inputs(self, provider):
+        caps = provider.capabilities()
+        assert caps["modalities"] == ["text", "image"]
+        assert caps["max_reference_images"] == 16
+
+    def test_codex_stream_request_includes_source_images(self, provider, monkeypatch, tmp_path):
         monkeypatch.setattr(codex_plugin, "_read_codex_access_token", lambda: "codex-token")
+        image_path = tmp_path / "source.png"
+        image_path.write_bytes(bytes.fromhex(_PNG_HEX))
 
-        partial_event = SimpleNamespace(
-            type="response.image_generation_call.partial_image",
-            partial_image_b64=_b64_png(),
+        captured = {}
+
+        def _collect(token, *, prompt, size, quality, input_images=None):
+            captured.update(codex_plugin._build_responses_payload(
+                prompt=prompt,
+                size=size,
+                quality=quality,
+                input_images=input_images,
+            ))
+            return _b64_png()
+
+        monkeypatch.setattr(codex_plugin, "_collect_image_b64", _collect)
+
+        result = provider.generate(
+            "put this same person in a navy JK uniform",
+            aspect_ratio="portrait",
+            image_url=str(image_path),
+            reference_image_urls=["https://example.com/ref.png"],
         )
-        final_response = SimpleNamespace(output=[], status="completed", output_text="")
 
-        fake_client = SimpleNamespace(
-            responses=SimpleNamespace(
-                stream=lambda **kwargs: _FakeStream([partial_event], final_response)
-            )
-        )
-        monkeypatch.setattr(codex_plugin, "_build_codex_client", lambda: fake_client)
-
-        result = provider.generate("a cat")
         assert result["success"] is True
-        assert Path(result["image"]).exists()
+        assert result["modality"] == "image"
+        assert result["input_image_count"] == 2
 
-    def test_final_response_sweep_recovers_image(self, provider, monkeypatch):
-        """If no image_generation_call event arrives mid-stream, the
-        post-stream final-response sweep should still find the image."""
+        content = captured["input"][0]["content"]
+        assert content[0] == {
+            "type": "input_text",
+            "text": "put this same person in a navy JK uniform",
+        }
+        assert content[1]["type"] == "input_image"
+        assert content[1]["image_url"].startswith("data:image/png;base64,")
+        assert content[2] == {"type": "input_image", "image_url": "https://example.com/ref.png"}
+
+    def test_generate_clamps_reference_images_to_cap(self, provider, monkeypatch):
         monkeypatch.setattr(codex_plugin, "_read_codex_access_token", lambda: "codex-token")
+        captured = {}
 
-        final_item = SimpleNamespace(
-            type="image_generation_call",
-            status="completed",
-            id="ig_final",
-            result=_b64_png(),
-        )
-        final_response = SimpleNamespace(output=[final_item], status="completed", output_text="")
+        def _collect(token, *, prompt, size, quality, input_images=None):
+            captured["input_images"] = input_images
+            return _b64_png()
 
-        fake_client = SimpleNamespace(
-            responses=SimpleNamespace(
-                stream=lambda **kwargs: _FakeStream([], final_response)
-            )
-        )
-        monkeypatch.setattr(codex_plugin, "_build_codex_client", lambda: fake_client)
+        monkeypatch.setattr(codex_plugin, "_collect_image_b64", _collect)
 
-        result = provider.generate("a cat")
+        refs = [f"https://example.com/ref-{idx}.png" for idx in range(20)]
+        result = provider.generate("combine the references", reference_image_urls=refs)
+
         assert result["success"] is True
-        assert Path(result["image"]).exists()
+        assert result["modality"] == "image"
+        assert result["input_image_count"] == 16
+        assert len(captured["input_images"]) == 16
+        assert captured["input_images"][-1]["image_url"] == "https://example.com/ref-15.png"
+
+    def test_rejects_non_image_local_source(self, provider, monkeypatch, tmp_path):
+        monkeypatch.setattr(codex_plugin, "_read_codex_access_token", lambda: "codex-token")
+        text_path = tmp_path / "not-image.txt"
+        text_path.write_text("hello")
+
+        result = provider.generate("edit this", image_url=str(text_path))
+
+        assert result["success"] is False
+        assert result["error_type"] == "invalid_image_input"
+        assert "not a supported image" in result["error"]
+
+    def test_rejects_svg_local_source(self, provider, monkeypatch, tmp_path):
+        # The shared magic-byte sniffer recognizes SVG, but gpt-image-2's
+        # input_image accepts raster only — SVG must fail locally with a clear
+        # error, not get embedded and rejected server-side with an opaque 400.
+        monkeypatch.setattr(codex_plugin, "_read_codex_access_token", lambda: "codex-token")
+        svg_path = tmp_path / "vector.svg"
+        svg_path.write_text('<svg xmlns="http://www.w3.org/2000/svg"></svg>')
+
+        result = provider.generate("edit this", image_url=str(svg_path))
+
+        assert result["success"] is False
+        assert result["error_type"] == "invalid_image_input"
+        assert "not a supported image" in result["error"]
+
+    def test_partial_image_event_used_when_done_missing(self):
+        """If output_item.done is missing, partial_image_b64 is accepted."""
+        payload = {
+            "type": "response.image_generation_call.partial_image",
+            "partial_image_b64": _b64_png(),
+        }
+        assert codex_plugin._extract_image_b64(payload) == _b64_png()
+
+    def test_sse_parser_handles_event_and_data_lines(self):
+        class _Response:
+            def iter_lines(self):
+                return iter([
+                    "event: response.output_item.done",
+                    'data: {"item": {"type": "image_generation_call", "result": "abc"}}',
+                    "",
+                ])
+
+        events = list(codex_plugin._iter_sse_json(_Response()))
+        assert events == [{
+            "type": "response.output_item.done",
+            "item": {"type": "image_generation_call", "result": "abc"},
+        }]
+
+    def test_final_response_sweep_recovers_image(self):
+        """Completed response output is found by recursive payload scanning."""
+        payload = {
+            "type": "response.completed",
+            "response": {
+                "output": [{
+                    "type": "image_generation_call",
+                    "status": "completed",
+                    "id": "ig_final",
+                    "result": _b64_png(),
+                }],
+            },
+        }
+        assert codex_plugin._extract_image_b64(payload) == _b64_png()
 
     def test_empty_response_returns_error(self, provider, monkeypatch):
         monkeypatch.setattr(codex_plugin, "_read_codex_access_token", lambda: "codex-token")
-
-        final_response = SimpleNamespace(output=[], status="completed", output_text="")
-        fake_client = SimpleNamespace(
-            responses=SimpleNamespace(
-                stream=lambda **kwargs: _FakeStream([], final_response)
-            )
-        )
-        monkeypatch.setattr(codex_plugin, "_build_codex_client", lambda: fake_client)
+        monkeypatch.setattr(codex_plugin, "_collect_image_b64", lambda *a, **kw: None)
 
         result = provider.generate("a cat")
         assert result["success"] is False
         assert result["error_type"] == "empty_response"
 
-    def test_client_init_failure_returns_auth_error(self, provider, monkeypatch):
-        monkeypatch.setattr(codex_plugin, "_read_codex_access_token", lambda: "codex-token")
-        monkeypatch.setattr(codex_plugin, "_build_codex_client", lambda: None)
-
-        result = provider.generate("a cat")
-        assert result["success"] is False
-        assert result["error_type"] == "auth_required"
-
     def test_stream_exception_returns_api_error(self, provider, monkeypatch):
         monkeypatch.setattr(codex_plugin, "_read_codex_access_token", lambda: "codex-token")
 
-        def _boom(**kwargs):
+        def _boom(*args, **kwargs):
             raise RuntimeError("cloudflare 403")
 
-        fake_client = SimpleNamespace(responses=SimpleNamespace(stream=_boom))
-        monkeypatch.setattr(codex_plugin, "_build_codex_client", lambda: fake_client)
+        monkeypatch.setattr(codex_plugin, "_collect_image_b64", _boom)
 
         result = provider.generate("a cat")
         assert result["success"] is False
         assert result["error_type"] == "api_error"
         assert "cloudflare 403" in result["error"]
+
+    def test_unsupported_image_tool_returns_capability_error(self, provider, monkeypatch):
+        monkeypatch.setattr(codex_plugin, "_read_codex_access_token", lambda: "codex-token")
+
+        def _unsupported(*args, **kwargs):
+            raise codex_plugin.CodexImageGenerationUnsupportedError(
+                "Tool choice 'image_generation' not found in 'tools' parameter."
+            )
+
+        monkeypatch.setattr(codex_plugin, "_collect_image_b64", _unsupported)
+
+        result = provider.generate("a cat")
+
+        assert result["success"] is False
+        assert result["error_type"] == "capability_unsupported"
+        assert "current Codex account" in result["error"]
+        assert "OpenAI API key, FAL, or xAI" in result["error"]
+
+
+class TestCapabilityErrorDetection:
+    @pytest.mark.parametrize(
+        "body",
+        [
+            "Tool choice 'image_generation' not found in 'tools' parameter.",
+            '{"error":{"message":"Tool choice \'image_generation\' not found in \'tools\' parameter."}}',
+        ],
+    )
+    def test_detects_exact_codex_image_tool_rejection(self, body):
+        assert codex_plugin._is_image_generation_unsupported_error(400, body) is True
+
+    @pytest.mark.parametrize(
+        ("status_code", "body"),
+        [
+            (401, "Tool choice 'image_generation' not found in 'tools' parameter."),
+            (400, "Tool choice 'web_search' not found in 'tools' parameter."),
+            (400, "The image_generation request was rejected by moderation."),
+            (500, "Tool choice 'image_generation' not found in 'tools' parameter."),
+        ],
+    )
+    def test_does_not_misclassify_other_failures(self, status_code, body):
+        assert codex_plugin._is_image_generation_unsupported_error(status_code, body) is False
+
+    def test_does_not_match_error_message_with_extra_text(self):
+        body = json.dumps({
+            "error": {
+                "message": (
+                    "Tool choice 'image_generation' not found in 'tools' parameter "
+                    "because the request is malformed."
+                )
+            }
+        })
+
+        assert codex_plugin._is_image_generation_unsupported_error(400, body) is False
+
+    def test_collect_classifies_exact_http_error_after_large_metadata(self, monkeypatch):
+        import httpx
+
+        body = json.dumps({
+            "metadata": "x" * 600,
+            "error": {
+                "message": "Tool choice 'image_generation' not found in 'tools' parameter."
+            },
+        })
+
+        def _handler(request):
+            return httpx.Response(400, text=body, request=request)
+
+        real_client = httpx.Client
+        monkeypatch.setattr(
+            httpx,
+            "Client",
+            lambda *args, **kwargs: real_client(
+                transport=httpx.MockTransport(_handler),
+                headers=kwargs.get("headers"),
+                timeout=kwargs.get("timeout"),
+            ),
+        )
+
+        with pytest.raises(codex_plugin.CodexImageGenerationUnsupportedError):
+            codex_plugin._collect_image_b64(
+                "codex-token",
+                prompt="a cat",
+                size="1024x1024",
+                quality="low",
+            )
 
 
 # ── Plugin entry point ──────────────────────────────────────────────────────

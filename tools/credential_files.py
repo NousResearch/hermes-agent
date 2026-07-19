@@ -22,9 +22,10 @@ from __future__ import annotations
 
 import logging
 import os
+import posixpath
 from contextvars import ContextVar
 from pathlib import Path
-from typing import Dict, List
+from typing import Dict, List, Optional
 from hermes_cli.config import cfg_get
 
 logger = logging.getLogger(__name__)
@@ -337,16 +338,19 @@ def iter_skills_files(
 
 
 # ---------------------------------------------------------------------------
-# Cache directory mounts (documents, images, audio, screenshots)
+# Cache directory mounts (documents, images, audio, videos, screenshots)
 # ---------------------------------------------------------------------------
 
-# The four cache subdirectories that should be mirrored into remote backends.
+# The cache subdirectories that should be mirrored into remote backends.
 # Each tuple is (new_subpath, old_name) matching hermes_constants.get_hermes_dir().
 _CACHE_DIRS: list[tuple[str, str]] = [
     ("cache/documents", "document_cache"),
     ("cache/images", "image_cache"),
     ("cache/audio", "audio_cache"),
+    ("cache/videos", "video_cache"),
     ("cache/screenshots", "browser_screenshots"),
+    ("cache/web", "web_cache"),
+    ("cache/delegation", "delegation_cache"),
 ]
 
 
@@ -372,6 +376,75 @@ def get_cache_directory_mounts(
                 "container_path": container_path,
             })
     return mounts
+
+
+def map_cache_path_to_container(
+    host_path: str,
+    container_base: str = "/root/.hermes",
+) -> Optional[str]:
+    """Map a host cache path to its mounted path under *container_base*.
+
+    Returns the POSIX container path when *host_path* lives under one of the
+    auto-mounted cache directories, otherwise ``None``.  Backend-agnostic: the
+    caller decides which ``container_base`` applies (Docker ``/root/.hermes``,
+    SSH ``<remote_home>/.hermes``, etc.) and whether translation is wanted.
+    Always joins with ``posixpath`` because container/remote paths are POSIX
+    regardless of the host OS.
+    """
+    path = Path(host_path)
+    for mount in get_cache_directory_mounts(container_base=container_base):
+        host_dir = Path(mount["host_path"])
+        try:
+            rel = path.relative_to(host_dir)
+        except ValueError:
+            continue
+        return posixpath.join(mount["container_path"], rel.as_posix())
+    return None
+
+
+def from_agent_visible_cache_path(
+    container_path: str,
+    container_base: str = "/root/.hermes",
+) -> str:
+    """Translate a sandbox/container cache path back to its host path.
+
+    Inverse of :func:`to_agent_visible_cache_path`. Returns the input unchanged
+    when the active backend is not Docker, or when the path is not under any
+    auto-mounted cache directory — the caller then treats a still-container
+    path as "no host file" and falls back to an in-container read.
+    """
+    if os.environ.get("TERMINAL_ENV", "local") != "docker":
+        return container_path
+
+    path = Path(container_path)
+    for mount in get_cache_directory_mounts(container_base=container_base):
+        try:
+            rel = path.relative_to(mount["container_path"])
+        except ValueError:
+            continue
+        return str(Path(mount["host_path"]) / rel)
+    return container_path
+
+
+def to_agent_visible_cache_path(
+    host_path: str,
+    container_base: str = "/root/.hermes",
+) -> str:
+    """Translate a host cache path to its mounted path inside the sandbox.
+
+    Returns the input unchanged if it is not under any auto-mounted cache
+    directory, or if the active terminal backend does not require path
+    translation (only Docker for now).
+    """
+    # Only Docker backend requires translation at this time.  Other backends
+    # (Modal, Daytona) use different mount semantics and will be
+    # addressed separately if needed.  Backend is identified by TERMINAL_ENV
+    # (same env var tools/terminal_tool.py reads in _get_environment_config).
+    if os.environ.get("TERMINAL_ENV", "local") != "docker":
+        return host_path
+
+    mapped = map_cache_path_to_container(host_path, container_base=container_base)
+    return mapped if mapped is not None else host_path
 
 
 def iter_cache_files(

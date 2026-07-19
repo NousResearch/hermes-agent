@@ -55,6 +55,40 @@ If scan-to-create is not available, the wizard falls back to manual input:
 Keep the App Secret private. Anyone with it can impersonate your app.
 :::
 
+### Configure Permissions
+
+In the Feishu developer console, go to **Permission Management** and add the following scopes. You can bulk-import them in the permissions page.
+
+**Required permissions:**
+
+| Scope | Purpose |
+|-------|---------|
+| `im:message` | Receive and read messages |
+| `im:message:send_as_bot` | Send messages as the bot |
+| `im:resource` | Access images, files, and audio sent by users |
+| `im:chat` | Access chat/group metadata |
+| `im:chat:readonly` | Read chat list and membership |
+
+**Recommended permissions (for full functionality):**
+
+| Scope | Purpose |
+|-------|---------|
+| `im:message.reactions:readonly` | Receive emoji reaction events |
+| `admin:app.info:readonly` | Auto-detect bot identity for @mention gating |
+| `contact:user.id:readonly` | Resolve user IDs for allowlist matching |
+
+### Configure Events
+
+In **Events and Callbacks**:
+
+1. Set the connection mode to **Long Connection (WebSocket)** (recommended) or configure a webhook URL
+2. In the **Event Configuration** section, subscribe to:
+   - `im.message.receive_v1` — required for receiving messages
+
+### Publish the App
+
+After configuring permissions and events, go to **Version Management** and publish a new version of the app. The permissions won't take effect until a version is published and approved (for enterprise apps, this may require admin approval).
+
 ## Step 2: Choose a Connection Mode
 
 ### Recommended: WebSocket mode
@@ -93,7 +127,7 @@ FEISHU_WEBHOOK_PORT=8765         # default: 8765
 FEISHU_WEBHOOK_PATH=/feishu/webhook  # default: /feishu/webhook
 ```
 
-When Feishu sends a URL verification challenge (`type: url_verification`), the webhook responds automatically so you can complete the subscription setup in the Feishu developer console.
+When Feishu sends a URL verification challenge (`type: url_verification`), the webhook responds automatically so you can complete the subscription setup in the Feishu developer console. The challenge response is gated on `FEISHU_VERIFICATION_TOKEN` when set — challenge requests with a missing or mismatched token are rejected so an unauthenticated remote cannot prove endpoint control by echoing attacker-controlled challenge data.
 
 ## Step 3: Configure Hermes
 
@@ -249,6 +283,8 @@ When users click buttons or interact with interactive cards sent by the bot, the
 - The action's `value` payload from the card definition is included as JSON.
 - Card actions are deduplicated with a 15-minute window to prevent double processing.
 
+Gateway-driven update prompts use a native Feishu `Yes` / `No` card instead of falling back to plain text replies. When `hermes update --gateway` needs confirmation, the adapter records the selected answer in Hermes's `.update_response` file and replaces the card inline with a resolved state.
+
 Card action events are dispatched with `MessageType.COMMAND`, so they flow through the normal command processing pipeline.
 
 This is also how **command approval** works — when the agent needs to run a dangerous command, it sends an interactive card with Allow Once / Session / Always / Deny buttons. The user clicks a button, and the card action callback delivers the approval decision back to the agent.
@@ -317,6 +353,29 @@ On top of the chat/card permissions already granted, add the drive comment event
 
 - Subscribe to `drive.notice.comment_add_v1` in **Event Subscriptions**.
 - Grant the `docs:doc:readonly` and `drive:drive:readonly` scopes so the handler can read document content.
+
+## Meeting Invitation Events
+
+You can invite the Hermes Feishu/Lark bot into a video meeting the same way you invite a human participant. When the bot receives the meeting invitation event, Hermes can automatically start an agent turn that attempts to join the meeting.
+
+Powered by the `vc.bot.meeting_invited_v1` event, the flow is:
+
+- A user invites the bot to a Feishu/Lark video meeting.
+- Feishu/Lark sends Hermes the meeting invitation event.
+- Hermes extracts the inviter, meeting topic, and meeting number.
+- If the inviter is authorized by the normal gateway allowlist or pairing policy, the agent receives the meeting number and tries to join automatically.
+- If the invite is malformed, or the agent cannot join, Hermes drops the event or replies to the inviter with a concise explanation.
+
+Malformed invitations that do not include both an inviter and a `meeting_no` are ignored.
+
+### Required Feishu App Configuration
+
+On top of the chat/card permissions already granted, add the video-meeting invitation event:
+
+- Subscribe to `vc.bot.meeting_invited_v1` in **Event Subscriptions**.
+- Enable the Video Conferencing permission scope prompted by the Feishu/Lark developer console for that event.
+- Keep `im:message` and `im:message:send_as_bot` enabled so Hermes can reply to the inviter.
+- Ensure the gateway user allowlist or pairing policy authorizes the inviter. Meeting invitations do not bypass normal gateway access checks.
 
 ## Media Support
 

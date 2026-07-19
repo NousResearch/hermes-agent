@@ -42,6 +42,7 @@ import subprocess
 import sys
 import time
 from collections import deque
+from contextlib import nullcontext
 from typing import Any, Deque, Dict, List, Optional
 
 try:
@@ -702,20 +703,35 @@ class WebhookAdapter(BasePlatformAdapter):
                     get_skill_commands,
                 )
 
-                skill_cmds = get_skill_commands()
-                for skill_name in skills:
-                    cmd_key = f"/{skill_name}"
-                    if cmd_key in skill_cmds:
-                        skill_content = build_skill_invocation_message(
-                            cmd_key, user_instruction=prompt
+                # When multiplexing routes to a non-default profile,
+                # enter that profile's scope so skill loading reads
+                # from the correct <profile>/skills/ directory (#67277).
+                _scope_ctx = nullcontext()
+                if profile and isinstance(profile, str):
+                    try:
+                        from hermes_cli.profiles import get_profile_dir
+                        from gateway.run import _profile_runtime_scope
+                        _scope_ctx = _profile_runtime_scope(
+                            get_profile_dir(profile)
                         )
-                        if skill_content:
-                            prompt = skill_content
-                            break  # Load the first matching skill
-                    else:
-                        logger.warning(
-                            "[webhook] Skill '%s' not found", skill_name
-                        )
+                    except Exception:
+                        pass  # Fall back to default profile's skills
+
+                with _scope_ctx:
+                    skill_cmds = get_skill_commands()
+                    for skill_name in skills:
+                        cmd_key = f"/{skill_name}"
+                        if cmd_key in skill_cmds:
+                            skill_content = build_skill_invocation_message(
+                                cmd_key, user_instruction=prompt
+                            )
+                            if skill_content:
+                                prompt = skill_content
+                                break  # Load the first matching skill
+                        else:
+                            logger.warning(
+                                "[webhook] Skill '%s' not found", skill_name
+                            )
             except Exception as e:
                 logger.warning("[webhook] Skill loading failed: %s", e)
 

@@ -154,7 +154,11 @@ def test_admitted_project_summary_suppresses_normal_notifier_and_replay(
     workspace.mkdir()
     monkeypatch.setenv("HERMES_KANBAN_DB", str(db_path))
     monkeypatch.setattr(Path, "home", lambda: tmp_path)
-    monkeypatch.setattr(runtime, "profile_exists", lambda profile: profile == "checker-terra")
+    monkeypatch.setattr(
+        runtime,
+        "profile_exists",
+        lambda profile: profile in {"checker-terra", "builder-gptluna"},
+    )
     kb.init_db()
 
     conn = kb.connect()

@@ -48,6 +48,7 @@ from contextlib import contextmanager, nullcontext
 from contextvars import ContextVar
 from functools import wraps
 import logging
+import math
 import os
 import re
 import sqlite3
@@ -2041,6 +2042,16 @@ class APIServerAdapter(BasePlatformAdapter):
             except (TypeError, ValueError):
                 return web.json_response(
                     _openai_error("'speed' must be a number", code="invalid_speed", param="speed"),
+                    status=400,
+                )
+            # Reject non-finite speeds (nan/inf) explicitly rather than relying
+            # on the clamp below to swallow them. max(0.25, min(4.0, nan)) does
+            # collapse nan→4.0 today, but only because of min's argument order;
+            # a future refactor that flips it would leak a non-finite value into
+            # provider code (e.g. Edge's round()).
+            if not math.isfinite(speed):
+                return web.json_response(
+                    _openai_error("'speed' must be a finite number", code="invalid_speed", param="speed"),
                     status=400,
                 )
             speed = max(0.25, min(4.0, speed))

@@ -1251,6 +1251,18 @@ class TestAudioSpeechEndpoint:
             assert (await resp.json())["error"]["code"] == "invalid_speed"
 
     @pytest.mark.asyncio
+    @pytest.mark.parametrize("bad_speed", ["nan", "inf", "-inf", "Infinity"])
+    async def test_speech_non_finite_speed_returns_400(self, adapter, bad_speed):
+        # float("nan"/"inf") parses fine, so these must be rejected explicitly
+        # rather than silently clamped through max(0.25, min(4.0, speed)).
+        app = _create_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            resp = await cli.post("/v1/audio/speech",
+                                  json={"input": "hi", "speed": bad_speed})
+            assert resp.status == 400
+            assert (await resp.json())["error"]["code"] == "invalid_speed"
+
+    @pytest.mark.asyncio
     async def test_speech_no_provider_available_returns_503(self, adapter, tmp_path):
         app = _create_app(adapter)
         tts, _ = _fake_tts(tmp_path)

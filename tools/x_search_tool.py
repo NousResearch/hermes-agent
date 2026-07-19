@@ -56,7 +56,7 @@ from tools.xai_http import hermes_xai_user_agent, resolve_xai_http_credentials
 logger = logging.getLogger(__name__)
 
 DEFAULT_XAI_BASE_URL = "https://api.x.ai/v1"
-DEFAULT_X_SEARCH_MODEL = "grok-4.20-reasoning"
+DEFAULT_X_SEARCH_MODEL = "grok-4.5"
 DEFAULT_X_SEARCH_TIMEOUT_SECONDS = 180
 DEFAULT_X_SEARCH_RETRIES = 2
 MAX_HANDLES = 10

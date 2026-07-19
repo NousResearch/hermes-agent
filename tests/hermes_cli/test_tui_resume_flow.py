@@ -380,6 +380,7 @@ def test_termux_fast_cli_launch_oneshot_uses_light_parser(monkeypatch, main_mod)
         "provider": "openai",
         "toolsets": None,
         "usage_file": None,
+        "max_turns": None,
     }
 
 
@@ -619,6 +620,7 @@ def test_main_top_level_oneshot_accepts_toolsets(monkeypatch, main_mod):
         "provider": None,
         "toolsets": "web,terminal",
         "usage_file": None,
+        "max_turns": None,
     }
 
 

@@ -56,6 +56,22 @@ class TestUnifiedDashboardRouting:
         assert exc.value.code == 0
         assert opened == ["http://127.0.0.1:9119/?profile=worker_x"]
 
+    def test_profile_launch_attach_brackets_ipv6_host_in_browser_url(self, main_mod, monkeypatch):
+        """IPv6 literals must be bracketed before adding a dashboard port."""
+        monkeypatch.setattr(
+            "hermes_cli.profiles.get_active_profile_name", lambda: "worker_x"
+        )
+        monkeypatch.setattr(main_mod, "_dashboard_listening", lambda host, port: True)
+        opened = []
+        import webbrowser
+        monkeypatch.setattr(webbrowser, "open", lambda url: opened.append(url))
+
+        with pytest.raises(SystemExit) as exc:
+            main_mod.cmd_dashboard(_args(host="::1", no_open=False))
+
+        assert exc.value.code == 0
+        assert opened == ["http://[::1]:9119/?profile=worker_x"]
+
     def test_profile_launch_reexecs_machine_dashboard(self, main_mod, monkeypatch):
         monkeypatch.delenv("HERMES_HOME", raising=False)
         monkeypatch.setattr(

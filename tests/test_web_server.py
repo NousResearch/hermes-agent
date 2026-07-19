@@ -85,6 +85,29 @@ def test_start_server_applies_process_local_ssh_bootstrap_state(monkeypatch):
     assert captured["port"] == 0
 
 
+def test_maybe_open_browser_brackets_ipv6_loopback(monkeypatch):
+    """A browser URL needs brackets around an IPv6 literal authority."""
+    import webbrowser
+
+    opened = []
+
+    class _ImmediateThread:
+        def __init__(self, *, target, daemon):
+            self._target = target
+
+        def start(self):
+            self._target()
+
+    monkeypatch.setattr(web_server.threading, "Thread", _ImmediateThread)
+    monkeypatch.setattr(web_server.time, "sleep", lambda _seconds: None)
+    monkeypatch.setattr(webbrowser, "open", lambda url: opened.append(url))
+    monkeypatch.setenv("DISPLAY", ":0")
+
+    web_server._maybe_open_browser("::1", 9119, True, "worker_x")
+
+    assert opened == ["http://[::1]:9119/?profile=worker_x"]
+
+
 def test_start_server_disables_ws_ping_on_loopback(monkeypatch):
     """Loopback binds (the Desktop case) MUST disable uvicorn's protocol-level
     keepalive ping so an event-loop stall can never trigger a false disconnect.

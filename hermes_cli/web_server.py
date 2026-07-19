@@ -19658,8 +19658,10 @@ def _maybe_open_browser(
         )
         return
 
+    from hermes_cli.url_utils import format_url_host
+
     _display_host = host if host not in ("0.0.0.0", "::") else "127.0.0.1"
-    _open_url = f"http://{_display_host}:{actual_port}"
+    _open_url = f"http://{format_url_host(_display_host)}:{actual_port}"
     if initial_profile:
         from urllib.parse import quote
         _open_url += f"/?profile={quote(initial_profile)}"

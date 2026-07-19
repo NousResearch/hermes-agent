@@ -15,7 +15,7 @@ Three concerns live here:
 * :func:`compress_context` — the actual compression call.  Runs the
   configured compressor, splits the SQLite session, rotates the
   session_id, notifies plugin context engines / memory providers, and
-  returns the compressed message list and freshly-built system prompt.
+  returns the compressed message list and active system prompt.
 
 * :func:`try_shrink_image_parts_in_messages` — image-too-large recovery
   helper that re-encodes ``data:image/...;base64,...`` parts at a smaller
@@ -51,6 +51,34 @@ COMPACTION_STATUS_MARKER = "Compacting context"
 COMPACTION_STATUS = (
     f"🗜️ {COMPACTION_STATUS_MARKER} — summarizing earlier conversation so I can continue..."
 )
+
+
+def _builtin_memory_prompt_snapshot(agent: Any) -> Optional[Tuple[str, str]]:
+    """Return the built-in memory text that can affect a system prompt.
+
+    ``MemoryStore`` freezes this text until ``load_from_disk()``.  Comparing
+    the frozen blocks before and after that reload lets compression retain the
+    exact cached system prompt when no built-in memory actually changed.  An
+    unreadable snapshot returns ``None`` so callers take the conservative
+    rebuild path.
+    """
+    store = getattr(agent, "_memory_store", None)
+    if store is None:
+        return "", ""
+    try:
+        memory = (
+            store.format_for_system_prompt("memory") or ""
+            if getattr(agent, "_memory_enabled", False)
+            else ""
+        )
+        user = (
+            store.format_for_system_prompt("user") or ""
+            if getattr(agent, "_user_profile_enabled", False)
+            else ""
+        )
+    except Exception:
+        return None
+    return memory, user
 
 
 def _lock_api_is_absent_on_session_db(lock_db: Any) -> bool:
@@ -604,7 +632,8 @@ def compress_context(
     Args:
         agent: The owning :class:`AIAgent`.
         messages: Current message history (will be summarised).
-        system_message: Current system prompt; rebuilt after compression.
+        system_message: Current system prompt; used when compression needs a
+            rebuilt cached prompt.
         approx_tokens: Pre-compression token estimate, logged for ops.
         task_id: Tool task scope (used for clearing file-read dedup state).
         focus_topic: Optional focus string for guided compression — the
@@ -671,8 +700,9 @@ def compress_context(
 
     _pre_msg_count = len(messages)
     # In-place compaction (config: compression.in_place, see #38763). When True,
-    # this compaction rewrites the message list + rebuilds the system prompt but
-    # keeps the SAME session_id — no end_session, no parent_session_id child, no
+    # this compaction rewrites the message list and refreshes the system prompt
+    # when necessary, but keeps the SAME session_id — no end_session, no
+    # parent_session_id child, no
     # `name #N` renumber, no contextvar/env/logging re-sync, no memory/context-
     # engine session-switch. The conversation keeps one durable id for life,
     # eliminating the session-rotation bug cluster. Default False during rollout.
@@ -1021,9 +1051,27 @@ def compress_context(
             })
         _ensure_compressed_has_user_turn(messages, compressed)
 
+        cached_system_prompt = agent._cached_system_prompt
+        old_memory_snapshot = _builtin_memory_prompt_snapshot(agent)
         agent._invalidate_system_prompt()
-        new_system_prompt = agent._build_system_prompt(system_message)
-        agent._cached_system_prompt = new_system_prompt
+        new_memory_snapshot = _builtin_memory_prompt_snapshot(agent)
+
+        # Built-in memory snapshots are the only system-prompt input that a
+        # normal compaction reloads. When their rendered text is unchanged,
+        # keep the exact cached prompt so local backends retain their KV-cache
+        # prefix. External providers can change their own prompt block during
+        # on_pre_compress(), so they deliberately retain the rebuild path.
+        if (
+            cached_system_prompt is not None
+            and getattr(agent, "_memory_manager", None) is None
+            and old_memory_snapshot is not None
+            and old_memory_snapshot == new_memory_snapshot
+        ):
+            new_system_prompt = cached_system_prompt
+            agent._cached_system_prompt = cached_system_prompt
+        else:
+            new_system_prompt = agent._build_system_prompt(system_message)
+            agent._cached_system_prompt = new_system_prompt
 
         if agent._session_db:
             try:

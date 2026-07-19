@@ -15281,6 +15281,21 @@ def _ws_client_is_allowed(ws: "WebSocket") -> bool:
     return client_host in _LOOPBACK_HOSTS
 
 
+def _ws_public_origin_matches(origin: urllib.parse.ParseResult, public_url: str) -> bool:
+    """Return True only for an exact configured public scheme/host/port."""
+    public = urllib.parse.urlparse(public_url)
+    if public.scheme not in {"http", "https"} or not public.hostname:
+        return False
+    if origin.scheme != public.scheme or origin.hostname != public.hostname:
+        return False
+    def _port(parsed: urllib.parse.ParseResult) -> Optional[int]:
+        try:
+            return parsed.port or (443 if parsed.scheme == "https" else 80)
+        except ValueError:
+            return None
+    return _port(origin) == _port(public)
+
+
 def _ws_host_origin_reason(ws: "WebSocket") -> Optional[str]:
     """Return a Host/Origin rejection reason, or None when allowed.
 
@@ -15310,9 +15325,18 @@ def _ws_host_origin_reason(ws: "WebSocket") -> Optional[str]:
     if not parsed.netloc:
         return f"origin_mismatch origin={origin} bound={bound_host}"
 
-    if not _is_accepted_host(parsed.netloc, bound_host):
-        return f"origin_mismatch origin={origin} bound={bound_host}"
-    return None
+    if _is_accepted_host(parsed.netloc, bound_host):
+        return None
+
+    # A loopback reverse proxy may preserve the browser's public Origin while
+    # forwarding Host to the local dashboard. Reuse the canonical resolver
+    # and require exact scheme/host/effective-port equality; do not turn this
+    # into a general Host bypass.
+    from hermes_cli.dashboard_auth.prefix import resolve_public_url
+    public_url = resolve_public_url()
+    if public_url and _ws_public_origin_matches(parsed, public_url):
+        return None
+    return f"origin_mismatch origin={origin} bound={bound_host}"
 
 
 def _ws_host_origin_is_allowed(ws: "WebSocket") -> bool:

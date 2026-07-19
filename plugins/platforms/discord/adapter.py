@@ -1266,8 +1266,19 @@ class DiscordAdapter(BasePlatformAdapter):
 
         role_authorized = False
         if getattr(message.author, "bot", False):
-            allow_bots = os.getenv("DISCORD_ALLOW_BOTS", "none").lower().strip()
-            if allow_bots == "none":
+            # allow_bots resolution is config-authoritative: config.extra
+            # (config.yaml) wins over the DISCORD_ALLOW_BOTS env var; the env var
+            # is only the fallback for deployments that never set it in config
+            # (see _discord_allow_bots). The gateway boot bridge force-syncs
+            # config -> env so the env-only cross-module consumers (authz_mixin
+            # bot bypass, relay policy) resolve the same value and cannot
+            # split-brain from this gate. Do not flip this precedence.
+            allow_bots = self._discord_allow_bots()
+            # Strict fail-closed enum: only "mentions" and "all" admit bots.
+            # Any other value -- "none", "false", empty, or a typo -- denies,
+            # matching the fail-closed checks in relay/__init__.py and
+            # authz_mixin.py. Never fall through to "all" for an unknown value.
+            if allow_bots not in {"mentions", "all"}:
                 return False, False
             if allow_bots == "mentions" and not self._self_is_explicitly_mentioned(message):
                 return False, False
@@ -1280,6 +1291,7 @@ class DiscordAdapter(BasePlatformAdapter):
             msg_guild = getattr(message, "guild", None)
             is_dm = isinstance(message.channel, discord.DMChannel) or msg_guild is None
             msg_channel_ids = None
+            parent_id = None
             if not is_dm:
                 msg_channel_ids = {str(message.channel.id)}
                 parent_id = self._get_parent_channel_id(message.channel)
@@ -1295,6 +1307,17 @@ class DiscordAdapter(BasePlatformAdapter):
                 self._warn_if_fail_closed_default()
                 return False, False
             role_authorized = bool(getattr(self, "_allowed_role_ids", set()))
+            if not is_dm and self._discord_require_mention():
+                free_channels = self._discord_free_response_channels()
+                channel_keys = self._discord_channel_keys(message, parent_id)
+                if (
+                    "*" not in free_channels
+                    and not (channel_keys & free_channels)
+                    and not self._discord_is_voice_linked_channel(message)
+                    and not self._self_is_explicitly_mentioned(message)
+                    and not self._discord_group_role_mentioned(message, parent_id)
+                ):
+                    return False, False
 
         raw_self_mention = self._self_is_explicitly_mentioned(message)
         if not isinstance(message.channel, discord.DMChannel) and (
@@ -1331,6 +1354,16 @@ class DiscordAdapter(BasePlatformAdapter):
             message, claim=True,
         )
         if not admitted:
+            if getattr(getattr(message, "author", None), "bot", False):
+                logger.info(
+                    "[Discord] Bot admission rejected: message_id=%s author_id=%s "
+                    "allow_bots=%s explicit_mention=%s raw_inline_mention=%s",
+                    getattr(message, "id", "-"),
+                    getattr(getattr(message, "author", None), "id", "-"),
+                    self._discord_allow_bots(),
+                    self._self_is_explicitly_mentioned(message),
+                    self._self_is_raw_mentioned(message),
+                )
             return False
         return await self._handle_message(
             message, role_authorized=role_authorized,
@@ -2120,17 +2153,13 @@ class DiscordAdapter(BasePlatformAdapter):
             parent_id = self._get_parent_channel_id(message.channel)
             channel_keys = self._discord_channel_keys(message, parent_id)
             free_channels = self._discord_free_response_channels()
-            in_bot_thread = (
-                isinstance(message.channel, discord.Thread)
-                and str(message.channel.id) in self._threads
-                and not self._discord_thread_require_mention()
-            )
             if (
                 self._discord_require_mention()
                 and "*" not in free_channels
                 and not (channel_keys & free_channels)
-                and not in_bot_thread
+                and not self._discord_is_voice_linked_channel(message)
                 and not self._self_is_explicitly_mentioned(message)
+                and not self._discord_group_role_mentioned(message, parent_id)
             ):
                 return False
         admitted, role_authorized = self._discord_message_admission(
@@ -5720,6 +5749,19 @@ class DiscordAdapter(BasePlatformAdapter):
             return {part.strip() for part in s.split(",") if part.strip()}
         return set()
 
+    def _discord_is_voice_linked_channel(self, message: Any) -> bool:
+        """Return True when the message's exact channel is a bound voice text channel.
+
+        Voice-linked text channels act as free-response while voice is active.
+        Only the exact bound channel gets the exemption, not sibling threads.
+        """
+        channel = getattr(message, "channel", None)
+        channel_id = getattr(channel, "id", None)
+        if channel_id is None:
+            return False
+        voice_linked_ids = {str(ch_id) for ch_id in self._voice_text_channels.values()}
+        return str(channel_id) in voice_linked_ids
+
     def _raw_mentioned_user_ids(self, message: Any) -> set:
         """Extract Discord user-mention IDs directly from raw message content.
 
@@ -5729,7 +5771,15 @@ class DiscordAdapter(BasePlatformAdapter):
         leaving the resolved ``mentions`` list empty).
         """
         content = getattr(message, "content", "") or ""
-        return {match.group(1) for match in re.finditer(r"<@!?(\d+)>", content)}
+        ids = {match.group(1) for match in re.finditer(r"<@!?(\d+)>", content)}
+        # discord.py retains the parsed raw IDs even when an upstream relay
+        # normalizes message.content before this adapter sees it. Prefer the
+        # union so reply-pings still remain absent unless Discord recorded an
+        # actual mention token.
+        raw_mentions = getattr(message, "raw_mentions", None)
+        if isinstance(raw_mentions, (list, tuple, set)):
+            ids.update(str(mention_id) for mention_id in raw_mentions)
+        return ids
 
     def _self_is_explicitly_mentioned(self, message: Any) -> bool:
         """Return True when this bot is explicitly @mentioned in the message.
@@ -5755,6 +5805,45 @@ class DiscordAdapter(BasePlatformAdapter):
         if not self._client or not self._client.user:
             return False
         return str(self._client.user.id) in self._raw_mentioned_user_ids(message)
+
+    def _discord_group_role_mentioned(self, message: Any, parent_id: Optional[str]) -> bool:
+        """Return True for an allowed inline Discord role mention in scope."""
+        configured_roles = self.config.extra.get("group_mention_role_ids", [])
+        if not isinstance(configured_roles, list):
+            configured_roles = str(configured_roles or "").split(",")
+        allowed_roles = {str(role_id).strip() for role_id in configured_roles if str(role_id).strip()}
+        role_mentions = set(re.findall(r"<@&(\d+)>", getattr(message, "content", "") or ""))
+        if not (allowed_roles & role_mentions):
+            return False
+        configured_channels = self.config.extra.get("group_mention_channel_ids", [])
+        if not isinstance(configured_channels, list):
+            configured_channels = str(configured_channels or "").split(",")
+        allowed_channels = {str(channel_id).strip() for channel_id in configured_channels if str(channel_id).strip()}
+        if "*" in allowed_channels:
+            return True
+        return bool(self._discord_channel_keys(message, parent_id) & allowed_channels)
+
+    def _discord_allow_bots(self) -> str:
+        """Resolve the effective ``allow_bots`` policy string, config-first.
+
+        config.yaml (``PlatformConfig.extra``) is the operator's authoritative
+        source of truth and wins over the ``DISCORD_ALLOW_BOTS`` environment
+        variable, which is only the fallback for deployments that never set it
+        in config. Returns the lower-cased, stripped raw value; callers apply
+        the strict fail-closed enum ``{mentions, all}``. The gateway boot bridge
+        force-syncs config -> env so the env-only cross-module consumers
+        (authz_mixin bot bypass, relay policy) resolve this same value.
+        """
+        configured = self.config.extra.get("allow_bots")
+        return (
+            str(
+                configured
+                if configured is not None
+                else os.getenv("DISCORD_ALLOW_BOTS", "none")
+            )
+            .lower()
+            .strip()
+        )
 
     def _discord_bots_require_inline_mention(self) -> bool:
         """Whether another bot must type an inline @mention to trigger us.
@@ -5905,9 +5994,11 @@ class DiscordAdapter(BasePlatformAdapter):
         if limit <= 0:
             return ""
 
-        # Determine which bot messages to include in context
-        allow_bots_raw = os.getenv("DISCORD_ALLOW_BOTS", "none").lower().strip()
-        include_other_bots = allow_bots_raw != "none"
+        # Determine which bot messages to include in context. Config-first via
+        # the shared resolver so history matches the admission gate; strict
+        # fail-closed enum means only {mentions, all} include other bots (for
+        # context, "mentions" is treated as "all" -- see the _keep filter).
+        include_other_bots = self._discord_allow_bots() in {"mentions", "all"}
 
         # Use the in-memory cache to narrow the fetch window on hot paths.
         # If we know our last message ID in this channel, pass it as `after`
@@ -7131,9 +7222,7 @@ class DiscordAdapter(BasePlatformAdapter):
             require_mention = self._discord_require_mention()
             # Voice-linked text channels act as free-response while voice is active.
             # Only the exact bound channel gets the exemption, not sibling threads.
-            voice_linked_ids = {str(ch_id) for ch_id in self._voice_text_channels.values()}
-            current_channel_id = str(message.channel.id)
-            is_voice_linked_channel = current_channel_id in voice_linked_ids
+            is_voice_linked_channel = self._discord_is_voice_linked_channel(message)
             is_free_channel = (
                 "*" in free_channels
                 or bool(channel_keys & free_channels)
@@ -7152,7 +7241,21 @@ class DiscordAdapter(BasePlatformAdapter):
             )
 
             if require_mention and not is_free_channel and not in_bot_thread:
-                if not self._self_is_explicitly_mentioned(message) and not mention_prefix:
+                # A configured in-scope group-role mention addresses the bot the
+                # same way an explicit @mention does -- but only for humans. A
+                # sibling bot must still type a real inline self-mention, so a
+                # role mention alone never hands off to a bot.
+                author_is_bot = bool(
+                    getattr(getattr(message, "author", None), "bot", False)
+                )
+                role_handoff = not author_is_bot and self._discord_group_role_mentioned(
+                    message, parent_channel_id
+                )
+                if (
+                    not self._self_is_explicitly_mentioned(message)
+                    and not mention_prefix
+                    and not role_handoff
+                ):
                     return False
         # Auto-thread: when enabled, automatically create a thread for every
         # @mention in a text channel so each conversation is isolated (like Slack).

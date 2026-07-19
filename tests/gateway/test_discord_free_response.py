@@ -1486,3 +1486,59 @@ async def test_discord_non_reply_free_channel_skips_backfill(adapter, monkeypatc
 
     adapter._fetch_channel_context.assert_not_awaited()
 
+
+
+@pytest.mark.asyncio
+async def test_fetch_channel_context_allow_bots_config_wins_over_stale_env(adapter, monkeypatch):
+    """History context is config-authoritative: config allow_bots="all" includes
+    other-bot messages even when a stale DISCORD_ALLOW_BOTS=none env disagrees.
+
+    The assembler used to read the env var directly; routing it through the
+    config-first resolver keeps it from splitting from the admission gate.
+    """
+    monkeypatch.setenv("DISCORD_ALLOW_BOTS", "none")  # stale/conflicting env
+    adapter.config.extra["allow_bots"] = "all"
+    adapter.config.extra["history_backfill_limit"] = 10
+
+    other_bot = SimpleNamespace(id=55, display_name="Gemini", name="Gemini", bot=True)
+    human = SimpleNamespace(id=56, display_name="Alice", name="Alice", bot=False)
+    channel = FakeHistoryChannel(
+        [
+            make_history_message(author=human, content="human note", msg_id=3),
+            make_history_message(author=other_bot, content="bot note", msg_id=2),
+        ],
+        channel_id=123,
+    )
+
+    result = await adapter._fetch_channel_context(
+        channel, before=make_message(channel=channel, content="trigger")
+    )
+
+    assert "[Gemini [bot]] bot note" in result
+    assert "[Alice] human note" in result
+
+
+@pytest.mark.asyncio
+async def test_fetch_channel_context_allow_bots_strict_enum_fails_closed(adapter, monkeypatch):
+    """A non-enum allow_bots value ("false") fails closed for history context:
+    other-bot messages are excluded even when a stale env says "all"."""
+    monkeypatch.setenv("DISCORD_ALLOW_BOTS", "all")  # stale/conflicting env
+    adapter.config.extra["allow_bots"] = "false"  # invalid enum -> fail closed
+    adapter.config.extra["history_backfill_limit"] = 10
+
+    other_bot = SimpleNamespace(id=55, display_name="Gemini", name="Gemini", bot=True)
+    human = SimpleNamespace(id=56, display_name="Alice", name="Alice", bot=False)
+    channel = FakeHistoryChannel(
+        [
+            make_history_message(author=human, content="human note", msg_id=3),
+            make_history_message(author=other_bot, content="bot note", msg_id=2),
+        ],
+        channel_id=123,
+    )
+
+    result = await adapter._fetch_channel_context(
+        channel, before=make_message(channel=channel, content="trigger")
+    )
+
+    assert "[Gemini [bot]] bot note" not in result
+    assert "[Alice] human note" in result

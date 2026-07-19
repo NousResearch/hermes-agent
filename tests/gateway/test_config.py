@@ -792,8 +792,13 @@ class TestLoadGatewayConfig:
 
         assert os.environ.get("DISCORD_BOTS_REQUIRE_INLINE_MENTION") == "true"
 
-    def test_bots_require_inline_mention_yaml_does_not_overwrite_env(self, tmp_path, monkeypatch):
-        """Explicit env var should win over config.yaml for inline bot mention gating."""
+    def test_bots_require_inline_mention_yaml_force_syncs_over_env(self, tmp_path, monkeypatch):
+        """config.yaml is authoritative: a stale env var is force-overwritten.
+
+        A YAML ``false`` must win over a stale
+        ``DISCORD_BOTS_REQUIRE_INLINE_MENTION=true`` so the env-only consumers
+        cannot split from the config-first admission path.
+        """
         hermes_home = tmp_path / ".hermes"
         hermes_home.mkdir()
         config_path = hermes_home / "config.yaml"
@@ -808,7 +813,7 @@ class TestLoadGatewayConfig:
 
         load_gateway_config()
 
-        assert os.environ.get("DISCORD_BOTS_REQUIRE_INLINE_MENTION") == "true"
+        assert os.environ.get("DISCORD_BOTS_REQUIRE_INLINE_MENTION") == "false"
 
     def test_bridges_discord_allow_from_from_config_yaml(self, tmp_path, monkeypatch):
         """discord.allow_from should populate DISCORD_ALLOWED_USERS for auth."""

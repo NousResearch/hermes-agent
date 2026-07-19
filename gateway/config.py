@@ -1383,6 +1383,46 @@ def load_gateway_config() -> GatewayConfig:
                     bridged["allowed_topics"] = platform_cfg["allowed_topics"]
                 if "free_response_channels" in platform_cfg:
                     bridged["free_response_channels"] = platform_cfg["free_response_channels"]
+                if plat == Platform.DISCORD:
+                    # Only allow_bots and bots_require_inline_mention have a
+                    # runtime env-var reader. group_mention_role_ids /
+                    # group_mention_channel_ids are consumed from
+                    # PlatformConfig.extra (see the discord adapter's
+                    # _discord_group_role_mentioned) and have no env reader, so
+                    # they are bridged into ``extra`` below but NOT to os.environ.
+                    discord_env_bridge = {
+                        "allow_bots": "DISCORD_ALLOW_BOTS",
+                        "bots_require_inline_mention": "DISCORD_BOTS_REQUIRE_INLINE_MENTION",
+                    }
+                    for key in (
+                        "allow_bots",
+                        "bots_require_inline_mention",
+                        "thread_require_mention",
+                        "group_mention_role_ids",
+                        "group_mention_channel_ids",
+                    ):
+                        if key in platform_cfg:
+                            bridged[key] = platform_cfg[key]
+                            env_key = discord_env_bridge.get(key)
+                            if env_key:
+                                # config.yaml is authoritative: force-sync the
+                                # value into os.environ, overwriting any stale or
+                                # conflicting shell value, so the env-only
+                                # consumers -- authz_mixin's bot bypass, the relay
+                                # policy builder, and the adapter's history
+                                # context assembler -- resolve the same policy as
+                                # the config-first admission gate. When the key is
+                                # absent from config the env var is left as the
+                                # intended fallback (the guard is on ``key in
+                                # platform_cfg`` above, not on the env presence).
+                                value = platform_cfg[key]
+                                # Match the adapter's str(...).lower() so a YAML
+                                # bool True serializes as "true", not "True".
+                                os.environ[env_key] = (
+                                    str(value).lower()
+                                    if isinstance(value, bool)
+                                    else str(value)
+                                )
                 if "mention_patterns" in platform_cfg:
                     bridged["mention_patterns"] = platform_cfg["mention_patterns"]
                 if "exclusive_bot_mentions" in platform_cfg:

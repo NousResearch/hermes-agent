@@ -179,6 +179,21 @@ def test_returns_turn_context_with_user_message_appended():
     assert ctx.active_system_prompt == "SYSTEM"
 
 
+def test_pre_llm_hook_receives_inbound_event_identity_and_timestamp():
+    agent = _FakeAgent()
+
+    with patch("hermes_cli.plugins.invoke_hook", return_value=[]) as invoke_hook:
+        _build(
+            agent,
+            persist_user_message_id="telegram-message-123",
+            persist_user_timestamp=1_752_464_800.0,
+        )
+
+    hook_kwargs = invoke_hook.call_args.kwargs
+    assert hook_kwargs["user_message_id"] == "telegram-message-123"
+    assert hook_kwargs["user_message_timestamp"] == 1_752_464_800.0
+
+
 def test_applies_agent_side_effects():
     agent = _FakeAgent()
     _build(agent)
@@ -450,4 +465,3 @@ def test_expired_cooldown_allows_preflight(tmp_path):
     assert isinstance(ctx, TurnContext)
     agent._emit_status.assert_called_once()
     agent._compress_context.assert_called()
-

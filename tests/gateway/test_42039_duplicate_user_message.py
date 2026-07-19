@@ -151,6 +151,9 @@ async def test_agent_failed_early_skip_db_when_agent_has_session_db(
     _assert_user_call_has_skip_db(
         runner.session_store.append_to_transcript.call_args_list, True
     )
+    run_kwargs = runner._run_agent.call_args.kwargs
+    assert run_kwargs["event_message_id"] is None
+    assert run_kwargs["persist_user_message_id"] == "msg-42"
 
 
 # ── Test 2: agent_failed_early with no _session_db → skip_db not True ─

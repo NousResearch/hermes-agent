@@ -96,6 +96,18 @@ def test_run_conversation_dict_returns_include_final_response():
     )
 
 
+def test_inbound_message_id_is_additive_to_run_conversation_signature():
+    """Keep the pre-existing positional moa_config argument stable."""
+    from agent import conversation_loop
+
+    expected_tail = ["persist_user_timestamp", "moa_config", "persist_user_message_id"]
+    loop_parameters = list(inspect.signature(conversation_loop.run_conversation).parameters)
+    agent_parameters = list(inspect.signature(AIAgent.run_conversation).parameters)
+
+    assert loop_parameters[-3:] == expected_tail
+    assert agent_parameters[-3:] == expected_tail
+
+
 @pytest.fixture()
 def agent():
     """Minimal AIAgent with mocked OpenAI client and tool loading."""
@@ -7814,6 +7826,7 @@ class TestPersistUserMessageOverride:
         agent._last_flushed_db_idx = 0
         agent._persist_user_message_idx = 0
         agent._persist_user_message_override = "Hello there"
+        agent._persist_user_message_id = "telegram-message-123"
         messages = [
             {
                 "role": "user",
@@ -7839,6 +7852,28 @@ class TestPersistUserMessageOverride:
         # But the DB write must get the override.
         first_db_write = agent._session_db.append_message.call_args_list[0].kwargs
         assert first_db_write["content"] == "Hello there"
+        assert first_db_write["platform_message_id"] == "telegram-message-123"
+
+    def test_persist_session_preserves_existing_platform_message_id(self, agent):
+        agent._session_db = MagicMock()
+        agent.session_id = "session-123"
+        agent._last_flushed_db_idx = 0
+        agent._persist_user_message_idx = None
+        agent._persist_user_message_override = None
+        agent._persist_user_message_timestamp = None
+        agent._persist_user_message_id = None
+        messages = [
+            {
+                "role": "user",
+                "content": "Compacted but still attributable",
+                "platform_message_id": "discord-message-456",
+            }
+        ]
+
+        agent._persist_session(messages, [])
+
+        db_write = agent._session_db.append_message.call_args.kwargs
+        assert db_write["platform_message_id"] == "discord-message-456"
 
 
 class TestReasoningReplayForStrictProviders:

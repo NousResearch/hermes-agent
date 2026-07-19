@@ -1693,13 +1693,14 @@ class AIAgent:
         that synthetic text leak into persisted transcripts or resumed session
         history. When an override is configured for the active turn, mutate the
         in-memory messages list in place so both persistence and returned
-        history stay clean.  A paired timestamp override preserves the platform
-        event time as message metadata, rather than embedding it in content.
+        history stay clean. Paired timestamp and message-ID overrides preserve
+        immutable platform event metadata rather than embedding it in content.
         """
         idx = getattr(self, "_persist_user_message_idx", None)
         override = getattr(self, "_persist_user_message_override", None)
         timestamp = getattr(self, "_persist_user_message_timestamp", None)
-        if idx is None or (override is None and timestamp is None):
+        message_id = getattr(self, "_persist_user_message_id", None)
+        if idx is None or (override is None and timestamp is None and message_id is None):
             return
         if 0 <= idx < len(messages):
             msg = messages[idx]
@@ -1716,6 +1717,8 @@ class AIAgent:
                     msg["content"] = override
                 if timestamp is not None:
                     msg["timestamp"] = timestamp
+                if message_id is not None:
+                    msg["platform_message_id"] = message_id
 
     def _persist_session(self, messages: List[Dict], conversation_history: List[Dict] = None):
         """Save session state to both JSON log and SQLite on any exit path.
@@ -1866,6 +1869,7 @@ class AIAgent:
         _ov_idx = getattr(self, "_persist_user_message_idx", None)
         _ov_content = getattr(self, "_persist_user_message_override", None)
         _ov_timestamp = getattr(self, "_persist_user_message_timestamp", None)
+        _ov_message_id = getattr(self, "_persist_user_message_id", None)
         try:
             # Retry row creation if the earlier attempt failed transiently.
             if not self._session_db_created:
@@ -1939,6 +1943,9 @@ class AIAgent:
                 if not isinstance(_row_api_content, str):
                     _row_api_content = None
                 _row_timestamp = msg.get("timestamp")
+                _row_platform_message_id = (
+                    msg.get("platform_message_id") or msg.get("message_id")
+                )
                 # Apply the persist override to THIS row's written values only
                 # (never to the live dict). A multimodal override is a complete
                 # clean replacement for an API-local noted payload. Preserve the
@@ -1980,6 +1987,8 @@ class AIAgent:
                         content = _ov_content
                     if _ov_timestamp is not None:
                         _row_timestamp = _ov_timestamp
+                    if _ov_message_id is not None:
+                        _row_platform_message_id = _ov_message_id
                 # Store the sidecar only when it actually differs.
                 if _row_api_content == content:
                     _row_api_content = None
@@ -2037,6 +2046,7 @@ class AIAgent:
                     reasoning_details=msg.get("reasoning_details") if role == "assistant" else None,
                     codex_reasoning_items=msg.get("codex_reasoning_items") if role == "assistant" else None,
                     codex_message_items=msg.get("codex_message_items") if role == "assistant" else None,
+                    platform_message_id=_row_platform_message_id,
                     timestamp=_row_timestamp,
                     api_content=_row_api_content,
                 )
@@ -6336,6 +6346,7 @@ class AIAgent:
         persist_user_message: Optional[Any] = None,
         persist_user_timestamp: Optional[float] = None,
         moa_config: Optional[dict[str, Any]] = None,
+        persist_user_message_id: Optional[str] = None,
     ) -> Dict[str, Any]:
         """Forwarder — see ``agent.conversation_loop.run_conversation``."""
         from agent.aux_accounting import (
@@ -6377,6 +6388,7 @@ class AIAgent:
                     stream_callback,
                     persist_user_message,
                     persist_user_timestamp=persist_user_timestamp,
+                    persist_user_message_id=persist_user_message_id,
                     moa_config=moa_config,
                 )
             finally:

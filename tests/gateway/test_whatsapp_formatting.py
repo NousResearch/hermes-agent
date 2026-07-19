@@ -44,6 +44,7 @@ def _make_adapter():
     adapter._bridge_log = None
     adapter._bridge_process = None
     adapter._reply_prefix = None
+    adapter._reply_to_mode = "first"
     adapter._running = True
     adapter._message_handler = None
     adapter._fatal_error_code = None

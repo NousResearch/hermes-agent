@@ -416,7 +416,6 @@ def _write_encrypted_disk_cache(
         payload = {
             "version": _ENCRYPTED_CACHE_VERSION,
             "key": serialized_key,
-            "fetched_at": entry.fetched_at,
             "salt": _b64e(salt),
             "nonce": _b64e(nonce),
             "ciphertext": _b64e(ciphertext),
@@ -429,6 +428,14 @@ def _write_encrypted_disk_cache(
                 json.dump(payload, f)
             os.chmod(tmp, 0o600)
             os.replace(tmp, path)
+            # A successful encrypted write completes migration; remove the
+            # legacy plaintext cache so stale secrets cannot remain on disk.
+            try:
+                _disk_cache_path(home_path).unlink()
+            except FileNotFoundError:
+                pass
+            except OSError:
+                pass
         except BaseException:
             try:
                 os.unlink(tmp)
@@ -459,12 +466,6 @@ def _read_encrypted_disk_cache(
             return None
         if payload.get("key") != serialized_key:
             return None
-        fetched_at = payload.get("fetched_at")
-        if not isinstance(fetched_at, (int, float)):
-            return None
-        entry_age = time.time() - float(fetched_at)
-        if entry_age < 0 or entry_age > max_age_seconds:
-            return None
         salt = _b64d(str(payload.get("salt", "")))
         nonce = _b64d(str(payload.get("nonce", "")))
         ciphertext = _b64d(str(payload.get("ciphertext", "")))
@@ -478,6 +479,9 @@ def _read_encrypted_disk_cache(
         secrets = inner.get("secrets")
         inner_fetched_at = inner.get("fetched_at")
         if not isinstance(secrets, dict) or not isinstance(inner_fetched_at, (int, float)):
+            return None
+        entry_age = time.time() - float(inner_fetched_at)
+        if entry_age < 0 or entry_age > max_age_seconds:
             return None
         typed = {
             k: v for k, v in secrets.items()
@@ -611,7 +615,10 @@ def fetch_bitwarden_secrets(
     if use_cache:
         if cache_ttl_seconds > 0:
             _CACHE[cache_key] = entry
-        if encrypted_cache_enabled and encrypted_cache_max_stale_seconds > 0:
+        if encrypted_cache_enabled:
+            # Encryption is the storage policy; max_stale_seconds only controls
+            # whether an outage may consume the last-good entry.  Never fall
+            # back to the plaintext cache just because stale fallback is off.
             _write_encrypted_disk_cache(
                 cache_key=cache_key,
                 access_token=access_token,

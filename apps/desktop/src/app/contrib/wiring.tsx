@@ -16,6 +16,7 @@ import { useLocation, useNavigate } from 'react-router-dom'
 import { formatRefValue } from '@/components/assistant-ui/directive-text'
 import { BootFailureOverlay } from '@/components/boot-failure-overlay'
 import { DesktopInstallOverlay } from '@/components/desktop-install-overlay'
+import { FindBar } from '@/components/find-bar'
 import { GatewayConnectingOverlay } from '@/components/gateway-connecting-overlay'
 import { NotificationStack } from '@/components/notifications'
 import { DesktopOnboardingOverlay } from '@/components/onboarding'
@@ -900,6 +901,7 @@ export function ContribWiring({ children }: { children: ReactNode }) {
       <SessionSwitcher />
       <FileActionDialogs />
       <RemoteFolderPicker />
+      <FindBar />
 
       {settingsOpen && (
         <Suspense fallback={null}>

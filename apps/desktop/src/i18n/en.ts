@@ -256,6 +256,7 @@ export const en: Translations = {
       'view.closeTab': 'Close tab',
       'view.reopenTab': 'Reopen closed tab',
       'view.flipPanes': 'Swap sidebar sides',
+      'view.findInPage': 'Find in page',
       'appearance.toggleMode': 'Toggle light / dark',
       'profile.default': 'Switch to default profile',
       'profile.switch.1': 'Switch to profile 1',

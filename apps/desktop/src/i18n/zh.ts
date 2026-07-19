@@ -247,6 +247,7 @@ export const zh: Translations = {
       'view.closeTab': '关闭标签',
       'view.reopenTab': '重新打开已关闭的标签',
       'view.flipPanes': '交换侧边栏位置',
+      'view.findInPage': '页面内查找',
       'appearance.toggleMode': '切换浅色/深色',
       'profile.default': '切换到默认配置',
       'profile.switch.1': '切换到配置 1',

@@ -9,6 +9,7 @@ import { contributedKeybindHandler, PROFILE_SLOT_COUNT, SESSION_SLOT_COUNT } fro
 import { comboAllowedInInput, comboFromEvent, isEditableTarget } from '@/lib/keybinds/combo'
 import { $repoStatus } from '@/store/coding-status'
 import { toggleCommandPalette } from '@/store/command-palette'
+import { openFindBar } from '@/store/find-in-page'
 import { $capture, $comboIndex, endCapture, setBinding } from '@/store/keybinds'
 import {
   requestSessionSearchFocus,
@@ -185,6 +186,7 @@ export function useKeybinds(deps: KeybindRuntimeDeps): void {
     // the Win/Linux path where ⌘W reaches the renderer directly.
     'view.closeTab': () => void closeActiveTab(),
     'view.reopenTab': reopenLastClosedTile,
+    'view.findInPage': openFindBar,
 
     'appearance.toggleMode': () => setMode(resolvedMode === 'dark' ? 'light' : 'dark'),
 

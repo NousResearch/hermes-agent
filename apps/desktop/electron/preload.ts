@@ -263,5 +263,19 @@ contextBridge.exposeInMainWorld('hermesDesktop', {
   themes: {
     fetchMarketplace: id => ipcRenderer.invoke('hermes:vscode-theme:fetch', id),
     searchMarketplace: query => ipcRenderer.invoke('hermes:vscode-theme:search', query)
+  },
+  // Find-in-page (Ctrl/Cmd+F): delegates to Electron's
+  // webContents.findInPage on the IPC sender's window so a Cmd+F pressed
+  // in a secondary session window searches THAT window, not the primary.
+  // `onFoundInPage` returns the unsubscribe fn; the renderer wires it via
+  // `initFindInPageListener` in store/find-in-page.ts and tears it down
+  // when the FindBar unmounts.
+  findInPage: (query, options) => ipcRenderer.invoke('hermes:find-in-page', query, options),
+  stopFindInPage: () => ipcRenderer.invoke('hermes:stop-find-in-page'),
+  onFoundInPage: callback => {
+    const listener = (_event, result) => callback(result)
+    ipcRenderer.on('hermes:found-in-page', listener)
+
+    return () => ipcRenderer.removeListener('hermes:found-in-page', listener)
   }
 })

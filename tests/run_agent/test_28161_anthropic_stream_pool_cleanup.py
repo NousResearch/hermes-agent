@@ -1,16 +1,24 @@
-"""Anthropic stream cleanup must call _anthropic_client.close() + _rebuild_anthropic_client(),
-not _replace_primary_openai_client(), to avoid 15-minute hangs on Anthropic-native configs.
+"""Anthropic stream cleanup must not call _replace_primary_openai_client() and
+must not hang on Anthropic-native configs (#28161), now via the request-local
+client model (#67142).
 
-Three cleanup sites in chat_completion_helpers.interruptible_streaming_api_call() were
-calling _replace_primary_openai_client() unconditionally.  For api_mode=anthropic_messages
-this silently fails (no OPENAI_API_KEY) and leaves the in-flight httpx stream unclosed,
-blocking the worker thread until the 900s httpx read-timeout fires.
+Originally three cleanup sites in interruptible_streaming_api_call() called
+_replace_primary_openai_client() unconditionally; for api_mode=anthropic_messages
+that silently failed (no OPENAI_API_KEY) and left the in-flight httpx stream
+unclosed, blocking the worker until the 900s read-timeout fired.
+
+Since #67142, anthropic streams run on a per-request client: the stale/retry
+cleanup closes the *request-local* client (worker-owned) and builds a fresh one
+next attempt — the shared _anthropic_client is never closed/rebuilt from inside
+a request (that poll-thread close was the TLS-FD→SQLite corruption vector). The
+no-hang guarantee is preserved because the poll thread aborts the request
+client's sockets, which unblocks the worker.
 
 Tests cover:
-- stream_retry_pool_cleanup  (connection error on fresh stream, L1836)
-- stale_stream_pool_cleanup  (outer poll loop detects stale stream, L1987)
+- stream_retry cleanup  (connection error on fresh stream)
+- stale_stream cleanup  (outer poll loop detects stale stream)
 
-Fixes #28161
+Fixes #28161. Extends #67142.
 """
 import threading
 from types import SimpleNamespace
@@ -41,6 +49,9 @@ def _make_anthropic_agent(**kwargs):
     agent.api_mode = "anthropic_messages"
     agent._anthropic_client = MagicMock()
     agent._anthropic_api_key = "test-anthropic-key"
+    # #67142: anthropic streams now run on a request-local client; route it to
+    # the test mock so .messages.stream is exercised and its cleanup observed.
+    agent._create_request_anthropic_client = lambda *a, **k: agent._anthropic_client
     return agent
 
 
@@ -74,13 +85,16 @@ def _failing_stream_cm():
 
 
 class TestAnthropicStreamPoolCleanup:
-    """_replace_primary_openai_client must not be called for api_mode=anthropic_messages."""
+    """Anthropic cleanup must never touch the OpenAI primary or the shared
+    Anthropic client, and must not hang (#28161 / #67142)."""
 
     @pytest.mark.filterwarnings(
         "ignore::pytest.PytestUnhandledThreadExceptionWarning"
     )
-    def test_stream_retry_calls_anthropic_rebuild_not_openai(self):
-        """Connection error during stream retry → close+rebuild Anthropic client, not OpenAI."""
+    def test_stream_retry_closes_request_client_not_openai(self):
+        """Connection error during stream retry → close the request-local
+        Anthropic client (worker-owned) and retry; never rebuild the shared
+        Anthropic client, never touch the OpenAI primary."""
         agent = _make_anthropic_agent()
 
         attempt_count = [0]
@@ -100,14 +114,19 @@ class TestAnthropicStreamPoolCleanup:
                 agent._interruptible_streaming_api_call({})
 
         mock_replace.assert_not_called()
-        mock_rebuild.assert_called_once()
-        agent._anthropic_client.close.assert_called_once()
+        # #67142: the shared client is never rebuilt from inside a request; the
+        # request-local client (routed to this mock) is closed instead.
+        mock_rebuild.assert_not_called()
+        agent._anthropic_client.close.assert_called()
+        assert attempt_count[0] == 2  # retried once, then succeeded
 
     @pytest.mark.filterwarnings(
         "ignore::pytest.PytestUnhandledThreadExceptionWarning"
     )
-    def test_stale_stream_calls_anthropic_rebuild_not_openai(self, monkeypatch):
-        """Stale-stream outer-poll detector → close+rebuild Anthropic client, not OpenAI."""
+    def test_stale_stream_aborts_request_client_not_openai(self, monkeypatch):
+        """Stale-stream outer-poll detector → abort the request-local client's
+        socket (unblocking the worker) and retry; never _replace_primary_openai
+        and never rebuild the shared Anthropic client."""
         monkeypatch.setenv("HERMES_STREAM_STALE_TIMEOUT", "0.1")
 
         agent = _make_anthropic_agent()
@@ -117,14 +136,15 @@ class TestAnthropicStreamPoolCleanup:
         def _stream_side_effect(*args, **kwargs):
             attempt_count[0] += 1
             if attempt_count[0] == 1:
-                # First attempt: stream that yields nothing (triggers stale detector),
-                # then raises ConnectError once _anthropic_client.close() unblocks it.
+                # First attempt: stream that yields nothing (triggers stale
+                # detector), then raises ConnectError once the poll thread
+                # aborts the request client's socket.
                 cm = MagicMock()
                 stream = MagicMock()
 
                 def _blocking_gen():
                     unblock.wait(timeout=5.0)
-                    raise httpx.ConnectError("connection dropped after close()")
+                    raise httpx.ConnectError("connection dropped after abort")
                     yield  # make this a generator so next() triggers the wait
 
                 stream.__iter__ = MagicMock(return_value=_blocking_gen())
@@ -135,8 +155,10 @@ class TestAnthropicStreamPoolCleanup:
             return _good_stream_cm()
 
         agent._anthropic_client.messages.stream.side_effect = _stream_side_effect
-        # close() on the mock Anthropic client unblocks the inner thread.
-        agent._anthropic_client.close.side_effect = unblock.set
+        # #67142: the stale detector aborts the request-local client's sockets
+        # from the poll thread (not close() on the shared client); simulate the
+        # socket shutdown waking the blocked read.
+        agent._abort_request_anthropic_client = lambda *a, **k: unblock.set()
 
         with patch.object(agent, "_rebuild_anthropic_client") as mock_rebuild:
             with patch.object(
@@ -145,6 +167,6 @@ class TestAnthropicStreamPoolCleanup:
                 agent._interruptible_streaming_api_call({})
 
         mock_replace.assert_not_called()
-        # close() and rebuild called at least once by the stale detector.
-        agent._anthropic_client.close.assert_called()
-        assert mock_rebuild.call_count >= 1
+        # The shared Anthropic client is never rebuilt from inside a request.
+        mock_rebuild.assert_not_called()
+        assert attempt_count[0] >= 2  # stale-killed once, then retried

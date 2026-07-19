@@ -190,12 +190,15 @@ export const en: Translations = {
     unmuteHaptics: 'Unmute haptics',
     openSettings: 'Open settings',
     openStarmap: 'Open memory graph',
-    openKeybinds: 'Keyboard shortcuts'
+    openKeybinds: 'Keyboard shortcuts',
+    layoutEditor: 'Layout editor',
+    layoutEditorTitle: 'Layout editor — ⌘-click resets the layout'
   },
 
   keybinds: {
     title: 'Keyboard shortcuts',
     subtitle: open => `Click a shortcut to rebind it · ${open} reopens this panel.`,
+    search: 'Search shortcuts…',
     rebind: 'Rebind',
     reset: 'Reset to default',
     resetAll: 'Reset all',
@@ -221,6 +224,7 @@ export const en: Translations = {
       'nav.cron': 'Open scheduled jobs',
       'nav.agents': 'Open agents',
       'session.new': 'New session',
+      'session.newTab': 'New session tab',
       'session.newWindow': 'New session in window',
       'session.next': 'Next session',
       'session.prev': 'Previous session',
@@ -249,7 +253,8 @@ export const en: Translations = {
       'view.prevTerminal': 'Previous terminal',
       'view.closeTerminal': 'Close terminal',
       'view.terminalSelection': 'Send terminal selection to composer',
-      'view.closePreviewTab': 'Close preview tab',
+      'view.closeTab': 'Close tab',
+      'view.reopenTab': 'Reopen closed tab',
       'view.flipPanes': 'Swap sidebar sides',
       'appearance.toggleMode': 'Toggle light / dark',
       'profile.default': 'Switch to default profile',
@@ -311,12 +316,29 @@ export const en: Translations = {
       providerApiKeys: 'API keys',
       gateway: 'Gateway',
       apiKeys: 'Tools & Keys',
+      keybinds: 'Keyboard Shortcuts',
       keysTools: 'Tools',
       keysSettings: 'Settings',
       mcp: 'MCP',
       archivedChats: 'Archived Chats',
       about: 'About',
-      notifications: 'Notifications'
+      billing: 'Billing',
+      notifications: 'Notifications',
+      plugins: 'Plugins'
+    },
+    plugins: {
+      title: 'Desktop plugins',
+      blurb:
+        'UI extensions loaded into this app — bundled with the build, or dropped into the desktop-plugins folder (including ones Hermes writes). Disabling unloads a plugin live and survives restarts.',
+      count: n => `${n} installed`,
+      openFolder: 'Open plugins folder',
+      rescan: 'Rescan',
+      reveal: 'Reveal in file manager',
+      enable: 'Enable',
+      disable: 'Disable',
+      failed: 'failed',
+      empty: 'No desktop plugins installed yet.',
+      kinds: { bundled: 'bundled', disk: 'on disk', runtime: 'runtime' }
     },
     notifications: {
       title: 'Notifications',
@@ -392,6 +414,8 @@ export const en: Translations = {
         `Scales text and controls across the whole app. Cmd/Ctrl with +, - and 0 also works. Current: ${percent}%.`,
       translucencyTitle: 'Window Translucency',
       translucencyDesc: 'See your desktop through the whole window. macOS and Windows only.',
+      backdropTitle: 'Chat Backdrop',
+      backdropDesc: 'The faint statue image behind the conversation.',
       embedsTitle: 'Inline Embeds',
       embedsDesc:
         'Rich previews load from third-party sites (YouTube, X, …). Ask shows a placeholder until you allow each one; Always loads them automatically; Off keeps plain links.',
@@ -540,8 +564,7 @@ export const en: Translations = {
       localDesc: 'Start a private Hermes backend on localhost. This is the default and works offline.',
       remoteTitle: 'Remote gateway',
       remoteDesc: 'Connect this desktop shell to a remote Hermes backend.',
-      remoteAuthHint:
-        'Hosted gateways use OAuth or a username and password; self-hosted ones may use a session token.',
+      remoteAuthHint: 'Hosted gateways use OAuth or a username and password; self-hosted ones may use a session token.',
       cloudTitle: 'Hermes Cloud',
       cloudDesc: 'Sign in once to Hermes Cloud and pick from the agents on your account — no URL to paste.',
       cloudSignInTitle: 'Hermes Cloud',
@@ -744,6 +767,10 @@ export const en: Translations = {
       noProviderKeys: 'No provider API keys available.',
       searchKeys: 'Search providers…',
       noKeysMatch: 'No providers match your search.',
+      localEndpoint: {
+        title: 'Local / custom endpoint',
+        description: 'Point Hermes at any OpenAI-compatible endpoint (Zyphra, vLLM, llama.cpp, Ollama, etc).'
+      },
       loading: 'Loading providers...'
     },
     sessions: {
@@ -985,6 +1012,7 @@ export const en: Translations = {
     goTo: 'Go to',
     goToSession: 'Go to session',
     branches: 'Branches',
+    commands: 'Commands',
     startInBranch: branch => `New conversation in ${branch}`,
     commandCenter: 'Command Center',
     appearance: 'Appearance',
@@ -1625,18 +1653,25 @@ export const en: Translations = {
       rename: 'Rename',
       archive: 'Archive',
       newWindow: 'New window',
+      hideTabBar: 'Hide tab bar',
+      openInNewTab: 'Open in new tab',
+      openInSplit: 'Open in split',
       copyIdFailed: 'Could not copy session ID',
       actionsFor: title => `Actions for ${title}`,
       sessionActions: 'Session actions',
       sessionRunning: 'Session running',
       needsInput: 'Needs your input',
       waitingForAnswer: 'Waiting for your answer',
+      finishedUnread: 'Finished — unread',
+      backgroundRunning: 'Background task running',
       handoffOrigin: platform => `Handed off from ${platform}`,
+      ownedByProfile: profile => `Profile: ${profile}`,
       renamed: 'Renamed',
       renameFailed: 'Rename failed',
       renameTitle: 'Rename session',
       renameDesc: 'Give this chat a memorable title. Leave empty to clear.',
       untitledPlaceholder: 'Untitled session',
+      untitledChat: id => `Chat ${id}`,
       ageNow: 'now',
       ageDay: 'd',
       ageHour: 'h',
@@ -1942,6 +1977,7 @@ export const en: Translations = {
     recommended: 'Recommended',
     connected: 'Connected',
     featuredPitch: 'One subscription, 300+ frontier models — the recommended way to run Hermes',
+    fireworksPitch: 'Direct model API — Fireworks-hosted frontier models',
     openRouterPitch: 'One key, hundreds of models — a solid default',
     apiKeyOptions: {
       fireworks: {
@@ -2144,6 +2180,7 @@ export const en: Translations = {
       noModel: 'no model',
       switchModel: 'Switch model',
       openModelPicker: 'Open model picker',
+      modelPinned: 'pinned by you; new chats use this instead of the Settings default',
       modelTitle: (provider, model) => `Model · ${provider}: ${model}`,
       providerModelTitle: (provider, model) => `${provider} · ${model}`
     }
@@ -2278,6 +2315,52 @@ export const en: Translations = {
       openTarget: url => `Open ${url}`,
       fallbackTitle: 'Preview'
     }
+  },
+
+  zones: {
+    showHeader: 'Show header',
+    hideHeader: 'Hide header',
+    minimize: 'Minimize',
+    restore: 'Restore',
+    closeRunningTitle: 'Close running tab?',
+    closeRunningBody:
+      'This chat is still working (or waiting on your input). Closing the tab hides it — the session keeps its progress and can be reopened from the sidebar.',
+    closeRunningConfirm: 'Close tab',
+    closeOthers: 'Close others',
+    closeToRight: 'Close to the right',
+    closeAll: 'Close all',
+    split: dir => `Split ${dir}`,
+    move: dir => `Move ${dir}`,
+    dirUp: 'up',
+    dirDown: 'down',
+    dirLeft: 'left',
+    dirRight: 'right',
+    pluginDisabled: pluginId => `Plugin "${pluginId}" disabled`,
+    pluginDisabledBody: 'Re-enable it in Settings → Plugins to bring the pane back.',
+    missingPane: paneId => `missing pane: ${paneId}`,
+    editTitle: 'Layouts',
+    editHint: 'Pick a layout, or drag panes between zones. Right-click a zone to split.',
+    reset: 'Reset',
+    templates: 'Templates',
+    custom: 'Custom',
+    newGridLayout: 'New grid layout',
+    saveCurrentAs: 'Save current arrangement as a template',
+    nameLayoutPlaceholder: 'Name this layout…',
+    deletePreset: name => `Delete ${name}`,
+    zoneEditorTitle: 'Zone editor',
+    editorHintPre: 'click to split · ',
+    editorHintPost: ' flips the line · drag across zones to merge · drag shared edges to resize',
+    templateColumns: 'Columns',
+    templateRows: 'Rows',
+    templateGrid: 'Grid',
+    templatePriority: 'Priority',
+    zoneTag: index => `zone ${index}`,
+    mergeZones: count => `Merge ${count} zones`,
+    customZoneName: count => `Custom ${count}-zone`,
+    layoutNamePlaceholder: fallback => `Layout name (${fallback})`,
+    saveApply: 'Save & apply',
+    notExpressible: 'this arrangement interlocks (pinwheel) — not expressible as nested splits yet',
+    zoneCount: count => `${count} zones`
   },
 
   assistant: {

@@ -1,7 +1,9 @@
+import './styles.css'
+
 import { StrictMode } from 'react'
 import { createRoot } from 'react-dom/client'
+
 import App from './app.tsx'
-import './styles.css'
 import { watchTheme } from './theme'
 
 // Follow the OS light/dark appearance. theme.ts paints the first frame on

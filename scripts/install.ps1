@@ -9,6 +9,7 @@
 #
 # Or download and run with options:
 #   .\install.ps1 -NoVenv -SkipSetup
+#   .\install.ps1 -DesktopOnly
 #
 # ============================================================================
 
@@ -56,7 +57,13 @@ param(
     #   * The canonical CLI one-liner (irm | iex) omits the flag too;
     #     terminal users don't need a desktop binary built for them, and
     #     `hermes desktop` already builds on demand.
-    [switch]$IncludeDesktop
+    [switch]$IncludeDesktop,
+
+    # --- Desktop-only install (skip Python/agent, only build Electron app) ---
+    # When set, installs ONLY the desktop app without the Python agent backend.
+    # Useful for users who want to connect to a remote Hermes gateway.
+    # Implies -IncludeDesktop.
+    [switch]$DesktopOnly
 )
 
 $ErrorActionPreference = "Stop"
@@ -3341,12 +3348,64 @@ function Write-Completion {
     }
     
     if (-not $HasRipgrep) {
-        Write-Host "Note: ripgrep (rg) was not installed. For faster file search:" -ForegroundColor Yellow
-        Write-Host "  winget install BurntSushi.ripgrep.MSVC" -ForegroundColor Yellow
+        Write-Host "Note: ripgrep (rg) was not found. File search will use" -ForegroundColor Yellow
+        Write-Host "grep as a fallback. For faster search in large codebases," -ForegroundColor Yellow
+        Write-Host "install ripgrep: scoop install ripgrep" -ForegroundColor Yellow
         Write-Host ""
     }
 }
 
+function Write-DesktopOnlyCompletion {
+    Write-Host ""
+    Write-Host "+---------------------------------------------------------+" -ForegroundColor Green
+    Write-Host "|          [OK] Desktop App Installation Complete!        |" -ForegroundColor Green
+    Write-Host "+---------------------------------------------------------+" -ForegroundColor Green
+    Write-Host ""
+    
+    # Show file locations
+    Write-Host "* Desktop app built:" -ForegroundColor Cyan
+    Write-Host ""
+    Write-Host "   Executable: " -NoNewline -ForegroundColor Yellow
+    $desktopExeCandidates = @(
+        "$InstallDir\apps\desktop\release\win-unpacked\Hermes.exe",
+        "$InstallDir\apps\desktop\release\win-arm64-unpacked\Hermes.exe"
+    )
+    foreach ($cand in $desktopExeCandidates) {
+        if (Test-Path $cand) {
+            Write-Host "$cand"
+            break
+        }
+    }
+    Write-Host ""
+    
+    Write-Host "---------------------------------------------------------" -ForegroundColor Cyan
+    Write-Host ""
+    Write-Host "* What's installed:" -ForegroundColor Cyan
+    Write-Host ""
+    Write-Host "   - Hermes Electron desktop app (standalone)"
+    Write-Host "   - No Python agent backend (connects to remote gateway)"
+    Write-Host ""
+    
+    Write-Host "* Next steps:" -ForegroundColor Cyan
+    Write-Host ""
+    Write-Host "   1. Launch the desktop app from Start Menu or Desktop shortcut"
+    Write-Host "   2. In Settings -> Gateway, configure your remote Hermes gateway URL"
+    Write-Host "   3. Sign in with your credentials to connect to the remote agent"
+    Write-Host ""
+    
+    Write-Host "---------------------------------------------------------" -ForegroundColor Cyan
+    Write-Host ""
+    Write-Host "[*] Note: This is a desktop-only install. The 'hermes' CLI command is not installed." -ForegroundColor Yellow
+    Write-Host "[*] To install the full agent later, run the standard installer without -DesktopOnly" -ForegroundColor Yellow
+    Write-Host ""
+    
+    if (-not $HasNode) {
+        Write-Host "Note: Node.js could not be installed automatically." -ForegroundColor Yellow
+        Write-Host "Browser tools need Node.js. Install manually:" -ForegroundColor Yellow
+        Write-Host "  https://nodejs.org/en/download/" -ForegroundColor Yellow
+        Write-Host ""
+    }
+}
 # ============================================================================
 # Stage protocol
 # ============================================================================
@@ -3431,7 +3490,32 @@ $InstallStages = @(
     @{ Name = "dependencies";     Title = "Installing Python dependencies";       Category = "install";      NeedsUserInput = $false; Worker = "Stage-Dependencies" }
     @{ Name = "node-deps";        Title = "Installing Node.js dependencies";      Category = "install";      NeedsUserInput = $false; Worker = "Stage-NodeDeps" }
 )
-if ($IncludeDesktop) {
+if ($DesktopOnly) {
+    # In desktop-only mode, skip Python/agent stages entirely
+    # Only do: uv, git, node, system-packages, repository, node-deps
+    $InstallStages = @(
+        @{ Name = "uv";               Title = "Installing uv package manager";        Category = "prereqs";      NeedsUserInput = $false; Worker = "Stage-Uv" }
+        @{ Name = "git";              Title = "Installing Git";                       Category = "prereqs";      NeedsUserInput = $false; Worker = "Stage-Git" }
+        @{ Name = "node";             Title = "Detecting Node.js";                    Category = "prereqs";      NeedsUserInput = $false; Worker = "Stage-Node" }
+        @{ Name = "system-packages";  Title = "Installing ripgrep and ffmpeg";        Category = "prereqs";      NeedsUserInput = $false; Worker = "Stage-SystemPackages" }
+        @{ Name = "repository";       Title = "Cloning Hermes repository";            Category = "install";      NeedsUserInput = $false; Worker = "Stage-Repository" }
+        @{ Name = "node-deps";        Title = "Installing Node.js dependencies";      Category = "install";      NeedsUserInput = $false; Worker = "Stage-NodeDeps" }
+    )
+} else {
+    # Normal full install with Python/agent
+    $InstallStages = @(
+        @{ Name = "uv";               Title = "Installing uv package manager";        Category = "prereqs";      NeedsUserInput = $false; Worker = "Stage-Uv" }
+        @{ Name = "python";           Title = "Verifying Python $PythonVersion";      Category = "prereqs";      NeedsUserInput = $false; Worker = "Stage-Python" }
+        @{ Name = "git";              Title = "Installing Git";                       Category = "prereqs";      NeedsUserInput = $false; Worker = "Stage-Git" }
+        @{ Name = "node";             Title = "Detecting Node.js";                    Category = "prereqs";      NeedsUserInput = $false; Worker = "Stage-Node" }
+        @{ Name = "system-packages";  Title = "Installing ripgrep and ffmpeg";        Category = "prereqs";      NeedsUserInput = $false; Worker = "Stage-SystemPackages" }
+        @{ Name = "repository";       Title = "Cloning Hermes repository";            Category = "install";      NeedsUserInput = $false; Worker = "Stage-Repository" }
+        @{ Name = "venv";             Title = "Creating Python virtual environment";  Category = "install";      NeedsUserInput = $false; Worker = "Stage-Venv" }
+        @{ Name = "dependencies";     Title = "Installing Python dependencies";       Category = "install";      NeedsUserInput = $false; Worker = "Stage-Dependencies" }
+        @{ Name = "node-deps";        Title = "Installing Node.js dependencies";      Category = "install";      NeedsUserInput = $false; Worker = "Stage-NodeDeps" }
+    )
+}
+if ($IncludeDesktop -or $DesktopOnly) {
     # Insert AFTER node-deps so workspace npm is already installed when
     # the desktop build runs. Inserted only when explicitly requested
     # (Hermes-Setup.exe), never via the irm|iex CLI one-liner.
@@ -3630,6 +3714,19 @@ function Invoke-PostInstallMode {
 
 function Main {
     Write-Banner
+    
+    if ($DesktopOnly) {
+        # Desktop-only mode: skip Python/agent stages, only build Electron app
+        Write-Info "Running in desktop-only mode (skipping Python/agent setup)"
+        Invoke-AllStages
+        if (-not $Json) {
+            Write-DesktopOnlyCompletion
+        } else {
+            @{ ok = $true; protocol_version = $InstallStageProtocolVersion } | ConvertTo-Json -Compress | Write-Output
+        }
+        return
+    }
+    
     Invoke-AllStages
     if (-not $Json) {
         Write-Completion

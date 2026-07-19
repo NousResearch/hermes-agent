@@ -80,6 +80,7 @@ STAGE_NAME=""
 JSON_OUTPUT=false
 NON_INTERACTIVE=false
 INCLUDE_DESKTOP=false
+DESKTOP_ONLY=false
 
 # Detect non-interactive mode (e.g. curl | bash)
 # When stdin is not a terminal, read -p will fail with EOF,
@@ -137,6 +138,11 @@ while [[ $# -gt 0 ]]; do
             INCLUDE_DESKTOP=true
             shift
             ;;
+        --desktop-only|-DesktopOnly)
+            DESKTOP_ONLY=true
+            INCLUDE_DESKTOP=true  # Implies --include-desktop
+            shift
+            ;;
         --dir)
             INSTALL_DIR="$2"
             INSTALL_DIR_EXPLICIT=true
@@ -173,6 +179,7 @@ while [[ $# -gt 0 ]]; do
             echo "  --json         Print a JSON result frame for --stage"
             echo "  --non-interactive  Skip stages that require user input"
             echo "  --include-desktop  Also build the desktop app (apps/desktop -> Hermes.app)"
+            echo "  --desktop-only     Install ONLY the desktop app (skip Python/agent setup; implies --include-desktop)"
             echo "  --dir PATH     Installation directory"
             echo "                   default (non-root):  ~/.hermes/hermes-agent"
             echo "                   default (root, Linux): /usr/local/lib/hermes-agent"
@@ -320,7 +327,25 @@ emit_manifest() {
     if [ "$INCLUDE_DESKTOP" = true ]; then
         desktop_stage='{"name":"desktop","title":"Build desktop app","category":"runtime","needs_user_input":false},'
     fi
-    printf '%s' '{"protocol_version":1,"stages":[{"name":"prerequisites","title":"System prerequisites","category":"runtime","needs_user_input":false},{"name":"repository","title":"Download Hermes Agent","category":"runtime","needs_user_input":false},{"name":"venv","title":"Create Python virtual environment","category":"runtime","needs_user_input":false},{"name":"python-deps","title":"Install Python dependencies","category":"runtime","needs_user_input":false},{"name":"node-deps","title":"Install browser-tool dependencies","category":"runtime","needs_user_input":false},{"name":"path","title":"Install hermes command","category":"runtime","needs_user_input":false},{"name":"config","title":"Prepare config and skills","category":"configuration","needs_user_input":false},{"name":"setup","title":"Configure API keys and settings","category":"configuration","needs_user_input":true},{"name":"gateway","title":"Configure gateway service","category":"configuration","needs_user_input":true},'"$desktop_stage"'{"name":"complete","title":"Finish install","category":"runtime","needs_user_input":false}]}'
+    
+    # In desktop-only mode, skip Python/agent stages
+    local venv_stage='{"name":"venv","title":"Create Python virtual environment","category":"runtime","needs_user_input":false},'
+    local python_deps_stage='{"name":"python-deps","title":"Install Python dependencies","category":"runtime","needs_user_input":false},'
+    local path_stage='{"name":"path","title":"Install hermes command","category":"runtime","needs_user_input":false},'
+    local config_stage='{"name":"config","title":"Prepare config and skills","category":"configuration","needs_user_input":false},'
+    local setup_stage='{"name":"setup","title":"Configure API keys and settings","category":"configuration","needs_user_input":true},'
+    local gateway_stage='{"name":"gateway","title":"Configure gateway service","category":"configuration","needs_user_input":true},'
+    
+    if [ "$DESKTOP_ONLY" = true ]; then
+        venv_stage=""
+        python_deps_stage=""
+        path_stage=""
+        config_stage=""
+        setup_stage=""
+        gateway_stage=""
+    fi
+    
+    printf '%s' '{"protocol_version":1,"stages":[{"name":"prerequisites","title":"System prerequisites","category":"runtime","needs_user_input":false},{"name":"repository","title":"Download Hermes Agent","category":"runtime","needs_user_input":false},'"$venv_stage$python_deps_stage"'{"name":"node-deps","title":"Install browser-tool dependencies","category":"runtime","needs_user_input":false},'"$path_stage$config_stage$setup_stage$gateway_stage"'"$desktop_stage"'{"name":"complete","title":"Finish install","category":"runtime","needs_user_input":false}]}'
     printf '\n'
 }
 
@@ -473,9 +498,6 @@ get_command_link_display_dir() {
 # the command link dir (node/npm/npx live there too, already on PATH) and
 # survive upgrades. Scoped to the managed Node via its prefix-local global
 # npmrc, so the user's other Node installs and their ~/.npmrc are untouched.
-# Hermes's own global installs pass an explicit --prefix and are unaffected.
-# Idempotent and a no-op when there is no Hermes-managed npm, so calling it on
-# every install run repairs pre-existing installs, not just fresh ones.
 configure_managed_node_npm_prefix() {
     [ -x "$HERMES_HOME/node/bin/npm" ] || return 0
     local link_dir
@@ -2231,11 +2253,10 @@ install_node_deps() {
                     ;;
                 opensuse*|sles)
                     log_warn "Playwright does not support automatic dependency installation on zypper-based systems."
-                    log_info "Install Chromium system dependencies manually before using browser tools:"
-                    log_info "  sudo zypper install mozilla-nss libatk-1_0-0 at-spi2-core cups-libs libdrm2 libxkbcommon0 Mesa-libgbm1 pango cairo libasound2"
-                    cd "$INSTALL_DIR" && run_playwright_install 600 npx playwright install chromium || {
-                        log_warn "Playwright browser installation failed — install dependencies above and retry."
-                    }
+                    log_info "Install Chromium/browser system dependencies for your distribution, then run:"
+                    log_info "  cd $INSTALL_DIR && npx playwright install chromium"
+                    log_info "Browser tools will not work until dependencies are installed."
+                    cd "$INSTALL_DIR" && run_playwright_install 600 npx playwright install chromium || true
                     ;;
                 *)
                     log_warn "Playwright does not support automatic dependency installation on $DISTRO."
@@ -2796,8 +2817,8 @@ install_desktop() {
     #    can report "up to date" against a stale node_modules/.package-lock.json
     #    marker while node_modules is actually empty (Windows workspace-hoisting
     #    flake) — leaving tsc/typescript unresolved and `npm run pack`'s
-    #    `tsc -b` failing with no obvious cause. Fall back to `npm install`
-    #    only if `npm ci` is unavailable or the lockfile is out of sync.
+    #    `tsc -b` failing with no obvious cause. Fall back to `npm install` only
+    #    if `npm ci` is unavailable or the lockfile is out of sync.
     #
     #    Both the install and the build below are wrapped in a hard wall-clock
     #    timeout (#39219): the Electron binary (~150MB) is fetched from GitHub,
@@ -2833,7 +2854,7 @@ install_desktop() {
         log_info "If the errors above mention EACCES / 'permission denied' / EEXIST while"
         log_info "writing the npm cache, your ~/.npm likely holds root-owned files from an"
         log_info "earlier 'sudo npm' or 'sudo npx'. Reclaim ownership and retry:"
-        log_info "  sudo chown -R \"\$(id -un)\" ~/.npm && npm cache verify"
+        log_info "  sudo chown -R \"$(id -un)\" ~/.npm && npm cache verify"
         log_info "Then re-run this installer, or build manually:"
         log_info "  cd \"$INSTALL_DIR\" && npm ci && cd apps/desktop && npm run pack"
         return 1
@@ -3114,6 +3135,30 @@ main() {
 
     detect_os
     resolve_install_layout
+    
+    if [ "$DESKTOP_ONLY" = true ]; then
+        # Desktop-only mode: skip Python/uv, only do Node.js + desktop build
+        check_git
+        check_node
+        check_network_prerequisites
+        # Skip install_system_packages in desktop-only mode (no Python build deps needed)
+        # install_system_packages
+        
+        clone_repo
+        install_node_deps
+        install_desktop
+        
+        print_success
+        
+        # Code-scoped stamp: write next to the install tree, not into $HERMES_HOME.
+        # $HERMES_HOME is a shared data dir (it can be bind-mounted into a Docker
+        # gateway too), so a stamp there gets clobbered by the container's 'docker'
+        # stamp and wrongly blocks 'hermes update' on this host install.
+        # See detect_install_method().
+        echo "git" > "$INSTALL_DIR/.install_method"
+        return 0
+    fi
+    
     install_uv
     check_python
     check_git

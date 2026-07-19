@@ -204,6 +204,26 @@ def _normalize_matrix_bang_command(text: str) -> str:
     return f"/{resolved}{match.group(2) or ''}"
 
 
+def _strip_matrix_reply_fallback(body: str, relates_to: dict) -> str:
+    """Remove Matrix plaintext reply fallback quoting from a message body."""
+    in_reply_to = relates_to.get("m.in_reply_to", {})
+    if not in_reply_to or not body.startswith("> "):
+        return body
+    lines = body.split("\n")
+    stripped = []
+    past_fallback = False
+    for line in lines:
+        if not past_fallback:
+            if line.startswith("> ") or line == ">":
+                continue
+            if line == "":
+                past_fallback = True
+                continue
+            past_fallback = True
+        stripped.append(line)
+    return "\n".join(stripped) if stripped else body
+
+
 class _MatrixHtmlSanitizer(HTMLParser):
     """Allowlist sanitizer for Matrix-compatible formatted HTML."""
 
@@ -2710,6 +2730,12 @@ class MatrixAdapter(BasePlatformAdapter):
             mentions_block.get("user_ids") if isinstance(mentions_block, dict) else None
         )
         is_mentioned = self._is_bot_mentioned(body, formatted_body, mention_user_ids)
+        command_body = _normalize_matrix_bang_command(
+            _strip_matrix_reply_fallback(body, relates_to)
+        )
+        # Keep the pre-strip form for group mention-gating below. The
+        # auto-thread policy recomputes after explicit mentions are removed.
+        is_command = command_body.startswith("/")
 
         # Require-mention gating.
         if not is_dm:
@@ -2727,7 +2753,6 @@ class MatrixAdapter(BasePlatformAdapter):
 
             is_free_room = room_id in self._free_rooms
             in_bot_thread = bool(thread_id and thread_id in self._threads)
-            is_command = body.startswith("/")
             if self._require_mention and not is_free_room and not in_bot_thread:
                 if not is_mentioned and not is_command:
                     logger.debug(
@@ -2753,20 +2778,35 @@ class MatrixAdapter(BasePlatformAdapter):
                     )
                     return None
 
-        # DM mention-thread.
-        if is_dm and not thread_id and self._dm_mention_threads and is_mentioned:
+        command_body_source = self._strip_mention(body) if is_mentioned else body
+        command_body = _normalize_matrix_bang_command(
+            _strip_matrix_reply_fallback(command_body_source, relates_to)
+        ).strip()
+        is_command = command_body.startswith("/")
+        command_parts = command_body.lower().split(maxsplit=1)
+        is_stop_command = bool(command_parts) and command_parts[0] == "/stop"
+        # Explicitly addressed control commands must reach the dispatcher even
+        # when normal mention-gating is disabled.
+        if is_mentioned and (self._require_mention or is_stop_command):
+            body = command_body_source
+
+        # DM mention-thread. Control commands must remain rooted so they can
+        # reach the command dispatcher for the private conversation.
+        if (
+            is_dm
+            and not thread_id
+            and self._dm_mention_threads
+            and is_mentioned
+            and not is_stop_command
+        ):
             thread_id = event_id
             self._threads.mark(thread_id)
-
-        # Strip mention from body (only when mention-gating is active).
-        if is_mentioned and self._require_mention:
-            body = self._strip_mention(body)
 
         # Auto-thread/session-scope policy. Real Matrix thread roots are
         # preserved above; synthetic thread roots are policy-driven.
         if not thread_id:
             if is_dm:
-                if self._dm_auto_thread:
+                if self._dm_auto_thread and not is_stop_command:
                     thread_id = event_id
                     self._threads.mark(thread_id)
             elif self._matrix_session_scope == "room":
@@ -2832,21 +2872,7 @@ class MatrixAdapter(BasePlatformAdapter):
         if in_reply_to:
             reply_to = in_reply_to.get("event_id")
 
-        # Strip reply fallback from body.
-        if reply_to and body.startswith("> "):
-            lines = body.split("\n")
-            stripped = []
-            past_fallback = False
-            for line in lines:
-                if not past_fallback:
-                    if line.startswith("> ") or line == ">":
-                        continue
-                    if line == "":
-                        past_fallback = True
-                        continue
-                    past_fallback = True
-                stripped.append(line)
-            body = "\n".join(stripped) if stripped else body
+        body = _strip_matrix_reply_fallback(body, relates_to)
 
         # Re-run bang normalization after reply-fallback stripping so a quoted
         # reply whose actual content is a bang command (e.g. ``> quoted\n\n!model``)

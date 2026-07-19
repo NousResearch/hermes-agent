@@ -4559,6 +4559,125 @@ class TestMatrixDmAutoThread:
         assert thread_id == "$ev1"
 
     @pytest.mark.asyncio
+    async def test_dm_auto_thread_skips_slash_command(self):
+        """Root-level slash commands should not create fresh DM threads."""
+        self.adapter._dm_auto_thread = True
+
+        ctx = await self.adapter._resolve_message_context(
+            room_id="!dm:ex",
+            sender="@alice:ex",
+            event_id="$stop-event",
+            body="/stop",
+            source_content={"body": "/stop"},
+            relates_to={},
+        )
+
+        assert ctx is not None
+        _body, _is_dm, _chat_type, thread_id, _display, _source = ctx
+        assert thread_id is None
+
+    @pytest.mark.asyncio
+    async def test_dm_auto_thread_keeps_skill_command_threaded(self):
+        """Only /stop is a root-DM control command under auto-threading."""
+        self.adapter._dm_auto_thread = True
+
+        ctx = await self.adapter._resolve_message_context(
+            room_id="!dm:ex",
+            sender="@alice:ex",
+            event_id="$arxiv-event",
+            body="!arxiv cats",
+            source_content={"body": "!arxiv cats"},
+            relates_to={},
+        )
+
+        assert ctx is not None
+        _body, _is_dm, _chat_type, thread_id, _display, _source = ctx
+        assert thread_id == "$arxiv-event"
+
+    @pytest.mark.asyncio
+    async def test_dm_auto_thread_skips_reply_fallback_slash_command(self):
+        """Slash commands after Matrix reply fallback should stay flat."""
+        self.adapter._dm_auto_thread = True
+
+        ctx = await self.adapter._resolve_message_context(
+            room_id="!dm:ex",
+            sender="@alice:ex",
+            event_id="$stop-event",
+            body="> <@bob:ex> quoted\n\n/stop",
+            source_content={"body": "> <@bob:ex> quoted\n\n/stop"},
+            relates_to={"m.in_reply_to": {"event_id": "$quoted"}},
+        )
+
+        assert ctx is not None
+        _body, _is_dm, _chat_type, thread_id, _display, _source = ctx
+        assert thread_id is None
+
+    @pytest.mark.asyncio
+    async def test_dm_auto_thread_skips_mention_prefixed_slash_command(self):
+        """Mention stripping must happen before command auto-thread policy."""
+        self.adapter._dm_auto_thread = True
+        self.adapter._require_mention = True
+        self.adapter._user_id = "@hermes:ex"
+
+        ctx = await self.adapter._resolve_message_context(
+            room_id="!dm:ex",
+            sender="@alice:ex",
+            event_id="$stop-event",
+            body="@hermes:ex /stop",
+            source_content={"body": "@hermes:ex /stop"},
+            relates_to={},
+        )
+
+        assert ctx is not None
+        body, _is_dm, _chat_type, thread_id, _display, _source = ctx
+        assert body == "/stop"
+        assert thread_id is None
+
+    @pytest.mark.asyncio
+    async def test_dm_mention_thread_skips_mention_prefixed_slash_command(self):
+        """DM mention-threading must not turn a control command into a thread."""
+        self.adapter._dm_auto_thread = True
+        self.adapter._dm_mention_threads = True
+        self.adapter._require_mention = True
+        self.adapter._user_id = "@hermes:ex"
+
+        ctx = await self.adapter._resolve_message_context(
+            room_id="!dm:ex",
+            sender="@alice:ex",
+            event_id="$stop-event",
+            body="@hermes:ex /stop",
+            source_content={"body": "@hermes:ex /stop"},
+            relates_to={},
+        )
+
+        assert ctx is not None
+        body, _is_dm, _chat_type, thread_id, _display, _source = ctx
+        assert body == "/stop"
+        assert thread_id is None
+
+    @pytest.mark.asyncio
+    async def test_dm_mention_thread_recognizes_command_without_mention_gating(self):
+        """Explicit mention commands stay controls when normal mention gating is off."""
+        self.adapter._dm_auto_thread = True
+        self.adapter._dm_mention_threads = True
+        self.adapter._require_mention = False
+        self.adapter._user_id = "@hermes:ex"
+
+        ctx = await self.adapter._resolve_message_context(
+            room_id="!dm:ex",
+            sender="@alice:ex",
+            event_id="$stop-event",
+            body="@hermes:ex /stop",
+            source_content={"body": "@hermes:ex /stop"},
+            relates_to={},
+        )
+
+        assert ctx is not None
+        body, _is_dm, _chat_type, thread_id, _display, _source = ctx
+        assert body == "/stop"
+        assert thread_id is None
+
+    @pytest.mark.asyncio
     async def test_dm_auto_thread_disabled_no_thread(self):
         """When dm_auto_thread is False (default), DMs have no auto-thread."""
         self.adapter._dm_auto_thread = False

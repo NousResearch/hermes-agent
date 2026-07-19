@@ -11171,6 +11171,9 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             if not hasattr(self, "_active_session_leases"):
                 self._active_session_leases = {}
             self._active_session_leases[_quick_key] = _active_session_lease
+        # Root-DM control commands may need the origin while this turn is
+        # still represented by the pending sentinel.
+        self._cache_session_source(_quick_key, source)
         self._running_agents[_quick_key] = _AGENT_PENDING_SENTINEL
         self._running_agents_ts[_quick_key] = time.time()
         self._persist_active_agents()
@@ -13551,15 +13554,18 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         chat_id = getattr(source, "chat_id", None)
         if not thread_id or not chat_id:
             return []
-        platform = source.platform.value
         chat_type = getattr(source, "chat_type", None) or ""
+        # The namespace is profile-aware (``agent:main`` for default,
+        # ``agent:<profile>`` for multiplexed profiles), so recover it from
+        # the caller's real session key instead of assuming ``agent:main``.
+        namespace = ":".join(own_key.split(":", 2)[:2])
         # Prefix that every per-user key in this thread shares, up to and
         # including the thread_id segment.  Matching either the exact
         # shared-thread key or any key with a further (user_id) segment
         # (prefix + ":") avoids cross-matching an unrelated thread whose id
         # merely starts with this one.
         prefix = ":".join(
-            ["agent:main", platform, chat_type, str(chat_id), str(thread_id)]
+            [namespace, source.platform.value, chat_type, str(chat_id), str(thread_id)]
         )
         matches = []
         for key, agent in list(self._running_agents.items()):
@@ -13568,6 +13574,40 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             if agent is _AGENT_PENDING_SENTINEL or not agent:
                 continue
             if key == prefix or key.startswith(prefix + ":"):
+                matches.append(key)
+        return matches
+
+
+    def _sibling_dm_thread_run_keys(self, source: SessionSource, own_key: str) -> list:
+        """Find active or pending Matrix DM threads rooted in the caller's DM session."""
+        if (
+            source.platform != Platform.MATRIX
+            or getattr(source, "chat_type", None) != "dm"
+            or getattr(source, "thread_id", None)
+            or not getattr(source, "chat_id", None)
+        ):
+            return []
+
+        namespace = ":".join(own_key.split(":", 2)[:2])
+        entries = getattr(getattr(self, "session_store", None), "_entries", {})
+        matches = []
+        for key, agent in list(self._running_agents.items()):
+            if key == own_key:
+                continue
+            if not agent:
+                continue
+            entry = entries.get(key)
+            run_source = getattr(entry, "origin", None) if entry else None
+            if run_source is None:
+                run_source = self._get_cached_session_source(key)
+            if (
+                run_source is not None
+                and ":".join(key.split(":", 2)[:2]) == namespace
+                and run_source.platform == Platform.MATRIX
+                and run_source.chat_type == "dm"
+                and run_source.chat_id == source.chat_id
+                and run_source.thread_id
+            ):
                 matches.append(key)
         return matches
 

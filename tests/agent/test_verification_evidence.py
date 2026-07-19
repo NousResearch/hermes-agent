@@ -444,6 +444,30 @@ def test_clean_git_pass_is_invalidated_by_a_new_commit(tmp_path, monkeypatch):
     assert verification_status(session_id="s-commit", cwd=tmp_path)["status"] == "stale"
 
 
+def test_latest_status_can_be_scoped_to_activity_after_a_goal_boundary(
+    tmp_path, monkeypatch
+):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / ".hermes"))
+    _node_project(tmp_path)
+
+    event = record_terminal_result(
+        command="scripts/run_tests.sh",
+        cwd=tmp_path,
+        session_id="s-goal-boundary",
+        exit_code=0,
+        output="all green",
+    )
+    assert event is not None
+
+    boundary = (datetime.now(timezone.utc) + timedelta(seconds=1)).isoformat()
+    scoped = latest_verification_status(
+        session_id="s-goal-boundary",
+        not_before=boundary,
+    )
+    assert scoped["status"] == "not_applicable"
+    assert scoped["evidence"] is None
+
+
 def test_schema_v1_is_migrated_in_place(tmp_path, monkeypatch):
     home = tmp_path / ".hermes"
     home.mkdir()

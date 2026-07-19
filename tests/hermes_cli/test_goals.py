@@ -1604,7 +1604,7 @@ class TestPreviousDeliverableSmokeGate:
                 "status": "passed" if status == "passed" else status,
                 "exit_code": 0 if status == "passed" else 1,
                 "output_summary": "42 passed",
-                "created_at": "2026-07-17T00:00:00+00:00",
+                "created_at": "2099-07-17T00:00:00+00:00",
             },
         }
 
@@ -1835,6 +1835,65 @@ class TestPreviousDeliverableSmokeGate:
         assert decision["should_continue"] is True
         assert decision["smoke_gate"] is None
         assert "[Continuing toward your standing goal]" in decision["continuation_prompt"]
+
+    def test_new_unrelated_goal_does_not_inherit_prior_coding_evidence(self, hermes_home):
+        from agent.verification_evidence import (
+            latest_verification_status,
+            record_terminal_result,
+        )
+        from hermes_cli import goals
+        from hermes_cli.goals import GoalContract, GoalManager
+
+        project = hermes_home.parent / "prior-coding-project"
+        project.mkdir()
+        (project / "package.json").write_text(
+            json.dumps({"scripts": {"test": "vitest"}}),
+            encoding="utf-8",
+        )
+        mgr = GoalManager("cross-goal-session")
+        mgr.set(
+            "finish the coding task",
+            contract=GoalContract(verification="npm test passes"),
+        )
+        event = record_terminal_result(
+            command="npm test",
+            cwd=project,
+            session_id="cross-goal-session",
+            exit_code=0,
+            output="12 passed",
+        )
+        assert event is not None
+        prior_status = latest_verification_status(session_id="cross-goal-session")
+        assert prior_status["status"] == "passed"
+
+        # ``set`` creates a new goal generation after the coding event. Its
+        # prose verification criterion must not make that older event apply.
+        mgr.set(
+            "research an unrelated topic",
+            contract=GoalContract(verification="all cited sources were read"),
+        )
+        with (
+            patch.object(
+                goals,
+                "judge_goal",
+                return_value=("continue", "read another source", False, None),
+            ),
+            patch.object(
+                goals,
+                "smoke_test_previous_deliverable",
+                side_effect=AssertionError("prior-goal evidence is not applicable"),
+            ),
+        ):
+            fallback_decision = mgr.evaluate_after_turn("research step")
+            explicit_decision = mgr.evaluate_after_turn(
+                "another research step",
+                verification_state=prior_status,
+            )
+
+        for decision in (fallback_decision, explicit_decision):
+            assert decision["should_continue"] is True
+            assert decision["smoke_gate"] is None
+            assert "[Continuing toward your standing goal]" in decision["continuation_prompt"]
 
     def test_fresh_verifier_receives_contract_artifact_and_objective_evidence(self, hermes_home):
         from hermes_cli import goals
@@ -2109,6 +2168,14 @@ class TestPreviousDeliverableSmokeGate:
         )
         subprocess.run(["git", "add", "."], cwd=project, check=True)
         subprocess.run(["git", "commit", "-qm", "initial"], cwd=project, check=True)
+
+        # Install the goal before its edits and verification run so the ledger
+        # activity belongs to this goal generation.
+        mgr = GoalManager("real-smoke-session")
+        mgr.set(
+            "ship tested artifact",
+            contract=GoalContract(verification="python -m pytest -q passes"),
+        )
         initial_run = subprocess.run(
             [sys.executable, "-m", "pytest", "-q"],
             cwd=project,
@@ -2132,11 +2199,6 @@ class TestPreviousDeliverableSmokeGate:
         )
         assert event and event["artifact_hash"]
 
-        mgr = GoalManager("real-smoke-session")
-        mgr.set(
-            "ship tested artifact",
-            contract=GoalContract(verification="python -m pytest -q passes"),
-        )
         fresh_review = MagicMock()
         fresh_review.choices = [MagicMock()]
         fresh_review.choices[0].message.content = (

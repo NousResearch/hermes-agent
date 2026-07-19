@@ -1031,12 +1031,75 @@ def judge_goal(
     return verdict, reason, parse_failed, wait_directive
 
 
-def _latest_goal_verification_status(session_id: str) -> Dict[str, Any]:
+def _goal_generation_boundary(created_at: float) -> Optional[str]:
+    """Return the persisted goal-generation boundary as a UTC timestamp."""
+    if created_at <= 0:
+        return None
+    try:
+        return datetime.fromtimestamp(created_at, tz=timezone.utc).isoformat()
+    except (OverflowError, OSError, TypeError, ValueError):
+        return None
+
+
+def _verification_activity_timestamp(value: Any) -> float:
+    if isinstance(value, (int, float)):
+        return float(value)
+    if not isinstance(value, str) or not value.strip():
+        return 0.0
+    try:
+        parsed = datetime.fromisoformat(value.strip().replace("Z", "+00:00"))
+        if parsed.tzinfo is None:
+            parsed = parsed.replace(tzinfo=timezone.utc)
+        return parsed.timestamp()
+    except (OverflowError, OSError, TypeError, ValueError):
+        return 0.0
+
+
+def _verification_for_goal_generation(
+    verification_state: Dict[str, Any],
+    *,
+    goal_created_at: float,
+) -> Dict[str, Any]:
+    """Reject verification/edit activity predating the active goal.
+
+    ``GoalState.created_at`` is the durable generation boundary: it is minted
+    when a goal is set and preserved across session rotation. Legacy states
+    with no boundary keep their historical behavior.
+    """
+    if goal_created_at <= 0:
+        return verification_state
+    evidence = verification_state.get("evidence")
+    event_at = _verification_activity_timestamp(
+        evidence.get("created_at") if isinstance(evidence, dict) else None
+    )
+    edit_at = _verification_activity_timestamp(verification_state.get("last_edit_at"))
+    if max(event_at, edit_at) >= goal_created_at:
+        return verification_state
+    return {
+        "status": "not_applicable",
+        "evidence": None,
+        "session_id": verification_state.get("session_id"),
+    }
+
+
+def _latest_goal_verification_status(
+    session_id: str,
+    *,
+    goal_created_at: float = 0.0,
+) -> Dict[str, Any]:
     try:
         from agent.verification_evidence import latest_verification_status
 
-        status = latest_verification_status(session_id=session_id)
-        return status if isinstance(status, dict) else {"status": "unknown"}
+        status = latest_verification_status(
+            session_id=session_id,
+            not_before=_goal_generation_boundary(goal_created_at),
+        )
+        if not isinstance(status, dict):
+            return {"status": "unknown"}
+        return _verification_for_goal_generation(
+            status,
+            goal_created_at=goal_created_at,
+        )
     except Exception as exc:
         logger.debug("goal smoke gate: verification status unavailable: %s", exc)
         return {"status": "unknown", "evidence": None}
@@ -2127,10 +2190,17 @@ class GoalManager:
             and state.has_contract()
             and state.contract.verification.strip()
         ):
-            _verification = (
+            _raw_verification = (
                 verification_state
                 if isinstance(verification_state, dict)
-                else _latest_goal_verification_status(self.session_id)
+                else _latest_goal_verification_status(
+                    self.session_id,
+                    goal_created_at=state.created_at,
+                )
+            )
+            _verification = _verification_for_goal_generation(
+                _raw_verification,
+                goal_created_at=state.created_at,
             )
             if _smoke_gate_is_applicable(_verification):
                 _artifact_hash = str(_verification.get("artifact_hash") or "").strip()

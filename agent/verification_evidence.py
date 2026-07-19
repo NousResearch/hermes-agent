@@ -1003,6 +1003,7 @@ def verification_status(
             "root": root,
             "session_id": sid,
             "changed_paths": changed_paths,
+            "last_edit_at": state["last_edit_at"],
         }
 
     evidence = dict(event)
@@ -1032,26 +1033,48 @@ def verification_status(
         "root": root,
         "session_id": sid,
         "changed_paths": changed_paths,
+        "last_edit_at": state["last_edit_at"],
         "artifact_hash": stored_artifact_hash,
         "current_artifact_hash": current_artifact_hash,
     }
 
 
-def latest_verification_status(*, session_id: str | None) -> dict[str, Any]:
-    """Return verification for the session's most recently active workspace."""
+def latest_verification_status(
+    *,
+    session_id: str | None,
+    not_before: str | None = None,
+) -> dict[str, Any]:
+    """Return the session's latest workspace active in this time window.
+
+    ``not_before`` scopes both verification events and tracked edits. Goal
+    orchestration uses the active goal's creation time here so a replacement
+    goal cannot inherit coding evidence from an earlier goal in the session.
+    """
     sid = str(session_id or "default")
+    params: list[Any] = [sid]
+    activity_filter = ""
+    if not_before:
+        activity_filter = (
+            " AND (COALESCE(s.last_edit_at, '') >= ? "
+            "OR COALESCE(e.created_at, '') >= ?)"
+        )
+        params.extend([not_before, not_before])
     with _DB_LOCK:
         with _connect() as conn:
             row = conn.execute(
-                """
+                f"""
                 SELECT s.root
                 FROM verification_state AS s
                 LEFT JOIN verification_events AS e ON e.id = s.last_event_id
                 WHERE s.session_id = ?
-                ORDER BY COALESCE(s.last_edit_at, e.created_at, '') DESC
+                {activity_filter}
+                ORDER BY MAX(
+                    COALESCE(s.last_edit_at, ''),
+                    COALESCE(e.created_at, '')
+                ) DESC
                 LIMIT 1
                 """,
-                (sid,),
+                params,
             ).fetchone()
     if row is None:
         return {"status": "not_applicable", "evidence": None, "session_id": sid}

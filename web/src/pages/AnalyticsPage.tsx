@@ -610,10 +610,18 @@ export default function AnalyticsPage() {
               <h2 className="font-mondwest text-display text-base tracking-wider text-foreground">
                 {analyticsCopy.hiddenTitle}
               </h2>
-              <p>{analyticsCopy.hiddenBody1}</p>
+              <p>
+                {analyticsCopy.hiddenBody1Before}
+                <span className="font-mono">usage</span>
+                {analyticsCopy.hiddenBody1After}
+              </p>
               <p>{analyticsCopy.hiddenBody2}</p>
               <p>
-                {analyticsCopy.hiddenBody3}{" "}
+                {analyticsCopy.hiddenBody3Before}
+                <span className="font-mono">
+                  dashboard.show_token_analytics: true
+                </span>
+                {analyticsCopy.hiddenBody3After}
                 <a href="/config" className="underline">
                   {analyticsCopy.hiddenConfigLink ?? t.app.nav.config}
                 </a>

@@ -69,7 +69,7 @@
         .map(function (tier) {
           return localizeTier(t, tier.name) + " " + tier.threshold;
         })
-        .join("، ");
+        .join(tx(t, "criteriaText.ladderSeparator", ", "));
       const requirement = copy.requirement.replace("{metric}", metric);
       return ladder
         ? requirement + " " + copy.tierLadder.replace("{ladder}", ladder)
@@ -82,7 +82,7 @@
           (catalog.metrics && catalog.metrics[requirement.metric]) ||
           requirement.metric.replace(/_/g, " ");
         return metric + " ≥ " + Number(requirement.gte || 1);
-      }).join("؛ ");
+      }).join(tx(t, "criteriaText.requirementSeparator", "; "));
       return copy.requirement.replace("{metric}", requirements);
     }
 
@@ -94,7 +94,9 @@
     const item = catalog && catalog.items && catalog.items[achievement.id];
     const isHidden = achievement.state === "secret" && achievement.name === "???";
     return Object.assign({}, achievement, {
-      name: isHidden ? "؟؟؟" : ((item && item.name) || achievement.name),
+      name: isHidden
+        ? tx(t, "criteriaText.secretMask", "???")
+        : ((item && item.name) || achievement.name),
       description: isHidden
         ? ((catalog && catalog.criteriaText && catalog.criteriaText.secretDescription) ||
           achievement.description)
@@ -102,7 +104,10 @@
       category: localizeCategory(t, achievement.category),
       criteria: localizeCriteria(t, achievement),
       display_tier: localizeTier(t, achievement.tier || achievement.next_tier || ""),
+      // Two suffixes: the share-card badge is upper-case ("GOLD TIER"), the
+      // tweet body is lower-case ("Gold tier "). Upstream hard-coded both.
       tier_suffix: tx(t, "share.tier_suffix", "tier"),
+      tier_badge_suffix: tx(t, "share.tier_badge_suffix", "TIER"),
     });
   }
 
@@ -277,7 +282,7 @@
     const badgeLabel =
       (achievement.display_tier || tier).toUpperCase() +
       " " +
-      (achievement.tier_suffix || "TIER");
+      (achievement.tier_badge_suffix || "TIER");
     ctx.font = "700 22px ui-monospace, 'SF Mono', Menlo, monospace";
     const badgeWidth = ctx.measureText(badgeLabel).width + 32;
     const badgeX = rx;

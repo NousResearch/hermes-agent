@@ -561,9 +561,11 @@ export interface Translations {
     acrossModels: string;
     inOut: string;
     hiddenTitle?: string;
-    hiddenBody1?: string;
+    hiddenBody1Before?: string;
+    hiddenBody1After?: string;
     hiddenBody2?: string;
-    hiddenBody3?: string;
+    hiddenBody3Before?: string;
+    hiddenBody3After?: string;
     hiddenConfigLink?: string;
   };
 
@@ -973,10 +975,30 @@ export interface Translations {
     sectionLabels?: Record<string, string>;
     fieldLabels?: Record<string, string>;
     fieldLeafLabels?: Record<string, string>;
+    /**
+     * Per-word vocabulary for assembling a label from a schema identifier.
+     * A key may also be a whole underscored compound (`api_call`), which wins
+     * over word-by-word assembly and lets a catalog spell out an idiom.
+     */
     fieldTerms?: Record<string, string>;
     /**
+     * English words in `fieldTerms` that are adjectives rather than nouns.
+     * Only consulted when `fieldTermOrder` is `"head-initial"`: an adjective
+     * agrees with the noun it follows, so it keeps its article, whereas the
+     * non-final noun of a genitive construct loses it.
+     */
+    fieldAdjectives?: string[];
+    /**
+     * Word order used when assembling a multi-word label. English compounds
+     * are head-final (`output tokens` = tokens of output); a `"head-initial"`
+     * catalog (Arabic) builds them the other way round. Omit to keep the
+     * source order.
+     */
+    fieldTermOrder?: "head-initial";
+    /**
      * Wording for schema keys with a recognisable shape (`max_*`, `*_timeout`,
-     * …), keyed by shape. `{name}` is replaced with the rest of the key. Omit
+     * …), keyed by shape. `{name}` is replaced with the rest of the key;
+     * `{lname}` inserts it with the Arabic preposition lām attached. Omit
      * this (English does) to keep the plain title-cased identifier.
      */
     fieldPatterns?: Record<string, string>;
@@ -1121,6 +1143,12 @@ export interface Translations {
       requirement: string;
       tierLadder: string;
       fallback: string;
+      /** Separator between tier-ladder entries. English default ", ". */
+      ladderSeparator?: string;
+      /** Separator between requirement clauses. English default "; ". */
+      requirementSeparator?: string;
+      /** Masked name shown for an undiscovered secret. English default "???". */
+      secretMask?: string;
     };
     hero: {
       kicker: string;
@@ -1214,7 +1242,10 @@ export interface Translations {
       hint: string;
       clipboard_unsupported: string;
       tweet_text: string;
+      /** Lower-case tier word used in the tweet body. English default "tier". */
       tier_suffix?: string;
+      /** Upper-case tier word used on the share-card badge. English default "TIER". */
+      tier_badge_suffix?: string;
     };
   };
 

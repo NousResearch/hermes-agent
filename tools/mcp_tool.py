@@ -4683,9 +4683,9 @@ def _normalize_mcp_input_schema(schema: dict | None) -> dict:
         coercion can still map a model-emitted ``"null"`` string to Python
         ``None`` for this optional field.
         """
-        from tools.schema_sanitizer import strip_nullable_unions
+        from tools.schema_sanitizer import strip_nullable_unions, _rewrite_collapsed_refs
 
-        return strip_nullable_unions(node, keep_nullable_hint=True)
+        return _rewrite_collapsed_refs(strip_nullable_unions(node, keep_nullable_hint=True))
 
     def _repair_object_shape(node):
         """Recursively repair object-shaped nodes: fill type, prune required."""

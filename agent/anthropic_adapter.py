@@ -1649,9 +1649,9 @@ def _normalize_tool_input_schema(schema: Any) -> Dict[str, Any]:
     if not schema:
         return {"type": "object", "properties": {}}
 
-    from tools.schema_sanitizer import strip_nullable_unions
+    from tools.schema_sanitizer import strip_nullable_unions, _rewrite_collapsed_refs
 
-    normalized = strip_nullable_unions(schema, keep_nullable_hint=False)
+    normalized = _rewrite_collapsed_refs(strip_nullable_unions(schema, keep_nullable_hint=False))
     if not isinstance(normalized, dict):
         return {"type": "object", "properties": {}}
     # Strip top-level union keywords that Anthropic's validator rejects.

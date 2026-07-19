@@ -5679,6 +5679,14 @@ class AIAgent:
         """
         tool_calls = assistant_message.tool_calls
 
+        # Tag repair-observability stats with the current model so
+        # per-model breakdowns in summary() reflect reality.
+        try:
+            from agent.tool_repair_stats import set_current_model as _set_model
+            _set_model(self.model or "unknown")
+        except Exception:
+            pass
+
         # Allow _vprint during tool execution even with stream consumers
         self._executing_tools = True
         try:

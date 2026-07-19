@@ -36,6 +36,7 @@ class RepairPattern(str, Enum):
     UNCLOSED_BRACKET = "unclosed_bracket"        # Unclosed {}/[]
     TRAILING_CONTENT = "trailing_content"        # Complete JSON + extra prose
     DOUBLE_SERIALIZE = "double_serialize"        # JSON string wrapping JSON object
+    MALFORMED_JSON_REPAIR = "malformed_json_repair"  # Generic JSON syntax repair (trailing comma / unclosed bracket / excess braces)
     UNREPAIRABLE = "unrepairable"                # Last resort → {}
 
     # Type coercion repairs (model_tools.py coerce_tool_args)

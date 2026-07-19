@@ -22,15 +22,24 @@ from typing import Any, Dict, List, Optional, Tuple
 
 try:
     from agent.tool_repair_stats import record_repair as _record_repair
+    from agent.tool_repair_stats import get_current_model as _get_model
+    from agent.tool_repair_stats import RepairPattern as _RP
 except ImportError:
     _record_repair = None  # type: ignore[assignment]
+    _get_model = None  # type: ignore[assignment]
+    _RP = None  # type: ignore[assignment]
 
 
 def _stat(pattern: Any, tool: str = "?") -> None:
     """Emit a repair stat event.  No-op when stats module is unavailable."""
     if _record_repair is not None:
         try:
-            _record_repair(pattern, tool)
+            # Resolve string pattern names to RepairPattern enums for
+            # consistent counting (prevents typos / mismatched keys).
+            rp_pattern = pattern
+            if _RP is not None and isinstance(pattern, str):
+                rp_pattern = _RP(pattern)
+            _record_repair(rp_pattern, tool, _get_model() if _get_model else "unknown")
         except Exception:
             pass
 logger = logging.getLogger(__name__)

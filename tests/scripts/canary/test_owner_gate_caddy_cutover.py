@@ -5,6 +5,7 @@ from __future__ import annotations
 import copy
 import json
 import os
+import stat
 import threading
 import time
 from contextlib import nullcontext
@@ -556,6 +557,33 @@ class ServiceBoundary:
         }
 
 
+def _bridge_intent_evidence(
+    *,
+    document: Mapping[str, Any],
+    requested: Mapping[str, Any],
+    active_before: Mapping[str, Any],
+    grants_root: Path,
+) -> Mapping[str, Any]:
+    identity = os.lstat(grants_root)
+    return {
+        "bootstrap_input_sha256": document["document_sha256"],
+        "bridge_request_receipt_sha256": requested["receipt_sha256"],
+        "bridge_action_sha256": requested["bridge_action_sha256"],
+        "legacy_passkey_request_id": LEGACY_REQUEST_ID,
+        "legacy_service_active_before_sha256": active_before[
+            "projection_sha256"
+        ],
+        "legacy_service_active_before": active_before,
+        "legacy_grants_root_path": str(grants_root),
+        "legacy_grants_root_device": identity.st_dev,
+        "legacy_grants_root_inode": identity.st_ino,
+        "legacy_grants_root_uid": identity.st_uid,
+        "legacy_grants_root_gid": identity.st_gid,
+        "temporary_service_stop_required": True,
+        "exact_preimage_restore_required_before_cutover_intent": True,
+    }
+
+
 def _bootstrap_roots(tmp_path: Path) -> tuple[Path, Path]:
     requests = tmp_path / "step_up_requests"
     grants = tmp_path / "step_up_verifications"
@@ -873,6 +901,83 @@ def test_prepare_is_no_live_mutation_no_clobber_and_replay_stable(
     ]
 
 
+def test_prepare_valid_legacy_intent_reconciles_maintenance_before_replay(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    authority = _authority()
+    boundary = Boundary()
+    store = _store(tmp_path)
+    journal = MemoryJournal()
+    _seed_bridge(authority, boundary, store)
+    prepared = caddy.prepare_cutover(
+        authority,
+        boundary=boundary,
+        store=store,
+        legacy_journal=journal,
+        now_unix=NOW,
+    )
+    intent_unsigned = {"durable": True}
+    intent = {
+        **intent_unsigned,
+        "receipt_sha256": caddy._sha256(caddy._canonical(intent_unsigned)),
+    }
+    journal.append(
+        authority.plan.sha256,
+        "activation_commit_intent",
+        intent,
+        NOW + 1,
+    )
+    monkeypatch.setattr(
+        cutover,
+        "_accepted_activation_commit_intent",
+        lambda entries, plan: (
+            intent
+            if entries == journal.load(plan.sha256)
+            and plan == authority.plan
+            else None
+        ),
+    )
+    boundary.raw = ORIGINAL
+    boundary.generation += 1
+
+    replayed = caddy.prepare_cutover(
+        authority,
+        boundary=boundary,
+        store=store,
+        legacy_journal=journal,
+        now_unix=NOW + 2,
+    )
+    replayed_again = caddy.prepare_cutover(
+        authority,
+        boundary=boundary,
+        store=store,
+        legacy_journal=journal,
+        now_unix=NOW + 3,
+    )
+
+    assert replayed == prepared
+    assert replayed_again == prepared
+    assert boundary.mode() == "maintenance"
+    assert boundary.reload_modes[-1] == "maintenance"
+    assert boundary.public_modes[-1] == "maintenance"
+    floor = caddy._last(
+        store.load(authority.plan.sha256),
+        "post_intent_maintenance_floor",
+    )
+    assert floor is not None
+    assert len(
+        [
+            entry
+            for entry in store.load(authority.plan.sha256)
+            if entry.value["event"] == "post_intent_maintenance_floor"
+        ]
+    ) == 1
+    assert floor.value["evidence"][
+        "legacy_activation_commit_intent_receipt_sha256"
+    ] == intent["receipt_sha256"]
+
+
 def test_prepare_rejects_artifact_clobber_on_replay(tmp_path: Path) -> None:
     authority = _authority()
     boundary = Boundary()
@@ -1026,6 +1131,130 @@ def test_activation_intent_without_terminal_never_restores_v1(
     assert receipt["v1_route_restored"] is False
     assert boundary.mode() == "maintenance"
     assert ORIGINAL not in boundary.replace_calls
+
+
+def test_forward_recovery_marker_enforces_maintenance_without_peer_journal(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    authority = _authority()
+    boundary = Boundary()
+    store = _store(tmp_path)
+    _prepare(authority, boundary, store)
+    intent = {"receipt_sha256": "6" * 64}
+    journal = MemoryJournal()
+    journal.append(
+        authority.plan.sha256,
+        "activation_commit_intent",
+        intent,
+        NOW + 1,
+    )
+    monkeypatch.setattr(
+        caddy,
+        "_legacy_commit_lineage",
+        lambda *_a, **_k: (intent, None),
+    )
+
+    recovered = caddy.commit_cutover(
+        authority,
+        boundary=boundary,
+        store=store,
+        legacy_journal=journal,
+        now_unix=NOW + 1,
+    )
+
+    assert recovered["outcome"] == (
+        "maintenance_active_forward_recovery_required"
+    )
+    assert caddy._accepted_caddy_post_intent_marker(
+        authority,
+        store.load(authority.plan.sha256),
+    )
+
+    class UnavailableJournal:
+        def load(self, _plan_sha256: str) -> list[Any]:
+            raise OSError("peer journal unavailable")
+
+    boundary.raw = ORIGINAL
+    boundary.generation += 1
+    with pytest.raises(
+        caddy.OwnerGateCaddyCutoverError,
+        match="post_intent_maintenance",
+    ):
+        caddy.commit_cutover(
+            authority,
+            boundary=boundary,
+            store=store,
+            legacy_journal=UnavailableJournal(),
+            now_unix=NOW + 2,
+        )
+
+    assert boundary.mode() == "maintenance"
+    assert boundary.replace_calls[-1] == boundary._configs().maintenance
+    assert ORIGINAL not in boundary.replace_calls
+
+
+def test_pre_floor_forward_recovery_replay_backfills_local_marker(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    authority = _authority()
+    intent = {"receipt_sha256": "6" * 64}
+    source_boundary = Boundary()
+    source_store = _store(tmp_path / "source")
+    source_prepared = _prepare(authority, source_boundary, source_store)
+    configs = source_boundary._configs()
+    prior_recovery = caddy._forward_recovery_maintenance(
+        authority,
+        prepare_receipt=source_prepared,
+        legacy_intent=intent,
+        boundary=source_boundary,
+        store=source_store,
+        payload=configs.maintenance,
+        allowed_current_payloads=(
+            configs.original,
+            configs.approval_bridge,
+            configs.private_v2,
+            configs.maintenance,
+        ),
+        now_unix=NOW + 1,
+    )
+
+    boundary = Boundary()
+    store = _store(tmp_path / "pre-floor")
+    prepared = _prepare(authority, boundary, store)
+    assert prepared == source_prepared
+    boundary.raw = configs.maintenance
+    boundary.generation += 1
+    store.append(
+        authority.plan.sha256,
+        "forward_recovery_maintenance",
+        prior_recovery,
+        NOW + 1,
+    )
+    assert caddy._last(
+        store.load(authority.plan.sha256),
+        "post_intent_maintenance_floor",
+    ) is None
+    monkeypatch.setattr(
+        caddy,
+        "_legacy_commit_lineage",
+        lambda *_a, **_k: (intent, None),
+    )
+
+    replayed = caddy.commit_cutover(
+        authority,
+        boundary=boundary,
+        store=store,
+        legacy_journal=LegacyJournal(),
+        now_unix=NOW + 2,
+    )
+
+    assert replayed == prior_recovery
+    assert caddy._last(
+        store.load(authority.plan.sha256),
+        "post_intent_maintenance_floor",
+    ) is not None
 
 
 def test_commit_private_v2_and_replay_are_idempotent(
@@ -1972,12 +2201,15 @@ def test_activate_bridge_stops_v1_before_atomic_consume_and_replays(
         boundary=boundary,
         store=store,
         service=service,
-        now_unix=NOW + 1,
+        now_unix=document["v2_expires_at_unix"],
         requests_root=requests,
         grants_root=grants,
         expected_uid=os.getuid(),
         expected_gid=os.getgid(),
         legacy_lock=lambda: nullcontext(),
+        freshness_clock=lambda: pytest.fail(
+            "terminal bridge replay must not consult freshness"
+        ),
     )
 
     consumed = json.loads(
@@ -2106,6 +2338,137 @@ def test_activate_bridge_rechecks_freshness_before_caddy_reload(
     assert service.active is True
 
 
+def test_activate_bridge_rejects_exact_expiry_after_final_verification(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    authority = _authority()
+    document = _bridge_document(authority)
+    requests, grants = _bootstrap_roots(tmp_path)
+    boundary = Boundary()
+    store = _store(tmp_path)
+    caddy.prepare_bridge_bootstrap(
+        document,
+        boundary=boundary,
+        store=store,
+        request_boundary=RequestBoundary(requests),
+        now_unix=NOW,
+        requests_root=requests,
+        expected_uid=os.getuid(),
+        expected_gid=os.getgid(),
+    )
+    request = json.loads(
+        (requests / f"{LEGACY_REQUEST_ID}.json").read_text()
+    )
+    _write_private_json(
+        grants / f"{LEGACY_REQUEST_ID}.json", _legacy_grant(request)
+    )
+    service = ServiceBoundary()
+    verified = False
+    verify_bridge = boundary.verify_bridge
+
+    def verify(*, request_id: str) -> Mapping[str, Any]:
+        nonlocal verified
+        observed = verify_bridge(request_id=request_id)
+        verified = True
+        return observed
+
+    monkeypatch.setattr(boundary, "verify_bridge", verify)
+    freshness = iter(
+        (
+            float(NOW),
+            float(NOW),
+            float(NOW),
+            float(document["v2_expires_at_unix"]),
+        )
+    )
+    clock_calls = 0
+
+    def freshness_clock() -> float:
+        nonlocal clock_calls
+        clock_calls += 1
+        if clock_calls == 4:
+            assert verified is True
+        return next(freshness)
+
+    with pytest.raises(
+        caddy.OwnerGateCaddyCutoverError,
+        match="bridge_activation_rolled_back",
+    ):
+        caddy.activate_bridge_bootstrap(
+            document,
+            boundary=boundary,
+            store=store,
+            service=service,
+            now_unix=NOW,
+            requests_root=requests,
+            grants_root=grants,
+            expected_uid=os.getuid(),
+            expected_gid=os.getgid(),
+            legacy_lock=lambda: nullcontext(),
+            freshness_clock=freshness_clock,
+        )
+
+    assert clock_calls == 4
+    assert boundary.raw == ORIGINAL
+    assert boundary.reload_modes == ["approval_bridge", "legacy"]
+    assert service.active is True
+    assert caddy._last(
+        store.load(authority.freeze.sha256), "bridge_activated"
+    ) is None
+
+
+def test_activate_bridge_journals_actual_final_verification_time(
+    tmp_path: Path,
+) -> None:
+    authority = _authority()
+    document = _bridge_document(authority)
+    requests, grants = _bootstrap_roots(tmp_path)
+    boundary = Boundary()
+    store = _store(tmp_path)
+    caddy.prepare_bridge_bootstrap(
+        document,
+        boundary=boundary,
+        store=store,
+        request_boundary=RequestBoundary(requests),
+        now_unix=NOW,
+        requests_root=requests,
+        expected_uid=os.getuid(),
+        expected_gid=os.getgid(),
+    )
+    request = json.loads(
+        (requests / f"{LEGACY_REQUEST_ID}.json").read_text()
+    )
+    _write_private_json(
+        grants / f"{LEGACY_REQUEST_ID}.json", _legacy_grant(request)
+    )
+    completion = NOW + 5
+    freshness = iter(
+        (float(NOW), float(NOW), float(NOW), float(completion))
+    )
+
+    receipt = caddy.activate_bridge_bootstrap(
+        document,
+        boundary=boundary,
+        store=store,
+        service=ServiceBoundary(),
+        now_unix=NOW,
+        requests_root=requests,
+        grants_root=grants,
+        expected_uid=os.getuid(),
+        expected_gid=os.getgid(),
+        legacy_lock=lambda: nullcontext(),
+        freshness_clock=lambda: next(freshness),
+    )
+
+    terminal = caddy._last(
+        store.load(authority.freeze.sha256), "bridge_activated"
+    )
+    assert terminal is not None
+    assert receipt["activated_at_unix"] == completion
+    assert terminal.value["recorded_at_unix"] == completion
+
+
 def test_activate_bridge_recovers_a_crash_with_v1_already_stopped(
     tmp_path: Path,
 ) -> None:
@@ -2135,18 +2498,12 @@ def test_activate_bridge_recovers_a_crash_with_v1_already_stopped(
     store.append(
         authority.freeze.sha256,
         "bridge_intent",
-        {
-            "bootstrap_input_sha256": document["document_sha256"],
-            "bridge_request_receipt_sha256": requested["receipt_sha256"],
-            "bridge_action_sha256": requested["bridge_action_sha256"],
-            "legacy_passkey_request_id": LEGACY_REQUEST_ID,
-            "legacy_service_active_before_sha256": active_before[
-                "projection_sha256"
-            ],
-            "legacy_service_active_before": active_before,
-            "temporary_service_stop_required": True,
-            "exact_preimage_restore_required_before_cutover_intent": True,
-        },
+        _bridge_intent_evidence(
+            document=document,
+            requested=requested,
+            active_before=active_before,
+            grants_root=grants,
+        ),
         NOW,
     )
     # Model power loss after the durable intent and systemd stop but before
@@ -2170,6 +2527,241 @@ def test_activate_bridge_recovers_a_crash_with_v1_already_stopped(
     assert boundary.mode() == "approval_bridge"
     assert service.active is True
     assert service.events == ["start", "health", "stop", "start", "health"]
+
+
+def test_activate_bridge_restores_exact_mode_zero_grants_directory_on_replay(
+    tmp_path: Path,
+) -> None:
+    authority = _authority()
+    document = _bridge_document(authority)
+    requests, grants = _bootstrap_roots(tmp_path)
+    boundary = Boundary()
+    store = _store(tmp_path)
+    requested = caddy.prepare_bridge_bootstrap(
+        document,
+        boundary=boundary,
+        store=store,
+        request_boundary=RequestBoundary(requests),
+        now_unix=NOW,
+        requests_root=requests,
+        expected_uid=os.getuid(),
+        expected_gid=os.getgid(),
+    )
+    request = json.loads(
+        (requests / f"{LEGACY_REQUEST_ID}.json").read_text()
+    )
+    _write_private_json(
+        grants / f"{LEGACY_REQUEST_ID}.json", _legacy_grant(request)
+    )
+    service = ServiceBoundary()
+    store.append(
+        authority.freeze.sha256,
+        "bridge_intent",
+        _bridge_intent_evidence(
+            document=document,
+            requested=requested,
+            active_before=service.observe_active(),
+            grants_root=grants,
+        ),
+        NOW,
+    )
+    grants.chmod(0)
+
+    try:
+        receipt = caddy.activate_bridge_bootstrap(
+            document,
+            boundary=boundary,
+            store=store,
+            service=service,
+            now_unix=NOW + 1,
+            requests_root=requests,
+            grants_root=grants,
+            expected_uid=os.getuid(),
+            expected_gid=os.getgid(),
+            legacy_lock=lambda: nullcontext(),
+        )
+        restored_mode = stat.S_IMODE(os.lstat(grants).st_mode)
+    finally:
+        grants.chmod(0o700)
+
+    assert receipt["schema"] == caddy.BRIDGE_RECEIPT_SCHEMA
+    assert restored_mode == 0o700
+    assert boundary.mode() == "approval_bridge"
+    assert service.active is True
+
+
+def test_expired_bridge_intent_restores_mode_zero_and_exact_caddy_preimage(
+    tmp_path: Path,
+) -> None:
+    authority = _authority()
+    document = _bridge_document(authority)
+    requests, grants = _bootstrap_roots(tmp_path)
+    boundary = Boundary()
+    store = _store(tmp_path)
+    requested = caddy.prepare_bridge_bootstrap(
+        document,
+        boundary=boundary,
+        store=store,
+        request_boundary=RequestBoundary(requests),
+        now_unix=NOW,
+        requests_root=requests,
+        expected_uid=os.getuid(),
+        expected_gid=os.getgid(),
+    )
+    service = ServiceBoundary()
+    store.append(
+        authority.freeze.sha256,
+        "bridge_intent",
+        _bridge_intent_evidence(
+            document=document,
+            requested=requested,
+            active_before=service.observe_active(),
+            grants_root=grants,
+        ),
+        NOW,
+    )
+    # Model power loss after the bridge write and the mode-000 fence, followed
+    # by recovery only after the v2 approval has expired.
+    boundary.raw = boundary._configs().approval_bridge
+    boundary.generation += 1
+    grants.chmod(0)
+
+    try:
+        with pytest.raises(
+            caddy.OwnerGateCaddyCutoverError,
+            match="bridge_activation_rolled_back",
+        ):
+            caddy.activate_bridge_bootstrap(
+                document,
+                boundary=boundary,
+                store=store,
+                service=service,
+                now_unix=document["v2_expires_at_unix"],
+                requests_root=requests,
+                grants_root=grants,
+                expected_uid=os.getuid(),
+                expected_gid=os.getgid(),
+                legacy_lock=lambda: nullcontext(),
+            )
+        restored_mode = stat.S_IMODE(os.lstat(grants).st_mode)
+    finally:
+        grants.chmod(0o700)
+
+    assert restored_mode == 0o700
+    assert boundary.raw == ORIGINAL
+    assert boundary.reload_modes == ["legacy"]
+    assert service.active is True
+    assert caddy._last(
+        store.load(authority.freeze.sha256), "bridge_exact_restore"
+    ) is not None
+
+
+def test_invalid_freshness_clock_cannot_strand_mode_zero_intent_recovery(
+    tmp_path: Path,
+) -> None:
+    authority = _authority()
+    document = _bridge_document(authority)
+    requests, grants = _bootstrap_roots(tmp_path)
+    boundary = Boundary()
+    store = _store(tmp_path)
+    requested = caddy.prepare_bridge_bootstrap(
+        document,
+        boundary=boundary,
+        store=store,
+        request_boundary=RequestBoundary(requests),
+        now_unix=NOW,
+        requests_root=requests,
+        expected_uid=os.getuid(),
+        expected_gid=os.getgid(),
+    )
+    service = ServiceBoundary()
+    store.append(
+        authority.freeze.sha256,
+        "bridge_intent",
+        _bridge_intent_evidence(
+            document=document,
+            requested=requested,
+            active_before=service.observe_active(),
+            grants_root=grants,
+        ),
+        NOW,
+    )
+    grants.chmod(0)
+
+    try:
+        with pytest.raises(
+            caddy.OwnerGateCaddyCutoverError,
+            match="bridge_activation_rolled_back",
+        ):
+            caddy.activate_bridge_bootstrap(
+                document,
+                boundary=boundary,
+                store=store,
+                service=service,
+                now_unix=NOW,
+                requests_root=requests,
+                grants_root=grants,
+                expected_uid=os.getuid(),
+                expected_gid=os.getgid(),
+                legacy_lock=lambda: nullcontext(),
+                freshness_clock=lambda: "not-a-number",  # type: ignore[return-value]
+            )
+        restored_mode = stat.S_IMODE(os.lstat(grants).st_mode)
+    finally:
+        grants.chmod(0o700)
+
+    assert restored_mode == 0o700
+    assert boundary.raw == ORIGINAL
+    assert service.active is True
+    assert caddy._last(
+        store.load(authority.freeze.sha256), "bridge_exact_restore"
+    ) is not None
+
+
+@pytest.mark.parametrize(
+    "mismatch",
+    ("path", "device", "inode", "uid", "gid", "mode"),
+)
+def test_mode_zero_grants_restore_rejects_every_identity_or_mode_mismatch(
+    mismatch: str,
+    tmp_path: Path,
+) -> None:
+    _requests, grants = _bootstrap_roots(tmp_path)
+    identity = os.lstat(grants)
+    intent = {
+        "legacy_grants_root_path": str(grants),
+        "legacy_grants_root_device": identity.st_dev,
+        "legacy_grants_root_inode": identity.st_ino,
+        "legacy_grants_root_uid": identity.st_uid,
+        "legacy_grants_root_gid": identity.st_gid,
+    }
+    if mismatch == "path":
+        intent["legacy_grants_root_path"] = str(tmp_path / "other")
+    elif mismatch == "device":
+        intent["legacy_grants_root_device"] = identity.st_dev + 1
+    elif mismatch == "inode":
+        intent["legacy_grants_root_inode"] = identity.st_ino + 1
+    elif mismatch == "uid":
+        intent["legacy_grants_root_uid"] = identity.st_uid + 1
+    elif mismatch == "gid":
+        intent["legacy_grants_root_gid"] = identity.st_gid + 1
+    grants.chmod(0o500 if mismatch == "mode" else 0)
+    expected_mode = stat.S_IMODE(os.lstat(grants).st_mode)
+
+    try:
+        with pytest.raises(
+            caddy.OwnerGateCaddyCutoverError,
+            match="legacy_grant_fence_replay_invalid",
+        ):
+            caddy._restore_fenced_legacy_grants_root(
+                intent,
+                grants_root=grants,
+                expected_uid=os.getuid(),
+                expected_gid=os.getgid(),
+            )
+        assert stat.S_IMODE(os.lstat(grants).st_mode) == expected_mode
+    finally:
+        grants.chmod(0o700)
 
 
 def test_bridge_verify_failure_restores_exact_v1_and_restarts_service(

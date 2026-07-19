@@ -68,6 +68,9 @@ CADDY_PREPARED_DEPENDENCY_SCHEMA = (
     "muncho-production-caddy-prepared-dependency.v1"
 )
 CADDY_COMMIT_STARTED_SCHEMA = "muncho-owner-gate-caddy-commit-started.v1"
+CADDY_POST_INTENT_FLOOR_SCHEMA = (
+    "muncho-owner-gate-caddy-post-intent-maintenance-floor.v1"
+)
 JOURNAL_ENTRY_SCHEMA = "muncho-owner-gate-caddy-cutover-journal-entry.v2"
 AUTHORITY_SCHEMA = "muncho-owner-gate-caddy-cutover-authority.v1"
 
@@ -443,6 +446,35 @@ _CADDY_COMMIT_STARTED_FIELDS = frozenset(
         "rollback_mode",
         "started_at_unix",
         "receipt_sha256",
+    }
+)
+_CADDY_POST_INTENT_FLOOR_FIELDS = frozenset(
+    {
+        "schema",
+        "cutover_plan_sha256",
+        "authority_sha256",
+        "prepare_receipt_sha256",
+        "legacy_activation_commit_intent_receipt_sha256",
+        "rollback_mode",
+        "observed_at_unix",
+        "receipt_sha256",
+    }
+)
+_BRIDGE_INTENT_FIELDS = frozenset(
+    {
+        "bootstrap_input_sha256",
+        "bridge_request_receipt_sha256",
+        "bridge_action_sha256",
+        "legacy_passkey_request_id",
+        "legacy_service_active_before_sha256",
+        "legacy_service_active_before",
+        "legacy_grants_root_path",
+        "legacy_grants_root_device",
+        "legacy_grants_root_inode",
+        "legacy_grants_root_uid",
+        "legacy_grants_root_gid",
+        "temporary_service_stop_required",
+        "exact_preimage_restore_required_before_cutover_intent",
     }
 )
 _LEGACY_TERMINAL_FIELDS = frozenset(
@@ -1799,6 +1831,145 @@ def _require_legacy_directory(
             "owner_gate_caddy_legacy_passkey_store_invalid"
         )
     return identity
+
+
+def _restore_fenced_legacy_grants_root(
+    intent: Mapping[str, Any],
+    *,
+    grants_root: Path,
+    expected_uid: int,
+    expected_gid: int,
+) -> tuple[int, ...]:
+    """Recover only the exact directory fenced by this durable intent."""
+
+    if (
+        not grants_root.is_absolute()
+        or ".." in grants_root.parts
+        or intent.get("legacy_grants_root_path") != str(grants_root)
+        or type(intent.get("legacy_grants_root_device")) is not int
+        or type(intent.get("legacy_grants_root_inode")) is not int
+        or type(intent.get("legacy_grants_root_uid")) is not int
+        or type(intent.get("legacy_grants_root_gid")) is not int
+        or type(expected_uid) is not int
+        or type(expected_gid) is not int
+        or intent.get("legacy_grants_root_inode", 0) <= 0
+        or intent.get("legacy_grants_root_uid") != expected_uid
+        or intent.get("legacy_grants_root_gid") != expected_gid
+    ):
+        raise OwnerGateCaddyCutoverError(
+            "owner_gate_caddy_legacy_grant_fence_replay_invalid"
+        )
+    try:
+        reached = os.lstat(grants_root)
+    except OSError as exc:
+        raise OwnerGateCaddyCutoverError(
+            "owner_gate_caddy_legacy_grant_fence_replay_invalid"
+        ) from exc
+    expected_identity = (
+        intent["legacy_grants_root_device"],
+        intent["legacy_grants_root_inode"],
+        expected_uid,
+        expected_gid,
+    )
+    if (
+        stat.S_ISLNK(reached.st_mode)
+        or not stat.S_ISDIR(reached.st_mode)
+        or reached.st_nlink < 2
+        or (
+            reached.st_dev,
+            reached.st_ino,
+            reached.st_uid,
+            reached.st_gid,
+        )
+        != expected_identity
+    ):
+        raise OwnerGateCaddyCutoverError(
+            "owner_gate_caddy_legacy_grant_fence_replay_invalid"
+        )
+    mode = stat.S_IMODE(reached.st_mode)
+    if mode == 0o700:
+        return _require_legacy_directory(
+            grants_root,
+            expected_uid=expected_uid,
+            expected_gid=expected_gid,
+        )
+    if mode != 0:
+        raise OwnerGateCaddyCutoverError(
+            "owner_gate_caddy_legacy_grant_fence_replay_invalid"
+        )
+
+    descriptor: int | None = None
+    try:
+        if os.geteuid() == 0:
+            descriptor = os.open(
+                grants_root,
+                os.O_RDONLY
+                | getattr(os, "O_DIRECTORY", 0)
+                | getattr(os, "O_CLOEXEC", 0)
+                | getattr(os, "O_NOFOLLOW", 0),
+            )
+            opened = os.fstat(descriptor)
+            if (
+                opened.st_dev,
+                opened.st_ino,
+                opened.st_uid,
+                opened.st_gid,
+            ) != expected_identity or stat.S_IMODE(opened.st_mode) != 0:
+                raise OwnerGateCaddyCutoverError(
+                    "owner_gate_caddy_legacy_grant_fence_replay_invalid"
+                )
+            os.fchmod(descriptor, 0o700)
+        else:
+            # Production runs as root and restores through the already-open
+            # directory descriptor.  A non-root test process cannot open a
+            # mode-000 directory, so exercise the same exact-identity checks
+            # around a no-follow path chmod.
+            os.chmod(grants_root, 0o700, follow_symlinks=False)
+            descriptor = os.open(
+                grants_root,
+                os.O_RDONLY
+                | getattr(os, "O_DIRECTORY", 0)
+                | getattr(os, "O_CLOEXEC", 0)
+                | getattr(os, "O_NOFOLLOW", 0),
+            )
+        os.fsync(descriptor)
+        restored = os.fstat(descriptor)
+        final = os.lstat(grants_root)
+        if (
+            (
+                restored.st_dev,
+                restored.st_ino,
+                restored.st_uid,
+                restored.st_gid,
+            )
+            != expected_identity
+            or (
+                final.st_dev,
+                final.st_ino,
+                final.st_uid,
+                final.st_gid,
+            )
+            != expected_identity
+            or stat.S_IMODE(restored.st_mode) != 0o700
+            or stat.S_IMODE(final.st_mode) != 0o700
+        ):
+            raise OwnerGateCaddyCutoverError(
+                "owner_gate_caddy_legacy_grant_fence_replay_invalid"
+            )
+    except OwnerGateCaddyCutoverError:
+        raise
+    except OSError as exc:
+        raise OwnerGateCaddyCutoverError(
+            "owner_gate_caddy_legacy_grant_fence_replay_invalid"
+        ) from exc
+    finally:
+        if descriptor is not None:
+            os.close(descriptor)
+    return _require_legacy_directory(
+        grants_root,
+        expected_uid=expected_uid,
+        expected_gid=expected_gid,
+    )
 
 
 def _stable_legacy_file(
@@ -4676,7 +4847,10 @@ def activate_bridge_bootstrap(
 
     foundation = validate_bridge_bootstrap_input(document)
     fresh_now = freshness_clock or (lambda: float(now_unix))
-    _require_v2_fresh(foundation, now_unix=int(fresh_now()))
+    if not grants_root.is_absolute() or ".." in grants_root.parts:
+        raise OwnerGateCaddyCutoverError(
+            "owner_gate_caddy_legacy_grant_fence_invalid"
+        )
     entries = store.load(foundation.freeze_plan_sha256)
     requested_entry = _last(entries, "bridge_authorization_requested")
     if requested_entry is None:
@@ -4710,6 +4884,10 @@ def activate_bridge_bootstrap(
             foundation=foundation,
             request_receipt=requested,
         )
+        if terminal.value["recorded_at_unix"] != receipt["activated_at_unix"]:
+            raise OwnerGateCaddyCutoverError(
+                "owner_gate_caddy_bridge_replay_invalid"
+            )
         projection = boundary.observe(mode="approval_bridge")
         active = service.observe_active()
         health = service.verify_local_v1()
@@ -4731,12 +4909,23 @@ def activate_bridge_bootstrap(
 
     existing_intent = _last(entries, "bridge_intent")
     if existing_intent is None:
+        _require_v2_fresh(
+            foundation,
+            now_unix=int(fresh_now()),
+        )
         active_before = service.observe_active()
+        grants_identity = _require_legacy_directory(
+            grants_root,
+            expected_uid=expected_uid,
+            expected_gid=expected_gid,
+        )
     else:
         intent = existing_intent.value["evidence"]
         stored_active = intent.get("legacy_service_active_before")
         if (
-            intent.get("bootstrap_input_sha256") != foundation.document_sha256
+            frozenset(intent) != _BRIDGE_INTENT_FIELDS
+            or intent.get("bootstrap_input_sha256")
+            != foundation.document_sha256
             or intent.get("bridge_request_receipt_sha256")
             != requested["receipt_sha256"]
             or intent.get("bridge_action_sha256")
@@ -4754,10 +4943,70 @@ def activate_bridge_bootstrap(
                 "owner_gate_caddy_bridge_intent_invalid"
             )
         try:
-            active_before = service.observe_active()
-        except BaseException:
-            active_before = service.start_exact(stored_active)
-            service.verify_local_v1()
+            _restore_fenced_legacy_grants_root(
+                intent,
+                grants_root=grants_root,
+                expected_uid=expected_uid,
+                expected_gid=expected_gid,
+            )
+            try:
+                active_before = service.observe_active()
+            except BaseException:
+                active_before = service.start_exact(stored_active)
+                service.verify_local_v1()
+            _require_v2_fresh(
+                foundation,
+                now_unix=int(fresh_now()),
+            )
+        except BaseException as primary:
+            recovery_errors: list[BaseException] = []
+            try:
+                current = boundary.stable_read()
+                if current.raw != configs.original:
+                    boundary.validate_payload(configs.original, mode="legacy")
+                    _replace_transaction_owned(
+                        boundary,
+                        configs.original,
+                        allowed_current_payloads=(configs.approval_bridge,),
+                    )
+                    boundary.reload()
+                boundary.observe(mode="legacy")
+            except BaseException as exc:
+                recovery_errors.append(exc)
+            try:
+                try:
+                    active = service.observe_active()
+                except BaseException:
+                    active = service.start_exact(stored_active)
+                health_after_failure = service.verify_local_v1()
+                store.append(
+                    foundation.freeze_plan_sha256,
+                    "bridge_exact_restore",
+                    {
+                        "bridge_request_receipt_sha256": requested[
+                            "receipt_sha256"
+                        ],
+                        "original_caddy_sha256": _sha256(configs.original),
+                        "legacy_service_active_sha256": active[
+                            "projection_sha256"
+                        ],
+                        "legacy_service_health_sha256": health_after_failure[
+                            "projection_sha256"
+                        ],
+                        "rollback_mode": "pre_migration_exact_bytes",
+                    },
+                    now_unix,
+                )
+            except BaseException as exc:
+                recovery_errors.append(exc)
+            if recovery_errors:
+                raise BaseExceptionGroup(
+                    "Caddy bridge replay failed and exact recovery was incomplete",
+                    [primary, *recovery_errors],
+                ) from None
+            raise OwnerGateCaddyCutoverError(
+                "owner_gate_caddy_bridge_activation_rolled_back"
+            ) from primary
 
     # Check that the exact approval exists while the service is live.  A
     # replay may see the one exact grant already consumed by this intent.
@@ -4771,6 +5020,15 @@ def activate_bridge_bootstrap(
         allow_consumed=existing_intent is not None,
     )
     if existing_intent is None:
+        confirmed_grants_identity = _require_legacy_directory(
+            grants_root,
+            expected_uid=expected_uid,
+            expected_gid=expected_gid,
+        )
+        if confirmed_grants_identity[1:5] != grants_identity[1:5]:
+            raise OwnerGateCaddyCutoverError(
+                "owner_gate_caddy_legacy_grant_fence_invalid"
+            )
         store.append(
             foundation.freeze_plan_sha256,
             "bridge_intent",
@@ -4787,6 +5045,11 @@ def activate_bridge_bootstrap(
                 "legacy_service_active_before": copy.deepcopy(
                     dict(active_before)
                 ),
+                "legacy_grants_root_path": str(grants_root),
+                "legacy_grants_root_device": grants_identity[3],
+                "legacy_grants_root_inode": grants_identity[4],
+                "legacy_grants_root_uid": grants_identity[1],
+                "legacy_grants_root_gid": grants_identity[2],
                 "temporary_service_stop_required": True,
                 "exact_preimage_restore_required_before_cutover_intent": True,
             },
@@ -4923,6 +5186,8 @@ def activate_bridge_bootstrap(
         service_active_after = service.start_exact(active_before)
         health = service.verify_local_v1()
         boundary.verify_bridge(request_id=foundation.v2_request_id)
+        completed_at_unix = int(fresh_now())
+        _require_v2_fresh(foundation, now_unix=completed_at_unix)
         unsigned = {
             "schema": BRIDGE_RECEIPT_SCHEMA,
             "release_revision": foundation.release_revision,
@@ -4975,7 +5240,7 @@ def activate_bridge_bootstrap(
             "caller_selected_input_accepted": False,
             "secret_material_recorded": False,
             "secret_digest_recorded": False,
-            "activated_at_unix": now_unix,
+            "activated_at_unix": completed_at_unix,
         }
         receipt = validate_bridge_receipt(
             {**unsigned, "receipt_sha256": _sha256(_canonical(unsigned))},
@@ -4986,7 +5251,7 @@ def activate_bridge_bootstrap(
             foundation.freeze_plan_sha256,
             "bridge_activated",
             receipt,
-            now_unix,
+            completed_at_unix,
         )
         return receipt
     except BaseException as primary:
@@ -5093,6 +5358,8 @@ def _load_required_bridge(
         or foundation.v2_request_id != claim.get("request_id")
         or foundation.v2_action_payload_sha256
         != claim.get("action_payload_sha256")
+        or terminal_entry.value["recorded_at_unix"]
+        != bridge["activated_at_unix"]
         or terminal_entry.value["recorded_at_unix"]
         > authority.claim_recorded_at_unix
     ):
@@ -5502,6 +5769,197 @@ def _has_legacy_activation_intent(
     )
 
 
+def _legacy_activation_intent_receipt_sha256(
+    authority: _Authority,
+    entries: Sequence[cutover.JournalEntry],
+) -> tuple[str, int]:
+    matches = [
+        entry
+        for entry in entries
+        if entry.value.get("event") == "activation_commit_intent"
+    ]
+    if len(matches) != 1:
+        raise OwnerGateCaddyCutoverError(
+            "owner_gate_caddy_legacy_lineage_invalid"
+        )
+    evidence = matches[0].value.get("evidence")
+    try:
+        accepted = cutover._accepted_activation_commit_intent(
+            list(entries), authority.plan
+        )
+    except BaseException as exc:
+        raise OwnerGateCaddyCutoverError(
+            "owner_gate_caddy_legacy_lineage_invalid"
+        ) from exc
+    if (
+        not isinstance(evidence, Mapping)
+        or accepted is None
+        or dict(accepted) != dict(evidence)
+        or _SHA256.fullmatch(str(accepted.get("receipt_sha256"))) is None
+        or type(matches[0].value.get("recorded_at_unix")) is not int
+        or matches[0].value["recorded_at_unix"] <= 0
+    ):
+        raise OwnerGateCaddyCutoverError(
+            "owner_gate_caddy_legacy_lineage_invalid"
+        )
+    return (
+        str(accepted["receipt_sha256"]),
+        matches[0].value["recorded_at_unix"],
+    )
+
+
+def _validate_caddy_post_intent_floor(
+    authority: _Authority,
+    entry: CaddyJournalEntry,
+    *,
+    prepare_receipt: Mapping[str, Any] | None = None,
+    legacy_intent_receipt_sha256: str | None = None,
+) -> Mapping[str, Any]:
+    raw = _hashed(
+        entry.value["evidence"],
+        _CADDY_POST_INTENT_FLOOR_FIELDS,
+        "post_intent_floor",
+    )
+    if (
+        entry.value["event"] != "post_intent_maintenance_floor"
+        or raw["schema"] != CADDY_POST_INTENT_FLOOR_SCHEMA
+        or raw["cutover_plan_sha256"] != authority.plan.sha256
+        or raw["authority_sha256"] != authority.sha256
+        or _SHA256.fullmatch(str(raw["prepare_receipt_sha256"])) is None
+        or _SHA256.fullmatch(
+            str(raw["legacy_activation_commit_intent_receipt_sha256"])
+        )
+        is None
+        or raw["rollback_mode"] != "post_migration_maintenance_only"
+        or type(raw["observed_at_unix"]) is not int
+        or raw["observed_at_unix"] <= 0
+        or raw["observed_at_unix"] != entry.value["recorded_at_unix"]
+        or (
+            prepare_receipt is not None
+            and raw["prepare_receipt_sha256"]
+            != prepare_receipt.get("receipt_sha256")
+        )
+        or (
+            legacy_intent_receipt_sha256 is not None
+            and raw["legacy_activation_commit_intent_receipt_sha256"]
+            != legacy_intent_receipt_sha256
+        )
+    ):
+        raise OwnerGateCaddyCutoverError(
+            "owner_gate_caddy_post_intent_floor_invalid"
+        )
+    return raw
+
+
+def _ensure_caddy_post_intent_floor(
+    authority: _Authority,
+    *,
+    store: CaddyTransactionStore,
+    caddy_entries: Sequence[CaddyJournalEntry],
+    prepare_receipt: Mapping[str, Any],
+    legacy_intent_receipt_sha256: str,
+    now_unix: int,
+    legacy_intent_recorded_at_unix: int | None = None,
+) -> Mapping[str, Any]:
+    prepared = validate_prepare_receipt(
+        prepare_receipt,
+        plan=authority.plan,
+    )
+    if prepared["authority_sha256"] != authority.sha256:
+        raise OwnerGateCaddyCutoverError(
+            "owner_gate_caddy_authority_replay_invalid"
+        )
+    prepared_entries = [
+        entry for entry in caddy_entries if entry.value["event"] == "prepared"
+    ]
+    markers = [
+        entry
+        for entry in caddy_entries
+        if entry.value["event"] == "post_intent_maintenance_floor"
+    ]
+    if (
+        len(prepared_entries) != 1
+        or prepared_entries[0].value["evidence"] != prepared
+        or prepared_entries[0].value["recorded_at_unix"]
+        != prepared["prepared_at_unix"]
+        or len(markers) > 1
+        or type(now_unix) is not int
+        or now_unix <= 0
+        or now_unix < prepared_entries[0].value["recorded_at_unix"]
+        or now_unix < caddy_entries[-1].value["recorded_at_unix"]
+        or (
+            legacy_intent_recorded_at_unix is not None
+            and (
+                type(legacy_intent_recorded_at_unix) is not int
+                or legacy_intent_recorded_at_unix <= 0
+                or now_unix < legacy_intent_recorded_at_unix
+            )
+        )
+        or (
+            markers
+            and (
+                markers[0].value["sequence"]
+                <= prepared_entries[0].value["sequence"]
+                or markers[0].value["recorded_at_unix"]
+                < prepared_entries[0].value["recorded_at_unix"]
+            )
+        )
+        or _SHA256.fullmatch(str(legacy_intent_receipt_sha256)) is None
+    ):
+        raise OwnerGateCaddyCutoverError(
+            "owner_gate_caddy_post_intent_floor_invalid"
+        )
+    if markers:
+        return _validate_caddy_post_intent_floor(
+            authority,
+            markers[0],
+            prepare_receipt=prepared,
+            legacy_intent_receipt_sha256=legacy_intent_receipt_sha256,
+        )
+    unsigned = {
+        "schema": CADDY_POST_INTENT_FLOOR_SCHEMA,
+        "cutover_plan_sha256": authority.plan.sha256,
+        "authority_sha256": authority.sha256,
+        "prepare_receipt_sha256": prepared["receipt_sha256"],
+        "legacy_activation_commit_intent_receipt_sha256": (
+            legacy_intent_receipt_sha256
+        ),
+        "rollback_mode": "post_migration_maintenance_only",
+        "observed_at_unix": now_unix,
+    }
+    expected = {
+        **unsigned,
+        "receipt_sha256": _sha256(_canonical(unsigned)),
+    }
+    store.append(
+        authority.plan.sha256,
+        "post_intent_maintenance_floor",
+        expected,
+        now_unix,
+    )
+    reloaded = store.load(authority.plan.sha256)
+    markers = [
+        entry
+        for entry in reloaded
+        if entry.value["event"] == "post_intent_maintenance_floor"
+    ]
+    if len(markers) != 1:
+        raise OwnerGateCaddyCutoverError(
+            "owner_gate_caddy_post_intent_floor_invalid"
+        )
+    observed = _validate_caddy_post_intent_floor(
+        authority,
+        markers[0],
+        prepare_receipt=prepared,
+        legacy_intent_receipt_sha256=legacy_intent_receipt_sha256,
+    )
+    if observed != expected:
+        raise OwnerGateCaddyCutoverError(
+            "owner_gate_caddy_post_intent_floor_invalid"
+        )
+    return observed
+
+
 def _prepared_dependency_from_entries(
     authority: _Authority,
     entries: Sequence[cutover.JournalEntry],
@@ -5752,6 +6210,68 @@ def prepare_cutover(
         raise OwnerGateCaddyCutoverError(
             "owner_gate_caddy_prepare_legacy_lineage_missing_after_commit_marker"
         )
+    if post_intent:
+        try:
+            prepared_entry = _last(caddy_entries, "prepared")
+            if prepared_entry is None:
+                raise OwnerGateCaddyCutoverError(
+                    "owner_gate_caddy_prepare_missing"
+                )
+            prepared = validate_prepare_receipt(
+                prepared_entry.value["evidence"],
+                plan=authority.plan,
+            )
+            (
+                intent_receipt_sha256,
+                intent_recorded_at_unix,
+            ) = (
+                _legacy_activation_intent_receipt_sha256(
+                    authority, legacy_entries
+                )
+            )
+            _ensure_caddy_post_intent_floor(
+                authority,
+                store=store,
+                caddy_entries=caddy_entries,
+                prepare_receipt=prepared,
+                legacy_intent_receipt_sha256=intent_receipt_sha256,
+                now_unix=now_unix,
+                legacy_intent_recorded_at_unix=intent_recorded_at_unix,
+            )
+            caddy_entries = store.load(authority.plan.sha256)
+            caddy_marker = _accepted_caddy_post_intent_marker(
+                authority, caddy_entries
+            )
+            if not caddy_marker:
+                raise OwnerGateCaddyCutoverError(
+                    "owner_gate_caddy_post_intent_floor_invalid"
+                )
+            # A prepared receipt is pre-migration evidence.  Once the peer
+            # intent is durable, maintenance must be live before that receipt
+            # can be replayed to a caller.
+            _force_caddy_local_post_intent_maintenance(
+                authority,
+                boundary=boundary,
+                store=store,
+                caddy_entries=caddy_entries,
+            )
+        except BaseException as primary:
+            try:
+                _recover_post_intent_maintenance(
+                    authority,
+                    boundary=boundary,
+                    store=store,
+                    legacy_entries=legacy_entries,
+                    caddy_entries=caddy_entries,
+                )
+            except BaseException as recovery:
+                raise BaseExceptionGroup(
+                    "Caddy prepare could not establish the post-intent maintenance floor",
+                    [primary, recovery],
+                ) from None
+            raise OwnerGateCaddyCutoverError(
+                "owner_gate_caddy_prepare_post_intent_maintenance"
+            ) from primary
     try:
         return _prepare_cutover_inner(
             authority,
@@ -5941,6 +6461,19 @@ def _forward_recovery_maintenance(
     allowed_current_payloads: Sequence[bytes],
     now_unix: int,
 ) -> Mapping[str, Any]:
+    intent_receipt_sha256 = legacy_intent.get("receipt_sha256")
+    if _SHA256.fullmatch(str(intent_receipt_sha256)) is None:
+        raise OwnerGateCaddyCutoverError(
+            "owner_gate_caddy_legacy_lineage_invalid"
+        )
+    _ensure_caddy_post_intent_floor(
+        authority,
+        store=store,
+        caddy_entries=store.load(authority.plan.sha256),
+        prepare_receipt=prepare_receipt,
+        legacy_intent_receipt_sha256=str(intent_receipt_sha256),
+        now_unix=now_unix,
+    )
     boundary.validate_payload(payload, mode="maintenance")
     _replace_transaction_owned(
         boundary,
@@ -6193,6 +6726,16 @@ def _commit_cutover_inner(
                 plan=authority.plan,
                 prepare_receipt=prepared,
             )
+            _ensure_caddy_post_intent_floor(
+                authority,
+                store=store,
+                caddy_entries=store.load(authority.plan.sha256),
+                prepare_receipt=prepared,
+                legacy_intent_receipt_sha256=legacy_intent[
+                    "receipt_sha256"
+                ],
+                now_unix=now_unix,
+            )
             try:
                 projection = boundary.observe(mode="maintenance")
                 public = boundary.verify_public(expected_status=503)
@@ -6358,13 +6901,83 @@ def _accepted_caddy_post_intent_marker(
     markers = [
         entry
         for entry in entries
-        if entry.value["event"] in {"commit_started", "terminal"}
+        if entry.value["event"]
+        in {
+            "post_intent_maintenance_floor",
+            "forward_recovery_maintenance",
+            "commit_started",
+            "terminal",
+        }
     ]
     if not markers:
         return False
     for entry in markers:
         evidence = entry.value["evidence"]
-        if entry.value["event"] == "commit_started":
+        if entry.value["event"] == "post_intent_maintenance_floor":
+            prepared_entries = [
+                item
+                for item in entries
+                if item.value["event"] == "prepared"
+            ]
+            if len(prepared_entries) != 1:
+                raise OwnerGateCaddyCutoverError(
+                    "owner_gate_caddy_post_intent_floor_invalid"
+                )
+            prepared = validate_prepare_receipt(
+                prepared_entries[0].value["evidence"],
+                plan=authority.plan,
+            )
+            if (
+                prepared["authority_sha256"] != authority.sha256
+                or prepared_entries[0].value["recorded_at_unix"]
+                != prepared["prepared_at_unix"]
+                or entry.value["sequence"]
+                <= prepared_entries[0].value["sequence"]
+                or entry.value["recorded_at_unix"]
+                < prepared_entries[0].value["recorded_at_unix"]
+            ):
+                raise OwnerGateCaddyCutoverError(
+                    "owner_gate_caddy_post_intent_floor_invalid"
+                )
+            _validate_caddy_post_intent_floor(
+                authority,
+                entry,
+                prepare_receipt=prepared,
+            )
+        elif entry.value["event"] == "forward_recovery_maintenance":
+            prepared_entries = [
+                item
+                for item in entries
+                if item.value["event"] == "prepared"
+            ]
+            if len(prepared_entries) != 1:
+                raise OwnerGateCaddyCutoverError(
+                    "owner_gate_caddy_maintenance_observation_invalid"
+                )
+            prepared = validate_prepare_receipt(
+                prepared_entries[0].value["evidence"],
+                plan=authority.plan,
+            )
+            receipt = validate_maintenance_observation(
+                evidence,
+                plan=authority.plan,
+                prepare_receipt=prepared,
+            )
+            if (
+                prepared["authority_sha256"] != authority.sha256
+                or prepared_entries[0].value["recorded_at_unix"]
+                != prepared["prepared_at_unix"]
+                or entry.value["sequence"]
+                <= prepared_entries[0].value["sequence"]
+                or entry.value["recorded_at_unix"]
+                < prepared_entries[0].value["recorded_at_unix"]
+                or entry.value["recorded_at_unix"]
+                != receipt["observed_at_unix"]
+            ):
+                raise OwnerGateCaddyCutoverError(
+                    "owner_gate_caddy_maintenance_observation_invalid"
+                )
+        elif entry.value["event"] == "commit_started":
             raw = _hashed(
                 evidence,
                 _CADDY_COMMIT_STARTED_FIELDS,

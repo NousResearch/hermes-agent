@@ -30,6 +30,7 @@ import {
 
 import { $boardSlug, bindApi, boardKey, fetchBoard } from './api'
 import { KanbanBoardPage } from './board'
+import { KANBAN_LOCALES } from './i18n'
 import { useKanban } from './ui'
 
 // Live "N running / ready" pill — one glance at fleet activity from anywhere,
@@ -79,6 +80,7 @@ const plugin: HermesPlugin = {
   name: 'Kanban',
   defaultEnabled: false,
   register(ctx) {
+    ctx.i18n.register(KANBAN_LOCALES)
     ctx.onDispose(bindApi(ctx.rest, ctx.storage, ctx.socket))
 
     ctx.registerMany([

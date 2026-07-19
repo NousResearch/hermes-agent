@@ -10119,10 +10119,30 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             # Resolve the command once for all early-intercept checks below.
             from hermes_cli.commands import (
                 ACTIVE_SESSION_BYPASS_COMMANDS as _DEDICATED_HANDLERS,
+                is_gateway_known_command as _is_gateway_known_command_inner,
                 resolve_command as _resolve_cmd_inner,
             )
             _evt_cmd = event.get_command()
             _cmd_def_inner = _resolve_cmd_inner(_evt_cmd) if _evt_cmd else None
+            _skill_cmd_key_inner = None
+            _plugin_cmd_inner = None
+            if _evt_cmd and _cmd_def_inner is None:
+                try:
+                    from agent.skill_commands import resolve_skill_command_key
+
+                    _skill_cmd_key_inner = resolve_skill_command_key(
+                        _evt_cmd, profile=source.profile
+                    )
+                except Exception:
+                    _skill_cmd_key_inner = None
+                if _skill_cmd_key_inner is None:
+                    for _plugin_candidate in (
+                        _evt_cmd,
+                        _evt_cmd.replace("_", "-"),
+                    ):
+                        if _is_gateway_known_command_inner(_plugin_candidate):
+                            _plugin_cmd_inner = _plugin_candidate
+                            break
 
             # Slash command access control on the running-agent fast-path.
             # Mirrors the cold-path gate further below so non-admin users
@@ -10132,6 +10152,10 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             # floor inside _check_slash_access.
             if _evt_cmd and _cmd_def_inner is not None:
                 _denied = self._check_slash_access(source, _cmd_def_inner.name)
+                if _denied is not None:
+                    return _denied
+            if _plugin_cmd_inner:
+                _denied = self._check_slash_access(source, _plugin_cmd_inner)
                 if _denied is not None:
                     return _denied
 
@@ -10372,6 +10396,16 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             if _cmd_def_inner:
                 return (
                     f"⏳ Agent is running — `/{_cmd_def_inner.name}` can't run "
+                    f"mid-turn. Wait for the current response or `/stop` first."
+                )
+            if _skill_cmd_key_inner or _plugin_cmd_inner:
+                _busy_cmd_name = (
+                    str(_skill_cmd_key_inner).lstrip("/")
+                    if _skill_cmd_key_inner
+                    else str(_plugin_cmd_inner).lstrip("/")
+                )
+                return (
+                    f"⏳ Agent is running — `/{_busy_cmd_name}` can't run "
                     f"mid-turn. Wait for the current response or `/stop` first."
                 )
 

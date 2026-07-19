@@ -495,36 +495,44 @@ class TestBypassWithBotnameSuffix:
         assert any("handled:new" in r for r in adapter.sent_responses)
 
 
-# ---------------------------------------------------------------------------
-# Regression: skill commands must also bypass active-session guard (#58559)
-# ---------------------------------------------------------------------------
+class TestDynamicCommandBypass:
+    """Resolvable plugin and skill commands bypass the Level-1 guard."""
 
-
-class TestSkillCommandBypass:
-    """Registered skill commands (e.g. /arxiv) must bypass the active-session
-    queue, matching how built-in slash commands are dispatched directly."""
-
-    def test_should_bypass_returns_true_for_skill_command(self):
-        """A registered skill command bypasses the active-session guard."""
-        from unittest.mock import patch as _patch
-
+    def test_skill_command_bypasses(self, monkeypatch):
         from hermes_cli.commands import should_bypass_active_session
 
-        with _patch(
+        monkeypatch.setattr(
             "agent.skill_commands.get_skill_commands",
-            return_value={"/arxiv": {"description": "search arXiv papers"}},
-        ):
-            assert should_bypass_active_session("arxiv") is True
+            lambda: {"/claude-code": {"name": "claude-code"}},
+        )
 
-    def test_should_bypass_returns_false_for_unregistered_skill(self):
-        """An unknown name that is neither a built-in nor a skill command
-        does NOT bypass."""
-        from unittest.mock import patch as _patch
+        assert should_bypass_active_session("claude_code") is True
 
+    def test_skill_command_uses_the_routed_profile(self, tmp_path, monkeypatch):
+        import agent.skill_commands as sc_mod
         from hermes_cli.commands import should_bypass_active_session
 
-        with _patch(
-            "agent.skill_commands.get_skill_commands",
-            return_value={"/arxiv": {"description": "search arXiv papers"}},
-        ):
-            assert should_bypass_active_session("not-a-skill") is False
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        skill = tmp_path / "profiles" / "worker" / "skills" / "worker-only"
+        skill.mkdir(parents=True)
+        (skill / "SKILL.md").write_text(
+            "---\nname: worker-only\ndescription: worker skill.\n---\n# Worker\n",
+            encoding="utf-8",
+        )
+        monkeypatch.setattr(sc_mod, "_skill_commands", {})
+        monkeypatch.setattr(sc_mod, "_skill_commands_platform", None)
+        monkeypatch.setattr(sc_mod, "_skill_commands_home", None)
+
+        assert should_bypass_active_session("worker-only", profile="worker") is True
+
+    def test_plugin_command_bypasses(self, monkeypatch):
+        from hermes_cli import commands
+
+        monkeypatch.setattr(
+            commands,
+            "_iter_plugin_command_entries",
+            lambda: [("plugin-command", "test plugin", "")],
+        )
+
+        assert commands.should_bypass_active_session("plugin_command") is True
+        assert commands.should_bypass_active_session("unknown-command") is False

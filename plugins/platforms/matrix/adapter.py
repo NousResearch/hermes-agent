@@ -2866,12 +2866,37 @@ class MatrixAdapter(BasePlatformAdapter):
             reply_to_message_id=reply_to,
         )
 
-        should_batch = self._text_batch_delay_seconds > 0 and (
-            msg_type == MessageType.TEXT
-            or (msg_type == MessageType.COMMAND and len(body) >= self._SPLIT_THRESHOLD)
-        )
-        if should_batch:
-            self._enqueue_text_event(msg_event)
+        should_batch = msg_type == MessageType.TEXT
+        batch_key = self._text_batch_key(msg_event)
+        pending = self._pending_text_batches.get(batch_key)
+        if not pending and len(body) < self._SPLIT_THRESHOLD:
+            auto_thread_batch = self._pending_auto_thread_command_batch(msg_event)
+            if auto_thread_batch:
+                batch_key, pending = auto_thread_batch
+
+        if msg_type == MessageType.COMMAND and self._text_batch_delay_seconds > 0:
+            if len(body) >= self._SPLIT_THRESHOLD:
+                if pending and pending.message_type != MessageType.COMMAND:
+                    prior_task = self._pending_text_batch_tasks.pop(batch_key, None)
+                    if prior_task and not prior_task.done():
+                        prior_task.cancel()
+                    pending_event = self._pending_text_batches.pop(batch_key, None)
+                    if pending_event:
+                        await self.handle_message(pending_event)
+                should_batch = True
+            elif (
+                pending
+                and pending.message_type == MessageType.COMMAND
+                and len(pending.text or "") >= self._SPLIT_THRESHOLD
+            ):
+                from hermes_cli.commands import should_bypass_active_session
+
+                should_batch = not should_bypass_active_session(
+                    msg_event.get_command(), profile=source.profile
+                )
+
+        if should_batch and self._text_batch_delay_seconds > 0:
+            self._enqueue_text_event(msg_event, key=batch_key)
         else:
             await self.handle_message(msg_event)
 
@@ -3580,9 +3605,33 @@ class MatrixAdapter(BasePlatformAdapter):
             profile=event.source.profile,
         )
 
-    def _enqueue_text_event(self, event: MessageEvent) -> None:
+    def _pending_auto_thread_command_batch(
+        self, event: MessageEvent
+    ) -> tuple[str, MessageEvent] | None:
+        """Find a split-command batch across synthetic Matrix thread roots."""
+        source = event.source
+        if source.thread_id != event.message_id:
+            return None
+        for key, pending in self._pending_text_batches.items():
+            pending_source = pending.source
+            if (
+                pending.message_type == MessageType.COMMAND
+                and len(pending.text or "") >= self._SPLIT_THRESHOLD
+                and pending_source.thread_id == pending.message_id
+                and pending_source.platform == source.platform
+                and pending_source.chat_id == source.chat_id
+                and pending_source.chat_type == source.chat_type
+                and (pending_source.user_id_alt or pending_source.user_id)
+                == (source.user_id_alt or source.user_id)
+                and pending_source.scope_id == source.scope_id
+                and pending_source.profile == source.profile
+            ):
+                return key, pending
+        return None
+
+    def _enqueue_text_event(self, event: MessageEvent, *, key: str | None = None) -> None:
         """Buffer a text event and reset the flush timer."""
-        key = self._text_batch_key(event)
+        key = key or self._text_batch_key(event)
         existing = self._pending_text_batches.get(key)
         chunk_len = len(event.text or "")
         if existing is None:

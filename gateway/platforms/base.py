@@ -4807,7 +4807,7 @@ class BasePlatformAdapter(ABC):
             cmd = event.get_command()
             from hermes_cli.commands import should_bypass_active_session
 
-            if should_bypass_active_session(cmd):
+            if should_bypass_active_session(cmd, profile=event.source.profile):
                 # /stop, /new, /reset must cancel the in-flight adapter task
                 # and preserve ordering of queued follow-ups.  Route those
                 # through the dedicated handoff path that serializes

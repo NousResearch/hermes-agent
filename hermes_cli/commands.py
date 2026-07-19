@@ -386,7 +386,9 @@ ACTIVE_SESSION_BYPASS_COMMANDS: frozenset[str] = frozenset(
 )
 
 
-def should_bypass_active_session(command_name: str | None) -> bool:
+def should_bypass_active_session(
+    command_name: str | None, *, profile: str | None = None
+) -> bool:
     """Return True for any resolvable slash command.
 
     Rationale: every gateway-registered slash command either has a
@@ -408,17 +410,21 @@ def should_bypass_active_session(command_name: str | None) -> bool:
     """
     if not command_name:
         return False
-    if resolve_command(command_name) is not None:
-        return True
-    # Skill commands (e.g. /arxiv) are resolved through a separate registry
-    # and must also bypass the active-session queue, matching how
-    # _resolve_matrix_bang_command already checks both registries.
-    try:
-        from agent.skill_commands import get_skill_commands
 
-        return f"/{command_name.lstrip('/')}" in (get_skill_commands() or {})
-    except Exception:  # pragma: no cover — defensive
-        return False
+    name = command_name.lower().lstrip("/")
+    candidates = {name, name.replace("_", "-")}
+    if any(is_gateway_known_command(candidate) for candidate in candidates):
+        return True
+
+    def _is_skill_command() -> bool:
+        try:
+            from agent.skill_commands import resolve_skill_command_key
+
+            return resolve_skill_command_key(name, profile=profile) is not None
+        except Exception:
+            return False
+
+    return _is_skill_command()
 
 
 def _resolve_config_gates() -> set[str]:

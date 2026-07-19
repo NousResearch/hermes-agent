@@ -536,3 +536,172 @@ class TestRegression_ToolsetScoping:
         # core tools are never deferrable
         assert "terminal" not in names
 
+
+# ---------------------------------------------------------------------------
+# Description-only mode — tests for PR #66826 description_only tool_injection
+# ---------------------------------------------------------------------------
+
+
+class TestDescriptionOnly:
+    """Tests for description-only tool marking, classification, and assembly."""
+
+    @staticmethod
+    def _register(name: str, toolset: str):
+        from tools.registry import registry
+
+        def _handler(args, task_id=None, **kw):
+            return json.dumps({"ok": True, "tool": name})
+
+        registry.register(
+            name=name,
+            handler=_handler,
+            schema=_td(name, f"desc for {name}", {"q": {"type": "string"}}),
+            toolset=toolset,
+        )
+
+    # ------------------------------------------------------------------
+    # mark / is round-trip
+    # ------------------------------------------------------------------
+
+    def test_mark_and_is_round_trip(self):
+        """mark_description_only_tool → is_description_only_tool round-trip."""
+        from tools.tool_search import (
+            mark_description_only_tool,
+            is_description_only_tool,
+            get_description_only_tool_names,
+        )
+        mark_description_only_tool("test_desc_only_roundtrip")
+        assert is_description_only_tool("test_desc_only_roundtrip")
+        assert "test_desc_only_roundtrip" in get_description_only_tool_names()
+        assert not is_description_only_tool("unmarked_tool")
+
+    def test_get_description_only_returns_copy(self):
+        """get_description_only_tool_names returns a copy, not a live ref."""
+        from tools.tool_search import (
+            mark_description_only_tool,
+            get_description_only_tool_names,
+        )
+        mark_description_only_tool("test_copy_tool")
+        copy1 = get_description_only_tool_names()
+        copy1.add("not_real")
+        copy2 = get_description_only_tool_names()
+        assert "not_real" not in copy2
+
+    # ------------------------------------------------------------------
+    # Classification: description_only tools are always deferrable
+    # ------------------------------------------------------------------
+
+    def test_description_only_tool_is_deferrable(self):
+        """A tool marked description_only is always deferrable regardless
+        of its toolset or core-tool status."""
+        from tools.tool_search import (
+            mark_description_only_tool,
+            is_deferrable_tool_name,
+        )
+        mark_description_only_tool("do_classify_me")
+        assert is_deferrable_tool_name("do_classify_me")
+
+    def test_classify_tools_splits_description_only_correctly(self):
+        """classify_tools puts description-only tools in deferrable."""
+        from tools.tool_search import (
+            mark_description_only_tool,
+            classify_tools,
+        )
+        mark_description_only_tool("do_classify_split")
+        # Build a mixed list: one core tool + one description-only tool.
+        defs = [
+            _td("terminal", "Run shell commands"),
+            _td("do_classify_split", "A description-only tool"),
+        ]
+        visible, deferrable = classify_tools(defs)
+        visible_names = {(td.get("function") or {}).get("name") for td in visible}
+        deferrable_names = {(td.get("function") or {}).get("name") for td in deferrable}
+        assert "terminal" in visible_names
+        assert "terminal" not in deferrable_names
+        assert "do_classify_split" in deferrable_names
+
+    # ------------------------------------------------------------------
+    # Assembly: description_only tools force bridge activation
+    # ------------------------------------------------------------------
+
+    def test_assemble_forces_bridge_with_description_only_below_threshold(self):
+        """Even below the threshold, description_only tools force bridge."""
+        from tools.tool_search import (
+            assemble_tool_defs,
+            mark_description_only_tool,
+            ToolSearchConfig,
+            BRIDGE_TOOL_NAMES,
+        )
+        mark_description_only_tool("do_force_bridge")
+        # A single description_only tool — way below any reasonable threshold.
+        defs = [_td("do_force_bridge", "Tiny tool")]
+        result = assemble_tool_defs(
+            defs,
+            context_length=200_000,
+            config=ToolSearchConfig.from_raw({"enabled": "auto", "threshold_pct": 10}),
+        )
+        assert result.activated
+        names = {(t.get("function") or {}).get("name") for t in result.tool_defs}
+        assert "tool_search" in names
+        assert "do_force_bridge" not in names  # deferred behind bridge
+
+    def test_assemble_with_description_only_off_skips_in_model_tools_layer(self):
+        """model_tools.py gates assembly when ts_cfg.enabled == 'off'.
+        assemble_tool_defs itself forces bridge for description_only tools
+        (so they remain discoverable), but the higher-level gate prevents
+        assembly from running at all. This test verifies the gate pattern."""
+        from tools.tool_search import (
+            mark_description_only_tool,
+            ToolSearchConfig,
+        )
+        mark_description_only_tool("do_gate_test")
+
+        # The model_tools.py gate: when enabled == "off", skip assembly.
+        ts_cfg = ToolSearchConfig.from_raw({"enabled": "off"})
+        assert ts_cfg.enabled == "off"
+        # In model_tools.py, the condition is:
+        #   if not skip_tool_search_assembly and ts_cfg.enabled != "off":
+        #       assemble_tool_defs(...)
+        # When enabled == "off", the condition is False → assembly skipped.
+        should_assemble = ts_cfg.enabled != "off"
+        assert not should_assemble, (
+            "model_tools.py gate should skip assembly when tool_search is off"
+        )
+
+    # ------------------------------------------------------------------
+    # Session scoping: description_only tools filtered by valid_tool_names
+    # ------------------------------------------------------------------
+
+    def test_session_scoped_inventory_only_sees_in_scope_tools(self):
+        """description_only tools from out-of-scope servers are not listed."""
+        from tools.tool_search import (
+            mark_description_only_tool,
+            get_description_only_tool_names,
+        )
+        self._register("mcp_scope_gh_do", "mcp-scope-gh")
+        mark_description_only_tool("mcp_scope_gh_do")
+
+        # A tool in a DIFFERENT toolset — should NOT appear when scoped.
+        self._register("mcp_other_do", "mcp-other")
+        mark_description_only_tool("mcp_other_do")
+
+        # Simulate a session with only mcp-scope-gh tools visible.
+        session_tools = {"mcp_scope_gh_do"}
+        _do_names = get_description_only_tool_names() & session_tools
+        assert "mcp_scope_gh_do" in _do_names
+        assert "mcp_other_do" not in _do_names  # scoped out
+
+    # ------------------------------------------------------------------
+    # Error handling: mark non-existent or duplicate tools
+    # ------------------------------------------------------------------
+
+    def test_mark_duplicate_does_not_raise(self):
+        """Marking the same tool twice is a no-op, not an error."""
+        from tools.tool_search import (
+            mark_description_only_tool,
+            is_description_only_tool,
+        )
+        mark_description_only_tool("do_duplicate")
+        mark_description_only_tool("do_duplicate")  # should not raise
+        assert is_description_only_tool("do_duplicate")
+

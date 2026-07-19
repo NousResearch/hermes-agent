@@ -4855,6 +4855,13 @@ def _register_server_tools(name: str, server: MCPServerTask, config: dict) -> Li
         _track_mcp_tool_server(util_name, name)
         registered_names.append(util_name)
 
+        # Description-only utility tools: mark for always-deferred treatment
+        # so they are discovered via tool_search rather than bloating
+        # the tools array on every turn.
+        if is_description_only:
+            from tools.tool_search import mark_description_only_tool
+            mark_description_only_tool(util_name)
+
     if registered_names:
         registry.register_toolset_alias(name, toolset_name)
 

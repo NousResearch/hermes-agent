@@ -327,27 +327,32 @@ def build_system_prompt_parts(agent: Any, system_message: Optional[str] = None) 
     # every turn. Full schemas are loaded on demand via tool_search / tool_describe.
     # Mirroring Claude Code's ``defer_loading`` pattern and Skill frontmatter
     # discovery (name + description in prompt, body loaded on /skill).
+    #
+    # Skip when tool_search is disabled — there's no bridge to route through
+    # and the inventory would mislead the model into using tool_search.
     if agent.valid_tool_names:
         try:
-            from tools.tool_search import get_description_only_tool_names
-            _do_names = get_description_only_tool_names()
-            if _do_names:
-                from tools.registry import registry
-                _do_lines = []
-                for _tn in sorted(_do_names):
-                    _entry = registry.get_entry(_tn)
-                    if _entry:
-                        _desc = (_entry.description or "")[:200].replace("\n", " ")
-                        _do_lines.append(f"- **{_tn}**: {_desc}")
-                if _do_lines:
-                    _do_block = (
-                        "## Available MCP Tools (description-only — load on demand)\n\n"
-                        "The following tools are available via `tool_search`. "
-                        "Call `tool_search` to find one, `tool_describe` to load "
-                        "its full parameter schema, then `tool_call` to invoke it.\n\n"
-                        + "\n".join(_do_lines)
-                    )
-                    stable_parts.append(_do_block)
+            from tools.tool_search import get_description_only_tool_names, load_config as _load_ts_cfg
+            _ts_cfg = _load_ts_cfg()
+            if _ts_cfg.enabled != "off":
+                _do_names = get_description_only_tool_names() & agent.valid_tool_names
+                if _do_names:
+                    from tools.registry import registry
+                    _do_lines = []
+                    for _tn in sorted(_do_names):
+                        _entry = registry.get_entry(_tn)
+                        if _entry:
+                            _desc = (_entry.description or "")[:200].replace("\n", " ")
+                            _do_lines.append(f"- **{_tn}**: {_desc}")
+                    if _do_lines:
+                        _do_block = (
+                            "## Available MCP Tools (description-only — load on demand)\n\n"
+                            "The following tools are available via `tool_search`. "
+                            "Call `tool_search` to find one, `tool_describe` to load "
+                            "its full parameter schema, then `tool_call` to invoke it.\n\n"
+                            + "\n".join(_do_lines)
+                        )
+                        stable_parts.append(_do_block)
         except Exception:
             pass
 

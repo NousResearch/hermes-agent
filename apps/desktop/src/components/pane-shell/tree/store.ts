@@ -149,6 +149,15 @@ function frontPaneInGroup(paneId: string) {
     return
   }
 
+  // Don't steal the active tab from a pane the user is already viewing. In the
+  // Focus layout `files` shares a group with `workspace`, so a reactive unhide
+  // (cwd arrives on the first reply) would otherwise yank the active tab off
+  // the new session onto files. Only take the active slot when the current
+  // active pane isn't itself showable — then fronting picks a valid tab.
+  if (group.active && !$hiddenTreePanes.get().has(group.active)) {
+    return
+  }
+
   const next = setActivePaneOp(tree, group.id, paneId)
 
   if (next !== tree) {

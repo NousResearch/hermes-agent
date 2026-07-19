@@ -4188,6 +4188,101 @@ class TestWebServerEndpoints:
         assert model_cfg["provider"] == "openrouter"
         assert model_cfg.get("base_url", "") == ""
 
+    def test_custom_endpoints_list_includes_direct_custom_config(self):
+        """A bare model.provider=custom config should show up in Desktop even
+        before the user has materialized it under providers.
+        """
+        from hermes_cli.config import save_config
+
+        save_config({
+            "model": {
+                "provider": "custom",
+                "default": "gpt-5.4",
+                "base_url": "http://127.0.0.1:8081/v1",
+                "api_key": "sk-local",
+            },
+            "providers": {},
+        })
+
+        resp = self.client.get("/api/providers/custom-endpoints")
+
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["current"] == {
+            "provider": "custom",
+            "model": "gpt-5.4",
+            "base_url": "http://127.0.0.1:8081/v1",
+        }
+        assert data["endpoints"][0]["id"] == "custom"
+        assert data["endpoints"][0]["source"] == "direct-config"
+        assert data["endpoints"][0]["has_api_key"] is True
+
+    def test_custom_endpoint_upsert_persists_provider_and_sets_default(self):
+        """Desktop can persist an OpenAI-compatible proxy in providers and make
+        it the default for new chats.
+        """
+        from hermes_cli.config import load_config
+
+        resp = self.client.post(
+            "/api/providers/custom-endpoints",
+            json={
+                "id": "axet-proxy",
+                "name": "Axet Proxy",
+                "base_url": "http://127.0.0.1:8081/v1/",
+                "model": "gpt-5.4",
+                "api_key": "sk-local",
+                "context_length": 262144,
+                "make_default": True,
+            },
+        )
+
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["ok"] is True
+        assert data["id"] == "axet-proxy"
+        endpoint = next(e for e in data["endpoints"] if e["id"] == "axet-proxy")
+        assert endpoint["base_url"] == "http://127.0.0.1:8081/v1"
+        assert endpoint["model"] == "gpt-5.4"
+        assert endpoint["is_current"] is True
+
+        cfg = load_config()
+        assert cfg["providers"]["axet-proxy"]["base_url"] == "http://127.0.0.1:8081/v1"
+        assert cfg["providers"]["axet-proxy"]["models"]["gpt-5.4"]["context_length"] == 262144
+        assert cfg["model"]["provider"] == "axet-proxy"
+        assert cfg["model"]["default"] == "gpt-5.4"
+        assert cfg["model"]["base_url"] == "http://127.0.0.1:8081/v1"
+
+    def test_set_model_main_preserves_base_url_for_named_custom_provider(self):
+        """Selecting a named custom endpoint from the Desktop model picker
+        should keep its endpoint URL attached to model config.
+        """
+        from hermes_cli.config import load_config, save_config
+
+        save_config({
+            "model": {"provider": "nous", "default": "hermes-4"},
+            "providers": {
+                "axet-proxy": {
+                    "name": "Axet Proxy",
+                    "base_url": "http://127.0.0.1:8081/v1",
+                    "api_key": "sk-local",
+                    "model": "gpt-5.4",
+                    "models": {"gpt-5.4": {}},
+                }
+            },
+        })
+
+        resp = self.client.post(
+            "/api/model/set",
+            json={"scope": "main", "provider": "axet-proxy", "model": "gpt-5.4"},
+        )
+
+        assert resp.status_code == 200
+        model_cfg = load_config()["model"]
+        assert model_cfg["provider"] == "axet-proxy"
+        assert model_cfg["default"] == "gpt-5.4"
+        assert model_cfg["base_url"] == "http://127.0.0.1:8081/v1"
+        assert model_cfg["api_key"] == "sk-local"
+
     def test_set_model_main_gateway_failure_does_not_block_save(self, monkeypatch):
         """A Portal/gateway hiccup must never prevent saving the model."""
         import hermes_cli.nous_subscription as ns

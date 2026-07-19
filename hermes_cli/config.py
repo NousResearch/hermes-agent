@@ -1303,13 +1303,10 @@ DEFAULT_CONFIG = {
     "browser": {
         "inactivity_timeout": 120,
         "command_timeout": 30,  # Timeout for browser commands in seconds (screenshot, navigate, etc.)
-        # Refuse a COLD browser start (spawning a new Chromium, ~300-400MB)
-        # when host MemAvailable is below this many MB, steering the agent to
-        # web_extract/web_search instead. 0 disables the guard (default).
-        # Reusing an already-open browser session is never blocked. Read from
-        # /proc/meminfo; skipped (fail open) where that is unavailable.
-        # Useful on small single-box hosts (e.g. a 1 GB VPS) where the launch
-        # spike can otherwise OOM-kill the gateway mid-task.
+        # Refuse a cold local Chromium start (roughly 300 to 400 MB) when host
+        # MemAvailable is below this many MB. 0 disables the guard (default).
+        # Reuse, cloud browsers, and CDP overrides are not blocked. The check
+        # fails open where /proc/meminfo is unavailable.
         "min_available_mb": 0,
         "record_sessions": False,  # Auto-record browser sessions as WebM videos
         "headed": False,  # Local mode: launch Chromium with a visible window (also skips per-turn cleanup so the window persists between turns; idle reaper still applies)

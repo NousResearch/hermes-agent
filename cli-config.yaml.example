@@ -366,12 +366,12 @@ browser:
   # after this period of no activity between agent loops (default: 120 = 2 minutes)
   inactivity_timeout: 120
 
-  # Refuse a COLD browser start (spawning a new Chromium, ~300-400MB) when host
+  # Refuse a cold local Chromium start (roughly 300 to 400 MB) when host
   # MemAvailable is below this many MB; the agent is steered to web_extract or
   # web_search instead. 0 disables the guard (default). Reusing an already-open
-  # browser session is never blocked, and the check fails open on hosts without
-  # /proc/meminfo. Recommended on small single-box hosts (e.g. a 1 GB VPS)
-  # where the Chromium launch spike can OOM-kill the gateway: 350
+  # local session is never blocked. Cloud browsers and CDP overrides are not
+  # checked. The check fails open on hosts without /proc/meminfo. Recommended
+  # on small single-box hosts (for example, a 1 GB VPS): 350
   min_available_mb: 0
 
 # =============================================================================

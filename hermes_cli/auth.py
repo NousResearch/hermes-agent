@@ -1290,6 +1290,26 @@ def _provider_state_transaction(
             provider_id,
         )
         active_path = _auth_file_path()
+        if provider_id == "xai-oauth":
+            # Match _read_xai_oauth_tokens' usability decision while retaining
+            # exact provenance for refresh persistence and quarantine. A
+            # metadata-only/partial profile block must not claim ownership of
+            # usable root credentials. Conversely, usable tokens supplied by
+            # the active profile's credential pool belong to the profile.
+            provider_state_usable = _xai_oauth_state_has_usable_tokens(state)
+            resolved_state = _xai_oauth_state_from_store(auth_store)
+            if _xai_oauth_state_has_usable_tokens(resolved_state):
+                state = resolved_state
+                if not provider_state_usable:
+                    source_path = active_path
+            else:
+                global_path = _global_auth_file_path()
+                global_state = _xai_oauth_state_from_store(
+                    _load_global_auth_store()
+                )
+                if _xai_oauth_state_has_usable_tokens(global_state):
+                    state = global_state
+                    source_path = global_path
         if source_path is None or _same_path(source_path, active_path):
             yield auth_store, state, source_path
             return
@@ -1305,6 +1325,10 @@ def _provider_state_transaction(
                 raw_state = source_providers.get(provider_id)
                 if isinstance(raw_state, dict):
                     source_state = dict(raw_state)
+            if provider_id == "xai-oauth":
+                resolved_source_state = _xai_oauth_state_from_store(source_store)
+                if _xai_oauth_state_has_usable_tokens(resolved_source_state):
+                    source_state = resolved_source_state
             yield auth_store, source_state, source_path
 
 

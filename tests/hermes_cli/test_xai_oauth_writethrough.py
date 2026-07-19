@@ -288,6 +288,138 @@ def test_two_root_owned_rotations_do_not_create_profile_shadow_and_reach_sibling
     assert "xai-oauth" not in _read_store(profile_two)["providers"]
 
 
+@pytest.mark.parametrize(
+    "profile_state",
+    [
+        {
+            "auth_mode": "oauth_pkce",
+            "discovery": {"client_id": "profile-metadata-only"},
+        },
+        {
+            "tokens": {"access_token": "partial-access"},
+            "discovery": {"client_id": "profile-partial"},
+        },
+        {
+            "tokens": {},
+            "last_auth_error": {
+                "code": "xai_refresh_failed",
+                "relogin_required": True,
+            },
+        },
+    ],
+    ids=["metadata-only", "partial-token", "quarantined"],
+)
+def test_unusable_profile_state_does_not_own_root_refresh(
+    profile_and_root, monkeypatch, profile_state
+):
+    profile_path, root_path = profile_and_root
+    profile_store = {
+        "version": 1,
+        "active_provider": "openrouter",
+        "providers": {"xai-oauth": profile_state},
+    }
+    _write_store(profile_path, profile_store)
+    _write_store(
+        root_path,
+        {
+            "version": 1,
+            "active_provider": "openai-codex",
+            "providers": {
+                "xai-oauth": {
+                    "auth_mode": "oauth_device_code",
+                    "tokens": {
+                        "access_token": "root-access",
+                        "refresh_token": "root-refresh",
+                    },
+                    "discovery": {
+                        "token_endpoint": "https://auth.x.ai/oauth/token"
+                    },
+                }
+            },
+        },
+    )
+    refresh_inputs = []
+
+    def _rotate(_access_token, refresh_token, **_kwargs):
+        refresh_inputs.append(refresh_token)
+        return {
+            "access_token": "root-access-new",
+            "refresh_token": "root-refresh-new",
+            "token_type": "Bearer",
+            "last_refresh": "2026-07-19T08:00:00+00:00",
+        }
+
+    monkeypatch.setattr(auth, "refresh_xai_oauth_pure", _rotate)
+
+    resolved = auth.resolve_xai_oauth_runtime_credentials(force_refresh=True)
+
+    assert resolved["api_key"] == "root-access-new"
+    assert refresh_inputs == ["root-refresh"]
+    assert _read_store(profile_path) == profile_store
+    root = _read_store(root_path)
+    assert root["active_provider"] == "openai-codex"
+    assert root["providers"]["xai-oauth"]["tokens"]["refresh_token"] == "root-refresh-new"
+
+
+def test_terminal_root_refresh_does_not_quarantine_unusable_profile_state(
+    profile_and_root, monkeypatch
+):
+    profile_path, root_path = profile_and_root
+    profile_store = {
+        "version": 1,
+        "active_provider": "openrouter",
+        "providers": {
+            "xai-oauth": {
+                "tokens": {},
+                "last_auth_error": {
+                    "code": "prior_profile_failure",
+                    "relogin_required": True,
+                },
+            }
+        },
+    }
+    _write_store(profile_path, profile_store)
+    _write_store(
+        root_path,
+        {
+            "version": 1,
+            "active_provider": "openai-codex",
+            "providers": {
+                "xai-oauth": {
+                    "tokens": {
+                        "access_token": "dead-root-access",
+                        "refresh_token": "dead-root-refresh",
+                    },
+                    "discovery": {
+                        "token_endpoint": "https://auth.x.ai/oauth/token"
+                    },
+                }
+            },
+        },
+    )
+
+    def _terminal_refresh(*_args, **_kwargs):
+        raise auth.AuthError(
+            "Root refresh grant was revoked",
+            provider="xai-oauth",
+            code="xai_refresh_failed",
+            relogin_required=True,
+        )
+
+    monkeypatch.setattr(auth, "refresh_xai_oauth_pure", _terminal_refresh)
+
+    with pytest.raises(auth.AuthError, match="revoked"):
+        auth.resolve_xai_oauth_runtime_credentials(force_refresh=True)
+
+    assert _read_store(profile_path) == profile_store
+    root = _read_store(root_path)
+    assert root["active_provider"] == "openai-codex"
+    root_state = root["providers"]["xai-oauth"]
+    assert not root_state["tokens"].get("access_token")
+    assert not root_state["tokens"].get("refresh_token")
+    assert root_state["last_auth_error"]["reason"] == "runtime_refresh_failure"
+
+
 def test_terminal_pool_refresh_quarantines_root_without_activation(
     profile_and_root, monkeypatch
 ):

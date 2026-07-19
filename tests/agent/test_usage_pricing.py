@@ -5,6 +5,7 @@ from agent.usage_pricing import (
     estimate_usage_cost,
     get_pricing_entry,
     normalize_usage,
+    resolve_billing_route,
 )
 
 
@@ -519,3 +520,75 @@ def test_deepseek_v4_flash_estimate_usage_cost():
     assert result.amount_usd is not None
     # 1M input × $0.14/M + 500K output × $0.28/M = $0.14 + $0.14 = $0.28
     assert float(result.amount_usd) == 0.28
+
+
+def test_zai_glm_5_2_pricing_entry_exists():
+    """Regression test: Z.AI GLM-5.2 must have a first-party pricing entry.
+
+    Before this fix, Z.AI/GLM sessions showed as $0.00 / unknown cost because
+    resolve_billing_route had no "zai" branch — it fell through to the
+    billing_mode="unknown" default, so get_pricing_entry() returned None.
+    The GLM-5.2 row existed only under the Fireworks ("fireworks","glm-5p2")
+    slug and was unreachable from the first-party Z.AI route.
+    """
+    entry = get_pricing_entry("glm-5.2", provider="zai")
+
+    assert entry is not None
+    assert entry.input_cost_per_million is not None
+    assert entry.output_cost_per_million is not None
+    assert entry.cache_read_cost_per_million is not None
+    assert float(entry.input_cost_per_million) == 1.40
+    assert float(entry.output_cost_per_million) == 4.40
+    assert float(entry.cache_read_cost_per_million) == 0.26
+    # Source must be the official Z.AI docs, not a reseller snapshot.
+    assert entry.source == "official_docs_snapshot"
+    assert entry.source_url is not None and "z.ai" in entry.source_url
+
+
+def test_zai_glm_5_2_estimate_usage_cost():
+    """Ensure Z.AI GLM-5.2 sessions get a dollar estimate, not unknown."""
+    result = estimate_usage_cost(
+        "glm-5.2",
+        CanonicalUsage(input_tokens=1_000_000, output_tokens=500_000, cache_read_tokens=2_000_000),
+        provider="zai",
+    )
+
+    assert result.status == "estimated"
+    assert result.amount_usd is not None
+    # 1M × $1.40 + 0.5M × $4.40 + 2M × $0.26 = 1.40 + 2.20 + 0.52 = 4.12
+    assert float(result.amount_usd) == 4.12
+
+
+def test_zai_provider_aliases_collapse_to_zai():
+    """Invariant: the documented Z.AI provider aliases (z-ai, z.ai, glm, zhipu)
+    and api.z.ai base_url all resolve to the "zai" billing route, so pricing
+    is found regardless of how the user configured the provider name."""
+    for alias in ("zai", "z-ai", "z.ai", "glm", "zhipu"):
+        route = resolve_billing_route("glm-5.2", provider=alias)
+        assert route.provider == "zai", alias
+        assert route.billing_mode == "official_docs_snapshot", alias
+
+
+def test_zai_base_url_detected_without_provider_name():
+    """Invariant: a session whose provider name is empty/unknown but whose
+    base_url is on api.z.ai still routes to Z.AI pricing — the host check must
+    not depend on the provider name being set."""
+    route = resolve_billing_route("glm-5.2", provider="", base_url="https://api.z.ai/api/paas/v4")
+    assert route.provider == "zai"
+    assert route.billing_mode == "official_docs_snapshot"
+
+
+def test_zai_rows_all_carry_cache_read_pricing():
+    """Invariant: Z.AI publishes a cached-input rate for every current GLM
+    model; every zai snapshot row must carry cache_read < input so cached
+    sessions estimate correctly instead of billing reads at full price."""
+    from agent.usage_pricing import _OFFICIAL_DOCS_PRICING
+
+    zai_rows = [k for k in _OFFICIAL_DOCS_PRICING if k[0] == "zai"]
+    assert zai_rows, "expected at least one zai pricing row"
+    for key in zai_rows:
+        entry = _OFFICIAL_DOCS_PRICING[key]
+        assert entry.cache_read_cost_per_million is not None, key
+        assert entry.input_cost_per_million is not None, key
+        assert entry.cache_read_cost_per_million < entry.input_cost_per_million, key
+

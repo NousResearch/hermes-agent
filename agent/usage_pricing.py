@@ -808,6 +808,54 @@ _OFFICIAL_DOCS_PRICING: Dict[tuple[str, str], PricingEntry] = {
         source_url="https://docs.fireworks.ai/serverless/pricing",
         pricing_version="fireworks-pricing-2026-07",
     ),
+    # Z.AI / Zhipu GLM — official docs (docs.z.ai/guides/overview/pricing).
+    # Z.AI's first-party API uses dot-notation model ids (glm-5.2), distinct
+    # from the Fireworks "p" slugs above. Both forms are handled so a session
+    # using either naming resolves. Rates verified July 2026.
+    (
+        "zai",
+        "glm-5.2",
+    ): PricingEntry(
+        input_cost_per_million=Decimal("1.40"),
+        output_cost_per_million=Decimal("4.40"),
+        cache_read_cost_per_million=Decimal("0.26"),
+        source="official_docs_snapshot",
+        source_url="https://docs.z.ai/guides/overview/pricing",
+        pricing_version="zai-pricing-2026-07",
+    ),
+    (
+        "zai",
+        "glm-5.1",
+    ): PricingEntry(
+        input_cost_per_million=Decimal("1.40"),
+        output_cost_per_million=Decimal("4.40"),
+        cache_read_cost_per_million=Decimal("0.26"),
+        source="official_docs_snapshot",
+        source_url="https://docs.z.ai/guides/overview/pricing",
+        pricing_version="zai-pricing-2026-07",
+    ),
+    (
+        "zai",
+        "glm-5-turbo",
+    ): PricingEntry(
+        input_cost_per_million=Decimal("1.20"),
+        output_cost_per_million=Decimal("4.00"),
+        cache_read_cost_per_million=Decimal("0.24"),
+        source="official_docs_snapshot",
+        source_url="https://docs.z.ai/guides/overview/pricing",
+        pricing_version="zai-pricing-2026-07",
+    ),
+    (
+        "zai",
+        "glm-5",
+    ): PricingEntry(
+        input_cost_per_million=Decimal("1.00"),
+        output_cost_per_million=Decimal("3.20"),
+        cache_read_cost_per_million=Decimal("0.20"),
+        source="official_docs_snapshot",
+        source_url="https://docs.z.ai/guides/overview/pricing",
+        pricing_version="zai-pricing-2026-07",
+    ),
 }
 
 # GPT-5.6 "-pro" high-effort variants bill at the same per-token rates as
@@ -866,6 +914,13 @@ def resolve_billing_route(
         return BillingRoute(provider="openai", model=model.split("/")[-1], base_url=base_url or "", billing_mode="official_docs_snapshot")
     if provider_name in {"minimax", "minimax-cn"}:
         return BillingRoute(provider=provider_name, model=model.split("/")[-1], base_url=base_url or "", billing_mode="official_docs_snapshot")
+    # Z.AI / Zhipu (api.z.ai) — first-party GLM provider. "zai", "z-ai", and
+    # "z.ai" are all accepted provider aliases (normalized upstream in
+    # hermes_cli/auth.py); "glm"/"zhipu" also collapse to "zai". Price off the
+    # official docs snapshot, not OpenRouter, so token-plan sessions see the
+    # equivalent first-party metered cost.
+    if provider_name in {"zai", "z-ai", "z.ai", "glm", "zhipu"} or base_url_host_matches(base_url or "", "api.z.ai"):
+        return BillingRoute(provider="zai", model=model.split("/")[-1], base_url=base_url or "", billing_mode="official_docs_snapshot")
     # Vertex AI hosts the same Gemini models as Google AI Studio; price them
     # off the gemini official-docs snapshot. Strip the "google/" vendor prefix
     # the OpenAI-compat endpoint requires so the pricing key matches.

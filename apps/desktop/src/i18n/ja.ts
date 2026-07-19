@@ -620,7 +620,23 @@ export const ja = defineLocale({
       failedLoad: '設定の読み込みに失敗しました',
       autosaveFailed: '自動保存に失敗しました',
       imported: '設定をインポートしました',
-      invalidJson: '設定 JSON が無効です'
+      invalidJson: '設定 JSON が無効です',
+      personalityLabels: {
+        helpful: '親切',
+        concise: '簡潔',
+        technical: 'テクニカル',
+        creative: 'クリエイティブ',
+        teacher: '先生',
+        kawaii: 'カワイイ',
+        catgirl: 'ネコガール',
+        pirate: '海賊',
+        shakespeare: 'シェイクスピア',
+        surfer: 'サーファー',
+        noir: 'ノワール',
+        uwu: 'uwu',
+        philosopher: '哲学者',
+        hype: 'ハイテンション'
+      }
     },
     credentials: {
       pasteKey: 'キーを貼り付け',

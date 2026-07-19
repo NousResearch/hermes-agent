@@ -719,7 +719,23 @@ export const zh: Translations = {
       failedLoad: '设置加载失败',
       autosaveFailed: '自动保存失败',
       imported: '配置已导入',
-      invalidJson: '配置 JSON 无效'
+      invalidJson: '配置 JSON 无效',
+      personalityLabels: {
+        helpful: '乐于助人',
+        concise: '简明扼要',
+        technical: '技术专家',
+        creative: '创意发想',
+        teacher: '耐心教师',
+        kawaii: '可爱系',
+        catgirl: '猫娘',
+        pirate: '海盗船长',
+        shakespeare: '莎士比亚',
+        surfer: '冲浪客',
+        noir: '黑色侦探',
+        uwu: 'uwu',
+        philosopher: '哲学家',
+        hype: '热血满格'
+      }
     },
     credentials: {
       pasteKey: '粘贴密钥',

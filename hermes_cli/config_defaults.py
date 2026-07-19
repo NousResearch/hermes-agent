@@ -1568,6 +1568,8 @@ DEFAULT_CONFIG = {
 
     "whatsapp": {
         # reply_prefix: None = built-in "☤ *Hermes Agent*" header; "" disables; \n allowed.
+        # Allow same-account group messages; group/mention gates still apply.
+        "process_from_me_groups": False,
     },
 
     "telegram": {

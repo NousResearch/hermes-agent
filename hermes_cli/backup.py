@@ -1551,14 +1551,22 @@ def _write_full_zip_backup(out_path: Path, hermes_root: Path) -> Optional[Path]:
         return None
 
 
+
 def _write_full_zip_backup_locked(out_path: Path, hermes_root: Path) -> Optional[Path]:
     scan_started = time.monotonic()
     logger.info("automatic backup phase=scan status=started")
+    skipped_symlinks: list[str] = []
     try:
-        files_to_add = list(_iter_backup_files(hermes_root, out_path))
+        files_to_add = list(_iter_backup_files(hermes_root, out_path, skipped_symlinks=skipped_symlinks))
     except OSError as exc:
         logger.warning("Full-zip backup: walk failed: %s", exc)
         return None
+    if skipped_symlinks:
+        preview = ", ".join(sorted(skipped_symlinks)[:10])
+        if len(skipped_symlinks) > 10:
+            preview += f", ... and {len(skipped_symlinks) - 10} more"
+        logger.warning("Full-zip backup: %d symlink(s) skipped (not archived): %s",
+                       len(skipped_symlinks), preview)
     if not files_to_add:
         return None
     logger.info("automatic backup phase=scan status=complete duration_ms=%.1f files=%d",

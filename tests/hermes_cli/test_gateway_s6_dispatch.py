@@ -131,6 +131,9 @@ class _ListingRecorder(_CallRecorder):
     def list_profile_gateways(self) -> list[str]:
         return list(self._profiles)
 
+    def is_running(self, name: str) -> bool:
+        return name.removeprefix("gateway-") in self._profiles
+
 
 def test_dispatch_all_returns_false_on_host(
     monkeypatch: pytest.MonkeyPatch,
@@ -239,7 +242,7 @@ def test_dispatch_all_empty_list_reports_and_returns_true(
     )
     assert gw._dispatch_all_via_service_manager_if_s6("stop") is True
     assert rec.calls == []
-    assert "No profile gateways" in capsys.readouterr().out
+    assert "No running profile gateways" in capsys.readouterr().out
 
 
 def test_dispatch_all_unknown_action_returns_false(

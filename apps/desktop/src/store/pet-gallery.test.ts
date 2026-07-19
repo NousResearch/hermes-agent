@@ -7,7 +7,7 @@ const messages = { failed: 'Import failed', tooLarge: 'Too large' }
 describe('pet package import', () => {
   beforeEach(() => resetPetGallery())
 
-  it('uploads bytes and refreshes only the local gallery', async () => {
+  it('uploads bytes and preserves cached remote gallery pets', async () => {
     const calls: Array<{ method: string; params?: Record<string, unknown> }> = []
 
     const request = vi.fn(async (method: string, params?: Record<string, unknown>) => {
@@ -17,29 +17,21 @@ describe('pet package import', () => {
         return { ok: true, slug: 'fox', displayName: 'Fox' }
       }
 
-      if (method === 'pet.gallery') {
-        return {
-          enabled: false,
-          active: '',
-          pets: [
-            {
-              slug: 'fox',
-              displayName: 'Fox',
-              installed: true,
-              managedLocal: true,
-              generated: false,
-              createdBy: 'import'
-            }
-          ]
-        }
-      }
-
-      if (method === 'pet.info') {
-        return { enabled: false }
-      }
-
       throw new Error(`unexpected method: ${method}`)
     }) as GatewayRequest
+
+    $petGallery.set({
+      enabled: false,
+      active: '',
+      pets: [
+        {
+          slug: 'boba',
+          displayName: 'Boba',
+          installed: false,
+          spritesheetUrl: 'https://petdex.dev/boba.webp'
+        }
+      ]
+    })
 
     const file = new File([new Uint8Array([0, 1, 2, 255])], 'fox.zip', {
       type: 'application/zip'
@@ -49,9 +41,16 @@ describe('pet package import', () => {
 
     const upload = calls.find(call => call.method === 'pet.import')
     expect(upload?.params).toMatchObject({ filename: 'fox.zip', dataBase64: 'AAEC/w==' })
-    expect(calls.filter(call => call.method === 'pet.gallery')).toHaveLength(1)
-    expect(calls.find(call => call.method === 'pet.gallery')?.params).toMatchObject({ localOnly: true })
-    expect($petGallery.get()?.pets[0]).toMatchObject({ createdBy: 'import', managedLocal: true })
+    expect(calls.filter(call => call.method === 'pet.gallery')).toHaveLength(0)
+    expect($petGallery.get()?.pets.find(pet => pet.slug === 'boba')).toMatchObject({
+      displayName: 'Boba',
+      spritesheetUrl: 'https://petdex.dev/boba.webp'
+    })
+    expect($petGallery.get()?.pets.find(pet => pet.slug === 'fox')).toMatchObject({
+      createdBy: 'import',
+      installed: true,
+      managedLocal: true
+    })
     expect($petBusy.get()).toBeNull()
   })
 

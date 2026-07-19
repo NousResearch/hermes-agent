@@ -112,10 +112,7 @@ export function loadPetThumb(request: GatewayRequest, slug: string, url?: string
  * ready snapshot is held; pass `{ force: true }` to bypass the cache (e.g. a
  * manual refresh). Concurrent callers share a single in-flight request.
  */
-export function loadPetGallery(
-  request: GatewayRequest,
-  options: { force?: boolean; localOnly?: boolean } = {}
-): Promise<void> {
+export function loadPetGallery(request: GatewayRequest, options: { force?: boolean } = {}): Promise<void> {
   if (!options.force && $petGallery.get() && $petGalleryStatus.get() === 'ready') {
     return Promise.resolve()
   }
@@ -164,7 +161,7 @@ export function loadPetGallery(
 
     // Phase 2: merge in the full petdex catalog in the background. A slow/failed
     // manifest fetch never hides the local pets shown in phase 1.
-    if (localOk && !options.localOnly) {
+    if (localOk) {
       try {
         const full = await petRpc<PetGallery>(request, 'pet.gallery')
 
@@ -428,7 +425,7 @@ export async function exportPet(request: GatewayRequest, slug: string, fallback:
   }
 }
 
-/** Import a validated pet package/raw atlas, then refresh the local gallery. */
+/** Import a validated pet package/raw atlas and add it to the cached gallery. */
 export async function importPet(
   request: GatewayRequest,
   file: File,
@@ -459,7 +456,29 @@ export async function importPet(
     }
 
     thumbCache.delete(res.slug)
-    await loadPetGallery(request, { force: true, localOnly: true })
+
+    const imported: GalleryPet = {
+      slug: res.slug,
+      displayName: res.displayName || res.slug,
+      installed: true,
+      spritesheetUrl: '',
+      generated: false,
+      managedLocal: true,
+      createdBy: 'import'
+    }
+
+    // The import response is authoritative for the new local pet. Upsert it
+    // without replacing the cached full manifest, so remote pets stay visible.
+    patchGallery(gallery => ({
+      ...gallery,
+      pets: gallery.pets.some(pet => pet.slug === imported.slug)
+        ? gallery.pets.map(pet =>
+            pet.slug === imported.slug
+              ? { ...pet, ...imported, spritesheetUrl: pet.spritesheetUrl || imported.spritesheetUrl }
+              : pet
+          )
+        : [...gallery.pets, imported]
+    }))
 
     return true
   } catch (e) {

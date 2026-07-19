@@ -98,6 +98,8 @@ def _cmd_import(args) -> int:
         _err(f"✗ pet file not found: {path}")
         return 1
     try:
+        if path.stat().st_size > store.PET_IMPORT_MAX_BYTES:
+            raise store.PetStoreError("pet import exceeds 32 MB")
         pet = store.import_pet_package(
             path.read_bytes(), filename=path.name, name=getattr(args, "name", "") or ""
         )

@@ -421,8 +421,13 @@ async def test_stream_edit_and_base_final_share_one_real_discord_message(
     running = await instance.send(
         "555",
         "Checking files",
-        metadata={"thread_id": "777", "status_key": "task_run"},
+        metadata={
+            "thread_id": "777",
+            "status_key": "task_run",
+            "non_conversational": True,
+        },
     )
+    assert "7001" in instance._nonconversational_messages
     stream_final = await instance.edit_message(
         "555",
         "7001",
@@ -453,6 +458,8 @@ async def test_stream_edit_and_base_final_share_one_real_discord_message(
         == "7001"
     )
     assert thread.send.await_count == 1
+    assert "7001" not in instance._nonconversational_messages
+    assert instance._last_self_message_id["777"] == "7001"
     assert thread.send.await_args.kwargs["embed"] == {
         "kind": "task_run",
         "summary": "Checking files",
@@ -579,7 +586,11 @@ async def test_keyed_consumer_fallback_oversized_final_preserves_all_chunks(
     running = await instance.send(
         "555",
         "Working",
-        metadata={"thread_id": "777", "status_key": "task_run:message:42"},
+        metadata={
+            "thread_id": "777",
+            "status_key": "task_run:message:42",
+            "non_conversational": True,
+        },
     )
     retained = sent[0][1]
     thread.fetch_message.return_value = retained
@@ -600,3 +611,9 @@ async def test_keyed_consumer_fallback_oversized_final_preserves_all_chunks(
     assert retained.edit.await_args.kwargs["content"].startswith("A" * 100)
     assert len(sent) >= 2
     assert "B" * 100 in sent[-1][0]["content"]
+    visible_ids = [str(message.id) for _kwargs, message in sent]
+    assert all(
+        message_id not in instance._nonconversational_messages
+        for message_id in visible_ids
+    )
+    assert instance._last_self_message_id["777"] == visible_ids[-1]

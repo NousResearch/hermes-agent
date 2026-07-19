@@ -10,7 +10,11 @@ import pytest
 
 from gateway.config import Platform, PlatformConfig
 from gateway.platforms.base import BasePlatformAdapter, MessageEvent, SendResult
-from gateway.run import _discord_task_run_status_key, _send_or_update_status_coro
+from gateway.run import (
+    _discord_task_run_status_key,
+    _edit_streamed_transformed_final,
+    _send_or_update_status_coro,
+)
 from gateway.session import SessionSource, build_session_key
 from gateway.stream_consumer import GatewayStreamConsumer, StreamConsumerConfig
 
@@ -129,6 +133,108 @@ async def test_stream_terminal_metadata_is_copied_not_shared_with_heartbeat():
             "status_terminal": True,
         }
     ]
+
+
+@pytest.mark.asyncio
+async def test_segment_break_finalize_keeps_keyed_card_running():
+    calls = []
+
+    class _Adapter:
+        async def edit_message(
+            self,
+            chat_id,
+            message_id,
+            content,
+            *,
+            finalize=False,
+            metadata=None,
+        ):
+            calls.append({"finalize": finalize, "metadata": metadata})
+            return SendResult(success=True, message_id=message_id)
+
+    consumer = GatewayStreamConsumer(
+        adapter=_Adapter(),
+        chat_id="555",
+        config=StreamConsumerConfig(cursor=""),
+        metadata={"thread_id": "777", "status_key": "task_run:message:42"},
+    )
+    consumer._message_id = "7001"
+    consumer._last_sent_text = "Earlier text"
+
+    await consumer._send_or_edit(
+        "Segment complete",
+        finalize=True,
+        is_turn_final=False,
+    )
+
+    assert calls == [
+        {
+            "finalize": True,
+            "metadata": {
+                "thread_id": "777",
+                "status_key": "task_run:message:42",
+                "status_terminal": False,
+            },
+        }
+    ]
+
+
+@pytest.mark.asyncio
+async def test_transformed_stream_edit_keeps_routing_and_requires_success():
+    calls = []
+
+    class _Adapter:
+        async def edit_message(
+            self,
+            chat_id,
+            message_id,
+            content,
+            *,
+            finalize=False,
+            metadata=None,
+        ):
+            calls.append(
+                {
+                    "chat_id": chat_id,
+                    "message_id": message_id,
+                    "content": content,
+                    "finalize": finalize,
+                    "metadata": metadata,
+                }
+            )
+            return SendResult(success=len(calls) == 2, message_id=message_id)
+
+    consumer = GatewayStreamConsumer(
+        adapter=_Adapter(),
+        chat_id="555",
+        config=StreamConsumerConfig(),
+        metadata={"thread_id": "777", "status_key": "task_run:message:42"},
+    )
+
+    failed = await _edit_streamed_transformed_final(
+        consumer,
+        message_id="7001",
+        content="Transformed final",
+    )
+    delivered = await _edit_streamed_transformed_final(
+        consumer,
+        message_id="7001",
+        content="Transformed final",
+    )
+
+    assert failed is False
+    assert delivered is True
+    assert calls[0] == calls[1] == {
+        "chat_id": "555",
+        "message_id": "7001",
+        "content": "Transformed final",
+        "finalize": True,
+        "metadata": {
+            "thread_id": "777",
+            "status_key": "task_run:message:42",
+            "status_terminal": True,
+        },
+    }
 
 
 @pytest.mark.asyncio

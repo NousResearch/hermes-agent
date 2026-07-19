@@ -321,11 +321,16 @@ class GatewayStreamConsumer:
                     for param in params.values()
                 ):
                     edit_metadata = dict(self.metadata)
-                    if (
-                        (finalize if status_terminal is None else status_terminal)
-                        and edit_metadata.get("status_key")
-                    ):
-                        edit_metadata["status_terminal"] = True
+                    if edit_metadata.get("status_key"):
+                        # ``False`` is meaningful here: a segment break uses
+                        # ``finalize=True`` to remove the cursor, but the run is
+                        # still active.  Preserve that explicit marker so the
+                        # Discord adapter does not infer a terminal transition
+                        # merely from ``finalize``.
+                        if status_terminal is not None:
+                            edit_metadata["status_terminal"] = bool(status_terminal)
+                        elif finalize:
+                            edit_metadata["status_terminal"] = True
                     kwargs["metadata"] = edit_metadata
             except (TypeError, ValueError):
                 pass
@@ -1829,7 +1834,7 @@ class GatewayStreamConsumer:
                         message_id=self._message_id,
                         content=text,
                         finalize=finalize,
-                        status_terminal=finalize and is_turn_final,
+                        status_terminal=(is_turn_final if finalize else None),
                     )
                     if result.success:
                         self._already_sent = True
@@ -1984,7 +1989,7 @@ class GatewayStreamConsumer:
                     metadata=self._metadata_for_send(
                         final=finalize,
                         expect_edits=True,
-                        status_terminal=finalize and is_turn_final,
+                        status_terminal=(is_turn_final if finalize else None),
                     ),
                 )
                 if result.success:

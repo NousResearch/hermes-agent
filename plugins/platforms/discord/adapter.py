@@ -390,6 +390,17 @@ class _DiscordNonConversationalMessageTracker:
         if changed:
             self._save()
 
+    def discard_many(self, message_ids: List[str]) -> None:
+        """Stop treating completed status-card messages as history noise."""
+        changed = False
+        for message_id in message_ids:
+            key = str(message_id or "").strip()
+            if key and key in self._ids:
+                self._ids.pop(key, None)
+                changed = True
+        if changed:
+            self._save()
+
     def __contains__(self, message_id: str) -> bool:
         return str(message_id or "") in self._ids
 
@@ -3253,6 +3264,41 @@ class DiscordAdapter(BasePlatformAdapter):
             self._status_message_users.pop(evict_key, None)
             self._status_message_terminal.pop(evict_key, None)
 
+    def _restore_terminal_status_to_conversation(
+        self,
+        *,
+        chat_id: str,
+        thread_id: str,
+        original_message_id: Optional[str],
+        result: SendResult,
+    ) -> None:
+        """Make a completed card visible to history backfill again.
+
+        Running task cards are deliberately excluded from conversational
+        history.  Once the card becomes the assistant's final answer, every
+        chunk belongs to the conversation and the fast-path history cursor
+        must point at the last visible chunk.
+        """
+        message_ids: list[str] = []
+
+        def _append(message_id: Any) -> None:
+            value = str(message_id or "").strip()
+            if value and value not in message_ids:
+                message_ids.append(value)
+
+        _append(original_message_id)
+        raw_response = result.raw_response
+        if isinstance(raw_response, dict):
+            for message_id in raw_response.get("message_ids", ()) or ():
+                _append(message_id)
+        for message_id in result.continuation_message_ids or ():
+            _append(message_id)
+        _append(result.message_id)
+
+        self._nonconversational_messages.discard_many(message_ids)
+        if message_ids:
+            self._last_self_message_id[thread_id or str(chat_id)] = message_ids[-1]
+
     async def send_or_update_status(
         self,
         chat_id: str,
@@ -3330,6 +3376,13 @@ class DiscordAdapter(BasePlatformAdapter):
                     )
                     if result.success:
                         retained_id = str(result.message_id or cached_id)
+                        if terminal:
+                            self._restore_terminal_status_to_conversation(
+                                chat_id=str(chat_id),
+                                thread_id=thread_id,
+                                original_message_id=cached_id,
+                                result=result,
+                            )
                         self._cache_status_message(
                             key,
                             retained_id,
@@ -3380,6 +3433,13 @@ class DiscordAdapter(BasePlatformAdapter):
                     result = await self.send(**fallback_kwargs)
 
                 if result.success and result.message_id:
+                    if terminal:
+                        self._restore_terminal_status_to_conversation(
+                            chat_id=str(chat_id),
+                            thread_id=thread_id,
+                            original_message_id=cached_id,
+                            result=result,
+                        )
                     self._cache_status_message(
                         key,
                         str(result.message_id),

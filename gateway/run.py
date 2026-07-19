@@ -544,6 +544,28 @@ async def _send_or_update_status_coro(adapter, chat_id, status_key, content, met
     return await adapter.send(chat_id, content, metadata=metadata)
 
 
+async def _edit_streamed_transformed_final(
+    stream_consumer: Any,
+    *,
+    message_id: str,
+    content: str,
+) -> bool:
+    """Replace a streamed reply with plugin-transformed terminal content.
+
+    Route through the consumer's metadata-aware edit seam so Discord retains
+    its thread and keyed status identity.  Only report delivery when the
+    adapter explicitly confirms success; otherwise Base delivery remains the
+    fallback for the transformed answer.
+    """
+    result = await stream_consumer._edit_message(
+        message_id=message_id,
+        content=content,
+        finalize=True,
+        status_terminal=True,
+    )
+    return bool(result and result.success)
+
+
 def _resolve_progress_thread_id(platform: Any, source_thread_id: Any, event_message_id: Any) -> Optional[str]:
     """Return thread/root ID that progress/status bubbles should target."""
     platform_value = getattr(platform, "value", platform)
@@ -12909,6 +12931,12 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 persist_user_message=persist_user_message,
                 persist_user_timestamp=persist_user_timestamp,
             )
+            if isinstance(agent_result, dict) and agent_result.get("_status_key"):
+                # An in-band queued follow-up may finish under a different
+                # inbound-message identity.  BasePlatformAdapter performs the
+                # final delivery after this handler returns, so hand it the
+                # final turn's key rather than overwriting the first answer.
+                event._status_key = agent_result["_status_key"]
 
             # Stop persistent typing indicator now that the agent is done.
             # Slack AI status is scoped to a thread/workspace, so preserve the
@@ -21841,10 +21869,15 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                                 "Queued follow-up for session %s: final stream delivery not confirmed; sending first response before continuing.",
                                 session_key or "?",
                             )
+                            _first_response_metadata = dict(
+                                _status_thread_metadata or {}
+                            )
+                            if _task_run_status_key:
+                                _first_response_metadata["status_terminal"] = True
                             await adapter.send(
                                 source.chat_id,
                                 first_response,
-                                metadata=_status_thread_metadata,
+                                metadata=_first_response_metadata or None,
                             )
                         except Exception as e:
                             logger.warning("Failed to send first response before queued message: %s", e)
@@ -21961,6 +21994,17 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     event_message_id=next_message_id,
                     channel_prompt=next_channel_prompt,
                 )
+                _followup_status_key = _discord_task_run_status_key(
+                    next_source.platform,
+                    event_message_id=next_message_id,
+                    session_key=next_session_key,
+                    run_generation=run_generation,
+                )
+                if _followup_status_key and isinstance(followup_result, dict):
+                    # Preserve a deeper queued turn's identity when recursive
+                    # draining returns through multiple levels.
+                    followup_result = dict(followup_result)
+                    followup_result.setdefault("_status_key", _followup_status_key)
                 return _preserve_queued_followup_history_offset(result, followup_result)
         finally:
             # Stop progress sender, interrupt monitor, and notification task
@@ -22076,17 +22120,22 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 _sc_msg_id = _sc.message_id
                 if _sc_msg_id:
                     try:
-                        await _sc.adapter.edit_message(
-                            chat_id=source.chat_id,
+                        _transformed_delivered = await _edit_streamed_transformed_final(
+                            _sc,
                             message_id=_sc_msg_id,
                             content=response["final_response"],
-                            finalize=True,
                         )
-                        response["already_sent"] = True
-                        logger.info(
-                            "Edited streamed message %s for session %s to include plugin-transformed content.",
-                            _sc_msg_id, session_key or "?",
-                        )
+                        if _transformed_delivered:
+                            response["already_sent"] = True
+                            logger.info(
+                                "Edited streamed message %s for session %s to include plugin-transformed content.",
+                                _sc_msg_id, session_key or "?",
+                            )
+                        else:
+                            logger.warning(
+                                "Failed to confirm transformed streamed edit for session %s; leaving normal final delivery enabled.",
+                                session_key or "?",
+                            )
                     except Exception as _edit_err:
                         logger.warning(
                             "Failed to edit streamed message for session %s: %s",

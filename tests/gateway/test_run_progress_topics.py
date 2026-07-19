@@ -1091,6 +1091,36 @@ async def test_run_agent_queued_message_does_not_treat_commentary_as_final(monke
 
 
 @pytest.mark.asyncio
+async def test_discord_queued_followup_terminalizes_each_run_key(monkeypatch, tmp_path):
+    """Two queued turns in one thread keep two completed status identities."""
+    QueuedCommentaryAgent.calls = 0
+    adapter, result = await _run_with_agent(
+        monkeypatch,
+        tmp_path,
+        QueuedCommentaryAgent,
+        session_id="sess-discord-queued-status-keys",
+        pending_text="queued follow-up",
+        config_data={"display": {"interim_assistant_messages": False}},
+        platform=Platform.DISCORD,
+        chat_id="555",
+        chat_type="thread",
+        thread_id="777",
+        adapter_cls=MetadataEditProgressCaptureAdapter,
+    )
+
+    first_delivery = next(
+        call for call in adapter.sent if call["content"] == "final response 1"
+    )
+    assert first_delivery["metadata"]["status_terminal"] is True
+    assert first_delivery["metadata"]["status_key"].startswith(
+        "task_run:generation:"
+    )
+    assert result["final_response"] == "final response 2"
+    assert result["_status_key"] == "task_run:message:queued-1"
+    assert result["_status_key"] != first_delivery["metadata"]["status_key"]
+
+
+@pytest.mark.asyncio
 async def test_run_agent_defers_background_review_notification_until_release(monkeypatch, tmp_path):
     adapter, result = await _run_with_agent(
         monkeypatch,

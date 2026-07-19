@@ -504,11 +504,15 @@ export function useSessionActions({
       const storedForProfile = await resolveStoredSession(storedSessionId)
       const sessionProfile = storedForProfile?.profile
 
-      if (resumeRequestRef.current !== requestId) {
+      if (!isCurrentResume()) {
         return
       }
 
       await ensureGatewayProfile(sessionProfile)
+
+      if (!isCurrentResume()) {
+        return
+      }
 
       // Re-check after the profile-resolve / gateway-swap awaits above: the
       // cache may have changed, and takeWarmCache re-validates belongs-to and

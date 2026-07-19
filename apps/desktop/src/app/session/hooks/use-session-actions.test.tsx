@@ -26,6 +26,10 @@ import type { ClientSessionState } from '../../types'
 
 import { useSessionActions } from './use-session-actions'
 
+const { ensureGatewayProfileMock } = vi.hoisted(() => ({
+  ensureGatewayProfileMock: vi.fn()
+}))
+
 vi.mock('@/hermes', async importOriginal => ({
   ...(await importOriginal<Record<string, unknown>>()),
   deleteSession: vi.fn(),
@@ -33,6 +37,11 @@ vi.mock('@/hermes', async importOriginal => ({
   listAllProfileSessions: vi.fn(),
   setApiRequestProfile: vi.fn(),
   setSessionArchived: vi.fn()
+}))
+
+vi.mock('@/store/profile', async importOriginal => ({
+  ...(await importOriginal<typeof import('@/store/profile')>()),
+  ensureGatewayProfile: ensureGatewayProfileMock
 }))
 
 const RUNTIME_SESSION_ID = 'rt-new-001'
@@ -58,6 +67,15 @@ function storedSession(overrides: Partial<SessionInfo> = {}): SessionInfo {
     tool_call_count: 0,
     ...overrides
   }
+}
+
+function deferred<T>() {
+  let resolve!: (value: T) => void
+  const promise = new Promise<T>(resolvePromise => {
+    resolve = resolvePromise
+  })
+
+  return { promise, resolve }
 }
 
 function Harness({
@@ -257,6 +275,7 @@ describe('resumeSession failure recovery', () => {
     setResumeFailedSessionId(null)
     setMessages([])
     setSessions([])
+    ensureGatewayProfileMock.mockReset()
     vi.restoreAllMocks()
   })
 
@@ -360,6 +379,36 @@ describe('resumeSession failure recovery', () => {
       actions!.startFreshSessionDraft(true)
       await pendingResume
     })
+
+    expect(requestGateway).not.toHaveBeenCalledWith('session.resume', expect.anything())
+    expect($activeSessionId.get()).toBeNull()
+    expect($selectedStoredSessionId.get()).toBeNull()
+    expect($messages.get()).toEqual([])
+  })
+
+  it('does not let a resume continue after New Chat during its gateway profile swap', async () => {
+    setSessions([storedSession({ profile: 'other-profile' })])
+    const gatewaySwap = deferred<void>()
+    ensureGatewayProfileMock.mockReturnValueOnce(gatewaySwap.promise)
+
+    const requestGateway = vi.fn(async (method: string, params?: Record<string, unknown>) => {
+      if (method === 'session.resume') {
+        return { session_id: 'runtime-1', resumed: params?.session_id, messages: [], info: {} } as never
+      }
+
+      return {} as never
+    })
+    let actions: HarnessHandle | null = null
+
+    render(<ResumeHarness onReady={handle => (actions = handle)} requestGateway={requestGateway} />)
+    await waitFor(() => expect(actions).not.toBeNull())
+
+    const pendingResume = actions!.resumeSession('stored-1', true)
+    await waitFor(() => expect(ensureGatewayProfileMock).toHaveBeenCalledWith('other-profile'))
+
+    actions!.startFreshSessionDraft(true)
+    gatewaySwap.resolve(undefined)
+    await pendingResume
 
     expect(requestGateway).not.toHaveBeenCalledWith('session.resume', expect.anything())
     expect($activeSessionId.get()).toBeNull()

@@ -438,3 +438,79 @@ async def test_session_header_rejected_without_api_key(adapter, session_db):
         assert resp.status == 403
         data = await resp.json()
         assert "X-Hermes-Session-Key requires API key" in data["error"]["message"]
+
+
+# ---------------------------------------------------------------------------
+# PATCH /api/sessions/{id} — archived field
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_patch_session_archive(adapter, session_db):
+    """PATCH with {archived: true} archives the session via SessionDB."""
+    session_id = session_db.create_session("to-archive", "api_server")
+    app = _create_session_app(adapter)
+    async with TestClient(TestServer(app)) as cli:
+        resp = await cli.patch(
+            f"/api/sessions/{session_id}",
+            json={"archived": True},
+        )
+        assert resp.status == 200
+        data = await resp.json()
+        assert data["session"]["archived"] is True
+
+    # Verify in DB
+    row = session_db.get_session(session_id)
+    assert row is not None
+    assert row["archived"] == 1
+
+
+@pytest.mark.asyncio
+async def test_patch_session_unarchive(adapter, session_db):
+    """PATCH with {archived: false} un-archives a previously archived session."""
+    session_id = session_db.create_session("to-unarchive", "api_server")
+    session_db.set_session_archived(session_id, True)
+
+    app = _create_session_app(adapter)
+    async with TestClient(TestServer(app)) as cli:
+        resp = await cli.patch(
+            f"/api/sessions/{session_id}",
+            json={"archived": False},
+        )
+        assert resp.status == 200
+        data = await resp.json()
+        assert data["session"]["archived"] is False
+
+    row = session_db.get_session(session_id)
+    assert row["archived"] == 0
+
+
+@pytest.mark.asyncio
+async def test_patch_session_rejects_unknown_fields(adapter, session_db):
+    """PATCH still rejects fields not in the allowed set."""
+    session_id = session_db.create_session("reject-test", "api_server")
+    app = _create_session_app(adapter)
+    async with TestClient(TestServer(app)) as cli:
+        resp = await cli.patch(
+            f"/api/sessions/{session_id}",
+            json={"bogus_field": "nope"},
+        )
+        assert resp.status == 400
+        data = await resp.json()
+        assert "bogus_field" in data["error"]["message"]
+
+
+@pytest.mark.asyncio
+async def test_patch_session_title_and_archived_together(adapter, session_db):
+    """PATCH can update title and archived in a single request."""
+    session_id = session_db.create_session("combo", "api_server")
+    app = _create_session_app(adapter)
+    async with TestClient(TestServer(app)) as cli:
+        resp = await cli.patch(
+            f"/api/sessions/{session_id}",
+            json={"title": "My Session", "archived": True},
+        )
+        assert resp.status == 200
+        data = await resp.json()
+        assert data["session"]["title"] == "My Session"
+        assert data["session"]["archived"] is True

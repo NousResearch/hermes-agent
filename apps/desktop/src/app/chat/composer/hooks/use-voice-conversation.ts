@@ -187,8 +187,10 @@ export function useVoiceConversation({
   )
 
   const startListening = useCallback(async () => {
-    pendingStartRef.current = false
-
+    // Keep the pending request armed while the previous turn is still busy.
+    // `busy` is a dependency of the driver effect, so it will retry when the
+    // assistant turn finishes. Clearing this before the guard caused the next
+    // voice turn to be lost until the user clicked the microphone again.
     if (!enabledRef.current || mutedRef.current || busyRef.current) {
       return
     }
@@ -196,6 +198,8 @@ export function useVoiceConversation({
     if (statusRef.current !== 'idle') {
       return
     }
+
+    pendingStartRef.current = false
 
     try {
       // VAD tuning mirrors `tools.voice_mode` defaults so the browser loop matches the CLI.

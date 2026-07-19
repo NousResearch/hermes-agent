@@ -497,31 +497,45 @@ def _convert_content_to_converse(content) -> List[Dict]:
       - Plain text strings → [{"text": "..."}]
       - Content arrays with text/image_url parts → mixed text/image blocks
 
-    Filters out empty text blocks — Bedrock's Converse API rejects messages
-    where a text content block has an empty ``text`` field (ValidationException:
-    "text content blocks must be non-empty"). Ref: issue #9486.
+    Ensures that every returned content block has a non-empty ``text`` field —
+    Bedrock's Converse API rejects messages where a text content block has an
+    empty ``text`` field (ValidationException: "text content blocks must be
+    non-empty"). Ref: issue #9486.
+
+    When all content is empty/whitespace-only, returns a single space placeholder
+    block so multi-turn conversations don't fail. A space is semantically neutral
+    and avoids the empty-text-block validation error.
     """
     if content is None:
         return [{"text": " "}]
+
     if isinstance(content, str):
-        return [{"text": content}] if content.strip() else [{"text": " "}]
+        text = content.strip()
+        return [{"text": text}] if text else [{"text": " "}]
+
     if isinstance(content, list):
         blocks = []
         for part in content:
             if isinstance(part, str):
-                blocks.append({"text": part})
+                text = part.strip()
+                if text:
+                    blocks.append({"text": text})
                 continue
+
             if not isinstance(part, dict):
                 continue
+
             part_type = part.get("type", "")
             if part_type == "text":
-                text = part.get("text", "")
-                blocks.append({"text": text if text else " "})
+                text = str(part.get("text", "")).strip()
+                if text:
+                    blocks.append({"text": text})
+                continue
+
             elif part_type == "image_url":
                 image_url = part.get("image_url", {})
                 url = image_url.get("url", "") if isinstance(image_url, dict) else ""
                 if url.startswith("data:"):
-                    # data:image/jpeg;base64,/9j/4AAQ...
                     header, _, data = url.partition(",")
                     media_type = "image/jpeg"
                     if header.startswith("data:"):
@@ -544,11 +558,12 @@ def _convert_content_to_converse(content) -> List[Dict]:
                         }
                     })
                 else:
-                    # Remote URL — Converse doesn't support URLs directly,
-                    # include as text reference for the model.
                     blocks.append({"text": f"[Image: {url}]"})
+
         return blocks if blocks else [{"text": " "}]
-    return [{"text": str(content)}]
+
+    text = str(content).strip()
+    return [{"text": text}] if text else [{"text": " "}]
 
 
 def convert_messages_to_converse(
@@ -592,7 +607,18 @@ def convert_messages_to_converse(
         if role == "tool":
             # Tool result messages → merge into the preceding user turn
             tool_call_id = msg.get("tool_call_id", "")
-            result_content = content if isinstance(content, str) else json.dumps(content)
+
+            # Handle empty/whitespace-only tool results — Bedrock rejects
+            # empty text blocks in multi-turn conversations. Use a space
+            # placeholder (semantically neutral) instead of an empty string.
+            # See also _convert_content_to_converse for user/assistant path.
+            if isinstance(content, str) and not content.strip():
+                result_content = " "
+            elif isinstance(content, str):
+                result_content = content
+            else:
+                result_content = json.dumps(content)
+
             tool_result_block = {
                 "toolResult": {
                     "toolUseId": tool_call_id,
@@ -1365,3 +1391,4 @@ def get_bedrock_context_length(model_id: str) -> int:
             best_key = key
             best_val = val
     return best_val
+

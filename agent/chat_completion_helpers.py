@@ -954,7 +954,27 @@ def interruptible_api_call(agent, api_kwargs: dict):
 
 
 def build_api_kwargs(agent, api_messages: list) -> dict:
-    """Build the keyword arguments dict for the active API mode."""
+    """Build the keyword arguments dict for the active API mode.
+
+    Pre-47) Sanitize empty text content across all messages. Some
+    upstream proxies (e.g. OpenAI-format -> Bedrock Converse gateways)
+    reject empty text blocks in multi-turn conversations. Replace
+    empty/whitespace-only content with a space placeholder to avoid
+    ``ValidationException: text content blocks must be non-empty``.
+    Tool-result sub-dicts are handled separately below.
+    """
+    for _msg in api_messages:
+        _content = _msg.get("content")
+        if _content is None:
+            _msg["content"] = " "
+        elif isinstance(_content, str) and not _content.strip():
+            _msg["content"] = " "
+        elif isinstance(_content, list):
+            for _part in _content:
+                if isinstance(_part, dict) and _part.get("type") in (None, "text"):
+                    _text = str(_part.get("text", "")).strip()
+                    if not _text:
+                        _part["text"] = " "
     tools_for_api = agent.tools
 
     if agent.api_mode == "anthropic_messages":

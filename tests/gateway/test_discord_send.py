@@ -326,7 +326,14 @@ async def test_forum_post_file_creates_thread_with_attachment():
     adapter = DiscordAdapter(PlatformConfig(enabled=True, token="***"))
 
     thread_ch = SimpleNamespace(id=777, send=AsyncMock())
-    thread = SimpleNamespace(id=777, message=SimpleNamespace(id=800), thread=thread_ch)
+    thread = SimpleNamespace(
+        id=777,
+        message=SimpleNamespace(
+            id=800,
+            attachments=[SimpleNamespace(filename="photo.png")],
+        ),
+        thread=thread_ch,
+    )
     forum_channel = _discord_mod.ForumChannel()
     forum_channel.id = 999
     forum_channel.name = "ideas"
@@ -356,7 +363,14 @@ async def test_forum_post_file_uses_filename_when_no_content():
     """Thread name falls back to file.filename when no content is provided."""
     adapter = DiscordAdapter(PlatformConfig(enabled=True, token="***"))
 
-    thread = SimpleNamespace(id=1, message=SimpleNamespace(id=2), thread=SimpleNamespace(id=1, send=AsyncMock()))
+    thread = SimpleNamespace(
+        id=1,
+        message=SimpleNamespace(
+            id=2,
+            attachments=[SimpleNamespace(filename="voice-message.ogg")],
+        ),
+        thread=SimpleNamespace(id=1, send=AsyncMock()),
+    )
     forum_channel = _discord_mod.ForumChannel()
     forum_channel.id = 10
     forum_channel.name = "forum"
@@ -388,6 +402,32 @@ async def test_forum_post_file_creation_failure():
 
     assert result.success is False
     assert "missing perms" in (result.error or "")
+
+
+@pytest.mark.asyncio
+async def test_forum_post_file_fails_when_starter_has_no_attachments():
+    """Forum create_thread can succeed yet return an attachmentless starter (#66797)."""
+    adapter = DiscordAdapter(PlatformConfig(enabled=True, token="***"))
+
+    thread = SimpleNamespace(
+        id=7,
+        message=SimpleNamespace(id=8, attachments=[]),
+        thread=SimpleNamespace(id=7, send=AsyncMock()),
+    )
+    forum_channel = _discord_mod.ForumChannel()
+    forum_channel.id = 999
+    forum_channel.create_thread = AsyncMock(return_value=thread)
+
+    fake_file = SimpleNamespace(filename="clip.mp4")
+    result = await adapter._forum_post_file(
+        forum_channel,
+        content="video clip",
+        files=[fake_file],
+    )
+
+    assert result.success is False
+    assert "no files" in (result.error or "").lower()
+    forum_channel.create_thread.assert_awaited_once()
 
 
 # ---------------------------------------------------------------------------
@@ -622,7 +662,10 @@ async def test_send_file_attachment_forum_uses_files_kwarg(tmp_path, monkeypatch
     adapter = DiscordAdapter(PlatformConfig(enabled=True, token="***"))
     created_thread = SimpleNamespace(
         id=7,
-        message=SimpleNamespace(id=8),
+        message=SimpleNamespace(
+            id=8,
+            attachments=[SimpleNamespace(filename="clip.mp4")],
+        ),
     )
     forum_channel = SimpleNamespace(
         id=7,
@@ -641,3 +684,39 @@ async def test_send_file_attachment_forum_uses_files_kwarg(tmp_path, monkeypatch
     thread_kwargs = forum_channel.create_thread.await_args.kwargs
     assert thread_kwargs.get("file") is None
     assert isinstance(thread_kwargs.get("files"), list) and len(thread_kwargs["files"]) == 1
+
+
+@pytest.mark.asyncio
+async def test_forum_send_video_fails_loud_when_starter_has_no_attachments(tmp_path, monkeypatch):
+    """Forum-parent send_video must fail loud when the starter message drops attachments."""
+    import plugins.platforms.discord.adapter as discord_platform
+
+    video = tmp_path / "clip.mp4"
+    video.write_bytes(b"fake-mp4")
+
+    monkeypatch.setattr(
+        discord_platform.discord,
+        "File",
+        lambda fp, filename=None, **kwargs: SimpleNamespace(fp=fp, filename=filename),
+    )
+
+    adapter = DiscordAdapter(PlatformConfig(enabled=True, token="***"))
+    created_thread = SimpleNamespace(
+        id=7,
+        message=SimpleNamespace(id=8, attachments=[]),
+    )
+    forum_channel = SimpleNamespace(
+        id=7,
+        create_thread=AsyncMock(return_value=created_thread),
+    )
+    adapter._client = SimpleNamespace(
+        get_channel=lambda _chat_id: forum_channel,
+        fetch_channel=AsyncMock(),
+    )
+    monkeypatch.setattr(adapter, "_is_forum_parent", lambda _ch: True)
+
+    result = await adapter.send_video("555", str(video))
+
+    assert result.success is False
+    assert "no files" in (result.error or "").lower()
+    forum_channel.create_thread.assert_awaited_once()

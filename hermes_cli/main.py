@@ -12832,6 +12832,23 @@ def _should_background_mcp_startup(args) -> bool:
     return args.command in {None, "chat", "rl"}
 
 
+def _reject_resume_in_oneshot(args) -> None:
+    """Fail loud when --resume/--continue is combined with -z/--oneshot.
+
+    The oneshot path never hydrates a resumed session's history, so the flag
+    was silently dropped and the prompt ran context-less (#49195; same class
+    as #26633/#31548). Reject it with a clear error instead.
+    """
+    if getattr(args, "resume", None) or getattr(args, "continue_last", None):
+        print(
+            "error: --resume/--continue is not supported with -z/--oneshot — "
+            "the oneshot path does not hydrate prior session history. Re-run "
+            "without -z to resume interactively, or drop --resume/--continue.",
+            file=sys.stderr,
+        )
+        sys.exit(2)
+
+
 def _prepare_agent_startup(args) -> None:
     """Discover plugins/MCP/hooks for commands that can run an agent turn."""
     # --yolo: chokepoint guarantee that HERMES_YOLO_MODE is set before ANY
@@ -12972,6 +12989,7 @@ def _try_termux_fast_cli_launch() -> bool:
         return True
 
     if getattr(args, "oneshot", None):
+        _reject_resume_in_oneshot(args)
         _prepare_agent_startup(args)
         from hermes_cli.oneshot import run_oneshot
 
@@ -15130,6 +15148,7 @@ def main():
     # Handle top-level --oneshot / -z: single-shot mode, stdout = final
     # response only, nothing else. Bypasses cli.py entirely.
     if getattr(args, "oneshot", None):
+        _reject_resume_in_oneshot(args)
         from hermes_cli.oneshot import run_oneshot
 
         sys.exit(

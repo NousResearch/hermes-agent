@@ -386,6 +386,40 @@ async def test_provider_retry_after_suppresses_fetch_until_deadline(tmp_path):
 
 
 @pytest.mark.asyncio
+async def test_provider_retry_after_starts_when_slow_fetch_completes(tmp_path):
+    clock = _Clock()
+    calls = []
+
+    def fetch(provider):
+        calls.append((provider, clock.now))
+        if len(calls) == 1:
+            clock.now = 20
+            raise _RateLimited(610)
+        return _snapshot()
+
+    adapter = _Adapter(
+        "discord",
+        capabilities=AccountUsagePresenceCapabilities(activity=True),
+    )
+    controller = AccountUsagePresenceController(
+        _config(platforms=["discord"]),
+        lambda: {"discord": adapter},
+        fetcher=fetch,
+        state_path=tmp_path / "state.json",
+        monotonic=clock,
+    )
+
+    await controller.refresh_once()
+    clock.now = 620
+    await controller.refresh_once()
+    assert calls == [("openai-codex", 0.0)]
+
+    clock.now = 630
+    await controller.refresh_once()
+    assert calls == [("openai-codex", 0.0), ("openai-codex", 630)]
+
+
+@pytest.mark.asyncio
 async def test_baseline_is_persisted_before_mutation_and_restored_on_stop(tmp_path):
     state_path = tmp_path / "account-usage-presence" / "journal.json"
     telegram = _Adapter(

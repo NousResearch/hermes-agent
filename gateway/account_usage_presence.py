@@ -484,8 +484,14 @@ class AccountUsagePresenceController:
                     exc_info=True,
                 )
                 outcome = AccountUsageFetchOutcome(failed=True)
+            # Retry-After is measured from when the response was observed, not
+            # from before a potentially slow provider request started.
+            now = self._monotonic()
             if outcome.retry_after_seconds is not None:
-                self._provider_retry_until = now + outcome.retry_after_seconds
+                self._provider_retry_until = max(
+                    self._provider_retry_until,
+                    now + outcome.retry_after_seconds,
+                )
                 logger.warning(
                     "Account-usage provider %s rate-limited; retrying in %.0fs",
                     provider,

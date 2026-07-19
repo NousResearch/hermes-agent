@@ -4253,6 +4253,49 @@ class TestWebServerEndpoints:
         assert data["model"] == "top/model"
         assert data["free_tier"] is False
 
+    def test_recommended_default_uses_requested_profile_scope(self, monkeypatch):
+        """Tier/auth lookup must use the profile onboarding authenticated."""
+        from hermes_constants import get_hermes_home
+        import hermes_cli.models as models_mod
+
+        profile_home = get_hermes_home() / "profiles" / "coder"
+        profile_home.mkdir(parents=True)
+        (profile_home / "config.yaml").write_text("{}\n", encoding="utf-8")
+        seen_homes = []
+
+        monkeypatch.setattr(
+            models_mod,
+            "get_curated_nous_model_ids",
+            lambda: ["free/profile-model"],
+        )
+        monkeypatch.setattr(
+            models_mod, "get_pricing_for_provider", lambda provider: {}
+        )
+        monkeypatch.setattr(
+            models_mod,
+            "check_nous_free_tier",
+            lambda *, force_fresh=False: seen_homes.append(get_hermes_home())
+            or True,
+        )
+        monkeypatch.setattr(
+            models_mod,
+            "union_with_portal_free_recommendations",
+            lambda ids, pricing, url: (ids, pricing),
+        )
+        monkeypatch.setattr(
+            models_mod,
+            "partition_nous_models_by_tier",
+            lambda ids, pricing, free_tier: (ids, []),
+        )
+
+        resp = self.client.get(
+            "/api/model/recommended-default?provider=nous&profile=coder"
+        )
+
+        assert resp.status_code == 200
+        assert resp.json()["model"] == "free/profile-model"
+        assert seen_homes == [profile_home]
+
     def test_recommended_default_handles_failure_gracefully(self, monkeypatch):
         """Endpoint never 500s — returns empty model on internal error."""
         import hermes_cli.models as models_mod

@@ -6,6 +6,8 @@ profile switcher can target any profile's HERMES_HOME. These tests pin:
 reads/writes land in the REQUESTED profile, the dashboard's own profile
 stays untouched, and the chat PTY env is scoped via HERMES_HOME.
 """
+import os
+
 import pytest
 import yaml
 
@@ -108,7 +110,10 @@ class TestProfileScopedConfig:
 
 
 class TestProfileScopedEnv:
-    def test_env_set_lands_in_target_profile_only(self, client, isolated_profiles):
+    def test_env_set_lands_in_target_profile_only(
+        self, client, isolated_profiles, monkeypatch
+    ):
+        monkeypatch.setenv("FAL_KEY", "launch-profile-value")
         resp = client.put(
             "/api/env",
             json={"key": "FAL_KEY", "value": "test-fal-123", "profile": "worker_beta"},
@@ -119,6 +124,7 @@ class TestProfileScopedEnv:
         default_env_path = isolated_profiles["default"] / ".env"
         if default_env_path.exists():
             assert "test-fal-123" not in default_env_path.read_text()
+        assert os.environ["FAL_KEY"] == "launch-profile-value"
 
     def test_env_list_reads_target_profile(self, client, isolated_profiles):
         (isolated_profiles["worker_beta"] / ".env").write_text(
@@ -130,7 +136,8 @@ class TestProfileScopedEnv:
         resp = client.get("/api/env")
         assert resp.json()["FAL_KEY"]["is_set"] is False
 
-    def test_env_delete_scoped(self, client, isolated_profiles):
+    def test_env_delete_scoped(self, client, isolated_profiles, monkeypatch):
+        monkeypatch.setenv("FAL_KEY", "launch-profile-value")
         (isolated_profiles["worker_beta"] / ".env").write_text(
             "FAL_KEY=doomed\n", encoding="utf-8"
         )
@@ -141,6 +148,7 @@ class TestProfileScopedEnv:
         )
         assert resp.status_code == 200
         assert "doomed" not in (isolated_profiles["worker_beta"] / ".env").read_text()
+        assert os.environ["FAL_KEY"] == "launch-profile-value"
 
 
 class TestProfileScopedMcp:

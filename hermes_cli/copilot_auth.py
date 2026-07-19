@@ -27,6 +27,7 @@ import time
 from pathlib import Path
 from typing import Optional
 
+from agent.secret_scope import get_secret as _get_secret
 from hermes_cli._subprocess_compat import IS_WINDOWS, windows_hide_flags
 
 logger = logging.getLogger(__name__)
@@ -80,7 +81,7 @@ def resolve_copilot_token() -> tuple[str, str]:
     """
     # 1. Check env vars in priority order
     for env_var in COPILOT_ENV_VARS:
-        val = os.getenv(env_var, "").strip()
+        val = (_get_secret(env_var, "") or "").strip()
         if val:
             valid, msg = validate_copilot_token(val)
             if not valid:

@@ -7,7 +7,7 @@ import time
 import types
 from datetime import datetime
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 import pytest
 
@@ -15,6 +15,58 @@ from hermes_constants import reset_hermes_home_override, set_hermes_home_overrid
 from hermes_cli.active_sessions import active_session_registry_snapshot
 from hermes_cli.browser_connect import ChromeDebugLaunch
 from tui_gateway import server
+
+
+@pytest.fixture(autouse=True)
+def _isolate_voice_runtime():
+    """Keep voice flags and TTS calls hermetic for every gateway test.
+
+    The voice RPC handlers mutate ``os.environ`` directly, outside pytest's
+    monkeypatch bookkeeping.  Snapshot and restore both runtime flags around
+    each test, and independently stub the lazy ``speak_text`` import so an
+    accidentally enabled flag can never reach a real TTS provider.
+    """
+    missing = object()
+    voice_keys = ("HERMES_VOICE", "HERMES_VOICE_TTS")
+    original = {key: os.environ.get(key, missing) for key in voice_keys}
+    for key in voice_keys:
+        os.environ[key] = "0"
+
+    called = threading.Event()
+    speak_mock = Mock(name="speak_text")
+
+    def _fake_speak_text(text):
+        speak_mock(text)
+        called.set()
+
+    def _restore_voice_env():
+        for key, value in original.items():
+            if value is missing:
+                os.environ.pop(key, None)
+            else:
+                os.environ[key] = value
+
+    try:
+        with patch("hermes_cli.voice.speak_text", side_effect=_fake_speak_text):
+            yield types.SimpleNamespace(
+                mock=speak_mock,
+                called=called,
+                missing=missing,
+                original=original,
+                restore_env=_restore_voice_env,
+            )
+    finally:
+        _restore_voice_env()
+
+
+@pytest.fixture(autouse=True)
+def _disable_real_chrome_discovery():
+    """Make every unmocked browser-connect launch path spawn-proof."""
+    with patch(
+        "hermes_cli.browser_connect.get_chrome_debug_candidates",
+        return_value=[],
+    ):
+        yield
 
 
 @pytest.fixture(autouse=True)
@@ -1145,6 +1197,33 @@ def test_voice_toggle_tts_branch_also_carries_record_key(monkeypatch):
 
     assert tts_resp["result"]["record_key"] == "ctrl+space"
     assert tts_resp["result"]["tts"] is True
+
+
+def test_voice_runtime_guard_contains_env_mutation_and_stubs_tts(
+    _isolate_voice_runtime,
+):
+    """Direct handler-style mutations stay local and TTS remains mocked."""
+    assert os.environ["HERMES_VOICE"] == "0"
+    assert os.environ["HERMES_VOICE_TTS"] == "0"
+
+    os.environ["HERMES_VOICE"] = "1"
+    os.environ["HERMES_VOICE_TTS"] = "1"
+    resp = server.dispatch(
+        {
+            "id": "voice-tts-guard",
+            "method": "voice.tts",
+            "params": {"text": "fixture isolation check"},
+        }
+    )
+
+    assert resp["result"]["status"] == "speaking"
+    assert _isolate_voice_runtime.called.wait(1)
+    _isolate_voice_runtime.mock.assert_called_once_with("fixture isolation check")
+
+    _isolate_voice_runtime.restore_env()
+    for key, expected in _isolate_voice_runtime.original.items():
+        actual = os.environ.get(key, _isolate_voice_runtime.missing)
+        assert actual == expected
 
 
 def test_load_enabled_toolsets_prefers_tui_env(monkeypatch):

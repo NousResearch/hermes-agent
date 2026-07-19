@@ -168,6 +168,10 @@ export function isXtermJs(): boolean {
   return xtversionName?.startsWith('xterm.js') ?? false
 }
 
+export function needsAltScreenResizeScrollbackClear(env: NodeJS.ProcessEnv = process.env): boolean {
+  return (env.TERM_PROGRAM ?? '').trim() === 'Apple_Terminal'
+}
+
 // Terminals known to correctly implement the Kitty keyboard protocol
 // (CSI >1u) and/or xterm modifyOtherKeys (CSI >4;2m) for ctrl+shift+<letter>
 // disambiguation. We previously enabled unconditionally (#23350), assuming
@@ -176,7 +180,7 @@ export function isXtermJs(): boolean {
 // in xterm.js-based terminals like VS Code). tmux is allowlisted because it
 // accepts modifyOtherKeys and doesn't forward the kitty sequence to the outer
 // terminal.
-const EXTENDED_KEYS_TERMINALS = ['iTerm.app', 'kitty', 'WezTerm', 'ghostty', 'tmux', 'windows-terminal']
+const EXTENDED_KEYS_TERMINALS = ['iTerm.app', 'kitty', 'WezTerm', 'ghostty', 'tmux', 'windows-terminal', 'vscode']
 
 /** True if this terminal correctly handles extended key reporting
  *  (Kitty keyboard protocol + xterm modifyOtherKeys). */
@@ -203,10 +207,15 @@ export type Terminal = {
   stderr: Writable
 }
 
-export function writeDiffToTerminal(terminal: Terminal, diff: Diff, skipSyncMarkers = false): void {
+export function writeDiffToTerminal(
+  terminal: Terminal,
+  diff: Diff,
+  skipSyncMarkers = false,
+  onDrain?: () => void
+): { bytes: number; backpressure: boolean } {
   // No output if there are no patches
   if (diff.length === 0) {
-    return
+    return { bytes: 0, backpressure: false }
   }
 
   // BSU/ESU wrapping is opt-out to keep main-screen behavior unchanged.
@@ -278,5 +287,13 @@ export function writeDiffToTerminal(terminal: Terminal, diff: Diff, skipSyncMark
     buffer += ESU
   }
 
-  terminal.stdout.write(buffer)
+  // Node's Writable.write returns false when the internal buffer is full
+  // (backpressure). On a slow terminal parser that's the tell: we're
+  // producing bytes faster than the outer terminal can consume them.
+  // The 2-arg form attaches a drain callback that fires once the chunk
+  // is actually flushed to the OS socket/pipe — giving us end-to-end
+  // drain timing, not just "queued in Node".
+  const wrote = onDrain ? terminal.stdout.write(buffer, () => onDrain()) : terminal.stdout.write(buffer)
+
+  return { bytes: Buffer.byteLength(buffer, 'utf8'), backpressure: !wrote }
 }

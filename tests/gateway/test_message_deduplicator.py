@@ -10,7 +10,6 @@ the past, the entry is treated as expired and the message is allowed through.
 """
 
 import time
-from unittest.mock import patch
 
 from gateway.platforms.helpers import MessageDeduplicator
 
@@ -61,6 +60,19 @@ class TestMessageDeduplicatorTTL:
         assert dedup.is_duplicate("") is False
         assert dedup.is_duplicate("") is False
 
+    def test_contains_does_not_claim_unseen_message(self):
+        dedup = MessageDeduplicator(ttl_seconds=60)
+
+        assert dedup.contains("msg-1") is False
+        assert dedup.is_duplicate("msg-1") is False
+
+    def test_contains_expires_stale_message_without_refreshing_it(self):
+        dedup = MessageDeduplicator(ttl_seconds=5)
+        dedup._seen["msg-1"] = time.time() - 10
+
+        assert dedup.contains("msg-1") is False
+        assert "msg-1" not in dedup._seen
+
     def test_max_size_eviction_prunes_expired(self):
         """Cache pruning on overflow removes expired entries."""
         dedup = MessageDeduplicator(max_size=5, ttl_seconds=60)
@@ -76,6 +88,19 @@ class TestMessageDeduplicatorTTL:
         assert len(dedup._seen) == 4
         assert "old-0" not in dedup._seen
         assert "new-0" in dedup._seen
+
+    def test_max_size_eviction_caps_fresh_entries(self):
+        """Fresh entries must still be capped to max_size on overflow."""
+        dedup = MessageDeduplicator(max_size=2, ttl_seconds=60)
+
+        dedup.is_duplicate("msg-1")
+        dedup.is_duplicate("msg-2")
+        dedup.is_duplicate("msg-3")
+
+        assert len(dedup._seen) == 2
+        assert "msg-1" not in dedup._seen
+        assert "msg-2" in dedup._seen
+        assert "msg-3" in dedup._seen
 
     def test_ttl_zero_means_no_dedup(self):
         """With TTL=0, all entries expire immediately."""

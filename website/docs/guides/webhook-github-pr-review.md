@@ -16,7 +16,7 @@ If you don't have a public URL or just want to get started quickly, check out [B
 :::
 
 :::info Reference docs
-For the full webhook platform reference (all config options, delivery types, dynamic subscriptions, security model) see [Webhooks](/docs/user-guide/messaging/webhooks).
+For the full webhook platform reference (all config options, delivery types, dynamic subscriptions, security model) see [Webhooks](/user-guide/messaging/webhooks).
 :::
 
 :::warning Prompt injection risk
@@ -182,12 +182,20 @@ tail -f "${HERMES_HOME:-$HOME/.hermes}/logs/gateway.log"
 
 ## Filtering to specific actions
 
-GitHub sends `pull_request` events for many actions: `opened`, `synchronize`, `reopened`, `closed`, `labeled`, etc. The `events` list filters only by the `X-GitHub-Event` header value — it cannot filter by action sub-type at the routing level.
+GitHub sends `pull_request` events for many actions: `opened`, `synchronize`, `reopened`, `closed`, `labeled`, etc. The `events` list filters by the `X-GitHub-Event` header value, and route-level `filters` can narrow by payload fields such as `action`.
 
 The prompt in Step 1 already handles this by instructing the agent to stop early for `closed` and `labeled` events.
 
 :::warning The agent still runs and consumes tokens
-The "stop here" instruction prevents a meaningful review, but the agent still runs to completion for every `pull_request` event regardless of action. GitHub webhooks can only filter by event type (`pull_request`, `push`, `issues`, etc.) — not by action sub-type (`opened`, `closed`, `labeled`). There is no routing-level filter for sub-actions. For high-volume repos, accept this cost or filter upstream with a GitHub Actions workflow that calls your webhook URL conditionally.
+The "stop here" instruction prevents a meaningful review, but the agent still runs to completion for every `pull_request` event regardless of action. Prefer filtering before the agent wakes:
+
+```yaml
+filters:
+  - field: "action"
+    in: ["opened", "synchronize", "reopened"]
+```
+
+For high-volume repositories, you can still filter upstream with a GitHub Actions workflow that calls your webhook URL conditionally.
 :::
 
 > There is no Jinja2 or conditional template syntax. `{field}` and `{nested.field}` are the only substitutions supported. Anything else is passed verbatim to the agent.
@@ -196,7 +204,7 @@ The "stop here" instruction prevents a meaningful review, but the agent still ru
 
 ## Using a skill for consistent review style
 
-Load a [Hermes skill](/docs/user-guide/features/skills) to give the agent a consistent review persona. Add `skills` to your route inside `platforms.webhook.extra.routes` in `config.yaml`:
+Load a [Hermes skill](/user-guide/features/skills) to give the agent a consistent review persona. Add `skills` to your route inside `platforms.webhook.extra.routes` in `config.yaml`:
 
 ```yaml
 platforms:
@@ -303,7 +311,6 @@ platforms:
   webhook:
     enabled: true
     extra:
-      host: "0.0.0.0"         # bind address (default: 0.0.0.0)
       port: 8644               # listen port (default: 8644)
       secret: ""               # optional global fallback secret
       rate_limit: 30           # requests per minute per route
@@ -324,6 +331,6 @@ platforms:
 ## What's Next?
 
 - **[Cron-Based PR Reviews](./github-pr-review-agent.md)** — poll for PRs on a schedule, no public endpoint needed
-- **[Webhook Reference](/docs/user-guide/messaging/webhooks)** — full config reference for the webhook platform
-- **[Build a Plugin](/docs/guides/build-a-hermes-plugin)** — package review logic into a shareable plugin
-- **[Profiles](/docs/user-guide/profiles)** — run a dedicated reviewer profile with its own memory and config
+- **[Webhook Reference](/user-guide/messaging/webhooks)** — full config reference for the webhook platform
+- **[Build a Plugin](/developer-guide/plugins)** — package review logic into a shareable plugin
+- **[Profiles](/user-guide/profiles)** — run a dedicated reviewer profile with its own memory and config

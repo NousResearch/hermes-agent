@@ -1,13 +1,14 @@
 ---
 name: systematic-debugging
-description: Use when encountering any bug, test failure, or unexpected behavior. 4-phase root cause investigation — NO fixes without understanding the problem first.
+description: "4-phase root cause debugging: understand bugs before fixing."
 version: 1.1.0
 author: Hermes Agent (adapted from obra/superpowers)
 license: MIT
+platforms: [linux, macos, windows]
 metadata:
   hermes:
     tags: [debugging, troubleshooting, problem-solving, root-cause, investigation]
-    related_skills: [test-driven-development, writing-plans, subagent-driven-development]
+    related_skills: [test-driven-development, plan, subagent-driven-development]
 ---
 
 # Systematic Debugging
@@ -27,6 +28,12 @@ NO FIXES WITHOUT ROOT CAUSE INVESTIGATION FIRST
 ```
 
 If you haven't completed Phase 1, you cannot propose fixes.
+
+## The Feedback Loop Rule
+
+The feedback loop is the debugging work. Before reading code to build a theory, create or identify a **tight** command that can go red on the user's exact symptom and green when the bug is fixed. A tight loop is fast, deterministic, agent-runnable, and specific enough to catch this bug — not merely "doesn't crash".
+
+When a clean repro is hard, spend disproportionate effort building the loop. Guessing without a red-capable loop is the failure mode this skill exists to prevent.
 
 ## When to Use
 
@@ -69,21 +76,46 @@ You MUST complete each phase before proceeding to the next.
 
 **Action:** Use `read_file` on the relevant source files. Use `search_files` to find the error string in the codebase.
 
-### 2. Reproduce Consistently
+### 2. Build a Tight Feedback Loop
 
-- Can you trigger it reliably?
-- What are the exact steps?
-- Does it happen every time?
-- If not reproducible → gather more data, don't guess
+- Can you trigger the user's exact symptom with one command?
+- Does the command fail for this bug and only pass once the bug is fixed?
+- Is it fast enough to run repeatedly?
+- Is it deterministic? For flaky bugs, can you raise the reproduction rate high enough to debug?
+- If not reproducible → gather more data, don't guess.
 
-**Action:** Use the `terminal` tool to run the failing test or trigger the bug:
+**Ways to construct a loop — try in roughly this order:**
+
+1. **Failing test** at the seam that reaches the bug: unit, integration, or end-to-end.
+2. **HTTP script / curl** against a running dev server.
+3. **CLI invocation** with fixture input, diffing stdout/stderr against expected output.
+4. **Headless browser script** (Playwright/Puppeteer) asserting on DOM, console, or network.
+5. **Replay a captured trace**: HAR, request payload, event log, queue message, or webhook body.
+6. **Throwaway harness** that boots the smallest useful slice of the system and calls the failing path.
+7. **Property / fuzz loop** when the bug is intermittent wrong output over a broad input space.
+8. **Bisection harness** suitable for `git bisect run` when the bug appeared between two known states.
+9. **Differential loop** comparing old vs new version, two configs, two providers, or two datasets.
+10. **Human-in-the-loop script** only as a last resort: script the human steps and capture their result so the loop stays structured.
+
+**Tighten the loop once it exists:**
+
+- Make it faster: cache setup, narrow scope, skip unrelated initialization.
+- Make the signal sharper: assert the exact symptom, not generic success.
+- Make it more deterministic: pin time, seed randomness, isolate filesystem, freeze network.
+
+For non-deterministic bugs, the immediate goal is a higher reproduction rate, not perfection. Run the trigger 100x, parallelize, add stress, narrow timing windows, or inject sleeps. A 50% flake is debuggable; a 1% flake usually is not.
+
+**Action:** Use the `terminal` tool to run the tight loop:
 
 ```bash
-# Run specific failing test
+# Run a specific failing test
 pytest tests/test_module.py::test_name -v
 
-# Run with verbose output
-pytest tests/test_module.py -v --tb=long
+# Or run a scripted repro
+python scripts/repro_bug.py
+
+# Or run a high-repetition flaky repro
+for i in {1..100}; do pytest tests/test_flake.py::test_name -q || break; done
 ```
 
 ### 3. Check Recent Changes
@@ -143,11 +175,13 @@ search_files("variable_name\\s*=", path="src/", file_glob="*.py")
 ### Phase 1 Completion Checklist
 
 - [ ] Error messages fully read and understood
-- [ ] Issue reproduced consistently
+- [ ] A tight loop command exists and has been run at least once
+- [ ] Loop is red-capable: it asserts the user's exact symptom, not a nearby failure
+- [ ] Loop is deterministic, or a flaky bug has a high enough reproduction rate to debug
 - [ ] Recent changes identified and reviewed
 - [ ] Evidence gathered (logs, state, data flow)
 - [ ] Problem isolated to specific component/code
-- [ ] Root cause hypothesis formed
+- [ ] Root cause hypotheses can be stated and tested
 
 **STOP:** Do not proceed to Phase 2 until you understand WHY it's happening.
 
@@ -156,6 +190,12 @@ search_files("variable_name\\s*=", path="src/", file_glob="*.py")
 ## Phase 2: Pattern Analysis
 
 **Find the pattern before fixing:**
+
+### 0. Minimize the Reproduction
+
+Once the loop is red, shrink the repro to the smallest scenario that still goes red. Cut inputs, callers, config, data, and steps **one at a time**, re-running the loop after each cut. Keep only what is load-bearing for the failure.
+
+Done when removing any remaining element makes the loop go green. A minimal repro narrows the hypothesis space and often becomes the cleanest regression test.
 
 ### 1. Find Working Examples
 
@@ -192,17 +232,22 @@ search_files("similar_pattern", path="src/", file_glob="*.py")
 
 **Scientific method:**
 
-### 1. Form a Single Hypothesis
+### 1. Form Ranked Falsifiable Hypotheses
 
-- State clearly: "I think X is the root cause because Y"
-- Write it down
-- Be specific, not vague
+- Generate 3–5 plausible hypotheses before testing any single one.
+- Rank them by likelihood and cheapness to falsify.
+- State the prediction each hypothesis makes: "If X is the cause, then changing or observing Y should make Z happen."
+- Discard or sharpen any hypothesis that does not make a testable prediction.
+
+If the user is present, show the ranked list before testing. They may have domain knowledge that instantly re-ranks it. If the user is AFK, proceed with your ranking.
 
 ### 2. Test Minimally
 
-- Make the SMALLEST possible change to test the hypothesis
-- One variable at a time
-- Don't fix multiple things at once
+- Test the highest-ranked hypothesis with the smallest possible probe.
+- Change one variable at a time.
+- Don't fix multiple things at once.
+- Prefer debugger/REPL inspection when available; one breakpoint beats ten logs.
+- If you add logs, tag every temporary line with a unique prefix such as `[DEBUG-a4f2]` so cleanup is a single search.
 
 ### 3. Verify Before Continuing
 

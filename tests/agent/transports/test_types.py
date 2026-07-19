@@ -1,7 +1,6 @@
 """Tests for agent/transports/types.py — dataclass construction + helpers."""
 
 import json
-import pytest
 
 from agent.transports.types import (
     NormalizedResponse,
@@ -200,6 +199,35 @@ class TestToolCallBackwardCompat:
         tc_no_pd = ToolCall(id="1", name="fn", arguments="{}")
         assert getattr(tc_no_pd, "call_id", None) is None
 
+    def test_extra_content_from_provider_data(self):
+        """Gemini thought_signature stored in provider_data is exposed via property."""
+        ec = {"google": {"thought_signature": "SIG_ABC123"}}
+        tc = ToolCall(id="1", name="fn", arguments="{}", provider_data={"extra_content": ec})
+        assert tc.extra_content == ec
+
+    def test_extra_content_none_when_no_provider_data(self):
+        tc = ToolCall(id="1", name="fn", arguments="{}", provider_data=None)
+        assert tc.extra_content is None
+
+    def test_extra_content_none_when_key_absent(self):
+        tc = ToolCall(id="1", name="fn", arguments="{}", provider_data={"call_id": "c1"})
+        assert tc.extra_content is None
+
+    def test_extra_content_getattr_pattern(self):
+        """_build_assistant_message uses getattr(tc, 'extra_content', None).
+
+        This is the exact pattern that was broken before the extra_content
+        property was added — ToolCall lacked the property so getattr always
+        returned None, silently dropping the Gemini thought_signature and
+        causing HTTP 400 on subsequent turns (issue #14488).
+        """
+        ec = {"google": {"thought_signature": "SIG_ABC123"}}
+        tc = ToolCall(id="1", name="fn", arguments="{}", provider_data={"extra_content": ec})
+        assert getattr(tc, "extra_content", None) == ec
+
+        tc_no_extra = ToolCall(id="1", name="fn", arguments="{}")
+        assert getattr(tc_no_extra, "extra_content", None) is None
+
 
 class TestNormalizedResponseBackwardCompat:
     """Test properties that replaced _nr_to_assistant_message() shim."""
@@ -241,3 +269,15 @@ class TestNormalizedResponseBackwardCompat:
     def test_codex_reasoning_items_none_when_absent(self):
         nr = NormalizedResponse(content="hi", tool_calls=None, finish_reason="stop")
         assert nr.codex_reasoning_items is None
+
+    def test_codex_message_items_from_provider_data(self):
+        items = [{"id": "msg_1", "type": "message"}]
+        nr = NormalizedResponse(
+            content="hi", tool_calls=None, finish_reason="stop",
+            provider_data={"codex_message_items": items},
+        )
+        assert nr.codex_message_items == items
+
+    def test_codex_message_items_none_when_absent(self):
+        nr = NormalizedResponse(content="hi", tool_calls=None, finish_reason="stop")
+        assert nr.codex_message_items is None

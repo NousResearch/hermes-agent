@@ -1,11 +1,8 @@
 """Tests for setup.py configuration flows."""
-import json
 import sys
 import types
 
-import pytest
 
-from hermes_cli.auth import get_active_provider
 from hermes_cli.config import load_config, save_config
 from hermes_cli import setup as setup_mod
 from hermes_cli.setup import setup_model_provider
@@ -162,11 +159,18 @@ def test_setup_gateway_skips_service_install_when_systemctl_missing(monkeypatch,
         "WEBHOOK_ENABLED": "",
     }
 
-    monkeypatch.setattr(setup_mod, "get_env_value", lambda key: env.get(key, ""))
-    monkeypatch.setattr(setup_mod, "prompt_yes_no", lambda *args, **kwargs: False)
-    monkeypatch.setattr("platform.system", lambda: "Linux")
-
     import hermes_cli.gateway as gateway_mod
+
+    monkeypatch.setattr(setup_mod, "get_env_value", lambda key: env.get(key, ""))
+    monkeypatch.setattr(gateway_mod, "get_env_value", lambda key: env.get(key, ""))
+    monkeypatch.setattr(setup_mod, "prompt_yes_no", lambda *args, **kwargs: False)
+    # Keep the checklist pre-selection (so matrix stays "configured" and the
+    # post-config service guidance runs), but stub the migrated plugins'
+    # interactive_setup so their wizards don't read real stdin. #41112.
+    monkeypatch.setattr(setup_mod, "prompt_checklist", lambda _q, _items, pre=(), **k: list(pre))
+    import hermes_cli.gateway as _gw_mod
+    monkeypatch.setattr(_gw_mod, "_configure_platform", lambda *a, **k: None)
+    monkeypatch.setattr("platform.system", lambda: "Linux")
 
     monkeypatch.setattr(gateway_mod, "supports_systemd_services", lambda: False)
     monkeypatch.setattr(gateway_mod, "is_macos", lambda: False)
@@ -200,11 +204,18 @@ def test_setup_gateway_in_container_shows_docker_guidance(monkeypatch, capsys):
         "WEBHOOK_ENABLED": "",
     }
 
-    monkeypatch.setattr(setup_mod, "get_env_value", lambda key: env.get(key, ""))
-    monkeypatch.setattr(setup_mod, "prompt_yes_no", lambda *args, **kwargs: False)
-    monkeypatch.setattr("platform.system", lambda: "Linux")
-
     import hermes_cli.gateway as gateway_mod
+
+    monkeypatch.setattr(setup_mod, "get_env_value", lambda key: env.get(key, ""))
+    monkeypatch.setattr(gateway_mod, "get_env_value", lambda key: env.get(key, ""))
+    monkeypatch.setattr(setup_mod, "prompt_yes_no", lambda *args, **kwargs: False)
+    # Keep the checklist pre-selection (so matrix stays "configured" and the
+    # post-config service guidance runs), but stub the migrated plugins'
+    # interactive_setup so their wizards don't read real stdin. #41112.
+    monkeypatch.setattr(setup_mod, "prompt_checklist", lambda _q, _items, pre=(), **k: list(pre))
+    import hermes_cli.gateway as _gw_mod
+    monkeypatch.setattr(_gw_mod, "_configure_platform", lambda *a, **k: None)
+    monkeypatch.setattr("platform.system", lambda: "Linux")
 
     monkeypatch.setattr(gateway_mod, "supports_systemd_services", lambda: False)
     monkeypatch.setattr(gateway_mod, "is_macos", lambda: False)
@@ -339,6 +350,41 @@ def test_select_provider_and_model_warns_if_named_custom_provider_disappears(
     assert "selected saved custom provider is no longer available" in out
 
 
+def test_select_provider_and_model_accepts_named_provider_from_providers_section(
+    tmp_path, monkeypatch, capsys
+):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    _clear_provider_env(monkeypatch)
+
+    cfg = load_config()
+    cfg["model"] = {
+        "provider": "volcengine-plan",
+        "default": "doubao-seed-2.0-code",
+    }
+    cfg["providers"] = {
+        "volcengine-plan": {
+            "name": "volcengine-plan",
+            "base_url": "https://ark.cn-beijing.volces.com/api/coding/v3",
+            "default_model": "doubao-seed-2.0-code",
+            "models": {"doubao-seed-2.0-code": {}},
+        }
+    }
+    save_config(cfg)
+
+    monkeypatch.setattr(
+        "hermes_cli.main._prompt_provider_choice",
+        lambda choices, default=0: len(choices) - 1,
+    )
+
+    from hermes_cli.main import select_provider_and_model
+
+    select_provider_and_model()
+
+    out = capsys.readouterr().out
+    assert "Warning: Unknown provider 'volcengine-plan'" not in out
+    assert "Active provider:  volcengine-plan" in out
+
+
 def test_codex_setup_uses_runtime_access_token_for_live_model_list(tmp_path, monkeypatch):
     """Codex model list fetching uses the runtime access token."""
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
@@ -445,50 +491,52 @@ def test_modal_setup_persists_direct_mode_when_user_chooses_their_own_account(tm
     assert config["terminal"]["modal_mode"] == "direct"
 
 
-def test_resolve_hermes_chat_argv_prefers_which(monkeypatch):
-    from hermes_cli import setup as setup_mod
-
-    monkeypatch.setattr(setup_mod.shutil, "which", lambda name: "/usr/local/bin/hermes" if name == "hermes" else None)
-
-    assert setup_mod._resolve_hermes_chat_argv() == ["/usr/local/bin/hermes", "chat"]
+# test_setup_slack_* moved to tests/gateway/test_slack_plugin_setup.py — the
+# _setup_slack wizard migrated to the slack plugin's interactive_setup (#41112).
 
 
-def test_resolve_hermes_chat_argv_falls_back_to_module(monkeypatch):
-    from hermes_cli import setup as setup_mod
+def test_prompt_yes_no_returns_default_when_noninteractive_env_set(monkeypatch):
+    """HERMES_NONINTERACTIVE=1 (set by dashboard/desktop spawns) must make
+    prompt_yes_no fall back to its default instead of reading stdin."""
+    monkeypatch.setenv("HERMES_NONINTERACTIVE", "1")
 
-    monkeypatch.setattr(setup_mod.shutil, "which", lambda _name: None)
-    monkeypatch.setattr(setup_mod.importlib.util, "find_spec", lambda name: object() if name == "hermes_cli" else None)
+    def _boom(*_a, **_k):
+        raise AssertionError("input() must not be called in non-interactive mode")
 
-    assert setup_mod._resolve_hermes_chat_argv() == [sys.executable, "-m", "hermes_cli.main", "chat"]
+    monkeypatch.setattr("builtins.input", _boom)
+
+    assert setup_mod.prompt_yes_no("Install it now?", True) is True
+    assert setup_mod.prompt_yes_no("Install it now?", False) is False
 
 
-def test_offer_launch_chat_execs_fresh_process(monkeypatch):
-    from hermes_cli import setup as setup_mod
+def test_prompt_yes_no_eof_returns_default_instead_of_exiting(monkeypatch):
+    """A closed/redirected stdin (EOFError) must yield the default, not abort.
 
-    monkeypatch.setattr(setup_mod, "prompt_yes_no", lambda *_args, **_kwargs: True)
-    monkeypatch.setattr(setup_mod, "_resolve_hermes_chat_argv", lambda: ["/usr/local/bin/hermes", "chat"])
+    Regression: the Windows gateway start path asks "Install it now?" when the
+    service is not installed; spawned from the desktop app (stdin=DEVNULL) the
+    EOFError used to sys.exit(1), killing every desktop-triggered restart."""
+    monkeypatch.delenv("HERMES_NONINTERACTIVE", raising=False)
 
-    exec_calls = []
+    def _eof(*_a, **_k):
+        raise EOFError
 
-    def fake_execvp(path, argv):
-        exec_calls.append((path, argv))
-        raise SystemExit(0)
+    monkeypatch.setattr("builtins.input", _eof)
 
-    monkeypatch.setattr(setup_mod.os, "execvp", fake_execvp)
+    assert setup_mod.prompt_yes_no("Install it now?", True) is True
+    assert setup_mod.prompt_yes_no("Install it now?", False) is False
+
+
+def test_prompt_yes_no_keyboard_interrupt_still_exits(monkeypatch):
+    """Ctrl+C is an explicit user abort and must keep exiting."""
+    monkeypatch.delenv("HERMES_NONINTERACTIVE", raising=False)
+
+    def _interrupt(*_a, **_k):
+        raise KeyboardInterrupt
+
+    monkeypatch.setattr("builtins.input", _interrupt)
+
+    import pytest
 
     with pytest.raises(SystemExit):
-        setup_mod._offer_launch_chat()
+        setup_mod.prompt_yes_no("Install it now?", True)
 
-    assert exec_calls == [("/usr/local/bin/hermes", ["/usr/local/bin/hermes", "chat"])]
-
-
-def test_offer_launch_chat_manual_fallback_when_unresolvable(monkeypatch, capsys):
-    from hermes_cli import setup as setup_mod
-
-    monkeypatch.setattr(setup_mod, "prompt_yes_no", lambda *_args, **_kwargs: True)
-    monkeypatch.setattr(setup_mod, "_resolve_hermes_chat_argv", lambda: None)
-
-    setup_mod._offer_launch_chat()
-
-    captured = capsys.readouterr()
-    assert "Run 'hermes chat' manually" in captured.out

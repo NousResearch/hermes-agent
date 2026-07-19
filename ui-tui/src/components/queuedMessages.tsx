@@ -23,12 +23,14 @@ export function QueuedMessages({ cols, queueEditIdx, queued, t }: QueuedMessages
 
   return (
     <Box flexDirection="column" marginTop={1}>
-      <Text color={t.color.dim} dimColor>
-        queued ({queued.length}){queueEditIdx !== null ? ` · editing ${queueEditIdx + 1}` : ''}
+      <Text color={t.color.muted} dimColor>
+        {`queued (${queued.length})${
+          queueEditIdx !== null ? ` · editing ${queueEditIdx + 1} · Ctrl+X delete · Esc cancel` : ''
+        }`}
       </Text>
 
       {q.showLead && (
-        <Text color={t.color.dim} dimColor>
+        <Text color={t.color.muted} dimColor>
           {' '}
           …
         </Text>
@@ -39,14 +41,14 @@ export function QueuedMessages({ cols, queueEditIdx, queued, t }: QueuedMessages
         const active = queueEditIdx === idx
 
         return (
-          <Text color={active ? t.color.amber : t.color.dim} dimColor key={`${idx}-${item.slice(0, 16)}`}>
+          <Text color={active ? t.color.accent : t.color.muted} dimColor key={`${idx}-${item.slice(0, 16)}`}>
             {active ? '▸' : ' '} {idx + 1}. {compactPreview(item, Math.max(16, cols - 10))}
           </Text>
         )
       })}
 
       {q.showTail && (
-        <Text color={t.color.dim} dimColor>
+        <Text color={t.color.muted} dimColor>
           {'  '}…and {queued.length - q.end} more
         </Text>
       )}

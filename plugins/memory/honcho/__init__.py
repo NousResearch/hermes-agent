@@ -4,8 +4,8 @@ Provides cross-session user modeling with dialectic Q&A, semantic search,
 peer cards, and persistent conclusions via the Honcho SDK. Honcho provides AI-native cross-session user
 modeling with dialectic Q&A, semantic search, peer cards, and conclusions.
 
-The 4 tools (profile, search, context, conclude) are exposed through
-the MemoryProvider interface.
+Five tools (profile, search, reasoning, context, conclude) are exposed
+through the MemoryProvider interface.
 
 Config: Uses the existing Honcho config chain:
   1. $HERMES_HOME/honcho.json (profile-scoped)
@@ -20,8 +20,9 @@ import logging
 import re
 import threading
 import time
-from typing import Any, Dict, List, Optional
+from typing import Any, Callable, Dict, List, Optional
 
+from agent.memory_manager import sanitize_context
 from agent.memory_provider import MemoryProvider
 from tools.registry import tool_error
 
@@ -35,9 +36,17 @@ logger = logging.getLogger(__name__)
 PROFILE_SCHEMA = {
     "name": "honcho_profile",
     "description": (
-        "Retrieve or update a peer card from Honcho — a curated list of key facts "
-        "about that peer (name, role, preferences, communication style, patterns). "
-        "Pass `card` to update; omit `card` to read."
+        "Read or write a peer's CARD — a short, curated list of standing facts "
+        "about that peer (name, role, preferences, communication style, recurring "
+        "patterns). This is the cheapest, fastest Honcho call: no query, no LLM, "
+        "just the current card. Pass `card` to overwrite it; omit `card` to read. "
+        "An empty read returns a `hint` explaining why (observation disabled, fresh "
+        "peer, representation still warming up) — that is NOT an error; the card "
+        "accumulates over time from observed conversation. "
+        "Related tools: honcho_context for the fuller standing snapshot (card + "
+        "representation + summary + recent messages); honcho_search to find "
+        "specific things that were actually said; honcho_reasoning for a "
+        "synthesized answer to a question."
     ),
     "parameters": {
         "type": "object",
@@ -59,25 +68,30 @@ PROFILE_SCHEMA = {
 SEARCH_SCHEMA = {
     "name": "honcho_search",
     "description": (
-        "Semantic search over Honcho's stored context about a peer. "
-        "Returns raw excerpts ranked by relevance — no LLM synthesis. "
-        "Cheaper and faster than honcho_reasoning. "
-        "Good when you want to find specific past facts and reason over them yourself."
+        "Hybrid (semantic + keyword) search over a peer's actual message "
+        "history across ALL past sessions they took part in — not just the "
+        "current one. Returns RRF-ranked raw message excerpts (what was "
+        "literally said, including the assistant's own messages about the "
+        "peer), no LLM synthesis. Cheaper and faster than honcho_reasoning. "
+        "Use this to recall specific past facts — 'what did I say about X', "
+        "'what was the regimen/decision/config we settled on' — and reason "
+        "over the excerpts yourself. For nuanced questions needing synthesis, "
+        "use honcho_reasoning instead."
     ),
     "parameters": {
         "type": "object",
         "properties": {
             "query": {
                 "type": "string",
-                "description": "What to search for in Honcho's memory.",
+                "description": "What to look for — a topic, keyword, name, or natural-language description of the fact you're trying to recall.",
             },
             "max_tokens": {
                 "type": "integer",
-                "description": "Token budget for returned context (default 800, max 2000).",
+                "description": "Approximate budget for returned excerpts (default 800, max 2000). Larger budgets return more/longer ranked snippets.",
             },
             "peer": {
                 "type": "string",
-                "description": "Peer to query. Built-in aliases: 'user' (default), 'ai'. Or pass any peer ID from this workspace.",
+                "description": "Whose history to search. Built-in aliases: 'user' (default), 'ai'. Or pass any peer ID from this workspace. Spans every session that peer took part in.",
             },
         },
         "required": ["query"],
@@ -87,11 +101,18 @@ SEARCH_SCHEMA = {
 REASONING_SCHEMA = {
     "name": "honcho_reasoning",
     "description": (
-        "Ask Honcho a natural language question and get a synthesized answer. "
-        "Uses Honcho's LLM (dialectic reasoning) — higher cost than honcho_profile or honcho_search. "
-        "Can query about any peer via alias or explicit peer ID. "
+        "Ask Honcho's dialectic agent a natural-language question about a peer and "
+        "get back a SYNTHESIZED answer. This is the only Honcho tool that runs an "
+        "LLM: it agentically searches both raw messages and derived conclusions, "
+        "reasons over them, and writes a prose answer — so it is the slowest and "
+        "most expensive call (seconds + tokens). Reach for it for nuanced or "
+        "open-ended questions ('how does this person prefer to receive feedback?', "
+        "'what's their relationship to project X?') where you want Honcho to do the "
+        "synthesis. For a specific fact that was stated, prefer honcho_search "
+        "(cheap, raw excerpts, you synthesize). For standing profile facts, prefer "
+        "honcho_profile / honcho_context (no LLM). "
         "Pass reasoning_level to control depth: minimal (fast/cheap), low (default), "
-        "medium, high, max (deep/expensive). Omit for configured default."
+        "medium, high, max (deep/expensive). Omit for the configured default."
     ),
     "parameters": {
         "type": "object",
@@ -104,13 +125,26 @@ REASONING_SCHEMA = {
                 "type": "string",
                 "description": (
                     "Override the default reasoning depth. "
-                    "Omit to use the configured default (typically low). "
-                    "Guide:\n"
-                    "- minimal: quick factual lookups (name, role, simple preference)\n"
-                    "- low: straightforward questions with clear answers\n"
-                    "- medium: multi-aspect questions requiring synthesis across observations\n"
-                    "- high: complex behavioral patterns, contradictions, deep analysis\n"
-                    "- max: thorough audit-level analysis, leave no stone unturned"
+                    "Omit to use the configured default (typically low).\n"
+                    "reasoning_level parameter guide:\n"
+                    "- minimal: use ONLY for a single quick factual lookup (e.g. "
+                    "'what is the user's name'). Honcho hard-caps this tier's output "
+                    "at 250 tokens combined with the model's own hidden reasoning "
+                    "tokens — a multi-part answer can get cut off mid-thought before "
+                    "it even reaches the final-answer phase, especially on models "
+                    "with reasoning/thinking enabled.\n"
+                    "- low/medium/high/max: use for anything requiring a synthesized, "
+                    "multi-fact, or summary-style answer (e.g. 'summarize known facts "
+                    "about this peer', 'what are their communication preferences'). "
+                    "These tiers have no output-token cap of their own (fall back to "
+                    "Honcho's 8192-token global default), so they don't have "
+                    "minimal's cutoff failure mode.\n"
+                    "  - low: straightforward questions with clear answers\n"
+                    "  - medium: multi-aspect questions requiring synthesis across observations\n"
+                    "  - high: complex behavioral patterns, contradictions, deep analysis\n"
+                    "  - max: thorough audit-level analysis, leave no stone unturned\n"
+                    "Default to at least 'low' unless the query is genuinely a single "
+                    "fact lookup."
                 ),
                 "enum": ["minimal", "low", "medium", "high", "max"],
             },
@@ -126,18 +160,18 @@ REASONING_SCHEMA = {
 CONTEXT_SCHEMA = {
     "name": "honcho_context",
     "description": (
-        "Retrieve full session context from Honcho — summary, peer representation, "
-        "peer card, and recent messages. No LLM synthesis. "
-        "Cheaper than honcho_reasoning. Use this to see what Honcho knows about "
-        "the current conversation and the specified peer."
+        "Retrieve the standing SNAPSHOT Honcho holds for the current session — "
+        "session summary, the peer's representation, the peer card, and the most "
+        "recent messages — in one call. No query, no LLM synthesis (cheaper than "
+        "honcho_reasoning). Use it to orient yourself on what Honcho currently "
+        "knows about this conversation and peer. This is a fixed snapshot, not a "
+        "search: to look up a specific past fact use honcho_search; to ask a "
+        "question and get a synthesized answer use honcho_reasoning; for just the "
+        "compact card use honcho_profile."
     ),
     "parameters": {
         "type": "object",
         "properties": {
-            "query": {
-                "type": "string",
-                "description": "Optional focus query to filter context. Omit for full session context snapshot.",
-            },
             "peer": {
                 "type": "string",
                 "description": "Peer to query. Built-in aliases: 'user' (default), 'ai'. Or pass any peer ID from this workspace.",
@@ -150,26 +184,42 @@ CONTEXT_SCHEMA = {
 CONCLUDE_SCHEMA = {
     "name": "honcho_conclude",
     "description": (
-        "Write or delete a conclusion about a peer in Honcho's memory. "
-        "Conclusions are persistent facts that build a peer's profile. "
-        "You MUST pass exactly one of: `conclusion` (to create) or `delete_id` (to delete). "
-        "Passing neither is an error. "
-        "Deletion is only for PII removal — Honcho self-heals incorrect conclusions over time."
+        "Write, delete, or list CONCLUSIONS — persistent, derived facts about a peer that "
+        "feeds their long-term profile (card + representation). Use this to record "
+        "something durable you've learned about the peer (a stable preference, a "
+        "correction, a standing constraint) so future sessions carry it forward. "
+        "You MUST pass exactly one of `conclusion` (to create), `delete_id` (to "
+        "delete), or `list` (to list/search); any other combination is an error. "
+        "A deletion ID is an opaque server-generated string: first call with `list=true` "
+        "and optionally `query`, then pass the returned ID as `delete_id`. "
+        "Deletion exists only for "
+        "PII removal — for merely wrong facts, write a corrected conclusion instead; "
+        "Honcho self-heals contradictions over time. This is a WRITE tool: to read "
+        "the profile use honcho_profile / honcho_context, and to search what was "
+        "said use honcho_search."
     ),
     "parameters": {
         "type": "object",
         "properties": {
             "conclusion": {
                 "type": "string",
-                "description": "A factual statement to persist. Provide this when creating a conclusion. Do not send it together with delete_id.",
+                "description": "A factual statement to persist. Provide this when creating a conclusion. Do not send it together with delete_id or list.",
             },
             "delete_id": {
                 "type": "string",
-                "description": "Conclusion ID to delete for PII removal. Provide this when deleting a conclusion. Do not send it together with conclusion.",
+                "description": "Conclusion ID to delete for PII removal. Provide this when deleting a conclusion. Do not send it together with conclusion or list. Get this id from a prior `list` call — never guess it.",
+            },
+            "list": {
+                "type": "boolean",
+                "description": "Set to true to list or search stored conclusions (with their ids) instead of creating or deleting one. Do not send together with conclusion or delete_id.",
+            },
+            "query": {
+                "type": "string",
+                "description": "Optional semantic search query, used only when `list` is true. Omit to list the most recent conclusions instead of searching.",
             },
             "peer": {
                 "type": "string",
-                "description": "Peer to query. Built-in aliases: 'user' (default), 'ai'. Or pass any peer ID from this workspace.",
+                "description": "The peer the conclusion is ABOUT. Built-in aliases: 'user' (default), 'ai'. Or pass any peer ID from this workspace.",
             },
         },
         "required": [],
@@ -187,24 +237,38 @@ ALL_TOOL_SCHEMAS = [PROFILE_SCHEMA, SEARCH_SCHEMA, REASONING_SCHEMA, CONTEXT_SCH
 class HonchoMemoryProvider(MemoryProvider):
     """Honcho AI-native memory with dialectic Q&A and persistent user modeling."""
 
-    def __init__(self):
+    def backup_paths(self) -> List[str]:
+        """Honcho keeps its peer/session config under ~/.honcho when no
+        profile-local honcho.json exists (see client.resolve_config_path)."""
+        paths: List[str] = []
+        try:
+            from .client import resolve_global_config_path
+            global_cfg = resolve_global_config_path()
+            # Capture the whole ~/.honcho dir so sibling state travels with it.
+            paths.append(str(global_cfg.parent))
+        except Exception:
+            pass
+        return paths
+
+    def __init__(self, query_rewriter: Optional[Callable[[str], str]] = None):
         self._manager = None   # HonchoSessionManager
         self._config = None    # HonchoClientConfig
         self._session_key = ""
+        self._query_rewriter = query_rewriter
         self._prefetch_result = ""
         self._prefetch_lock = threading.Lock()
         self._prefetch_thread: Optional[threading.Thread] = None
         self._sync_thread: Optional[threading.Thread] = None
 
-        # B1: recall_mode — set during initialize from config
         self._recall_mode = "hybrid"  # "context", "tools", or "hybrid"
 
         # Base context cache — refreshed on context_cadence, not frozen
         self._base_context_cache: Optional[str] = None
         self._base_context_lock = threading.Lock()
 
-        # B5: Cost-awareness turn counting and cadence
+        # Recall cadence and liveness state.
         self._turn_count = 0
+        self._query_rewrite_enabled = False
         self._injection_frequency = "every-turn"  # or "first-turn"
         self._context_cadence = 1   # minimum turns between context API calls
         self._dialectic_cadence = 1  # backwards-compat fallback; wizard writes 2 on new configs
@@ -220,12 +284,15 @@ class HonchoMemoryProvider(MemoryProvider):
         self._prefetch_result_fired_at: int = -999      # turn the pending result was fired at
         self._dialectic_empty_streak: int = 0           # consecutive empty returns
 
-        # Port #1957: lazy session init for tools-only mode
+        # Tools-only mode may defer session initialization until a tool call.
         self._session_initialized = False
         self._lazy_init_kwargs: Optional[dict] = None
         self._lazy_init_session_id: Optional[str] = None
+        self._init_thread: Optional[threading.Thread] = None
+        self._init_lock = threading.Lock()
+        self._init_error = ""
 
-        # Port #4053: cron guard — when True, plugin is fully inactive
+        # Cron and flush contexts disable the plugin entirely.
         self._cron_skipped = False
 
     @property
@@ -237,7 +304,6 @@ class HonchoMemoryProvider(MemoryProvider):
         try:
             from plugins.memory.honcho.client import HonchoClientConfig
             cfg = HonchoClientConfig.from_global_config()
-            # Port #2645: baseUrl-only verification — api_key OR base_url suffices
             return cfg.enabled and bool(cfg.api_key or cfg.base_url)
         except Exception:
             return False
@@ -245,6 +311,7 @@ class HonchoMemoryProvider(MemoryProvider):
     def save_config(self, values, hermes_home):
         """Write config to $HERMES_HOME/honcho.json (Honcho SDK native format)."""
         import json
+        import os
         from pathlib import Path
         config_path = Path(hermes_home) / "honcho.json"
         existing = {}
@@ -254,7 +321,8 @@ class HonchoMemoryProvider(MemoryProvider):
             except Exception:
                 pass
         existing.update(values)
-        config_path.write_text(json.dumps(existing, indent=2))
+        from utils import atomic_json_write
+        atomic_json_write(config_path, existing, mode=0o600)
 
     def get_config_schema(self):
         return [
@@ -271,15 +339,13 @@ class HonchoMemoryProvider(MemoryProvider):
     def initialize(self, session_id: str, **kwargs) -> None:
         """Initialize Honcho session manager.
 
-        Handles: cron guard, recall_mode, session name resolution,
-        peer memory mode, SOUL.md ai_peer sync, memory file migration,
-        and pre-warming context at init.
+        Handles cron guards, recall configuration, session resolution,
+        memory migration, and optional dialectic prewarming.
         """
         try:
-            # ----- Port #4053: cron guard -----
             agent_context = kwargs.get("agent_context", "")
             platform = kwargs.get("platform", "cli")
-            if agent_context in ("cron", "flush") or platform == "cron":
+            if agent_context in {"cron", "flush"} or platform == "cron":
                 logger.debug("Honcho skipped: cron/flush context (agent_context=%s, platform=%s)",
                              agent_context, platform)
                 self._cron_skipped = True
@@ -295,55 +361,108 @@ class HonchoMemoryProvider(MemoryProvider):
 
             self._config = cfg
 
-            # ----- B1: recall_mode from config -----
             self._recall_mode = cfg.recall_mode  # "context", "tools", or "hybrid"
             logger.debug("Honcho recall_mode: %s", self._recall_mode)
 
-            # ----- B5: cost-awareness config -----
-            try:
-                raw = cfg.raw or {}
-                self._injection_frequency = raw.get("injectionFrequency", "every-turn")
-                self._context_cadence = int(raw.get("contextCadence", 1))
-                # Backwards-compat: unset dialecticCadence falls back to 1
-                # (every turn) so existing honcho.json configs without the key
-                # behave as they did before. New setups via `hermes honcho setup`
-                # get dialecticCadence=2 written explicitly by the wizard.
-                self._dialectic_cadence = int(raw.get("dialecticCadence", 1))
-                self._dialectic_depth = max(1, min(cfg.dialectic_depth, 3))
-                self._dialectic_depth_levels = cfg.dialectic_depth_levels
-                self._reasoning_heuristic = cfg.reasoning_heuristic
-                if cfg.reasoning_level_cap in self._LEVEL_ORDER:
-                    self._reasoning_level_cap = cfg.reasoning_level_cap
-            except Exception as e:
-                logger.debug("Honcho cost-awareness config parse error: %s", e)
+            self._injection_frequency = cfg.injection_frequency
+            self._context_cadence = cfg.context_cadence
+            self._dialectic_cadence = cfg.dialectic_cadence
+            self._query_rewrite_enabled = cfg.query_rewrite
+            self._FIRST_TURN_BASE_TIMEOUT = cfg.first_turn_base_wait
+            self._FIRST_TURN_DIALECTIC_CAP = cfg.first_turn_dialectic_wait
+            self._dialectic_depth = max(1, min(cfg.dialectic_depth, 3))
+            self._dialectic_depth_levels = cfg.dialectic_depth_levels
+            self._reasoning_heuristic = cfg.reasoning_heuristic
+            if cfg.reasoning_level_cap in self._LEVEL_ORDER:
+                self._reasoning_level_cap = cfg.reasoning_level_cap
 
-            # ----- Port #1969: aiPeer sync from SOUL.md — REMOVED -----
-            # SOUL.md is persona content, not identity config. aiPeer should
-            # only come from honcho.json (host block or root) or the default.
-            # See scratch/memory-plugin-ux-specs.md #10 for rationale.
+            # aiPeer comes from honcho.json (host block or root) only.
+            # SOUL.md is persona content, not identity config.
 
-            # ----- Port #1957: lazy session init for tools-only mode -----
+            self._lazy_init_kwargs = dict(kwargs)
+            self._lazy_init_session_id = session_id
+            self._session_key = self._resolve_session_key(cfg, session_id, **kwargs)
+
+            # Network-backed session creation can block on Honcho service or DB
+            # outages. Startup must fail open for context/hybrid modes, where
+            # Honcho is initialized only to enrich prompts. Tools-only mode has
+            # an explicit contract: init_on_session_start=False stays lazy until
+            # the first tool call, while init_on_session_start=True remains an
+            # eager, ready-on-return initialization path.
             if self._recall_mode == "tools":
                 if cfg.init_on_session_start:
-                    # Eager init even in tools mode (opt-in)
-                    self._do_session_init(cfg, session_id, **kwargs)
+                    self._ensure_session()
                     return
-                # Defer actual session creation until first tool call
-                self._lazy_init_kwargs = kwargs
-                self._lazy_init_session_id = session_id
-                # Still need a client reference for _ensure_session
-                self._config = cfg
                 logger.debug("Honcho tools-only mode — deferring session init until first tool call")
                 return
 
-            # ----- Eager init (context or hybrid mode) -----
-            self._do_session_init(cfg, session_id, **kwargs)
+            self._start_session_init_background(wait_timeout=0.1)
 
         except ImportError:
             logger.debug("honcho-ai package not installed — plugin inactive")
         except Exception as e:
             logger.warning("Honcho init failed: %s", e)
             self._manager = None
+
+    def _resolve_session_key(self, cfg, session_id: str, **kwargs) -> str:
+        """Resolve the Honcho session key without touching the network."""
+        session_title = kwargs.get("session_title")
+        gateway_session_key = kwargs.get("gateway_session_key")
+        return (
+            cfg.resolve_session_name(
+                session_title=session_title,
+                session_id=session_id,
+                gateway_session_key=gateway_session_key,
+            )
+            or session_id
+            or "hermes-default"
+        )
+
+    def _start_session_init_background(self, *, wait_timeout: float = 0.0) -> None:
+        """Start Honcho session initialization in a daemon thread.
+
+        This keeps Hermes CLI/gateway startup responsive when Honcho is down,
+        slow, or its database is unhealthy. The thread may still take the SDK
+        timeout path, but it cannot block agent construction or first prompt
+        assembly. ``wait_timeout`` lets fast/mock initializations finish before
+        returning while still failing open for slow backends.
+        """
+        if self._cron_skipped or self._session_initialized:
+            return
+        if not self._config or self._lazy_init_kwargs is None:
+            return
+
+        with self._init_lock:
+            if self._cron_skipped or self._session_initialized:
+                return
+            if self._init_thread and self._init_thread.is_alive():
+                return
+            if not self._config or self._lazy_init_kwargs is None:
+                return
+
+            cfg = self._config
+            init_kwargs = dict(self._lazy_init_kwargs)
+            init_session_id = self._lazy_init_session_id or "hermes-default"
+
+            def _run() -> None:
+                try:
+                    self._do_session_init(cfg, init_session_id, **init_kwargs)
+                    self._lazy_init_kwargs = None
+                    self._lazy_init_session_id = None
+                    self._init_error = ""
+                except Exception as e:
+                    self._init_error = str(e)
+                    self._manager = None
+                    logger.warning("Honcho background session init failed: %s", e)
+
+            self._init_thread = threading.Thread(
+                target=_run,
+                daemon=True,
+                name="honcho-session-init",
+            )
+            self._init_thread.start()
+            if wait_timeout > 0:
+                self._init_thread.join(timeout=wait_timeout)
 
     def _do_session_init(self, cfg, session_id: str, **kwargs) -> None:
         """Shared session initialization logic for both eager and lazy paths."""
@@ -356,27 +475,19 @@ class HonchoMemoryProvider(MemoryProvider):
             config=cfg,
             context_tokens=cfg.context_tokens,
             runtime_user_peer_name=kwargs.get("user_id") or None,
+            runtime_user_peer_name_alt=kwargs.get("user_id_alt") or None,
         )
 
-        # ----- B3: resolve_session_name -----
-        session_title = kwargs.get("session_title")
-        gateway_session_key = kwargs.get("gateway_session_key")
-        self._session_key = (
-            cfg.resolve_session_name(
-                session_title=session_title,
-                session_id=session_id,
-                gateway_session_key=gateway_session_key,
-            )
-            or session_id
-            or "hermes-default"
-        )
+        self._session_key = self._resolve_session_key(cfg, session_id, **kwargs)
         logger.debug("Honcho session key resolved: %s", self._session_key)
 
-        # Create session eagerly
+        # Create the remote session before running startup-only migration and
+        # prewarm work. Do not mark the provider ready until this method's
+        # synchronous setup has finished; background startup sets _manager before
+        # get_or_create()/migration/prewarm are complete, and lifecycle hooks must
+        # not treat that partially initialized state as usable.
         session = self._manager.get_or_create(self._session_key)
-        self._session_initialized = True
 
-        # ----- B6: Memory file migration (one-time, for new sessions) -----
         # Skip under per-session strategy: every Hermes run creates a fresh
         # Honcho session by design, so uploading MEMORY.md/USER.md/SOUL.md to
         # each one would flood the backend with short-lived duplicates instead
@@ -395,45 +506,48 @@ class HonchoMemoryProvider(MemoryProvider):
         except Exception as e:
             logger.debug("Honcho memory file migration skipped: %s", e)
 
-        # ----- B7: Pre-warming at init -----
-        # Context prewarm warms peer.context() (base layer), consumed via
-        # pop_context_result() in prefetch(). Dialectic prewarm runs the
-        # full configured depth and writes into _prefetch_result so turn 1
-        # consumes the result directly.
-        if self._recall_mode in ("context", "hybrid"):
-            try:
-                self._manager.prefetch_context(self._session_key)
-            except Exception as e:
-                logger.debug("Honcho context prewarm failed: %s", e)
+        # Query-aware base retrieval starts with the first substantive message.
+        # Generic dialectic prewarm is incompatible with latest-message rewriting.
+        if self._recall_mode in {"context", "hybrid"}:
+            if self._query_rewriter is None or not self._query_rewrite_enabled:
+                _prewarm_query = (
+                    "Summarize what you know about this user. "
+                    "Focus on preferences, current projects, and working style."
+                )
 
-            _prewarm_query = (
-                "Summarize what you know about this user. "
-                "Focus on preferences, current projects, and working style."
-            )
+                def _prewarm_dialectic() -> None:
+                    try:
+                        r = self._run_dialectic_depth(
+                            _prewarm_query, use_query_rewrite=False
+                        )
+                    except Exception as exc:
+                        logger.debug("Honcho dialectic prewarm failed: %s", exc)
+                        self._dialectic_empty_streak += 1
+                        return
+                    if r and r.strip():
+                        with self._prefetch_lock:
+                            self._prefetch_result = r
+                            self._prefetch_result_fired_at = 0
+                        self._last_dialectic_turn = 0
+                        self._dialectic_empty_streak = 0
+                    else:
+                        self._dialectic_empty_streak += 1
 
-            def _prewarm_dialectic() -> None:
-                try:
-                    r = self._run_dialectic_depth(_prewarm_query)
-                except Exception as exc:
-                    logger.debug("Honcho dialectic prewarm failed: %s", exc)
-                    self._dialectic_empty_streak += 1
-                    return
-                if r and r.strip():
-                    with self._prefetch_lock:
-                        self._prefetch_result = r
-                        self._prefetch_result_fired_at = 0
-                    # Treat prewarm as turn 0 so cadence gating starts clean.
-                    self._last_dialectic_turn = 0
-                    self._dialectic_empty_streak = 0
-                else:
-                    self._dialectic_empty_streak += 1
+                self._prefetch_thread_started_at = time.monotonic()
+                prewarm_thread = threading.Thread(
+                    target=_prewarm_dialectic,
+                    daemon=True,
+                    name="honcho-prewarm-dialectic",
+                )
+                prewarm_thread.start()
+                self._prefetch_thread = prewarm_thread
+                logger.debug("Honcho dialectic prewarm started for session: %s", self._session_key)
+            else:
+                logger.debug(
+                    "Honcho generic dialectic prewarm skipped: awaiting first user message"
+                )
 
-            self._prefetch_thread_started_at = time.monotonic()
-            self._prefetch_thread = threading.Thread(
-                target=_prewarm_dialectic, daemon=True, name="honcho-prewarm-dialectic"
-            )
-            self._prefetch_thread.start()
-            logger.debug("Honcho pre-warm started for session: %s", self._session_key)
+        self._session_initialized = True
 
     def _ensure_session(self) -> bool:
         """Lazily initialize the Honcho session (for tools-only mode).
@@ -444,7 +558,9 @@ class HonchoMemoryProvider(MemoryProvider):
             return True
         if self._cron_skipped:
             return False
-        if not self._config or not self._lazy_init_kwargs:
+        if self._init_thread and self._init_thread.is_alive():
+            return False
+        if not self._config or self._lazy_init_kwargs is None:
             return False
 
         try:
@@ -458,8 +574,25 @@ class HonchoMemoryProvider(MemoryProvider):
             self._lazy_init_session_id = None
             return self._manager is not None
         except Exception as e:
+            self._manager = None
+            self._session_initialized = False
             logger.warning("Honcho lazy session init failed: %s", e)
             return False
+
+    def _session_ready(self) -> bool:
+        """Return whether a manager/session key can be used safely.
+
+        Background initialization sets ``_manager`` before the blocking
+        get-or-create call completes, so ``_session_initialized`` guards real
+        async startup. Tests and legacy direct construction may inject a ready
+        manager/session key without setting that flag; allow that only when no
+        init thread is currently in flight.
+        """
+        if not self._manager or not self._session_key:
+            return False
+        if self._session_initialized:
+            return True
+        return not (self._init_thread and self._init_thread.is_alive())
 
     def _format_first_turn_context(self, ctx: dict) -> str:
         """Format the prefetch context dict into a readable system prompt block."""
@@ -500,16 +633,9 @@ class HonchoMemoryProvider(MemoryProvider):
         if self._cron_skipped:
             return ""
         if not self._manager or not self._session_key:
-            # tools-only mode without session yet still returns a minimal block
-            if self._recall_mode == "tools" and self._config:
-                return (
-                    "# Honcho Memory\n"
-                    "Active (tools-only mode). Use honcho_profile, honcho_search, "
-                    "honcho_reasoning, honcho_context, and honcho_conclude tools to access user memory."
-                )
-            return ""
+            if not self._config:
+                return ""
 
-        # ----- B1: adapt text based on recall_mode -----
         if self._recall_mode == "context":
             header = (
                 "# Honcho Memory\n"
@@ -547,126 +673,165 @@ class HonchoMemoryProvider(MemoryProvider):
         1. Base context from peer.context() — cached, refreshed on context_cadence
         2. Dialectic supplement — cached, refreshed on dialectic_cadence
 
-        B1: Returns empty when recall_mode is "tools" (no injection).
-        B5: Respects injection_frequency — "first-turn" returns cached/empty after turn 0.
-        Port #3265: Truncates to context_tokens budget.
+        Returns empty in tools-only mode and respects the configured injection
+        frequency and context budget.
         """
         if self._cron_skipped:
             return ""
 
-        # B1: tools-only mode — no auto-injection
+        # Tools-only mode has no automatic injection.
         if self._recall_mode == "tools":
             return ""
 
-        # B5: injection_frequency — if "first-turn" and past first turn, return empty.
-        # _turn_count is 1-indexed (first user message = 1), so > 1 means "past first".
-        if self._injection_frequency == "first-turn" and self._turn_count > 1:
-            return ""
+        first_turn_base_deadline = None
+        if self._turn_count <= 1:
+            base_wait = self._FIRST_TURN_BASE_TIMEOUT
+            request_timeout = getattr(self._config, "timeout", None)
+            if request_timeout is not None:
+                base_wait = min(base_wait, max(0.0, request_timeout))
+            first_turn_base_deadline = time.monotonic() + max(0.0, base_wait)
 
-        # Trivial prompts ("ok", "yes", slash commands) carry no semantic signal.
+        if not self._session_ready():
+            # Only turn 1 may wait for session init; later turns fail open.
+            self._start_session_init_background()
+            if first_turn_base_deadline is not None:
+                _init_thread = self._init_thread
+                if _init_thread is not None:
+                    _init_thread.join(
+                        timeout=max(0.0, first_turn_base_deadline - time.monotonic())
+                    )
+            if not self._session_ready():
+                return ""
+
+        # First-turn mode suppresses only the base layer; dialectic is independent.
+        _skip_base = (
+            self._injection_frequency == "first-turn" and self._turn_count > 1
+        )
+
+        # Trivial turns start no work, but may consume a ready pending result.
         if self._is_trivial_prompt(query):
-            return ""
+            ready = self._consume_pending_dialectic()
+            return self._truncate_to_budget(ready) if ready else ""
 
         parts = []
 
         # ----- Layer 1: Base context (representation + card) -----
-        # On first call, fetch synchronously so turn 1 isn't empty.
-        # After that, serve from cache and refresh in background on cadence.
-        with self._base_context_lock:
-            if self._base_context_cache is None:
-                # First call — synchronous fetch
-                try:
-                    ctx = self._manager.get_prefetch_context(self._session_key)
-                    self._base_context_cache = self._format_first_turn_context(ctx) if ctx else ""
-                    self._last_context_turn = self._turn_count
-                except Exception as e:
-                    logger.debug("Honcho base context fetch failed: %s", e)
+        if not _skip_base:
+            # The first base fetch gets the remaining turn-1 budget. Later
+            # refreshes are consumed asynchronously.
+            with self._base_context_lock:
+                _first_base_fetch = self._base_context_cache is None
+                if _first_base_fetch:
                     self._base_context_cache = ""
-            base_context = self._base_context_cache
+                    self._last_context_turn = self._turn_count
+                base_context = self._base_context_cache
 
-        # Check if background context prefetch has a fresher result
-        if self._manager:
-            fresh_ctx = self._manager.pop_context_result(self._session_key)
-            if fresh_ctx:
-                formatted = self._format_first_turn_context(fresh_ctx)
-                if formatted:
-                    with self._base_context_lock:
-                        self._base_context_cache = formatted
-                    base_context = formatted
+            if _first_base_fetch and self._manager:
+                _ctx_holder: dict[str, dict] = {}
 
-        if base_context:
-            parts.append(base_context)
+                def _fetch_base() -> None:
+                    try:
+                        ctx = self._manager.get_prefetch_context(
+                            self._session_key, query or None
+                        ) or {}
+                        _ctx_holder["ctx"] = ctx
+                        if ctx:
+                            self._manager.set_context_result(self._session_key, ctx)
+                    except Exception as e:
+                        logger.debug("Honcho first-turn base context failed: %s", e)
+
+                _bt = threading.Thread(
+                    target=_fetch_base, daemon=True, name="honcho-base-first"
+                )
+                _bt.start()
+                _base_wait = (
+                    max(0.0, first_turn_base_deadline - time.monotonic())
+                    if first_turn_base_deadline is not None
+                    else 0.0
+                )
+                _bt.join(timeout=_base_wait)
+                _ctx = _ctx_holder.get("ctx")
+                if _ctx:
+                    self._manager.pop_context_result(self._session_key)
+                    formatted = self._format_first_turn_context(_ctx)
+                    if formatted:
+                        with self._base_context_lock:
+                            self._base_context_cache = formatted
+                        base_context = formatted
+                elif _bt.is_alive():
+                    logger.debug(
+                        "Honcho first-turn base context still running after %.1fs — "
+                        "will surface on next turn", _base_wait,
+                    )
+
+            # Later turns consume the refresh queued by the previous turn.
+            if not _first_base_fetch and self._manager:
+                fresh_ctx = self._manager.pop_context_result(self._session_key)
+                if fresh_ctx:
+                    formatted = self._format_first_turn_context(fresh_ctx)
+                    if formatted:
+                        with self._base_context_lock:
+                            self._base_context_cache = formatted
+                        base_context = formatted
+
+            if base_context:
+                parts.append(base_context)
 
         # ----- Layer 2: Dialectic supplement -----
-        # On the very first turn, no queue_prefetch() has run yet so the
-        # dialectic result is empty.  Run with a bounded timeout so a slow
-        # Honcho connection doesn't block the first response indefinitely.
-        # On timeout we let the thread keep running and write its result into
-        # _prefetch_result under the lock, so the next turn picks it up.
-        #
-        # Skip if the session-start prewarm already filled _prefetch_result —
-        # firing another .chat() would be duplicate work.
+        # Turn 1 may briefly wait for dialectic; unfinished work remains async.
         with self._prefetch_lock:
             _prewarm_landed = bool(self._prefetch_result)
         if _prewarm_landed and self._last_dialectic_turn == -999:
             self._last_dialectic_turn = self._turn_count
 
         if self._last_dialectic_turn == -999 and query:
-            _first_turn_timeout = (
-                self._config.timeout if self._config and self._config.timeout else 8.0
-            )
-            _fired_at = self._turn_count
+            # Reuse an in-flight prewarm; otherwise start one dialectic. A short
+            # request timeout may tighten, but never expand, the turn-1 wait.
+            _dia_wait = self._FIRST_TURN_DIALECTIC_CAP
+            request_timeout = getattr(self._config, "timeout", None)
+            if request_timeout is not None:
+                _dia_wait = min(_dia_wait, max(0.0, request_timeout))
+            if self._thread_is_live():
+                _live = self._prefetch_thread
+                if _live is not None:
+                    _live.join(timeout=_dia_wait)
+            else:
+                _first_turn_timeout = _dia_wait
+                _fired_at = self._turn_count
 
-            def _run_first_turn() -> None:
-                try:
-                    r = self._run_dialectic_depth(query)
-                except Exception as exc:
-                    logger.debug("Honcho first-turn dialectic failed: %s", exc)
-                    self._dialectic_empty_streak += 1
-                    return
-                if r and r.strip():
-                    with self._prefetch_lock:
-                        self._prefetch_result = r
-                        self._prefetch_result_fired_at = _fired_at
-                    # Advance cadence only on a non-empty result so the next
-                    # turn retries when the call returned nothing.
-                    self._last_dialectic_turn = _fired_at
-                    self._dialectic_empty_streak = 0
-                else:
-                    self._dialectic_empty_streak += 1
+                def _run_first_turn() -> None:
+                    try:
+                        r = self._run_dialectic_depth(query)
+                    except Exception as exc:
+                        logger.debug("Honcho first-turn dialectic failed: %s", exc)
+                        self._dialectic_empty_streak += 1
+                        return
+                    if r and r.strip():
+                        with self._prefetch_lock:
+                            self._prefetch_result = r
+                            self._prefetch_result_fired_at = _fired_at
+                        # Empty results do not consume the cadence window.
+                        self._last_dialectic_turn = _fired_at
+                        self._dialectic_empty_streak = 0
+                    else:
+                        self._dialectic_empty_streak += 1
 
-            self._prefetch_thread_started_at = time.monotonic()
-            self._prefetch_thread = threading.Thread(
-                target=_run_first_turn, daemon=True, name="honcho-prefetch-first"
-            )
-            self._prefetch_thread.start()
-            self._prefetch_thread.join(timeout=_first_turn_timeout)
-            if self._prefetch_thread.is_alive():
+                self._prefetch_thread_started_at = time.monotonic()
+                first_turn_thread = threading.Thread(
+                    target=_run_first_turn, daemon=True, name="honcho-prefetch-first"
+                )
+                first_turn_thread.start()
+                self._prefetch_thread = first_turn_thread
+                self._prefetch_thread.join(timeout=_first_turn_timeout)
+            if self._prefetch_thread and self._prefetch_thread.is_alive():
                 logger.debug(
                     "Honcho first-turn dialectic still running after %.1fs — "
                     "will surface on next turn",
-                    _first_turn_timeout,
+                    _dia_wait,
                 )
 
-        if self._prefetch_thread and self._prefetch_thread.is_alive():
-            self._prefetch_thread.join(timeout=3.0)
-        with self._prefetch_lock:
-            dialectic_result = self._prefetch_result
-            fired_at = self._prefetch_result_fired_at
-            self._prefetch_result = ""
-            self._prefetch_result_fired_at = -999
-
-        # Discard stale pending results: if the fire happened more than
-        # cadence × multiplier turns ago (e.g. a run of trivial-prompt turns
-        # passed without consumption), the content likely no longer tracks
-        # the current conversational pivot.
-        stale_limit = self._dialectic_cadence * self._STALE_RESULT_MULTIPLIER
-        if dialectic_result and fired_at >= 0 and (self._turn_count - fired_at) > stale_limit:
-            logger.debug(
-                "Honcho pending dialectic discarded as stale: fired_at=%d, "
-                "turn=%d, limit=%d", fired_at, self._turn_count, stale_limit,
-            )
-            dialectic_result = ""
+        # Consume only results that are already ready; later turns never wait.
+        dialectic_result = self._consume_pending_dialectic()
 
         if dialectic_result and dialectic_result.strip():
             parts.append(dialectic_result)
@@ -676,10 +841,31 @@ class HonchoMemoryProvider(MemoryProvider):
 
         result = "\n\n".join(parts)
 
-        # ----- Port #3265: token budget enforcement -----
         result = self._truncate_to_budget(result)
 
         return result
+
+    def _consume_pending_dialectic(self) -> str:
+        """Pop any pending dialectic result, applying the stale-discard guard.
+
+        Returns an empty string when no result is ready or the pending result
+        is older than the configured cadence window.
+        """
+        with self._prefetch_lock:
+            dialectic_result = self._prefetch_result
+            fired_at = self._prefetch_result_fired_at
+            self._prefetch_result = ""
+            self._prefetch_result_fired_at = -999
+
+        # Drop results that no longer track the current conversational pivot.
+        stale_limit = self._dialectic_cadence * self._STALE_RESULT_MULTIPLIER
+        if dialectic_result and fired_at >= 0 and (self._turn_count - fired_at) > stale_limit:
+            logger.debug(
+                "Honcho pending dialectic discarded as stale: fired_at=%d, "
+                "turn=%d, limit=%d", fired_at, self._turn_count, stale_limit,
+            )
+            return ""
+        return dialectic_result if (dialectic_result and dialectic_result.strip()) else ""
 
     def _truncate_to_budget(self, text: str) -> str:
         """Truncate text to fit within context_tokens budget if set."""
@@ -698,25 +884,28 @@ class HonchoMemoryProvider(MemoryProvider):
     def queue_prefetch(self, query: str, *, session_id: str = "") -> None:
         """Fire background prefetch threads for the upcoming turn.
 
-        B5: Checks cadence independently for dialectic and context refresh.
-        Context refresh updates the base layer (representation + card).
-        Dialectic fires the LLM reasoning supplement.
+        Context and dialectic refreshes have independent cadence controls.
         """
         if self._cron_skipped:
             return
-        if not self._manager or not self._session_key or not query:
+        # Tools-only mode has no automatic prefetch.
+        if self._recall_mode == "tools":
             return
 
-        # B1: tools-only mode — no prefetch
-        if self._recall_mode == "tools":
+        if not self._session_ready() or not query:
+            self._start_session_init_background()
             return
 
         # Trivial prompts don't warrant either a context refresh or a dialectic call.
         if self._is_trivial_prompt(query):
             return
 
-        # ----- Context refresh (base layer) — independent cadence -----
-        if self._context_cadence <= 1 or (self._turn_count - self._last_context_turn) >= self._context_cadence:
+        # First-turn-only base context never needs a later refresh.
+        context_due = (
+            self._context_cadence <= 1
+            or (self._turn_count - self._last_context_turn) >= self._context_cadence
+        )
+        if self._injection_frequency != "first-turn" and context_due:
             self._last_context_turn = self._turn_count
             try:
                 self._manager.prefetch_context(self._session_key, query)
@@ -764,10 +953,11 @@ class HonchoMemoryProvider(MemoryProvider):
                 self._dialectic_empty_streak += 1
 
         self._prefetch_thread_started_at = time.monotonic()
-        self._prefetch_thread = threading.Thread(
+        prefetch_thread = threading.Thread(
             target=_run, daemon=True, name="honcho-prefetch"
         )
-        self._prefetch_thread.start()
+        prefetch_thread.start()
+        self._prefetch_thread = prefetch_thread
 
     # ----- Dialectic depth: multi-pass .chat() with cold/warm prompts -----
 
@@ -802,6 +992,10 @@ class HonchoMemoryProvider(MemoryProvider):
     # Cap on the empty-streak backoff so a persistently silent backend
     # eventually settles on a ceiling instead of unbounded widening.
     _BACKOFF_MAX = 8
+    # Total turn-1 budget shared by session init and base retrieval.
+    _FIRST_TURN_BASE_TIMEOUT = 3.0
+    # Independent turn-1 grace for the slower dialectic path.
+    _FIRST_TURN_DIALECTIC_CAP = 2.0
 
     def _thread_is_live(self) -> bool:
         """Thread-alive guard that treats threads older than the stale
@@ -942,7 +1136,7 @@ class HonchoMemoryProvider(MemoryProvider):
         # Long enough even without structure
         return len(result.strip()) > 300
 
-    def _run_dialectic_depth(self, query: str) -> str:
+    def _run_dialectic_depth(self, query: str, *, use_query_rewrite: bool = True) -> str:
         """Execute up to dialecticDepth .chat() calls with conditional bail-out.
 
         Cold start (no base context): general user-oriented query.
@@ -955,17 +1149,35 @@ class HonchoMemoryProvider(MemoryProvider):
 
         is_cold = not self._base_context_cache
         results: list[str] = []
+        rewritten_query = ""
+        if use_query_rewrite and self._query_rewrite_enabled and self._query_rewriter:
+            try:
+                rewritten_query = self._query_rewriter(query).strip()
+            except Exception as exc:
+                logger.debug("Honcho query rewriter failed: %s", exc)
 
         for i in range(self._dialectic_depth):
+            # Dependent prompts require a non-empty prior result.
+            prior_results = [r for r in results if r and r.strip()]
             if i == 0:
-                prompt = self._build_dialectic_prompt(0, results, is_cold)
+                prompt = rewritten_query or self._build_dialectic_prompt(
+                    0, prior_results, is_cold
+                )
             else:
                 # Skip further passes if prior pass delivered strong signal
-                if results and self._signal_sufficient(results[-1]):
+                if prior_results and self._signal_sufficient(prior_results[-1]):
                     logger.debug("Honcho dialectic depth %d: pass %d skipped, prior signal sufficient",
                                  self._dialectic_depth, i)
                     break
-                prompt = self._build_dialectic_prompt(i, results, is_cold)
+                if not prior_results:
+                    # Retry the independent base prompt after empty passes.
+                    logger.debug("Honcho dialectic depth %d: pass %d has no non-empty prior — "
+                                 "falling back to base prompt", self._dialectic_depth, i)
+                    prompt = rewritten_query or self._build_dialectic_prompt(
+                        0, prior_results, is_cold
+                    )
+                else:
+                    prompt = self._build_dialectic_prompt(i, prior_results, is_cold)
 
             level = self._resolve_pass_level(i, query=query)
             logger.debug("Honcho dialectic depth %d: pass %d, level=%s, cold=%s",
@@ -1056,6 +1268,63 @@ class HonchoMemoryProvider(MemoryProvider):
 
         return chunks
 
+    def _empty_profile_hint(self, peer: str) -> Dict[str, Any]:
+        """Build a diagnostic hint when honcho_profile returns an empty card.
+
+        A literal "No profile facts available yet." tells the model nothing
+        about WHY.  The model then often surfaces it to the user as a cryptic
+        error.  This hint enumerates the likely causes so the model can
+        explain the situation (or retry with a different peer).
+
+        Ordered by likelihood for a typical deployment:
+          1. Observation is disabled for this peer
+          2. Card hasn't accumulated yet (fresh peer, not enough dialectic
+             cycles — dialectic cadence runs every N turns)
+          3. Self-hosted Honcho backend doesn't support peer cards
+             (honcho-ai server < 3.x)
+        """
+        cfg = self._config
+        reasons: List[str] = []
+
+        if cfg is not None:
+            if peer == "user":
+                observe_me = bool(getattr(cfg, "user_observe_me", True))
+                observe_others = bool(getattr(cfg, "user_observe_others", True))
+            else:
+                observe_me = bool(getattr(cfg, "ai_observe_me", True))
+                observe_others = bool(getattr(cfg, "ai_observe_others", True))
+            if not (observe_me or observe_others):
+                reasons.append(
+                    f"observation is disabled for peer '{peer}' "
+                    f"(user_observe_me/ai_observe_me in config)"
+                )
+
+        cadence = getattr(self, "_dialectic_cadence", 1)
+        turn = getattr(self, "_turn_count", 0)
+        if turn < max(2, cadence):
+            reasons.append(
+                f"this session has only {turn} turn(s); peer cards accumulate "
+                f"as the dialectic layer reasons over conversation history "
+                f"(cadence every {cadence} turn(s))"
+            )
+
+        if not reasons:
+            reasons.append(
+                "peer card has no facts yet — Honcho's dialectic layer builds "
+                "this over time from observed turns; self-hosted Honcho < 3.x "
+                "does not support peer cards at all"
+            )
+
+        return {
+            "result": "No profile facts available yet.",
+            "hint": (
+                "This is not an error.  "
+                + "; ".join(reasons)
+                + ".  Try honcho_reasoning for a synthesized answer, or "
+                "honcho_search to query raw conversation excerpts."
+            ),
+        }
+
     def sync_turn(self, user_content: str, assistant_content: str, *, session_id: str = "") -> None:
         """Record the conversation turn in Honcho (non-blocking).
 
@@ -1064,17 +1333,22 @@ class HonchoMemoryProvider(MemoryProvider):
         """
         if self._cron_skipped:
             return
-        if not self._manager or not self._session_key:
+        if self._recall_mode == "tools" and not self._session_ready():
+            return
+        if not self._session_ready():
+            self._start_session_init_background()
             return
 
         msg_limit = self._config.message_max_chars if self._config else 25000
+        clean_user_content = sanitize_context(user_content or "").strip()
+        clean_assistant_content = sanitize_context(assistant_content or "").strip()
 
         def _sync():
             try:
                 session = self._manager.get_or_create(self._session_key)
-                for chunk in self._chunk_message(user_content, msg_limit):
+                for chunk in self._chunk_message(clean_user_content, msg_limit):
                     session.add_message("user", chunk)
-                for chunk in self._chunk_message(assistant_content, msg_limit):
+                for chunk in self._chunk_message(clean_assistant_content, msg_limit):
                     session.add_message("assistant", chunk)
                 self._manager._flush_session(session)
             except Exception as e:
@@ -1087,13 +1361,28 @@ class HonchoMemoryProvider(MemoryProvider):
         )
         self._sync_thread.start()
 
-    def on_memory_write(self, action: str, target: str, content: str) -> None:
-        """Mirror built-in user profile writes as Honcho conclusions."""
+    def on_memory_write(
+        self,
+        action: str,
+        target: str,
+        content: str,
+        metadata: Optional[Dict[str, Any]] = None,
+    ) -> None:
+        """Mirror built-in user profile writes as Honcho conclusions.
+
+        ``metadata`` is accepted for compatibility with the write-origin
+        work landed in main (commit 6a957a74); it's not yet threaded into
+        the Honcho conclusion payload.  Left as a follow-up so this PR
+        stays focused on the 7-PR consolidation and its review follow-ups.
+        """
         if action != "add" or target != "user" or not content:
             return
         if self._cron_skipped:
             return
-        if not self._manager or not self._session_key:
+        if self._recall_mode == "tools" and not self._session_ready():
+            return
+        if not self._session_ready():
+            self._start_session_init_background()
             return
 
         def _write():
@@ -1111,6 +1400,8 @@ class HonchoMemoryProvider(MemoryProvider):
             return
         if not self._manager:
             return
+        if not self._session_initialized and self._init_thread and self._init_thread.is_alive():
+            return
         # Wait for pending sync
         if self._sync_thread and self._sync_thread.is_alive():
             self._sync_thread.join(timeout=10.0)
@@ -1122,7 +1413,7 @@ class HonchoMemoryProvider(MemoryProvider):
     def get_tool_schemas(self) -> List[Dict[str, Any]]:
         """Return tool schemas, respecting recall_mode.
 
-        B1: context-only mode hides all tools.
+        Context-only mode exposes no Honcho tools.
         """
         if self._cron_skipped:
             return []
@@ -1135,8 +1426,9 @@ class HonchoMemoryProvider(MemoryProvider):
         if self._cron_skipped:
             return tool_error("Honcho is not active (cron context).")
 
-        # Port #1957: ensure session is initialized for tools-only mode
         if not self._session_initialized:
+            if self._init_thread and self._init_thread.is_alive():
+                return tool_error("Honcho session is still initializing; try again shortly.")
             if not self._ensure_session():
                 return tool_error("Honcho session could not be initialized.")
 
@@ -1154,11 +1446,11 @@ class HonchoMemoryProvider(MemoryProvider):
                     return json.dumps({"result": f"Peer card updated ({len(result)} facts).", "card": result})
                 card = self._manager.get_peer_card(self._session_key, peer=peer)
                 if not card:
-                    return json.dumps({"result": "No profile facts available yet."})
+                    return json.dumps(self._empty_profile_hint(peer))
                 return json.dumps({"result": card})
 
             elif tool_name == "honcho_search":
-                query = args.get("query", "")
+                query = (args.get("query") or "").strip()
                 if not query:
                     return tool_error("Missing required parameter: query")
                 max_tokens = min(int(args.get("max_tokens", 800)), 2000)
@@ -1171,7 +1463,7 @@ class HonchoMemoryProvider(MemoryProvider):
                 return json.dumps({"result": result})
 
             elif tool_name == "honcho_reasoning":
-                query = args.get("query", "")
+                query = (args.get("query") or "").strip()
                 if not query:
                     return tool_error("Missing required parameter: query")
                 peer = args.get("peer", "user")
@@ -1180,6 +1472,8 @@ class HonchoMemoryProvider(MemoryProvider):
                     self._session_key, query,
                     reasoning_level=reasoning_level,
                     peer=peer,
+                    # Explicit reasoning bypasses the automatic-injection cap.
+                    apply_injection_cap=False,
                 )
                 # Update cadence tracker so auto-injection respects the gap after an explicit call
                 self._last_dialectic_turn = self._turn_count
@@ -1209,13 +1503,23 @@ class HonchoMemoryProvider(MemoryProvider):
             elif tool_name == "honcho_conclude":
                 delete_id = (args.get("delete_id") or "").strip()
                 conclusion = args.get("conclusion", "").strip()
+                list_mode = bool(args.get("list"))
                 peer = args.get("peer", "user")
 
                 has_delete_id = bool(delete_id)
                 has_conclusion = bool(conclusion)
-                if has_delete_id == has_conclusion:
-                    return tool_error("Exactly one of conclusion or delete_id must be provided.")
+                if sum([has_delete_id, has_conclusion, list_mode]) != 1:
+                    return tool_error("Exactly one of conclusion, delete_id, or list must be provided.")
 
+                query = (args.get("query") or "").strip()
+                if query and not list_mode:
+                    return tool_error("query is only valid when list is true.")
+
+                if list_mode:
+                    conclusions = self._manager.list_conclusions(
+                        self._session_key, query=query or None, peer=peer
+                    )
+                    return json.dumps({"conclusions": conclusions})
                 if has_delete_id:
                     ok = self._manager.delete_conclusion(self._session_key, delete_id, peer=peer)
                     if ok:
@@ -1237,7 +1541,7 @@ class HonchoMemoryProvider(MemoryProvider):
             if t and t.is_alive():
                 t.join(timeout=5.0)
         # Flush any remaining messages
-        if self._manager:
+        if self._manager and not (self._init_thread and self._init_thread.is_alive() and not self._session_initialized):
             try:
                 self._manager.flush_all()
             except Exception:
@@ -1250,4 +1554,8 @@ class HonchoMemoryProvider(MemoryProvider):
 
 def register(ctx) -> None:
     """Register Honcho as a memory provider plugin."""
-    ctx.register_memory_provider(HonchoMemoryProvider())
+    from plugins.memory.query_rewrite import rewrite_memory_query
+
+    ctx.register_memory_provider(
+        HonchoMemoryProvider(query_rewriter=rewrite_memory_query)
+    )

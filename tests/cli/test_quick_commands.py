@@ -67,6 +67,18 @@ class TestCLIQuickCommands:
         args = cli.console.print.call_args[0][0]
         assert "no output" in args.lower()
 
+    def test_exec_command_silent_empty_suppresses_fallback(self):
+        cli = self._make_cli({"quiet": {"type": "exec", "command": "true", "silent_empty": True}})
+        cli.process_command("/quiet")
+        cli.console.print.assert_not_called()
+
+    def test_exec_command_silent_empty_false_still_shows_fallback(self):
+        cli = self._make_cli({"loud": {"type": "exec", "command": "true", "silent_empty": False}})
+        cli.process_command("/loud")
+        cli.console.print.assert_called_once()
+        args = cli.console.print.call_args[0][0]
+        assert "no output" in args.lower()
+
     def test_alias_command_routes_to_target(self):
         """Alias quick commands rewrite to the target command."""
         cli = self._make_cli({"shortcut": {"type": "alias", "target": "/help"}})
@@ -228,6 +240,32 @@ class TestGatewayQuickCommands:
             result = await runner._handle_message(event)
         assert result is not None
         assert "timed out" in result.lower()
+
+    @pytest.mark.asyncio
+    async def test_exec_command_no_output_returns_fallback(self):
+        from gateway.run import GatewayRunner
+        runner = GatewayRunner.__new__(GatewayRunner)
+        runner.config = {"quick_commands": {"silent": {"type": "exec", "command": "true"}}}
+        runner._running_agents = {}
+        runner._pending_messages = {}
+        runner._is_user_authorized = MagicMock(return_value=True)
+
+        event = self._make_event("silent")
+        result = await runner._handle_message(event)
+        assert result == "Command returned no output."
+
+    @pytest.mark.asyncio
+    async def test_exec_command_silent_empty_returns_empty_string(self):
+        from gateway.run import GatewayRunner
+        runner = GatewayRunner.__new__(GatewayRunner)
+        runner.config = {"quick_commands": {"quiet": {"type": "exec", "command": "true", "silent_empty": True}}}
+        runner._running_agents = {}
+        runner._pending_messages = {}
+        runner._is_user_authorized = MagicMock(return_value=True)
+
+        event = self._make_event("quiet")
+        result = await runner._handle_message(event)
+        assert result == ""
 
     @pytest.mark.asyncio
     async def test_gateway_config_object_supports_quick_commands(self):

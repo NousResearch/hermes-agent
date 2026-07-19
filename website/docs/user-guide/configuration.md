@@ -1696,6 +1696,22 @@ quick_commands:
 
 Usage: type `/status`, `/disk`, `/update`, `/gpu`, or `/restart` in the CLI or any messaging platform. `exec` commands run locally on the host and return the output directly — no LLM call, no tokens consumed. `alias` commands rewrite to the configured slash command target.
 
+```yaml
+# Suppress "(no output)" / "Command returned no output." fallback for
+# quick commands that succeed with no output (e.g., a silent health
+# check or a background file sync).
+quick_commands:
+  sync-logs:
+    type: exec
+    command: rsync -a /var/log/hermes/ /mnt/backup/logs/
+    silent_empty: true
+```
+
+When `silent_empty` is `true` (default `false`), the CLI, gateway, and TUI will
+not render a placeholder message if the command exits with code 0 but produces
+no output. This keeps the interface quiet for commands where silence is the
+expected success signal.
+
 - **30-second timeout** — long-running commands are killed with an error message
 - **Priority** — quick commands are checked before skill commands, so you can override skill names
 - **Autocomplete** — quick commands are resolved at dispatch time and are not shown in the built-in slash-command autocomplete tables

@@ -82,7 +82,13 @@ export function createSlashHandler(ctx: SlashHandlerContext): (cmd: string) => b
       }
 
       if (d.type === 'exec' || d.type === 'plugin') {
-        return sys(d.output || '(no output)')
+        if (d.output) {
+          return sys(d.output)
+        }
+        if (!d.silent_empty) {
+          return sys('(no output)')
+        }
+        return
       }
 
       if (d.type === 'alias') {

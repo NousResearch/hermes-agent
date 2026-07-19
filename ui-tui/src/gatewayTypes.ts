@@ -143,7 +143,7 @@ export interface BillingMutationResponse {
 }
 
 export type CommandDispatchResponse =
-  | { output?: string; type: 'exec' | 'plugin' }
+  | { output?: string; silent_empty?: boolean; type: 'exec' | 'plugin' }
   | { target: string; type: 'alias' }
   | { message?: string; name: string; type: 'skill' }
   | { message: string; notice?: string; type: 'send' }

@@ -167,6 +167,48 @@ def _status_cas_lock() -> UpdateLock:
     return UpdateLock(get_status_path().with_name(f".{STATUS_FILENAME}.lock"))
 
 
+def _write_status_locked(
+    status: dict[str, Any], *, expected_run_generation: str | None | object = _UNSET
+) -> Path:
+    """Write status while the caller holds ``_status_cas_lock``."""
+    path = get_status_path()
+    existing = read_status()
+    current_generation = existing.get("runGeneration")
+    caller_generation = status.get("runGeneration", current_generation)
+    if expected_run_generation is _UNSET:
+        expected = (
+            current_generation
+            if current_generation is None
+            else caller_generation
+        )
+    else:
+        expected = expected_run_generation
+    if expected != current_generation:
+        raise StaleStatusWriteError(
+            "auto-update status generation changed: "
+            f"expected {expected!r}, current {current_generation!r}"
+        )
+
+    payload = dict(DEFAULT_STATUS)
+    payload.update(status)
+    if "runGeneration" not in status:
+        payload["runGeneration"] = current_generation
+    payload["mode"] = payload.get("mode") or "manual"
+    # Persisted scheduler state is an input to the fail-closed dispatcher.
+    # Do not turn malformed truthy values such as ``"false"`` into an
+    # enabled schedule while recording a diagnostic.
+    payload["enabled"] = payload.get("enabled", False) is True
+    if not isinstance(payload.get("planSchedule"), list):
+        payload["planSchedule"] = []
+    if not payload.get("logPath"):
+        payload["logPath"] = str(get_log_path())
+
+    from utils import atomic_json_write
+
+    atomic_json_write(path, payload, indent=2, sort_keys=True)
+    return path
+
+
 def write_status(
     status: dict[str, Any], *, expected_run_generation: str | None | object = _UNSET
 ) -> Path:
@@ -175,53 +217,23 @@ def write_status(
     The shared update lock serializes update work, but it cannot protect a late
     receipt from an already-running old process. This profile-local CAS lock
     makes the persisted-generation comparison and atomic replace one operation.
-    ``expected_run_generation`` is explicit for a new run claiming ownership;
-    terminal writers pass their own generation and fail closed after a newer run
-    has claimed the file.
     """
-    path = get_status_path()
     with _status_cas_lock():
-        existing = read_status()
-        current_generation = existing.get("runGeneration")
-        caller_generation = status.get("runGeneration", current_generation)
-        if expected_run_generation is _UNSET:
-            expected = (
-                current_generation
-                if current_generation is None
-                else caller_generation
-            )
-        else:
-            expected = expected_run_generation
-        if expected != current_generation:
-            raise StaleStatusWriteError(
-                "auto-update status generation changed: "
-                f"expected {expected!r}, current {current_generation!r}"
-            )
-
-        payload = dict(DEFAULT_STATUS)
-        payload.update(status)
-        if "runGeneration" not in status:
-            payload["runGeneration"] = current_generation
-        payload["mode"] = payload.get("mode") or "manual"
-        # Persisted scheduler state is an input to the fail-closed dispatcher.
-        # Do not turn malformed truthy values such as ``"false"`` into an
-        # enabled schedule while recording a diagnostic.
-        payload["enabled"] = payload.get("enabled", False) is True
-        if not isinstance(payload.get("planSchedule"), list):
-            payload["planSchedule"] = []
-        if not payload.get("logPath"):
-            payload["logPath"] = str(get_log_path())
-
-        from utils import atomic_json_write
-
-        atomic_json_write(path, payload, indent=2, sort_keys=True)
-    return path
+        return _write_status_locked(
+            status, expected_run_generation=expected_run_generation
+        )
 
 
 def update_status_fields(**fields: Any) -> Path:
-    status = read_status()
-    status.update(fields)
-    return write_status(status, expected_run_generation=status.get("runGeneration"))
+    # Read, merge, compare, and replace as one transaction. In particular, a
+    # scheduler enable/disable update must not write a stale same-generation
+    # snapshot over a terminal auto-update receipt.
+    with _status_cas_lock():
+        status = read_status()
+        status.update(fields)
+        return _write_status_locked(
+            status, expected_run_generation=status.get("runGeneration")
+        )
 
 
 def append_log(
@@ -305,11 +317,10 @@ def _live_process_metadata(pid: int) -> dict[str, Any] | None:
             "start_time": get_process_start_time(pid),
             "command": _read_process_cmdline(pid),
         }
-        for name in ("exe", "cwd"):
-            try:
-                metadata[name] = str(Path(f"/proc/{pid}/{name}").resolve())
-            except (OSError, RuntimeError):
-                pass
+        if pid == os.getpid():
+            metadata["executable"] = str(Path(sys.executable).resolve())
+            metadata["installation_identity"] = _installation_identity()
+            metadata["profile_home"] = str(get_hermes_home().resolve())
         return metadata
     except Exception:
         return None
@@ -347,6 +358,11 @@ def _version_matches(actual: str | None, expected: str | None) -> bool:
     actual = str(actual).strip()
     expected = str(expected).strip()
     return bool(actual and expected and (actual == expected or actual.startswith(expected) or expected.startswith(actual)))
+
+
+def _revision_matches(actual: str | None, expected: str | None) -> bool:
+    """Match a runtime Git revision without consulting its semver version."""
+    return _version_matches(actual, expected)
 
 
 def _installation_matches(identity: dict[str, Any] | None) -> bool:
@@ -393,6 +409,17 @@ def _live_gateway_identity(
         live = _live_process_metadata(live_pid)
         if live is None:
             return None
+        reported_profile = (
+            runtime.get("profile_home")
+            or runtime.get("profileHome")
+            or live.get("profile_home")
+        )
+        if reported_profile:
+            try:
+                if Path(str(reported_profile)).resolve() != get_hermes_home().resolve():
+                    return None
+            except (OSError, RuntimeError):
+                return None
         live_start = live.get("start_time")
         if (
             not allow_start_time_change
@@ -422,7 +449,10 @@ def _live_gateway_identity(
             or runtime.get("hermes_home")
             or runtime.get("hermesHome")
             or str(get_hermes_home()),
-            "executable": live.get("executable") or live.get("exe"),
+            "executable": runtime.get("executable")
+            or runtime.get("executablePath")
+            or live.get("executable")
+            or live.get("exe"),
         }
     except Exception:
         return None
@@ -445,7 +475,11 @@ def _stopped_runtime_is_live_validated(runtime: dict[str, Any] | None) -> bool:
     return _live_process_metadata(identity[0]) is None
 
 
-def _capture_gateway_runtime(expected_version: str | None = None) -> dict[str, Any] | None:
+def _capture_gateway_runtime(
+    expected_version: str | None = None,
+    *,
+    expected_revision: str | None = None,
+) -> dict[str, Any] | None:
     """Capture a durable, OS-validated pre-update gateway proof."""
     try:
         from gateway import status as gateway_status
@@ -477,11 +511,18 @@ def _capture_gateway_runtime(expected_version: str | None = None) -> dict[str, A
     identity = _live_gateway_identity(runtime)
     if identity is None:
         return None
-    reported = identity.get("runtime_version") or identity.get("runtime_revision")
-    if not reported:
+    if not identity.get("runtime_version") and not identity.get("runtime_revision"):
         return None
-    if expected_version and not _version_matches(reported, expected_version):
+    if expected_revision and not _revision_matches(
+        identity.get("runtime_revision"), expected_revision
+    ):
         return None
+    if expected_version:
+        if re.fullmatch(r"[0-9a-fA-F]{7,40}", expected_version):
+            if not _revision_matches(identity.get("runtime_revision"), expected_version):
+                return None
+        elif not _version_matches(identity.get("runtime_version"), expected_version):
+            return None
     if not _installation_matches(identity):
         return None
     captured = dict(runtime)
@@ -572,10 +613,12 @@ def _gateway_was_running(runtime: dict[str, Any] | None) -> bool:
 def _verify_health(
     previous_runtime: dict[str, Any] | None = None,
     expected_version: str | None = None,
+    *,
+    expected_revision: str | None = None,
 ) -> tuple[bool, str]:
     """Return a bounded, live post-update health verdict."""
     try:
-        from gateway.status import read_runtime_status
+        from gateway import status as gateway_status
     except Exception as exc:
         return False, f"could not import gateway status helpers: {exc}"
 
@@ -598,7 +641,7 @@ def _verify_health(
     deadline = time.monotonic() + _HEALTH_STARTUP_GRACE_SECONDS
     last_detail = "gateway did not return to a healthy state"
     while True:
-        runtime = read_runtime_status()
+        runtime = gateway_status.read_runtime_status()
         if isinstance(runtime, dict):
             state = str(runtime.get("gateway_state") or "")
             if state in {"startup_failed", "failed"}:
@@ -633,25 +676,31 @@ def _verify_health(
                         )
                     except (OSError, RuntimeError, TypeError):
                         profile_matches = False
-                    if expected_version and (
+                    expected_identity = expected_revision or expected_version
+                    if expected_identity and (
                         not old_install
                         or not new_install
                         or old_install != new_install
                         or not _installation_matches(new_identity)
                     ):
                         last_detail = "gateway restart reported a different installation"
-                    elif expected_version and not new_profile:
+                    elif expected_identity and not new_profile:
                         last_detail = "gateway restart did not report the expected profile"
+                    elif expected_revision and not _revision_matches(
+                        new_identity.get("runtime_revision"), expected_revision
+                    ):
+                        last_detail = (
+                            "gateway restart did not report the expected updated Git revision "
+                            f"{expected_revision}"
+                        )
                     elif expected_version and not _version_matches(
-                        new_identity.get("runtime_version")
-                        or new_identity.get("runtime_revision"),
-                        expected_version,
+                        new_identity.get("runtime_version"), expected_version
                     ):
                         last_detail = (
                             "gateway restart did not report the expected updated version "
                             f"{expected_version}"
                         )
-                    elif expected_version and not profile_matches:
+                    elif expected_identity and not profile_matches:
                         last_detail = "gateway restart reported a different profile"
                     elif (old_pid, old_start) != (new_pid, new_start):
                         return True, f"gateway state: running (new process {new_pid})"
@@ -675,6 +724,12 @@ def _verify_health(
             else:
                 last_detail = f"gateway state: {state or 'unknown'}"
         else:
+            if was_explicitly_stopped:
+                try:
+                    if gateway_status.get_running_pid() is None:
+                        return True, "gateway state: stopped (no live gateway status)"
+                except Exception:
+                    pass
             last_detail = "gateway runtime status disappeared after update"
 
         if time.monotonic() >= deadline:
@@ -1252,6 +1307,13 @@ def _enable_launchd(
             _run_launchctl(["enable", f"{target}/{_launchd_label()}"]),
             "launchctl enable",
         )
+        final_state = _launchd_state(target)
+        if final_state.get("loaded") is not True or final_state.get("enabled") is not True:
+            raise RuntimeError(
+                "launchd enable completed without adopting the expected job: "
+                f"loaded={final_state.get('loaded')!r}, "
+                f"enabled={final_state.get('enabled')!r}"
+            )
     except Exception as exc:
         receipt = _restore_launchd(
                 target=target,
@@ -1655,6 +1717,12 @@ def _verify_systemd_enabled(service_path: Path, timer_path: Path) -> None:
             "systemd timer did not start: expected ActiveState=active, got "
             f"{timer_state.get('active_state')!r}"
         )
+    if timer_state.get("unit_file_state") != "enabled":
+        raise RuntimeError(
+            "systemd timer is not persistently enabled: expected "
+            "UnitFileState=enabled, got "
+            f"{timer_state.get('unit_file_state')!r}"
+        )
     for path in (service_path, timer_path):
         artifact = _read_artifact_state(path)
         if artifact.get("kind") != "file":
@@ -1789,7 +1857,21 @@ def _disable_scheduler(status: dict[str, Any]) -> _SchedulerHandle | None:
     return None
 
 
-def cmd_auto_enable(args) -> None:
+def _acquire_scheduler_update_lock() -> UpdateLock:
+    """Serialize scheduler mutations with source-checkout update execution."""
+    from hermes_cli.main import PROJECT_ROOT
+
+    try:
+        return acquire_update_lock(PROJECT_ROOT)
+    except (UpdateLockBusyError, UpdateLockError) as exc:
+        print(
+            f"✗ Another Hermes update is already running; scheduler mutation refused ({exc}).",
+            file=sys.stderr,
+        )
+        raise SystemExit(EXIT_UPDATE_FAILED) from exc
+
+
+def _cmd_auto_enable_locked(args) -> None:
     scheduler_handle: _SchedulerHandle | None = None
     try:
         hour, minute, schedule = _parse_time(getattr(args, "time", ""))
@@ -1843,7 +1925,15 @@ def cmd_auto_enable(args) -> None:
     print("  Command:     hermes update auto run-scheduled")
 
 
-def cmd_auto_disable(_args) -> None:
+def cmd_auto_enable(args) -> None:
+    update_lock = _acquire_scheduler_update_lock()
+    try:
+        return _cmd_auto_enable_locked(args)
+    finally:
+        update_lock.release()
+
+
+def _cmd_auto_disable_locked(_args) -> None:
     status = read_status()
     scheduler_handle: _SchedulerHandle | None = None
     try:
@@ -1886,6 +1976,14 @@ def cmd_auto_disable(_args) -> None:
             print(f"  Removed: {scheduler_path}" if removed else f"  Scheduler path: {scheduler_path}")
     else:
         print("Hermes auto-update is already disabled.")
+
+
+def cmd_auto_disable(args) -> None:
+    update_lock = _acquire_scheduler_update_lock()
+    try:
+        return _cmd_auto_disable_locked(args)
+    finally:
+        update_lock.release()
 
 
 def _minutes_for_schedule(schedule: str) -> int:
@@ -2237,11 +2335,12 @@ def _cmd_auto_run_now_locked(args) -> None:
         return _cmd_auto_run_now_locked_impl(args, run_context=run_context)
     except (KeyboardInterrupt, SystemExit):
         raise
-    except StaleStatusWriteError:
+    except StaleStatusWriteError as exc:
         print(
             "⚠ Auto-update run lost status ownership; stale terminal receipt was rejected.",
             file=sys.stderr,
         )
+        raise SystemExit(EXIT_UPDATE_FAILED) from exc
     except Exception as exc:
         _record_unexpected_run_failure(
             exc, run_generation=run_context.get("run_generation")
@@ -2321,13 +2420,18 @@ def _cmd_auto_run_now_locked_impl(
             return
 
         expected_sha = check.get("latest_sha")
-        expected_runtime_version = str(expected_sha or latest_version or "").strip() or None
         if check.get("install_method") == "git" and not expected_sha:
             raise AutoUpdateError(
                 STATUS_UPDATE_FAILED,
                 "update check reported an available git update without an expected latest SHA",
                 EXIT_UPDATE_FAILED,
             )
+        if check.get("install_method") == "git" or expected_sha:
+            expected_runtime_revision = str(expected_sha or "").strip() or None
+            expected_runtime_version = None
+        else:
+            expected_runtime_revision = None
+            expected_runtime_version = str(latest_version or "").strip() or None
 
         intent_error = _pre_update_gateway_intent_error()
         if intent_error:
@@ -2344,10 +2448,12 @@ def _cmd_auto_run_now_locked_impl(
                 proof_error,
                 EXIT_HEALTH_FAILED,
             )
-        if _gateway_was_running(previous_runtime) and not expected_runtime_version:
+        if _gateway_was_running(previous_runtime) and not (
+            expected_runtime_version or expected_runtime_revision
+        ):
             raise AutoUpdateError(
                 STATUS_HEALTH_FAILED,
-                "could not establish the expected updated runtime version; refusing to update",
+                "could not establish the expected updated runtime identity; refusing to update",
                 EXIT_HEALTH_FAILED,
             )
 
@@ -2383,7 +2489,14 @@ def _cmd_auto_run_now_locked_impl(
                 EXIT_UPDATE_FAILED,
             )
 
-        ok, detail = _verify_health(previous_runtime, expected_runtime_version)
+        if expected_runtime_revision:
+            ok, detail = _verify_health(
+                previous_runtime,
+                expected_runtime_version,
+                expected_revision=expected_runtime_revision,
+            )
+        else:
+            ok, detail = _verify_health(previous_runtime, expected_runtime_version)
         if not ok:
             raise AutoUpdateError(
                 STATUS_HEALTH_FAILED,

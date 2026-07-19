@@ -1043,6 +1043,20 @@ class TestCmdUpdateCheckBranchFlag:
         rev_list_cmds = [c for c in commands if "rev-list" in c]
         assert any("upstream/main" in c for c in rev_list_cmds), rev_list_cmds
 
+    @patch("hermes_cli.config.detect_install_method", return_value="pip")
+    @patch("hermes_cli.banner._fetch_pypi_latest", return_value="0.0.0")
+    @patch("subprocess.run")
+    def test_check_branch_warns_on_pypi_install(
+        self, mock_run, _mock_pypi, _mock_method, capsys
+    ):
+        """PyPI install + --branch=<non-main> surfaces a warning instead of silent drop."""
+        args = SimpleNamespace(check=True, branch="bb/gui")
+
+        cmd_update(args)
+
+        out = capsys.readouterr().out
+        assert "--branch is ignored for PyPI installs" in out
+        assert "bb/gui" in out
 
 class TestCmdUpdateZipBranchRefusal:
     """``hermes update --branch=<non-main>`` must refuse on the ZIP fallback path.

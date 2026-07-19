@@ -453,6 +453,22 @@ class TestGatewayRuntimeStatus:
         assert runtime_payload["runtime_version"]
         assert runtime_payload["runtime_revision"]
 
+    def test_pid_and_runtime_records_publish_portable_install_and_profile_identity(
+        self, tmp_path, monkeypatch
+    ):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        monkeypatch.setattr(status, "_installation_identity", lambda: "install-a")
+
+        status.write_pid_file()
+        status.write_runtime_status(gateway_state="running")
+
+        pid_payload = json.loads((tmp_path / "gateway.pid").read_text())
+        runtime_payload = status.read_runtime_status()
+        assert pid_payload["installation_identity"] == "install-a"
+        assert pid_payload["profile_home"] == str(tmp_path.resolve())
+        assert runtime_payload["installation_identity"] == "install-a"
+        assert runtime_payload["profile_home"] == str(tmp_path.resolve())
+
     def test_old_runtime_writer_cannot_overwrite_new_generation(
         self, tmp_path, monkeypatch
     ):

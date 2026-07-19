@@ -9205,21 +9205,25 @@ def _get_update_check_result(
         raise RuntimeError(recommended_update_command_for_method(method))
     if method == "pip":
         from hermes_cli import __version__
-        from hermes_cli.banner import check_via_pypi
+        from hermes_cli.banner import _fetch_pypi_latest, _version_tuple
 
-        result = check_via_pypi()
-        if result is None:
+        latest_version = _fetch_pypi_latest()
+        if latest_version is None:
             raise RuntimeError("Could not reach PyPI to check for updates.")
+        try:
+            update_available = _version_tuple(latest_version) > _version_tuple(__version__)
+        except Exception:
+            update_available = latest_version != __version__
         return {
             "install_method": "pip",
             "branch": branch,
             "branch_explicit": branch_explicit,
             "branch_ignored": bool(branch_explicit and branch != "main"),
             "current_version": __version__,
-            "latest_version": "",
+            "latest_version": latest_version,
             "compare_ref": "pypi",
-            "behind": int(result),
-            "update_available": bool(result),
+            "behind": int(update_available),
+            "update_available": update_available,
         }
 
     git_dir = PROJECT_ROOT / ".git"

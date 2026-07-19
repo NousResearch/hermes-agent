@@ -276,6 +276,22 @@ def _runtime_identity() -> tuple[str | None, str | None]:
     return _RUNTIME_VERSION, _RUNTIME_REVISION
 
 
+def _installation_identity() -> str:
+    """Return a portable identity for the running Hermes installation.
+
+    The identity is derived from paths available to the process itself.  It
+    deliberately does not inspect a PID through ``/proc``: that filesystem is
+    Linux-specific and is absent on Darwin.
+    """
+    install_root = Path(__file__).resolve().parents[1]
+    executable = Path(sys.executable).resolve()
+    return f"{install_root}\0{sys.prefix}\0{executable}"
+
+
+def _profile_home_identity() -> str:
+    return str(_get_process_hermes_home().resolve())
+
+
 def terminate_pid(pid: int, *, force: bool = False) -> None:
     """Terminate a PID with platform-appropriate force semantics.
 
@@ -610,6 +626,9 @@ def _build_pid_record() -> dict:
         "generation": _GATEWAY_RUNTIME_GENERATION,
         "runtime_version": runtime_version,
         "runtime_revision": runtime_revision,
+        "installation_identity": _installation_identity(),
+        "profile_home": _profile_home_identity(),
+        "executable": str(Path(sys.executable).resolve()),
     }
 
 
@@ -1109,6 +1128,9 @@ def write_runtime_status(
         payload["generation"] = current_record["generation"]
         payload["runtime_version"] = current_record["runtime_version"]
         payload["runtime_revision"] = current_record["runtime_revision"]
+        payload["installation_identity"] = current_record["installation_identity"]
+        payload["profile_home"] = current_record["profile_home"]
+        payload["executable"] = current_record["executable"]
         payload["updated_at"] = _utc_now_iso()
 
         if gateway_state is not _UNSET:

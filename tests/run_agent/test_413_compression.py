@@ -583,7 +583,14 @@ class TestPreflightCompression:
                 approx_tokens=1234,
             )
 
-        assert compressed == [{"role": "user", "content": f"{SUMMARY_PREFIX}\nPrevious conversation"}]
+        # The compressor returned only the user-role summary; a summary
+        # message no longer satisfies the human-anchor check, so the real
+        # user turn is restored after it (repair merges the pair
+        # summary-first before the next API call).
+        assert compressed == [
+            {"role": "user", "content": f"{SUMMARY_PREFIX}\nPrevious conversation"},
+            {"role": "user", "content": "hello"},
+        ]
         assert new_system_prompt == "new system prompt"
         assert events[0][0] == "lifecycle"
         assert "Compacting context" in events[0][1]

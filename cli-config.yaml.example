@@ -888,6 +888,10 @@ platform_toolsets:
 #
 # discord:
 #   require_mention: true            # Require @mention in server channels (default: true)
+#   thread_require_mention: true     # Require @mention inside threads too
+#   allow_bots: mentions             # none, mentions, or all
+#   bot_allow_from: []               # Discord bot user IDs allowed by allow_bots
+#   bots_require_inline_mention: true # Ignore reply pings from bots; require a typed @mention
 #   auto_thread: true                # Auto-create thread on @mention (default: true)
 #   free_response_channels: ""       # Channel IDs where no mention is needed
 #   reactions: true                  # Show processing reactions (default: true)

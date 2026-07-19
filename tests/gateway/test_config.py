@@ -810,6 +810,46 @@ class TestLoadGatewayConfig:
 
         assert os.environ.get("DISCORD_BOTS_REQUIRE_INLINE_MENTION") == "true"
 
+    def test_bridges_discord_bot_admission_from_config_yaml(self, tmp_path, monkeypatch):
+        hermes_home = tmp_path / ".hermes"
+        hermes_home.mkdir()
+        (hermes_home / "config.yaml").write_text(
+            "discord:\n"
+            "  allow_bots: mentions\n"
+            "  bot_allow_from:\n"
+            "    - \"123456789012345678\"\n"
+            "    - \"999888777666555444\"\n",
+            encoding="utf-8",
+        )
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+        monkeypatch.delenv("DISCORD_ALLOW_BOTS", raising=False)
+        monkeypatch.delenv("DISCORD_ALLOWED_BOTS", raising=False)
+
+        load_gateway_config()
+
+        assert os.environ.get("DISCORD_ALLOW_BOTS") == "mentions"
+        assert os.environ.get("DISCORD_ALLOWED_BOTS") == (
+            "123456789012345678,999888777666555444"
+        )
+
+    def test_discord_bot_admission_env_does_not_overwrite_env(self, tmp_path, monkeypatch):
+        hermes_home = tmp_path / ".hermes"
+        hermes_home.mkdir()
+        (hermes_home / "config.yaml").write_text(
+            "discord:\n"
+            "  allow_bots: mentions\n"
+            "  bot_allow_from: [\"123\"]\n",
+            encoding="utf-8",
+        )
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+        monkeypatch.setenv("DISCORD_ALLOW_BOTS", "all")
+        monkeypatch.setenv("DISCORD_ALLOWED_BOTS", "456")
+
+        load_gateway_config()
+
+        assert os.environ.get("DISCORD_ALLOW_BOTS") == "all"
+        assert os.environ.get("DISCORD_ALLOWED_BOTS") == "456"
+
     def test_bridges_discord_allow_from_from_config_yaml(self, tmp_path, monkeypatch):
         """discord.allow_from should populate DISCORD_ALLOWED_USERS for auth."""
         hermes_home = tmp_path / ".hermes"

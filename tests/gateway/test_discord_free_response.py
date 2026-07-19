@@ -1092,6 +1092,28 @@ class TestChannelContextUnverifiedTagging:
         assert "[Gemini [bot]] bot note" in result
 
     @pytest.mark.asyncio
+    async def test_bot_allowlist_filters_history_context(self, adapter, monkeypatch):
+        monkeypatch.setenv("DISCORD_ALLOW_BOTS", "all")
+        monkeypatch.setenv("DISCORD_ALLOWED_BOTS", "58")
+        adapter.config.extra["history_backfill_limit"] = 10
+        allowed_bot = SimpleNamespace(id=58, display_name="Allowed", name="Allowed", bot=True)
+        blocked_bot = SimpleNamespace(id=59, display_name="Blocked", name="Blocked", bot=True)
+        channel = FakeHistoryChannel(
+            [
+                make_history_message(author=allowed_bot, content="trusted", msg_id=1),
+                make_history_message(author=blocked_bot, content="untrusted", msg_id=2),
+            ],
+            channel_id=123,
+        )
+
+        result = await adapter._fetch_channel_context(
+            channel, before=make_message(channel=channel, content="trigger"),
+        )
+
+        assert "[Allowed [bot]] trusted" in result
+        assert "untrusted" not in result
+
+    @pytest.mark.asyncio
     async def test_auth_check_receives_chat_type_group_for_plain_channel(self, adapter, monkeypatch):
         monkeypatch.setenv("DISCORD_ALLOW_BOTS", "all")
         adapter.config.extra["history_backfill_limit"] = 10
@@ -1485,4 +1507,3 @@ async def test_discord_non_reply_free_channel_skips_backfill(adapter, monkeypatc
     await adapter._handle_message(message)
 
     adapter._fetch_channel_context.assert_not_awaited()
-

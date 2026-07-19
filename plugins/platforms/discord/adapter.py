@@ -1269,6 +1269,8 @@ class DiscordAdapter(BasePlatformAdapter):
             allow_bots = os.getenv("DISCORD_ALLOW_BOTS", "none").lower().strip()
             if allow_bots == "none":
                 return False, False
+            if not _discord_bot_id_is_allowed(getattr(message.author, "id", None)):
+                return False, False
             if allow_bots == "mentions" and not self._self_is_explicitly_mentioned(message):
                 return False, False
             if (
@@ -5953,7 +5955,10 @@ class DiscordAdapter(BasePlatformAdapter):
                 if (
                     is_bot_author
                     and msg.author != self._client.user
-                    and not include_other_bots
+                    and (
+                        not include_other_bots
+                        or not _discord_bot_id_is_allowed(getattr(msg.author, "id", None))
+                    )
                 ):
                     return None
                 if not content and msg.attachments:
@@ -9204,6 +9209,15 @@ def _clean_discord_user_ids(raw: str) -> list:
     return cleaned
 
 
+def _discord_bot_id_is_allowed(author_id: Any) -> bool:
+    """Return whether a bot ID passes the optional Discord bot allowlist."""
+    raw = os.getenv("DISCORD_ALLOWED_BOTS", "").strip()
+    if not raw:
+        return True
+    allowed = {value.strip() for value in raw.split(",") if value.strip()}
+    return author_id is not None and str(author_id) in allowed
+
+
 def interactive_setup() -> None:
     """Guide the user through Discord bot setup.
 
@@ -9312,6 +9326,13 @@ def _apply_yaml_config(yaml_cfg: dict, discord_cfg: dict) -> dict | None:
         os.environ["DISCORD_THREAD_REQUIRE_MENTION"] = str(discord_cfg["thread_require_mention"]).lower()
     if "bots_require_inline_mention" in discord_cfg and not os.getenv("DISCORD_BOTS_REQUIRE_INLINE_MENTION"):
         os.environ["DISCORD_BOTS_REQUIRE_INLINE_MENTION"] = str(discord_cfg["bots_require_inline_mention"]).lower()
+    if "allow_bots" in discord_cfg and not os.getenv("DISCORD_ALLOW_BOTS"):
+        os.environ["DISCORD_ALLOW_BOTS"] = str(discord_cfg["allow_bots"]).lower()
+    bot_allow_from_cfg = discord_cfg.get("bot_allow_from")
+    if bot_allow_from_cfg is not None and not os.getenv("DISCORD_ALLOWED_BOTS"):
+        if isinstance(bot_allow_from_cfg, list):
+            bot_allow_from_cfg = ",".join(str(v) for v in bot_allow_from_cfg)
+        os.environ["DISCORD_ALLOWED_BOTS"] = str(bot_allow_from_cfg)
     platforms_cfg = yaml_cfg.get("platforms")
     platform_extra_cfg = {}
     if isinstance(platforms_cfg, dict):

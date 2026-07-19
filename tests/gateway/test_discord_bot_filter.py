@@ -3,7 +3,11 @@
 import os
 import re
 import unittest
+from types import SimpleNamespace
 from unittest.mock import MagicMock
+
+import plugins.platforms.discord.adapter as discord_platform
+from plugins.platforms.discord.adapter import DiscordAdapter, _discord_bot_id_is_allowed
 
 
 def _make_author(*, bot: bool = False, is_self: bool = False):
@@ -217,6 +221,56 @@ class TestDiscordBotFilter(unittest.TestCase):
         self.assertTrue(self._run_filter(msg, "All"))
         self.assertFalse(self._run_filter(msg, "NONE"))
         self.assertFalse(self._run_filter(msg, "None"))
+
+
+def test_bot_id_allowlist_is_optional(monkeypatch):
+    monkeypatch.delenv("DISCORD_ALLOWED_BOTS", raising=False)
+
+    assert _discord_bot_id_is_allowed("12345") is True
+
+
+def test_bot_id_allowlist_accepts_only_configured_ids(monkeypatch):
+    monkeypatch.setenv("DISCORD_ALLOWED_BOTS", "12345, 67890")
+
+    assert _discord_bot_id_is_allowed(12345) is True
+    assert _discord_bot_id_is_allowed("67890") is True
+    assert _discord_bot_id_is_allowed("99999") is False
+    assert _discord_bot_id_is_allowed(None) is False
+
+
+def test_live_admission_rejects_unlisted_bot(monkeypatch):
+    monkeypatch.setenv("DISCORD_ALLOW_BOTS", "all")
+    monkeypatch.setenv("DISCORD_ALLOWED_BOTS", "67890")
+    adapter = object.__new__(DiscordAdapter)
+    adapter._client = SimpleNamespace(user=SimpleNamespace(id=99999, bot=True))
+    adapter._dedup = SimpleNamespace(contains=lambda _message_id: False)
+    adapter._discord_bots_require_inline_mention = lambda: False
+    message = SimpleNamespace(
+        id=1,
+        author=SimpleNamespace(id=12345, bot=True),
+        type=discord_platform.discord.MessageType.default,
+    )
+
+    assert adapter._discord_message_admission(message, claim=False) == (False, False)
+
+
+def test_live_admission_accepts_allowlisted_bot(monkeypatch):
+    monkeypatch.setenv("DISCORD_ALLOW_BOTS", "all")
+    monkeypatch.setenv("DISCORD_ALLOWED_BOTS", "12345")
+    adapter = object.__new__(DiscordAdapter)
+    adapter._client = SimpleNamespace(user=SimpleNamespace(id=99999, bot=True))
+    adapter._dedup = SimpleNamespace(contains=lambda _message_id: False)
+    adapter._discord_bots_require_inline_mention = lambda: False
+    message = SimpleNamespace(
+        id=1,
+        author=SimpleNamespace(id=12345, bot=True),
+        type=discord_platform.discord.MessageType.default,
+        channel=SimpleNamespace(),
+        mentions=[],
+        content="hello",
+    )
+
+    assert adapter._discord_message_admission(message, claim=False) == (True, False)
 
 
 if __name__ == "__main__":

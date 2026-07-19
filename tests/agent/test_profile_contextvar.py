@@ -16,6 +16,37 @@ from agent.profile import (
 )
 
 
+@pytest.fixture(autouse=True)
+def _rebind_live_profile_module():
+    """Re-bind this module's agent.profile symbols to the LIVE module.
+
+    Some suites (e.g. test_empty_tool_name_loop_dampening) drop every cached
+    ``agent.*`` entry from ``sys.modules`` to force fresh imports.  After such
+    a nuke, ``agent.profile`` is re-imported with a brand-new ContextVar, while
+    this module's import-time bindings still point at the OLD module — so
+    ``set_active_profile`` (old var) and ``_current_agent_profile`` fetched
+    inside a test (new var) silently disagree, and dataclass equality across
+    the two AgentProfile classes is always False.  Re-binding at test start
+    keeps every symbol self-consistent regardless of suite order.
+    """
+    import agent.profile as _live
+
+    g = globals()
+    for name in (
+        "AgentProfile",
+        "get_active_profile",
+        "set_active_profile",
+        "use_profile",
+        "load_agent_registry",
+        "DEFAULT_AGENT_ID",
+    ):
+        g[name] = getattr(_live, name)
+    yield
+    # Hygiene: never leak an active profile into later tests, even if an
+    # assertion tripped mid-test before its own cleanup ran.
+    _live._current_agent_profile.set(None)
+
+
 class TestAgentProfile:
     def test_default_profile(self):
         p = AgentProfile()

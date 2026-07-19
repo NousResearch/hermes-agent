@@ -403,6 +403,7 @@ def test_termux_fast_cli_launch_oneshot_uses_light_parser(monkeypatch, main_mod)
         "provider": "openai",
         "toolsets": None,
         "usage_file": "usage.json",
+        "worktree": False,
     }
 
 
@@ -657,6 +658,7 @@ def test_main_top_level_oneshot_accepts_toolsets(monkeypatch, main_mod):
         "provider": None,
         "toolsets": "web,terminal",
         "usage_file": "usage.json",
+        "worktree": False,
     }
 
 
@@ -1945,9 +1947,10 @@ def test_termux_fast_cli_launch_oneshot_forwards_worktree(monkeypatch, main_mod)
 
     monkeypatch.setattr(main_mod.os, "_exit", _fake_exit)
 
-    with pytest.raises(SystemExit):
+    with pytest.raises(SystemExit) as exc:
         main_mod._try_termux_fast_cli_launch()
 
+    assert exc.value.code == 0
     assert captured["worktree"] is True
 
 

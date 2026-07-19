@@ -234,6 +234,19 @@ def run_oneshot(
     wt_info = None
     _cleanup_worktree = None
     if worktree:
+        # Capture BEFORE importing cli: the import bridges config → env and
+        # force-exports TERMINAL_CWD (cli.py's config bridge), which would
+        # clobber the in-process caller's original value we mean to restore.
+        _prev_terminal_cwd = os.environ.get("TERMINAL_CWD")
+
+        def _restore_terminal_cwd() -> None:
+            # Every exit path after the cli import must run this: the import
+            # already force-exported TERMINAL_CWD even when setup then fails.
+            if _prev_terminal_cwd is None:
+                os.environ.pop("TERMINAL_CWD", None)
+            else:
+                os.environ["TERMINAL_CWD"] = _prev_terminal_cwd
+
         try:
             from cli import (
                 CLI_CONFIG,
@@ -243,21 +256,27 @@ def run_oneshot(
                 _setup_worktree,
             )
 
-            repo = _git_repo_root()
-            if repo:
-                _prune_stale_worktrees(repo)
-            wt_info = _setup_worktree(sync_base=CLI_CONFIG.get("worktree_sync", True))
+            # The helpers print() their setup progress ("✓ Worktree
+            # created: ..."); one-shot's stdout must carry ONLY the final
+            # response, so route helper output to stderr — same contract as
+            # the cleanup path in the finally below.
+            with redirect_stdout(sys.stderr):
+                repo = _git_repo_root()
+                if repo:
+                    _prune_stale_worktrees(repo)
+                wt_info = _setup_worktree(sync_base=CLI_CONFIG.get("worktree_sync", True))
         except Exception as exc:
+            _restore_terminal_cwd()
             sys.stderr.write(f"hermes -z: failed to create worktree: {exc}\n")
             return 2
         if not wt_info:
+            _restore_terminal_cwd()
             sys.stderr.write(
                 "hermes -z: -w/--worktree was requested but worktree setup "
                 "failed (not a git repository?). Refusing to run without "
                 "isolation.\n"
             )
             return 2
-        _prev_terminal_cwd = os.environ.get("TERMINAL_CWD")
         os.environ["TERMINAL_CWD"] = wt_info["path"]
 
     # Auto-approve any shell / tool approvals.  Non-interactive by
@@ -323,10 +342,7 @@ def run_oneshot(
             # Restore the caller's terminal cwd: the worktree path is gone
             # now, and in-process callers (tests, embedding) shouldn't keep
             # inheriting a dangling TERMINAL_CWD.
-            if _prev_terminal_cwd is None:
-                os.environ.pop("TERMINAL_CWD", None)
-            else:
-                os.environ["TERMINAL_CWD"] = _prev_terminal_cwd
+            _restore_terminal_cwd()
 
     if failure is not None:
         # Re-raise control-flow exceptions so the parent handles them as usual

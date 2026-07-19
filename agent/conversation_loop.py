@@ -4498,22 +4498,11 @@ def run_conversation(
                         logging.debug(f"Tool call: {tc.function.name} with args: {tc.function.arguments[:200]}...")
                 
                 # Validate tool call names - detect model hallucinations
-                # Repair mismatched tool names before validating
-                for tc in assistant_message.tool_calls:
-                    if tc.function.name not in agent.valid_tool_names:
-                        repaired = agent._repair_tool_call(tc.function.name)
-                        if repaired:
-                            print(f"{agent.log_prefix}🔧 Auto-repaired tool name: '{tc.function.name}' -> '{repaired}'")
-                            tc.function.name = repaired
-                # ponytail: auto-route direct calls to deferred core tools through
-                # the tool_call bridge. When defer_core_tools is on, verbose core
-                # tools (terminal, patch, memory, …) are stripped from valid_tool_names
-                # and live behind the bridge. If the model calls one by name directly
-                # — which it will, since the system prompt mentions them in guidance —
-                # rewrite the call to tool_call(name=..., arguments={...}) instead
-                # of failing as "Unknown tool" and burning a retry on agent-correction.
-                # Fast-path: skip entirely when every tool call is already valid,
-                # so the common path pays nothing (no load_config, no imports).
+                # Auto-route BEFORE repair: exact matches on deferred core tools
+                # must be claimed by the bridge, not hijacked by fuzzy repair
+                # (which would rewrite `patch` → some ≥0.7-similar visible tool
+                # and silently execute the wrong tool). See Opus review round 3.
+                # Fast-path: skip entirely when every tool call is already valid.
                 _all_valid = all(
                     tc.function.name in agent.valid_tool_names
                     for tc in assistant_message.tool_calls
@@ -4533,9 +4522,6 @@ def run_conversation(
                                         _wrapped = json.loads(tc.function.arguments or "{}")
                                     except Exception:
                                         # ponytail: malformed args — repair first, fall back to {}.
-                                        # Wrapping raw as {"_raw": ...} would break the underlying
-                                        # tool's schema; an empty dict lets the call proceed and
-                                        # the model agent-correct from the tool's error response.
                                         _repaired = _repair_tool_call_arguments(
                                             tc.function.arguments or "", _n
                                         )
@@ -4552,6 +4538,15 @@ def run_conversation(
                                         logging.debug(f"Auto-routed deferred tool '{_n}' -> tool_call")
                     except Exception:
                         pass
+                # Repair mismatched tool names — only for calls that weren't
+                # claimed by the auto-route above. Deferred-tool exact matches
+                # are now `tool_call`, so repair only sees actual typos.
+                for tc in assistant_message.tool_calls:
+                    if tc.function.name not in agent.valid_tool_names:
+                        repaired = agent._repair_tool_call(tc.function.name)
+                        if repaired:
+                            print(f"{agent.log_prefix}🔧 Auto-repaired tool name: '{tc.function.name}' -> '{repaired}'")
+                            tc.function.name = repaired
                 invalid_tool_calls = [
                     tc.function.name for tc in assistant_message.tool_calls
                     if tc.function.name not in agent.valid_tool_names

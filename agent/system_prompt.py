@@ -319,9 +319,9 @@ def build_system_prompt_parts(agent: Any, system_message: Optional[str] = None) 
             _compact_cats = frozenset()
         # ponytail: extra config source merged in; frozenset union is cheap
         try:
-            from hermes_cli.config import load_config as _load_cfg
+            from hermes_cli.config import load_config_readonly as _load_cfg_ro
 
-            _skills_cfg = ((_load_cfg() or {}).get("skills") or {})
+            _skills_cfg = ((_load_cfg_ro() or {}).get("skills") or {})
             if isinstance(_skills_cfg, dict):
                 _extra = _skills_cfg.get("compact_categories")
                 if isinstance(_extra, list):
@@ -339,6 +339,49 @@ def build_system_prompt_parts(agent: Any, system_message: Optional[str] = None) 
         skills_prompt = ""
     if skills_prompt:
         stable_parts.append(skills_prompt)
+
+    # Deferred-tool manifest (Opus review round 3, PR #67457). When
+    # ``defer_core_tools`` is on, verbose core tools are stripped from the
+    # model-visible tools array and live behind the tool_search bridge. The
+    # auto-route in conversation_loop.py rewrites direct calls to them as
+    # ``tool_call(name=X, ...)`` — but only fires when the model *emits* a
+    # direct call, and the model only emits a call for a tool it knows exists.
+    # Without this manifest, isolated cron/subagent turns that need a deferred
+    # tool but never saw its name fail silently — the #84141 regression class
+    # the original tool_search commit (369075dc9) was designed to prevent.
+    #
+    # The manifest restores the always-see-every-name invariant: every
+    # deferred tool's name + a one-line description stays in the prompt. The
+    # model always knows the tool exists → always can emit a direct call →
+    # auto-route fires even in cron. We drop schemas, not names. Compact
+    # form (one line per tool) costs ~30-60 tokens for 30 deferred tools —
+    # a fraction of the ~14K tokens of schemas we saved.
+    try:
+        from tools import tool_search as _ts
+        _ts_cfg = _ts.load_config()
+        if getattr(_ts_cfg, "defer_core_tools", False):
+            _deferred = [
+                (n, ((td.get("function") or {}).get("description") or "").split(".")[0].strip())
+                for td in (getattr(agent, "_pre_assembly_tool_defs", None) or [])
+                for n in [(td.get("function") or {}).get("name", "")]
+                if n and _ts.is_deferrable_tool_name(n, config=_ts_cfg)
+            ]
+            if _deferred:
+                _manifest_lines = [
+                    f"  - {n}: {desc}" if desc else f"  - {n}"
+                    for n, desc in sorted(_deferred)
+                ]
+                _manifest = (
+                    "## Deferred tools (available via tool_call)\n"
+                    "The tools below are loaded on demand to keep this prompt lean. "
+                    "Call them directly by name — the runtime routes the call through "
+                    "the tool_call bridge automatically. You do NOT need to call "
+                    "tool_search or tool_describe first for these.\n"
+                    + "\n".join(_manifest_lines)
+                )
+                stable_parts.append(_manifest)
+    except Exception:
+        pass
 
     # Alibaba Coding Plan API always returns "glm-4.7" as model name regardless
     # of the requested model. Inject explicit model identity into the system prompt

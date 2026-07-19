@@ -1101,15 +1101,18 @@ def handle_function_call(
             ) or []
         except Exception:
             current_defs = []
+        _ts_cfg = _ts_mod.load_config()
         if function_name == _ts_mod.TOOL_SEARCH_NAME:
             return _ts_mod.dispatch_tool_search(function_args or {},
-                                                current_tool_defs=current_defs)
+                                                current_tool_defs=current_defs,
+                                                config=_ts_cfg)
         if function_name == _ts_mod.TOOL_DESCRIBE_NAME:
             return _ts_mod.dispatch_tool_describe(function_args or {},
-                                                  current_tool_defs=current_defs)
+                                                  current_tool_defs=current_defs,
+                                                  config=_ts_cfg)
         if function_name == _ts_mod.TOOL_CALL_NAME:
             underlying_name, underlying_args, err = _ts_mod.resolve_underlying_call(
-                function_args or {}, config=_ts_mod.load_config()
+                function_args or {}, config=_ts_cfg
             )
             if err or not underlying_name:
                 return json.dumps({"error": err or "tool_call could not be resolved"},

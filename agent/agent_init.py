@@ -1197,6 +1197,20 @@ def init_agent(
         disabled_toolsets=disabled_toolsets,
         quiet_mode=agent.quiet_mode,
     )
+    # Stash the pre-assembly tool defs so the system-prompt builder can
+    # emit a compact manifest of deferred tools (names + 1-line descriptions).
+    # The post-assembly agent.tools already has deferred tools stripped, so
+    # we need the pre-assembly view to know what was deferred. Computed once
+    # at init, reused for the session — cache-stable. See Opus review round 3.
+    try:
+        agent._pre_assembly_tool_defs = _ra().get_tool_definitions(
+            enabled_toolsets=enabled_toolsets,
+            disabled_toolsets=disabled_toolsets,
+            quiet_mode=True,
+            skip_tool_search_assembly=True,
+        )
+    except Exception:
+        agent._pre_assembly_tool_defs = None
     
     # Show tool configuration and store valid tool names for validation
     agent.valid_tool_names = set()

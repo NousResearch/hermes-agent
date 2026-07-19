@@ -12,14 +12,10 @@ import os
 logger = logging.getLogger(__name__)
 
 DEFAULT_CODEX_MODELS: List[str] = [
-    # GPT-5.6 series (Sol/Terra/Luna + -pro high-effort modes) — GA 2026-07-09
-    # (previewed 2026-06-26).
+    # GPT-5.6 series exposed by the ChatGPT Codex OAuth backend.
     "gpt-5.6-sol",
-    "gpt-5.6-sol-pro",
     "gpt-5.6-terra",
-    "gpt-5.6-terra-pro",
     "gpt-5.6-luna",
-    "gpt-5.6-luna-pro",
     "gpt-5.5",
     "gpt-5.4-mini",
     "gpt-5.4",
@@ -51,45 +47,32 @@ DEFAULT_CODEX_MODELS: List[str] = [
     # live discovery will pick them up automatically via _fetch_models_from_api.
 ]
 
-_FORWARD_COMPAT_TEMPLATE_MODELS: List[tuple[str, tuple[str, ...]]] = [
-    ("gpt-5.6-sol", ("gpt-5.5", "gpt-5.4")),
-    ("gpt-5.6-sol-pro", ("gpt-5.5", "gpt-5.4")),
-    ("gpt-5.6-terra", ("gpt-5.5", "gpt-5.4")),
-    ("gpt-5.6-terra-pro", ("gpt-5.5", "gpt-5.4")),
-    ("gpt-5.6-luna", ("gpt-5.5", "gpt-5.4")),
-    ("gpt-5.6-luna-pro", ("gpt-5.5", "gpt-5.4")),
-    ("gpt-5.5", ("gpt-5.4", "gpt-5.4-mini", "gpt-5.3-codex")),
-    ("gpt-5.4-mini", ("gpt-5.3-codex",)),
-    ("gpt-5.4", ("gpt-5.3-codex",)),
-    # Surface Spark whenever any compatible Codex template is present so
-    # accounts hitting the live endpoint with an older lineup still see
-    # Spark in the picker. Backend gates real availability by ChatGPT Pro
-    # entitlement; Hermes does not.
-    ("gpt-5.3-codex-spark", ("gpt-5.3-codex",)),
-]
+# These slugs are valid on other OpenAI product/API surfaces but the ChatGPT
+# Codex OAuth endpoint has returned HTTP 400 for them.  Keep them out of
+# offline config/cache fallbacks.  This is deliberately *not* applied to a
+# successful live response: if the Codex endpoint starts advertising one of
+# them for an account, live provider authority immediately re-enables it.
+_LIVE_ONLY_CODEX_MODELS = frozenset(
+    {
+        "gpt-5.6-sol-pro",
+        "gpt-5.6-terra-pro",
+        "gpt-5.6-luna-pro",
+    }
+)
 
 
-def _add_forward_compat_models(model_ids: List[str]) -> List[str]:
-    """Add Clawdbot-style synthetic forward-compat Codex models.
-
-    If a newer Codex slug isn't returned by live discovery, surface it when an
-    older compatible template model is present. This mirrors Clawdbot's
-    synthetic catalog / forward-compat behavior for GPT-5 Codex variants.
-    """
+def _dedupe_model_ids(
+    model_ids: List[str], *, exclude_live_only: bool = False
+) -> List[str]:
+    """Return model IDs once, preserving provider order."""
     ordered: List[str] = []
     seen: set[str] = set()
     for model_id in model_ids:
+        if exclude_live_only and model_id in _LIVE_ONLY_CODEX_MODELS:
+            continue
         if model_id not in seen:
             ordered.append(model_id)
             seen.add(model_id)
-
-    for synthetic_model, template_models in _FORWARD_COMPAT_TEMPLATE_MODELS:
-        if synthetic_model in seen:
-            continue
-        if any(template in seen for template in template_models):
-            ordered.append(synthetic_model)
-            seen.add(synthetic_model)
-
     return ordered
 
 
@@ -130,7 +113,9 @@ def _fetch_models_from_api(access_token: str) -> List[str]:
         sortable.append((rank, slug))
 
     sortable.sort(key=lambda x: (x[0], x[1]))
-    return _add_forward_compat_models([slug for _, slug in sortable])
+    # A successful live response is authoritative.  Do not synthesize models
+    # that the account-specific endpoint did not advertise.
+    return _dedupe_model_ids([slug for _, slug in sortable])
 
 
 def _read_default_model(codex_home: Path) -> Optional[str]:
@@ -202,14 +187,16 @@ def get_codex_model_ids(access_token: Optional[str] = None) -> List[str]:
     if access_token:
         api_models = _fetch_models_from_api(access_token)
         if api_models:
-            return _add_forward_compat_models(api_models)
+            return _dedupe_model_ids(api_models)
 
     # Fall back to local sources
     default_model = _read_default_model(codex_home)
-    if default_model:
+    if default_model and default_model not in _LIVE_ONLY_CODEX_MODELS:
         ordered.append(default_model)
 
     for model_id in _read_cache_models(codex_home):
+        if model_id in _LIVE_ONLY_CODEX_MODELS:
+            continue
         if model_id not in ordered:
             ordered.append(model_id)
 
@@ -217,4 +204,4 @@ def get_codex_model_ids(access_token: Optional[str] = None) -> List[str]:
         if model_id not in ordered:
             ordered.append(model_id)
 
-    return _add_forward_compat_models(ordered)
+    return _dedupe_model_ids(ordered, exclude_live_only=True)

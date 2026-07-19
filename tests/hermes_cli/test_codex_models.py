@@ -57,23 +57,50 @@ def test_get_codex_model_ids_falls_back_to_curated_defaults(tmp_path, monkeypatc
     assert "gpt-5.3-codex-spark" in models
 
 
-def test_get_codex_model_ids_adds_forward_compat_models_from_templates(monkeypatch):
+def test_get_codex_model_ids_uses_live_api_as_exact_authority(monkeypatch):
     monkeypatch.setattr(
         "hermes_cli.codex_models._fetch_models_from_api",
-        lambda access_token: ["gpt-5.3-codex"],
+        lambda access_token: ["gpt-5.3-codex", "gpt-5.3-codex"],
     )
 
     models = get_codex_model_ids(access_token="codex-access-token")
 
-    # When live discovery only returns gpt-5.3-codex, forward-compat synthesis
-    # should surface gpt-5.5, gpt-5.4, gpt-5.4-mini, and gpt-5.3-codex-spark
-    # (each is templated off gpt-5.3-codex).
-    assert models == [
-        "gpt-5.3-codex",
-        "gpt-5.5",
-        "gpt-5.4-mini",
-        "gpt-5.4",
-        "gpt-5.3-codex-spark",
+    assert models == ["gpt-5.3-codex"]
+
+
+def test_offline_fallback_suppresses_live_only_pro_models(tmp_path, monkeypatch):
+    codex_home = tmp_path / "codex-home"
+    codex_home.mkdir(parents=True, exist_ok=True)
+    (codex_home / "config.toml").write_text('model = "gpt-5.6-sol-pro"\n')
+    (codex_home / "models_cache.json").write_text(
+        json.dumps(
+            {
+                "models": [
+                    {"slug": "gpt-5.6-sol-pro", "priority": 0},
+                    {"slug": "gpt-5.6-sol", "priority": 1},
+                ]
+            }
+        )
+    )
+    monkeypatch.setenv("CODEX_HOME", str(codex_home))
+
+    models = get_codex_model_ids()
+
+    assert "gpt-5.6-sol" in models
+    assert "gpt-5.6-sol-pro" not in models
+    assert "gpt-5.6-terra-pro" not in models
+    assert "gpt-5.6-luna-pro" not in models
+
+
+def test_live_api_can_reenable_a_live_only_model(monkeypatch):
+    monkeypatch.setattr(
+        "hermes_cli.codex_models._fetch_models_from_api",
+        lambda access_token: ["gpt-5.6-sol-pro", "gpt-5.6-sol"],
+    )
+
+    assert get_codex_model_ids(access_token="codex-access-token") == [
+        "gpt-5.6-sol-pro",
+        "gpt-5.6-sol",
     ]
 
 
@@ -108,9 +135,7 @@ def test_fetch_from_api_keeps_supported_in_api_false_models(monkeypatch):
 
     models = codex_models._fetch_models_from_api(access_token="tok")
 
-    assert "gpt-5.5" in models
-    assert "gpt-5.3-codex-spark" in models
-    assert "gpt-5-internal" not in models
+    assert models == ["gpt-5.5", "gpt-5.3-codex-spark"]
 
 
 def test_model_command_uses_runtime_access_token_for_codex_list(monkeypatch):

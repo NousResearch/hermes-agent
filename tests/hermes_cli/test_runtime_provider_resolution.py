@@ -8,6 +8,33 @@ import pytest
 from hermes_cli import runtime_provider as rp
 
 
+def test_openai_api_always_uses_chat_completions(monkeypatch):
+    monkeypatch.setenv("OPENAI_API_KEY", "openai-test-key")
+
+    resolved = rp.resolve_runtime_provider(requested="openai-api")
+
+    assert resolved["provider"] == "openai-api"
+    assert resolved["api_mode"] == "chat_completions"
+    assert resolved["base_url"] == "https://api.openai.com/v1"
+    assert resolved["api_key"] == "openai-test-key"
+
+
+def test_openai_api_explicit_runtime_keeps_chat_completions():
+    resolved = rp._resolve_explicit_runtime(
+        provider="openai-api",
+        requested_provider="openai-api",
+        model_cfg={"provider": "openai-api"},
+        explicit_api_key="openai-test-key",
+        explicit_base_url="https://api.openai.com/v1/",
+    )
+
+    assert resolved is not None
+    assert resolved["provider"] == "openai-api"
+    assert resolved["api_mode"] == "chat_completions"
+    assert resolved["base_url"] == "https://api.openai.com/v1"
+    assert resolved["api_key"] == "openai-test-key"
+
+
 def test_configured_api_key_provider_without_key_fails_closed(monkeypatch):
     """A saved provider must not resolve as another authenticated provider."""
     monkeypatch.setattr(

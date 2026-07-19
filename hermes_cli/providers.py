@@ -65,7 +65,9 @@ HERMES_OVERLAYS: Dict[str, HermesOverlay] = {
         base_url_override="https://chatgpt.com/backend-api/codex",
     ),
     "openai-api": HermesOverlay(
-        transport="codex_responses",
+        # GPT-4o and other Chat Completions models do not support the
+        # Responses-only `reasoning.encrypted_content` include parameter.
+        transport="openai_chat",
         base_url_override="https://api.openai.com/v1",
         base_url_env_var="OPENAI_BASE_URL",
     ),

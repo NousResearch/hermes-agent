@@ -62,6 +62,7 @@ from plugins.platforms.slack.adapter import SlackAdapter  # noqa: E402
 BOT_USER_ID = "U_BOT_123"
 CHANNEL_ID = "C0CHANNEL001"
 THREAD_TS = "1700000000.000100"
+TEAM_ID = "T0WORKSPACE1"
 
 
 def _make_adapter():
@@ -79,34 +80,63 @@ def _make_adapter():
     adapter._LEFT_THREADS_MAX = 1000
     adapter._silent_threads = set()
     adapter._SILENT_THREADS_MAX = 1000
+    # Current-main workspace-scoped key shapes: (team_id, channel_id, thread_ts)
+    # for _assistant_threads / _active_status_threads and the
+    # "channel:thread:team" string for the context cache.
     adapter._assistant_threads = {}
     adapter._thread_context_cache = {}
     adapter._active_status_threads = {}
     return adapter
 
 
-def _make_event(platform=Platform.SLACK, thread_id=THREAD_TS, chat_id=CHANNEL_ID, user_id="U_USER_123", text="/leave"):
+def _make_event(
+    platform=Platform.SLACK,
+    thread_id=THREAD_TS,
+    chat_id=CHANNEL_ID,
+    user_id="U_USER_123",
+    text="/leave",
+    scope_id=TEAM_ID,
+):
     """Build a minimal MessageEvent-like namespace."""
     source = SimpleNamespace(
         platform=platform,
         thread_id=thread_id,
         chat_id=chat_id,
         user_id=user_id,
+        scope_id=scope_id,
     )
     event = SimpleNamespace(source=source, text=text)
     return event
 
 
-def _make_runner(adapter=None):
+def _make_runner(adapter=None, session_store=None):
     """Minimal GatewayRunner-like namespace with slash command mixin methods."""
     from gateway.slash_commands import GatewaySlashCommandsMixin
 
     runner = object.__new__(GatewaySlashCommandsMixin)
     runner.adapters = {}
-    runner._session_store = None
+    # GatewayRunner owns ``session_store`` (not ``_session_store``); the leave
+    # cleanup must read this canonical attribute.
+    runner.session_store = session_store
+
+    def _session_key_for_source(source):
+        # Mirror the canonical per-thread key: workspace + channel + thread.
+        return ":".join(
+            str(p)
+            for p in (
+                getattr(source, "platform", None) and source.platform.value,
+                getattr(source, "scope_id", "") or "",
+                source.chat_id,
+                getattr(source, "thread_id", "") or "",
+                getattr(source, "user_id", "") or "",
+            )
+        )
+
+    runner._session_key_for_source = _session_key_for_source
     if adapter is not None:
         runner.adapters[Platform.SLACK] = adapter
     return runner
+
 
 
 # ---------------------------------------------------------------------------
@@ -260,9 +290,9 @@ async def test_leave_command_thread_removes_from_bot_message_ts():
 
 @pytest.mark.asyncio
 async def test_leave_command_thread_removes_assistant_thread_entry():
-    """Invoking /leave removes the (channel_id, thread_id) entry from _assistant_threads."""
+    """Invoking /leave removes the (team_id, channel_id, thread_ts) entry from _assistant_threads."""
     adapter = _make_adapter()
-    thread_key = (CHANNEL_ID, THREAD_TS)
+    thread_key = (TEAM_ID, CHANNEL_ID, THREAD_TS)
     adapter._assistant_threads[thread_key] = {"user_id": "U_USER_123"}
     runner = _make_runner(adapter=adapter)
     event = _make_event(thread_id=THREAD_TS, chat_id=CHANNEL_ID)
@@ -273,10 +303,39 @@ async def test_leave_command_thread_removes_assistant_thread_entry():
 
 
 @pytest.mark.asyncio
-async def test_leave_command_thread_removes_context_cache():
-    """Invoking /leave removes the thread context cache entry."""
+async def test_leave_command_thread_removes_assistant_thread_when_team_unknown():
+    """Cleanup matches (channel, thread) even when the event has no team_id."""
     adapter = _make_adapter()
-    cache_key = f"{CHANNEL_ID}:{THREAD_TS}"
+    thread_key = (TEAM_ID, CHANNEL_ID, THREAD_TS)
+    adapter._assistant_threads[thread_key] = {"user_id": "U_USER_123"}
+    runner = _make_runner(adapter=adapter)
+    # scope_id="" simulates an event where the workspace id couldn't be resolved.
+    event = _make_event(thread_id=THREAD_TS, chat_id=CHANNEL_ID, scope_id="")
+
+    await runner._handle_leave_command(event)
+
+    assert thread_key not in adapter._assistant_threads
+
+
+@pytest.mark.asyncio
+async def test_leave_command_thread_removes_active_status_entry():
+    """Invoking /leave removes the workspace-scoped _active_status_threads entry."""
+    adapter = _make_adapter()
+    status_key = (TEAM_ID, CHANNEL_ID, THREAD_TS)
+    adapter._active_status_threads[status_key] = {"thread_ts": THREAD_TS, "team_id": TEAM_ID}
+    runner = _make_runner(adapter=adapter)
+    event = _make_event(thread_id=THREAD_TS, chat_id=CHANNEL_ID)
+
+    await runner._handle_leave_command(event)
+
+    assert status_key not in adapter._active_status_threads
+
+
+@pytest.mark.asyncio
+async def test_leave_command_thread_removes_context_cache():
+    """Invoking /leave removes the workspace-suffixed thread context cache entry."""
+    adapter = _make_adapter()
+    cache_key = f"{CHANNEL_ID}:{THREAD_TS}:{TEAM_ID}"
     adapter._thread_context_cache[cache_key] = object()
     runner = _make_runner(adapter=adapter)
     event = _make_event(thread_id=THREAD_TS, chat_id=CHANNEL_ID)
@@ -302,10 +361,11 @@ async def test_leave_command_returns_ephemeral_reply():
 async def test_leave_command_no_thread_cleans_channel_level():
     """Invoking /leave in a channel (no thread_id) cleans channel-level tracking."""
     adapter = _make_adapter()
-    # Set up channel-level entries
-    thread_key = (CHANNEL_ID, THREAD_TS)
+    # Set up channel-level entries under the current workspace-scoped keys.
+    thread_key = (TEAM_ID, CHANNEL_ID, THREAD_TS)
     adapter._assistant_threads[thread_key] = {}
-    adapter._thread_context_cache[f"{CHANNEL_ID}:{THREAD_TS}"] = object()
+    adapter._active_status_threads[thread_key] = {"thread_ts": THREAD_TS}
+    adapter._thread_context_cache[f"{CHANNEL_ID}:{THREAD_TS}:{TEAM_ID}"] = object()
     runner = _make_runner(adapter=adapter)
     # No thread_id — channel-level invocation
     event = _make_event(thread_id=None, chat_id=CHANNEL_ID)
@@ -313,6 +373,8 @@ async def test_leave_command_no_thread_cleans_channel_level():
     result = await runner._handle_leave_command(event)
 
     assert thread_key not in adapter._assistant_threads
+    assert thread_key not in adapter._active_status_threads
+    assert not adapter._thread_context_cache
     assert isinstance(result, EphemeralReply)
 
 
@@ -424,6 +486,130 @@ async def test_silent_command_returns_ephemeral_reply():
     result = await runner._handle_silent_command(event)
 
     assert isinstance(result, EphemeralReply)
+
+
+# ---------------------------------------------------------------------------
+# _handle_leave_command: session cleanup via the canonical store
+# ---------------------------------------------------------------------------
+
+
+class _FakeSessionStore:
+    """A minimal session store backed by a JSON file to survive a restart.
+
+    Mirrors the surface ``_handle_leave_command`` uses: ``_ensure_loaded``,
+    ``_entries``, and ``_save``. Persisting to ``path`` lets a test simulate a
+    gateway restart by constructing a second store over the same file.
+    """
+
+    def __init__(self, path):
+        import json
+
+        self._json = json
+        self.path = path
+        self._entries = {}
+        self._loaded = False
+        self._saved = False
+
+    def _ensure_loaded(self):
+        if self._loaded:
+            return
+        if self.path.exists():
+            self._entries = dict(self._json.loads(self.path.read_text()))
+        self._loaded = True
+
+    def _save(self):
+        self._saved = True
+        self.path.write_text(self._json.dumps(self._entries))
+
+
+@pytest.mark.asyncio
+async def test_leave_command_removes_canonical_session(tmp_path):
+    """/leave deletes the session keyed by _session_key_for_source."""
+    adapter = _make_adapter()
+    store = _FakeSessionStore(tmp_path / "sessions.json")
+    runner = _make_runner(adapter=adapter, session_store=store)
+    event = _make_event(thread_id=THREAD_TS, chat_id=CHANNEL_ID)
+
+    session_key = runner._session_key_for_source(event.source)
+    store._entries[session_key] = {"session_id": "sess-1"}
+    store._save()
+    store._saved = False  # reset so we can assert the leave path saved
+
+    result = await runner._handle_leave_command(event)
+
+    assert session_key not in store._entries
+    assert store._saved is True
+    assert isinstance(result, EphemeralReply)
+    assert "active session" in result.text or "session" in result.text.lower()
+
+
+@pytest.mark.asyncio
+async def test_leave_command_uses_session_store_not_underscore_variant(tmp_path):
+    """Regression: cleanup must read ``session_store`` (the attribute the
+    GatewayRunner actually owns), not the obsolete ``_session_store``.
+
+    If it read ``_session_store`` the session would survive /leave entirely.
+    """
+    adapter = _make_adapter()
+    store = _FakeSessionStore(tmp_path / "sessions.json")
+    runner = _make_runner(adapter=adapter, session_store=store)
+    # A legacy attribute pointing at a DIFFERENT store must be ignored.
+    runner._session_store = _FakeSessionStore(tmp_path / "wrong.json")
+    event = _make_event(thread_id=THREAD_TS, chat_id=CHANNEL_ID)
+
+    session_key = runner._session_key_for_source(event.source)
+    store._entries[session_key] = {"session_id": "sess-1"}
+    store._save()
+
+    await runner._handle_leave_command(event)
+
+    assert session_key not in store._entries
+
+
+@pytest.mark.asyncio
+async def test_leave_command_session_gone_after_restart(tmp_path):
+    """After /leave, a fresh store over the same persisted file must NOT route
+    the left thread back to its old session (restart regression)."""
+    adapter = _make_adapter()
+    path = tmp_path / "sessions.json"
+    store = _FakeSessionStore(path)
+    runner = _make_runner(adapter=adapter, session_store=store)
+    event = _make_event(thread_id=THREAD_TS, chat_id=CHANNEL_ID)
+
+    session_key = runner._session_key_for_source(event.source)
+    store._entries[session_key] = {"session_id": "sess-1"}
+    store._save()
+
+    await runner._handle_leave_command(event)
+
+    # Simulate a gateway restart: a brand-new store loads from disk.
+    restarted = _FakeSessionStore(path)
+    restarted._ensure_loaded()
+    assert session_key not in restarted._entries
+
+
+# ---------------------------------------------------------------------------
+# Silent mode: response suppression integrates with the normal turn path
+# ---------------------------------------------------------------------------
+
+
+class TestSilentSuppressionIntegration:
+    """The gateway marks silent-thread events with ``suppress_response`` and
+    the base adapter drops the outbound reply — no parallel handler, no
+    ``slack:<chat_id>`` running-agent key.
+    """
+
+    def test_message_event_has_suppress_response_flag(self):
+        from gateway.platforms.base import MessageEvent
+
+        ev = MessageEvent(text="hi")
+        assert ev.suppress_response is False
+
+    def test_no_parallel_silent_handler_remains(self):
+        """The parallel ``_handle_message_silently`` handler was removed."""
+        from gateway.run import GatewayRunner
+
+        assert not hasattr(GatewayRunner, "_handle_message_silently")
 
 
 # ---------------------------------------------------------------------------

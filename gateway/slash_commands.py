@@ -2648,6 +2648,55 @@ class GatewaySlashCommandsMixin:
             )
             return t("gateway.voice.help", toggle=toggle_line, channels=channels)
 
+    @staticmethod
+    def _pop_workspace_thread_keys(store, team_id: str, channel_id: str, thread_ts: str) -> int:
+        """Delete workspace-scoped thread entries from a Slack adapter dict.
+
+        Current-main Slack thread-local state (``_assistant_threads``,
+        ``_active_status_threads``) is keyed by ``(team_id, channel_id,
+        thread_ts)``. When ``team_id`` is known we delete the exact key; we
+        also match any entry with the same ``(channel_id, thread_ts)`` so a
+        workspace id we couldn't resolve at cleanup time still clears the
+        right thread. Returns the number of entries removed.
+        """
+        if not isinstance(store, dict) or not channel_id or not thread_ts:
+            return 0
+        removed = 0
+        for key in list(store.keys()):
+            if not (isinstance(key, tuple) and len(key) >= 3):
+                continue
+            k_team, k_channel, k_thread = key[0], key[1], key[2]
+            if k_channel != channel_id or k_thread != thread_ts:
+                continue
+            if team_id and k_team and k_team != team_id:
+                continue
+            del store[key]
+            removed += 1
+        return removed
+
+    @staticmethod
+    def _pop_context_cache_keys(store, team_id: str, channel_id: str, thread_ts: str) -> int:
+        """Delete thread-context-cache entries for a Slack thread.
+
+        The cache key is the string ``"channel_id:thread_ts:team_id"`` on
+        current main. We match on the ``channel_id:thread_ts`` prefix so the
+        entry is cleared even when ``team_id`` differs or is unknown. Returns
+        the number of entries removed.
+        """
+        if not isinstance(store, dict) or not channel_id or not thread_ts:
+            return 0
+        prefix = f"{channel_id}:{thread_ts}"
+        removed = 0
+        for key in list(store.keys()):
+            if not isinstance(key, str):
+                continue
+            # Exact "channel:thread" or the workspace-suffixed
+            # "channel:thread:team" variant.
+            if key == prefix or key.startswith(prefix + ":"):
+                del store[key]
+                removed += 1
+        return removed
+
     async def _handle_leave_command(self, event: MessageEvent) -> Union[str, EphemeralReply]:
         """Handle /leave command to exit current Slack thread."""
         platform = event.source.platform
@@ -2663,6 +2712,12 @@ class GatewaySlashCommandsMixin:
         # Get thread information from the event
         thread_id = event.source.thread_id
         chat_id = event.source.chat_id
+        # Slack workspace id (team_id). Current-main thread-local state
+        # (_assistant_threads, _active_status_threads, thread context cache)
+        # is workspace-scoped so Slack Connect can't collide the same
+        # channel/thread IDs across two workspaces. Cleanup must key the
+        # same way or it silently reports success while leaving state intact.
+        team_id = str(getattr(event.source, "scope_id", "") or "")
 
         # Allow /leave in both threads and channels, but provide different messages
         is_thread = bool(thread_id)
@@ -2695,69 +2750,75 @@ class GatewaySlashCommandsMixin:
                     adapter._bot_message_ts.discard(thread_id)
                     cleaned_items.append("bot message tracking")
 
-                # 3. Remove from assistant threads dict (uses (channel_id, thread_id) tuple key)
+                # 3. Remove from assistant threads dict — current-main key is
+                #    (team_id, channel_id, thread_ts). Fall back to matching on
+                #    (channel_id, thread_ts) so a workspace id we couldn't
+                #    resolve still cleans the right entries.
                 if hasattr(adapter, '_assistant_threads'):
-                    thread_key = (chat_id, thread_id)
-                    if thread_key in adapter._assistant_threads:
-                        del adapter._assistant_threads[thread_key]
+                    removed = self._pop_workspace_thread_keys(
+                        adapter._assistant_threads, team_id, chat_id, thread_id
+                    )
+                    if removed:
                         cleaned_items.append("assistant threads")
 
-                # 4. Clear thread context cache (uses "channel_id:thread_id" string key)
+                # 4. Clear thread context cache — current-main key is
+                #    "channel_id:thread_ts:team_id".
                 if hasattr(adapter, '_thread_context_cache'):
-                    cache_key = f"{chat_id}:{thread_id}"
-                    if cache_key in adapter._thread_context_cache:
-                        del adapter._thread_context_cache[cache_key]
+                    removed = self._pop_context_cache_keys(
+                        adapter._thread_context_cache, team_id, chat_id, thread_id
+                    )
+                    if removed:
                         cleaned_items.append("thread context cache")
 
-                # 5. Clear any active status threads (keyed by chat_id → thread_ts)
+                # 5. Clear any active Assistant status — current-main key is
+                #    (team_id, channel_id, thread_ts).
                 if hasattr(adapter, '_active_status_threads'):
-                    if chat_id in adapter._active_status_threads:
-                        # Only remove if the status thread matches this specific thread
-                        if adapter._active_status_threads.get(chat_id) == thread_id:
-                            del adapter._active_status_threads[chat_id]
-                            cleaned_items.append("active status")
+                    removed = self._pop_workspace_thread_keys(
+                        adapter._active_status_threads, team_id, chat_id, thread_id
+                    )
+                    if removed:
+                        cleaned_items.append("active status")
 
-                # 6. Try to clean up any active sessions for this thread
+                # 6. Try to clean up any active session for this thread.
+                #    GatewayRunner owns ``self.session_store`` (not
+                #    ``_session_store``), and the canonical routing key comes
+                #    from ``_session_key_for_source`` — not a hand-rolled
+                #    build_session_key call. Using the wrong attribute/keying
+                #    silently skipped session cleanup entirely, so a restart
+                #    would re-route the "left" thread to its old session.
                 try:
-                    session_store = getattr(self, '_session_store', None)
-                    if session_store:
-                        # Read session isolation settings
-                        store_cfg = getattr(session_store, "config", None)
-                        gspu = getattr(store_cfg, "group_sessions_per_user", True) if store_cfg else True
-                        tspu = getattr(store_cfg, "thread_sessions_per_user", False) if store_cfg else False
+                    session_store = getattr(self, "session_store", None)
+                    if session_store is not None:
+                        session_key = self._session_key_for_source(event.source)
 
-                        # Build the session key using the same logic
-                        session_key = build_session_key(
-                            event.source,
-                            group_sessions_per_user=gspu,
-                            thread_sessions_per_user=tspu,
-                        )
-
-                        # Check if session exists and remove it
                         session_store._ensure_loaded()
+                        removed_sessions = 0
                         if session_key in session_store._entries:
                             del session_store._entries[session_key]
-                            session_store._save()
-                            cleaned_items.append("active session")
+                            removed_sessions += 1
 
-                        # Also clean up ANY session related to this thread
-                        sessions_removed = 0
-                        keys_to_remove = []
+                        # Also drop any sibling session that scopes this exact
+                        # thread (defensive: covers isolation-setting drift
+                        # between when the session was created and now).
+                        user_id = event.source.user_id or ""
                         for existing_key in list(session_store._entries.keys()):
-                            if (chat_id in existing_key and
-                                    thread_id in existing_key and
-                                    event.source.user_id in existing_key):
-                                keys_to_remove.append(existing_key)
+                            if existing_key == session_key:
+                                continue
+                            if (
+                                chat_id in existing_key
+                                and thread_id in existing_key
+                                and (not user_id or user_id in existing_key)
+                            ):
+                                del session_store._entries[existing_key]
+                                removed_sessions += 1
 
-                        for key in keys_to_remove:
-                            if key in session_store._entries:
-                                del session_store._entries[key]
-                                sessions_removed += 1
-
-                        if sessions_removed > 0:
+                        if removed_sessions > 0:
                             session_store._save()
-                            if "active session" not in cleaned_items:
-                                cleaned_items.append(f"{sessions_removed} session(s)")
+                            cleaned_items.append(
+                                "active session"
+                                if removed_sessions == 1
+                                else f"{removed_sessions} session(s)"
+                            )
 
                 except Exception as e:
                     logger.warning("Failed to clean up session for thread %s: %s", thread_id, e)
@@ -2773,23 +2834,37 @@ class GatewaySlashCommandsMixin:
                 channel_cleaned = []
 
                 if hasattr(adapter, '_assistant_threads'):
-                    # Remove any assistant threads for this channel
-                    keys_to_remove = [key for key in adapter._assistant_threads.keys() if key[0] == chat_id]
+                    # Current-main key is (team_id, channel_id, thread_ts) —
+                    # match on the channel_id element (index 1).
+                    keys_to_remove = [
+                        key for key in list(adapter._assistant_threads.keys())
+                        if isinstance(key, tuple) and len(key) >= 2 and key[1] == chat_id
+                    ]
                     for key in keys_to_remove:
                         del adapter._assistant_threads[key]
+                    if keys_to_remove:
                         channel_cleaned.append("assistant threads")
 
                 if hasattr(adapter, '_thread_context_cache'):
-                    # Remove thread context caches for this channel
-                    keys_to_remove = [key for key in adapter._thread_context_cache.keys() if key.startswith(f"{chat_id}:")]
+                    # Cache key is "channel_id:thread_ts:team_id".
+                    keys_to_remove = [
+                        key for key in list(adapter._thread_context_cache.keys())
+                        if isinstance(key, str) and key.startswith(f"{chat_id}:")
+                    ]
                     for key in keys_to_remove:
                         del adapter._thread_context_cache[key]
+                    if keys_to_remove:
                         channel_cleaned.append("thread context cache")
 
                 if hasattr(adapter, '_active_status_threads'):
-                    # _active_status_threads is Dict[str, str]: chat_id → thread_ts
-                    if chat_id in adapter._active_status_threads:
-                        del adapter._active_status_threads[chat_id]
+                    # Current-main key is (team_id, channel_id, thread_ts).
+                    keys_to_remove = [
+                        key for key in list(adapter._active_status_threads.keys())
+                        if isinstance(key, tuple) and len(key) >= 2 and key[1] == chat_id
+                    ]
+                    for key in keys_to_remove:
+                        del adapter._active_status_threads[key]
+                    if keys_to_remove:
                         channel_cleaned.append("active status")
 
                 if channel_cleaned:

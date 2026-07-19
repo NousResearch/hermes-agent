@@ -475,14 +475,12 @@ class SlackAdapter(BasePlatformAdapter):
         # Bot will read messages and maintain context but not respond unless @mentioned.
         self._silent_threads: set = set()
         self._SILENT_THREADS_MAX = 1000
-        # Assistant thread metadata keyed by (channel_id, thread_ts). Slack's
-        # AI Assistant lifecycle events can arrive before/alongside message
-        # events, and they carry the user/thread identity needed for stable
-        # session + memory scoping.
-        self._assistant_threads: Dict[Tuple[str, str], Dict[str, str]] = {}
         # Assistant thread metadata keyed by (team_id, channel_id, thread_ts).
         # Slack's AI Assistant lifecycle events can arrive before/alongside
-        # message events, and carry identity needed for stable session scoping.
+        # message events, and carry the user/thread identity needed for stable
+        # session + memory scoping. The workspace (team_id) is part of the key
+        # because Slack Connect can expose the same channel/thread IDs in more
+        # than one workspace — see ``_workspace_thread_key``.
         self._assistant_threads: Dict[Tuple[str, str, str], Dict[str, str]] = {}
         self._ASSISTANT_THREADS_MAX = 5000
         # Agent-view context is per workspace/user (not global): a context

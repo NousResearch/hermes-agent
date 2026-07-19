@@ -1812,6 +1812,13 @@ class MessageEvent:
     # completion notifications) that must bypass user authorization checks.
     internal: bool = False
 
+    # Internal flag — set by the gateway when the originating thread is in
+    # silent mode (Slack ``/silent``). The turn still runs through the normal
+    # claimed-turn lifecycle so the agent keeps full conversational context,
+    # but the final response is not delivered to the platform. Slash commands
+    # are never marked silent so control commands still work in a silent thread.
+    suppress_response: bool = False
+
     # Free-form per-event metadata.  Adapters may set platform-specific
     # signals here (e.g. WhatsApp sets ``whatsapp_from_owner=True`` when
     # the bridge is configured to forward owner-typed messages).  Plugins
@@ -4887,6 +4894,13 @@ class BasePlatformAdapter(ABC):
                         )
                         response = await self._message_handler(event)
                         _text, _eph_ttl = self._unwrap_ephemeral(response)
+                        if _text and getattr(event, "suppress_response", False):
+                            logger.info(
+                                "[%s] Suppressing clarify response for silent "
+                                "session %s",
+                                self.name, session_key,
+                            )
+                            _text = None
                         if _text:
                             _r = await self._send_with_retry(
                                 chat_id=event.source.chat_id,
@@ -5063,6 +5077,18 @@ class BasePlatformAdapter(ABC):
                     "[%s] Suppressing stale response for interrupted session %s",
                     self.name,
                     session_key,
+                )
+                response = None
+            # Silent-thread suppression (Slack /silent): the turn ran through
+            # the normal lifecycle for context, but we must not deliver the
+            # reply. EphemeralReply (slash-command sentinels) is never marked
+            # silent, so this only drops ordinary agent prose.
+            if response and getattr(event, "suppress_response", False):
+                logger.info(
+                    "[%s] Suppressing response for silent session %s (%d chars)",
+                    self.name,
+                    session_key,
+                    len(response) if isinstance(response, str) else 0,
                 )
                 response = None
             if not response:

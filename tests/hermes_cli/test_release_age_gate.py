@@ -522,3 +522,414 @@ class TestGateCoverageOfInternalInstallers:
         )
         assert len(installed) == 1
         assert "--no-build-isolation" in installed[0]
+
+
+class TestReleaseAgePreflight:
+    """Option-A preflight: defer the update BEFORE source advances when the
+    incoming core dependency set is blocked solely by the gate."""
+
+    _PYPROJECT = '[project]\nname = "x"\nversion = "0"\ndependencies = ["foo==1.2.3"]\n'
+
+    def _run(
+        self,
+        monkeypatch,
+        *,
+        ungated_rc,
+        gated_offline_rc=0,
+        gated_online_rc=0,
+        gated_build_rc=0,
+        uv="/usr/bin/uv",
+    ):
+        calls: list[list[str]] = []
+        envs: list[dict | None] = []
+
+        def fake_run(cmd, **kw):
+            from types import SimpleNamespace
+
+            if "--help" in cmd:
+                # Capability probe: report a uv that supports all gate flags.
+                return SimpleNamespace(
+                    returncode=0,
+                    stdout="--exclude-newer --no-build --offline",
+                    stderr="",
+                )
+            calls.append(list(cmd))
+            envs.append(kw.get("env"))
+            if "--exclude-newer" not in cmd:
+                rc = ungated_rc
+            elif "--offline" in cmd:
+                rc = gated_offline_rc
+            elif "--no-build" in cmd:
+                rc = gated_online_rc
+            else:
+                rc = gated_build_rc
+
+            return SimpleNamespace(
+                returncode=rc,
+                stdout="",
+                stderr="refused: only releases before cutoff allowed" if rc else "",
+            )
+
+        monkeypatch.setattr(cli_main.subprocess, "run", fake_run)
+        monkeypatch.setattr("hermes_cli.managed_uv.ensure_uv", lambda: uv)
+        result = cli_main._release_age_preflight_blocked(
+            self._PYPROJECT, "2026-05-10T00:00:00Z"
+        )
+        return result, calls, envs
+
+    def test_defers_when_only_the_gate_blocks_resolution(self, monkeypatch):
+        """Ungated succeeds; gated fails offline, online, AND with builds
+        permitted → confirmed rejection."""
+        blocked, calls, _ = self._run(
+            monkeypatch,
+            ungated_rc=0,
+            gated_offline_rc=1,
+            gated_online_rc=1,
+            gated_build_rc=1,
+        )
+        assert blocked is not None and "refused" in blocked
+        assert len(calls) == 4
+        assert "--exclude-newer" not in calls[0]
+        assert "--offline" in calls[1]
+        assert "--offline" not in calls[2] and "--exclude-newer" in calls[2]
+        # The resolves that can encounter ungated candidates must never
+        # execute a PEP 517 backend; only the final gate-confirmed check
+        # permits builds (its candidates are all gate-passing artifacts).
+        assert all("--no-build" in c for c in calls[:3])
+        assert "--no-build" not in calls[3] and "--exclude-newer" in calls[3]
+
+    def test_no_deferral_when_aged_sdist_satisfies_gated_build(self, monkeypatch):
+        """Wheel newer than cutoff + aged sdist: the --no-build gated runs
+        fail, but the build-permitted gated confirm succeeds (the real
+        install builds) → fail open."""
+        blocked, calls, _ = self._run(
+            monkeypatch,
+            ungated_rc=0,
+            gated_offline_rc=1,
+            gated_online_rc=1,
+            gated_build_rc=0,
+        )
+        assert blocked is None
+        assert len(calls) == 4
+
+    def test_ambient_uv_exclude_newer_is_scrubbed(self, monkeypatch):
+        """A stray UV_EXCLUDE_NEWER in the environment would silently gate
+        the 'ungated' control, masking real rejections as broken-regardless."""
+        monkeypatch.setenv("UV_EXCLUDE_NEWER", "2020-01-01T00:00:00Z")
+        blocked, calls, envs = self._run(monkeypatch, ungated_rc=0)
+        assert blocked is None
+        assert envs and all(e is not None for e in envs)
+        assert all("UV_EXCLUDE_NEWER" not in e for e in envs)
+
+    def test_preflight_includes_build_system_requires(self, monkeypatch):
+        """A too-new [build-system].requires pin strands the update the same
+        way a runtime dep does — it must be part of the resolved set."""
+        seen_reqs: dict[str, str] = {}
+
+        def fake_run(cmd, **kw):
+            from pathlib import Path
+            from types import SimpleNamespace
+
+            if "--help" in cmd:
+                return SimpleNamespace(
+                    returncode=0,
+                    stdout="--exclude-newer --no-build --offline",
+                    stderr="",
+                )
+            reqs_path = next(a for a in cmd if str(a).endswith("requirements.in"))
+            seen_reqs["content"] = Path(reqs_path).read_text(encoding="utf-8")
+            return SimpleNamespace(returncode=0, stdout="", stderr="")
+
+        monkeypatch.setattr(cli_main.subprocess, "run", fake_run)
+        monkeypatch.setattr("hermes_cli.managed_uv.ensure_uv", lambda: "/usr/bin/uv")
+
+        pyproject = (
+            '[build-system]\nrequires = ["setuptools==80.0.0"]\n'
+            '[project]\nname = "x"\nversion = "0"\ndependencies = ["foo==1.2.3"]\n'
+        )
+        assert (
+            cli_main._release_age_preflight_blocked(pyproject, "2026-05-10T00:00:00Z")
+            is None
+        )
+        assert "foo==1.2.3" in seen_reqs["content"]
+        assert "setuptools==80.0.0" in seen_reqs["content"]
+
+    def test_sdist_only_falls_back_to_gated_build_and_proceeds(self, monkeypatch):
+        """Wheels-only control fails (sdist-only dep, e.g. Termux) but the
+        gated build-permitted resolve succeeds → the real install will too."""
+        blocked, calls, _ = self._run(
+            monkeypatch, ungated_rc=1, gated_build_rc=0
+        )
+        assert blocked is None
+        assert len(calls) == 2
+        # The fallback resolve is gated (never an ungated build) so it can
+        # only execute backends of aged, gate-passing artifacts.
+        assert "--exclude-newer" in calls[1] and "--no-build" not in calls[1]
+
+    def test_sdist_only_defers_conservatively_when_gated_build_fails(
+        self, monkeypatch
+    ):
+        """If even the gated build can't resolve, advancing source would
+        strand the install whether the cause is the gate or broken deps —
+        defer, with wording that doesn't overclaim gate causality."""
+        blocked, calls, _ = self._run(
+            monkeypatch, ungated_rc=1, gated_build_rc=1
+        )
+        assert blocked is not None
+        assert "may also indicate a resolution problem" in blocked
+        assert len(calls) == 2
+
+    def test_no_deferral_when_gated_resolution_succeeds(self, monkeypatch):
+        blocked, calls, _ = self._run(monkeypatch, ungated_rc=0, gated_offline_rc=0)
+        assert blocked is None
+        assert len(calls) == 2  # ungated + gated --offline; online confirm not needed
+
+    def test_no_deferral_when_offline_fails_but_online_succeeds(self, monkeypatch):
+        """A cache miss can fail the --offline run; the online confirmation
+        succeeding proves the gate is not the cause → fail open."""
+        blocked, calls, _ = self._run(
+            monkeypatch, ungated_rc=0, gated_offline_rc=1, gated_online_rc=0
+        )
+        assert blocked is None
+        assert len(calls) == 3
+
+    def test_fails_open_without_uv(self, monkeypatch):
+        blocked, calls, _ = self._run(
+            monkeypatch, ungated_rc=0, gated_offline_rc=1, gated_online_rc=1, uv=None
+        )
+        assert blocked is None
+        assert calls == []
+
+    def test_fails_open_on_unparsable_pyproject(self, monkeypatch):
+        monkeypatch.setattr("hermes_cli.managed_uv.ensure_uv", lambda: "/usr/bin/uv")
+
+        def boom(cmd, **kw):
+            raise AssertionError("must not resolve an unparsable pyproject")
+
+        monkeypatch.setattr(cli_main.subprocess, "run", boom)
+        assert (
+            cli_main._release_age_preflight_blocked("not [ toml", "2026-05-10T00:00:00Z")
+            is None
+        )
+
+    def test_deferral_message_names_cutoff_and_override(self, monkeypatch, capsys):
+        monkeypatch.setattr(cli_main, "_get_min_release_age_days", lambda: 3)
+        cli_main._print_release_age_deferral(
+            "refused: foo too new", "2026-05-10T00:00:00Z"
+        )
+        out = capsys.readouterr().out
+        assert "Update deferred" in out
+        assert "2026-05-10T00:00:00Z" in out
+        assert "minimum_release_age_days" in out
+        assert "unchanged" in out
+
+    def test_lazy_refresh_makes_managed_uv_discoverable(self, monkeypatch):
+        """On managed installs uv lives off PATH; while the gate scopes
+        UV_EXCLUDE_NEWER (which makes lazy_deps fail closed without uv), the
+        managed uv's dir must be prepended to PATH — and restored after."""
+        import os
+
+        seen: dict[str, str | None] = {}
+
+        class _FakeLazyDeps:
+            @staticmethod
+            def active_features():
+                return ["voice"]
+
+            @staticmethod
+            def refresh_active_features(prompt=False):
+                seen["path"] = os.environ.get("PATH")
+                return {"voice": "current"}
+
+        original_path = os.environ.get("PATH", "")
+        monkeypatch.delenv("UV_EXCLUDE_NEWER", raising=False)
+        monkeypatch.setattr(cli_main, "_get_min_release_age_days", lambda: 3)
+        monkeypatch.setattr(
+            cli_main, "_exclude_newer_date", lambda days, **kw: "2026-05-10T00:00:00Z"
+        )
+        monkeypatch.setattr(cli_main.shutil, "which", lambda name: None)
+        monkeypatch.setattr(
+            "hermes_cli.managed_uv.ensure_uv", lambda: "/fake/hermes-home/bin/uv"
+        )
+        import sys as _sys
+
+        monkeypatch.setitem(_sys.modules, "tools.lazy_deps", _FakeLazyDeps())
+        import tools
+
+        monkeypatch.setattr(tools, "lazy_deps", _FakeLazyDeps(), raising=False)
+        cli_main._refresh_active_lazy_features()
+
+        assert seen["path"].startswith("/fake/hermes-home/bin" + os.pathsep)
+        assert os.environ.get("PATH", "") == original_path
+
+    def test_git_ref_preflight_fails_open_when_ref_has_no_pyproject(self, monkeypatch):
+        from pathlib import Path
+        from types import SimpleNamespace
+
+        monkeypatch.setattr(
+            cli_main.subprocess,
+            "run",
+            lambda cmd, **kw: SimpleNamespace(returncode=128, stdout="", stderr="bad ref"),
+        )
+        assert (
+            cli_main._release_age_preflight_git_ref(
+                ["git"], "origin/xyz", "2026-05-10T00:00:00Z", Path("/tmp")
+            )
+            is None
+        )
+
+    def test_git_ref_preflight_delegates_pyproject_to_blocked_check(self, monkeypatch):
+        from pathlib import Path
+        from types import SimpleNamespace
+
+        monkeypatch.setattr(
+            cli_main.subprocess,
+            "run",
+            lambda cmd, **kw: SimpleNamespace(
+                returncode=0, stdout='[project]\nname="x"\n', stderr=""
+            ),
+        )
+        captured = {}
+
+        def fake_blocked(text, cutoff):
+            captured["text"] = text
+            captured["cutoff"] = cutoff
+            return "blocked-reason"
+
+        monkeypatch.setattr(cli_main, "_release_age_preflight_blocked", fake_blocked)
+        assert (
+            cli_main._release_age_preflight_git_ref(
+                ["git"], "abc123", "2026-05-10T00:00:00Z", Path("/tmp")
+            )
+            == "blocked-reason"
+        )
+        assert captured["cutoff"] == "2026-05-10T00:00:00Z"
+
+    def test_fails_open_when_uv_lacks_gate_flags(self, monkeypatch):
+        """An older uv without --exclude-newer would fail the gated runs with
+        a usage error while the ungated control succeeds — indistinguishable
+        from a real rejection. The capability probe must fail open instead."""
+        from types import SimpleNamespace
+
+        compile_calls: list[list[str]] = []
+
+        def fake_run(cmd, **kw):
+            if "--help" in cmd:
+                return SimpleNamespace(
+                    returncode=0, stdout="an old uv with no such flags", stderr=""
+                )
+            compile_calls.append(list(cmd))
+            return SimpleNamespace(returncode=2, stdout="", stderr="unexpected argument")
+
+        monkeypatch.setattr(cli_main.subprocess, "run", fake_run)
+        monkeypatch.setattr("hermes_cli.managed_uv.ensure_uv", lambda: "/usr/bin/uv")
+
+        assert (
+            cli_main._release_age_preflight_blocked(
+                self._PYPROJECT, "2026-05-10T00:00:00Z"
+            )
+            is None
+        )
+        assert compile_calls == []  # probe failed → no resolution attempted
+
+    def test_resolves_against_target_venv_python(self, monkeypatch, tmp_path):
+        """Resolution must use the interpreter the update installs into —
+        the uv on PATH may be bound to a different Python, skewing marker
+        evaluation and wheel tags."""
+        from types import SimpleNamespace
+
+        venv_bin = tmp_path / "venv" / "bin"
+        venv_bin.mkdir(parents=True)
+        (venv_bin / "python").write_text("")
+        monkeypatch.setattr(cli_main, "PROJECT_ROOT", tmp_path)
+        monkeypatch.setattr(cli_main, "_is_windows", lambda: False)
+
+        calls: list[list[str]] = []
+
+        def fake_run(cmd, **kw):
+            if "--help" in cmd:
+                return SimpleNamespace(
+                    returncode=0,
+                    stdout="--exclude-newer --no-build --offline",
+                    stderr="",
+                )
+            calls.append(list(cmd))
+            return SimpleNamespace(returncode=0, stdout="", stderr="")
+
+        monkeypatch.setattr(cli_main.subprocess, "run", fake_run)
+        monkeypatch.setattr("hermes_cli.managed_uv.ensure_uv", lambda: "/usr/bin/uv")
+
+        cli_main._release_age_preflight_blocked(
+            self._PYPROJECT, "2026-05-10T00:00:00Z"
+        )
+        assert calls, "expected at least one resolve"
+        assert all(
+            "--python" in c and str(venv_bin / "python") in c for c in calls
+        )
+
+
+class TestGatewayModeStatus:
+    """Gateway output is streamed to the messaging user: informational
+    confirmations stay quiet, but a bypassed gate must still warn."""
+
+    def test_gateway_mode_suppresses_active_confirmation(self, monkeypatch, capsys):
+        monkeypatch.setattr(cli_main, "_get_min_release_age_days", lambda: 3)
+        cli_main._print_release_age_status(uv_available=True, gateway_mode=True)
+        assert capsys.readouterr().out == ""
+
+    def test_gateway_mode_still_warns_when_gate_bypassed(self, monkeypatch, capsys):
+        monkeypatch.setattr(cli_main, "_get_min_release_age_days", lambda: 3)
+        cli_main._print_release_age_status(uv_available=False, gateway_mode=True)
+        out = capsys.readouterr().out
+        assert "release-age gate configured" in out
+
+
+class TestReleaseAgeDaysClamp:
+    def test_huge_value_clamped_instead_of_overflowing(self, monkeypatch):
+        """A typo'd huge day count must not crash the datetime subtraction
+        (OverflowError) and brick every update."""
+        with patch(
+            "hermes_cli.config.load_config",
+            return_value={"security": {"minimum_release_age_days": 10**9}},
+        ):
+            days = cli_main._get_min_release_age_days()
+        assert days == 36500
+        # And the cutoff computation stays representable.
+        assert cli_main._exclude_newer_date(days) is not None
+
+    def test_lazy_refresh_prefers_managed_uv_over_system_uv(self, monkeypatch):
+        """A stale system uv that predates UV_EXCLUDE_NEWER would ignore the
+        gate env var — the managed uv dir must shadow it while gated."""
+        import os
+
+        seen: dict[str, str | None] = {}
+
+        class _FakeLazyDeps:
+            @staticmethod
+            def active_features():
+                return ["voice"]
+
+            @staticmethod
+            def refresh_active_features(prompt=False):
+                seen["path"] = os.environ.get("PATH")
+                return {"voice": "current"}
+
+        monkeypatch.delenv("UV_EXCLUDE_NEWER", raising=False)
+        monkeypatch.setattr(cli_main, "_get_min_release_age_days", lambda: 3)
+        monkeypatch.setattr(
+            cli_main, "_exclude_newer_date", lambda days, **kw: "2026-05-10T00:00:00Z"
+        )
+        # System uv IS discoverable — managed must still shadow it.
+        monkeypatch.setattr(cli_main.shutil, "which", lambda name: "/usr/bin/uv")
+        monkeypatch.setattr(
+            "hermes_cli.managed_uv.ensure_uv", lambda: "/fake/hermes-home/bin/uv"
+        )
+        import sys as _sys
+
+        monkeypatch.setitem(_sys.modules, "tools.lazy_deps", _FakeLazyDeps())
+        import tools
+
+        monkeypatch.setattr(tools, "lazy_deps", _FakeLazyDeps(), raising=False)
+        cli_main._refresh_active_lazy_features()
+
+        assert seen["path"].startswith("/fake/hermes-home/bin" + os.pathsep)

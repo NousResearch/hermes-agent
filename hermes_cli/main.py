@@ -6400,6 +6400,23 @@ def _update_via_zip(args):
                     extracted = candidate
                     break
 
+        # Release-age gate preflight: the live tree is untouched until the
+        # copy loop below, so a confirmed gate rejection of the incoming
+        # core deps can still defer the whole update cleanly (tmp_dir is
+        # removed in the finally). Fail-open contract lives in
+        # _release_age_preflight_blocked.
+        zip_cutoff = _exclude_newer_date(_get_min_release_age_days())
+        if zip_cutoff:
+            incoming_pyproject = os.path.join(extracted, "pyproject.toml")
+            blocked = None
+            if os.path.isfile(incoming_pyproject):
+                with open(incoming_pyproject, encoding="utf-8") as f:
+                    blocked = _release_age_preflight_blocked(f.read(), zip_cutoff)
+            if blocked:
+                _print_release_age_deferral(blocked, zip_cutoff)
+                # EX_TEMPFAIL: a deferred update must not read as applied.
+                sys.exit(75)
+
         # Copy updated files over existing installation, preserving venv/node_modules/.git
         preserve = {"venv", "node_modules", ".git", ".env"}
         update_count = 0
@@ -6901,7 +6918,7 @@ def _sync_fork_with_upstream(git_cmd: list[str], cwd: Path) -> bool:
         return False
 
 
-def _sync_with_upstream_if_needed(git_cmd: list[str], cwd: Path) -> None:
+def _sync_with_upstream_if_needed(git_cmd: list[str], cwd: Path) -> bool:
     """Check if fork is behind upstream and sync if safe.
 
     This implements the fork upstream sync logic:
@@ -6909,6 +6926,9 @@ def _sync_with_upstream_if_needed(git_cmd: list[str], cwd: Path) -> None:
     - Compare origin/main with upstream/main
     - If origin/main is strictly behind upstream/main, pull from upstream
     - Try to sync fork back to origin if possible
+
+    Returns True when the sync was deferred by the release-age gate (the
+    caller should report EX_TEMPFAIL rather than success); falsy otherwise.
     """
     has_upstream = _has_upstream_remote(git_cmd, cwd)
 
@@ -6990,14 +7010,47 @@ def _sync_with_upstream_if_needed(git_cmd: list[str], cwd: Path) -> None:
     # origin/main is strictly behind upstream/main (can fast-forward)
     print()
     print(f"→ Fork is {upstream_ahead} commit(s) behind upstream")
+
+    # Release-age preflight of the actual sync target: the main update
+    # preflight only sees origin/main, but this fast-forward advances the
+    # live tree from upstream/main. Pin the merge to the preflighted SHA
+    # (a pull would re-fetch and could land on a newer, unvalidated tip).
+    sync_cutoff = _exclude_newer_date(_get_min_release_age_days())
+    upstream_sha: str | None = None
+    if sync_cutoff:
+        sha_result = subprocess.run(
+            git_cmd + ["rev-parse", "upstream/main"],
+            cwd=cwd,
+            capture_output=True,
+            text=True,
+        )
+        upstream_sha = (
+            sha_result.stdout.strip() if sha_result.returncode == 0 else None
+        )
+        if upstream_sha:
+            blocked = _release_age_preflight_git_ref(
+                git_cmd, upstream_sha, sync_cutoff, cwd
+            )
+            if blocked:
+                _print_release_age_deferral(blocked, sync_cutoff)
+                print("  Skipping upstream sync; your fork remains as-is.")
+                return True
+
     print("→ Pulling from upstream...")
 
     try:
-        subprocess.run(
-            git_cmd + ["pull", "--ff-only", "upstream", "main"],
-            cwd=cwd,
-            check=True,
-        )
+        if upstream_sha:
+            subprocess.run(
+                git_cmd + ["merge", "--ff-only", upstream_sha],
+                cwd=cwd,
+                check=True,
+            )
+        else:
+            subprocess.run(
+                git_cmd + ["pull", "--ff-only", "upstream", "main"],
+                cwd=cwd,
+                check=True,
+            )
     except subprocess.CalledProcessError:
         print(
             "  ✗ Failed to pull from upstream. You may need to resolve conflicts manually."
@@ -7741,12 +7794,32 @@ def _refresh_active_lazy_features() -> None:
     # can't be threaded through its API without coupling it to the CLI.
     # uv reads UV_EXCLUDE_NEWER as the env equivalent of --exclude-newer;
     # scope it to this refresh so gated updates can't pull brand-new
-    # artifacts through the lazy path. The pip fallback tier ignores the
-    # variable, matching the gate's uv-only behavior elsewhere.
+    # artifacts through the lazy path. lazy_deps fails closed on the pip
+    # fallback while the variable is set, so also make the managed uv
+    # (installed at $HERMES_HOME/bin, deliberately off PATH) discoverable
+    # for the same scope — otherwise every gated refresh on a standard
+    # managed install would fail despite a usable uv.
     cutoff = _exclude_newer_date(_get_min_release_age_days())
     saved_exclude_newer = os.environ.get("UV_EXCLUDE_NEWER")
+    saved_path = os.environ.get("PATH")
     if cutoff:
         os.environ["UV_EXCLUDE_NEWER"] = cutoff
+        # Always prefer the managed uv while the gate scopes the env var —
+        # a stale system uv on PATH that predates UV_EXCLUDE_NEWER would
+        # silently ignore it and install ungated.
+        try:
+            from hermes_cli.managed_uv import ensure_uv
+
+            managed_uv = ensure_uv()
+        except Exception:
+            managed_uv = None
+        if managed_uv:
+            managed_dir = os.path.dirname(managed_uv)
+            os.environ["PATH"] = (
+                managed_dir + os.pathsep + saved_path
+                if saved_path
+                else managed_dir
+            )
     try:
         results = lazy_deps.refresh_active_features(prompt=False)
     except Exception as exc:
@@ -7756,6 +7829,10 @@ def _refresh_active_lazy_features() -> None:
         return
     finally:
         if cutoff:
+            if saved_path is None:
+                os.environ.pop("PATH", None)
+            else:
+                os.environ["PATH"] = saved_path
             if saved_exclude_newer is None:
                 os.environ.pop("UV_EXCLUDE_NEWER", None)
             else:
@@ -7806,7 +7883,7 @@ def _get_min_release_age_days() -> int:
         if val is None:
             return 0
         try:
-            return max(0, int(val))
+            days = int(val)
         except (TypeError, ValueError):
             logger.warning(
                 "security.minimum_release_age_days has non-integer value %r; "
@@ -7814,6 +7891,16 @@ def _get_min_release_age_days() -> int:
                 val,
             )
             return 0
+        if days > 36500:
+            # ~100 years — anything larger is a typo and would overflow the
+            # datetime subtraction in _exclude_newer_date, crashing updates.
+            logger.warning(
+                "security.minimum_release_age_days=%r is out of range; "
+                "clamping to 36500",
+                val,
+            )
+            days = 36500
+        return max(0, days)
     except Exception as exc:
         logger.debug("release-age gate config read failed: %s", exc)
         return 0
@@ -7858,13 +7945,15 @@ def _print_release_age_status(
     ``cli-config.yaml.example``. When the gate is on, prints either a
     confirmation with the active cutoff (uv available) or a warning that
     the current updater path cannot apply it (pipx has no
-    ``--exclude-newer`` equivalent; plain pip requires uv). Suppressed
-    entirely in gateway mode (no human terminal).
+    ``--exclude-newer`` equivalent; plain pip requires uv). Gateway mode
+    suppresses only the informational confirmation — gateway output is
+    streamed back to the messaging user, so a *bypassed* gate must still
+    warn there.
     """
-    if gateway_mode:
-        return
     days = _get_min_release_age_days()
     if days <= 0:
+        return
+    if gateway_mode and uv_available:
         return
     if uv_available:
         cutoff = _exclude_newer_date(days)
@@ -7883,6 +7972,204 @@ def _print_release_age_status(
             f"  ⚠ release-age gate configured (minimum_release_age_days={days}) "
             f"but requires `uv`; falling through without gating"
         )
+
+
+def _release_age_preflight_blocked(pyproject_text: str, cutoff: str) -> str | None:
+    """Return uv's resolver error when the incoming core dependency set is
+    blocked *solely* by the release-age gate, else None.
+
+    Called with the **incoming** (not yet checked out) pyproject.toml so the
+    update can be deferred before source advances — a gated install failure
+    after the pull would strand new code with stale deps until the offending
+    pin ages past the cutoff.
+
+    Resolves ``[project.dependencies]`` only: optional extras are already
+    tolerated-to-fail by the install fallback flow, so a gate-refused extra
+    doesn't warrant deferring the whole update.
+
+    Fail-open by design: any machinery error (no uv, unparsable pyproject,
+    network failure, timeout) returns None so the preflight can never block
+    an update on its own. Only a confirmed gate rejection — gated resolution
+    fails while ungated resolution succeeds — defers.
+    """
+    try:
+        import tempfile
+        import tomllib
+
+        from hermes_cli.managed_uv import ensure_uv
+
+        uv = ensure_uv()
+        if not uv:
+            # Without uv nothing downstream is gated either; don't defer.
+            return None
+
+        # Capability probe: an older uv whose `pip compile` lacks any of the
+        # options used below would fail the gated runs with a usage error
+        # while the ungated control succeeds — indistinguishable from a real
+        # gate rejection and would falsely defer updates forever (before the
+        # install phase ever gets to run update_managed_uv()). Fail open on
+        # such a uv; the install-phase gate handles it from there.
+        help_probe = subprocess.run(
+            [uv, "pip", "compile", "--help"],
+            capture_output=True,
+            text=True,
+            timeout=30,
+        )
+        if help_probe.returncode != 0 or any(
+            flag not in help_probe.stdout
+            for flag in ("--exclude-newer", "--no-build", "--offline")
+        ):
+            return None
+
+        parsed = tomllib.loads(pyproject_text)
+        deps = list(parsed.get("project", {}).get("dependencies", []) or [])
+        # The gated editable install also resolves the build backend, so a
+        # too-new [build-system].requires pin would strand the update the
+        # same way a runtime dep would. Preflight them together.
+        deps += list(parsed.get("build-system", {}).get("requires", []) or [])
+        if not deps:
+            return None
+
+        # Resolve for the interpreter the update will actually install into
+        # (PROJECT_ROOT/venv on the git/ZIP paths) — the uv on PATH may be
+        # bound to a different Python, skewing marker evaluation and wheel
+        # tags. Missing venv python → uv's default interpreter (fail-open
+        # spirit: a skewed resolution is still better than none).
+        venv_python = (
+            PROJECT_ROOT
+            / "venv"
+            / ("Scripts" if _is_windows() else "bin")
+            / ("python.exe" if _is_windows() else "python")
+        )
+        python_args = (
+            ["--python", str(venv_python)] if venv_python.exists() else []
+        )
+
+        # Ambient age gates (e.g. a stray UV_EXCLUDE_NEWER exported in the
+        # shell) would silently gate the "ungated" control below, masking a
+        # real rejection as broken-regardless → fail open → stranding. All
+        # resolves run with them scrubbed; the gated ones pass the flag
+        # explicitly.
+        resolve_env = {
+            k: v
+            for k, v in os.environ.items()
+            if k not in {"UV_EXCLUDE_NEWER", "UV_EXCLUDE_NEWER_PACKAGE"}
+        }
+
+        with tempfile.TemporaryDirectory() as tmp:
+            reqs = Path(tmp) / "requirements.in"
+            reqs.write_text("\n".join(deps) + "\n", encoding="utf-8")
+
+            def _resolve(extra_args: list[str], *, no_build: bool = True):
+                # --no-build: resolution must never execute a candidate's
+                # PEP 517 backend — the ungated control would otherwise run
+                # code from the very artifact the gate exists to quarantine.
+                # An sdist-only dep fails the control instead → fail open,
+                # and the real (gated) install handles it normally.
+                return subprocess.run(
+                    [
+                        uv,
+                        "pip",
+                        "compile",
+                        str(reqs),
+                        "--no-header",
+                        *(["--no-build"] if no_build else []),
+                        *python_args,
+                        *extra_args,
+                    ],
+                    capture_output=True,
+                    text=True,
+                    timeout=180,
+                    cwd=tmp,
+                    env=resolve_env,
+                )
+
+            # uv's refusal text does not name the exclusion (it reads as
+            # "there is no version of X"), so the gate is confirmed
+            # structurally instead: the ungated control must succeed online
+            # (proves resolvability and warms uv's metadata cache), then the
+            # gated resolve must fail BOTH --offline (pure cache — network
+            # cannot be the cause) and online (rules out a cache miss).
+            # Any other combination fails open.
+            ungated = _resolve([])
+            if ungated.returncode != 0:
+                # The wheels-only control failed — typically an sdist-only
+                # dependency (common on Termux/Android). An ungated build
+                # is off the table (it would execute a possibly brand-new
+                # artifact's PEP 517 backend), but a GATED build is safe:
+                # only aged, gate-passing artifacts are candidates. If it
+                # resolves, the real install will too; if it doesn't,
+                # defer conservatively — advancing source would strand the
+                # install whether the cause is the gate or broken deps.
+                gated_build = _resolve(
+                    ["--exclude-newer", cutoff], no_build=False
+                )
+                if gated_build.returncode == 0:
+                    return None
+                detail = (gated_build.stderr or "").strip() or (
+                    "resolution failed under --exclude-newer"
+                )
+                return (
+                    "the incoming dependencies could not be resolved under "
+                    "the release-age gate (this may also indicate a "
+                    "resolution problem unrelated to the gate — see the "
+                    "resolver output):\n" + detail
+                )
+            gated_offline = _resolve(["--offline", "--exclude-newer", cutoff])
+            if gated_offline.returncode == 0:
+                return None
+            gated_online = _resolve(["--exclude-newer", cutoff])
+            if gated_online.returncode == 0:
+                return None
+            # Final check before deferring: the gated failures above ran
+            # with --no-build, which can't fall back to an *aged, allowed*
+            # sdist when only the newer wheel is refused. The real install
+            # does build, so confirm with builds permitted — safe here,
+            # because --exclude-newer means only gate-passing artifacts are
+            # candidates for building.
+            gated_build = _resolve(["--exclude-newer", cutoff], no_build=False)
+            if gated_build.returncode == 0:
+                return None
+            return (gated_build.stderr or gated_online.stderr or "").strip() or (
+                "resolution refused by --exclude-newer"
+            )
+    except Exception as exc:
+        logger.debug("release-age preflight skipped: %s", exc)
+        return None
+
+
+def _release_age_preflight_git_ref(
+    git_cmd: list[str], ref: str, cutoff: str, cwd: Path
+) -> str | None:
+    """Preflight the pyproject.toml at a git ref (not yet checked out).
+
+    Returns the block reason when that revision's dependency set is refused
+    solely by the release-age gate, else None (including when the ref has no
+    readable pyproject — fail open, per _release_age_preflight_blocked).
+    """
+    show = subprocess.run(
+        git_cmd + ["show", f"{ref}:pyproject.toml"],
+        cwd=cwd,
+        capture_output=True,
+        text=True,
+    )
+    if show.returncode != 0 or not show.stdout.strip():
+        return None
+    return _release_age_preflight_blocked(show.stdout, cutoff)
+
+
+def _print_release_age_deferral(blocked: str, cutoff: str) -> None:
+    """Explain a preflight deferral: what refused, and how to proceed."""
+    print("✗ Update deferred by the release-age gate:")
+    for line in blocked.splitlines()[-6:]:
+        print(f"    {line}")
+    print(
+        f"  The incoming version requires a dependency published after the "
+        f"cutoff ({cutoff}, minimum_release_age_days="
+        f"{_get_min_release_age_days()})."
+    )
+    print("  Your install is unchanged. Retry once the dependency ages past the")
+    print("  gate, or temporarily set security.minimum_release_age_days: 0.")
 
 
 def _uv_exclude_newer_args(
@@ -10142,6 +10429,10 @@ def _cmd_update_impl(args, gateway_mode: bool):
         # minutes on a non-single-branch checkout. Fetch only what we update
         # against.
         branch = _resolve_update_branch(args)
+        # Set when the fork's upstream sync is deferred by the release-age
+        # gate after the origin update already applied; the success path
+        # still exits EX_TEMPFAIL so automation retries once the pin ages.
+        upstream_sync_deferred_late = False
 
         print("→ Fetching updates...")
         fetch_result = subprocess.run(
@@ -10176,6 +10467,9 @@ def _cmd_update_impl(args, gateway_mode: bool):
             check=True,
         )
         current_branch = result.stdout.strip()
+        # For detached HEAD "current_branch" is the literal "HEAD"; capture
+        # the commit so a deferred update can restore the exact checkout.
+        original_head_sha = _capture_head_sha(git_cmd, PROJECT_ROOT)
 
         # If user is on a different branch than the update target, switch
         # to the target. When the target is "main" this is the historical
@@ -10191,6 +10485,44 @@ def _cmd_update_impl(args, gateway_mode: bool):
             print(f"  ⚠ Currently on {label} — switching to {branch} for update...")
             # Stash before checkout so uncommitted work isn't lost
             auto_stash_ref = _stash_local_changes_if_needed(git_cmd, PROJECT_ROOT)
+            # Release-age preflight before switching: a successful checkout
+            # advances the tree (real for detached HEAD), after which a
+            # zero-commit early return would skip the main preflight. The
+            # checked ref is the *fetched* tip — the update's true
+            # destination — not the possibly-stale local branch tip, which
+            # the flow only passes through transiently.
+            switch_cutoff = _exclude_newer_date(_get_min_release_age_days())
+            if switch_cutoff:
+                fetched_tip = subprocess.run(
+                    git_cmd + ["rev-parse", "--verify", f"origin/{branch}"],
+                    cwd=PROJECT_ROOT,
+                    capture_output=True,
+                    text=True,
+                )
+                target_sha = (
+                    fetched_tip.stdout.strip()
+                    if fetched_tip.returncode == 0
+                    else None
+                )
+                if target_sha and target_sha != original_head_sha:
+                    blocked = _release_age_preflight_git_ref(
+                        git_cmd, target_sha, switch_cutoff, PROJECT_ROOT
+                    )
+                    if blocked:
+                        _print_release_age_deferral(blocked, switch_cutoff)
+                        # Checkout hasn't run — the stash restores in place.
+                        if auto_stash_ref is not None:
+                            _restore_stashed_changes(
+                                git_cmd,
+                                PROJECT_ROOT,
+                                auto_stash_ref,
+                                prompt_user=False,
+                                input_fn=gw_input_fn,
+                            )
+                        _resume_windows_gateways_after_update(
+                            _windows_gateway_resume
+                        )
+                        sys.exit(75)  # EX_TEMPFAIL
             checkout_result = subprocess.run(
                 git_cmd + ["checkout", branch],
                 cwd=PROJECT_ROOT,
@@ -10202,6 +10534,33 @@ def _cmd_update_impl(args, gateway_mode: bool):
                 # it up as a tracking branch of origin/<branch>. This is
                 # the common case when the requested branch exists upstream
                 # but was never checked out locally.
+                #
+                # Release-age preflight first: ``checkout -B`` jumps the
+                # live tree straight to the fetched revision, after which
+                # the zero-commit early return skips the main preflight.
+                switch_cutoff = _exclude_newer_date(_get_min_release_age_days())
+                if switch_cutoff:
+                    blocked = _release_age_preflight_git_ref(
+                        git_cmd, f"origin/{branch}", switch_cutoff, PROJECT_ROOT
+                    )
+                    if blocked:
+                        _print_release_age_deferral(blocked, switch_cutoff)
+                        # Still on the original branch (checkout failed), so
+                        # the stash restores where it was taken.
+                        if auto_stash_ref is not None:
+                            _restore_stashed_changes(
+                                git_cmd,
+                                PROJECT_ROOT,
+                                auto_stash_ref,
+                                prompt_user=False,
+                                input_fn=gw_input_fn,
+                            )
+                        _resume_windows_gateways_after_update(
+                            _windows_gateway_resume
+                        )
+                        # EX_TEMPFAIL: automation and the gateway watcher
+                        # must not report a deferred update as applied.
+                        sys.exit(75)
                 track_result = subprocess.run(
                     git_cmd + ["checkout", "-B", branch, f"origin/{branch}"],
                     cwd=PROJECT_ROOT,
@@ -10246,8 +10605,11 @@ def _cmd_update_impl(args, gateway_mode: bool):
             _invalidate_update_cache()
 
             # Even if origin is up to date, the fork may be behind upstream
+            upstream_sync_deferred = False
             if is_fork and branch == "main":
-                _sync_with_upstream_if_needed(git_cmd, PROJECT_ROOT)
+                upstream_sync_deferred = bool(
+                    _sync_with_upstream_if_needed(git_cmd, PROJECT_ROOT)
+                )
 
             # Restore stash and switch back to original branch if we moved
             if auto_stash_ref is not None:
@@ -10266,6 +10628,12 @@ def _cmd_update_impl(args, gateway_mode: bool):
                     text=True,
                     check=False,
                 )
+
+            if upstream_sync_deferred:
+                # The pending upstream update was deferred by the release-age
+                # gate — automation must not read this as "update applied".
+                _resume_windows_gateways_after_update(_windows_gateway_resume)
+                sys.exit(75)  # EX_TEMPFAIL
 
             # A current checkout does NOT imply a healthy install: a previous
             # dependency sync may have failed partway (classic on Windows,
@@ -10326,6 +10694,67 @@ def _cmd_update_impl(args, gateway_mode: bool):
 
         print(f"→ Found {commit_count} new commit(s)")
 
+        # Release-age gate preflight: resolve the *incoming* core dependency
+        # set (already fetched, not yet checked out) against the gate before
+        # the pull advances source. A confirmed gate rejection defers the
+        # whole update with the install unchanged; see
+        # _release_age_preflight_blocked for the fail-open contract.
+        #
+        # The preflighted revision is pinned: `git pull` re-fetches and the
+        # ref can move between our check and the merge, so when the gate is
+        # active the update below fast-forwards to exactly this SHA instead
+        # of whatever origin/<branch> means by then.
+        preflighted_sha: str | None = None
+        preflight_cutoff = _exclude_newer_date(_get_min_release_age_days())
+        if preflight_cutoff:
+            sha_result = subprocess.run(
+                git_cmd + ["rev-parse", f"origin/{branch}"],
+                cwd=PROJECT_ROOT,
+                capture_output=True,
+                text=True,
+            )
+            sha = sha_result.stdout.strip() if sha_result.returncode == 0 else ""
+            blocked = (
+                _release_age_preflight_git_ref(
+                    git_cmd, sha, preflight_cutoff, PROJECT_ROOT
+                )
+                if sha
+                else None
+            )
+            if blocked:
+                _print_release_age_deferral(blocked, preflight_cutoff)
+                # Return to the user's checkout BEFORE restoring their stash —
+                # applying it onto the update target branch could conflict
+                # and strand the edits in the stash. Detached HEAD goes back
+                # to the exact commit it was on.
+                restore_target = None
+                if current_branch == "HEAD":
+                    restore_target = original_head_sha
+                elif current_branch != branch:
+                    restore_target = current_branch
+                if restore_target:
+                    subprocess.run(
+                        git_cmd + ["checkout", restore_target],
+                        cwd=PROJECT_ROOT,
+                        capture_output=True,
+                        text=True,
+                        check=False,
+                    )
+                if auto_stash_ref is not None:
+                    _restore_stashed_changes(
+                        git_cmd,
+                        PROJECT_ROOT,
+                        auto_stash_ref,
+                        prompt_user=prompt_for_restore,
+                        input_fn=gw_input_fn,
+                    )
+                _resume_windows_gateways_after_update(_windows_gateway_resume)
+                # EX_TEMPFAIL: automation and the gateway watcher must not
+                # report a deferred update as applied.
+                sys.exit(75)
+            if sha:
+                preflighted_sha = sha
+
         print("→ Pulling updates...")
         update_succeeded = False
         # Capture the pre-pull SHA so we can auto-roll-back if the new code
@@ -10335,12 +10764,24 @@ def _cmd_update_impl(args, gateway_mode: bool):
         # the bad commit and the fix landing).
         pre_pull_sha = _capture_head_sha(git_cmd, PROJECT_ROOT)
         try:
-            pull_result = subprocess.run(
-                git_cmd + ["pull", "--ff-only", "origin", branch],
-                cwd=PROJECT_ROOT,
-                capture_output=True,
-                text=True,
-            )
+            if preflighted_sha:
+                # Gate active: advance to exactly the revision the preflight
+                # validated (`git pull` would re-fetch and could land on a
+                # newer commit whose deps were never preflighted). The
+                # objects are already local from the fetch above.
+                pull_result = subprocess.run(
+                    git_cmd + ["merge", "--ff-only", preflighted_sha],
+                    cwd=PROJECT_ROOT,
+                    capture_output=True,
+                    text=True,
+                )
+            else:
+                pull_result = subprocess.run(
+                    git_cmd + ["pull", "--ff-only", "origin", branch],
+                    cwd=PROJECT_ROOT,
+                    capture_output=True,
+                    text=True,
+                )
             if pull_result.returncode != 0:
                 # ff-only failed — local and remote have diverged (e.g. upstream
                 # force-pushed or rebase).  Since local changes are already
@@ -10349,7 +10790,8 @@ def _cmd_update_impl(args, gateway_mode: bool):
                     "  ⚠ Fast-forward not possible (history diverged), resetting to match remote..."
                 )
                 reset_result = subprocess.run(
-                    git_cmd + ["reset", "--hard", f"origin/{branch}"],
+                    git_cmd
+                    + ["reset", "--hard", preflighted_sha or f"origin/{branch}"],
                     cwd=PROJECT_ROOT,
                     capture_output=True,
                     text=True,
@@ -10445,7 +10887,9 @@ def _cmd_update_impl(args, gateway_mode: bool):
 
         # Fork upstream sync logic (only for main branch on forks)
         if is_fork and branch == "main":
-            _sync_with_upstream_if_needed(git_cmd, PROJECT_ROOT)
+            upstream_sync_deferred_late = bool(
+                _sync_with_upstream_if_needed(git_cmd, PROJECT_ROOT)
+            )
 
         # Reinstall Python dependencies. Prefer .[all], but if one optional extra
         # breaks on this machine, keep base deps and reinstall the remaining extras
@@ -11632,6 +12076,12 @@ def _cmd_update_impl(args, gateway_mode: bool):
         print()
         print("Tip: You can now select a provider and model:")
         print("  hermes model              # Select provider and model")
+
+        if upstream_sync_deferred_late:
+            # Origin's commits and dependencies applied fine, but the
+            # upstream portion of this fork update was deferred by the
+            # release-age gate — EX_TEMPFAIL so automation retries later.
+            sys.exit(75)
 
     except subprocess.CalledProcessError as e:
         if sys.platform == "win32":

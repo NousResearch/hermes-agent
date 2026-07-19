@@ -8707,15 +8707,19 @@ class TelegramAdapter(BasePlatformAdapter):
                 if ext in _TELEGRAM_IMAGE_EXTENSIONS or doc_mime.startswith("image/"):
                     image_download_session_key = self._track_media_download_start(event)
                     try:
-                        cached_path = cache_image_from_bytes(bytes(image_bytes), ext=image_ext)
-                    except ValueError as e:
-                        logger.warning("[Telegram] Failed to cache image document: %s", _redact_telegram_error_text(e), exc_info=True)
-                        event.text = (
-                            f"Image document '{original_filename or doc_mime or ext or 'unknown'}' "
-                            "could not be read as an image."
-                        )
-                        await self.handle_message(event)
-                        return
+                        file_obj = await doc.get_file()
+                        image_bytes = await file_obj.download_as_bytearray()
+                        image_ext = ext if ext in _TELEGRAM_IMAGE_EXTENSIONS else _TELEGRAM_IMAGE_MIME_TO_EXT.get(doc_mime, ".jpg")
+                        try:
+                            cached_path = cache_image_from_bytes(bytes(image_bytes), ext=image_ext)
+                        except ValueError as e:
+                            logger.warning("[Telegram] Failed to cache image document: %s", _redact_telegram_error_text(e), exc_info=True)
+                            event.text = (
+                                f"Image document '{original_filename or doc_mime or ext or 'unknown'}' "
+                                "could not be read as an image."
+                            )
+                            await self.handle_message(event)
+                            return
 
                         event.message_type = MessageType.PHOTO
                         event.media_urls = [cached_path]

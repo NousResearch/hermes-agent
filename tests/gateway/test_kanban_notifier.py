@@ -1,5 +1,7 @@
 import asyncio
+import uuid
 from pathlib import Path
+from types import SimpleNamespace
 
 
 from gateway.config import Platform
@@ -13,6 +15,13 @@ class RecordingAdapter:
 
     async def send(self, chat_id, text, metadata=None):
         self.sent.append({"chat_id": chat_id, "text": text, "metadata": metadata or {}})
+        return SimpleNamespace(success=True, message_id=f"receipt-{len(self.sent)}")
+
+    async def find_message_by_client_msg_id(self, chat_id, client_msg_id, *, thread_ts=None):
+        for index, sent in enumerate(self.sent, 1):
+            if sent["chat_id"] == chat_id and sent["metadata"].get("client_msg_id") == client_msg_id:
+                return f"receipt-{index}"
+        return None
 
 
 class DisconnectedAdapters(dict):
@@ -38,7 +47,8 @@ async def _run_one_notifier_tick(monkeypatch, runner):
 def _make_runner(adapter):
     runner = GatewayRunner.__new__(GatewayRunner)
     runner._running = True
-    runner.adapters = {Platform.TELEGRAM: adapter}
+    runner.adapters = {Platform.TELEGRAM: adapter, Platform.SLACK: adapter}
+    runner._profile_adapters = {"developer": {Platform.SLACK: adapter}}
     runner._kanban_sub_fail_counts = {}
     return runner
 
@@ -69,6 +79,31 @@ def _unseen_terminal_events(tid):
         conn.close()
 
 
+def _delivery_gates():
+    head = "a" * 40
+    merge = "b" * 40
+    return {
+        "delivery": {
+            "final_head": head,
+            "review": {"verdict": "PASS", "head": head, "reviewer": "reviewer", "evidence": "https://example.test/review"},
+            "merge": {"head": head, "commit": merge, "evidence": "https://example.test/merge"},
+            "production": {"deployed": True, "commit": merge, "evidence": "https://example.test/deploy"},
+            "migration": {"required": False},
+            "e2e": {"passed": True, "commit": merge, "evidence": "https://example.test/e2e"},
+        }
+    }
+
+
+def _record_delivery_gates(conn, task_id):
+    head = "a" * 40
+    merge = "b" * 40
+    kb.record_delivery_attestation(conn, task_id, repo="example/repo", gate="review", head=head, subject=head, actor="reviewer", evidence="review-1")
+    kb.record_delivery_attestation(conn, task_id, repo="example/repo", gate="merge", head=head, subject=merge, actor="github-app", evidence="merge-1")
+    for gate in ("production", "e2e"):
+        kb.record_delivery_attestation(conn, task_id, repo="example/repo", gate=gate, head=merge, subject=f"{gate}-1", actor="delivery-runner", evidence=f"{gate}-1")
+    kb.record_delivery_attestation(conn, task_id, repo="example/repo", gate="migration", head=merge, subject="not-required", actor="delivery-runner", evidence="migration-inventory-1")
+
+
 def test_kanban_notifier_dedupes_board_slugs_pointing_to_same_db(tmp_path, monkeypatch):
     db_path = tmp_path / "shared-kanban.db"
     monkeypatch.setenv("HERMES_KANBAN_DB", str(db_path))
@@ -84,8 +119,96 @@ def test_kanban_notifier_dedupes_board_slugs_pointing_to_same_db(tmp_path, monke
     asyncio.run(_run_one_notifier_tick(monkeypatch, runner))
 
     assert len(adapter.sent) == 1
-    assert "Kanban" in adapter.sent[0]["text"]
-    assert tid in adapter.sent[0]["text"]
+    assert adapter.sent[0]["text"] == "notify once fertig."
+    assert tid not in adapter.sent[0]["text"]
+
+
+def test_coding_completion_reaches_done_only_after_receipt(tmp_path, monkeypatch):
+    db_path = tmp_path / "coding-receipt.db"
+    monkeypatch.setenv("HERMES_KANBAN_DB", str(db_path))
+    kb.init_db()
+    metadata = _delivery_gates()
+    with kb.connect() as conn:
+        tid = kb.create_task(
+            conn,
+            title="ship coding task",
+            assignee="worker",
+            workspace_kind="worktree",
+            workspace_path=str(tmp_path / "worktree"),
+            delivery_required=True,
+        )
+        _record_delivery_gates(conn, tid)
+        assert kb.complete_task(conn, tid, summary="merged production verified", metadata=metadata)
+        kb.add_notify_sub(
+            conn, task_id=tid, platform="slack", chat_id="C0BGA1TAYRY",
+            notifier_profile="developer",
+        )
+        pending = kb.get_task(conn, tid)
+        assert pending is not None and pending.status == "review"
+
+    adapter = RecordingAdapter()
+    asyncio.run(_run_one_notifier_tick(monkeypatch, _make_runner(adapter)))
+
+    with kb.connect() as conn:
+        task = kb.get_task(conn, tid)
+        events = kb.list_events(conn, tid)
+    assert task is not None and task.status == "done"
+    assert len(adapter.sent) == 1
+    assert [e.kind for e in events].count("completion_acknowledged") == 1
+
+
+def test_notifier_recovers_post_send_crash_without_duplicate(tmp_path, monkeypatch):
+    db_path = tmp_path / "post-send-crash.db"
+    monkeypatch.setenv("HERMES_KANBAN_DB", str(db_path))
+    kb.init_db()
+    metadata = _delivery_gates()
+    adapter = RecordingAdapter()
+    with kb.connect() as conn:
+        tid = kb.create_task(
+            conn,
+            title="crash-safe completion",
+            assignee="worker",
+            workspace_kind="worktree",
+            workspace_path=str(tmp_path / "worktree"),
+            delivery_required=True,
+        )
+        _record_delivery_gates(conn, tid)
+        assert kb.complete_task(conn, tid, summary="verified", metadata=metadata)
+        kb.add_notify_sub(
+            conn, task_id=tid, platform="slack", chat_id="C0BGA1TAYRY",
+            notifier_profile="developer",
+        )
+        _, _, events = kb.claim_unseen_events_for_sub(
+            conn,
+            task_id=tid,
+            platform="slack",
+            chat_id="C0BGA1TAYRY",
+            kinds=["completed"],
+        )
+        assert len(events) == 1
+        client_msg_id = str(uuid.uuid5(
+            uuid.NAMESPACE_URL,
+            f"hermes-kanban:default:{tid}:{events[0].id}:slack:C0BGA1TAYRY:",
+        ))
+        asyncio.run(adapter.send(
+            "C0BGA1TAYRY",
+            "delivered before crash",
+            metadata={"client_msg_id": client_msg_id},
+        ))
+        conn.execute(
+            "UPDATE kanban_notify_subs SET pending_claimed_at = 0 WHERE task_id = ?",
+            (tid,),
+        )
+
+    asyncio.run(_run_one_notifier_tick(monkeypatch, _make_runner(adapter)))
+
+    with kb.connect() as conn:
+        assert kb.list_notify_subs(conn) == []
+        task = kb.get_task(conn, tid)
+        events = kb.list_events(conn, tid)
+        assert task is not None and task.status == "done"
+    assert len(adapter.sent) == 1
+    assert [event.kind for event in events].count("completion_acknowledged") == 1
 
 
 def test_kanban_notifier_claim_prevents_second_watcher_send(tmp_path, monkeypatch):

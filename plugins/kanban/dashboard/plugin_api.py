@@ -475,6 +475,10 @@ def get_board(
                 # needs the summary.
                 d["diagnostics"] = diags
                 d["warnings"] = _warnings_summary_from_diagnostics(diags)
+            # Cancellation is terminal but not successful. It remains
+            # available through task detail/list APIs, never in Done.
+            if t.status == "cancelled":
+                continue
             col = t.status if t.status in columns else "todo"
             columns[col].append(d)
 
@@ -608,6 +612,7 @@ class CreateTaskBody(BaseModel):
     skills: Optional[list[str]] = None
     goal_mode: bool = False
     goal_max_turns: Optional[int] = None
+    task_kind: Optional[str] = None
 
 
 @router.post("/tasks")
@@ -632,6 +637,7 @@ def create_task(payload: CreateTaskBody, board: Optional[str] = Query(None)):
             skills=payload.skills,
             goal_mode=payload.goal_mode,
             goal_max_turns=payload.goal_max_turns,
+            task_kind=(payload.task_kind or ("coding" if payload.assignee == "developer" else "general")),
         )
         task = kanban_db.get_task(conn, task_id)
         body: dict[str, Any] = {"task": _task_dict(task) if task else None}
@@ -810,6 +816,7 @@ class UpdateTaskBody(BaseModel):
     body: Optional[str] = None
     result: Optional[str] = None
     block_reason: Optional[str] = None
+    actor: Optional[str] = None
     # Structured handoff fields — forwarded to complete_task when status
     # transitions to 'done'. Dashboard parity with ``hermes kanban
     # complete --summary ... --metadata ...``.
@@ -842,11 +849,27 @@ def update_task(task_id: str, payload: UpdateTaskBody, board: Optional[str] = Qu
             s = payload.status
             ok = True
             if s == "done":
-                ok = kanban_db.complete_task(
-                    conn, task_id,
-                    result=payload.result,
-                    summary=payload.summary,
-                    metadata=payload.metadata,
+                try:
+                    ok = kanban_db.complete_task(
+                        conn, task_id,
+                        result=payload.result,
+                        summary=payload.summary,
+                        metadata=payload.metadata,
+                    )
+                except kanban_db.CompletionGateError as exc:
+                    raise HTTPException(status_code=409, detail=str(exc)) from exc
+            elif s == "cancelled":
+                if not payload.block_reason:
+                    raise HTTPException(status_code=400, detail="cancelled requires block_reason")
+                ok = kanban_db.cancel_task(conn, task_id, reason=payload.block_reason)
+            elif s == "reopen":
+                if not payload.block_reason:
+                    raise HTTPException(status_code=400, detail="reopen requires block_reason")
+                ok = kanban_db.reopen_task(
+                    conn,
+                    task_id,
+                    actor=payload.actor or "dashboard",
+                    reason=payload.block_reason,
                 )
             elif s == "blocked":
                 ok = kanban_db.block_task(conn, task_id, reason=payload.block_reason)
@@ -998,6 +1021,11 @@ def _set_status_direct(
         if prev is None:
             return False
 
+        if prev["status"] in {"done", "cancelled", "archived"}:
+            # Terminal history is immutable through drag/drop; the explicit
+            # reopen verb records actor, reason and a new handoff generation.
+            return False
+
         # Guard: don't allow promoting to 'ready' unless all parents are done.
         # Prevents the dispatcher from spawning a child whose upstream work
         # hasn't completed (e.g. T4 dispatched while T3 is still blocked).
@@ -1014,10 +1042,6 @@ def _set_status_direct(
                 return False
 
         was_running = prev["status"] == "running"
-        reopening_satisfied_parent = (
-            prev["status"] in {"done", "archived"}
-            and new_status not in {"done", "archived"}
-        )
 
         cur = conn.execute(
             "UPDATE tasks SET status = ?, "
@@ -1041,38 +1065,7 @@ def _set_status_direct(
             "VALUES (?, ?, 'status', ?, ?)",
             (task_id, run_id, json.dumps({"status": new_status}), int(time.time())),
         )
-        if reopening_satisfied_parent:
-            # A parent leaving done/archived invalidates any direct child that
-            # was sitting in ready solely because that parent used to satisfy
-            # the dependency gate. Demote those children immediately so the
-            # dashboard does not keep advertising stale-ready work.
-            for row in conn.execute(
-                "SELECT child_id FROM task_links WHERE parent_id = ? ORDER BY child_id",
-                (task_id,),
-            ).fetchall():
-                child_id = row["child_id"]
-                demoted = conn.execute(
-                    "UPDATE tasks SET status = 'todo' "
-                    "WHERE id = ? AND status = 'ready'",
-                    (child_id,),
-                )
-                if demoted.rowcount == 1:
-                    conn.execute(
-                        "INSERT INTO task_events (task_id, kind, payload, created_at) "
-                        "VALUES (?, 'status', ?, ?)",
-                        (
-                            child_id,
-                            json.dumps(
-                                {
-                                    "status": "todo",
-                                    "reason": "parent_reopened",
-                                    "parent": task_id,
-                                }
-                            ),
-                            int(time.time()),
-                        ),
-                    )
-    # If we re-opened something, children may have gone stale.
+    # Moving a task to a dependency-satisfying state may unlock children.
     if new_status in {"done", "ready"}:
         kanban_db.recompute_ready(conn)
     return True

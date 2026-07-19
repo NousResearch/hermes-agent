@@ -71,7 +71,7 @@ def test_board_empty(client):
     data = r.json()
     # All canonical columns present (triage + the rest), each empty.
     names = [c["name"] for c in data["columns"]]
-    assert set(names) == kb.VALID_STATUSES - {"archived"}
+    assert set(names) == kb.VALID_STATUSES - {"archived", "cancelled"}
     for expected in ("triage", "todo", "scheduled", "ready", "running", "blocked", "done"):
         assert expected in names, f"missing column {expected}: {names}"
     assert all(len(c["tasks"]) == 0 for c in data["columns"])
@@ -113,6 +113,26 @@ def test_create_task_appears_on_board(client):
     assert ready["tasks"][0]["id"] == task_id
     assert "acme" in data["tenants"]
     assert "researcher" in data["assignees"]
+
+
+def test_cancelled_task_is_not_projected_as_done(client):
+    created = client.post(
+        "/api/plugins/kanban/tasks",
+        json={"title": "cancelled", "assignee": "developer"},
+    ).json()["task"]
+    response = client.patch(
+        f"/api/plugins/kanban/tasks/{created['id']}",
+        json={"status": "cancelled", "block_reason": "stopped"},
+    )
+    assert response.status_code == 200
+
+    board = client.get("/api/plugins/kanban/board").json()
+    done_ids = {
+        task["id"]
+        for column in board["columns"] if column["name"] == "done"
+        for task in column["tasks"]
+    }
+    assert created["id"] not in done_ids
 
 
 def test_board_list_recommends_persistent_workspace_for_configured_workdir(
@@ -585,14 +605,22 @@ def test_reopening_parent_demotes_ready_child(client):
 
     r = client.patch(
         f"/api/plugins/kanban/tasks/{parent['id']}",
-        json={"status": "todo"},
+        json={
+            "status": "reopen",
+            "block_reason": "acceptance changed",
+            "actor": "operator",
+        },
     )
     assert r.status_code == 200
 
     child_after_reopen = client.get(
         f"/api/plugins/kanban/tasks/{child['id']}"
     ).json()["task"]
+    parent_after_reopen = client.get(
+        f"/api/plugins/kanban/tasks/{parent['id']}"
+    ).json()["task"]
     assert child_after_reopen["status"] == "todo"
+    assert parent_after_reopen["status"] == "running"
 
 
 def test_patch_reassign(client):

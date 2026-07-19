@@ -662,7 +662,15 @@ def _handle_complete(args: dict, **kw) -> str:
                     f"could not complete {tid} (unknown id or already terminal)"
                 )
             run = kb.latest_run(conn, tid)
-            return _ok(task_id=tid, run_id=run.id if run else None)
+            task = kb.get_task(conn, tid)
+            return _ok(
+                task_id=tid,
+                run_id=run.id if run else None,
+                status=task.status if task else None,
+                notification_ack_pending=bool(
+                    task and task.pending_completion_event_id is not None
+                ),
+            )
         finally:
             conn.close()
     except ValueError as e:
@@ -827,6 +835,16 @@ def _handle_comment(args: dict, **kw) -> str:
     try:
         kb, conn = _connect(board=board)
         try:
+            task = kb.get_task(conn, tid)
+            if (
+                tid == os.environ.get("HERMES_KANBAN_TASK")
+                and task
+                and task.status in {"done", "cancelled", "archived"}
+            ):
+                return tool_error(
+                    f"kanban_comment: {tid} is terminal ({task.status}); "
+                    "reopen it explicitly before continuing work"
+                )
             cid = kb.add_comment(conn, tid, author=author, body=str(body))
             return _ok(task_id=tid, comment_id=cid)
         finally:
@@ -1099,6 +1117,12 @@ def _handle_create(args: dict, **kw) -> str:
     idempotency_key = args.get("idempotency_key")
     max_runtime_seconds = args.get("max_runtime_seconds")
     initial_status = args.get("initial_status") or "running"
+    task_kind = args.get("task_kind") or (
+        "coding" if str(assignee).casefold() == "developer" else "general"
+    )
+    delivery_required, delivery_bool_error = _parse_bool_arg(args, "delivery_required")
+    if delivery_bool_error:
+        return tool_error(delivery_bool_error)
     skills = args.get("skills")
     if isinstance(skills, str):
         # Accept a single skill name as a string for convenience.
@@ -1159,6 +1183,8 @@ def _handle_create(args: dict, **kw) -> str:
                 initial_status=str(initial_status),
                 created_by=os.environ.get("HERMES_PROFILE") or "worker",
                 session_id=session_id,
+                delivery_required=delivery_required,
+                task_kind=str(task_kind),
             )
             new_task = kb.get_task(conn, new_tid)
             subscribed = _maybe_auto_subscribe(conn, new_tid)
@@ -1829,6 +1855,19 @@ KANBAN_CREATE_SCHEMA = {
                     "brief running-to-blocked transition. Defaults to "
                     "'running', which preserves the usual dispatch path."
                 ),
+            },
+            "delivery_required": {
+                "type": "boolean",
+                "description": (
+                    "Require independent review, merge, production, migration "
+                    "(when applicable), E2E, and one Slack receipt before Done. "
+                    "Use for coding deliveries."
+                ),
+            },
+            "task_kind": {
+                "type": "string",
+                "enum": ["coding", "general"],
+                "description": "Semantic task class; coding fails closed on delivery gates.",
             },
             "skills": {
                 "type": "array",

@@ -1156,7 +1156,10 @@ def cmd_update(name: str) -> None:
                 sys.exit(1)
             console.print(f"[dim]Updating {name}...[/dim]")
             _validate_update_local_git_config(target, provenance)
-            ok, output = _git_pull_plugin_dir(target)
+            ok, output = _git_pull_plugin_dir(
+                target,
+                source_url=provenance.source_url if provenance is not None else None,
+            )
             if not ok:
                 console.print(f"[red]Error:[/red] {output}")
                 sys.exit(1)
@@ -2503,7 +2506,10 @@ def dashboard_update_user_plugin(name: str) -> dict[str, Any]:
                     "error": f"Plugin '{name}' is not a git checkout; cannot pull updates.",
                 }
             _validate_update_local_git_config(target, provenance)
-            ok, msg = _git_pull_plugin_dir(target)
+            ok, msg = _git_pull_plugin_dir(
+                target,
+                source_url=provenance.source_url if provenance is not None else None,
+            )
             if not ok:
                 return {"ok": False, "error": msg}
             if provenance is not None:
@@ -2660,10 +2666,62 @@ def _refresh_update_provenance(target: Path, provenance: PluginProvenance) -> No
     )
 
 
-def _git_pull_plugin_dir(target: Path) -> tuple[bool, str]:
+def _git_pull_plugin_dir(
+    target: Path, *, source_url: str | None = None
+) -> tuple[bool, str]:
+    """Fast-forward a plugin, binding provenance updates to their locked URL."""
+    if source_url is not None:
+        try:
+            source_url = validate_source_url(source_url)
+        except ValueError:
+            return False, "Git fetch failed."
     git_exe = _resolve_git_executable()
     if not git_exe:
         return False, "git is not installed or not in PATH."
+
+    if source_url is not None:
+        def run_fixed(args: list[str], failure: str) -> tuple[bool, str]:
+            try:
+                result = subprocess.run(
+                    [git_exe, "-c", f"core.hooksPath={os.devnull}", *args],
+                    capture_output=True,
+                    text=True,
+                    timeout=60,
+                    cwd=str(target),
+                    env=_inspection_git_env(),
+                )
+            except (FileNotFoundError, OSError):
+                return False, failure
+            except subprocess.TimeoutExpired:
+                return False, f"{failure[:-1]} (timed out)."
+            if result.returncode != 0:
+                return False, failure
+            return True, result.stdout.strip()
+
+        ok, old_head = run_fixed(["rev-parse", "--verify", "HEAD^{commit}"], "Git resolve commit failed.")
+        if not ok:
+            return False, old_head
+        try:
+            old_head = validate_full_commit_sha(old_head)
+        except ValueError:
+            return False, "Git resolve commit failed."
+        ok, message = run_fixed(
+            ["fetch", "--no-tags", "--", source_url, "HEAD"], "Git fetch failed."
+        )
+        if not ok:
+            return False, message
+        ok, message = run_fixed(["merge", "--ff-only", "FETCH_HEAD"], "Git merge failed.")
+        if not ok:
+            return False, message
+        ok, new_head = run_fixed(["rev-parse", "--verify", "HEAD^{commit}"], "Git resolve commit failed.")
+        if not ok:
+            return False, new_head
+        try:
+            new_head = validate_full_commit_sha(new_head)
+        except ValueError:
+            return False, "Git resolve commit failed."
+        return (True, "Already up to date.") if old_head == new_head else (True, "Updated.")
+
     try:
         result = subprocess.run(
             [git_exe, "-c", f"core.hooksPath={os.devnull}", "pull", "--ff-only"],

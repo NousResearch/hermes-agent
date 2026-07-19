@@ -144,7 +144,11 @@ def test_unsafe_lock_fails_closed_before_git(tmp_path, monkeypatch, kind, capsys
 
 def test_legacy_no_lock_update_still_pulls_without_creating_lock(tmp_path, monkeypatch):
     target = _installed(tmp_path, monkeypatch)
-    monkeypatch.setattr(pc, "_git_pull_plugin_dir", lambda _: (True, "Already up to date."))
+    monkeypatch.setattr(
+        pc,
+        "_git_pull_plugin_dir",
+        lambda _, *, source_url=None: (True, "Already up to date."),
+    )
     monkeypatch.setattr(pc, "_copy_example_files", lambda *_: None)
 
     pc.cmd_update("demo")
@@ -246,6 +250,88 @@ def test_unpinned_update_refreshes_lock_to_real_remote_head(tmp_path, monkeypatc
     assert lock.source_url == f"file://{remote}"
 
 
+def test_provenance_update_ignores_branch_upstream_and_fetches_locked_source(
+    tmp_path, monkeypatch
+):
+    good, clone = _real_update_repo(tmp_path, monkeypatch)
+    seed = tmp_path / "seed"
+    evil = tmp_path / "evil.git"
+    subprocess.run(["git", "init", "--bare", str(evil)], check=True, capture_output=True)
+    subprocess.run(["git", "-C", str(clone), "remote", "add", "evil", str(evil)], check=True)
+    subprocess.run(["git", "-C", str(clone), "push", "evil", "HEAD"], check=True, capture_output=True)
+    current = subprocess.run(
+        ["git", "-C", str(clone), "branch", "--show-current"],
+        check=True, text=True, capture_output=True,
+    ).stdout.strip()
+    subprocess.run(
+        ["git", "-C", str(clone), "config", f"branch.{current}.remote", "evil"], check=True
+    )
+    subprocess.run(
+        ["git", "-C", str(clone), "config", f"branch.{current}.merge", f"refs/heads/{current}"],
+        check=True,
+    )
+    initial = subprocess.run(
+        ["git", "-C", str(clone), "rev-parse", "HEAD"],
+        check=True, text=True, capture_output=True,
+    ).stdout.strip()
+    write_provenance_lock(clone, _provenance(commit=initial, source=str(good)))
+
+    evil_seed = tmp_path / "evil-seed"
+    subprocess.run(["git", "clone", str(evil), str(evil_seed)], check=True, capture_output=True)
+    subprocess.run(["git", "-C", str(evil_seed), "config", "user.email", "evil@example.com"], check=True)
+    subprocess.run(["git", "-C", str(evil_seed), "config", "user.name", "Evil"], check=True)
+    (evil_seed / "plugin.yaml").write_text("name: demo\nsource: evil\n")
+    subprocess.run(["git", "-C", str(evil_seed), "commit", "-am", "evil"], check=True, capture_output=True)
+    subprocess.run(["git", "-C", str(evil_seed), "push"], check=True, capture_output=True)
+    evil_head = subprocess.run(
+        ["git", "-C", str(evil_seed), "rev-parse", "HEAD"],
+        check=True, text=True, capture_output=True,
+    ).stdout.strip()
+
+    (seed / "plugin.yaml").write_text("name: demo\nsource: locked\n")
+    subprocess.run(["git", "-C", str(seed), "commit", "-am", "good"], check=True, capture_output=True)
+    subprocess.run(["git", "-C", str(seed), "push"], check=True, capture_output=True)
+    good_head = subprocess.run(
+        ["git", "-C", str(seed), "rev-parse", "HEAD"],
+        check=True, text=True, capture_output=True,
+    ).stdout.strip()
+
+    pc.cmd_update("demo")
+
+    actual = subprocess.run(
+        ["git", "-C", str(clone), "rev-parse", "HEAD"],
+        check=True, text=True, capture_output=True,
+    ).stdout.strip()
+    assert actual == good_head
+    assert actual not in {initial, evil_head}
+
+
+def test_explicit_source_fetch_failure_is_sanitized_and_does_not_refresh(
+    tmp_path, monkeypatch
+):
+    target = _installed(tmp_path, monkeypatch)
+    provenance = _provenance()
+    write_provenance_lock(target, provenance)
+    before = (target / LOCK_FILENAME).read_bytes()
+    run = Mock(
+        side_effect=[
+            Mock(returncode=0, stdout="1" * 40, stderr=""),
+            Mock(returncode=1, stdout="", stderr="token=raw-secret"),
+        ]
+    )
+    monkeypatch.setattr(pc.subprocess, "run", run)
+    monkeypatch.setattr(pc, "_resolve_git_executable", lambda: "/usr/bin/git")
+    refresh = Mock()
+    monkeypatch.setattr(pc, "_refresh_update_provenance", refresh)
+
+    result = pc.dashboard_update_user_plugin("demo")
+
+    assert result == {"ok": False, "error": "Git fetch failed."}
+    assert "raw-secret" not in result["error"]
+    refresh.assert_not_called()
+    assert (target / LOCK_FILENAME).read_bytes() == before
+
+
 def test_update_rejects_smudge_filter_without_executing_or_pulling(tmp_path, monkeypatch, capsys):
     remote, clone = _real_update_repo(tmp_path, monkeypatch)
     marker = tmp_path / "executed"
@@ -307,7 +393,9 @@ def test_update_rejects_multiple_origin_urls_from_provenance_without_pull(tmp_pa
 def test_lock_refresh_failure_is_partial_for_cli_and_dashboard(tmp_path, monkeypatch, capsys):
     target = _installed(tmp_path, monkeypatch)
     write_provenance_lock(target, _provenance())
-    monkeypatch.setattr(pc, "_git_pull_plugin_dir", lambda _: (True, "updated"))
+    monkeypatch.setattr(
+        pc, "_git_pull_plugin_dir", lambda _, *, source_url=None: (True, "updated")
+    )
     monkeypatch.setattr(pc, "_refresh_update_provenance", lambda *_: (_ for _ in ()).throw(RuntimeError("raw-secret")))
     copy = Mock()
     monkeypatch.setattr(pc, "_copy_example_files", copy)

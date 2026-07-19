@@ -25,6 +25,7 @@ from hermes_cli.project_finalization_contract import (
     create_project_finalization,
     get_project_finalization,
     record_checker_verdict,
+    register_project_member,
 )
 
 
@@ -398,7 +399,7 @@ def test_failed_required_task_delivers_distinct_failed_payload(board):
 def test_terminal_snapshot_fences_all_candidate_writers_during_async_delivery(
     board, outcome, checker_verdict
 ):
-    root, _, _ = _setup(
+    root, checker, _ = _setup(
         board,
         complete_checker=checker_verdict is not None,
         verdict=checker_verdict,
@@ -415,8 +416,21 @@ def test_terminal_snapshot_fences_all_candidate_writers_during_async_delivery(
             "VALUES (?, 'gave_up', 1, 2, 'gave_up', 'worker crashed')",
             (root,),
         )
+    optional_repair = _task(board, "compatibility repair member")
+    assert kb.complete_task(board, optional_repair, result="repair evidence complete")
+    register_project_member(
+        board,
+        board_id="default",
+        root_task_id=root,
+        generation=1,
+        task_id=optional_repair,
+        membership_kind="repair",
+        required=False,
+    )
     unrelated = _task(board, "unrelated parent")
     before_task = kb.get_task(board, root)
+    before_checker = kb.get_task(board, checker)
+    before_repair = kb.get_task(board, optional_repair)
     before_counts = {
         "comments": board.execute(
             "SELECT COUNT(*) FROM task_comments WHERE task_id=?", (root,)
@@ -448,6 +462,34 @@ def test_terminal_snapshot_fences_all_candidate_writers_during_async_delivery(
         ("body", lambda: board.execute("UPDATE tasks SET body='changed' WHERE id=?", (root,))),
         ("status", lambda: board.execute("UPDATE tasks SET status='todo' WHERE id=?", (root,))),
         ("assign", lambda: kb.assign_task(board, root, "other-profile")),
+        (
+            "checker-status",
+            lambda: board.execute("UPDATE tasks SET status='archived' WHERE id=?", (checker,)),
+        ),
+        ("checker-archive", lambda: kb.archive_task(board, checker)),
+        (
+            "checker-authority",
+            lambda: board.execute(
+                "UPDATE project_finalizations SET checker_profile='changed' "
+                "WHERE root_task_id=?",
+                (root,),
+            ),
+        ),
+        (
+            "checker-verdict",
+            lambda: record_checker_verdict(
+                board,
+                board_id="default",
+                root_task_id=root,
+                generation=1,
+                checker_task_id=checker,
+                verdict="PASS",
+            ),
+        ),
+        (
+            "optional-repair",
+            lambda: kb.assign_task(board, optional_repair, "other-profile"),
+        ),
         ("priority-event", reprioritize_with_event),
         ("comment", lambda: kb.add_comment(board, root, "reviewer", "late note")),
         (
@@ -492,8 +534,8 @@ def test_terminal_snapshot_fences_all_candidate_writers_during_async_delivery(
         assert frozen.terminal_candidate_snapshot_version is not None
         for label, mutate in mutators:
             with pytest.raises(
-                (kb.ProjectCandidateFrozenError, sqlite3.IntegrityError),
-                match="project .*candidate is frozen",
+                (ValueError, sqlite3.IntegrityError),
+                match="project .*is frozen",
             ):
                 mutate()
             fence_hits.append(label)
@@ -516,11 +558,21 @@ def test_terminal_snapshot_fences_all_candidate_writers_during_async_delivery(
     )
     assert terminal.terminal_outcome == outcome
     after_task = kb.get_task(board, root)
+    after_checker = kb.get_task(board, checker)
+    after_repair = kb.get_task(board, optional_repair)
     assert (after_task.title, after_task.body, after_task.status, after_task.priority) == (
         before_task.title,
         before_task.body,
         before_task.status,
         before_task.priority,
+    )
+    assert (after_checker.status, after_checker.assignee) == (
+        before_checker.status,
+        before_checker.assignee,
+    )
+    assert (after_repair.status, after_repair.assignee) == (
+        before_repair.status,
+        before_repair.assignee,
     )
     assert board.execute(
         "SELECT COUNT(*) FROM task_comments WHERE task_id=?", (root,)

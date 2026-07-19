@@ -1002,6 +1002,7 @@ def submit_project_checker_verdict(
              WHERE f.board_id = ?
                AND f.admission_key IS NOT NULL
                AND f.terminal_outcome IS NULL
+               AND f.terminal_candidate_snapshot_version IS NULL
                AND f.final_checker_task_id = ?
                AND m.task_id = ?
                AND m.membership_kind = 'checker'

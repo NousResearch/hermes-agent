@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import sqlite3
 from pathlib import Path
 
 import pytest
@@ -15,6 +16,7 @@ from hermes_cli.project_delivery_ledger import list_delivery_attempts
 from hermes_cli.project_finalization_contract import (
     get_project_finalization,
     list_project_members,
+    register_project_member,
 )
 
 
@@ -119,6 +121,26 @@ def test_admitted_project_passes_checker_delivers_once_and_replays_safely(
         "subscription:sha256:"
     )
 
+    compatibility_repair = kb.create_task(
+        conn,
+        title="Compatibility repair membership",
+        assignee="builder-sol",
+        workspace_kind="dir",
+        workspace_path=str(workspace),
+    )
+    assert kb.complete_task(
+        conn, compatibility_repair, result="compatibility repair complete"
+    )
+    register_project_member(
+        conn,
+        board_id=BOARD,
+        root_task_id=root,
+        generation=1,
+        task_id=compatibility_repair,
+        membership_kind="repair",
+        required=False,
+    )
+
     assert kb.complete_task(conn, root, result="root work complete")
     kb.recompute_ready(conn)
     assert kb.get_task(conn, implementation).status == "ready"
@@ -147,6 +169,12 @@ def test_admitted_project_passes_checker_delivers_once_and_replays_safely(
                 result="mutation attempted during provider delivery",
             )
         delivery_race_fences.append("result")
+        with pytest.raises(kb.ProjectCandidateFrozenError):
+            kb.assign_task(conn, compatibility_repair, CHECKER_PROFILE)
+        delivery_race_fences.append("optional-repair")
+        with pytest.raises(sqlite3.IntegrityError, match="terminal candidate is frozen"):
+            kb.archive_task(conn, checker_id)
+        delivery_race_fences.append("checker")
         delivery_calls.append((platform, chat_id, thread_id, message))
         if len(delivery_calls) == 1:
             return {"rejected": True, "error": "provider refused first attempt"}
@@ -236,6 +264,8 @@ def test_admitted_project_passes_checker_delivers_once_and_replays_safely(
             implementation,
             result="changed after checker approval",
         )
+    with pytest.raises(kb.ProjectCandidateFrozenError):
+        kb.assign_task(conn, compatibility_repair, CHECKER_PROFILE)
 
     # Simulate an older process reopening required work after PASS. Unfinished
     # implementation takes precedence: no replacement checker may be minted or
@@ -312,6 +342,7 @@ def test_admitted_project_passes_checker_delivers_once_and_replays_safely(
     # Reproduce a pre-fence/older-writer row after rejected delivery. Recovery
     # must preserve the old files, rotate authority, and allow a new immutable
     # candidate generation to use the existing retry ledger.
+    conn.execute("DROP TRIGGER pfinal_v2_fence_authority_update")
     conn.execute(
         "UPDATE project_finalizations SET terminal_intent=NULL, "
         "terminal_candidate_snapshot_version=NULL WHERE root_task_id=?",
@@ -358,7 +389,16 @@ def test_admitted_project_passes_checker_delivers_once_and_replays_safely(
     assert terminal.terminal_outcome == "COMPLETE"
     assert terminal.checker_verdict == "PASS"
     assert len(delivery_calls) == 2
-    assert delivery_race_fences == ["assign", "result", "assign", "result"]
+    assert delivery_race_fences == [
+        "assign",
+        "result",
+        "optional-repair",
+        "checker",
+        "assign",
+        "result",
+        "optional-repair",
+        "checker",
+    ]
     assert all(call[:3] == ("telegram", CHAT_ID, THREAD_ID) for call in delivery_calls)
     assert terminal.final_report_path not in old_artifacts
     assert terminal.manifest_path not in old_artifacts

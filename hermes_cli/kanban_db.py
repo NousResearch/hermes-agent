@@ -228,7 +228,6 @@ def _require_project_candidate_mutable(
                AND f.generation = m.generation
              WHERE m.task_id = ?
                AND m.membership_kind IN ('required', 'repair')
-               AND m.required = 1
                AND f.admission_key IS NOT NULL
                AND f.checker_verdict = 'PASS'
                AND f.terminal_outcome IS NULL

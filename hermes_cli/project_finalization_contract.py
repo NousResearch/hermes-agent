@@ -341,21 +341,48 @@ CREATE INDEX IF NOT EXISTS idx_pcleanup_root ON project_cleanup_journal(board_id
 # changes that participate in the candidate digest.
 _TERMINAL_FENCE_TRIGGER_SQL: tuple[str, ...] = (
     """
-    CREATE TRIGGER IF NOT EXISTS pfinal_fence_tasks_insert
+    CREATE TRIGGER IF NOT EXISTS pfinal_v2_fence_authority_update
+    BEFORE UPDATE ON project_finalizations
+    WHEN OLD.terminal_outcome IS NULL
+      AND OLD.terminal_candidate_snapshot_version IS NOT NULL
+      AND NEW.terminal_outcome IS NULL
+      AND (
+        OLD.board_id IS NOT NEW.board_id
+        OR OLD.root_task_id IS NOT NEW.root_task_id
+        OR OLD.generation IS NOT NEW.generation
+        OR OLD.final_checker_task_id IS NOT NEW.final_checker_task_id
+        OR OLD.checker_verdict IS NOT NEW.checker_verdict
+        OR OLD.admission_key IS NOT NEW.admission_key
+        OR OLD.checker_profile IS NOT NEW.checker_profile
+        OR OLD.notification_route_identity IS NOT NEW.notification_route_identity
+        OR OLD.checker_candidate_snapshot_version IS NOT NEW.checker_candidate_snapshot_version
+        OR OLD.checker_candidate_id IS NOT NEW.checker_candidate_id
+        OR OLD.terminal_intent IS NOT NEW.terminal_intent
+        OR OLD.terminal_candidate_snapshot_version IS NOT NEW.terminal_candidate_snapshot_version
+        OR OLD.repair_generation IS NOT NEW.repair_generation
+        OR OLD.repair_budget IS NOT NEW.repair_budget
+        OR OLD.notification_policy IS NOT NEW.notification_policy
+        OR OLD.retention_days IS NOT NEW.retention_days
+        OR OLD.blocker_json IS NOT NEW.blocker_json
+      )
+    BEGIN SELECT RAISE(ABORT, 'project terminal authority is frozen'); END
+    """,
+    """
+    CREATE TRIGGER IF NOT EXISTS pfinal_v2_fence_tasks_insert
     BEFORE INSERT ON tasks
     WHEN EXISTS (
         SELECT 1 FROM project_finalization_members AS m
         JOIN project_finalizations AS f
           ON f.board_id=m.board_id AND f.root_task_id=m.root_task_id AND f.generation=m.generation
-        WHERE m.task_id=NEW.id AND m.required=1
-          AND m.membership_kind IN ('required','repair')
+        WHERE m.task_id=NEW.id
+          AND m.membership_kind IN ('required','repair','checker')
           AND f.terminal_outcome IS NULL
           AND f.terminal_candidate_snapshot_version IS NOT NULL
     )
     BEGIN SELECT RAISE(ABORT, 'project terminal candidate is frozen'); END
     """,
     """
-    CREATE TRIGGER IF NOT EXISTS pfinal_fence_tasks_update
+    CREATE TRIGGER IF NOT EXISTS pfinal_v2_fence_tasks_update
     BEFORE UPDATE ON tasks
     WHEN (
         OLD.id IS NOT NEW.id OR OLD.title IS NOT NEW.title OR OLD.body IS NOT NEW.body
@@ -374,71 +401,71 @@ _TERMINAL_FENCE_TRIGGER_SQL: tuple[str, ...] = (
         SELECT 1 FROM project_finalization_members AS m
         JOIN project_finalizations AS f
           ON f.board_id=m.board_id AND f.root_task_id=m.root_task_id AND f.generation=m.generation
-        WHERE m.task_id=OLD.id AND m.required=1
-          AND m.membership_kind IN ('required','repair')
+        WHERE m.task_id=OLD.id
+          AND m.membership_kind IN ('required','repair','checker')
           AND f.terminal_outcome IS NULL
           AND f.terminal_candidate_snapshot_version IS NOT NULL
     )
     BEGIN SELECT RAISE(ABORT, 'project terminal candidate is frozen'); END
     """,
     """
-    CREATE TRIGGER IF NOT EXISTS pfinal_fence_tasks_delete
+    CREATE TRIGGER IF NOT EXISTS pfinal_v2_fence_tasks_delete
     BEFORE DELETE ON tasks
     WHEN EXISTS (
         SELECT 1 FROM project_finalization_members AS m
         JOIN project_finalizations AS f
           ON f.board_id=m.board_id AND f.root_task_id=m.root_task_id AND f.generation=m.generation
-        WHERE m.task_id=OLD.id AND m.required=1
-          AND m.membership_kind IN ('required','repair')
+        WHERE m.task_id=OLD.id
+          AND m.membership_kind IN ('required','repair','checker')
           AND f.terminal_outcome IS NULL
           AND f.terminal_candidate_snapshot_version IS NOT NULL
     )
     BEGIN SELECT RAISE(ABORT, 'project terminal candidate is frozen'); END
     """,
     """
-    CREATE TRIGGER IF NOT EXISTS pfinal_fence_runs_insert
+    CREATE TRIGGER IF NOT EXISTS pfinal_v2_fence_runs_insert
     BEFORE INSERT ON task_runs
     WHEN EXISTS (
         SELECT 1 FROM project_finalization_members AS m
         JOIN project_finalizations AS f
           ON f.board_id=m.board_id AND f.root_task_id=m.root_task_id AND f.generation=m.generation
-        WHERE m.task_id=NEW.task_id AND m.required=1
-          AND m.membership_kind IN ('required','repair')
+        WHERE m.task_id=NEW.task_id
+          AND m.membership_kind IN ('required','repair','checker')
           AND f.terminal_outcome IS NULL
           AND f.terminal_candidate_snapshot_version IS NOT NULL
     )
     BEGIN SELECT RAISE(ABORT, 'project terminal candidate is frozen'); END
     """,
     """
-    CREATE TRIGGER IF NOT EXISTS pfinal_fence_runs_update
+    CREATE TRIGGER IF NOT EXISTS pfinal_v2_fence_runs_update
     BEFORE UPDATE ON task_runs
     WHEN EXISTS (
         SELECT 1 FROM project_finalization_members AS m
         JOIN project_finalizations AS f
           ON f.board_id=m.board_id AND f.root_task_id=m.root_task_id AND f.generation=m.generation
-        WHERE m.task_id IN (OLD.task_id, NEW.task_id) AND m.required=1
-          AND m.membership_kind IN ('required','repair')
+        WHERE m.task_id IN (OLD.task_id, NEW.task_id)
+          AND m.membership_kind IN ('required','repair','checker')
           AND f.terminal_outcome IS NULL
           AND f.terminal_candidate_snapshot_version IS NOT NULL
     )
     BEGIN SELECT RAISE(ABORT, 'project terminal candidate is frozen'); END
     """,
     """
-    CREATE TRIGGER IF NOT EXISTS pfinal_fence_runs_delete
+    CREATE TRIGGER IF NOT EXISTS pfinal_v2_fence_runs_delete
     BEFORE DELETE ON task_runs
     WHEN EXISTS (
         SELECT 1 FROM project_finalization_members AS m
         JOIN project_finalizations AS f
           ON f.board_id=m.board_id AND f.root_task_id=m.root_task_id AND f.generation=m.generation
-        WHERE m.task_id=OLD.task_id AND m.required=1
-          AND m.membership_kind IN ('required','repair')
+        WHERE m.task_id=OLD.task_id
+          AND m.membership_kind IN ('required','repair','checker')
           AND f.terminal_outcome IS NULL
           AND f.terminal_candidate_snapshot_version IS NOT NULL
     )
     BEGIN SELECT RAISE(ABORT, 'project terminal candidate is frozen'); END
     """,
     """
-    CREATE TRIGGER IF NOT EXISTS pfinal_fence_events_insert
+    CREATE TRIGGER IF NOT EXISTS pfinal_v2_fence_events_insert
     BEFORE INSERT ON task_events
     WHEN substr(NEW.kind,1,8) <> 'project_'
       AND substr(NEW.kind,1,7) <> 'notify_'
@@ -447,15 +474,15 @@ _TERMINAL_FENCE_TRIGGER_SQL: tuple[str, ...] = (
         SELECT 1 FROM project_finalization_members AS m
         JOIN project_finalizations AS f
           ON f.board_id=m.board_id AND f.root_task_id=m.root_task_id AND f.generation=m.generation
-        WHERE m.task_id=NEW.task_id AND m.required=1
-          AND m.membership_kind IN ('required','repair')
+        WHERE m.task_id=NEW.task_id
+          AND m.membership_kind IN ('required','repair','checker')
           AND f.terminal_outcome IS NULL
           AND f.terminal_candidate_snapshot_version IS NOT NULL
       )
     BEGIN SELECT RAISE(ABORT, 'project terminal candidate is frozen'); END
     """,
     """
-    CREATE TRIGGER IF NOT EXISTS pfinal_fence_events_update
+    CREATE TRIGGER IF NOT EXISTS pfinal_v2_fence_events_update
     BEFORE UPDATE ON task_events
     WHEN (
         (substr(OLD.kind,1,8) <> 'project_' AND substr(OLD.kind,1,7) <> 'notify_'
@@ -467,15 +494,15 @@ _TERMINAL_FENCE_TRIGGER_SQL: tuple[str, ...] = (
         SELECT 1 FROM project_finalization_members AS m
         JOIN project_finalizations AS f
           ON f.board_id=m.board_id AND f.root_task_id=m.root_task_id AND f.generation=m.generation
-        WHERE m.task_id IN (OLD.task_id, NEW.task_id) AND m.required=1
-          AND m.membership_kind IN ('required','repair')
+        WHERE m.task_id IN (OLD.task_id, NEW.task_id)
+          AND m.membership_kind IN ('required','repair','checker')
           AND f.terminal_outcome IS NULL
           AND f.terminal_candidate_snapshot_version IS NOT NULL
     )
     BEGIN SELECT RAISE(ABORT, 'project terminal candidate is frozen'); END
     """,
     """
-    CREATE TRIGGER IF NOT EXISTS pfinal_fence_events_delete
+    CREATE TRIGGER IF NOT EXISTS pfinal_v2_fence_events_delete
     BEFORE DELETE ON task_events
     WHEN substr(OLD.kind,1,8) <> 'project_'
       AND substr(OLD.kind,1,7) <> 'notify_'
@@ -484,17 +511,17 @@ _TERMINAL_FENCE_TRIGGER_SQL: tuple[str, ...] = (
         SELECT 1 FROM project_finalization_members AS m
         JOIN project_finalizations AS f
           ON f.board_id=m.board_id AND f.root_task_id=m.root_task_id AND f.generation=m.generation
-        WHERE m.task_id=OLD.task_id AND m.required=1
-          AND m.membership_kind IN ('required','repair')
+        WHERE m.task_id=OLD.task_id
+          AND m.membership_kind IN ('required','repair','checker')
           AND f.terminal_outcome IS NULL
           AND f.terminal_candidate_snapshot_version IS NOT NULL
       )
     BEGIN SELECT RAISE(ABORT, 'project terminal candidate is frozen'); END
     """,
     """
-    CREATE TRIGGER IF NOT EXISTS pfinal_fence_members_insert
+    CREATE TRIGGER IF NOT EXISTS pfinal_v2_fence_members_insert
     BEFORE INSERT ON project_finalization_members
-    WHEN NEW.required=1 AND NEW.membership_kind IN ('required','repair') AND EXISTS (
+    WHEN NEW.membership_kind IN ('required','repair','checker') AND EXISTS (
         SELECT 1 FROM project_finalizations AS f
         WHERE f.board_id=NEW.board_id AND f.root_task_id=NEW.root_task_id AND f.generation=NEW.generation
           AND f.terminal_outcome IS NULL
@@ -503,23 +530,23 @@ _TERMINAL_FENCE_TRIGGER_SQL: tuple[str, ...] = (
     BEGIN SELECT RAISE(ABORT, 'project terminal candidate is frozen'); END
     """,
     """
-    CREATE TRIGGER IF NOT EXISTS pfinal_fence_members_update
+    CREATE TRIGGER IF NOT EXISTS pfinal_v2_fence_members_update
     BEFORE UPDATE ON project_finalization_members
     WHEN EXISTS (
         SELECT 1 FROM project_finalizations AS f
         WHERE ((f.board_id=OLD.board_id AND f.root_task_id=OLD.root_task_id AND f.generation=OLD.generation
-                AND OLD.required=1 AND OLD.membership_kind IN ('required','repair'))
+                AND OLD.membership_kind IN ('required','repair','checker'))
             OR (f.board_id=NEW.board_id AND f.root_task_id=NEW.root_task_id AND f.generation=NEW.generation
-                AND NEW.required=1 AND NEW.membership_kind IN ('required','repair')))
+                AND NEW.membership_kind IN ('required','repair','checker')))
           AND f.terminal_outcome IS NULL
           AND f.terminal_candidate_snapshot_version IS NOT NULL
     )
     BEGIN SELECT RAISE(ABORT, 'project terminal candidate is frozen'); END
     """,
     """
-    CREATE TRIGGER IF NOT EXISTS pfinal_fence_members_delete
+    CREATE TRIGGER IF NOT EXISTS pfinal_v2_fence_members_delete
     BEFORE DELETE ON project_finalization_members
-    WHEN OLD.required=1 AND OLD.membership_kind IN ('required','repair') AND EXISTS (
+    WHEN OLD.membership_kind IN ('required','repair','checker') AND EXISTS (
         SELECT 1 FROM project_finalizations AS f
         WHERE f.board_id=OLD.board_id AND f.root_task_id=OLD.root_task_id AND f.generation=OLD.generation
           AND f.terminal_outcome IS NULL
@@ -1449,6 +1476,8 @@ def record_checker_verdict(
             raise ValueError(f"no project finalization for {board_id}/{root_task_id}/{generation}")
         if row["final_checker_task_id"] != checker_task_id:
             raise ValueError("checker_task_id does not match designated final_checker_task_id")
+        if row["terminal_candidate_snapshot_version"] is not None:
+            raise ValueError("project terminal authority is frozen")
         if row["admission_key"] is not None:
             raise ValueError(
                 "admitted checker verdicts require the structured runtime submission protocol"

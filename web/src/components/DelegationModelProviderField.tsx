@@ -15,7 +15,16 @@ const INHERIT_VALUE = "__inherit__"
 // state (documented in `website/docs/user-guide/configuration.md:2023`).
 // Surfacing this as a distinct dropdown option lets users create and edit
 // the state explicitly instead of getting it stripped by the picker.
-const MODEL_ONLY_VALUE = "__model_only__";
+const MODEL_ONLY_VALUE = "__model_only__"
+
+// Map a persisted `(provider, model)` pair to the dropdown's sentinel/slug
+// value. Used both for the initial `useState` seed and for resyncing
+// after external config changes (profile switch, reset).
+function selectValueFor(provider: string, model: string): string {
+  if (!provider && !model) return INHERIT_VALUE
+  if (!provider && model) return MODEL_ONLY_VALUE
+  return provider
+}
 
 interface DelegationValue {
   model: string;
@@ -122,12 +131,9 @@ export function DelegationModelProviderField({
   // model-only branch (with an empty input ready for typing), instead of
   // snapping back to inherit because the model is empty. Same for
   // backspace mid-edit: the dropdown stays where the user left it.
-  const initialSelectValue = !persistedProvider && !persistedModel
-    ? INHERIT_VALUE
-    : !persistedProvider && persistedModel
-      ? MODEL_ONLY_VALUE
-      : persistedProvider;
-  const [providerSelectValue, setProviderSelectValue] = useState<string>(initialSelectValue);
+  const [providerSelectValue, setProviderSelectValue] = useState<string>(
+    selectValueFor(persistedProvider, persistedModel),
+  );
 
   // Track the last pair we emitted so we can ignore the autosave echo
   // through `config` (parent writes through `onChange`, then the new
@@ -144,17 +150,7 @@ export function DelegationModelProviderField({
     }
     setDraftProvider(persistedProvider)
     setDraftModel(persistedModel)
-    // Also resync the dropdown's selected value to match the new
-    // persisted state — otherwise a profile switch with the same model
-    // but different provider would leave the dropdown showing the old
-    // selection.
-    setProviderSelectValue(
-      !persistedProvider && !persistedModel
-        ? INHERIT_VALUE
-        : !persistedProvider && persistedModel
-          ? MODEL_ONLY_VALUE
-          : persistedProvider
-    )
+    setProviderSelectValue(selectValueFor(persistedProvider, persistedModel))
     lastEmittedRef.current = { provider: persistedProvider, model: persistedModel }
   }, [persistedProvider, persistedModel])
 
@@ -171,11 +167,8 @@ export function DelegationModelProviderField({
   //    model but inherit credentials from the parent (preserved by the
   //    resolver at `tools/delegate_tool.py:3139-3149`).
   //  - explicit pick → fully pinned to the chosen provider.
-  const isInherit =
-    providerSelectValue === INHERIT_VALUE ||
-    (draftProvider === "" && draftModel === "");
-  const isModelOnly =
-    providerSelectValue === MODEL_ONLY_VALUE && draftProvider === "";
+  const isInherit = providerSelectValue === INHERIT_VALUE
+  const isModelOnly = providerSelectValue === MODEL_ONLY_VALUE
 
   const selectedRow = providers.find((p) => p.slug === draftProvider)
   const catalog = selectedRow?.models ?? []

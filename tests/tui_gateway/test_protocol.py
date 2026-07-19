@@ -41,6 +41,7 @@ def server():
         mod._sessions.clear()
         mod._pending.clear()
         mod._answers.clear()
+        mod._idempotency_keys.clear()
 
 
 @pytest.fixture()
@@ -531,6 +532,122 @@ def test_enforce_session_cap_disabled_is_noop(server, monkeypatch):
     server._enforce_session_cap()
 
     assert evicted == []
+
+
+# ── session.create idempotency (PR #65411 sweeper review) ────────────────────
+
+
+def _stub_session_create_dependencies(server, monkeypatch):
+    """Stub out the heavy deps that session.create touches so we can call it
+    directly without a real agent/DB. Mirrors the pattern used by the
+    session.resume tests above."""
+    monkeypatch.setattr(server, "_claim_active_session_slot", lambda *a, **kw: (None, None))
+    monkeypatch.setattr(server, "_register_session_cwd", lambda *a, **kw: None)
+    monkeypatch.setattr(server, "_schedule_agent_build", lambda *a, **kw: None)
+    monkeypatch.setattr(server, "_schedule_session_cap_enforcement", lambda *a, **kw: None)
+    monkeypatch.setattr(server, "_enable_gateway_prompts", lambda: None)
+    monkeypatch.setattr(server, "_load_show_reasoning", lambda: False)
+    monkeypatch.setattr(server, "_load_tool_progress_mode", lambda: None)
+    monkeypatch.setattr(server, "_resolve_model", lambda: "test/model")
+    monkeypatch.setattr(server, "_resolve_session_source", lambda s: s or "desktop")
+    monkeypatch.setattr(server, "_profile_home", lambda p: None)
+    monkeypatch.setattr(server, "_current_profile_name", lambda: "test")
+    monkeypatch.setattr(server, "_git_branch_for_cwd", lambda c: "")
+    monkeypatch.setattr(server, "_completion_cwd", lambda p: "")
+    monkeypatch.setattr(server, "_new_session_key", lambda: "stored-key-1")
+
+
+def test_session_create_idempotency_key_dedupes_retry(server, monkeypatch):
+    """A retried session.create with the same idempotency_key returns the SAME
+    sid instead of spawning a duplicate child. Regression for PR #65411
+    sweeper review: previously, every retry created a fresh UUID, so a
+    response-lost retry left two child sessions behind."""
+    _stub_session_create_dependencies(server, monkeypatch)
+
+    first = server.handle_request(
+        {
+            "id": "c1",
+            "method": "session.create",
+            "params": {
+                "cols": 96,
+                "source": "desktop",
+                "messages": [{"role": "user", "content": "branch me"}],
+                "parent_session_id": "parent-1",
+                "idempotency_key": "branch-retry-abc",
+            },
+        }
+    )
+    assert "error" not in first
+    first_sid = first["result"]["session_id"]
+    assert first_sid
+    assert len(server._sessions) == 1
+
+    # Simulate the client retrying after a lost response: same key, same params.
+    second = server.handle_request(
+        {
+            "id": "c2",
+            "method": "session.create",
+            "params": {
+                "cols": 96,
+                "source": "desktop",
+                "messages": [{"role": "user", "content": "branch me"}],
+                "parent_session_id": "parent-1",
+                "idempotency_key": "branch-retry-abc",
+            },
+        }
+    )
+    assert "error" not in second
+    # Same sid returned — no duplicate session was created.
+    assert second["result"]["session_id"] == first_sid
+    assert len(server._sessions) == 1
+
+
+def test_session_create_no_idempotency_key_creates_distinct_sessions(server, monkeypatch):
+    """Without an idempotency_key, repeated session.create calls keep the
+    existing behavior (each call spawns a fresh session)."""
+    _stub_session_create_dependencies(server, monkeypatch)
+
+    first = server.handle_request(
+        {"id": "c1", "method": "session.create", "params": {"cols": 96, "source": "desktop"}}
+    )
+    second = server.handle_request(
+        {"id": "c2", "method": "session.create", "params": {"cols": 96, "source": "desktop"}}
+    )
+
+    assert "error" not in first
+    assert "error" not in second
+    assert first["result"]["session_id"] != second["result"]["session_id"]
+    assert len(server._sessions) == 2
+
+
+def test_session_create_idempotency_key_expires_with_session(server, monkeypatch):
+    """If the original session was closed between the first create and the
+    retry, the same idempotency_key falls through and creates a fresh session
+    (the key does NOT pin a dead sid forever)."""
+    _stub_session_create_dependencies(server, monkeypatch)
+
+    first = server.handle_request(
+        {
+            "id": "c1",
+            "method": "session.create",
+            "params": {"cols": 96, "source": "desktop", "idempotency_key": "branch-retry-xyz"},
+        }
+    )
+    first_sid = first["result"]["session_id"]
+
+    # Original session closed before the retry arrives.
+    server._sessions.pop(first_sid, None)
+
+    second = server.handle_request(
+        {
+            "id": "c2",
+            "method": "session.create",
+            "params": {"cols": 96, "source": "desktop", "idempotency_key": "branch-retry-xyz"},
+        }
+    )
+    assert "error" not in second
+    assert second["result"]["session_id"] != first_sid
+    assert len(server._sessions) == 1
 
 
 def test_session_resume_handles_multimodal_list_content(server, monkeypatch):

@@ -155,14 +155,15 @@ export function notify(input: NotificationInput): string {
   return id
 }
 
-export function notifyError(error: unknown, fallback: string): string {
+export function notifyError(error: unknown, fallback: string, action?: NotificationAction): string {
   const readable = readableError(error, fallback)
 
   return notify({
     kind: 'error',
     title: fallback,
     message: readable.message,
-    detail: readable.detail
+    detail: readable.detail,
+    action
   })
 }
 

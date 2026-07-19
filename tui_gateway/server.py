@@ -137,6 +137,12 @@ _cfg_lock = threading.Lock()
 _sessions_lock = threading.RLock()  # reentrant: _close_session_by_id may run under callers that already hold it
 _prompt_lock = threading.Lock()
 _cfg_cache: dict | None = None
+
+# Idempotency registry for session.create: maps client-supplied key → sid so a
+# retried create (e.g. response lost in transit) returns the same session
+# instead of spawning a duplicate child. Entries expire with the session.
+_idempotency_keys: dict[str, tuple[str, float]] = {}
+_IDEMPOTENCY_KEY_TTL = 300.0  # 5 min: longer than any realistic retry window
 _cfg_mtime: float | None = None
 _cfg_path = None
 _session_resume_lock = threading.Lock()
@@ -5711,6 +5717,56 @@ def _queued_prompt_snapshot(session: dict) -> dict | None:
 
 @method("session.create")
 def _(rid, params: dict) -> dict:
+    # Idempotency: a client retrying a create whose first response was lost
+    # should get back the SAME session, not a fresh one (which would leave a
+    # duplicate child). Caller supplies a stable key per logical create.
+    idem_key = str(params.get("idempotency_key") or "").strip() or None
+    if idem_key is not None:
+        with _sessions_lock:
+            # Drop expired entries while we're here.
+            now_for_gc = time.time()
+            expired = [k for k, (_, ts) in _idempotency_keys.items() if now_for_gc - ts > _IDEMPOTENCY_KEY_TTL]
+            for k in expired:
+                _idempotency_keys.pop(k, None)
+            existing = _idempotency_keys.get(idem_key)
+            if existing is not None:
+                existing_sid, _ = existing
+                existing_session = _sessions.get(existing_sid)
+                if existing_session is not None:
+                    # Refresh TTL so back-to-back retries don't age out mid-flight.
+                    _idempotency_keys[idem_key] = (existing_sid, now_for_gc)
+                    return _ok(
+                        rid,
+                        {
+                            "session_id": existing_sid,
+                            "stored_session_id": existing_session["session_key"],
+                            "message_count": len(existing_session["history"]),
+                            "messages": _history_to_messages(existing_session["history"]),
+                            "info": {
+                                "model": (
+                                    existing_session["model_override"].get("model")
+                                    if existing_session.get("model_override")
+                                    else _resolve_model()
+                                ),
+                                **(
+                                    {"provider": existing_session["model_override"]["provider"]}
+                                    if existing_session.get("model_override") and existing_session["model_override"].get("provider")
+                                    else {}
+                                ),
+                                "tools": {},
+                                "skills": {},
+                                "cwd": existing_session["cwd"],
+                                "branch": _git_branch_for_cwd(existing_session["cwd"]),
+                                "lazy": True,
+                                "desktop_contract": DESKTOP_BACKEND_CONTRACT,
+                                "profile_name": _current_profile_name(),
+                            },
+                        },
+                    )
+                # Session was closed between original create and retry — fall
+                # through and create a fresh one with the same key.
+                _idempotency_keys.pop(idem_key, None)
+
     sid = uuid.uuid4().hex[:8]
     key = _new_session_key()
     cols = int(params.get("cols", 80))
@@ -5806,6 +5862,8 @@ def _(rid, params: dict) -> dict:
             "transport": current_transport() or _stdio_transport,
         }
         _register_session_cwd(_sessions[sid])
+        if idem_key is not None:
+            _idempotency_keys[idem_key] = (sid, now)
 
     # NOTE: we intentionally do NOT persist a DB row here. Every TUI/desktop
     # launch (and every "New agent" / draft) opens a session here just to paint

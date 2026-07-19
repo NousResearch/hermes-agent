@@ -502,6 +502,24 @@ export function StatusRule({
       ? `Δ ${(usage.dev_credits_spent_micros / 10000).toFixed(1)}¢`
       : ''
 
+  // OpenRouter credit balance. The server omits the key for non-OpenRouter
+  // providers, so this segment self-hides for everyone else. Color tiers match
+  // the classic status bar (cli.py _or_credit_style): >$50 good, >$10 warn,
+  // >$1 bad, <=$1 critical.
+  const orCreditsText =
+    typeof usage.or_credits_label === 'string' && usage.or_credits_label ? `💳 ${usage.or_credits_label}` : ''
+  const orCreditsBalance = usage.or_credits_balance
+  const orCreditsColor =
+    typeof orCreditsBalance !== 'number'
+      ? t.color.muted
+      : orCreditsBalance <= 1
+        ? t.color.statusCritical
+        : orCreditsBalance <= 10
+          ? t.color.statusBad
+          : orCreditsBalance <= 50
+            ? t.color.statusWarn
+            : t.color.statusGood
+
   const showBar = !!bar && fits(SEP + stringWidth(`[${bar}] ${pct != null ? `${pct}%` : ''}`))
   const showDuration = segs.duration && !!sessionStartedAt && fits(SEP + MAX_DURATION_WIDTH)
 
@@ -512,6 +530,7 @@ export function StatusRule({
     segs.duration && !busy && lastTurnEndedAt != null && fits(SEP + stringWidth('✓ ') + MAX_DURATION_WIDTH)
 
   const showCompressions = segs.compressions && compressions > 0 && fits(SEP + stringWidth(`cmp ${compressions}`))
+  const showOrCredits = !!orCreditsText && fits(SEP + stringWidth(orCreditsText))
   const showVoice = segs.voice && !!voiceLabel && fits(SEP + stringWidth(voiceLabel))
   const showSessionCount = !!sessionCountText && fits(SEP + stringWidth(sessionCountText))
   const showBg = segs.bg && bgCount > 0 && fits(SEP + stringWidth(`${bgCount} bg`))
@@ -614,6 +633,12 @@ export function StatusRule({
             <Text color={compressions >= 10 ? t.color.error : compressions >= 5 ? t.color.warn : t.color.muted}>
               cmp {compressions}
             </Text>
+          </Text>
+        ) : null}
+        {showOrCredits ? (
+          <Text color={orCreditsColor} wrap="truncate-end">
+            {' │ '}
+            {orCreditsText}
           </Text>
         ) : null}
         {showVoice ? (

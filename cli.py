@@ -159,11 +159,10 @@ def realign_markdown_tables(*args, **kwargs):
     return _realign_markdown_tables(*args, **kwargs)
 
 
-# ── OpenRouter credit cache for status bar display ────────────────────────
-_or_credits_cache: dict = {
-    "balance": None, "label": None, "quota_pct": None, "timestamp": 0.0
-}
-_OR_CREDITS_CACHE_TTL = 300.0  # seconds
+# OpenRouter status-bar credit balance is served by a background-refreshed,
+# per-account probe (agent/openrouter_credits.py) shared with the TUI gateway,
+# so the ~1x/s status redraw never blocks on the network and a credential
+# switch never shows a prior account's balance. See PR #57321.
 
 # NOTE: `from agent.account_usage import ...` is deliberately NOT at module
 # top — it transitively pulls the OpenAI SDK chain (~230 ms cold) and is only
@@ -4488,6 +4487,20 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
             return "class:status-bar-warn"
         return "class:status-bar-good"
 
+    def _or_credits_probe_ref(self):
+        """Return this CLI's OpenRouter credit probe, created on first use.
+
+        Lazy so the status-bar path works even when a HermesCLI is built via
+        __new__ (e.g. in tests) without running __init__.
+        """
+        probe = getattr(self, "_or_credits_probe", None)
+        if probe is None:
+            from agent.openrouter_credits import OpenRouterCreditsProbe
+
+            probe = OpenRouterCreditsProbe()
+            self._or_credits_probe = probe
+        return probe
+
     def _build_context_bar(self, percent_used: Optional[int], width: int = 10) -> str:
         safe_percent = max(0, min(100, percent_used or 0))
         filled = round((safe_percent / 100) * width)
@@ -4648,37 +4661,28 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
             if context_length:
                 snapshot["context_percent"] = max(0, min(100, round((context_tokens / context_length) * 100)))
 
-        # ── OpenRouter credits (cached, 5-min TTL) ───────────────
+        # ── OpenRouter credits (background-refreshed, per-account) ────────
+        # Fetching credits inline would block this ~1x/s redraw for up to 10s
+        # (fetch_account_usage's httpx timeout). Read only the last completed
+        # result from a shared probe that refreshes off the render path and
+        # keys its cache by account, so a credential switch never shows a prior
+        # account's balance. New data triggers a repaint via on_update. (#57321)
         _or_provider = getattr(agent, "provider", None) or getattr(self, "provider", None)
         if _or_provider and _or_provider.strip() == "openrouter":
-            _now = time.time()
-            if _now - _or_credits_cache["timestamp"] > _OR_CREDITS_CACHE_TTL:
-                try:
-                    _or_base_url = getattr(agent, "base_url", None) or getattr(self, "base_url", None)
-                    _or_api_key = getattr(agent, "api_key", None) or getattr(self, "api_key", None)
-                    from agent.account_usage import fetch_account_usage
-                    _or_snap = fetch_account_usage(
-                        _or_provider, base_url=_or_base_url, api_key=_or_api_key
-                    )
-                    if _or_snap and _or_snap.details:
-                        _balance_label = str(_or_snap.details[0])
-                        _m = re.search(r'\$(\d+\.?\d*)', _balance_label)
-                        _balance_num = float(_m.group(1)) if _m else None
-                        _or_credits_cache["balance"] = _balance_num
-                        _or_credits_cache["label"] = None
-                        if _balance_num is not None:
-                            _or_credits_cache["label"] = f"${_balance_num:,.2f}"
-                        _or_credits_cache["quota_pct"] = None
-                        for _w in _or_snap.windows:
-                            if getattr(_w, "label", "") == "API key quota" and getattr(_w, "used_percent", None) is not None:
-                                _or_credits_cache["quota_pct"] = _w.used_percent
-                                break
-                        _or_credits_cache["timestamp"] = _now
-                except Exception:
-                    pass
-            if _or_credits_cache["balance"] is not None:
-                snapshot["or_credits_balance"] = _or_credits_cache["balance"]
-                snapshot["or_credits_label"] = _or_credits_cache["label"]
+            try:
+                _or_base_url = getattr(agent, "base_url", None) or getattr(self, "base_url", None)
+                _or_api_key = getattr(agent, "api_key", None) or getattr(self, "api_key", None)
+                _or_credits = self._or_credits_probe_ref().snapshot(
+                    _or_provider,
+                    _or_base_url,
+                    _or_api_key,
+                    on_update=lambda: self._invalidate(min_interval=0.0),
+                )
+                if _or_credits.get("balance") is not None:
+                    snapshot["or_credits_balance"] = _or_credits["balance"]
+                    snapshot["or_credits_label"] = _or_credits["label"]
+            except Exception:
+                pass
 
         return snapshot
 

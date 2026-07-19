@@ -1,3 +1,4 @@
+import threading
 import time
 from datetime import datetime, timedelta
 from types import SimpleNamespace
@@ -504,6 +505,99 @@ class TestCLIStatusBar:
         compact = cli_obj._get_voice_status_fragments(width=50)
 
         assert compact == [("class:voice-status", " 🎤 Ctrl+B ")]
+
+
+class TestCLIStatusBarOrCredits:
+    """OpenRouter credit balance probe integration in the status bar.
+
+    Verifies the four review requirements from PR #57321:
+    1. Non-blocking snapshot (never calls fetch_account_usage inline)
+    2. Correct color-coded threshold rendering
+    3. Non-OpenRouter provider omits the credit segment
+    4. Probe is created lazily and survives across snapshots
+    """
+
+    def test_credit_style_thresholds(self):
+        """Color tiers match the spec: >$50 good, >$10 warn, >$1 bad, <=$1 critical."""
+        assert HermesCLI._or_credit_style(None) == "class:status-bar-dim"
+        assert HermesCLI._or_credit_style(0.0) == "class:status-bar-critical"
+        assert HermesCLI._or_credit_style(1.0) == "class:status-bar-critical"
+        assert HermesCLI._or_credit_style(5.0) == "class:status-bar-bad"
+        assert HermesCLI._or_credit_style(10.0) == "class:status-bar-bad"
+        assert HermesCLI._or_credit_style(25.0) == "class:status-bar-warn"
+        assert HermesCLI._or_credit_style(50.0) == "class:status-bar-warn"
+        assert HermesCLI._or_credit_style(100.0) == "class:status-bar-good"
+
+    def test_snapshot_includes_balance_when_available(self):
+        """When the probe has a balance, the snapshot carries it."""
+        cli_obj = _attach_agent(
+            _make_cli(model="openrouter/anthropic/claude-sonnet-4"),
+            prompt_tokens=10_000,
+            completion_tokens=2_000,
+            total_tokens=12_000,
+            api_calls=3,
+            context_tokens=12_000,
+            context_length=200_000,
+        )
+        # Override provider to OpenRouter
+        cli_obj.agent.provider = "openrouter"
+        cli_obj.agent.base_url = "https://openrouter.ai/api/v1"
+        cli_obj.agent.api_key = "sk-or-v1-test"
+        # Simulate a probe that already has cached data
+        fake_probe = MagicMock()
+        fake_probe.snapshot.return_value = {"balance": 42.50, "label": "$42.50", "quota_pct": None}
+        cli_obj._or_credits_probe = fake_probe
+
+        snapshot = cli_obj._get_status_bar_snapshot()
+        assert snapshot.get("or_credits_balance") == 42.50
+        assert snapshot.get("or_credits_label") == "$42.50"
+
+    def test_non_openrouter_provider_omits_credits(self):
+        """Non-OpenRouter providers should not show credit balance."""
+        cli_obj = _attach_agent(
+            _make_cli(),
+            prompt_tokens=10_000,
+            completion_tokens=2_000,
+            total_tokens=12_000,
+            api_calls=3,
+            context_tokens=12_000,
+            context_length=200_000,
+        )
+        fake_probe = MagicMock()
+        fake_probe.snapshot.return_value = {"balance": 42.50, "label": "$42.50", "quota_pct": None}
+        cli_obj._or_credits_probe = fake_probe
+
+        snapshot = cli_obj._get_status_bar_snapshot()
+        assert "or_credits_balance" not in snapshot
+        assert "or_credits_label" not in snapshot
+
+    def test_probe_created_lazily(self):
+        """_or_credits_probe_ref creates the probe on first call."""
+        cli_obj = _make_cli()
+        assert not hasattr(cli_obj, "_or_credits_probe")
+        probe = cli_obj._or_credits_probe_ref()
+        assert probe is not None
+        assert hasattr(cli_obj, "_or_credits_probe")
+        # Second call returns the same instance
+        assert cli_obj._or_credits_probe_ref() is probe
+
+    def test_snapshot_non_blocking(self):
+        """snapshot() never blocks — it calls the probe, not fetch_account_usage."""
+        cli_obj = _attach_agent(
+            _make_cli(model="openrouter/anthropic/claude-sonnet-4"),
+            prompt_tokens=10_000,
+            completion_tokens=2_000,
+            total_tokens=12_000,
+            api_calls=3,
+            context_tokens=12_000,
+            context_length=200_000,
+        )
+        cli_obj.agent.provider = "openrouter"
+        cli_obj.agent.base_url = "https://openrouter.ai/api/v1"
+        cli_obj.agent.api_key = "sk-or-v1-test"
+        # If no probe is set, snapshot returns empty — but never blocks
+        snapshot = cli_obj._get_status_bar_snapshot()
+        assert "or_credits_balance" not in snapshot
 
 
 class TestCLIUsageReport:

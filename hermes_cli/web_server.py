@@ -6350,12 +6350,50 @@ async def get_env_vars(profile: Optional[str] = None):
     return result
 
 
+def _is_masked_writeback(key: str, value: str) -> bool:
+    """True if ``value`` is the masked display string for the key's stored secret.
+
+    Compares the incoming value against ``redact_key()`` of the *profile-scoped
+    on-disk* value — the exact string ``GET /api/env`` masked and handed the SPA
+    (``redacted_value``), and the exact store that ``PUT /api/env`` writes via
+    ``save_env_value()``. Reading through ``load_env()`` (not ``get_env_value()``,
+    which prefers ``os.environ``) keeps the read side aligned with both the mask
+    source and the write target, so a stale inherited environment value can't let
+    a masked write-back slip through.
+
+    This is deliberately exact-match only: it prevents overwriting an existing
+    credential with its own mask. When no value is stored on disk there is no
+    credential to corrupt, so nothing is rejected.
+    """
+    if not value:
+        return False
+    try:
+        current = load_env().get(key)
+    except Exception:
+        current = None
+    return bool(current) and value == redact_key(current)
+
+
 @app.put("/api/env")
 async def set_env_var(body: EnvVarUpdate, profile: Optional[str] = None):
     try:
         with _profile_scope(body.profile or profile):
+            if _is_masked_writeback(body.key, body.value):
+                # The dashboard pre-populates editable inputs with the masked
+                # redacted_value; saving an unchanged key then writes the mask
+                # back over the real credential (issue #54708), silently
+                # corrupting it. Refuse rather than destroy the secret.
+                raise HTTPException(
+                    status_code=400,
+                    detail=(
+                        "Value looks like a masked/redacted display string, not a "
+                        "real credential. Reveal or re-enter the value before saving."
+                    ),
+                )
             save_env_value(body.key, body.value)
         return {"ok": True, "key": body.key}
+    except HTTPException:
+        raise
     except ValueError as exc:
         # save_env_value raises ValueError for invalid names and for keys
         # on the denylist (LD_PRELOAD, PATH, PYTHONPATH, …). Surface the

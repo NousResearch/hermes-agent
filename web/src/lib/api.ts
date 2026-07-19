@@ -1196,10 +1196,10 @@ export const api = {
   getCommands: (profile?: string) =>
     fetchJSON<CommandInfo[]>(`/api/commands${profileQuery(profile)}`),
   upsertCustomCommand: (command: Omit<CommandInfo, "source">, profile?: string) =>
-    fetchJSON<{ ok: boolean }>("/api/commands/custom", {
+    fetchJSON<{ ok: boolean }>(`/api/commands/custom${profileQuery(profile)}`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ ...command, profile: profile || undefined }),
+      body: JSON.stringify(command),
     }),
   deleteCustomCommand: (name: string, profile?: string) =>
     fetchJSON<{ ok: boolean }>(
@@ -1216,10 +1216,9 @@ export const api = {
       },
     ),
   syncCommands: (profile?: string) =>
-    fetchJSON<{ ok: boolean; method?: string; pid?: number; detail?: string }>("/api/commands/sync", {
+    fetchJSON<{ ok: boolean; method?: string; pid?: number; detail?: string }>(`/api/commands/sync${profileQuery(profile)}`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ profile: profile || undefined }),
     }),
 };
 

@@ -9362,6 +9362,24 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                         command = target_command.split()[0] if target_command else target_command
                         _cmd_def = _resolve_cmd(command) if command else None
                         canonical = _cmd_def.name if _cmd_def else command
+            # Also check commands.custom for alias expansion (new command store)
+            if _cmd_def is None and command:
+                if isinstance(self.config, dict):
+                    custom_cmds = self.config.get("commands", {}).get("custom", {}) or {}
+                else:
+                    custom_cmds = getattr(getattr(self.config, "commands", {}), "custom", {}) or {}
+                if isinstance(custom_cmds, dict) and command in custom_cmds:
+                    qcmd = custom_cmds[command]
+                    if isinstance(qcmd, dict) and qcmd.get("type") == "alias":
+                        target = qcmd.get("target", "").strip()
+                        if target:
+                            target = target if target.startswith("/") else f"/{target}"
+                            target_command = target.lstrip("/")
+                            user_args = event.get_command_args().strip()
+                            event.text = f"{target} {user_args}".strip()
+                            command = target_command.split()[0] if target_command else target_command
+                            _cmd_def = _resolve_cmd(command) if command else None
+                            canonical = _cmd_def.name if _cmd_def else command
 
         # Per-platform slash command access control. Only kicks in when the
         # operator has set ``allow_admin_from`` for the source's scope (DM

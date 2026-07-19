@@ -46,6 +46,8 @@ declare global {
         control: (payload: PetOverlayControl) => void
         onState: (callback: (payload: PetOverlayStatePayload) => void) => () => void
         onControl: (callback: (payload: PetOverlayControl) => void) => () => void
+        reportTrayState: (state: { available: boolean; poppedOut: boolean }) => void
+        onTrayCommand: (callback: (command: 'pop-out' | 'pop-in') => void) => () => void
       }
       getBootProgress: () => Promise<DesktopBootProgress>
       getConnectionConfig: (profile?: null | string) => Promise<DesktopConnectionConfig>

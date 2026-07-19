@@ -33,6 +33,13 @@ contextBridge.exposeInMainWorld('hermesDesktop', {
       ipcRenderer.on('hermes:pet-overlay:control', listener)
 
       return () => ipcRenderer.removeListener('hermes:pet-overlay:control', listener)
+    },
+    reportTrayState: state => ipcRenderer.send('hermes:tray:pet-state', state),
+    onTrayCommand: callback => {
+      const listener = (_event, command) => callback(command)
+      ipcRenderer.on('hermes:tray:pet-command', listener)
+
+      return () => ipcRenderer.removeListener('hermes:tray:pet-command', listener)
     }
   },
   getBootProgress: () => ipcRenderer.invoke('hermes:boot-progress:get'),

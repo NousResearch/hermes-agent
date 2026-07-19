@@ -70,3 +70,10 @@ test('leaves live-window focus to deep-link delivery', () => {
     focusExisting: false
   })
 })
+
+test('deep-link delivery uses the shared show-and-focus path', async () => {
+  const source = await import('node:fs/promises').then(fs => fs.readFile(new URL('./main.ts', import.meta.url), 'utf8'))
+  const body = source.slice(source.indexOf('function handleDeepLink'), source.indexOf('// Renderer calls this'))
+
+  assert.match(body, /focusWindow\(mainWindow\)/)
+})

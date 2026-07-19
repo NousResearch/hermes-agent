@@ -160,6 +160,25 @@ class TestValidateSignature:
         req = _mock_request(headers={"X-Gitlab-Token": "wrong"})
         assert adapter._validate_signature(req, b"{}", "correct") is False
 
+    def test_validate_bearer_token(self):
+        """Authorization Bearer token matching the route secret is accepted."""
+        adapter = _make_adapter()
+        secret = "bearer-token-value"
+        req = _mock_request(headers={"Authorization": f"Bearer {secret}"})
+        assert adapter._validate_signature(req, b"{}", secret) is True
+
+    def test_validate_bearer_token_wrong(self):
+        """Wrong Authorization Bearer token is rejected."""
+        adapter = _make_adapter()
+        req = _mock_request(headers={"Authorization": "Bearer wrong"})
+        assert adapter._validate_signature(req, b"{}", "correct") is False
+
+    def test_non_ascii_bearer_token_rejects_without_raising(self):
+        """Hostile non-ASCII Bearer input must fail closed instead of raising."""
+        adapter = _make_adapter()
+        req = _mock_request(headers={"Authorization": "Bearer tökén"})
+        assert adapter._validate_signature(req, b"{}", "correct") is False
+
     def test_validate_no_signature_with_secret_rejects(self):
         """Secret configured but no recognised signature header → reject."""
         adapter = _make_adapter()
@@ -349,6 +368,31 @@ class TestValidateSignature:
             "X-Webhook-Signature-V2": v2_sig,
             "X-Webhook-Signature": v1_sig,
             # X-Webhook-Timestamp deliberately omitted.
+        })
+        assert adapter._validate_signature(req, body, secret) is False
+
+    def test_validate_generic_v2_missing_timestamp_does_not_fall_back_to_bearer(self):
+        """A V2 header commits to V2 even when a valid Bearer token is present."""
+        adapter = _make_adapter()
+        body = b'{"event": "push"}'
+        secret = "generic-secret"
+        timestamp = str(int(time.time()))
+        v2_sig = _generic_v2_signature(body, secret, timestamp)
+        req = _mock_request(headers={
+            "X-Webhook-Signature-V2": v2_sig,
+            # X-Webhook-Timestamp deliberately omitted.
+            "Authorization": f"Bearer {secret}",
+        })
+        assert adapter._validate_signature(req, body, secret) is False
+
+    def test_validate_invalid_v1_does_not_fall_back_to_bearer(self):
+        """A present legacy V1 signature must validate rather than fall back."""
+        adapter = _make_adapter()
+        body = b'{"event": "push"}'
+        secret = "generic-secret"
+        req = _mock_request(headers={
+            "X-Webhook-Signature": "0" * 64,
+            "Authorization": f"Bearer {secret}",
         })
         assert adapter._validate_signature(req, body, secret) is False
 

@@ -963,7 +963,8 @@ class WebhookAdapter(BasePlatformAdapter):
         - Svix/AgentMail: svix-id + svix-timestamp + svix-signature
         - GitHub: X-Hub-Signature-256 = sha256=<hex HMAC-SHA256>
         - GitLab: X-Gitlab-Token = <plain secret>
-        - Generic: X-Webhook-Signature = <hex HMAC-SHA256>
+        - Generic V2: X-Webhook-Signature-V2 + X-Webhook-Timestamp
+        - Generic V1 (legacy): X-Webhook-Signature = <hex HMAC-SHA256>
         - Bearer: Authorization = Bearer <plain secret>
         """
         def _header(name: str) -> str:
@@ -1075,7 +1076,7 @@ class WebhookAdapter(BasePlatformAdapter):
         auth_header = request.headers.get("Authorization", "")
         auth_scheme, _, auth_token = auth_header.partition(" ")
         if auth_scheme.lower() == "bearer" and auth_token:
-            return hmac.compare_digest(auth_token.strip(), secret)
+            return _hmac_str_equal(auth_token.strip(), secret)
 
         # No recognised signature/auth header but secret is configured → reject
         logger.debug(

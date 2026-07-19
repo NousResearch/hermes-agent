@@ -457,7 +457,7 @@ The adapter validates incoming webhooks using the appropriate method for each so
 - **GitLab**: `X-Gitlab-Token` header — plain secret string match
 - **Generic (V2, recommended)**: `X-Webhook-Signature-V2` + `X-Webhook-Timestamp` headers — HMAC-SHA256 hex digest of `<timestamp>.<body>`. The timestamp (Unix seconds) must be within ±300 seconds of the server clock, which prevents captured requests from being replayed later.
 - **Generic (V1, legacy)**: `X-Webhook-Signature` header — raw HMAC-SHA256 hex digest of the body only. Still accepted for backward compatibility, but it has no replay protection (a captured request replays indefinitely); the gateway logs a deprecation warning once per route. Switch senders to V2.
-- **Bearer token**: `Authorization: Bearer <secret>` header — plain secret string match
+- **Bearer token**: `Authorization: Bearer <webhook-secret>` header — plain secret string match
 
 Use HMAC signatures when your webhook provider supports them. Bearer-token auth is useful for services that can send a fixed authorization token but cannot compute per-payload HMAC signatures.
 
@@ -526,7 +526,8 @@ This is the same trust model that applies to everything the agent reads: web pag
 - Ensure the secret in your route config exactly matches the secret configured in the webhook source
 - For GitHub, the secret is HMAC-based — check `X-Hub-Signature-256`
 - For GitLab, the secret is a plain token match — check `X-Gitlab-Token`
-- For generic HMAC integrations, check `X-Webhook-Signature`
+- For generic HMAC V2 integrations, check both `X-Webhook-Signature-V2` and `X-Webhook-Timestamp`
+- For legacy generic HMAC V1 integrations, check `X-Webhook-Signature`
 - For bearer-token integrations, check `Authorization: Bearer <webhook-secret>`
 - Check gateway logs for `Invalid signature` warnings
 

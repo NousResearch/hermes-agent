@@ -52,6 +52,7 @@ _LEGACY_MIGRATION_MARKER = "hof002-v1"
 
 # Regex for SHA-256 (64 lowercase hex)
 _SHA256_RE = re.compile(r"^[a-f0-9]{64}$")
+_CANDIDATE_SNAPSHOT_RE = re.compile(r"^sha256:[a-f0-9]{64}$")
 
 # Full column list for repair (used for partial migration tolerance)
 PROJECT_FINALIZATIONS_COLS = [
@@ -67,6 +68,9 @@ PROJECT_FINALIZATIONS_COLS = [
     ("notification_route_identity", "TEXT"),
     ("checker_candidate_snapshot_version", "TEXT"),
     ("checker_candidate_id", "TEXT"),
+    ("terminal_intent", "TEXT"),
+    ("terminal_candidate_snapshot_version", "TEXT"),
+    ("artifact_candidate_snapshot_version", "TEXT"),
     ("repair_generation", "INTEGER NOT NULL DEFAULT 0"),
     ("repair_budget", "INTEGER NOT NULL DEFAULT 1"),
     ("notification_policy", "TEXT NOT NULL"),
@@ -108,6 +112,9 @@ class ProjectFinalization:
     notification_route_identity: Optional[str]
     checker_candidate_snapshot_version: Optional[str]
     checker_candidate_id: Optional[str]
+    terminal_intent: Optional[str]
+    terminal_candidate_snapshot_version: Optional[str]
+    artifact_candidate_snapshot_version: Optional[str]
     repair_generation: int
     repair_budget: int
     notification_policy: str
@@ -220,6 +227,9 @@ CREATE TABLE IF NOT EXISTS project_finalizations (
     notification_route_identity TEXT,
     checker_candidate_snapshot_version TEXT,
     checker_candidate_id  TEXT,
+    terminal_intent       TEXT,
+    terminal_candidate_snapshot_version TEXT,
+    artifact_candidate_snapshot_version TEXT,
     repair_generation     INTEGER NOT NULL DEFAULT 0,
     repair_budget         INTEGER NOT NULL DEFAULT 1,
     notification_policy   TEXT NOT NULL,
@@ -325,6 +335,201 @@ CREATE INDEX IF NOT EXISTS idx_pcleanup_root ON project_cleanup_journal(board_id
 """
 
 
+# A terminal candidate is frozen before artifact publication and remains frozen
+# until the matching terminal outcome is committed. These triggers are the
+# exhaustive boundary for public APIs, dashboard SQL, run writes, and event-only
+# changes that participate in the candidate digest.
+_TERMINAL_FENCE_TRIGGER_SQL: tuple[str, ...] = (
+    """
+    CREATE TRIGGER IF NOT EXISTS pfinal_fence_tasks_insert
+    BEFORE INSERT ON tasks
+    WHEN EXISTS (
+        SELECT 1 FROM project_finalization_members AS m
+        JOIN project_finalizations AS f
+          ON f.board_id=m.board_id AND f.root_task_id=m.root_task_id AND f.generation=m.generation
+        WHERE m.task_id=NEW.id AND m.required=1
+          AND m.membership_kind IN ('required','repair')
+          AND f.terminal_outcome IS NULL
+          AND f.terminal_candidate_snapshot_version IS NOT NULL
+    )
+    BEGIN SELECT RAISE(ABORT, 'project terminal candidate is frozen'); END
+    """,
+    """
+    CREATE TRIGGER IF NOT EXISTS pfinal_fence_tasks_update
+    BEFORE UPDATE ON tasks
+    WHEN (
+        OLD.id IS NOT NEW.id OR OLD.title IS NOT NEW.title OR OLD.body IS NOT NEW.body
+        OR OLD.assignee IS NOT NEW.assignee OR OLD.status IS NOT NEW.status
+        OR OLD.result IS NOT NEW.result OR OLD.contract IS NOT NEW.contract
+        OR OLD.workspace_kind IS NOT NEW.workspace_kind
+        OR OLD.workspace_path IS NOT NEW.workspace_path
+        OR OLD.branch_name IS NOT NEW.branch_name
+        OR OLD.block_kind IS NOT NEW.block_kind
+        OR OLD.block_recurrences IS NOT NEW.block_recurrences
+        OR OLD.consecutive_failures IS NOT NEW.consecutive_failures
+        OR OLD.last_failure_error IS NOT NEW.last_failure_error
+        OR OLD.workflow_template_id IS NOT NEW.workflow_template_id
+        OR OLD.current_step_key IS NOT NEW.current_step_key
+    ) AND EXISTS (
+        SELECT 1 FROM project_finalization_members AS m
+        JOIN project_finalizations AS f
+          ON f.board_id=m.board_id AND f.root_task_id=m.root_task_id AND f.generation=m.generation
+        WHERE m.task_id=OLD.id AND m.required=1
+          AND m.membership_kind IN ('required','repair')
+          AND f.terminal_outcome IS NULL
+          AND f.terminal_candidate_snapshot_version IS NOT NULL
+    )
+    BEGIN SELECT RAISE(ABORT, 'project terminal candidate is frozen'); END
+    """,
+    """
+    CREATE TRIGGER IF NOT EXISTS pfinal_fence_tasks_delete
+    BEFORE DELETE ON tasks
+    WHEN EXISTS (
+        SELECT 1 FROM project_finalization_members AS m
+        JOIN project_finalizations AS f
+          ON f.board_id=m.board_id AND f.root_task_id=m.root_task_id AND f.generation=m.generation
+        WHERE m.task_id=OLD.id AND m.required=1
+          AND m.membership_kind IN ('required','repair')
+          AND f.terminal_outcome IS NULL
+          AND f.terminal_candidate_snapshot_version IS NOT NULL
+    )
+    BEGIN SELECT RAISE(ABORT, 'project terminal candidate is frozen'); END
+    """,
+    """
+    CREATE TRIGGER IF NOT EXISTS pfinal_fence_runs_insert
+    BEFORE INSERT ON task_runs
+    WHEN EXISTS (
+        SELECT 1 FROM project_finalization_members AS m
+        JOIN project_finalizations AS f
+          ON f.board_id=m.board_id AND f.root_task_id=m.root_task_id AND f.generation=m.generation
+        WHERE m.task_id=NEW.task_id AND m.required=1
+          AND m.membership_kind IN ('required','repair')
+          AND f.terminal_outcome IS NULL
+          AND f.terminal_candidate_snapshot_version IS NOT NULL
+    )
+    BEGIN SELECT RAISE(ABORT, 'project terminal candidate is frozen'); END
+    """,
+    """
+    CREATE TRIGGER IF NOT EXISTS pfinal_fence_runs_update
+    BEFORE UPDATE ON task_runs
+    WHEN EXISTS (
+        SELECT 1 FROM project_finalization_members AS m
+        JOIN project_finalizations AS f
+          ON f.board_id=m.board_id AND f.root_task_id=m.root_task_id AND f.generation=m.generation
+        WHERE m.task_id IN (OLD.task_id, NEW.task_id) AND m.required=1
+          AND m.membership_kind IN ('required','repair')
+          AND f.terminal_outcome IS NULL
+          AND f.terminal_candidate_snapshot_version IS NOT NULL
+    )
+    BEGIN SELECT RAISE(ABORT, 'project terminal candidate is frozen'); END
+    """,
+    """
+    CREATE TRIGGER IF NOT EXISTS pfinal_fence_runs_delete
+    BEFORE DELETE ON task_runs
+    WHEN EXISTS (
+        SELECT 1 FROM project_finalization_members AS m
+        JOIN project_finalizations AS f
+          ON f.board_id=m.board_id AND f.root_task_id=m.root_task_id AND f.generation=m.generation
+        WHERE m.task_id=OLD.task_id AND m.required=1
+          AND m.membership_kind IN ('required','repair')
+          AND f.terminal_outcome IS NULL
+          AND f.terminal_candidate_snapshot_version IS NOT NULL
+    )
+    BEGIN SELECT RAISE(ABORT, 'project terminal candidate is frozen'); END
+    """,
+    """
+    CREATE TRIGGER IF NOT EXISTS pfinal_fence_events_insert
+    BEFORE INSERT ON task_events
+    WHEN substr(NEW.kind,1,8) <> 'project_'
+      AND substr(NEW.kind,1,7) <> 'notify_'
+      AND NEW.kind NOT IN ('assigned','claimed','claim_extended','heartbeat','reclaim_deferred','reclaimed','respawn_guarded','spawned','stale','tip_scratch_workspace')
+      AND EXISTS (
+        SELECT 1 FROM project_finalization_members AS m
+        JOIN project_finalizations AS f
+          ON f.board_id=m.board_id AND f.root_task_id=m.root_task_id AND f.generation=m.generation
+        WHERE m.task_id=NEW.task_id AND m.required=1
+          AND m.membership_kind IN ('required','repair')
+          AND f.terminal_outcome IS NULL
+          AND f.terminal_candidate_snapshot_version IS NOT NULL
+      )
+    BEGIN SELECT RAISE(ABORT, 'project terminal candidate is frozen'); END
+    """,
+    """
+    CREATE TRIGGER IF NOT EXISTS pfinal_fence_events_update
+    BEFORE UPDATE ON task_events
+    WHEN (
+        (substr(OLD.kind,1,8) <> 'project_' AND substr(OLD.kind,1,7) <> 'notify_'
+         AND OLD.kind NOT IN ('assigned','claimed','claim_extended','heartbeat','reclaim_deferred','reclaimed','respawn_guarded','spawned','stale','tip_scratch_workspace'))
+        OR
+        (substr(NEW.kind,1,8) <> 'project_' AND substr(NEW.kind,1,7) <> 'notify_'
+         AND NEW.kind NOT IN ('assigned','claimed','claim_extended','heartbeat','reclaim_deferred','reclaimed','respawn_guarded','spawned','stale','tip_scratch_workspace'))
+    ) AND EXISTS (
+        SELECT 1 FROM project_finalization_members AS m
+        JOIN project_finalizations AS f
+          ON f.board_id=m.board_id AND f.root_task_id=m.root_task_id AND f.generation=m.generation
+        WHERE m.task_id IN (OLD.task_id, NEW.task_id) AND m.required=1
+          AND m.membership_kind IN ('required','repair')
+          AND f.terminal_outcome IS NULL
+          AND f.terminal_candidate_snapshot_version IS NOT NULL
+    )
+    BEGIN SELECT RAISE(ABORT, 'project terminal candidate is frozen'); END
+    """,
+    """
+    CREATE TRIGGER IF NOT EXISTS pfinal_fence_events_delete
+    BEFORE DELETE ON task_events
+    WHEN substr(OLD.kind,1,8) <> 'project_'
+      AND substr(OLD.kind,1,7) <> 'notify_'
+      AND OLD.kind NOT IN ('assigned','claimed','claim_extended','heartbeat','reclaim_deferred','reclaimed','respawn_guarded','spawned','stale','tip_scratch_workspace')
+      AND EXISTS (
+        SELECT 1 FROM project_finalization_members AS m
+        JOIN project_finalizations AS f
+          ON f.board_id=m.board_id AND f.root_task_id=m.root_task_id AND f.generation=m.generation
+        WHERE m.task_id=OLD.task_id AND m.required=1
+          AND m.membership_kind IN ('required','repair')
+          AND f.terminal_outcome IS NULL
+          AND f.terminal_candidate_snapshot_version IS NOT NULL
+      )
+    BEGIN SELECT RAISE(ABORT, 'project terminal candidate is frozen'); END
+    """,
+    """
+    CREATE TRIGGER IF NOT EXISTS pfinal_fence_members_insert
+    BEFORE INSERT ON project_finalization_members
+    WHEN NEW.required=1 AND NEW.membership_kind IN ('required','repair') AND EXISTS (
+        SELECT 1 FROM project_finalizations AS f
+        WHERE f.board_id=NEW.board_id AND f.root_task_id=NEW.root_task_id AND f.generation=NEW.generation
+          AND f.terminal_outcome IS NULL
+          AND f.terminal_candidate_snapshot_version IS NOT NULL
+    )
+    BEGIN SELECT RAISE(ABORT, 'project terminal candidate is frozen'); END
+    """,
+    """
+    CREATE TRIGGER IF NOT EXISTS pfinal_fence_members_update
+    BEFORE UPDATE ON project_finalization_members
+    WHEN EXISTS (
+        SELECT 1 FROM project_finalizations AS f
+        WHERE ((f.board_id=OLD.board_id AND f.root_task_id=OLD.root_task_id AND f.generation=OLD.generation
+                AND OLD.required=1 AND OLD.membership_kind IN ('required','repair'))
+            OR (f.board_id=NEW.board_id AND f.root_task_id=NEW.root_task_id AND f.generation=NEW.generation
+                AND NEW.required=1 AND NEW.membership_kind IN ('required','repair')))
+          AND f.terminal_outcome IS NULL
+          AND f.terminal_candidate_snapshot_version IS NOT NULL
+    )
+    BEGIN SELECT RAISE(ABORT, 'project terminal candidate is frozen'); END
+    """,
+    """
+    CREATE TRIGGER IF NOT EXISTS pfinal_fence_members_delete
+    BEFORE DELETE ON project_finalization_members
+    WHEN OLD.required=1 AND OLD.membership_kind IN ('required','repair') AND EXISTS (
+        SELECT 1 FROM project_finalizations AS f
+        WHERE f.board_id=OLD.board_id AND f.root_task_id=OLD.root_task_id AND f.generation=OLD.generation
+          AND f.terminal_outcome IS NULL
+          AND f.terminal_candidate_snapshot_version IS NOT NULL
+    )
+    BEGIN SELECT RAISE(ABORT, 'project terminal candidate is frozen'); END
+    """,
+)
+
+
 @dataclass(frozen=True)
 class _SchemaColumn:
     name: str
@@ -366,6 +571,9 @@ _PROJECT_FINALIZATION_COLUMNS = (
     _schema_column("notification_route_identity", "notification_route_identity TEXT"),
     _schema_column("checker_candidate_snapshot_version", "checker_candidate_snapshot_version TEXT"),
     _schema_column("checker_candidate_id", "checker_candidate_id TEXT"),
+    _schema_column("terminal_intent", "terminal_intent TEXT"),
+    _schema_column("terminal_candidate_snapshot_version", "terminal_candidate_snapshot_version TEXT"),
+    _schema_column("artifact_candidate_snapshot_version", "artifact_candidate_snapshot_version TEXT"),
     _schema_column("repair_generation", "repair_generation INTEGER NOT NULL DEFAULT 0", not_null=True, default="0"),
     _schema_column("repair_budget", "repair_budget INTEGER NOT NULL DEFAULT 1", not_null=True, default="1"),
     _schema_column("notification_policy", "notification_policy TEXT NOT NULL", not_null=True),
@@ -642,6 +850,20 @@ def _validate_migration_metadata(conn: sqlite3.Connection) -> None:
     raise ValueError(f"unsupported migration marker: {migration!r}")
 
 
+def _ensure_terminal_fence_triggers(conn: sqlite3.Connection) -> None:
+    tables = {
+        row["name"]
+        for row in conn.execute("SELECT name FROM sqlite_master WHERE type='table'")
+    }
+    if not {"tasks", "task_runs", "task_events"} <= tables:
+        # The contract can be migrated in isolation by schema tooling. The
+        # normal Kanban connection path calls us again after its core tables
+        # exist, at which point the database fence is installed.
+        return
+    for statement in _TERMINAL_FENCE_TRIGGER_SQL:
+        conn.execute(statement)
+
+
 def ensure_project_finalization_schema(conn: sqlite3.Connection) -> None:
     """Transactionally validate or safely repair the HOF-002 persistence schema.
 
@@ -659,6 +881,7 @@ def ensure_project_finalization_schema(conn: sqlite3.Connection) -> None:
         _ensure_required_indexes(conn)
         _validate_required_indexes(conn)
         _validate_migration_metadata(conn)
+        _ensure_terminal_fence_triggers(conn)
         conn.execute(
             "INSERT INTO project_finalization_meta (key, value) VALUES (?, ?) "
             "ON CONFLICT(key) DO UPDATE SET value=excluded.value",
@@ -707,6 +930,9 @@ def _row_to_project_finalization(row: sqlite3.Row) -> ProjectFinalization:
         notification_route_identity=row["notification_route_identity"],
         checker_candidate_snapshot_version=row["checker_candidate_snapshot_version"],
         checker_candidate_id=row["checker_candidate_id"],
+        terminal_intent=row["terminal_intent"],
+        terminal_candidate_snapshot_version=row["terminal_candidate_snapshot_version"],
+        artifact_candidate_snapshot_version=row["artifact_candidate_snapshot_version"],
         repair_generation=int(row["repair_generation"]),
         repair_budget=int(row["repair_budget"]),
         notification_policy=row["notification_policy"],
@@ -839,6 +1065,11 @@ def validate_state(state: str) -> None:
 def validate_sha256(sha: Optional[str]) -> None:
     if sha is not None and not _SHA256_RE.match(sha):
         raise ValueError(f"invalid sha256 (must be 64 lowercase hex): {sha!r}")
+
+
+def validate_candidate_snapshot_version(value: str) -> None:
+    if not isinstance(value, str) or not _CANDIDATE_SNAPSHOT_RE.fullmatch(value):
+        raise ValueError("candidate_snapshot_version must be sha256:<64 lowercase hex>")
 
 
 def validate_cleanup_after(cleanup_after: object) -> None:
@@ -1240,6 +1471,175 @@ def record_checker_verdict(
         return _row_to_project_finalization(new_row)
 
 
+def freeze_terminal_candidate(
+    conn: sqlite3.Connection,
+    *,
+    board_id: str,
+    root_task_id: str,
+    generation: int,
+    outcome: str,
+    candidate_snapshot_version: str,
+    lock_owner: str,
+    evaluation_time: int,
+) -> ProjectFinalization:
+    """Freeze the exact terminal candidate before publication or delivery.
+
+    The live evaluator is re-run inside the write transaction, so the fence
+    cannot bind a stale caller snapshot.  Once persisted, database triggers
+    reject every candidate-affecting writer until the matching terminal CAS.
+    """
+    validate_generation(generation)
+    validate_terminal_outcome(outcome)
+    validate_candidate_snapshot_version(candidate_snapshot_version)
+    if not lock_owner:
+        raise ValueError("lock_owner is required")
+    if not isinstance(evaluation_time, int) or isinstance(evaluation_time, bool):
+        raise ValueError("evaluation_time must be an integer")
+
+    with write_txn(conn):
+        row = _get_project_finalization_row(conn, board_id, root_task_id, generation)
+        if row is None:
+            raise ValueError("project finalization does not exist")
+        if row["terminal_outcome"] is not None:
+            raise ValueError("project finalization is already terminal")
+        if (
+            row["lock_owner"] != lock_owner
+            or int(row["lock_expires_at"] or 0) < evaluation_time
+        ):
+            raise ValueError("current finalization lock is required")
+
+        from hermes_cli.project_finalizer import evaluate_project
+
+        evaluation = evaluate_project(
+            conn,
+            board_id=board_id,
+            root_task_id=root_task_id,
+            generation=generation,
+            evaluation_time=evaluation_time,
+        )
+        expected_state = {
+            "COMPLETE": "COMPLETE_ELIGIBLE",
+            "BLOCKED": "BLOCKED",
+            "FAILED": "FAILED",
+        }[outcome]
+        if (
+            evaluation.evaluation_state != expected_state
+            or evaluation.terminal_outcome != outcome
+            or evaluation.candidate_snapshot_version != candidate_snapshot_version
+        ):
+            raise ValueError("terminal candidate no longer matches live evaluation")
+        if outcome == "COMPLETE":
+            if row["checker_verdict"] != "PASS":
+                raise ValueError("COMPLETE requires a PASS verdict")
+            if row["admission_key"] is not None and (
+                row["checker_candidate_snapshot_version"]
+                != candidate_snapshot_version
+                or row["checker_candidate_id"] != candidate_snapshot_version
+            ):
+                raise ValueError("COMPLETE requires a PASS bound to the terminal candidate")
+
+        _validate_immutable_persisted_value(row, "terminal_intent", outcome)
+        _validate_immutable_persisted_value(
+            row, "terminal_candidate_snapshot_version", candidate_snapshot_version
+        )
+
+        has_artifacts = any(
+            row[field] is not None
+            for field in (
+                "final_report_path",
+                "final_report_sha256",
+                "manifest_path",
+                "manifest_sha256",
+                "usage_summary_json",
+            )
+        )
+        clear_artifacts = bool(
+            has_artifacts
+            and row["artifact_candidate_snapshot_version"]
+            != candidate_snapshot_version
+        )
+        if clear_artifacts:
+            accepted = conn.execute(
+                """
+                SELECT 1 FROM project_delivery_attempts
+                 WHERE board_id=? AND root_task_id=? AND generation=? AND accepted=1
+                 LIMIT 1
+                """,
+                (board_id, root_task_id, generation),
+            ).fetchone()
+            if accepted is not None:
+                raise ValueError("cannot replace artifacts after accepted delivery")
+
+        clear_checker = bool(
+            row["admission_key"] is not None
+            and outcome != "COMPLETE"
+            and row["checker_verdict"] is not None
+            and (
+                row["checker_candidate_snapshot_version"]
+                != candidate_snapshot_version
+                or row["checker_candidate_id"] != candidate_snapshot_version
+            )
+        )
+        unchanged = (
+            row["terminal_intent"] == outcome
+            and row["terminal_candidate_snapshot_version"]
+            == candidate_snapshot_version
+            and row["state"] == "delivery_pending"
+            and not clear_artifacts
+            and not clear_checker
+        )
+        if unchanged:
+            return _row_to_project_finalization(row)
+
+        updated = conn.execute(
+            """
+            UPDATE project_finalizations
+               SET terminal_intent=?,
+                   terminal_candidate_snapshot_version=?,
+                   state='delivery_pending',
+                   checker_verdict=CASE WHEN ? THEN NULL ELSE checker_verdict END,
+                   checker_candidate_snapshot_version=CASE WHEN ? THEN NULL ELSE checker_candidate_snapshot_version END,
+                   checker_candidate_id=CASE WHEN ? THEN NULL ELSE checker_candidate_id END,
+                   final_report_path=CASE WHEN ? THEN NULL ELSE final_report_path END,
+                   final_report_sha256=CASE WHEN ? THEN NULL ELSE final_report_sha256 END,
+                   manifest_path=CASE WHEN ? THEN NULL ELSE manifest_path END,
+                   manifest_sha256=CASE WHEN ? THEN NULL ELSE manifest_sha256 END,
+                   usage_summary_json=CASE WHEN ? THEN NULL ELSE usage_summary_json END,
+                   artifact_candidate_snapshot_version=CASE WHEN ? THEN NULL ELSE artifact_candidate_snapshot_version END,
+                   finalized_at=CASE WHEN ? THEN NULL ELSE finalized_at END,
+                   updated_at=?, version=version+1
+             WHERE board_id=? AND root_task_id=? AND generation=?
+               AND terminal_outcome IS NULL
+               AND lock_owner=? AND COALESCE(lock_expires_at,0)>=?
+            """,
+            (
+                outcome,
+                candidate_snapshot_version,
+                clear_checker,
+                clear_checker,
+                clear_checker,
+                clear_artifacts,
+                clear_artifacts,
+                clear_artifacts,
+                clear_artifacts,
+                clear_artifacts,
+                clear_artifacts,
+                clear_artifacts,
+                evaluation_time,
+                board_id,
+                root_task_id,
+                generation,
+                lock_owner,
+                evaluation_time,
+            ),
+        )
+        if updated.rowcount != 1:
+            raise RuntimeError("terminal candidate fence compare-and-set failed")
+        frozen = _get_project_finalization_row(conn, board_id, root_task_id, generation)
+        assert frozen is not None
+        return _row_to_project_finalization(frozen)
+
+
 def record_final_artifacts(
     conn: sqlite3.Connection,
     *,
@@ -1251,11 +1651,14 @@ def record_final_artifacts(
     manifest_path: str,
     manifest_sha256: str,
     usage_summary_json: str | None = None,
+    candidate_snapshot_version: str | None = None,
 ) -> ProjectFinalization:
     """Persist final report and manifest identity. Idempotent for identical values."""
     validate_generation(generation)
     validate_sha256(report_sha256)
     validate_sha256(manifest_sha256)
+    if candidate_snapshot_version is not None:
+        validate_candidate_snapshot_version(candidate_snapshot_version)
 
     now = int(time.time())
     with write_txn(conn):
@@ -1267,14 +1670,26 @@ def record_final_artifacts(
             ("final_report_sha256", report_sha256),
             ("manifest_path", manifest_path),
             ("manifest_sha256", manifest_sha256),
+            ("artifact_candidate_snapshot_version", candidate_snapshot_version),
         ):
-            _validate_immutable_persisted_value(row, field, candidate)
+            if candidate is not None:
+                _validate_immutable_persisted_value(row, field, candidate)
+        if candidate_snapshot_version is not None and (
+            row["terminal_candidate_snapshot_version"]
+            != candidate_snapshot_version
+        ):
+            raise ValueError("artifacts must match the frozen terminal candidate")
         # Idempotent if identical
         if (
             row["final_report_path"] == report_path
             and row["final_report_sha256"] == report_sha256
             and row["manifest_path"] == manifest_path
             and row["manifest_sha256"] == manifest_sha256
+            and (
+                candidate_snapshot_version is None
+                or row["artifact_candidate_snapshot_version"]
+                == candidate_snapshot_version
+            )
         ):
             return _row_to_project_finalization(row)
 
@@ -1286,13 +1701,15 @@ def record_final_artifacts(
                    manifest_path = ?,
                    manifest_sha256 = ?,
                    usage_summary_json = COALESCE(?, usage_summary_json),
+                   artifact_candidate_snapshot_version = COALESCE(?, artifact_candidate_snapshot_version),
                    finalized_at = ?,
                    updated_at = ?
              WHERE board_id = ? AND root_task_id = ? AND generation = ?
             """,
             (
                 report_path, report_sha256, manifest_path, manifest_sha256,
-                usage_summary_json, now, now, board_id, root_task_id, generation,
+                usage_summary_json, candidate_snapshot_version, now, now,
+                board_id, root_task_id, generation,
             ),
         )
         new_row = _get_project_finalization_row(conn, board_id, root_task_id, generation)
@@ -1307,6 +1724,9 @@ def record_terminal_outcome(
     generation: int,
     outcome: str,
     blocker_json: str | None = None,
+    candidate_snapshot_version: str | None = None,
+    lock_owner: str | None = None,
+    now: int | None = None,
 ) -> ProjectFinalization:
     """Record the terminal project outcome (COMPLETE / BLOCKED / FAILED).
 
@@ -1314,8 +1734,10 @@ def record_terminal_outcome(
     """
     validate_generation(generation)
     validate_terminal_outcome(outcome)
+    if candidate_snapshot_version is not None:
+        validate_candidate_snapshot_version(candidate_snapshot_version)
 
-    now = int(time.time())
+    now_ts = int(time.time()) if now is None else int(now)
     # Map outcome to a terminal-ish state (keeps state and outcome separate per spec)
     state_map = {
         "COMPLETE": "complete",
@@ -1331,6 +1753,19 @@ def record_terminal_outcome(
         _validate_immutable_persisted_value(row, "terminal_outcome", outcome)
         if row["terminal_outcome"] == outcome:
             return _row_to_project_finalization(row)
+        if row["terminal_candidate_snapshot_version"] is not None:
+            if (
+                row["terminal_intent"] != outcome
+                or candidate_snapshot_version
+                != row["terminal_candidate_snapshot_version"]
+            ):
+                raise ValueError("terminal outcome does not match frozen candidate")
+            if (
+                not lock_owner
+                or row["lock_owner"] != lock_owner
+                or int(row["lock_expires_at"] or 0) < now_ts
+            ):
+                raise ValueError("current finalization lock is required")
 
         conn.execute(
             """
@@ -1342,7 +1777,7 @@ def record_terminal_outcome(
                    updated_at = ?
              WHERE board_id = ? AND root_task_id = ? AND generation = ?
             """,
-            (outcome, target_state, blocker_json, now, now, board_id, root_task_id, generation),
+            (outcome, target_state, blocker_json, now_ts, now_ts, board_id, root_task_id, generation),
         )
         new_row = _get_project_finalization_row(conn, board_id, root_task_id, generation)
         return _row_to_project_finalization(new_row)

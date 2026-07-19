@@ -737,6 +737,76 @@ def register_project_checker(
         if not _token_matches(project_row, expected_token, now=current_time):
             return AtomicCheckerRegistration(REGISTRATION_STALE_SNAPSHOT)
 
+        if (
+            project_row["terminal_candidate_snapshot_version"]
+            == action.candidate_snapshot_version
+        ):
+            # A frozen candidate is already in publication/delivery. It must
+            # finish through that terminal intent, not acquire new authority.
+            return AtomicCheckerRegistration(REGISTRATION_STALE_SNAPSHOT)
+
+        has_artifacts = any(
+            project_row[field] is not None
+            for field in (
+                "final_report_path",
+                "final_report_sha256",
+                "manifest_path",
+                "manifest_sha256",
+                "usage_summary_json",
+            )
+        )
+        reset_stale_artifacts = bool(
+            (
+                project_row["terminal_candidate_snapshot_version"] is not None
+                and project_row["terminal_candidate_snapshot_version"]
+                != action.candidate_snapshot_version
+            )
+            or (
+                has_artifacts
+                and project_row["artifact_candidate_snapshot_version"]
+                != action.candidate_snapshot_version
+            )
+        )
+        if reset_stale_artifacts:
+            accepted = conn.execute(
+                """
+                SELECT 1 FROM project_delivery_attempts
+                 WHERE board_id=? AND root_task_id=? AND generation=? AND accepted=1
+                 LIMIT 1
+                """,
+                (
+                    action.project.board_id,
+                    action.project.root_task_id,
+                    action.project.generation,
+                ),
+            ).fetchone()
+            if accepted is not None:
+                return AtomicCheckerRegistration(REGISTRATION_STALE_SNAPSHOT)
+            # Disable a stale/pre-migration fence inside this atomic recovery
+            # transaction so member triggers permit the replacement checker.
+            # The final CAS below clears the obsolete artifact identity; all
+            # previously published files remain immutable on disk.
+            prepared = conn.execute(
+                """
+                UPDATE project_finalizations
+                   SET terminal_intent=NULL,
+                       terminal_candidate_snapshot_version=NULL
+                 WHERE board_id=? AND root_task_id=? AND generation=?
+                   AND version=? AND lock_owner=?
+                   AND COALESCE(lock_expires_at,0)>=?
+                """,
+                (
+                    action.project.board_id,
+                    action.project.root_task_id,
+                    action.project.generation,
+                    expected_token.project_version,
+                    expected_token.lock_token,
+                    current_time,
+                ),
+            )
+            if prepared.rowcount != 1:
+                return AtomicCheckerRegistration(REGISTRATION_STALE_SNAPSHOT)
+
         route_rows = _resolve_route_rows(
             conn,
             board_id=action.project.board_id,
@@ -808,6 +878,13 @@ def register_project_checker(
                    checker_verdict = NULL,
                    checker_candidate_snapshot_version = ?,
                    checker_candidate_id = ?,
+                   final_report_path=CASE WHEN ? THEN NULL ELSE final_report_path END,
+                   final_report_sha256=CASE WHEN ? THEN NULL ELSE final_report_sha256 END,
+                   manifest_path=CASE WHEN ? THEN NULL ELSE manifest_path END,
+                   manifest_sha256=CASE WHEN ? THEN NULL ELSE manifest_sha256 END,
+                   usage_summary_json=CASE WHEN ? THEN NULL ELSE usage_summary_json END,
+                   artifact_candidate_snapshot_version=CASE WHEN ? THEN NULL ELSE artifact_candidate_snapshot_version END,
+                   finalized_at=CASE WHEN ? THEN NULL ELSE finalized_at END,
                    state = 'evaluating',
                    updated_at = ?,
                    version = version + 1
@@ -819,6 +896,13 @@ def register_project_checker(
                 task_id,
                 action.candidate_snapshot_version,
                 action.candidate_id,
+                reset_stale_artifacts,
+                reset_stale_artifacts,
+                reset_stale_artifacts,
+                reset_stale_artifacts,
+                reset_stale_artifacts,
+                reset_stale_artifacts,
+                reset_stale_artifacts,
                 current_time,
                 action.project.board_id,
                 action.project.root_task_id,

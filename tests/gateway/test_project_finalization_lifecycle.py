@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import sqlite3
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
@@ -388,6 +389,155 @@ def test_failed_required_task_delivers_distinct_failed_payload(board):
     assert {item["task_id"] for item in manifest["required_tasks"]} == {root}
     assert usage["usage_status"] == "partial"
     assert usage["total_input_tokens"] == 10
+
+
+@pytest.mark.parametrize(
+    ("outcome", "checker_verdict"),
+    (("COMPLETE", "PASS"), ("BLOCKED", "FAIL_TERMINAL"), ("FAILED", None)),
+)
+def test_terminal_snapshot_fences_all_candidate_writers_during_async_delivery(
+    board, outcome, checker_verdict
+):
+    root, _, _ = _setup(
+        board,
+        complete_checker=checker_verdict is not None,
+        verdict=checker_verdict,
+    )
+    if outcome == "FAILED":
+        board.execute(
+            "UPDATE tasks SET status='blocked', consecutive_failures=1, "
+            "last_failure_error='worker crashed' WHERE id=?",
+            (root,),
+        )
+        board.execute(
+            "INSERT INTO task_runs "
+            "(task_id, status, started_at, ended_at, outcome, error) "
+            "VALUES (?, 'gave_up', 1, 2, 'gave_up', 'worker crashed')",
+            (root,),
+        )
+    unrelated = _task(board, "unrelated parent")
+    before_task = kb.get_task(board, root)
+    before_counts = {
+        "comments": board.execute(
+            "SELECT COUNT(*) FROM task_comments WHERE task_id=?", (root,)
+        ).fetchone()[0],
+        "attachments": board.execute(
+            "SELECT COUNT(*) FROM task_attachments WHERE task_id=?", (root,)
+        ).fetchone()[0],
+        "runs": board.execute(
+            "SELECT COUNT(*) FROM task_runs WHERE task_id=?", (root,)
+        ).fetchone()[0],
+        "members": board.execute(
+            "SELECT COUNT(*) FROM project_finalization_members WHERE task_id=?",
+            (root,),
+        ).fetchone()[0],
+    }
+    fence_hits = []
+
+    def reprioritize_with_event():
+        with kb.write_txn(board):
+            board.execute("UPDATE tasks SET priority=99 WHERE id=?", (root,))
+            board.execute(
+                "INSERT INTO task_events (task_id, kind, payload, created_at) "
+                "VALUES (?, 'reprioritized', '{}', 100)",
+                (root,),
+            )
+
+    mutators = (
+        ("title", lambda: board.execute("UPDATE tasks SET title='changed' WHERE id=?", (root,))),
+        ("body", lambda: board.execute("UPDATE tasks SET body='changed' WHERE id=?", (root,))),
+        ("status", lambda: board.execute("UPDATE tasks SET status='todo' WHERE id=?", (root,))),
+        ("assign", lambda: kb.assign_task(board, root, "other-profile")),
+        ("priority-event", reprioritize_with_event),
+        ("comment", lambda: kb.add_comment(board, root, "reviewer", "late note")),
+        (
+            "attachment",
+            lambda: kb.add_attachment(
+                board,
+                root,
+                filename="late.txt",
+                stored_path="C:/tmp/late.txt",
+            ),
+        ),
+        ("link", lambda: kb.link_tasks(board, unrelated, root)),
+        (
+            "run",
+            lambda: board.execute(
+                "INSERT INTO task_runs (task_id, status, started_at) "
+                "VALUES (?, 'running', 100)",
+                (root,),
+            ),
+        ),
+        (
+            "event",
+            lambda: board.execute(
+                "INSERT INTO task_events (task_id, kind, created_at) "
+                "VALUES (?, 'edited', 100)",
+                (root,),
+            ),
+        ),
+        (
+            "membership",
+            lambda: board.execute(
+                "DELETE FROM project_finalization_members WHERE task_id=?", (root,)
+            ),
+        ),
+    )
+
+    async def deliver(*_):
+        frozen = get_project_finalization(
+            board, board_id="default", root_task_id=root, generation=1
+        )
+        assert frozen.terminal_intent == outcome
+        assert frozen.terminal_candidate_snapshot_version is not None
+        for label, mutate in mutators:
+            with pytest.raises(
+                (kb.ProjectCandidateFrozenError, sqlite3.IntegrityError),
+                match="project .*candidate is frozen",
+            ):
+                mutate()
+            fence_hits.append(label)
+        return {"provider_message_id": f"accepted-{outcome.lower()}"}
+
+    service = ProjectFinalizationService(
+        kb.connect,
+        owner="terminal-fence-test",
+        now=lambda: 100,
+        deliver=deliver,
+        enabled=True,
+        canary_scope=("*",),
+    )
+    result = _run(service)
+
+    assert result.delivered == result.terminalized == 1
+    assert len(fence_hits) == len(mutators)
+    terminal = get_project_finalization(
+        board, board_id="default", root_task_id=root, generation=1
+    )
+    assert terminal.terminal_outcome == outcome
+    after_task = kb.get_task(board, root)
+    assert (after_task.title, after_task.body, after_task.status, after_task.priority) == (
+        before_task.title,
+        before_task.body,
+        before_task.status,
+        before_task.priority,
+    )
+    assert board.execute(
+        "SELECT COUNT(*) FROM task_comments WHERE task_id=?", (root,)
+    ).fetchone()[0] == before_counts["comments"]
+    assert board.execute(
+        "SELECT COUNT(*) FROM task_attachments WHERE task_id=?", (root,)
+    ).fetchone()[0] == before_counts["attachments"]
+    assert board.execute(
+        "SELECT COUNT(*) FROM task_runs WHERE task_id=?", (root,)
+    ).fetchone()[0] == before_counts["runs"]
+    assert board.execute(
+        "SELECT COUNT(*) FROM project_finalization_members WHERE task_id=?", (root,)
+    ).fetchone()[0] == before_counts["members"]
+    assert board.execute(
+        "SELECT COUNT(*) FROM task_links WHERE parent_id=? AND child_id=?",
+        (unrelated, root),
+    ).fetchone()[0] == 0
 
 
 def test_ambiguous_receipt_is_persisted_without_blind_resend(board):

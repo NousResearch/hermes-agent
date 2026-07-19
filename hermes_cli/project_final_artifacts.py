@@ -45,6 +45,7 @@ class ProjectFinalizationSnapshot:
     board_id: str
     root_task_id: str
     generation: int
+    candidate_snapshot_version: str | None = None
     goal: str = ""
     title: str = ""
     root_goal: str | None = None
@@ -210,6 +211,9 @@ def _validate_snapshot(snapshot: ProjectFinalizationSnapshot) -> None:
     if "/" in snapshot.root_task_id or "\\" in snapshot.root_task_id or snapshot.root_task_id in {".", ".."}:
         raise ValueError("root_task_id must be a single safe path component")
     validate_generation(snapshot.generation)
+    if snapshot.candidate_snapshot_version is not None:
+        from hermes_cli.project_finalization_contract import validate_candidate_snapshot_version
+        validate_candidate_snapshot_version(snapshot.candidate_snapshot_version)
     if snapshot.terminal_outcome is None:
         raise ValueError("terminal_outcome is required")
     validate_terminal_outcome(snapshot.terminal_outcome)
@@ -254,7 +258,11 @@ def _safe_board_id(board_id: str) -> str:
 def artifact_root(snapshot: ProjectFinalizationSnapshot, *, hermes_home: Path | None = None) -> Path:
     _validate_snapshot(snapshot)
     home = Path(hermes_home) if hermes_home is not None else get_hermes_home()
-    return home / "reports" / "project-finalization" / _safe_board_id(snapshot.board_id) / snapshot.root_task_id / f"generation-{snapshot.generation}"
+    root = home / "reports" / "project-finalization" / _safe_board_id(snapshot.board_id) / snapshot.root_task_id / f"generation-{snapshot.generation}"
+    if snapshot.candidate_snapshot_version is not None:
+        digest = snapshot.candidate_snapshot_version.removeprefix("sha256:")
+        root = root / f"candidate-{digest}"
+    return root
 
 
 def _section_value(value: Any) -> str:
@@ -323,6 +331,7 @@ def _manifest(snapshot: ProjectFinalizationSnapshot, root_path: Path, report_pat
         "board_id": snapshot.board_id,
         "root_task_id": snapshot.root_task_id,
         "generation": snapshot.generation,
+        "candidate_snapshot_version": snapshot.candidate_snapshot_version,
         "terminal_outcome": snapshot.terminal_outcome,
         "checker_task_id": snapshot.checker_task_id,
         "checker_verdict": snapshot.checker_verdict,
@@ -451,6 +460,7 @@ def publish_project_final_artifacts(conn: Any, snapshot: ProjectFinalizationSnap
             report_path=published.report_path, report_sha256=published.report_sha256,
             manifest_path=published.manifest_path, manifest_sha256=published.manifest_sha256,
             usage_summary_json=published.usage_summary_json,
+            candidate_snapshot_version=snapshot.candidate_snapshot_version,
         )
         if (
             recorded.final_report_path != published.report_path
@@ -458,6 +468,8 @@ def publish_project_final_artifacts(conn: Any, snapshot: ProjectFinalizationSnap
             or recorded.manifest_path != published.manifest_path
             or recorded.manifest_sha256 != published.manifest_sha256
             or recorded.usage_summary_json != published.usage_summary_json
+            or recorded.artifact_candidate_snapshot_version
+            != snapshot.candidate_snapshot_version
         ):
             raise ValueError("persisted artifact identity verification failed")
         return published

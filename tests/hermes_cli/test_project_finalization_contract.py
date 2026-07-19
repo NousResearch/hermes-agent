@@ -238,6 +238,9 @@ def test_populated_v1_schema_migrates_additively_and_preserves_finalization_row(
             "    notification_route_identity TEXT,\n",
             "    checker_candidate_snapshot_version TEXT,\n",
             "    checker_candidate_id  TEXT,\n",
+            "    terminal_intent       TEXT,\n",
+            "    terminal_candidate_snapshot_version TEXT,\n",
+            "    artifact_candidate_snapshot_version TEXT,\n",
         ):
             legacy_finalizations = legacy_finalizations.replace(column, "")
         conn.executescript(legacy_finalizations)
@@ -263,6 +266,9 @@ def test_populated_v1_schema_migrates_additively_and_preserves_finalization_row(
             "notification_route_identity",
             "checker_candidate_snapshot_version",
             "checker_candidate_id",
+            "terminal_intent",
+            "terminal_candidate_snapshot_version",
+            "artifact_candidate_snapshot_version",
         } <= columns
         row = conn.execute("SELECT * FROM project_finalizations").fetchone()
         assert row["board_id"] == "board"

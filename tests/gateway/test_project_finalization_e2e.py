@@ -148,13 +148,15 @@ def test_admitted_project_passes_checker_delivers_once_and_replays_safely(
             )
         delivery_race_fences.append("result")
         delivery_calls.append((platform, chat_id, thread_id, message))
+        if len(delivery_calls) == 1:
+            return {"rejected": True, "error": "provider refused first attempt"}
         return {"provider_message_id": "telegram-message-1"}
 
-    clock = iter(range(200, 220))
+    clock = {"now": 200}
     service = ProjectFinalizationService(
         lambda: kb.connect(db_path),
         owner="e2e-finalizer",
-        now=lambda: next(clock),
+        now=lambda: clock["now"],
         deliver=accepted_delivery,
         enabled=True,
         canary_scope=(f"{BOARD}/{root}",),
@@ -235,11 +237,23 @@ def test_admitted_project_passes_checker_delivers_once_and_replays_safely(
             result="changed after checker approval",
         )
 
-    # Simulate a stale row written by an older process that lacked the public
-    # mutation fence. The evaluator must invalidate the old PASS, rotate one
-    # checker onto the changed candidate, and publish/deliver nothing.
+    # Simulate an older process reopening required work after PASS. Unfinished
+    # implementation takes precedence: no replacement checker may be minted or
+    # claimed until the required member is terminal again.
+    conn.execute("UPDATE tasks SET status='todo' WHERE id=?", (root,))
+    reopened_tick = asyncio.run(service.tick(board_id=BOARD))
+    reopened_aggregate = get_project_finalization(
+        conn, board_id=BOARD, root_task_id=root, generation=1
+    )
+    assert reopened_tick.checkers_reconciled == 0
+    assert reopened_tick.delivered == reopened_tick.terminalized == 0
+    assert reopened_aggregate.final_checker_task_id == checker_id
+    assert kb.get_task(conn, checker_id).status == "done"
+
+    # Once required work is terminal again, the stale PASS must rotate exactly
+    # one checker onto the changed candidate and still publish nothing.
     conn.execute(
-        "UPDATE tasks SET assignee='builder-terra' WHERE id=?",
+        "UPDATE tasks SET status='done', assignee='builder-terra' WHERE id=?",
         (root,),
     )
     stale_pass_tick = asyncio.run(service.tick(board_id=BOARD))
@@ -276,23 +290,84 @@ def test_admitted_project_passes_checker_delivers_once_and_replays_safely(
     assert replacement_verdict.completed is True
     checker_id = replacement_checker_id
 
+    rejected = asyncio.run(service.tick(board_id=BOARD))
+    rejected_project = get_project_finalization(
+        conn, board_id=BOARD, root_task_id=root, generation=1
+    )
+    assert rejected.delivered == rejected.terminalized == 0
+    assert rejected_project.terminal_outcome is None
+    assert rejected_project.final_report_path and rejected_project.manifest_path
+    old_manifest = json.loads(
+        Path(rejected_project.manifest_path).read_text(encoding="utf-8")
+    )
+    old_artifacts = {
+        path: Path(path).read_bytes()
+        for path in (
+            rejected_project.final_report_path,
+            rejected_project.manifest_path,
+            old_manifest["usage_summary_path"],
+        )
+    }
+
+    # Reproduce a pre-fence/older-writer row after rejected delivery. Recovery
+    # must preserve the old files, rotate authority, and allow a new immutable
+    # candidate generation to use the existing retry ledger.
+    conn.execute(
+        "UPDATE project_finalizations SET terminal_intent=NULL, "
+        "terminal_candidate_snapshot_version=NULL WHERE root_task_id=?",
+        (root,),
+    )
+    conn.execute(
+        "UPDATE tasks SET body='candidate changed after rejected delivery' WHERE id=?",
+        (implementation,),
+    )
+    stale_artifact_tick = asyncio.run(service.tick(board_id=BOARD))
+    stale_artifact_project = get_project_finalization(
+        conn, board_id=BOARD, root_task_id=root, generation=1
+    )
+    assert stale_artifact_tick.checkers_reconciled == 1
+    assert stale_artifact_tick.delivered == stale_artifact_tick.terminalized == 0
+    assert stale_artifact_project.final_report_path is None
+    assert stale_artifact_project.manifest_path is None
+    assert all(Path(path).read_bytes() == content for path, content in old_artifacts.items())
+
+    final_checker_id = stale_artifact_project.final_checker_task_id
+    assert final_checker_id != checker_id
+    final_claim = kb.claim_task(conn, final_checker_id, claimer="e2e-final-checker")
+    assert final_claim is not None and final_claim.current_run_id is not None
+    runtime.submit_project_checker_verdict(
+        conn,
+        board_id=BOARD,
+        task_id=final_checker_id,
+        run_id=final_claim.current_run_id,
+        worker_profile=CHECKER_PROFILE,
+        verdict="PASS",
+        reason="post-rejection candidate received fresh independent review",
+        evidence=evidence,
+        summary="final checker passed the recovered candidate",
+        now=213,
+    )
+    checker_id = final_checker_id
+    clock["now"] = 300
     finalized = asyncio.run(service.tick(board_id=BOARD))
-    assert finalized.delivered == 1
-    assert finalized.terminalized == 1
+    assert finalized.delivered == finalized.terminalized == 1
     terminal = get_project_finalization(
         conn, board_id=BOARD, root_task_id=root, generation=1
     )
     assert terminal is not None
     assert terminal.terminal_outcome == "COMPLETE"
     assert terminal.checker_verdict == "PASS"
-    assert len(delivery_calls) == 1
-    assert delivery_race_fences == ["assign", "result"]
-    assert delivery_calls[0][:3] == ("telegram", CHAT_ID, THREAD_ID)
+    assert len(delivery_calls) == 2
+    assert delivery_race_fences == ["assign", "result", "assign", "result"]
+    assert all(call[:3] == ("telegram", CHAT_ID, THREAD_ID) for call in delivery_calls)
+    assert terminal.final_report_path not in old_artifacts
+    assert terminal.manifest_path not in old_artifacts
+    assert all(Path(path).read_bytes() == content for path, content in old_artifacts.items())
 
     terminal_replay = asyncio.run(service.tick(board_id=BOARD))
     assert terminal_replay.delivered == 0
     assert terminal_replay.terminalized == 0
-    assert len(delivery_calls) == 1
+    assert len(delivery_calls) == 2
     attempts = list_delivery_attempts(
         conn,
         board_id=BOARD,
@@ -302,8 +377,9 @@ def test_admitted_project_passes_checker_delivers_once_and_replays_safely(
         destination_reference=CHAT_ID,
         message_kind="project_complete",
     )
-    assert len(attempts) == 1
-    assert attempts[0].delivery_state == "accepted"
+    assert [attempt.attempt_number for attempt in attempts] == [1, 2]
+    assert attempts[0].delivery_state == "retry_scheduled"
+    assert attempts[1].delivery_state == "accepted"
 
     members = list_project_members(
         conn, board_id=BOARD, root_task_id=root, generation=1
@@ -315,7 +391,7 @@ def test_admitted_project_passes_checker_delivers_once_and_replays_safely(
         event.kind == "project_checker_registered"
         for task in kb.list_tasks(conn, include_archived=True)
         for event in kb.list_events(conn, task.id)
-    ) == 2
+    ) == 3
 
 
 def test_repairable_verdict_rotates_authority_and_fresh_checker_can_pass(

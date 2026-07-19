@@ -44,6 +44,7 @@ from hermes_cli.project_final_artifacts import (
 from hermes_cli.project_finalization_contract import (
     acquire_finalization_lock,
     ensure_project_finalization_schema,
+    freeze_terminal_candidate,
     get_project_finalization,
     list_project_finalizations,
     list_project_members,
@@ -254,7 +255,17 @@ class ProjectFinalizationService:
     async def _finalize(self, conn: sqlite3.Connection, current: Any, evaluation: ProjectEvaluation, outcome: str, result: ProjectFinalizationTickResult, now: int) -> ProjectFinalizationTickResult:
         if not self._owns_lock(current, now):
             return result.plus(skipped=1)
-        snapshot = self._artifact_snapshot(conn, current, evaluation, outcome)
+        frozen = freeze_terminal_candidate(
+            conn,
+            board_id=current.board_id,
+            root_task_id=current.root_task_id,
+            generation=current.generation,
+            outcome=outcome,
+            candidate_snapshot_version=evaluation.candidate_snapshot_version,
+            lock_owner=self._owner,
+            evaluation_time=now,
+        )
+        snapshot = self._artifact_snapshot(conn, frozen, evaluation, outcome)
         published = publish_project_final_artifacts(conn, snapshot)
         durable = get_project_finalization(conn, board_id=current.board_id, root_task_id=current.root_task_id, generation=current.generation)
         if durable is None:
@@ -264,7 +275,17 @@ class ProjectFinalizationService:
             # No route is safe to infer. Persist a terminal technical outcome only
             # for non-success states; success remains nonterminal until delivery.
             if outcome != "COMPLETE":
-                record_terminal_outcome(conn, board_id=current.board_id, root_task_id=current.root_task_id, generation=current.generation, outcome=outcome, blocker_json=json.dumps({"reason": destination.reason}, sort_keys=True))
+                record_terminal_outcome(
+                    conn,
+                    board_id=current.board_id,
+                    root_task_id=current.root_task_id,
+                    generation=current.generation,
+                    outcome=outcome,
+                    blocker_json=json.dumps({"reason": destination.reason}, sort_keys=True),
+                    candidate_snapshot_version=evaluation.candidate_snapshot_version,
+                    lock_owner=self._owner,
+                    now=now,
+                )
                 return result.plus(terminalized=1)
             return result.plus(skipped=1)
         message_kind = f"project_{outcome.lower()}"
@@ -276,10 +297,21 @@ class ProjectFinalizationService:
             return result.plus(skipped=1)
         if delivered != DELIVERY_ACCEPTED:
             return result.plus(skipped=1)
+        final_now = self._now()
         refreshed = get_project_finalization(conn, board_id=current.board_id, root_task_id=current.root_task_id, generation=current.generation)
-        if refreshed is None or not self._owns_lock(refreshed, self._now()):
+        if refreshed is None or not self._owns_lock(refreshed, final_now):
             return result.plus(skipped=1)
-        record_terminal_outcome(conn, board_id=current.board_id, root_task_id=current.root_task_id, generation=current.generation, outcome=outcome, blocker_json=(json.dumps({"reason": evaluation.failure_reason}, sort_keys=True) if outcome != "COMPLETE" else None))
+        record_terminal_outcome(
+            conn,
+            board_id=current.board_id,
+            root_task_id=current.root_task_id,
+            generation=current.generation,
+            outcome=outcome,
+            blocker_json=(json.dumps({"reason": evaluation.failure_reason}, sort_keys=True) if outcome != "COMPLETE" else None),
+            candidate_snapshot_version=evaluation.candidate_snapshot_version,
+            lock_owner=self._owner,
+            now=final_now,
+        )
         if self._cleanup_enabled:
             cleanup_after = (datetime.fromtimestamp(now, UTC) + timedelta(days=current.retention_days)).strftime("%Y-%m-%dT%H:%M:%SZ")
             schedule_project_cleanup(conn, board_id=current.board_id, root_task_id=current.root_task_id, generation=current.generation, cleanup_after=cleanup_after)
@@ -436,6 +468,7 @@ class ProjectFinalizationService:
             board_id=current.board_id,
             root_task_id=current.root_task_id,
             generation=current.generation,
+            candidate_snapshot_version=evaluation.candidate_snapshot_version,
             goal=getattr(root, "title", "") or "project finalization",
             title=getattr(root, "title", "") or "project finalization",
             terminal_outcome=outcome,

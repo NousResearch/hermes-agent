@@ -12,9 +12,11 @@
 import { atom, type PluginRestOptions, type PluginStorage, queryClient } from '@hermes/plugin-sdk'
 
 import type {
+  BoardMeta,
   BoardsResponse,
   KanbanBoard,
   KanbanProfile,
+  KanbanProject,
   KanbanTask,
   KanbanTaskDetail,
   OrchestrationSettings,
@@ -113,6 +115,7 @@ export const taskKey = (slug: string, id: string) => ['kanban', 'task', slug, id
 export const logKey = (slug: string, id: string) => ['kanban', 'log', slug, id] as const
 export const BOARDS_KEY = ['kanban', 'boards'] as const
 export const PROFILES_KEY = ['kanban', 'profiles'] as const
+export const PROJECTS_KEY = ['kanban', 'projects'] as const
 export const ORCHESTRATION_KEY = ['kanban', 'orchestration'] as const
 
 // ── reads ─────────────────────────────────────────────────────────────────────
@@ -128,6 +131,9 @@ export const fetchLog = (id: string) => call<WorkerLog>(withBoard(`/tasks/${id}/
 export const fetchBoards = () => call<BoardsResponse>('/boards')
 
 export const fetchProfiles = () => call<{ profiles: KanbanProfile[] }>('/profiles')
+
+/** First-class Hermes projects, for scoping a board's default workspace. */
+export const fetchProjects = () => call<{ projects: KanbanProject[] }>('/projects')
 
 export const fetchOrchestration = () => call<OrchestrationSettings>('/orchestration')
 
@@ -191,8 +197,16 @@ export const reclaimTask = (id: string) => nudged(call(withBoard(`/tasks/${id}/r
 export const uploadAttachment = (id: string, upload: { filename: string; contentType?: string; bytes: ArrayBuffer }) =>
   call(withBoard(`/tasks/${id}/attachments`), { method: 'POST', upload })
 
-export const createBoard = (slug: string, name: string) =>
-  call<{ board: { slug: string } }>('/boards', { method: 'POST', body: { slug, name } })
+export const createBoard = (slug: string, name: string, projectId?: string) =>
+  call<{ board: { slug: string } }>('/boards', {
+    method: 'POST',
+    body: { slug, name, ...(projectId ? { project_id: projectId } : {}) }
+  })
+
+/** Edit a board's display metadata + default project directory. Pass
+ *  `default_workdir: ''` to clear it. Slug is immutable. */
+export const updateBoard = (slug: string, patch: Record<string, unknown>) =>
+  call<{ board: BoardMeta }>(`/boards/${encodeURIComponent(slug)}`, { method: 'PATCH', body: patch })
 
 export const nudgeDispatcher = () => call<{ spawned?: unknown[] }>(withBoard('/dispatch'), { method: 'POST', body: {} })
 

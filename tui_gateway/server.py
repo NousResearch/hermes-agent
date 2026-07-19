@@ -3699,6 +3699,35 @@ def _session_usage_snapshot(session: dict | None) -> dict:
     return dict(mirror_usage) if isinstance(mirror_usage, dict) else {}
 
 
+def _project_info_for_cwd(cwd: str) -> dict | None:
+    """Return the first-class Project owning ``cwd`` for UI status surfaces.
+
+    Backed by the per-profile projects.db (the same store the desktop's project
+    tree caches), so the TUI status label, the desktop status bar, and ``/status``
+    all name the session's workspace identically. Only explicit, named projects
+    resolve here — an auto-discovered repo root has no projects.db row, so it
+    falls back to the cwd leaf on every surface.
+    """
+    if not str(cwd or "").strip():
+        return None
+    try:
+        from hermes_cli import projects_db as pdb
+
+        with pdb.connect_closing() as conn:
+            project = pdb.project_for_path(conn, cwd)
+        if project is None:
+            return None
+        return {
+            "id": project.id,
+            "slug": project.slug,
+            "name": project.name,
+            "primary_path": project.primary_path,
+        }
+    except Exception:
+        logger.debug("failed to resolve project for cwd", exc_info=True)
+        return None
+
+
 def _session_info(agent, session: dict | None = None) -> dict:
     if session is None:
         for candidate in _sessions.values():
@@ -3754,6 +3783,7 @@ def _session_info(agent, session: dict | None = None) -> dict:
         "skills": dict(mirror.get("skills") or {}) if isinstance(mirror.get("skills"), dict) else {},
         "cwd": cwd,
         "branch": _git_branch_for_cwd(cwd),
+        "project": _project_info_for_cwd(cwd),
         "personality": str(personality or ""),
         "running": bool((session or {}).get("running")),
         "title": _session_live_title(session or {}, session_key) if session_key else "",
@@ -4357,7 +4387,12 @@ def _apply_project_workspace(task_id: str, path: str, _name: str = "") -> None:
         info = (
             _session_info(agent, session)
             if agent is not None
-            else {"cwd": resolved, "branch": _git_branch_for_cwd(resolved), "lazy": True}
+            else {
+                "cwd": resolved,
+                "branch": _git_branch_for_cwd(resolved),
+                "project": _project_info_for_cwd(resolved),
+                "lazy": True,
+            }
         )
         _emit("session.info", sid, info)
     except Exception:
@@ -5812,6 +5847,7 @@ def _(rid, params: dict) -> dict:
                 "skills": {},
                 "cwd": _sessions[sid]["cwd"],
                 "branch": _git_branch_for_cwd(_sessions[sid]["cwd"]),
+                "project": _project_info_for_cwd(_sessions[sid]["cwd"]),
                 "lazy": True,
                 "desktop_contract": DESKTOP_BACKEND_CONTRACT,
                 "profile_name": _current_profile_name(),
@@ -5958,6 +5994,7 @@ def _lazy_resume_info(cwd: str, *, model: str = "", provider: str = "") -> dict:
     info = {
         "cwd": cwd,
         "branch": _git_branch_for_cwd(cwd),
+        "project": _project_info_for_cwd(cwd),
         "model": model or _resolve_model(),
         "tools": {},
         "skills": {},
@@ -6452,6 +6489,7 @@ def _(rid, params: dict) -> dict:
     info = _session_info(agent, session) if agent is not None else {
         "cwd": cwd,
         "branch": _git_branch_for_cwd(cwd),
+        "project": _project_info_for_cwd(cwd),
         "lazy": True,
     }
     _emit("session.info", params.get("session_id", ""), info)
@@ -6551,8 +6589,10 @@ def _fallback_session_info(session: dict) -> dict:
     agent = session.get("agent")
     if agent is not None:
         return _session_info(agent)
+    cwd = _default_session_cwd()
     return {
-        "cwd": _default_session_cwd(),
+        "cwd": cwd,
+        "project": _project_info_for_cwd(cwd),
         "lazy": True,
         "model": _resolve_model(),
         "skills": {},
@@ -8618,12 +8658,15 @@ def _(rid, params: dict) -> dict:
     usage = _session_usage_snapshot(session)
     provider = getattr(agent, "provider", None) or mirror.get("provider") or "unknown"
     model = getattr(agent, "model", None) or mirror.get("model") or "(unknown)"
+    project = _project_info_for_cwd(_display_session_cwd(session))
     lines = [
         "Hermes TUI Status",
         "",
         f"Session ID: {key}",
         f"Path: {display_hermes_home()}",
     ]
+    if project:
+        lines.append(f"Project: {project['name']}")
     title = (meta.get("title") or "").strip()
     if title:
         lines.append(f"Title: {title}")
@@ -13982,7 +14025,7 @@ def _(rid, params: dict) -> dict:
     """
     try:
         from hermes_cli.auth import PROVIDER_REGISTRY
-        from hermes_cli.config import is_managed, save_env_value
+        from hermes_cli.config import is_managed
         from hermes_cli.inventory import build_models_payload, load_picker_context
 
         slug = (params.get("slug") or "").strip()
@@ -14006,9 +14049,13 @@ def _(rid, params: dict) -> dict:
         if not pconfig.api_key_env_vars:
             return _err(rid, 4004, f"no env var defined for {pconfig.name}")
 
-        # Save the key to ~/.hermes/.env
+        # Save the key to ~/.hermes/.env via the unified credential lifecycle
+        # so any stale config.yaml mirror of the previous key (model.api_key,
+        # custom_providers[*].api_key) is rotated in the same action (#62269).
         env_var = pconfig.api_key_env_vars[0]
-        save_env_value(env_var, api_key)
+        from hermes_cli.credential_lifecycle import save_provider_env_credential
+
+        save_provider_env_credential(env_var, api_key)
         # Also set in current process so the refreshed inventory sees it.
         import os
 
@@ -14062,7 +14109,7 @@ def _(rid, params: dict) -> dict:
     """
     try:
         from hermes_cli.auth import PROVIDER_REGISTRY, clear_provider_auth
-        from hermes_cli.config import remove_env_value
+        from hermes_cli.credential_lifecycle import remove_provider_env_credential
 
         slug = (params.get("slug") or "").strip()
         if not slug:
@@ -14072,13 +14119,19 @@ def _(rid, params: dict) -> dict:
         cleared_env = False
         cleared_auth = False
 
-        # Remove API key env vars from .env and process
+        # Remove API key env vars from .env and process, plus every mirror
+        # (env-seeded credential_pool entries, provider model cache rows,
+        # value-matched config.yaml api_key copies) via the unified helper —
+        # otherwise the provider resurrects in the picker after restart
+        # (#51071 / #59761).
         if pconfig and pconfig.api_key_env_vars:
             for ev in pconfig.api_key_env_vars:
-                if remove_env_value(ev):
+                if remove_provider_env_credential(ev).get("found"):
                     cleared_env = True
 
-        # Clear OAuth / credential pool state
+        # Clear OAuth / credential pool state. This is a full provider
+        # disconnect (TUI "disconnect" action), so removing OAuth grants
+        # here is the documented intent — unlike the key-only delete paths.
         cleared_auth = clear_provider_auth(slug)
 
         if not cleared_env and not cleared_auth:

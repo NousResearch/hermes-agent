@@ -705,6 +705,7 @@ export const zh: Translations = {
     config: {
       none: '无',
       noneParen: '(无)',
+      builtinOnly: '仅内置',
       notSet: '未设置',
       commaSeparated: '逗号分隔的值',
       loading: '正在加载 Hermes 配置...',
@@ -1004,6 +1005,8 @@ export const zh: Translations = {
       noProviderOptions: '此工具集没有提供方选项；启用后即可使用当前配置。',
       noProviders: '此工具集当前没有可用提供方。',
       ready: '就绪',
+      needsSignIn: '需要登录',
+      needsSetup: '需要安装',
       nousIncluded: '包含在 Nous 订阅中；登录 Nous Portal 即可激活。',
       noApiKeyRequired: '不需要 API 密钥。',
       postSetupHint: step => `此后端需要一次性安装 (${step})。将在此机器上执行，可能需要几分钟。`,
@@ -1023,7 +1026,20 @@ export const zh: Translations = {
       modelInactiveHint: '请先选择此后端，然后再更改其模型。',
       modelSelectedTitle: '模型已选择',
       modelSelectedMessage: model => `${model} 将应用于新会话。`,
-      failedSelectModel: model => `选择 ${model} 失败`
+      failedSelectModel: model => `选择 ${model} 失败`,
+      terminalBackend: {
+        sectionTitle: '执行后端',
+        loading: '正在检查执行后端…',
+        failedLoad: '无法加载终端后端',
+        ready: '就绪',
+        needsSetup: '需要设置',
+        unavailable: '不可用',
+        inUse: '使用中',
+        selectedTitle: '已选择后端',
+        selectedMessage: backend => `终端命令现在通过 ${backend} 运行。将应用于新会话。`,
+        failedSelect: backend => `选择 ${backend} 失败`,
+        needsSetupHint: '现在即可选择此后端——但在完成设置前命令将会失败。'
+      }
     }
   },
 

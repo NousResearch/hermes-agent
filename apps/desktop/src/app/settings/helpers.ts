@@ -1,7 +1,7 @@
 import { asText } from '@/lib/text'
-import type { HermesConfigRecord, ToolsetInfo } from '@/types/hermes'
+import type { ConfigFieldSchema, HermesConfigRecord, ToolsetInfo } from '@/types/hermes'
 
-import { BUILTIN_PERSONALITIES, ENUM_OPTIONS, PROVIDER_GROUPS } from './constants'
+import { BUILTIN_PERSONALITIES, ENUM_OPTIONS, PROVIDER_GROUPS, SECTIONS } from './constants'
 
 // Canonical implementations live in @/lib/text; re-exported here so the many
 // settings/capabilities call sites keep their import path.
@@ -97,6 +97,40 @@ export function getNested(obj: HermesConfigRecord, path: string): unknown {
   return cur
 }
 
+export function inferFieldSchema(value: unknown): ConfigFieldSchema {
+  if (typeof value === 'boolean') {
+    return { type: 'boolean' }
+  }
+
+  if (typeof value === 'number') {
+    return { type: 'number' }
+  }
+
+  if (Array.isArray(value)) {
+    return { type: 'list' }
+  }
+
+  return { type: 'string' }
+}
+
+// Backend schema omits some declared keys (e.g. memory.provider); config presence is the availability signal.
+export function sectionFieldEntries(
+  schema: Record<string, ConfigFieldSchema>,
+  config: HermesConfigRecord
+): Map<string, [string, ConfigFieldSchema][]> {
+  return new Map(
+    SECTIONS.map(s => [
+      s.id,
+      s.keys.flatMap(k => {
+        const value = getNested(config, k)
+        const field = schema[k] ?? (value === undefined ? undefined : inferFieldSchema(value))
+
+        return field ? [[k, field] as [string, ConfigFieldSchema]] : []
+      })
+    ])
+  )
+}
+
 export function setNested(obj: HermesConfigRecord, path: string, value: unknown): HermesConfigRecord {
   const clone = structuredClone(obj)
   const parts = configPathParts(path)
@@ -147,4 +181,17 @@ export function enumOptionsFor(
   const current = asText(value)
 
   return current && !opts.includes(current) ? [...opts, current] : opts
+}
+
+// Built-in memory (MEMORY.md/USER.md) is controlled by memory_enabled, not
+// memory.provider — only a real external plugin name gets provider-shaped
+// affordances (config panel, OAuth connect). See #49513.
+export function isExternalMemoryProvider(value: unknown): value is string {
+  if (typeof value !== 'string') {
+    return false
+  }
+
+  const normalized = value.trim().toLowerCase()
+
+  return normalized !== '' && normalized !== 'builtin' && normalized !== 'built-in' && normalized !== 'none'
 }

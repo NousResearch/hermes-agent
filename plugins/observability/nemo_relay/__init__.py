@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import atexit
 import asyncio
+import contextvars
 import inspect
 import json
 import logging
@@ -12,8 +13,22 @@ import threading
 import tomllib
 from collections.abc import Callable
 from dataclasses import dataclass, field
+from functools import wraps
 from pathlib import Path
 from typing import Any, Optional
+
+from .shared_metrics import SharedMetricsStore
+from .shared_metrics_contract import (
+    MODEL_CALL_SCOPE as _SHARED_METRICS_MODEL_CALL_SCOPE,
+    SCHEMA_KEY as _SHARED_METRICS_SCHEMA_KEY,
+    SCHEMA_VERSION as _SHARED_METRICS_SCHEMA_VERSION,
+    SESSION_SCOPE as _SHARED_METRICS_SESSION_SCOPE,
+    SUBSCRIBER_NAME as _SHARED_METRICS_SUBSCRIBER_NAME,
+    execution_surface as _execution_surface,
+    model_call_fields as _model_call_fields,
+    model_call_outcome as _model_call_outcome,
+)
+from .shared_metrics_subscriber import SharedMetricsSubscriber
 
 logger = logging.getLogger(__name__)
 
@@ -30,13 +45,27 @@ _RELAY_LLM_SURFACE_BY_API_MODE = {
 @dataclass
 class _SessionState:
     session_id: str
+    lock: threading.RLock = field(default_factory=threading.RLock, repr=False)
+    closing: bool = False
     handle: Any = None
+    metrics_handle: Any = None
+    metrics_context: contextvars.Context | None = None
     atif_exporter: Any = None
     atif_subscriber_name: str = ""
     is_embedded_subagent: bool = False
     parent_session_id: str = ""
     llm_spans: dict[str, Any] = field(default_factory=dict)
     tool_spans: dict[str, Any] = field(default_factory=dict)
+    metrics_model_calls: dict[str, "_SharedMetricsModelCall"] = field(
+        default_factory=dict
+    )
+
+
+@dataclass
+class _SharedMetricsModelCall:
+    handle: Any
+    task_id: str
+    fields: dict[str, str]
 
 
 @dataclass
@@ -48,6 +77,7 @@ class _SubagentParent:
 
 @dataclass
 class _Settings:
+    shared_metrics_enabled: bool = False
     plugins_toml_path: str = ""
     plugins_config: dict[str, Any] | None = None
     dynamic_plugins: list[dict[str, Any]] = field(default_factory=list)
@@ -66,20 +96,124 @@ class _Settings:
     atif_model_name: str = "unknown"
 
 
+def _with_session_state_lock(method: Callable[..., Any]) -> Callable[..., Any]:
+    """Serialize one session without blocking unrelated sessions."""
+
+    @wraps(method)
+    def wrapped(
+        self: "_Runtime",
+        event: dict[str, Any],
+        *args: Any,
+        **kwargs: Any,
+    ) -> Any:
+        with self._state_lock:
+            state = self.sessions.get(_session_id(event))
+        if state is None:
+            return None
+        with state.lock:
+            if state.closing:
+                return None
+            return method(self, event, state, *args, **kwargs)
+
+    return wrapped
+
+
+def _with_ensured_session_lock(method: Callable[..., Any]) -> Callable[..., Any]:
+    """Create a missing session, then serialize work scoped to it."""
+
+    @wraps(method)
+    def wrapped(
+        self: "_Runtime",
+        event: dict[str, Any],
+        *args: Any,
+        **kwargs: Any,
+    ) -> Any:
+        state = self.ensure_session(event)
+        with state.lock:
+            if state.closing:
+                return None
+            return method(self, event, state, *args, **kwargs)
+
+    return wrapped
+
+
 class _Runtime:
     def __init__(self, nemo_relay: Any, settings: _Settings) -> None:
         self.nemo_relay = nemo_relay
         self.settings = settings
+        self._state_lock = threading.RLock()
+        self._plugin_lifecycle_lock = threading.RLock()
         self.sessions: dict[str, _SessionState] = {}
         self.subagent_parents: dict[str, _SubagentParent] = {}
         self.atof_exporter: Any = None
         self._atof_subscriber_name = "hermes.nemo_relay.atof"
         self._plugin_activation: Any = None
         self._shutdown_registered = False
+        self.shared_metrics: SharedMetricsSubscriber | None = None
+        if settings.shared_metrics_enabled:
+            try:
+                from hermes_cli import __version__
+
+                self.shared_metrics = SharedMetricsSubscriber(
+                    SharedMetricsStore(),
+                    __version__,
+                )
+            except Exception:
+                logger.warning(
+                    "NeMo Relay shared metrics disabled: local store initialization failed",
+                    exc_info=True,
+                )
+        self._shared_metrics_registered = False
+        self._configure_shared_metrics()
         self._plugin_config_initialized = self._configure_plugins_toml()
         self._plugin_config_needs_reinit = False
         if not self._plugin_config_initialized:
             self._activate_direct_fallbacks()
+
+    def _configure_shared_metrics(self) -> None:
+        if self.shared_metrics is None:
+            return
+        subscribers = getattr(self.nemo_relay, "subscribers", None)
+        register = getattr(subscribers, "register", None)
+        if not callable(register):
+            logger.warning(
+                "NeMo Relay shared metrics disabled: subscriber registration is unavailable"
+            )
+            self.shared_metrics = None
+            return
+        try:
+            register(_SHARED_METRICS_SUBSCRIBER_NAME, self.shared_metrics)
+        except Exception as exc:
+            logger.warning(
+                "NeMo Relay shared metrics subscriber registration failed: %s", exc
+            )
+            self.shared_metrics = None
+            return
+        self._shared_metrics_registered = True
+        self._ensure_shutdown_registered()
+
+    def export_shared_metrics(self) -> list[Path]:
+        """Commit and export model-call deltas after Relay subscriber flush."""
+        if self.shared_metrics is None:
+            return []
+        try:
+            return self.shared_metrics.store.create_and_export_package()
+        except Exception:
+            logger.warning("Hermes shared-metrics package export failed", exc_info=True)
+            return []
+
+    def rich_observability_enabled(self) -> bool:
+        if not self.settings.shared_metrics_enabled:
+            return True
+        return bool(
+            self.settings.atof_enabled
+            or self.settings.atif_enabled
+            or _enabled_component_config(
+                self.settings.plugins_config,
+                "observability",
+            )
+            is not None
+        )
 
     def _configure_plugins_toml(self) -> bool:
         if not self.settings.plugins_config:
@@ -150,7 +284,9 @@ class _Runtime:
                     # before its awaitable resolves, including error results.
                     self._plugin_activation = None
                     self._plugin_config_initialized = False
-                    self._plugin_config_needs_reinit = bool(self.settings.plugins_config)
+                    self._plugin_config_needs_reinit = bool(
+                        self.settings.plugins_config
+                    )
             else:
                 failures.append("dynamic plugin activation has no close method")
         else:
@@ -234,71 +370,268 @@ class _Runtime:
         self.atof_exporter = None
 
     def ensure_session(self, kwargs: dict[str, Any]) -> _SessionState:
-        self._maybe_reinitialize_plugins_toml()
-        session_id = _session_id(kwargs)
-        state = self.sessions.get(session_id)
-        if state is not None:
-            return state
+        with self._plugin_lifecycle_lock:
+            self._maybe_reinitialize_plugins_toml()
+            with self._state_lock:
+                session_id = _session_id(kwargs)
+                state = self.sessions.get(session_id)
+                if state is not None:
+                    self._ensure_shared_metrics_session(state, kwargs)
+                    return state
 
-        state = _SessionState(session_id=session_id)
-        if self.settings.atif_enabled and not self._plugins_toml_owns_exporter("atif"):
-            state.atif_exporter = self.nemo_relay.AtifExporter(
-                session_id,
-                self.settings.atif_agent_name,
-                self.settings.atif_agent_version,
-                model_name=str(kwargs.get("model") or self.settings.atif_model_name),
-                extra={"source": "hermes-agent", "plugin": "observability/nemo_relay"},
+                state = _SessionState(session_id=session_id)
+                if self.rich_observability_enabled():
+                    if (
+                        self.settings.atif_enabled
+                        and not self._plugins_toml_owns_exporter("atif")
+                    ):
+                        state.atif_exporter = self.nemo_relay.AtifExporter(
+                            session_id,
+                            self.settings.atif_agent_name,
+                            self.settings.atif_agent_version,
+                            model_name=str(
+                                kwargs.get("model") or self.settings.atif_model_name
+                            ),
+                            extra={
+                                "source": "hermes-agent",
+                                "plugin": "observability/nemo_relay",
+                            },
+                        )
+                        state.atif_subscriber_name = (
+                            f"hermes.nemo_relay.atif.{session_id}"
+                        )
+                        state.atif_exporter.register(state.atif_subscriber_name)
+
+                    subagent_parent = self.subagent_parents.get(session_id)
+                    metadata = _metadata(kwargs)
+                    parent_handle = None
+                    if subagent_parent is not None:
+                        parent_handle = subagent_parent.parent_handle
+                        metadata = {**metadata, **subagent_parent.metadata}
+                        state.is_embedded_subagent = True
+                        state.parent_session_id = subagent_parent.parent_session_id
+
+                    state.handle = self.nemo_relay.scope.push(
+                        f"hermes-session-{session_id}",
+                        self.nemo_relay.ScopeType.Agent,
+                        handle=parent_handle,
+                        data={"session_id": session_id},
+                        metadata=metadata,
+                    )
+
+                self._ensure_shared_metrics_session(state, kwargs)
+                self.sessions[session_id] = state
+                return state
+
+    def _ensure_shared_metrics_session(
+        self,
+        state: _SessionState,
+        kwargs: dict[str, Any],
+    ) -> None:
+        if (
+            state.closing
+            or not self._shared_metrics_registered
+            or state.metrics_handle is not None
+        ):
+            return
+        metrics_context = contextvars.Context()
+        try:
+            state.metrics_handle = metrics_context.run(
+                self.nemo_relay.scope.push,
+                _SHARED_METRICS_SESSION_SCOPE,
+                self.nemo_relay.ScopeType.Agent,
+                input={"execution_surface": _execution_surface(kwargs)},
+                metadata={_SHARED_METRICS_SCHEMA_KEY: _SHARED_METRICS_SCHEMA_VERSION},
             )
-            state.atif_subscriber_name = f"hermes.nemo_relay.atif.{session_id}"
-            state.atif_exporter.register(state.atif_subscriber_name)
+        except Exception:
+            logger.warning(
+                "NeMo Relay shared-metrics session start failed", exc_info=True
+            )
+            return
+        state.metrics_context = metrics_context
 
-        subagent_parent = self.subagent_parents.get(session_id)
-        metadata = _metadata(kwargs)
-        parent_handle = None
-        if subagent_parent is not None:
-            parent_handle = subagent_parent.parent_handle
-            metadata = {**metadata, **subagent_parent.metadata}
-            state.is_embedded_subagent = True
-            state.parent_session_id = subagent_parent.parent_session_id
+    def _run_in_metrics_context(
+        self,
+        state: _SessionState,
+        callback: Callable[..., Any],
+        *args: Any,
+        **kwargs: Any,
+    ) -> Any:
+        """Run a native lifecycle call against the isolated metrics stack."""
+        if state.metrics_context is None:
+            raise RuntimeError("shared-metrics scope context is unavailable")
 
-        state.handle = self.nemo_relay.scope.push(
-            f"hermes-session-{session_id}",
-            self.nemo_relay.ScopeType.Agent,
-            handle=parent_handle,
-            data={"session_id": session_id},
-            metadata=metadata,
+        def invoke() -> Any:
+            # Relay's manual LLM helpers call the native API directly. Re-sync
+            # this Context's stack before entering them so scope-local policy
+            # cannot leak in from the rich-observability stack on this thread.
+            self.nemo_relay.get_scope_stack()
+            return callback(*args, **kwargs)
+
+        return state.metrics_context.run(invoke)
+
+    @_with_ensured_session_lock
+    def start_model_call(self, kwargs: dict[str, Any], state: _SessionState) -> None:
+        if not self._shared_metrics_registered or state.metrics_handle is None:
+            return
+        request_id = str(kwargs.get("api_request_id") or "")
+        if not request_id:
+            return
+        fields = _model_call_fields(kwargs)
+        model_family = fields.pop("model_family")
+        existing = state.metrics_model_calls.get(request_id)
+        if existing is not None:
+            # A logical call can span retries or provider fallback. Attribute its
+            # terminal provider fields to the most recent attempt without opening
+            # a second Relay lifecycle. Relay's model_name remains the logical
+            # model family recorded when the lifecycle started.
+            existing.fields = fields
+            return
+        request = self.nemo_relay.LLMRequest({}, {})
+        try:
+            handle = self._run_in_metrics_context(
+                state,
+                self.nemo_relay.llm.call,
+                _SHARED_METRICS_MODEL_CALL_SCOPE,
+                request,
+                handle=state.metrics_handle,
+                metadata={_SHARED_METRICS_SCHEMA_KEY: _SHARED_METRICS_SCHEMA_VERSION},
+                model_name=model_family,
+            )
+        except Exception:
+            logger.warning(
+                "NeMo Relay shared-metrics model-call start failed", exc_info=True
+            )
+            return
+        state.metrics_model_calls[request_id] = _SharedMetricsModelCall(
+            handle=handle,
+            task_id=str(kwargs.get("task_id") or ""),
+            fields=fields,
         )
-        self.sessions[session_id] = state
-        return state
+
+    def _finish_model_call(
+        self,
+        state: _SessionState,
+        request_id: str,
+        outcome: str,
+    ) -> None:
+        model_call = state.metrics_model_calls.pop(request_id, None)
+        if model_call is None:
+            return
+        try:
+            self._run_in_metrics_context(
+                state,
+                self.nemo_relay.llm.call_end,
+                model_call.handle,
+                {**model_call.fields, "outcome": outcome},
+                metadata={_SHARED_METRICS_SCHEMA_KEY: _SHARED_METRICS_SCHEMA_VERSION},
+            )
+        except Exception:
+            logger.warning(
+                "NeMo Relay shared-metrics model-call end failed", exc_info=True
+            )
+
+    @_with_session_state_lock
+    def end_model_call(self, kwargs: dict[str, Any], state: _SessionState) -> None:
+        request_id = str(kwargs.get("api_request_id") or "")
+        model_call = state.metrics_model_calls.get(request_id)
+        if model_call is None:
+            return
+        fields = _model_call_fields(kwargs)
+        fields.pop("model_family")
+        model_call.fields = fields
+        self._finish_model_call(state, request_id, _model_call_outcome(kwargs))
+
+    @_with_session_state_lock
+    def end_pending_model_calls(
+        self,
+        kwargs: dict[str, Any],
+        state: _SessionState,
+    ) -> None:
+        self._end_pending_model_calls(state, kwargs)
+
+    def _end_pending_model_calls(
+        self,
+        state: _SessionState,
+        kwargs: dict[str, Any],
+    ) -> None:
+        task_id = str(kwargs.get("task_id") or "")
+        request_ids = [
+            request_id
+            for request_id, model_call in state.metrics_model_calls.items()
+            if not task_id or model_call.task_id == task_id
+        ]
+        outcome = "cancelled" if kwargs.get("interrupted") else "failed"
+        for request_id in request_ids:
+            self._finish_model_call(state, request_id, outcome)
 
     def export_atif(self, state: _SessionState) -> None:
         if not self.settings.atif_enabled or state.atif_exporter is None:
             return
-        if state.is_embedded_subagent and self.settings.atif_subagent_export_mode != "all":
+        if (
+            state.is_embedded_subagent
+            and self.settings.atif_subagent_export_mode != "all"
+        ):
             return
         output_dir = self.settings.atif_output_directory
         if not output_dir:
             return
         Path(output_dir).mkdir(parents=True, exist_ok=True)
-        filename = self.settings.atif_filename_template.format(session_id=state.session_id)
-        Path(output_dir, filename).write_text(state.atif_exporter.export_json(), encoding="utf-8")
+        filename = self.settings.atif_filename_template.format(
+            session_id=state.session_id
+        )
+        Path(output_dir, filename).write_text(
+            state.atif_exporter.export_json(), encoding="utf-8"
+        )
+
+    def _clear_static_plugins_after_last_session(self) -> None:
+        """Clear static plugin state without holding the session-map lock."""
+        with self._plugin_lifecycle_lock:
+            with self._state_lock:
+                if self.sessions or self._plugin_activation is not None:
+                    return
+                should_clear = self._plugin_config_initialized
+                if not should_clear and self.settings.plugins_config:
+                    self._plugin_config_needs_reinit = True
+            if should_clear:
+                self._clear_plugins_toml()
 
     def close_session(self, kwargs: dict[str, Any]) -> None:
         session_id = _session_id(kwargs)
-        self.subagent_parents.pop(session_id, None)
-        state = self.sessions.pop(session_id, None)
+        with self._state_lock:
+            self.subagent_parents.pop(session_id, None)
+            state = self.sessions.get(session_id)
         if state is None:
             return
         failures: list[str] = []
-        if state.handle is not None:
-            try:
-                self.nemo_relay.scope.pop(state.handle, output=_jsonable(kwargs))
-            except Exception as exc:
-                failures.append(f"session scope pop failed: {exc}")
+        with state.lock:
+            if state.closing:
+                return
+            state.closing = True
+            self._end_pending_model_calls(state, {"session_id": session_id})
+            if state.metrics_handle is not None and state.metrics_context is not None:
+                try:
+                    self._run_in_metrics_context(
+                        state,
+                        self.nemo_relay.scope.pop,
+                        state.metrics_handle,
+                        output={},
+                        metadata={
+                            _SHARED_METRICS_SCHEMA_KEY: _SHARED_METRICS_SCHEMA_VERSION
+                        },
+                    )
+                except Exception as exc:
+                    failures.append(f"shared-metrics session scope pop failed: {exc}")
+            if state.handle is not None:
+                try:
+                    self.nemo_relay.scope.pop(state.handle, output=_jsonable(kwargs))
+                except Exception as exc:
+                    failures.append(f"session scope pop failed: {exc}")
         try:
             _flush_relay_subscribers(self.nemo_relay)
         except Exception as exc:
             failures.append(f"subscriber flush failed: {exc}")
+        self.export_shared_metrics()
         try:
             self.export_atif(state)
         except Exception as exc:
@@ -308,21 +641,13 @@ class _Runtime:
                 state.atif_exporter.deregister(state.atif_subscriber_name)
             except Exception as exc:
                 failures.append(f"ATIF deregister failed: {exc}")
-        if (
-            self._plugin_config_initialized
-            and self._plugin_activation is None
-            and not self.sessions
-        ):
-            try:
-                self._clear_plugins_toml()
-            except Exception as exc:
-                failures.append(f"plugin configuration clear failed: {exc}")
-        elif (
-            self.settings.plugins_config
-            and self._plugin_activation is None
-            and not self.sessions
-        ):
-            self._plugin_config_needs_reinit = True
+        with self._state_lock:
+            if self.sessions.get(session_id) is state:
+                self.sessions.pop(session_id, None)
+        try:
+            self._clear_static_plugins_after_last_session()
+        except Exception as exc:
+            failures.append(f"plugin configuration clear failed: {exc}")
         if failures:
             logger.warning(
                 "NeMo Relay session %s teardown completed with errors: %s",
@@ -333,17 +658,38 @@ class _Runtime:
     def shutdown(self) -> None:
         """Close active sessions and the process-lifetime plugin activation."""
         failures: list[str] = []
-        for session_id in list(self.sessions):
+        with self._state_lock:
+            session_ids = list(self.sessions)
+        for session_id in session_ids:
             try:
-                self.close_session({"session_id": session_id, "reason": "runtime_shutdown"})
+                self.close_session({
+                    "session_id": session_id,
+                    "reason": "runtime_shutdown",
+                })
             except Exception as exc:
                 failures.append(f"session {session_id} close failed: {exc}")
-        if self._plugin_config_initialized:
-            try:
-                self._clear_plugins_toml()
-            except Exception as exc:
-                failures.append(f"plugin runtime close failed: {exc}")
+        with self._plugin_lifecycle_lock:
+            if self._plugin_config_initialized:
+                try:
+                    self._clear_plugins_toml()
+                except Exception as exc:
+                    failures.append(f"plugin runtime close failed: {exc}")
         self._clear_atof()
+        if self._shared_metrics_registered:
+            try:
+                _flush_relay_subscribers(self.nemo_relay)
+            except Exception as exc:
+                failures.append(f"shared-metrics subscriber flush failed: {exc}")
+            self.export_shared_metrics()
+            try:
+                subscribers = getattr(self.nemo_relay, "subscribers", None)
+                deregister = getattr(subscribers, "deregister", None)
+                if callable(deregister):
+                    deregister(_SHARED_METRICS_SUBSCRIBER_NAME)
+            except Exception as exc:
+                failures.append(f"shared-metrics subscriber deregister failed: {exc}")
+            finally:
+                self._shared_metrics_registered = False
         if self._shutdown_registered and self._plugin_activation is None:
             atexit.unregister(self.shutdown)
             self._shutdown_registered = False
@@ -388,14 +734,17 @@ class _Runtime:
     def managed_llm_enabled(self) -> bool:
         return (
             (self.settings.adaptive_enabled or self._plugin_activation is not None)
-            and callable(getattr(getattr(self.nemo_relay, "llm", None), "execute", None))
+            and callable(
+                getattr(getattr(self.nemo_relay, "llm", None), "execute", None)
+            )
             and callable(getattr(self.nemo_relay, "LLMRequest", None))
         )
 
     def managed_tool_enabled(self) -> bool:
         return (
-            (self.settings.adaptive_enabled or self._plugin_activation is not None)
-            and callable(getattr(getattr(self.nemo_relay, "tools", None), "execute", None))
+            self.settings.adaptive_enabled or self._plugin_activation is not None
+        ) and callable(
+            getattr(getattr(self.nemo_relay, "tools", None), "execute", None)
         )
 
     def _run_managed_with_downstream_preservation(
@@ -433,7 +782,9 @@ class _Runtime:
         try:
             managed_result = _resolve_awaitable(make_managed_execute(_impl))
         except Exception as exc:
-            if downstream_error is not None and _is_relay_wrapped_callback_error(exc, callback_error):
+            if downstream_error is not None and _is_relay_wrapped_callback_error(
+                exc, callback_error
+            ):
                 raise downstream_error
             raise
         if (
@@ -463,14 +814,12 @@ class _Runtime:
                     request,
                     impl,
                     handle=state.handle,
-                    data=_jsonable(
-                        {
-                            "turn_id": kwargs.get("turn_id"),
-                            "api_request_id": kwargs.get("api_request_id"),
-                            "api_call_count": kwargs.get("api_call_count"),
-                            "mode": self.settings.adaptive_mode,
-                        }
-                    ),
+                    data=_jsonable({
+                        "turn_id": kwargs.get("turn_id"),
+                        "api_request_id": kwargs.get("api_request_id"),
+                        "api_call_count": kwargs.get("api_call_count"),
+                        "mode": self.settings.adaptive_mode,
+                    }),
                     metadata=_metadata(kwargs),
                     model_name=str(kwargs.get("model") or ""),
                 )
@@ -481,7 +830,11 @@ class _Runtime:
             return _managed_execute()
 
         return self._run_managed_with_downstream_preservation(
-            next_call, _normalize, _llm_response_payload, _make_managed, preserve_raw_response=True
+            next_call,
+            _normalize,
+            _llm_response_payload,
+            _make_managed,
+            preserve_raw_response=True,
         )
 
     def execute_tool(self, kwargs: dict[str, Any]) -> Any:
@@ -502,14 +855,12 @@ class _Runtime:
                     args,
                     impl,
                     handle=state.handle,
-                    data=_jsonable(
-                        {
-                            "turn_id": kwargs.get("turn_id"),
-                            "api_request_id": kwargs.get("api_request_id"),
-                            "tool_call_id": kwargs.get("tool_call_id"),
-                            "mode": self.settings.adaptive_mode,
-                        }
-                    ),
+                    data=_jsonable({
+                        "turn_id": kwargs.get("turn_id"),
+                        "api_request_id": kwargs.get("api_request_id"),
+                        "tool_call_id": kwargs.get("tool_call_id"),
+                        "mode": self.settings.adaptive_mode,
+                    }),
                     metadata=_metadata(kwargs),
                 )
                 if inspect.isawaitable(result):
@@ -555,8 +906,16 @@ def on_session_start(**kwargs: Any) -> None:
 
 def on_session_end(**kwargs: Any) -> None:
     runtime = _get_runtime()
-    if runtime is not None:
-        _safe(lambda: (runtime.mark("hermes.session.end", kwargs), runtime.export_atif(runtime.ensure_session(kwargs))))
+    if runtime is None:
+        return
+    _safe(lambda: runtime.end_pending_model_calls(kwargs))
+    if runtime.rich_observability_enabled():
+        _safe(
+            lambda: (
+                runtime.mark("hermes.session.end", kwargs),
+                runtime.export_atif(runtime.ensure_session(kwargs)),
+            )
+        )
 
 
 def on_session_finalize(**kwargs: Any) -> None:
@@ -573,13 +932,13 @@ def on_session_reset(**kwargs: Any) -> None:
 
 def on_pre_llm_call(**kwargs: Any) -> None:
     runtime = _get_runtime()
-    if runtime is not None:
+    if runtime is not None and runtime.rich_observability_enabled():
         _safe(lambda: runtime.mark("hermes.turn.start", kwargs))
 
 
 def on_post_llm_call(**kwargs: Any) -> None:
     runtime = _get_runtime()
-    if runtime is not None:
+    if runtime is not None and runtime.rich_observability_enabled():
         _safe(lambda: runtime.mark("hermes.turn.end", kwargs))
 
 
@@ -587,19 +946,27 @@ def on_pre_api_request(**kwargs: Any) -> None:
     runtime = _get_runtime()
     if runtime is None:
         return
+    _safe(lambda: runtime.start_model_call(kwargs))
+    if not runtime.rich_observability_enabled():
+        return
     if runtime.managed_llm_enabled():
         return
 
     def _record() -> None:
         state = runtime.ensure_session(kwargs)
         request_payload = kwargs.get("request")
-        request_body = request_payload.get("body") if isinstance(request_payload, dict) else {}
+        request_body = (
+            request_payload.get("body") if isinstance(request_payload, dict) else {}
+        )
         request = runtime.nemo_relay.LLMRequest({}, _jsonable(request_body))
         span = runtime.nemo_relay.llm.call(
             str(kwargs.get("provider") or "llm"),
             request,
             handle=state.handle,
-            data=_jsonable({"turn_id": kwargs.get("turn_id"), "api_request_id": kwargs.get("api_request_id")}),
+            data=_jsonable({
+                "turn_id": kwargs.get("turn_id"),
+                "api_request_id": kwargs.get("api_request_id"),
+            }),
             metadata=_metadata(kwargs),
             model_name=str(kwargs.get("model") or ""),
         )
@@ -611,6 +978,9 @@ def on_pre_api_request(**kwargs: Any) -> None:
 def on_post_api_request(**kwargs: Any) -> None:
     runtime = _get_runtime()
     if runtime is None:
+        return
+    _safe(lambda: runtime.end_model_call({**kwargs, "outcome": "success"}))
+    if not runtime.rich_observability_enabled():
         return
     if runtime.managed_llm_enabled():
         return
@@ -624,7 +994,10 @@ def on_post_api_request(**kwargs: Any) -> None:
         runtime.nemo_relay.llm.call_end(
             span,
             _jsonable(kwargs.get("response") or {}),
-            data=_jsonable({"usage": kwargs.get("usage"), "finish_reason": kwargs.get("finish_reason")}),
+            data=_jsonable({
+                "usage": kwargs.get("usage"),
+                "finish_reason": kwargs.get("finish_reason"),
+            }),
             metadata=_metadata(kwargs),
         )
 
@@ -633,7 +1006,7 @@ def on_post_api_request(**kwargs: Any) -> None:
 
 def on_api_request_error(**kwargs: Any) -> None:
     runtime = _get_runtime()
-    if runtime is None:
+    if runtime is None or not runtime.rich_observability_enabled():
         return
     if runtime.managed_llm_enabled():
         return
@@ -658,6 +1031,8 @@ def on_pre_tool_call(**kwargs: Any) -> None:
     runtime = _get_runtime()
     if runtime is None:
         return
+    if not runtime.rich_observability_enabled():
+        return
     if runtime.managed_tool_enabled():
         return
 
@@ -667,7 +1042,10 @@ def on_pre_tool_call(**kwargs: Any) -> None:
             str(kwargs.get("tool_name") or "tool"),
             _jsonable(kwargs.get("args") or {}),
             handle=state.handle,
-            data=_jsonable({"turn_id": kwargs.get("turn_id"), "api_request_id": kwargs.get("api_request_id")}),
+            data=_jsonable({
+                "turn_id": kwargs.get("turn_id"),
+                "api_request_id": kwargs.get("api_request_id"),
+            }),
             metadata=_metadata(kwargs),
             tool_call_id=str(kwargs.get("tool_call_id") or ""),
         )
@@ -679,6 +1057,8 @@ def on_pre_tool_call(**kwargs: Any) -> None:
 def on_post_tool_call(**kwargs: Any) -> None:
     runtime = _get_runtime()
     if runtime is None:
+        return
+    if not runtime.rich_observability_enabled():
         return
     if runtime.managed_tool_enabled():
         return
@@ -692,7 +1072,10 @@ def on_post_tool_call(**kwargs: Any) -> None:
         runtime.nemo_relay.tools.call_end(
             span,
             _jsonable(kwargs.get("result")),
-            data=_jsonable({"status": kwargs.get("status"), "duration_ms": kwargs.get("duration_ms")}),
+            data=_jsonable({
+                "status": kwargs.get("status"),
+                "duration_ms": kwargs.get("duration_ms"),
+            }),
             metadata=_metadata(kwargs),
         )
 
@@ -701,25 +1084,29 @@ def on_post_tool_call(**kwargs: Any) -> None:
 
 def on_pre_approval_request(**kwargs: Any) -> None:
     runtime = _get_runtime()
-    if runtime is not None:
+    if runtime is None:
+        return
+    if runtime.rich_observability_enabled():
         _safe(lambda: runtime.mark("hermes.approval.request", kwargs))
 
 
 def on_post_approval_response(**kwargs: Any) -> None:
     runtime = _get_runtime()
-    if runtime is not None:
+    if runtime is None:
+        return
+    if runtime.rich_observability_enabled():
         _safe(lambda: runtime.mark("hermes.approval.response", kwargs))
 
 
 def on_subagent_start(**kwargs: Any) -> None:
     runtime = _get_runtime()
-    if runtime is not None:
+    if runtime is not None and runtime.rich_observability_enabled():
         _safe(lambda: runtime.mark_subagent_start(kwargs))
 
 
 def on_subagent_stop(**kwargs: Any) -> None:
     runtime = _get_runtime()
-    if runtime is not None:
+    if runtime is not None and runtime.rich_observability_enabled():
         _safe(lambda: runtime.mark_subagent_stop(kwargs))
 
 
@@ -761,7 +1148,9 @@ def _get_runtime() -> Optional[_Runtime]:
         try:
             _RUNTIME = _Runtime(nemo_relay=nemo_runtime, settings=_load_settings())
         except Exception as exc:
-            logger.debug("NeMo Relay plugin disabled: init failed: %s", exc, exc_info=True)
+            logger.debug(
+                "NeMo Relay plugin disabled: init failed: %s", exc, exc_info=True
+            )
             _RUNTIME = _INIT_FAILED
             return None
         return _RUNTIME
@@ -772,6 +1161,7 @@ def _load_settings() -> _Settings:
     plugins_config = _load_plugins_config(plugins_toml_path)
     adaptive_config = _enabled_component_config(plugins_config, "adaptive")
     return _Settings(
+        shared_metrics_enabled=_shared_metrics_enabled(),
         plugins_toml_path=plugins_toml_path,
         plugins_config=plugins_config,
         dynamic_plugins=_dynamic_plugin_specs(plugins_config, plugins_toml_path),
@@ -783,12 +1173,38 @@ def _load_settings() -> _Settings:
         atof_mode=_env("HERMES_NEMO_RELAY_ATOF_MODE") or "append",
         atif_enabled=_env_bool("HERMES_NEMO_RELAY_ATIF_ENABLED"),
         atif_output_directory=_env("HERMES_NEMO_RELAY_ATIF_OUTPUT_DIRECTORY"),
-        atif_filename_template=_env("HERMES_NEMO_RELAY_ATIF_FILENAME_TEMPLATE") or "hermes-atif-{session_id}.json",
+        atif_filename_template=_env("HERMES_NEMO_RELAY_ATIF_FILENAME_TEMPLATE")
+        or "hermes-atif-{session_id}.json",
         atif_subagent_export_mode=_atif_subagent_export_mode(),
         atif_agent_name=_env("HERMES_NEMO_RELAY_ATIF_AGENT_NAME") or "Hermes Agent",
         atif_agent_version=_env("HERMES_NEMO_RELAY_ATIF_AGENT_VERSION") or "unknown",
         atif_model_name=_env("HERMES_NEMO_RELAY_ATIF_MODEL_NAME") or "unknown",
     )
+
+
+def _shared_metrics_enabled() -> bool:
+    try:
+        from hermes_cli.config import load_config_readonly
+
+        config = load_config_readonly() or {}
+    except Exception:
+        logger.debug(
+            "Unable to read Hermes shared-metrics configuration", exc_info=True
+        )
+        return False
+    if not isinstance(config, dict):
+        return False
+    plugins = config.get("plugins")
+    if not isinstance(plugins, dict):
+        return False
+    entries = plugins.get("entries")
+    if not isinstance(entries, dict):
+        return False
+    entry = entries.get("observability/nemo_relay") or entries.get("nemo_relay")
+    if not isinstance(entry, dict):
+        return False
+    shared_metrics = entry.get("shared_metrics")
+    return isinstance(shared_metrics, dict) and shared_metrics.get("enabled") is True
 
 
 def _static_plugin_config(plugins_config: dict[str, Any]) -> dict[str, Any]:
@@ -863,13 +1279,15 @@ def _dynamic_plugin_specs(
             continue
         if not isinstance(manifest_ref, str) or not manifest_ref.strip():
             logger.warning(
-                "Invalid NeMo Relay dynamic_plugins[%d]: manifest_ref is required", index
+                "Invalid NeMo Relay dynamic_plugins[%d]: manifest_ref is required",
+                index,
             )
             invalid = True
             continue
         if not isinstance(config, dict):
             logger.warning(
-                "Invalid NeMo Relay dynamic_plugins[%d]: config must be an object", index
+                "Invalid NeMo Relay dynamic_plugins[%d]: config must be an object",
+                index,
             )
             invalid = True
             continue
@@ -886,7 +1304,9 @@ def _dynamic_plugin_specs(
         spec: dict[str, Any] = {
             "plugin_id": plugin_id.strip(),
             "kind": kind,
-            "manifest_ref": _config_relative_path(manifest_ref.strip(), plugins_toml_path),
+            "manifest_ref": _config_relative_path(
+                manifest_ref.strip(), plugins_toml_path
+            ),
             "config": config,
         }
         if environment_ref is not None:
@@ -908,7 +1328,9 @@ def _config_relative_path(value: str, plugins_toml_path: str) -> str:
     path = Path(value)
     if path.is_absolute():
         return str(path)
-    config_path = Path(plugins_toml_path) if plugins_toml_path else Path.cwd() / "plugins.toml"
+    config_path = (
+        Path(plugins_toml_path) if plugins_toml_path else Path.cwd() / "plugins.toml"
+    )
     if not config_path.is_absolute():
         config_path = Path.cwd() / config_path
     return os.path.abspath(config_path.parent / path)
@@ -998,7 +1420,9 @@ def _child_session_id(kwargs: dict[str, Any]) -> str:
     return str(kwargs.get("child_session_id") or "")
 
 
-def _subagent_child_metadata(kwargs: dict[str, Any], parent_metadata: dict[str, Any]) -> dict[str, Any]:
+def _subagent_child_metadata(
+    kwargs: dict[str, Any], parent_metadata: dict[str, Any]
+) -> dict[str, Any]:
     child_session_id = _child_session_id(kwargs)
     metadata = {
         "session_id": child_session_id,
@@ -1023,7 +1447,10 @@ def _subagent_child_metadata(kwargs: dict[str, Any], parent_metadata: dict[str, 
 
 
 def _api_key(kwargs: dict[str, Any]) -> str:
-    return str(kwargs.get("api_request_id") or f"{_session_id(kwargs)}:{kwargs.get('api_call_count') or 'api'}")
+    return str(
+        kwargs.get("api_request_id")
+        or f"{_session_id(kwargs)}:{kwargs.get('api_call_count') or 'api'}"
+    )
 
 
 def _tool_key(kwargs: dict[str, Any]) -> str:
@@ -1104,7 +1531,9 @@ def _json_semantically_equal(left: Any, right: Any) -> bool:
     """Compare JSON-compatible values without conflating booleans and numbers."""
     try:
         options = {"ensure_ascii": False, "sort_keys": True, "separators": (",", ":")}
-        return json.dumps(_jsonable(left), **options) == json.dumps(_jsonable(right), **options)
+        return json.dumps(_jsonable(left), **options) == json.dumps(
+            _jsonable(right), **options
+        )
     except (TypeError, ValueError):
         return False
 
@@ -1119,12 +1548,16 @@ def _original_downstream_error(exc: Exception) -> BaseException:
     # Hermes wraps downstream execution failures in a local/private exception
     # class, so detect the wrapper by shape instead of importing it here.
     original = getattr(exc, "original", None)
-    if exc.__class__.__name__ == "_DownstreamExecutionError" and isinstance(original, BaseException):
+    if exc.__class__.__name__ == "_DownstreamExecutionError" and isinstance(
+        original, BaseException
+    ):
         return original
     return exc
 
 
-def _is_relay_wrapped_callback_error(exc: Exception, callback_error: Exception | None) -> bool:
+def _is_relay_wrapped_callback_error(
+    exc: Exception, callback_error: Exception | None
+) -> bool:
     # NeMo Relay re-wraps a failing callback as ``RuntimeError("internal error:
     # <ClassName>: <message>")``. Match by prefix rather than exact equality so a
     # trailing traceback/suffix in a future Relay version doesn't silently defeat
@@ -1165,13 +1598,25 @@ def _llm_response_payload(response: Any) -> Any:
         if reasoning is not None:
             assistant_message["reasoning_content"] = _jsonable(reasoning)
     elif isinstance(payload, dict):
-        assistant_message["content"] = payload.get("content") or payload.get("output_text") or ""
+        assistant_message["content"] = (
+            payload.get("content") or payload.get("output_text") or ""
+        )
 
     return {
-        "model": _value(response, "model", payload.get("model") if isinstance(payload, dict) else None),
+        "model": _value(
+            response,
+            "model",
+            payload.get("model") if isinstance(payload, dict) else None,
+        ),
         "assistant_message": assistant_message,
         "finish_reason": finish_reason,
-        "usage": _jsonable(_value(response, "usage", payload.get("usage") if isinstance(payload, dict) else None)),
+        "usage": _jsonable(
+            _value(
+                response,
+                "usage",
+                payload.get("usage") if isinstance(payload, dict) else None,
+            )
+        ),
     }
 
 
@@ -1181,16 +1626,14 @@ def _tool_calls_payload(tool_calls: Any) -> list[dict[str, Any]]:
     normalized: list[dict[str, Any]] = []
     for call in tool_calls:
         function = _value(call, "function")
-        normalized.append(
-            {
-                "id": _value(call, "id"),
-                "type": _value(call, "type", "function") or "function",
-                "function": {
-                    "name": _value(function, "name"),
-                    "arguments": _value(function, "arguments"),
-                },
-            }
-        )
+        normalized.append({
+            "id": _value(call, "id"),
+            "type": _value(call, "type", "function") or "function",
+            "function": {
+                "name": _value(function, "name"),
+                "arguments": _value(function, "arguments"),
+            },
+        })
     return normalized
 
 

@@ -4624,6 +4624,11 @@ class APIServerAdapter(BasePlatformAdapter):
         })
         current.setdefault("created_at", fields.pop("created_at", now))
         current.update(fields)
+        # The approval payload is only meaningful while the run is blocked
+        # waiting; drop it on any transition away so pollers never render a
+        # stale command as still pending.
+        if status != "waiting_for_approval":
+            current.pop("approval", None)
         self._run_statuses[run_id] = current
         return current
 
@@ -4849,6 +4854,15 @@ class APIServerAdapter(BasePlatformAdapter):
                         run_id,
                         "waiting_for_approval",
                         last_event="approval.request",
+                        # Expose the (already redacted) command in the pollable
+                        # snapshot so clients that missed the SSE event — offline,
+                        # killed, or polling GET /v1/runs/{id} for recovery — are
+                        # not asked to approve blind.
+                        approval={
+                            "command": event.get("command"),
+                            "choices": event.get("choices"),
+                            "requested_at": event["timestamp"],
+                        },
                     )
                     try:
                         loop.call_soon_threadsafe(q.put_nowait, event)

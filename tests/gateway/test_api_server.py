@@ -4249,3 +4249,48 @@ class TestModelRoutesAgentCreation:
         assert adapter._session_model_override_for("chan-1") == {"model": "user/model"}
         assert adapter._session_model_override_for("chan-2") is None
         assert adapter._session_model_override_for(None) is None
+
+
+class TestApprovalCommandInRunSnapshot:
+    """`GET /v1/runs/{id}` snapshot exposes the (redacted) approval command
+    while waiting, and clears it on any transition away, so pollers that
+    missed the SSE event are not asked to approve blind."""
+
+    def _adapter(self):
+        # _set_run_status only touches self._run_statuses; bypass the heavy
+        # __init__ so this stays a focused unit test.
+        adapter = APIServerAdapter.__new__(APIServerAdapter)
+        adapter._run_statuses = {}
+        return adapter
+
+    def test_approval_payload_retained_while_waiting(self):
+        adapter = self._adapter()
+        snap = adapter._set_run_status(
+            "run_1",
+            "waiting_for_approval",
+            last_event="approval.request",
+            approval={
+                "command": "rm -r /tmp/x",
+                "choices": ["once", "session", "always", "deny"],
+                "requested_at": 1.0,
+            },
+        )
+        assert snap["status"] == "waiting_for_approval"
+        assert snap["approval"]["command"] == "rm -r /tmp/x"
+        assert snap["approval"]["choices"] == ["once", "session", "always", "deny"]
+
+    def test_approval_payload_cleared_on_transition_away(self):
+        adapter = self._adapter()
+        adapter._set_run_status(
+            "run_1",
+            "waiting_for_approval",
+            approval={"command": "rm -r /tmp/x", "choices": ["once"], "requested_at": 1.0},
+        )
+        snap = adapter._set_run_status("run_1", "running", last_event="approval.responded")
+        assert snap["status"] == "running"
+        assert "approval" not in snap
+
+    def test_absent_when_never_waiting(self):
+        adapter = self._adapter()
+        snap = adapter._set_run_status("run_1", "running")
+        assert "approval" not in snap

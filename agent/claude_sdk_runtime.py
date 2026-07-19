@@ -156,17 +156,27 @@ def build_system_prompt_append(
         except Exception:  # pragma: no cover
             logger.debug("platform hint lookup failed", exc_info=True)
 
-    # Memory blocks + guidance — gated on the same config predicate that
-    # decides whether the memory shim is exposed at all.
+    # Memory is gated by TWO predicates, mirroring the registration site
+    # (hermes_tools_mcp_server._stateless_shim_defs): the store BLOCKS ride
+    # the config kill-switch alone — an external provider runs alongside the
+    # on-disk store, whose facts stay readable — while the TOOL guidance and
+    # the skills-index advertisement additionally require that no external
+    # `memory.provider` is configured, because that is when the shim is
+    # unregistered and instructing an absent tool would be a lie.
     try:
         from agent.transports.hermes_tools_mcp_server import (
+            _external_memory_provider,
             _memory_enabled_in_config,
         )
 
-        memory_on = _memory_enabled_in_config()
+        memory_enabled = _memory_enabled_in_config()
+        memory_tool_exposed = (
+            memory_enabled and _external_memory_provider() is None
+        )
     except Exception:  # pragma: no cover
-        memory_on = True
-    if memory_on:
+        memory_enabled = True
+        memory_tool_exposed = True
+    if memory_enabled:
         try:
             from tools.memory_tool import load_on_disk_store
 
@@ -177,6 +187,7 @@ def build_system_prompt_append(
                     blocks.append(block)
         except Exception:
             logger.debug("memory block composition failed", exc_info=True)
+    if memory_tool_exposed:
         try:
             from agent.prompt_builder import MEMORY_GUIDANCE
 
@@ -198,13 +209,19 @@ def build_system_prompt_append(
         logger.debug("session_search guidance unavailable", exc_info=True)
 
     # Skills index for the read-side tools, filtered to the honest
-    # MCP-exposed surface.
+    # MCP-exposed surface. `memory` joins only when the shim is actually
+    # registered (see the two-predicate gate above); EXPOSED_TOOLS is the
+    # STATIC surface — per-tool check_fn filtering happens at registration
+    # in the MCP child's env and cannot be evaluated here.
     try:
         from agent import prompt_builder
         from agent.transports.hermes_tools_mcp_server import EXPOSED_TOOLS
 
+        advertised = set(EXPOSED_TOOLS) | {"session_search"}
+        if memory_tool_exposed:
+            advertised.add("memory")
         index = prompt_builder.build_skills_system_prompt(
-            available_tools=set(EXPOSED_TOOLS) | {"memory", "session_search"},
+            available_tools=advertised,
         )
         if index:
             blocks.append(_strip_uncallable_tool_guidance(index))

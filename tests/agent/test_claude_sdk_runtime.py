@@ -1414,6 +1414,44 @@ class TestSystemPromptAppend:
         # session_search still works when memory is off — its guidance stays.
         assert "session_search" in (out or "")
 
+    def test_external_memory_provider_removes_tool_guidance(self, tmp_path, monkeypatch):
+        # memory.provider: honcho (or ANY external backend) leaves the memory
+        # shim UNREGISTERED (hermes_tools_mcp_server._stateless_shim_defs
+        # requires enabled AND no external provider), so the append must not
+        # instruct or advertise an absent tool. The on-disk store block stays:
+        # external providers run alongside the builtin store, and its facts
+        # remain readable. Proven red-first against the enabled-only gate.
+        import agent.prompt_builder as pb
+        import hermes_cli.config as cfg
+        from agent.claude_sdk_runtime import build_system_prompt_append
+
+        self._home(tmp_path, monkeypatch, memory="a durable fact")
+        monkeypatch.setattr(
+            cfg,
+            "load_config",
+            lambda *a, **k: {
+                "memory": {"memory_enabled": True, "provider": "honcho"}
+            },
+        )
+        captured = {}
+
+        def fake_index(**kwargs):
+            captured.update(kwargs)
+            return ""
+
+        monkeypatch.setattr(pb, "build_skills_system_prompt", fake_index)
+        out = build_system_prompt_append() or ""
+        assert "You have persistent memory" not in out
+        assert "ONLY durable memory" not in out
+        # The store block itself survives — facts stay readable.
+        assert "a durable fact" in out
+        # session_search is unaffected.
+        assert "session_search" in out
+        # And the skills filter is not told the tool exists.
+        tools = captured.get("available_tools") or set()
+        assert "memory" not in tools
+        assert "session_search" in tools
+
     def test_session_line_and_platform_hint(self, tmp_path, monkeypatch):
         from agent.claude_sdk_runtime import build_system_prompt_append
         from agent.prompt_builder import PLATFORM_HINTS

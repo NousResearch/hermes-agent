@@ -13,8 +13,8 @@ def build_plugins_parser(subparsers, *, cmd_plugins: Callable) -> None:
     """Attach the ``plugins`` subcommand to ``subparsers``."""
     plugins_parser = subparsers.add_parser(
         "plugins",
-        help="Manage plugins — install, update, remove, list",
-        description="Install plugins from Git repositories, update, remove, or list them.",
+        help="Manage plugins — install, update, remove, list, inspect",
+        description="Install plugins from Git repositories, update, remove, list, or inspect them.",
     )
     plugins_subparsers = plugins_parser.add_subparsers(dest="plugins_action")
 
@@ -77,6 +77,16 @@ def build_plugins_parser(subparsers, *, cmd_plugins: Callable) -> None:
         help="Print compact plain-text output instead of a Rich table",
     )
     plugins_list.add_argument(
+        "--json",
+        action="store_true",
+        help="Print machine-readable JSON",
+    )
+
+    plugins_show = plugins_subparsers.add_parser(
+        "show", help="Show active plugin hooks and prompt sections"
+    )
+    plugins_show.add_argument("name", help="Plugin name or registry key")
+    plugins_show.add_argument(
         "--json",
         action="store_true",
         help="Print machine-readable JSON",

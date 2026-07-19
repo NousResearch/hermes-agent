@@ -362,16 +362,23 @@ def register(ctx):
     ctx.register_hook("pre_tool_call", my_tool_observer)
     ctx.register_hook("post_tool_call", my_tool_logger)
     ctx.register_hook("pre_llm_call", my_memory_callback)
+    ctx.register_hook("build_environment_hints", my_environment_hints)
     ctx.register_hook("post_llm_call", my_sync_callback)
     ctx.register_hook("on_session_start", my_init_callback)
     ctx.register_hook("on_session_end", my_cleanup_callback)
+    ctx.register_system_prompt_section(
+        id="myplugin.rules",
+        content=lambda session_info: "Stable plugin rules",
+        position="after_memory",
+        max_chars=4000,
+    )
 ```
 
 **General rules for all hooks:**
 
-- Callbacks receive **keyword arguments**. Always accept `**kwargs` for forward compatibility — new parameters may be added in future versions without breaking your plugin.
+- Hook callbacks receive **keyword arguments**. Always accept `**kwargs` for forward compatibility — new parameters may be added in future versions without breaking your plugin.
 - If a callback **crashes**, it's logged and skipped. Other hooks and the agent continue normally. A misbehaving plugin can never break the agent.
-- Two hooks' return values affect behavior: [`pre_tool_call`](#pre_tool_call) can **block** the tool, and [`pre_llm_call`](#pre_llm_call) can **inject context** into the LLM call. All other hooks are fire-and-forget observers.
+- Three hooks' return values affect behavior: [`pre_tool_call`](#pre_tool_call) can **block** the tool, [`pre_llm_call`](#pre_llm_call) can **inject context** into the LLM call, and [`build_environment_hints`](#build_environment_hints) can append bounded execution-environment rows. All other hooks are fire-and-forget observers or transforms.
 - Observer callbacks receive `telemetry_schema_version` automatically. When present, `turn_id`, `api_request_id`, `task_id`, `session_id`, and `api_call_count` are separate correlation fields. Treat `api_request_id` as an opaque identifier; do not parse its string format.
 
 ### Quick reference
@@ -381,6 +388,7 @@ def register(ctx):
 | [`pre_tool_call`](#pre_tool_call) | Before any tool executes | `{"action": "block", "message": str}` to veto the call |
 | [`post_tool_call`](#post_tool_call) | After any tool returns | ignored |
 | [`pre_llm_call`](#pre_llm_call) | Once per turn, before the tool-calling loop | `{"context": str}` to prepend context to the user message |
+| [`build_environment_hints`](#build_environment_hints) | Once during new-session prompt assembly | `{"hints": [(key, value), ...]}` to append rows |
 | [`post_llm_call`](#post_llm_call) | Once per turn, after the tool-calling loop | ignored |
 | [`pre_verify`](#pre_verify) | Once per turn when the agent edited code, before it verifies/finishes | `{"action": "continue", "message": str}` to keep going |
 | [`on_session_start`](#on_session_start) | New session created (first turn only) | ignored |
@@ -587,6 +595,71 @@ def guardrails(**kwargs):
 def register(ctx):
     ctx.register_hook("pre_llm_call", guardrails)
 ```
+
+---
+
+### Cache-safe system prompt sections
+
+Use `ctx.register_system_prompt_section()` for plugin context that should be
+available every turn without being re-injected through `pre_llm_call`:
+
+```python
+def register(ctx):
+    ctx.register_system_prompt_section(
+        id="myplugin.rules",
+        content=lambda session_info: (
+            f"## My Plugin Rules\nSession: {session_info['session_id']}"
+        ),
+        position="after_memory",
+        max_chars=4000,
+    )
+```
+
+The `id` must be unique and uses letters, numbers, `.`, `_`, or `-`. `content`
+may be a string or a callable that receives an immutable mapping containing
+`session_id`, `model`, `provider`, `platform`, `profile_name`, and `cwd`.
+
+Allowed positions are `after_identity`, `after_tools`, and `after_memory`.
+Hermes does not allow arbitrary replacement or reordering of core prompt
+content. A section can request at most 8,000 characters; the default is 4,000,
+Hermes accepts at most 32 sections, and all rendered blocks (including their
+headings) share a 12,000-character session budget. Raising, invalid, or
+over-budget sections are skipped with a warning.
+
+The callable is evaluated exactly once for a new session. Its rendered output
+is frozen, stored with the assembled prompt, restored after a process restart,
+and reused during compression rebuilds. Plugin state changes therefore affect
+the next session only. Use `pre_llm_call` for per-turn or recalled context.
+
+Run `hermes plugins show <name>` to inspect registered section IDs, positions,
+budgets, and content types without evaluating their content.
+
+---
+
+### `build_environment_hints`
+
+Fires once while Hermes assembles a new session's execution-environment block.
+It may append key-value rows but cannot replace core host/backend hints.
+
+```python
+def environment_hints(**kwargs):
+    session_info = kwargs["session_info"]
+    return {
+        "hints": [
+            ("Kanban board", "production"),
+            ("Session surface", session_info["platform"]),
+        ]
+    }
+
+def register(ctx):
+    ctx.register_hook("build_environment_hints", environment_hints)
+```
+
+Rows must be non-empty, single-line key/value pairs. Hermes accepts at most 20
+rows, 500 characters per row, and 2,000 characters total. Invalid,
+over-budget, or raising callbacks are skipped with warnings. Accepted rows use
+the same freeze, persistence, resume, and next-session-only rules as system
+prompt sections.
 
 ---
 

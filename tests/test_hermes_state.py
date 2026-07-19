@@ -235,6 +235,13 @@ class TestSessionLifecycle:
         session = db.get_session("s1")
         assert session["system_prompt"] == "You are a helpful assistant."
 
+    def test_update_plugin_prompt_state(self, db):
+        db.create_session(session_id="s1", source="cli")
+        state = '{"version":1,"sections":[],"environment_hints":[]}'
+        db.update_plugin_prompt_state("s1", state)
+
+        assert db.get_session("s1")["plugin_prompt_state"] == state
+
     def test_update_token_counts(self, db):
         db.create_session(session_id="s1", source="cli")
         db.update_token_counts("s1", input_tokens=200, output_tokens=100)
@@ -2184,6 +2191,10 @@ class TestDeleteAndExport:
             git_branch="feature/import",
             git_repo_root="/workspace/project",
         )
+        plugin_prompt_state = (
+            '{"version":1,"sections":[],"environment_hints":[]}'
+        )
+        db.update_plugin_prompt_state("s1", plugin_prompt_state)
         db.append_message("s1", role="user", content="Hello", timestamp=10)
         db.append_message(
             "s1",
@@ -2214,6 +2225,7 @@ class TestDeleteAndExport:
             assert imported["cwd"] == "/workspace/project"
             assert imported["git_branch"] == "feature/import"
             assert imported["git_repo_root"] == "/workspace/project"
+            assert imported["plugin_prompt_state"] == plugin_prompt_state
             assert imported["message_count"] == 2
             assert imported["tool_call_count"] == 1
             assert imported["handoff_state"] is None
@@ -6020,6 +6032,7 @@ class TestCompactRows:
         rows = db.list_sessions_rich(compact_rows=True)
         assert len(rows) == 1
         assert "system_prompt" not in rows[0]
+        assert "plugin_prompt_state" not in rows[0]
 
     def test_full_rows_include_system_prompt(self, db):
         self._create(db, "s1", system_prompt="keep me")
@@ -6071,12 +6084,13 @@ class TestCompactRows:
             row[1] for row in db._conn.execute("PRAGMA table_info(sessions)")
         }
         row = db.list_sessions_rich(compact_rows=True)[0]
-        # Hardcode the one sanctioned exclusion: if the excluded set ever
+        # Hardcode the sanctioned prompt-payload exclusions: if the set ever
         # widens (or the projection silently drops a column), this fails and
         # forces a conscious review of what list consumers lose.
-        missing = live_cols - set(row) - {"system_prompt"}
+        missing = live_cols - set(row) - {"system_prompt", "plugin_prompt_state"}
         assert not missing, f"compact projection lost schema columns: {missing}"
         assert "system_prompt" not in row
+        assert "plugin_prompt_state" not in row
 
     def test_compact_rows_tip_projection_omits_system_prompt(self, db):
         """Compression-tip projection must not reintroduce the blob: the

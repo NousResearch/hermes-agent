@@ -761,6 +761,7 @@ CREATE TABLE IF NOT EXISTS sessions (
     model TEXT,
     model_config TEXT,
     system_prompt TEXT,
+    plugin_prompt_state TEXT,
     parent_session_id TEXT,
     started_at REAL NOT NULL,
     ended_at REAL,
@@ -2781,6 +2782,19 @@ class SessionDB:
             )
         self._execute_write(_do)
 
+    def update_plugin_prompt_state(
+        self,
+        session_id: str,
+        plugin_prompt_state: Optional[str],
+    ) -> None:
+        """Store frozen plugin output used by compression-time rebuilds."""
+        def _do(conn):
+            conn.execute(
+                "UPDATE sessions SET plugin_prompt_state = ? WHERE id = ?",
+                (plugin_prompt_state, session_id),
+            )
+        self._execute_write(_do)
+
     def update_session_model(self, session_id: str, model: str) -> None:
         """Update the model for a session after a mid-session switch.
 
@@ -3634,7 +3648,7 @@ class SessionDB:
     # the projection is derived from SCHEMA_SQL so columns added later via
     # declarative reconciliation are included automatically instead of
     # silently dropping out of list rows.
-    _SESSION_COMPACT_EXCLUDED = frozenset({"system_prompt"})
+    _SESSION_COMPACT_EXCLUDED = frozenset({"system_prompt", "plugin_prompt_state"})
     _session_compact_cols_sql: Optional[str] = None
 
     @classmethod
@@ -5933,6 +5947,7 @@ class SessionDB:
             "user_id",
             "model",
             "system_prompt",
+            "plugin_prompt_state",
             "end_reason",
             "cwd",
             "git_branch",
@@ -6096,6 +6111,7 @@ class SessionDB:
                 conn.execute(
                     """INSERT INTO sessions (
                            id, source, user_id, model, model_config, system_prompt,
+                           plugin_prompt_state,
                            parent_session_id, started_at, ended_at, end_reason,
                            message_count, tool_call_count, input_tokens, output_tokens,
                            cache_read_tokens, cache_write_tokens, reasoning_tokens,
@@ -6106,7 +6122,7 @@ class SessionDB:
                        )
                        VALUES (
                            :id, :source, :user_id, :model, :model_config,
-                           :system_prompt, NULL, :started_at, :ended_at,
+                           :system_prompt, :plugin_prompt_state, NULL, :started_at, :ended_at,
                            :end_reason, 0, 0, :input_tokens, :output_tokens,
                            :cache_read_tokens, :cache_write_tokens,
                            :reasoning_tokens, :cwd, :git_branch, :git_repo_root,
@@ -6122,6 +6138,7 @@ class SessionDB:
                         "model": raw.get("model"),
                         "model_config": raw.get("model_config"),
                         "system_prompt": raw.get("system_prompt"),
+                        "plugin_prompt_state": raw.get("plugin_prompt_state"),
                         "started_at": started_at,
                         "ended_at": self._float_or_none(raw.get("ended_at")),
                         "end_reason": raw.get("end_reason"),

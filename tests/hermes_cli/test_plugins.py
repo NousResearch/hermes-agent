@@ -11,6 +11,8 @@ import yaml
 
 from hermes_cli.plugins import (
     ENTRY_POINTS_GROUP,
+    MAX_SYSTEM_PROMPT_SECTIONS,
+    MAX_SYSTEM_PROMPT_SECTIONS_TOTAL_CHARS,
     VALID_HOOKS,
     PluginContext,
     PluginManager,
@@ -634,6 +636,109 @@ class TestPluginHooks:
 
     def test_valid_hooks_include_pre_gateway_dispatch(self):
         assert "pre_gateway_dispatch" in VALID_HOOKS
+
+    def test_valid_hooks_include_environment_hints_not_legacy_static_context(self):
+        assert "build_environment_hints" in VALID_HOOKS
+        assert "static_context" not in VALID_HOOKS
+
+    def test_plugin_registers_named_bounded_system_prompt_section(self, tmp_path, monkeypatch):
+        plugins_dir = tmp_path / "hermes_test" / "plugins"
+        _make_plugin_dir(
+            plugins_dir,
+            "prompt_plugin",
+            register_body=(
+                'ctx.register_system_prompt_section('
+                '"prompt-plugin.rules", '
+                'lambda session_info: f"Session: {session_info[\'session_id\']}", '
+                'position="after_memory", max_chars=100)'
+            ),
+        )
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes_test"))
+
+        mgr = PluginManager()
+        mgr.discover_and_load()
+
+        rendered = mgr.render_system_prompt_sections({"session_id": "s-1"})
+
+        assert [(item.id, item.content, item.position) for item in rendered] == [
+            ("prompt-plugin.rules", "Session: s-1", "after_memory")
+        ]
+        assert mgr.list_system_prompt_sections("prompt_plugin") == [
+            {
+                "id": "prompt-plugin.rules",
+                "plugin": "prompt_plugin",
+                "position": "after_memory",
+                "max_chars": 100,
+                "content_type": "callable",
+            }
+        ]
+
+    def test_system_prompt_section_failures_and_budgets_warn_and_skip(
+        self, caplog
+    ):
+        mgr = PluginManager()
+        ctx = PluginContext(PluginManifest(name="budget-plugin"), mgr)
+
+        def raising(_session_info):
+            raise RuntimeError("boom")
+
+        ctx.register_system_prompt_section("budget.raises", raising)
+        ctx.register_system_prompt_section(
+            "budget.too-large",
+            "x" * 101,
+            max_chars=100,
+        )
+        ctx.register_system_prompt_section(
+            "budget.first",
+            "a" * (MAX_SYSTEM_PROMPT_SECTIONS_TOTAL_CHARS // 2 + 1),
+            max_chars=8_000,
+        )
+        ctx.register_system_prompt_section(
+            "budget.second",
+            "b" * (MAX_SYSTEM_PROMPT_SECTIONS_TOTAL_CHARS // 2 + 1),
+            max_chars=8_000,
+        )
+
+        with caplog.at_level(logging.WARNING, logger="hermes_cli.plugins"):
+            rendered = mgr.render_system_prompt_sections({"session_id": "s-1"})
+
+        assert [item.id for item in rendered] == ["budget.first"]
+        messages = [record.getMessage() for record in caplog.records]
+        assert any("raised and was skipped" in message for message in messages)
+        assert any("exceeded max_chars" in message for message in messages)
+        assert any("total session budget" in message for message in messages)
+
+    def test_system_prompt_section_count_is_bounded(self, caplog):
+        mgr = PluginManager()
+        ctx = PluginContext(PluginManifest(name="many-sections"), mgr)
+        for index in range(MAX_SYSTEM_PROMPT_SECTIONS + 1):
+            ctx.register_system_prompt_section(f"many.{index}", "x")
+
+        with caplog.at_level(logging.WARNING, logger="hermes_cli.plugins"):
+            rendered = mgr.render_system_prompt_sections({"session_id": "s-1"})
+
+        assert len(rendered) == MAX_SYSTEM_PROMPT_SECTIONS
+        assert any(
+            "section limit" in record.getMessage() for record in caplog.records
+        )
+
+    def test_environment_hint_hook_returns_bounded_key_value_rows(self):
+        mgr = PluginManager()
+        ctx = PluginContext(PluginManifest(name="env-plugin"), mgr)
+        ctx.register_hook(
+            "build_environment_hints",
+            lambda **kwargs: {
+                "hints": [
+                    ("Board", kwargs["session_info"]["session_id"]),
+                    ("Plan", "plan-7"),
+                ]
+            },
+        )
+
+        assert mgr.collect_environment_hints("Host: Linux", {"session_id": "s-1"}) == [
+            ("Board", "s-1"),
+            ("Plan", "plan-7"),
+        ]
 
     def test_pre_gateway_dispatch_collects_action_dicts(self, tmp_path, monkeypatch):
         """pre_gateway_dispatch callbacks return action dicts (skip/rewrite/allow)."""

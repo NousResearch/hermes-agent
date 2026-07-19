@@ -2717,7 +2717,15 @@ def _persist_live_session_system_prompt(session: dict | None) -> None:
     try:
         prompt = agent._build_system_prompt(None)
         agent._cached_system_prompt = prompt
-        db.update_system_prompt(getattr(agent, "session_id", None) or session_key, prompt)
+        persisted_session_id = getattr(agent, "session_id", None) or session_key
+        db.update_system_prompt(persisted_session_id, prompt)
+        if hasattr(db, "update_plugin_prompt_state"):
+            from agent.system_prompt import serialize_plugin_prompt_state
+
+            db.update_plugin_prompt_state(
+                persisted_session_id,
+                serialize_plugin_prompt_state(agent),
+            )
     except Exception:
         logger.debug("failed to persist live session system prompt", exc_info=True)
 

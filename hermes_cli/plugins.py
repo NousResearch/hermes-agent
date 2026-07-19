@@ -39,12 +39,13 @@ import importlib.util
 import inspect
 import logging
 import os
+import re
 import sys
 import threading
 import types
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Callable, Dict, List, Optional, Set, Union
+from typing import Any, Callable, Dict, List, Mapping, Optional, Set, Union
 
 from hermes_constants import get_hermes_home
 from utils import env_var_enabled, fast_safe_load
@@ -142,6 +143,9 @@ VALID_HOOKS: Set[str] = {
     # First non-None string wins. Useful for vocabulary/personality transformation.
     "transform_llm_output",
     "pre_llm_call",
+    # Additive execution-environment rows. Evaluated once and frozen with the
+    # session's persisted system prompt; callbacks cannot replace core hints.
+    "build_environment_hints",
     "post_llm_call",
     # Verification-loop gate. Fired once per turn when the agent has edited code
     # and is about to verify/finish (after the verify-on-stop guard). A callback
@@ -215,6 +219,31 @@ VALID_HOOKS: Set[str] = {
 }
 
 ENTRY_POINTS_GROUP = "hermes_agent.plugins"
+
+SYSTEM_PROMPT_SECTION_POSITIONS = frozenset(
+    {"after_identity", "after_tools", "after_memory"}
+)
+DEFAULT_SYSTEM_PROMPT_SECTION_MAX_CHARS = 4_000
+MAX_SYSTEM_PROMPT_SECTION_CHARS = 8_000
+MAX_SYSTEM_PROMPT_SECTIONS = 32
+MAX_SYSTEM_PROMPT_SECTIONS_TOTAL_CHARS = 12_000
+MAX_PLUGIN_ENVIRONMENT_HINT_ROWS = 20
+MAX_PLUGIN_ENVIRONMENT_HINT_ROW_CHARS = 500
+MAX_PLUGIN_ENVIRONMENT_HINTS_TOTAL_CHARS = 2_000
+_SYSTEM_PROMPT_SECTION_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$")
+_SYSTEM_PROMPT_SECTION_HEADING_PREFIX = "## Plugin Context: "
+
+
+def is_valid_system_prompt_section_id(value: Any) -> bool:
+    """Return whether *value* is safe to render in a prompt heading."""
+    return isinstance(value, str) and bool(
+        _SYSTEM_PROMPT_SECTION_ID_RE.fullmatch(value)
+    )
+
+
+def system_prompt_section_rendered_chars(section_id: str, content: str) -> int:
+    """Count the full rendered prompt block, including its audit heading."""
+    return len(_SYSTEM_PROMPT_SECTION_HEADING_PREFIX) + len(section_id) + 2 + len(content)
 
 _NS_PARENT = "hermes_plugins"
 
@@ -314,6 +343,28 @@ class PluginManifest:
     key: str = ""
 
 
+@dataclass(frozen=True)
+class PluginSystemPromptSection:
+    """A plugin-owned, session-stable system-prompt registration."""
+
+    id: str
+    content: Union[str, Callable[[Mapping[str, Any]], str]]
+    position: str
+    max_chars: int
+    plugin: str
+
+
+@dataclass(frozen=True)
+class RenderedPluginSystemPromptSection:
+    """Frozen output persisted with a session for cache-safe rebuilds."""
+
+    id: str
+    content: str
+    position: str
+    max_chars: int
+    plugin: str
+
+
 @dataclass
 class LoadedPlugin:
     """Runtime state for a single loaded plugin."""
@@ -324,6 +375,7 @@ class LoadedPlugin:
     hooks_registered: List[str] = field(default_factory=list)
     middleware_registered: List[str] = field(default_factory=list)
     commands_registered: List[str] = field(default_factory=list)
+    prompt_sections_registered: List[str] = field(default_factory=list)
     enabled: bool = False
     error: Optional[str] = None
     # True for a bundled platform plugin recorded as a deferred (not-yet-
@@ -1155,6 +1207,66 @@ class PluginContext:
             display_name,
         )
 
+    def register_system_prompt_section(
+        self,
+        id: str,
+        content: Union[str, Callable[[Mapping[str, Any]], str]],
+        *,
+        position: str = "after_tools",
+        max_chars: int = DEFAULT_SYSTEM_PROMPT_SECTION_MAX_CHARS,
+    ) -> None:
+        """Register cache-safe context evaluated once for each new session.
+
+        ``content`` may be a string or a callable receiving an immutable
+        session-info mapping. Rendered output is frozen and persisted with the
+        session, so plugin state changes do not alter an existing conversation.
+        """
+        section_id = id.strip() if isinstance(id, str) else ""
+        if not is_valid_system_prompt_section_id(section_id):
+            raise ValueError(
+                "system prompt section id must be 1-128 characters using "
+                "letters, numbers, '.', '_', or '-'"
+            )
+        if not isinstance(content, str) and not callable(content):
+            raise TypeError("system prompt section content must be a string or callable")
+        if position not in SYSTEM_PROMPT_SECTION_POSITIONS:
+            raise ValueError(
+                "system prompt section position must be one of: "
+                + ", ".join(sorted(SYSTEM_PROMPT_SECTION_POSITIONS))
+            )
+        if (
+            isinstance(max_chars, bool)
+            or not isinstance(max_chars, int)
+            or max_chars <= 0
+            or max_chars > MAX_SYSTEM_PROMPT_SECTION_CHARS
+        ):
+            raise ValueError(
+                "system prompt section max_chars must be between 1 and "
+                f"{MAX_SYSTEM_PROMPT_SECTION_CHARS}"
+            )
+        existing = self._manager._system_prompt_sections.get(section_id)
+        if existing is not None:
+            raise ValueError(
+                f"system prompt section {section_id!r} is already registered "
+                f"by plugin {existing.plugin!r}"
+            )
+
+        plugin_id = self.manifest.key or self.manifest.name
+        self._manager._system_prompt_sections[section_id] = PluginSystemPromptSection(
+            id=section_id,
+            content=content,
+            position=position,
+            max_chars=max_chars,
+            plugin=plugin_id,
+        )
+        logger.debug(
+            "Plugin %s registered system prompt section %s at %s (max_chars=%d)",
+            plugin_id,
+            section_id,
+            position,
+            max_chars,
+        )
+
     def register_hook(self, hook_name: str, callback: Callable) -> None:
         """Register a lifecycle hook callback.
 
@@ -1257,6 +1369,7 @@ class PluginManager:
         self._cli_commands: Dict[str, dict] = {}
         self._context_engine = None  # Set by a plugin via register_context_engine()
         self._plugin_commands: Dict[str, dict] = {}  # Slash commands registered by plugins
+        self._system_prompt_sections: Dict[str, PluginSystemPromptSection] = {}
         self._discovered: bool = False
         self._cli_ref = None  # Set by CLI after plugin discovery
         # Plugin skill registry: qualified name → metadata dict.
@@ -1297,6 +1410,7 @@ class PluginManager:
             self._plugin_platform_names.clear()
             self._cli_commands.clear()
             self._plugin_commands.clear()
+            self._system_prompt_sections.clear()
             self._plugin_skills.clear()
             self._aux_tasks.clear()
             self._slack_action_handlers.clear()
@@ -1789,6 +1903,7 @@ class PluginManager:
                 _mw_counts_before = {
                     kind: len(cbs) for kind, cbs in self._middleware.items()
                 }
+                _sections_before = set(self._system_prompt_sections)
                 register_fn(ctx)
                 loaded.tools_registered = [
                     t for t in self._plugin_tool_names
@@ -1808,12 +1923,19 @@ class PluginManager:
                     c for c in self._plugin_commands
                     if self._plugin_commands[c].get("plugin") == manifest.name
                 ]
+                loaded.prompt_sections_registered = [
+                    section_id
+                    for section_id in self._system_prompt_sections
+                    if section_id not in _sections_before
+                ]
                 loaded.enabled = True
                 logger.debug(
-                    "  registered: %d tool(s), %d hook(s), %d middleware, %d slash command(s), %d CLI command(s)",
+                    "  registered: %d tool(s), %d hook(s), %d middleware, "
+                    "%d prompt section(s), %d slash command(s), %d CLI command(s)",
                     len(loaded.tools_registered),
                     len(loaded.hooks_registered),
                     len(loaded.middleware_registered),
+                    len(loaded.prompt_sections_registered),
                     len(loaded.commands_registered),
                     sum(
                         1 for c in self._cli_commands
@@ -1930,6 +2052,189 @@ class PluginManager:
         """Return True when at least one callback is registered for a hook."""
         return bool(self._hooks.get(hook_name))
 
+    def render_system_prompt_sections(
+        self,
+        session_info: Dict[str, Any],
+    ) -> List[RenderedPluginSystemPromptSection]:
+        """Evaluate registered sections once for a new session.
+
+        The caller freezes and persists the returned values. Oversized,
+        invalid, or raising sections fail open with an audit warning.
+        """
+        frozen_info = types.MappingProxyType(dict(session_info))
+        rendered: List[RenderedPluginSystemPromptSection] = []
+        total_chars = 0
+        for section in self._system_prompt_sections.values():
+            if len(rendered) >= MAX_SYSTEM_PROMPT_SECTIONS:
+                logger.warning(
+                    "Plugin system prompt section %s (%s) exceeded the session "
+                    "section limit (%d) and was skipped",
+                    section.id,
+                    section.plugin,
+                    MAX_SYSTEM_PROMPT_SECTIONS,
+                )
+                continue
+            try:
+                value = (
+                    section.content(frozen_info)
+                    if callable(section.content)
+                    else section.content
+                )
+            except Exception as exc:
+                logger.warning(
+                    "Plugin system prompt section %s (%s) raised and was skipped: %s",
+                    section.id,
+                    section.plugin,
+                    exc,
+                )
+                continue
+            if not isinstance(value, str):
+                logger.warning(
+                    "Plugin system prompt section %s (%s) returned %s, not str; skipped",
+                    section.id,
+                    section.plugin,
+                    type(value).__name__,
+                )
+                continue
+            text = value.strip()
+            if not text:
+                continue
+            if len(text) > section.max_chars:
+                logger.warning(
+                    "Plugin system prompt section %s (%s) exceeded max_chars "
+                    "(%d > %d) and was skipped",
+                    section.id,
+                    section.plugin,
+                    len(text),
+                    section.max_chars,
+                )
+                continue
+            rendered_chars = system_prompt_section_rendered_chars(section.id, text)
+            if total_chars + rendered_chars > MAX_SYSTEM_PROMPT_SECTIONS_TOTAL_CHARS:
+                logger.warning(
+                    "Plugin system prompt section %s (%s) exceeded the total "
+                    "session budget (%d chars) and was skipped",
+                    section.id,
+                    section.plugin,
+                    MAX_SYSTEM_PROMPT_SECTIONS_TOTAL_CHARS,
+                )
+                continue
+            frozen = RenderedPluginSystemPromptSection(
+                id=section.id,
+                content=text,
+                position=section.position,
+                max_chars=section.max_chars,
+                plugin=section.plugin,
+            )
+            rendered.append(frozen)
+            total_chars += rendered_chars
+            logger.info(
+                "Session plugin prompt section: id=%s plugin=%s position=%s chars=%d",
+                frozen.id,
+                frozen.plugin,
+                frozen.position,
+                len(frozen.content),
+            )
+        return rendered
+
+    def collect_environment_hints(
+        self,
+        core_hints: str,
+        session_info: Dict[str, Any],
+    ) -> List[tuple[str, str]]:
+        """Collect bounded key-value rows from environment-hint callbacks."""
+        frozen_hints = types.MappingProxyType({"text": core_hints})
+        frozen_info = types.MappingProxyType(dict(session_info))
+        rows: List[tuple[str, str]] = []
+        total_chars = 0
+
+        for callback in self._hooks.get("build_environment_hints", []):
+            try:
+                result = callback(
+                    hints=frozen_hints,
+                    session_info=frozen_info,
+                    telemetry_schema_version=OBSERVER_SCHEMA_VERSION,
+                )
+            except Exception as exc:
+                logger.warning(
+                    "Hook 'build_environment_hints' callback %s raised: %s",
+                    getattr(callback, "__name__", repr(callback)),
+                    exc,
+                )
+                continue
+            if result is None:
+                continue
+            candidates = result.get("hints") if isinstance(result, dict) else None
+            if not isinstance(candidates, (list, tuple)):
+                logger.warning(
+                    "Hook 'build_environment_hints' callback %s returned an "
+                    "invalid shape; expected {'hints': [(key, value), ...]}",
+                    getattr(callback, "__name__", repr(callback)),
+                )
+                continue
+            for candidate in candidates:
+                if len(rows) >= MAX_PLUGIN_ENVIRONMENT_HINT_ROWS:
+                    logger.warning(
+                        "Plugin environment hints exceeded the %d-row session budget; "
+                        "remaining rows were skipped",
+                        MAX_PLUGIN_ENVIRONMENT_HINT_ROWS,
+                    )
+                    return rows
+                if not isinstance(candidate, (list, tuple)) or len(candidate) != 2:
+                    logger.warning("Invalid plugin environment hint row %r; skipped", candidate)
+                    continue
+                key, value = candidate
+                key = str(key).strip()
+                value = str(value).strip()
+                if not key or not value:
+                    continue
+                if "\n" in key or "\r" in key or "\n" in value or "\r" in value:
+                    logger.warning(
+                        "Plugin environment hint %r was not a single key-value row; skipped",
+                        key,
+                    )
+                    continue
+                row_chars = len(key) + len(value) + 2
+                if row_chars > MAX_PLUGIN_ENVIRONMENT_HINT_ROW_CHARS:
+                    logger.warning(
+                        "Plugin environment hint %r exceeded the %d-character row budget; skipped",
+                        key,
+                        MAX_PLUGIN_ENVIRONMENT_HINT_ROW_CHARS,
+                    )
+                    continue
+                if total_chars + row_chars > MAX_PLUGIN_ENVIRONMENT_HINTS_TOTAL_CHARS:
+                    logger.warning(
+                        "Plugin environment hints exceeded the %d-character session budget; "
+                        "remaining rows were skipped",
+                        MAX_PLUGIN_ENVIRONMENT_HINTS_TOTAL_CHARS,
+                    )
+                    return rows
+                rows.append((key, value))
+                total_chars += row_chars
+                logger.info(
+                    "Session plugin environment hint: key=%s chars=%d",
+                    key,
+                    row_chars,
+                )
+        return rows
+
+    def list_system_prompt_sections(
+        self,
+        plugin: Optional[str] = None,
+    ) -> List[Dict[str, Any]]:
+        """Return registration metadata without evaluating section content."""
+        return [
+            {
+                "id": section.id,
+                "plugin": section.plugin,
+                "position": section.position,
+                "max_chars": section.max_chars,
+                "content_type": "callable" if callable(section.content) else "string",
+            }
+            for section in self._system_prompt_sections.values()
+            if plugin is None or section.plugin == plugin
+        ]
+
     def has_middleware(self, kind: str) -> bool:
         """Return True when at least one callback is registered for middleware."""
         return bool(self._middleware.get(kind))
@@ -1994,6 +2299,7 @@ class PluginManager:
                     "hooks": len(loaded.hooks_registered),
                     "middleware": len(loaded.middleware_registered),
                     "commands": len(loaded.commands_registered),
+                    "prompt_sections": len(loaded.prompt_sections_registered),
                     "error": loaded.error,
                 }
             )
@@ -2052,6 +2358,21 @@ def invoke_hook(hook_name: str, **kwargs: Any) -> List[Any]:
     Returns a list of non-``None`` return values from plugin callbacks.
     """
     return get_plugin_manager().invoke_hook(hook_name, **kwargs)
+
+
+def render_system_prompt_sections(
+    session_info: Dict[str, Any],
+) -> List[RenderedPluginSystemPromptSection]:
+    """Evaluate registered prompt sections for a new session."""
+    return get_plugin_manager().render_system_prompt_sections(session_info)
+
+
+def collect_environment_hints(
+    core_hints: str,
+    session_info: Dict[str, Any],
+) -> List[tuple[str, str]]:
+    """Collect plugin-owned environment rows for a new session."""
+    return get_plugin_manager().collect_environment_hints(core_hints, session_info)
 
 
 def invoke_middleware(kind: str, **kwargs: Any) -> List[Any]:

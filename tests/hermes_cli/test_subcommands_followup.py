@@ -64,3 +64,17 @@ def test_mcp_and_acp_accept_hooks_flag():
     # acp takes --accept-hooks at top level
     ns = parser.parse_args(["acp", "--accept-hooks"])
     assert ns.accept_hooks is True
+
+
+def test_plugins_show_parser_accepts_name_and_json():
+    parser = argparse.ArgumentParser(prog="hermes")
+    sub = parser.add_subparsers(dest="command")
+    handler = _h("plugins")
+    build_plugins_parser(sub, cmd_plugins=handler)
+
+    ns = parser.parse_args(["plugins", "show", "fixture", "--json"])
+
+    assert ns.plugins_action == "show"
+    assert ns.name == "fixture"
+    assert ns.json is True
+    assert ns.func is handler

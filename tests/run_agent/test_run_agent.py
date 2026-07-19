@@ -1428,6 +1428,58 @@ class TestBuildSystemPrompt:
         prompt = agent._build_system_prompt()
         assert "NOUS SUBSCRIPTION BLOCK" in prompt
 
+    def test_plugin_prompt_sections_are_positioned_and_evaluated_once(self, agent):
+        from hermes_cli.plugins import RenderedPluginSystemPromptSection
+
+        sections = [
+            RenderedPluginSystemPromptSection(
+                id="test.identity",
+                content="IDENTITY PLUGIN BLOCK",
+                position="after_identity",
+                max_chars=100,
+                plugin="test",
+            ),
+            RenderedPluginSystemPromptSection(
+                id="test.tools",
+                content="TOOLS PLUGIN BLOCK",
+                position="after_tools",
+                max_chars=100,
+                plugin="test",
+            ),
+            RenderedPluginSystemPromptSection(
+                id="test.memory",
+                content="MEMORY PLUGIN BLOCK",
+                position="after_memory",
+                max_chars=100,
+                plugin="test",
+            ),
+        ]
+        with patch(
+            "hermes_cli.plugins.render_system_prompt_sections",
+            return_value=sections,
+        ) as render_sections:
+            first = agent._build_system_prompt(system_message="Custom instruction")
+            second = agent._build_system_prompt(system_message="Custom instruction")
+
+        assert first == second
+        assert first.index("IDENTITY PLUGIN BLOCK") < first.index("Custom instruction")
+        assert first.index("TOOLS PLUGIN BLOCK") < first.index("Custom instruction")
+        assert first.index("Custom instruction") < first.index("MEMORY PLUGIN BLOCK")
+        assert first.index("MEMORY PLUGIN BLOCK") < first.index("Conversation started:")
+        render_sections.assert_called_once()
+
+    def test_plugin_environment_hint_rows_are_frozen(self, agent):
+        with patch(
+            "hermes_cli.plugins.collect_environment_hints",
+            return_value=[("Kanban board", "alpha")],
+        ) as collect_hints:
+            first = agent._build_system_prompt()
+            second = agent._build_system_prompt()
+
+        assert first == second
+        assert "Kanban board: alpha" in first
+        collect_hints.assert_called_once()
+
     def test_skills_prompt_derives_available_toolsets_from_loaded_tools(self):
         tools = _make_tool_defs("web_search", "skills_list", "skill_view", "skill_manage")
         toolset_map = {

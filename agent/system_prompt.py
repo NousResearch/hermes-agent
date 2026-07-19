@@ -12,7 +12,8 @@ Three tiers are joined with ``\\n\\n``:
 * ``stable``   — identity (SOUL.md or DEFAULT_AGENT_IDENTITY), tool
   guidance, computer-use guidance, nous subscription block, tool-use
   enforcement guidance + per-model operational guidance, skills prompt,
-  alibaba model-name workaround, environment hints, platform hints.
+  alibaba model-name workaround, environment hints, platform hints,
+  plugin-owned frozen sections at constrained anchors.
 * ``context``  — caller-supplied ``system_message`` plus context files
   (AGENTS.md / .cursorrules / etc.) discovered under ``TERMINAL_CWD``.
 * ``volatile`` — memory snapshot, USER.md profile, external memory
@@ -24,6 +25,7 @@ Pure helpers that read the agent's state.  AIAgent keeps thin forwarders.
 from __future__ import annotations
 
 import json
+import logging
 import os
 from typing import Any, Dict, List, Optional
 
@@ -48,6 +50,10 @@ from agent.prompt_builder import (
 from agent.runtime_cwd import resolve_context_cwd
 from hermes_constants import get_hermes_home
 from utils import is_truthy_value
+
+
+logger = logging.getLogger(__name__)
+_PLUGIN_PROMPT_STATE_VERSION = 1
 
 
 def _ra():
@@ -144,6 +150,183 @@ def _tui_embedded_pane_clarifier(hint: str) -> str:
     return hint + _TUI_EMBEDDED_PANE_CLARIFIER
 
 
+def _plugin_session_info(agent: Any) -> Dict[str, str]:
+    """Return the immutable-at-render-time metadata exposed to plugins."""
+    try:
+        cwd = str(resolve_context_cwd() or "")
+    except Exception:
+        cwd = ""
+    try:
+        from hermes_cli.profiles import get_active_profile_name
+
+        profile_name = str(get_active_profile_name() or "default")
+    except Exception:
+        profile_name = "default"
+    return {
+        "session_id": str(getattr(agent, "session_id", None) or ""),
+        "model": str(getattr(agent, "model", None) or ""),
+        "provider": str(getattr(agent, "provider", None) or ""),
+        "platform": str(getattr(agent, "platform", None) or ""),
+        "profile_name": profile_name,
+        "cwd": cwd,
+    }
+
+
+def _frozen_plugin_prompt_sections(agent: Any) -> tuple:
+    attr = "_plugin_system_prompt_sections_snapshot"
+    if hasattr(agent, attr):
+        return getattr(agent, attr)
+    try:
+        from hermes_cli.plugins import render_system_prompt_sections
+
+        rendered = tuple(render_system_prompt_sections(_plugin_session_info(agent)))
+    except Exception as exc:
+        logger.warning("Plugin system prompt sections could not be rendered: %s", exc)
+        rendered = ()
+    setattr(agent, attr, rendered)
+    return rendered
+
+
+def _frozen_plugin_environment_hints(agent: Any, core_hints: str) -> tuple:
+    attr = "_plugin_environment_hints_snapshot"
+    if hasattr(agent, attr):
+        return getattr(agent, attr)
+    try:
+        from hermes_cli.plugins import collect_environment_hints
+
+        rows = tuple(
+            collect_environment_hints(core_hints, _plugin_session_info(agent))
+        )
+    except Exception as exc:
+        logger.warning("Plugin environment hints could not be rendered: %s", exc)
+        rows = ()
+    setattr(agent, attr, rows)
+    return rows
+
+
+def _plugin_section_blocks(sections: tuple, position: str) -> List[str]:
+    return [
+        f"## Plugin Context: {section.id}\n\n{section.content}"
+        for section in sections
+        if section.position == position
+    ]
+
+
+def serialize_plugin_prompt_state(agent: Any) -> Optional[str]:
+    """Serialize frozen plugin prompt output for session persistence."""
+    if not hasattr(agent, "_plugin_system_prompt_sections_snapshot"):
+        return None
+    sections = getattr(agent, "_plugin_system_prompt_sections_snapshot", ())
+    environment_hints = getattr(agent, "_plugin_environment_hints_snapshot", ())
+    payload = {
+        "version": _PLUGIN_PROMPT_STATE_VERSION,
+        "sections": [
+            {
+                "id": section.id,
+                "content": section.content,
+                "position": section.position,
+                "max_chars": section.max_chars,
+                "plugin": section.plugin,
+            }
+            for section in sections
+        ],
+        "environment_hints": [list(row) for row in environment_hints],
+    }
+    return json.dumps(payload, ensure_ascii=False, separators=(",", ":"))
+
+
+def restore_plugin_prompt_state(agent: Any, raw_state: Any) -> bool:
+    """Restore validated plugin output before a resumed-session rebuild."""
+    if not raw_state:
+        return False
+    try:
+        payload = json.loads(raw_state) if isinstance(raw_state, str) else raw_state
+        if not isinstance(payload, dict) or payload.get("version") != _PLUGIN_PROMPT_STATE_VERSION:
+            raise ValueError("unsupported plugin prompt state version")
+
+        from hermes_cli.plugins import (
+            MAX_PLUGIN_ENVIRONMENT_HINT_ROW_CHARS,
+            MAX_PLUGIN_ENVIRONMENT_HINT_ROWS,
+            MAX_PLUGIN_ENVIRONMENT_HINTS_TOTAL_CHARS,
+            MAX_SYSTEM_PROMPT_SECTION_CHARS,
+            MAX_SYSTEM_PROMPT_SECTIONS,
+            MAX_SYSTEM_PROMPT_SECTIONS_TOTAL_CHARS,
+            SYSTEM_PROMPT_SECTION_POSITIONS,
+            RenderedPluginSystemPromptSection,
+            is_valid_system_prompt_section_id,
+            system_prompt_section_rendered_chars,
+        )
+
+        section_items = payload.get("sections", [])
+        if not isinstance(section_items, list):
+            raise ValueError("sections must be a list")
+        if len(section_items) > MAX_SYSTEM_PROMPT_SECTIONS:
+            raise ValueError("too many system prompt sections")
+        sections = []
+        section_chars = 0
+        for item in section_items:
+            if not isinstance(item, dict):
+                raise ValueError("section entry must be an object")
+            section_id = item.get("id")
+            content = item.get("content")
+            position = item.get("position")
+            plugin = item.get("plugin")
+            max_chars = item.get("max_chars")
+            if not all(isinstance(value, str) for value in (section_id, content, plugin)):
+                raise ValueError("section id, content, and plugin must be strings")
+            if not is_valid_system_prompt_section_id(section_id) or not plugin:
+                raise ValueError("invalid section identity")
+            if position not in SYSTEM_PROMPT_SECTION_POSITIONS:
+                raise ValueError("invalid section position")
+            if (
+                isinstance(max_chars, bool)
+                or not isinstance(max_chars, int)
+                or not 0 < max_chars <= MAX_SYSTEM_PROMPT_SECTION_CHARS
+                or len(content) > max_chars
+            ):
+                raise ValueError("invalid section budget")
+            section_chars += system_prompt_section_rendered_chars(section_id, content)
+            if section_chars > MAX_SYSTEM_PROMPT_SECTIONS_TOTAL_CHARS:
+                raise ValueError("section total budget exceeded")
+            sections.append(
+                RenderedPluginSystemPromptSection(
+                    id=section_id,
+                    content=content,
+                    position=position,
+                    max_chars=max_chars,
+                    plugin=plugin,
+                )
+            )
+
+        hint_items = payload.get("environment_hints", [])
+        if not isinstance(hint_items, list) or len(hint_items) > MAX_PLUGIN_ENVIRONMENT_HINT_ROWS:
+            raise ValueError("invalid environment hints")
+        rows = []
+        hint_chars = 0
+        for row in hint_items:
+            if not isinstance(row, list) or len(row) != 2:
+                raise ValueError("invalid environment hint row")
+            key, value = row
+            if not isinstance(key, str) or not isinstance(value, str):
+                raise ValueError("environment hint values must be strings")
+            if not key.strip() or not value.strip() or "\n" in key or "\n" in value:
+                raise ValueError("invalid environment hint value")
+            row_chars = len(key) + len(value) + 2
+            if row_chars > MAX_PLUGIN_ENVIRONMENT_HINT_ROW_CHARS:
+                raise ValueError("environment hint row budget exceeded")
+            hint_chars += row_chars
+            if hint_chars > MAX_PLUGIN_ENVIRONMENT_HINTS_TOTAL_CHARS:
+                raise ValueError("environment hints total budget exceeded")
+            rows.append((key, value))
+    except Exception as exc:
+        logger.warning("Stored plugin prompt state was invalid and was ignored: %s", exc)
+        return False
+
+    agent._plugin_system_prompt_sections_snapshot = tuple(sections)
+    agent._plugin_environment_hints_snapshot = tuple(rows)
+    return True
+
+
 def build_system_prompt_parts(agent: Any, system_message: Optional[str] = None) -> Dict[str, str]:
     """Assemble the system prompt as three ordered parts.
 
@@ -178,6 +361,11 @@ def build_system_prompt_parts(agent: Any, system_message: Optional[str] = None) 
         if isinstance(_cc_len, int) and _cc_len > 0:
             _ctx_len = _cc_len
 
+    # Plugin sections are evaluated at most once for this AIAgent. The frozen
+    # snapshot survives compression rebuilds and is persisted for process
+    # restarts by ``serialize_plugin_prompt_state``.
+    _plugin_sections = _frozen_plugin_prompt_sections(agent)
+
     # ── Stable tier ────────────────────────────────────────────────
     stable_parts: List[str] = []
 
@@ -197,6 +385,7 @@ def build_system_prompt_parts(agent: Any, system_message: Optional[str] = None) 
 
     # Pointer to the hermes-agent skill + docs for user questions about Hermes itself.
     stable_parts.append(HERMES_AGENT_HELP_GUIDANCE)
+    stable_parts.extend(_plugin_section_blocks(_plugin_sections, "after_identity"))
 
     # Universal task-completion / no-fabrication guidance.  Applied to ALL
     # models regardless of tool_use_enforcement gating — the failure modes
@@ -322,6 +511,7 @@ def build_system_prompt_parts(agent: Any, system_message: Optional[str] = None) 
         skills_prompt = ""
     if skills_prompt:
         stable_parts.append(skills_prompt)
+    stable_parts.extend(_plugin_section_blocks(_plugin_sections, "after_tools"))
 
     # Alibaba Coding Plan API always returns "glm-4.7" as model name regardless
     # of the requested model. Inject explicit model identity into the system prompt
@@ -341,6 +531,14 @@ def build_system_prompt_parts(agent: Any, system_message: Optional[str] = None) 
     # execution environment so it can translate paths and adapt behavior.
     # Stable for the lifetime of the process.
     _env_hints = _r.build_environment_hints()
+    _plugin_env_rows = _frozen_plugin_environment_hints(agent, _env_hints)
+    if _plugin_env_rows:
+        _plugin_env_block = "\n".join(
+            f"{key}: {value}" for key, value in _plugin_env_rows
+        )
+        _env_hints = "\n\n".join(
+            part for part in (_env_hints, _plugin_env_block) if part
+        )
     if _env_hints:
         stable_parts.append(_env_hints)
 
@@ -500,6 +698,8 @@ def build_system_prompt_parts(agent: Any, system_message: Optional[str] = None) 
         except Exception:
             pass
 
+    volatile_parts.extend(_plugin_section_blocks(_plugin_sections, "after_memory"))
+
     from hermes_time import now as _hermes_now
     now = _hermes_now()
     # Date-only (not minute-precision) so the system prompt is byte-stable
@@ -590,4 +790,6 @@ __all__ = [
     "build_system_prompt",
     "invalidate_system_prompt",
     "format_tools_for_system_message",
+    "serialize_plugin_prompt_state",
+    "restore_plugin_prompt_state",
 ]

@@ -325,6 +325,7 @@ def _restore_or_build_system_prompt(agent, system_message, conversation_history)
     DB roundtrip).
     """
     stored_prompt = None
+    stored_plugin_prompt_state = None
     stored_state = "missing"
     if conversation_history and agent._session_db:
         try:
@@ -337,6 +338,7 @@ def _restore_or_build_system_prompt(agent, system_message, conversation_history)
                     stored_state = "empty"
                 else:
                     stored_prompt = raw_prompt
+                    stored_plugin_prompt_state = session_row.get("plugin_prompt_state")
                     stored_state = "present"
         except Exception as exc:
             logger.warning(
@@ -344,6 +346,18 @@ def _restore_or_build_system_prompt(agent, system_message, conversation_history)
                 "(session=%s): %s. Falling back to fresh build — prefix "
                 "cache will miss for this turn.",
                 agent.session_id, exc,
+            )
+
+    if stored_prompt and stored_plugin_prompt_state:
+        try:
+            from agent.system_prompt import restore_plugin_prompt_state
+
+            restore_plugin_prompt_state(agent, stored_plugin_prompt_state)
+        except Exception as exc:
+            logger.warning(
+                "Stored plugin prompt state could not be restored for session %s: %s",
+                agent.session_id,
+                exc,
             )
 
     if stored_prompt and _stored_prompt_matches_runtime(agent, stored_prompt):
@@ -419,6 +433,22 @@ def _restore_or_build_system_prompt(agent, system_message, conversation_history)
                 "miss the prefix cache.",
                 agent.session_id, exc,
             )
+        else:
+            try:
+                if hasattr(agent._session_db, "update_plugin_prompt_state"):
+                    from agent.system_prompt import serialize_plugin_prompt_state
+
+                    agent._session_db.update_plugin_prompt_state(
+                        agent.session_id,
+                        serialize_plugin_prompt_state(agent),
+                    )
+            except Exception as exc:
+                logger.warning(
+                    "Session DB plugin prompt state write failed for session %s: %s. "
+                    "A later compression rebuild may re-evaluate plugin context.",
+                    agent.session_id,
+                    exc,
+                )
 
 
 def _stored_prompt_matches_runtime(agent, prompt: str) -> bool:

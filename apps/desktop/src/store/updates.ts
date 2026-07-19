@@ -328,6 +328,10 @@ export async function checkBackendUpdates(): Promise<DesktopUpdateStatus | null>
 }
 
 export async function checkUpdates(): Promise<DesktopUpdateStatus | null> {
+  if (isRemoteMode()) {
+    return $updateStatus.get()
+  }
+
   const bridge = window.hermesDesktop?.updates
 
   if (!bridge || $updateChecking.get()) {

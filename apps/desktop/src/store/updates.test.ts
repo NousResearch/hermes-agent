@@ -44,6 +44,7 @@ vi.mock('@/hermes', () => ({
 const {
   maybeNotifyUpdateAvailable,
   checkBackendUpdates,
+  checkUpdates,
   $backendUpdateStatus,
   applyBackendUpdate,
   $backendUpdateApply,
@@ -475,6 +476,7 @@ describe('startUpdatePoller', () => {
       targetSha: 'sha-abc',
       fetchedAt: 0
     })
+    setConnection({ baseUrl: 'http://local.example.com', mode: 'local' } as never)
     $updateStatus.set(null)
     ;(globalThis as unknown as { window: unknown }).window = {
       hermesDesktop: { updates: { check: checkMock, onProgress: onProgressMock } },
@@ -526,4 +528,17 @@ describe('startUpdatePoller', () => {
 
     expect(checkMock).toHaveBeenCalled()
   })
+
+  it('skips desktop client update checks in remote mode', async () => {
+    setConnection({ baseUrl: 'http://remote.example.com', mode: 'remote' } as never)
+
+    await checkUpdates()
+    startUpdatePoller()
+    await vi.advanceTimersByTimeAsync(30 * 60 * 1000)
+    listeners['focus']?.()
+    await vi.advanceTimersByTimeAsync(0)
+
+    expect(checkMock).not.toHaveBeenCalled()
+  })
+
 })

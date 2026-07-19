@@ -13655,6 +13655,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         from agent.model_metadata import get_model_context_length, DEFAULT_FALLBACK_CONTEXT
 
         model = _resolve_gateway_model()
+        configured_model = model
         config_context_length = None
         provider = None
         base_url = None
@@ -13705,6 +13706,12 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     "falling back to global model defaults",
                     exc_info=True,
                 )
+
+        # A global model.context_length belongs to the configured model, not a
+        # session /model or channel override. Matching per-model metadata or
+        # detection below should determine the routed model's context instead.
+        if model != configured_model:
+            config_context_length = None
 
         # Also check custom_providers for context_length when top-level model.context_length is not set
         if config_context_length is None and data:

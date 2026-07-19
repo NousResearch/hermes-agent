@@ -156,6 +156,69 @@ class TestFormatSessionInfo:
         assert "global-model" not in info
         assert "openai-codex" not in info
 
+    def test_channel_override_discards_global_context_for_routed_model(
+        self, runner, tmp_path
+    ):
+        room_id = "!routed-context:server"
+        runner.config = GatewayConfig(
+            platforms={
+                Platform.MATRIX: PlatformConfig(
+                    enabled=True,
+                    channel_overrides={
+                        room_id: ChannelOverride(
+                            model="routed-model",
+                            provider="routed-provider",
+                        )
+                    },
+                )
+            }
+        )
+        source = SessionSource(
+            platform=Platform.MATRIX,
+            chat_id=room_id,
+            user_id="u1",
+        )
+        p1, p2, p3 = _patch_info(
+            tmp_path,
+            "model:\n"
+            "  default: global-model\n"
+            "  provider: global-provider\n"
+            "  context_length: 128000\n"
+            "custom_providers:\n"
+            "  - name: routed-provider\n"
+            "    model: routed-model\n"
+            "    context_length: 65536\n",
+            "global-model",
+            {"provider": "global-provider", "base_url": "", "api_key": "gk"},
+        )
+        with (
+            p1,
+            p2,
+            p3,
+            patch(
+                "gateway.run._resolve_runtime_agent_kwargs_for_provider",
+                return_value={
+                    "provider": "routed-provider",
+                    "base_url": "https://routed.example/v1",
+                    "api_key": "rk",
+                },
+            ),
+            patch(
+                "agent.model_metadata.get_model_context_length",
+                side_effect=lambda _model, **kwargs: kwargs.get(
+                    "config_context_length"
+                )
+                or 262144,
+            ) as detect_context,
+        ):
+            info = runner._format_session_info(source)
+
+        assert "routed-model" in info
+        assert "65K" in info
+        assert "128K" not in info
+        assert "config" in info
+        assert detect_context.call_args.kwargs["config_context_length"] == 65536
+
     def test_session_override_takes_priority_over_channel(self, runner, tmp_path):
         room_id = "!room:server"
         runner.config = GatewayConfig(

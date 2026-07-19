@@ -1087,6 +1087,7 @@ def create_job(
     workdir: Optional[str] = None,
     no_agent: bool = False,
     attach_to_session: Optional[bool] = None,
+    profile: Optional[str] = None,
 ) -> Dict[str, Any]:
     """
     Create a new cron job.
@@ -1251,6 +1252,12 @@ def create_job(
         "deliver": deliver,
         "origin": origin,  # Tracks where job was created for "origin" delivery
         "enabled_toolsets": normalized_toolsets,
+        # Profile assignment (None = inherit the scheduler's active profile).
+        # Recorded at creation so profile-pinned jobs survive restarts and
+        # cross-profile dashboard/tick iteration; matches the field update_job
+        # writes and the scheduler resolves. Missing on pre-existing jobs
+        # (back-compat: treated as None).
+        "profile": _normalize_job_optional_text(profile),
         "workdir": normalized_workdir,
     }
     # Only persist attach_to_session when explicitly set, so existing jobs and

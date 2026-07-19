@@ -108,7 +108,9 @@ if (typeof window !== 'undefined' && !window.__PERF_DRIVE__) {
     const user = {
       id: `perf-u-${i}`,
       role: 'user' as const,
-      parts: [{ type: 'text' as const, text: `Question ${i}: how does the widget in module ${i} handle back-pressure?` }],
+      parts: [
+        { type: 'text' as const, text: `Question ${i}: how does the widget in module ${i} handle back-pressure?` }
+      ],
       timestamp: Date.now()
     }
 

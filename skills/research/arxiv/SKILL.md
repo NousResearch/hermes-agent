@@ -189,67 +189,20 @@ No dependencies — uses only Python stdlib.
 
 ---
 
-## Semantic Scholar (Citations, Related Papers, Author Profiles)
+## Semantic Scholar
 
-arXiv doesn't provide citation data or recommendations. Use the **Semantic Scholar API** for that — free, no key needed for basic use (1 req/sec), returns JSON.
-
-### Get paper details + citations
-
-```bash
-# By arXiv ID
-curl -s "https://api.semanticscholar.org/graph/v1/paper/arXiv:2402.03300?fields=title,authors,citationCount,referenceCount,influentialCitationCount,year,abstract" | python3 -m json.tool
-
-# By Semantic Scholar paper ID or DOI
-curl -s "https://api.semanticscholar.org/graph/v1/paper/DOI:10.1234/example?fields=title,citationCount"
-```
-
-### Get citations OF a paper (who cited it)
-
-```bash
-curl -s "https://api.semanticscholar.org/graph/v1/paper/arXiv:2402.03300/citations?fields=title,authors,year,citationCount&limit=10" | python3 -m json.tool
-```
-
-### Get references FROM a paper (what it cites)
-
-```bash
-curl -s "https://api.semanticscholar.org/graph/v1/paper/arXiv:2402.03300/references?fields=title,authors,year,citationCount&limit=10" | python3 -m json.tool
-```
-
-### Search papers (alternative to arXiv search, returns JSON)
-
-```bash
-curl -s "https://api.semanticscholar.org/graph/v1/paper/search?query=GRPO+reinforcement+learning&limit=5&fields=title,authors,year,citationCount,externalIds" | python3 -m json.tool
-```
-
-### Get paper recommendations
-
-```bash
-curl -s -X POST "https://api.semanticscholar.org/recommendations/v1/papers/" \
-  -H "Content-Type: application/json" \
-  -d '{"positivePaperIds": ["arXiv:2402.03300"], "negativePaperIds": []}' | python3 -m json.tool
-```
-
-### Author profile
-
-```bash
-curl -s "https://api.semanticscholar.org/graph/v1/author/search?query=Yann+LeCun&fields=name,hIndex,citationCount,paperCount" | python3 -m json.tool
-```
-
-### Useful Semantic Scholar fields
-
-`title`, `authors`, `year`, `abstract`, `citationCount`, `referenceCount`, `influentialCitationCount`, `isOpenAccess`, `openAccessPdf`, `fieldsOfStudy`, `publicationVenue`, `externalIds` (contains arXiv ID, DOI, etc.)
+For citation data, references, author metrics, and paper recommendations, see the
+`semantic-scholar` skill.
 
 ---
 
 ## Complete Research Workflow
 
 1. **Discover**: `python scripts/search_arxiv.py "your topic" --sort date --max 10`
-2. **Assess impact**: `curl -s "https://api.semanticscholar.org/graph/v1/paper/arXiv:ID?fields=citationCount,influentialCitationCount"`
+2. **Assess impact**: use the `semantic-scholar` skill for citation counts
 3. **Read abstract**: `web_extract(urls=["https://arxiv.org/abs/ID"])`
 4. **Read full paper**: `web_extract(urls=["https://arxiv.org/pdf/ID"])`
-5. **Find related work**: `curl -s "https://api.semanticscholar.org/graph/v1/paper/arXiv:ID/references?fields=title,citationCount&limit=20"`
-6. **Get recommendations**: POST to Semantic Scholar recommendations endpoint
-7. **Track authors**: `curl -s "https://api.semanticscholar.org/graph/v1/author/search?query=NAME"`
+5. **Find related work**: use the `semantic-scholar` skill for references and recommendations
 
 ## Rate Limits
 
@@ -261,7 +214,6 @@ curl -s "https://api.semanticscholar.org/graph/v1/author/search?query=Yann+LeCun
 ## Notes
 
 - arXiv returns Atom XML — use the helper script or parsing snippet for clean output
-- Semantic Scholar returns JSON — pipe through `python3 -m json.tool` for readability
 - arXiv IDs: old format (`hep-th/0601001`) vs new (`2402.03300`)
 - PDF: `https://arxiv.org/pdf/{id}` — Abstract: `https://arxiv.org/abs/{id}`
 - HTML (when available): `https://arxiv.org/html/{id}`

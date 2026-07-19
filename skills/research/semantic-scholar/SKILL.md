@@ -1,6 +1,6 @@
 ---
 name: semantic-scholar
-description: "Search papers, citations, references, authors, and recommendations via Semantic Scholar API."
+description: "Citations, references, and author metrics via S2 API."
 version: 1.0.0
 author: Sam27
 license: MIT
@@ -11,266 +11,166 @@ metadata:
     related_skills: [arxiv]
 ---
 
-# Semantic Scholar
+# Semantic Scholar Skill
 
-Search and explore academic papers, citations, references, author profiles,
-and paper recommendations via the [Semantic Scholar Academic Graph API](https://api.semanticscholar.org/api-docs/).
-No API key required for basic use. Complements the `arxiv` skill: use arXiv to
-find and read papers; use this skill when you need **citation data, references,
-author metrics, or recommendations** — things arXiv cannot provide.
+Query the [Semantic Scholar Academic Graph API](https://api.semanticscholar.org/api-docs/)
+for citation data, references, author profiles, and paper recommendations.
+No API key required for basic use. Complements `arxiv` (full text) with
+structured metadata arXiv cannot provide.
 
----
+## When to Use
 
-## Quick reference
+- User needs citation counts or influential citation metrics for a paper
+- User asks "who cited this paper?" or "what does this paper cite?"
+- User wants paper recommendations based on a seed paper
+- User needs author h-index, publication list, or affiliation
+- User wants to search papers and get structured JSON (not XML)
 
-| Goal | Command |
-|------|---------|
-| Search papers by keyword | See [Search papers](#1-search-papers) |
-| Get paper details + abstract | See [Paper details](#2-paper-details) |
-| List papers that cite a paper | See [Citations](#3-citations) |
-| List papers a paper cites | See [References](#4-references) |
-| Find similar papers | See [Recommendations](#5-recommendations) |
-| Look up an author | See [Author search](#6-author-search) |
-| Get all papers by an author | See [Author papers](#7-author-papers) |
+## Prerequisites
 
-**Base URL:** `https://api.semanticscholar.org/graph/v1`
-**Rate limit (no key):** 1 request/second — always add `sleep 1` between calls in loops.
-**Optional API key:** set `SEMANTIC_SCHOLAR_API_KEY` in env for higher limits; pass as `-H "x-api-key: $SEMANTIC_SCHOLAR_API_KEY"`.
+- `curl` and `python3` (stdlib only, no pip packages)
+- Optional: set `SEMANTIC_SCHOLAR_API_KEY` in env for higher rate limits
 
----
-
-## 1. Search papers
+## How to Run
 
 ```bash
-# Basic keyword search (returns 10 results)
+curl -s "https://api.semanticscholar.org/graph/v1/paper/search\
+?query=transformer+attention&fields=title,year,citationCount&limit=5" | python3 -m json.tool
+```
+
+## Quick Reference
+
+| Goal | Endpoint |
+|------|----------|
+| Search papers | `GET /paper/search?query=QUERY&fields=...` |
+| Paper details | `GET /paper/{id}?fields=...` |
+| Citations (who cited it) | `GET /paper/{id}/citations?fields=...` |
+| References (what it cites) | `GET /paper/{id}/references?fields=...` |
+| Recommendations | `GET /recommendations/v1/papers/forpaper/{s2id}` |
+| Author search | `GET /author/search?query=NAME&fields=...` |
+| Author papers | `GET /author/{id}/papers?fields=...` |
+| Batch lookup | `POST /paper/batch?fields=...` |
+
+**Base URL:** `https://api.semanticscholar.org/graph/v1`
+**Paper ID formats:** S2 hash, `ARXIV:2106.15928`, `DOI:10.18653/v1/N19-1423`, `CorpusID:12345`
+
+## Procedure
+
+### Search papers
+
+{% raw %}
+```bash
 curl -s "https://api.semanticscholar.org/graph/v1/paper/search\
 ?query=QUERY\
 &fields=title,year,authors,citationCount,tldr\
 &limit=10" | python3 -m json.tool
 
-# With year filter and more results
+# With year filter and citation sort
 curl -s "https://api.semanticscholar.org/graph/v1/paper/search\
-?query=QUERY\
-&fields=title,year,authors,citationCount,abstract,openAccessPdf\
-&limit=20\
-&year=2022-2025" | python3 -m json.tool
-
-# Sort by citation count (most cited first)
-curl -s "https://api.semanticscholar.org/graph/v1/paper/search\
-?query=QUERY\
-&fields=title,year,citationCount,influentialCitationCount\
-&limit=10\
-&sort=citationCount" | python3 -m json.tool
-```
-
-**Useful `fields` values:**
-- `title`, `year`, `abstract` — basics
-- `authors` — author names + IDs
-- `citationCount` — total citations
-- `influentialCitationCount` — citations where this paper had significant methodological impact (more meaningful than raw count)
-- `tldr` — AI-generated one-sentence summary (not available for all papers)
-- `openAccessPdf` — link to free PDF if available
-- `externalIds` — DOI, arXiv ID, etc.
-- `publicationVenue` — journal or conference name
-
-**Parse results cleanly with Python:**
-
-{% raw %}
-```bash
-curl -s "https://api.semanticscholar.org/graph/v1/paper/search\
-?query=attention+is+all+you+need\
-&fields=title,year,citationCount,authors" | \
-python3 -c "
-import json, sys
-data = json.load(sys.stdin)
-for p in data['data']:
-    authors = ', '.join(a['name'] for a in p.get('authors', [])[:3])
-    print(f\"{p['year']} | {p['citationCount']:>6} citations | {authors} | {p['title']}\")
-"
+?query=QUERY&fields=title,year,citationCount\
+&limit=10&year=2022-2025&sort=citationCount" | python3 -m json.tool
 ```
 {% endraw %}
 
----
+**Useful fields:** `title`, `year`, `abstract`, `authors`, `citationCount`,
+`influentialCitationCount`, `tldr`, `openAccessPdf`, `externalIds`, `publicationVenue`
 
-## 2. Paper details
-
-Accepted paper ID formats: S2 paper ID, `DOI:10.xxx`, `ARXIV:2106.15928`,
-`CorpusID:12345`, `URL:https://...`
+### Paper details
 
 ```bash
 # By arXiv ID
 curl -s "https://api.semanticscholar.org/graph/v1/paper/ARXIV:1706.03762\
-?fields=title,year,abstract,authors,citationCount,influentialCitationCount,\
-references,openAccessPdf,publicationVenue" | python3 -m json.tool
+?fields=title,year,abstract,citationCount,influentialCitationCount,openAccessPdf" | python3 -m json.tool
 
 # By DOI
 curl -s "https://api.semanticscholar.org/graph/v1/paper/DOI:10.18653/v1/N19-1423\
-?fields=title,year,abstract,citationCount,tldr" | python3 -m json.tool
-
-# By S2 paper ID
-curl -s "https://api.semanticscholar.org/graph/v1/paper/649def34f8be52c8b66281af98ae884c09aef38b\
-?fields=title,year,abstract,citationCount,authors" | python3 -m json.tool
+?fields=title,year,citationCount,tldr" | python3 -m json.tool
 ```
 
----
-
-## 3. Citations
-
-Papers that **cite** a given paper (who built on this work?):
+### Citations (who cited this paper?)
 
 {% raw %}
 ```bash
 curl -s "https://api.semanticscholar.org/graph/v1/paper/ARXIV:1706.03762/citations\
-?fields=title,year,authors,citationCount\
-&limit=20" | \
+?fields=title,year,citationCount&limit=10" | \
 python3 -c "
 import json, sys
-data = json.load(sys.stdin)
-for item in data['data']:
+for item in json.load(sys.stdin)['data']:
     p = item['citingPaper']
-    authors = ', '.join(a['name'] for a in p.get('authors', [])[:2])
-    print(f\"{p.get('year','?')} | {p.get('citationCount',0):>6} cites | {authors} | {p['title']}\")
+    print(f\"{p.get('year','?')} | {p.get('citationCount',0):>6} cites | {p['title']}\")
 "
 ```
 {% endraw %}
 
----
-
-## 4. References
-
-Papers **referenced by** a given paper (what did this paper build on?):
+### References (what does this paper cite?)
 
 {% raw %}
 ```bash
 curl -s "https://api.semanticscholar.org/graph/v1/paper/ARXIV:1706.03762/references\
-?fields=title,year,authors,citationCount\
-&limit=20" | \
+?fields=title,year,citationCount&limit=10" | \
 python3 -c "
 import json, sys
-data = json.load(sys.stdin)
-for item in data['data']:
+for item in json.load(sys.stdin)['data']:
     p = item['citedPaper']
     print(f\"{p.get('year','?')} | {p.get('citationCount',0):>6} cites | {p['title']}\")
 "
 ```
 {% endraw %}
 
----
-
-## 5. Recommendations
-
-Find papers similar to a known paper (or a set of papers):
+### Recommendations
 
 ```bash
-# Recommendations for a single paper (use the S2 paper ID from a prior lookup)
-curl -s "https://api.semanticscholar.org/recommendations/v1/papers/forpaper/204e3073870fae3d05bcbc2f6a8e263d9b72e776\
-?fields=title,year,authors,citationCount\
-&limit=10" | python3 -m json.tool
+# Single paper (use S2 paper ID from a prior lookup)
+curl -s "https://api.semanticscholar.org/recommendations/v1/papers/\
+forpaper/204e3073870fae3d05bcbc2f6a8e263d9b72e776\
+?fields=title,year,citationCount&limit=5" | python3 -m json.tool
 
-# Recommendations from a set of papers (positive = like these, negative = unlike these)
+# Multi-paper (accepts ARXIV:/DOI: prefixes)
 curl -s -X POST "https://api.semanticscholar.org/recommendations/v1/papers\
-?fields=title,year,citationCount,authors\
-&limit=10" \
+?fields=title,year,citationCount&limit=5" \
   -H "Content-Type: application/json" \
-  -d '{
-    "positivePaperIds": ["ARXIV:1706.03762", "ARXIV:2005.14165"],
-    "negativePaperIds": []
-  }' | python3 -m json.tool
+  -d '{"positivePaperIds": ["ARXIV:1706.03762", "ARXIV:2005.14165"], "negativePaperIds": []}' | python3 -m json.tool
 ```
 
----
-
-## 6. Author search
+### Author search and papers
 
 ```bash
-# Search for an author by name
+# Find an author
 curl -s "https://api.semanticscholar.org/graph/v1/author/search\
-?query=Yoshua+Bengio\
-&fields=name,hIndex,citationCount,paperCount,affiliations\
-&limit=5" | python3 -m json.tool
-```
+?query=Yoshua+Bengio&fields=name,hIndex,citationCount,paperCount&limit=5" | python3 -m json.tool
 
-Key author fields: `name`, `hIndex`, `citationCount`, `paperCount`, `affiliations`, `homepage`, `externalIds`
-
----
-
-## 7. Author papers
-
-{% raw %}
-```bash
-# Get papers by author ID (from step 6 results)
+# Get papers by author ID
 curl -s "https://api.semanticscholar.org/graph/v1/author/1741101/papers\
-?fields=title,year,citationCount,venue\
-&limit=20\
-&sort=citationCount" | \
-python3 -c "
-import json, sys
-data = json.load(sys.stdin)
-for p in data['data']:
-    print(f\"{p.get('year','?')} | {p.get('citationCount',0):>6} cites | {p['title']}\")
-"
+?fields=title,year,citationCount&limit=10&sort=citationCount" | python3 -m json.tool
 ```
-{% endraw %}
 
----
-
-## Batch lookups
-
-Fetch details for multiple papers in one request (more efficient than looping):
+### Batch lookup
 
 ```bash
 curl -s -X POST "https://api.semanticscholar.org/graph/v1/paper/batch\
-?fields=title,year,citationCount,authors" \
+?fields=title,year,citationCount" \
   -H "Content-Type: application/json" \
-  -d '{"ids": ["ARXIV:1706.03762", "ARXIV:2005.14165", "DOI:10.18653/v1/N19-1423"]}' | \
-python3 -m json.tool
+  -d '{"ids": ["ARXIV:1706.03762", "ARXIV:2005.14165"]}' | python3 -m json.tool
 ```
 
----
+## Pitfalls
 
-## Rate limiting
+- **Rate limit:** 1 request/second without a key. Always `sleep 1` between
+  calls in loops. Bursts trigger an IP-level ban lasting several minutes.
+- **DOI coverage:** Not all DOIs resolve. If a DOI returns "not found", search
+  by title instead.
+- **Recommendations:** The single-paper endpoint (`/forpaper/{id}`) requires
+  the S2 paper ID (hex hash), not `ARXIV:` or `DOI:` prefixes. The multi-paper
+  POST endpoint accepts both.
+- **`influentialCitationCount`** is often more useful than `citationCount` — it
+  counts only citations with significant methodological impact.
+- **`tldr`** is an AI-generated summary; not available for all papers.
 
-The public API allows **1 request/second** without a key. Always sleep between
-calls in a loop:
+## Verification
 
 ```bash
-for ID in ARXIV:1706.03762 ARXIV:2005.14165; do
-  curl -s "https://api.semanticscholar.org/graph/v1/paper/${ID}?fields=title,citationCount"
-  sleep 1
-done
+curl -s "https://api.semanticscholar.org/graph/v1/paper/ARXIV:1706.03762?fields=title,citationCount" | python3 -m json.tool
 ```
 
-For bulk work, request a free API key at https://www.semanticscholar.org/product/api
-and pass it as a header: `-H "x-api-key: $SEMANTIC_SCHOLAR_API_KEY"`.
-
----
-
-## When to use this vs arXiv
-
-| Need | Use |
-|------|-----|
-| Find and read a paper's full text | `arxiv` skill |
-| Search by topic, browse abstracts | Either (arXiv for latest preprints) |
-| Citation counts, influential citations | **This skill** |
-| Who cited this paper? | **This skill** |
-| What papers does this cite? | **This skill** |
-| Find papers similar to X | **This skill** (recommendations) |
-| Author h-index, publication list | **This skill** |
-
----
-
-## Notes
-
-- `influentialCitationCount` is often more useful than `citationCount` — it counts
-  only citations where the paper had significant methodological impact, not just
-  passing mentions.
-- The `tldr` field contains an AI-generated single-sentence summary; not available
-  for all papers.
-- Paper IDs are stable and cross-format: `ARXIV:1706.03762`, `DOI:10.xxx`, and
-  the native S2 ID all resolve to the same record.
-- Semantic Scholar covers 200M+ papers across all fields, not just CS/ML.
-- The single-paper recommendations endpoint (`/forpaper/{id}`) works best with
-  S2 paper IDs (the hex hash from a prior lookup). The multi-paper POST endpoint
-  accepts `ARXIV:` and `DOI:` prefixes directly.
-- Not all DOIs resolve in Semantic Scholar. If a DOI lookup returns "not found",
-  try searching by title instead.
+A successful response returns JSON with `paperId`, `title`, and `citationCount` fields.
+If you see a 429 error, wait 60 seconds and retry — you've hit the rate limit.

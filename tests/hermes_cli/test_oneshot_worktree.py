@@ -43,28 +43,39 @@ def test_worktree_success_retargets_terminal_cwd_and_cleans_up(tmp_path, capsys)
         # "has unpushed commits, keeping" notice in -w's main use case.
         print(f"⚠ Worktree has unpushed commits, keeping: {info['path']}")
 
+    def fake_setup(**kwargs):
+        # The real helper print()s its setup progress too.
+        print(f"✓ Worktree created: {wt_path}")
+        return wt_info
+
     with patch("cli.CLI_CONFIG", {}, create=True), \
          patch("cli._git_repo_root", return_value=str(tmp_path)), \
          patch("cli._prune_stale_worktrees") as prune, \
-         patch("cli._setup_worktree", return_value=wt_info), \
+         patch("cli._setup_worktree", side_effect=fake_setup), \
          patch("cli._cleanup_worktree", side_effect=fake_cleanup), \
          patch("hermes_cli.oneshot._run_agent", side_effect=fake_run_agent):
+        # Entering the patch context imported `cli`, whose config bridge
+        # force-exports TERMINAL_CWD; re-pin the caller's value afterward so
+        # the exact-restore assertion below is meaningful. (In production the
+        # first `import cli` happens inside run_oneshot, AFTER its capture —
+        # which is exactly why the capture sits before the import.)
+        os.environ["TERMINAL_CWD"] = "/original/cwd"
         rc = run_oneshot("make a commit", worktree=True)
 
     assert rc == 0
     assert seen["terminal_cwd"] == wt_path, "agent did not run inside the worktree"
     assert cleaned == [wt_info], "worktree was not cleaned up after the run"
     prune.assert_called_once()
-    # One-shot's stdout contract: ONLY the final response. The cleanup
-    # helper's output must land on stderr, never before the response on
-    # stdout.
+    # One-shot's stdout contract: ONLY the final response. Both the setup
+    # helper's "Worktree created" print and the cleanup helper's output must
+    # land on stderr, never on stdout.
     captured = capsys.readouterr()
     assert captured.out == "done\n"
+    assert "Worktree created" in captured.err
     assert "unpushed commits" in captured.err
-    # The dangling (now-deleted) worktree path must not leak into the
-    # caller's env. (The exact restored value is whatever cli.py's config
-    # bridge exported at import time, so pin only the non-dangling part.)
-    assert os.environ.get("TERMINAL_CWD") != wt_path
+    # TERMINAL_CWD is captured BEFORE the cli import (whose config bridge
+    # force-exports it), so the caller's original value is restored exactly.
+    assert os.environ.get("TERMINAL_CWD") == "/original/cwd"
 
 
 def test_worktree_setup_failure_refuses_to_run(capsys):
@@ -74,12 +85,16 @@ def test_worktree_setup_failure_refuses_to_run(capsys):
          patch("cli._setup_worktree", return_value=None), \
          patch("cli._cleanup_worktree"), \
          patch("hermes_cli.oneshot._run_agent") as run_agent:
+        os.environ["TERMINAL_CWD"] = "/original/cwd"  # re-pin after cli import
         rc = run_oneshot("make a commit", worktree=True)
 
     assert rc == 2
     run_agent.assert_not_called()
     err = capsys.readouterr().err
     assert "Refusing to run without" in err
+    # The early-return path must also restore the caller's TERMINAL_CWD —
+    # the cli import already force-exported it before setup failed.
+    assert os.environ.get("TERMINAL_CWD") == "/original/cwd"
 
 
 def test_worktree_setup_exception_is_a_hard_error(capsys):
@@ -96,6 +111,7 @@ def test_worktree_setup_exception_is_a_hard_error(capsys):
 def test_default_run_does_not_touch_worktree_machinery():
     with patch("cli._setup_worktree") as setup, \
          patch("hermes_cli.oneshot._run_agent", return_value=("done", {})):
+        os.environ["TERMINAL_CWD"] = "/original/cwd"  # re-pin after cli import
         rc = run_oneshot("hello")
 
     assert rc == 0

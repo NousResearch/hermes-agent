@@ -1410,6 +1410,9 @@ class HindsightMemoryProvider(MemoryProvider):
             text = str(getattr(result, "text", "") or "")
             if not text:
                 continue
+            if not self._auto_retain_filter_enabled:
+                texts.append(text)
+                continue
             sanitized = _strip_patterns(text, self._auto_retain_strip_patterns)
             if sanitized and not self._recall_text_is_noise(sanitized):
                 texts.append(sanitized)

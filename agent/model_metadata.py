@@ -17,7 +17,12 @@ from urllib.parse import urlparse
 import requests
 import yaml
 
-from utils import atomic_json_write, base_url_host_matches, base_url_hostname
+from utils import (
+    atomic_json_write,
+    base_url_host_matches,
+    base_url_hostname,
+    pricing_currency_is_usd_or_unspecified,
+)
 
 from hermes_constants import OPENROUTER_MODELS_URL
 
@@ -785,14 +790,23 @@ def detect_local_server_type(base_url: str, api_key: str = "") -> Optional[str]:
     return result
 
 
-def _iter_nested_dicts(value: Any):
+def _iter_nested_dicts_with_ancestors(
+    value: Any,
+    ancestors: tuple[Dict[str, Any], ...] = (),
+):
     if isinstance(value, dict):
-        yield value
+        yield value, ancestors
+        child_ancestors = (value, *ancestors)
         for nested in value.values():
-            yield from _iter_nested_dicts(nested)
+            yield from _iter_nested_dicts_with_ancestors(nested, child_ancestors)
     elif isinstance(value, list):
         for item in value:
-            yield from _iter_nested_dicts(item)
+            yield from _iter_nested_dicts_with_ancestors(item, ancestors)
+
+
+def _iter_nested_dicts(value: Any):
+    for mapping, _ancestors in _iter_nested_dicts_with_ancestors(value):
+        yield mapping
 
 
 def _coerce_reasonable_int(value: Any, minimum: int = 1024, maximum: int = 10_000_000) -> Optional[int]:
@@ -833,6 +847,8 @@ def _extract_pricing(payload: Dict[str, Any]) -> Dict[str, Any]:
     novita_input = payload.get("input_token_price_per_m")
     novita_output = payload.get("output_token_price_per_m")
     if novita_input is not None or novita_output is not None:
+        if not pricing_currency_is_usd_or_unspecified(payload):
+            return {}
         pricing: Dict[str, Any] = {}
         if novita_input is not None:
             pricing["prompt"] = str(float(novita_input) / 10_000 / 1_000_000)
@@ -849,6 +865,12 @@ def _extract_pricing(payload: Dict[str, Any]) -> Dict[str, Any]:
     if isinstance(deepinfra_pricing, dict) and any(
         k in deepinfra_pricing for k in ("input_tokens", "output_tokens", "cache_read_tokens")
     ):
+        if not pricing_currency_is_usd_or_unspecified(
+            deepinfra_pricing,
+            metadata,
+            payload,
+        ):
+            return {}
         result: Dict[str, Any] = {}
         if deepinfra_pricing.get("input_tokens") is not None:
             result["prompt"] = str(float(deepinfra_pricing["input_tokens"]) / 1_000_000)
@@ -865,9 +887,11 @@ def _extract_pricing(payload: Dict[str, Any]) -> Dict[str, Any]:
         "cache_read": ("cache_read", "cached_prompt", "input_cache_read", "cache_read_cost_per_token"),
         "cache_write": ("cache_write", "cache_creation", "input_cache_write", "cache_write_cost_per_token"),
     }
-    for mapping in _iter_nested_dicts(payload):
+    for mapping, ancestors in _iter_nested_dicts_with_ancestors(payload):
         normalized = {str(key).lower(): value for key, value in mapping.items()}
         if not any(any(alias in normalized for alias in aliases) for aliases in alias_map.values()):
+            continue
+        if not pricing_currency_is_usd_or_unspecified(mapping, *ancestors):
             continue
         pricing: Dict[str, Any] = {}
         for target, aliases in alias_map.items():
@@ -918,7 +942,7 @@ def fetch_model_metadata(force_refresh: bool = False) -> Dict[str, Dict[str, Any
                 "context_length": model.get("context_length", 128000),
                 "max_completion_tokens": model.get("top_provider", {}).get("max_completion_tokens", 4096),
                 "name": model.get("name", model_id),
-                "pricing": model.get("pricing", {}),
+                "pricing": _extract_pricing(model),
             }
             _add_model_aliases(cache, model_id, entry)
             canonical = model.get("canonical_slug", "")

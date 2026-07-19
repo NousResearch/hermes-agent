@@ -7,6 +7,7 @@ import os
 import shutil
 import stat
 import tempfile
+from collections.abc import Mapping
 from pathlib import Path
 from typing import Any, Union
 from urllib.parse import urlparse
@@ -17,6 +18,26 @@ logger = logging.getLogger(__name__)
 
 
 TRUTHY_STRINGS = frozenset({"1", "true", "yes", "on"})
+
+
+def pricing_currency_is_usd_or_unspecified(
+    mapping: Mapping[str, Any],
+    *ancestors: Mapping[str, Any],
+) -> bool:
+    """Return whether the nearest declared pricing currency is USD-compatible.
+
+    ``mapping`` is the pricing object and ``ancestors`` must be ordered from
+    nearest to farthest. Empty currency values inherit from the next object;
+    no declaration preserves the historical assumption that prices are USD.
+    """
+    for candidate in (mapping, *ancestors):
+        for key, value in candidate.items():
+            if str(key).lower() != "currency":
+                continue
+            normalized = "" if value is None else str(value).strip().upper()
+            if normalized:
+                return normalized in {"USD", "$"}
+    return True
 
 
 def is_truthy_value(value: Any, default: bool = False) -> bool:

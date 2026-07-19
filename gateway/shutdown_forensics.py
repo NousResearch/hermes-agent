@@ -108,7 +108,7 @@ def snapshot_shutdown_context(received_signal: Any = None) -> Dict[str, Any]:
 
     * The signal number/name (so SIGINT vs SIGTERM is visible)
     * Our own PID/ppid + parent process info from /proc (Linux)
-    * Whether systemd is our parent (``ppid==1`` or ``INVOCATION_ID`` set)
+    * Which supervisor launched us (systemd, launchd, generic PID 1, or none)
     * Whether takeover/planned-stop markers exist (consumed lazily by the caller)
     * /proc/self limits + load average (1-min)
     * Wall-clock and monotonic timestamps for cross-correlating later phases
@@ -131,16 +131,33 @@ def snapshot_shutdown_context(received_signal: Any = None) -> Dict[str, Any]:
         "self": _proc_summary(pid),
     }
 
-    # systemd context.  If we were started by a systemd unit, INVOCATION_ID
-    # is set in our env.  ppid==1 (init) is also a strong signal that
-    # systemd reaped+forwarded the SIGTERM.
+    # Supervisor context. PID 1 is launchd on macOS and may be systemd, s6,
+    # tini, or another init on Linux, so PPID alone must not be labelled
+    # systemd. systemd provides explicit invocation/journal markers; launchd
+    # provides XPC_SERVICE_NAME and reparents daemon jobs to PID 1.
     invocation_id = os.environ.get("INVOCATION_ID")
     if invocation_id:
         ctx["systemd_invocation_id"] = invocation_id
     journal_stream = os.environ.get("JOURNAL_STREAM")
     if journal_stream:
         ctx["systemd_journal_stream"] = journal_stream
-    ctx["under_systemd"] = bool(invocation_id) or ppid == 1
+    xpc_service_name = os.environ.get("XPC_SERVICE_NAME")
+    under_systemd = bool(invocation_id or journal_stream)
+    if under_systemd:
+        supervisor = "systemd"
+    elif sys.platform == "darwin" and (
+        ppid == 1 or xpc_service_name not in (None, "", "0")
+    ):
+        supervisor = "launchd"
+        if xpc_service_name not in (None, "", "0"):
+            ctx["launchd_service_name"] = xpc_service_name
+    elif ppid == 1:
+        supervisor = "pid1"
+    else:
+        supervisor = "none"
+    ctx["supervisor"] = supervisor
+    # Retain the machine-readable compatibility field, but make it truthful.
+    ctx["under_systemd"] = under_systemd
 
     # Load average — high load points the finger at "something else
     # crushing the box" rather than "external killer".
@@ -285,7 +302,9 @@ def format_context_for_log(ctx: Dict[str, Any]) -> str:
     parent_cmd = parent.get("cmdline", "(unknown)")
     parent_name = parent.get("name") or "?"
     parent_pid = parent.get("pid") or "?"
-    under_systemd = "yes" if ctx.get("under_systemd") else "no"
+    supervisor = ctx.get("supervisor") or (
+        "systemd" if ctx.get("under_systemd") else "none"
+    )
     load = ctx.get("loadavg_1m")
     load_str = f"{load:.2f}" if isinstance(load, (int, float)) else "?"
     extras: List[str] = []
@@ -302,7 +321,7 @@ def format_context_for_log(ctx: Dict[str, Any]) -> str:
     # Parent cmdline is the most useful single signal — log it prominently.
     return (
         f"signal={sig} "
-        f"under_systemd={under_systemd} "
+        f"supervisor={supervisor} "
         f"parent_pid={parent_pid} "
         f"parent_name={parent_name} "
         f"loadavg_1m={load_str}"

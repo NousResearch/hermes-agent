@@ -9,6 +9,8 @@ import {
   $currentModel,
   $currentProvider,
   getCurrentModelSource,
+  manualModelPickSeq,
+  markManualModelPick,
   setCurrentModel,
   setCurrentModelSource,
   setCurrentProvider
@@ -62,9 +64,18 @@ export function useModelControls({ queryClient, requestGateway }: ModelControlsO
         return
       }
 
+      // `force` (a new-chat reseed) deliberately overrides a PRE-EXISTING manual
+      // pick, but must still yield to a NEWER one: capture the manual-pick token
+      // before the async lookup and bail if it moves while we wait, so a pick
+      // made mid-reseed wins (AGENTS.md: guard against the past).
+      const pickSeq = manualModelPickSeq()
       const result = await getGlobalModelInfo()
 
-      if ($activeSessionId.get() || (!force && $currentModel.get() && getCurrentModelSource() === 'manual')) {
+      if ($activeSessionId.get() || manualModelPickSeq() !== pickSeq) {
+        return
+      }
+
+      if (!force && $currentModel.get() && getCurrentModelSource() === 'manual') {
         return
       }
 
@@ -104,6 +115,9 @@ export function useModelControls({ queryClient, requestGateway }: ModelControlsO
       setCurrentModel(selection.model)
       setCurrentProvider(selection.provider)
       setCurrentModelSource('manual')
+      // Bump the manual-pick token so an in-flight new-chat reseed yields to
+      // this newer intent instead of clobbering it when its lookup resolves.
+      markManualModelPick()
       updateModelOptionsCache(selection.provider, selection.model, !liveSessionId)
 
       // No live session yet: the pick is pure UI state. session.create reads

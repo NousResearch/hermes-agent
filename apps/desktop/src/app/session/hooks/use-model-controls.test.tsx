@@ -210,6 +210,37 @@ describe('useModelControls', () => {
     expect(getCurrentModelSource()).toBe('default')
   })
 
+  it('a manual pick made during a new-chat reseed wins over the resolved default', async () => {
+    // The new-chat reseed's model lookup is async; hold it open so a picker
+    // selection can land while it is in flight (the AGENTS "guard against the
+    // past" case teknium1 flagged).
+    let resolveInfo: (value: { model: string; provider: string }) => void = () => {}
+    vi.mocked(getGlobalModelInfo).mockImplementation(
+      () => new Promise(resolve => (resolveInfo = resolve))
+    )
+
+    const { result } = renderHook(() =>
+      useModelControls({
+        queryClient: new QueryClient(),
+        requestGateway: vi.fn()
+      })
+    )
+
+    // A fresh draft force-reseeds; its default lookup is now pending.
+    const reseed = result.current.refreshCurrentModel(true)
+
+    // The user picks a model before that lookup resolves.
+    await result.current.selectModel({ model: 'anthropic/claude-sonnet-4.6', provider: 'anthropic' })
+
+    // The stale default resolves last — it must NOT overwrite the newer pick.
+    resolveInfo({ model: 'openai/gpt-5.5', provider: 'openai-codex' })
+    await reseed
+
+    expect($currentModel.get()).toBe('anthropic/claude-sonnet-4.6')
+    expect($currentProvider.get()).toBe('anthropic')
+    expect(getCurrentModelSource()).toBe('manual')
+  })
+
   it('refreshes legacy/default-derived composer state from the profile default', async () => {
     setCurrentModel('openai/gpt-5.5')
     setCurrentProvider('nous')

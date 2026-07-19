@@ -375,6 +375,19 @@ export const setCurrentModelSource = (source: ComposerModelSource) => {
   $currentModelSource.set(source)
 }
 
+// Monotonic token bumped on every committed manual composer pick. A new-chat
+// force-reseed captures it before its async model lookup and bails if it moved
+// while pending, so a pick made mid-reseed wins over the resolved default
+// (AGENTS.md: "guard against the past — a stale response must never overwrite
+// newer intent"). Deliberately not persisted: it only orders in-process races.
+let _manualModelPickSeq = 0
+
+export const markManualModelPick = () => {
+  _manualModelPickSeq += 1
+}
+
+export const manualModelPickSeq = (): number => _manualModelPickSeq
+
 export const setCurrentReasoningEffort = (next: Updater<string>) => {
   updateAtom($currentReasoningEffort, next)
   persistString(COMPOSER_EFFORT_KEY, $currentReasoningEffort.get() || null)

@@ -298,10 +298,16 @@ def build_system_prompt_parts(agent: Any, system_message: Optional[str] = None) 
             )
             if toolset
         }
-        # Focus mode (opt-in) demotes non-coding skill categories to
-        # names-only in the index (never hidden — skill_view/skills_list
-        # reach everything, and every name stays visible for recall). The
-        # default coding posture leaves the index untouched.
+        # Skill-category demotion to names-only in the index (never hidden —
+        # skill_view/skills_list reach everything, every name stays visible
+        # for recall). Two sources, unioned:
+        #   1. ``agent.coding_context: focus`` — demotes non-coding categories
+        #      when pair-programming on a coding surface. Default posture
+        #      leaves the index untouched.
+        #   2. ``skills.compact_categories`` — operator opt-in that works on
+        #      any platform (Telegram/Discord/CLI). Lets messaging-platform
+        #      users cut the ~38% skills-block overhead without focus mode,
+        #      which is gated on interactive coding surfaces only.
         _compact_cats = frozenset()
         try:
             from agent.coding_context import coding_compact_skill_categories
@@ -311,6 +317,19 @@ def build_system_prompt_parts(agent: Any, system_message: Optional[str] = None) 
             )
         except Exception:
             _compact_cats = frozenset()
+        # ponytail: extra config source merged in; frozenset union is cheap
+        try:
+            from hermes_cli.config import load_config as _load_cfg
+
+            _skills_cfg = ((_load_cfg() or {}).get("skills") or {})
+            if isinstance(_skills_cfg, dict):
+                _extra = _skills_cfg.get("compact_categories")
+                if isinstance(_extra, list):
+                    _compact_cats = _compact_cats | frozenset(str(c) for c in _extra)
+                elif isinstance(_extra, str):
+                    _compact_cats = _compact_cats | frozenset([_extra])
+        except Exception:
+            pass
         skills_prompt = _r.build_skills_system_prompt(
             available_tools=agent.valid_tool_names,
             available_toolsets=avail_toolsets,

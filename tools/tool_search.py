@@ -68,6 +68,16 @@ class ToolSearchConfig:
     threshold_pct: float  # 0..100 — only used when enabled == "auto"
     search_default_limit: int
     max_search_limit: int
+    # ponytail: core-tool deferral (opt-in). Stock Hermes only defers MCP/plugin
+    # tools; verbose built-ins (terminal, patch, memory, …) always load. When
+    # ``defer_core_tools`` is True, tools in DEFAULT_DEFERRABLE_CORE_TOOLS become
+    # eligible for deferral too. Defaults to False so stock behaviour is unchanged.
+    defer_core_tools: bool = False
+    # Absolute token threshold for the auto gate. When > 0, auto mode activates
+    # if deferrable_tokens >= auto_token_threshold (in addition to the % gate).
+    # Lets large-context models opt into deferral without setting threshold_pct
+    # to a tiny number. 0 = disabled (percentage gate alone).
+    auto_token_threshold: int = 0
 
     @classmethod
     def from_raw(cls, raw: Any) -> "ToolSearchConfig":
@@ -106,11 +116,21 @@ class ToolSearchConfig:
         search_default_limit = max(1, min(max_search_limit,
                                           _safe_int(raw.get("search_default_limit"), 5)))
 
+        defer_core_raw = raw.get("defer_core_tools", False)
+        if isinstance(defer_core_raw, str):
+            defer_core_tools = defer_core_raw.strip().lower() in ("true", "1", "yes", "on")
+        else:
+            defer_core_tools = bool(defer_core_raw)
+
+        auto_token_threshold = max(0, _safe_int(raw.get("auto_token_threshold"), 0))
+
         return cls(
             enabled=enabled,
             threshold_pct=threshold_pct,
             search_default_limit=search_default_limit,
             max_search_limit=max_search_limit,
+            defer_core_tools=defer_core_tools,
+            auto_token_threshold=auto_token_threshold,
         )
 
 
@@ -160,16 +180,51 @@ def _core_tool_names() -> frozenset[str]:
         return frozenset()
 
 
-def is_deferrable_tool_name(name: str) -> bool:
+# Verbose core tools that MAY defer when ``defer_core_tools`` is opted in.
+# Foundational tools (read_file, write_file, search_files, web_search,
+# web_extract, process, todo, clarify, skill_view, skills_list) stay
+# always-direct — the agent loop and prompt guidance depend on them being
+# callable without a search round-trip. ``clarify`` in particular must stay
+# direct: the agent loop uses it for interactive clarification and deferring
+# it breaks mid-turn questions.
+DEFAULT_DEFERRABLE_CORE_TOOLS = frozenset({
+    "terminal", "patch", "memory", "session_search", "execute_code",
+    "delegate_task", "cronjob", "skill_manage",
+    "vision_analyze", "image_generate", "text_to_speech", "computer_use",
+    "browser_back", "browser_cdp", "browser_click", "browser_console",
+    "browser_dialog", "browser_get_images", "browser_navigate",
+    "browser_press", "browser_scroll", "browser_snapshot", "browser_type",
+    "browser_vision",
+    "kanban_block", "kanban_comment", "kanban_complete", "kanban_create",
+    "kanban_heartbeat", "kanban_link", "kanban_list", "kanban_show",
+    "kanban_unblock",
+    "ha_call_service", "ha_get_state", "ha_list_entities", "ha_list_services",
+    "close_terminal", "read_terminal",
+})
+
+
+def is_deferrable_tool_name(
+    name: str, config: Optional["ToolSearchConfig"] = None
+) -> bool:
     """Return True if a tool with this name is *eligible* for deferral.
 
     A tool is deferrable iff it is registered with an MCP toolset prefix
     OR it is not in ``_HERMES_CORE_TOOLS``. Core tools are never deferred
     even when their toolset is technically plugin-provided (this protects
     against accidental shadowing).
+
+    When ``config.defer_core_tools`` is True, core tools in
+    ``DEFAULT_DEFERRABLE_CORE_TOOLS`` also become eligible — they defer
+    behind the same bridge as MCP/plugin tools. Foundational tools
+    (read_file, write_file, clarify, todo, …) are never in that allowlist
+    so they always stay direct.
     """
     if name in BRIDGE_TOOL_NAMES:
         return False
+    # Opt-in core-tool deferral takes the allowlist path first.
+    if config is not None and getattr(config, "defer_core_tools", False):
+        if name in DEFAULT_DEFERRABLE_CORE_TOOLS:
+            return True
     if name in _core_tool_names():
         return False
     # Check registry toolset for MCP prefix.
@@ -186,7 +241,10 @@ def is_deferrable_tool_name(name: str) -> bool:
         return False
 
 
-def classify_tools(tool_defs: List[Dict[str, Any]]) -> Tuple[List[Dict[str, Any]], List[Dict[str, Any]]]:
+def classify_tools(
+    tool_defs: List[Dict[str, Any]],
+    config: Optional["ToolSearchConfig"] = None,
+) -> Tuple[List[Dict[str, Any]], List[Dict[str, Any]]]:
     """Split a tool-defs list into (visible, deferrable).
 
     ``visible`` retains every tool that must stay in the model-facing array:
@@ -202,7 +260,7 @@ def classify_tools(tool_defs: List[Dict[str, Any]]) -> Tuple[List[Dict[str, Any]
             # Should never happen — bridge tools are added after classification —
             # but be defensive.
             continue
-        if is_deferrable_tool_name(name):
+        if is_deferrable_tool_name(name, config=config):
             deferrable.append(td)
         else:
             visible.append(td)
@@ -241,7 +299,8 @@ def should_activate(
     ``"off"`` skips unconditionally. ``"on"`` activates unconditionally
     (as long as there is at least one deferrable tool — there's no point
     swapping a no-op). ``"auto"`` activates when the deferrable schemas
-    would consume ``threshold_pct`` of context or more.
+    would consume ``threshold_pct`` of context or more, or when they exceed
+    ``auto_token_threshold`` tokens (if > 0).
     """
     if config.enabled == "off":
         return False
@@ -250,6 +309,9 @@ def should_activate(
     if config.enabled == "on":
         return True
     # auto
+    # Absolute token threshold (primary knob for large-context models).
+    if config.auto_token_threshold and deferrable_tokens >= config.auto_token_threshold:
+        return True
     if not context_length or context_length <= 0:
         # Without a known context size, fall back to a fixed 20K-token cutoff
         # — the cliff above which Anthropic and OpenAI both saw quality drops.
@@ -551,7 +613,7 @@ def assemble_tool_defs(
     incoming = [td for td in tool_defs
                 if (td.get("function") or {}).get("name") not in BRIDGE_TOOL_NAMES]
 
-    visible, deferrable = classify_tools(incoming)
+    visible, deferrable = classify_tools(incoming, config=config)
     if not deferrable:
         return AssemblyResult(tool_defs=incoming, activated=False)
 
@@ -657,7 +719,10 @@ def dispatch_tool_describe(args: Dict[str, Any],
     }, ensure_ascii=False)
 
 
-def scoped_deferrable_names(tool_defs: List[Dict[str, Any]]) -> frozenset[str]:
+def scoped_deferrable_names(
+    tool_defs: List[Dict[str, Any]],
+    config: Optional["ToolSearchConfig"] = None,
+) -> frozenset[str]:
     """Return the set of deferrable tool names present in ``tool_defs``.
 
     ``tool_defs`` is expected to be the *pre-assembly* tool list for the
@@ -672,7 +737,7 @@ def scoped_deferrable_names(tool_defs: List[Dict[str, Any]]) -> frozenset[str]:
     names: set[str] = set()
     for td in tool_defs:
         name = (td.get("function") or {}).get("name", "")
-        if name and is_deferrable_tool_name(name):
+        if name and is_deferrable_tool_name(name, config=config):
             names.add(name)
     return frozenset(names)
 

@@ -556,7 +556,7 @@ def _compute_tool_definitions(
             )
             if assembly.activated and not quiet_mode:
                 print(
-                    f"🔎 Tool Search: {assembly.deferred_count} MCP/plugin tools deferred "
+                    f"🔎 Tool Search: {assembly.deferred_count} tools deferred "
                     f"(~{assembly.deferred_tokens} tokens) behind tool_search/describe/call. "
                     f"Threshold ~{assembly.threshold_tokens} tokens."
                 )
@@ -1118,7 +1118,9 @@ def handle_function_call(
             # additionally rejects any tool the session was not granted, so a
             # restricted session can never invoke an out-of-scope tool through
             # the bridge even if the catalog scoping above regressed.
-            _scoped_deferrable = _ts_mod.scoped_deferrable_names(current_defs)
+            _scoped_deferrable = _ts_mod.scoped_deferrable_names(
+                current_defs, config=_ts_mod.load_config()
+            )
             if underlying_name not in _scoped_deferrable:
                 return json.dumps({
                     "error": (

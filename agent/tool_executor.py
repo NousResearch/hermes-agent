@@ -253,7 +253,7 @@ def _tool_search_scoped_names(agent) -> frozenset:
             quiet_mode=True,
             skip_tool_search_assembly=True,
         ) or []
-        names = _ts.scoped_deferrable_names(scoped_defs)
+        names = _ts.scoped_deferrable_names(scoped_defs, config=_ts.load_config())
     except Exception:
         names = frozenset()
     try:

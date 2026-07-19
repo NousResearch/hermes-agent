@@ -1636,9 +1636,9 @@ def build_skills_system_prompt(
     hidden_note = ""
     if demoted:
         hidden_note = (
-            "\n(Categories marked [names only] are outside the current coding "
-            "context, so their descriptions are omitted — the skills work "
-            "normally and load with skill_view(name) as usual.)"
+            "\n(Categories marked [names only] have their descriptions omitted "
+            "to keep the prompt lean — the skills work normally and load with "
+            "skill_view(name) as usual.)"
         )
 
     if not skills_by_category:

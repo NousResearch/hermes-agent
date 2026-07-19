@@ -4505,6 +4505,43 @@ def run_conversation(
                         if repaired:
                             print(f"{agent.log_prefix}🔧 Auto-repaired tool name: '{tc.function.name}' -> '{repaired}'")
                             tc.function.name = repaired
+                # ponytail: auto-route direct calls to deferred core tools through
+                # the tool_call bridge. When defer_core_tools is on, verbose core
+                # tools (terminal, patch, memory, …) are stripped from valid_tool_names
+                # and live behind the bridge. If the model calls one by name directly
+                # — which it will, since the system prompt mentions them in guidance —
+                # rewrite the call to tool_call(name=..., arguments={...}) instead
+                # of failing as "Unknown tool" and burning a retry on agent-correction.
+                # Fast-path: skip entirely when every tool call is already valid,
+                # so the common path pays nothing (no load_config, no imports).
+                _all_valid = all(
+                    tc.function.name in agent.valid_tool_names
+                    for tc in assistant_message.tool_calls
+                )
+                if not _all_valid:
+                    try:
+                        from tools import tool_search as _ts
+                        from tools.tool_search import TOOL_CALL_NAME as _TCN
+                        _cfg = _ts.load_config()
+                        if getattr(_cfg, "defer_core_tools", False):
+                            for tc in assistant_message.tool_calls:
+                                _n = tc.function.name
+                                if _n in agent.valid_tool_names or _n in _ts.BRIDGE_TOOL_NAMES:
+                                    continue
+                                if _ts.is_deferrable_tool_name(_n, config=_cfg):
+                                    try:
+                                        _wrapped = json.loads(tc.function.arguments or "{}")
+                                    except Exception:
+                                        _wrapped = {"_raw": tc.function.arguments}
+                                    tc.function.name = _TCN
+                                    tc.function.arguments = json.dumps({
+                                        "name": _n,
+                                        "arguments": _wrapped,
+                                    })
+                                    if agent.verbose_logging:
+                                        logging.debug(f"Auto-routed deferred tool '{_n}' -> tool_call")
+                    except Exception:
+                        pass
                 invalid_tool_calls = [
                     tc.function.name for tc in assistant_message.tool_calls
                     if tc.function.name not in agent.valid_tool_names

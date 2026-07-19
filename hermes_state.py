@@ -337,6 +337,10 @@ class SessionDB:
 
         self._lock = threading.Lock()
         self._write_count = 0
+        self._fts_enabled = True
+        self._trigram_enabled = True
+        self._fts_unavailable_warned = False
+        self._trigram_unavailable_warned = False
         try:
             self._conn = sqlite3.connect(
                 str(self.db_path),
@@ -357,6 +361,12 @@ class SessionDB:
 
             self._init_schema()
         except Exception as exc:
+            if hasattr(self, '_conn') and self._conn is not None:
+                try:
+                    self._conn.close()
+                except Exception:
+                    pass
+                self._conn = None
             # Capture the cause so /resume and friends can surface WHY the
             # session DB is unavailable instead of a bare "Session database
             # not available."  Callers that catch this exception keep their
@@ -461,6 +471,48 @@ class SessionDB:
                     pass
                 self._conn.close()
                 self._conn = None
+
+    @staticmethod
+    def _is_fts5_unavailable_error(exc: sqlite3.OperationalError) -> bool:
+        err = str(exc).lower()
+        if "no such module" in err and "fts5" in err:
+            return True
+        if "no such tokenizer: trigram" in err:
+            return True
+        return False
+
+    @staticmethod
+    def _is_trigram_unavailable_error(exc: sqlite3.OperationalError) -> bool:
+        """True when only the trigram tokenizer is missing (FTS5 itself works)."""
+        return "no such tokenizer: trigram" in str(exc).lower()
+
+    def _warn_trigram_unavailable(self, exc: sqlite3.OperationalError) -> None:
+        """Log once that the trigram tokenizer is missing; base FTS5 stays enabled."""
+        if getattr(self, "_trigram_unavailable_warned", False):
+            return
+        self._trigram_unavailable_warned = True
+        logger.info(
+            "SQLite trigram tokenizer unavailable for %s "
+            "(requires SQLite >= 3.34, this build is %s); "
+            "CJK/substring search will fall back to LIKE: %s",
+            self.db_path,
+            sqlite3.sqlite_version,
+            exc,
+        )
+
+    def _warn_fts5_unavailable(self, exc: sqlite3.OperationalError) -> None:
+        self._fts_enabled = False
+        if getattr(self, "_fts_unavailable_warned", False):
+            return
+        self._fts_unavailable_warned = True
+        logger.warning(
+            "SQLite FTS5 unavailable for %s; full-text session search "
+            "disabled. Run `hermes update` to rebuild the venv with a "
+            "current Python (managed uv guarantees FTS5). "
+            "(underlying error: %s)",
+            self.db_path,
+            exc,
+        )
 
     @staticmethod
     def _parse_schema_columns(schema_sql: str) -> Dict[str, Dict[str, str]]:
@@ -608,16 +660,22 @@ class SessionDB:
                 # FTS_TRIGRAM_SQL below, but existing rows need a one-time
                 # backfill into the FTS index.
                 try:
-                    cursor.execute("SELECT * FROM messages_fts_trigram LIMIT 0")
-                    _fts_trigram_exists = True
-                except sqlite3.OperationalError:
-                    _fts_trigram_exists = False
-                if not _fts_trigram_exists:
-                    cursor.executescript(FTS_TRIGRAM_SQL)
-                    cursor.execute(
-                        "INSERT INTO messages_fts_trigram(rowid, content) "
-                        "SELECT id, content FROM messages WHERE content IS NOT NULL"
-                    )
+                    try:
+                        cursor.execute("SELECT * FROM messages_fts_trigram LIMIT 0")
+                        _fts_trigram_exists = True
+                    except sqlite3.OperationalError:
+                        _fts_trigram_exists = False
+                    if not _fts_trigram_exists:
+                        cursor.executescript(FTS_TRIGRAM_SQL)
+                        cursor.execute(
+                            "INSERT INTO messages_fts_trigram(rowid, content) "
+                            "SELECT id, content FROM messages WHERE content IS NOT NULL"
+                        )
+                except sqlite3.OperationalError as exc:
+                    if self._is_fts5_unavailable_error(exc) or self._is_trigram_unavailable_error(exc):
+                        pass
+                    else:
+                        raise
             if current_version < 11:
                 # v11: re-index FTS5 tables to cover tool_name + tool_calls and
                 # switch from external-content to inline mode. Existing DBs have
@@ -625,44 +683,50 @@ class SessionDB:
                 # overwrite, so we drop them explicitly and let the post-migration
                 # existence checks (below) recreate them from FTS_SQL /
                 # FTS_TRIGRAM_SQL, then backfill every message row. Fixes #16751.
-                for _trig in (
-                    "messages_fts_insert",
-                    "messages_fts_delete",
-                    "messages_fts_update",
-                    "messages_fts_trigram_insert",
-                    "messages_fts_trigram_delete",
-                    "messages_fts_trigram_update",
-                ):
-                    try:
-                        cursor.execute(f"DROP TRIGGER IF EXISTS {_trig}")
-                    except sqlite3.OperationalError:
+                try:
+                    for _trig in (
+                        "messages_fts_insert",
+                        "messages_fts_delete",
+                        "messages_fts_update",
+                        "messages_fts_trigram_insert",
+                        "messages_fts_trigram_delete",
+                        "messages_fts_trigram_update",
+                    ):
+                        try:
+                            cursor.execute(f"DROP TRIGGER IF EXISTS {_trig}")
+                        except sqlite3.OperationalError:
+                            pass
+                    for _tbl in ("messages_fts", "messages_fts_trigram"):
+                        try:
+                            cursor.execute(f"DROP TABLE IF EXISTS {_tbl}")
+                        except sqlite3.OperationalError:
+                            pass
+                    # Recreate virtual tables + triggers with the new inline-mode
+                    # schema that indexes content || tool_name || tool_calls.
+                    cursor.executescript(FTS_SQL)
+                    cursor.executescript(FTS_TRIGRAM_SQL)
+                    # Backfill both indexes from every existing messages row.
+                    cursor.execute(
+                        "INSERT INTO messages_fts(rowid, content) "
+                        "SELECT id, "
+                        "COALESCE(content, '') || ' ' || "
+                        "COALESCE(tool_name, '') || ' ' || "
+                        "COALESCE(tool_calls, '') "
+                        "FROM messages"
+                    )
+                    cursor.execute(
+                        "INSERT INTO messages_fts_trigram(rowid, content) "
+                        "SELECT id, "
+                        "COALESCE(content, '') || ' ' || "
+                        "COALESCE(tool_name, '') || ' ' || "
+                        "COALESCE(tool_calls, '') "
+                        "FROM messages"
+                    )
+                except sqlite3.OperationalError as exc:
+                    if self._is_fts5_unavailable_error(exc) or self._is_trigram_unavailable_error(exc):
                         pass
-                for _tbl in ("messages_fts", "messages_fts_trigram"):
-                    try:
-                        cursor.execute(f"DROP TABLE IF EXISTS {_tbl}")
-                    except sqlite3.OperationalError:
-                        pass
-                # Recreate virtual tables + triggers with the new inline-mode
-                # schema that indexes content || tool_name || tool_calls.
-                cursor.executescript(FTS_SQL)
-                cursor.executescript(FTS_TRIGRAM_SQL)
-                # Backfill both indexes from every existing messages row.
-                cursor.execute(
-                    "INSERT INTO messages_fts(rowid, content) "
-                    "SELECT id, "
-                    "COALESCE(content, '') || ' ' || "
-                    "COALESCE(tool_name, '') || ' ' || "
-                    "COALESCE(tool_calls, '') "
-                    "FROM messages"
-                )
-                cursor.execute(
-                    "INSERT INTO messages_fts_trigram(rowid, content) "
-                    "SELECT id, "
-                    "COALESCE(content, '') || ' ' || "
-                    "COALESCE(tool_name, '') || ' ' || "
-                    "COALESCE(tool_calls, '') "
-                    "FROM messages"
-                )
+                    else:
+                        raise
             if current_version < SCHEMA_VERSION:
                 cursor.execute(
                     "UPDATE schema_version SET version = ?",
@@ -681,14 +745,43 @@ class SessionDB:
         # FTS5 setup (separate because CREATE VIRTUAL TABLE can't be in executescript with IF NOT EXISTS reliably)
         try:
             cursor.execute("SELECT * FROM messages_fts LIMIT 0")
-        except sqlite3.OperationalError:
-            cursor.executescript(FTS_SQL)
+        except sqlite3.OperationalError as exc:
+            if self._is_fts5_unavailable_error(exc):
+                self._warn_fts5_unavailable(exc)
+            else:
+                try:
+                    cursor.executescript(FTS_SQL)
+                except sqlite3.OperationalError as exc_inner:
+                    if self._is_fts5_unavailable_error(exc_inner):
+                        self._warn_fts5_unavailable(exc_inner)
+                    else:
+                        raise
 
         # Trigram FTS5 for CJK/substring search
-        try:
-            cursor.execute("SELECT * FROM messages_fts_trigram LIMIT 0")
-        except sqlite3.OperationalError:
-            cursor.executescript(FTS_TRIGRAM_SQL)
+        if self._fts_enabled:
+            try:
+                cursor.execute("SELECT * FROM messages_fts_trigram LIMIT 0")
+            except sqlite3.OperationalError as exc:
+                if self._is_trigram_unavailable_error(exc):
+                    self._warn_trigram_unavailable(exc)
+                    self._trigram_enabled = False
+                elif self._is_fts5_unavailable_error(exc):
+                    self._warn_fts5_unavailable(exc)
+                    self._trigram_enabled = False
+                else:
+                    try:
+                        cursor.executescript(FTS_TRIGRAM_SQL)
+                    except sqlite3.OperationalError as exc_inner:
+                        if self._is_trigram_unavailable_error(exc_inner):
+                            self._warn_trigram_unavailable(exc_inner)
+                            self._trigram_enabled = False
+                        elif self._is_fts5_unavailable_error(exc_inner):
+                            self._warn_fts5_unavailable(exc_inner)
+                            self._trigram_enabled = False
+                        else:
+                            raise
+        else:
+            self._trigram_enabled = False
 
         self._conn.commit()
 

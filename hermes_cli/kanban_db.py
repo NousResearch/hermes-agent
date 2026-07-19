@@ -1005,6 +1005,38 @@ def _validate_sqlite_header(path: Path) -> None:
     )
 
 
+class _ConnContext(sqlite3.Connection):
+    """sqlite3.Connection subclass that closes itself on context-manager exit.
+
+    ``sqlite3.Connection.__exit__`` only commits or rolls back the active
+    transaction; it deliberately does NOT close the file descriptor (see
+    CPython ``Modules/_sqlite/connection.c``).  Every ``with connect() as
+    conn:`` call site therefore leaks an open FD to kanban.db + its WAL
+    file.  In long-lived gateway / dashboard processes that route every
+    kanban operation through ``connect()``, these accumulate until the
+    process hits the kernel FD limit (``[Errno 24] Too many open files``).
+    Production incident: #33159.
+
+    This wrapper overrides ``__exit__`` to add ``self.close()`` so that
+    ``with connect() as conn:`` is safe without any call-site changes.
+    The ``connect_closing()`` helper is kept for back-compat but is now
+    redundant — it delegates to this class transparently.
+    """
+
+    def __exit__(self, exc_type, exc_val, exc_tb):
+        # Let the base class handle commit/rollback first.
+        try:
+            super().__exit__(exc_type, exc_val, exc_tb)
+        finally:
+            # Always close the FD regardless of transaction outcome.
+            try:
+                self.close()
+            except Exception:
+                pass
+        # Return False (do not suppress exceptions) — same as base class.
+        return False
+
+
 def connect(
     db_path: Optional[Path] = None,
     *,
@@ -1035,7 +1067,12 @@ def connect(
     path.parent.mkdir(parents=True, exist_ok=True)
     _validate_sqlite_header(path)
     resolved = str(path.resolve())
-    conn = sqlite3.connect(str(path), isolation_level=None, timeout=30)
+    conn = sqlite3.connect(
+        str(path),
+        factory=_ConnContext,
+        isolation_level=None,
+        timeout=30,
+    )
     try:
         conn.row_factory = sqlite3.Row
         with _INIT_LOCK:

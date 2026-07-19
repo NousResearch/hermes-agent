@@ -1981,13 +1981,13 @@ def test_connect_falls_back_to_delete_on_locking_protocol(kanban_home, caplog):
 
     real_connect = _sqlite3.connect
 
-    class _WalBlockingConnection(_sqlite3.Connection):
-        def execute(self, sql, *args, **kwargs):  # type: ignore[override]
-            if "journal_mode=wal" in sql.lower().replace(" ", ""):
-                raise _sqlite3.OperationalError("locking protocol")
-            return super().execute(sql, *args, **kwargs)
-
     def wal_blocking_connect(*args, **kwargs):
+        factory = kwargs.pop("factory", _sqlite3.Connection)
+        class _WalBlockingConnection(factory):
+            def execute(self, sql, *args, **kwargs):  # type: ignore[override]
+                if "journal_mode=wal" in sql.lower().replace(" ", ""):
+                    raise _sqlite3.OperationalError("locking protocol")
+                return super().execute(sql, *args, **kwargs)
         return real_connect(
             *args, factory=_WalBlockingConnection, **kwargs
         )
@@ -2981,3 +2981,66 @@ def test_detect_stale_does_not_tick_failure_counter(kanban_home, monkeypatch):
         assert "stale" in kinds, (
             f"Expected 'stale' event in task_events; got {kinds!r}"
         )
+
+
+def test_connect_closes_fd_on_context_manager_exit(kanban_home):
+    """Regression #33159: with kb.connect() as conn: must close FD on exit.
+
+    sqlite3.Connection.__exit__ only commits/rolls back; it does NOT close
+    the FD. The _ConnContext wrapper must override __exit__ to call close().
+    """
+    import gc
+    import os
+
+    try:
+        fd_before = set(int(f) for f in os.listdir(f"/proc/{os.getpid()}/fd"))
+    except OSError:
+        pytest.skip("Cannot enumerate /proc FDs on this platform")
+
+    with kb.connect() as conn:
+        _ = kb.list_tasks(conn)
+
+    gc.collect()
+
+    fd_after = set(int(f) for f in os.listdir(f"/proc/{os.getpid()}/fd"))
+    new_fds = fd_after - fd_before
+    assert len(new_fds) <= 2, (
+        f"FD leak: {len(new_fds)} new FDs remain open after "
+        f"'with kb.connect() as conn:' exit. new_fds={new_fds}"
+    )
+
+
+def test_connect_context_manager_closes_on_exception(kanban_home):
+    """FD must be closed even when an exception is raised inside the with block."""
+    import gc
+    import os
+
+    try:
+        fd_before = set(int(f) for f in os.listdir(f"/proc/{os.getpid()}/fd"))
+    except OSError:
+        pytest.skip("Cannot enumerate /proc FDs on this platform")
+
+    with pytest.raises(RuntimeError):
+        with kb.connect() as conn:
+            _ = kb.list_tasks(conn)
+            raise RuntimeError("intentional error")
+
+    gc.collect()
+    fd_after = set(int(f) for f in os.listdir(f"/proc/{os.getpid()}/fd"))
+    new_fds = fd_after - fd_before
+    assert len(new_fds) <= 2, (
+        f"FD leak on exception: {len(new_fds)} new FDs. "
+        f"_ConnContext.__exit__ must close even on error."
+    )
+
+
+def test_connect_returns_conn_context_type(kanban_home):
+    """connect() must return a _ConnContext, not a bare sqlite3.Connection."""
+    from hermes_cli.kanban_db import _ConnContext
+    conn = kb.connect()
+    try:
+        assert isinstance(conn, _ConnContext), (
+            f"connect() returned {type(conn).__name__}, expected _ConnContext"
+        )
+    finally:
+        conn.close()

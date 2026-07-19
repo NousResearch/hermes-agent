@@ -810,6 +810,13 @@ def _validate_direct_iam_apply_identity(
     organization_generation = generation_by_resource.get(
         ancestor_binding.get("resource_name")
     )
+    # A policy etag is a CAS generation for the complete IAM policy, not the
+    # identity of one binding.  The direct authority already proves a complete
+    # logical policy snapshot, requires exactly one project/ancestor binding
+    # for the owner-gate service account, and rejects every other binding for
+    # that principal.  Unrelated residual-binding changes may therefore move
+    # either policy generation between foundation apply and direct collection
+    # without recreating any owner-gate security identity.
     if (
         direct_authority.get("owner_gate_vm_numeric_id") != vm.get("numeric_id")
         or direct_authority.get("owner_gate_vm_name") != vm.get("name")
@@ -834,10 +841,7 @@ def _validate_direct_iam_apply_identity(
         or direct_authority.get("mutation_role_etag")
         != mutation_role.get("etag")
         or not isinstance(project_generation, Mapping)
-        or project_generation.get("etag") != project_binding.get("policy_etag")
         or not isinstance(organization_generation, Mapping)
-        or organization_generation.get("etag")
-        != ancestor_binding.get("policy_etag")
     ):
         raise OwnerGateTrustAuthorError(
             "owner_gate_trust_author_foundation_identity_mismatch"

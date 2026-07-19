@@ -2796,6 +2796,7 @@ def create_task(
     session_id: Optional[str] = None,
     board: Optional[str] = None,
     project_id: Optional[str] = None,
+    project_source_task_id: Optional[str] = None,
 ) -> str:
     """Create a new task and optionally link it under parent tasks.
 
@@ -2824,6 +2825,12 @@ def create_task(
     model (and optionally its provider) without touching the profile's
     config — passed to the worker as ``-m <model> [--provider <name>]``.
     ``provider_override`` requires ``model_override``.
+
+    ``project_source_task_id`` is an internal cross-profile fallback for a
+    worker-created child. When the active profile cannot resolve ``project_id``
+    in its own projects.db, a matching canonical project-linked task in this
+    board can supply the repo and branch convention. Its literal worktree is
+    never reused; the new task still gets its own task-id-keyed path.
     """
     model_override = (model_override or "").strip() or None
     provider_override = (provider_override or "").strip() or None
@@ -2860,13 +2867,61 @@ def create_task(
     if project_id is not None:
         project_id = str(project_id).strip() or None
     if project_id:
-        try:
-            from hermes_cli import projects_db as _pdb
+        from hermes_cli import projects_db as _pdb
 
+        try:
             with _pdb.connect_closing() as _pconn:
                 project_obj = _pdb.get_project(_pconn, project_id)
         except Exception:
             project_obj = None
+        if project_obj is None and project_source_task_id:
+            # Worker profiles have their own projects.db, while the Kanban DB is
+            # intentionally shared. Recover routing only from a canonical
+            # project-linked source task in this same board. This carries the
+            # repo + project branch convention forward without copying or
+            # opening the creator profile's project store, and without reusing
+            # the source task's literal worktree path.
+            source_task = get_task(conn, str(project_source_task_id))
+            if (
+                source_task is not None
+                and source_task.project_id == project_id
+                and source_task.workspace_kind == "worktree"
+                and source_task.workspace_path
+            ):
+                source_path = Path(source_task.workspace_path)
+                if (
+                    source_path.is_absolute()
+                    and source_path.name == source_task.id
+                    and source_path.parent.name == ".worktrees"
+                ):
+                    project_slug = None
+                    if source_task.branch_name:
+                        prefix, separator, leaf = source_task.branch_name.partition("/")
+                        if separator and (
+                            leaf == source_task.id
+                            or leaf.startswith(f"{source_task.id}-")
+                        ):
+                            try:
+                                project_slug = _pdb.normalize_slug(prefix)
+                            except ValueError:
+                                project_slug = None
+                    if project_slug is None:
+                        try:
+                            project_slug = _pdb.normalize_slug(project_id)
+                        except ValueError:
+                            project_slug = None
+                    if project_slug:
+                        project_repo = str(source_path.parent.parent)
+                        project_obj = _pdb.Project(
+                            id=project_id,
+                            slug=project_slug,
+                            name=project_slug,
+                            created_at=0,
+                            primary_path=project_repo,
+                        )
+                        if workspace_kind == "scratch":
+                            workspace_kind = "worktree"
+
         if project_obj is None:
             # A project id/slug that doesn't resolve must not crash task
             # creation or persist a dangling reference — drop the link and

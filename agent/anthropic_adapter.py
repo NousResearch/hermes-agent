@@ -2255,7 +2255,10 @@ def _merge_consecutive_roles(result: List[Dict[str, Any]]) -> List[Dict[str, Any
 
 
 def _manage_thinking_signatures(
-    result: List[Dict[str, Any]], base_url: str | None, model: str | None
+    result: List[Dict[str, Any]],
+    base_url: str | None,
+    model: str | None,
+    messages: List[Dict[str, Any]],
 ) -> None:
     """Strip or preserve thinking blocks based on endpoint type.
 
@@ -2276,12 +2279,29 @@ def _manage_thinking_signatures(
     """
     _THINKING_TYPES = frozenset(("thinking", "redacted_thinking"))
     _is_third_party = _is_third_party_anthropic_endpoint(base_url)
-    # Kimi / DeepSeek share a contract: strip signed Anthropic blocks
-    # (neither upstream can validate Anthropic signatures), preserve unsigned
-    # ones synthesised from reasoning_content.  See #13848, #16748.
+    # Kimi /coding and DeepSeek /anthropic share a contract: both speak the
+    # Anthropic Messages protocol upstream but require that thinking blocks
+    # synthesised from reasoning_content round-trip on subsequent turns when
+    # thinking is enabled.  Signed Anthropic blocks still have to be stripped
+    # (neither endpoint can validate Anthropic's signatures); unsigned blocks
+    # are preserved.  See hermes-agent#13848 (Kimi) and #16748 (DeepSeek).
+    #
+    # Auto-detect: any other third-party endpoint that has already returned
+    # reasoning_content (e.g. mimo-v2.5-pro, and other /anthropic-path
+    # proxies) enforces the same echo-back contract.  If any assistant
+    # message carries reasoning_content, the endpoint has been using thinking
+    # mode — preserve the unsigned blocks it needs, same as Kimi/DeepSeek.
     _preserve_unsigned_thinking = (
         _is_kimi_family_endpoint(base_url, model)
         or _is_deepseek_anthropic_endpoint(base_url)
+        or (
+            _is_third_party
+            and any(
+                m.get("role") == "assistant"
+                and isinstance(m.get("reasoning_content"), str)
+                for m in messages
+            )
+        )
     )
 
     last_assistant_idx = None
@@ -2453,7 +2473,7 @@ def convert_messages_to_anthropic(
 
     _strip_orphaned_tool_blocks(result)
     result = _merge_consecutive_roles(result)
-    _manage_thinking_signatures(result, base_url, model)
+    _manage_thinking_signatures(result, base_url, model, messages)
     _evict_old_screenshots(result)
 
     return system, result

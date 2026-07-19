@@ -218,11 +218,6 @@ class Mem0MemoryProvider(MemoryProvider):
         self._sync_lock = threading.Lock()
         self._prefetch_lock = threading.Lock()
         self._atexit_registered = False
-        try:
-            from tools.write_approval import register_external_pending_applier
-            register_external_pending_applier("mem0", self._apply_pending_write)
-        except Exception:
-            logger.debug("Could not register Mem0 pending-write applier", exc_info=True)
 
     @property
     def name(self) -> str:
@@ -481,8 +476,21 @@ class Mem0MemoryProvider(MemoryProvider):
         return ""
 
     def sync_turn(self, user_content: str, assistant_content: str, *, session_id: str = "") -> None:
-        """Send the turn to Mem0 for server-side fact extraction (non-blocking)."""
+        """Send an approval-gated turn to Mem0 for fact extraction."""
         if self._backend is None or self._is_breaker_open():
+            return
+
+        messages = [
+            {"role": "user", "content": user_content},
+            {"role": "assistant", "content": assistant_content},
+        ]
+        gated = self._write_gate(
+            "sync",
+            {"messages": messages, "infer": True},
+            summary="Extract durable Mem0 facts from a completed turn",
+            detail=f"user: {user_content}\nassistant: {assistant_content}",
+        )
+        if gated is not None:
             return
 
         def _sync():
@@ -490,10 +498,6 @@ class Mem0MemoryProvider(MemoryProvider):
             if backend is None:
                 return
             try:
-                messages = [
-                    {"role": "user", "content": user_content},
-                    {"role": "assistant", "content": assistant_content},
-                ]
                 backend.add(
                     messages,
                     user_id=self._user_id,
@@ -517,8 +521,15 @@ class Mem0MemoryProvider(MemoryProvider):
 
     def _write_gate(self, action: str, payload: Dict[str, Any], *, summary: str, detail: str = "") -> str | None:
         """Scan and approval-gate all persistent Mem0 mutations."""
-        content = payload.get("content") or payload.get("text") or ""
-        if content:
+        scan_values = [payload.get("content"), payload.get("text")]
+        scan_values.extend(
+            message.get("content")
+            for message in (payload.get("messages") or [])
+            if isinstance(message, dict)
+        )
+        for content in (
+            value for value in scan_values if isinstance(value, str) and value
+        ):
             try:
                 from tools.memory_tool import _scan_memory_content
                 scan_error = _scan_memory_content(content)
@@ -539,7 +550,16 @@ class Mem0MemoryProvider(MemoryProvider):
                 return json.dumps({"error": decision.message, "stored": False}, ensure_ascii=False)
             pending = stage_write(
                 "memory",
-                {"provider": "mem0", "action": action, **payload},
+                {
+                    "provider": "mem0",
+                    "scope": {
+                        "user_id": str(self._user_id),
+                        "agent_id": str(self._agent_id),
+                        "channel": str(self._channel or "cli"),
+                    },
+                    "action": action,
+                    **payload,
+                },
                 summary=summary,
                 origin=current_origin(),
             )
@@ -559,6 +579,26 @@ class Mem0MemoryProvider(MemoryProvider):
         """Apply a previously approved Mem0 mutation without re-staging it."""
         if self._backend is None or self._is_breaker_open():
             return {"success": False, "error": "Mem0 backend unavailable."}
+        scan_values = [payload.get("content"), payload.get("text")]
+        scan_values.extend(
+            message.get("content")
+            for message in (payload.get("messages") or [])
+            if isinstance(message, dict)
+        )
+        try:
+            from tools.memory_tool import _scan_memory_content
+            for content in (
+                value for value in scan_values if isinstance(value, str) and value
+            ):
+                scan_error = _scan_memory_content(content)
+                if scan_error:
+                    return {"success": False, "error": scan_error}
+        except Exception as exc:
+            logger.error("Mem0 pending content scan unavailable: %s", exc)
+            return {
+                "success": False,
+                "error": "Mem0 pending write blocked because the threat scanner was unavailable.",
+            }
         action = payload.get("action")
         try:
             if action == "add":
@@ -567,6 +607,17 @@ class Mem0MemoryProvider(MemoryProvider):
                     user_id=self._user_id,
                     agent_id=self._agent_id,
                     infer=False,
+                    metadata=self._write_metadata(),
+                )
+            elif action == "sync":
+                messages = payload.get("messages")
+                if not isinstance(messages, list) or not messages:
+                    return {"success": False, "error": "Staged Mem0 sync has no messages."}
+                result = self._backend.add(
+                    messages,
+                    user_id=self._user_id,
+                    agent_id=self._agent_id,
+                    infer=True,
                     metadata=self._write_metadata(),
                 )
             elif action == "update":
@@ -712,6 +763,38 @@ class Mem0MemoryProvider(MemoryProvider):
             if t and t.is_alive():
                 t.join(timeout=5.0)
         self._shutdown_backend()
+
+
+def apply_pending_write(payload: Dict[str, Any]) -> Dict[str, Any]:
+    """Resolve an approved Mem0 mutation after any process restart.
+
+    The staged scope must still resolve to the exact same user and agent under
+    the current profile configuration. Identity drift fails closed.
+    """
+    scope = payload.get("scope")
+    if not isinstance(scope, dict):
+        return {"success": False, "error": "Staged Mem0 write has no provider scope."}
+    user_id = scope.get("user_id")
+    agent_id = scope.get("agent_id")
+    channel = scope.get("channel") or "cli"
+    if not all(isinstance(value, str) and value for value in (user_id, agent_id, channel)):
+        return {"success": False, "error": "Staged Mem0 provider scope is incomplete."}
+
+    provider = Mem0MemoryProvider()
+    try:
+        provider.initialize(
+            "pending-memory-approval",
+            user_id=user_id,
+            platform=channel,
+        )
+        if str(provider._user_id) != user_id or str(provider._agent_id) != agent_id:
+            return {
+                "success": False,
+                "error": "Staged Mem0 identity no longer matches this profile configuration.",
+            }
+        return provider._apply_pending_write(payload)
+    finally:
+        provider.shutdown()
 
 
 def register(ctx) -> None:

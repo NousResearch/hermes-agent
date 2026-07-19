@@ -263,8 +263,11 @@ content such as transient task state, secrets, instructions, and raw dumps.
 Uncertainty, malformed model output, timeout, or provider failure stages the
 write under `/memory pending`; it never silently approves on failure. The
 normal memory threat scanner still runs before the judge. The configured
-`auxiliary.approval` model is used, and the same policy covers built-in memory
-and external providers that use Hermes' shared write gate, including Mem0.
+`auxiliary.approval` model is used, and the same policy covers built-in memory,
+explicit provider tool calls, and automatic provider turn extraction. Provider-
+backed pending writes include their user/agent/channel scope and are resolved
+again on approval, so replay remains identity-safe across gateway or CLI
+restarts. Mem0 currently supports this durable replay path.
 
 ## Background review notifications (`display.memory_notifications`)
 

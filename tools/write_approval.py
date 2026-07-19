@@ -45,6 +45,7 @@ web dashboard.
 
 from __future__ import annotations
 
+import importlib
 import json
 import logging
 import os
@@ -62,28 +63,32 @@ MEMORY = "memory"
 SKILLS = "skills"
 _SUBSYSTEMS = (MEMORY, SKILLS)
 
-# Providers with non-file-backed persistent stores can register an applier for
-# staged memory writes. The pending JSON record remains durable across restarts;
-# each provider registers its live applier during initialization.
-_EXTERNAL_PENDING_APPLIERS = {}
-
-
-def register_external_pending_applier(provider: str, applier) -> None:
-    """Register a callable that applies an approved provider-backed write."""
-    if provider and callable(applier):
-        _EXTERNAL_PENDING_APPLIERS[str(provider)] = applier
+# Provider-backed pending writes must remain replayable after a process restart.
+# Keep this allowlist static: the provider name comes from an on-disk pending
+# record and must never become an arbitrary import target.
+_EXTERNAL_PENDING_RESOLVERS = {
+    "mem0": ("plugins.memory.mem0", "apply_pending_write"),
+}
 
 
 def apply_external_pending(payload: Dict[str, Any]) -> Dict[str, Any]:
-    """Apply a staged provider-backed write through its live provider."""
+    """Resolve and apply a durable provider-backed pending write.
+
+    Resolution is independent of a live agent/plugin instance so
+    ``/memory approve`` works after a CLI or gateway restart. Each resolver
+    validates the staged provider scope before mutating data.
+    """
     provider = str(payload.get("provider", ""))
-    applier = _EXTERNAL_PENDING_APPLIERS.get(provider)
-    if applier is None:
+    resolver = _EXTERNAL_PENDING_RESOLVERS.get(provider)
+    if resolver is None:
         return {
             "success": False,
-            "error": f"Provider '{provider}' is not available in this gateway.",
+            "error": f"Provider '{provider}' is not supported for pending replay.",
         }
     try:
+        module_name, function_name = resolver
+        module = importlib.import_module(module_name)
+        applier = getattr(module, function_name)
         result = applier(payload)
         return result if isinstance(result, dict) else {"success": bool(result)}
     except Exception as exc:

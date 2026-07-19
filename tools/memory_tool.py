@@ -850,6 +850,14 @@ def _apply_write_gate(action: str, target: str, content: Optional[str],
         summary = f"remove from {label}"
         detail = old_text or ""
 
+    # New persistent text must pass the same strict scanner as MemoryStore
+    # before it crosses the external smart-judge boundary. MemoryStore scans
+    # again during apply as defense in depth.
+    if action in {"add", "replace"}:
+        scan_error = _scan_memory_content(content or "")
+        if scan_error:
+            return tool_error(scan_error, success=False)
+
     decision = wa.evaluate_gate(wa.MEMORY, inline_summary=summary, inline_detail=detail)
 
     if decision.allow:
@@ -902,6 +910,13 @@ def _apply_batch_write_gate(target: str, operations: List[Dict[str, Any]]) -> Op
         else:
             detail_lines.append(f"- {act}: {op.get('content', '')}")
     detail = "\n".join(detail_lines)
+
+    for op in operations:
+        op = op or {}
+        if op.get("action") in {"add", "replace"}:
+            scan_error = _scan_memory_content(op.get("content") or "")
+            if scan_error:
+                return tool_error(scan_error, success=False)
 
     decision = wa.evaluate_gate(wa.MEMORY, inline_summary=summary, inline_detail=detail)
 

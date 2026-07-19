@@ -57,19 +57,61 @@ MAX_SCAN_CHARS = 65_536
 # Value shapes (shared by every credential pattern below)
 # ---------------------------------------------------------------------------
 
-# A high-entropy bare token: letters/digits/underscore/hyphen, length >= 12,
-# containing at least one non-pure-alpha and one non-pure-digit run so we don't
-# match ordinary words or pure numbers.  Anchored so it can sit after a colon,
-# an equals sign, "is", "for <svc>", etc.
+# A candidate "value" token: letters/digits/underscore/hyphen, length >= 12.
+# This is intentionally broad — the real filter is ``_looks_like_secret()``
+# below, which rejects pure-lowercase dictionary words (e.g. "authentication",
+# "documentation") so a benign sentence like "Password policy: authentication"
+# is NOT flagged.  The regex only finds *candidates*; the validator decides.
 _TOKEN = r"[A-Za-z0-9_=\-]{12,}"
 
 # A hex / base64-ish blob (20+ chars) — typical of API keys, hashes, tokens.
 _HEX = r"[A-Za-z0-9+/]{20,}"
 
-# A value that is "probably not a sentence": excludes trailing sentence
-# punctuation and common English words so ``Password is required`` does not
-# match.  Used for the "Password is <value>" prose form.
-_PROSE_VALUE = r"(?!=[\s])([A-Za-z0-9_=\-]{10,}|[A-Za-z0-9+/]{12,})"
+# A candidate value for the "Password is <value>" prose form.  Same breadth as
+# ``_TOKEN``; validated by ``_looks_like_secret()`` after the match.
+_PROSE_VALUE = r"[A-Za-z0-9_=\-]{10,}|[A-Za-z0-9+/]{12,}"
+
+
+def _looks_like_secret(value: str) -> bool:
+    """Decide whether a matched value is a *probable* credential, not a word.
+
+    A benign dictionary word (even a long one) must NOT look like a secret.
+    We require at least one of:
+
+    * a digit (``hunter23``, ``CANARY_7F39``),
+    * a mix of upper- and lower-case letters (``CANARYabc``, ``Sup3r``),
+    * an underscore/hyphen joining multiple segments (``stored_in_keychain``
+      is a *variable name*, not a secret, so we additionally require one of the
+      above — but ``my_api_key_abc123`` wins because it has a digit),
+    * a base64/hex structure (``+/`` present, or 20+ chars of [A-Za-z0-9]).
+
+    Pure-lowercase-alpha runs like ``authentication`` / ``configurable`` /
+    ``recommended`` / ``documentation`` fail every check and are rejected.
+    """
+    if not value:
+        return False
+    v = value.strip().strip("\"'")
+    # A bare variable lookup / env reference is not a literal secret value.
+    if v.startswith(("os.getenv", "os.environ", "process.env", "$ENV", "environ[")):
+        return False
+    has_digit = any(ch.isdigit() for ch in v)
+    has_lower = any(ch.islower() for ch in v)
+    has_upper = any(ch.isupper() for ch in v)
+    has_mixed_case = has_lower and has_upper
+    # underscore/hyphen only counts when joined to something structured
+    has_segment_sep = ("_" in v or "-" in v) and any(ch.isalnum() for ch in v)
+    base64ish = ("/" in v) or len(re.sub(r"[^A-Za-z0-9]", "", v)) >= 20
+    # Require a digit OR mixed case OR (a segment separator AND at least 8
+    # alnum chars — catches things like "stored_in_keychain" only if also
+    # structured; here stored_in_keychain has no digit/case so it fails, which
+    # is the desired behaviour for pure variable-name values).
+    if has_digit or has_mixed_case or base64ish:
+        return True
+    if has_segment_sep and len(re.sub(r"[^A-Za-z0-9]", "", v)) >= 16:
+        # e.g. "my_long_apikey_abc123" — but that has a digit, caught above.
+        # A pure "stored_in_keychain" (no digit/case) must NOT pass.
+        return has_digit or has_mixed_case
+    return False
 
 # Generic credential-keyword vocabulary (case-insensitive).  Excludes bare
 # "auth" so "Authorization:" (handled separately) and "author:" don't collide
@@ -97,42 +139,64 @@ class SecretFinding:
         return self.marker
 
 
-# Each entry: (compiled regex, category, marker).  Order is irrelevant; all
-# are tried.  Every pattern requires BOTH a credential keyword and a concrete
-# structured value.
+# Each entry: (compiled regex, category, marker, validate_value).  When
+# ``validate_value`` is True the matched value must also pass
+# ``_looks_like_secret()`` — this is what keeps prose/assignment forms from
+# firing on pure dictionary words.  Patterns that are *themselves* proof (a
+# PEM block, a vendor-key prefix, a Bearer/Basic token) skip value validation.
 _PATTERNS: List[tuple] = []
 
 
-def _add(pattern: str, category: str, marker: str) -> None:
-    _PATTERNS.append((re.compile(pattern, re.IGNORECASE), category, marker))
+def _add(pattern: str, category: str, marker: str, validate_value: bool = False) -> None:
+    _PATTERNS.append(
+        (re.compile(pattern, re.IGNORECASE), category, marker, validate_value)
+    )
+
+
+# Pull the most likely credential value out of a matched span: the trailing
+# run of token characters.  Used only to validate prose/assignment matches.
+_VALUE_EXTRACT_RE = re.compile(r"[A-Za-z0-9_=\-+/]{8,}")
+
+
+def _extract_candidate_value(match: "re.Match") -> str:
+    span = match.group(0)
+    # Prefer the token after a colon/equals if present.
+    candidates = _VALUE_EXTRACT_RE.findall(span)
+    if not candidates:
+        return ""
+    # The credential value is usually the last sizeable token in the span
+    # (after the keyword), e.g. "Password for X: <VALUE>".
+    return candidates[-1]
 
 
 # --- Prose forms ("Password for X: VALUE", "The password is VALUE") -------
-
-# "Password for <service>: <value>" / "password to the db is <value>"
-# Requires a value of >=10 chars that is not a common English stopword-ish
-# short word.  We additionally require the value NOT be a known FP word.
+# Requires the extracted value to look like a secret (digit / mixed case /
+# base64), so "Password policy: authentication" is NOT flagged.
 _add(
     rf"{_CRED_KEY}\b[^\n]{{0,40}}?[:=]\s*{_PROSE_VALUE}(?![A-Za-z])",
     "password_prose",
     "[credential: password (prose form)]",
+    validate_value=True,
 )
 # "The password is <value>" / "my api key is <value>"
 _add(
     rf"\b(?:the|my|our)\s+{_CRED_KEY}\s+(?:is|was|has|equals)\s+{_PROSE_VALUE}(?![A-Za-z])",
     "credential_prose",
     "[credential: api key / token (prose form)]",
+    validate_value=True,
 )
 # "store the password as <value>" — imperative/instruction prose still has a
 # concrete value, so it is caught; relies on the value shape, not the verb.
 
 # --- Direct assignments (both quoted and unquoted) -------------------------
 # Legacy threat_patterns only handled the quoted form with >=20 chars.  We
-# also catch unquoted ``password = hunter2`` while still requiring a value.
+# also catch unquoted ``password = hunter2`` while still requiring a value
+# that looks like a secret.
 _add(
     rf"{_CRED_KEY}\s*[=:]\s*['\"]?{_TOKEN}['\"]?",
     "credential_assignment",
     "[credential: direct assignment]",
+    validate_value=True,
 )
 # YAML / .env style ``key: value`` handled above via the assignment pattern.
 
@@ -143,27 +207,33 @@ _add(
     rf"(?:api[ _-]?key|access[ _-]?token|secret)\s*(?:of|for|to)?\s*[:=]?\s*{_TOKEN}",
     "api_key_prose",
     "[credential: api key / token]",
+    validate_value=True,
 )
 
 # --- Authorization / bearer headers ----------------------------------------
 # "Authorization: Bearer <token>", "Authorization: Basic <b64>", or any scheme.
-# The credential class excludes quotes so masking never corrupts syntax.
+# A real scheme word + token is itself the proof; still require the trailing
+# token to look structured (a bare "Authorization: Bearer" with no token is
+# not a leak).
 _add(
-    r"(?:proxy-)?authorization\s*:\s*(?:bearer|basic|token|digest|apikey)?\s*\S+",
+    r"(?:proxy-)?authorization\s*:\s*(?:bearer|basic|token|digest|apikey)?\s*(\S+)",
     "authorization_header",
     "[credential: Authorization header]",
+    validate_value=True,
 )
 # Bare scheme token without a header name: "Bearer <token>", "Basic <b64>".
 _add(
-    r"\b(?:bearer|basic|token|digest)\s+[A-Za-z0-9._\-+/]{12,}",
+    r"\b(?:bearer|basic|token|digest)\s+([A-Za-z0-9._\-+/]{12,})",
     "auth_scheme_token",
     "[credential: bearer/basic token]",
+    validate_value=True,
 )
 # x-api-key / x-auth-token header style.
 _add(
-    r"\b(?:x-api-key|x-goog-api-key|api-key|apikey|x-api-token|x-auth-token|x-access-token)\s*:\s*\S+",
+    r"\b(?:x-api-key|x-goog-api-key|api-key|apikey|x-api-token|x-auth-token|x-access-token)\s*:\s*(\S+)",
     "secret_header",
     "[credential: secret header]",
+    validate_value=True,
 )
 
 # --- Private key blocks -----------------------------------------------------
@@ -225,11 +295,17 @@ def scan_for_secrets(content: str) -> List[SecretFinding]:
     scanned = content[:MAX_SCAN_CHARS]
     findings: List[SecretFinding] = []
     seen_markers = set()
-    for compiled, category, marker in _PATTERNS:
-        if compiled.search(scanned):
-            if marker not in seen_markers:
-                findings.append(SecretFinding(category=category, marker=marker))
-                seen_markers.add(marker)
+    for compiled, category, marker, validate_value in _PATTERNS:
+        match = compiled.search(scanned)
+        if not match:
+            continue
+        if validate_value:
+            candidate = _extract_candidate_value(match)
+            if not _looks_like_secret(candidate):
+                continue
+        if marker not in seen_markers:
+            findings.append(SecretFinding(category=category, marker=marker))
+            seen_markers.add(marker)
     return findings
 
 

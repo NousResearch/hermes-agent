@@ -163,3 +163,68 @@ class TestNoSecretLeakInLogs:
             store = MemoryStore()
             store.load_from_disk()
         assert "CANARY_PASSWORD_7F39C1_A91D2E" not in caplog.text
+
+
+class TestMemoryScanAudit:
+    """Coverage for the /memory scan audit (scan_memory_for_secrets)."""
+
+    def _seed(self, tmp_path, monkeypatch, entries):
+        mem_dir = tmp_path / "memories"
+        mem_dir.mkdir(parents=True, exist_ok=True)
+        body = "\n§\n" + "\n§\n".join(entries) + "\n"
+        (mem_dir / "MEMORY.md").write_text(body, encoding="utf-8")
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        from hermes_constants import get_hermes_home
+
+        # get_hermes_home reads HERMES_HOME from the process env, which
+        # monkeypatch.setenv sets.
+        return get_hermes_home()
+
+    def test_scan_reports_source_and_entry_index(self, tmp_path, monkeypatch):
+        from tools.secret_detector import scan_memory_for_secrets
+
+        self._seed(
+            tmp_path, monkeypatch,
+            [
+                "User prefers terse responses.",                        # clean
+                "Password for Test WebUI: CANARY_PASSWORD_7F39C1_A91D2E",  # entry 2 (cred)
+                "Never store API keys in source control.",              # clean
+                "Authorization: Bearer CANARYeyJabc123def456ghi789",      # entry 4 (cred)
+            ],
+        )
+        results = scan_memory_for_secrets()
+        # Two credential entries found (entry 2 and entry 4).
+        assert len(results) == 2
+        assert "MEMORY.md#entry2" in results
+        assert "MEMORY.md#entry4" in results
+        # Each result is value-free (only category + marker).
+        for findings in results.values():
+            for f in findings:
+                assert "CANARY_PASSWORD_7F39C1_A91D2E" not in f.category
+                assert "CANARY_PASSWORD_7F39C1_A91D2E" not in f.marker
+                assert "CANARYeyJabc123def456ghi789" not in f.category
+                assert "CANARYeyJabc123def456ghi789" not in f.marker
+
+    def test_scan_no_value_leak_in_aggregated_output(self, tmp_path, monkeypatch):
+        from tools.secret_detector import scan_memory_for_secrets
+
+        self._seed(
+            tmp_path, monkeypatch,
+            ["Password for X: CANARY_PASSWORD_7F39C1_A91D2E"],
+        )
+        results = scan_memory_for_secrets()
+        flat = str(results)
+        assert "CANARY_PASSWORD_7F39C1_A91D2E" not in flat
+
+    def test_scan_clean_memory_reports_nothing(self, tmp_path, monkeypatch):
+        from tools.secret_detector import scan_memory_for_secrets
+
+        self._seed(
+            tmp_path, monkeypatch,
+            [
+                "User rotates passwords monthly.",
+                "The project has password authentication enabled.",
+                "Never store API keys in source control.",
+            ],
+        )
+        assert scan_memory_for_secrets() == {}

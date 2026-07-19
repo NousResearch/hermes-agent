@@ -115,3 +115,55 @@ class TestEmptyInput:
         assert scan_for_secrets("") == []
         assert not contains_secret("")
         assert first_secret_message("") is None
+
+
+class TestNoFalsePositivesOnDictionaryWords:
+    """These are the exact strings that previously triggered false positives
+    because the value matcher accepted long alphabetic dictionary words. A
+    probable secret must look structured (digit / mixed case / base64), not be
+    a long English word.
+    """
+
+    @pytest.mark.parametrize("text", [
+        "Password policy: authentication",
+        "Password reset: documentation",
+        "Token expiration: configurable",
+        "API key rotation: recommended",
+        "Database password: stored_in_keychain",
+        'password = os.getenv("DATABASE_PASSWORD")',
+        "api_key = environment_variable",
+        "The password is intentionally omitted",
+        # Additional prose with long non-secret values.
+        "The password is configuration",
+        "Secret management: documentation",
+        "Credential rotation: recommended",
+        "Access token lifetime: configurable",
+    ])
+    def test_benign_sentences_not_flagged(self, text):
+        assert not contains_secret(text)
+
+
+class TestLooksLikeSecretHelper:
+    """Direct unit coverage of the value validator so the rule is pinned."""
+
+    def test_pure_alpha_word_rejected(self):
+        from tools.secret_detector import _looks_like_secret
+
+        assert not _looks_like_secret("authentication")
+        assert not _looks_like_secret("stored_in_keychain")
+        assert not _looks_like_secret("environment_variable")
+
+    def test_structured_value_accepted(self):
+        from tools.secret_detector import _looks_like_secret
+
+        assert _looks_like_secret("CANARY_PASSWORD_7F39C1_A91D2E")
+        assert _looks_like_secret("hunter2hunter2hunter22")  # has digits
+        assert _looks_like_secret("Sup3rSecretPass")          # mixed case + digit
+        assert _looks_like_secret("abc123def456ghi789")       # has digits
+        assert _looks_like_secret("dXNlcjpwYXNzd29yZA==")    # base64-ish
+
+    def test_env_lookup_not_a_value(self):
+        from tools.secret_detector import _looks_like_secret
+
+        assert not _looks_like_secret('os.getenv("DATABASE_PASSWORD")')
+        assert not _looks_like_secret("process.env.API_KEY")

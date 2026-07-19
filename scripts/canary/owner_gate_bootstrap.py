@@ -1103,6 +1103,32 @@ def _default_runner(argv: Sequence[str]) -> bytes:
     return completed.stdout
 
 
+def _executable_target_sha256(
+    path: Path,
+    *,
+    expected_uid: int = 0,
+    expected_gid: int = 0,
+) -> str:
+    """Hash the stable opened target of a regular file or executable symlink."""
+
+    try:
+        identity = stage0._capture_executable_identity(
+            path,
+            expected_uid=expected_uid,
+            expected_gid=expected_gid,
+        )
+    except stage0.OwnerGateStage0Error:
+        raise OwnerGateBootstrapError(
+            "owner_gate_bootstrap_runtime_mismatch"
+        ) from None
+    digest = identity.get("target_sha256")
+    if not isinstance(digest, str) or _SHA256.fullmatch(digest) is None:
+        raise OwnerGateBootstrapError(
+            "owner_gate_bootstrap_runtime_mismatch"
+        )
+    return digest
+
+
 def validate_target_runtime(
     bundle: VerifiedBundle,
     *,
@@ -2068,7 +2094,7 @@ def install_configuration_units_firewall_and_hosts(
         foundation.canonical_json_bytes(cloud_attestor),
         mode=0o444,
     ))
-    python_sha, _ = package._sha256_file(layout.python)
+    python_sha = _executable_target_sha256(layout.python)
     if python_sha != bundle.manifest["interpreter_sha256"]:
         raise OwnerGateBootstrapError("owner_gate_bootstrap_runtime_mismatch")
     files.append(_install_exact_bytes(

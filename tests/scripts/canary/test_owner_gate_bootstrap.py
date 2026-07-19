@@ -25,6 +25,22 @@ def _secure_test_directory(path: Path, *, mode: int = 0o700) -> None:
     os.chown(path, os.geteuid(), os.getegid())
 
 
+def test_executable_target_sha256_accepts_pinned_python_symlink(
+    tmp_path: Path,
+) -> None:
+    target = tmp_path / "python3.11"
+    target.write_bytes(b"pinned-python-target\n")
+    target.chmod(0o755)
+    link = tmp_path / "python3"
+    link.symlink_to(target.name)
+
+    assert bootstrap._executable_target_sha256(
+        link,
+        expected_uid=os.geteuid(),
+        expected_gid=os.getegid(),
+    ) == hashlib.sha256(target.read_bytes()).hexdigest()
+
+
 def test_activation_evidence_staging_receipt_directory_is_verified(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

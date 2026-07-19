@@ -17809,8 +17809,10 @@ def _maybe_open_browser(
         )
         return
 
+    from hermes_cli.url_utils import format_url_host
+
     _display_host = host if host not in ("0.0.0.0", "::") else "127.0.0.1"
-    _open_url = f"http://{_display_host}:{actual_port}"
+    _open_url = f"http://{format_url_host(_display_host)}:{actual_port}"
     if initial_profile:
         from urllib.parse import quote
         _open_url += f"/?profile={quote(initial_profile)}"
@@ -18035,7 +18037,9 @@ def start_server(
                 # advertise a paste-and-connect URL, just announce the bind.
                 print(f"  Hermes backend listening on {host}:{actual_port}")
             else:
-                print(f"  Hermes Web UI → http://{host}:{actual_port}")
+                from hermes_cli.url_utils import format_url_host
+
+                print(f"  Hermes Web UI → http://{format_url_host(host)}:{actual_port}")
             _maybe_open_browser(host, actual_port, open_browser, initial_profile)
 
             # Collapse the peer-hangup teardown flood (#50005). When the Desktop

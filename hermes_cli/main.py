@@ -12399,7 +12399,10 @@ def cmd_dashboard(args):
         # Desktop pool backends are intentionally per-profile.
         and os.environ.get("HERMES_DESKTOP") != "1"
     ):
-        url = f"http://{args.host or '127.0.0.1'}:{args.port}/?profile={_launch_profile}"
+        from hermes_cli.url_utils import format_url_host
+
+        url_host = format_url_host(args.host or "127.0.0.1")
+        url = f"http://{url_host}:{args.port}/?profile={_launch_profile}"
         if _dashboard_listening(args.host, args.port):
             print(f"Machine dashboard already running on port {args.port}.")
             print(f"  Managing profile '{_launch_profile}': {url}")

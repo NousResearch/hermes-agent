@@ -6046,6 +6046,18 @@ def _close_cached_client(client: Any) -> None:
         close_fn = getattr(client, "close", None)
         if callable(close_fn) and not inspect.iscoroutinefunction(close_fn):
             close_fn()
+            return
+        if close_fn is not None:
+            # The wrapper's own close() is a coroutine, and these callers are
+            # synchronous (CLI shutdown, credential-refresh eviction) with no
+            # loop to await it on — so it is skipped. Fall back to the leaf the
+            # wrapper already mirrors as ``_real_client`` for eviction-by-leaf
+            # (#23482): AsyncGeminiNativeClient wraps a GeminiNativeClient whose
+            # close() IS synchronous, so without this the native-Gemini
+            # transport survives every shutdown and every refresh.
+            leaf_close = getattr(getattr(client, "_real_client", None), "close", None)
+            if callable(leaf_close) and not inspect.iscoroutinefunction(leaf_close):
+                leaf_close()
     except Exception:
         pass
 

@@ -82,11 +82,114 @@ def test_bedrock_async_wrapper_answers_close_protocol():
 
 def test_async_wrappers_mirror_the_sync_close_surface():
     """Every sync wrapper's close() must have an async counterpart."""
+    from agent.gemini_native_adapter import (
+        AsyncGeminiNativeClient,
+        GeminiNativeClient,
+    )
+
     pairs = [
         (ac.CodexAuxiliaryClient, ac.AsyncCodexAuxiliaryClient),
         (ac.AnthropicAuxiliaryClient, ac.AsyncAnthropicAuxiliaryClient),
         (ac.BedrockAuxiliaryClient, ac.AsyncBedrockAuxiliaryClient),
+        (GeminiNativeClient, AsyncGeminiNativeClient),
     ]
     for sync_cls, async_cls in pairs:
         assert hasattr(sync_cls, "close")
         assert hasattr(async_cls, "close"), f"{async_cls.__name__} lost close()"
+
+
+# -- native Gemini: close() is a coroutine, so it needs a sync cache route ----
+
+
+def _cached_gemini_pair():
+    """A native-Gemini async wrapper parked in the client cache."""
+    from agent.gemini_native_adapter import (
+        AsyncGeminiNativeClient,
+        GeminiNativeClient,
+    )
+
+    sync = GeminiNativeClient(api_key="unit-test-key")
+    wrapper = AsyncGeminiNativeClient(sync)
+    with ac._client_cache_lock:
+        ac._client_cache.clear()
+        ac._client_cache[("gemini", "native")] = (wrapper, "gemini-2.0", None)
+    return sync, wrapper
+
+
+def test_native_gemini_cached_wrapper_closes_on_shutdown():
+    """``shutdown_cached_clients`` must release the native-Gemini transport.
+
+    ``AsyncGeminiNativeClient.close()`` is a coroutine, so the canonical
+    closer's ``iscoroutinefunction`` guard skips it, and the shim carries no
+    ``_client`` for ``_force_close_async_httpx`` to find. Without a synchronous
+    route the transport survives shutdown — the same leak this PR fixes for the
+    Codex/Anthropic/Bedrock shims, reached by a different path.
+    """
+    sync, _ = _cached_gemini_pair()
+    try:
+        ac.shutdown_cached_clients()
+    finally:
+        with ac._client_cache_lock:
+            ac._client_cache.clear()
+
+    assert sync.is_closed, "native-Gemini transport leaked past cache shutdown"
+
+
+def test_native_gemini_cached_wrapper_closes_on_credential_eviction():
+    """``_evict_cached_clients`` fires on every credential refresh.
+
+    Each refresh must hand back the transport it replaces, otherwise a
+    long-running gateway accumulates one leaked native-Gemini connection per
+    rotation (#10200).
+    """
+    sync, _ = _cached_gemini_pair()
+    try:
+        ac._evict_cached_clients("gemini")
+    finally:
+        with ac._client_cache_lock:
+            ac._client_cache.clear()
+
+    assert sync.is_closed, "native-Gemini transport leaked past credential eviction"
+
+
+def test_native_gemini_async_close_still_awaits():
+    """The synchronous cache route must not disturb the public async close()."""
+    import asyncio
+
+    from agent.gemini_native_adapter import (
+        AsyncGeminiNativeClient,
+        GeminiNativeClient,
+    )
+
+    sync = GeminiNativeClient(api_key="unit-test-key")
+    asyncio.run(AsyncGeminiNativeClient(sync).close())
+
+    assert sync.is_closed
+
+
+def test_every_cached_async_wrapper_has_a_synchronous_close_route():
+    """The closer runs from sync callers, so an async-only close() is unreachable.
+
+    Generalises the Gemini case: any wrapper that can be cached must either
+    expose a synchronous ``close()`` or mirror a leaf whose ``close()`` is
+    synchronous, or ``_close_cached_client`` silently does nothing to it.
+    """
+    from agent.gemini_native_adapter import AsyncGeminiNativeClient
+
+    wrappers = [
+        ac.AsyncCodexAuxiliaryClient,
+        ac.AsyncAnthropicAuxiliaryClient,
+        ac.AsyncBedrockAuxiliaryClient,
+        AsyncGeminiNativeClient,
+    ]
+    for cls in wrappers:
+        close_fn = getattr(cls, "close", None)
+        assert close_fn is not None, f"{cls.__name__} has no close()"
+        if not inspect.iscoroutinefunction(close_fn):
+            continue
+        # Coroutine close() → the sync closer skips it, so the wrapper must
+        # mirror its leaf as _real_client for the fallback to reach.
+        assert "_real_client" in inspect.getsource(cls), (
+            f"{cls.__name__}.close() is async and the class does not mirror a "
+            "_real_client leaf — _close_cached_client cannot release it"
+        )

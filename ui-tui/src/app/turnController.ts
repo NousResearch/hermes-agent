@@ -112,6 +112,14 @@ const clear = (t: Timer): null => {
 class TurnController {
   bufRef = ''
   interrupted = false
+  // Turn-generation counter. Incremented on every startMessage() and on
+  // session-boundary resets. recordMessageComplete captures the generation
+  // it persisted for; a subsequent message.complete that lands after a
+  // generation bump (= a stale event for an older turn, or a duplicate
+  // emit) is dropped instead of re-appending the assistant's final text
+  // (#59423).
+  private turnGeneration = 0
+  private persistedTurnGeneration = -1
   lastStatusNote = ''
   persistedToolLabels = new Set<string>()
   persistSpawnTree?: (subagents: SubagentProgress[], sessionId: null | string) => Promise<void>
@@ -286,6 +294,11 @@ class TurnController {
     })
     patchUiState({ busy: false })
     resetFlowOverlays()
+    // idle() does NOT clear turn-generation tracking — that's done by
+    // startMessage() (which bumps the generation) or by reset() /
+    // fullReset() (session boundary). Leaving the values alone here lets
+    // the next `message.complete` correctly detect whether the snapshot
+    // it's about to build has already been persisted (#59423).
   }
 
   // `keepBusy` holds the session busy after interrupting so a queued message
@@ -328,6 +341,13 @@ class TurnController {
     } else {
       sys('interrupted')
     }
+
+    // We just persisted the cancelled-turn snapshot (segments + the
+    // *[interrupted]* marker). Stash the turn generation so any late
+    // `message.complete` (including after the user has submitted a new
+    // prompt and the generation has bumped) sees a mismatch and refuses
+    // to re-append (#59423).
+    this.persistedTurnGeneration = this.turnGeneration
 
     this.clearStatusTimer()
 
@@ -555,6 +575,31 @@ class TurnController {
   }
 
   recordMessageComplete(payload: { rendered?: string; reasoning?: string; text?: string }) {
+    // Stale `message.complete` detection (#59423): if the controller has
+    // already persisted a snapshot for this turn's generation — either
+    // because this exact `message.complete` is a duplicate emit, or
+    // because the user has interrupted + submitted a new prompt since
+    // (which bumped `turnGeneration` but left `persistedTurnGeneration`
+    // pointing at the now-stale prior turn) — bail out before writing
+    // any messages. Otherwise the same final assistant text would land
+    // in the transcript a second time.
+    const isStale = this.persistedTurnGeneration === this.turnGeneration
+
+    if (isStale) {
+      // Still drain the side-effects so streaming/segment state converges
+      // even on a duplicate emit (the live overlay would otherwise keep
+      // showing stale data).
+      this.idle()
+      this.clearReasoning()
+      this.turnTools = []
+      this.persistedToolLabels.clear()
+      this.bufRef = ''
+      this.interrupted = false
+      this.flushPendingNotice()
+
+      return { finalMessages: [], finalText: '', wasInterrupted: false }
+    }
+
     this.closeReasoningSegment()
 
     // Ink renders markdown via <Md>; the gateway's Rich-rendered ANSI
@@ -643,6 +688,13 @@ class TurnController {
     this.persistedToolLabels.clear()
     this.bufRef = ''
     this.interrupted = false
+    // Stash the generation we just persisted so a duplicate or stale
+    // `message.complete` (one whose `turnGeneration` no longer matches
+    // because the user has interrupted + submitted a new prompt, or
+    // because the gateway re-emitted the same event) is recognised as
+    // already-handled and dropped before it re-appends the assistant's
+    // final reply (#59423).
+    this.persistedTurnGeneration = this.turnGeneration
     patchTurnState({ activity: [], outcome: '' })
 
     // Real turn end: surface any notice held back while busy. Done after
@@ -889,6 +941,11 @@ class TurnController {
     this.turnTools = []
     this.toolTokenAcc = 0
     this.persistedToolLabels.clear()
+    // Session boundary: drop turn-generation tracking so a stale
+    // `message.complete` arriving from session A's last turn can't
+    // silently suppress session B's first turn (#59423).
+    this.turnGeneration = 0
+    this.persistedTurnGeneration = -1
     // Session boundary: drop notice state so session A's sticky can't bleed
     // into session B (R3-H5). reset()/fullReset() CLEAR — they never flush.
     this.clearNoticeState()
@@ -944,6 +1001,9 @@ class TurnController {
     this.turnTools = []
     this.toolTokenAcc = 0
     this.interrupted = false
+    // Bump the turn generation so a stale `message.complete` for any prior
+    // turn is recognised as stale by recordMessageComplete (#59423).
+    this.turnGeneration += 1
     this.persistedToolLabels.clear()
     // "Flash and yield" notices clear when a new turn starts: a usage-band heads-up
     // (credits.usage, 50/75/90%) and the one-time "grant spent" transition

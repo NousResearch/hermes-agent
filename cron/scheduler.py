@@ -3139,8 +3139,14 @@ def run_job(
                     logger.warning("Job '%s': failed to parse prefill messages file '%s': %s", job_id, pfpath, e)
                     prefill_messages = None
 
-        # Max iterations
-        max_iterations = _cfg.get("agent", {}).get("max_turns") or _cfg.get("max_turns") or 90
+        # Max iterations — resolved through resolve_turn_limit() so that
+        # agent.max_turns: none / unlimited → sys.maxsize sentinel, and
+        # explicit 0 / null / "none" are honored instead of skipped by `or`.
+        from hermes_cli.config import resolve_turn_limit as _resolve_turn_limit
+        _mt = _cfg.get("agent", {}).get("max_turns")
+        if _mt is None:
+            _mt = _cfg.get("max_turns")
+        max_iterations = _resolve_turn_limit(_mt)
 
         # Provider routing
         pr = _cfg.get("provider_routing") or {}

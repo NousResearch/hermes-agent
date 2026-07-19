@@ -54,6 +54,11 @@ _SEVERITY_DISPLAY = {
 }
 
 
+def operator_card_severity_display(severity: str) -> tuple[str, str]:
+    """Return the shared emoji and label for a validated severity."""
+    return _SEVERITY_DISPLAY[severity]
+
+
 class OperatorCardValidationError(ValueError):
     """Raised when untrusted operator-card data violates the contract."""
 
@@ -153,7 +158,7 @@ class OperatorCardLink:
         parsed = urlsplit(url)
         if (
             parsed.scheme not in {"http", "https"}
-            or not parsed.netloc
+            or not parsed.hostname
             or parsed.username is not None
             or parsed.password is not None
         ):
@@ -261,7 +266,7 @@ def render_operator_card_text(
     Passing ``None`` returns the complete fallback so an adapter with native
     message chunking can preserve every field and link across messages.
     """
-    emoji, severity_label = _SEVERITY_DISPLAY[card.severity]
+    emoji, severity_label = operator_card_severity_display(card.severity)
     lines = [f"{emoji} **{severity_label} — {card.title}**", card.summary]
     lines.extend(f"{field.label}: {field.value}" for field in card.fields)
     if card.actions:

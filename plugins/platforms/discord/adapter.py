@@ -112,7 +112,11 @@ from pathlib import Path as _Path
 sys.path.insert(0, str(_Path(__file__).resolve().parents[3]))
 
 from gateway.config import Platform, PlatformConfig
-from gateway.operator_cards import OperatorCard, render_operator_card_text
+from gateway.operator_cards import (
+    OperatorCard,
+    operator_card_severity_display,
+    render_operator_card_text,
+)
 
 from gateway.platforms.helpers import MessageDeduplicator, ThreadParticipationTracker, convert_table_to_bullets
 from utils import atomic_json_write, env_float, env_int
@@ -192,14 +196,6 @@ _DISCORD_OPERATOR_CARD_COLORS = {
     "blocked": 0xE74C3C,
     "critical": 0x992D22,
 }
-_DISCORD_OPERATOR_CARD_SEVERITY_LABELS = {
-    "done": "Done",
-    "info": "Info",
-    "needs_review": "Needs review",
-    "blocked": "Blocked",
-    "critical": "Critical",
-}
-
 # Discord embed budgets, measured in UTF-16 code units (Discord's own unit for
 # these limits).  A contract-valid operator card can still exceed them — e.g.
 # up to 12 fields at the 1024-char field ceiling, or a link block wider than a
@@ -229,7 +225,7 @@ def _build_operator_card_embed(card: OperatorCard) -> Any:
         card.summary, _DISCORD_EMBED_DESCRIPTION_LIMIT
     )
     card_type_label = card.card_type.replace("_", " ").title()
-    severity_label = _DISCORD_OPERATOR_CARD_SEVERITY_LABELS[card.severity]
+    _, severity_label = operator_card_severity_display(card.severity)
     footer = _truncate_discord_component_text(
         f"{card_type_label} · {severity_label}", _DISCORD_EMBED_FOOTER_LIMIT
     )
@@ -2963,9 +2959,9 @@ class DiscordAdapter(BasePlatformAdapter):
                     max_length=None,
                 )
                 operator_card_embed = _build_operator_card_embed(operator_card)
-                severity_label = _DISCORD_OPERATOR_CARD_SEVERITY_LABELS[
+                _, severity_label = operator_card_severity_display(
                     operator_card.severity
-                ]
+                )
                 # Discord's 100-char thread-name cap is measured in UTF-16 code
                 # units; a naive ``[:100]`` slice counts code points and can
                 # emit a name Discord rejects.  Use the shared UTF-16-aware

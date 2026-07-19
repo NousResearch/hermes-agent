@@ -84,6 +84,7 @@ def test_every_severity_has_a_mobile_readable_label(severity, label):
         ({"state_ref": ""}, "state_ref"),
         ({"actions": [{"id": "approve", "label": "Approve", "style": "neon"}]}, "style"),
         ({"links": [{"label": "Bad", "url": "javascript:alert(1)"}]}, "url"),
+        ({"links": [{"label": "Bad", "url": "https://:443"}]}, "url"),
     ],
 )
 def test_invalid_values_fail_closed(change, message):

@@ -711,6 +711,7 @@ export interface Translations {
       loading: string
       appliesDesc: string
       provider: string
+      genericProvider: string
       model: string
       applying: string
       pasteProviderKey: (key: string) => string
@@ -746,7 +747,8 @@ export interface Translations {
       moaPresets: string
       moaPrefix: string
       otherProviders: string
-      staleAuxWarning: (count: number, names: string, provider: string) => string
+      // Split around the provider name so it keeps upstream's monospace span.
+      staleAuxWarning: (count: number, names: string) => { before: string; after: string }
       tasks: Record<string, AuxTaskCopy>
     }
     computerUse: {

@@ -153,7 +153,7 @@ interface StaleAuxWarningProps {
   copy: {
     otherProviders: string
     resetAllToMain: string
-    staleAuxWarning: (count: number, names: string, provider: string) => string
+    staleAuxWarning: (count: number, names: string) => { before: string; after: string }
   }
   onReset: () => void
   slots: readonly StaleAuxAssignment[]
@@ -172,12 +172,15 @@ function StaleAuxWarning({ applying, copy, onReset, slots, taskLabel }: StaleAux
   const provider = slots[0].provider
   const allSameProvider = slots.every(slot => slot.provider === provider)
   const names = slots.map(slot => taskLabel(slot.task)).join(', ')
+  const warning = copy.staleAuxWarning(slots.length, names)
 
   return (
     <div className="flex flex-wrap items-center gap-2 rounded-md border border-amber-500/40 bg-amber-500/10 px-3 py-2 text-xs text-amber-200">
       <AlertTriangle className="size-3.5 shrink-0" />
       <span className="grow">
-        {copy.staleAuxWarning(slots.length, names, allSameProvider ? provider : copy.otherProviders)}
+        {warning.before}
+        <span className="font-mono">{allSameProvider ? provider : copy.otherProviders}</span>
+        {warning.after}
       </span>
       <Button disabled={applying} onClick={onReset} size="sm" variant="textStrong">
         {copy.resetAllToMain}
@@ -767,7 +770,7 @@ export function ModelSettings({ onMainModelChanged }: ModelSettingsProps) {
               </>
             ) : (
               <Button onClick={startProviderSetup} size="sm" variant="textStrong">
-                {m.setUpProvider(selectedProviderRow?.name ?? m.provider)}
+                {m.setUpProvider(selectedProviderRow?.name ?? m.genericProvider)}
               </Button>
             )
           ) : (

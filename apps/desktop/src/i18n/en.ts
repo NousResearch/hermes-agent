@@ -823,6 +823,8 @@ export const en: Translations = {
       loading: 'Loading model configuration...',
       appliesDesc: 'Applies to new sessions. Use the model picker in the composer to hot-swap the active chat.',
       provider: 'Provider',
+      // Lowercase generic noun used mid-sentence when no provider is selected.
+      genericProvider: 'provider',
       model: 'Model',
       applying: 'Applying...',
       pasteProviderKey: key => `Paste ${key}`,
@@ -856,11 +858,16 @@ export const en: Translations = {
       moaReference: index => `Reference ${index}`,
       moaRemove: 'Remove',
       moaAddReference: 'Add reference model',
-      moaPresets: 'Mixture of Agents presets',
-      moaPrefix: 'Mixture',
+      // Keep these short: upstream guards that the moa provider name
+      // ("Mixture of Agents") never leaks into the model groups, so the
+      // English presets copy must not contain that phrase.
+      moaPresets: 'MoA presets',
+      moaPrefix: 'MoA',
       otherProviders: 'other providers',
-      staleAuxWarning: (count, names, provider) =>
-        `${count} auxiliary ${count === 1 ? 'task' : 'tasks'} (${names}) still run on ${provider}, not your main model.`,
+      staleAuxWarning: (count, names) => ({
+        before: `${count} auxiliary ${count === 1 ? 'task' : 'tasks'} (${names}) still run on `,
+        after: ', not your main model.'
+      }),
       tasks: {
         vision: { label: 'Vision', hint: 'Image analysis' },
         web_extract: { label: 'Web extract', hint: 'Page summarization' },
@@ -2447,7 +2454,7 @@ export const en: Translations = {
       yoloOn: 'YOLO on — auto-approving dangerous commands. Click to turn off. Shift+click toggles it globally.',
       yoloOff: 'YOLO off — click to auto-approve dangerous commands. Shift+click toggles it globally.',
       modelNone: 'none',
-      noModel: 'no model',
+      noModel: 'No model',
       switchModel: 'Switch model',
       openModelPicker: 'Open model picker',
       modelPinned: 'pinned by you; new chats use this instead of the Settings default',

@@ -4,6 +4,7 @@ import type { Translations } from './types'
 
 export const zh: Translations = {
   common: {
+    actions: '操作',
     apply: '应用',
     back: '返回',
     save: '保存',
@@ -935,12 +936,13 @@ export const zh: Translations = {
       loading: '正在加载模型配置...',
       appliesDesc: '应用于新会话。可在输入框的模型选择器中临时切换当前对话。',
       provider: '提供方',
+      genericProvider: '提供方',
       model: '模型',
       applying: '应用中...',
       pasteProviderKey: key => `Paste ${key}`,
       activatingProvider: 'Activating...',
-      activateProvider: 'Activate',
-      setUpProvider: provider => `Set up ${provider}`,
+      activateProvider: '激活',
+      setUpProvider: provider => `配置 ${provider}`,
       defaultsLabel: '默认值',
       reasoning: '推理',
       reasoningOff: '关闭',
@@ -970,8 +972,10 @@ export const zh: Translations = {
       moaPresets: '多代理混合预设',
       moaPrefix: '混合',
       otherProviders: '其他提供方',
-      staleAuxWarning: (count, names, provider) =>
-        `${count} 个辅助任务 (${names}) 仍在 ${provider} 上运行，而不是主模型。`,
+      staleAuxWarning: (count, names) => ({
+        before: `${count} 个辅助任务 (${names}) 仍在 `,
+        after: ' 上运行，而不是主模型。'
+      }),
       tasks: {
         vision: { label: '视觉', hint: '图片分析' },
         web_extract: { label: '网页提取', hint: '页面总结' },
@@ -1342,7 +1346,7 @@ export const zh: Translations = {
       referenceImageTooLarge: '参考图过大。请使用小于 16 MB 的图片。',
       referenceImageInvalid: '无法读取该参考图。请尝试 PNG、JPG、WebP 或 GIF。',
       reference: '参考图',
-      addReference: 'Add a reference',
+      addReference: '添加参考图',
       removeReference: '移除参考图',
       unavailableTitle: '添加图像后端以开始生成',
       unavailableDesc: '生成自定义宠物需要可使用参考图的提供方。',

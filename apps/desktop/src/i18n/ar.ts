@@ -1247,6 +1247,7 @@ export const ar: Translations = {
       loading: 'جارٍ تحميل إعداد النموذج...',
       appliesDesc: 'ينطبق على الجلسات الجديدة. استخدم منتقي النموذج في محرر الرسالة لتبديل نموذج المحادثة النشطة.',
       provider: 'المزوّد',
+      genericProvider: 'مزوّد',
       model: 'النموذج',
       applying: 'جارٍ التطبيق...',
       pasteProviderKey: key => `الصق ${key}`,
@@ -1282,14 +1283,17 @@ export const ar: Translations = {
       moaPresets: 'إعدادات مزيج الوكلاء',
       moaPrefix: 'مزيج',
       otherProviders: 'مزودين آخرين',
-      staleAuxWarning: (count, names, provider) =>
-        count === 1
-          ? `لا تزال مهمة مساعدة واحدة (${names}) تعمل على ${provider}، لا على نموذجك الرئيسي.`
-          : count === 2
-            ? `لا تزال مهمتان مساعدتان (${names}) تعملان على ${provider}، لا على نموذجك الرئيسي.`
-            : count <= 10
-              ? `لا تزال ${count} مهام مساعدة (${names}) تعمل على ${provider}، لا على نموذجك الرئيسي.`
-              : `لا تزال ${count} مهمة مساعدة (${names}) تعمل على ${provider}، لا على نموذجك الرئيسي.`,
+      staleAuxWarning: (count, names) => ({
+        before:
+          count === 1
+            ? `لا تزال مهمة مساعدة واحدة (${names}) تعمل على `
+            : count === 2
+              ? `لا تزال مهمتان مساعدتان (${names}) تعملان على `
+              : count <= 10
+                ? `لا تزال ${count} مهام مساعدة (${names}) تعمل على `
+                : `لا تزال ${count} مهمة مساعدة (${names}) تعمل على `,
+        after: '، لا على نموذجك الرئيسي.'
+      }),
       tasks: {
         vision: { label: 'الرؤية', hint: 'تحليل الصور' },
         web_extract: { label: 'استخراج الويب', hint: 'تلخيص الصفحات' },

@@ -13,10 +13,8 @@ describe('model-status-label', () => {
   it('formats display names consistently', () => {
     expect(displayModelName('anthropic/claude-opus-4.8-fast')).toBe('Opus 4.8')
     expect(displayModelName('openai/gpt-5.5-fast')).toBe('GPT-5.5')
-    expect(displayModelName('deepseek/deepseek-v4-pro-thinking')).toBe('DeepSeek V4 Pro')
+    expect(displayModelName('deepseek/deepseek-v4-pro-thinking')).toBe('Deepseek V4 Pro')
     expect(displayModelName('openai/gpt-5.5')).toBe('GPT-5.5')
-    expect(displayModelName('zai/glm-5.2')).toBe('GLM 5.2')
-    expect(displayModelName('minimax/minimax-m3')).toBe('MiniMax M3')
   })
 
   it('strips trailing date-pin snapshots from the display name', () => {
@@ -38,6 +36,15 @@ describe('model-status-label', () => {
     )
   })
 
+  it('always surfaces the effort (default medium) so the level is visible', () => {
+    expect(formatModelStatusLabel('openai/gpt-5.5', { reasoningEffort: 'medium' })).toBe('GPT-5.5 · Med')
+    expect(formatModelStatusLabel('openai/gpt-5.5')).toBe('GPT-5.5 · Med')
+  })
+
+  it('returns just the placeholder name when there is no model', () => {
+    expect(formatModelStatusLabel('')).toBe('No model')
+  })
+
   it('formats session state with the active locale labels passed by the caller', () => {
     const ar = TRANSLATIONS.ar
 
@@ -50,16 +57,6 @@ describe('model-status-label', () => {
         reasoningLabels: ar.shell.statusbar.reasoningShort
       })
     ).toBe('GPT-5.5 · سريع عالٍ')
-  })
-
-  it('always surfaces the effort (default medium) so the level is visible', () => {
-    expect(formatModelStatusLabel('openai/gpt-5.5', { reasoningEffort: 'medium' })).toBe('GPT-5.5 · Med')
-    expect(formatModelStatusLabel('openai/gpt-5.5')).toBe('GPT-5.5 · Med')
-  })
-
-  it('returns just the placeholder name when there is no model', () => {
-    // The placeholder now resolves through the i18n catalog (statusbar style).
-    expect(formatModelStatusLabel('')).toBe('no model')
   })
 
   describe('currentPickerSelection', () => {

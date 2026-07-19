@@ -3304,6 +3304,10 @@ class SessionDB:
         if not title:
             return None
 
+        # Lone surrogates cannot be bound by sqlite3 (UnicodeEncodeError at
+        # UTF-8 encode time) — scrub them like every other write path here.
+        title = _sanitize_surrogates(title)
+
         # Remove ASCII control characters (0x00-0x1F, 0x7F) but keep
         # whitespace chars (\t=0x09, \n=0x0A, \r=0x0D) so they can be
         # normalized to spaces by the whitespace collapsing step below
@@ -4181,7 +4185,10 @@ class SessionDB:
         ``api_content`` is the exact content string sent to the API for this
         message when it differs from ``content`` (ephemeral memory/plugin
         injections, persist overrides).  It is a byte-fidelity sidecar for
-        prompt-cache-stable replay — stored verbatim, never sanitized.
+        prompt-cache-stable replay — stored as sent, except lone surrogates
+        (which sqlite3 cannot bind and which the conversation loop scrubs
+        from every outgoing payload anyway, so the scrubbed form IS the
+        wire bytes).
         """
         # Serialize structured fields to JSON before entering the write txn
         reasoning_details_json = (
@@ -4229,7 +4236,7 @@ class SessionDB:
                     stored_content,
                     tool_call_id,
                     tool_calls_json,
-                    tool_name,
+                    _scrub_surrogates(tool_name),
                     effect_disposition,
                     message_timestamp,
                     token_count,
@@ -4242,7 +4249,7 @@ class SessionDB:
                     platform_message_id,
                     1 if observed else 0,
                     1,
-                    api_content if isinstance(api_content, str) else None,
+                    _scrub_surrogates(api_content) if isinstance(api_content, str) else None,
                 ),
             )
             msg_id = cursor.lastrowid
@@ -4325,7 +4332,7 @@ class SessionDB:
                     self._encode_content(msg.get("content")),
                     msg.get("tool_call_id"),
                     tool_calls_json,
-                    msg.get("tool_name"),
+                    _scrub_surrogates(msg.get("tool_name")),
                     msg.get("effect_disposition"),
                     message_timestamp,
                     msg.get("token_count"),
@@ -4338,7 +4345,7 @@ class SessionDB:
                     platform_msg_id,
                     1 if msg.get("observed") else 0,
                     1,
-                    api_content if isinstance(api_content, str) else None,
+                    _scrub_surrogates(api_content) if isinstance(api_content, str) else None,
                 ),
             )
             inserted += 1
@@ -4489,7 +4496,7 @@ class SessionDB:
                 "WHERE session_id = ? AND role = 'user' AND active = 1 "
                 "ORDER BY id DESC LIMIT 1"
                 ") AND content IS ?",
-                (api_content, session_id, encoded),
+                (_scrub_surrogates(api_content), session_id, encoded),
             )
             return cursor.rowcount
 

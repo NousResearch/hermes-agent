@@ -1351,10 +1351,10 @@ def switch_model(
         base_url = normalize_opencode_base_url(target_provider, api_mode, base_url)
 
     # --- Get capabilities (legacy) ---
-    capabilities = get_model_capabilities(target_provider, new_model)
+    capabilities = get_model_capabilities(target_provider, new_model, base_url=base_url)
 
     # --- Get full model info from models.dev ---
-    model_info = get_model_info(target_provider, new_model)
+    model_info = get_model_info(target_provider, new_model, base_url=base_url)
 
     # --- Collect warnings ---
     warnings: list[str] = []

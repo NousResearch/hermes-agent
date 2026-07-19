@@ -522,22 +522,34 @@ The base URL can be overridden with `GMI_BASE_URL` (default: `https://api.gmi-se
 
 ### StepFun
 
-Step-series models via [StepFun](https://platform.stepfun.com) — OpenAI-compatible API, API key authentication.
+Step-series models via [StepFun](https://platform.stepfun.com) — OpenAI-compatible API, API key authentication. StepFun exposes **two providers**, both sharing the `STEPFUN_API_KEY` account key:
+
+- **`stepfun`** — standard chat completions (`/v1`).
+- **`stepfun-plan`** — the Step Plan reasoning API (`/step_plan/v1`, plan-based billing). Aliases: `step`, `stepfun-coding-plan`.
 
 ```bash
-# StepFun
-hermes chat --provider stepfun --model step-3.5-flash
+# StepFun standard chat
+hermes chat --provider stepfun --model step-3.7-flash
+# StepFun Step Plan
+hermes chat --provider stepfun-plan --model step-3.7-flash
 # Requires: STEPFUN_API_KEY in ~/.hermes/.env
 ```
 
 Or set it permanently in `config.yaml`:
 ```yaml
 model:
-  provider: "stepfun"
-  default: "step-3.5-flash"
+  provider: "stepfun"        # or "stepfun-plan"
+  default: "step-3.7-flash"
 ```
 
-The base URL can be overridden with `STEPFUN_BASE_URL` (default: `https://api.stepfun.com/v1`).
+**Region toggle.** Each provider defaults to the International endpoint (`api.stepfun.ai`); pick China (`api.stepfun.com`) during `hermes setup`, or override the base URL directly:
+
+- `stepfun` → `STEPFUN_BASE_URL` (default `https://api.stepfun.ai/v1`; China `https://api.stepfun.com/v1`)
+- `stepfun-plan` → `STEPFUN_STEP_PLAN_BASE_URL` (default `https://api.stepfun.ai/step_plan/v1`; China `https://api.stepfun.com/step_plan/v1`)
+
+Model catalog and capability metadata are resolved per the selected region, so China endpoints get the endpoint-correct catalog (e.g. `step-router-v1`, which is Step Plan China-only).
+
+**Migration.** The bare `stepfun` id previously meant the Step Plan endpoint. Configs pointing `stepfun` at a `/step_plan/` URL are migrated to `stepfun-plan` automatically (config version 34), and a `STEPFUN_BASE_URL` override that targeted `/step_plan/` is moved to `STEPFUN_STEP_PLAN_BASE_URL`.
 
 ### Hugging Face Inference Providers
 

@@ -300,3 +300,81 @@ class TestStepfunMigration:
         env = out["_env"]
         assert env.get("STEPFUN_BASE_URL") == std_url
         assert "STEPFUN_STEP_PLAN_BASE_URL" not in env
+
+
+class TestStepfunRegionModelsDev:
+    """models.dev metadata must resolve per the selected StepFun region.
+
+    The China (`.com`) and International (`.ai`) endpoints are distinct
+    models.dev catalogs; only the China Step Plan catalog carries
+    `step-router-v1`. Regression coverage for both regions and both ids.
+    """
+
+    REGISTRY = {
+        "stepfun-ai": {  # International standard
+            "api": "https://api.stepfun.ai/v1",
+            "models": {"step-3.7-flash": {"tool_call": True, "limit": {"context": 65536}}},
+        },
+        "stepfun": {  # China standard
+            "api": "https://api.stepfun.com/v1",
+            "models": {"step-3.7-flash": {"tool_call": True, "limit": {"context": 65536}}},
+        },
+        "stepfun-ai-step-plan": {  # International Step Plan
+            "api": "https://api.stepfun.ai/step_plan/v1",
+            "models": {"step-3.7-flash": {"tool_call": True, "limit": {"context": 65536}}},
+        },
+        "stepfun-step-plan": {  # China Step Plan — carries step-router-v1
+            "api": "https://api.stepfun.com/step_plan/v1",
+            "models": {
+                "step-3.7-flash": {"tool_call": True, "limit": {"context": 65536}},
+                "step-router-v1": {"tool_call": True, "limit": {"context": 32768}},
+            },
+        },
+    }
+
+    def _patch(self, monkeypatch):
+        import agent.models_dev as md
+        monkeypatch.setattr(md, "fetch_models_dev", lambda *a, **k: self.REGISTRY)
+        # Isolate from any real ~/.hermes/.env override lookups.
+        monkeypatch.setattr(md, "_read_base_url_override", lambda env_var: None)
+        return md
+
+    def test_resolve_id_by_base_url(self, monkeypatch):
+        md = self._patch(monkeypatch)
+        assert md._resolve_models_dev_id("stepfun") == "stepfun-ai"
+        assert md._resolve_models_dev_id("stepfun-plan") == "stepfun-ai-step-plan"
+        assert (
+            md._resolve_models_dev_id("stepfun", "https://api.stepfun.com/v1")
+            == "stepfun"
+        )
+        assert (
+            md._resolve_models_dev_id("stepfun-plan", "https://api.stepfun.com/step_plan/v1")
+            == "stepfun-step-plan"
+        )
+
+    def test_resolve_id_from_env_override(self, monkeypatch):
+        import agent.models_dev as md
+        monkeypatch.setattr(md, "fetch_models_dev", lambda *a, **k: self.REGISTRY)
+        monkeypatch.setenv("STEPFUN_STEP_PLAN_BASE_URL", "https://api.stepfun.com/step_plan/v1")
+        monkeypatch.delenv("STEPFUN_BASE_URL", raising=False)
+        # China env override → China Step Plan id even with no base_url passed.
+        assert md._resolve_models_dev_id("stepfun-plan") == "stepfun-step-plan"
+        # Standard id still International (its own env var unset).
+        assert md._resolve_models_dev_id("stepfun") == "stepfun-ai"
+
+    def test_china_step_plan_catalog_has_router(self, monkeypatch):
+        md = self._patch(monkeypatch)
+        cn = md.list_provider_models("stepfun-plan", base_url="https://api.stepfun.com/step_plan/v1")
+        intl = md.list_provider_models("stepfun-plan", base_url="https://api.stepfun.ai/step_plan/v1")
+        assert "step-router-v1" in cn
+        assert "step-router-v1" not in intl
+
+    def test_context_lookup_routes_by_region(self, monkeypatch):
+        md = self._patch(monkeypatch)
+        # step-router-v1 only exists in the China Step Plan catalog.
+        assert md.lookup_models_dev_context(
+            "stepfun-plan", "step-router-v1", base_url="https://api.stepfun.com/step_plan/v1"
+        ) == 32768
+        assert md.lookup_models_dev_context(
+            "stepfun-plan", "step-router-v1", base_url="https://api.stepfun.ai/step_plan/v1"
+        ) is None

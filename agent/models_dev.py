@@ -20,6 +20,7 @@ rather than parsing the raw JSON themselves.
 
 import json
 import logging
+import os
 import time
 from dataclasses import dataclass
 from pathlib import Path
@@ -184,6 +185,62 @@ PROVIDER_TO_MODELS_DEV: Dict[str, str] = {
 _MODELS_DEV_TO_PROVIDER: Optional[Dict[str, str]] = None
 
 
+# StepFun ships distinct China (`.com`) and international (`.ai`) endpoints,
+# and models.dev tracks them as separate provider catalogs. The default
+# PROVIDER_TO_MODELS_DEV entries above point at the international IDs; when the
+# resolved endpoint is China we swap to the China IDs so catalog/capability
+# metadata stays endpoint-correct. (The China Step Plan catalog additionally
+# carries `step-router-v1`, absent from the international one.)
+_STEPFUN_CN_MODELS_DEV: Dict[str, str] = {
+    "stepfun": "stepfun",
+    "stepfun-plan": "stepfun-step-plan",
+}
+# Per-id base-url override env var — the region toggle writes the chosen host
+# here at setup time, so it's the source of truth when no base_url is passed.
+_STEPFUN_BASE_URL_ENV: Dict[str, str] = {
+    "stepfun": "STEPFUN_BASE_URL",
+    "stepfun-plan": "STEPFUN_STEP_PLAN_BASE_URL",
+}
+
+
+def _is_china_stepfun(base_url: Optional[str]) -> bool:
+    """True when a StepFun base URL points at the China (`.com`) endpoint."""
+    return "api.stepfun.com" in (base_url or "").strip().lower()
+
+
+def _read_base_url_override(env_var: str) -> Optional[str]:
+    """Read a base-url override from ~/.hermes/.env or the environment."""
+    try:
+        from hermes_cli.config import get_env_value
+        val = get_env_value(env_var)
+        if val:
+            return val
+    except Exception:
+        pass
+    return os.environ.get(env_var)
+
+
+def _resolve_models_dev_id(
+    provider: str, base_url: Optional[str] = None
+) -> Optional[str]:
+    """Resolve a Hermes provider ID to its region-correct models.dev ID.
+
+    For StepFun (whose China `.com` and international `.ai` endpoints have
+    separate models.dev catalogs) the region is derived from *base_url* when
+    given, else from the provider's base-url override env var. Everything else
+    is a straight PROVIDER_TO_MODELS_DEV lookup.
+    """
+    if provider in _STEPFUN_CN_MODELS_DEV:
+        url = base_url
+        if not url:
+            env_var = _STEPFUN_BASE_URL_ENV.get(provider)
+            if env_var:
+                url = _read_base_url_override(env_var)
+        if _is_china_stepfun(url):
+            return _STEPFUN_CN_MODELS_DEV[provider]
+    return PROVIDER_TO_MODELS_DEV.get(provider)
+
+
 
 def _get_cache_path() -> Path:
     """Return path to disk cache file."""
@@ -319,13 +376,17 @@ def fetch_models_dev(force_refresh: bool = False) -> Dict[str, Any]:
     return _models_dev_cache
 
 
-def lookup_models_dev_context(provider: str, model: str) -> Optional[int]:
+def lookup_models_dev_context(
+    provider: str, model: str, base_url: Optional[str] = None
+) -> Optional[int]:
     """Look up context_length for a provider+model combo in models.dev.
 
     Returns the context window in tokens, or None if not found.
     Handles case-insensitive matching and filters out context=0 entries.
+    *base_url* routes region-split providers (e.g. StepFun) to the
+    endpoint-correct catalog.
     """
-    mdev_provider_id = PROVIDER_TO_MODELS_DEV.get(provider)
+    mdev_provider_id = _resolve_models_dev_id(provider, base_url)
     if not mdev_provider_id:
         return None
 
@@ -411,12 +472,15 @@ class ModelCapabilities:
     model_family: str = ""
 
 
-def _get_provider_models(provider: str) -> Optional[Dict[str, Any]]:
+def _get_provider_models(
+    provider: str, base_url: Optional[str] = None
+) -> Optional[Dict[str, Any]]:
     """Resolve a Hermes provider ID to its models dict from models.dev.
 
     Returns the models dict or None if the provider is unknown or has no data.
+    *base_url* routes region-split providers to the endpoint-correct catalog.
     """
-    mdev_provider_id = PROVIDER_TO_MODELS_DEV.get(provider)
+    mdev_provider_id = _resolve_models_dev_id(provider, base_url)
     if not mdev_provider_id:
         return None
 
@@ -448,11 +512,14 @@ def _find_model_entry(models: Dict[str, Any], model: str) -> Optional[Dict[str, 
     return None
 
 
-def get_model_capabilities(provider: str, model: str) -> Optional[ModelCapabilities]:
+def get_model_capabilities(
+    provider: str, model: str, base_url: Optional[str] = None
+) -> Optional[ModelCapabilities]:
     """Look up full capability metadata from models.dev cache.
 
     Uses the existing fetch_models_dev() and PROVIDER_TO_MODELS_DEV mapping.
-    Returns None if model not found.
+    Returns None if model not found. *base_url* routes region-split providers
+    to the endpoint-correct catalog.
 
     Extracts from model entry fields:
       - reasoning  (bool)  → supports_reasoning
@@ -462,7 +529,7 @@ def get_model_capabilities(provider: str, model: str) -> Optional[ModelCapabilit
       - limit.output  (int) → max_output_tokens
       - family     (str)   → model_family
     """
-    models = _get_provider_models(provider)
+    models = _get_provider_models(provider, base_url)
     if models is None:
         return None
 
@@ -509,15 +576,18 @@ def get_model_capabilities(provider: str, model: str) -> Optional[ModelCapabilit
     )
 
 
-def list_provider_models(provider: str) -> List[str]:
+def list_provider_models(
+    provider: str, base_url: Optional[str] = None
+) -> List[str]:
     """Return all model IDs for a provider from models.dev.
 
     Returns an empty list if the provider is unknown or has no data.
+    *base_url* routes region-split providers to the endpoint-correct catalog.
     """
     from hermes_cli.models import normalize_provider
     provider = normalize_provider(provider) or provider
-    
-    models = _get_provider_models(provider)
+
+    models = _get_provider_models(provider, base_url)
     if models is None:
         return []
     return [
@@ -573,14 +643,17 @@ def _should_hide_from_provider_catalog(provider: str, model_id: str) -> bool:
     return False
 
 
-def list_agentic_models(provider: str) -> List[str]:
+def list_agentic_models(
+    provider: str, base_url: Optional[str] = None
+) -> List[str]:
     """Return model IDs suitable for agentic use from models.dev.
 
     Filters for tool_call=True and excludes noise (TTS, embedding,
     dated preview snapshots, live/streaming, image-only models).
-    Returns an empty list on any failure.
+    Returns an empty list on any failure. *base_url* routes region-split
+    providers to the endpoint-correct catalog.
     """
-    models = _get_provider_models(provider)
+    models = _get_provider_models(provider, base_url)
     if models is None:
         return []
 
@@ -672,14 +745,17 @@ def _parse_provider_info(provider_id: str, raw: Dict[str, Any]) -> ProviderInfo:
 # Provider-level queries
 # ---------------------------------------------------------------------------
 
-def get_provider_info(provider_id: str) -> Optional[ProviderInfo]:
+def get_provider_info(
+    provider_id: str, base_url: Optional[str] = None
+) -> Optional[ProviderInfo]:
     """Get full provider metadata from models.dev.
 
     Accepts either a Hermes provider ID (e.g. "kilocode") or a models.dev
     ID (e.g. "kilo").  Returns None if the provider is not in the catalog.
+    *base_url* routes region-split providers to the endpoint-correct catalog.
     """
-    # Resolve Hermes ID → models.dev ID
-    mdev_id = PROVIDER_TO_MODELS_DEV.get(provider_id, provider_id)
+    # Resolve Hermes ID → models.dev ID (region-aware for split providers)
+    mdev_id = _resolve_models_dev_id(provider_id, base_url) or provider_id
 
     data = fetch_models_dev()
     raw = data.get(mdev_id)
@@ -694,14 +770,15 @@ def get_provider_info(provider_id: str) -> Optional[ProviderInfo]:
 # ---------------------------------------------------------------------------
 
 def get_model_info(
-    provider_id: str, model_id: str
+    provider_id: str, model_id: str, base_url: Optional[str] = None
 ) -> Optional[ModelInfo]:
     """Get full model metadata from models.dev.
 
     Accepts Hermes or models.dev provider ID.  Tries exact match then
-    case-insensitive fallback.  Returns None if not found.
+    case-insensitive fallback.  Returns None if not found. *base_url* routes
+    region-split providers to the endpoint-correct catalog.
     """
-    mdev_id = PROVIDER_TO_MODELS_DEV.get(provider_id, provider_id)
+    mdev_id = _resolve_models_dev_id(provider_id, base_url) or provider_id
 
     data = fetch_models_dev()
     pdata = data.get(mdev_id)

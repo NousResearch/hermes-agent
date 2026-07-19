@@ -2,6 +2,8 @@ import crypto from 'node:crypto'
 import fs from 'node:fs'
 import path from 'node:path'
 
+import { resolveReadableFileForIpc } from './hardening'
+
 export const BACKGROUND_PROTOCOL = 'hermes-background'
 export const BACKGROUND_MAX_FILE_BYTES = 100 * 1024 * 1024
 export const BACKGROUND_MAX_FOLDER_IMAGES = 1_000
@@ -30,6 +32,10 @@ export interface BackgroundResolveResult {
   sourcePath: string
   truncated: boolean
 }
+
+export type BackgroundProtocolTarget =
+  | { filePath: null; status: 404 | 415 }
+  | { filePath: string; status: 200 }
 
 interface AuthorizedImage {
   filePath: string
@@ -234,5 +240,35 @@ export function backgroundTokenFromUrl(rawUrl: string): string | null {
     return url.pathname.split('/').filter(Boolean)[0] ?? null
   } catch {
     return null
+  }
+}
+
+export async function resolveBackgroundProtocolTarget(
+  rawUrl: string,
+  registry: BackgroundImageRegistry
+): Promise<BackgroundProtocolTarget> {
+  const token = backgroundTokenFromUrl(rawUrl)
+  const grantedPath = token ? registry.resolve(token) : null
+
+  if (!grantedPath) {
+    return { filePath: null, status: 404 }
+  }
+
+  try {
+    const { realPath } = await resolveReadableFileForIpc(grantedPath, {
+      maxBytes: BACKGROUND_MAX_FILE_BYTES,
+      purpose: 'Background image'
+    })
+
+    if (!BACKGROUND_IMAGE_EXTENSIONS.has(imageExtension(realPath))) {
+      return { filePath: null, status: 415 }
+    }
+
+    return { filePath: realPath, status: 200 }
+  } catch (error) {
+    const code = error && typeof error === 'object' && 'code' in error ? error.code : null
+    const status = code === 'EFBIG' || code === 'EISDIR' || code === 'EINVAL' ? 415 : 404
+
+    return { filePath: null, status }
   }
 }

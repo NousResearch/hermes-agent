@@ -6,10 +6,12 @@ import path from 'node:path'
 import { afterEach, test } from 'vitest'
 
 import {
+  BACKGROUND_MAX_FILE_BYTES,
   BACKGROUND_MAX_FOLDER_IMAGES,
   BackgroundImageRegistry,
   backgroundTokenFromUrl,
-  resolveBackgroundImages
+  resolveBackgroundImages,
+  resolveBackgroundProtocolTarget
 } from './background-images'
 
 const tempDirs = new Set<string>()
@@ -43,6 +45,77 @@ test('resolves a selected image behind an opaque protocol token', async () => {
   const token = backgroundTokenFromUrl(result.images[0].url)
   assert.ok(token)
   assert.equal(registry.resolve(token), fs.realpathSync(image))
+  assert.deepEqual(await resolveBackgroundProtocolTarget(result.images[0].url, registry), {
+    filePath: fs.realpathSync(image),
+    status: 200
+  })
+})
+
+test('protocol rejects an authorized image replaced by a symlink to a sensitive image path', async t => {
+  const root = tempDir()
+  const image = path.join(root, 'safe.png')
+  const sensitiveDir = path.join(root, '.ssh')
+  const sensitiveImage = path.join(sensitiveDir, 'secret.png')
+  fs.mkdirSync(sensitiveDir)
+  fs.writeFileSync(image, 'safe')
+  fs.writeFileSync(sensitiveImage, 'secret')
+  const registry = new BackgroundImageRegistry()
+  const result = await resolveBackgroundImages({ kind: 'image', sourcePath: image }, registry)
+
+  fs.unlinkSync(image)
+
+  try {
+    fs.symlinkSync(sensitiveImage, image, 'file')
+  } catch (error: any) {
+    t.skip(`symlink creation unavailable: ${error.code}`)
+
+    return
+  }
+
+  assert.deepEqual(await resolveBackgroundProtocolTarget(result.images[0].url, registry), {
+    filePath: null,
+    status: 404
+  })
+})
+
+test('protocol validates the canonical extension after an authorized image is replaced', async t => {
+  const root = tempDir()
+  const image = path.join(root, 'safe.png')
+  const textFile = path.join(root, 'replacement.txt')
+  fs.writeFileSync(image, 'safe')
+  fs.writeFileSync(textFile, 'text')
+  const registry = new BackgroundImageRegistry()
+  const result = await resolveBackgroundImages({ kind: 'image', sourcePath: image }, registry)
+
+  fs.unlinkSync(image)
+
+  try {
+    fs.symlinkSync(textFile, image, 'file')
+  } catch (error: any) {
+    t.skip(`symlink creation unavailable: ${error.code}`)
+
+    return
+  }
+
+  assert.deepEqual(await resolveBackgroundProtocolTarget(result.images[0].url, registry), {
+    filePath: null,
+    status: 415
+  })
+})
+
+test('protocol rechecks the size of an authorized image before streaming', async () => {
+  const root = tempDir()
+  const image = path.join(root, 'wallpaper.png')
+  fs.writeFileSync(image, 'small')
+  const registry = new BackgroundImageRegistry()
+  const result = await resolveBackgroundImages({ kind: 'image', sourcePath: image }, registry)
+
+  fs.truncateSync(image, BACKGROUND_MAX_FILE_BYTES + 1)
+
+  assert.deepEqual(await resolveBackgroundProtocolTarget(result.images[0].url, registry), {
+    filePath: null,
+    status: 415
+  })
 })
 
 test('folder scan is top-level, hidden-file safe, sorted, and format filtered', async () => {

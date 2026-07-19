@@ -35,15 +35,13 @@ import { createBackendConnectionState } from './backend-connection-state'
 import { buildDesktopBackendEnv, normalizeHermesHomeRoot } from './backend-env'
 import { canImportHermesCli, verifyHermesCli } from './backend-probes'
 import { waitForDashboardPortAnnouncement } from './backend-ready'
+import { shouldLatchBackendStartFailure } from './backend-start-failure'
 import {
-  BACKGROUND_IMAGE_EXTENSIONS,
-  BACKGROUND_MAX_FILE_BYTES,
   BACKGROUND_PROTOCOL,
   BackgroundImageRegistry,
-  backgroundTokenFromUrl,
-  resolveBackgroundImages
+  resolveBackgroundImages,
+  resolveBackgroundProtocolTarget
 } from './background-images'
-import { shouldLatchBackendStartFailure } from './backend-start-failure'
 import { detectRemoteDisplay, isWindowsBinaryPathInWsl, isWslEnvironment } from './bootstrap-platform'
 import { runBootstrap } from './bootstrap-runner'
 import {
@@ -948,27 +946,18 @@ function registerMediaProtocol() {
 
 function registerBackgroundProtocol() {
   protocol.handle(BACKGROUND_PROTOCOL, async request => {
-    const token = backgroundTokenFromUrl(request.url)
-    const filePath = token ? backgroundImageRegistry.resolve(token) : null
+    const target = await resolveBackgroundProtocolTarget(request.url, backgroundImageRegistry)
 
-    if (!filePath || !BACKGROUND_IMAGE_EXTENSIONS.has(path.extname(filePath).toLowerCase())) {
-      return new Response('Background image not found', { status: 404 })
+    if (!target.filePath) {
+      const message = target.status === 415 ? 'Background image unavailable' : 'Background image not found'
+
+      return new Response(message, { status: target.status })
     }
 
-    try {
-      const stat = await fs.promises.stat(filePath)
-
-      if (!stat.isFile() || stat.size > BACKGROUND_MAX_FILE_BYTES) {
-        return new Response('Background image unavailable', { status: 415 })
-      }
-
-      return electronNet.fetch(pathToFileURL(filePath).toString(), {
-        bypassCustomProtocolHandlers: true,
-        headers: request.headers
-      })
-    } catch {
-      return new Response('Background image not found', { status: 404 })
-    }
+    return electronNet.fetch(pathToFileURL(target.filePath).toString(), {
+      bypassCustomProtocolHandlers: true,
+      headers: request.headers
+    })
   })
 }
 

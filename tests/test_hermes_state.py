@@ -4731,6 +4731,45 @@ class TestVacuum:
         # Should not raise, even though there's nothing significant to reclaim.
         db.vacuum()
 
+    def test_auto_maintenance_records_successful_vacuum(self, db, monkeypatch):
+        monkeypatch.setattr(db, "prune_sessions", lambda **_kwargs: 3)
+        vacuum_calls = []
+        monkeypatch.setattr(db, "vacuum", lambda: vacuum_calls.append(True))
+
+        result = db.maybe_auto_prune_and_vacuum(min_interval_hours=0)
+
+        assert result["vacuumed"] is True
+        assert vacuum_calls == [True]
+        assert db.get_meta("last_vacuum") is not None
+
+    def test_auto_maintenance_skips_recent_vacuum(self, db, monkeypatch):
+        monkeypatch.setattr(db, "prune_sessions", lambda **_kwargs: 3)
+        db.set_meta("last_vacuum", str(time.time()))
+        vacuum_calls = []
+        monkeypatch.setattr(db, "vacuum", lambda: vacuum_calls.append(True))
+
+        result = db.maybe_auto_prune_and_vacuum(
+            min_interval_hours=0,
+            min_vacuum_interval_days=30,
+        )
+
+        assert result["vacuumed"] is False
+        assert vacuum_calls == []
+
+    def test_auto_maintenance_retries_after_vacuum_interval(self, db, monkeypatch):
+        monkeypatch.setattr(db, "prune_sessions", lambda **_kwargs: 3)
+        db.set_meta("last_vacuum", str(time.time() - 31 * 86400))
+        vacuum_calls = []
+        monkeypatch.setattr(db, "vacuum", lambda: vacuum_calls.append(True))
+
+        result = db.maybe_auto_prune_and_vacuum(
+            min_interval_hours=0,
+            min_vacuum_interval_days=30,
+        )
+
+        assert result["vacuumed"] is True
+        assert vacuum_calls == [True]
+
 
 class TestOptimizeFts:
     def test_optimize_returns_index_count(self, db):

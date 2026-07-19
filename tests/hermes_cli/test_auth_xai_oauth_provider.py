@@ -281,6 +281,107 @@ def test_save_and_read_xai_oauth_tokens_roundtrip(tmp_path, monkeypatch):
     assert data["discovery"]["token_endpoint"] == "https://auth.x.ai/oauth2/token"
 
 
+def test_save_xai_oauth_tokens_clears_stale_auth_error(tmp_path, monkeypatch):
+    hermes_home = tmp_path / "hermes"
+    hermes_home.mkdir(parents=True, exist_ok=True)
+    auth_path = hermes_home / "auth.json"
+    auth_path.write_text(
+        json.dumps(
+            {
+                "version": 1,
+                "active_provider": "openai-codex",
+                "providers": {
+                    "xai-oauth": {
+                        "tokens": {},
+                        "last_auth_error": {
+                            "provider": "xai-oauth",
+                            "reason": "credential_pool_refresh_failure",
+                            "relogin_required": True,
+                        },
+                    }
+                },
+            }
+        )
+    )
+    monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+
+    _save_xai_oauth_tokens(
+        {
+            "access_token": "at-new",
+            "refresh_token": "rt-new",
+            "id_token": "",
+            "expires_in": 3600,
+            "token_type": "Bearer",
+        },
+        set_active=False,
+    )
+
+    auth_store = json.loads(auth_path.read_text())
+    state = auth_store["providers"]["xai-oauth"]
+    assert state["tokens"]["access_token"] == "at-new"
+    assert "last_auth_error" not in state
+    assert auth_store["active_provider"] == "openai-codex"
+
+
+def test_xai_model_flow_cancel_after_refresh_preserves_active_provider(
+    tmp_path, monkeypatch
+):
+    from hermes_cli import main as main_mod
+
+    hermes_home = tmp_path / "hermes"
+    expired = _jwt_with_exp(int(time.time()) - 10)
+    auth_path = _setup_hermes_auth(
+        hermes_home,
+        access_token=expired,
+        refresh_token="rt-old",
+        discovery={"token_endpoint": "https://auth.x.ai/oauth2/token"},
+    )
+    auth_store = json.loads(auth_path.read_text())
+    auth_store["active_provider"] = "openrouter"
+    auth_store["suppressed_sources"] = {"xai-oauth": ["device_code"]}
+    auth_store["providers"]["xai-oauth"]["last_auth_error"] = {
+        "provider": "xai-oauth",
+        "reason": "credential_pool_refresh_failure",
+        "relogin_required": True,
+    }
+    auth_path.write_text(json.dumps(auth_store, indent=2))
+    config_path = hermes_home / "config.yaml"
+    config_path.write_text(
+        "model:\n  provider: openrouter\n  default: openai/gpt-5.6-sol\n"
+    )
+    original_config = config_path.read_text()
+
+    monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+    monkeypatch.delenv("HERMES_XAI_BASE_URL", raising=False)
+    monkeypatch.delenv("XAI_BASE_URL", raising=False)
+    fresh = _jwt_with_exp(int(time.time()) + 2 * 60 * 60)
+
+    monkeypatch.setattr(
+        "hermes_cli.auth.refresh_xai_oauth_pure",
+        lambda *args, **kwargs: {
+            "access_token": fresh,
+            "refresh_token": "rt-new",
+            "id_token": "",
+            "expires_in": 3600,
+            "token_type": "Bearer",
+            "last_refresh": "2026-07-18T20:00:00Z",
+        },
+    )
+    monkeypatch.setattr(
+        "hermes_cli.model_setup_flows._prompt_auth_credentials_choice",
+        lambda *args, **kwargs: "cancel",
+    )
+
+    main_mod._model_flow_xai_oauth({}, current_model="openai/gpt-5.6-sol")
+
+    updated = json.loads(auth_path.read_text())
+    xai_state = updated["providers"]["xai-oauth"]
+    assert xai_state["tokens"]["access_token"] == fresh
+    assert "last_auth_error" not in xai_state
+    assert updated["active_provider"] == "openrouter"
+    assert config_path.read_text() == original_config
+
+
 def test_read_xai_oauth_tokens_missing(tmp_path, monkeypatch):
     hermes_home = tmp_path / "hermes"
     hermes_home.mkdir(parents=True, exist_ok=True)
@@ -1219,6 +1320,71 @@ def test_login_xai_oauth_relogin_clears_suppression_and_reseeds(tmp_path, monkey
     assert pool.has_credentials()
     entry = next(e for e in pool.entries() if e.source == "device_code")
     assert entry.access_token == new_access
+
+
+def test_login_xai_oauth_config_failure_is_not_reported_as_success(
+    tmp_path, monkeypatch, capsys
+):
+    from types import SimpleNamespace
+
+    from hermes_cli.auth import _login_xai_oauth
+
+    hermes_home = tmp_path / "hermes"
+    hermes_home.mkdir(parents=True, exist_ok=True)
+    (hermes_home / "auth.json").write_text(
+        json.dumps({"version": 1, "active_provider": "openrouter", "providers": {}})
+    )
+    monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+    monkeypatch.setattr(
+        "hermes_cli.auth.resolve_xai_oauth_runtime_credentials",
+        lambda: {"api_key": "fresh-token", "base_url": DEFAULT_XAI_OAUTH_BASE_URL},
+    )
+    monkeypatch.setattr("builtins.input", lambda *args, **kwargs: "y")
+    monkeypatch.setattr(
+        "hermes_cli.auth._update_config_for_provider",
+        lambda *args, **kwargs: (_ for _ in ()).throw(RuntimeError("config failed")),
+    )
+
+    with pytest.raises(RuntimeError, match="config failed"):
+        _login_xai_oauth(SimpleNamespace(), PROVIDER_REGISTRY["xai-oauth"])
+
+    assert "Login successful!" not in capsys.readouterr().out
+
+
+def test_login_xai_oauth_auth_only_reuses_credentials_without_switching_provider(
+    tmp_path, monkeypatch, capsys
+):
+    from types import SimpleNamespace
+
+    from hermes_cli.auth import _login_xai_oauth
+
+    hermes_home = tmp_path / "hermes"
+    hermes_home.mkdir(parents=True, exist_ok=True)
+    auth_path = hermes_home / "auth.json"
+    auth_path.write_text(
+        json.dumps({"version": 1, "active_provider": "openrouter", "providers": {}})
+    )
+    monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+    monkeypatch.setattr(
+        "hermes_cli.auth.resolve_xai_oauth_runtime_credentials",
+        lambda: {"api_key": "fresh-token", "base_url": DEFAULT_XAI_OAUTH_BASE_URL},
+    )
+    monkeypatch.setattr("builtins.input", lambda *args, **kwargs: "y")
+    monkeypatch.setattr(
+        "hermes_cli.auth._update_config_for_provider",
+        lambda *args, **kwargs: (_ for _ in ()).throw(
+            AssertionError("auth-only login must not update config")
+        ),
+    )
+
+    _login_xai_oauth(
+        SimpleNamespace(),
+        PROVIDER_REGISTRY["xai-oauth"],
+        update_config=False,
+    )
+
+    assert json.loads(auth_path.read_text())["active_provider"] == "openrouter"
+    assert "Login successful!" in capsys.readouterr().out
 
 
 # ---------------------------------------------------------------------------

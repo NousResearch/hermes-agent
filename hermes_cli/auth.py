@@ -1233,7 +1233,11 @@ def _load_provider_state_with_source(
 
 
 @contextmanager
-def _provider_state_transaction(provider_id: str):
+def _provider_state_transaction(
+    provider_id: str,
+    *,
+    timeout_seconds: float = AUTH_LOCK_TIMEOUT_SECONDS,
+):
     """Lock the active auth store and any global fallback source in order.
 
     Profile-backed refresh paths must take the global auth-store lock before
@@ -1241,7 +1245,7 @@ def _provider_state_transaction(provider_id: str):
     target lock is acquired prevents both stale refreshes and whole-file lost
     updates without inverting the documented auth -> shared lock order.
     """
-    with _auth_store_lock():
+    with _auth_store_lock(timeout_seconds=timeout_seconds):
         auth_store = _load_auth_store()
         state, source_path = _load_provider_state_with_source(
             auth_store,
@@ -1252,7 +1256,10 @@ def _provider_state_transaction(provider_id: str):
             yield auth_store, state, source_path
             return
 
-        with _auth_store_lock(target_path=source_path):
+        with _auth_store_lock(
+            timeout_seconds=timeout_seconds,
+            target_path=source_path,
+        ):
             source_store = _load_auth_store(source_path)
             source_providers = source_store.get("providers")
             source_state = None
@@ -1292,6 +1299,8 @@ def _save_provider_state_to_source(
     provider_id: str,
     state: Dict[str, Any],
     source_path: Optional[Path],
+    *,
+    set_active: bool = True,
 ) -> None:
     """Persist provider state back to the auth store it was read from."""
     active_path = _auth_file_path()
@@ -1302,7 +1311,12 @@ def _save_provider_state_to_source(
     except Exception:
         same_store = source_path == active_path
     if same_store:
-        _save_provider_state(auth_store, provider_id, state)
+        _store_provider_state(
+            auth_store,
+            provider_id,
+            state,
+            set_active=set_active,
+        )
         _save_auth_store(auth_store)
         return
 
@@ -1310,7 +1324,7 @@ def _save_provider_state_to_source(
         provider_id,
         state,
         source_path,
-        set_active=True,
+        set_active=set_active,
     )
 
 
@@ -4113,6 +4127,7 @@ def _save_xai_oauth_tokens(
     redirect_uri: str = "",
     last_refresh: Optional[str] = None,
     auth_mode: str = "oauth_device_code",
+    set_active: bool = True,
 ) -> None:
     if last_refresh is None:
         last_refresh = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
@@ -4125,13 +4140,17 @@ def _save_xai_oauth_tokens(
         write_through_to_root = not _profile_has_own_xai_oauth_state(auth_store)
         state = _load_provider_state(auth_store, "xai-oauth") or {}
         state["tokens"] = tokens
+        # A successful login or refresh supersedes a terminal error from the
+        # previous grant. Leaving the marker behind makes healthy auth state
+        # continue to claim that re-login is required.
+        state.pop("last_auth_error", None)
         state["last_refresh"] = last_refresh
         state["auth_mode"] = auth_mode
         if discovery:
             state["discovery"] = discovery
         if redirect_uri:
             state["redirect_uri"] = redirect_uri
-        _save_provider_state(auth_store, "xai-oauth", state)
+        _store_provider_state(auth_store, "xai-oauth", state, set_active=set_active)
         _save_auth_store(auth_store)
         if write_through_to_root:
             _write_through_xai_oauth_to_global_root(state)
@@ -4469,6 +4488,10 @@ def _refresh_xai_oauth_tokens(
         redirect_uri=redirect_uri,
         last_refresh=refreshed["last_refresh"],
         auth_mode=auth_mode,
+        # Refreshing credentials is maintenance, not provider selection. A
+        # status check or background runtime refresh must not change the
+        # user's active provider.
+        set_active=False,
     )
     return updated_tokens
 
@@ -4496,7 +4519,13 @@ def resolve_xai_oauth_runtime_credentials(
     if (not should_refresh) and refresh_if_expiring:
         should_refresh = _xai_access_token_is_expiring(access_token, effective_skew)
     if should_refresh:
-        with _auth_store_lock(timeout_seconds=max(float(AUTH_LOCK_TIMEOUT_SECONDS), refresh_timeout_seconds + 5.0)):
+        with _provider_state_transaction(
+            "xai-oauth",
+            timeout_seconds=max(
+                float(AUTH_LOCK_TIMEOUT_SECONDS),
+                refresh_timeout_seconds + 5.0,
+            ),
+        ) as (_source_auth_store, _source_state, _source_path):
             data = _read_xai_oauth_tokens(_lock=False)
             tokens = dict(data["tokens"])
             access_token = str(tokens.get("access_token", "") or "").strip()
@@ -4528,8 +4557,7 @@ def resolve_xai_oauth_runtime_credentials(
                         # Clear dead tokens from auth.json so subsequent sessions fail fast
                         # without a network retry. Mirrors credential_pool.py quarantine.
                         try:
-                            _q_store = _load_auth_store()
-                            _q_state = _load_provider_state(_q_store, "xai-oauth") or {}
+                            _q_state = dict(_source_state or {})
                             _q_tokens = dict(_q_state.get("tokens") or {})
                             _q_tokens.pop("access_token", None)
                             _q_tokens.pop("refresh_token", None)
@@ -4542,8 +4570,13 @@ def resolve_xai_oauth_runtime_credentials(
                                 "relogin_required": True,
                                 "at": datetime.now(timezone.utc).isoformat(),
                             }
-                            _store_provider_state(_q_store, "xai-oauth", _q_state, set_active=False)
-                            _save_auth_store(_q_store)
+                            _save_provider_state_to_source(
+                                _source_auth_store,
+                                "xai-oauth",
+                                _q_state,
+                                _source_path,
+                                set_active=False,
+                            )
                         except Exception as _save_exc:
                             logger.debug(
                                 "xAI OAuth: failed to persist quarantined state: %s", _save_exc,
@@ -7106,6 +7139,7 @@ def _login_xai_oauth(
     pconfig: ProviderConfig,
     *,
     force_new_login: bool = False,
+    update_config: bool = True,
 ) -> None:
     del pconfig
 
@@ -7120,13 +7154,16 @@ def _login_xai_oauth(
                 except (EOFError, KeyboardInterrupt):
                     reuse = "y"
                 if reuse in {"", "y", "yes"}:
-                    config_path = _update_config_for_provider(
-                        "xai-oauth",
-                        existing.get("base_url", DEFAULT_XAI_OAUTH_BASE_URL),
-                    )
+                    config_path = None
+                    if update_config:
+                        config_path = _update_config_for_provider(
+                            "xai-oauth",
+                            existing.get("base_url", DEFAULT_XAI_OAUTH_BASE_URL),
+                        )
                     print()
                     print("Login successful!")
-                    print(f"  Config updated: {config_path} (model.provider=xai-oauth)")
+                    if config_path is not None:
+                        print(f"  Config updated: {config_path} (model.provider=xai-oauth)")
                     return
         except AuthError:
             pass
@@ -7151,6 +7188,7 @@ def _login_xai_oauth(
         redirect_uri=creds.get("redirect_uri", ""),
         last_refresh=creds.get("last_refresh"),
         auth_mode="oauth_device_code",
+        set_active=update_config,
     )
     # An explicit interactive re-login is a strong signal the user wants the
     # xAI credential re-enabled. ``hermes auth remove xai-oauth`` leaves a
@@ -7161,12 +7199,18 @@ def _login_xai_oauth(
     # of ``_save_xai_oauth_tokens`` on purpose — that helper is shared with the
     # refresh hot path, which must never mutate suppression state.
     unsuppress_credential_source("xai-oauth", "device_code")
-    config_path = _update_config_for_provider("xai-oauth", creds.get("base_url", DEFAULT_XAI_OAUTH_BASE_URL))
+    config_path = None
+    if update_config:
+        config_path = _update_config_for_provider(
+            "xai-oauth",
+            creds.get("base_url", DEFAULT_XAI_OAUTH_BASE_URL),
+        )
     print()
     print("Login successful!")
     from hermes_constants import display_hermes_home as _dhh
     print(f"  Auth state: {_dhh()}/auth.json")
-    print(f"  Config updated: {config_path} (model.provider=xai-oauth)")
+    if config_path is not None:
+        print(f"  Config updated: {config_path} (model.provider=xai-oauth)")
 
 
 def _xai_oauth_request_device_code(

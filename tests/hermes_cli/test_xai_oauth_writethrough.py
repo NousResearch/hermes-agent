@@ -167,3 +167,117 @@ def test_write_through_failure_does_not_break_profile_save(profile_and_root, mon
 
     profile = _read_store(profile_path)
     assert profile["providers"]["xai-oauth"]["tokens"]["refresh_token"] == "r"
+
+
+def test_singleton_refresh_holds_root_source_lock_and_preserves_active_providers(
+    profile_and_root, monkeypatch
+):
+    profile_path, root_path = profile_and_root
+    _write_store(
+        profile_path,
+        {"version": 1, "active_provider": "openrouter", "providers": {}},
+    )
+    _write_store(
+        root_path,
+        {
+            "version": 1,
+            "active_provider": "openai-codex",
+            "providers": {
+                "xai-oauth": {
+                    "tokens": {
+                        "access_token": "old-access",
+                        "refresh_token": "old-refresh",
+                    },
+                    "discovery": {
+                        "client_id": "xai-client",
+                        "token_endpoint": "https://auth.x.ai/oauth/token",
+                        "redirect_uri": "http://localhost:1455/auth/callback",
+                    },
+                }
+            },
+        },
+    )
+
+    lock_observed = []
+
+    def _refresh(*_args, **_kwargs):
+        holder = auth._auth_lock_holder_for(root_path)
+        lock_observed.append(getattr(holder, "depth", 0) > 0)
+        return {
+            "access_token": "new-access",
+            "refresh_token": "new-refresh",
+            "token_type": "Bearer",
+            "last_refresh": "2026-07-19T04:00:00+00:00",
+        }
+
+    monkeypatch.setattr(auth, "refresh_xai_oauth_pure", _refresh)
+
+    resolved = auth.resolve_xai_oauth_runtime_credentials(force_refresh=True)
+
+    assert resolved["api_key"] == "new-access"
+    assert lock_observed == [True]
+    assert _read_store(profile_path)["active_provider"] == "openrouter"
+    root = _read_store(root_path)
+    assert root["active_provider"] == "openai-codex"
+    assert root["providers"]["xai-oauth"]["tokens"]["refresh_token"] == "new-refresh"
+
+
+def test_terminal_pool_refresh_quarantines_root_without_activation(
+    profile_and_root, monkeypatch
+):
+    from agent.credential_pool import load_pool
+
+    profile_path, root_path = profile_and_root
+    _write_store(
+        profile_path,
+        {"version": 1, "active_provider": "openrouter", "providers": {}},
+    )
+    _write_store(
+        root_path,
+        {
+            "version": 1,
+            "active_provider": "openai-codex",
+            "providers": {
+                "xai-oauth": {
+                    "tokens": {
+                        "access_token": "dead-access",
+                        "refresh_token": "dead-refresh",
+                    },
+                    "discovery": {
+                        "client_id": "xai-client",
+                        "token_endpoint": "https://auth.x.ai/oauth/token",
+                        "redirect_uri": "http://localhost:1455/auth/callback",
+                    },
+                }
+            },
+        },
+    )
+
+    pool = load_pool("xai-oauth")
+    assert pool.select() is not None
+    lock_observed = []
+
+    def _terminal_refresh(*_args, **_kwargs):
+        holder = auth._auth_lock_holder_for(root_path)
+        lock_observed.append(getattr(holder, "depth", 0) > 0)
+        raise auth.AuthError(
+            "Refresh session has been revoked",
+            provider="xai-oauth",
+            code="xai_refresh_failed",
+            relogin_required=True,
+        )
+
+    monkeypatch.setattr(auth, "refresh_xai_oauth_pure", _terminal_refresh)
+
+    assert pool.try_refresh_current() is None
+
+    assert lock_observed == [True]
+    profile = _read_store(profile_path)
+    root = _read_store(root_path)
+    assert profile["active_provider"] == "openrouter"
+    assert "xai-oauth" not in profile["providers"]
+    assert root["active_provider"] == "openai-codex"
+    root_state = root["providers"]["xai-oauth"]
+    assert not root_state["tokens"].get("access_token")
+    assert not root_state["tokens"].get("refresh_token")
+    assert root_state["last_auth_error"]["reason"] == "credential_pool_refresh_failure"

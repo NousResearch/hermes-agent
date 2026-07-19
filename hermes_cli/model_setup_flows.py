@@ -676,6 +676,7 @@ def _model_flow_xai_oauth(_config, current_model="", *, args=None):
                     mock_args,
                     PROVIDER_REGISTRY["xai-oauth"],
                     force_new_login=True,
+                    update_config=False,
                 )
             except SystemExit:
                 print("Login cancelled or failed.")
@@ -693,7 +694,11 @@ def _model_flow_xai_oauth(_config, current_model="", *, args=None):
                 no_browser=bool(getattr(args, "no_browser", False)),
                 timeout=getattr(args, "timeout", None),
             )
-            _login_xai_oauth(mock_args, PROVIDER_REGISTRY["xai-oauth"])
+            _login_xai_oauth(
+                mock_args,
+                PROVIDER_REGISTRY["xai-oauth"],
+                update_config=False,
+            )
         except SystemExit:
             print("Login cancelled or failed.")
             return

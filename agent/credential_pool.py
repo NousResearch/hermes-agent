@@ -1065,6 +1065,10 @@ class CredentialPool:
                         tokens["refresh_token"] = entry.refresh_token
                     if entry.last_refresh:
                         state["last_refresh"] = entry.last_refresh
+                    # A successful pool refresh supersedes any terminal error
+                    # persisted for the previous grant. Clear it before profile
+                    # and global-root write-through so both stores agree.
+                    state.pop("last_auth_error", None)
                     _store_provider_state(auth_store, "xai-oauth", state, set_active=False)
 
                 else:
@@ -1099,8 +1103,9 @@ class CredentialPool:
                 if self.provider == "openai-codex"
                 else self._sync_xai_oauth_entry_from_pool_store
             )
-            with _auth_store_lock(
-                timeout_seconds=self._single_use_refresh_lock_timeout()
+            with auth_mod._provider_state_transaction(
+                self.provider,
+                timeout_seconds=self._single_use_refresh_lock_timeout(),
             ):
                 synced = sync_entry(entry)
                 if self.provider == "openai-codex":
@@ -1289,9 +1294,11 @@ class CredentialPool:
                         "xAI OAuth refresh token is terminally invalid; clearing local token state"
                     )
                     try:
-                        with _auth_store_lock():
-                            auth_store = _load_auth_store()
-                            state = _load_provider_state(auth_store, "xai-oauth") or {}
+                        with auth_mod._provider_state_transaction(
+                            "xai-oauth",
+                            timeout_seconds=self._single_use_refresh_lock_timeout(),
+                        ) as (auth_store, source_state, source_path):
+                            state = source_state or {}
                             if isinstance(state, dict):
                                 tokens = state.get("tokens") or {}
                                 if isinstance(tokens, dict):
@@ -1309,8 +1316,13 @@ class CredentialPool:
                                             "relogin_required": True,
                                             "at": datetime.now(timezone.utc).isoformat(),
                                         }
-                                        _save_provider_state(auth_store, "xai-oauth", state)
-                                        _save_auth_store(auth_store)
+                                        auth_mod._save_provider_state_to_source(
+                                            auth_store,
+                                            "xai-oauth",
+                                            state,
+                                            source_path,
+                                            set_active=False,
+                                        )
                     except Exception as clear_exc:
                         logger.debug(
                             "Failed to clear terminal xAI OAuth state: %s", clear_exc

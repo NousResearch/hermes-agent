@@ -16,8 +16,10 @@ Stdlib + pytest + unittest.mock only. No live cua-driver, no network.
 
 from __future__ import annotations
 
+import asyncio
 import json
 import os
+from types import SimpleNamespace
 from typing import Any, Dict, Optional
 from unittest.mock import patch
 
@@ -159,6 +161,59 @@ def test_text_response_surfaces_fields_additively():
 # ---------------------------------------------------------------------------
 # Phase B — delivery_mode threading + capability gating
 # ---------------------------------------------------------------------------
+
+def test_foreground_capability_inferred_from_tool_input_schema():
+    """cua-driver 0.8.3 declares foreground in inputSchema but omits the
+    non-standard capabilities extension."""
+    from tools.computer_use.cua_backend import _CuaDriverSession
+
+    tool = SimpleNamespace(
+        name="hotkey",
+        capabilities=None,
+        inputSchema={
+            "type": "object",
+            "properties": {
+                "delivery_mode": {
+                    "type": "string",
+                    "enum": ["background", "foreground"],
+                },
+            },
+        },
+        model_extra=None,
+    )
+
+    class Session:
+        async def list_tools(self):
+            return SimpleNamespace(tools=[tool], capability_version=None, model_extra=None)
+
+    wrapper = _CuaDriverSession.__new__(_CuaDriverSession)
+    wrapper._capabilities = {}
+    wrapper._capability_version = ""
+    asyncio.run(wrapper._populate_capabilities(Session()))
+
+    assert wrapper.supports_capability("input.delivery_mode", tool="hotkey")
+
+
+def test_foreground_capability_not_inferred_without_schema_support():
+    from tools.computer_use.cua_backend import _CuaDriverSession
+
+    tool = SimpleNamespace(
+        name="hotkey",
+        capabilities=None,
+        inputSchema={"type": "object", "properties": {}},
+        model_extra=None,
+    )
+
+    class Session:
+        async def list_tools(self):
+            return SimpleNamespace(tools=[tool], capability_version=None, model_extra=None)
+
+    wrapper = _CuaDriverSession.__new__(_CuaDriverSession)
+    wrapper._capabilities = {}
+    wrapper._capability_version = ""
+    asyncio.run(wrapper._populate_capabilities(Session()))
+
+    assert not wrapper.supports_capability("input.delivery_mode", tool="hotkey")
 
 def test_background_is_default_no_flag_sent():
     out = {"isError": False, "data": {}, "structuredContent": {"effect": "confirmed"}}

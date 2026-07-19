@@ -746,18 +746,34 @@ class _CuaDriverSession:
                 tool_name = getattr(tool, "name", None)
                 if not isinstance(tool_name, str):
                     continue
+                extra = getattr(tool, "model_extra", None) or {}
                 caps = getattr(tool, "capabilities", None)
                 if caps is None:
                     # Some MCP SDKs forward custom fields via
                     # `model_extra` (Pydantic v2) instead of attributes.
-                    extra = getattr(tool, "model_extra", None) or {}
                     caps = extra.get("capabilities")
                 if isinstance(caps, list):
-                    self._capabilities[tool_name] = {
+                    tool_capabilities = {
                         c for c in caps if isinstance(c, str)
                     }
                 else:
-                    self._capabilities[tool_name] = set()
+                    tool_capabilities = set()
+
+                # cua-driver 0.8.3 exposes foreground delivery in the
+                # standard MCP input schema but does not include the custom
+                # `capabilities` extension. Treat the explicit schema enum as
+                # authoritative so Hermes does not reject a supported action.
+                input_schema = getattr(tool, "inputSchema", None)
+                if input_schema is None:
+                    input_schema = extra.get("inputSchema") or extra.get("input_schema")
+                if isinstance(input_schema, dict):
+                    properties = input_schema.get("properties")
+                    delivery = properties.get("delivery_mode") if isinstance(properties, dict) else None
+                    modes = delivery.get("enum") if isinstance(delivery, dict) else None
+                    if isinstance(modes, list) and "foreground" in modes:
+                        tool_capabilities.add("input.delivery_mode")
+
+                self._capabilities[tool_name] = tool_capabilities
             # capability_version is a top-level sibling of `tools` on the
             # tools/list response. cua-driver-core/src/tool.rs:354 emits
             # it; cua-driver-core/src/protocol.rs:150 leaves it OUT of
@@ -2504,4 +2520,3 @@ class CuaDriverBackend(ComputerUseBackend):
             meta.update(structured)
         return _action_result_from(name, ok, message, meta, structured,
                                    requested_delivery=args.get("delivery_mode"))
-

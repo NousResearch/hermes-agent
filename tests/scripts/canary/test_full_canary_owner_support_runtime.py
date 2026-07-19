@@ -86,7 +86,13 @@ def _support_tree(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
 
     for package in launcher._TRUSTED_OWNER_SUPPORT_SOURCE_MODULES:
         _write(source / package / "__init__.py", b"# release source\n")
-    for package in ("cryptography", "yaml", "cffi", "pycparser"):
+    for package in (
+        "cryptography",
+        "yaml",
+        "cffi",
+        "pycparser",
+        "packaging",
+    ):
         _write(site / package / "__init__.py", b"# pinned wheel\n")
     _write(site / "_cffi_backend.so", b"pinned-native-extension")
 
@@ -124,7 +130,13 @@ def _real_import_support_tree(
             ignore=ignored,
             copy_function=shutil.copyfile,
         )
-    for package in ("cryptography", "yaml", "cffi", "pycparser"):
+    for package in (
+        "cryptography",
+        "yaml",
+        "cffi",
+        "pycparser",
+        "packaging",
+    ):
         spec = importlib.util.find_spec(package)
         assert spec is not None and spec.origin is not None
         shutil.copytree(
@@ -216,6 +228,7 @@ def test_owner_support_constants_pin_exact_release_inputs() -> None:
         ("cffi", "2.0.0"),
         ("PyYAML", "6.0.3"),
         ("pycparser", "3.0"),
+        ("packaging", "26.0"),
     ]
     assert [(wheel[2], wheel[4], wheel[5]) for wheel in wheels] == [
         (
@@ -238,6 +251,11 @@ def test_owner_support_constants_pin_exact_release_inputs() -> None:
             48_172,
             "b727414169a36b7d524c1c3e31839a521725078d7b2ff038656844266160a992",
         ),
+        (
+            "packaging-26.0-py3-none-any.whl",
+            74_366,
+            "b36f1fef9334a5588b4166f8bcd26a14e521f2b55e6b9de3aaa80d3ff7a37529",
+        ),
     ]
     assert len({wheel[2] for wheel in wheels}) == len(wheels)
     for _distribution, _version, filename, url, size, digest in wheels:
@@ -255,6 +273,7 @@ def test_owner_support_constants_pin_exact_release_inputs() -> None:
         "cffi",
         "pycparser",
         "_cffi_backend",
+        "packaging",
     )
 
 
@@ -580,7 +599,10 @@ namespace["activate_trusted_owner_support"](
     release_sha={RELEASE_SHA!r},
 )
 
+import packaging
 from scripts.canary import full_canary_owner_launcher as sealed_launcher
+from scripts.canary import owner_gate_bootstrap
+from scripts.canary import owner_gate_inert_observation
 from scripts.canary import owner_gate_v1_credential_migration as migration
 from scripts.canary import production_cutover_owner_launcher as cutover
 
@@ -625,6 +647,10 @@ print(json.dumps({{
     "expected_digest": hashlib.sha256(expected).hexdigest(),
     "raw_matches": raw == expected,
     "origin": migration.__file__,
+    "bootstrap_origin": owner_gate_bootstrap.__file__,
+    "inert_observation_origin": owner_gate_inert_observation.__file__,
+    "packaging_origin": packaging.__file__,
+    "packaging_version": packaging.__version__,
     "transport_module": type(transport._transport).__module__,
 }}, sort_keys=True, separators=(",", ":")))
 """
@@ -659,7 +685,15 @@ print(json.dumps({{
     assert result == {
         "digest": hashlib.sha256(collector.read_bytes()).hexdigest(),
         "expected_digest": hashlib.sha256(collector.read_bytes()).hexdigest(),
+        "bootstrap_origin": str(
+            source / "scripts/canary/owner_gate_bootstrap.py"
+        ),
+        "inert_observation_origin": str(
+            source / "scripts/canary/owner_gate_inert_observation.py"
+        ),
         "origin": str(collector),
+        "packaging_origin": str(site / "packaging/__init__.py"),
+        "packaging_version": "26.0",
         "raw_matches": True,
         "transport_module": (
             "scripts.canary.production_cutover_owner_launcher"
@@ -750,7 +784,13 @@ def _synthetic_publication_inputs(
 ) -> tuple[tuple[object, ...], bytes, bytes, str]:
     wheel_buffer = io.BytesIO()
     with zipfile.ZipFile(wheel_buffer, mode="w") as archive:
-        for package in ("cryptography", "yaml", "cffi", "pycparser"):
+        for package in (
+            "cryptography",
+            "yaml",
+            "cffi",
+            "pycparser",
+            "packaging",
+        ):
             archive.writestr(f"{package}/__init__.py", b"# pinned wheel\n")
         archive.writestr("_cffi_backend.so", b"pinned-native-extension")
     wheel_payload = wheel_buffer.getvalue()
@@ -1097,6 +1137,7 @@ def test_tree_is_bound_to_release_and_canonical_owner_path(
         "site-packages/yaml/__init__.py",
         "site-packages/cffi/__init__.py",
         "site-packages/pycparser/__init__.py",
+        "site-packages/packaging/__init__.py",
     ],
 )
 def test_tree_rejects_missing_required_object(

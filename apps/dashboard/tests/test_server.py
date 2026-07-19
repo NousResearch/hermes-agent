@@ -830,6 +830,37 @@ class MarketsWatchlistTests(unittest.TestCase):
         self.assertEqual(out["trials"][0]["status"], "RECRUITING")
         self.assertTrue(out["trials"][0]["url"].endswith("NCT01"))
 
+    def test_drug_sample_and_normalizer(self):
+        d = self.api.drug({"q": ["metformin"]})
+        self.assertIsNotNone(d["drug"])
+        self.assertTrue(d["drug"]["sections"])
+        for s in d["drug"]["sections"]:
+            self.assertTrue(s["label"] and s["text"])
+        import unittest.mock as mock
+        raw = json.dumps({"results": [{
+            "openfda": {"brand_name": ["Lipitor"], "generic_name": ["Atorvastatin"],
+                        "manufacturer_name": ["Acme"], "route": ["ORAL"]},
+            "indications_and_usage": ["Reduces LDL cholesterol."],
+            "contraindications": ["Active liver disease."],
+            "drug_interactions": ["Avoid strong CYP3A4 inhibitors."],
+            "some_unmapped_field": ["ignored"]}]}).encode()
+        with mock.patch.object(server, "fetch_url", return_value=raw):
+            out = server.live_drug("atorvastatin")
+        self.assertEqual(out["drug"]["generic"], "Atorvastatin")
+        self.assertEqual(out["drug"]["brand"], "Lipitor")
+        labels = [s["label"] for s in out["drug"]["sections"]]
+        self.assertEqual(labels, ["Indications", "Contraindications", "Interactions"])  # order preserved, unmapped dropped
+
+    def test_drug_no_results(self):
+        import unittest.mock as mock
+        with mock.patch.object(server, "fetch_url", return_value=b'{"results": []}'):
+            out = server.live_drug("zzznotadrug")
+        self.assertIsNone(out["drug"])
+
+    def test_drug_requires_query(self):
+        with self.assertRaises(server.ApiError):
+            self.api.drug({"q": ["  "]})
+
     def test_pubmed_grounding_normalizer(self):
         import unittest.mock as mock
         esearch = json.dumps({"esearchresult": {"idlist": ["111"]}}).encode()

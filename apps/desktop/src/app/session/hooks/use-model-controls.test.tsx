@@ -207,6 +207,47 @@ describe('useModelControls', () => {
     expect($currentModel.get()).toBe('openai/gpt-5.5')
   })
 
+  it('reseeds a sticky manual pick that was removed from the catalog', async () => {
+    vi.mocked(getGlobalModelInfo).mockResolvedValue({ model: 'openai/gpt-5.5', provider: 'openai-codex' })
+
+    const queryClient = new QueryClient()
+    queryClient.setQueryData(['model-options', 'global'], {
+      providers: [{ models: ['openai/gpt-5.5'], name: 'OpenRouter', slug: 'openrouter' }]
+    })
+
+    // A manual pick whose model no longer exists on its provider.
+    setCurrentModel('openrouter/owl-alpha')
+    setCurrentProvider('openrouter')
+    setCurrentModelSource('manual')
+
+    const { result } = renderHook(() => useModelControls({ queryClient, requestGateway: vi.fn() }))
+
+    await result.current.refreshCurrentModel()
+
+    expect($currentModel.get()).toBe('openai/gpt-5.5')
+    expect(getCurrentModelSource()).toBe('default')
+  })
+
+  it('keeps a sticky manual pick that is still in the catalog', async () => {
+    vi.mocked(getGlobalModelInfo).mockResolvedValue({ model: 'openai/gpt-5.5', provider: 'openai-codex' })
+
+    const queryClient = new QueryClient()
+    queryClient.setQueryData(['model-options', 'global'], {
+      providers: [{ models: ['openrouter/glm-4.7', 'openai/gpt-5.5'], name: 'OpenRouter', slug: 'openrouter' }]
+    })
+
+    setCurrentModel('openrouter/glm-4.7')
+    setCurrentProvider('openrouter')
+    setCurrentModelSource('manual')
+
+    const { result } = renderHook(() => useModelControls({ queryClient, requestGateway: vi.fn() }))
+
+    await result.current.refreshCurrentModel()
+
+    expect($currentModel.get()).toBe('openrouter/glm-4.7')
+    expect(getCurrentModelSource()).toBe('manual')
+  })
+
   it('refreshes legacy/default-derived composer state from the profile default', async () => {
     setCurrentModel('openai/gpt-5.5')
     setCurrentProvider('nous')

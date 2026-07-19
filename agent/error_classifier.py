@@ -878,10 +878,11 @@ def _classify_by_status(
         error_inner = body.get("error", {})
         if isinstance(error_inner, dict):
             inner_type = error_inner.get("type", "")
-            inner_msg = error_inner.get("message", error_msg)
+            inner_raw = error_inner.get("message")
+            inner_msg = str(inner_raw).lower() if isinstance(inner_raw, str) else error_msg
         else:
             inner_type = ""
-            inner_msg = str(error_inner) if error_inner else error_msg
+            inner_msg = str(error_inner).lower() if error_inner else error_msg
         if (
             inner_type == "ModelError"
             or any(p in inner_msg for p in _MODEL_NOT_FOUND_PATTERNS)

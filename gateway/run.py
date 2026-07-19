@@ -361,7 +361,7 @@ def _gateway_provider_error_reply(text: str) -> str:
     if re.search(r"(model\s+\S+\s+is\s+not\s+supported|is\s+not\s+a\s+supported\s+model)", text, re.IGNORECASE):
         return (
             "⚠️ This model is not supported by the provider. "
-            "Try a different free model from the provider's available list."
+            "Try a different model from the provider's available list."
         )
     if _GATEWAY_AUTH_ERROR_RE.search(text):
         return (

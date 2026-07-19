@@ -242,6 +242,78 @@ class TestClassifyApiError:
         assert result.retryable is False
         assert result.should_fallback is True
 
+    def test_401_opencode_zen_model_error_classifies_as_model_not_found(self):
+        """OpenCode Zen 401 with ModelError → model_not_found, NOT auth, NO credential rotation."""
+        e = MockAPIError(
+            "Unauthorized",
+            status_code=401,
+            body={
+                "type": "error",
+                "error": {
+                    "type": "ModelError",
+                    "message": "The model 'gpt-5' is not supported.",
+                },
+            },
+        )
+        result = classify_api_error(e, provider="opencode")
+        assert result.reason == FailoverReason.model_not_found
+        assert result.should_fallback is True
+        assert result.retryable is False
+        assert result.should_rotate_credential is False
+
+    def test_401_opencode_zen_mixed_case_message(self):
+        """Mixed-case inner message must still match lowercase model-not-found patterns."""
+        e = MockAPIError(
+            "Unauthorized",
+            status_code=401,
+            body={
+                "type": "error",
+                "error": {
+                    "type": "error",
+                    "message": "This Model Is Not Supported By This Provider",
+                },
+            },
+        )
+        result = classify_api_error(e, provider="opencode")
+        assert result.reason == FailoverReason.model_not_found
+        assert result.should_rotate_credential is False
+
+    def test_401_opencode_zen_null_inner_msg_falls_through_to_type_check(self):
+        """Null error.message with ModelError type → model_not_found via type check, not crash."""
+        e = MockAPIError(
+            "Unauthorized",
+            status_code=401,
+            body={
+                "type": "error",
+                "error": {
+                    "type": "ModelError",
+                    "message": None,
+                },
+            },
+        )
+        result = classify_api_error(e, provider="opencode")
+        # Falls through to type check: ModelError → model_not_found
+        assert result.reason == FailoverReason.model_not_found
+        assert result.should_rotate_credential is False
+
+    def test_401_dict_inner_msg_no_crash(self):
+        """Dict error.message must not crash; fall through to auth with rotation."""
+        e = MockAPIError(
+            "Unauthorized",
+            status_code=401,
+            body={
+                "type": "error",
+                "error": {
+                    "type": "error",
+                    "message": {"detail": [{"msg": "nested validation error"}]},
+                },
+            },
+        )
+        result = classify_api_error(e, provider="opencode")
+        # Dict doesn't match ModelError type or patterns → falls through to auth
+        assert result.reason == FailoverReason.auth
+        assert result.should_rotate_credential is True
+
     def test_403_classified_as_auth(self):
         e = MockAPIError("Forbidden", status_code=403)
         result = classify_api_error(e, provider="anthropic")

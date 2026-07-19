@@ -692,11 +692,14 @@ def _content_digest(skill_path: Path) -> str:
     """Canonical SHA-256 over relative paths and exact file bytes."""
     h = hashlib.sha256()
     if skill_path.is_dir():
-        for file_path in sorted(skill_path.rglob("*")):
-            if file_path.is_file():
-                rel = file_path.relative_to(skill_path).as_posix()
-                h.update(rel.encode("utf-8") + b"\x00")
-                h.update(file_path.read_bytes())
+        files = (file_path for file_path in skill_path.rglob("*") if file_path.is_file())
+        for file_path in sorted(
+            files,
+            key=lambda path: path.relative_to(skill_path).as_posix(),
+        ):
+            rel = file_path.relative_to(skill_path).as_posix()
+            h.update(rel.encode("utf-8") + b"\x00")
+            h.update(file_path.read_bytes())
     else:
         h.update(skill_path.read_bytes())
     return h.hexdigest()

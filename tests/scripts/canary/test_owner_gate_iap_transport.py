@@ -3,6 +3,7 @@ from __future__ import annotations
 import os
 import base64
 import hashlib
+import inspect
 import json
 import shlex
 import struct
@@ -493,6 +494,214 @@ def test_transport_has_one_fixed_iap_stdin_command_and_closed_environment(
     assert host_identity.calls == 3
     assert not hasattr(transport, "run_local_compute_mutation")
     assert not hasattr(transport, "run")
+
+
+def _activation_response(
+    *,
+    overrides: Mapping[str, Any] | None = None,
+) -> Mapping[str, Any]:
+    unsigned = {
+        "schema": launcher.OWNER_GATE_ACTIVATION_RESPONSE_SCHEMA,
+        "release_revision": RELEASE,
+        "disposition": "installed",
+        "activation_seal_path": launcher.OWNER_GATE_ACTIVATION_SEAL_PATH,
+        "activation_seal_sha256": "a" * 64,
+        "activation_receipt_path": (
+            f"{launcher.OWNER_GATE_ACTIVATION_RECEIPT_BASE}/{RELEASE}.json"
+        ),
+        "activation_receipt_sha256": "b" * 64,
+        "service_contract_accepted": True,
+        "cloud_mutation_performed": False,
+        **dict(overrides or {}),
+    }
+    return {
+        **unsigned,
+        "response_sha256": hashlib.sha256(
+            launcher._canonical_bytes(unsigned)
+        ).hexdigest(),
+    }
+
+
+def test_activation_action_has_one_fixed_release_result_and_root_command(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls: list[tuple[tuple[str, ...], Mapping[str, Any]]] = []
+    raw = launcher._canonical_bytes(_activation_response()) + b"\n"
+    request = launcher._canonical_bytes({
+        "schema": launcher.OWNER_GATE_ACTIVATION_REQUEST_SCHEMA,
+        "release_revision": RELEASE,
+    })
+    factory = _script_factory(
+        "import os,sys;"
+        "received=sys.stdin.buffer.read();"
+        f"sys.exit(9) if received!={request!r} else None;"
+        f"os.write(1,{raw!r})"
+    )
+
+    def capture(
+        argv: tuple[str, ...],
+        **kwargs: Any,
+    ) -> subprocess.Popen[bytes]:
+        calls.append((tuple(argv), dict(kwargs)))
+        return factory(argv, **kwargs)
+
+    transport, configuration, identity, host_identity = _transport(
+        monkeypatch,
+        popen_factory=capture,
+    )
+
+    response = transport.install_activation_seal()
+
+    assert response == _activation_response()
+    assert len(calls) == 1
+    argv, invocation = calls[0]
+    expected_command = shlex.join((
+        "/usr/bin/sudo",
+        "--non-interactive",
+        "--user=root",
+        "--",
+        "/opt/muncho-owner-gate/current/venv/bin/python",
+        "-I",
+        "-B",
+        (
+            "/opt/muncho-owner-gate/current/bin/"
+            "muncho-owner-gate-activate-storage"
+        ),
+        "install",
+    ))
+    assert argv == (
+        *_Executable.prefix,
+        "compute",
+        "ssh",
+        f"{launcher.OS_LOGIN_USERNAME}@muncho-owner-gate-01",
+        "--project=adventico-ai-platform",
+        "--zone=europe-west3-a",
+        f"--account={ACCOUNT}",
+        "--plain",
+        "--tunnel-through-iap",
+        "--quiet",
+        f"--command={expected_command}",
+        *_expected_ssh_flags(),
+    )
+    assert invocation["shell"] is False
+    assert invocation["start_new_session"] is True
+    assert invocation["stderr"] is subprocess.DEVNULL
+    assert set(invocation["env"]) == launcher.OwnerGateIapTransport._ENVIRONMENT_KEYS
+    assert configuration.stability_checks >= 5
+    assert identity.stability_checks == 2
+    assert host_identity.calls == 3
+    assert tuple(
+        inspect.signature(
+            launcher.OwnerGateIapTransport.install_activation_seal
+        ).parameters
+    ) == ("self",)
+
+
+@pytest.mark.parametrize(
+    "overrides",
+    (
+        {"schema": "wrong"},
+        {"release_revision": "b" * 40},
+        {"disposition": "forced"},
+        {"activation_seal_path": "/tmp/seal"},
+        {"activation_seal_sha256": "x" * 64},
+        {"activation_receipt_path": "/tmp/receipt"},
+        {"activation_receipt_sha256": "x" * 64},
+        {"service_contract_accepted": False},
+        {"cloud_mutation_performed": True},
+    ),
+)
+def test_activation_result_rejects_every_release_or_receipt_mismatch(
+    overrides: Mapping[str, Any],
+) -> None:
+    response = _activation_response(overrides=overrides)
+    with pytest.raises(
+        launcher.OwnerLauncherError,
+        match="owner_gate_activation_iap_response_invalid",
+    ):
+        launcher.validate_owner_gate_activation_response(
+            response,
+            expected_release_sha=RELEASE,
+        )
+
+
+def test_activation_result_rejects_extra_field_and_wrong_self_hash() -> None:
+    extra = {**_activation_response(), "caller_command": "/bin/sh"}
+    wrong_hash = {**_activation_response(), "response_sha256": "0" * 64}
+    for response in (extra, wrong_hash):
+        with pytest.raises(
+            launcher.OwnerLauncherError,
+            match="owner_gate_activation_iap_response_invalid",
+        ):
+            launcher.validate_owner_gate_activation_response(
+                response,
+                expected_release_sha=RELEASE,
+            )
+
+
+def test_activation_transport_rejects_nonexact_ssh_flags(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls: list[tuple[tuple[str, ...], Mapping[str, Any]]] = []
+    transport, _configuration, _identity, _host_identity = _transport(
+        monkeypatch,
+        popen_factory=_passthrough_factory(calls),
+    )
+    monkeypatch.setattr(
+        launcher.OwnerGateIapTransport,
+        "_sealed_ssh_flags",
+        staticmethod(lambda *_args: ("--ssh-flag=-oPermitLocalCommand=yes",)),
+    )
+
+    with pytest.raises(
+        launcher.OwnerLauncherError,
+        match="owner_gate_activation_iap_argv_invalid",
+    ):
+        transport.install_activation_seal()
+    assert calls == []
+
+
+def test_activation_factory_accepts_no_host_path_or_command(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    configuration = _Configuration()
+    identity = _Identity(configuration)
+    executable = _Executable()
+    captured: dict[str, Any] = {}
+    expected = _activation_response(overrides={"disposition": "exact_replay"})
+
+    class Transport:
+        def __init__(self, **kwargs: Any) -> None:
+            captured.update(kwargs)
+
+        def install_activation_seal(self) -> Mapping[str, Any]:
+            return expected
+
+    monkeypatch.setattr(launcher, "OwnerGateIapTransport", Transport)
+
+    result = launcher.install_owner_gate_activation_seal(
+        release_sha=RELEASE,
+        gcloud_executable=executable,
+        gcloud_configuration=configuration,
+        owner_identity=identity,
+    )
+
+    assert result == expected
+    assert captured == {
+        "release_sha": RELEASE,
+        "owner_identity": identity,
+        "gcloud_executable": executable,
+        "gcloud_configuration": configuration,
+    }
+    assert tuple(
+        inspect.signature(launcher.install_owner_gate_activation_seal).parameters
+    ) == (
+        "release_sha",
+        "gcloud_executable",
+        "gcloud_configuration",
+        "owner_identity",
+    )
+
 
 
 def test_production_host_identity_gate_is_deliberately_unpinned() -> None:

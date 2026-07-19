@@ -182,6 +182,212 @@ staging, Phase-B preflight, and apply. Before a cutover plan is staged, a
 failure invokes the fixed `abort-freeze` recovery path. The private signing key
 is never passed to the production transport.
 
+The isolated-canary prerequisite is not hand-authored JSON. Build it from the
+four immutable canonical public receipts with the edge author:
+
+```bash
+python -m scripts.canary.owner_gate_release_author \
+  author-isolated-canary-prerequisite \
+  --release-revision <exact-40-character-release-sha> \
+  --fixture /absolute/immutable/fixture.json \
+  --workspace-gateway /absolute/immutable/workspace-gateway.json \
+  --cleanup-receipt /absolute/immutable/cleanup-receipt.json \
+  --production-diff /absolute/immutable/production-diff.json
+```
+
+It reuses the production validator, derives the fixture digest itself, and
+publishes only to the fixed mode-`0444` owner path
+`~/.hermes/owner-gate-production-cutover/isolated-canary-prerequisites/<release-sha>.json`.
+There is no output-path argument.
+
+### Fixed host-authority plan production
+
+The owner launcher does not accept the seven semantic host-authority fields as
+JSON. Signed v3 unit inputs bind the exact identities, distinct public key IDs,
+and the reviewed legacy-to-target Discord policy reconciliation. The fixed
+root-side producer then:
+
+- re-verifies the immutable release and renders or copies every contracted host
+  artifact to its fixed create-only staging path;
+- records only public verifier/key identities and never secret content or a
+  secret digest;
+- derives live user/group, target-file, token/passkey metadata, lease-directory,
+  service-target, topology, and transition facts; and
+- copies the initial collector's already owner-approved cron continuity plan
+  byte-for-byte into the exact seven-field host-authority plan.
+
+`stage-host-artifacts` is inert and cleanly resumable only for exact bytes.
+`collect-host-plan` is read-only. The downstream host-authority collector still
+re-reads every staged file, rejects target or boot drift, and binds the result
+to the signed FreezePlan. Caller-authored `host_transition`, target identity,
+or `capability_topology` remains outside the authority boundary.
+
+### Executable owner cutover sequence
+
+The public owner CLI exposes only `prepare-cutover` and `resume-cutover` for
+this transition. The remote action names described elsewhere in this document
+are sealed implementation steps; do not invoke them as substitute owner CLI
+actions. Create the output parent first as an owner-only directory. Every
+`--workspace`, `--output`, key, prerequisite, and accepted-receipt path passed
+below must be absolute.
+
+First prepare the exact freeze authority and the passkey-v2 request without
+staging the freeze publication:
+
+```bash
+python -m scripts.canary.production_cutover_owner_launcher \
+  prepare-cutover \
+  --revision <exact-40-character-release-sha> \
+  --isolated-canary-goal-prerequisite \
+    /absolute/owner-only/cutover/isolated-canary-prerequisite.json \
+  --owner-private-key /absolute/owner-only/cutover-owner-ed25519 \
+  --truth-mode start_new_truth_epoch \
+  --output \
+    /absolute/owner-only/cutover/00-awaiting-bridge-bootstrap.json
+```
+
+For `reseed_accepted_events`, replace the truth mode and also pass
+`--accepted-event-receipts /absolute/owner-only/cutover/accepted-events.json`;
+that file must contain exactly the top-level `accepted_event_receipts` list.
+Do not pass that option with `start_new_truth_epoch`. A successful prepare
+output has state `awaiting_bridge_bootstrap`.
+
+Advance exactly one durable state at a time. The first resume asks the legacy
+passkey verifier for the narrowly bound approval needed to install the
+temporary v2 approval bridge:
+
+```bash
+python -m scripts.canary.production_cutover_owner_launcher \
+  resume-cutover \
+  --revision <same-exact-release-sha> \
+  --workspace \
+    /absolute/owner-only/cutover/00-awaiting-bridge-bootstrap.json \
+  --output /absolute/owner-only/cutover/01-awaiting-bridge-passkey.json
+```
+
+Verify that the new workspace state is `awaiting_bridge_passkey`, review its
+exact bridge bindings, then open only its
+`bridge_request.legacy_approval_url`. Emil must approve that exact legacy
+bridge action with the legacy passkey. A chat approval, SSH key, TOTP, or the
+later v2 approval is not a substitute.
+
+After the legacy bridge approval, consume it and atomically install the
+fixed, v2-only approval bridge:
+
+```bash
+python -m scripts.canary.production_cutover_owner_launcher \
+  resume-cutover \
+  --revision <same-exact-release-sha> \
+  --workspace /absolute/owner-only/cutover/01-awaiting-bridge-passkey.json \
+  --output /absolute/owner-only/cutover/02-awaiting-cutover-passkey.json
+```
+
+Verify state `awaiting_cutover_passkey`. Only this workspace may advertise the
+already-bound v2 URL in `advertised_approval_url`. Open that exact URL and have
+Emil approve the complete release, FreezePlan, transaction, and action payload
+with the v2 passkey. Do not approve a copied request ID or a newly constructed
+URL.
+
+The next resume consumes that single-use v2 grant and durably records the
+claim, but does not yet stage the freeze authority:
+
+```bash
+python -m scripts.canary.production_cutover_owner_launcher \
+  resume-cutover \
+  --revision <same-exact-release-sha> \
+  --workspace /absolute/owner-only/cutover/02-awaiting-cutover-passkey.json \
+  --output /absolute/owner-only/cutover/03-passkey-claim-recorded.json
+```
+
+Verify state `passkey_claim_recorded`. The fourth resume uses that recorded
+claim to stage the freeze authority, capture and bind the final tail and
+stopped services, stage cron continuity, author and stage the cutover plan,
+and durably publish every receipt needed by convergence:
+
+```bash
+python -m scripts.canary.production_cutover_owner_launcher \
+  resume-cutover \
+  --revision <same-exact-release-sha> \
+  --workspace /absolute/owner-only/cutover/03-passkey-claim-recorded.json \
+  --output /absolute/owner-only/cutover/04-cutover-staged.json
+```
+
+Verify state `cutover_staged`. The fifth and final resume invokes only the
+fixed, idempotent internal `converge-cutover` root action and writes the
+terminal owner receipt:
+
+```bash
+python -m scripts.canary.production_cutover_owner_launcher \
+  resume-cutover \
+  --revision <same-exact-release-sha> \
+  --workspace /absolute/owner-only/cutover/04-cutover-staged.json \
+  --output /absolute/owner-only/cutover/05-cutover-terminal.json
+```
+
+The output writer is create-only. It accepts an existing file only for a
+byte-identical replay and otherwise fails with `owner_cutover_output_conflict`.
+Never reuse an output filename for a different input workspace, state, retry,
+or release. The next command always reads the preceding immutable output and
+writes a new absolute filename; never redirect stdout over a workspace. If an
+approval window expires, preserve the whole chain and start a fresh
+`prepare-cutover` chain under fresh filenames.
+
+Recovery follows the durable boundary, not operator guesswork:
+
+| Durable state | Allowed recovery/convergence |
+| --- | --- |
+| No `cutover_staged` workspace, with no `freeze_aborted` terminal | A failure after freeze publication but before cutover-plan staging invokes the fixed internal `abort-freeze`. It may restore only the exact legacy services and Caddy bytes proven by the signed pre-state. If recovery is still incomplete, preserve the workspace and journals while reconciling only through the same fixed owner surface. |
+| Any validated `freeze_aborted` terminal, before or after cutover-plan staging | The frozen attempt is closed. Preserve its immutable workspace and journals, then start a fresh `prepare-cutover` and approval chain under fresh filenames. The same `03-passkey-claim-recorded.json` or `04-cutover-staged.json` attempt cannot be retried into a new admissible freeze. |
+| `cutover_staged`, before `activation_commit_intent` | The fifth `resume-cutover` calls the fixed `converge-cutover` state machine. Its signed pre-intent replay may finish the approved apply or restore the exact legacy/database/host/Caddy preimages. Before a cutover `passkey_intent`, `abort-freeze` is valid only through the maintenance-proven Caddy restore handoff; after a cutover `passkey_intent`, the cutover transaction must first produce its validated `rollback_terminal` and must not call `abort-freeze`. Never run a loose rollback command. |
+| Pre-intent recovery terminalized as `cutover_rolled_back_restored` | The approved attempt is closed and cannot resume forward apply. Preserve the immutable workspace and both journals, then start a fresh `prepare-cutover` and approval chain under fresh filenames. Do not retry the same fifth-stage workspace expecting it to activate. |
+| `activation_commit_intent` durable | The boundary is forward-only. Repeated fifth-stage `resume-cutover` calls from the immutable `04-cutover-staged.json`, each with a new absolute output, may converge only to verified `private_v2_active` or the persistent fixed 503 `maintenance_active` floor. They must never restore or route to v1. |
+
+If either resume fails without creating its output, preserve the input
+workspace and every remote journal before choosing the next action from the
+durable state above. Retry the same fifth-stage workspace with a new absolute
+recovery-attempt output only when recovery is incomplete or the transaction is
+already forward-only. A completed `freeze_aborted` or
+`cutover_rolled_back_restored` recovery instead requires a fresh
+`prepare-cutover` and approval chain; the old workspace remains evidence. The
+recorded claim is validated for replay only within an admissible retry and the
+passkey is not consumed again. If a terminal output reports
+`caddy_outcome=maintenance_active`, v1 remains forbidden and the evidence must
+be preserved while forward convergence continues through the same fixed owner
+surface. There is no public owner `recover` or `converge` subcommand:
+`converge-cutover` is an internal root action reached only by
+`resume-cutover`; do not invoke it directly.
+
+### Rollback authority boundary
+
+Rollback has four deliberately separate phases:
+
+1. Before a cutover plan has been staged, `abort-freeze` may restart only the
+   exact legacy gateway that the freeze stopped. It must attest that database
+   authority, host state, tokens, and Caddy were never changed.
+2. After plan staging but before a cutover `passkey_intent`, `abort-freeze` is
+   valid only inside `converge-cutover` after Caddy has durably published the
+   exact maintenance/public-503 restore handoff. The abort receipt binds that
+   handoff and cutover plan; exact legacy Caddy bytes may be restored only after
+   the gateway abort is terminal.
+3. After a cutover `passkey_intent` but before the fsynced
+   `activation_commit_intent`, the signed cutover transaction performs its own
+   exact preimage rollback for the approved database, host, token, and service
+   changes and publishes a validated `rollback_terminal`. Caddy is recovered
+   by its separate signed journal/state machine only after that terminal;
+   `abort-freeze` is not valid on this path.
+4. The fsynced `activation_commit_intent` is the irreversible forward-only
+   authority boundary. Recovery after it must never restore or route to v1.
+   It may only converge to verified v2 or to the fixed 503 maintenance route
+   while preserving the v2 authority database and mutation journal, followed
+   by forward recovery.
+
+The existing `muncho-auto-deploy-release run <SHA> <PR>` action remains valid
+only before cutover while the loaded production unit still uses the legacy
+mutable-release symlink topology. It is a reversible pre-cutover deploy, not a
+cutover stage action and not a launch blocker. Once the SHA-pinned cutover
+identity or any ambiguous cutover state is present, that helper remains
+fail-closed; no new stage-only variant is introduced.
+
 This layer deliberately does not invent a production gateway `ExecStart`.
 The production model-sovereignty startup-contract renderer must supply the
 normal GPT-5.6 agent loop + API/Relay + Canonical Writer target unit/config;

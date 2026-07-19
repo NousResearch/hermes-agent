@@ -54,6 +54,8 @@ def _isolated_authority_root(
             resource_ancestor_chain=("organizations/123456789012",),
             interpreter_sha256="f" * 64,
             interpreter_version="3.11.2",
+            interpreter_image=_unsigned("0" * 64)["interpreter_image"],
+            attested_at_unix=1_784_300_000,
         ),
     )
 
@@ -115,6 +117,14 @@ def _unsigned(key_id: str) -> dict[str, object]:
 def _write_unsigned(path: Path, value: dict[str, object]) -> None:
     path.write_bytes(foundation.canonical_json_bytes(value))
     path.chmod(0o444)
+
+
+def _fixed_unsigned_path() -> Path:
+    return author.MANIFEST_DIRECTORY / f"{'a' * 40}.trust.unsigned.json"
+
+
+def _unsigned_sha256(path: Path) -> str:
+    return hashlib.sha256(path.read_bytes()).hexdigest()
 
 
 def _chain_paths(tmp_path: Path) -> dict[str, Path]:
@@ -472,7 +482,7 @@ def test_sign_manifest_requires_pinned_matching_key_and_postverifies(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     _directory, private_path, public_path, key_id = _initialize(tmp_path)
-    unsigned_path = tmp_path / "unsigned.json"
+    unsigned_path = _fixed_unsigned_path()
     output_path = author.MANIFEST_DIRECTORY / f"{'a' * 40}.trust.json"
     _write_unsigned(unsigned_path, _unsigned(key_id))
     monkeypatch.setattr(
@@ -483,6 +493,7 @@ def test_sign_manifest_requires_pinned_matching_key_and_postverifies(
 
     receipt = author.sign_manifest(
         unsigned_path=unsigned_path,
+        expected_unsigned_sha256=_unsigned_sha256(unsigned_path),
         private_key_path=private_path,
         public_key_path=public_path,
         output_path=output_path,
@@ -513,6 +524,44 @@ def test_sign_manifest_requires_pinned_matching_key_and_postverifies(
     assert verified["release_revision"] == "a" * 40
     assert verified["foundation_source_revision"] == "0" * 40
     assert verified["foundation_source_tree_oid"] == "8" * 40
+
+
+def test_sign_manifest_rejects_unsigned_digest_before_private_key_read(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _directory, private_path, public_path, key_id = _initialize(tmp_path)
+    unsigned_path = _fixed_unsigned_path()
+    output_path = author.MANIFEST_DIRECTORY / f"{'a' * 40}.trust.json"
+    _write_unsigned(unsigned_path, _unsigned(key_id))
+    monkeypatch.setattr(
+        trust,
+        "PINNED_RELEASE_TRUST_PUBLIC_KEY_SHA256",
+        key_id,
+    )
+    original_reader = author._read_exact_regular
+    reads: list[Path] = []
+
+    def record_read(path: Path, **kwargs: object) -> bytes:
+        reads.append(path)
+        return original_reader(path, **kwargs)
+
+    monkeypatch.setattr(author, "_read_exact_regular", record_read)
+    with pytest.raises(
+        author.OwnerGateTrustAuthorError,
+        match="owner_gate_trust_author_unsigned_binding_invalid",
+    ):
+        author.sign_manifest(
+            unsigned_path=unsigned_path,
+            expected_unsigned_sha256="0" * 64,
+            private_key_path=private_path,
+            public_key_path=public_path,
+            output_path=output_path,
+            **_chain_paths(tmp_path),
+        )
+    assert public_path in reads
+    assert private_path not in reads
+    assert not output_path.exists()
 
 
 def test_real_foundation_chain_accepts_distinct_collector_paths_with_equal_keys(
@@ -565,7 +614,7 @@ def test_real_foundation_chain_accepts_historical_success_after_f_freshness_expi
     ).parameters
 
 
-def test_real_foundation_chain_rejects_one_path_for_two_collector_authorities(
+def test_real_foundation_chain_accepts_one_path_for_foundation_collector(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -573,6 +622,30 @@ def test_real_foundation_chain_rejects_one_path_for_two_collector_authorities(
     paths["project_ancestry_collector_public_key_path"] = paths[
         "network_collector_public_key_path"
     ]
+    release_key = Ed25519PrivateKey.from_private_bytes(
+        (author.KEY_DIRECTORY / author.PRIVATE_KEY_NAME).read_bytes()
+    )
+
+    chain = _REAL_VALIDATE_FOUNDATION_CHAIN(
+        **paths,
+        release_public_key=release_key.public_key(),
+        final_release_revision="c" * 40,
+    )
+
+    assert chain.bootstrap_network_collector_public_key_id
+    assert chain.project_ancestry_evidence_sha256
+
+
+def test_real_foundation_chain_rejects_distinct_foundation_collector_keys(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    paths, _chain = _real_chain_inputs(tmp_path, monkeypatch)
+    other_key = Ed25519PrivateKey.generate().public_key().public_bytes_raw()
+    ancestry_key = paths["project_ancestry_collector_public_key_path"]
+    ancestry_key.chmod(0o600)
+    ancestry_key.write_bytes(other_key)
+    ancestry_key.chmod(0o444)
     release_key = Ed25519PrivateKey.from_private_bytes(
         (author.KEY_DIRECTORY / author.PRIVATE_KEY_NAME).read_bytes()
     )
@@ -786,7 +859,7 @@ def test_sign_manifest_rejects_caller_hash_drift_from_validated_raw_chain(
     )
     unsigned = _unsigned(key_id)
     unsigned[field] = replacement
-    unsigned_path = tmp_path / "unsigned.json"
+    unsigned_path = _fixed_unsigned_path()
     _write_unsigned(unsigned_path, unsigned)
     output_path = author.MANIFEST_DIRECTORY / f"{'a' * 40}.trust.json"
 
@@ -796,6 +869,7 @@ def test_sign_manifest_rejects_caller_hash_drift_from_validated_raw_chain(
     ):
         author.sign_manifest(
             unsigned_path=unsigned_path,
+            expected_unsigned_sha256=_unsigned_sha256(unsigned_path),
             private_key_path=private_path,
             public_key_path=public_path,
             output_path=output_path,
@@ -809,7 +883,7 @@ def test_sign_manifest_fails_closed_for_unpinned_key_without_output(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     _directory, private_path, public_path, key_id = _initialize(tmp_path)
-    unsigned_path = tmp_path / "unsigned.json"
+    unsigned_path = _fixed_unsigned_path()
     output_path = author.MANIFEST_DIRECTORY / f"{'a' * 40}.trust.json"
     _write_unsigned(unsigned_path, _unsigned(key_id))
     monkeypatch.setattr(
@@ -824,6 +898,7 @@ def test_sign_manifest_fails_closed_for_unpinned_key_without_output(
     ):
         author.sign_manifest(
             unsigned_path=unsigned_path,
+            expected_unsigned_sha256=_unsigned_sha256(unsigned_path),
             private_key_path=private_path,
             public_key_path=public_path,
             output_path=output_path,
@@ -842,7 +917,7 @@ def test_sign_manifest_rejects_noncanonical_input_and_no_clobber(
         "PINNED_RELEASE_TRUST_PUBLIC_KEY_SHA256",
         key_id,
     )
-    unsigned_path = tmp_path / "unsigned.json"
+    unsigned_path = _fixed_unsigned_path()
     unsigned_path.write_text(json.dumps(_unsigned(key_id), indent=2), "utf-8")
     unsigned_path.chmod(0o444)
     output_path = author.MANIFEST_DIRECTORY / f"{'a' * 40}.trust.json"
@@ -853,6 +928,7 @@ def test_sign_manifest_rejects_noncanonical_input_and_no_clobber(
     ):
         author.sign_manifest(
             unsigned_path=unsigned_path,
+            expected_unsigned_sha256=_unsigned_sha256(unsigned_path),
             private_key_path=private_path,
             public_key_path=public_path,
             output_path=output_path,
@@ -869,6 +945,7 @@ def test_sign_manifest_rejects_noncanonical_input_and_no_clobber(
     ):
         author.sign_manifest(
             unsigned_path=unsigned_path,
+            expected_unsigned_sha256=_unsigned_sha256(unsigned_path),
             private_key_path=private_path,
             public_key_path=public_path,
             output_path=output_path,
@@ -882,7 +959,7 @@ def test_sign_manifest_recovers_crash_after_manifest_stage_open(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     _directory, private_path, public_path, key_id = _initialize(tmp_path)
-    unsigned_path = tmp_path / "unsigned.json"
+    unsigned_path = _fixed_unsigned_path()
     _write_unsigned(unsigned_path, _unsigned(key_id))
     output_path = author.MANIFEST_DIRECTORY / f"{'a' * 40}.trust.json"
     stage = output_path.with_name(f".{output_path.name}.stage")
@@ -896,6 +973,7 @@ def test_sign_manifest_recovers_crash_after_manifest_stage_open(
 
     receipt = author.sign_manifest(
         unsigned_path=unsigned_path,
+        expected_unsigned_sha256=_unsigned_sha256(unsigned_path),
         private_key_path=private_path,
         public_key_path=public_path,
         output_path=output_path,
@@ -918,55 +996,12 @@ def test_authority_home_ignores_home_environment(
     assert author.AUTHORITY_PARENT != Path(os.environ["HOME"]) / ".hermes"
 
 
-def test_trust_author_cli_uses_fixed_journal_and_distinct_ancestry_key(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
+def test_trust_author_cli_exposes_key_initialization_only() -> None:
     parameters = inspect.signature(author.sign_manifest).parameters
     assert "foundation_apply_receipt_path" not in parameters
     assert "project_ancestry_collector_public_key_path" in parameters
-
-    captured: dict[str, object] = {}
-
-    def sign_manifest_probe(**kwargs: object) -> dict[str, bool]:
-        captured.update(kwargs)
-        return {"ok": True}
-
-    monkeypatch.setattr(author, "sign_manifest", sign_manifest_probe)
-    ancestry_key = tmp_path / "project-ancestry-collector.pub"
-    arguments = [
-        "sign",
-        "--unsigned",
-        str(tmp_path / "unsigned.json"),
-        "--output",
-        str(tmp_path / "signed.json"),
-        "--pre-foundation-authority",
-        str(tmp_path / "pre-foundation.json"),
-        "--owner-reauth-receipt",
-        str(tmp_path / "owner-reauth.json"),
-        "--network-evidence",
-        str(tmp_path / "network-evidence.json"),
-        "--network-collector-public-key",
-        str(tmp_path / "network-collector.pub"),
-        "--project-ancestry-evidence",
-        str(tmp_path / "project-ancestry.json"),
-        "--project-ancestry-collector-public-key",
-        str(ancestry_key),
-        "--direct-iam-identity-authority",
-        str(tmp_path / "direct-iam.json"),
-    ]
-
-    assert author.main(arguments) == 0
-    assert captured["project_ancestry_collector_public_key_path"] == ancestry_key
-    assert "foundation_apply_receipt_path" not in captured
     with pytest.raises(SystemExit):
-        author.main(
-            [
-                *arguments,
-                "--foundation-apply-receipt",
-                str(tmp_path / "caller-selected-apply.json"),
-            ]
-        )
+        author.main(["sign", "--unsigned", "/tmp/unsigned.json"])
 
     assert not hasattr(author, "ValidatedFoundationChain")
     with pytest.raises(

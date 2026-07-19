@@ -10,7 +10,9 @@ second no-replace output is only a root-readable append-only audit mirror.
 
 All values written into the seal are derived from validated artifacts.  The
 entrypoint accepts no release, evidence, digest, resource, or destination
-argument.
+argument.  Before any mutation it requires the canonical release binding sent
+by the fixed owner launcher on stdin and compares it with its own immutable
+installed release.
 """
 
 from __future__ import annotations
@@ -40,6 +42,7 @@ from scripts.canary import owner_gate_trust as trust
 from scripts.canary import passkey_v2_protocol as protocol
 from scripts.canary import passkey_v2_service as service
 from scripts.canary import passkey_v2_storage_growth as storage
+from scripts.canary import production_cutover_passkey as production_cutover
 
 
 ACTIVATION_EVIDENCE_BASE = Path(
@@ -51,6 +54,9 @@ ACTIVATION_RECEIPT_BASE = Path(
 ACTIVATION_SEAL_PATH = foundation.MUTATION_ENABLE_SEAL
 ACTIVATION_LOCK_PATH = Path(
     "/run/muncho-owner-gate/storage-executor-activation.lock"
+)
+AUTHORITY_RECEIPT_PUBLIC_KEY_PATH = Path(
+    "/etc/muncho-owner-gate/public/authority-receipt-public.pem"
 )
 RELEASE_BASE = foundation.RELEASE_BASE
 ROOT_UID = 0
@@ -66,9 +72,11 @@ RECEIPT_FILE_MODE = 0o444
 LOCK_FILE_MODE = 0o600
 MAX_JSON_BYTES = 16 * 1024 * 1024
 MAX_PAYLOAD_BYTES = 128 * 1024 * 1024
+MAX_ACTIVATION_REQUEST_BYTES = 1024
 
 ACTIVATION_RECEIPT_SCHEMA = "muncho-owner-gate-storage-activation-receipt.v1"
 ACTIVATION_RESPONSE_SCHEMA = "muncho-owner-gate-storage-activation-response.v1"
+ACTIVATION_REQUEST_SCHEMA = "muncho-owner-gate-storage-activation-request.v1"
 ACTIVATION_EVIDENCE_VALIDATION_SCHEMA = (
     "muncho-owner-gate-activation-evidence-validation.v1"
 )
@@ -1561,6 +1569,95 @@ def _install_activation_seal(
                 release_revision=revision,
             )
             receipt_raw = _canonical(stored_receipt)
+            package_raw, _package_snapshot = _read_regular(
+                release / "package-manifest.json",
+                maximum=MAX_JSON_BYTES,
+                uid=ROOT_UID,
+                gid=ROOT_GID,
+                modes=frozenset({EVIDENCE_FILE_MODE}),
+                code="owner_gate_activation_package_invalid",
+            )
+            packaged = _decode_canonical(
+                package_raw, code="owner_gate_activation_package_invalid"
+            )
+            cutover_capable = any(
+                isinstance(item, Mapping)
+                and item.get("release_relative")
+                == "scripts/canary/production_cutover_passkey.py"
+                for item in packaged.get("payloads", [])
+            )
+            cutover_trust_raw: bytes | None = None
+            cutover_trust_snapshots: tuple[_FileSnapshot, ...] = ()
+            if cutover_capable:
+                trust_manifest_raw, trust_manifest_snapshot = _read_regular(
+                    release / "trust/release-trust.json",
+                    maximum=MAX_JSON_BYTES,
+                    uid=ROOT_UID,
+                    gid=ROOT_GID,
+                    modes=frozenset({EVIDENCE_FILE_MODE}),
+                    code="owner_gate_activation_cutover_trust_invalid",
+                )
+                trust_public_raw, trust_public_snapshot = _read_regular(
+                    release / "trust/release-trust-signing.pub",
+                    maximum=32,
+                    uid=ROOT_UID,
+                    gid=ROOT_GID,
+                    modes=frozenset({EVIDENCE_FILE_MODE}),
+                    code="owner_gate_activation_cutover_trust_invalid",
+                )
+                host_public_raw, host_public_snapshot = _read_regular(
+                    release / "trust/host-observation-attestation.pub",
+                    maximum=32,
+                    uid=ROOT_UID,
+                    gid=ROOT_GID,
+                    modes=frozenset({EVIDENCE_FILE_MODE}),
+                    code="owner_gate_activation_cutover_trust_invalid",
+                )
+                receipt_public_raw, receipt_public_snapshot = _read_regular(
+                    AUTHORITY_RECEIPT_PUBLIC_KEY_PATH,
+                    maximum=16 * 1024,
+                    uid=ROOT_UID,
+                    gid=ROOT_GID,
+                    modes=frozenset({EVIDENCE_FILE_MODE}),
+                    code="owner_gate_activation_cutover_trust_invalid",
+                )
+                post_host_raw, post_host_snapshot = _read_regular(
+                    evidence_root / POST_IAM_HOST_OBSERVATION_NAME,
+                    maximum=MAX_JSON_BYTES,
+                    uid=ROOT_UID,
+                    gid=ROOT_GID,
+                    modes=frozenset({EVIDENCE_FILE_MODE}),
+                    code="owner_gate_activation_cutover_trust_invalid",
+                )
+                try:
+                    post_host = _decode_canonical(
+                        post_host_raw,
+                        code="owner_gate_activation_cutover_trust_invalid",
+                    )
+                    portable_cutover_trust = (
+                        production_cutover.build_trust_bundle(
+                            authority_release_sha=revision,
+                            release_trust_manifest_raw=trust_manifest_raw,
+                            release_trust_public_key_raw=trust_public_raw,
+                            host_observation_public_key_raw=host_public_raw,
+                            post_iam_host_observation=post_host,
+                            authority_receipt_public_key_pem=(
+                                receipt_public_raw
+                            ),
+                        )
+                    )
+                except production_cutover.ProductionCutoverPasskeyError:
+                    raise OwnerGateActivationSealError(
+                        "owner_gate_activation_cutover_trust_invalid"
+                    ) from None
+                cutover_trust_raw = _canonical(portable_cutover_trust)
+                cutover_trust_snapshots = (
+                    trust_manifest_snapshot,
+                    trust_public_snapshot,
+                    host_public_snapshot,
+                    receipt_public_snapshot,
+                    post_host_snapshot,
+                )
             try:
                 accepted = service.validate_activation_seal(
                     protocol.decode_canonical_json(seal_raw),
@@ -1592,8 +1689,26 @@ def _install_activation_seal(
                 gid=ROOT_GID,
                 mode=RECEIPT_FILE_MODE,
             )
+            if cutover_trust_raw is not None:
+                _preflight_no_replace(
+                    production_cutover.CUTOVER_TRUST_BUNDLE_PATH,
+                    raw=cutover_trust_raw,
+                    uid=ROOT_UID,
+                    gid=ROOT_GID,
+                    mode=EVIDENCE_FILE_MODE,
+                )
             for snapshot in derived.snapshots:
                 snapshot.require_unchanged()
+            for snapshot in cutover_trust_snapshots:
+                snapshot.require_unchanged()
+            if cutover_trust_raw is not None:
+                _publish_no_replace(
+                    production_cutover.CUTOVER_TRUST_BUNDLE_PATH,
+                    raw=cutover_trust_raw,
+                    uid=ROOT_UID,
+                    gid=ROOT_GID,
+                    mode=EVIDENCE_FILE_MODE,
+                )
             installed = _publish_no_replace(
                 seal_path,
                 raw=seal_raw,
@@ -1608,6 +1723,8 @@ def _install_activation_seal(
                 gid=ROOT_GID,
                 mode=RECEIPT_FILE_MODE,
             )
+            for snapshot in cutover_trust_snapshots:
+                snapshot.require_unchanged()
             response_unsigned = {
                 "schema": ACTIVATION_RESPONSE_SCHEMA,
                 "release_revision": revision,
@@ -1668,6 +1785,37 @@ def _installed_release() -> Path:
     return release
 
 
+def validate_activation_install_request(
+    raw: bytes,
+    *,
+    expected_release_revision: str,
+) -> Mapping[str, Any]:
+    """Bind the fixed action to the installed release before any mutation."""
+
+    if (
+        _REVISION.fullmatch(expected_release_revision or "") is None
+        or type(raw) is not bytes
+        or not raw
+        or len(raw) > MAX_ACTIVATION_REQUEST_BYTES
+    ):
+        raise OwnerGateActivationSealError(
+            "owner_gate_activation_request_invalid"
+        )
+    value = _decode_canonical(
+        raw,
+        code="owner_gate_activation_request_invalid",
+    )
+    if (
+        set(value) != {"schema", "release_revision"}
+        or value.get("schema") != ACTIVATION_REQUEST_SCHEMA
+        or value.get("release_revision") != expected_release_revision
+    ):
+        raise OwnerGateActivationSealError(
+            "owner_gate_activation_request_invalid"
+        )
+    return value
+
+
 def main(argv: Sequence[str] | None = None) -> int:
     arguments = tuple(argv or ())
     if arguments != ("install",):
@@ -1676,6 +1824,16 @@ def main(argv: Sequence[str] | None = None) -> int:
         )
     release = _installed_release()
     revision = release.name
+    try:
+        request_raw = sys.stdin.buffer.read(MAX_ACTIVATION_REQUEST_BYTES + 1)
+    except OSError:
+        raise OwnerGateActivationSealError(
+            "owner_gate_activation_request_invalid"
+        ) from None
+    validate_activation_install_request(
+        request_raw,
+        expected_release_revision=revision,
+    )
     response = install_activation_seal(
         release=release,
         evidence_root=ACTIVATION_EVIDENCE_BASE / revision,
@@ -1694,12 +1852,14 @@ __all__ = [
     "ACTIVATION_LOCK_PATH",
     "ACTIVATION_RECEIPT_BASE",
     "ACTIVATION_RECEIPT_SCHEMA",
+    "ACTIVATION_REQUEST_SCHEMA",
     "ACTIVATION_RESPONSE_SCHEMA",
     "ACTIVATION_SEAL_PATH",
     "EVIDENCE_NAMES",
     "OwnerGateActivationSealError",
     "install_activation_seal",
     "main",
+    "validate_activation_install_request",
     "validate_activation_evidence_strict",
 ]
 

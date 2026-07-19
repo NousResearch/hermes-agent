@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import base64
 import hashlib
+import io
 import multiprocessing
 import os
 import select
@@ -60,6 +61,80 @@ def _write_exact(path: Path, value: Mapping[str, Any]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_bytes(foundation.canonical_json_bytes(value))
     path.chmod(0o444)
+
+
+def _activation_request(
+    *,
+    release_revision: str = REVISION,
+) -> bytes:
+    return foundation.canonical_json_bytes({
+        "schema": activation.ACTIVATION_REQUEST_SCHEMA,
+        "release_revision": release_revision,
+    })
+
+
+def test_activation_request_binds_release_before_install(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    installed = Path("/opt/muncho-owner-gate/releases") / REVISION
+
+    class Stdin:
+        buffer = io.BytesIO(_activation_request(release_revision="f" * 40))
+
+    monkeypatch.setattr(activation, "_installed_release", lambda: installed)
+    monkeypatch.setattr(activation.sys, "stdin", Stdin())
+    monkeypatch.setattr(
+        activation,
+        "install_activation_seal",
+        lambda **_kwargs: (_ for _ in ()).throw(
+            AssertionError("release mismatch must precede installation")
+        ),
+    )
+
+    with pytest.raises(
+        activation.OwnerGateActivationSealError,
+        match="owner_gate_activation_request_invalid",
+    ):
+        activation.main(("install",))
+
+
+@pytest.mark.parametrize(
+    "raw",
+    (
+        b"",
+        b'{"release_revision":"' + REVISION.encode("ascii") + b'","schema":"wrong"}',
+        _activation_request() + b"\n",
+        b'{"schema": "muncho-owner-gate-storage-activation-request.v1"}',
+        foundation.canonical_json_bytes({
+            "schema": activation.ACTIVATION_REQUEST_SCHEMA,
+            "release_revision": REVISION,
+            "caller_path": "/tmp/escape",
+        }),
+        b"x" * (activation.MAX_ACTIVATION_REQUEST_BYTES + 1),
+    ),
+)
+def test_activation_request_rejects_nonexact_or_caller_selected_input(
+    raw: bytes,
+) -> None:
+    with pytest.raises(
+        activation.OwnerGateActivationSealError,
+        match="owner_gate_activation_request_invalid",
+    ):
+        activation.validate_activation_install_request(
+            raw,
+            expected_release_revision=REVISION,
+        )
+
+
+def test_activation_request_accepts_only_canonical_exact_release() -> None:
+    raw = _activation_request()
+    assert activation.validate_activation_install_request(
+        raw,
+        expected_release_revision=REVISION,
+    ) == {
+        "schema": activation.ACTIVATION_REQUEST_SCHEMA,
+        "release_revision": REVISION,
+    }
 
 
 def _host_for_release(
@@ -188,18 +263,43 @@ def _production_ingress_envelope(
         ),
         "old_v1": {
             "unit": production_ingress.OLD_V1_UNIT,
-            "load_state": "masked",
-            "active_state": "inactive",
-            "sub_state": "dead",
-            "unit_file_state": "masked",
-            "fragment_path": production_ingress.OLD_V1_MASK_TARGET,
-            "drop_in_paths": [],
-            "permanent_mask_path": str(
-                production_ingress.OLD_V1_MASK_PATH
+            "load_state": "loaded",
+            "active_state": "active",
+            "sub_state": "running",
+            "unit_file_state": "enabled",
+            "fragment_path": str(
+                production_ingress.OLD_V1_FRAGMENT_PATH
             ),
-            "permanent_mask_target": production_ingress.OLD_V1_MASK_TARGET,
-            "mask_uid": production_ingress.EXPECTED_ROOT_UID,
-            "mask_gid": production_ingress.EXPECTED_ROOT_GID,
+            "fragment_uid": production_ingress.EXPECTED_ROOT_UID,
+            "fragment_gid": production_ingress.EXPECTED_ROOT_GID,
+            "fragment_mode": (
+                f"{production_ingress.OLD_V1_FRAGMENT_MODE:04o}"
+            ),
+            "fragment_size": 512,
+            "fragment_sha256": (
+                production_ingress.OLD_V1_FRAGMENT_SHA256
+            ),
+            "stable_nofollow_fragment_verified": True,
+            "drop_in_paths": [],
+            "main_pid": 4343,
+            "exec_main_pid": 4343,
+            "exec_start_path": (
+                production_ingress.OLD_V1_EXEC_START_ARGV[0]
+            ),
+            "exec_start_argv": list(
+                production_ingress.OLD_V1_EXEC_START_ARGV
+            ),
+            "service_user": production_ingress.OLD_V1_USER,
+            "service_group": production_ingress.OLD_V1_GROUP,
+            "need_daemon_reload": False,
+            "process_cmdline": list(
+                production_ingress.OLD_V1_PROCESS_CMDLINE
+            ),
+            "process_uid": production_ingress.OLD_V1_UID,
+            "process_gid": production_ingress.OLD_V1_GID,
+            "process_start_time_ticks": 90,
+            "process_cgroup_unit_verified": True,
+            "active_process_stable": True,
             "trusted_for_v2": False,
         },
         "caddy": {
@@ -227,6 +327,10 @@ def _production_ingress_envelope(
             "auth_host_route_count": 1,
             "reverse_proxy_handler_count": 1,
             "reverse_proxy_upstream_count": 1,
+            "reverse_proxy_upstreams": [
+                production_ingress.LEGACY_V1_UPSTREAM
+            ],
+            "legacy_v1_upstream_active": True,
             "still_on_current_host": True,
             "private_v2_upstream_active": False,
             "process_executable": "/usr/bin/caddy",
@@ -242,6 +346,10 @@ def _production_ingress_envelope(
                 "auth_host_route_count": 1,
                 "reverse_proxy_handler_count": 1,
                 "reverse_proxy_upstream_count": 1,
+                "reverse_proxy_upstreams": [
+                    production_ingress.LEGACY_V1_UPSTREAM
+                ],
+                "legacy_v1_upstream_active": True,
                 "still_on_current_host": True,
                 "private_v2_upstream_active": False,
             }),

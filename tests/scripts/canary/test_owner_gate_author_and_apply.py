@@ -27,6 +27,13 @@ class SimulatedCrash(BaseException):
     pass
 
 
+def test_authority_ttl_reuses_validated_preflight_window() -> None:
+    assert (
+        author.MAX_AUTHORITY_TTL_SECONDS
+        == pre_foundation.MAX_AUTHORITY_TTL_SECONDS
+    )
+
+
 class _Capabilities:
     def __init__(self, root: Path) -> None:
         self.release_key = Ed25519PrivateKey.generate()

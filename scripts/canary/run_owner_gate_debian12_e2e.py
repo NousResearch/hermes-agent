@@ -17,12 +17,22 @@ covering the package-to-Stage0 binding without weakening production trust.
 from __future__ import annotations
 
 import argparse
+import json
 import os
+import shutil
 import subprocess
+import sys
 import textwrap
 import uuid
 from pathlib import Path
 from typing import Sequence
+
+REPOSITORY = Path(__file__).resolve(strict=True).parents[2]
+if str(REPOSITORY) not in sys.path:
+    # The documented invocation executes this file directly from the repo root.
+    sys.path.insert(0, str(REPOSITORY))
+
+from scripts.canary import owner_gate_package as package
 
 
 DEBIAN_12_IMAGE = (
@@ -367,11 +377,99 @@ def _run(
     return completed.stdout
 
 
+def _publish_verified_wheelhouse(*, container: str, destination: Path) -> None:
+    """Publish the exact post-offline-test inputs without re-downloading them."""
+
+    if (
+        not destination.is_absolute()
+        or ".." in destination.parts
+        or destination.exists()
+        or destination.is_symlink()
+        or not destination.parent.is_dir()
+    ):
+        raise HarnessError("owner_gate_debian12_wheelhouse_output_invalid")
+    staging = destination.parent / (
+        f".{destination.name}.stage-{os.getpid()}-{uuid.uuid4().hex[:8]}"
+    )
+    artifacts = staging / "artifacts"
+    manifest_path = staging / "wheelhouse-manifest.json"
+    try:
+        staging.mkdir(mode=0o700)
+        artifacts.mkdir(mode=0o755)
+        _run((
+            "docker",
+            "cp",
+            f"{container}:/tmp/owner-gate-wheelhouse/.",
+            str(artifacts),
+        ))
+        _run((
+            "docker",
+            "cp",
+            (
+                f"{container}:/tmp/owner-gate-bundle/"
+                "wheelhouse-manifest.json"
+            ),
+            str(manifest_path),
+        ))
+        try:
+            raw = manifest_path.read_bytes()
+            manifest = json.loads(raw.decode("ascii", errors="strict"))
+        except (OSError, UnicodeError, json.JSONDecodeError):
+            raise HarnessError(
+                "owner_gate_debian12_wheelhouse_output_invalid"
+            ) from None
+        if (
+            raw != package.foundation.canonical_json_bytes(manifest) + b"\n"
+            or not isinstance(manifest, dict)
+        ):
+            raise HarnessError("owner_gate_debian12_wheelhouse_output_invalid")
+        package.validate_wheelhouse(root=artifacts, manifest=manifest)
+        expected = {
+            manifest["bootstrap_pip"]["filename"],
+            *(item["filename"] for item in manifest["wheels"]),
+        }
+        try:
+            observed = {item.name for item in artifacts.iterdir() if item.is_file()}
+            if observed != expected or any(
+                not item.is_file() or item.is_symlink()
+                for item in artifacts.iterdir()
+            ):
+                raise HarnessError(
+                    "owner_gate_debian12_wheelhouse_output_invalid"
+                )
+            for item in artifacts.iterdir():
+                item.chmod(0o444)
+            manifest_path.chmod(0o444)
+            artifacts.chmod(0o555)
+            staging.chmod(0o555)
+            if destination.exists() or destination.is_symlink():
+                raise HarnessError(
+                    "owner_gate_debian12_wheelhouse_output_invalid"
+                )
+            staging.rename(destination)
+        except OSError:
+            raise HarnessError(
+                "owner_gate_debian12_wheelhouse_output_invalid"
+            ) from None
+    except BaseException:
+        if staging.exists() and not staging.is_symlink():
+            shutil.rmtree(staging, ignore_errors=True)
+        raise
+
+
 def main(argv: Sequence[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--image", default=DEBIAN_12_IMAGE)
+    parser.add_argument(
+        "--wheelhouse-output",
+        type=Path,
+        help=(
+            "absolute, non-existing directory that receives the exact "
+            "wheelhouse only after all offline checks pass"
+        ),
+    )
     arguments = parser.parse_args(argv)
-    repository = Path(__file__).resolve(strict=True).parents[2]
+    repository = REPOSITORY
     container = f"muncho-owner-gate-e2e-{os.getpid()}-{uuid.uuid4().hex[:8]}"
     _run(("docker", "version", "--format", "{{.Server.Version}}"), timeout=30)
     try:
@@ -411,6 +509,12 @@ def main(argv: Sequence[str] | None = None) -> int:
             ("docker", "exec", "--interactive", container, "env", "PYTHONPATH=/repo", "python3", "-"),
             input_text=textwrap.dedent(OFFLINE_INSTALL_AND_REPLAY),
         ), end="")
+        if arguments.wheelhouse_output is not None:
+            _publish_verified_wheelhouse(
+                container=container,
+                destination=arguments.wheelhouse_output,
+            )
+            print("publish: verified wheelhouse preserved atomically\n", end="")
     finally:
         subprocess.run(
             ("docker", "rm", "--force", container),

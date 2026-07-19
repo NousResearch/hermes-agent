@@ -21,8 +21,10 @@ accepted by any public schema.
 from __future__ import annotations
 
 import argparse
+import base64
 import copy
 import hashlib
+import ipaddress
 import json
 import os
 import re
@@ -92,8 +94,8 @@ from gateway.operational_edge_readiness import (
 from ops.muncho.runtime import mechanical_job_rail
 
 
-FREEZE_PLAN_SCHEMA = "muncho-production-legacy-freeze-plan.v2"
-CUTOVER_PLAN_SCHEMA = "muncho-production-legacy-cutover-plan.v2"
+FREEZE_PLAN_SCHEMA = "muncho-production-legacy-freeze-plan.v3"
+CUTOVER_PLAN_SCHEMA = "muncho-production-legacy-cutover-plan.v3"
 APPROVAL_SCHEMA = "muncho-production-legacy-cutover-approval.v1"
 SNAPSHOT_SCHEMA = "muncho-production-legacy-snapshot.v1"
 SERVICE_SCHEMA = "muncho-production-service-observation.v1"
@@ -120,6 +122,23 @@ PROJECT = "adventico-ai-platform"
 ZONE = "europe-west3-a"
 VM_NAME = "ai-platform-runtime-01"
 DATABASE = "ai_platform_brain"
+PRODUCTION_SQL_INSTANCE = "ai-platform-postgres"
+PRODUCTION_SQL_REGION = "europe-west3"
+DATABASE_RECOVERY_SCRATCH_NETWORK = (
+    "projects/adventico-ai-platform/global/networks/muncho-canary-vpc"
+)
+DATABASE_RECOVERY_RECEIPT_SCHEMA = (
+    "muncho-production-database-recovery-receipt.v1"
+)
+DATABASE_RECOVERY_PROBE_RECEIPT_SCHEMA = (
+    "muncho-production-database-recovery-probe-receipt.v1"
+)
+DATABASE_RECOVERY_PROBE_CONTRACT = {
+    "database": DATABASE,
+    "transaction_mode": "read_only",
+    "schema_probe": "pg_catalog_schema_identity_v1",
+    "content_probe": "canonical_event_log_envelope_identity_v1",
+}
 GATEWAY_UNIT = "hermes-cloud-gateway.service"
 WRITER_UNIT = "muncho-canonical-writer.service"
 CONNECTOR_UNIT = "muncho-discord-connector.service"
@@ -186,7 +205,7 @@ _MAX_ARTIFACT = 8 * 1024 * 1024
 _ARTIFACT_TIMEOUT_SECONDS = 900
 _MAX_ACCEPTED_LEGACY_EVENTS = 40_000
 ARTIFACT_REQUEST_SCHEMA = "muncho-production-cutover-artifact-request.v1"
-FREEZE_ABORT_SCHEMA = "muncho-production-freeze-abort-receipt.v1"
+FREEZE_ABORT_SCHEMA = "muncho-production-freeze-abort-receipt.v2"
 STAGED_FREEZE_PLAN_PATH = EVIDENCE_ROOT / "staged" / "freeze-plan.json"
 STAGED_FREEZE_APPROVAL_PATH = EVIDENCE_ROOT / "staged" / "freeze-approval.json"
 STAGED_CUTOVER_PLAN_PATH = EVIDENCE_ROOT / "staged" / "cutover-plan.json"
@@ -966,11 +985,270 @@ def _artifact(value: Any, label: str, revision: str) -> dict[str, Any]:
     return raw
 
 
+_DATABASE_RECOVERY_FIELDS = frozenset({
+    "schema",
+    "release_revision",
+    "source",
+    "backup",
+    "scratch",
+    "probe_receipt",
+    "backup_rechecked_at_unix",
+    "journal_prefix_sha256",
+    "secret_material_recorded",
+    "secret_digest_recorded",
+    "receipt_sha256",
+})
+_DATABASE_RECOVERY_SOURCE_FIELDS = frozenset({
+    "project",
+    "instance",
+    "region",
+    "database",
+    "private_network",
+    "database_version",
+    "configuration_sha256",
+    "readback_sha256",
+})
+_DATABASE_RECOVERY_BACKUP_FIELDS = frozenset({
+    "backup_id",
+    "operation_id",
+    "status",
+    "type",
+    "source_instance",
+    "completed_at_unix",
+    "retained",
+    "readback_sha256",
+})
+_DATABASE_RECOVERY_SCRATCH_FIELDS = frozenset({
+    "project",
+    "instance",
+    "region",
+    "network",
+    "create_operation_id",
+    "restore_operation_id",
+    "delete_operation_id",
+    "restored_backup_id",
+    "private_only",
+    "backup_enabled",
+    "deletion_protection_enabled",
+    "deleted",
+    "readback_sha256",
+    "deleted_at_unix",
+    "private_ip",
+    "server_ca_sha256",
+    "cloud_sql_ssl_mode",
+    "tls_mode",
+    "tls_ca_verified",
+    "tls_hostname_verified",
+})
+_DATABASE_RECOVERY_PROBE_FIELDS = frozenset({
+    "schema",
+    "ok",
+    "release_revision",
+    "scratch_instance",
+    "database",
+    "probe_contract_sha256",
+    "transaction_read_only",
+    "schema_sha256",
+    "content_sha256",
+    "canonical_event_row_count",
+    "scratch_private_ip",
+    "server_ca_sha256",
+    "tls_mode",
+    "tls_ca_verified",
+    "tls_hostname_verified",
+    "canary_instance_id",
+    "canary_network",
+    "canary_subnetwork",
+    "canary_private_ip",
+    "release_manifest_file_sha256",
+    "stopped_units_sha256",
+    "psql_executable_sha256",
+    "probed_at_unix",
+    "secret_material_recorded",
+    "secret_digest_recorded",
+    "receipt_sha256",
+})
+_CLOUD_SQL_OPERATION_ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,254}$")
+_CLOUD_SQL_BACKUP_ID = re.compile(r"^[1-9][0-9]{0,19}$")
+_CLOUD_SQL_PRIVATE_NETWORK = re.compile(
+    rf"^projects/{re.escape(PROJECT)}/global/networks/"
+    r"[a-z](?:[-a-z0-9]{0,61}[a-z0-9])?$"
+)
+_CLOUD_SQL_RFC1918 = tuple(
+    ipaddress.ip_network(value)
+    for value in ("10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16")
+)
+
+
+def database_recovery_scratch_instance(revision: str) -> str:
+    if not isinstance(revision, str) or _REVISION.fullmatch(revision) is None:
+        raise ValueError("database recovery release revision is invalid")
+    return f"muncho-recovery-{revision[:20]}"
+
+
+def _validate_database_recovery_receipt(
+    value: Any,
+    *,
+    revision: str,
+    now_unix: int | None = None,
+    max_recheck_age_seconds: int | None = None,
+) -> dict[str, Any]:
+    raw = _hashed(
+        value,
+        _DATABASE_RECOVERY_FIELDS,
+        "receipt_sha256",
+        "database recovery receipt",
+    )
+    source = _exact(
+        raw["source"],
+        _DATABASE_RECOVERY_SOURCE_FIELDS,
+        "database recovery source",
+    )
+    backup = _exact(
+        raw["backup"],
+        _DATABASE_RECOVERY_BACKUP_FIELDS,
+        "database recovery backup",
+    )
+    scratch = _exact(
+        raw["scratch"],
+        _DATABASE_RECOVERY_SCRATCH_FIELDS,
+        "database recovery scratch",
+    )
+    probe = _hashed(
+        raw["probe_receipt"],
+        _DATABASE_RECOVERY_PROBE_FIELDS,
+        "receipt_sha256",
+        "database recovery probe receipt",
+    )
+    operation_fields = (
+        backup["operation_id"],
+        scratch["create_operation_id"],
+        scratch["restore_operation_id"],
+        scratch["delete_operation_id"],
+    )
+    timestamp_fields = (
+        backup["completed_at_unix"],
+        probe["probed_at_unix"],
+        scratch["deleted_at_unix"],
+        raw["backup_rechecked_at_unix"],
+    )
+    try:
+        scratch_address = ipaddress.ip_address(str(scratch["private_ip"]))
+    except ValueError as exc:
+        raise ValueError("database recovery receipt is invalid") from exc
+    if (
+        raw["schema"] != DATABASE_RECOVERY_RECEIPT_SCHEMA
+        or raw["release_revision"] != revision
+        or source["project"] != PROJECT
+        or source["instance"] != PRODUCTION_SQL_INSTANCE
+        or source["region"] != PRODUCTION_SQL_REGION
+        or source["database"] != DATABASE
+        or not isinstance(source["private_network"], str)
+        or _CLOUD_SQL_PRIVATE_NETWORK.fullmatch(source["private_network"])
+        is None
+        or not isinstance(source["database_version"], str)
+        or not source["database_version"].startswith("POSTGRES_")
+        or backup["source_instance"] != PRODUCTION_SQL_INSTANCE
+        or backup["status"] != "SUCCESSFUL"
+        or backup["type"] != "ON_DEMAND"
+        or backup["retained"] is not True
+        or _CLOUD_SQL_BACKUP_ID.fullmatch(str(backup["backup_id"])) is None
+        or any(
+            not isinstance(operation, str)
+            or _CLOUD_SQL_OPERATION_ID.fullmatch(operation) is None
+            for operation in operation_fields
+        )
+        or scratch["project"] != PROJECT
+        or scratch["instance"] != database_recovery_scratch_instance(revision)
+        or scratch["region"] != PRODUCTION_SQL_REGION
+        or scratch["network"] != DATABASE_RECOVERY_SCRATCH_NETWORK
+        or scratch["restored_backup_id"] != backup["backup_id"]
+        or scratch["private_only"] is not True
+        or scratch["backup_enabled"] is not False
+        or scratch["deletion_protection_enabled"] is not False
+        or scratch["deleted"] is not True
+        or not isinstance(scratch["private_ip"], str)
+        or scratch_address.version != 4
+        or not any(scratch_address in network for network in _CLOUD_SQL_RFC1918)
+        or scratch["private_ip"] != probe["scratch_private_ip"]
+        or scratch["server_ca_sha256"] != probe["server_ca_sha256"]
+        or scratch["cloud_sql_ssl_mode"] != "ENCRYPTED_ONLY"
+        or scratch["tls_mode"] != "verify-ca"
+        or scratch["tls_ca_verified"] is not True
+        or scratch["tls_hostname_verified"] is not False
+        or probe["schema"] != DATABASE_RECOVERY_PROBE_RECEIPT_SCHEMA
+        or probe["ok"] is not True
+        or probe["release_revision"] != revision
+        or probe["scratch_instance"] != scratch["instance"]
+        or probe["database"] != DATABASE
+        or probe["probe_contract_sha256"]
+        != _sha256_json(DATABASE_RECOVERY_PROBE_CONTRACT)
+        or probe["transaction_read_only"] is not True
+        or probe["tls_mode"] != "verify-ca"
+        or probe["tls_ca_verified"] is not True
+        or probe["tls_hostname_verified"] is not False
+        or probe["canary_instance_id"] != "9153645328899914617"
+        or probe["canary_network"] != "muncho-canary-vpc"
+        or probe["canary_subnetwork"] != "muncho-canary-europe-west3"
+        or probe["canary_private_ip"] != "10.90.0.2"
+        or probe["psql_executable_sha256"]
+        != "f79699639336f0ed369158e9e4085929d943427e25393725ae28f1f4d95690c4"
+        or type(probe["canonical_event_row_count"]) is not int
+        or probe["canonical_event_row_count"] < 0
+        or any(type(timestamp) is not int or timestamp <= 0 for timestamp in timestamp_fields)
+        or not (
+            backup["completed_at_unix"]
+            <= probe["probed_at_unix"]
+            <= scratch["deleted_at_unix"]
+            <= raw["backup_rechecked_at_unix"]
+        )
+        or raw["secret_material_recorded"] is not False
+        or raw["secret_digest_recorded"] is not False
+        or probe["secret_material_recorded"] is not False
+        or probe["secret_digest_recorded"] is not False
+        or any(
+            _SHA256.fullmatch(str(digest)) is None
+            for digest in (
+                source["configuration_sha256"],
+                source["readback_sha256"],
+                backup["readback_sha256"],
+                scratch["readback_sha256"],
+                probe["schema_sha256"],
+                probe["content_sha256"],
+                probe["server_ca_sha256"],
+                probe["release_manifest_file_sha256"],
+                probe["stopped_units_sha256"],
+                probe["psql_executable_sha256"],
+                raw["journal_prefix_sha256"],
+            )
+        )
+    ):
+        raise ValueError("database recovery receipt is invalid")
+    if max_recheck_age_seconds is not None:
+        if (
+            type(now_unix) is not int
+            or type(max_recheck_age_seconds) is not int
+            or not 1 <= max_recheck_age_seconds <= 900
+            or not 0
+            <= now_unix - raw["backup_rechecked_at_unix"]
+            <= max_recheck_age_seconds
+        ):
+            raise ValueError("database recovery backup recheck is stale")
+    return {
+        **raw,
+        "source": copy.deepcopy(dict(source)),
+        "backup": copy.deepcopy(dict(backup)),
+        "scratch": copy.deepcopy(dict(scratch)),
+        "probe_receipt": copy.deepcopy(dict(probe)),
+    }
+
+
 _FREEZE_FIELDS = frozenset({
     "schema", "release_revision", "target", "owner_subject_sha256",
     "owner_public_key_ed25519_hex", "owner_key_id", "gateway_before",
     "writer_before", "connector_before", "initial_snapshot",
-    "owner_runtime_attestation", "observe_artifact", "cutover_authority", "states",
+    "owner_runtime_attestation", "observe_artifact", "cutover_authority",
+    "database_recovery_receipt_sha256", "states",
     "secret_material_recorded", "plan_sha256",
 })
 
@@ -992,13 +1270,14 @@ _CUTOVER_AUTHORITY_FIELDS = frozenset({
     "mechanical_job_host_facts",
     "mechanical_job_package",
     "isolated_canary_goal_prerequisite",
+    "database_recovery_receipt",
     "legacy_truth_decision",
     "final_tail_bounds",
     "rollback_contract",
     "secret_material_recorded",
     "authority_sha256",
 })
-_CUTOVER_AUTHORITY_SCHEMA = "muncho-production-cutover-authority.v3"
+_CUTOVER_AUTHORITY_SCHEMA = "muncho-production-cutover-authority.v4"
 
 
 def _validate_cutover_authority(
@@ -1066,6 +1345,10 @@ def _validate_cutover_authority(
         raw["isolated_canary_goal_prerequisite"],
         revision=revision,
     )
+    recovery = _validate_database_recovery_receipt(
+        raw["database_recovery_receipt"],
+        revision=revision,
+    )
     _validate_host_transition(
         raw["host_transition"],
         gateway_pre=gateway_pre,
@@ -1122,6 +1405,7 @@ def _validate_cutover_authority(
         "mechanical_job_host_facts": copy.deepcopy(dict(host_facts)),
         "mechanical_job_package": copy.deepcopy(dict(mechanical_package)),
         "isolated_canary_goal_prerequisite": copy.deepcopy(dict(canary_goal)),
+        "database_recovery_receipt": copy.deepcopy(dict(recovery)),
         "legacy_truth_decision": copy.deepcopy(dict(decision)),
     }
 
@@ -1143,6 +1427,7 @@ def build_cutover_authority(
     mechanical_job_host_facts: Mapping[str, Any],
     mechanical_job_package: Mapping[str, Any],
     isolated_canary_goal_prerequisite: Mapping[str, Any],
+    database_recovery_receipt: Mapping[str, Any],
     legacy_truth_decision: Mapping[str, Any],
     max_appended_rows: int,
     max_capture_delay_seconds: int,
@@ -1165,6 +1450,9 @@ def build_cutover_authority(
         "mechanical_job_package": copy.deepcopy(dict(mechanical_job_package)),
         "isolated_canary_goal_prerequisite": copy.deepcopy(
             dict(isolated_canary_goal_prerequisite)
+        ),
+        "database_recovery_receipt": copy.deepcopy(
+            dict(database_recovery_receipt)
         ),
         "legacy_truth_decision": copy.deepcopy(dict(legacy_truth_decision)),
         "final_tail_bounds": {
@@ -1244,6 +1532,11 @@ class FreezePlan:
         observe = _artifact(raw["observe_artifact"], "observe artifact", revision)
         if observe != authority["artifacts"]["observe"]:
             raise ValueError("freeze observe artifact is not authority-bound")
+        if (
+            raw["database_recovery_receipt_sha256"]
+            != authority["database_recovery_receipt"]["receipt_sha256"]
+        ):
+            raise ValueError("freeze database recovery receipt is not authority-bound")
         if raw["states"] != ["authority", "gateway_stopped", "final_tail_captured"] or raw["secret_material_recorded"] is not False:
             raise ValueError("freeze plan contract is invalid")
         return cls(raw)
@@ -1302,6 +1595,9 @@ def build_freeze_plan(
         ),
         "observe_artifact": copy.deepcopy(dict(authority["artifacts"]["observe"])),
         "cutover_authority": copy.deepcopy(dict(authority)),
+        "database_recovery_receipt_sha256": authority[
+            "database_recovery_receipt"
+        ]["receipt_sha256"],
         "states": ["authority", "gateway_stopped", "final_tail_captured"],
         "secret_material_recorded": False,
     }
@@ -2416,6 +2712,7 @@ _CUTOVER_FIELDS = frozenset({
     "mechanical_job_host_facts",
     "mechanical_job_package",
     "legacy_truth_decision",
+    "database_recovery_receipt_sha256",
     "owner_runtime_attestation",
     "secret_material_recorded", "plan_sha256",
 })
@@ -2465,6 +2762,8 @@ class CutoverPlan:
             or raw["owner_key_id"] != freeze.value["owner_key_id"]
             or raw["owner_runtime_attestation"]
             != freeze.value["owner_runtime_attestation"]
+            or raw["database_recovery_receipt_sha256"]
+            != freeze.value["database_recovery_receipt_sha256"]
         ):
             raise ValueError("cutover freeze authority binding is invalid")
         tail = FinalTailReceipt.from_mapping(raw["final_tail_receipt"], plan=freeze)
@@ -2645,6 +2944,9 @@ def build_cutover_plan(
         "legacy_truth_decision": copy.deepcopy(
             dict(authority["legacy_truth_decision"])
         ),
+        "database_recovery_receipt_sha256": freeze_plan.value[
+            "database_recovery_receipt_sha256"
+        ],
         "owner_runtime_attestation": copy.deepcopy(
             dict(freeze_plan.value["owner_runtime_attestation"])
         ),
@@ -2739,6 +3041,52 @@ _JOURNAL_FIELDS = frozenset({
     "schema", "plan_sha256", "sequence", "event", "previous_entry_sha256",
     "evidence", "recorded_at_unix", "entry_sha256",
 })
+PASSKEY_CLAIM_SCHEMA = "muncho-production-cutover-passkey-claim.v1"
+PASSKEY_CLAIM_SUPERSEDED_SCHEMA = (
+    "muncho-production-cutover-passkey-claim-superseded.v1"
+)
+PASSKEY_INTENT_SCHEMA = "muncho-production-cutover-passkey-intent.v1"
+_PASSKEY_CLAIM_FIELDS = frozenset({
+    "schema",
+    "freeze_plan_sha256",
+    "freeze_approval_sha256",
+    "freeze_publication_sha256",
+    "passkey_proof_sha256",
+    "authorization_receipt_sha256",
+    "action_envelope_sha256",
+    "action_payload_sha256",
+    "request_id",
+    "consume_attempt_id",
+    "authority_release_sha",
+    "execution_window_expires_at_unix",
+})
+_PASSKEY_CLAIM_SUPERSEDED_FIELDS = frozenset({
+    "schema",
+    "freeze_plan_sha256",
+    "freeze_approval_sha256",
+    "freeze_publication_sha256",
+    "action_payload_sha256",
+    "old_claim_entry_sha256",
+    "old_claim_sha256",
+    "old_passkey_proof_sha256",
+    "old_authorization_receipt_sha256",
+    "old_execution_window_expires_at_unix",
+    "new_claim",
+    "new_claim_sha256",
+    "new_passkey_proof_sha256",
+    "new_authorization_receipt_sha256",
+    "new_execution_window_expires_at_unix",
+})
+_PASSKEY_INTENT_FIELDS = frozenset({
+    "schema",
+    "phase",
+    "freeze_plan_sha256",
+    "freeze_approval_sha256",
+    "passkey_claim_entry_sha256",
+    "cutover_plan_sha256",
+    "parent_freeze_intent_entry_sha256",
+    "parent_freeze_terminal_entry_sha256",
+})
 
 
 @dataclass(frozen=True)
@@ -2821,6 +3169,575 @@ class RootCutoverJournal:
         )
         activation._write_root_receipt(root / f"{len(entries):06d}.json", entry.value)
         return entry
+
+
+def validate_passkey_claim_evidence(
+    value: Any,
+    *,
+    plan_sha256: str,
+    approval_sha256: str,
+    release_revision: str,
+) -> Mapping[str, Any]:
+    """Validate the compact root-journal projection of one consumed grant."""
+
+    if not isinstance(value, Mapping) or set(value) != _PASSKEY_CLAIM_FIELDS:
+        raise PermissionError("production passkey claim is invalid")
+    claim = copy.deepcopy(dict(value))
+    if (
+        claim.get("schema") != PASSKEY_CLAIM_SCHEMA
+        or _REVISION.fullmatch(release_revision or "") is None
+        or claim.get("freeze_plan_sha256") != plan_sha256
+        or claim.get("freeze_approval_sha256") != approval_sha256
+        or claim.get("authority_release_sha") != release_revision
+        or any(
+            _SHA256.fullmatch(str(claim.get(name))) is None
+            for name in (
+                "freeze_publication_sha256",
+                "passkey_proof_sha256",
+                "authorization_receipt_sha256",
+                "action_envelope_sha256",
+                "action_payload_sha256",
+                "consume_attempt_id",
+            )
+        )
+        or not isinstance(claim.get("request_id"), str)
+        or _SHA256.fullmatch(claim["request_id"]) is None
+        or not isinstance(claim.get("authority_release_sha"), str)
+        or re.fullmatch(r"[0-9a-f]{40}", claim["authority_release_sha"])
+        is None
+        or type(claim.get("execution_window_expires_at_unix")) is not int
+        or claim["execution_window_expires_at_unix"] <= 0
+    ):
+        raise PermissionError("production passkey claim is invalid")
+    return claim
+
+
+def require_recorded_passkey_claim(
+    journal: CutoverJournal,
+    *,
+    plan_sha256: str,
+    approval_sha256: str,
+    release_revision: str,
+) -> tuple[JournalEntry, Mapping[str, Any]]:
+    entries = journal.load(plan_sha256)
+    claims = [entry for entry in entries if entry.value["event"] == "passkey_claim"]
+    if len(claims) != 1 or claims[0].value["sequence"] != 0:
+        raise PermissionError(
+            "production cutover requires one recorded passkey claim"
+        )
+    active_entry = claims[0]
+    active_claim = validate_passkey_claim_evidence(
+        claims[0].value["evidence"],
+        plan_sha256=plan_sha256,
+        approval_sha256=approval_sha256,
+        release_revision=release_revision,
+    )
+    if (
+        active_entry.value["recorded_at_unix"] <= 0
+        or active_entry.value["recorded_at_unix"]
+        >= active_claim["execution_window_expires_at_unix"]
+    ):
+        raise PermissionError("production passkey claim timing is invalid")
+    allowed_prelude = {
+        "passkey_claim",
+        "authority",
+        "passkey_claim_superseded",
+    }
+    for entry in entries:
+        if entry.value["event"] != "passkey_claim_superseded":
+            continue
+        if any(
+            prior.value["event"] not in allowed_prelude
+            for prior in entries[:entry.value["sequence"]]
+        ):
+            raise PermissionError(
+                "production passkey claim supersession followed state change"
+            )
+        value = entry.value["evidence"]
+        if (
+            not isinstance(value, Mapping)
+            or set(value) != _PASSKEY_CLAIM_SUPERSEDED_FIELDS
+            or value.get("schema") != PASSKEY_CLAIM_SUPERSEDED_SCHEMA
+            or value.get("freeze_plan_sha256") != plan_sha256
+            or value.get("freeze_approval_sha256") != approval_sha256
+            or value.get("freeze_publication_sha256")
+            != active_claim["freeze_publication_sha256"]
+            or value.get("action_payload_sha256")
+            != active_claim["action_payload_sha256"]
+            or value.get("old_claim_entry_sha256") != active_entry.sha256
+            or value.get("old_claim_sha256") != _sha256_json(active_claim)
+            or value.get("old_passkey_proof_sha256")
+            != active_claim["passkey_proof_sha256"]
+            or value.get("old_authorization_receipt_sha256")
+            != active_claim["authorization_receipt_sha256"]
+            or value.get("old_execution_window_expires_at_unix")
+            != active_claim["execution_window_expires_at_unix"]
+            or not isinstance(value.get("new_claim"), Mapping)
+        ):
+            raise PermissionError(
+                "production passkey claim supersession is invalid"
+            )
+        new_claim = validate_passkey_claim_evidence(
+            value["new_claim"],
+            plan_sha256=plan_sha256,
+            approval_sha256=approval_sha256,
+            release_revision=release_revision,
+        )
+        if (
+            value.get("new_claim_sha256") != _sha256_json(new_claim)
+            or value.get("new_passkey_proof_sha256")
+            != new_claim["passkey_proof_sha256"]
+            or value.get("new_authorization_receipt_sha256")
+            != new_claim["authorization_receipt_sha256"]
+            or value.get("new_execution_window_expires_at_unix")
+            != new_claim["execution_window_expires_at_unix"]
+            or new_claim["freeze_publication_sha256"]
+            != active_claim["freeze_publication_sha256"]
+            or new_claim["action_payload_sha256"]
+            != active_claim["action_payload_sha256"]
+            or any(
+                new_claim[name] == active_claim[name]
+                for name in (
+                    "passkey_proof_sha256",
+                    "authorization_receipt_sha256",
+                    "action_envelope_sha256",
+                    "request_id",
+                    "consume_attempt_id",
+                )
+            )
+            or entry.value["recorded_at_unix"]
+            < active_entry.value["recorded_at_unix"]
+            or entry.value["recorded_at_unix"]
+            < active_claim["execution_window_expires_at_unix"]
+            or entry.value["recorded_at_unix"]
+            >= new_claim["execution_window_expires_at_unix"]
+        ):
+            raise PermissionError(
+                "production passkey claim supersession is invalid"
+            )
+        active_entry = entry
+        active_claim = new_claim
+    return active_entry, active_claim
+
+
+def supersede_recorded_passkey_claim(
+    journal: CutoverJournal,
+    *,
+    plan_sha256: str,
+    approval_sha256: str,
+    release_revision: str,
+    new_claim_value: Mapping[str, Any],
+    now_unix: int,
+) -> tuple[JournalEntry, Mapping[str, Any]]:
+    """Atomically replace only the active authorization, never its history."""
+
+    if type(now_unix) is not int or now_unix <= 0:
+        raise PermissionError("production passkey claim supersession is invalid")
+    active_entry, active_claim = require_recorded_passkey_claim(
+        journal,
+        plan_sha256=plan_sha256,
+        approval_sha256=approval_sha256,
+        release_revision=release_revision,
+    )
+    new_claim = validate_passkey_claim_evidence(
+        new_claim_value,
+        plan_sha256=plan_sha256,
+        approval_sha256=approval_sha256,
+        release_revision=release_revision,
+    )
+    entries = journal.load(plan_sha256)
+    if (
+        any(
+            entry.value["event"]
+            not in {
+                "passkey_claim",
+                "authority",
+                "passkey_claim_superseded",
+            }
+            for entry in entries
+        )
+        or len([
+            entry for entry in entries if entry.value["event"] == "authority"
+        ]) > 1
+        or new_claim == active_claim
+        or now_unix < active_entry.value["recorded_at_unix"]
+        or now_unix < active_claim["execution_window_expires_at_unix"]
+        or now_unix >= new_claim["execution_window_expires_at_unix"]
+        or any(
+            new_claim[name] != active_claim[name]
+            for name in (
+                "freeze_plan_sha256",
+                "freeze_approval_sha256",
+                "freeze_publication_sha256",
+                "action_payload_sha256",
+                "authority_release_sha",
+            )
+        )
+        or any(
+            new_claim[name] == active_claim[name]
+            for name in (
+                "passkey_proof_sha256",
+                "authorization_receipt_sha256",
+                "action_envelope_sha256",
+                "request_id",
+                "consume_attempt_id",
+            )
+        )
+    ):
+        raise PermissionError("production passkey claim supersession is invalid")
+    evidence = {
+        "schema": PASSKEY_CLAIM_SUPERSEDED_SCHEMA,
+        "freeze_plan_sha256": plan_sha256,
+        "freeze_approval_sha256": approval_sha256,
+        "freeze_publication_sha256": active_claim[
+            "freeze_publication_sha256"
+        ],
+        "action_payload_sha256": active_claim["action_payload_sha256"],
+        "old_claim_entry_sha256": active_entry.sha256,
+        "old_claim_sha256": _sha256_json(active_claim),
+        "old_passkey_proof_sha256": active_claim[
+            "passkey_proof_sha256"
+        ],
+        "old_authorization_receipt_sha256": active_claim[
+            "authorization_receipt_sha256"
+        ],
+        "old_execution_window_expires_at_unix": active_claim[
+            "execution_window_expires_at_unix"
+        ],
+        "new_claim": copy.deepcopy(dict(new_claim)),
+        "new_claim_sha256": _sha256_json(new_claim),
+        "new_passkey_proof_sha256": new_claim["passkey_proof_sha256"],
+        "new_authorization_receipt_sha256": new_claim[
+            "authorization_receipt_sha256"
+        ],
+        "new_execution_window_expires_at_unix": new_claim[
+            "execution_window_expires_at_unix"
+        ],
+    }
+    appended = journal.append(
+        plan_sha256,
+        "passkey_claim_superseded",
+        evidence,
+        now_unix,
+    )
+    checked_entry, checked_claim = require_recorded_passkey_claim(
+        journal,
+        plan_sha256=plan_sha256,
+        approval_sha256=approval_sha256,
+        release_revision=release_revision,
+    )
+    if checked_entry.sha256 != appended.sha256 or checked_claim != new_claim:
+        raise PermissionError("production passkey claim supersession is invalid")
+    return checked_entry, checked_claim
+
+
+def _validated_claimed_approval(
+    journal: CutoverJournal,
+    *,
+    plan: FreezePlan,
+    approval_value: Mapping[str, Any],
+) -> tuple[CutoverApproval, JournalEntry, Mapping[str, Any]]:
+    entries = journal.load(plan.sha256)
+    authorities = [
+        entry for entry in entries
+        if entry.value["event"] == "authority"
+        and entry.value["evidence"].get("approval_sha256")
+        == approval_value.get("approval_sha256")
+    ]
+    if len(authorities) != 1:
+        raise PermissionError(
+            "production cutover requires one recorded owner authority"
+        )
+    claim_entry, claim = require_recorded_passkey_claim(
+        journal,
+        plan_sha256=plan.sha256,
+        approval_sha256=str(approval_value.get("approval_sha256")),
+        release_revision=plan.value["release_revision"],
+    )
+    authority_entry = authorities[0]
+    initial_claims = [
+        entry for entry in entries if entry.value["event"] == "passkey_claim"
+    ]
+    initial_claim = initial_claims[0] if len(initial_claims) == 1 else None
+    if (
+        initial_claim is None
+        or initial_claim.value["sequence"] >= authority_entry.value["sequence"]
+        or authority_entry.value["recorded_at_unix"]
+        < initial_claim.value["recorded_at_unix"]
+        or any(
+            entry.value["event"]
+            not in {"passkey_claim", "passkey_claim_superseded"}
+            for entry in entries[:authority_entry.value["sequence"]]
+        )
+    ):
+        raise PermissionError(
+            "production passkey claim and owner authority ordering is invalid"
+        )
+    approval = CutoverApproval.from_mapping(
+        approval_value,
+        plan=plan,
+        now_unix=claim_entry.value["recorded_at_unix"],
+    )
+    return approval, claim_entry, claim
+
+
+def _require_or_record_passkey_intent(
+    journal: CutoverJournal,
+    *,
+    journal_plan_sha256: str,
+    phase: str,
+    freeze_plan_sha256: str,
+    freeze_approval_sha256: str,
+    cutover_plan_sha256: str | None,
+    claim_entry: JournalEntry,
+    claim: Mapping[str, Any],
+    now_unix: int,
+    cutover_plan: CutoverPlan | None = None,
+) -> JournalEntry:
+    if phase not in {"freeze_stop", "cutover_apply"}:
+        raise PermissionError("production passkey intent is invalid")
+
+    def valid_freeze_prelude(entries: list[JournalEntry]) -> bool:
+        authorization_entries = [
+            entry
+            for entry in entries
+            if entry.value["event"]
+            in {"passkey_claim", "passkey_claim_superseded"}
+        ]
+        return (
+            all(
+                entry.value["event"]
+                in {
+                    "passkey_claim",
+                    "passkey_claim_superseded",
+                    "authority",
+                }
+                for entry in entries
+            )
+            and len([
+                entry for entry in entries
+                if entry.value["event"] == "passkey_claim"
+            ]) == 1
+            and len([
+                entry for entry in entries
+                if entry.value["event"] == "authority"
+            ]) == 1
+            and bool(authorization_entries)
+            and authorization_entries[-1].sha256 == claim_entry.sha256
+        )
+
+    parent_freeze_intent: JournalEntry | None = None
+    parent_freeze_terminal: JournalEntry | None = None
+    if phase == "cutover_apply":
+        freeze_entries = journal.load(freeze_plan_sha256)
+        freeze_intents = [
+            entry for entry in freeze_entries
+            if entry.value["event"] == "passkey_intent"
+        ]
+        if len(freeze_intents) == 1:
+            candidate = freeze_intents[0]
+            expected_parent = {
+                "schema": PASSKEY_INTENT_SCHEMA,
+                "phase": "freeze_stop",
+                "freeze_plan_sha256": freeze_plan_sha256,
+                "freeze_approval_sha256": freeze_approval_sha256,
+                "passkey_claim_entry_sha256": claim_entry.sha256,
+                "cutover_plan_sha256": None,
+                "parent_freeze_intent_entry_sha256": None,
+                "parent_freeze_terminal_entry_sha256": None,
+            }
+            if (
+                set(candidate.value["evidence"]) == _PASSKEY_INTENT_FIELDS
+                and candidate.value["evidence"] == expected_parent
+                and valid_freeze_prelude(
+                    freeze_entries[:candidate.value["sequence"]]
+                )
+                and candidate.value["recorded_at_unix"]
+                >= claim_entry.value["recorded_at_unix"]
+                and candidate.value["recorded_at_unix"]
+                < claim["execution_window_expires_at_unix"]
+            ):
+                parent_freeze_intent = candidate
+        if parent_freeze_intent is None:
+            raise PermissionError(
+                "production cutover requires exact parent freeze intent"
+            )
+        final_tail_entries = [
+            entry for entry in freeze_entries
+            if entry.value["event"] == "final_tail_captured"
+        ]
+        gateway_stopped_entries = [
+            entry for entry in freeze_entries
+            if entry.value["event"] == "gateway_stopped"
+        ]
+        try:
+            if (
+                not isinstance(cutover_plan, CutoverPlan)
+                or cutover_plan.sha256 != cutover_plan_sha256
+                or cutover_plan.value["freeze_plan_sha256"]
+                != freeze_plan_sha256
+                or cutover_plan.value["freeze_approval_sha256"]
+                != freeze_approval_sha256
+            ):
+                raise ValueError("cutover plan mismatch")
+            tail = FinalTailReceipt.from_mapping(
+                cutover_plan.value["final_tail_receipt"],
+                plan=FreezePlan.from_mapping(
+                    cutover_plan.value["freeze_plan"]
+                ),
+            )
+            gateway_evidence = gateway_stopped_entries[0].value[
+                "evidence"
+            ]
+            if (
+                set(gateway_evidence) != {"gateway", "writer"}
+                or ServiceObservation.from_mapping(
+                    gateway_evidence["gateway"]
+                ).to_mapping()
+                != cutover_plan.value["gateway_legacy_identity"]
+                or ServiceObservation.from_mapping(
+                    gateway_evidence["writer"]
+                ).to_mapping()
+                != cutover_plan.value["writer_pre_identity"]
+            ):
+                raise ValueError("gateway stop mismatch")
+        except (IndexError, KeyError, TypeError, ValueError):
+            raise PermissionError(
+                "production cutover parent final tail is invalid"
+            ) from None
+        if (
+            len(final_tail_entries) != 1
+            or len(gateway_stopped_entries) != 1
+            or any(
+                entry.value["event"] == "freeze_aborted"
+                for entry in freeze_entries
+            )
+            or any(
+                entry.value["event"]
+                not in {
+                    "passkey_claim",
+                    "passkey_claim_superseded",
+                    "authority",
+                    "passkey_intent",
+                    "gateway_stopped",
+                    "final_tail_captured",
+                }
+                for entry in freeze_entries
+            )
+            or tail.value["freeze_plan_sha256"] != freeze_plan_sha256
+            or tail.value["approval_sha256"] != freeze_approval_sha256
+            or final_tail_entries[0].value["evidence"] != tail.to_mapping()
+            or not (
+                parent_freeze_intent.value["sequence"]
+                < gateway_stopped_entries[0].value["sequence"]
+                < final_tail_entries[0].value["sequence"]
+            )
+        ):
+            raise PermissionError(
+                "production cutover parent final tail is invalid"
+            )
+        parent_freeze_terminal = final_tail_entries[0]
+    elif cutover_plan is not None:
+        raise PermissionError("production passkey intent is invalid")
+    expected = {
+        "schema": PASSKEY_INTENT_SCHEMA,
+        "phase": phase,
+        "freeze_plan_sha256": freeze_plan_sha256,
+        "freeze_approval_sha256": freeze_approval_sha256,
+        "passkey_claim_entry_sha256": claim_entry.sha256,
+        "cutover_plan_sha256": cutover_plan_sha256,
+        "parent_freeze_intent_entry_sha256": (
+            None
+            if parent_freeze_intent is None
+            else parent_freeze_intent.sha256
+        ),
+        "parent_freeze_terminal_entry_sha256": (
+            None
+            if parent_freeze_terminal is None
+            else parent_freeze_terminal.sha256
+        ),
+    }
+    journal_entries = journal.load(journal_plan_sha256)
+    intents = [
+        entry for entry in journal_entries
+        if entry.value["event"] == "passkey_intent"
+    ]
+
+    def valid_prelude(entries: list[JournalEntry]) -> bool:
+        if phase == "cutover_apply":
+            if not isinstance(cutover_plan, CutoverPlan):
+                return False
+            try:
+                require_caddy_maintenance_arm_dependency(
+                    entries, cutover_plan
+                )
+            except (TypeError, ValueError, ProductionCutoverError):
+                return False
+            return (
+                len(entries) == 2
+                and entries[0].value["event"] == "caddy_prepared"
+                and entries[1].value["event"]
+                == "caddy_maintenance_armed"
+            )
+        return valid_freeze_prelude(entries)
+
+    if intents:
+        intent_sequence = intents[0].value["sequence"]
+        if (
+            len(intents) != 1
+            or set(intents[0].value["evidence"])
+            != _PASSKEY_INTENT_FIELDS
+            or intents[0].value["evidence"] != expected
+            or not valid_prelude(journal_entries[:intent_sequence])
+            or intents[0].value["recorded_at_unix"]
+            < claim_entry.value["recorded_at_unix"]
+            or (
+                phase == "freeze_stop"
+                and intents[0].value["recorded_at_unix"]
+                >= claim["execution_window_expires_at_unix"]
+            )
+            or (
+                parent_freeze_intent is not None
+                and intents[0].value["recorded_at_unix"]
+                < parent_freeze_intent.value["recorded_at_unix"]
+            )
+            or (
+                parent_freeze_terminal is not None
+                and intents[0].value["recorded_at_unix"]
+                < parent_freeze_terminal.value["recorded_at_unix"]
+            )
+        ):
+            raise PermissionError("production passkey intent is invalid")
+        return intents[0]
+    if not valid_prelude(journal_entries):
+        raise PermissionError(
+            "production passkey intent cannot be recorded after state change"
+        )
+    if (
+        claim_entry.value["recorded_at_unix"]
+        >= claim["execution_window_expires_at_unix"]
+        or (
+            phase == "freeze_stop"
+            and now_unix >= claim["execution_window_expires_at_unix"]
+        )
+        or (
+            parent_freeze_intent is not None
+            and now_unix < parent_freeze_intent.value["recorded_at_unix"]
+        )
+        or (
+            parent_freeze_terminal is not None
+            and now_unix < parent_freeze_terminal.value["recorded_at_unix"]
+        )
+    ):
+        raise PermissionError(
+            "production passkey execution window expired before intent"
+        )
+    return journal.append(
+        journal_plan_sha256,
+        "passkey_intent",
+        expected,
+        now_unix,
+    )
 
 
 class ServiceBoundary(Protocol):
@@ -4123,7 +5040,11 @@ def _append_authority(
 ) -> list[JournalEntry]:
     entries = journal.load(plan_sha256)
     authorities = [entry for entry in entries if entry.value["event"] == "authority"]
-    if authorities and authorities[-1].value["evidence"]["approval_sha256"] == approval.sha256:
+    if (
+        authorities
+        and authorities[-1].value["evidence"]["approval_sha256"]
+        == approval.sha256
+    ):
         return entries
     expected_sequence = len(authorities)
     previous = None if not authorities else authorities[-1].value["evidence"]["approval_sha256"]
@@ -4147,6 +5068,8 @@ def _require_same_service_identity(expected: ServiceObservation, current: Servic
 
 _FREEZE_ABORT_FIELDS = frozenset({
     "schema", "freeze_plan_sha256", "approval_sha256", "trigger",
+    "cutover_plan_sha256", "caddy_restore_intent_receipt_sha256",
+    "caddy_restore_required",
     "gateway_legacy_restarted", "writer_stopped", "connector_stopped",
     "database_mutated", "host_mutated", "secret_material_recorded",
     "completed_at_unix", "receipt_sha256",
@@ -4169,6 +5092,31 @@ def _validate_freeze_abort_receipt(
         or raw["freeze_plan_sha256"] != plan.sha256
         or _SHA256.fullmatch(str(raw["approval_sha256"])) is None
         or raw["trigger"] not in {"capture_failure", "owner_abort"}
+        or (
+            raw["cutover_plan_sha256"] is not None
+            and _SHA256.fullmatch(str(raw["cutover_plan_sha256"])) is None
+        )
+        or type(raw["caddy_restore_required"]) is not bool
+        or (
+            raw["caddy_restore_intent_receipt_sha256"] is not None
+            and _SHA256.fullmatch(
+                str(raw["caddy_restore_intent_receipt_sha256"])
+            )
+            is None
+        )
+        or raw["caddy_restore_required"]
+        is not (raw["caddy_restore_intent_receipt_sha256"] is not None)
+        or (
+            raw["caddy_restore_required"]
+            and raw["cutover_plan_sha256"] is None
+        )
+        or (
+            raw["trigger"] == "capture_failure"
+            and (
+                raw["cutover_plan_sha256"] is not None
+                or raw["caddy_restore_required"]
+            )
+        )
         or raw["gateway_legacy_restarted"] is not True
         or raw["writer_stopped"] is not True
         or raw["connector_stopped"] is not True
@@ -4189,14 +5137,25 @@ def _restore_legacy_gateway_after_freeze(
     dependencies: FreezeDependencies,
     entries: list[JournalEntry],
     trigger: str,
+    cutover_plan_sha256: str | None,
+    caddy_restore_intent_receipt_sha256: str | None,
     now_unix: int,
 ) -> Mapping[str, Any]:
     terminal = _last(entries, "freeze_aborted")
     if terminal is not None:
-        return _validate_freeze_abort_receipt(
+        prior = _validate_freeze_abort_receipt(
             terminal.value["evidence"],
             plan=plan,
         )
+        if (
+            prior["cutover_plan_sha256"] != cutover_plan_sha256
+            or prior["caddy_restore_intent_receipt_sha256"]
+            != caddy_restore_intent_receipt_sha256
+        ):
+            raise ProductionCutoverError(
+                "production_freeze_abort_receipt_invalid"
+            )
+        return prior
     gateway_expected = ServiceObservation.from_mapping(plan.value["gateway_before"])
     writer_expected = ServiceObservation.from_mapping(plan.value["writer_before"])
     connector_expected = ServiceObservation.from_mapping(
@@ -4233,6 +5192,13 @@ def _restore_legacy_gateway_after_freeze(
         "freeze_plan_sha256": plan.sha256,
         "approval_sha256": approval.sha256,
         "trigger": trigger,
+        "cutover_plan_sha256": cutover_plan_sha256,
+        "caddy_restore_intent_receipt_sha256": (
+            caddy_restore_intent_receipt_sha256
+        ),
+        "caddy_restore_required": (
+            caddy_restore_intent_receipt_sha256 is not None
+        ),
         "gateway_legacy_restarted": True,
         "writer_stopped": True,
         "connector_stopped": True,
@@ -4254,32 +5220,127 @@ def _restore_legacy_gateway_after_freeze(
     return receipt
 
 
+def _validated_precommit_abort_cutover_plan(
+    freeze_plan: FreezePlan,
+    cutover_plan: CutoverPlan | None,
+) -> CutoverPlan | None:
+    """Return the exact staged child plan accepted for pre-commit abort."""
+
+    if cutover_plan is None:
+        return None
+    if not isinstance(cutover_plan, CutoverPlan):
+        raise ProductionCutoverError(
+            "production_freeze_abort_cutover_plan_invalid"
+        )
+    try:
+        validated = CutoverPlan.from_mapping(cutover_plan.to_mapping())
+        nested_freeze = FreezePlan.from_mapping(
+            validated.value["freeze_plan"]
+        )
+    except (KeyError, TypeError, ValueError) as exc:
+        raise ProductionCutoverError(
+            "production_freeze_abort_cutover_plan_invalid"
+        ) from exc
+    if (
+        validated.to_mapping() != cutover_plan.to_mapping()
+        or nested_freeze.sha256 != freeze_plan.sha256
+        or nested_freeze.to_mapping() != freeze_plan.to_mapping()
+        or validated.value["freeze_plan_sha256"] != freeze_plan.sha256
+    ):
+        raise ProductionCutoverError(
+            "production_freeze_abort_cutover_plan_invalid"
+        )
+    return validated
+
+
+def _require_precommit_abort_cutover_journal(
+    journal: CutoverJournal,
+    cutover_plan: CutoverPlan,
+) -> Mapping[str, Any] | None:
+    """Accept prepare-only, or a maintenance-proven freeze-abort handoff."""
+
+    entries = journal.load(cutover_plan.sha256)
+    if not entries:
+        return None
+    events = [entry.value["event"] for entry in entries]
+    if events == ["caddy_prepared"]:
+        try:
+            require_caddy_prepared_dependency(entries, cutover_plan)
+        except (KeyError, TypeError, ValueError, ProductionCutoverError) as exc:
+            raise ProductionCutoverError(
+                "production_freeze_abort_cutover_journal_not_precommit"
+            ) from exc
+        return None
+    try:
+        intent = require_caddy_pre_intent_restore_intent_dependency(
+            entries, cutover_plan
+        )
+    except (KeyError, TypeError, ValueError, ProductionCutoverError) as exc:
+        raise ProductionCutoverError(
+            "production_freeze_abort_cutover_journal_not_precommit"
+        ) from exc
+    if (
+        intent["recovery_basis"] != "freeze_abort"
+        or any(entry.value["event"] == "passkey_intent" for entry in entries)
+        or events
+        not in (
+            [
+                "caddy_prepared",
+                "caddy_maintenance_armed",
+                "caddy_pre_intent_restore_intent",
+            ],
+            [
+                "caddy_prepared",
+                "caddy_maintenance_armed",
+                "caddy_pre_intent_restore_intent",
+                "caddy_pre_intent_restored",
+            ],
+        )
+    ):
+        raise ProductionCutoverError(
+            "production_freeze_abort_cutover_journal_not_precommit"
+        )
+    if events[-1] == "caddy_pre_intent_restored":
+        try:
+            require_caddy_pre_intent_restore_dependency(entries, cutover_plan)
+        except (KeyError, TypeError, ValueError, ProductionCutoverError) as exc:
+            raise ProductionCutoverError(
+                "production_freeze_abort_cutover_journal_not_precommit"
+            ) from exc
+    return intent
+
+
 def abort_freeze(
     plan: FreezePlan,
     approval_value: Mapping[str, Any],
     dependencies: FreezeDependencies,
     *,
-    cutover_plan_staged: bool,
+    cutover_plan: CutoverPlan | None,
     now_unix: int | None = None,
 ) -> Mapping[str, Any]:
     """Restore the exact legacy gateway before any cutover mutation.
 
     The recorded freeze authority is revalidated at the time it entered the
     append-only journal, so recovery remains possible after a short approval
-    lease expires.  A staged cutover plan or any non-freeze journal event
-    blocks this path; forward mutations use the full rollback state machine.
+    lease expires.  An exact staged cutover plan is safe to reconcile only
+    while its own journal is empty or contains only the validated Caddy
+    preparation, or after a journal-bound exact Caddy restore.  If apply intent
+    exists, a fully validated rollback terminal must immediately precede that
+    restore.  Any other state belongs to forward recovery.
     """
 
-    if type(cutover_plan_staged) is not bool or cutover_plan_staged:
-        raise ProductionCutoverError(
-            "production_freeze_abort_cutover_plan_present"
-        )
+    staged_cutover = _validated_precommit_abort_cutover_plan(
+        plan, cutover_plan
+    )
     now = int(time.time()) if now_unix is None else now_unix
     with dependencies.lock():
         entries = dependencies.journal.load(plan.sha256)
         if any(
             entry.value["event"]
             not in {
+                "passkey_claim",
+                "passkey_claim_superseded",
+                "passkey_intent",
                 "authority",
                 "gateway_stopped",
                 "final_tail_captured",
@@ -4290,33 +5351,50 @@ def abort_freeze(
             raise ProductionCutoverError(
                 "production_freeze_abort_journal_not_pre_mutation"
             )
-        authorities = [
-            entry for entry in entries if entry.value["event"] == "authority"
-        ]
-        matching = next(
-            (
-                entry
-                for entry in authorities
-                if entry.value["evidence"].get("approval_sha256")
-                == approval_value.get("approval_sha256")
-            ),
-            None,
-        )
-        if matching is None:
-            raise PermissionError(
-                "freeze abort requires a recorded owner authority"
+        caddy_restore_intent: Mapping[str, Any] | None = None
+        if staged_cutover is not None:
+            caddy_restore_intent = _require_precommit_abort_cutover_journal(
+                dependencies.journal, staged_cutover
             )
-        approval = CutoverApproval.from_mapping(
-            approval_value,
+        approval, claim_entry, claim = _validated_claimed_approval(
+            dependencies.journal,
             plan=plan,
-            now_unix=matching.value["recorded_at_unix"],
+            approval_value=approval_value,
         )
+        if (
+            staged_cutover is not None
+            and staged_cutover.value["freeze_approval_sha256"]
+            != approval.sha256
+        ):
+            raise ProductionCutoverError(
+                "production_freeze_abort_cutover_plan_invalid"
+            )
+        if _last(entries, "passkey_intent") is not None:
+            _require_or_record_passkey_intent(
+                dependencies.journal,
+                journal_plan_sha256=plan.sha256,
+                phase="freeze_stop",
+                freeze_plan_sha256=plan.sha256,
+                freeze_approval_sha256=approval.sha256,
+                cutover_plan_sha256=None,
+                claim_entry=claim_entry,
+                claim=claim,
+                now_unix=now,
+            )
         return _restore_legacy_gateway_after_freeze(
             plan=plan,
             approval=approval,
             dependencies=dependencies,
             entries=entries,
             trigger="owner_abort",
+            cutover_plan_sha256=(
+                None if staged_cutover is None else staged_cutover.sha256
+            ),
+            caddy_restore_intent_receipt_sha256=(
+                None
+                if caddy_restore_intent is None
+                else str(caddy_restore_intent["receipt_sha256"])
+            ),
             now_unix=now,
         )
 
@@ -4331,9 +5409,45 @@ def execute_final_tail_capture(
     """Stop the exact gateway and capture the final append-only legacy tail."""
 
     now = int(time.time()) if now_unix is None else now_unix
-    approval = CutoverApproval.from_mapping(approval_value, plan=plan, now_unix=now)
     with dependencies.lock():
-        entries = _append_authority(dependencies.journal, plan.sha256, approval, now)
+        entries = dependencies.journal.load(plan.sha256)
+        aborts = [
+            entry
+            for entry in entries
+            if entry.value["event"] == "freeze_aborted"
+        ]
+        if aborts:
+            if (
+                len(aborts) != 1
+                or aborts[0].value["sequence"] != len(entries) - 1
+            ):
+                raise ProductionCutoverError(
+                    "production_freeze_abort_receipt_invalid"
+                )
+            _validate_freeze_abort_receipt(
+                aborts[0].value["evidence"],
+                plan=plan,
+            )
+            raise ProductionCutoverError(
+                "production_freeze_already_aborted"
+            )
+        approval, claim_entry, claim = _validated_claimed_approval(
+            dependencies.journal,
+            plan=plan,
+            approval_value=approval_value,
+        )
+        _require_or_record_passkey_intent(
+            dependencies.journal,
+            journal_plan_sha256=plan.sha256,
+            phase="freeze_stop",
+            freeze_plan_sha256=plan.sha256,
+            freeze_approval_sha256=approval.sha256,
+            cutover_plan_sha256=None,
+            claim_entry=claim_entry,
+            claim=claim,
+            now_unix=now,
+        )
+        entries = dependencies.journal.load(plan.sha256)
         terminal = _last(entries, "final_tail_captured")
         if terminal is not None:
             return FinalTailReceipt.from_mapping(terminal.value["evidence"], plan=plan)
@@ -4414,6 +5528,8 @@ def execute_final_tail_capture(
                     dependencies=dependencies,
                     entries=dependencies.journal.load(plan.sha256),
                     trigger="capture_failure",
+                    cutover_plan_sha256=None,
+                    caddy_restore_intent_receipt_sha256=None,
                     now_unix=now,
                 )
             except BaseException as recovery:
@@ -5579,6 +6695,402 @@ _ACTIVATION_COMMIT_INTENT_FIELDS = frozenset({
     "secret_material_recorded", "receipt_sha256",
 })
 
+CADDY_PREPARED_DEPENDENCY_SCHEMA = (
+    "muncho-production-caddy-prepared-dependency.v1"
+)
+CADDY_MAINTENANCE_ARM_SCHEMA = (
+    "muncho-production-caddy-maintenance-arm.v1"
+)
+CADDY_PRE_INTENT_RESTORE_INTENT_SCHEMA = (
+    "muncho-production-caddy-pre-intent-restore-intent.v1"
+)
+CADDY_PRE_INTENT_RESTORE_SCHEMA = (
+    "muncho-production-caddy-pre-intent-restore.v1"
+)
+_CADDY_PREPARED_DEPENDENCY_FIELDS = frozenset({
+    "schema", "release_revision", "freeze_plan_sha256",
+    "cutover_plan_sha256", "freeze_approval_sha256", "authority_sha256",
+    "caddy_prepare_receipt_sha256", "original_caddy_sha256",
+    "approval_bridge_caddy_sha256", "private_v2_caddy_sha256",
+    "maintenance_caddy_sha256", "maintenance_caddy_b64",
+    "production_mutation_performed", "caller_selected_input_accepted",
+    "secret_material_recorded", "secret_digest_recorded",
+    "prepared_at_unix", "receipt_sha256",
+})
+_CADDY_MAINTENANCE_ARM_FIELDS = frozenset({
+    "schema", "release_revision", "freeze_plan_sha256",
+    "cutover_plan_sha256", "freeze_approval_sha256", "authority_sha256",
+    "caddy_prepare_receipt_sha256", "legacy_service_active_sha256",
+    "maintenance_caddy_sha256", "active_route_projection_sha256",
+    "public_status", "caddy_validated", "caddy_reloaded",
+    "public_verified", "v1_public_route_closed", "rollback_mode",
+    "production_mutation_performed", "caller_selected_input_accepted",
+    "secret_material_recorded", "secret_digest_recorded",
+    "armed_at_unix", "receipt_sha256",
+})
+_CADDY_PRE_INTENT_RESTORE_INTENT_FIELDS = frozenset({
+    "schema", "release_revision", "freeze_plan_sha256",
+    "cutover_plan_sha256", "freeze_approval_sha256", "authority_sha256",
+    "caddy_prepare_receipt_sha256", "maintenance_arm_receipt_sha256",
+    "original_caddy_sha256", "maintenance_caddy_sha256",
+    "active_route_projection_sha256", "public_status", "public_verified",
+    "v1_public_route_closed", "exact_original_artifact_available",
+    "forward_apply_invalidated", "recovery_basis",
+    "rollback_terminal_receipt_sha256", "rollback_mode",
+    "production_mutation_performed", "caller_selected_input_accepted",
+    "secret_material_recorded", "secret_digest_recorded",
+    "restore_started_at_unix", "receipt_sha256",
+})
+_CADDY_PRE_INTENT_RESTORE_FIELDS = frozenset({
+    "schema", "release_revision", "freeze_plan_sha256",
+    "cutover_plan_sha256", "freeze_approval_sha256", "authority_sha256",
+    "caddy_prepare_receipt_sha256", "maintenance_arm_receipt_sha256",
+    "restore_intent_receipt_sha256", "original_caddy_sha256",
+    "active_route_projection_sha256", "exact_original_caddy_restored",
+    "caddy_validated", "caddy_reloaded", "live_readback_verified",
+    "v1_public_route_restored", "gateway_terminal_event",
+    "gateway_terminal_receipt_sha256", "recovery_basis",
+    "legacy_service_active_sha256", "legacy_service_health_sha256",
+    "rollback_mode", "production_mutation_performed",
+    "caller_selected_input_accepted", "secret_material_recorded",
+    "secret_digest_recorded", "restored_at_unix", "receipt_sha256",
+})
+
+
+def require_caddy_prepared_dependency(
+    entries: list[JournalEntry],
+    plan: CutoverPlan,
+) -> Mapping[str, Any]:
+    matches = [
+        entry for entry in entries if entry.value["event"] == "caddy_prepared"
+    ]
+    if len(matches) != 1 or matches[0].value["sequence"] != 0:
+        raise ProductionCutoverError(
+            "production_caddy_prepared_dependency_missing"
+        )
+    raw = _hashed(
+        matches[0].value["evidence"],
+        _CADDY_PREPARED_DEPENDENCY_FIELDS,
+        "receipt_sha256",
+        "Caddy prepared dependency",
+    )
+    freeze = FreezePlan.from_mapping(plan.value["freeze_plan"])
+    try:
+        maintenance = base64.b64decode(
+            raw["maintenance_caddy_b64"].encode("ascii", errors="strict"),
+            validate=True,
+        )
+    except (UnicodeError, ValueError) as exc:
+        raise ProductionCutoverError(
+            "production_caddy_prepared_dependency_invalid"
+        ) from exc
+    if (
+        raw["schema"] != CADDY_PREPARED_DEPENDENCY_SCHEMA
+        or raw["release_revision"] != plan.value["release_revision"]
+        or raw["freeze_plan_sha256"] != freeze.sha256
+        or raw["cutover_plan_sha256"] != plan.sha256
+        or raw["freeze_approval_sha256"]
+        != plan.value["freeze_approval_sha256"]
+        or any(
+            _SHA256.fullmatch(str(raw[field])) is None
+            for field in (
+                "authority_sha256",
+                "caddy_prepare_receipt_sha256",
+                "original_caddy_sha256",
+                "approval_bridge_caddy_sha256",
+                "private_v2_caddy_sha256",
+                "maintenance_caddy_sha256",
+            )
+        )
+        or not 0 < len(maintenance) <= 1024 * 1024
+        or base64.b64encode(maintenance).decode("ascii")
+        != raw["maintenance_caddy_b64"]
+        or hashlib.sha256(maintenance).hexdigest()
+        != raw["maintenance_caddy_sha256"]
+        or raw["production_mutation_performed"] is not False
+        or raw["caller_selected_input_accepted"] is not False
+        or raw["secret_material_recorded"] is not False
+        or raw["secret_digest_recorded"] is not False
+        or type(raw["prepared_at_unix"]) is not int
+        or raw["prepared_at_unix"] <= 0
+    ):
+        raise ProductionCutoverError(
+            "production_caddy_prepared_dependency_invalid"
+        )
+    return raw
+
+
+def require_caddy_maintenance_arm_dependency(
+    entries: list[JournalEntry],
+    plan: CutoverPlan,
+    *,
+    allow_restore: bool = False,
+) -> Mapping[str, Any]:
+    """Require the exact public-503 floor before irreversible cutover intent."""
+
+    prepared = require_caddy_prepared_dependency(entries, plan)
+    if not allow_restore and any(
+        entry.value["event"]
+        in {
+            "caddy_pre_intent_restore_intent",
+            "caddy_pre_intent_restored",
+        }
+        for entry in entries
+    ):
+        raise ProductionCutoverError(
+            "production_caddy_maintenance_arm_dependency_invalidated"
+        )
+    matches = [
+        entry
+        for entry in entries
+        if entry.value["event"] == "caddy_maintenance_armed"
+    ]
+    if len(matches) != 1 or matches[0].value["sequence"] != 1:
+        raise ProductionCutoverError(
+            "production_caddy_maintenance_arm_dependency_missing"
+        )
+    raw = _hashed(
+        matches[0].value["evidence"],
+        _CADDY_MAINTENANCE_ARM_FIELDS,
+        "receipt_sha256",
+        "Caddy maintenance arm dependency",
+    )
+    freeze = FreezePlan.from_mapping(plan.value["freeze_plan"])
+    if (
+        raw["schema"] != CADDY_MAINTENANCE_ARM_SCHEMA
+        or raw["release_revision"] != plan.value["release_revision"]
+        or raw["freeze_plan_sha256"] != freeze.sha256
+        or raw["cutover_plan_sha256"] != plan.sha256
+        or raw["freeze_approval_sha256"]
+        != plan.value["freeze_approval_sha256"]
+        or raw["caddy_prepare_receipt_sha256"]
+        != prepared["caddy_prepare_receipt_sha256"]
+        or raw["maintenance_caddy_sha256"]
+        != prepared["maintenance_caddy_sha256"]
+        or any(
+            _SHA256.fullmatch(str(raw[field])) is None
+            for field in (
+                "authority_sha256",
+                "legacy_service_active_sha256",
+                "active_route_projection_sha256",
+            )
+        )
+        or raw["authority_sha256"] != prepared["authority_sha256"]
+        or raw["public_status"] != 503
+        or raw["caddy_validated"] is not True
+        or raw["caddy_reloaded"] is not True
+        or raw["public_verified"] is not True
+        or raw["v1_public_route_closed"] is not True
+        or raw["rollback_mode"]
+        != "pre_intent_exact_restore_available"
+        or raw["production_mutation_performed"] is not True
+        or raw["caller_selected_input_accepted"] is not False
+        or raw["secret_material_recorded"] is not False
+        or raw["secret_digest_recorded"] is not False
+        or type(raw["armed_at_unix"]) is not int
+        or raw["armed_at_unix"] < prepared["prepared_at_unix"]
+        or matches[0].value["recorded_at_unix"] != raw["armed_at_unix"]
+    ):
+        raise ProductionCutoverError(
+            "production_caddy_maintenance_arm_dependency_invalid"
+        )
+    return raw
+
+
+def require_caddy_pre_intent_restore_intent_dependency(
+    entries: list[JournalEntry],
+    plan: CutoverPlan,
+) -> Mapping[str, Any]:
+    """Require the maintenance-proven handoff that invalidates forward apply."""
+
+    prepared = require_caddy_prepared_dependency(entries, plan)
+    arm = require_caddy_maintenance_arm_dependency(
+        entries, plan, allow_restore=True
+    )
+    intents = [
+        entry
+        for entry in entries
+        if entry.value["event"] == "caddy_pre_intent_restore_intent"
+    ]
+    if len(intents) != 1 or intents[0].value["sequence"] <= 1:
+        raise ProductionCutoverError(
+            "production_caddy_pre_intent_restore_intent_missing"
+        )
+    intent = _hashed(
+        intents[0].value["evidence"],
+        _CADDY_PRE_INTENT_RESTORE_INTENT_FIELDS,
+        "receipt_sha256",
+        "Caddy pre-intent restore intent",
+    )
+    freeze = FreezePlan.from_mapping(plan.value["freeze_plan"])
+    rollback_entry = _last(entries, "rollback_terminal")
+    expected_basis = "cutover_rollback" if rollback_entry is not None else "freeze_abort"
+    if (
+        intent["schema"] != CADDY_PRE_INTENT_RESTORE_INTENT_SCHEMA
+        or intent["release_revision"] != plan.value["release_revision"]
+        or intent["freeze_plan_sha256"] != freeze.sha256
+        or intent["cutover_plan_sha256"] != plan.sha256
+        or intent["freeze_approval_sha256"]
+        != plan.value["freeze_approval_sha256"]
+        or intent["authority_sha256"] != prepared["authority_sha256"]
+        or intent["caddy_prepare_receipt_sha256"]
+        != prepared["caddy_prepare_receipt_sha256"]
+        or intent["maintenance_arm_receipt_sha256"]
+        != arm["receipt_sha256"]
+        or intent["original_caddy_sha256"]
+        != prepared["original_caddy_sha256"]
+        or intent["maintenance_caddy_sha256"]
+        != prepared["maintenance_caddy_sha256"]
+        or intent["maintenance_caddy_sha256"]
+        != arm["maintenance_caddy_sha256"]
+        or intent["active_route_projection_sha256"]
+        != arm["active_route_projection_sha256"]
+        or intent["public_status"] != 503
+        or intent["public_verified"] is not True
+        or intent["v1_public_route_closed"] is not True
+        or intent["exact_original_artifact_available"] is not True
+        or intent["forward_apply_invalidated"] is not True
+        or intent["recovery_basis"] != expected_basis
+        or intent["rollback_terminal_receipt_sha256"]
+        != (
+            None
+            if rollback_entry is None
+            else rollback_entry.value["evidence"].get("receipt_sha256")
+        )
+        or intent["rollback_mode"] != "pre_intent_exact_bytes"
+        or intent["production_mutation_performed"] is not False
+        or intent["caller_selected_input_accepted"] is not False
+        or intent["secret_material_recorded"] is not False
+        or intent["secret_digest_recorded"] is not False
+        or type(intent["restore_started_at_unix"]) is not int
+        or intent["restore_started_at_unix"] < arm["armed_at_unix"]
+        or intents[0].value["recorded_at_unix"]
+        != intent["restore_started_at_unix"]
+        or (
+            rollback_entry is None
+            and intents[0].value["sequence"] != 2
+        )
+        or (
+            rollback_entry is not None
+            and (
+                rollback_entry.value["sequence"]
+                != intents[0].value["sequence"] - 1
+                or _last(entries, "activation_commit_intent") is not None
+                or _last(entries, "terminal") is not None
+            )
+        )
+    ):
+        raise ProductionCutoverError(
+            "production_caddy_pre_intent_restore_intent_invalid"
+        )
+    if rollback_entry is not None:
+        _validate_rollback_terminal(
+            rollback_entry.value["evidence"], plan=plan, entries=entries
+        )
+    return intent
+
+
+def require_caddy_pre_intent_restore_dependency(
+    entries: list[JournalEntry],
+    plan: CutoverPlan,
+) -> Mapping[str, Any]:
+    """Require exact legacy restoration after its durable gateway terminal."""
+
+    prepared = require_caddy_prepared_dependency(entries, plan)
+    arm = require_caddy_maintenance_arm_dependency(
+        entries, plan, allow_restore=True
+    )
+    intent = require_caddy_pre_intent_restore_intent_dependency(entries, plan)
+    terminals = [
+        entry
+        for entry in entries
+        if entry.value["event"] == "caddy_pre_intent_restored"
+    ]
+    intent_entry = _last(entries, "caddy_pre_intent_restore_intent")
+    if (
+        len(terminals) != 1
+        or intent_entry is None
+        or terminals[0].value["sequence"]
+        != intent_entry.value["sequence"] + 1
+        or terminals[0].value["sequence"] != len(entries) - 1
+    ):
+        raise ProductionCutoverError(
+            "production_caddy_pre_intent_restore_dependency_missing"
+        )
+    restored = _hashed(
+        terminals[0].value["evidence"],
+        _CADDY_PRE_INTENT_RESTORE_FIELDS,
+        "receipt_sha256",
+        "Caddy pre-intent restore dependency",
+    )
+    freeze = FreezePlan.from_mapping(plan.value["freeze_plan"])
+    expected_gateway_event = (
+        "rollback_terminal"
+        if intent["recovery_basis"] == "cutover_rollback"
+        else "freeze_aborted"
+    )
+    if (
+        restored["schema"] != CADDY_PRE_INTENT_RESTORE_SCHEMA
+        or restored["release_revision"] != plan.value["release_revision"]
+        or restored["freeze_plan_sha256"] != freeze.sha256
+        or restored["cutover_plan_sha256"] != plan.sha256
+        or restored["freeze_approval_sha256"]
+        != plan.value["freeze_approval_sha256"]
+        or restored["authority_sha256"] != prepared["authority_sha256"]
+        or restored["caddy_prepare_receipt_sha256"]
+        != prepared["caddy_prepare_receipt_sha256"]
+        or restored["maintenance_arm_receipt_sha256"]
+        != arm["receipt_sha256"]
+        or restored["restore_intent_receipt_sha256"]
+        != intent["receipt_sha256"]
+        or restored["original_caddy_sha256"]
+        != prepared["original_caddy_sha256"]
+        or _SHA256.fullmatch(
+            str(restored["active_route_projection_sha256"])
+        )
+        is None
+        or restored["exact_original_caddy_restored"] is not True
+        or restored["caddy_validated"] is not True
+        or restored["caddy_reloaded"] is not True
+        or restored["live_readback_verified"] is not True
+        or restored["v1_public_route_restored"] is not True
+        or restored["gateway_terminal_event"] != expected_gateway_event
+        or _SHA256.fullmatch(
+            str(restored["gateway_terminal_receipt_sha256"])
+        )
+        is None
+        or restored["recovery_basis"] != intent["recovery_basis"]
+        or any(
+            _SHA256.fullmatch(str(restored[field])) is None
+            for field in (
+                "legacy_service_active_sha256",
+                "legacy_service_health_sha256",
+            )
+        )
+        or restored["rollback_mode"] != "pre_intent_exact_bytes"
+        or restored["production_mutation_performed"] is not True
+        or restored["caller_selected_input_accepted"] is not False
+        or restored["secret_material_recorded"] is not False
+        or restored["secret_digest_recorded"] is not False
+        or type(restored["restored_at_unix"]) is not int
+        or restored["restored_at_unix"] < intent["restore_started_at_unix"]
+        or terminals[0].value["recorded_at_unix"]
+        != restored["restored_at_unix"]
+    ):
+        raise ProductionCutoverError(
+            "production_caddy_pre_intent_restore_dependency_invalid"
+        )
+    rollback_entry = _last(entries, "rollback_terminal")
+    if (
+        rollback_entry is not None
+        and restored["gateway_terminal_receipt_sha256"]
+        != rollback_entry.value["evidence"].get("receipt_sha256")
+    ):
+        raise ProductionCutoverError(
+            "production_caddy_pre_intent_restore_dependency_invalid"
+        )
+    return restored
+
 
 def _require_activation_commit_intent(
     value: Mapping[str, Any],
@@ -6022,12 +7534,52 @@ def execute_cutover(
 
     now = int(time.time()) if now_unix is None else now_unix
     freeze = FreezePlan.from_mapping(plan.value["freeze_plan"])
-    approval = CutoverApproval.from_mapping(
-        approval_value,
-        plan=freeze,
-        now_unix=now,
-    )
     with dependencies.lock():
+        freeze_abort_entries = [
+            entry
+            for entry in dependencies.journal.load(freeze.sha256)
+            if entry.value["event"] == "freeze_aborted"
+        ]
+        if freeze_abort_entries:
+            if len(freeze_abort_entries) != 1:
+                raise ProductionCutoverError(
+                    "production_freeze_abort_receipt_invalid"
+                )
+            freeze_abort = _validate_freeze_abort_receipt(
+                freeze_abort_entries[0].value["evidence"],
+                plan=freeze,
+            )
+            if freeze_abort["cutover_plan_sha256"] not in {None, plan.sha256}:
+                raise ProductionCutoverError(
+                    "production_freeze_abort_receipt_invalid"
+                )
+            raise ProductionCutoverError(
+                "production_cutover_freeze_already_aborted"
+            )
+        approval, claim_entry, claim = _validated_claimed_approval(
+            dependencies.journal,
+            plan=freeze,
+            approval_value=approval_value,
+        )
+        if approval.sha256 != plan.value["freeze_approval_sha256"]:
+            raise PermissionError(
+                "cutover does not reuse the pre-stop owner approval"
+            )
+        require_caddy_maintenance_arm_dependency(
+            dependencies.journal.load(plan.sha256), plan
+        )
+        _require_or_record_passkey_intent(
+            dependencies.journal,
+            journal_plan_sha256=plan.sha256,
+            phase="cutover_apply",
+            freeze_plan_sha256=freeze.sha256,
+            freeze_approval_sha256=approval.sha256,
+            cutover_plan_sha256=plan.sha256,
+            claim_entry=claim_entry,
+            claim=claim,
+            now_unix=now,
+            cutover_plan=plan,
+        )
         entries = dependencies.journal.load(plan.sha256)
         rollback_terminal = _last(entries, "rollback_terminal")
         if rollback_terminal is not None:
@@ -6048,8 +7600,6 @@ def execute_cutover(
                     "production_cron_cutover_terminal_lineage_invalid"
                 )
             return copy.deepcopy(dict(terminal_entry.value["evidence"]))
-        if not entries and approval.sha256 != plan.value["freeze_approval_sha256"]:
-            raise PermissionError("cutover does not reuse the pre-stop owner approval")
         entries = _append_authority(
             dependencies.journal,
             plan.sha256,
@@ -6866,15 +8416,29 @@ def execute_fixed_staged(command: str) -> Mapping[str, Any]:
         plan = FreezePlan.from_mapping(
             _load_staged_json(STAGED_FREEZE_PLAN_PATH)
         )
+        staged_cutover = (
+            CutoverPlan.from_mapping(
+                _load_staged_json(STAGED_CUTOVER_PLAN_PATH)
+            )
+            if os.path.lexists(STAGED_CUTOVER_PLAN_PATH)
+            else None
+        )
+        approval_value = _load_staged_json(STAGED_FREEZE_APPROVAL_PATH)
+        require_recorded_passkey_claim(
+            journal,
+            plan_sha256=plan.sha256,
+            approval_sha256=str(approval_value.get("approval_sha256")),
+            release_revision=plan.value["release_revision"],
+        )
         receipt = abort_freeze(
             plan,
-            _load_staged_json(STAGED_FREEZE_APPROVAL_PATH),
+            approval_value,
             FreezeDependencies(
                 services=services,
                 snapshots=process,
                 journal=journal,
             ),
-            cutover_plan_staged=os.path.lexists(STAGED_CUTOVER_PLAN_PATH),
+            cutover_plan=staged_cutover,
         )
         return receipt
     if command == "phase-b-preflight":
@@ -6882,9 +8446,11 @@ def execute_fixed_staged(command: str) -> Mapping[str, Any]:
             _load_staged_json(STAGED_CUTOVER_PLAN_PATH)
         )
         freeze = FreezePlan.from_mapping(plan.value["freeze_plan"])
-        CutoverApproval.from_mapping(
-            _load_staged_json(STAGED_FREEZE_APPROVAL_PATH),
+        approval_value = _load_staged_json(STAGED_FREEZE_APPROVAL_PATH)
+        _validated_claimed_approval(
+            journal,
             plan=freeze,
+            approval_value=approval_value,
         )
         receipt = _require_database_receipt(
             ProductionDatabaseArtifactBoundary(process).preflight(plan),
@@ -6931,9 +8497,11 @@ def execute_fixed_staged(command: str) -> Mapping[str, Any]:
         plan = CutoverPlan.from_mapping(
             _load_staged_json(STAGED_CUTOVER_PLAN_PATH)
         )
+        freeze = FreezePlan.from_mapping(plan.value["freeze_plan"])
+        approval_value = _load_staged_json(STAGED_FREEZE_APPROVAL_PATH)
         return execute_cutover(
             plan,
-            _load_staged_json(STAGED_FREEZE_APPROVAL_PATH),
+            approval_value,
             CutoverDependencies(
                 services=services,
                 snapshots=process,

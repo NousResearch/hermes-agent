@@ -41,6 +41,8 @@ def _pin_release_key(monkeypatch: pytest.MonkeyPatch) -> None:
 def _chain(
     *,
     preexisting_owner_subnet: bool = False,
+    authority_expires_at_unix: int = helpers.NOW + 300,
+    owner_expires_at_unix: int = helpers.NOW + 300,
 ) -> apply.ValidatedFoundationAChain:
     signed_evidence = helpers._signed_network_evidence(
         preexisting_owner_subnet=preexisting_owner_subnet,
@@ -48,16 +50,24 @@ def _chain(
     evidence = helpers._evidence(
         preexisting_owner_subnet=preexisting_owner_subnet,
     )
-    authority, _plan, _evidence = helpers._authority(evidence=evidence)
+    authority, _plan, _evidence = helpers._authority(
+        evidence=evidence,
+        expires_at_unix=authority_expires_at_unix,
+        owner_expires_at_unix=owner_expires_at_unix,
+    )
     return apply.decode_validated_foundation_a_chain(
         pre_foundation_authority_raw=gate.canonical_json_bytes(authority),
         owner_reauthentication_receipt_raw=gate.canonical_json_bytes(
-            helpers._owner_reauth_receipt()
+            helpers._owner_reauth_receipt(
+                expires_at_unix=owner_expires_at_unix,
+            )
         ),
         network_evidence_raw=gate.canonical_json_bytes(
             signed_evidence
         ),
-        project_ancestry_evidence_raw=helpers._signed_ancestry_raw(),
+        project_ancestry_evidence_raw=helpers._signed_ancestry_raw(
+            owner_expires_at_unix=owner_expires_at_unix,
+        ),
         release_public_key=helpers.RELEASE_KEY.public_key(),
         network_collector_public_key=helpers.NETWORK_KEY.public_key(),
         project_ancestry_collector_public_key=(
@@ -555,6 +565,109 @@ def test_all_preexisting_exact_foundation_performs_no_mutation(
         subnet_receipt["resource_identity"]["local_route_identity"]
         ["numeric_id"]
         == signed_route["numeric_id"]
+    )
+
+
+def test_expired_authority_after_terminal_ancestry_is_cleanly_classified(
+    tmp_path: Path,
+) -> None:
+    chain = _chain(
+        preexisting_owner_subnet=True,
+        authority_expires_at_unix=helpers.NOW + 300,
+        owner_expires_at_unix=helpers.NOW + 600,
+    )
+    expired = False
+
+    class ExpiringProvider(_FakeProvider):
+        ancestry_calls = 0
+
+        def observe_ancestry_chain(self) -> list[Mapping[str, Any]]:
+            nonlocal expired
+            self.ancestry_calls += 1
+            live = super().observe_ancestry_chain()
+            if self.ancestry_calls == 2:
+                expired = True
+            return live
+
+    provider = ExpiringProvider(chain)
+    provider.states = {
+        step.name: "exact" for step in chain.plan.foundation_steps
+    }
+    store = _journal_for_test(tmp_path / "journal")
+
+    with pytest.raises(apply.FoundationApplyFailed) as caught:
+        apply._apply_with_provider(
+            chain=chain,
+            private_key=helpers.RELEASE_KEY,
+            provider=provider,
+            journal=store,
+            now_unix=lambda: (
+                helpers.NOW + 301 if expired else helpers.NOW + 2
+            ),
+        )
+
+    receipt = caught.value.receipt
+    assert provider.ancestry_calls == 2
+    assert provider.execute_calls == []
+    assert provider.rollback_calls == []
+    assert receipt["failed_step_name"] == "sign_success_receipt"
+    assert receipt["failure_code"] == (
+        "owner_gate_foundation_authority_expired"
+    )
+    assert receipt["terminal_state"] == "rolled_back_clean"
+    assert receipt["partial_unknown_state"] is False
+    assert [
+        item["disposition"] for item in receipt["completed_step_receipts"]
+    ] == ["preexisting_exact"] * len(chain.plan.foundation_steps)
+    assert frozenset(store.list(apply._transaction_id(chain))) == {
+        "manifest",
+        "failure-intent",
+        "failure",
+        *{
+            f"s{index}-preexisting"
+            for index in range(len(chain.plan.foundation_steps))
+        },
+    }
+
+
+def test_terminal_nonmutation_proof_requires_exact_preexisting_inventory(
+    tmp_path: Path,
+) -> None:
+    chain = _chain(preexisting_owner_subnet=True)
+    store = _journal_for_test(tmp_path / "journal")
+    transaction_id = apply._transaction_id(chain)
+    receipts = [
+        {
+            "step_name": step.name,
+            "disposition": "preexisting_exact",
+        }
+        for step in chain.plan.foundation_steps
+    ]
+    store.publish(transaction_id, "manifest", {"phase": "manifest"})
+    for index in range(len(chain.plan.foundation_steps)):
+        store.publish(
+            transaction_id,
+            f"s{index}-preexisting",
+            {"phase": "preexisting_exact"},
+        )
+
+    assert apply._failure_is_proven_nonmutating(
+        journal=store,
+        transaction_id=transaction_id,
+        failed_step_name="sign_success_receipt",
+        step_receipts=receipts,
+        created_steps=[],
+        plan=chain.plan,
+    )
+
+    store.publish(transaction_id, "s0-pre", {"phase": "precondition_absent"})
+    assert not apply._failure_is_proven_nonmutating(
+        journal=store,
+        transaction_id=transaction_id,
+        failed_step_name="sign_success_receipt",
+        step_receipts=receipts,
+        created_steps=[],
+        plan=chain.plan,
     )
 
 

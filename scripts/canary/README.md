@@ -311,10 +311,91 @@ field in this handoff.
 
 ### Inert owner-gate HOST/CLOUD observation
 
+The owner-side release author is a separate edge command. It never accepts a
+private key or a caller-selected publication path. First publish an exact clean
+`main` checkout whose sole `origin` is the reviewed fork and whose
+`origin/main`, `HEAD`, tree, worktree, submodules, and outer-stage-zero sources
+all resolve to the release SHA:
+
+```bash
+python -m scripts.canary.owner_gate_release_author \
+  publish-release-source \
+  --source-root /absolute/clean/fork-main \
+  --release-revision <exact-40-character-release-sha>
+```
+
+This performs a local `--no-hardlinks --no-checkout` clone, checks out the
+exact SHA detached, resets and re-verifies the fixed fork origin, and publishes
+with one atomic no-replace rename at
+`~/.hermes/trusted/owner-gate-release-sources/<release-sha>`. A conflicting
+destination or fixed `.pending` path fails closed.
+
+After Foundation A, the same edge author can build the canonical unsigned
+release trust manifest from the exact offline package inventory, the one
+Foundation collector key used by both network and ancestry evidence, the three
+distinct final collector keys, and the signed credential-migration envelope:
+
+```bash
+python -m scripts.canary.owner_gate_release_author \
+  author-unsigned-trust \
+  --source-root /absolute/clean/fork-main \
+  --release-revision <final-release-sha> \
+  --wheelhouse-root /absolute/immutable/wheelhouse \
+  --wheelhouse-manifest /absolute/immutable/wheelhouse-manifest.json \
+  --interpreter-sha256 <sha256> \
+  --foundation-source-revision <foundation-release-sha> \
+  --foundation-source-tree-oid <foundation-tree-oid> \
+  --pre-foundation-authority /absolute/immutable/pre-foundation.json \
+  --owner-reauth-receipt /absolute/immutable/owner-reauth.json \
+  --network-evidence /absolute/immutable/network-evidence.json \
+  --foundation-collector-public-key /absolute/immutable/foundation.pub \
+  --project-ancestry-evidence /absolute/immutable/project-ancestry.json \
+  --direct-iam-identity-authority /absolute/immutable/direct-iam.json \
+  --network-collector-public-key /absolute/immutable/final-network.pub \
+  --cloud-collector-public-key /absolute/immutable/final-cloud.pub \
+  --host-collector-public-key /absolute/immutable/final-host.pub \
+  --credential-migration-envelope /absolute/immutable/credential.json
+```
+
+The fixed output is
+`~/.hermes/owner-gate-release-authority/manifests/<release-sha>.trust.unsigned.json`
+at mode `0444`. Sign it only through the same fixed release author, repeating
+the exact inputs used to author it:
+
+```bash
+python -m scripts.canary.owner_gate_release_author \
+  sign-trust \
+  --source-root /absolute/clean/fork-main \
+  --release-revision <final-release-sha> \
+  --wheelhouse-root /absolute/immutable/wheelhouse \
+  --wheelhouse-manifest /absolute/immutable/wheelhouse-manifest.json \
+  --interpreter-sha256 <same-sha256> \
+  --foundation-source-revision <same-foundation-release-sha> \
+  --foundation-source-tree-oid <same-foundation-tree-oid> \
+  --pre-foundation-authority /absolute/immutable/pre-foundation.json \
+  --owner-reauth-receipt /absolute/immutable/owner-reauth.json \
+  --network-evidence /absolute/immutable/network-evidence.json \
+  --foundation-collector-public-key /absolute/immutable/foundation.pub \
+  --project-ancestry-evidence /absolute/immutable/project-ancestry.json \
+  --direct-iam-identity-authority /absolute/immutable/direct-iam.json \
+  --network-collector-public-key /absolute/immutable/final-network.pub \
+  --cloud-collector-public-key /absolute/immutable/final-cloud.pub \
+  --host-collector-public-key /absolute/immutable/final-host.pub \
+  --credential-migration-envelope /absolute/immutable/credential.json
+```
+
+`owner_gate_trust_author` has no `sign` CLI action; its only CLI action is
+`init-key`. `owner_gate_release_author sign-trust` re-authors and compares the
+unsigned manifest before signing, revalidates the complete signed Foundation
+apply journal lineage and package inventory, and writes only the fixed
+`<release-sha>.trust.json` path. It accepts neither a Foundation apply receipt
+path nor an output path.
+
 The first combined inert observation is a separate exact action on the
 release-bound full owner launcher. It does not replay the Foundation operation
 and accepts no evidence, key, plan, journal, stream, output, or remote-command
-argument. Package preparation remains separate and must publish exactly these
+argument. Package *authoring* remains separate. The fixed owner-side input
+preparer validates an already-materialized package and publishes exactly these
 owner-owned, mode-`0400`, single-link regular files below an owner-owned
 mode-`0700` release directory:
 
@@ -337,7 +418,59 @@ cryptographically validated successful outer Foundation transaction, then
 loads Foundation B only through
 `load_validated_foundation_apply_chain(foundation_a)`.
 
-After the two streams and pins have been prepared, run:
+The preparer accepts no path. Before it can write anything, these two exact
+owner-only prerequisites must already exist:
+
+```text
+~/.hermes/trusted/owner-gate-release-sources/<release-sha>/
+~/.hermes/trusted/owner-gate-offline-bundles/<release-sha>/
+```
+
+The release source root is mode `0700`, has exact `HEAD=<release-sha>`, has no
+tracked or untracked change, and its Git tree must equal the source tree in the
+sealed release-bound owner-support manifest. The bundle root is the immutable
+mode-`0555` result of the reviewed `owner_gate_package.materialize_bundle`
+builder. Its inventory is closed: every directory is mode `0555`; every file
+has the exact builder mode and is owner-owned and single-link; the signed
+release-trust manifest, its bound Foundation apply receipt digest, direct-IAM
+authority, package manifest, payload/wheel inventory, collector keys, and
+credential-migration envelope must all verify. This action does not download,
+author, repair, or select a bundle.
+
+First run the read-only prerequisite check. It creates neither the input root
+nor a lock or pending directory and reports the exact missing or invalid fixed
+prerequisite:
+
+```bash
+/Users/emillomliev/.local/share/uv/python/\
+cpython-3.11.15-macos-aarch64-none/bin/python3.11 \
+  -I -S -B -X pycache_prefix=/var/empty/muncho-canary \
+  /absolute/clean/hermes-agent/scripts/canary/full_canary_owner_launcher.py \
+  --release-sha <exact-40-character-release-sha> \
+  --preflight-owner-gate-inert-inputs
+```
+
+Then publish the two reviewed exact-tree streams and their canonical
+self-hashed pins with the pathless action:
+
+```bash
+/Users/emillomliev/.local/share/uv/python/\
+cpython-3.11.15-macos-aarch64-none/bin/python3.11 \
+  -I -S -B -X pycache_prefix=/var/empty/muncho-canary \
+  /absolute/clean/hermes-agent/scripts/canary/full_canary_owner_launcher.py \
+  --release-sha <exact-40-character-release-sha> \
+  --prepare-owner-gate-inert-inputs
+```
+
+The preparer fsyncs each file and the private pending directory before one
+atomic no-replace directory rename, then fsyncs the parent and loads the result
+through the same pinned reader used by the observation. A valid final directory
+is an exact replay and is never rebuilt. A crash after the rename is therefore
+recoverable by replay. Any `.pending` directory means publication did not reach
+the atomic boundary and requires manual reconciliation; it is never removed or
+silently resumed.
+
+After the preparation receipt succeeds, run:
 
 ```bash
 /Users/emillomliev/.local/share/uv/python/\
@@ -378,6 +511,45 @@ retained and a new transaction is collected.
 Stdout is only the compact canonical secret-free receipt and digest inventory,
 not the three evidence documents. It never contains an access token, private
 key, generic command, or mutable pair.
+
+### Fixed owner-gate activation-seal install
+
+After `--stage-owner-gate-activation-evidence` has successfully staged and
+validated the complete release-bound evidence set, install the host activation
+seal with the sole fixed action:
+
+```bash
+/Users/emillomliev/.local/share/uv/python/\
+cpython-3.11.15-macos-aarch64-none/bin/python3.11 \
+  -I -S -B -X pycache_prefix=/var/empty/muncho-canary \
+  /absolute/clean/hermes-agent/scripts/canary/full_canary_owner_launcher.py \
+  --release-sha <exact-40-character-release-sha> \
+  --install-owner-gate-activation-seal
+```
+
+There is no host, path, command, seal, receipt, or payload argument. The
+launcher uses only the signed numeric identity and host key for
+`muncho-owner-gate-01`, the pinned owner account, the sealed gcloud runtime,
+IAP, and the complete fixed SSH option tuple. The only permitted remote command
+is:
+
+```text
+/usr/bin/sudo --non-interactive --user=root -- /opt/muncho-owner-gate/current/venv/bin/python -I -B /opt/muncho-owner-gate/current/bin/muncho-owner-gate-activate-storage install
+```
+
+The remote release validates the already-staged evidence before installing or
+exactly replaying `/etc/muncho-owner-gate/storage-executor-enabled` and the
+release-addressed receipt below
+`/var/lib/muncho-owner-gate/activation-receipts/`. Before any mutation, it also
+requires the two-field canonical release request sent on stdin by the fixed
+launcher and rejects it unless that SHA equals its own resolved immutable
+release. The launcher accepts only one canonical newline-terminated
+`muncho-owner-gate-storage-activation-response.v1` result whose release equals
+the requested SHA, disposition is `installed` or `exact_replay`, seal and
+receipt paths and SHA-256 values are exact, the service contract is accepted,
+`cloud_mutation_performed=false`, and `response_sha256` verifies. This is the
+single bounded host activation mutation; it grants no generic SSH or Cloud
+mutation surface.
 
 ## Later host/runtime gates
 
@@ -809,3 +981,83 @@ marker-wait and observation-staging actions are not exposed as standalone owner
 CLI choices. Run the explicit `stop`, `retire-secrets`, and stopped-preflight
 actions afterward as terminal verification/idempotent cleanup; a partial live
 result is never promotion evidence.
+
+## Production cutover owner state chain
+
+After every production prerequisite in
+`docs/muncho-production-cutover-artifacts.md` is satisfied, the executable
+owner surface is one `prepare-cutover` followed by five one-state
+`resume-cutover` calls. All paths are absolute, each output is create-only,
+and each resume reads the preceding immutable output and writes a new filename:
+
+```bash
+python -m scripts.canary.production_cutover_owner_launcher \
+  prepare-cutover \
+  --revision <exact-40-character-release-sha> \
+  --isolated-canary-goal-prerequisite \
+    /absolute/owner-only/cutover/isolated-canary-prerequisite.json \
+  --owner-private-key /absolute/owner-only/cutover-owner-ed25519 \
+  --truth-mode start_new_truth_epoch \
+  --output /absolute/owner-only/cutover/00-awaiting-bridge-bootstrap.json
+
+python -m scripts.canary.production_cutover_owner_launcher \
+  resume-cutover --revision <same-exact-release-sha> \
+  --workspace /absolute/owner-only/cutover/00-awaiting-bridge-bootstrap.json \
+  --output /absolute/owner-only/cutover/01-awaiting-bridge-passkey.json
+
+# Review 01 and approve only bridge_request.legacy_approval_url.
+python -m scripts.canary.production_cutover_owner_launcher \
+  resume-cutover --revision <same-exact-release-sha> \
+  --workspace /absolute/owner-only/cutover/01-awaiting-bridge-passkey.json \
+  --output /absolute/owner-only/cutover/02-awaiting-cutover-passkey.json
+
+# Review 02 and approve only advertised_approval_url with the exact v2 passkey.
+python -m scripts.canary.production_cutover_owner_launcher \
+  resume-cutover --revision <same-exact-release-sha> \
+  --workspace /absolute/owner-only/cutover/02-awaiting-cutover-passkey.json \
+  --output /absolute/owner-only/cutover/03-passkey-claim-recorded.json
+
+python -m scripts.canary.production_cutover_owner_launcher \
+  resume-cutover --revision <same-exact-release-sha> \
+  --workspace /absolute/owner-only/cutover/03-passkey-claim-recorded.json \
+  --output /absolute/owner-only/cutover/04-cutover-staged.json
+
+python -m scripts.canary.production_cutover_owner_launcher \
+  resume-cutover --revision <same-exact-release-sha> \
+  --workspace /absolute/owner-only/cutover/04-cutover-staged.json \
+  --output /absolute/owner-only/cutover/05-cutover-terminal.json
+```
+
+The two approvals are distinct and ordered: the legacy passkey authorizes only
+the fixed temporary approval bridge; the v2 passkey authorizes the exact
+release-bound FreezePlan and is consumed into `passkey_claim_recorded`. Never
+reuse an output filename for a different state, input, retry, or release. An
+expired approval starts a fresh `prepare-cutover` chain under fresh filenames;
+old workspaces and journals remain evidence.
+
+The fourth resume durably produces state `cutover_staged`; it binds the final
+tail, stopped services, cron continuity, authored and staged cutover plan, and
+their receipts. The fifth resume is the only route to the fixed idempotent
+internal `converge-cutover` root action and the terminal receipt.
+
+Recovery follows that boundary. Before `cutover_staged`, the fixed internal
+`abort-freeze` may restore only the signed exact legacy/Caddy pre-state; once
+its validated `freeze_aborted` terminal exists, that attempt is closed and a
+fresh `prepare-cutover` and approval chain is required. From
+`cutover_staged` but before a cutover `passkey_intent`, `abort-freeze` is valid
+only through the maintenance-proven Caddy restore handoff; exact Caddy bytes
+are restored only after that gateway abort is terminal. After a cutover
+`passkey_intent` but before `activation_commit_intent`, the cutover transaction
+must first publish its validated `rollback_terminal`; that path does not call
+`abort-freeze`. Either pre-intent recovery may close the approved attempt as
+`freeze_aborted` or `cutover_rolled_back_restored`. Preserve its workspace and
+journals, then start a fresh `prepare-cutover` and approval chain under fresh
+filenames; retrying the same fifth-stage workspace cannot resume forward
+apply. Same-workspace fifth-stage retries are only for incomplete recovery or
+an already forward-only transaction. After `activation_commit_intent`, such
+retries from the preserved `04-cutover-staged.json`, each into a new absolute
+recovery-attempt output, may converge only to
+`private_v2_active` or persistent fixed 503 `maintenance_active`, never v1.
+There is no public owner `recover` or `converge` subcommand; do not invoke the
+sealed `converge-cutover` action directly. The production cutover artifact
+document is the normative detailed recovery matrix and runbook.

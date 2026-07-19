@@ -1246,19 +1246,31 @@ def _validate_production_ingress_observation(
     caddy = observation["caddy"]
     facts = {
         "production_ingress_observation_sha256": envelope_sha256,
-        "old_v1_masked": (
-            old_v1["load_state"] == "masked"
-            and old_v1["active_state"] == "inactive"
-            and old_v1["unit_file_state"] == "masked"
-            and old_v1["fragment_path"] == "/dev/null"
-            and old_v1["permanent_mask_target"] == "/dev/null"
+        "legacy_v1_service_active": (
+            old_v1["load_state"] == "loaded"
+            and old_v1["active_state"] == "active"
+            and old_v1["sub_state"] == "running"
+            and old_v1["unit_file_state"] == "enabled"
+            and old_v1["fragment_path"]
+            == str(ingress.OLD_V1_FRAGMENT_PATH)
+            and old_v1["fragment_sha256"]
+            == ingress.OLD_V1_FRAGMENT_SHA256
+            and old_v1["active_process_stable"] is True
+        ),
+        "legacy_v1_trusted_for_v2": old_v1["trusted_for_v2"],
+        "legacy_v1_caddy_route_active": (
+            caddy["reverse_proxy_upstreams"]
+            == [ingress.LEGACY_V1_UPSTREAM]
+            and caddy["legacy_v1_upstream_active"] is True
         ),
         "caddy_cutover_performed": caddy["private_v2_upstream_active"],
         "rollback_mode": caddy["rollback_mode"],
     }
     if facts != {
         "production_ingress_observation_sha256": envelope_sha256,
-        "old_v1_masked": True,
+        "legacy_v1_service_active": True,
+        "legacy_v1_trusted_for_v2": False,
+        "legacy_v1_caddy_route_active": True,
         "caddy_cutover_performed": False,
         "rollback_mode": "pre_migration_v1_only",
     }:

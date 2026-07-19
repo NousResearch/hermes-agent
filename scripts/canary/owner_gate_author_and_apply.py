@@ -145,7 +145,7 @@ from scripts.canary import trusted_signer_author as signer_author
 OPERATION = "author-and-apply"
 INTENT_SCHEMA = "muncho-owner-gate-foundation-author-intent.v1"
 TERMINAL_SCHEMA = "muncho-owner-gate-foundation-author-terminal.v1"
-MAX_AUTHORITY_TTL_SECONDS = 600
+MAX_AUTHORITY_TTL_SECONDS = pre_foundation.MAX_AUTHORITY_TTL_SECONDS
 _REVISION = re.compile(r"^[0-9a-f]{40}$")
 _SHA256 = re.compile(r"^[0-9a-f]{64}$")
 

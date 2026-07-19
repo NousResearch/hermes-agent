@@ -25,6 +25,7 @@ from gateway.operational_edge_catalog import asset_catalog
 from scripts.canary import package_production_cutover_artifacts as package
 from tests.gateway.test_canonical_writer_production_cutover import (
     _cron_authority,
+    _database_recovery_receipt,
     _runtime_attestation,
 )
 from tests.gateway.test_production_capability_prerequisites import _topology
@@ -168,9 +169,21 @@ def _unit_inputs() -> dict:
             "user": "ai-platform-brain", "group": "ai-platform-brain",
             "uid": RELEASE_OWNER_UID, "gid": RELEASE_OWNER_GID,
         },
+        "writer": {
+            "user": "muncho-canonical-writer",
+            "group": "muncho-canonical-writer", "uid": 2000, "gid": 2000,
+        },
+        "projector": {
+            "user": "muncho-projector", "group": "muncho-projector",
+            "uid": 2004, "gid": 2004,
+        },
         "routeback": {
             "user": "muncho-discord-egress", "group": "muncho-discord-egress",
             "uid": 2002, "gid": 2002,
+        },
+        "connector": {
+            "user": "muncho-discord-connector",
+            "group": "muncho-discord-connector", "uid": 2001, "gid": 2001,
         },
         "mac_ops": {
             "user": "muncho-mac-ops-edge", "group": "muncho-mac-ops-edge",
@@ -184,17 +197,28 @@ def _unit_inputs() -> dict:
             "user": "muncho-worker", "group": "muncho-worker",
             "uid": 2007, "gid": 2007,
         },
-        "worker_client_group": "muncho-worker-clients",
-        "worker_client_gid": 2008,
+        "writer_client_group": {"group": "muncho-writer-client", "gid": 2005},
+        "worker_client_group": {"group": "muncho-worker-clients", "gid": 2008},
         "operational_edge_identities": operational_identities,
         "operational_edge_socket_groups": operational_socket_groups,
         "writer_capability_public_key_id": "c" * 64,
+        "discord_edge_receipt_public_key_id": "a" * 64,
         "operational_edge_key_foundation_sha256": (
             _operational_key_foundation()["receipt_sha256"]
         ),
         "operational_edge_receipt_public_key_ids": (
             _operational_receipt_key_ids()
         ),
+        "discord_reconciliation_intent": {
+            "schema": package.DISCORD_RECONCILIATION_INTENT_SCHEMA,
+            "purpose": package.DISCORD_RECONCILIATION_INTENT_PURPOSE,
+            "release_revision": REVISION,
+            "legacy_public_policy_sha256": "1" * 64,
+            "target_public_policy_sha256": "2" * 64,
+            "reviewed_reconciliation": True,
+            "secret_material_recorded": False,
+            "secret_digest_recorded": False,
+        },
         "release_owner_uid": RELEASE_OWNER_UID,
         "release_owner_gid": RELEASE_OWNER_GID,
         "bwrap_sha256": "6" * 64,
@@ -1070,7 +1094,7 @@ def _cutover_plan(
         "evidence_sha256": _sha_json(isolated_canary_unsigned),
     }
     authority_unsigned = {
-        "schema": "muncho-production-cutover-authority.v3",
+        "schema": "muncho-production-cutover-authority.v4",
         "release_revision": REVISION,
         "artifacts": artifacts,
         "gateway_target_identity": stable(gateway_target_observation),
@@ -1083,6 +1107,7 @@ def _cutover_plan(
         "mechanical_job_host_facts": host_facts,
         "mechanical_job_package": mechanical_package,
         "isolated_canary_goal_prerequisite": isolated_canary,
+        "database_recovery_receipt": _database_recovery_receipt(),
         "legacy_truth_decision": legacy_truth_decision,
         "final_tail_bounds": {
             "max_appended_rows": 10_000,
@@ -1096,7 +1121,7 @@ def _cutover_plan(
         "authority_sha256": _sha_json(authority_unsigned),
     }
     freeze_unsigned = {
-        "schema": "muncho-production-legacy-freeze-plan.v2",
+        "schema": "muncho-production-legacy-freeze-plan.v3",
         "release_revision": REVISION,
         "target": target,
         "owner_subject_sha256": "e" * 64,
@@ -1109,6 +1134,9 @@ def _cutover_plan(
         "owner_runtime_attestation": _runtime_attestation(),
         "observe_artifact": artifacts["observe"],
         "cutover_authority": authority,
+        "database_recovery_receipt_sha256": authority[
+            "database_recovery_receipt"
+        ]["receipt_sha256"],
         "states": ["authority", "gateway_stopped", "final_tail_captured"],
         "secret_material_recorded": False,
     }
@@ -1130,7 +1158,7 @@ def _cutover_plan(
     }
     tail = {**tail_unsigned, "receipt_sha256": _sha_json(tail_unsigned)}
     unsigned = {
-        "schema": "muncho-production-legacy-cutover-plan.v2",
+        "schema": "muncho-production-legacy-cutover-plan.v3",
         "release_revision": REVISION,
         "target": target,
         "owner_subject_sha256": "e" * 64,
@@ -1155,6 +1183,9 @@ def _cutover_plan(
         "mechanical_job_host_facts": authority["mechanical_job_host_facts"],
         "mechanical_job_package": authority["mechanical_job_package"],
         "legacy_truth_decision": legacy_truth_decision,
+        "database_recovery_receipt_sha256": freeze[
+            "database_recovery_receipt_sha256"
+        ],
         "owner_runtime_attestation": freeze["owner_runtime_attestation"],
         "rollback_contract": rollback,
         "states": [

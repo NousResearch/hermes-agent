@@ -30,6 +30,34 @@ has committed, v1 can never be re-enabled; rollback becomes a fail-closed
 maintenance response while the v2 authority database and mutation journal are
 preserved.
 
+The Caddy switch is owned by
+`scripts.canary.owner_gate_caddy_cutover`, not by an operator-supplied reload
+command.  Its caller selects one of exactly four fixed phases; it cannot supply
+a path, hostname, upstream, executable, or Caddy bytes.  `prepare-bridge` reads
+one canonical, self-digested v2 request binding from standard input, snapshots
+the exact live Caddyfile, and creates or adopts exactly one legacy-v1 passkey
+request without changing ingress.  After that passkey is approved,
+`activate-bridge` temporarily stops the legacy verifier, atomically consumes
+the grant, installs only the exact v2 request UI/API paths, restarts and locally
+health-checks the legacy verifier, and proves the default local-v1 route is
+unchanged.  A pre-migration failure or interrupted retry restores the exact
+preimage and the legacy verifier; the bridge authorization cannot authorize
+the database or full route cutover.
+
+The input-free `prepare` phase reuses the separately consumed v2
+production-cutover passkey claim from the root journal, binds it to the exact
+FreezePlan, CutoverPlan, bridge, and release, then stores an fsynced no-clobber
+preimage plus validated private-v2 and maintenance candidates.  It does not
+edit live ingress.  `commit` additionally requires the durable legacy
+`activation_commit_intent` and terminal lineage, atomically replaces only the
+verified local upstream token with `10.80.3.2:8080`, validates and reloads
+Caddy, and verifies public TLS readiness.  Before the irreversible intent,
+recovery restores the exact preimage.  After it, any validation, reload, or
+public-verification failure can only converge to the fixed 503 maintenance
+route; v1 bytes are never restored.  Both successful and maintenance terminals
+bind the same passkey claim journal entry and consumption identity, preventing
+database and ingress authority from being replayed independently.
+
 The mutation IAM binding is a second gate.  Bootstrap creates no usable Cloud
 mutation authority.  The deferred custom-role binding is resource-conditioned
 to the exact canary disk and instance. Completion is observed by polling those

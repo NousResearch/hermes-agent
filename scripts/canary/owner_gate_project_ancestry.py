@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import base64
 import hashlib
+import importlib
 import json
 import os
 import re
@@ -27,11 +28,23 @@ from cryptography.hazmat.primitives.asymmetric.ed25519 import (
     Ed25519PublicKey,
 )
 
-from scripts.canary import full_canary_owner_launcher as launcher
 from scripts.canary import owner_gate_foundation as foundation
 from scripts.canary import owner_gate_owner_reauth as owner_reauth
 from scripts.canary import owner_gate_trust_author as release_author
 from scripts.canary import trusted_signer_author as signer_author
+
+
+class _OwnerLauncherProducerSurface:
+    def __getattr__(self, name: str) -> Any:
+        return getattr(
+            importlib.import_module(
+                "scripts.canary.full_canary_owner_launcher"
+            ),
+            name,
+        )
+
+
+launcher = _OwnerLauncherProducerSurface()
 
 
 EVIDENCE_SCHEMA = "muncho-owner-gate-project-ancestry-evidence.v1"

@@ -10,6 +10,7 @@ import pytest
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 
 from scripts.canary import owner_gate_foundation as foundation
+from scripts.canary import full_canary_owner_launcher as owner_launcher
 from scripts.canary import owner_gate_owner_reauth as reauth
 from scripts.canary import owner_gate_trust as trust
 
@@ -20,6 +21,10 @@ KEY_ID = hashlib.sha256(
     PRIVATE_KEY.public_key().public_bytes_raw()
 ).hexdigest()
 REVISION = "a" * 40
+
+
+def test_owner_reauth_validator_and_producer_pin_the_same_gcloud_sdk() -> None:
+    assert reauth.GCLOUD_SDK_VERSION == owner_launcher._GCLOUD_SDK_VERSION
 
 
 @pytest.fixture(autouse=True)

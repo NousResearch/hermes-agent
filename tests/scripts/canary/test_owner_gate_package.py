@@ -157,6 +157,71 @@ def test_ingress_contract_does_not_pull_owner_transports_into_preflight_closure(
     assert "scripts/canary/production_cutover_owner_launcher.py" not in closure
 
 
+def test_exact_owner_gate_runtime_closure_is_bounded_and_has_no_app_graph(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def local_blob(
+        source_root: Path,
+        release_revision: str,
+        relative: str,
+        *,
+        required: bool,
+    ):
+        assert source_root == ROOT
+        assert release_revision == REVISION
+        selected = source_root / relative
+        if not selected.is_file():
+            if required:
+                raise package.OwnerGatePackageError(
+                    "owner_gate_package_git_object_missing"
+                )
+            return None
+        return selected.read_bytes(), "100644"
+
+    monkeypatch.setattr(package, "_git_blob", local_blob)
+    closure = package.resolve_runtime_source_closure(
+        ROOT,
+        release_revision=REVISION,
+    )
+
+    assert len(closure) <= package.MAX_RUNTIME_SOURCE_FILES
+    assert "scripts/canary/production_cutover_portable_contract.py" in closure
+    assert "gateway/canonical_writer_production_cutover.py" not in closure
+    assert not any(
+        relative.startswith(package.FORBIDDEN_RUNTIME_PREFIXES)
+        for relative in closure
+    )
+
+
+def test_runtime_closure_budget_and_prefix_denylist_are_enforced(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    source = _source(tmp_path, monkeypatch)
+    monkeypatch.setattr(package, "MAX_RUNTIME_SOURCE_FILES", 3)
+    with pytest.raises(
+        package.OwnerGatePackageError,
+        match="owner_gate_package_runtime_source_budget_exceeded",
+    ):
+        package.resolve_runtime_source_closure(
+            source,
+            release_revision=REVISION,
+        )
+
+    forbidden = source / "gateway/run.py"
+    _write(forbidden, b"VALUE = 1\n")
+    monkeypatch.setattr(package, "MAX_RUNTIME_SOURCE_FILES", 64)
+    monkeypatch.setattr(package, "ROOT_RUNTIME_FILES", ("gateway/run.py",))
+    with pytest.raises(
+        package.OwnerGatePackageError,
+        match="owner_gate_package_forbidden_runtime_module",
+    ):
+        package.resolve_runtime_source_closure(
+            source,
+            release_revision=REVISION,
+        )
+
+
 def test_activation_evidence_staging_receipts_have_exact_tmpfiles_identity() -> None:
     tmpfiles = (
         ROOT / "ops/muncho/owner-gate/muncho-owner-gate.tmpfiles"

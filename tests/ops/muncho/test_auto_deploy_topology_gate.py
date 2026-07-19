@@ -157,7 +157,7 @@ def _write_pinned_topology(paths: dict[str, Path]) -> dict[str, str]:
         ).hexdigest(),
     }
     unsigned = {
-        "schema": "muncho-production-legacy-cutover-plan.v2",
+        "schema": "muncho-production-legacy-cutover-plan.v3",
         "release_revision": REVISION,
         "gateway_target_identity": target,
         "owner_runtime_attestation": runtime_attestation,

@@ -25,6 +25,7 @@ if _REPOSITORY_ROOT not in sys.path:
 
 from gateway import canonical_writer_production_cutover as cutover
 from scripts.canary import package_production_cutover_artifacts as package
+from scripts.canary import production_cutover_passkey as passkey
 
 
 PUBLICATION_SCHEMA = "muncho-production-cutover-publication.v1"
@@ -253,6 +254,7 @@ def _install_exact(path: Path, payload: bytes, *, uid: int, gid: int) -> bool:
             try:
                 os.link(temporary, path, follow_symlinks=False)
                 created = True
+                cutover.activation._fsync_directory(path.parent)
             except FileExistsError:
                 pass
             temporary.unlink()
@@ -293,6 +295,7 @@ def _remove_exact_created(path: Path, payload: bytes, *, uid: int, gid: int) -> 
         ):
             raise PublicStagingError("public_staging_rollback_conflict")
         path.unlink()
+        cutover.activation._fsync_directory(path.parent)
     except FileNotFoundError:
         return
     except PublicStagingError:
@@ -305,6 +308,9 @@ def stage_publication(
     value: Mapping[str, Any],
     *,
     require_root: bool = True,
+    now_unix: int | None = None,
+    journal: cutover.CutoverJournal | None = None,
+    lock_factory: Any | None = None,
 ) -> Mapping[str, Any]:
     if require_root and (
         not sys.platform.startswith("linux") or os.geteuid() != 0  # windows-footgun: ok — Linux production/canary boundary
@@ -312,10 +318,168 @@ def stage_publication(
         raise PublicStagingError("public_staging_requires_linux_root")
     uid = 0 if require_root else os.geteuid()  # windows-footgun: ok — Linux production/canary boundary
     gid = 0 if require_root else os.getegid()  # windows-footgun: ok — Linux production/canary boundary
-    action, outputs = _publication(value)
+    current = int(time.time()) if now_unix is None else now_unix
+    proof: Mapping[str, Any] | None = None
+    replay_only = False
+    publication = value
+    if value.get("schema") == passkey.CUTOVER_CLAIM_FRAME_SCHEMA:
+        try:
+            publication, proof = passkey.validate_claim_frame(
+                value, now_unix=current
+            )
+        except passkey.ProductionCutoverPasskeyError:
+            try:
+                publication, proof = (
+                    passkey.validate_claim_frame_for_recorded_replay(value)
+                )
+                replay_only = True
+            except passkey.ProductionCutoverPasskeyError:
+                raise PublicStagingError(
+                    "public_staging_passkey_claim_invalid"
+                ) from None
+    publication_validation_time = (
+        proof["authorization_receipt"]["consumed_at_unix"]
+        if replay_only and proof is not None
+        else current
+    )
+    action, outputs = _publication(
+        publication,
+        now_unix=publication_validation_time,
+    )
+    if action == "freeze-authority" and proof is None:
+        raise PublicStagingError("public_staging_passkey_claim_required")
+    if action != "freeze-authority" and proof is not None:
+        raise PublicStagingError("public_staging_passkey_claim_unexpected")
+    needs_claim = action in {"freeze-authority", "cutover-plan"}
+    if needs_claim and journal is None:
+        journal = cutover.RootCutoverJournal()
+    if lock_factory is None:
+        lock_factory = cutover.activation._host_activation_lock
+
+    def require_or_record_claim() -> None:
+        assert journal is not None
+        if action == "freeze-authority":
+            assert proof is not None
+            documents = publication["documents"]
+            plan = cutover.FreezePlan.from_mapping(documents["plan"])
+            approval = cutover.CutoverApproval.from_mapping(
+                documents["approval"],
+                plan=plan,
+                now_unix=publication_validation_time,
+            )
+            receipt = proof["authorization_receipt"]
+            action_envelope = proof["action_envelope"]
+            evidence = {
+                "schema": cutover.PASSKEY_CLAIM_SCHEMA,
+                "freeze_plan_sha256": plan.sha256,
+                "freeze_approval_sha256": approval.sha256,
+                "freeze_publication_sha256": publication[
+                    "publication_sha256"
+                ],
+                "passkey_proof_sha256": proof["proof_sha256"],
+                "authorization_receipt_sha256": receipt[
+                    "receipt_sha256"
+                ],
+                "action_envelope_sha256": action_envelope[
+                    "envelope_sha256"
+                ],
+                "action_payload_sha256": action_envelope[
+                    "action_payload_sha256"
+                ],
+                "request_id": action_envelope["request_id"],
+                "consume_attempt_id": receipt["consume_attempt_id"],
+                "authority_release_sha": action_envelope[
+                    "authority_release_sha"
+                ],
+                "execution_window_expires_at_unix": receipt[
+                    "execution_window_expires_at_unix"
+                ],
+            }
+            cutover.validate_passkey_claim_evidence(
+                evidence,
+                plan_sha256=plan.sha256,
+                approval_sha256=approval.sha256,
+                release_revision=plan.value["release_revision"],
+            )
+            existing_entry: cutover.JournalEntry | None = None
+            existing_claim: Mapping[str, Any] | None = None
+            if journal.load(plan.sha256):
+                try:
+                    existing_entry, existing_claim = (
+                        cutover.require_recorded_passkey_claim(
+                            journal,
+                            plan_sha256=plan.sha256,
+                            approval_sha256=approval.sha256,
+                            release_revision=plan.value[
+                                "release_revision"
+                            ],
+                        )
+                    )
+                except (PermissionError, ValueError):
+                    raise PublicStagingError(
+                        "public_staging_passkey_claim_conflict"
+                    ) from None
+            if existing_entry is not None and existing_claim == evidence:
+                if (
+                    existing_entry.value["recorded_at_unix"]
+                    < receipt["consumed_at_unix"]
+                    or existing_entry.value["recorded_at_unix"]
+                    >= receipt["execution_window_expires_at_unix"]
+                    or existing_entry.value["recorded_at_unix"]
+                    >= approval.value["expires_at_unix"]
+                ):
+                    raise PublicStagingError(
+                        "public_staging_passkey_claim_conflict"
+                    )
+            elif existing_entry is not None:
+                if replay_only:
+                    raise PublicStagingError(
+                        "public_staging_passkey_claim_expired"
+                    )
+                try:
+                    cutover.supersede_recorded_passkey_claim(
+                        journal,
+                        plan_sha256=plan.sha256,
+                        approval_sha256=approval.sha256,
+                        release_revision=plan.value["release_revision"],
+                        new_claim_value=evidence,
+                        now_unix=current,
+                    )
+                except (PermissionError, ValueError):
+                    raise PublicStagingError(
+                        "public_staging_passkey_claim_conflict"
+                    ) from None
+            else:
+                if replay_only:
+                    raise PublicStagingError(
+                        "public_staging_passkey_claim_expired"
+                    )
+                journal.append(
+                    plan.sha256, "passkey_claim", evidence, current
+                )
+            # Persist the Ed25519 authority at the same first-write boundary.
+            # Later exact recovery therefore never depends on a short lease.
+            cutover._append_authority(
+                journal, plan.sha256, approval, current
+            )
+        else:
+            plan = cutover.CutoverPlan.from_mapping(
+                publication["documents"]["plan"]
+            )
+            cutover.require_recorded_passkey_claim(
+                journal,
+                plan_sha256=plan.value["freeze_plan_sha256"],
+                approval_sha256=plan.value["freeze_approval_sha256"],
+                release_revision=plan.value["release_revision"],
+            )
+
     records = []
     created_outputs: list[tuple[Path, bytes]] = []
+    context = lock_factory() if needs_claim else None
     try:
+        if context is not None:
+            context.__enter__()
+            require_or_record_claim()
         for path, payload in outputs.items():
             created = _install_exact(path, payload, uid=uid, gid=gid)
             if created:
@@ -329,11 +493,14 @@ def stage_publication(
         for path, payload in reversed(created_outputs):
             _remove_exact_created(path, payload, uid=uid, gid=gid)
         raise
+    finally:
+        if context is not None:
+            context.__exit__(*sys.exc_info())
     unsigned = {
         "schema": RECEIPT_SCHEMA,
         "action": action,
-        "release_revision": value["release_revision"],
-        "publication_sha256": value["publication_sha256"],
+        "release_revision": publication["release_revision"],
+        "publication_sha256": publication["publication_sha256"],
         "files": records,
         "secret_material_recorded": False,
         "secret_digest_recorded": False,

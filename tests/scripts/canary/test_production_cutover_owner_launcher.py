@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import base64
+import copy
 import hashlib
 import json
 import os
@@ -29,6 +30,7 @@ from tests.gateway.test_canonical_writer_production_cutover import (
     Services,
     Snapshots,
     _approval,
+    _database_recovery_receipt,
     _freeze,
     _isolated_canary_goal_prerequisite,
     _mechanical_package,
@@ -222,6 +224,66 @@ def _patch_staged_paths(monkeypatch, staged: Path) -> None:
     )
 
 
+def _stage_freeze_with_test_claim(
+    monkeypatch: pytest.MonkeyPatch,
+    publication: dict,
+    *,
+    now: int,
+    journal: MemoryJournal,
+    proof_marker: str = "1",
+    proof_consumed_at: int | None = None,
+    proof_window_seconds: int = 3_600,
+    action_payload_marker: str = "a",
+) -> dict:
+    consumed_at = now if proof_consumed_at is None else proof_consumed_at
+    proof = {
+        "proof_sha256": proof_marker * 64,
+        "action_envelope": {
+            "request_id": proof_marker * 64,
+            "envelope_sha256": proof_marker * 64,
+            "action_payload_sha256": action_payload_marker * 64,
+            "authority_release_sha": REVISION,
+        },
+        "authorization_receipt": {
+            "receipt_sha256": proof_marker * 64,
+            "consume_attempt_id": proof_marker * 64,
+            "consumed_at_unix": consumed_at,
+            "execution_window_expires_at_unix": (
+                consumed_at + proof_window_seconds
+            ),
+        },
+    }
+    frame = {
+        "schema": stager.passkey.CUTOVER_CLAIM_FRAME_SCHEMA,
+        "publication": publication,
+        "passkey_proof": proof,
+        "claim_sha256": "5" * 64,
+    }
+
+    def validate(_value, *, now_unix):
+        if now_unix >= proof["authorization_receipt"][
+            "execution_window_expires_at_unix"
+        ]:
+            raise stager.passkey.ProductionCutoverPasskeyError(
+                "production_cutover_passkey_proof_invalid"
+            )
+        return publication, proof
+
+    monkeypatch.setattr(stager.passkey, "validate_claim_frame", validate)
+    monkeypatch.setattr(
+        stager.passkey,
+        "validate_claim_frame_for_recorded_replay",
+        lambda value: (publication, proof),
+    )
+    return stager.stage_publication(
+        frame,
+        require_root=False,
+        now_unix=now,
+        journal=journal,
+        lock_factory=nullcontext,
+    )
+
+
 def test_owner_key_stays_local_while_freeze_publication_is_staged(
     monkeypatch,
     tmp_path: Path,
@@ -242,6 +304,9 @@ def test_owner_key_stays_local_while_freeze_publication_is_staged(
         isolated_canary_goal_prerequisite=(
             _isolated_canary_goal_prerequisite()
         ),
+        database_recovery_receipt=_database_recovery_receipt(
+            rechecked_at_unix=now
+        ),
         truth_mode="start_new_truth_epoch",
         now_unix=now,
     )
@@ -253,7 +318,9 @@ def test_owner_key_stays_local_while_freeze_publication_is_staged(
     assert b"PRIVATE KEY" not in serialized
     staged = (tmp_path / "staged").resolve()
     _patch_staged_paths(monkeypatch, staged)
-    receipt = stager.stage_publication(publication, require_root=False)
+    receipt = _stage_freeze_with_test_claim(
+        monkeypatch, publication, now=now, journal=MemoryJournal()
+    )
     assert receipt["action"] == "freeze-authority"
     assert stat.S_IMODE((staged / "freeze-plan.json").stat().st_mode) == 0o400
     assert stat.S_IMODE((staged / "freeze-approval.json").stat().st_mode) == 0o400
@@ -276,12 +343,21 @@ def test_approved_sequence_runs_freeze_tail_then_cutover_plan_without_new_semant
         isolated_canary_goal_prerequisite=(
             _isolated_canary_goal_prerequisite()
         ),
+        database_recovery_receipt=_database_recovery_receipt(
+            rechecked_at_unix=now
+        ),
         truth_mode="start_new_truth_epoch",
         now_unix=now,
     )
     staged = (tmp_path / "staged").resolve()
     _patch_staged_paths(monkeypatch, staged)
-    stager.stage_publication(freeze_publication, require_root=False)
+    journal = MemoryJournal()
+    _stage_freeze_with_test_claim(
+        monkeypatch,
+        freeze_publication,
+        now=now,
+        journal=journal,
+    )
 
     tail = cutover.execute_final_tail_capture(
         freeze,
@@ -289,7 +365,7 @@ def test_approved_sequence_runs_freeze_tail_then_cutover_plan_without_new_semant
         cutover.FreezeDependencies(
             services=services,
             snapshots=Snapshots(_snapshot(14_081, marker="2", observed_at=now)),
-            journal=MemoryJournal(),
+            journal=journal,
             lock=nullcontext,
         ),
         now_unix=now,
@@ -302,7 +378,13 @@ def test_approved_sequence_runs_freeze_tail_then_cutover_plan_without_new_semant
         writer_stopped=services.writer.to_mapping(),
         connector_stopped=services.connector.to_mapping(),
     )
-    receipt = stager.stage_publication(publication, require_root=False)
+    receipt = stager.stage_publication(
+        publication,
+        require_root=False,
+        now_unix=now,
+        journal=journal,
+        lock_factory=nullcontext,
+    )
 
     assert receipt["action"] == "cutover-plan"
     assert plan.value["freeze_approval_sha256"] == approval["approval_sha256"]
@@ -327,6 +409,9 @@ def test_stager_rejects_tampered_publication_without_creating_files(
         isolated_canary_goal_prerequisite=(
             _isolated_canary_goal_prerequisite()
         ),
+        database_recovery_receipt=_database_recovery_receipt(
+            rechecked_at_unix=now
+        ),
         truth_mode="start_new_truth_epoch",
         now_unix=now,
     )
@@ -335,13 +420,267 @@ def test_stager_rejects_tampered_publication_without_creating_files(
     _patch_staged_paths(monkeypatch, staged)
 
     try:
-        stager.stage_publication(publication, require_root=False)
+        _stage_freeze_with_test_claim(
+            monkeypatch,
+            publication,
+            now=now,
+            journal=MemoryJournal(),
+        )
     except stager.PublicStagingError:
         pass
     else:
         raise AssertionError("tampered publication unexpectedly staged")
 
     assert list(staged.iterdir()) == []
+
+
+def test_stager_rejects_bare_freeze_before_any_write(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    now = int(time.time())
+    _plan, _approval, publication = owner.author_freeze(
+        collector_receipt=_collector_receipt(now, Services()),
+        release_revision=REVISION,
+        owner_subject_sha256="a" * 64,
+        private_key=Ed25519PrivateKey.generate(),
+        owner_runtime_attestation=_runtime_attestation(),
+        isolated_canary_goal_prerequisite=(
+            _isolated_canary_goal_prerequisite()
+        ),
+        database_recovery_receipt=_database_recovery_receipt(
+            rechecked_at_unix=now
+        ),
+        truth_mode="start_new_truth_epoch",
+        now_unix=now,
+    )
+    staged = (tmp_path / "staged").resolve()
+    _patch_staged_paths(monkeypatch, staged)
+    journal = MemoryJournal()
+
+    with pytest.raises(
+        stager.PublicStagingError,
+        match="public_staging_passkey_claim_required",
+    ):
+        stager.stage_publication(
+            publication,
+            require_root=False,
+            now_unix=now,
+            journal=journal,
+            lock_factory=nullcontext,
+        )
+
+    assert journal.load(publication["documents"]["plan"]["plan_sha256"]) == []
+    assert list(staged.iterdir()) == []
+
+
+def test_stager_accepts_exact_replay_and_pre_mutation_reauthorization(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    now = int(time.time())
+    plan, _approval, publication = owner.author_freeze(
+        collector_receipt=_collector_receipt(now, Services()),
+        release_revision=REVISION,
+        owner_subject_sha256="a" * 64,
+        private_key=Ed25519PrivateKey.generate(),
+        owner_runtime_attestation=_runtime_attestation(),
+        isolated_canary_goal_prerequisite=(
+            _isolated_canary_goal_prerequisite()
+        ),
+        database_recovery_receipt=_database_recovery_receipt(
+            rechecked_at_unix=now
+        ),
+        truth_mode="start_new_truth_epoch",
+        now_unix=now,
+    )
+    staged = (tmp_path / "staged").resolve()
+    _patch_staged_paths(monkeypatch, staged)
+    journal = MemoryJournal()
+
+    first = _stage_freeze_with_test_claim(
+        monkeypatch,
+        publication,
+        now=now,
+        journal=journal,
+        proof_window_seconds=60,
+    )
+    replay = _stage_freeze_with_test_claim(
+        monkeypatch,
+        publication,
+        now=now,
+        journal=journal,
+        proof_window_seconds=60,
+    )
+    with pytest.raises(
+        stager.PublicStagingError,
+        match="public_staging_passkey_claim_conflict",
+    ):
+        _stage_freeze_with_test_claim(
+            monkeypatch,
+            publication,
+            now=now,
+            journal=journal,
+            proof_marker="6",
+        )
+    superseded = _stage_freeze_with_test_claim(
+        monkeypatch,
+        publication,
+        now=now + 60,
+        journal=journal,
+        proof_marker="6",
+    )
+
+    assert all(item["created"] is True for item in first["files"])
+    assert all(item["created"] is False for item in replay["files"])
+    assert all(item["created"] is False for item in superseded["files"])
+    assert [
+        entry.value["event"] for entry in journal.load(plan.sha256)
+    ] == ["passkey_claim", "authority", "passkey_claim_superseded"]
+    active_entry, active_claim = cutover.require_recorded_passkey_claim(
+        journal,
+        plan_sha256=plan.sha256,
+        approval_sha256=publication["documents"]["approval"][
+            "approval_sha256"
+        ],
+        release_revision=REVISION,
+    )
+    assert active_entry.value["event"] == "passkey_claim_superseded"
+    assert active_claim["passkey_proof_sha256"] == "6" * 64
+
+
+def test_stager_rejects_reauthorization_after_freeze_intent(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    now = int(time.time())
+    plan, approval, publication = owner.author_freeze(
+        collector_receipt=_collector_receipt(now, Services()),
+        release_revision=REVISION,
+        owner_subject_sha256="a" * 64,
+        private_key=Ed25519PrivateKey.generate(),
+        owner_runtime_attestation=_runtime_attestation(),
+        isolated_canary_goal_prerequisite=(
+            _isolated_canary_goal_prerequisite()
+        ),
+        database_recovery_receipt=_database_recovery_receipt(
+            rechecked_at_unix=now
+        ),
+        truth_mode="start_new_truth_epoch",
+        now_unix=now,
+    )
+    staged = (tmp_path / "staged").resolve()
+    _patch_staged_paths(monkeypatch, staged)
+    journal = MemoryJournal()
+    _stage_freeze_with_test_claim(
+        monkeypatch,
+        publication,
+        now=now,
+        journal=journal,
+        proof_window_seconds=60,
+    )
+    claim_entry, claim = cutover.require_recorded_passkey_claim(
+        journal,
+        plan_sha256=plan.sha256,
+        approval_sha256=approval["approval_sha256"],
+        release_revision=REVISION,
+    )
+    cutover._require_or_record_passkey_intent(
+        journal,
+        journal_plan_sha256=plan.sha256,
+        phase="freeze_stop",
+        freeze_plan_sha256=plan.sha256,
+        freeze_approval_sha256=approval["approval_sha256"],
+        cutover_plan_sha256=None,
+        claim_entry=claim_entry,
+        claim=claim,
+        now_unix=now,
+    )
+
+    with pytest.raises(
+        stager.PublicStagingError,
+        match="public_staging_passkey_claim_conflict",
+    ):
+        _stage_freeze_with_test_claim(
+            monkeypatch,
+            publication,
+            now=now + 60,
+            journal=journal,
+            proof_marker="6",
+        )
+
+    assert [
+        entry.value["event"] for entry in journal.load(plan.sha256)
+    ] == ["passkey_claim", "authority", "passkey_intent"]
+
+
+def test_stager_recovers_claim_to_authority_crash_without_backdating(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    now = int(time.time())
+    plan, approval, publication = owner.author_freeze(
+        collector_receipt=_collector_receipt(now, Services()),
+        release_revision=REVISION,
+        owner_subject_sha256="a" * 64,
+        private_key=Ed25519PrivateKey.generate(),
+        owner_runtime_attestation=_runtime_attestation(),
+        isolated_canary_goal_prerequisite=(
+            _isolated_canary_goal_prerequisite()
+        ),
+        database_recovery_receipt=_database_recovery_receipt(
+            rechecked_at_unix=now
+        ),
+        truth_mode="start_new_truth_epoch",
+        now_unix=now,
+    )
+    staged = (tmp_path / "staged").resolve()
+    _patch_staged_paths(monkeypatch, staged)
+    journal = MemoryJournal()
+    original = cutover._append_authority
+    monkeypatch.setattr(
+        cutover,
+        "_append_authority",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            OSError("injected authority journal failure")
+        ),
+    )
+
+    with pytest.raises(OSError, match="injected authority"):
+        _stage_freeze_with_test_claim(
+            monkeypatch,
+            publication,
+            now=now,
+            journal=journal,
+        )
+    assert [
+        entry.value["event"] for entry in journal.load(plan.sha256)
+    ] == ["passkey_claim"]
+    assert list(staged.iterdir()) == []
+
+    monkeypatch.setattr(cutover, "_append_authority", original)
+    recovered = _stage_freeze_with_test_claim(
+        monkeypatch,
+        publication,
+        now=now + 4_000,
+        journal=journal,
+        proof_consumed_at=now,
+    )
+    entries = journal.load(plan.sha256)
+
+    assert all(item["created"] is True for item in recovered["files"])
+    assert [entry.value["event"] for entry in entries] == [
+        "passkey_claim",
+        "authority",
+    ]
+    assert entries[0].value["recorded_at_unix"] == now
+    assert entries[1].value["recorded_at_unix"] == now + 4_000
+    validated, _claim_entry, _claim = cutover._validated_claimed_approval(
+        journal,
+        plan=plan,
+        approval_value=approval,
+    )
+    assert validated.sha256 == approval["approval_sha256"]
 
 
 def test_stager_rolls_back_only_new_files_after_partial_publication_failure(
@@ -359,6 +698,9 @@ def test_stager_rolls_back_only_new_files_after_partial_publication_failure(
         isolated_canary_goal_prerequisite=(
             _isolated_canary_goal_prerequisite()
         ),
+        database_recovery_receipt=_database_recovery_receipt(
+            rechecked_at_unix=now
+        ),
         truth_mode="start_new_truth_epoch",
         now_unix=now,
     )
@@ -375,13 +717,81 @@ def test_stager_rolls_back_only_new_files_after_partial_publication_failure(
         return original(path, payload, uid=uid, gid=gid)
 
     monkeypatch.setattr(stager, "_install_exact", fail_second)
+    journal = MemoryJournal()
     try:
-        stager.stage_publication(publication, require_root=False)
+        _stage_freeze_with_test_claim(
+            monkeypatch,
+            publication,
+            now=now,
+            journal=journal,
+        )
     except stager.PublicStagingError:
         pass
     else:
         raise AssertionError("partial publication unexpectedly succeeded")
 
+    assert list(staged.iterdir()) == []
+    plan_sha256 = publication["documents"]["plan"]["plan_sha256"]
+    assert [
+        entry.value["event"] for entry in journal.load(plan_sha256)
+    ] == ["passkey_claim", "authority"]
+
+    # The durable claim is the recovery authority after a crash between the
+    # journal commit and file installation.  Exact old bytes may finish that
+    # interrupted publication after both short leases expire.
+    monkeypatch.setattr(stager, "_install_exact", original)
+    recovered = _stage_freeze_with_test_claim(
+        monkeypatch,
+        publication,
+        now=now + 4_000,
+        journal=journal,
+        proof_consumed_at=now,
+    )
+
+    assert all(item["created"] is True for item in recovered["files"])
+    assert [
+        entry.value["event"] for entry in journal.load(plan_sha256)
+    ] == ["passkey_claim", "authority"]
+
+
+def test_stager_rejects_expired_unused_claim_before_any_write(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    now = int(time.time())
+    _plan, _approval, publication = owner.author_freeze(
+        collector_receipt=_collector_receipt(now, Services()),
+        release_revision=REVISION,
+        owner_subject_sha256="a" * 64,
+        private_key=Ed25519PrivateKey.generate(),
+        owner_runtime_attestation=_runtime_attestation(),
+        isolated_canary_goal_prerequisite=(
+            _isolated_canary_goal_prerequisite()
+        ),
+        database_recovery_receipt=_database_recovery_receipt(
+            rechecked_at_unix=now
+        ),
+        truth_mode="start_new_truth_epoch",
+        now_unix=now,
+    )
+    staged = (tmp_path / "staged").resolve()
+    _patch_staged_paths(monkeypatch, staged)
+    journal = MemoryJournal()
+
+    with pytest.raises(
+        stager.PublicStagingError,
+        match="public_staging_passkey_claim_expired",
+    ):
+        _stage_freeze_with_test_claim(
+            monkeypatch,
+            publication,
+            now=now + 4_000,
+            journal=journal,
+            proof_consumed_at=now,
+        )
+
+    plan_sha256 = publication["documents"]["plan"]["plan_sha256"]
+    assert journal.load(plan_sha256) == []
     assert list(staged.iterdir()) == []
 
 
@@ -578,11 +988,23 @@ def test_unit_input_authority_is_signed_locally_and_staged_before_release(
             "uid": 1000,
             "gid": 1000,
         },
+        "writer": {
+            "user": "muncho-canonical-writer",
+            "group": "muncho-canonical-writer", "uid": 2000, "gid": 2000,
+        },
+        "projector": {
+            "user": "muncho-projector", "group": "muncho-projector",
+            "uid": 2004, "gid": 2004,
+        },
         "routeback": {
             "user": "muncho-discord-egress",
             "group": "muncho-discord-egress",
             "uid": 2002,
             "gid": 2002,
+        },
+        "connector": {
+            "user": "muncho-discord-connector",
+            "group": "muncho-discord-connector", "uid": 2001, "gid": 2001,
         },
         "mac_ops": {
             "user": "muncho-mac-ops-edge",
@@ -602,15 +1024,26 @@ def test_unit_input_authority_is_signed_locally_and_staged_before_release(
             "uid": 2007,
             "gid": 2007,
         },
-        "worker_client_group": "muncho-worker-clients",
-        "worker_client_gid": 2008,
+        "writer_client_group": {"group": "muncho-writer-client", "gid": 2005},
+        "worker_client_group": {"group": "muncho-worker-clients", "gid": 2008},
         "operational_edge_identities": operational_identities,
         "operational_edge_socket_groups": operational_socket_groups,
         "writer_capability_public_key_id": "c" * 64,
+        "discord_edge_receipt_public_key_id": "a" * 64,
         "operational_edge_key_foundation_sha256": "d" * 64,
         "operational_edge_receipt_public_key_ids": (
             _operational_receipt_key_ids()
         ),
+        "discord_reconciliation_intent": {
+            "schema": package.DISCORD_RECONCILIATION_INTENT_SCHEMA,
+            "purpose": package.DISCORD_RECONCILIATION_INTENT_PURPOSE,
+            "release_revision": REVISION,
+            "legacy_public_policy_sha256": "1" * 64,
+            "target_public_policy_sha256": "2" * 64,
+            "reviewed_reconciliation": True,
+            "secret_material_recorded": False,
+            "secret_digest_recorded": False,
+        },
         "release_owner_uid": 1000,
         "release_owner_gid": 1000,
         "bwrap_sha256": "6" * 64,
@@ -672,11 +1105,23 @@ def test_owner_cli_authors_unit_input_publication_without_exporting_key(
             "uid": 1000,
             "gid": 1000,
         },
+        "writer": {
+            "user": "muncho-canonical-writer",
+            "group": "muncho-canonical-writer", "uid": 2000, "gid": 2000,
+        },
+        "projector": {
+            "user": "muncho-projector", "group": "muncho-projector",
+            "uid": 2004, "gid": 2004,
+        },
         "routeback": {
             "user": "muncho-discord-egress",
             "group": "muncho-discord-egress",
             "uid": 2002,
             "gid": 2002,
+        },
+        "connector": {
+            "user": "muncho-discord-connector",
+            "group": "muncho-discord-connector", "uid": 2001, "gid": 2001,
         },
         "mac_ops": {
             "user": "muncho-mac-ops-edge",
@@ -696,15 +1141,26 @@ def test_owner_cli_authors_unit_input_publication_without_exporting_key(
             "uid": 2007,
             "gid": 2007,
         },
-        "worker_client_group": "muncho-worker-clients",
-        "worker_client_gid": 2008,
+        "writer_client_group": {"group": "muncho-writer-client", "gid": 2005},
+        "worker_client_group": {"group": "muncho-worker-clients", "gid": 2008},
         "operational_edge_identities": operational_identities,
         "operational_edge_socket_groups": operational_socket_groups,
         "writer_capability_public_key_id": "c" * 64,
+        "discord_edge_receipt_public_key_id": "a" * 64,
         "operational_edge_key_foundation_sha256": "d" * 64,
         "operational_edge_receipt_public_key_ids": (
             _operational_receipt_key_ids()
         ),
+        "discord_reconciliation_intent": {
+            "schema": package.DISCORD_RECONCILIATION_INTENT_SCHEMA,
+            "purpose": package.DISCORD_RECONCILIATION_INTENT_PURPOSE,
+            "release_revision": REVISION,
+            "legacy_public_policy_sha256": "1" * 64,
+            "target_public_policy_sha256": "2" * 64,
+            "reviewed_reconciliation": True,
+            "secret_material_recorded": False,
+            "secret_digest_recorded": False,
+        },
         "release_owner_uid": 1000,
         "release_owner_gid": 1000,
         "bwrap_sha256": "6" * 64,
@@ -736,23 +1192,12 @@ def test_owner_cli_authors_unit_input_publication_without_exporting_key(
     assert key_path.exists()
 
 
-def test_sealed_cli_is_the_only_full_cutover_workflow_entrypoint(
+def test_sealed_cli_exposes_only_prepare_and_resume_cutover_workflow(
     monkeypatch,
     tmp_path: Path,
 ) -> None:
     private = Ed25519PrivateKey.generate()
     key_path = _private_key_file(tmp_path, private)
-    host_plan = {
-        "release_manifest_sha256": "1" * 64,
-        "gateway_target_identity": {},
-        "writer_target_identity": {},
-        "connector_target_identity": {},
-        "host_transition": {},
-        "capability_topology": {},
-        "cron_continuity_plan": {},
-    }
-    host_plan_path = (tmp_path / "host-authority-plan.json").resolve()
-    host_plan_path.write_bytes(_canonical(host_plan))
     canary_prerequisite = _isolated_canary_goal_prerequisite()
     canary_prerequisite_path = (
         tmp_path / "isolated-canary-goal-prerequisite.json"
@@ -775,6 +1220,11 @@ def test_sealed_cli_is_the_only_full_cutover_workflow_entrypoint(
         lambda revision: (Identity(), object(), object()),
     )
     monkeypatch.setattr(
+        owner,
+        "build_production_cutover_passkey_boundary",
+        lambda *args, **kwargs: object(),
+    )
+    monkeypatch.setattr(
         owner.canary_transport,
         "harden_owner_secret_process",
         lambda: None,
@@ -790,12 +1240,9 @@ def test_sealed_cli_is_the_only_full_cutover_workflow_entrypoint(
 
     monkeypatch.setattr(owner, "execute_production_cutover_workflow", execute)
 
-    assert owner.main([
-        "execute-cutover",
+    common = [
         "--revision",
         REVISION,
-        "--host-authority-plan",
-        str(host_plan_path),
         "--isolated-canary-goal-prerequisite",
         str(canary_prerequisite_path),
         "--owner-private-key",
@@ -804,16 +1251,22 @@ def test_sealed_cli_is_the_only_full_cutover_workflow_entrypoint(
         "start_new_truth_epoch",
         "--output",
         str(output),
-    ]) == 0
+    ]
+    assert owner.main(["prepare-cutover", *common]) == 0
 
     assert len(calls) == 1
     assert calls[0]["release_revision"] == REVISION
     assert calls[0]["owner_subject_sha256"] == "a" * 64
-    assert calls[0]["host_authority_plan"] == host_plan
+    assert "host_authority_plan" not in calls[0]
     assert calls[0]["isolated_canary_goal_prerequisite"] == canary_prerequisite
+    assert calls[0]["prepare_only"] is True
     assert callable(calls[0]["transport_factory"])
     assert output.exists()
     assert b"PRIVATE KEY" not in output.read_bytes()
+
+    for forbidden in ("execute-cutover", "author-freeze", "author-cutover"):
+        with pytest.raises(SystemExit):
+            owner.main([forbidden, *common])
 
 
 def test_cloud_transport_commands_are_fixed_to_target_release() -> None:
@@ -833,6 +1286,18 @@ def test_cloud_transport_commands_are_fixed_to_target_release() -> None:
         REVISION,
         "apply-cutover",
     )
+    caddy_prepare = owner.ProductionCutoverTransport._remote_command(
+        REVISION,
+        "prepare-caddy-cutover",
+    )
+    caddy_commit = owner.ProductionCutoverTransport._remote_command(
+        REVISION,
+        "commit-caddy-cutover",
+    )
+    converge = owner.ProductionCutoverTransport._remote_command(
+        REVISION,
+        "converge-cutover",
+    )
     interpreter = (
         "/opt/adventico-ai-platform/hermes-agent-releases/"
         f"hermes-agent-{REVISION[:12]}/.venv/bin/python"
@@ -842,13 +1307,363 @@ def test_cloud_transport_commands_are_fixed_to_target_release() -> None:
     assert interpreter in stage
     assert interpreter in cron_stage
     assert interpreter in apply
+    assert interpreter in caddy_prepare
+    assert interpreter in caddy_commit
+    assert interpreter in converge
     assert "scripts.canary.production_cutover_initial_collector" in initial
     assert "scripts.canary.production_cutover_public_stager" in stage
     assert "scripts.canary.stage_production_cron_continuity" in cron_stage
     assert "gateway.canonical_writer_production_cutover" in apply
+    assert "scripts.canary.owner_gate_caddy_cutover" in caddy_prepare
+    assert "scripts.canary.owner_gate_caddy_cutover" in caddy_commit
+    assert "scripts.canary.owner_gate_caddy_cutover" in converge
     assert initial[-3:] == ("initial", "--revision", REVISION)
     assert cron_stage[-3:] == ("stage", "--revision", REVISION)
     assert apply[-1] == "apply-cutover"
+    assert caddy_prepare[-1] == "prepare"
+    assert caddy_commit[-1] == "commit"
+    assert converge[-1] == "converge"
+
+
+def _durable_workflow_fixture(
+    monkeypatch: pytest.MonkeyPatch,
+    *,
+    convergence_tamper: bool = False,
+):
+    from tests.scripts.canary import (
+        test_production_cutover_host_authority as workflow,
+    )
+
+    monkeypatch.setattr(
+        owner,
+        "_active_owner_runtime_attestation",
+        lambda revision: _runtime_attestation(revision),
+    )
+    monkeypatch.setattr(
+        workflow.owner_gate_trust,
+        "PINNED_RELEASE_TRUST_PUBLIC_KEY_SHA256",
+        workflow._RELEASE_TRUST_KEY_ID,
+    )
+    monkeypatch.setattr(owner.secrets, "token_bytes", lambda _size: b"n" * 32)
+    monkeypatch.setattr(
+        owner.uuid,
+        "uuid4",
+        lambda: "11111111-1111-4111-8111-111111111111",
+    )
+    monkeypatch.setattr(
+        "scripts.canary.production_cutover_public_stager.time.time",
+        lambda: NOW,
+    )
+    monkeypatch.setattr(
+        "gateway.canonical_writer_production_cutover.time.time",
+        lambda: NOW,
+    )
+    services, initial, host, _host_plan = workflow._workflow_inputs()
+
+    class PasskeyBoundary:
+        def __init__(self) -> None:
+            self.request_id: str | None = None
+            self.proof: dict | None = None
+            self.consume_calls = 0
+
+        def request(self, publication: dict) -> dict:
+            action, self.proof = workflow._workflow_passkey_exchange(
+                publication
+            )
+            self.request_id = action["request_id"]
+            return {
+                "request_id": self.request_id,
+                "action_envelope_sha256": action["envelope_sha256"],
+                "challenge_record_sha256": self.proof[
+                    "challenge_record"
+                ]["challenge_record_sha256"],
+                "expires_at_unix": action["expires_at_unix"],
+                "release_sha": REVISION,
+                "plan_sha256": publication["documents"]["plan"][
+                    "plan_sha256"
+                ],
+                "freeze_publication_sha256": publication[
+                    "publication_sha256"
+                ],
+                "action_payload_sha256": action["action_payload_sha256"],
+                "transaction_id": action["transaction_id"],
+                "approval_url": (
+                    f"{owner.cutover_passkey.protocol.PRODUCTION_ORIGIN}/"
+                    f"approve/{self.request_id}"
+                ),
+                "passkey_only": True,
+                "single_use": True,
+                "control_plane_mutation_performed": True,
+                "source_data_mutation_performed": False,
+                "production_host_mutation_performed": False,
+            }
+
+        def consume(
+            self,
+            *,
+            freeze_publication: dict,
+            request_id: str,
+            consume_attempt_id: str,
+        ) -> dict:
+            self.consume_calls += 1
+            assert request_id == self.request_id
+            assert self.proof is not None
+            return {
+                "request_id": request_id,
+                "consume_attempt_id": consume_attempt_id,
+                "disposition": "authorized_once",
+                "passkey_proof": copy.deepcopy(self.proof),
+                "release_sha": REVISION,
+                "plan_sha256": freeze_publication["documents"]["plan"][
+                    "plan_sha256"
+                ],
+                "single_use": True,
+                "control_plane_mutation_performed": True,
+                "source_data_mutation_performed": False,
+                "production_host_mutation_performed": False,
+            }
+
+    class BridgeBootstrap:
+        def __init__(self) -> None:
+            self.request: dict | None = None
+
+        def prepare(self, document: dict) -> dict:
+            self.request = workflow._bridge_request(document)
+            return self.request
+
+        def consume_and_install(self, document: dict) -> dict:
+            assert self.request is not None
+            return workflow._bridge_receipt(document, self.request)
+
+    class WorkflowTransport(workflow._WorkflowTransport):
+        def invoke(self, revision: str, action: str, **kwargs) -> dict:
+            if action != "converge-cutover":
+                return super().invoke(revision, action, **kwargs)
+            self.calls.append(action)
+            assert self.cutover_plan is not None
+            unsigned = {
+                "schema": owner.CONVERGENCE_SCHEMA,
+                "release_revision": REVISION,
+                "freeze_plan_sha256": self.cutover_plan.value[
+                    "freeze_plan_sha256"
+                ],
+                "cutover_plan_sha256": self.cutover_plan.sha256,
+                "preflight_receipt_sha256": "1" * 64,
+                "caddy_prepare_receipt_sha256": "2" * 64,
+                "maintenance_arm_receipt_sha256": "3" * 64,
+                "cutover_terminal_receipt_sha256": "4" * 64,
+                "caddy_terminal_receipt_sha256": "5" * 64,
+                "caddy_outcome": "private_v2_active",
+                "legacy_service_retirement_receipt_sha256": "6" * 64,
+                "control_plane_mutation_performed": True,
+                "source_data_mutation_performed": True,
+                "production_host_mutation_performed": True,
+                "secret_material_recorded": False,
+                "secret_digest_recorded": False,
+            }
+            if convergence_tamper:
+                unsigned["source_data_mutation_performed"] = False
+            receipt = {
+                **unsigned,
+                "receipt_sha256": hashlib.sha256(
+                    _canonical(unsigned)
+                ).hexdigest(),
+            }
+            self.convergence_receipt = copy.deepcopy(receipt)
+            return receipt
+
+    boundary = PasskeyBoundary()
+    bridge = BridgeBootstrap()
+    prepare_transport = workflow._WorkflowTransport(initial, host, services)
+    transport = WorkflowTransport(initial, host, services)
+    workspace = owner.execute_production_cutover_workflow(
+        release_revision=REVISION,
+        owner_identity=object(),
+        owner_subject_sha256="a" * 64,
+        private_key=Ed25519PrivateKey.generate(),
+        isolated_canary_goal_prerequisite=(
+            _isolated_canary_goal_prerequisite()
+        ),
+        truth_mode="start_new_truth_epoch",
+        passkey_boundary=boundary,
+        prepare_only=True,
+        transport_factory=lambda _identity: prepare_transport,
+        database_recovery_gate_runner=workflow._recovery_gate_runner,
+        now_unix=NOW,
+    )
+    for _expected_state in (
+        "awaiting_bridge_passkey",
+        "awaiting_cutover_passkey",
+        "passkey_claim_recorded",
+        "cutover_staged",
+    ):
+        workspace = owner.resume_prepared_production_cutover_workflow(
+            workspace=workspace,
+            owner_identity=object(),
+            passkey_boundary=boundary,
+            bridge_bootstrap=bridge,
+            transport_factory=lambda _identity: transport,
+            now_unix=NOW,
+        )
+        assert workspace["state"] == _expected_state
+    return workspace, transport, boundary, bridge
+
+
+def test_durable_cutover_workspace_stops_before_convergence(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    workspace, transport, boundary, bridge = _durable_workflow_fixture(
+        monkeypatch
+    )
+
+    assert workspace["state"] == "cutover_staged"
+    assert all(
+        isinstance(workspace[name], dict)
+        for name in (
+            "final_tail_receipt",
+            "stopped_collector_receipt",
+            "cron_continuity_stage_receipt",
+            "cutover_plan",
+            "cutover_publication",
+            "cutover_stage_receipt",
+        )
+    )
+    assert transport.calls == [
+        "stage-publication",
+        "capture-final-tail",
+        "collect-stopped",
+        "stage-cron-continuity",
+        "stage-publication",
+    ]
+    assert "phase-b-preflight" not in transport.calls
+    assert "prepare-caddy-cutover" not in transport.calls
+    assert "apply-cutover" not in transport.calls
+    assert "commit-caddy-cutover" not in transport.calls
+
+    receipt = owner.resume_prepared_production_cutover_workflow(
+        workspace=workspace,
+        owner_identity=object(),
+        passkey_boundary=boundary,
+        bridge_bootstrap=bridge,
+        transport_factory=lambda _identity: transport,
+        now_unix=NOW + 3_600,
+    )
+
+    assert transport.calls[-1:] == ["converge-cutover"]
+    assert transport.calls.count("converge-cutover") == 1
+    assert receipt["schema"] == owner.WORKFLOW_RECEIPT_SCHEMA
+    assert receipt["convergence_receipt_sha256"] == (
+        transport.convergence_receipt["receipt_sha256"]
+    )
+    assert receipt["terminal_receipt_sha256"] == "4" * 64
+    assert receipt["legacy_service_retirement_receipt_sha256"] == "6" * 64
+    assert receipt["caddy_outcome"] == "private_v2_active"
+    assert receipt["gates"][-1]["stage"] == "cutover_convergence_accepted"
+    assert boundary.consume_calls == 1
+
+    replayed = owner.resume_prepared_production_cutover_workflow(
+        workspace=workspace,
+        owner_identity=object(),
+        passkey_boundary=boundary,
+        bridge_bootstrap=bridge,
+        transport_factory=lambda _identity: transport,
+        now_unix=NOW + 7_200,
+    )
+
+    assert replayed == receipt
+    assert transport.calls.count("converge-cutover") == 2
+    assert boundary.consume_calls == 1
+
+
+def test_terminal_workflow_receipt_rejects_rebound_retirement_receipt(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    workspace, transport, boundary, bridge = _durable_workflow_fixture(
+        monkeypatch
+    )
+    receipt = owner.resume_prepared_production_cutover_workflow(
+        workspace=workspace,
+        owner_identity=object(),
+        passkey_boundary=boundary,
+        bridge_bootstrap=bridge,
+        transport_factory=lambda _identity: transport,
+        now_unix=NOW,
+    )
+    changed = copy.deepcopy(receipt)
+    changed["legacy_service_retirement_receipt_sha256"] = "f" * 64
+    changed["receipt_sha256"] = hashlib.sha256(_canonical({
+        name: item
+        for name, item in changed.items()
+        if name != "receipt_sha256"
+    })).hexdigest()
+
+    with pytest.raises(
+        owner.OwnerCutoverError,
+        match="workflow_receipt_invalid",
+    ):
+        owner._validate_workflow_receipt(
+            changed,
+            release_revision=REVISION,
+            freeze_plan_sha256=workspace["freeze_plan"]["plan_sha256"],
+            freeze_approval_sha256=workspace["freeze_approval"][
+                "approval_sha256"
+            ],
+            cutover_plan_sha256=workspace["cutover_plan"]["plan_sha256"],
+            convergence=transport.convergence_receipt,
+            gates=receipt["gates"],
+        )
+
+
+def test_cutover_staged_tamper_rejects_before_remote_action(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    workspace, transport, boundary, bridge = _durable_workflow_fixture(
+        monkeypatch
+    )
+    changed = copy.deepcopy(workspace)
+    changed["cutover_plan"]["freeze_plan_sha256"] = "f" * 64
+    changed["workspace_sha256"] = hashlib.sha256(_canonical({
+        name: item
+        for name, item in changed.items()
+        if name != "workspace_sha256"
+    })).hexdigest()
+    before = list(transport.calls)
+
+    with pytest.raises(owner.OwnerCutoverError, match="workspace_invalid"):
+        owner.resume_prepared_production_cutover_workflow(
+            workspace=changed,
+            owner_identity=object(),
+            passkey_boundary=boundary,
+            bridge_bootstrap=bridge,
+            transport_factory=lambda _identity: transport,
+            now_unix=NOW,
+        )
+
+    assert transport.calls == before
+
+
+def test_combined_convergence_tamper_fails_closed_after_one_action(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    workspace, transport, boundary, bridge = _durable_workflow_fixture(
+        monkeypatch,
+        convergence_tamper=True,
+    )
+
+    with pytest.raises(
+        owner.OwnerCutoverError,
+        match="convergence_receipt_invalid",
+    ):
+        owner.resume_prepared_production_cutover_workflow(
+            workspace=workspace,
+            owner_identity=object(),
+            passkey_boundary=boundary,
+            bridge_bootstrap=bridge,
+            transport_factory=lambda _identity: transport,
+            now_unix=NOW,
+        )
+
+    assert transport.calls.count("converge-cutover") == 1
 
 
 class _TrustedGcloud:

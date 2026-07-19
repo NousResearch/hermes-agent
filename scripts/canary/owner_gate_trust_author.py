@@ -12,6 +12,7 @@ from __future__ import annotations
 import argparse
 import base64
 import hashlib
+import importlib
 import json
 import os
 import pwd
@@ -67,6 +68,8 @@ class _ValidatedFoundationChain:
     resource_ancestor_chain: tuple[str, ...]
     interpreter_sha256: str
     interpreter_version: str
+    interpreter_image_canonical: bytes
+    attested_at_unix: int
     _marker: object
 
     def __new__(cls, *_args: Any, **_kwargs: Any) -> "_ValidatedFoundationChain":
@@ -90,7 +93,29 @@ class _ValidatedFoundationChain:
         resource_ancestor_chain: tuple[str, ...],
         interpreter_sha256: str,
         interpreter_version: str,
+        interpreter_image: Mapping[str, Any],
+        attested_at_unix: int,
     ) -> "_ValidatedFoundationChain":
+        image = dict(interpreter_image)
+        if (
+            set(image)
+            != {
+                "project",
+                "image_name",
+                "image_numeric_id",
+                "image_self_link",
+                "python_version",
+                "interpreter_sha256",
+            }
+            or image.get("interpreter_sha256") != interpreter_sha256
+            or image.get("python_version") != interpreter_version
+            or type(attested_at_unix) is not int
+            or attested_at_unix <= 0
+        ):
+            raise OwnerGateTrustAuthorError(
+                "owner_gate_trust_author_foundation_chain_invalid"
+            )
+        image_canonical = foundation.canonical_json_bytes(image)
         value = object.__new__(cls)
         for name, item in {
             "final_release_revision": final_release_revision,
@@ -115,10 +140,23 @@ class _ValidatedFoundationChain:
             "resource_ancestor_chain": resource_ancestor_chain,
             "interpreter_sha256": interpreter_sha256,
             "interpreter_version": interpreter_version,
+            "interpreter_image_canonical": image_canonical,
+            "attested_at_unix": attested_at_unix,
         }.items():
             object.__setattr__(value, name, item)
         object.__setattr__(value, "_marker", _FOUNDATION_CHAIN_MARKER)
         return value
+
+    @property
+    def interpreter_image(self) -> Mapping[str, Any]:
+        value = json.loads(
+            self.interpreter_image_canonical.decode("ascii", errors="strict")
+        )
+        if not isinstance(value, Mapping):  # defensive; factory made it exact
+            raise OwnerGateTrustAuthorError(
+                "owner_gate_trust_author_foundation_chain_invalid"
+            )
+        return dict(value)
 
 
 def _fsync_directory(path: Path) -> None:
@@ -823,16 +861,17 @@ def _validate_foundation_chain_files(
     # Lazy imports break the intentional authoring cycle: ancestry collection
     # loads the release-author paths, while this author validates ancestry only
     # after its own immutable authority paths have been initialized.
-    from scripts.canary import owner_gate_foundation_apply as foundation_apply
-    from scripts.canary import owner_gate_pre_foundation as pre_foundation
-    from scripts.canary import owner_gate_project_ancestry as project_ancestry
+    foundation_apply = importlib.import_module(
+        "scripts.canary.owner_gate_foundation_apply"
+    )
+    pre_foundation = importlib.import_module(
+        "scripts.canary.owner_gate_pre_foundation"
+    )
+    project_ancestry = importlib.import_module(
+        "scripts.canary.owner_gate_project_ancestry"
+    )
 
     try:
-        if (
-            network_collector_public_key_path
-            == project_ancestry_collector_public_key_path
-        ):
-            raise ValueError
         reauth_raw = _read_chain_bytes(
             owner_reauthentication_receipt_path,
             maximum=owner_reauth.MAX_CAPTURE_BYTES,
@@ -858,6 +897,12 @@ def _validate_foundation_chain_files(
             maximum=32,
             code="owner_gate_trust_author_foundation_chain_invalid",
         )
+        # Foundation A intentionally has one network-observation authority.
+        # Project ancestry is another statement made by that same collector,
+        # not a second trust root.  Accept either one immutable path supplied
+        # for both roles or two immutable copies, but never two distinct keys.
+        if network_key_raw != ancestry_key_raw:
+            raise ValueError
         project_ancestry_raw = _read_chain_bytes(
             project_ancestry_evidence_path,
             maximum=project_ancestry.MAX_JSON_BYTES,
@@ -965,12 +1010,15 @@ def _validate_foundation_chain_files(
         resource_ancestor_chain=resource_ancestor_chain,
         interpreter_sha256=image["interpreter_sha256"],
         interpreter_version=image["python_version"],
+        interpreter_image=image,
+        attested_at_unix=direct_authority["collected_at_unix"],
     )
 
 
 def sign_manifest(
     *,
     unsigned_path: Path,
+    expected_unsigned_sha256: str,
     private_key_path: Path,
     public_key_path: Path,
     output_path: Path,
@@ -983,7 +1031,7 @@ def sign_manifest(
     direct_iam_identity_authority_path: Path,
     now_unix: int | None = None,
 ) -> Mapping[str, Any]:
-    """Sign one exact canonical manifest after its public key is fork-pinned."""
+    """Sign one fixed, independently rebuilt manifest after public validation."""
 
     _require_owner_directory(
         KEY_DIRECTORY,
@@ -1004,12 +1052,6 @@ def sign_manifest(
         raise OwnerGateTrustAuthorError(
             "owner_gate_trust_author_key_path_invalid"
         )
-    private_raw = _read_exact_regular(
-        private_key_path,
-        size=PRIVATE_KEY_BYTES,
-        modes=frozenset({0o600}),
-        code="owner_gate_trust_author_private_key_invalid",
-    )
     public_raw = _read_exact_regular(
         public_key_path,
         size=PUBLIC_KEY_BYTES,
@@ -1017,14 +1059,27 @@ def sign_manifest(
         code="owner_gate_trust_author_public_key_invalid",
     )
     key_id = hashlib.sha256(public_raw).hexdigest()
-    if (
-        _public_raw(private_raw) != public_raw
-        or key_id != trust.PINNED_RELEASE_TRUST_PUBLIC_KEY_SHA256
-    ):
+    if key_id != trust.PINNED_RELEASE_TRUST_PUBLIC_KEY_SHA256:
         raise OwnerGateTrustAuthorError(
             "owner_gate_trust_author_key_not_pinned"
         )
     unsigned = _read_unsigned(unsigned_path)
+    unsigned_raw = foundation.canonical_json_bytes(unsigned)
+    fixed_unsigned = MANIFEST_DIRECTORY / (
+        f"{unsigned['release_revision']}.trust.unsigned.json"
+    )
+    if (
+        unsigned_path != fixed_unsigned
+        or len(expected_unsigned_sha256) != 64
+        or any(
+            character not in "0123456789abcdef"
+            for character in expected_unsigned_sha256
+        )
+        or hashlib.sha256(unsigned_raw).hexdigest() != expected_unsigned_sha256
+    ):
+        raise OwnerGateTrustAuthorError(
+            "owner_gate_trust_author_unsigned_binding_invalid"
+        )
     chain = _validate_foundation_chain_files(
         pre_foundation_authority_path=pre_foundation_authority_path,
         owner_reauthentication_receipt_path=owner_reauthentication_receipt_path,
@@ -1067,6 +1122,9 @@ def sign_manifest(
         != chain.project_ancestry_chain_sha256
         or unsigned["resource_ancestor_chain"]
         != list(chain.resource_ancestor_chain)
+        or unsigned["interpreter_image"] != chain.interpreter_image
+        or unsigned["release_attestation"]["attested_at_unix"]
+        != chain.attested_at_unix
         or chain.bootstrap_network_collector_public_key_id
         in set(final_collectors.values())
     ):
@@ -1083,6 +1141,19 @@ def sign_manifest(
     if unsigned.get("signer_key_id") != key_id:
         raise OwnerGateTrustAuthorError(
             "owner_gate_trust_author_signer_mismatch"
+        )
+    # The private key is deliberately the last input loaded: every public
+    # release, package, collector, migration, image, and chain binding has
+    # already been recomputed and compared by the fixed authoring flow.
+    private_raw = _read_exact_regular(
+        private_key_path,
+        size=PRIVATE_KEY_BYTES,
+        modes=frozenset({0o600}),
+        code="owner_gate_trust_author_private_key_invalid",
+    )
+    if _public_raw(private_raw) != public_raw:
+        raise OwnerGateTrustAuthorError(
+            "owner_gate_trust_author_key_not_pinned"
         )
     try:
         signature = Ed25519PrivateKey.from_private_bytes(private_raw).sign(
@@ -1149,45 +1220,10 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     subparsers = parser.add_subparsers(dest="command", required=True)
     subparsers.add_parser("init-key")
-    sign = subparsers.add_parser("sign")
-    sign.add_argument("--unsigned", type=Path, required=True)
-    sign.add_argument("--output", type=Path, required=True)
-    sign.add_argument("--pre-foundation-authority", type=Path, required=True)
-    sign.add_argument("--owner-reauth-receipt", type=Path, required=True)
-    sign.add_argument("--network-evidence", type=Path, required=True)
-    sign.add_argument("--network-collector-public-key", type=Path, required=True)
-    sign.add_argument("--project-ancestry-evidence", type=Path, required=True)
-    sign.add_argument(
-        "--project-ancestry-collector-public-key",
-        type=Path,
-        required=True,
-    )
-    sign.add_argument("--direct-iam-identity-authority", type=Path, required=True)
     arguments = parser.parse_args(argv)
-    if arguments.command == "init-key":
-        receipt = initialize_keypair()
-    else:
-        receipt = sign_manifest(
-            unsigned_path=arguments.unsigned,
-            private_key_path=KEY_DIRECTORY / PRIVATE_KEY_NAME,
-            public_key_path=KEY_DIRECTORY / PUBLIC_KEY_NAME,
-            output_path=arguments.output,
-            pre_foundation_authority_path=arguments.pre_foundation_authority,
-            owner_reauthentication_receipt_path=arguments.owner_reauth_receipt,
-            network_evidence_path=arguments.network_evidence,
-            network_collector_public_key_path=(
-                arguments.network_collector_public_key
-            ),
-            project_ancestry_evidence_path=(
-                arguments.project_ancestry_evidence
-            ),
-            project_ancestry_collector_public_key_path=(
-                arguments.project_ancestry_collector_public_key
-            ),
-            direct_iam_identity_authority_path=(
-                arguments.direct_iam_identity_authority
-            ),
-        )
+    if arguments.command != "init-key":  # pragma: no cover - argparse exactness
+        raise OwnerGateTrustAuthorError("owner_gate_trust_author_command_invalid")
+    receipt = initialize_keypair()
     print(foundation.canonical_json_bytes(receipt).decode("ascii"))
     return 0
 

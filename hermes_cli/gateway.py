@@ -5589,8 +5589,8 @@ def _setup_weixin():
     if base_url:
         # Defensive: ensure the base URL is always the canonical iLink
         # endpoint, even if the QR session somehow captured a stale one.
-        if "ilinkai.weixin.qq.com" not in base_url:
-            base_url = "https://ilinkai.weixin.qq.com"
+        from gateway.platforms.weixin_qr_session import _normalise_ilink_base_url
+        base_url = _normalise_ilink_base_url(base_url)
         save_env_value("WEIXIN_BASE_URL", base_url)
     save_env_value(
         "WEIXIN_CDN_BASE_URL",

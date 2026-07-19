@@ -51,6 +51,7 @@ class WeixinQRSession:
 
     session_id: str
     hermes_home: str
+    profile: str = ""  # Bound at creation; apply must match.
     bot_type: str = "3"
     created_at_ts: float = field(default_factory=time.time)
     expires_at_ts: float = 0.0
@@ -162,6 +163,7 @@ class WeixinQRSessionManager:
         self,
         hermes_home: str,
         *,
+        profile: str = "",
         bot_type: str = "3",
         timeout_seconds: int = DEFAULT_SESSION_TIMEOUT_SECONDS,
     ) -> Dict[str, Any]:
@@ -178,6 +180,7 @@ class WeixinQRSessionManager:
             session = WeixinQRSession(
                 session_id=session_id,
                 hermes_home=hermes_home,
+                profile=profile,
                 bot_type=bot_type,
                 created_at_ts=now,
                 expires_at_ts=now + timeout_seconds,
@@ -232,6 +235,11 @@ class WeixinQRSessionManager:
             if not session or session.state != "confirmed":
                 return None
             return dict(session.credentials) if session.credentials else None
+
+    def get_session(self, session_id: str) -> Optional[WeixinQRSession]:
+        """Return the raw session object (for profile validation on apply)."""
+        with self._lock:
+            return self._sessions.get(session_id)
 
     # ------------------------------------------------------------------
     # Background task implementation
@@ -393,6 +401,13 @@ class WeixinQRSessionManager:
 
         # Render QR as base64 PNG for inline <img> rendering.
         session.qr_image_base64 = _render_qr_png_base64(session.qr_payload)
+        if not session.qr_image_base64:
+            session.state = "failed"
+            session.error_message = (
+                "QR rendering failed — the 'qrcode' package may be missing. "
+                "Install it with: pip install qrcode"
+            )
+            return False
         return True
 
     async def _handle_confirmed(
@@ -416,7 +431,7 @@ class WeixinQRSessionManager:
         # normalise to the canonical ILINK_BASE_URL to avoid silent session
         # failures caused by the wrong domain.
         raw_base_url = str(status_resp.get("baseurl") or ILINK_BASE_URL)
-        base_url = ILINK_BASE_URL if "ilinkai.weixin.qq.com" not in raw_base_url else raw_base_url
+        base_url = _normalise_ilink_base_url(raw_base_url)
         user_id = str(status_resp.get("ilink_user_id") or "")
 
         if not account_id or not token:
@@ -485,3 +500,25 @@ _weixin_qr_sessions = WeixinQRSessionManager()
 def get_weixin_qr_session_manager() -> WeixinQRSessionManager:
     """Return the process-global WeixinQRSessionManager."""
     return _weixin_qr_sessions
+
+
+def _normalise_ilink_base_url(raw_url: str) -> str:
+    """Normalise an iLink base URL to the canonical endpoint.
+
+    iLink sometimes returns ``ilinkai.wechat.com`` (missing ``.qq.com``) or
+    other variant domains.  Parse the URL and require an exact HTTPS hostname
+    match against ``ilinkai.weixin.qq.com`` before retaining a server-provided
+    URL; otherwise fall back to the canonical ``ILINK_BASE_URL``.
+    """
+    from urllib.parse import urlparse
+
+    try:
+        parsed = urlparse(raw_url)
+        if (
+            parsed.scheme == "https"
+            and parsed.hostname == "ilinkai.weixin.qq.com"
+        ):
+            return raw_url
+    except Exception:
+        pass
+    return ILINK_BASE_URL

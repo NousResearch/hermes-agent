@@ -234,6 +234,7 @@ def _apply_async_record(node: Dict[str, Any], record: Dict[str, Any]) -> bool:
     delegation_id = str(record.get("delegation_id") or "").strip()
     if (
         not delegation_id
+        or node.get("status") != "dispatched"
         or node.get("delegation_id") != delegation_id
     ):
         return False

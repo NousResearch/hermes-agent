@@ -369,6 +369,52 @@ def test_completion_callback_survives_recent_record_eviction(monkeypatch):
     assert node["async_completion_reconciled"] is True
 
 
+def test_late_completion_callback_cannot_overwrite_manual_terminal_result(monkeypatch):
+    callbacks = []
+
+    def fake_delegate_task(**kwargs):
+        callbacks.append(kwargs["_completion_callback"])
+        return json.dumps({"status": "dispatched", "delegation_id": "deleg_late"})
+
+    from tools import delegate_tool
+
+    monkeypatch.setattr(delegate_tool, "delegate_task", fake_delegate_task)
+    parent = object()
+    _call(
+        {
+            "action": "create",
+            "workflow_id": "wf_late",
+            "objective": "Keep manually recorded terminal state",
+            "dispatch_ready": True,
+            "nodes": [{"node_id": "worker", "goal": "Do work"}],
+        },
+        parent_agent=parent,
+    )
+    _call(
+        {
+            "action": "record_result",
+            "workflow_id": "wf_late",
+            "node_id": "worker",
+            "status": "failed",
+            "summary": "Manual failure is authoritative.",
+        },
+        parent_agent=parent,
+    )
+
+    callbacks[0](
+        {
+            "delegation_id": "deleg_late",
+            "status": "completed",
+            "summary": "Late completion must not replace manual state.",
+        }
+    )
+
+    node = _call(
+        {"action": "status", "workflow_id": "wf_late"}, parent_agent=parent
+    )["workflow"]["nodes"][0]
+    assert node["status"] == "failed"
+    assert node["summary"] == "Manual failure is authoritative."
+
 
 def test_dispatch_ready_unlocks_dependents_after_async_reconcile(monkeypatch):
     dispatches = []

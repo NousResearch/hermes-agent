@@ -1,14 +1,14 @@
 ---
-title: "Popular Web Designs"
+title: "Popular Web Designs — 54 real design systems (Stripe, Linear, Vercel) as HTML/CSS"
 sidebar_label: "Popular Web Designs"
-description: "Curated real design systems as HTML/CSS, sourced from VoltAgent/awesome-design-md and periodically compared with upstream"
+description: "54 real design systems (Stripe, Linear, Vercel) as HTML/CSS"
 ---
 
 {/* This page is auto-generated from the skill's SKILL.md by website/scripts/generate-skill-docs.py. Edit the source SKILL.md, not this page. */}
 
 # Popular Web Designs
 
-Curated real design systems as HTML/CSS, sourced from VoltAgent/awesome-design-md and periodically compared with upstream.
+54 real design systems (Stripe, Linear, Vercel) as HTML/CSS.
 
 ## Skill metadata
 

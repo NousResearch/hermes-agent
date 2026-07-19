@@ -1,6 +1,6 @@
 ---
 name: popular-web-designs
-description: Curated real design systems as HTML/CSS, sourced from VoltAgent/awesome-design-md and periodically compared with upstream.
+description: 54 real design systems (Stripe, Linear, Vercel) as HTML/CSS.
 version: 1.0.1
 author: Hermes Agent + Teknium (design systems sourced from VoltAgent/awesome-design-md)
 license: MIT

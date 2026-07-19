@@ -15455,17 +15455,33 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     # elapses, whichever comes first.  Subsequent degraded
                     # hits after the wait are fast-retried (3 s sleep).
                     if not _polling_waited:
-                        _polling_event = getattr(adapter, "_polling_progress_event", None)
-                        if _polling_event is not None:
-                            _poll_timeout = 90.0  # _POLLING_PROGRESS_TIMEOUT + _UPDATER_START_TIMEOUT
+                        _poll_timeout = 90.0  # _POLLING_PROGRESS_TIMEOUT + _UPDATER_START_TIMEOUT
+                        _poll_start = time.monotonic()
+                        # Re-read _polling_progress_event each iteration:
+                        # TelegramAdapter._begin_polling_generation() replaces the
+                        # event object on every recovery generation, so a one-shot
+                        # capture can wait on an event that will never be set.
+                        # Short 3 s sub-waits let us pick up a replacement event
+                        # when it arrives, keeping the 90 s total budget.
+                        while time.monotonic() - _poll_start < _poll_timeout:
+                            _polling_event = getattr(
+                                adapter, "_polling_progress_event", None
+                            )
+                            if _polling_event is None or _polling_event.is_set():
+                                break
                             try:
-                                await asyncio.wait_for(_polling_event.wait(), timeout=_poll_timeout)
-                            except asyncio.TimeoutError:
-                                logger.warning(
-                                    "Restart notification to %s:%s — polling did not settle "
-                                    "within %.0f s; attempting send anyway",
-                                    platform_str, chat_id, _poll_timeout,
+                                await asyncio.wait_for(
+                                    _polling_event.wait(), timeout=3.0,
                                 )
+                                break
+                            except asyncio.TimeoutError:
+                                continue
+                        else:
+                            logger.warning(
+                                "Restart notification to %s:%s — polling did not settle "
+                                "within %.0f s; attempting send anyway",
+                                platform_str, chat_id, _poll_timeout,
+                            )
                         _polling_waited = True
 
                     if _attempt + 1 >= _max_attempts:

@@ -700,6 +700,82 @@ async def test_send_restart_notification_no_polling_event_non_telegram(
 
 
 @pytest.mark.asyncio
+async def test_send_restart_notification_recovers_after_event_replacement(
+    tmp_path, monkeypatch,
+):
+    """When _polling_progress_event is replaced by a new polling generation
+    after the first degraded send, the re-read loop picks up the replacement
+    event and delivers successfully.
+
+    Regression for the generation-scoped event problem: TelegramAdapter.
+    _begin_polling_generation() creates a new asyncio.Event() for every
+    recovery generation.  A one-shot capture of the original event would
+    wait forever on an object that can never be set (the recovery generation
+    owns a different event).  The fix re-reads _polling_progress_event in a
+    3 s sub-wait loop so it picks up the replacement event naturally.
+    """
+    monkeypatch.setattr(gateway_run, "_hermes_home", tmp_path)
+
+    notify_path = tmp_path / ".restart_notify.json"
+    notify_path.write_text(json.dumps({
+        "platform": "telegram",
+        "chat_id": "42",
+    }))
+
+    runner, adapter = make_restart_runner()
+
+    # Original event — will be replaced before it is ever set.
+    _original_event = asyncio.Event()
+    adapter._polling_progress_event = _original_event
+    # Replacement event that recovery would create.
+    _replacement_event = asyncio.Event()
+
+    # Synchronisation signals.
+    _first_degraded_signal = asyncio.Event()  # send() completed attempt 1
+    _send_count = 0
+
+    async def _mock_send(*_args, **_kwargs):
+        nonlocal _send_count
+        _send_count += 1
+        if _send_count == 1:
+            _first_degraded_signal.set()
+            return SendResult(success=False, error="send_path_degraded")
+        # Second send: replacement event must already be set.
+        assert _replacement_event.is_set(), (
+            "replacement event should be set before the second send"
+        )
+        return SendResult(success=True, message_id="restart-1")
+
+    adapter.send = AsyncMock(side_effect=_mock_send)
+
+    async def _recovery_task():
+        """Simulate a recovery generation: replace the event, then set it."""
+        await _first_degraded_signal.wait()
+        await asyncio.sleep(0)  # yield
+        # Replace the event — this is what _begin_polling_generation() does.
+        adapter._polling_progress_event = _replacement_event
+        await asyncio.sleep(0)  # yield so the re-read loop can see it
+        _replacement_event.set()
+
+    task = asyncio.create_task(_recovery_task())
+
+    delivered_target = await runner._send_restart_notification()
+
+    await task
+
+    assert delivered_target == ("telegram", "42", None)
+    assert _send_count == 2, (
+        f"expected 2 sends (degraded → retry), got {_send_count}"
+    )
+    assert not notify_path.exists()
+
+    # The original event was never set — verify the fix didn't just get lucky.
+    assert not _original_event.is_set(), (
+        "original event must NOT have been set — delivery relied on replacement"
+    )
+
+
+@pytest.mark.asyncio
 async def test_send_home_channel_startup_notification_skipped_when_flag_disabled(
     tmp_path, monkeypatch
 ):

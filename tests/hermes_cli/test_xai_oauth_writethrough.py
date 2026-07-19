@@ -222,6 +222,72 @@ def test_singleton_refresh_holds_root_source_lock_and_preserves_active_providers
     assert root["providers"]["xai-oauth"]["tokens"]["refresh_token"] == "new-refresh"
 
 
+def test_two_root_owned_rotations_do_not_create_profile_shadow_and_reach_sibling(
+    tmp_path, monkeypatch
+):
+    profile_one = tmp_path / "profiles" / "one" / "auth.json"
+    profile_two = tmp_path / "profiles" / "two" / "auth.json"
+    root_path = tmp_path / "root" / "auth.json"
+    active_profile = [profile_one]
+    monkeypatch.setattr(auth, "_auth_file_path", lambda: active_profile[0])
+    monkeypatch.setattr(auth, "_global_auth_file_path", lambda: root_path)
+    monkeypatch.setenv("HOME", str(tmp_path / "not-the-root"))
+    for profile_path in (profile_one, profile_two):
+        _write_store(
+            profile_path,
+            {"version": 1, "active_provider": "openrouter", "providers": {}},
+        )
+    _write_store(
+        root_path,
+        {
+            "version": 1,
+            "active_provider": "openai-codex",
+            "providers": {
+                "xai-oauth": {
+                    "tokens": {
+                        "access_token": "access-0",
+                        "refresh_token": "refresh-0",
+                    },
+                    "discovery": {
+                        "token_endpoint": "https://auth.x.ai/oauth/token"
+                    },
+                }
+            },
+        },
+    )
+    refresh_inputs = []
+
+    def _rotate(_access_token, refresh_token, **_kwargs):
+        refresh_inputs.append(refresh_token)
+        generation = len(refresh_inputs)
+        return {
+            "access_token": f"access-{generation}",
+            "refresh_token": f"refresh-{generation}",
+            "token_type": "Bearer",
+            "last_refresh": f"2026-07-19T0{generation}:00:00+00:00",
+        }
+
+    monkeypatch.setattr(auth, "refresh_xai_oauth_pure", _rotate)
+
+    first = auth.resolve_xai_oauth_runtime_credentials(force_refresh=True)
+    second = auth.resolve_xai_oauth_runtime_credentials(force_refresh=True)
+
+    assert first["api_key"] == "access-1"
+    assert second["api_key"] == "access-2"
+    assert refresh_inputs == ["refresh-0", "refresh-1"]
+    assert "xai-oauth" not in _read_store(profile_one)["providers"]
+    root = _read_store(root_path)
+    assert root["providers"]["xai-oauth"]["tokens"]["refresh_token"] == "refresh-2"
+
+    active_profile[0] = profile_two
+    sibling = auth.resolve_xai_oauth_runtime_credentials(
+        force_refresh=False,
+        refresh_if_expiring=False,
+    )
+    assert sibling["api_key"] == "access-2"
+    assert "xai-oauth" not in _read_store(profile_two)["providers"]
+
+
 def test_terminal_pool_refresh_quarantines_root_without_activation(
     profile_and_root, monkeypatch
 ):

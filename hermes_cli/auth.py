@@ -18,6 +18,7 @@ Nous authentication paths:
 
 from __future__ import annotations
 
+import copy
 import json
 import logging
 import os
@@ -1200,6 +1201,43 @@ def _save_auth_store(auth_store: Dict[str, Any], target_path: Optional[Path] = N
     except OSError:
         pass
     return auth_file
+
+
+def _restore_auth_store_snapshot(
+    auth_file: Path,
+    *,
+    existed: bool,
+    payload: bytes,
+) -> None:
+    """Restore exact auth.json bytes after a coordinated write fails."""
+    if not existed:
+        auth_file.unlink(missing_ok=True)
+    else:
+        tmp_path = auth_file.with_name(
+            f"{auth_file.name}.rollback.{os.getpid()}.{uuid.uuid4().hex}"
+        )
+        try:
+            fd = os.open(
+                str(tmp_path),
+                os.O_WRONLY | os.O_CREAT | os.O_EXCL,
+                stat.S_IRUSR | stat.S_IWUSR,
+            )
+            with os.fdopen(fd, "wb") as handle:
+                handle.write(payload)
+                handle.flush()
+                os.fsync(handle.fileno())
+            real_path = atomic_replace(tmp_path, auth_file)
+            os.chmod(real_path, stat.S_IRUSR | stat.S_IWUSR)
+        finally:
+            tmp_path.unlink(missing_ok=True)
+    try:
+        dir_fd = os.open(str(auth_file.parent), os.O_RDONLY)
+    except OSError:
+        return
+    try:
+        os.fsync(dir_fd)
+    finally:
+        os.close(dir_fd)
 
 
 def _load_provider_state_with_source(
@@ -4458,15 +4496,15 @@ def _refresh_xai_oauth_tokens(
     token_endpoint: str,
     redirect_uri: str = "",
     timeout_seconds: float,
+    source_auth_store: Dict[str, Any],
+    source_state: Dict[str, Any],
+    source_path: Optional[Path],
 ) -> Dict[str, Any]:
     # Re-persist whatever auth_mode is already stored (legacy pre-device-code
     # logins may still carry ``oauth_pkce``): the refresh hot path must not
     # relabel how the grant was originally obtained.
-    try:
-        state = _load_provider_state(_load_auth_store(), "xai-oauth") or {}
-        auth_mode = str(state.get("auth_mode") or "oauth_device_code")
-    except Exception:
-        auth_mode = "oauth_device_code"
+    state = copy.deepcopy(source_state)
+    auth_mode = str(state.get("auth_mode") or "oauth_device_code")
     refreshed = refresh_xai_oauth_pure(
         str(tokens.get("access_token", "") or ""),
         str(tokens.get("refresh_token", "") or ""),
@@ -4482,15 +4520,21 @@ def _refresh_xai_oauth_tokens(
         updated_tokens["expires_in"] = refreshed["expires_in"]
     if refreshed.get("token_type"):
         updated_tokens["token_type"] = refreshed["token_type"]
-    _save_xai_oauth_tokens(
-        updated_tokens,
-        discovery={"token_endpoint": token_endpoint},
-        redirect_uri=redirect_uri,
-        last_refresh=refreshed["last_refresh"],
-        auth_mode=auth_mode,
-        # Refreshing credentials is maintenance, not provider selection. A
-        # status check or background runtime refresh must not change the
-        # user's active provider.
+    state["tokens"] = updated_tokens
+    state.pop("last_auth_error", None)
+    state["last_refresh"] = refreshed["last_refresh"]
+    state["auth_mode"] = auth_mode
+    discovery = dict(state.get("discovery") or {})
+    discovery["token_endpoint"] = token_endpoint
+    state["discovery"] = discovery
+    if redirect_uri:
+        state["redirect_uri"] = redirect_uri
+    _save_provider_state_to_source(
+        source_auth_store,
+        "xai-oauth",
+        state,
+        source_path,
+        # Refreshing credentials is maintenance, not provider selection.
         set_active=False,
     )
     return updated_tokens
@@ -4549,6 +4593,9 @@ def resolve_xai_oauth_runtime_credentials(
                         token_endpoint=token_endpoint,
                         redirect_uri=redirect_uri,
                         timeout_seconds=refresh_timeout_seconds,
+                        source_auth_store=_source_auth_store,
+                        source_state=_source_state or {},
+                        source_path=_source_path,
                     )
                     access_token = str(tokens.get("access_token", "") or "").strip()
                 except AuthError as exc:
@@ -6684,12 +6731,6 @@ def _update_config_for_provider(
     explicit model-selection flow must pass *replace_default_model* so the
     selected model, provider, and endpoint become visible together.
     """
-    # Set active_provider in auth.json so auto-resolution picks this provider
-    with _auth_store_lock():
-        auth_store = _load_auth_store()
-        auth_store["active_provider"] = provider_id
-        _save_auth_store(auth_store)
-
     # Update config.yaml model section
     config_path = get_config_path()
     config_path.parent.mkdir(parents=True, exist_ok=True)
@@ -6729,7 +6770,25 @@ def _update_config_for_provider(
 
     config["model"] = model_cfg
 
-    atomic_yaml_write(config_path, config, sort_keys=False)
+    # Keep auth.json and config.yaml coherent across the durable config-write
+    # boundary. Holding the auth lock prevents rollback from overwriting a
+    # concurrent auth update.
+    with _auth_store_lock():
+        auth_file = _auth_file_path()
+        auth_existed = auth_file.exists()
+        auth_snapshot = auth_file.read_bytes() if auth_existed else b""
+        auth_store = _load_auth_store()
+        auth_store["active_provider"] = provider_id
+        _save_auth_store(auth_store)
+        try:
+            atomic_yaml_write(config_path, config, sort_keys=False)
+        except BaseException:
+            _restore_auth_store_snapshot(
+                auth_file,
+                existed=auth_existed,
+                payload=auth_snapshot,
+            )
+            raise
     return config_path
 
 

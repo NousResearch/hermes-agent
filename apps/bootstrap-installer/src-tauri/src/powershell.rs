@@ -9,7 +9,7 @@
 use anyhow::{Context, Result};
 use std::path::Path;
 use std::process::Stdio;
-use tokio::io::{AsyncBufReadExt, BufReader};
+use tokio::io::{AsyncBufReadExt, AsyncReadExt, BufReader};
 use tokio::process::{Child, Command};
 use tokio::sync::mpsc;
 
@@ -78,7 +78,14 @@ pub async fn run_script(
     let stderr = child.stderr.take().expect("stderr was piped");
 
     let mut stdout_reader = BufReader::new(stdout).lines();
-    let mut stderr_reader = BufReader::new(stderr).lines();
+    // stderr is read as raw bytes and decoded lossily because PowerShell
+    // emits localized error messages in the console codepage (e.g. CP1252
+    // on pt-BR Windows), not UTF-8.  `BufReader::lines()` would fail with
+    // "stream did not contain valid UTF-8", truncating the error text at
+    // the first accented character — making failures undiagnosable for
+    // non-English users.
+    let mut stderr_reader = BufReader::new(stderr);
+    let mut stderr_buf: Vec<u8> = Vec::new();
 
     let mut combined_stdout = String::new();
     let mut combined_stderr = String::new();
@@ -104,15 +111,19 @@ pub async fn run_script(
                     }
                 }
             }
-            line = stderr_reader.next_line() => {
-                match line {
-                    Ok(Some(l)) => {
-                        (sink.on_stderr_line)(&l);
-                        combined_stderr.push_str(&l);
-                        combined_stderr.push('\n');
-                    }
-                    Ok(None) => {
+            result = stderr_reader.read_until(b'\n', &mut stderr_buf) => {
+                match result {
+                    Ok(0) => {
                         // stderr EOF — keep draining stdout.
+                    }
+                    Ok(_) => {
+                        let line = String::from_utf8_lossy(&stderr_buf);
+                        // Trim trailing newline included by read_until.
+                        let trimmed = line.trim_end_matches('\n');
+                        (sink.on_stderr_line)(trimmed);
+                        combined_stderr.push_str(trimmed);
+                        combined_stderr.push('\n');
+                        stderr_buf.clear();
                     }
                     Err(e) => {
                         tracing::warn!("stderr read error: {e}");
@@ -135,10 +146,22 @@ pub async fn run_script(
         combined_stdout.push_str(&l);
         combined_stdout.push('\n');
     }
-    while let Ok(Some(l)) = stderr_reader.next_line().await {
-        (sink.on_stderr_line)(&l);
-        combined_stderr.push_str(&l);
-        combined_stderr.push('\n');
+    loop {
+        match stderr_reader.read_until(b'\n', &mut stderr_buf).await {
+            Ok(0) => break,
+            Ok(_) => {
+                let line = String::from_utf8_lossy(&stderr_buf);
+                let trimmed = line.trim_end_matches('\n');
+                (sink.on_stderr_line)(trimmed);
+                combined_stderr.push_str(trimmed);
+                combined_stderr.push('\n');
+                stderr_buf.clear();
+            }
+            Err(e) => {
+                tracing::warn!("stderr drain error: {e}");
+                break;
+            }
+        }
     }
 
     let status = child

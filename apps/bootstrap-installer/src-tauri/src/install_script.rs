@@ -116,18 +116,20 @@ pub async fn resolve(
     };
 
     let cached = cached_path(kind, &commit_or_ref);
+
+    // If a cached file exists but the install script itself was updated
+    // (e.g. the prior download was corrupt or unparseable on non-English
+    // Windows), stale cache reuse would defeat the Retry button. Always
+    // re-download so the user can recover without manual cache cleanup.
+    // The download is a single ~180 KB GET; the cost is negligible
+    // compared to a failed install loop.
     if cached.exists() {
         emit_log(&format!(
-            "[bootstrap] using cached {} for {}",
+            "[bootstrap] removing stale cache {} for {}",
             kind.filename(),
             truncate_ref(&commit_or_ref)
         ));
-        return Ok(ResolvedScript {
-            path: cached,
-            source: ScriptSource::Cached,
-            commit: pin.commit.clone(),
-            branch: pin.branch.clone(),
-        });
+        let _ = std::fs::remove_file(&cached);
     }
 
     emit_log(&format!(
@@ -232,6 +234,21 @@ async fn download(kind: ScriptKind, commit_or_ref: &str, dest_path: &Path) -> Re
     let mut file = tokio::fs::File::create(&tmp_path)
         .await
         .with_context(|| format!("creating temp file {}", tmp_path.display()))?;
+
+    // Write a UTF-8 BOM before .ps1 files so PowerShell 5.1 decodes them as
+    // UTF-8 regardless of the system locale. Without the BOM, PowerShell 5.1
+    // falls back to the ANSI codepage (e.g. CP1252 on pt-BR Windows), which
+    // misinterprets multi-byte UTF-8 sequences — em dashes become typographic
+    // quotes that the parser treats as string delimiters, causing cascading
+    // parse failures. The install.ps1 in the repo is now pure ASCII as a
+    // defense-in-depth measure; the BOM is a belt-and-suspenders guard against
+    // future non-ASCII characters.
+    if matches!(kind, ScriptKind::Ps1) {
+        file.write_all(&[0xEF, 0xBB, 0xBF])
+            .await
+            .with_context(|| format!("writing BOM to {}", tmp_path.display()))?;
+    }
+
     file.write_all(&bytes)
         .await
         .with_context(|| format!("writing temp file {}", tmp_path.display()))?;

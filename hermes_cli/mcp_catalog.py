@@ -490,6 +490,14 @@ def _build_server_config(
         cfg["url"] = t.url
         if entry.auth.type == "oauth":
             cfg["auth"] = "oauth"
+        elif entry.auth.type == "api_key" and entry.auth.env_var:
+            # Bearer-token remote server: mirror the `hermes mcp add`
+            # convention (_bearer_auth_headers) — the token itself is
+            # prompted via auth.env and stored in ~/.hermes/.env; only an
+            # interpolated header reference lands in config.yaml.
+            cfg["headers"] = {
+                "Authorization": f"Bearer ${{{entry.auth.env_var}}}"
+            }
     return cfg
 
 

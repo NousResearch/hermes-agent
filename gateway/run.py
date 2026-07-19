@@ -16453,56 +16453,6 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             except Exception as echo_exc:
                 logger.debug("%s echo failed (non-fatal): %s", log_context, echo_exc)
 
-    async def _dequeue_pending_with_transcription(
-        self,
-        adapter,
-        session_key: str,
-        source,
-    ) -> str | None:
-        """Dequeue a pending queued message, auto-transcribing audio media.
-
-        When a voice/audio message arrives during an active agent run, the
-        adapter stores the event in its pending queue and signals an interrupt
-        (see base.BaseAdapter.handle_message). The adapter path bypasses
-        _handle_message entirely, so the normal STT pipeline at message-receive
-        time never runs.
-
-        This helper fills that gap: when the dequeued event has audio media,
-        we transcribe inline, echo the raw transcript back to the user (same
-        "🎙️" format as the fresh-message path), and return enriched text.
-        Non-audio events fall back to _build_media_placeholder, matching the
-        original _dequeue_pending_text behavior.
-        """
-        event = adapter.get_pending_message(session_key)
-        if not event:
-            return None
-
-        text = event.text or ""
-
-        if self._pending_event_audio_paths(event):
-            enriched_text, successful_transcripts = await self._transcribe_pending_audio_event_once(
-                event,
-                text,
-            )
-            # Echo raw transcripts back to the user when configured so voice
-            # interrupts feel identical to fresh voice messages.
-            echo_adapter = self._adapter_for_source(source)
-            echo_meta = {"thread_id": source.thread_id} if source.thread_id else None
-            await self._echo_pending_stt_transcripts_once(
-                event,
-                echo_adapter,
-                source,
-                successful_transcripts,
-                metadata=echo_meta,
-            )
-            return enriched_text or None
-
-        # Non-audio fallback: preserve original _dequeue_pending_text semantics.
-        media_urls = getattr(event, "media_urls", None) or []
-        if not text and media_urls:
-            text = _build_media_placeholder(event)
-        return text or None
-
     def _build_process_event_source(self, evt: dict):
         """Resolve the canonical source for a synthetic background-process event.
 

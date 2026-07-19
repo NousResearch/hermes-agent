@@ -1834,11 +1834,18 @@ class TestWebServerEndpoints:
         try:
             for sid, src in (
                 ("sb-desktop", "desktop"),
+                ("sb-handoff", "tui"),
                 ("sb-cron", "cron"),
                 ("sb-telegram", "telegram"),
             ):
                 db.create_session(session_id=sid, source=src)
                 db.append_message(session_id=sid, role="user", content="hi")
+            db.record_gateway_session_peer(
+                "sb-handoff",
+                session_key="telegram:chat:topic",
+                source="tui",
+                origin_json=json.dumps({"platform": "telegram", "chat_id": "chat", "thread_id": "topic"}),
+            )
         finally:
             db.close()
 
@@ -1847,6 +1854,7 @@ class TestWebServerEndpoints:
             "?recents_profile=all&recents_limit=20&recents_exclude=cron,telegram"
             "&cron_limit=50&messaging_limit=100"
             "&messaging_exclude=cron,cli,codex,desktop,gateway,local,tui"
+            "&messaging_origin_sources=telegram,discord"
         )
         assert resp.status_code == 200
         data = resp.json()
@@ -1862,6 +1870,7 @@ class TestWebServerEndpoints:
         assert "sb-cron" not in recents_ids and "sb-cron" not in messaging_ids
         assert "sb-telegram" in messaging_ids
         assert "sb-telegram" not in recents_ids and "sb-telegram" not in cron_ids
+        assert "sb-handoff" in messaging_ids
 
         # Rows carry profile tagging like /api/profiles/sessions.
         row = next(s for s in data["recents"]["sessions"] if s["id"] == "sb-desktop")

@@ -1,5 +1,6 @@
 import { useCallback, useRef } from 'react'
 
+import { sessionConversationIdentity } from '@/app/chat/sidebar/messaging-groups'
 import { getCronJobs, listAllProfileSessions, listSidebarSessions, type SessionInfo } from '@/hermes'
 import { sameCronSignature } from '@/lib/session-signatures'
 import {
@@ -82,12 +83,15 @@ export function useSessionListActions({ profileScope }: UseSessionListActionsArg
   const refreshMessagingSessions = useCallback(async () => {
     try {
       const result = await listAllProfileSessions(MESSAGING_SECTION_LIMIT, 1, 'exclude', 'recent', 'all', {
-        excludeSources: MESSAGING_EXCLUDED_SOURCES
+        excludeSources: MESSAGING_EXCLUDED_SOURCES,
+        includeOriginSources: MESSAGING_SESSION_SOURCE_IDS
       })
 
       // Drop any non-messaging source the broad exclude didn't catch (custom
       // sources) — those stay in local recents, not a platform section.
-      const rows = result.sessions.filter(s => isMessagingSource(s.source))
+      const rows = result.sessions.filter(
+        s => isMessagingSource(s.source) || isMessagingSource(sessionConversationIdentity(s)?.platform)
+      )
 
       setMessagingSessions(prev => (sameCronSignature(prev, rows) ? prev : rows))
       // Hit the cap → at least one platform may have more on disk than loaded,
@@ -102,14 +106,18 @@ export function useSessionListActions({ profileScope }: UseSessionListActionsArg
   // pager): fetch that source's next window and merge it back in place, leaving
   // every other platform's rows untouched. Resolves the platform's exact total.
   const loadMoreMessagingForPlatform = useCallback(async (platform: string) => {
-    const inPlatform = (s: SessionInfo) => normalizeSessionSource(s.source) === platform
+    const inPlatform = (s: SessionInfo) =>
+      normalizeSessionSource(s.source) === platform ||
+      normalizeSessionSource(sessionConversationIdentity(s)?.platform) === platform
+
     const loaded = $messagingSessions.get().filter(inPlatform).length
 
     const result = await listAllProfileSessions(loaded + SIDEBAR_SESSIONS_PAGE_SIZE, 1, 'exclude', 'recent', 'all', {
-      source: platform
+      source: platform,
+      includeOriginSources: [platform]
     })
 
-    const incoming = result.sessions.filter(s => normalizeSessionSource(s.source) === platform)
+    const incoming = result.sessions.filter(inPlatform)
 
     setMessagingSessions(prev => [
       ...prev.filter(s => !inPlatform(s)),
@@ -171,7 +179,8 @@ export function useSessionListActions({ profileScope }: UseSessionListActionsArg
         recentsExclude: SIDEBAR_EXCLUDED_SOURCES,
         cronLimit: CRON_SECTION_LIMIT,
         messagingLimit: MESSAGING_SECTION_LIMIT,
-        messagingExclude: MESSAGING_EXCLUDED_SOURCES
+        messagingExclude: MESSAGING_EXCLUDED_SOURCES,
+        messagingOriginSources: MESSAGING_SESSION_SOURCE_IDS
       })
 
       if (refreshSessionsRequestRef.current === requestId) {
@@ -203,7 +212,9 @@ export function useSessionListActions({ profileScope }: UseSessionListActionsArg
         // Messaging sections: drop any non-messaging source the broad exclude
         // didn't catch (custom sources stay in local recents), then split per
         // platform in the UI.
-        const messagingRows = result.messaging.sessions.filter(s => isMessagingSource(s.source))
+        const messagingRows = result.messaging.sessions.filter(
+          s => isMessagingSource(s.source) || isMessagingSource(sessionConversationIdentity(s)?.platform)
+        )
 
         setMessagingSessions(prev => (sameCronSignature(prev, messagingRows) ? prev : messagingRows))
         // Hit the cap → at least one platform may have more on disk than loaded.

@@ -7,6 +7,7 @@ from pathlib import Path
 from typing import Any, Mapping
 
 import pytest
+from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 
 from scripts.canary import full_canary_owner_launcher as launcher
 from scripts.canary import owner_gate_foundation as foundation
@@ -130,6 +131,110 @@ def _fixed_environment(
 def _assert_receipt_hash(receipt: Mapping[str, Any]) -> None:
     unsigned = {key: value for key, value in receipt.items() if key != "receipt_sha256"}
     assert receipt["receipt_sha256"] == foundation.sha256_json(unsigned)
+
+
+def test_owner_stage0_signature_runner_uses_sealed_cryptography(
+    tmp_path: Path,
+) -> None:
+    private = Ed25519PrivateKey.generate()
+    message = b"exact-stage-zero-message"
+    paths = {
+        "key": tmp_path / "public.der",
+        "message": tmp_path / "message.bin",
+        "signature": tmp_path / "signature.bin",
+    }
+    paths["key"].write_bytes(
+        preparer.stage0._SPKI_ED25519_PREFIX
+        + private.public_key().public_bytes_raw()
+    )
+    paths["message"].write_bytes(message)
+    paths["signature"].write_bytes(private.sign(message))
+    for path in paths.values():
+        path.chmod(0o600)
+    argv = (
+        str(preparer.stage0.OPENSSL),
+        "pkeyutl",
+        "-verify",
+        "-pubin",
+        "-keyform",
+        "DER",
+        "-inkey",
+        str(paths["key"]),
+        "-rawin",
+        "-in",
+        str(paths["message"]),
+        "-sigfile",
+        str(paths["signature"]),
+    )
+
+    assert preparer._owner_stage0_signature_runner(argv).startswith(
+        b"Signature Verified"
+    )
+
+    paths["signature"].write_bytes(b"\x00" * 64)
+    with pytest.raises(
+        preparer.stage0.OwnerGateStage0Error,
+        match="owner_gate_stage0_signature_invalid",
+    ):
+        preparer._owner_stage0_signature_runner(argv)
+
+
+def test_fixed_bundle_passes_owner_signature_runner(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    trusted = tmp_path / "trusted"
+    bundle_base = trusted / "owner-gate-offline-bundles"
+    bundle = bundle_base / REVISION
+    for path in (trusted, bundle_base, bundle):
+        _owner_directory(path)
+    package_path = bundle / "package-manifest.json"
+    package_path.write_bytes(b"{}")
+    package_path.chmod(0o444)
+    bundle.chmod(0o555)
+    manifest = {
+        "release_revision": REVISION,
+        "source_tree_oid": SOURCE_TREE,
+        "package_sha256": "c" * 64,
+        "credential_migration_envelope_sha256": "d" * 64,
+        "trust_manifest_sha256": "e" * 64,
+    }
+    observed: dict[str, Any] = {}
+
+    def verify_bundle(
+        root: Path,
+        *,
+        expected_uid: int,
+        runner: Any,
+    ) -> Mapping[str, Any]:
+        observed.update({
+            "root": root,
+            "expected_uid": expected_uid,
+            "runner": runner,
+        })
+        return manifest
+
+    monkeypatch.setattr(preparer, "TRUSTED_ROOT", trusted)
+    monkeypatch.setattr(preparer, "BUNDLE_SOURCE_BASE", bundle_base)
+    monkeypatch.setattr(preparer.stage0, "verify_bundle_stage0", verify_bundle)
+    monkeypatch.setattr(
+        preparer,
+        "_require_exact_bundle_inventory",
+        lambda *_args, **_kwargs: None,
+    )
+    monkeypatch.setattr(
+        preparer.outer,
+        "build_tree_stream_manifest",
+        lambda *_args, **_kwargs: {"release_id": REVISION},
+    )
+
+    preparer._fixed_bundle(REVISION)
+
+    assert observed == {
+        "root": bundle,
+        "expected_uid": os.geteuid(),
+        "runner": preparer._owner_stage0_signature_runner,
+    }
 
 
 def test_prepare_publishes_exact_three_file_input_and_replays_without_rebuild(

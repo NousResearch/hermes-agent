@@ -64,12 +64,21 @@ import { useProfileScope } from "@/contexts/useProfileScope";
 // instead of spawning a fresh one. Per-localStorage, so other devices can't grab it.
 // ``rotate`` mints a new token — used when the user explicitly starts a fresh
 // session so the old keep-alive PTY is NOT reattached (the registry reaps it).
+//
+// Scope the key by resume session (+ profile) so switching `/chat?resume=`
+// never reuses another session's keep-alive PTY. Backend #60745 also composites
+// the registry key; this frontend scope is what stops New-chat → click-old from
+// binding every transcript to one living child (#64425 / #63701 / #60772).
 const PTY_ATTACH_TOKEN_KEY = "hermes.pty.token.chat";
-function ptyAttachToken(rotate = false): string {
+function ptyAttachToken(
+  rotate = false,
+  scope?: string | null,
+): string {
+  const key = scope ? `${PTY_ATTACH_TOKEN_KEY}:${scope}` : PTY_ATTACH_TOKEN_KEY;
   let t = "";
   if (!rotate) {
     try {
-      t = window.localStorage.getItem(PTY_ATTACH_TOKEN_KEY) ?? "";
+      t = window.localStorage.getItem(key) ?? "";
     } catch {
       /* private mode / storage blocked */
     }
@@ -79,7 +88,7 @@ function ptyAttachToken(rotate = false): string {
     crypto.getRandomValues(a);
     t = Array.from(a, (b) => b.toString(16).padStart(2, "0")).join("");
     try {
-      window.localStorage.setItem(PTY_ATTACH_TOKEN_KEY, t);
+      window.localStorage.setItem(key, t);
     } catch {
       /* ignore */
     }
@@ -925,7 +934,10 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
       // Keep-alive identity: reattach to this tab's living PTY across
       // refresh/transient drops. A forced-fresh start rotates the token so
       // the previous keep-alive PTY is not reattached (registry reaps it).
-      params.attach = ptyAttachToken(forceFresh);
+      // Scope by resume+profile so sidebar session switches spawn/reattach
+      // the matching child instead of the last living PTY for this tab.
+      const attachScope = [resumeParam ?? "", scopedProfile ?? ""].join("\0");
+      params.attach = ptyAttachToken(forceFresh, attachScope);
       // Profile-scoped chat: the PTY child gets HERMES_HOME pointed at the
       // selected profile, so the conversation runs with that profile's model,
       // skills, memory, and sessions (see web_server._resolve_chat_argv).

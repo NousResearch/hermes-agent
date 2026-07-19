@@ -2361,6 +2361,12 @@ class MCPServerTask:
                     self._mark_lifecycle_started()
                     await self._discover_tools()
                     self._ready.set()
+                    # Tools may have been discovered before _ready was set
+                    # (e.g. _ready.clear() at line ~2934), which causes
+                    # _register_discovered_tools_if_needed() to return early.
+                    # Re-invoke so the newly-discovered tools are registered
+                    # even on the post-clear reconnect path (#67187).
+                    self._register_discovered_tools_if_needed()
                     # Session is live again: clear any breaker state from a
                     # prior outage so the first call after recovery isn't
                     # gated on a stale consecutive-failure count (#16788).
@@ -2656,6 +2662,12 @@ class MCPServerTask:
                     self.session = session
                     await self._discover_tools()
                     self._ready.set()
+                    # Tools may have been discovered before _ready was set
+                    # (e.g. _ready.clear() at line ~2934), which causes
+                    # _register_discovered_tools_if_needed() to return early.
+                    # Re-invoke so the newly-discovered tools are registered
+                    # even on the post-clear reconnect path (#67187).
+                    self._register_discovered_tools_if_needed()
                     # Session is live again: clear any breaker state from a
                     # prior outage so the first call after recovery isn't
                     # gated on a stale consecutive-failure count (#16788).
@@ -2713,6 +2725,8 @@ class MCPServerTask:
                         self.session = session
                         await self._discover_tools()
                         self._ready.set()
+                        # Re-register after _ready.set() — see #67187.
+                        self._register_discovered_tools_if_needed()
                         # Session is live again: clear any breaker state from
                         # a prior outage so the first call after recovery
                         # isn't gated on a stale failure count (#16788).
@@ -2745,6 +2759,8 @@ class MCPServerTask:
                     self.session = session
                     await self._discover_tools()
                     self._ready.set()
+                    # Re-register after _ready.set() — see #67187.
+                    self._register_discovered_tools_if_needed()
                     # Session is live again: clear any breaker state from a
                     # prior outage so the first call after recovery isn't
                     # gated on a stale consecutive-failure count (#16788).
@@ -5143,8 +5159,14 @@ async def _discover_and_register_server(name: str, config: dict) -> List[str]:
         _server_connect_errors.pop(name, None)
         _servers[name] = server
 
-    registered_names = _register_server_tools(name, server, config)
-    server._registered_tool_names = list(registered_names)
+    # If the server task already registered tools through its own
+    # _register_discovered_tools_if_needed() call (added post _ready.set()
+    # for #67187), skip double-registration here.
+    if not server._registered_tool_names:
+        registered_names = _register_server_tools(name, server, config)
+        server._registered_tool_names = list(registered_names)
+    else:
+        registered_names = server._registered_tool_names
 
     transport_type = "HTTP" if "url" in config else "stdio"
     logger.info(

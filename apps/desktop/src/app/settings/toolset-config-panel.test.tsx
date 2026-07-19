@@ -1,7 +1,21 @@
-import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
+import { cleanup, fireEvent, render as rtlRender, screen, waitFor } from '@testing-library/react'
+import type { ReactElement } from 'react'
+import { MemoryRouter } from 'react-router-dom'
+import type * as ReactRouterDom from 'react-router-dom'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import type { ToolsetConfig } from '@/types/hermes'
+
+// EnvVarField navigates to Settings → Keys via useNavigate, so every render
+// needs a router context. The navigate spy asserts the deep-link target.
+const navigateSpy = vi.fn()
+
+vi.mock('react-router-dom', async importOriginal => ({
+  ...(await importOriginal<typeof ReactRouterDom>()),
+  useNavigate: () => navigateSpy
+}))
+
+const render = (ui: ReactElement) => rtlRender(ui, { wrapper: MemoryRouter })
 
 const getToolsetConfig = vi.fn()
 const getToolsetModels = vi.fn()
@@ -19,7 +33,8 @@ vi.mock('@/hermes', () => ({
   getToolsetConfig: (name: string) => getToolsetConfig(name),
   getToolsetModels: (name: string, provider?: string) => getToolsetModels(name, provider),
   selectToolsetModel: (name: string, model: string, provider?: string) => selectToolsetModel(name, model, provider),
-  selectToolsetProvider: (name: string, provider: string) => selectToolsetProvider(name, provider),
+  selectToolsetProvider: (name: string, provider: string, capability?: string) =>
+    capability === undefined ? selectToolsetProvider(name, provider) : selectToolsetProvider(name, provider, capability),
   setEnvVar: (key: string, value: string) => setEnvVar(key, value),
   deleteEnvVar: (key: string) => deleteEnvVar(key),
   revealEnvVar: (key: string) => revealEnvVar(key),
@@ -361,6 +376,40 @@ describe('ToolsetConfigPanel', () => {
     await waitFor(() => expect(screen.getByText(/npm ERR! install failed/)).toBeTruthy(), {
       timeout: 4000
     })
+  })
+
+
+  it('swaps the install hint for the installed one-liner when the provider is ready', async () => {
+    // Server says the post_setup install is already satisfied (status ready) —
+    // the "needs a one-time install" copy would contradict the Ready pill.
+    getToolsetConfig.mockResolvedValue(
+      config({
+        name: 'browser',
+        active_provider: 'Camofox',
+        providers: [
+          {
+            name: 'Camofox',
+            badge: 'local',
+            tag: 'Stealth local browser',
+            env_vars: [],
+            post_setup: 'camofox',
+            requires_nous_auth: false,
+            is_active: true,
+            status: 'ready'
+          }
+        ]
+      })
+    )
+
+    const { ToolsetConfigPanel } = await import('./toolset-config-panel')
+    render(<ToolsetConfigPanel onConfiguredChange={vi.fn()} toolset="browser" />)
+
+    // Installed confirmation replaces the contradictory install prompt…
+    expect(await screen.findByText(/Installed\. Re-run setup only if something is broken\./)).toBeTruthy()
+    expect(screen.queryByText(/needs a one-time install/)).toBeNull()
+    // …but a repair affordance stays available (c9's resting state renders
+    // the low-key Re-run setup button instead of the primary CTA).
+    expect(screen.getByRole('button', { name: /Re-run setup/ })).toBeTruthy()
   })
 
   describe('readiness pills', () => {
@@ -738,6 +787,145 @@ describe('ToolsetConfigPanel', () => {
 
       await waitFor(() => expect(notify).toHaveBeenCalledWith(expect.objectContaining({ kind: 'success' })))
       expect(startOAuthLogin).not.toHaveBeenCalled()
+    })
+  })
+
+  describe('API key deep link', () => {
+    it('offers "Manage in API Keys" on a set key and navigates to Settings → Keys', async () => {
+      getToolsetConfig.mockResolvedValue(
+        config({
+          active_provider: 'ElevenLabs',
+          providers: [
+            {
+              name: 'ElevenLabs',
+              badge: 'paid',
+              tag: 'Most natural voices',
+              env_vars: [
+                {
+                  key: 'ELEVENLABS_API_KEY',
+                  prompt: 'ElevenLabs API key',
+                  url: 'https://x',
+                  default: null,
+                  is_set: true
+                }
+              ],
+              post_setup: null,
+              requires_nous_auth: false,
+              is_active: true,
+              status: 'ready'
+            }
+          ]
+        })
+      )
+
+      const { ToolsetConfigPanel } = await import('./toolset-config-panel')
+      render(<ToolsetConfigPanel onConfiguredChange={vi.fn()} toolset="tts" />)
+
+      const trigger = await screen.findByRole('button', { name: /Actions for ELEVENLABS_API_KEY/ })
+      fireEvent.pointerDown(trigger, { button: 0, ctrlKey: false, pointerType: 'mouse' })
+      fireEvent.click(await screen.findByRole('menuitem', { name: 'Manage in API Keys' }))
+
+      await waitFor(() =>
+        expect(navigateSpy).toHaveBeenCalledWith('/settings?tab=keys&key=ELEVENLABS_API_KEY')
+      )
+    })
+
+    it('hides "Manage in API Keys" while the key is unset', async () => {
+      // Default config(): ElevenLabs key is not set. An unset key is managed
+      // right here via Set — no point bouncing the user to another page.
+      const { ToolsetConfigPanel } = await import('./toolset-config-panel')
+      render(<ToolsetConfigPanel onConfiguredChange={vi.fn()} toolset="tts" />)
+
+      // Expand the keyed provider so its env row renders.
+      fireEvent.click(await screen.findByRole('button', { name: /ElevenLabs/ }))
+      const trigger = await screen.findByRole('button', { name: /Actions for ELEVENLABS_API_KEY/ })
+      fireEvent.pointerDown(trigger, { button: 0, ctrlKey: false, pointerType: 'mouse' })
+
+      await screen.findByRole('menuitem', { name: 'Set' })
+      expect(screen.queryByRole('menuitem', { name: 'Manage in API Keys' })).toBeNull()
+    })
+  })
+
+  describe('web capability split', () => {
+    function webConfig(overrides: Partial<ToolsetConfig> = {}): ToolsetConfig {
+      return {
+        name: 'web',
+        has_category: true,
+        active_provider: 'SearXNG',
+        active_search_backend: 'searxng',
+        active_extract_backend: 'firecrawl',
+        providers: [
+          {
+            name: 'SearXNG',
+            badge: 'free · self-hosted',
+            tag: 'Free metasearch',
+            env_vars: [],
+            post_setup: null,
+            requires_nous_auth: false,
+            is_active: true,
+            status: 'ready',
+            web_backend: 'searxng',
+            capabilities: ['search']
+          },
+          {
+            name: 'Firecrawl',
+            badge: 'paid',
+            tag: 'Full search + extract',
+            env_vars: [],
+            post_setup: null,
+            requires_nous_auth: false,
+            is_active: false,
+            status: 'ready',
+            web_backend: 'firecrawl',
+            capabilities: ['search', 'extract']
+          }
+        ],
+        ...overrides
+      }
+    }
+
+    it('shows the resolved per-capability backends as badges', async () => {
+      getToolsetConfig.mockResolvedValue(webConfig())
+
+      const { ToolsetConfigPanel } = await import('./toolset-config-panel')
+      render(<ToolsetConfigPanel onConfiguredChange={vi.fn()} toolset="web" />)
+
+      expect(await screen.findByText('Search: searxng')).toBeTruthy()
+      expect(screen.getByText('Extract: firecrawl')).toBeTruthy()
+      // The row backing each capability gets an assignment pill.
+      expect(screen.getByText('Search backend')).toBeTruthy()
+      expect(screen.getByText('Extract backend')).toBeTruthy()
+    })
+
+    it('hides "Use for Extract" on a search-only provider and wires capability selection', async () => {
+      getToolsetConfig.mockResolvedValue(webConfig())
+      selectToolsetProvider.mockResolvedValue({ ok: true, name: 'web', provider: 'SearXNG', capability: 'search' })
+
+      const { ToolsetConfigPanel } = await import('./toolset-config-panel')
+      render(<ToolsetConfigPanel onConfiguredChange={vi.fn()} toolset="web" />)
+
+      // Active/expanded provider is search-only SearXNG.
+      await screen.findByText('Search: searxng')
+      expect(await screen.findByRole('button', { name: 'Use for Search' })).toBeTruthy()
+      expect(screen.queryByRole('button', { name: 'Use for Extract' })).toBeNull()
+
+      // Expand Firecrawl (search + extract) and assign it as the search backend.
+      fireEvent.click(screen.getByRole('button', { name: /Firecrawl/ }))
+      const useForSearch = await screen.findByRole('button', { name: 'Use for Search' })
+      fireEvent.click(useForSearch)
+
+      await waitFor(() => expect(selectToolsetProvider).toHaveBeenCalledWith('web', 'Firecrawl', 'search'))
+      // Badge tracks the local write without a refetch.
+      await waitFor(() => expect(screen.getByText('Search: firecrawl')).toBeTruthy())
+    })
+
+    it('does not render capability chrome for non-web toolsets', async () => {
+      const { ToolsetConfigPanel } = await import('./toolset-config-panel')
+      render(<ToolsetConfigPanel onConfiguredChange={vi.fn()} toolset="tts" />)
+
+      await screen.findByText('Microsoft Edge TTS')
+      expect(screen.queryByText(/^Search: /)).toBeNull()
+      expect(screen.queryByRole('button', { name: 'Use for Search' })).toBeNull()
     })
   })
 })

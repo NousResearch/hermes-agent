@@ -635,6 +635,7 @@ export const ja = defineLocale({
     envActions: {
       actionsFor: label => `${label} のアクション`,
       credentialActions: '認証情報のアクション',
+      manageInKeys: 'API キーで管理',
       docs: 'ドキュメント',
       hideValue: '値を非表示',
       revealValue: '値を表示',
@@ -872,7 +873,7 @@ export const ja = defineLocale({
       noApiKeyRequired: 'API キーは不要です。',
       postSetupHint: step =>
         `このバックエンドは一度だけインストールが必要です (${step})。このマシン上で実行され、数分かかる場合があります。`,
-      postSetupInstalledHint: 'このバックエンドはこのマシンにインストール済みです。',
+      postSetupInstalledHint: 'インストール済みです。問題がある場合のみセットアップを再実行してください。',
       postSetupRun: 'セットアップを実行',
       postSetupRerun: 'セットアップを再実行',
       postSetupInstalled: 'インストール済み',
@@ -883,6 +884,16 @@ export const ja = defineLocale({
       postSetupErrorTitle: 'セットアップはエラーで終了しました',
       postSetupErrorMessage: step => `${step} のログを確認してください。`,
       postSetupFailed: step => `${step} のセットアップの実行に失敗しました`,
+      webSearchActive: backend => `検索: ${backend}`,
+      webExtractActive: backend => `抽出: ${backend}`,
+      webCapabilityUnset: '未設定',
+      webUseForSearch: '検索に使用',
+      webUseForExtract: '抽出に使用',
+      webUsedForSearch: '検索バックエンド',
+      webUsedForExtract: '抽出バックエンド',
+      webCapabilitySelectedMessage: (provider, capability) =>
+        `${provider} がウェブ${capability === 'search' ? '検索' : '抽出'}を担当します。`,
+      failedSelectCapability: provider => `${provider} の設定に失敗しました`,
       terminalBackend: {
         sectionTitle: '実行バックエンド',
         loading: '実行バックエンドを確認中…',
@@ -916,6 +927,9 @@ export const ja = defineLocale({
     noDescription: '説明はありません。',
     configured: '設定済み',
     needsKeys: 'キーが必要',
+    visionModelHint:
+      'ビジョンは補助モデル設定を使用します。画像対応モデルはそこで選択され、ここでプロバイダーごとに選ぶものではありません。',
+    visionModelLink: '設定 → モデル でビジョンモデルを選択',
     toolsetsEnabled: (enabled, total) => `${enabled}/${total} ツールセットが有効`,
     configureToolset: label => `${label} を設定`,
     toggleToolset: label => `${label} ツールセットを切り替え`,

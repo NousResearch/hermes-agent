@@ -14670,6 +14670,7 @@ async def get_toolset_config(name: str, profile: Optional[str] = None):
         _is_provider_active,
         _visible_providers,
         provider_readiness_status,
+        web_provider_capabilities,
     )
     from hermes_cli.config import get_env_value
     from hermes_cli.nous_subscription import get_nous_subscription_features
@@ -14683,6 +14684,8 @@ async def get_toolset_config(name: str, profile: Optional[str] = None):
         cat = TOOL_CATEGORIES.get(name)
         providers = []
         active_provider = None
+        active_search_backend = None
+        active_extract_backend = None
         if cat:
             # Fetch portal/entitlement state once for the whole matrix — the
             # per-provider readiness computation below reuses it instead of
@@ -14706,7 +14709,7 @@ async def get_toolset_config(name: str, profile: Optional[str] = None):
                 is_active = _is_provider_active(prov, config, force_fresh=True)
                 if is_active and active_provider is None:
                     active_provider = prov["name"]
-                providers.append({
+                row = {
                     "name": prov["name"],
                     "badge": prov.get("badge", ""),
                     "tag": prov.get("tag", ""),
@@ -14721,17 +14724,45 @@ async def get_toolset_config(name: str, profile: Optional[str] = None):
                     "status": provider_readiness_status(
                         prov, config, features=features, is_active=is_active
                     ),
-                })
-    return {
+                }
+                if name == "web" and prov.get("web_backend"):
+                    # The runtime split web into two capabilities long ago
+                    # (web.search_backend / web.extract_backend); surface each
+                    # row's backend key and which capabilities it can serve so
+                    # the GUI can offer per-capability selection.
+                    row["web_backend"] = prov["web_backend"]
+                    row["capabilities"] = web_provider_capabilities(prov["web_backend"])
+                providers.append(row)
+        if name == "web":
+            # Resolve the per-capability active backends exactly the way the
+            # web_search / web_extract dispatchers do (per-capability key →
+            # shared web.backend → credential auto-detect), so the GUI badges
+            # reflect what a tool call would actually hit right now.
+            try:
+                from tools.web_tools import _get_extract_backend, _get_search_backend
+
+                active_search_backend = _get_search_backend()
+                active_extract_backend = _get_extract_backend()
+            except Exception:
+                active_search_backend = None
+                active_extract_backend = None
+    payload = {
         "name": name,
         "has_category": cat is not None,
         "providers": providers,
         "active_provider": active_provider,
     }
+    if name == "web":
+        payload["active_search_backend"] = active_search_backend
+        payload["active_extract_backend"] = active_extract_backend
+    return payload
 
 
 class ToolsetProviderSelect(BaseModel):
     provider: str
+    # Web-only capability scope: 'search' | 'extract'. Omitted → whole-provider
+    # selection through the legacy apply_provider_selection path (web.backend).
+    capability: Optional[str] = None
     profile: Optional[str] = None
 
 
@@ -14917,6 +14948,15 @@ async def select_toolset_provider(
     API keys and post-setup flows are handled by separate endpoints. Returns
     400 for unknown toolset or provider names.
 
+    For the ``web`` toolset only, an optional ``capability`` ('search' |
+    'extract') scopes the selection to ``web.search_backend`` /
+    ``web.extract_backend`` — the same per-capability overrides the runtime
+    dispatchers (``tools.web_tools._get_search_backend`` /
+    ``_get_extract_backend``) resolve first. The provider must actually
+    support the requested capability (a search-only backend can't be the
+    extract backend). Omitting ``capability`` keeps the legacy whole-provider
+    behavior (writes ``web.backend``).
+
     Managed Nous rows (``managed_nous_feature``) additionally report the
     Portal entitlement state: the CLI flow gates these selections on
     ``ensure_nous_portal_access`` (inline login), but the GUI has no inline
@@ -14930,6 +14970,7 @@ async def select_toolset_provider(
     from hermes_cli.tools_config import (
         TOOL_CATEGORIES,
         apply_provider_selection,
+        web_provider_capabilities,
         _get_effective_configurable_toolsets,
         _visible_providers,
     )
@@ -14942,15 +14983,58 @@ async def select_toolset_provider(
     if name not in valid:
         raise HTTPException(status_code=400, detail=f"Unknown toolset: {name}")
 
+    if body.capability is not None:
+        if name != "web":
+            raise HTTPException(
+                status_code=400,
+                detail="capability selection is only supported for the web toolset",
+            )
+        if body.capability not in ("search", "extract"):
+            raise HTTPException(
+                status_code=400,
+                detail=f"Unknown capability: {body.capability!r} (expected 'search' or 'extract')",
+            )
+
     with _profile_scope(body.profile or profile):
         config = load_config()
-        try:
-            apply_provider_selection(name, body.provider, config)
-        except KeyError as exc:
-            raise HTTPException(status_code=400, detail=str(exc).strip('"'))
+        if body.capability is not None:
+            # Per-capability path: resolve the picker row to its backend key
+            # and write web.<capability>_backend. Does NOT touch web.backend,
+            # so the other capability keeps resolving through the shared
+            # fallback chain.
+            cat = TOOL_CATEGORIES.get(name)
+            providers = _visible_providers(cat, config, force_fresh=True) if cat else []
+            prov = next((p for p in providers if p.get("name") == body.provider), None)
+            if prov is None:
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"Unknown provider {body.provider!r} for toolset {name!r}",
+                )
+            backend = prov.get("web_backend")
+            if not backend:
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"Provider {body.provider!r} has no web backend key",
+                )
+            if body.capability not in web_provider_capabilities(backend):
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"{body.provider} does not support {body.capability}",
+                )
+            web_cfg = config.setdefault("web", {})
+            if not isinstance(web_cfg, dict):
+                web_cfg = {}
+                config["web"] = web_cfg
+            web_cfg[f"{body.capability}_backend"] = backend
+        else:
+            try:
+                apply_provider_selection(name, body.provider, config)
+            except KeyError as exc:
+                raise HTTPException(status_code=400, detail=str(exc).strip('"'))
         save_config(config)
-
         response: Dict[str, Any] = {"ok": True, "name": name, "provider": body.provider}
+        if body.capability is not None:
+            response["capability"] = body.capability
 
         # Entitlement check for managed Nous rows — mirrors the gate the CLI
         # applies via ensure_nous_portal_access at selection time.

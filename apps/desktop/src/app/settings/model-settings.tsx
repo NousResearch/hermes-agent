@@ -35,6 +35,7 @@ import { useOnProfileSwitch } from '../hooks/use-on-profile-switch'
 import { CONTROL_TEXT } from './constants'
 import { getNested, setNested } from './helpers'
 import { ListRow, Pill, SectionHeading } from './primitives'
+import { useDeepLinkHighlight } from './use-deep-link-highlight'
 
 // Skeleton mirror of the Model settings DOM so the page keeps its shape while
 // the provider/model catalog loads, instead of collapsing to a centered
@@ -214,6 +215,14 @@ export function ModelSettings({ onMainModelChanged }: ModelSettingsProps) {
   // place — mirrors the onboarding ApiKeyForm but scoped to the model picker.
   const [apiKeyDraft, setApiKeyDraft] = useState('')
   const [activating, setActivating] = useState(false)
+
+  // Deep link from the vision Capabilities detail (?tab=config:model&aux=vision):
+  // scroll the auxiliary task row into view and flash it once the list loads.
+  useDeepLinkHighlight({
+    elementId: task => `aux-task-${task}`,
+    param: 'aux',
+    ready: task => AUX_TASKS.some(meta => meta.key === task)
+  })
 
   // Every profile-scoped async here captures this and bails before writing back,
   // so a request in flight when the user switches profiles can't paint profile
@@ -877,7 +886,8 @@ export function ModelSettings({ onMainModelChanged }: ModelSettingsProps) {
             const isEditing = editingAuxTask === meta.key
 
             return (
-              <ListRow
+              <div className="scroll-mt-6 rounded-lg" id={`aux-task-${meta.key}`} key={meta.key}>
+                <ListRow
                 action={
                   !isEditing && (
                     <div className="flex shrink-0 items-center gap-1.5">
@@ -951,7 +961,6 @@ export function ModelSettings({ onMainModelChanged }: ModelSettingsProps) {
                     {isAuto ? m.autoUseMain : `${current.provider} · ${current.model || m.providerDefault}`}
                   </span>
                 }
-                key={meta.key}
                 title={
                   <span className="flex items-baseline gap-2">
                     {copy.label}
@@ -959,6 +968,7 @@ export function ModelSettings({ onMainModelChanged }: ModelSettingsProps) {
                   </span>
                 }
               />
+              </div>
             )
           })}
         </div>

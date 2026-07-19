@@ -869,6 +869,8 @@ export interface SelectToolsetProviderResponse {
   ok: boolean
   name: string
   provider: string
+  /** Present when the selection was scoped to one web capability. */
+  capability?: string
   /** Present (true) when a managed Nous row was selected but the Portal
    *  entitlement is missing — the row won't activate until the user signs
    *  in to Nous Portal. */
@@ -877,12 +879,16 @@ export interface SelectToolsetProviderResponse {
   feature?: string
 }
 
-export function selectToolsetProvider(name: string, provider: string): Promise<SelectToolsetProviderResponse> {
+export function selectToolsetProvider(
+  name: string,
+  provider: string,
+  capability?: 'search' | 'extract'
+): Promise<SelectToolsetProviderResponse> {
   return window.hermesDesktop.api<SelectToolsetProviderResponse>({
     ...profileScoped(),
     path: `/api/tools/toolsets/${encodeURIComponent(name)}/provider`,
     method: 'PUT',
-    body: { provider }
+    body: capability ? { provider, capability } : { provider }
   })
 }
 

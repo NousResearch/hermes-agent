@@ -1,7 +1,3 @@
-@import '@fontsource/cairo/400.css';
-@import '@fontsource/cairo/500.css';
-@import '@fontsource/cairo/600.css';
-@import '@fontsource/cairo/700.css';
 @import 'tailwindcss';
 @plugin '@tailwindcss/typography';
 @import 'tw-shimmer';
@@ -497,30 +493,30 @@
   }
 }
 
-/* Arabic (RTL) UI font. Cairo ships via @fontsource (Arabic + Latin glyphs).
-   Declared on body — not :root — because the theme engine (applyTheme) writes
-   --dt-font-sans inline on <html> at boot, which would shadow any :root rule;
-   a body-level declaration wins for the whole rendered tree. LTR locales are
-   untouched: they keep the theme's own stack. Letter-spacing is forced to 0 —
-   tracking breaks Arabic's connected letterforms. */
+/* Arabic (RTL) UI font — system faces only, matching the dashboard's stack, so
+   no webfont ships to users who never switch locale. Declared on body — not
+   :root — because the theme engine (applyTheme) writes --dt-font-sans inline
+   on <html> at boot, which would shadow any :root rule; a body-level
+   declaration wins for the whole rendered tree. LTR locales are untouched:
+   they keep the theme's own stack. Letter-spacing is forced to 0 — tracking
+   breaks Arabic's connected letterforms. */
 html[dir='rtl'] body {
   --dt-font-sans:
-    'Cairo', 'Segoe WPC', 'Segoe UI', -apple-system, BlinkMacSystemFont, 'SF Pro Text', system-ui, sans-serif,
+    Tahoma, 'Geeza Pro', 'Noto Sans Arabic', 'Segoe UI', -apple-system, BlinkMacSystemFont, system-ui, sans-serif,
     'Apple Color Emoji', 'Segoe UI Emoji', 'Segoe UI Symbol', 'Noto Color Emoji', emoji;
-  /* Mono stack gains Cairo before the generic fallback: Latin/digits keep the
-     real monospace faces, while Arabic glyphs (absent from all of them) fall
-     to Cairo instead of a system Arabic face squeezed into mono metrics —
-     which renders disconnected, letter-spaced strokes. */
+  /* Mono faces carry no Arabic glyphs. Without an explicit Arabic fallback
+     before the generic `monospace`, Arabic text in mono badges renders as
+     disconnected, cell-spaced letters. Latin/digits still use the real mono. */
   --dt-font-mono:
-    'Cascadia Code', 'JetBrains Mono', 'SF Mono', ui-monospace, Menlo, Consolas, 'Cairo', monospace,
-    'Apple Color Emoji', 'Segoe UI Emoji', 'Segoe UI Symbol', 'Noto Color Emoji', emoji;
+    'Cascadia Code', 'JetBrains Mono', 'SF Mono', ui-monospace, Menlo, Consolas, Tahoma, 'Geeza Pro',
+    'Noto Sans Arabic', monospace, 'Apple Color Emoji', 'Segoe UI Emoji', 'Segoe UI Symbol', 'Noto Color Emoji', emoji;
   letter-spacing: 0;
 }
 
 /* Tooltips hardcode Arial (see components/ui/tooltip.tsx) — Arial's Arabic
-   glyphs clash with the UI face, so swap to Cairo only under RTL. */
+   glyphs clash with the UI face, so align them with the RTL body stack. */
 html[dir='rtl'] [data-slot='tooltip-content'] {
-  font-family: 'Cairo', Arial, sans-serif;
+  font-family: Tahoma, 'Geeza Pro', 'Noto Sans Arabic', Arial, sans-serif;
 }
 
 /* Tailwind tracking-* utilities tear Arabic apart: letter-spacing breaks the

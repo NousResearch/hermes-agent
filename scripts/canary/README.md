@@ -386,6 +386,12 @@ The final release SHA must be a separately reviewed successor revision and
 must not equal the Foundation A source revision; both trust authoring and
 packaging reject equality.
 
+The canonical direct-IAM authority remains bound to the Foundation A revision
+and is reused byte-for-byte when the successor trust manifest and package are
+authored. Do not recollect or rewrite it for the successor. The final network,
+cloud, and host collector keys and the credential-migration envelope are
+successor-release-bound and must be authored for the final release SHA.
+
 ```bash
 python -m scripts.canary.owner_gate_release_author \
   author-unsigned-trust \

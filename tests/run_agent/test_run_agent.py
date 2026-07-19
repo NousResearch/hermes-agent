@@ -4364,6 +4364,7 @@ class TestRunConversation:
         assert len(pre_request_calls) == 2
         assert len(post_request_calls) == 2
         assert [call["api_call_count"] for call in pre_request_calls] == [1, 2]
+        assert [call["retry_count"] for call in pre_request_calls] == [0, 0]
         assert [call["api_call_count"] for call in post_request_calls] == [1, 2]
         assert all(call["session_id"] == agent.session_id for call in pre_request_calls)
         assert all(call["turn_id"] == pre_request_calls[0]["turn_id"] for call in pre_request_calls + post_request_calls)
@@ -4375,6 +4376,41 @@ class TestRunConversation:
         assert any(msg.get("role") == "user" and msg.get("content") == "search something" for msg in pre_request_calls[0]["request_messages"])
         assert all("usage" in c and "response" in c for c in post_request_calls)
         assert all("assistant_message" in c["response"] for c in post_request_calls)
+
+    def test_terminal_task_closes_logical_calls_before_metrics_scope(self, agent):
+        from agent import relay_runtime
+
+        order = []
+        failed_result = {
+            "final_response": "provider failed",
+            "messages": [],
+            "completed": False,
+            "failed": True,
+            "interrupted": False,
+        }
+
+        with (
+            patch(
+                "agent.conversation_loop.run_conversation",
+                return_value=failed_result,
+            ),
+            patch(
+                "hermes_cli.observability.relay_shared_metrics.start_task_run",
+            ),
+            patch(
+                "hermes_cli.observability.relay_shared_metrics.finish_task_run",
+                side_effect=lambda **_kwargs: order.append("metrics"),
+            ),
+            patch.object(
+                relay_runtime.SESSION_COORDINATOR,
+                "finish_logical_calls",
+                side_effect=lambda *_args, **_kwargs: order.append("logical"),
+            ),
+        ):
+            result = agent.run_conversation("private prompt")
+
+        assert result is failed_result
+        assert order == ["logical", "metrics"]
 
     def test_api_request_error_hook_skips_payload_work_without_listener(self, agent, monkeypatch):
         payload_built = False

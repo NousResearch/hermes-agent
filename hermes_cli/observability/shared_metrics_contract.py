@@ -14,6 +14,9 @@ MODEL_CALL_SCOPE = "hermes.model_call"
 TASK_SCOPE = "hermes.task_run"
 SUBSCRIBER_NAME = "hermes.nemo_relay.shared_metrics"
 PRIMARY_MODEL_CALL_ROLE = "primary"
+MODEL_CALL_METRIC = "hermes.model_call.count"
+TASK_STARTED_METRIC = "hermes.task_run.started"
+TASK_FINISHED_METRIC = "hermes.task_run.finished"
 
 EXECUTION_SURFACES: frozenset[str] = frozenset({
     "api",
@@ -117,6 +120,32 @@ MODEL_FAMILIES: frozenset[str] = frozenset({
     "unknown",
 })
 
+_COUNTER_DIMENSION_VALUES: dict[str, dict[str, frozenset[str]]] = {
+    MODEL_CALL_METRIC: {
+        "call_role": frozenset({PRIMARY_MODEL_CALL_ROLE}),
+        "locality": MODEL_LOCALITIES,
+        "model_family": MODEL_FAMILIES,
+        "outcome": MODEL_OUTCOMES,
+        "provider_family": PROVIDER_FAMILIES,
+    },
+    TASK_STARTED_METRIC: {
+        "entrypoint": TASK_ENTRYPOINTS,
+        "execution_surface": EXECUTION_SURFACES,
+    },
+    TASK_FINISHED_METRIC: {
+        "duration_bucket": DURATION_BUCKETS,
+        "end_reason": TASK_END_REASONS,
+        "entrypoint": TASK_ENTRYPOINTS,
+        "execution_surface": EXECUTION_SURFACES,
+        "model_call_count_bucket": COUNT_BUCKETS,
+        "outcome": TASK_OUTCOMES,
+        "retry_count_bucket": COUNT_BUCKETS,
+        "termination": TASK_TERMINATIONS,
+        "tool_call_count_bucket": COUNT_BUCKETS,
+    },
+}
+COUNTER_METRICS: frozenset[str] = frozenset(_COUNTER_DIMENSION_VALUES)
+
 _MODEL_FAMILY_PATTERN = re.compile(
     r"(?:^|[/_.:-])("
     + "|".join(
@@ -143,6 +172,21 @@ _TELEMETRY_AGGREGATOR_OVERRIDES = frozenset({
 # Hermes intentionally resolves these local runtimes through the generic custom
 # provider path, so canonical provider metadata cannot distinguish them alone.
 _LOCAL_CUSTOM_PROVIDER_ALIASES = frozenset({"mlx", "ollama"})
+
+
+def counter_dimensions_are_valid(
+    metric_name: str,
+    dimensions: dict[str, Any],
+) -> bool:
+    """Return whether dimensions match one closed shared-metric contract."""
+    contract = _COUNTER_DIMENSION_VALUES.get(metric_name)
+    if contract is None or set(dimensions) != set(contract):
+        return False
+    return all(
+        isinstance(dimensions[field], str)
+        and dimensions[field] in allowed_values
+        for field, allowed_values in contract.items()
+    )
 
 
 def model_call_dimensions(event: Any) -> dict[str, str] | None:
@@ -180,21 +224,16 @@ def model_call_dimensions(event: Any) -> dict[str, str] | None:
     }
     if not isinstance(data, dict) or set(data) != expected_fields:
         return None
-    if (
-        data.get("call_role") != PRIMARY_MODEL_CALL_ROLE
-        or data.get("locality") not in MODEL_LOCALITIES
-        or data.get("model_family") not in MODEL_FAMILIES
-        or data.get("outcome") not in MODEL_OUTCOMES
-        or data.get("provider_family") not in PROVIDER_FAMILIES
-    ):
-        return None
-    return {
-        "call_role": PRIMARY_MODEL_CALL_ROLE,
-        "locality": data["locality"],
-        "model_family": data["model_family"],
-        "outcome": data["outcome"],
-        "provider_family": data["provider_family"],
+    dimensions = {
+        "call_role": data.get("call_role"),
+        "locality": data.get("locality"),
+        "model_family": data.get("model_family"),
+        "outcome": data.get("outcome"),
+        "provider_family": data.get("provider_family"),
     }
+    if not counter_dimensions_are_valid(MODEL_CALL_METRIC, dimensions):
+        return None
+    return dimensions
 
 
 def task_counter(event: Any) -> tuple[str, dict[str, str]] | None:
@@ -222,15 +261,13 @@ def task_counter(event: Any) -> tuple[str, dict[str, str]] | None:
         expected_fields = {"entrypoint", "execution_surface"}
         if not isinstance(data, dict) or set(data) != expected_fields:
             return None
-        if (
-            data.get("entrypoint") not in TASK_ENTRYPOINTS
-            or data.get("execution_surface") not in EXECUTION_SURFACES
-        ):
-            return None
-        return "hermes.task_run.started", {
-            "entrypoint": data["entrypoint"],
-            "execution_surface": data["execution_surface"],
+        dimensions = {
+            "entrypoint": data.get("entrypoint"),
+            "execution_surface": data.get("execution_surface"),
         }
+        if not counter_dimensions_are_valid(TASK_STARTED_METRIC, dimensions):
+            return None
+        return TASK_STARTED_METRIC, dimensions
 
     expected_fields = {
         "duration_bucket",
@@ -249,21 +286,10 @@ def task_counter(event: Any) -> tuple[str, dict[str, str]] | None:
         or set(data) != expected_fields
     ):
         return None
-    if (
-        data.get("duration_bucket") not in DURATION_BUCKETS
-        or data.get("end_reason") not in TASK_END_REASONS
-        or data.get("entrypoint") not in TASK_ENTRYPOINTS
-        or data.get("execution_surface") not in EXECUTION_SURFACES
-        or data.get("model_call_count_bucket") not in COUNT_BUCKETS
-        or data.get("outcome") not in TASK_OUTCOMES
-        or data.get("retry_count_bucket") not in COUNT_BUCKETS
-        or data.get("termination") not in TASK_TERMINATIONS
-        or data.get("tool_call_count_bucket") not in COUNT_BUCKETS
-    ):
+    dimensions = {field: data.get(field) for field in sorted(expected_fields)}
+    if not counter_dimensions_are_valid(TASK_FINISHED_METRIC, dimensions):
         return None
-    return "hermes.task_run.finished", {
-        field: data[field] for field in sorted(expected_fields)
-    }
+    return TASK_FINISHED_METRIC, dimensions
 
 
 def execution_surface(kwargs: dict[str, Any]) -> str:

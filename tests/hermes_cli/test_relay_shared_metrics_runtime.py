@@ -473,6 +473,31 @@ def test_session_coordinator_separates_turn_release_from_hard_finalize(
     assert runtime.get_session("coordinated-session") is None
 
 
+def test_turn_cleanup_can_be_retried_from_its_originating_context(direct_runtime):
+    del direct_runtime
+    coordinator = relay_runtime.SESSION_COORDINATOR
+    lease = coordinator.acquire_conversation(
+        profile_key=relay_runtime.current_profile_key(),
+        session_id="cross-context-session",
+        platform="cli",
+    )
+    turn = coordinator.begin_turn(
+        lease,
+        turn_id="turn-1",
+        task_id="task-1",
+    )
+
+    contextvars.Context().run(coordinator.end_turn, turn, outcome="success")
+
+    assert turn.closed
+    assert relay_runtime.active_turn("cross-context-session") is None
+    assert relay_runtime.current_turn() is turn
+
+    coordinator.end_turn(turn, outcome="success")
+    assert relay_runtime.current_turn() is None
+    coordinator.release_conversation(lease)
+
+
 def test_session_coordinator_prepares_subscribers_before_opening_scope(
     direct_runtime,
 ):
@@ -826,6 +851,45 @@ def test_shared_metrics_isolates_same_task_id_across_sessions(direct_runtime):
     assert len(task_ends) == 2
 
 
+def test_shared_metrics_keys_turn_ownership_by_session(direct_runtime):
+    runtime = relay_shared_metrics._get_runtime()
+    assert runtime is not None
+    event_a = {
+        "session_id": "session-a",
+        "task_id": "task-a",
+        "turn_id": "shared-turn",
+        "platform": "cli",
+    }
+    event_b = {
+        "session_id": "session-b",
+        "task_id": "task-b",
+        "turn_id": "shared-turn",
+        "platform": "gateway",
+    }
+    task_a = runtime.start_task(event_a)
+    task_b = runtime.start_task(event_b)
+
+    runtime.start_model_call({
+        **event_a,
+        "api_request_id": "request-a",
+        "provider": "anthropic",
+        "model": "claude-sonnet",
+    })
+
+    session_a = runtime._session(event_a)
+    session_b = runtime._session(event_b)
+    assert task_a is not None
+    assert task_b is not None
+    assert session_a is not None
+    assert session_b is not None
+    assert "request-a" in session_a.model_calls
+    assert "request-a" not in session_b.model_calls
+    [model_start] = [
+        event for event in direct_runtime.events if event[0] == "llm.call"
+    ]
+    assert model_start[3]["handle"] == task_a.handle
+
+
 def test_disabling_shared_metrics_stops_collection_and_shutdown_export(
     tmp_path, monkeypatch
 ):
@@ -937,6 +1001,86 @@ def test_async_session_runner_awaits_inside_saved_relay_context(direct_runtime):
     result = asyncio.run(runtime.run_in_session_async(session, probe))
 
     assert result == session.handle
+
+
+def test_active_turn_requires_matching_session_and_profile(
+    direct_runtime,
+    tmp_path,
+    monkeypatch,
+):
+    del direct_runtime
+    coordinator = relay_runtime.SESSION_COORDINATOR
+    profile_key = relay_runtime.current_profile_key()
+    lease = coordinator.acquire_conversation(
+        profile_key=profile_key,
+        session_id="session-1",
+        platform="cli",
+    )
+    turn = coordinator.begin_turn(
+        lease,
+        turn_id="turn-1",
+        task_id="task-1",
+    )
+
+    assert relay_runtime.active_turn("session-1") is turn
+    assert relay_runtime.active_turn("session-2") is None
+
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "other-profile"))
+    assert relay_runtime.active_turn("session-1") is None
+
+    coordinator.end_turn(turn, outcome="success")
+    coordinator.release_conversation(lease)
+    assert relay_runtime.active_turn("session-1") is None
+
+
+def test_turn_cleanup_drains_logical_calls_after_turn_scope_start_failure(
+    direct_runtime,
+):
+    coordinator = relay_runtime.SESSION_COORDINATOR
+    profile_key = relay_runtime.current_profile_key()
+    lease = coordinator.acquire_conversation(
+        profile_key=profile_key,
+        session_id="session-1",
+        platform="cli",
+    )
+    assert lease.session is not None
+    original_push = direct_runtime.scope.push
+
+    def fail_turn_push(name, *args, **kwargs):
+        if name == relay_runtime.TURN_SCOPE:
+            raise RuntimeError("simulated turn scope failure")
+        return original_push(name, *args, **kwargs)
+
+    direct_runtime.scope.push = fail_turn_push
+    turn = coordinator.begin_turn(
+        lease,
+        turn_id="turn-1",
+        task_id="task-1",
+    )
+    direct_runtime.scope.push = original_push
+    assert turn.handle is None
+
+    runtime = lease.host
+    logical_handle = runtime.run_in_session(
+        lease.session,
+        runtime.relay.scope.push,
+        relay_runtime.LOGICAL_LLM_SCOPE,
+        runtime.relay.ScopeType.Function,
+        handle=lease.session.handle,
+        input={},
+    )
+    turn.logical_llm_calls["request-1"] = logical_handle
+
+    coordinator.end_turn(turn, outcome="failed")
+    coordinator.release_conversation(lease)
+
+    logical_closes = [
+        event
+        for event in direct_runtime.events
+        if event[0] == "scope.pop" and event[1] == logical_handle
+    ]
+    assert len(logical_closes) == 1
+    assert turn.logical_llm_calls == {}
 
 
 def test_shared_metrics_creates_one_task_under_concurrent_access(direct_runtime):
@@ -1299,6 +1443,58 @@ def test_task_terminal_counts_logical_calls_retries_and_unique_tools(direct_runt
         "termination": "none",
         "tool_call_count_bucket": "2",
     }
+
+
+def test_task_terminal_counts_explicit_retry_with_new_request_id(direct_runtime):
+    base = {
+        "session_id": "s1",
+        "task_id": "t1",
+        "platform": "cli",
+        "provider": "nvidia",
+        "model": "nvidia/nemotron-3-super-120b-a12b",
+    }
+
+    lifecycle.invoke_hook("pre_llm_call", **base)
+    lifecycle.invoke_hook(
+        "pre_api_request",
+        **base,
+        api_request_id="r1",
+        retry_count=0,
+    )
+    lifecycle.invoke_hook(
+        "api_request_error",
+        **base,
+        api_request_id="r1",
+        retryable=True,
+    )
+    lifecycle.invoke_hook(
+        "pre_api_request",
+        **base,
+        api_request_id="r2",
+        retry_count=1,
+    )
+    lifecycle.invoke_hook(
+        "post_api_request",
+        **base,
+        api_request_id="r2",
+    )
+    lifecycle.invoke_hook(
+        "on_session_end",
+        **base,
+        completed=True,
+        failed=False,
+        interrupted=False,
+        turn_exit_reason="text_response(stop)",
+    )
+    lifecycle.finalize_session(session_id="s1")
+
+    [task_end] = [
+        event
+        for event in direct_runtime.events
+        if event[0] == "scope.pop" and event[1][1] == "hermes.task_run"
+    ]
+    assert task_end[2]["output"]["model_call_count_bucket"] == "2"
+    assert task_end[2]["output"]["retry_count_bucket"] == "1"
 
 
 def test_outer_agent_boundary_closes_early_returns_and_exceptions(

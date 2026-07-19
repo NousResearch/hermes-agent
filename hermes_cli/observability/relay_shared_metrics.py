@@ -47,11 +47,19 @@ _RUNTIMES: dict[str, _Runtime | object] = {}
 _RUNTIME_LOCK = threading.RLock()
 
 
+def _retry_ordinal(event: dict[str, Any]) -> int | None:
+    value = event.get("retry_count")
+    if isinstance(value, int) and not isinstance(value, bool) and value >= 0:
+        return value
+    return None
+
+
 @dataclass
 class _ModelCall:
     handle: Any
     task_id: str
     fields: dict[str, str]
+    retry_ordinal: int | None = None
 
 
 @dataclass
@@ -92,7 +100,7 @@ class _Runtime:
         self._task_creation_lock = threading.RLock()
         self._task_sessions_lock = threading.RLock()
         self._task_sessions: dict[tuple[str, str], _MetricsSession] = {}
-        self._turn_sessions: dict[str, _MetricsSession] = {}
+        self._turn_sessions: dict[tuple[str, str], _MetricsSession] = {}
         self._subscriber_name = f"{SUBSCRIBER_NAME}.{self.host.runtime_id}"
         self.subscriber = SharedMetricsSubscriber(
             SharedMetricsStore(),
@@ -164,7 +172,7 @@ class _Runtime:
                     return None
                 task_context = session.relay_session.context.copy()
                 start_fields = task_start_fields(event)
-                active_turn = relay_runtime.current_turn()
+                active_turn = relay_runtime.active_turn(session.session_id)
                 parent_handle = session.relay_session.handle
                 if (
                     active_turn is not None
@@ -225,6 +233,7 @@ class _Runtime:
         if not request_id:
             return
         fields = model_call_fields(event)
+        retry_ordinal = _retry_ordinal(event)
         model_family = fields["model_family"]
         with session.lock:
             if session.closing:
@@ -235,10 +244,22 @@ class _Runtime:
             if existing is not None:
                 existing.fields = fields
                 if task is not None:
-                    task.retry_count += 1
+                    if retry_ordinal is None or existing.retry_ordinal is None:
+                        task.retry_count += 1
+                    elif retry_ordinal > existing.retry_ordinal:
+                        task.retry_count += retry_ordinal - existing.retry_ordinal
+                if retry_ordinal is not None:
+                    existing.retry_ordinal = max(
+                        existing.retry_ordinal or 0,
+                        retry_ordinal,
+                    )
                 return
             if task is not None:
                 task.model_call_ids.add(request_id)
+                if retry_ordinal is not None and retry_ordinal > 0:
+                    # A real Hermes retry can advance api_request_id while
+                    # carrying the retry ordinal. Count that physical attempt.
+                    task.retry_count += 1
                 handle = self._run_in_task(
                     task,
                     self.relay.llm.call,
@@ -262,6 +283,7 @@ class _Runtime:
                 handle=handle,
                 task_id=str(event.get("task_id") or ""),
                 fields=fields,
+                retry_ordinal=retry_ordinal,
             )
 
     def record_tool_call(self, event: dict[str, Any]) -> None:
@@ -444,10 +466,10 @@ class _Runtime:
         task_key = self._task_key(event)
         if task_key is None:
             return None
-        turn_id = str(event.get("turn_id") or "")
+        turn_key = self._turn_key(event)
         with self._task_sessions_lock:
-            if turn_id:
-                owner = self._turn_sessions.get(turn_id)
+            if turn_key is not None:
+                owner = self._turn_sessions.get(turn_key)
                 if owner is not None:
                     return owner
             owner = self._task_sessions.get(task_key)
@@ -462,6 +484,14 @@ class _Runtime:
                     candidates.append(session)
             return candidates[0] if len(candidates) == 1 else None
 
+    @staticmethod
+    def _turn_key(event: dict[str, Any]) -> tuple[str, str] | None:
+        session_id = str(event.get("session_id") or "")
+        turn_id = str(event.get("turn_id") or "")
+        if not session_id or not turn_id:
+            return None
+        return session_id, turn_id
+
     def _remember_turn(
         self,
         session: _MetricsSession,
@@ -473,7 +503,7 @@ class _Runtime:
             return
         task.turn_ids.add(turn_id)
         with self._task_sessions_lock:
-            self._turn_sessions[turn_id] = session
+            self._turn_sessions[(session.session_id, turn_id)] = session
 
     def _finish_model_call(
         self,
@@ -556,8 +586,9 @@ class _Runtime:
                 if self._task_sessions.get(task_key) is session:
                     self._task_sessions.pop(task_key, None)
                 for turn_id in task.turn_ids:
-                    if self._turn_sessions.get(turn_id) is session:
-                        self._turn_sessions.pop(turn_id, None)
+                    turn_key = (session.session_id, turn_id)
+                    if self._turn_sessions.get(turn_key) is session:
+                        self._turn_sessions.pop(turn_key, None)
 
     def _export(self) -> None:
         self._safe(self.subscriber.store.create_and_export_package)

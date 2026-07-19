@@ -20,7 +20,7 @@ def execute(
     metadata: dict[str, Any] | None = None,
 ) -> tuple[Any, dict[str, Any]]:
     """Run one tool call through Relay and return its final arguments."""
-    runtime, session, parent = _execution_context(session_id)
+    runtime, session, parent = relay_runtime.resolve_execution_context(session_id)
     if runtime is None or session is None:
         return callback(args), args
 
@@ -63,21 +63,6 @@ def execute(
     if "value" in raw_result and _json_equal(managed, raw_result["json"]):
         return raw_result["value"], observed_args
     return managed, observed_args
-
-
-def _execution_context(
-    session_id: str,
-) -> tuple[relay_runtime.RelayRuntime | None, Any, Any]:
-    turn = relay_runtime.current_turn()
-    if turn is not None and isinstance(turn.lease.host, relay_runtime.RelayRuntime):
-        return turn.lease.host, turn.lease.session, turn.handle
-    runtime = relay_runtime.get_runtime()
-    if runtime is None:
-        return None, None, None
-    session = runtime.get_session(session_id)
-    if session is None:
-        session = runtime.ensure_session({"session_id": session_id})
-    return runtime, session, None if session is None else session.handle
 
 
 def _jsonable(value: Any) -> Any:

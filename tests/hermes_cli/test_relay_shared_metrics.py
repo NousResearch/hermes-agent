@@ -538,6 +538,36 @@ def test_package_schema_rejects_unknown_fields(tmp_path):
         _schema_validator().validate(invalid_package)
 
 
+def test_store_rejects_dimensions_outside_the_metric_contract(tmp_path):
+    store = SharedMetricsStore(tmp_path / "metrics.sqlite3", tmp_path / "outbox")
+
+    with pytest.raises(ValueError, match="Unsupported dimensions"):
+        store.record_counter(
+            "hermes.model_call.count",
+            {"prompt": "must-not-be-persisted"},
+            "test-version",
+        )
+
+    assert store.counter_snapshot() == []
+
+
+def test_package_builder_rejects_tampered_dimensions(tmp_path):
+    database_path = tmp_path / "metrics.sqlite3"
+    outbox_directory = tmp_path / "outbox"
+    store = SharedMetricsStore(database_path, outbox_directory)
+    store.record_model_call(_dimensions(), "test-version")
+    with sqlite3.connect(database_path) as connection:
+        connection.execute(
+            "UPDATE counter_aggregates SET dimensions_json = ?",
+            (json.dumps({"prompt": "must-not-be-exported"}),),
+        )
+
+    with pytest.raises(ValueError, match="Unsupported dimensions"):
+        store.create_and_export_package()
+
+    assert list(outbox_directory.glob("*.json")) == []
+
+
 def test_pending_package_retry_reuses_the_same_package_and_file(tmp_path):
     database_path = tmp_path / "metrics.sqlite3"
     outbox_directory = tmp_path / "outbox"

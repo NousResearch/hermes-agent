@@ -149,6 +149,43 @@ async def test_stale_marker_older_than_5min_does_not_block(tmp_path, monkeypatch
 
 
 @pytest.mark.asyncio
+async def test_slow_service_restart_still_ignores_same_update(tmp_path, monkeypatch):
+    """A slow drain must not outlive dedup when this boot came from /restart.
+
+    Service-managed shutdown can take more than five minutes while in-flight
+    gateway work drains. The replacement process still knows it booted from
+    the recorded chat restart, so the first same update must be suppressed
+    instead of requesting exit 75 again and entering a supervisor loop.
+    """
+    monkeypatch.setattr(gateway_run, "_hermes_home", tmp_path)
+    monkeypatch.setenv("INVOCATION_ID", "systemd-test")
+
+    marker = tmp_path / ".restart_last_processed.json"
+    marker.write_text(
+        json.dumps(
+            {
+                "platform": "telegram",
+                "update_id": 12345,
+                "requested_at": time.time() - 1200,
+            }
+        )
+    )
+
+    runner, _adapter = make_restart_runner()
+    request_restart = MagicMock()
+    monkeypatch.setattr(runner, "request_restart", request_restart)
+    runner._booted_from_restart = True
+
+    result = await runner._handle_restart_command(
+        _make_restart_event(update_id=12345)
+    )
+
+    assert result == ""
+    request_restart.assert_not_called()
+    assert runner._booted_from_restart is False
+
+
+@pytest.mark.asyncio
 async def test_no_marker_file_allows_restart(tmp_path, monkeypatch):
     """Clean gateway start (no prior marker) processes /restart normally."""
     monkeypatch.setattr(gateway_run, "_hermes_home", tmp_path)

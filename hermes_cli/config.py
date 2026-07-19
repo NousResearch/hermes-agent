@@ -3123,15 +3123,11 @@ DEFAULT_CONFIG = {
         #   "auto"  — prefer native draft streaming where the platform
         #             supports it (Telegram DMs via sendMessageDraft,
         #             Bot API 9.5+) and fall back to edit-based elsewhere.
-        #             Safe global default: platforms without draft support
-        #             (Discord, Slack, Matrix, Telegram groups) transparently
-        #             use the edit path, so "auto" only upgrades chats that
-        #             can render the smoother native preview.
         #   "draft" — explicitly request native drafts; falls back to edit
         #             when the platform/chat doesn't support them.
-        #   "edit"  — progressive editMessageText only (legacy behavior).
+        #   "edit"  — progressive editMessageText only (legacy/default behavior).
         #   "off"   — disable streaming entirely (same as enabled: false).
-        "transport": "auto",
+        "transport": "edit",
         # Minimum seconds between progressive edits — tuned for Telegram's
         # ~1 edit/s flood envelope.
         "edit_interval": 0.8,

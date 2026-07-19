@@ -40,6 +40,7 @@ def server():
         # via reload (which we don't do).
         mod._sessions.clear()
         mod._pending.clear()
+        mod._pending_prompt_payloads.clear()
         mod._answers.clear()
 
 
@@ -971,6 +972,59 @@ def test_session_resume_reuses_live_agent_after_compression_rotation(server, mon
     assert len(server._sessions) == 1
 
 
+def test_session_resume_returns_pending_clarify_prompt_for_rehydration(server, monkeypatch):
+    """A reconnecting TUI needs the live clarify payload, not only waiting status."""
+
+    target = "20260409_020202_waiting"
+    sid = "live-waiting"
+    server._sessions[sid] = {
+        "agent": types.SimpleNamespace(model="test/model", session_id=target),
+        "created_at": 123.0,
+        "display_history_prefix": [],
+        "history": [{"role": "assistant", "content": "Choose one."}],
+        "history_lock": threading.RLock(),
+        "last_active": 123.0,
+        "running": False,
+        "session_key": target,
+        "transport": server._stdio_transport,
+    }
+    server._pending["clarify-1"] = (sid, threading.Event())
+    server._pending_prompt_payloads["clarify-1"] = (
+        "clarify.request",
+        {"choices": ["a", "b", "c", "d", "e"], "question": "Which option?", "request_id": "clarify-1"},
+    )
+
+    class _DB:
+        def get_session(self, _sid):
+            return {"id": target}
+
+        def get_session_by_title(self, _title):
+            return None
+
+        def resolve_resume_session_id(self, _target):
+            return target
+
+    monkeypatch.setattr(server, "_get_db", lambda: _DB())
+    monkeypatch.setattr(server, "_emit", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(server, "_session_info", lambda _agent, _session=None: {"model": "test/model"})
+
+    result = server.handle_request(
+        {"id": "r1", "method": "session.resume", "params": {"session_id": target, "cols": 100}}
+    )
+
+    assert "error" not in result
+    assert result["result"]["session_id"] == sid
+    assert result["result"]["status"] == "waiting"
+    assert result["result"]["pending_prompt"] == {
+        "event": "clarify.request",
+        "payload": {
+            "choices": ["a", "b", "c", "d", "e"],
+            "question": "Which option?",
+            "request_id": "clarify-1",
+        },
+    }
+
+
 def test_sync_session_key_after_compress_reanchors_active_session_lease(
     server, monkeypatch, tmp_path
 ):
@@ -1134,6 +1188,8 @@ def test_session_activate_rebinds_orphaned_ws_session_to_current_transport(serve
         "session_key": "20260409_010101_abc123",
         "transport": old_transport,
     }
+    server._pending["sudo-1"] = (sid, threading.Event())
+    server._pending_prompt_payloads["sudo-1"] = ("sudo.request", {"request_id": "sudo-1"})
     monkeypatch.setattr(server, "current_transport", lambda: new_transport)
     monkeypatch.setattr(server, "_get_db", lambda: None)
     monkeypatch.setattr(
@@ -1148,6 +1204,10 @@ def test_session_activate_rebinds_orphaned_ws_session_to_current_transport(serve
 
     assert "error" not in resp
     assert resp["result"]["session_id"] == sid
+    assert resp["result"]["pending_prompt"] == {
+        "event": "sudo.request",
+        "payload": {"request_id": "sudo-1"},
+    }
     assert server._sessions[sid]["transport"] is new_transport
     assert not server._ws_session_is_orphaned(server._sessions[sid])
 

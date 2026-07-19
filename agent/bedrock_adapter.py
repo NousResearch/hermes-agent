@@ -490,6 +490,11 @@ def convert_tools_to_converse(tools: List[Dict]) -> List[Dict]:
     return result
 
 
+def _nonblank(text: str) -> str:
+    """Return *text* if it contains non-whitespace, else a placeholder dot."""
+    return text if text and text.strip() else "."
+
+
 def _convert_content_to_converse(content) -> List[Dict]:
     """Convert OpenAI message content (string or list) to Converse content blocks.
 
@@ -497,26 +502,30 @@ def _convert_content_to_converse(content) -> List[Dict]:
       - Plain text strings → [{"text": "..."}]
       - Content arrays with text/image_url parts → mixed text/image blocks
 
-    Filters out empty text blocks — Bedrock's Converse API rejects messages
-    where a text content block has an empty ``text`` field (ValidationException:
-    "text content blocks must be non-empty"). Ref: issue #9486.
+    Substitutes a non-whitespace placeholder ("."), never an empty or
+    whitespace-only string — Bedrock's Converse API rejects any text content
+    block whose ``text`` is blank (ValidationException: "text content blocks
+    must contain non-whitespace text"). A single space (" ") is whitespace and
+    is also rejected, so the placeholder must contain a non-whitespace char.
+    Ref: issue #9486 (originally "non-empty"; Bedrock later tightened this to
+    "non-whitespace").
     """
     if content is None:
-        return [{"text": " "}]
+        return [{"text": _nonblank(content)}]
     if isinstance(content, str):
-        return [{"text": content}] if content.strip() else [{"text": " "}]
+        return [{"text": _nonblank(content)}]
     if isinstance(content, list):
         blocks = []
         for part in content:
             if isinstance(part, str):
-                blocks.append({"text": part})
+                blocks.append({"text": _nonblank(part)})
                 continue
             if not isinstance(part, dict):
                 continue
             part_type = part.get("type", "")
             if part_type == "text":
                 text = part.get("text", "")
-                blocks.append({"text": text if text else " "})
+                blocks.append({"text": _nonblank(text)})
             elif part_type == "image_url":
                 image_url = part.get("image_url", {})
                 url = image_url.get("url", "") if isinstance(image_url, dict) else ""
@@ -547,7 +556,7 @@ def _convert_content_to_converse(content) -> List[Dict]:
                     # Remote URL — Converse doesn't support URLs directly,
                     # include as text reference for the model.
                     blocks.append({"text": f"[Image: {url}]"})
-        return blocks if blocks else [{"text": " "}]
+        return blocks if blocks else [{"text": "."}]
     return [{"text": str(content)}]
 
 
@@ -584,15 +593,20 @@ def convert_messages_to_converse(
             elif isinstance(content, list):
                 for part in content:
                     if isinstance(part, dict) and part.get("type") == "text":
-                        system_blocks.append({"text": part.get("text", "")})
+                        system_blocks.append({"text": _nonblank(part.get("text", ""))})
                     elif isinstance(part, str):
-                        system_blocks.append({"text": part})
+                        system_blocks.append({"text": _nonblank(part)})
             continue
 
         if role == "tool":
             # Tool result messages → merge into the preceding user turn
             tool_call_id = msg.get("tool_call_id", "")
             result_content = content if isinstance(content, str) else json.dumps(content)
+            # Bedrock rejects blank text blocks; a tool that returns empty or
+            # whitespace-only output (e.g. a command with no stdout) would
+            # otherwise produce one. Substitute a non-whitespace placeholder.
+            if not (result_content and result_content.strip()):
+                result_content = "."
             tool_result_block = {
                 "toolResult": {
                     "toolUseId": tool_call_id,
@@ -635,7 +649,7 @@ def convert_messages_to_converse(
                 })
 
             if not content_blocks:
-                content_blocks = [{"text": " "}]
+                content_blocks = [{"text": "."}]
 
             # Merge with previous assistant message if needed (strict alternation)
             if converse_msgs and converse_msgs[-1]["role"] == "assistant":
@@ -661,11 +675,11 @@ def convert_messages_to_converse(
 
     # Converse requires the first message to be from the user
     if converse_msgs and converse_msgs[0]["role"] != "user":
-        converse_msgs.insert(0, {"role": "user", "content": [{"text": " "}]})
+        converse_msgs.insert(0, {"role": "user", "content": [{"text": "."}]})
 
     # Converse requires the last message to be from the user
     if converse_msgs and converse_msgs[-1]["role"] != "user":
-        converse_msgs.append({"role": "user", "content": [{"text": " "}]})
+        converse_msgs.append({"role": "user", "content": [{"text": "."}]})
 
     return (system_blocks if system_blocks else None, converse_msgs)
 

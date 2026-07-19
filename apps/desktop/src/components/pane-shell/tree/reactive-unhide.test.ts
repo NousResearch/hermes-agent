@@ -43,16 +43,23 @@ describe('reactive pane unhide', () => {
     // Declare a minimal default tree mirroring the production DEFAULT_TREE's
     // row shape (sessions | workspace | right-column-with-files).
     tree.declareDefaultTree(
-      model.split('row', [
-        model.group(['sessions'], { id: 'grp-sessions' }),
-        model.group(['workspace'], { id: 'grp-main' }),
-        model.split('column', [
-          model.split('row', [
-            model.group(['files'], { id: 'grp-files' })
-          ], [1], 'spl-rail'),
-          model.group(['terminal'], { id: 'grp-terminal' })
-        ], [1.6, 1], 'spl-right')
-      ], [0.85, 3, 1.6])
+      model.split(
+        'row',
+        [
+          model.group(['sessions'], { id: 'grp-sessions' }),
+          model.group(['workspace'], { id: 'grp-main' }),
+          model.split(
+            'column',
+            [
+              model.split('row', [model.group(['files'], { id: 'grp-files' })], [1], 'spl-rail'),
+              model.group(['terminal'], { id: 'grp-terminal' })
+            ],
+            [1.6, 1],
+            'spl-right'
+          )
+        ],
+        [0.85, 3, 1.6]
+      )
     )
 
     // Mirror controller.tsx:512.

@@ -3282,6 +3282,15 @@ def interruptible_streaming_api_call(agent, api_kwargs: dict, *, on_first_delta=
 
         if agent._interrupt_requested:
             return None
+        if (
+            base_final_message is not None
+            and not getattr(base_final_message, "content", None)
+            and getattr(base_final_message, "stop_reason", None) is None
+        ):
+            raise EmptyStreamError(
+                "Provider returned an empty stream with no stop_reason "
+                "(possible upstream error or malformed event stream)."
+            )
         if base_final_message is not None and not stream.output_modified:
             return base_final_message
         final_message = accumulator.response(base_final_message)

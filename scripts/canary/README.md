@@ -367,6 +367,10 @@ release trust manifest from the exact offline package inventory, the one
 Foundation collector key used by both network and ancestry evidence, the three
 distinct final collector keys, and the signed credential-migration envelope:
 
+The final release SHA must be a separately reviewed successor revision and
+must not equal the Foundation A source revision; both trust authoring and
+packaging reject equality.
+
 ```bash
 python -m scripts.canary.owner_gate_release_author \
   author-unsigned-trust \

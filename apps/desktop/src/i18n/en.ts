@@ -1677,7 +1677,14 @@ export const en: Translations = {
       enter: label => `Open ${label}`,
       reorder: label => `Reorder ${label}`,
       toggle: label => `Toggle ${label} sessions`,
-      back: 'All projects'
+      back: 'All projects',
+      topicProjectAction: 'Project binding',
+      topicProjectTitle: 'Topic project',
+      topicProjectDesc: 'Link this messaging topic to one Hermes Project. Desktop replies still stay in Desktop.',
+      topicProjectPlaceholder: 'Choose a project',
+      topicAliasPlaceholder: 'Local topic alias',
+      topicLink: 'Save binding',
+      topicUnlink: 'Unlink'
     },
     newSessionIn: label => `New session in ${label}`,
     showMoreIn: (count, label) => `Show ${count} more in ${label}`,

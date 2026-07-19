@@ -26,6 +26,7 @@ returns the worktree's own root, which is why the client double-counted them).
 from __future__ import annotations
 
 import re
+import json
 from typing import Any, Callable, Optional
 
 # A cwd -> git identity resolver. Returns ``{"repo_root", "worktree_root"}`` where
@@ -433,6 +434,162 @@ def _project_for_session(session: dict, index: _FolderIndex, resolve: Optional[R
     return best
 
 
+def _normalize_text(value: Any) -> str:
+    return str(value).strip() if value is not None else ""
+
+
+def _normalize_thread(value: Any) -> Optional[str]:
+    text = _normalize_text(value)
+    return text or None
+
+
+def _session_conversation_target(session: dict) -> Optional[tuple[str, str, Optional[str]]]:
+    platform = _normalize_text(session.get("source")).lower()
+    chat_id = _normalize_text(session.get("chat_id"))
+    thread_id = _normalize_thread(session.get("thread_id"))
+
+    raw_origin = session.get("origin_json")
+    if isinstance(raw_origin, str) and raw_origin.strip():
+        try:
+            origin = json.loads(raw_origin)
+        except (TypeError, ValueError):
+            origin = None
+        if isinstance(origin, dict):
+            # A Desktop/TUI continuation keeps the messaging origin while its
+            # live source becomes local. Prefer that external origin so the
+            # continuation still matches the messaging Project binding.
+            platform = _normalize_text(origin.get("platform")).lower() or platform
+            chat_id = chat_id or _normalize_text(origin.get("chat_id"))
+            thread_id = thread_id if thread_id is not None else _normalize_thread(origin.get("thread_id"))
+
+    if not platform or not chat_id:
+        return None
+    return platform, chat_id, thread_id
+
+
+def _session_origin(session: dict) -> dict:
+    raw_origin = session.get("origin_json")
+    if isinstance(raw_origin, str) and raw_origin.strip():
+        try:
+            origin = json.loads(raw_origin)
+        except (TypeError, ValueError):
+            origin = {}
+        if isinstance(origin, dict):
+            return origin
+    return {}
+
+
+def _conversation_key(platform: str, chat_id: str, thread_id: Optional[str]) -> str:
+    return json.dumps(
+        {"platform": platform, "chat_id": chat_id, "thread_id": thread_id},
+        sort_keys=True,
+        separators=(",", ":"),
+    )
+
+
+class _ConversationBindingIndex:
+    def __init__(self, projects: list[dict]) -> None:
+        self._by_target: dict[str, dict] = {}
+        self._binding_by_project_target: dict[tuple[str, str], dict] = {}
+        for project in projects:
+            for binding in project.get("conversation_bindings") or []:
+                platform = _normalize_text(binding.get("platform")).lower()
+                chat_id = _normalize_text(binding.get("chat_id"))
+                if not platform or not chat_id:
+                    continue
+                key = _conversation_key(platform, chat_id, _normalize_thread(binding.get("thread_id")))
+                self._by_target[key] = project
+                self._binding_by_project_target[(project["id"], key)] = binding
+
+    def match(self, session: dict) -> Optional[dict]:
+        target = _session_conversation_target(session)
+        if target is None:
+            return None
+        return self._by_target.get(_conversation_key(*target))
+
+    def binding_for(self, project_id: str, session: dict) -> Optional[dict]:
+        target = _session_conversation_target(session)
+        if target is None:
+            return None
+        return self._binding_by_project_target.get((project_id, _conversation_key(*target)))
+
+
+def _conversation_label(session: dict, binding: Optional[dict], *, topic: bool) -> str:
+    alias = _normalize_text((binding or {}).get("alias"))
+    if alias:
+        return alias
+
+    origin = _session_origin(session)
+    chat_topic = _normalize_text(origin.get("chat_topic") or origin.get("thread_name") or origin.get("topic"))
+    if topic and chat_topic:
+        return chat_topic
+
+    display = _normalize_text(session.get("display_name") or origin.get("display_name") or origin.get("chat_title"))
+    target = _session_conversation_target(session)
+    if not target:
+        return "Conversation"
+    _platform, chat_id, thread_id = target
+    if topic and thread_id:
+        return f"{display or chat_id} · {thread_id}"
+    return display or chat_id
+
+
+def _build_conversation_repos(
+    project_id: str,
+    sessions: list[dict],
+    binding_index: _ConversationBindingIndex,
+    hydrate: bool,
+) -> list[dict]:
+    repos: dict[str, dict] = {}
+
+    for session in sessions:
+        target = _session_conversation_target(session)
+        if target is None:
+            continue
+        platform, chat_id, thread_id = target
+        binding = binding_index.binding_for(project_id, session)
+        if binding is None:
+            continue
+        repo_id = f"conversation::{platform}::{chat_id}"
+        group_id = f"{repo_id}::thread::{thread_id or ''}"
+        repo = repos.setdefault(
+            repo_id,
+            {
+                "id": repo_id,
+                "label": _conversation_label(session, None, topic=False),
+                "path": None,
+                "groups": [],
+                "sessionCount": 0,
+            },
+        )
+        group = next((g for g in repo["groups"] if g["id"] == group_id), None)
+        if group is None:
+            group = {
+                "id": group_id,
+                "label": _conversation_label(session, binding, topic=True),
+                "path": None,
+                "isConversation": True,
+                "sessions": [],
+            }
+            repo["groups"].append(group)
+        group["sessions"].append(session)
+        repo["sessionCount"] += 1
+
+    for repo in repos.values():
+        for group in repo["groups"]:
+            group["sessions"].sort(key=_session_time, reverse=True)
+        repo["groups"].sort(
+            key=lambda g: (
+                -max((_session_time(s) for s in g.get("sessions") or []), default=0.0),
+                g["label"].lower(),
+            )
+        )
+        if not hydrate:
+            for group in repo["groups"]:
+                group["sessions"] = []
+    return sorted(repos.values(), key=lambda r: (-r["sessionCount"], r["label"].lower()))
+
+
 # ---------------------------------------------------------------------------
 # Public builder
 # ---------------------------------------------------------------------------
@@ -497,11 +654,12 @@ def build_tree(
     _junk = is_junk_root or (lambda _root: False)
     _junk_cwd = is_junk_cwd or (lambda _cwd: False)
     folder_index = _FolderIndex(active_projects)
+    binding_index = _ConversationBindingIndex(active_projects)
 
     by_project: dict[str, list[dict]] = {}
     unowned: list[dict] = []
     for session in sessions:
-        owner = _project_for_session(session, folder_index, resolve)
+        owner = binding_index.match(session) or _project_for_session(session, folder_index, resolve)
         if owner:
             by_project.setdefault(owner["id"], []).append(session)
         else:
@@ -523,10 +681,20 @@ def build_tree(
     # Tier 1: explicit, user-created projects (always shown, even with 0 sessions).
     for project in active_projects:
         psessions = by_project.get(project["id"], [])
+        conversation_sessions: list[dict] = []
+        filesystem_sessions: list[dict] = []
+        for session in psessions:
+            target = (
+                conversation_sessions
+                if binding_index.binding_for(project["id"], session) is not None
+                else filesystem_sessions
+            )
+            target.append(session)
         scoped_ids.extend(s["id"] for s in psessions if s.get("id"))
         repos = _seed_folder_repos(
-            _build_repos(psessions, resolve, hydrate), project.get("folders") or [], resolve
+            _build_repos(filesystem_sessions, resolve, hydrate), project.get("folders") or [], resolve
         )
+        repos.extend(_build_conversation_repos(project["id"], conversation_sessions, binding_index, hydrate))
         result.append(
             _project_node(
                 pid=project["id"],

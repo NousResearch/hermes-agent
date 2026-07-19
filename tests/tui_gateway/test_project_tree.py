@@ -42,6 +42,16 @@ def _project(pid, name, folders, **over):
     return row
 
 
+def _binding(project_id, *, platform="telegram", chat_id="chat", thread_id="thread", alias=None):
+    return {
+        "project_id": project_id,
+        "platform": platform,
+        "chat_id": chat_id,
+        "thread_id": thread_id,
+        "alias": alias,
+    }
+
+
 def _resolver(mapping):
     """Build a resolve() from {cwd: (repo_root, worktree_root)}."""
 
@@ -312,6 +322,75 @@ def test_scoped_session_ids_is_union_of_placed_sessions():
 
     assert set(tree["scoped_session_ids"]) == {owned["id"], auto["id"]}
     assert homeless["id"] not in tree["scoped_session_ids"]
+
+
+def test_explicit_conversation_binding_claims_cwdless_session():
+    project = _project("p_topic", "Topic Project", [], conversation_bindings=[_binding("p_topic", alias="Ops")])
+    bound = _session(None, source="telegram", chat_id="chat", thread_id="thread", display_name="Team")
+    unbound = _session(None, source="telegram", chat_id="chat", thread_id="other")
+
+    tree = pt.build_tree([project], [bound, unbound], [], resolve=None, hydrate=True)
+    node = next(p for p in tree["projects"] if p["id"] == "p_topic")
+
+    assert node["sessionCount"] == 1
+    assert tree["scoped_session_ids"] == [bound["id"]]
+    assert unbound["id"] not in tree["scoped_session_ids"]
+    groups = [g for repo in node["repos"] for g in repo["groups"]]
+    assert [g["label"] for g in groups] == ["Ops"]
+    assert groups[0]["sessions"] == [bound]
+
+
+def test_conversation_binding_claims_local_handoff_from_messaging_origin():
+    project = _project("p_topic", "Topic Project", [], conversation_bindings=[_binding("p_topic", alias="Ops")])
+    handoff = _session(
+        None,
+        source="tui",
+        origin_json='{"platform":"telegram","chat_id":"chat","thread_id":"thread"}',
+    )
+
+    tree = pt.build_tree([project], [handoff], [], resolve=None, hydrate=True)
+    node = next(p for p in tree["projects"] if p["id"] == "p_topic")
+
+    assert tree["scoped_session_ids"] == [handoff["id"]]
+    assert node["sessionCount"] == 1
+    assert node["repos"][0]["id"] == "conversation::telegram::chat"
+
+
+def test_conversation_binding_dedupes_session_that_also_matches_folder():
+    project = _project(
+        "p_topic",
+        "Topic Project",
+        ["/repo"],
+        conversation_bindings=[_binding("p_topic", alias="Ops")],
+    )
+    session = _session("/repo", source="telegram", chat_id="chat", thread_id="thread")
+
+    tree = pt.build_tree([project], [session], [], resolve=lambda _cwd: None, hydrate=True)
+    node = next(p for p in tree["projects"] if p["id"] == "p_topic")
+    rows = [s["id"] for repo in node["repos"] for group in repo["groups"] for s in group["sessions"]]
+    populated_repos = [repo for repo in node["repos"] if any(group["sessions"] for group in repo["groups"])]
+
+    assert rows == [session["id"]]
+    assert node["sessionCount"] == 1
+    assert len(populated_repos) == 1
+    assert populated_repos[0]["id"] == "conversation::telegram::chat"
+    assert populated_repos[0]["groups"][0]["isConversation"] is True
+
+
+def test_threadless_conversation_binding_matches_null_and_empty_thread():
+    project = _project(
+        "p_dm",
+        "DM",
+        [],
+        conversation_bindings=[_binding("p_dm", platform="slack", chat_id="C1", thread_id=None)],
+    )
+    null_thread = _session(None, source="slack", chat_id="C1", thread_id=None)
+    empty_thread = _session(None, source="slack", chat_id="C1", thread_id="")
+    other_thread = _session(None, source="slack", chat_id="C1", thread_id="T2")
+
+    tree = pt.build_tree([project], [null_thread, empty_thread, other_thread], [], resolve=None, hydrate=True)
+
+    assert set(tree["scoped_session_ids"]) == {null_thread["id"], empty_thread["id"]}
 
 
 def test_overview_drops_session_rows_but_keeps_counts_and_previews():

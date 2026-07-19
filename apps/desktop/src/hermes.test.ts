@@ -69,14 +69,16 @@ describe('Hermes REST session helpers', () => {
       recentsExclude: ['cron', 'tool'],
       cronLimit: 50,
       messagingLimit: 100,
-      messagingExclude: ['cron', 'desktop']
+      messagingExclude: ['cron', 'desktop'],
+      messagingOriginSources: ['telegram', 'discord']
     })
 
     expect(api).toHaveBeenCalledWith(
       expect.objectContaining({
         path:
           '/api/profiles/sessions/sidebar?recents_profile=work&recents_limit=30&cron_limit=50' +
-          '&messaging_limit=100&recents_exclude=cron%2Ctool&messaging_exclude=cron%2Cdesktop',
+          '&messaging_limit=100&recents_exclude=cron%2Ctool&messaging_exclude=cron%2Cdesktop' +
+          '&messaging_origin_sources=telegram%2Cdiscord',
         timeoutMs: 60_000
       })
     )
@@ -91,7 +93,8 @@ describe('Hermes REST session helpers', () => {
       recentsExclude: [],
       cronLimit: 50,
       messagingLimit: 100,
-      messagingExclude: []
+      messagingExclude: [],
+      messagingOriginSources: []
     })
 
     expect(result.recents.sessions).toEqual([])

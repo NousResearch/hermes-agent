@@ -28,7 +28,6 @@ import { useI18n } from '@/i18n'
 import { comboTokens } from '@/lib/keybinds/combo'
 import { profileColor } from '@/lib/profile-color'
 import { sessionMatchesSearch } from '@/lib/session-search'
-import { normalizeSessionSource, sessionSourceLabel } from '@/lib/session-source'
 import { cn } from '@/lib/utils'
 import { $cronJobs } from '@/store/cron'
 import { $bindings } from '@/store/keybinds'
@@ -111,6 +110,7 @@ import type { SidebarNavItem } from '../../types'
 import { countLabel } from './chrome'
 import { SidebarCronJobsSection } from './cron-jobs-section'
 import { SidebarLoadMoreRow } from './load-more-row'
+import { buildMessagingGroups, type MessagingConversationGroup } from './messaging-groups'
 import { orderByIds, reconcileOrderIds, resolveManualSessionOrderIds, sameIds } from './order'
 import { ProfileRail } from './profile-switcher'
 import { ProjectDialog } from './project-dialog'
@@ -121,7 +121,6 @@ import {
   ProjectBackRow,
   ProjectMenu,
   projectTreeCwd,
-  sessionRecency as sessionTime,
   type SidebarProjectTree,
   type SidebarSessionGroup,
   type SidebarWorkspaceTree,
@@ -867,39 +866,14 @@ export function ChatSidebar({
       return []
     }
 
-    const bySource = new Map<string, SessionInfo[]>()
-
-    for (const session of messagingSessions) {
-      const sourceId = normalizeSessionSource(session.source)
-
-      if (!sourceId) {
-        continue
-      }
-
-      const list = bySource.get(sourceId) ?? []
-      list.push(session)
-      bySource.set(sourceId, list)
-    }
-
-    return [...bySource.entries()]
-      .map(([sourceId, list]) => {
-        const ordered = [...list].sort((a, b) => sessionTime(b) - sessionTime(a))
-        const known = messagingPlatformTotals[sourceId]
-        const total = Math.max(ordered.length, known ?? 0)
-
-        return {
-          // Known exact total → more exist iff total exceeds loaded; otherwise
-          // the seed fetch was capped, so assume more until a per-platform load
-          // resolves the count.
-          hasMore: known != null ? known > ordered.length : messagingTruncated,
-          label: sessionSourceLabel(sourceId) ?? sourceId,
-          sessions: ordered,
-          sourceId,
-          total
-        }
-      })
-      .sort((a, b) => sessionTime(b.sessions[0]) - sessionTime(a.sessions[0]))
-  }, [messagingSessions, messagingPlatformTotals, messagingTruncated])
+    return buildMessagingGroups({
+      platformTotals: messagingPlatformTotals,
+      projectProfile: showAllProfiles ? null : normalizeProfileKey(profileScope),
+      projects,
+      sessions: messagingSessions,
+      truncated: messagingTruncated
+    })
+  }, [messagingSessions, messagingPlatformTotals, messagingTruncated, projects, profileScope, showAllProfiles])
 
   // ALL-profiles view: one collapsible group per profile, color on the header
   // (not on every row). Default profile floats to the top, the rest alpha.
@@ -1420,6 +1394,21 @@ export function ChatSidebar({
               messagingGroups.map(group => {
                 const visible = messagingVisible[group.sourceId] ?? NON_SESSION_INITIAL_ROWS
                 const shownSessions = group.sessions.slice(0, visible)
+                const shownSessionIds = new Set(shownSessions.map(session => session.id))
+
+                const shownConversations = group.conversations
+                  .map(conversation => ({
+                    ...conversation,
+                    topics: conversation.topics
+                      .map(topic => ({
+                        ...topic,
+                        sessions: topic.sessions.filter(session => shownSessionIds.has(session.id))
+                      }))
+                      .filter(topic => topic.sessions.length > 0)
+                  }))
+                  .filter(conversation => conversation.topics.length > 0)
+
+                const shownFlatSessions = group.flatSessions.filter(session => shownSessionIds.has(session.id))
                 // More to show if rows are hidden behind the cap, or the backend
                 // still has older threads on disk.
                 const canRevealMore = visible < group.sessions.length || group.hasMore
@@ -1448,6 +1437,7 @@ export function ChatSidebar({
                       />
                     }
                     labelMeta={countLabel(group.sessions.length, group.total)}
+                    messagingConversations={shownConversations}
                     onArchiveSession={onArchiveSession}
                     onDeleteSession={onDeleteSession}
                     onResumeSession={onResumeSession}
@@ -1455,8 +1445,9 @@ export function ChatSidebar({
                     onTogglePin={pinSession}
                     open={messagingOpenIds.includes(group.sourceId)}
                     pinned={false}
+                    projects={projects}
                     rootClassName="shrink-0 p-0"
-                    sessions={shownSessions}
+                    sessions={shownFlatSessions}
                     workingSessionIdSet={workingSessionIdSet}
                   />
                 )
@@ -1490,6 +1481,8 @@ export function ChatSidebar({
 interface MessagingSection {
   sourceId: string
   label: string
+  conversations: MessagingConversationGroup[]
+  flatSessions: SessionInfo[]
   sessions: SessionInfo[]
   total: number
   hasMore: boolean

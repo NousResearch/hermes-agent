@@ -134,6 +134,76 @@ def test_project_for_path_skips_archived(conn):
     assert pdb.project_for_path(conn, "/www/app/src").id == pid
 
 
+def test_conversation_binding_crud_roundtrip_and_serialization(conn):
+    pid = pdb.create_project(conn, name="Support")
+
+    binding = pdb.bind_conversation(
+        conn,
+        pid,
+        platform="Telegram",
+        chat_id="chat-1",
+        thread_id="topic-7",
+        alias="Launch topic",
+    )
+    project = pdb.get_project(conn, pid)
+
+    assert binding.project_id == pid
+    assert binding.platform == "telegram"
+    assert binding.chat_id == "chat-1"
+    assert binding.thread_id == "topic-7"
+    assert binding.alias == "Launch topic"
+    assert project.conversation_bindings == [binding]
+    assert project.to_dict()["conversation_bindings"][0]["target_key"] == binding.target_key
+
+
+def test_conversation_binding_threadless_normalizes_empty_thread(conn):
+    pid = pdb.create_project(conn, name="DMs")
+
+    bound = pdb.bind_conversation(conn, pid, platform="slack", chat_id="C123", thread_id="")
+    same = pdb.get_conversation_binding(conn, platform="slack", chat_id="C123", thread_id=None)
+
+    assert bound.thread_id is None
+    assert same is not None
+    assert same.target_key == bound.target_key
+
+
+def test_conversation_binding_one_project_per_target_and_alias_update(conn):
+    first = pdb.create_project(conn, name="First")
+    second = pdb.create_project(conn, name="Second")
+
+    pdb.bind_conversation(conn, first, platform="telegram", chat_id="chat", thread_id="thread", alias="Old")
+    moved = pdb.bind_conversation(conn, second, platform="telegram", chat_id="chat", thread_id="thread", alias="New")
+    updated = pdb.bind_conversation(conn, second, platform="telegram", chat_id="chat", thread_id="thread", alias="Updated")
+
+    assert moved.project_id == second
+    assert updated.alias == "Updated"
+    assert pdb.list_conversation_bindings(conn, project_id=first) == []
+    assert [b.project_id for b in pdb.list_conversation_bindings(conn)] == [second]
+
+
+def test_conversation_binding_rejects_archived_project(conn):
+    pid = pdb.create_project(conn, name="Archived")
+    pdb.archive_project(conn, pid)
+
+    with pytest.raises(ValueError, match="archived project"):
+        pdb.bind_conversation(conn, pid, platform="telegram", chat_id="chat", thread_id="thread")
+
+    assert pdb.list_conversation_bindings(conn) == []
+
+
+def test_conversation_binding_unbind_and_cascade_delete(conn):
+    pid = pdb.create_project(conn, name="Bound")
+    pdb.bind_conversation(conn, pid, platform="telegram", chat_id="chat", thread_id=None)
+
+    assert pdb.unbind_conversation(conn, platform="telegram", chat_id="chat", thread_id="missing") is False
+    assert pdb.unbind_conversation(conn, platform="telegram", chat_id="chat", thread_id=None) is True
+    assert pdb.list_conversation_bindings(conn) == []
+
+    pdb.bind_conversation(conn, pid, platform="telegram", chat_id="chat", thread_id=None)
+    pdb.delete_project(conn, pid)
+    assert pdb.list_conversation_bindings(conn) == []
+
+
 def test_active_pointer(conn):
     pid = pdb.create_project(conn, name="P")
     assert pdb.get_active_id(conn) is None

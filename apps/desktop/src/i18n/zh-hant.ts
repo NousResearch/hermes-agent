@@ -1552,7 +1552,17 @@ export const zhHant = defineLocale({
         '從 git 中移除（刪除工作樹目錄，但保留分支），或僅從側邊欄隱藏該軌道並將工作樹保留在磁碟上。',
       removeWorktreeDirty: '此工作樹有未提交的變更。強制移除（捨棄這些變更），或僅隱藏軌道並保留在磁碟上。',
       forceRemove: '強制移除',
-      enter: label => `開啟 ${label}`
+      enter: label => `開啟 ${label}`,
+      reorder: label => `重新排序 ${label}`,
+      toggle: label => `切換 ${label} 工作階段`,
+      back: '全部專案',
+      topicProjectAction: '專案綁定',
+      topicProjectTitle: '話題專案',
+      topicProjectDesc: '將此訊息話題連結到一個 Hermes 專案。桌面回覆仍只留在桌面。',
+      topicProjectPlaceholder: '選擇專案',
+      topicAliasPlaceholder: '本地話題別名',
+      topicLink: '儲存綁定',
+      topicUnlink: '取消連結'
     },
     newSessionIn: label => `在 ${label} 中新建工作階段`,
     showMoreIn: (count, label) => `在 ${label} 中再顯示 ${count} 個`,

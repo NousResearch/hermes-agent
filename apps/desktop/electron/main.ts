@@ -8128,9 +8128,14 @@ async function interceptSessionRequestForRemote(request) {
 
     const messagingSp = sliceParams('messaging_limit', '100', { profile: 'all' })
     const messagingExclude = searchParams.get('messaging_exclude')
+    const messagingOriginSources = searchParams.get('messaging_origin_sources')
 
     if (messagingExclude) {
       messagingSp.set('exclude_sources', messagingExclude)
+    }
+
+    if (messagingOriginSources) {
+      messagingSp.set('include_origin_sources', messagingOriginSources)
     }
 
     const [recents, cron, messaging] = await Promise.all([

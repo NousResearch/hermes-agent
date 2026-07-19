@@ -1858,7 +1858,14 @@ export const zh: Translations = {
       enter: label => `打开 ${label}`,
       reorder: label => `重新排序 ${label}`,
       toggle: label => `展开/收起 ${label} 会话`,
-      back: '全部项目'
+      back: '全部项目',
+      topicProjectAction: '项目绑定',
+      topicProjectTitle: '话题项目',
+      topicProjectDesc: '将此消息话题链接到一个 Hermes 项目。桌面端回复仍只留在桌面端。',
+      topicProjectPlaceholder: '选择项目',
+      topicAliasPlaceholder: '本地话题别名',
+      topicLink: '保存绑定',
+      topicUnlink: '取消链接'
     },
     newSessionIn: label => `在 ${label} 中新建会话`,
     showMoreIn: (count, label) => `在 ${label} 中再显示 ${count} 个`,

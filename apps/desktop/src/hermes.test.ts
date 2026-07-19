@@ -11,6 +11,7 @@ import {
   getStatus,
   listAllProfileSessions,
   listSessions,
+  setApiRequestProfile,
   setSpeechSynthesisTimeoutSeconds,
   speakText
 } from './hermes'
@@ -35,6 +36,7 @@ describe('Hermes REST session helpers', () => {
   })
 
   afterEach(() => {
+    setApiRequestProfile(null)
     setSpeechSynthesisTimeoutSeconds(undefined)
     vi.restoreAllMocks()
     Reflect.deleteProperty(window, 'hermesDesktop')
@@ -146,6 +148,19 @@ describe('Hermes REST session helpers', () => {
     await speakText('Read this aloud')
 
     expect(api).toHaveBeenCalledWith(expect.objectContaining({ timeoutMs: 300_000 }))
+  })
+
+  it('routes speech synthesis through the active profile', async () => {
+    setApiRequestProfile('voice-profile')
+
+    await speakText('Read this aloud')
+
+    expect(api).toHaveBeenCalledWith(
+      expect.objectContaining({
+        path: '/api/audio/speak',
+        profile: 'voice-profile'
+      })
+    )
   })
 
   it('bounds the configured speech synthesis timeout', async () => {

@@ -2845,7 +2845,11 @@ WantedBy=multi-user.target
     systemd_type, systemd_watchdog_directives = _systemd_watchdog_service_fields(
         hermes_home
     )
-    profile_arg = _profile_arg(hermes_home)
+    # A service installed for the default profile must stay on that profile.
+    # Without an explicit selector, CLI startup follows the interactive
+    # active_profile marker and can silently move the always-on gateway (and
+    # its cron store) to a named profile such as `aegis`.
+    profile_arg = _profile_arg(hermes_home) or "--profile default"
     path_entries.extend(_build_user_local_paths(Path.home(), path_entries))
     path_entries.extend(_build_wsl_interop_paths(path_entries))
     path_entries.extend(common_bin_paths)
@@ -3951,7 +3955,10 @@ def generate_launchd_plist() -> str:
     log_dir = get_hermes_home() / "logs"
     log_dir.mkdir(parents=True, exist_ok=True)
     label = get_launchd_label()
-    profile_arg = _profile_arg(hermes_home)
+    # Keep the machine service on the profile it was installed for. A bare
+    # default-profile command follows the interactive active_profile marker
+    # during startup and can silently switch cron stores.
+    profile_arg = _profile_arg(hermes_home) or "--profile default"
     # Build a sane PATH for the launchd plist.  launchd provides only a
     # minimal default (/usr/bin:/bin:/usr/sbin:/sbin) which misses Homebrew,
     # nvm, cargo, etc.  We prepend venv/bin and node_modules/.bin (matching
@@ -4022,12 +4029,6 @@ def generate_launchd_plist() -> str:
         <string>{hermes_home}</string>
     </dict>
 
-    <key>LimitLoadToSessionType</key>
-    <array>
-        <string>Aqua</string>
-        <string>Background</string>
-    </array>
-    
     <key>RunAtLoad</key>
     <true/>
     

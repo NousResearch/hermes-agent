@@ -187,14 +187,34 @@ const ReasoningTextPart: ReasoningMessagePartComponent = () => {
   const { status, text } = useMessagePartReasoning()
   const messageRunning = useAuiState(s => s.message.status?.type === 'running')
 
-  return (
-    <MarkdownTextContent
-      containerClassName="text-xs leading-snug text-muted-foreground/85"
-      containerProps={{ 'data-slot': 'aui_reasoning-text' } as ComponentProps<'div'>}
-      isRunning={status.type === 'running' || messageRunning}
-      text={text.trimStart()}
-    />
-  )
+  // Recursion guard: prevent infinite render loop when reasoning content
+  // triggers repeated re-renders via the markdown parser.
+  const renderDepthRef = useRef(0)
+  const MAX_RENDER_DEPTH = 50
+
+  renderDepthRef.current++
+  if (renderDepthRef.current > MAX_RENDER_DEPTH) {
+    renderDepthRef.current--
+    console.warn('[ReasoningTextPart] Render depth exceeded, showing fallback', { textLength: text.length })
+    return (
+      <div className="text-xs text-muted-foreground/60 italic" data-slot="aui_reasoning-fallback">
+        [Reasoning too deeply nested to render]
+      </div>
+    )
+  }
+
+  try {
+    return (
+      <MarkdownTextContent
+        containerClassName="text-xs leading-snug text-muted-foreground/85"
+        containerProps={{ 'data-slot': 'aui_reasoning-text' } as ComponentProps<'div'>}
+        isRunning={status.type === 'running' || messageRunning}
+        text={text.trimStart()}
+      />
+    )
+  } finally {
+    renderDepthRef.current--
+  }
 }
 
 // Module-level constant so the `components` prop on `MessagePrimitive.Parts`

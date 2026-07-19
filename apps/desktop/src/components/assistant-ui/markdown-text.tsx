@@ -59,6 +59,67 @@ function preprocessWithTailRepair(text: string): string {
   }
 }
 
+// Memoized block splitter. Streamdown calls `parseMarkdownIntoBlocks` (a full
+// `marked` lex of the entire message, ~1.6ms per 28KB) inside a useMemo keyed
+// on the text — but the same text is re-lexed every time a message REMOUNTS
+// (virtualizer scroll, session switch) and whenever multiple surfaces render
+// the same content (deferred + smooth reveal republish). A small module-level
+// LRU keyed by the exact source string removes all of those repeat parses
+// with zero correctness risk (same input → same output). Streaming tail
+// growth misses the cache by design (every flush is a new string) — that
+// single lex is the irreducible cost.
+//
+// NESTING-DEPTH GUARD: micromark's lexer can recurse infinitely on certain
+// pathological inputs (deeply nested lists, blockquotes, or mixed constructs).
+// We wrap the call with a simple depth counter and fall back to a safe
+// single-block return if depth exceeds MAX_PARSE_DEPTH. This prevents the
+// "Maximum call stack size exceeded" crash observed in production when
+// reasoning content triggers the lexer recursion.
+const BLOCK_CACHE_MAX = 64
+const BLOCK_CACHE_MIN_LENGTH = 1024
+const MAX_PARSE_DEPTH = 100
+const blockCache = new Map<string, string[]>()
+let parseDepth = 0
+
+function parseMarkdownIntoBlocksCached(markdown: string): string[] {
+  if (markdown.length < BLOCK_CACHE_MIN_LENGTH) {
+    return parseMarkdownIntoBlocksWithGuard(markdown)
+  }
+
+  const hit = blockCache.get(markdown)
+
+  if (hit) {
+      // Refresh recency (Map iteration order is insertion order).
+      blockCache.delete(markdown)
+      blockCache.set(markdown, hit)
+
+      return hit
+    }
+
+  const blocks = parseMarkdownIntoBlocksWithGuard(markdown)
+  blockCache.set(markdown, blocks)
+
+  if (blockCache.size > BLOCK_CACHE_MAX) {
+    blockCache.delete(blockCache.keys().next().value as string)
+  }
+
+  return blocks
+}
+
+function parseMarkdownIntoBlocksWithGuard(markdown: string): string[] {
+  parseDepth++
+  try {
+    if (parseDepth > MAX_PARSE_DEPTH) {
+      // Fallback: treat entire input as a single block to avoid stack overflow
+      console.warn('[markdown-text] parse depth exceeded, falling back to single block', { markdownLength: markdown.length })
+      return [markdown]
+    }
+    return parseMarkdownIntoBlocks(markdown)
+  } finally {
+    parseDepth--
+  }
+}
+
 async function mediaSrc(path: string): Promise<string> {
   if (/^(?:https?|data):/i.test(path)) {
     return path

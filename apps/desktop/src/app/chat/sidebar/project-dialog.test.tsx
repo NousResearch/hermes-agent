@@ -1,4 +1,5 @@
 import { cleanup, fireEvent, render, screen } from '@testing-library/react'
+import type * as Nanostores from 'nanostores'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import { ProjectDialog } from './project-dialog'
@@ -38,8 +39,7 @@ vi.mock('@/i18n', () => ({
 // vi.mock factories are hoisted above the rest of the file, so the atom must
 // be created inside vi.hoisted to exist by the time the factory runs.
 const { $projectDialog } = vi.hoisted(() => {
-  // eslint-disable-next-line @typescript-eslint/no-var-requires -- nanostores has no side effects to worry about at hoist time
-  const { atom } = require('nanostores') as typeof import('nanostores')
+  const { atom } = require('nanostores') as typeof Nanostores
 
   return {
     $projectDialog: atom<{ mode: 'create' | 'rename' | 'add-folder'; name?: string; projectId?: string } | null>({

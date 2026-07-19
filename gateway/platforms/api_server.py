@@ -128,6 +128,31 @@ CHAT_COMPLETIONS_SSE_KEEPALIVE_SECONDS = 30.0
 MAX_NORMALIZED_TEXT_LENGTH = 65_536  # 64 KB cap for normalized content parts
 MAX_CONTENT_LIST_SIZE = 1_000  # Max items when content is an array
 
+# ``POST /api/sessions/{session_id}/fork`` retains its legacy full-transcript
+# fork body. The explicit derivation contract discriminator opts into the
+# strict v1 request, whose complete shape is validated before the SessionDB
+# transaction is entered.
+_TRANSCRIPT_DERIVATION_V1_CONTRACT_FIELD = "derivation_contract"
+_TRANSCRIPT_DERIVATION_V1_CONTRACT_VALUE = "transcript_derivation_v1"
+_TRANSCRIPT_DERIVATION_V1_FIELDS = frozenset({
+    _TRANSCRIPT_DERIVATION_V1_CONTRACT_FIELD,
+    "id",
+    "operation_id",
+    "kind",
+    "target_message_id",
+    "boundary",
+})
+_TRANSCRIPT_DERIVATION_V1_KIND_BOUNDARIES = {
+    "branch": "after_turn",
+    "edit": "before_turn",
+    "retry": "before_turn",
+}
+_TRANSCRIPT_DERIVATION_V1_OPERATION_ID_MAX_LENGTH = 256
+_TRANSCRIPT_DERIVATION_V1_MESSAGE_ID_RE = re.compile(
+    r"msg:v1:([1-9][0-9]{0,18})\Z"
+)
+_SQLITE_MAX_INTEGER = (1 << 63) - 1
+
 
 def _coerce_port(value: Any, default: int = DEFAULT_PORT) -> int:
     """Parse a listen port without letting malformed env/config values crash startup."""
@@ -2136,6 +2161,7 @@ class APIServerAdapter(BasePlatformAdapter):
                 "session_chat": True,
                 "session_chat_streaming": True,
                 "session_fork": True,
+                "transcript_derivation_v1": True,
                 "session_search": True,
                 "admin_config_rw": False,
                 "jobs_admin": False,
@@ -2168,6 +2194,21 @@ class APIServerAdapter(BasePlatformAdapter):
                 "session_delete": {"method": "DELETE", "path": "/api/sessions/{session_id}"},
                 "session_messages": {"method": "GET", "path": "/api/sessions/{session_id}/messages"},
                 "session_fork": {"method": "POST", "path": "/api/sessions/{session_id}/fork"},
+                "transcript_derivation_v1": {
+                    "method": "POST",
+                    "path": "/api/sessions/{session_id}/fork",
+                    "required_fields": [
+                        "derivation_contract", "id", "operation_id", "kind",
+                        "target_message_id", "boundary",
+                    ],
+                    "optional_fields": ["title"],
+                    "request_discriminator": {
+                        "field": _TRANSCRIPT_DERIVATION_V1_CONTRACT_FIELD,
+                        "value": _TRANSCRIPT_DERIVATION_V1_CONTRACT_VALUE,
+                    },
+                    "target_message_id_format": "msg:v1:<sqlite-int>",
+                    "kind_boundaries": dict(_TRANSCRIPT_DERIVATION_V1_KIND_BOUNDARIES),
+                },
                 "session_chat": {"method": "POST", "path": "/api/sessions/{session_id}/chat"},
                 "session_chat_stream": {"method": "POST", "path": "/api/sessions/{session_id}/chat/stream"},
             },
@@ -2299,7 +2340,11 @@ class APIServerAdapter(BasePlatformAdapter):
             "tool_name", "timestamp", "token_count", "finish_reason", "reasoning",
             "reasoning_content",
         )
-        return {key: message.get(key) for key in safe_keys if key in message}
+        payload = {key: message.get(key) for key in safe_keys if key in message}
+        message_id = payload.get("id")
+        if isinstance(message_id, int) and not isinstance(message_id, bool) and message_id > 0:
+            payload["derivation_id"] = f"msg:v1:{message_id}"
+        return payload
 
     async def _read_json_body(self, request: "web.Request") -> tuple[Dict[str, Any], Optional["web.Response"]]:
         try:
@@ -2791,6 +2836,185 @@ class APIServerAdapter(BasePlatformAdapter):
         if err:
             return err
         db = self._ensure_session_db()
+
+        if _TRANSCRIPT_DERIVATION_V1_CONTRACT_FIELD in body:
+            required = _TRANSCRIPT_DERIVATION_V1_FIELDS
+            supplied = set(body)
+            if not required.issubset(supplied) or not supplied.issubset(required | {"title"}):
+                return web.json_response(
+                    _openai_error(
+                        "Transcript derivation requires exactly derivation_contract, id, "
+                        "operation_id, kind, target_message_id, boundary, and optional title",
+                        code="invalid_transcript_derivation_request",
+                    ),
+                    status=400,
+                )
+            if (
+                body[_TRANSCRIPT_DERIVATION_V1_CONTRACT_FIELD]
+                != _TRANSCRIPT_DERIVATION_V1_CONTRACT_VALUE
+            ):
+                return web.json_response(
+                    _openai_error(
+                        "Unsupported transcript derivation contract",
+                        code="invalid_transcript_derivation_contract",
+                    ),
+                    status=400,
+                )
+
+            child_session_id = body["id"]
+            from gateway.session import _is_path_unsafe
+            if (
+                not isinstance(child_session_id, str)
+                or not child_session_id
+                or child_session_id != child_session_id.strip()
+                or len(child_session_id) > self._MAX_SESSION_HEADER_LEN
+                or re.search(r'[\r\n\x00]', child_session_id)
+                or _is_path_unsafe(child_session_id)
+            ):
+                return web.json_response(
+                    _openai_error("Invalid derivation child session ID", code="invalid_derivation_session_id"),
+                    status=400,
+                )
+
+            operation_id = body["operation_id"]
+            if (
+                not isinstance(operation_id, str)
+                or not operation_id
+                or operation_id != operation_id.strip()
+                or len(operation_id) > _TRANSCRIPT_DERIVATION_V1_OPERATION_ID_MAX_LENGTH
+                or re.search(r'[\r\n\x00]', operation_id)
+            ):
+                return web.json_response(
+                    _openai_error("Invalid transcript derivation operation ID", code="invalid_derivation_operation_id"),
+                    status=400,
+                )
+
+            kind = body["kind"]
+            boundary = body["boundary"]
+            if (
+                not isinstance(kind, str)
+                or kind not in _TRANSCRIPT_DERIVATION_V1_KIND_BOUNDARIES
+                or not isinstance(boundary, str)
+                or _TRANSCRIPT_DERIVATION_V1_KIND_BOUNDARIES.get(kind) != boundary
+            ):
+                return web.json_response(
+                    _openai_error(
+                        "Invalid transcript derivation kind/boundary combination",
+                        code="invalid_derivation_boundary",
+                    ),
+                    status=400,
+                )
+
+            target_message_id = body["target_message_id"]
+            match = (
+                _TRANSCRIPT_DERIVATION_V1_MESSAGE_ID_RE.fullmatch(target_message_id)
+                if isinstance(target_message_id, str)
+                else None
+            )
+            target_message_row_id = int(match.group(1)) if match else 0
+            if not match or target_message_row_id > _SQLITE_MAX_INTEGER:
+                return web.json_response(
+                    _openai_error(
+                        "target_message_id must be msg:v1:<positive-sqlite-int>",
+                        code="invalid_derivation_message_id",
+                    ),
+                    status=400,
+                )
+
+            title = body.get("title")
+            if "title" in body and (
+                not isinstance(title, str)
+                or len(title) > db.MAX_TITLE_LENGTH
+            ):
+                return web.json_response(
+                    _openai_error(
+                        f"title must be a string no longer than {db.MAX_TITLE_LENGTH} characters",
+                        code="invalid_derivation_title",
+                    ),
+                    status=400,
+                )
+
+            from hermes_state import (
+                DisplayProjectionTooLargeError,
+                SessionDB,
+                TranscriptDerivationConflictError,
+                TranscriptDerivationValidationError,
+            )
+
+            def derive_and_load_child():
+                # Use a dedicated connection so the long transaction's Python
+                # lock cannot stall unrelated synchronous API reads on the
+                # adapter's shared SessionDB from this aiohttp event loop.
+                worker_db = SessionDB(db.db_path, initialize_schema=False)
+                try:
+                    derivation_result = worker_db.derive_session_at_boundary(
+                        source_id,
+                        child_session_id,
+                        operation_id,
+                        kind,
+                        target_message_row_id,
+                        boundary,
+                        title,
+                    )
+                    child_snapshot = worker_db.get_session(child_session_id)
+                    if child_snapshot is not None:
+                        try:
+                            child_config = json.loads(
+                                child_snapshot.get("model_config") or "{}"
+                            )
+                        except (TypeError, json.JSONDecodeError):
+                            child_config = None
+                        if (
+                            not isinstance(child_config, dict)
+                            or child_config.get("_derivation_operation_id")
+                            != operation_id
+                        ):
+                            raise TranscriptDerivationConflictError(
+                                "The derivation child changed before its response was read"
+                            )
+                    return derivation_result, child_snapshot
+                finally:
+                    worker_db.close()
+
+            try:
+                async with self._session_history_semaphore:
+                    derivation, child = (
+                        await self._run_blocking_operation_cancellation_safe(
+                            derive_and_load_child
+                        )
+                    )
+            except TranscriptDerivationConflictError as exc:
+                return web.json_response(
+                    _openai_error(str(exc), code="transcript_derivation_conflict"),
+                    status=409,
+                )
+            except TranscriptDerivationValidationError as exc:
+                return web.json_response(
+                    _openai_error(str(exc), code="transcript_derivation_invalid"),
+                    status=422,
+                )
+            except DisplayProjectionTooLargeError:
+                return web.json_response(
+                    _openai_error(
+                        "Session history exceeds the bounded derivation projection",
+                        code="transcript_derivation_too_large",
+                    ),
+                    status=422,
+                )
+            if child is None:
+                return web.json_response(
+                    _openai_error(
+                        "Transcript derivation committed without readable child session metadata",
+                        code="transcript_derivation_incomplete",
+                    ),
+                    status=502,
+                )
+            return web.json_response({
+                "object": "hermes.session.derivation",
+                "derivation": derivation,
+                "session": self._session_response(child),
+            }, status=201)
+
         fork_id = str(body.get("id") or body.get("session_id") or f"api_{int(time.time())}_{uuid.uuid4().hex[:8]}").strip()
         if not fork_id or re.search(r'[\r\n\x00]', fork_id):
             return web.json_response(_openai_error("Invalid session ID", code="invalid_session_id"), status=400)

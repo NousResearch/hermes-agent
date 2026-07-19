@@ -16,11 +16,24 @@ jobs:
 
       - name: Check for unmapped contributor emails
         run: |
-          # Get the merge base between this PR and main
-          MERGE_BASE=$(git merge-base origin/main HEAD)
+          if [ -n "${GITHUB_BASE_REF:-}" ]; then
+            # Pull requests must be audited against their actual target branch.
+            git fetch --no-tags origin "${GITHUB_BASE_REF}:refs/remotes/origin/${GITHUB_BASE_REF}"
+            MERGE_BASE=$(git merge-base "origin/${GITHUB_BASE_REF}" HEAD)
+            REVISION_RANGE="${MERGE_BASE}..HEAD"
+          else
+            # On a main push, origin/main already points at HEAD after checkout.
+            # Use the push payload's previous tip so the new commits are audited.
+            PUSH_BEFORE="${{ github.event.before }}"
+            if [ -z "$PUSH_BEFORE" ] || [ "$PUSH_BEFORE" = "0000000000000000000000000000000000000000" ]; then
+              REVISION_RANGE="HEAD"
+            else
+              REVISION_RANGE="${PUSH_BEFORE}..HEAD"
+            fi
+          fi
 
           # Find any new author emails in this PR's commits
-          NEW_EMAILS=$(git log ${MERGE_BASE}..HEAD --format='%ae' --no-merges | sort -u)
+          NEW_EMAILS=$(git log "$REVISION_RANGE" --format='%ae' --no-merges | sort -u)
 
           if [ -z "$NEW_EMAILS" ]; then
             echo "No new commits to check."

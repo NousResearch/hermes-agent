@@ -2475,6 +2475,16 @@ def run_conversation(
                 
                 api_duration = time.time() - api_start_time
                 
+                # Capture the provider's response on the success boundary so
+                # paired request+response dumps are available when requested.
+                if env_var_enabled("HERMES_DUMP_REQUESTS") and response is not None:
+                    agent._dump_api_response_debug(
+                        response=response,
+                        status=getattr(response, "status_code", None),
+                        headers=getattr(response, "headers", None),
+                        reason="success",
+                    )
+                
                 # Stop thinking spinner silently -- the response box or tool
                 # execution messages that follow are more informative.
                 if thinking_spinner:
@@ -5116,11 +5126,12 @@ def run_conversation(
                         )
                     # Mirror the request dump with a response-side capture so the
                     # provider's actual failure body/status is on disk for triage.
-                    agent._dump_api_response_debug(
-                        reason="non_retryable_client_error",
-                        error=api_error,
-                        status=getattr(api_error, "status_code", None),
-                    )
+                    if env_var_enabled("HERMES_DUMP_REQUESTS"):
+                        agent._dump_api_response_debug(
+                            reason="non_retryable_client_error",
+                            error=api_error,
+                            status=getattr(api_error, "status_code", None),
+                        )
                     # Terminal — flush buffered context so the user sees
                     # what was tried before the abort.
                     agent._flush_status_buffer()
@@ -5462,11 +5473,12 @@ def run_conversation(
                         agent._dump_api_request_debug(
                             api_kwargs, reason="max_retries_exhausted", error=api_error,
                         )
-                    agent._dump_api_response_debug(
-                        reason="max_retries_exhausted",
-                        error=api_error,
-                        status=getattr(api_error, "status_code", None),
-                    )
+                    if env_var_enabled("HERMES_DUMP_REQUESTS"):
+                        agent._dump_api_response_debug(
+                            reason="max_retries_exhausted",
+                            error=api_error,
+                            status=getattr(api_error, "status_code", None),
+                        )
                     agent._persist_session(messages, conversation_history)
                     _billing_block = None
                     if classified.reason == FailoverReason.billing:

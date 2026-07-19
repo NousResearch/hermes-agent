@@ -13,6 +13,7 @@ vi.mock('@/hermes', () => ({
 
 vi.mock('@/store/profile', async () => {
   const { atom } = await import('nanostores')
+
   return { $activeGatewayProfile: atom('default') }
 })
 

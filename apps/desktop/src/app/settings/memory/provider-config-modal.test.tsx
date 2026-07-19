@@ -11,6 +11,7 @@ vi.mock('@/hermes', () => ({
 
 vi.mock('@/store/profile', async () => {
   const { atom } = await import('nanostores')
+
   return { $activeGatewayProfile: atom('default') }
 })
 
@@ -68,6 +69,7 @@ async function renderModal(open = true) {
   const { ProviderConfigModal } = await import('./provider-config-modal')
   const onOpenChange = vi.fn()
   const onSaved = vi.fn().mockResolvedValue(undefined)
+
   const result = render(
     <ProviderConfigModal
       config={schema()}
@@ -77,6 +79,7 @@ async function renderModal(open = true) {
       provider="honcho"
     />
   )
+
   return { ...result, onOpenChange, onSaved }
 }
 

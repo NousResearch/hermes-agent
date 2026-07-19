@@ -1,8 +1,8 @@
 import { Input } from '@/components/ui/input'
-import { Tip } from '@/components/ui/tooltip'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import { Switch } from '@/components/ui/switch'
 import { Textarea } from '@/components/ui/textarea'
+import { Tip } from '@/components/ui/tooltip'
 import { Check, Info } from '@/lib/icons'
 import type { MemoryProviderField } from '@/types/hermes'
 
@@ -45,6 +45,7 @@ export function FieldControl({
     onChange(next)
     onCommit?.(next)
   }
+
   const commitDraft = onCommit ? () => onCommit(value) : undefined
 
   if (field.kind === 'bool') {

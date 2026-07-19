@@ -14,12 +14,12 @@ import {
 import { saveMemoryProviderConfig } from '@/hermes'
 import { ExternalLink, Loader2, Save, SlidersHorizontal } from '@/lib/icons'
 import { notify, notifyError } from '@/store/notifications'
+import { $activeGatewayProfile } from '@/store/profile'
 import type { MemoryProviderConfig, MemoryProviderField } from '@/types/hermes'
 
-import { $activeGatewayProfile } from '@/store/profile'
+import { ListRow } from '../primitives'
 
 import { FieldControl, FieldTitle } from './field-control'
-import { ListRow } from '../primitives'
 
 // Secrets seed blank: values are write-only and blank keeps the stored one.
 function seedAll(config: MemoryProviderConfig): Record<string, string> {
@@ -29,15 +29,18 @@ function seedAll(config: MemoryProviderConfig): Record<string, string> {
 // Group fields in declared order, preserving first-seen group sequence.
 function groupFields(fields: MemoryProviderField[]): [string, MemoryProviderField[]][] {
   const groups: [string, MemoryProviderField[]][] = []
+
   for (const field of fields) {
     const name = field.group || 'Other'
     const bucket = groups.find(([key]) => key === name)
+
     if (bucket) {
       bucket[1].push(field)
     } else {
       groups.push([name, [field]])
     }
   }
+
   return groups
 }
 
@@ -73,6 +76,7 @@ export function ProviderConfigModal({
     const edited = Object.fromEntries(Object.entries(values).filter(([key, value]) => value !== seeded[key]))
 
     setSaving(true)
+
     try {
       await saveMemoryProviderConfig(provider, edited)
       notify({ kind: 'success', title: `${config.label} saved`, message: 'Memory provider configuration updated.' })

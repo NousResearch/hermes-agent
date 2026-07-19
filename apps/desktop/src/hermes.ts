@@ -956,10 +956,17 @@ export function testMessagingPlatform(platformId: string): Promise<MessagingPlat
   })
 }
 
-export function getCronJobs(): Promise<CronJob[]> {
+// Cron jobs are stored per-profile (<HERMES_HOME>/cron/jobs.json), and the
+// backend's list endpoint defaults to 'all'. Pass a concrete profile key to
+// list just that profile's jobs, or 'all' for the unified cross-profile view.
+// Omitting the arg keeps the legacy 'all' default for non-profile callers.
+// profileScoped() still rides along for backend-process routing.
+export function getCronJobs(profile?: string): Promise<CronJob[]> {
+  const suffix = profile ? `?profile=${encodeURIComponent(profile)}` : ''
+
   return window.hermesDesktop.api<CronJob[]>({
     ...profileScoped(),
-    path: '/api/cron/jobs',
+    path: `/api/cron/jobs${suffix}`,
     timeoutMs: STARTUP_REQUEST_TIMEOUT_MS
   })
 }

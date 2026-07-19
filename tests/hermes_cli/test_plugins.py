@@ -2366,3 +2366,62 @@ class TestDispatchToolWithoutCliRef:
             assert calls[0][1].get("parent_agent") is None
         finally:
             registry.deregister("_test_dispatch_probe")
+
+
+class TestMainSetsCliRefForQueryMode:
+    """Regression for #67597.
+
+    Single-query mode (`hermes chat -q "…"`) invokes ``cli.chat()`` directly
+    and never enters ``HermesCLI.run()``, which is where the interactive path
+    assigns ``get_plugin_manager()._cli_ref = self``. If the assignment lives
+    ONLY inside ``run()``, ``PluginContext.dispatch_tool()`` cannot resolve
+    ``parent_agent`` in query mode and agent-context tools like
+    ``delegate_task`` lose the active agent.
+
+    The fix wires ``_cli_ref`` in ``main()``'s top-level flow, right after the
+    ``HermesCLI`` instance is built and before the query/interactive branch, so
+    BOTH modes get it. These tests pin that structural invariant (driving all
+    of ``main()`` would require mocking credential + agent init).
+    """
+
+    @staticmethod
+    def _main_funcdef():
+        import ast
+        from pathlib import Path
+
+        source = Path(__file__).resolve().parents[2] / "cli.py"
+        tree = ast.parse(source.read_text(encoding="utf-8"))
+        for node in tree.body:
+            if isinstance(node, ast.FunctionDef) and node.name == "main":
+                return node
+        raise AssertionError("could not find top-level main() in cli.py")
+
+    @staticmethod
+    def _assigns_cli_ref(stmt: "object") -> bool:
+        import ast
+
+        for assign in ast.walk(stmt):
+            if not isinstance(assign, ast.Assign):
+                continue
+            for target in assign.targets:
+                if isinstance(target, ast.Attribute) and target.attr == "_cli_ref":
+                    return True
+        return False
+
+    def test_cli_ref_assigned_at_main_top_level(self):
+        """The assignment must sit directly in main()'s body, not nested inside
+        the interactive/query branch — otherwise query mode never runs it."""
+        import ast
+
+        main = self._main_funcdef()
+
+        top_level_assign = any(
+            self._assigns_cli_ref(stmt)
+            for stmt in main.body
+            if not isinstance(stmt, (ast.If, ast.Try, ast.With, ast.For, ast.While))
+        )
+        assert top_level_assign, (
+            "main() must assign `_cli_ref` in its top-level flow (before the "
+            "query vs. interactive branch) so single-query mode wires it too "
+            "(#67597)."
+        )

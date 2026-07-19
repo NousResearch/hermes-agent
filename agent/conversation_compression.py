@@ -339,6 +339,12 @@ def check_compression_model_feasibility(agent: Any) -> None:
                     new_threshold / main_ctx
                 )
             safe_pct = int((aux_context / main_ctx) * 100) if main_ctx else 50
+            # Account for the small-context floor: models under 512K
+            # are raise-only floored at 75%.
+            from agent.context_compressor import _SMALL_CTX_WINDOW_LIMIT, _SMALL_CTX_THRESHOLD_PERCENT
+            if main_ctx and main_ctx < _SMALL_CTX_WINDOW_LIMIT:
+                floor_pct = int(_SMALL_CTX_THRESHOLD_PERCENT * 100)
+                safe_pct = max(safe_pct, floor_pct)
             # Build human-readable "model (provider)" labels for both
             # the main model and the compression model so users can
             # tell at a glance which provider each side is actually

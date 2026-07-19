@@ -1,22 +1,37 @@
 from __future__ import annotations
 
+import hashlib
 import json
+import logging
+import os
 import sqlite3
-from dataclasses import dataclass
+import uuid
+from dataclasses import dataclass, field
 from datetime import datetime, timezone
-from typing import Any, Dict, Optional
+from typing import Any, Dict, List, Optional
 
+logger = logging.getLogger(__name__)
 
-@dataclass(frozen=True)
-class BriefItem:
-    label: str
-    value: str
-    provenance: str  # live | cached | synthetic | pending | unavailable
-    updated_at: str
+EXECUTION_STATES = {"generated", "persisted", "delivered", "failed", "retried"}
+DATA_PROVENANCE = {"live", "cached", "synthetic", "pending", "unavailable"}
 
 
 def _now() -> str:
     return datetime.now(timezone.utc).isoformat()
+
+
+def _sha256(data: bytes) -> str:
+    return hashlib.sha256(data).hexdigest()
+
+
+@dataclass(frozen=True)
+class BriefRecord:
+    id: str = field(default_factory=lambda: "BR-" + uuid.uuid4().hex[:12])
+    execution_id: str = field(default_factory=lambda: "EX-" + uuid.uuid4().hex[:12])
+    scheduled_date: str = ""
+    environment: str = field(default_factory=lambda: os.environ.get("HERMES_ENV", "unknown"))
+    version: str = field(default_factory=lambda: os.environ.get("HERMES_VERSION", "0.18.2"))
+    git_sha: str = field(default_factory=lambda: os.environ.get("HERMES_GIT_SHA", "unknown"))
 
 
 def make_executive_brief(
@@ -35,21 +50,33 @@ def make_executive_brief(
     weather: Optional[Dict[str, Any]] = None,
     scripture: Optional[str] = None,
     priorities: Optional[Dict[str, Any]] = None,
+    execution: Optional[BriefRecord] = None,
 ) -> Dict[str, Any]:
-    """Build a structured executive briefing with per-section provenance.
+    now = _now()
+    record = execution or BriefRecord(scheduled_date=datetime.now(timezone.utc).date().isoformat())
 
-    Every section records whether its data is live, cached, synthetic,
-    pending, or unavailable.
-    """
     return {
-        "generated_at": _now(),
+        "id": record.id,
+        "execution_id": record.execution_id,
+        "scheduled_date": record.scheduled_date,
+        "environment": record.environment,
+        "version": record.version,
+        "git_sha": record.git_sha,
+        "generated_at": now,
+        "generated_timestamp": now,
         "currency": "USD",
         "timezone": "UTC",
-        "executive_summary": {
-            "text": "System is validating end-to-end briefing generation.",
-            "provenance": "synthetic",
-            "updated_at": _now(),
+        "execution_state": "generated",
+        "delivery": {
+            "status": "pending",
+            "message_id": None,
+            "telegram_delivery_timestamp": None,
+            "retry_count": 0,
+            "error_classification": None,
         },
+        "execution_log": [
+            {"timestamp": now, "state": "generated", "message": "Brief generated"}
+        ],
         "sections": [
             "calendar",
             "blackgold_priority_items",
@@ -66,20 +93,20 @@ def make_executive_brief(
             "scripture",
             "top_executive_priorities",
         ],
-        "calendar": _section(calendar, _now()),
-        "blackgold_priority_items": _section(blackgold, _now()),
-        "deal_pipeline": _section(pipeline, _now()),
-        "approval_queue": _section(approvals, _now()),
-        "banking_and_gci": _section(banking, _now()),
-        "portfolio_alerts": _section(portfolio, _now()),
-        "market_intelligence": _section(market, _now()),
-        "ai_workforce_status": _section(workforce, _now()),
-        "infrastructure_health": _section(infra, _now()),
-        "failed_jobs": _section(failed_jobs, _now()),
-        "financial_alerts": _section(financial, _now()),
-        "weather": _section(weather, _now()),
-        "scripture": _scripture_section(scripture, _now()),
-        "top_executive_priorities": _section(priorities, _now()),
+        "calendar": _section(calendar, now),
+        "blackgold_priority_items": _section(blackgold, now),
+        "deal_pipeline": _section(pipeline, now),
+        "approval_queue": _section(approvals, now),
+        "banking_and_gci": _section(banking, now),
+        "portfolio_alerts": _section(portfolio, now),
+        "market_intelligence": _section(market, now),
+        "ai_workforce_status": _section(workforce, now),
+        "infrastructure_health": _section(infra, now),
+        "failed_jobs": _section(failed_jobs, now),
+        "financial_alerts": _section(financial, now),
+        "weather": _section(weather, now),
+        "scripture": _scripture_section(scripture, now),
+        "top_executive_priorities": _section(priorities, now),
         "provenance_legend": {
             "live": "Real operational data",
             "cached": "Recent data returned from storage",
@@ -87,42 +114,124 @@ def make_executive_brief(
             "pending": "Awaiting upstream source",
             "unavailable": "Integration not yet connected",
         },
+        "data_source_status": {
+            section: _source_status(calendar, blackgold, pipeline, approvals, banking, portfolio, market, workforce, infra, failed_jobs, financial, weather, scripture, priorities)[section]
+            for section in [
+                "calendar",
+                "blackgold_priority_items",
+                "deal_pipeline",
+                "approval_queue",
+                "banking_and_gci",
+                "portfolio_alerts",
+                "market_intelligence",
+                "ai_workforce_status",
+                "infrastructure_health",
+                "failed_jobs",
+                "financial_alerts",
+                "weather",
+                "scripture",
+                "top_executive_priorities",
+            ]
+        },
     }
+
+
+def _source_status(*sections):
+    return {section: "available" for section in sections}
 
 
 def _section(value: Optional[Dict[str, Any]], updated_at: str) -> Dict[str, Any]:
     if value is None:
-        return {"data": {}, "provenance": "unavailable", "updated_at": updated_at}
+        return {"data": {}, "provenance": "unavailable", "updated_at": updated_at, "error": None}
     return {
         "data": value.get("data", value),
         "provenance": value.get("provenance", "synthetic"),
         "updated_at": value.get("updated_at", updated_at),
+        "error": value.get("error"),
     }
 
 
 def _scripture_section(value: Optional[str], updated_at: str) -> Dict[str, Any]:
     if not value:
-        return {"data": "", "provenance": "unavailable", "updated_at": updated_at}
-    return {"data": value, "provenance": "cached", "updated_at": updated_at}
+        return {"data": "", "provenance": "unavailable", "updated_at": updated_at, "error": None}
+    return {"data": value, "provenance": "cached", "updated_at": updated_at, "error": None}
 
 
-def remainder(item: str, text: str) -> str:
-    return text[len(item):].strip()
+def redact_secrets(pack: Dict[str, Any]) -> Dict[str, Any]:
+    redacted = json.loads(json.dumps(pack))
+    keys = ["telegram_bot_token", "openrouter_api_key", "google_client_secret", "onepassword_token", "secret"]
+    for key in list(redacted.keys()):
+        if any(k in key.lower() for k in keys):
+            redacted[key] = "***REDACTED***"
+    if "delivery" in redacted and isinstance(redacted["delivery"], dict):
+        redacted["delivery"] = {k: v for k, v in redacted["delivery"].items() if k != "error"}
+    return redacted
+
+
+def validate_brief_schema(brief: Dict[str, Any]) -> Dict[str, Any]:
+    required = ["id", "execution_id", "scheduled_date", "environment", "generated_at", "execution_state", "delivery", "execution_log"]
+    missing = [k for k in required if k not in brief]
+    if missing:
+        return {"success": False, "error": {"code": "invalid_schema", "missing": missing}}
+    if brief["execution_state"] not in EXECUTION_STATES:
+        return {"success": False, "error": {"code": "invalid_state", "state": brief["execution_state"]}}
+    return {"success": True}
+
+
+def append_execution_log(brief: Dict[str, Any], state: str, message: str) -> Dict[str, Any]:
+    brief["execution_state"] = state
+    brief.setdefault("execution_log", []).append({"timestamp": _now(), "state": state, "message": message})
+    return brief
+
+
+def mark_delivered(brief: Dict[str, Any], message_id: Any, timestamp: Optional[str] = None) -> Dict[str, Any]:
+    brief["delivery"] = {
+        "status": "delivered",
+        "message_id": message_id,
+        "telegram_delivery_timestamp": timestamp or _now(),
+        "retry_count": brief.get("delivery", {}).get("retry_count", 0),
+        "error_classification": None,
+    }
+    return append_execution_log(brief, "delivered", f"Delivered message_id={message_id}")
+
+
+def mark_failed(brief: Dict[str, Any], error: str, classification: str, retry: bool = False) -> Dict[str, Any]:
+    delivery = brief.setdefault("delivery", {})
+    delivery["status"] = "failed"
+    delivery["error_classification"] = classification
+    if retry:
+        delivery["retry_count"] = delivery.get("retry_count", 0) + 1
+    return append_execution_log(brief, "failed", f"Delivery failed: {error}")
+
+
+def duplicate_delivery_key(brief: Dict[str, Any]) -> str:
+    scheduled = brief.get("scheduled_date", "")
+    eid = brief.get("execution_id", "")
+    delivery = brief.get("delivery", {})
+    ts = delivery.get("telegram_delivery_timestamp", "")
+    msg = delivery.get("message_id", "")
+    return f"brief:{scheduled}:{eid}:{msg}:{ts}"
 
 
 def store_brief(pack: Dict[str, Any], db_path: str = "/app/.hermes/executions.db") -> Dict[str, Any]:
     try:
+        os.makedirs(os.path.dirname(db_path), exist_ok=True)
         conn = sqlite3.connect(db_path)
         cur = conn.cursor()
         cur.execute(
-            "CREATE TABLE IF NOT EXISTS briefs (id INTEGER PRIMARY KEY AUTOINCREMENT, created_at TEXT, payload TEXT)"
+            "CREATE TABLE IF NOT EXISTS briefs (id TEXT, execution_id TEXT, scheduled_date TEXT, environment TEXT, payload TEXT, created_at TEXT)"
         )
         cur.execute(
-            "INSERT INTO briefs(created_at, payload) VALUES(?, ?)",
-            (_now(), json.dumps(pack)),
+            "INSERT INTO briefs(id, execution_id, scheduled_date, environment, payload, created_at) VALUES(?, ?, ?, ?, ?, ?)",
+            (pack.get("id"), pack.get("execution_id"), pack.get("scheduled_date"), pack.get("environment"), json.dumps(pack), _now()),
         )
         conn.commit()
         conn.close()
-        return {"success": True, "id": pack.get("generated_at")}
+        return {"success": True, "id": pack.get("id"), "execution_id": pack.get("execution_id")}
     except Exception as exc:
+        logger.exception("Failed to store brief")
         return {"success": False, "error": str(exc)}
+
+
+def is_dry_run() -> bool:
+    return os.environ.get("BRIEF_DRY_RUN", "false").lower() in {"1", "true", "yes"}

@@ -104,3 +104,24 @@ describe("api OAuth helpers", () => {
     }
   });
 });
+
+describe("api.getAuthMe loopback contract", () => {
+  it("accepts a token-authenticated synthetic loopback identity", async () => {
+    vi.stubGlobal("window", { __HERMES_SESSION_TOKEN__: "loopback-token" });
+    const identity = {
+      display_name: "Local",
+      email: "",
+      expires_at: 0,
+      org_id: "",
+      provider: "loopback",
+      user_id: "local",
+    };
+    const fetchMock = jsonFetchMock(identity);
+    vi.stubGlobal("fetch", fetchMock);
+
+    await expect(api.getAuthMe()).resolves.toEqual(identity);
+
+    const init = fetchMock.mock.calls[0][1] as RequestInit;
+    expect((init.headers as Headers).get(SESSION_HEADER)).toBe("loopback-token");
+  });
+});

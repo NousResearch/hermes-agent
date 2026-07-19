@@ -310,19 +310,14 @@ export const api = {
   /**
    * Identity probe for the dashboard auth gate (Phase 7).
    *
-   * Returns the verified Session as JSON when gated mode is active and a
-   * valid cookie is attached. Loopback mode is unaffected — the endpoint
-   * still exists but is never useful there (no Session, no cookie). The
-   * AuthWidget component swallows 401s from this call: if the gate isn't
-   * engaged, /api/auth/me returns 401 and the widget renders nothing.
+   * Returns the verified Session when gated mode is active. In loopback mode,
+   * a valid injected session token returns a synthetic ``provider=loopback``
+   * identity; AuthWidget recognizes that provider and renders nothing, so it
+   * never exposes a logout action that would redirect to an unavailable login.
    *
-   * ``allowUnauthorized`` is load-bearing: in loopback mode this endpoint
-   * 401s by design, and fetchJSON's default loopback behaviour treats a
-   * 401 as a rotated session token and full-page-reloads to pick up a
-   * fresh one. Because every *other* dashboard request succeeds (and so
-   * clears the one-shot reload guard), that turns this expected 401 into
-   * an infinite reload loop. Opting out keeps the 401 a plain throw the
-   * widget can catch.
+   * ``allowUnauthorized`` remains load-bearing for a missing or stale loopback
+   * token: keep that 401 local to the widget instead of triggering the global
+   * rotated-token reload path.
    */
   getAuthMe: () =>
     fetchJSON<AuthMeResponse>("/api/auth/me", undefined, {
@@ -1273,7 +1268,8 @@ export const api = {
 /** Identity payload returned by ``GET /api/auth/me`` (Phase 7).
  *
  * Returned by the dashboard's gated middleware when a valid session cookie
- * is attached. ``email`` and ``display_name`` are empty strings under the
+ * is attached, or as a synthetic ``provider=loopback`` identity after token
+ * validation in local mode. ``email`` and ``display_name`` are empty strings under the
  * Nous Portal contract V1 (the access token has no email/name claims —
  * see Contract Anchor C4 in the plan). The AuthWidget surfaces a
  * truncated ``user_id`` instead.

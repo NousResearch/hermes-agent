@@ -25,6 +25,7 @@
 
 import { useEffect, useState } from "react";
 import { api, type AuthMeResponse } from "@/lib/api";
+import { shouldHideAuthWidget } from "./auth-widget-visibility";
 import { cn } from "@/lib/utils";
 import { LogOut } from "lucide-react";
 
@@ -51,6 +52,10 @@ export function AuthWidget({ className }: AuthWidgetProps) {
       .getAuthMe()
       .then((data) => {
         if (cancelled) return;
+        if (shouldHideAuthWidget(data)) {
+          setHidden(true);
+          return;
+        }
         setMe(data);
       })
       .catch((err: unknown) => {

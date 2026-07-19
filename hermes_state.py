@@ -6126,11 +6126,20 @@ class SessionDB:
         except json.JSONDecodeError:
             return value
 
-    @staticmethod
-    def _import_message_content(value: Any, path: str) -> Any:
+    @classmethod
+    def _import_message_content(cls, value: Any, path: str) -> Any:
         if value is None or isinstance(value, (str, list, dict)):
             return value
-        raise ValueError(f"{path} must be a string, list, object, or null")
+        if isinstance(value, int):
+            if not cls._is_sqlite_integer(value):
+                raise ValueError(f"{path} is outside SQLite's integer range")
+            return value
+        if isinstance(value, float):
+            cls._validate_import_finite_numbers(value, path)
+            return value
+        raise ValueError(
+            f"{path} must be a string, list, object, finite number, or null"
+        )
 
     @staticmethod
     def _import_error(index: int, session_id: str, error: str) -> Dict[str, Any]:

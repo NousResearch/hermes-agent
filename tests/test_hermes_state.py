@@ -2296,6 +2296,33 @@ class TestDeleteAndExport:
         finally:
             target.close()
 
+    def test_import_exported_session_round_trips_numeric_content(
+        self, db, tmp_path
+    ):
+        contents = [-(1 << 63), -1.25, 0, 1.25, (1 << 63) - 1]
+        db.create_session(session_id="numeric-content", source="cli")
+        for index in range(len(contents)):
+            db.append_message(
+                "numeric-content",
+                role="user",
+                content=f"placeholder-{index}",
+            )
+        exported = db.export_session("numeric-content")
+        for message, content in zip(exported["messages"], contents):
+            message["content"] = content
+
+        target = SessionDB(db_path=tmp_path / "numeric_content.db")
+        try:
+            result = target.import_sessions([exported])
+
+            assert result["ok"] is True
+            assert [
+                message["content"]
+                for message in target.get_messages("numeric-content")
+            ] == [str(content) for content in contents]
+        finally:
+            target.close()
+
     def test_import_sessions_restores_valid_parents_and_detaches_missing(self, db):
         result = db.import_sessions(
             [

@@ -1800,7 +1800,7 @@ class TestWebServerEndpoints:
             (
                 {"messages": [{"role": "user", "content": 1 << 100}]},
                 "oversized-scalar-content",
-                "session.messages[0].content must be a string, list, object, or null",
+                "session.messages[0].content is outside SQLite's integer range",
                 "/api/sessions",
             ),
             (

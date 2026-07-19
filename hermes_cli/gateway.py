@@ -6699,6 +6699,33 @@ def _gateway_command_inner(args):
             )
             sys.exit(1)
 
+        # === AUTO-SAVE: 在停止前保存当前session对话 ===
+        try:
+            import sqlite3 as _sqlite3
+            from hermes_constants import get_hermes_home as _gkh
+            _db_path = _gkh() / "profiles" / "main" / "state.db"
+            if _db_path.exists():
+                _conn = _sqlite3.connect(str(_db_path))
+                _cur = _conn.cursor()
+                _cur.execute("SELECT id FROM sessions WHERE source='feishu' ORDER BY started_at DESC LIMIT 1")
+                _row = _cur.fetchone()
+                if _row:
+                    _sid = _row[0]
+                    _cur.execute("SELECT role, content FROM messages WHERE session_id=? AND role IN ('user','assistant') AND content IS NOT NULL AND content != '' ORDER BY timestamp", (_sid,))
+                    _msgs = [{"role": r, "content": c} for r, c in _cur.fetchall()][-100:]
+                    if _msgs:
+                        _save_dir = _gkh() / "last_session_context"
+                        _save_dir.mkdir(exist_ok=True)
+                        _save_file = _save_dir / "last_session.json"
+                        import json as _json
+                        with open(_save_file, "w", encoding="utf-8") as _f:
+                            _json.dump(_msgs, _f, ensure_ascii=False, indent=1)
+                        print(f"✓ Session context saved ({len(_msgs)} messages)")
+                _conn.close()
+        except Exception as _e:
+            print(f"⚠ Could not save session context: {_e}")
+        # === END AUTO-SAVE ===
+
         stop_all = getattr(args, "all", False)
         system = getattr(args, "system", False)
 
@@ -6791,6 +6818,35 @@ def _gateway_command_inner(args):
                 "Use `hermes gateway restart` from a shell outside the running gateway."
             )
             sys.exit(1)
+
+        # === AUTO-SAVE: 在重启前保存当前session对话 ===
+        try:
+            import sqlite3 as _sqlite3
+            from pathlib import Path as _Path
+            from hermes_constants import get_hermes_home as _gkh
+            _db_path = _gkh() / "profiles" / "main" / "state.db"
+            if _db_path.exists():
+                _conn = _sqlite3.connect(str(_db_path))
+                _cur = _conn.cursor()
+                # 找最近的feishu session
+                _cur.execute("SELECT id FROM sessions WHERE source='feishu' ORDER BY started_at DESC LIMIT 1")
+                _row = _cur.fetchone()
+                if _row:
+                    _sid = _row[0]
+                    _cur.execute("SELECT role, content FROM messages WHERE session_id=? AND role IN ('user','assistant') AND content IS NOT NULL AND content != '' ORDER BY timestamp", (_sid,))
+                    _msgs = [{"role": r, "content": c} for r, c in _cur.fetchall()][-100:]
+                    if _msgs:
+                        _save_dir = _gkh() / "last_session_context"
+                        _save_dir.mkdir(exist_ok=True)
+                        _save_file = _save_dir / "last_session.json"
+                        import json as _json
+                        with open(_save_file, "w", encoding="utf-8") as _f:
+                            _json.dump(_msgs, _f, ensure_ascii=False, indent=1)
+                        print(f"✓ Session context saved ({len(_msgs)} messages)")
+                _conn.close()
+        except Exception as _e:
+            print(f"⚠ Could not save session context: {_e}")
+        # === END AUTO-SAVE ===
 
         # Try service first, fall back to killing and restarting
         service_available = False

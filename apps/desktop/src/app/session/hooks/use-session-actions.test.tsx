@@ -9,18 +9,23 @@ import { $activeGatewayProfile, $newChatProfile } from '@/store/profile'
 import { $projectScope, $projectTree, ALL_PROJECTS } from '@/store/projects'
 import {
   $activeSessionId,
+  $activeSessionStoredIdRotation,
   $currentCwd,
   $messages,
   $newChatWorkspaceTarget,
   $resumeFailedSessionId,
+  $selectedStoredSessionId,
   setActiveSessionId,
+  setActiveSessionStoredIdRotation,
   setCurrentCwd,
   setMessages,
   setNewChatWorkspaceTarget,
   setResumeFailedSessionId,
+  setSelectedStoredSessionId,
   setSessions
 } from '@/store/session'
 
+import { sessionRoute } from '../../routes'
 import type { ClientSessionState } from '../../types'
 
 import { useSessionActions } from './use-session-actions'
@@ -75,6 +80,7 @@ function Harness({
     creatingSessionRef: ref(false),
     ensureSessionState: () => ({}) as ClientSessionState,
     getRouteToken: () => 'token',
+    getRoutedStoredSessionId: () => null,
     navigate: vi.fn() as never,
     requestGateway,
     resetViewSync: vi.fn(),
@@ -92,6 +98,166 @@ function Harness({
 
   return null
 }
+
+function StoredIdRotationHarness({
+  activeSessionIdRef,
+  getRoutedStoredSessionId,
+  navigate,
+  selectedStoredSessionIdRef
+}: {
+  activeSessionIdRef: MutableRefObject<string | null>
+  getRoutedStoredSessionId: () => null | string
+  navigate: (to: string, options?: { replace?: boolean }) => void
+  selectedStoredSessionIdRef: MutableRefObject<string | null>
+}) {
+  const ref = <T,>(value: T): MutableRefObject<T> => ({ current: value })
+
+  useSessionActions({
+    activeSessionId: activeSessionIdRef.current,
+    activeSessionIdRef,
+    busyRef: ref(false),
+    creatingSessionRef: ref(false),
+    ensureSessionState: () => ({}) as ClientSessionState,
+    getRouteToken: () => 'token',
+    getRoutedStoredSessionId,
+    navigate: navigate as never,
+    requestGateway: async () => ({}) as never,
+    resetViewSync: vi.fn(),
+    runtimeIdByStoredSessionIdRef: ref(new Map<string, string>()),
+    selectedStoredSessionId: selectedStoredSessionIdRef.current,
+    selectedStoredSessionIdRef,
+    sessionStateByRuntimeIdRef: ref(new Map<string, ClientSessionState>()),
+    syncSessionStateToView: vi.fn(),
+    updateSessionState: () => ({}) as ClientSessionState
+  })
+
+  return null
+}
+
+describe('active stored-session id rotation routing', () => {
+  afterEach(() => {
+    cleanup()
+    setActiveSessionId(null)
+    setActiveSessionStoredIdRotation(null)
+    setSelectedStoredSessionId(null)
+    vi.restoreAllMocks()
+  })
+
+  it('follows a rotation while the same conversation still owns the foreground route', async () => {
+    const activeSessionIdRef: MutableRefObject<string | null> = { current: 'runtime-A' }
+    const selectedStoredSessionIdRef: MutableRefObject<string | null> = { current: 'stored-A' }
+    const navigate = vi.fn()
+
+    setSelectedStoredSessionId('stored-A')
+    render(
+      <StoredIdRotationHarness
+        activeSessionIdRef={activeSessionIdRef}
+        getRoutedStoredSessionId={() => 'stored-A'}
+        navigate={navigate}
+        selectedStoredSessionIdRef={selectedStoredSessionIdRef}
+      />
+    )
+
+    act(() => {
+      setActiveSessionStoredIdRotation({
+        nextStoredSessionId: 'stored-A-next',
+        previousStoredSessionId: 'stored-A',
+        runtimeSessionId: 'runtime-A'
+      })
+    })
+
+    await waitFor(() => expect(selectedStoredSessionIdRef.current).toBe('stored-A-next'))
+    expect($selectedStoredSessionId.get()).toBe('stored-A-next')
+    expect(navigate).toHaveBeenCalledWith(sessionRoute('stored-A-next'), { replace: true })
+    expect($activeSessionStoredIdRotation.get()).toBeNull()
+  })
+
+  it('does not overwrite a newer route intent before its resume effect has synchronized selection', async () => {
+    const activeSessionIdRef: MutableRefObject<string | null> = { current: 'runtime-A' }
+    const selectedStoredSessionIdRef: MutableRefObject<string | null> = { current: 'stored-A' }
+    const navigate = vi.fn()
+
+    setSelectedStoredSessionId('stored-A')
+    render(
+      <StoredIdRotationHarness
+        activeSessionIdRef={activeSessionIdRef}
+        getRoutedStoredSessionId={() => 'stored-C'}
+        navigate={navigate}
+        selectedStoredSessionIdRef={selectedStoredSessionIdRef}
+      />
+    )
+
+    act(() => {
+      setActiveSessionStoredIdRotation({
+        nextStoredSessionId: 'stored-A-next',
+        previousStoredSessionId: 'stored-A',
+        runtimeSessionId: 'runtime-A'
+      })
+    })
+
+    await waitFor(() => expect($activeSessionStoredIdRotation.get()).toBeNull())
+    expect(selectedStoredSessionIdRef.current).toBe('stored-A')
+    expect($selectedStoredSessionId.get()).toBe('stored-A')
+    expect(navigate).not.toHaveBeenCalled()
+  })
+
+  it('does not let the previous runtime jump back after selection already moved', async () => {
+    const activeSessionIdRef: MutableRefObject<string | null> = { current: 'runtime-A' }
+    const selectedStoredSessionIdRef: MutableRefObject<string | null> = { current: 'stored-C' }
+    const navigate = vi.fn()
+
+    setSelectedStoredSessionId('stored-C')
+    render(
+      <StoredIdRotationHarness
+        activeSessionIdRef={activeSessionIdRef}
+        getRoutedStoredSessionId={() => 'stored-C'}
+        navigate={navigate}
+        selectedStoredSessionIdRef={selectedStoredSessionIdRef}
+      />
+    )
+
+    act(() => {
+      setActiveSessionStoredIdRotation({
+        nextStoredSessionId: 'stored-A-next',
+        previousStoredSessionId: 'stored-A',
+        runtimeSessionId: 'runtime-A'
+      })
+    })
+
+    await waitFor(() => expect($activeSessionStoredIdRotation.get()).toBeNull())
+    expect(selectedStoredSessionIdRef.current).toBe('stored-C')
+    expect($selectedStoredSessionId.get()).toBe('stored-C')
+    expect(navigate).not.toHaveBeenCalled()
+  })
+
+  it('updates the underlying selection without navigating out of an overlay or page', async () => {
+    const activeSessionIdRef: MutableRefObject<string | null> = { current: 'runtime-A' }
+    const selectedStoredSessionIdRef: MutableRefObject<string | null> = { current: 'stored-A' }
+    const navigate = vi.fn()
+
+    setSelectedStoredSessionId('stored-A')
+    render(
+      <StoredIdRotationHarness
+        activeSessionIdRef={activeSessionIdRef}
+        getRoutedStoredSessionId={() => null}
+        navigate={navigate}
+        selectedStoredSessionIdRef={selectedStoredSessionIdRef}
+      />
+    )
+
+    act(() => {
+      setActiveSessionStoredIdRotation({
+        nextStoredSessionId: 'stored-A-next',
+        previousStoredSessionId: 'stored-A',
+        runtimeSessionId: 'runtime-A'
+      })
+    })
+
+    await waitFor(() => expect(selectedStoredSessionIdRef.current).toBe('stored-A-next'))
+    expect($selectedStoredSessionId.get()).toBe('stored-A-next')
+    expect(navigate).not.toHaveBeenCalled()
+  })
+})
 
 async function createWith(
   profileSetup: () => void,
@@ -235,6 +401,7 @@ function ResumeHarness({
     creatingSessionRef: ref(false),
     ensureSessionState: () => ({}) as ClientSessionState,
     getRouteToken: () => 'token',
+    getRoutedStoredSessionId: () => null,
     navigate: vi.fn() as never,
     requestGateway,
     resetViewSync: vi.fn(),
@@ -638,6 +805,7 @@ function BranchHarness({
     creatingSessionRef: ref(false),
     ensureSessionState: () => ({}) as ClientSessionState,
     getRouteToken: () => 'token',
+    getRoutedStoredSessionId: () => null,
     navigate: vi.fn() as never,
     requestGateway,
     resetViewSync: vi.fn(),

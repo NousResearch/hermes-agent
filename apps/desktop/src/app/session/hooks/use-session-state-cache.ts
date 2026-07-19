@@ -105,6 +105,16 @@ export function useSessionStateCache({
 
         sessionStateByRuntimeIdRef.current.set(sessionId, updated)
 
+        // Drop the obsolete stored→runtime reverse mapping as soon as the id
+        // rotates (e.g. auto-compression forks a continuation). Leaving the
+        // stale key lets getRuntimeIdForStoredSession resolve the old stored id
+        // to this runtime, which the compression route-follow logic relies on
+        // being absent. The rotation signal itself is emitted centrally from
+        // handleTransition (session-states.ts) off the published diff.
+        if (existing.storedSessionId && existing.storedSessionId !== storedSessionId) {
+          runtimeIdByStoredSessionIdRef.current.delete(existing.storedSessionId)
+        }
+
         if (storedSessionId) {
           runtimeIdByStoredSessionIdRef.current.set(storedSessionId, sessionId)
         }

@@ -34,7 +34,7 @@ import {
   $activeSessionId,
   $selectedStoredSessionId,
   $unreadFinishedSessionIds,
-  setActiveSessionStoredId
+  setActiveSessionStoredIdRotation
 } from './session'
 import { isSecondaryWindow } from './windows'
 
@@ -109,10 +109,18 @@ export function getRecentlySettledSessionIds(now: number = Date.now()): string[]
 
 // --- Transition detection (called automatically from publishSessionState) ---
 function handleTransition(previous: ClientSessionState | null, next: ClientSessionState, runtimeId: string) {
-  // Compression id rotation: signal the route-follow effect.
+  // Compression id rotation: signal the route-follow effect with enough
+  // provenance (previous id + runtime) that the consumer can reject the event
+  // if the user navigated elsewhere before React handled it. A bare next id
+  // could let a background session's delayed rotation steal the foreground
+  // route.
   if (previous?.storedSessionId && next.storedSessionId && previous.storedSessionId !== next.storedSessionId) {
     if (runtimeId === $activeSessionId.get()) {
-      setActiveSessionStoredId(next.storedSessionId)
+      setActiveSessionStoredIdRotation({
+        nextStoredSessionId: next.storedSessionId,
+        previousStoredSessionId: previous.storedSessionId,
+        runtimeSessionId: runtimeId
+      })
     }
 
     clearSettled(previous.storedSessionId)

@@ -1584,7 +1584,7 @@ class CLICommandsMixin:
             print("  /learn needs an active chat session to run.")
 
     def _handle_memory_command(self, cmd: str):
-        """Handle /memory slash command — pending review + approval-gate toggle."""
+        """Handle /memory slash command — pending review + approval-gate toggle + scan."""
         from hermes_cli.write_approval_commands import handle_pending_subcommand
         from tools import write_approval as wa
         parts = cmd.strip().split()
@@ -1601,6 +1601,13 @@ class CLICommandsMixin:
             # an approval here enforces the same caps as the live agent would.
             from tools.memory_tool import load_on_disk_store
             store = load_on_disk_store()
+
+        # /memory scan — audit existing memory for probable credentials without
+        # printing their values.  Reports location + category + remediation.
+        if args and args[0] == "scan":
+            self._handle_memory_scan()
+            return
+
         out = handle_pending_subcommand(
             wa.MEMORY, args,
             memory_store=store,
@@ -1608,8 +1615,29 @@ class CLICommandsMixin:
         )
         if out is None:
             out = ("Unknown /memory subcommand. "
-                   "Use: pending, approve <id>, reject <id>, approval <on|off>.")
+                   "Use: pending, approve <id>, reject <id>, approval <on|off>, scan.")
         print(out)
+
+    def _handle_memory_scan(self):
+        """Audit existing MEMORY.md / USER.md for probable credentials.
+
+        Does not print secret values.  Reports each match's source, entry
+        index, category, and remediation guidance (rotate, don't just remove).
+        """
+        from tools.secret_detector import scan_memory_for_secrets
+
+        findings = scan_memory_for_secrets()
+        if not findings:
+            print("  ✓ No probable credentials found in memory.")
+            return
+        print(f"  ⚠ Found {len(findings)} memory entr"
+              f"{'y' if len(findings) == 1 else 'ies'} with probable credentials:")
+        for source, entries in findings.items():
+            categories = ", ".join(sorted({f.category for f in entries}))
+            print(f"    • {source} — category: {categories}")
+        print("  Remediation: use the memory tool to remove each flagged entry")
+        print("  from MEMORY.md / USER.md, then ROTATE the exposed credential.")
+        print("  Removing it from memory does not undo a prior leak.")
 
     def _save_write_approval(self, subsystem: str, enabled: bool):
         """Persist <subsystem>.write_approval to config (for /memory|/skills approval)."""

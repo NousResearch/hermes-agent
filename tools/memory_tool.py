@@ -13,6 +13,13 @@ Mid-session writes update files on disk immediately (durable) but do NOT change
 the system prompt -- this preserves the prefix cache for the entire session.
 The snapshot refreshes on the next session start.
 
+IMPORTANT (credential safety): MEMORY.md / USER.md are NOT a credential store.
+Entries are scanned for probable authentication credentials (see
+tools/secret_detector.py) both at write time and at snapshot-build time. A
+probable credential is refused on write and withheld from the system prompt on
+load; the original file is left on disk so the operator can remove it. Credentials
+belong in Hermes' supported credential storage (e.g. ~/.hermes/.env), never here.
+
 Entry delimiter: § (section sign). Entries can be multiline.
 Character limits (not tokens) because char counts are model-independent.
 
@@ -73,11 +80,35 @@ ENTRY_DELIMITER = "\n§\n"
 # ---------------------------------------------------------------------------
 
 from tools.threat_patterns import first_threat_message as _first_threat_message
+from tools.secret_detector import first_secret_message as _first_secret_message
 
 
 def _scan_memory_content(content: str) -> Optional[str]:
-    """Scan memory content for injection/exfil patterns. Returns error string if blocked."""
-    return _first_threat_message(content, scope="strict")
+    """Scan memory content for injection/exfil patterns AND probable credentials.
+
+    Returns a user-facing error string (never the secret itself) when the
+    content should be rejected, else ``None``.
+
+    Two independent checks run here:
+
+    - ``threat_patterns`` — prompt-injection / exfiltration *instructions*.
+    - ``secret_detector`` — *probable authentication credentials* (passwords,
+      API keys, tokens, private keys, connection strings).  This is what the
+      old scanner missed: prose forms like ``Password for X: VALUE`` that are
+      not direct quoted assignments.
+
+    The credential check is the data-leak guard: MEMORY.md / USER.md are
+    injected into the system prompt, so a credential written here can reach the
+    model provider and model responses.  Detection returns only a category,
+    never the matched value.
+    """
+    threat = _first_threat_message(content, scope="strict")
+    if threat:
+        return threat
+    secret = _first_secret_message(content)
+    if secret:
+        return secret
+    return None
 
 
 def _drift_error(path: "Path", bak_path: str) -> Dict[str, Any]:
@@ -206,22 +237,31 @@ class MemoryStore:
 
     @staticmethod
     def _sanitize_entries_for_snapshot(entries: List[str], filename: str) -> List[str]:
-        """Return ``entries`` with any threat-matching entry replaced by a placeholder.
+        """Return ``entries`` with any threat- or credential-matching entry replaced.
 
-        Each entry is scanned with the shared threat-pattern library at the
-        ``"strict"`` scope (same as memory writes).  On match, the entry is
-        replaced in the returned list with ``"[BLOCKED: <filename> entry
-        contained threat pattern: <ids>. Removed from system prompt.]"`` —
-        the placeholder enters the snapshot, the original entry stays in
-        live state for the user to inspect and delete.
+        Each entry is scanned with two independent libraries at load time:
+
+        - ``tools.threat_patterns`` (prompt-injection / exfiltration
+          *instructions*) at the ``"strict"`` scope — same as memory writes.
+        - ``tools.secret_detector`` (probable *authentication credentials*).
+          This catches prose-form credentials like ``Password for X: VALUE``
+          that the write-time guard may have missed (older Hermes versions, or
+          manual edits made directly to MEMORY.md / USER.md).
+
+        On a match, the entry is replaced in the returned list with a
+        value-free placeholder that enters the system prompt; the original
+        entry stays in live state (memory_entries / user_entries) so the user
+        can still SEE and remove it via the memory tool.  The original secret
+        value is never placed in the snapshot, the placeholder, or a log line.
 
         Empty or already-block-marker entries pass through unchanged.
         """
         from tools.threat_patterns import scan_for_threats
+        from tools.secret_detector import scan_for_secrets
 
         sanitized: List[str] = []
         for entry in entries:
-            if not entry or entry.startswith("[BLOCKED:"):
+            if not entry or entry.startswith("[BLOCKED:") or entry.startswith("[CREDENTIAL:"):
                 sanitized.append(entry)
                 continue
             findings = scan_for_threats(entry, scope="strict")
@@ -235,6 +275,25 @@ class MemoryStore:
                     f"{', '.join(findings)}. Removed from system prompt; "
                     f"use memory(action=remove) "
                     f"to delete the original.]"
+                )
+                continue
+            secret_findings = scan_for_secrets(entry)
+            if secret_findings:
+                categories = ", ".join(sorted({f.category for f in secret_findings}))
+                logger.warning(
+                    "Memory entry from %s withheld from system prompt: probable "
+                    "credential (category: %s). Original file on disk is "
+                    "unchanged; remove the entry with memory(action=remove) and "
+                    "rotate the exposed credential.",
+                    filename, categories,
+                )
+                sanitized.append(
+                    f"[CREDENTIAL: {filename} entry contained a probable "
+                    f"authentication credential ({categories}). It was withheld "
+                    f"from the system prompt and the original value was not "
+                    f"echoed. Use memory(action=remove) to delete the original "
+                    f"entry from disk, then rotate the credential — removing it "
+                    f"from memory does not undo a leak.]"
                 )
             else:
                 sanitized.append(entry)

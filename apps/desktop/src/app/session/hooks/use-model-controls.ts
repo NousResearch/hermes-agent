@@ -3,6 +3,7 @@ import { useCallback } from 'react'
 
 import { getGlobalModelInfo } from '@/hermes'
 import { useI18n } from '@/i18n'
+import { manualPickRemoved } from '@/lib/model-options'
 import { notifyError } from '@/store/notifications'
 import {
   $activeSessionId,
@@ -52,37 +53,55 @@ export function useModelControls({ queryClient, requestGateway }: ModelControlsO
   // only fills an EMPTY selection so a user's pick (plain UI state in
   // $currentModel) survives the lifecycle refreshes that fire on boot / fresh
   // draft / session events. A live session owns the footer, so skip entirely.
-  const refreshCurrentModel = useCallback(async (force = false) => {
-    try {
-      if ($activeSessionId.get()) {
-        return
-      }
+  const refreshCurrentModel = useCallback(
+    async (force = false) => {
+      try {
+        if ($activeSessionId.get()) {
+          return
+        }
 
-      if (!force && $currentModel.get() && getCurrentModelSource() === 'manual') {
-        return
-      }
+        // A manual pick stays sticky UNLESS it was removed from the catalog (its
+        // model no longer exists on the provider), in which case keeping it would
+        // 404 every new chat — fall through to reseed from the profile default.
+        // Reads the model-options cache the composer already populated; an
+        // unknown/not-yet-loaded catalog conservatively preserves the pick.
+        const keepManualPick = () => {
+          if (force || !$currentModel.get() || getCurrentModelSource() !== 'manual') {
+            return false
+          }
 
-      const result = await getGlobalModelInfo()
+          const options = queryClient.getQueryData<ModelOptionsResponse>(['model-options', 'global'])
 
-      if ($activeSessionId.get() || (!force && $currentModel.get() && getCurrentModelSource() === 'manual')) {
-        return
-      }
+          return !manualPickRemoved(options?.providers, $currentProvider.get(), $currentModel.get())
+        }
 
-      if (typeof result.model === 'string') {
-        setCurrentModel(result.model)
-      }
+        if (keepManualPick()) {
+          return
+        }
 
-      if (typeof result.provider === 'string') {
-        setCurrentProvider(result.provider)
-      }
+        const result = await getGlobalModelInfo()
 
-      if (typeof result.model === 'string' || typeof result.provider === 'string') {
-        setCurrentModelSource('default')
+        if ($activeSessionId.get() || keepManualPick()) {
+          return
+        }
+
+        if (typeof result.model === 'string') {
+          setCurrentModel(result.model)
+        }
+
+        if (typeof result.provider === 'string') {
+          setCurrentProvider(result.provider)
+        }
+
+        if (typeof result.model === 'string' || typeof result.provider === 'string') {
+          setCurrentModelSource('default')
+        }
+      } catch {
+        // The delayed session.info event still updates this once the agent is ready.
       }
-    } catch {
-      // The delayed session.info event still updates this once the agent is ready.
-    }
-  }, [])
+    },
+    [queryClient]
+  )
 
   // Returns whether the switch succeeded so callers can await it before applying
   // follow-up changes. The composer model is plain UI state: with no live

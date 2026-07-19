@@ -107,6 +107,7 @@ contextBridge.exposeInMainWorld('hermesDesktop', {
   readDir: dirPath => ipcRenderer.invoke('hermes:fs:readDir', dirPath),
   gitRoot: startPath => ipcRenderer.invoke('hermes:fs:gitRoot', startPath),
   revealPath: targetPath => ipcRenderer.invoke('hermes:fs:reveal', targetPath),
+  openDir: dirPath => ipcRenderer.invoke('hermes:fs:openDir', dirPath),
   renamePath: (targetPath, newName) => ipcRenderer.invoke('hermes:fs:rename', targetPath, newName),
   writeTextFile: (filePath, content) => ipcRenderer.invoke('hermes:fs:writeText', filePath, content),
   trashPath: targetPath => ipcRenderer.invoke('hermes:fs:trash', targetPath),
@@ -117,6 +118,7 @@ contextBridge.exposeInMainWorld('hermesDesktop', {
       ipcRenderer.invoke('hermes:git:worktreeRemove', repoPath, worktreePath, options),
     branchSwitch: (repoPath, branch) => ipcRenderer.invoke('hermes:git:branchSwitch', repoPath, branch),
     branchList: repoPath => ipcRenderer.invoke('hermes:git:branchList', repoPath),
+    baseBranchList: repoPath => ipcRenderer.invoke('hermes:git:baseBranchList', repoPath),
     repoStatus: repoPath => ipcRenderer.invoke('hermes:git:repoStatus', repoPath),
     fileDiff: (repoPath, filePath) => ipcRenderer.invoke('hermes:git:fileDiff', repoPath, filePath),
     scanRepos: (roots, options) => ipcRenderer.invoke('hermes:git:scanRepos', roots, options),
@@ -136,6 +138,7 @@ contextBridge.exposeInMainWorld('hermesDesktop', {
     }
   },
   terminal: {
+    cwd: id => ipcRenderer.invoke('hermes:terminal:cwd', id),
     dispose: id => ipcRenderer.invoke('hermes:terminal:dispose', id),
     resize: (id, size) => ipcRenderer.invoke('hermes:terminal:resize', id, size),
     start: options => ipcRenderer.invoke('hermes:terminal:start', options),

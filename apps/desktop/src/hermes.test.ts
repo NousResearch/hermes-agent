@@ -10,7 +10,8 @@ import {
   getSessionMessages,
   getStatus,
   listAllProfileSessions,
-  listSessions
+  listSessions,
+  listSidebarSessions
 } from './hermes'
 import { refreshActiveProfile } from './store/profile'
 
@@ -57,6 +58,45 @@ describe('Hermes REST session helpers', () => {
         timeoutMs: 60_000
       })
     )
+  })
+
+  it('batches the sidebar slices into a single request with per-slice limits + excludes', async () => {
+    api.mockResolvedValue({ recents: { sessions: [] }, cron: { sessions: [] }, messaging: { sessions: [] } })
+
+    await listSidebarSessions({
+      recentsProfile: 'work',
+      recentsLimit: 30,
+      recentsExclude: ['cron', 'tool'],
+      cronLimit: 50,
+      messagingLimit: 100,
+      messagingExclude: ['cron', 'desktop']
+    })
+
+    expect(api).toHaveBeenCalledWith(
+      expect.objectContaining({
+        path:
+          '/api/profiles/sessions/sidebar?recents_profile=work&recents_limit=30&cron_limit=50' +
+          '&messaging_limit=100&recents_exclude=cron%2Ctool&messaging_exclude=cron%2Cdesktop',
+        timeoutMs: 60_000
+      })
+    )
+  })
+
+  it('defaults missing sidebar slices to empty session arrays', async () => {
+    api.mockResolvedValue({})
+
+    const result = await listSidebarSessions({
+      recentsProfile: 'all',
+      recentsLimit: 20,
+      recentsExclude: [],
+      cronLimit: 50,
+      messagingLimit: 100,
+      messagingExclude: []
+    })
+
+    expect(result.recents.sessions).toEqual([])
+    expect(result.cron.sessions).toEqual([])
+    expect(result.messaging.sessions).toEqual([])
   })
 
   it('uses a longer timeout for profile listing during desktop startup', async () => {

@@ -265,6 +265,66 @@ def test_ws_cancelled_terminal_ends_stream(monkeypatch):
     assert result.status == "cancelled"
 
 
+def test_run_codex_stream_ws_cancelled_uses_shared_consumer(monkeypatch):
+    """Cancelled WS frames must terminate via the production collector, not a fake one."""
+    import agent.codex_responses_ws_transport as transport
+    from agent.codex_runtime import run_codex_stream
+
+    socket = _FakeSocket(
+        [
+            json.dumps(
+                {
+                    "type": "response.done",
+                    "response": {
+                        "id": "resp_ws_cancelled",
+                        "status": "canceled",
+                    },
+                }
+            ),
+        ]
+    )
+    monkeypatch.setattr(transport, "_connect_websocket", lambda *_args, **_kwargs: socket)
+    sse_calls = []
+
+    def create(**kwargs):
+        sse_calls.append(kwargs)
+        return iter([])
+
+    agent = SimpleNamespace(
+        responses_transport="websocket",
+        responses_transport_provider="custom:sub2api",
+        responses_ws_url=None,
+        _generic_ws_auto_disabled_for=None,
+        provider="custom",
+        api_mode="codex_responses",
+        base_url="https://relay.example.com/v1",
+        api_key="test-key",
+        session_id="session-1",
+        model="gpt-5",
+        _client_kwargs={},
+        _interrupt_requested=False,
+        _codex_streamed_text_parts=[],
+        _fire_stream_delta=lambda _text: None,
+        _fire_reasoning_delta=lambda _text: None,
+        _fire_streamed_codex_commentary=lambda _text: None,
+        _touch_activity=lambda _message: None,
+        _client_log_context=lambda: "test",
+        interim_assistant_callback=None,
+        show_commentary=True,
+    )
+    client = SimpleNamespace(responses=SimpleNamespace(create=create))
+
+    response = run_codex_stream(
+        agent,
+        {"model": "gpt-5", "input": "hello"},
+        client=client,
+    )
+    assert response.status == "cancelled"
+    assert response.id == "resp_ws_cancelled"
+    assert response.output == []
+    assert sse_calls == []
+
+
 def test_ws_idle_timeout_raises_started_error(monkeypatch):
     import agent.codex_responses_ws_transport as transport
 

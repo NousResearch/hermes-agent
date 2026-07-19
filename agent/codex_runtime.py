@@ -865,6 +865,7 @@ _TERMINAL_EVENT_TYPES = frozenset({
     "response.completed",
     "response.incomplete",
     "response.failed",
+    "response.cancelled",
 })
 
 
@@ -1000,6 +1001,10 @@ def _consume_codex_event_stream(
         event_type = _event_field(event, "type", "")
         if not isinstance(event_type, str):
             event_type = ""
+        # Normalize US spelling so both SSE and WebSocket cancel frames share
+        # one terminal path.
+        if event_type == "response.canceled":
+            event_type = "response.cancelled"
 
         # ``error`` SSE frames carry the provider's real failure reason
         # (subscription / quota / model-not-available / rejected-reasoning-replay)
@@ -1131,6 +1136,12 @@ def _consume_codex_event_stream(
                 terminal_status = terminal_status or "incomplete"
             elif event_type == "response.failed":
                 terminal_status = terminal_status or "failed"
+            elif event_type == "response.cancelled":
+                # Normalize US spelling from response.status when present.
+                if str(terminal_status or "").lower() in {"", "canceled"}:
+                    terminal_status = "cancelled"
+                else:
+                    terminal_status = terminal_status or "cancelled"
             # Stop on terminal event.
             break
 

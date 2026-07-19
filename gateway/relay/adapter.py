@@ -154,6 +154,12 @@ class RelayAdapter(BasePlatformAdapter):
         set_passthrough = getattr(self._transport, "set_passthrough_handler", None)
         if callable(set_passthrough):
             set_passthrough(self._on_passthrough)
+        set_descriptor = getattr(self._transport, "set_descriptor_handler", None)
+        if callable(set_descriptor):
+            # The production transport re-handshakes inside its own reconnect
+            # supervisor. Observe every descriptor so negotiated limits and edit
+            # support cannot remain stale after a reconnect.
+            set_descriptor(self._apply_descriptor)
         ok = await self._transport.connect()
         if not ok:
             return False

@@ -87,7 +87,12 @@ class GatewayAuthorizationMixin:
             # Only the transport-stamped, wire-invisible trust marker may
             # redirect this lookup; ordinary direct-platform events retain
             # their original adapter.
-            platform = Platform.RELAY
+            # Relay is one process-level ingress connection in multiplex mode;
+            # secondary profile registries intentionally omit it. Resolve it
+            # directly from the shared adapter map rather than applying the
+            # profile-specific fail-closed lookup used by ordinary adapters.
+            adapters = getattr(self, "adapters", None) or {}
+            return adapters.get(Platform.RELAY)
         return self._authorization_adapter(
             platform,
             getattr(source, "profile", None),

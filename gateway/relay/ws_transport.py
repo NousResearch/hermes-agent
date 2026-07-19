@@ -34,7 +34,7 @@ import json
 import logging
 import uuid
 from dataclasses import dataclass
-from typing import Any, Dict, List, Optional
+from typing import Any, Callable, Dict, List, Optional
 
 from gateway.platforms.base import MessageEvent, MessageType
 from gateway.session import SessionSource
@@ -326,6 +326,7 @@ class WebSocketRelayTransport:
         self._reader: Optional[asyncio.Task[None]] = None
         self._inbound: Optional[InboundHandler] = None
         self._descriptor: Optional[CapabilityDescriptor] = None
+        self._descriptor_handler: Optional[Callable[[CapabilityDescriptor], Any]] = None
         self._descriptor_ready: asyncio.Future[CapabilityDescriptor] | None = None
         # requestId -> future awaiting the matching outbound_result.
         self._pending: Dict[str, asyncio.Future[Dict[str, Any]]] = {}
@@ -348,6 +349,13 @@ class WebSocketRelayTransport:
     async def connect(self) -> bool:
         await self._dial_and_start()
         return True
+
+    def set_descriptor_handler(
+        self,
+        handler: Callable[[CapabilityDescriptor], Any],
+    ) -> None:
+        """Observe every negotiated descriptor, including reconnects."""
+        self._descriptor_handler = handler
 
     async def _dial_and_start(self) -> None:
         """Open the socket, start the reader, send hello. Used by connect() and
@@ -705,6 +713,10 @@ class WebSocketRelayTransport:
         if ftype == "descriptor":
             descriptor = CapabilityDescriptor.from_json(json.dumps(frame.get("descriptor", {})))
             self._descriptor = descriptor
+            if self._descriptor_handler is not None:
+                result = self._descriptor_handler(descriptor)
+                if asyncio.iscoroutine(result):
+                    await result
             # Phase 7 Unit 7d-B: a received descriptor means the WS upgrade auth
             # passed and the connector accepted us — record that we've handshaked
             # at least once, so a LATER 4401 close is read as a revocation

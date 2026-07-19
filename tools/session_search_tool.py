@@ -756,8 +756,7 @@ def _time_window(
             end=window_end,
             exclude_sources=list(_HIDDEN_SESSION_SOURCES),
             role_filter=role_filter,
-            limit=10000,
-            offset=0,
+            limit=None,
         )
     except Exception as e:
         logging.error("search_messages_by_time_window failed: %s", e, exc_info=True)

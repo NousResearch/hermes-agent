@@ -5566,7 +5566,7 @@ class SessionDB:
         role_filter: List[str] = None,
         include_inactive: bool = False,
         sort: str = None,
-        limit: int = 1000,
+        limit: int = None,
         offset: int = 0,
     ) -> List[Dict[str, Any]]:
         """Return messages whose timestamps fall inside [start, end].
@@ -5605,7 +5605,10 @@ class SessionDB:
             order_by_sql = "ORDER BY m.timestamp ASC, m.id ASC"
 
         where_sql = " AND ".join(where_clauses)
-        params.extend([limit, offset])
+        limit_offset_sql = ""
+        if limit is not None:
+            limit_offset_sql = "LIMIT ? OFFSET ?"
+            params.extend([limit, offset])
 
         sql = f"""
             SELECT
@@ -5625,7 +5628,7 @@ class SessionDB:
             JOIN sessions s ON s.id = m.session_id
             WHERE {where_sql}
             {order_by_sql}
-            LIMIT ? OFFSET ?
+            {limit_offset_sql}
         """
 
         with self._lock:

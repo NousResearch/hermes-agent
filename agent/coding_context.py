@@ -690,12 +690,19 @@ def _enabled_mcp_servers(config: Optional[dict[str, Any]]) -> list[str]:
 
 def _git(cwd: Path, *args: str) -> str:
     _popen_kwargs = {"creationflags": windows_hide_flags()} if IS_WINDOWS else {}
+    env = {
+        **os.environ,
+        "GIT_TERMINAL_PROMPT": "0",
+        "GCM_INTERACTIVE": "never",
+    }
     try:
         out = subprocess.run(
             ["git", "-C", str(cwd), *args],
             capture_output=True,
             text=True,
             timeout=_GIT_TIMEOUT,
+            stdin=subprocess.DEVNULL,
+            env=env,
             **_popen_kwargs,
         )
     except (OSError, subprocess.SubprocessError):

@@ -4,6 +4,7 @@ import json
 import os
 import subprocess
 import shutil
+import sys
 from pathlib import Path
 
 import pytest
@@ -129,6 +130,46 @@ class TestCodingSelection:
 
 
 # ── git/workspace probe ─────────────────────────────────────────────────────
+
+class TestGitProbeStdioSafety:
+    def test_git_probe_detaches_stdin(self, tmp_path, monkeypatch):
+        """ACP stdio hosts hang if git inherits the JSON-RPC stdin pipe."""
+        _git_init(tmp_path)
+        captured: dict = {}
+
+        def _fake_run(*args, **kwargs):
+            captured.update(kwargs)
+            return subprocess.CompletedProcess(args[0], 0, stdout="ok\n", stderr="")
+
+        monkeypatch.setattr(cc.subprocess, "run", _fake_run)
+        assert cc._git(tmp_path, "status", "--porcelain=2") == "ok"
+        assert captured.get("stdin") is subprocess.DEVNULL
+        env = captured.get("env") or {}
+        assert env.get("GIT_TERMINAL_PROMPT") == "0"
+        assert env.get("GCM_INTERACTIVE") == "never"
+
+    def test_git_probe_returns_under_piped_stdin(self, tmp_path):
+        """Regression: piped stdin must not stall the workspace git probe."""
+        _git_init(tmp_path)
+        helper = (
+            "import sys\n"
+            "from pathlib import Path\n"
+            "from agent.coding_context import _git\n"
+            f"print(_git(Path({str(tmp_path)!r}), 'rev-parse', '--is-inside-work-tree'))\n"
+        )
+        repo_root = str(Path(__file__).resolve().parents[2])
+        proc = subprocess.run(
+            [sys.executable, "-c", helper],
+            input="",  # keep stdin as a pipe (empty)
+            capture_output=True,
+            text=True,
+            timeout=10,
+            cwd=repo_root,
+            env={**os.environ, "PYTHONPATH": repo_root},
+        )
+        assert proc.returncode == 0
+        assert proc.stdout.strip() == "true"
+
 
 class TestWorkspaceBlock:
     def test_empty_outside_repo(self, tmp_path):

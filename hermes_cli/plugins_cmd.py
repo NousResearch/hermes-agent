@@ -19,13 +19,22 @@ import stat
 import subprocess
 import sys
 import tempfile
-from dataclasses import asdict
+from dataclasses import asdict, dataclass
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Optional
 
 from hermes_constants import get_hermes_home
 from hermes_cli.config import cfg_get
 from hermes_cli.secret_prompt import masked_secret_prompt
+from hermes_cli.plugin_supply_chain import (
+    PluginCapabilityReport,
+    PluginProvenance,
+    build_capability_report,
+    validate_full_commit_sha,
+    validate_source_url,
+    write_provenance_lock,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -67,6 +76,23 @@ def _resolve_git_executable() -> Optional[str]:
 
 class PluginOperationError(Exception):
     """Recoverable plugin install/update failure (CLI exits; HTTP maps to 4xx)."""
+
+
+@dataclass(frozen=True)
+class InstallResult:
+    """Complete result of a successfully published plugin installation."""
+
+    target: Path
+    manifest: dict[str, Any]
+    name: str
+    provenance: PluginProvenance
+    capabilities: PluginCapabilityReport
+
+    def __iter__(self):
+        """Keep the historical three-value unpacking contract for callers."""
+        yield self.target
+        yield self.manifest
+        yield self.name
 
 
 # Minimum manifest version this installer understands.
@@ -713,111 +739,134 @@ def cmd_inspect(
         raise SystemExit(1) from None
 
 
-def _install_plugin_core(identifier: str, *, force: bool) -> tuple[Path, dict, str]:
-    """Clone Git plugin into ``~/.hermes/plugins``.
-
-    Returns ``(target_dir, installed_manifest, canonical_name)``.
-    Raises ``PluginOperationError`` on failure.
-    """
-    import tempfile
-
+def _install_plugin_core(
+    identifier: str, *, force: bool, requested_ref: str | None = None
+) -> InstallResult:
+    """Clone, inspect, and atomically publish a Git plugin."""
+    if requested_ref is not None:
+        try:
+            requested_ref = validate_full_commit_sha(requested_ref)
+        except ValueError as exc:
+            raise PluginOperationError(str(exc)) from exc
     try:
         git_url, subdir = _resolve_git_url(identifier)
-    except ValueError as e:
-        raise PluginOperationError(str(e)) from e
+        source_url = validate_source_url(git_url)
+    except ValueError as exc:
+        raise PluginOperationError(str(exc)) from exc
 
     plugins_dir = _plugins_dir()
+    git_exe = _resolve_git_executable()
+    if not git_exe:
+        raise PluginOperationError("git is not installed or not in PATH.")
 
     with tempfile.TemporaryDirectory() as tmp:
-        tmp_clone = Path(tmp) / "plugin"
-
-        git_exe = _resolve_git_executable()
-        if not git_exe:
-            raise PluginOperationError("git is not installed or not in PATH.")
-
-        try:
-            result = subprocess.run(
-                [git_exe, "clone", "--depth", "1", git_url, str(tmp_clone)],
-                capture_output=True,
-                text=True,
-                timeout=60,
+        clone_root = Path(tmp) / "plugin"
+        _run_inspect_git([git_exe, "clone", source_url, str(clone_root)], operation="clone")
+        if requested_ref is not None:
+            _run_inspect_git(
+                [git_exe, "checkout", "--detach", requested_ref],
+                operation="checkout",
+                cwd=clone_root,
             )
-        except FileNotFoundError as e:
-            raise PluginOperationError(
-                "git is not installed or not in PATH.",
-            ) from e
-        except subprocess.TimeoutExpired as e:
-            raise PluginOperationError(
-                "Git clone timed out after 60 seconds.",
-            ) from e
-
-        if result.returncode != 0:
-            err = (result.stderr or result.stdout or "").strip()
-            raise PluginOperationError(f"Git clone failed:\n{err}")
-
-        # Resolve the directory within the clone that holds the plugin.
-        if subdir:
-            tmp_target = _resolve_subdir_within(tmp_clone, subdir)
-        else:
-            tmp_target = tmp_clone
-
-        manifest = _read_manifest(tmp_target)
-        plugin_name = manifest.get("name") or (
-            subdir.rstrip("/").rsplit("/", 1)[-1] if subdir else _repo_name_from_url(git_url)
+        resolved_commit = _run_inspect_git(
+            [git_exe, "rev-parse", "HEAD"], operation="resolve commit", cwd=clone_root
         )
+        try:
+            resolved_commit = validate_full_commit_sha(resolved_commit)
+        except ValueError as exc:
+            raise PluginOperationError(f"Git returned an invalid commit: {exc}") from exc
+        if requested_ref is not None and resolved_commit != requested_ref:
+            raise PluginOperationError("Checked out commit does not exactly match the requested ref.")
+
+        source_dir = _resolve_subdir_within(clone_root, subdir) if subdir else clone_root
+        manifest = _read_inspection_manifest(source_dir)
+        fallback_name = subdir.rstrip("/").rsplit("/", 1)[-1] if subdir else _repo_name_from_url(source_url)
+        plugin_name = manifest.get("name")
+        if plugin_name is None or plugin_name == "":
+            plugin_name = fallback_name
+        elif not isinstance(plugin_name, str):
+            raise PluginOperationError("Plugin manifest field 'name' must be a string.")
+        for field in ("version", "description"):
+            value = manifest.get(field)
+            if value is not None and not isinstance(value, str):
+                raise PluginOperationError(f"Plugin manifest field '{field}' must be a string.")
 
         try:
             target = _sanitize_plugin_name(plugin_name, plugins_dir)
-        except ValueError as e:
-            raise PluginOperationError(str(e)) from e
-
+        except ValueError as exc:
+            raise PluginOperationError(str(exc)) from exc
         mv = manifest.get("manifest_version")
         if mv is not None:
             try:
                 mv_int = int(mv)
             except (ValueError, TypeError):
                 raise PluginOperationError(
-                    f"Plugin '{plugin_name}' has invalid manifest_version "
-                    f"'{mv}' (expected an integer).",
+                    f"Plugin '{plugin_name}' has invalid manifest_version '{mv}' (expected an integer)."
                 ) from None
             if mv_int > _SUPPORTED_MANIFEST_VERSION:
                 from hermes_cli.config import recommended_update_command
-
                 raise PluginOperationError(
                     f"Plugin '{plugin_name}' requires manifest_version {mv}, "
                     f"but this installer only supports up to {_SUPPORTED_MANIFEST_VERSION}. "
-                    f"Run {recommended_update_command()} to update Hermes.",
+                    f"Run {recommended_update_command()} to update Hermes."
                 ) from None
+        if target.exists() and not force:
+            raise PluginOperationError(
+                f"Plugin '{plugin_name}' already exists. Use force reinstall "
+                f"or run `hermes plugins update {plugin_name}`."
+            )
 
-        if target.exists():
-            if not force:
-                raise PluginOperationError(
-                    f"Plugin '{plugin_name}' already exists. Use force reinstall "
-                    f"or run `hermes plugins update {plugin_name}`.",
-                )
-            shutil.rmtree(target)
+        staging_root = Path(tempfile.mkdtemp(prefix=".install-", dir=plugins_dir))
+        staged = staging_root / "payload"
+        backup: Path | None = None
+        try:
+            shutil.copytree(source_dir, staged, symlinks=True)
+            from rich.console import Console
+            _copy_example_files(staged, Console())
+            installed_manifest = _read_inspection_manifest(staged)
+            installed_name = installed_manifest.get("name") or target.name
+            capabilities = build_capability_report(staged, installed_manifest)
+            provenance = PluginProvenance(
+                source_url=source_url,
+                subdir=subdir,
+                resolved_commit=resolved_commit,
+                requested_ref=requested_ref,
+                inspected_at=datetime.now(timezone.utc).isoformat(),
+            )
+            try:
+                write_provenance_lock(staged, provenance)
+            except Exception as exc:
+                raise PluginOperationError("Failed to write plugin provenance lock.") from exc
 
-        shutil.move(str(tmp_target), str(target))
+            try:
+                if target.exists():
+                    backup = Path(tempfile.mkdtemp(prefix=".backup-", dir=plugins_dir))
+                    backup.rmdir()
+                    os.replace(target, backup)
+                os.replace(staged, target)
+            except OSError as exc:
+                if backup is not None and backup.exists() and not target.exists():
+                    try:
+                        os.replace(backup, target)
+                    except OSError:
+                        logger.error("Failed to restore previous plugin after publication failure")
+                raise PluginOperationError("Failed to publish plugin installation.") from exc
 
-    has_yaml = (target / "plugin.yaml").exists() or (target / "plugin.yml").exists()
-    if not has_yaml and not (target / "__init__.py").exists():
-        logger.warning(
-            "%s has no plugin.yaml / __init__.py; may not be a valid plugin",
-            plugin_name,
-        )
-
-    from rich.console import Console
-
-    _copy_example_files(target, Console())
-    installed_manifest = _read_manifest(target)
-    installed_name = installed_manifest.get("name") or target.name
-    return target, installed_manifest, installed_name
+            if backup is not None and backup.exists():
+                try:
+                    shutil.rmtree(backup)
+                except OSError:
+                    logger.warning("Installed plugin, but failed to clean up previous installation backup")
+            return InstallResult(target, installed_manifest, installed_name, provenance, capabilities)
+        finally:
+            shutil.rmtree(staging_root, ignore_errors=True)
 
 
 def cmd_install(
     identifier: str,
     force: bool = False,
     enable: Optional[bool] = None,
+    requested_ref: str | None = None,
 ) -> None:
     """Install a plugin from a Git URL or owner/repo shorthand.
 
@@ -846,14 +895,18 @@ def cmd_install(
         console.print(f"[dim]Cloning {git_url}...[/dim]")
 
     try:
-        target, installed_manifest, installed_name = _install_plugin_core(
+        install_result = _install_plugin_core(
             identifier,
             force=force,
+            requested_ref=requested_ref,
         )
     except PluginOperationError as e:
         console.print(f"[red]Error:[/red] {e}")
         sys.exit(1)
 
+    target = install_result.target
+    installed_manifest = install_result.manifest
+    installed_name = install_result.name
     if not (target / "plugin.yaml").exists() and not (target / "plugin.yml").exists() and not (
         target / "__init__.py"
     ).exists():
@@ -2031,6 +2084,7 @@ def dashboard_install_plugin(
     *,
     force: bool,
     enable: bool,
+    requested_ref: str | None = None,
 ) -> dict[str, Any]:
     """Non-interactive install for the web dashboard. Returns a JSON-serializable dict."""
     warnings: list[str] = []
@@ -2044,13 +2098,17 @@ def dashboard_install_plugin(
         pass
 
     try:
-        target, installed_manifest, installed_name = _install_plugin_core(
+        install_result = _install_plugin_core(
             identifier,
             force=force,
+            requested_ref=requested_ref,
         )
     except PluginOperationError as exc:
         return {"ok": False, "error": str(exc)}
 
+    target = install_result.target
+    installed_manifest = install_result.manifest
+    installed_name = install_result.name
     missing_env = _missing_requires_env_names(installed_manifest)
     if enable:
         en = _get_enabled_set()
@@ -2072,6 +2130,11 @@ def dashboard_install_plugin(
         "missing_env": missing_env,
         "after_install_path": hint,
         "enabled": enable,
+        "provenance": asdict(install_result.provenance),
+        "capabilities": {
+            key: list(value) if isinstance(value, tuple) else value
+            for key, value in asdict(install_result.capabilities).items()
+        },
     }
 
 
@@ -2284,6 +2347,7 @@ def plugins_command(args) -> None:
             args.identifier,
             force=getattr(args, "force", False),
             enable=enable_arg,
+            requested_ref=getattr(args, "requested_ref", None),
         )
     elif action == "update":
         cmd_update(args.name)

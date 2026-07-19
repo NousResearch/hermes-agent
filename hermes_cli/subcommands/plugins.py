@@ -31,6 +31,9 @@ def build_plugins_parser(subparsers, *, cmd_plugins: Callable) -> None:
         action="store_true",
         help="Remove existing plugin and reinstall",
     )
+    plugins_install.add_argument(
+        "--ref", dest="requested_ref", help="Exact 40-character lowercase commit SHA"
+    )
     _install_enable_group = plugins_install.add_mutually_exclusive_group()
     _install_enable_group.add_argument(
         "--enable",

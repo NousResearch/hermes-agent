@@ -17886,6 +17886,7 @@ class _AgentPluginInstallBody(BaseModel):
     identifier: str
     force: bool = False
     enable: bool = True
+    requested_ref: str | None = None
 
 
 def _strip_dashboard_manifest(p: Dict[str, Any]) -> Dict[str, Any]:
@@ -18027,6 +18028,7 @@ async def post_agent_plugin_install(request: Request, body: _AgentPluginInstallB
         body.identifier.strip(),
         force=body.force,
         enable=body.enable,
+        requested_ref=body.requested_ref,
     )
     if not result.get("ok"):
         raise HTTPException(

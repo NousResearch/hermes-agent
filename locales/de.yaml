@@ -77,6 +77,7 @@ gateway:
     switch_failed:         "Verzweigung erstellt, aber Wechsel fehlgeschlagen."
     branched_one:          "⑂ Verzweigt zu **{title}** ({count} Nachricht kopiert)\nOriginal: `{parent}`\nZweig: `{new}`\nVerwenden Sie `/resume`, um zum Original zurückzukehren."
     branched_many:         "⑂ Verzweigt zu **{title}** ({count} Nachrichten kopiert)\nOriginal: `{parent}`\nZweig: `{new}`\nVerwenden Sie `/resume`, um zum Original zurückzukehren."
+    new_thread:            "🧵 Neuer Thread für den Branch erstellt: `{thread}` — die ursprüngliche Unterhaltung bleibt hier aktiv."
 
   commands:
     usage:                 "Verwendung: `/commands [page]`"

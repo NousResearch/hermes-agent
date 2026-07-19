@@ -77,6 +77,7 @@ gateway:
     switch_failed:         "Tak is geskep, maar oorskakeling het misluk."
     branched_one:          "⑂ Vertak na **{title}** ({count} boodskap gekopieer)\nOorspronklik: `{parent}`\nTak: `{new}`\nGebruik `/resume` om terug te gaan na die oorspronklike."
     branched_many:         "⑂ Vertak na **{title}** ({count} boodskappe gekopieer)\nOorspronklik: `{parent}`\nTak: `{new}`\nGebruik `/resume` om terug te gaan na die oorspronklike."
+    new_thread:            "🧵 Nuwe draad vir die tak geskep: `{thread}` — die oorspronklike gesprek bly hier aktief."
 
   commands:
     usage:                 "Gebruik: `/commands [page]`"

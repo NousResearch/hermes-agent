@@ -77,6 +77,7 @@ gateway:
     switch_failed:         "Ramo criado, mas não foi possível mudar para ele."
     branched_one:          "⑂ Ramificado para **{title}** ({count} mensagem copiada)\nOriginal: `{parent}`\nRamo: `{new}`\nUsa `/resume` para voltar ao original."
     branched_many:         "⑂ Ramificado para **{title}** ({count} mensagens copiadas)\nOriginal: `{parent}`\nRamo: `{new}`\nUsa `/resume` para voltar ao original."
+    new_thread:            "🧵 Novo tópico criado para a ramificação: `{thread}` — a conversa original permanece ativa aqui."
 
   commands:
     usage:                 "Uso: `/commands [page]`"

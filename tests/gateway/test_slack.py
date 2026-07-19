@@ -1531,6 +1531,74 @@ class TestSlackThreadFileContext:
         )
 
     @pytest.mark.asyncio
+    async def test_thread_file_cache_fetches_only_messages_after_previous_event(self, adapter):
+        adapter.set_authorization_check(lambda *_args: True)
+        adapter._user_name_cache = {("", "U_OWNER"): "배익현"}
+
+        async def conversations_replies(**kwargs):
+            if kwargs.get("oldest") == "1000.9":
+                return {
+                    "messages": [
+                        {"ts": "1001.0", "user": "U_OWNER", "text": "next event"}
+                    ],
+                    "response_metadata": {"next_cursor": ""},
+                }
+            if kwargs.get("cursor") == "CURSOR_2":
+                return {
+                    "messages": [
+                        {
+                            "ts": "1000.8",
+                            "user": "U_OWNER",
+                            "files": [
+                                {
+                                    "id": "F_RECENT",
+                                    "name": "recent.pdf",
+                                    "mimetype": "application/pdf",
+                                    "size": 100,
+                                    "url_private_download": (
+                                        "https://files.slack.com/recent.pdf"
+                                    ),
+                                }
+                            ],
+                        },
+                        {"ts": "1000.9", "user": "U_OWNER", "text": "first event"},
+                    ],
+                    "response_metadata": {"next_cursor": ""},
+                }
+            return {
+                "messages": [
+                    {"ts": "1000.0", "user": "U_OWNER", "text": "root"},
+                    {"ts": "1000.1", "user": "U_OWNER", "text": "older"},
+                ],
+                "response_metadata": {"next_cursor": "CURSOR_2"},
+            }
+
+        adapter._app.client.conversations_replies = AsyncMock(
+            side_effect=conversations_replies
+        )
+
+        first_files, _ = await adapter._fetch_thread_file_attachments(
+            channel_id="C123",
+            thread_ts="1000.0",
+            current_ts="1000.9",
+            limit=3,
+        )
+        second_files, _ = await adapter._fetch_thread_file_attachments(
+            channel_id="C123",
+            thread_ts="1000.0",
+            current_ts="1001.0",
+            limit=3,
+        )
+
+        assert [file_obj["id"] for file_obj in first_files] == ["F_RECENT"]
+        assert [file_obj["id"] for file_obj in second_files] == ["F_RECENT"]
+        assert adapter._app.client.conversations_replies.await_count == 3
+        incremental_call = adapter._app.client.conversations_replies.await_args_list[2]
+        assert incremental_call.kwargs["oldest"] == "1000.9"
+        assert incremental_call.kwargs["inclusive"] is False
+        assert "cursor" not in incremental_call.kwargs
+
+    @pytest.mark.asyncio
     async def test_thread_file_lookup_prefers_newest_five_files(self, adapter):
         adapter.set_authorization_check(lambda *_args: True)
         adapter._user_name_cache = {("", "U_OWNER"): "배익현"}

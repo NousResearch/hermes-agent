@@ -4498,15 +4498,48 @@ class SlackAdapter(BasePlatformAdapter):
             cache_key = f"{channel_id}:{thread_ts}:{team_id}"
             now = time.monotonic()
             cached = self._thread_context_cache.get(cache_key)
-            cache_matches_turn = bool(
+            cache_is_fresh = bool(
                 cached
                 and (now - cached.fetched_at) < self._THREAD_CACHE_TTL
-                and cached.current_ts == current_ts
                 and cached.messages
             )
+            cache_matches_turn = bool(
+                cache_is_fresh and cached and cached.current_ts == current_ts
+            )
+            incremental_from = ""
+            if cache_is_fresh and cached and cached.current_ts != current_ts:
+                try:
+                    is_later_turn = float(current_ts) > float(cached.current_ts)
+                except (TypeError, ValueError):
+                    is_later_turn = current_ts > cached.current_ts
+                if is_later_turn and not cached.next_cursor:
+                    incremental_from = cached.current_ts
+
             if cache_matches_turn and cached is not None:
                 messages = [dict(message) for message in cached.messages]
                 next_cursor = cached.next_cursor
+            elif incremental_from and cached is not None:
+                messages = [dict(message) for message in cached.messages]
+                first_page = await self._get_client(
+                    channel_id, team_id=team_id
+                ).conversations_replies(
+                    channel=channel_id,
+                    ts=thread_ts,
+                    oldest=incremental_from,
+                    limit=_THREAD_FILE_API_PAGE_SIZE,
+                    inclusive=False,
+                )
+                messages.extend(
+                    dict(message)
+                    for message in (first_page or {}).get("messages", [])
+                    if isinstance(message, dict)
+                )
+                next_cursor = str(
+                    ((first_page or {}).get("response_metadata") or {}).get(
+                        "next_cursor"
+                    )
+                    or ""
+                )
             else:
                 first_page = await self._get_client(
                     channel_id, team_id=team_id
@@ -4530,15 +4563,18 @@ class SlackAdapter(BasePlatformAdapter):
 
             while next_cursor and len(messages) < _THREAD_FILE_MAX_MESSAGES:
                 try:
+                    pagination_kwargs: Dict[str, Any] = {
+                        "channel": channel_id,
+                        "ts": thread_ts,
+                        "cursor": next_cursor,
+                        "limit": _THREAD_FILE_API_PAGE_SIZE,
+                        "inclusive": not bool(incremental_from),
+                    }
+                    if incremental_from:
+                        pagination_kwargs["oldest"] = incremental_from
                     page = await self._get_client(
                         channel_id, team_id=team_id
-                    ).conversations_replies(
-                        channel=channel_id,
-                        ts=thread_ts,
-                        cursor=next_cursor,
-                        limit=_THREAD_FILE_API_PAGE_SIZE,
-                        inclusive=True,
-                    )
+                    ).conversations_replies(**pagination_kwargs)
                 except Exception as page_exc:
                     logger.warning(
                         "[Slack] Could not continue thread-file pagination; "
@@ -4575,12 +4611,20 @@ class SlackAdapter(BasePlatformAdapter):
                 ),
                 "",
             )
+            cache_window_size = max(limit, _THREAD_FILE_CONTEXT_MESSAGE_LIMIT)
+            cached_messages = messages[-cache_window_size:]
+            root_message = next(
+                (message for message in messages if message.get("ts") == thread_ts),
+                None,
+            )
+            if root_message is not None and root_message not in cached_messages:
+                cached_messages = [root_message, *cached_messages]
             self._thread_context_cache[cache_key] = _ThreadContextCache(
                 content=cached.content if cached else "",
                 fetched_at=now,
                 message_count=cached.message_count if cached else 0,
                 parent_text=parent_text or (cached.parent_text if cached else ""),
-                messages=messages,
+                messages=cached_messages,
                 next_cursor=next_cursor,
                 current_ts=current_ts,
             )

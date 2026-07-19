@@ -81,6 +81,30 @@ def test_neutts_null_config_uses_subprocess_default(tmp_path, monkeypatch):
     assert used == {"warm": False, "subprocess": True}
 
 
+def test_neutts_null_config_public_path_uses_default_output_format(
+    tmp_path, monkeypatch
+):
+    monkeypatch.setattr(
+        tts_tool,
+        "_load_tts_config",
+        lambda: {"provider": "neutts", "neutts": None},
+    )
+    monkeypatch.setattr(tts_tool, "DEFAULT_OUTPUT_DIR", str(tmp_path))
+    monkeypatch.setattr(tts_tool, "_check_neutts_available", lambda: True)
+
+    def fake_generate(text, output_path, tts_config):
+        Path(output_path).write_bytes(b"not real audio")
+        return output_path
+
+    monkeypatch.setattr(tts_tool, "_generate_neutts", fake_generate)
+
+    result = json.loads(tts_tool.text_to_speech_tool("hello", output_path=None))
+
+    assert result["success"] is True
+    assert result["provider"] == "neutts"
+    assert result["file_path"].endswith(".mp3")
+
+
 def test_neutts_warm_cache_config_defaults_to_off():
     from hermes_cli.config import DEFAULT_CONFIG
 

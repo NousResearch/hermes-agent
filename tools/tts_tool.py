@@ -2597,7 +2597,7 @@ def text_to_speech_tool(
             fmt = _get_command_tts_output_format(command_provider_config)
             file_path = out_dir / f"tts_{timestamp}.{fmt}"
         elif provider == "neutts":
-            fmt = _neutts_output_format(tts_config.get("neutts", {}))
+            fmt = _neutts_output_format(tts_config.get("neutts") or {})
             file_path = out_dir / f"tts_{timestamp}.{fmt}"
         # Use .ogg for Telegram with providers that support native Opus output,
         # otherwise fall back to .mp3 (Edge TTS will attempt ffmpeg conversion later).

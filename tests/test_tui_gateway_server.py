@@ -2499,8 +2499,10 @@ def test_ws_orphan_reap_spares_detached_session_with_running_async_delegation(mo
     monkeypatch.setattr(server, "_get_db", lambda: _DB())
     monkeypatch.setattr(
         server,
-        "_close_session_by_id",
-        lambda sid, *, end_reason="tui_close": closed.append((sid, end_reason)) or True,
+        "_teardown_popped_session",
+        lambda session, *, end_reason="tui_close": (
+            closed.append((session["_sid"], end_reason)) if session is not None else None
+        ),
     )
 
     server._sessions["bg-sid"] = _session(

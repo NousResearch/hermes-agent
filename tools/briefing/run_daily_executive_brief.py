@@ -56,7 +56,10 @@ def main(argv: list[str] | None = None) -> int:
     generated_at = datetime.now(timezone.utc).isoformat()
     brief["generated_at"] = generated_at
     brief["generated_timestamp"] = generated_at
-    brief["execution_log"].append({"timestamp": generated_at, "state": "generated", "message": "Brief generated"})
+    if not brief.get("execution_log"):
+        brief["execution_log"] = []
+    if not brief["execution_log"] or brief["execution_log"][-1].get("state") != "generated":
+        brief["execution_log"].append({"timestamp": generated_at, "state": "generated", "message": "Brief generated"})
 
     validation = validate_brief_schema(brief)
     if not validation.get("success"):

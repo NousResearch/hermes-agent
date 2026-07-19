@@ -1006,6 +1006,34 @@ def test_create_happy_path(worker_env):
         conn.close()
 
 
+def test_create_scheduled_stays_parked(worker_env):
+    from tools import kanban_tools as kt
+    from hermes_cli import kanban_db as kb
+
+    out = kt._handle_create({
+        "title": "route before dispatch",
+        "assignee": "peer",
+        "initial_status": "scheduled",
+    })
+    data = json.loads(out)
+    assert data["ok"] is True
+    assert data["status"] == "scheduled"
+
+    with kb.connect_closing() as conn:
+        assert kb.recompute_ready(conn) == 0
+        task = kb.get_task(conn, data["task_id"])
+
+    assert task is not None
+    assert task.status == "scheduled"
+
+
+def test_create_schema_exposes_scheduled_initial_status():
+    from tools.kanban_tools import KANBAN_CREATE_SCHEMA
+
+    initial_status = KANBAN_CREATE_SCHEMA["parameters"]["properties"]["initial_status"]
+    assert initial_status["enum"] == ["running", "blocked", "scheduled"]
+
+
 def test_create_inherits_worker_dir_workspace(monkeypatch, worker_env):
     """A worker scoped to a dir: task that spawns a child without a
     workspace arg inherits the dir, not scratch (so follow-up code-gen

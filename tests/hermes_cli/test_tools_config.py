@@ -2038,3 +2038,57 @@ def test_provider_readiness_unknown_post_setup_falls_back_to_is_active():
     provider = {"name": "Mystery", "env_vars": [], "post_setup": "mystery_hook"}
     assert provider_readiness_status(provider, {}, is_active=True) == "ready"
     assert provider_readiness_status(provider, {}, is_active=False) == "needs_setup"
+
+
+# ── Windows console-flash guard for post-setup subprocess spawns ──────────────
+#
+# The desktop GUI runs post-setup hooks through a detached, console-less
+# `hermes tools post-setup <key>` child. On Windows each console child (npm,
+# npx, pip, powershell) spawned without CREATE_NO_WINDOW materializes a brand
+# new console window — the "terminal flash" reported on the Capabilities
+# browser-setup journey. `_post_setup_no_window_flags` is the single wrapper
+# every hook spawn passes as `creationflags`.
+
+
+def test_post_setup_no_window_flags_zero_on_posix(monkeypatch):
+    from hermes_cli import _subprocess_compat
+    from hermes_cli.tools_config import _post_setup_no_window_flags
+
+    monkeypatch.setattr(_subprocess_compat, "IS_WINDOWS", False)
+    assert _post_setup_no_window_flags() == 0
+    assert _post_setup_no_window_flags(streams_to_console=True) == 0
+
+
+def test_post_setup_no_window_flags_hides_window_on_windows(monkeypatch):
+    from hermes_cli import _subprocess_compat
+    from hermes_cli.tools_config import _post_setup_no_window_flags
+
+    monkeypatch.setattr(_subprocess_compat, "IS_WINDOWS", True)
+    # CREATE_NO_WINDOW only — DETACHED_PROCESS would sever stdio and break
+    # capture_output in the hooks.
+    assert _post_setup_no_window_flags() == 0x08000000
+
+
+def test_post_setup_no_window_flags_streaming_keeps_interactive_console(monkeypatch):
+    """A hook that streams live output to a real console must stay visible."""
+    import sys as _sys
+
+    from hermes_cli import _subprocess_compat
+    from hermes_cli.tools_config import _post_setup_no_window_flags
+
+    monkeypatch.setattr(_subprocess_compat, "IS_WINDOWS", True)
+
+    class _Tty:
+        def isatty(self):
+            return True
+
+    class _Pipe:
+        def isatty(self):
+            return False
+
+    monkeypatch.setattr(_sys, "stdout", _Tty())
+    assert _post_setup_no_window_flags(streams_to_console=True) == 0
+
+    # GUI-spawn case: stdout is a log pipe, no console to stream to — hide.
+    monkeypatch.setattr(_sys, "stdout", _Pipe())
+    assert _post_setup_no_window_flags(streams_to_console=True) == 0x08000000

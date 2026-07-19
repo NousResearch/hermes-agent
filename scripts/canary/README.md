@@ -274,6 +274,15 @@ release-bound owner-support tree. Replace the SHA placeholder once with the
 exact reviewed 40-character release SHA; do not use `-m`, a worktree path, a
 relative path, a symlink, or caller-authored evidence/key/journal flags:
 
+Before invoking this entrypoint, the owner account
+`lomliev@adventico.com` must hold the temporary organization-level role
+`roles/iam.organizationRoleAdmin` on organization `929802425070`. The
+Foundation plan creates and re-observes one exact organization-scoped custom
+read-only role; project-level IAM authority is insufficient. Grant this role
+only to the human owner account, verify the exact binding by readback, and
+remove it after the signed Foundation success terminal has been validated.
+Do not grant it to the owner-gate or runtime service account.
+
 ```bash
 /Users/emillomliev/.local/share/uv/python/\
 cpython-3.11.15-macos-aarch64-none/bin/python3.11 \
@@ -296,6 +305,13 @@ inner journal before recovery; an ambiguous partial mutation becomes a durable
 manual-reconciliation block and is never skipped in favor of fresh authoring.
 Stdout contains only the stable terminal envelope, never a bearer token, key
 material, raw evidence, or signed receipt body.
+
+A release-addressed `manual_reconciliation_required` outer terminal is
+immutable and cannot be cleared or retried after repairing external IAM.
+Never delete or edit its journal. After correcting the missing prerequisite,
+create, review, and merge a fresh fork release revision, publish the
+release-bound owner-support runtime for that new SHA, and invoke this same
+sole entrypoint from the new immutable owner-support path.
 
 `success.json` is a signed journal transition wrapper, not a raw foundation
 apply receipt.  Downstream owner gates must not copy it, loosen its mode, or

@@ -4,9 +4,9 @@ explicit ``encoding=`` triggers ``UnicodeDecodeError`` on Chinese Windows
 
 PR #55339 covers 21 call sites in ``agent/``, ``gateway/``, ``cli.py``,
 ``cron/``, plus 5 more in ``tools/`` and ``hermes_cli/`` (main.py,
-setup.py, tts_tool.py, transcription_tools.py). The one call site it
-misses — ``hermes_cli/onepassword_secrets_cli.py::_op_whoami`` — is
-guarded here.
+setup.py, tts_tool.py, transcription_tools.py). The two call sites it
+misses — ``hermes_cli/onepassword_secrets_cli.py::_op_whoami`` and
+``_op_version`` — are guarded here.
 
 Without ``encoding=``, ``text=True`` decodes child output with
 ``locale.getpreferredencoding(False)`` — cp936 on Chinese Windows —
@@ -49,4 +49,20 @@ def test_op_whoami_passes_utf8_encoding(tmp_path):
             returncode=0, stdout="user@example.com", stderr=""
         )
         op_cli._op_whoami(fake_binary, account="")
+    _assert_utf8_kwargs(mock_run)
+
+
+def test_op_version_passes_utf8_encoding(tmp_path):
+    """_op_version must pass encoding='utf-8', errors='replace' so op CLI
+    output containing non-ASCII bytes doesn't crash on cp936. Pairs with
+    _op_whoami — both run in the same setup/status CLI flow."""
+    from hermes_cli import onepassword_secrets_cli as op_cli
+
+    fake_binary = tmp_path / "op"
+    fake_binary.write_bytes(b"")
+    with patch.object(op_cli.subprocess, "run") as mock_run:
+        mock_run.return_value = MagicMock(
+            returncode=0, stdout="2.24.0", stderr=""
+        )
+        op_cli._op_version(fake_binary)
     _assert_utf8_kwargs(mock_run)

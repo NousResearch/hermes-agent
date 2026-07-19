@@ -163,6 +163,77 @@ class TestCompressionBoundaryHook:
             assert compressed
             assert agent.session_id != original_sid
 
+    def test_pre_context_compress_plugin_hook_fires_before_compress(self):
+        """Plugins can checkpoint state immediately before compression mutates messages."""
+        from hermes_state import SessionDB
+
+        seen = []
+
+        def _hook(name, **kwargs):
+            seen.append((name, kwargs))
+            return []
+
+        with tempfile.TemporaryDirectory() as tmpdir, patch(
+            "hermes_cli.plugins.invoke_hook", side_effect=_hook
+        ):
+            db = SessionDB(db_path=Path(tmpdir) / "test.db")
+            agent = self._make_agent(db)
+
+            compressor = MagicMock()
+            compressor.compress.return_value = [{"role": "user", "content": "summary"}]
+            compressor.compression_count = 0
+            compressor.last_prompt_tokens = 0
+            compressor.last_completion_tokens = 0
+            compressor.context_length = 200_000
+            compressor.threshold_tokens = 196_000
+            compressor._last_summary_error = None
+            compressor._last_compress_aborted = False
+            agent.context_compressor = compressor
+
+            messages = [{"role": "user", "content": "m"}]
+            agent._compress_context(messages, "sys", approx_tokens=123_456, task_id="task-1")
+
+        assert seen, "pre_context_compress hook was not invoked"
+        hook_name, payload = seen[0]
+        assert hook_name == "pre_context_compress"
+        assert payload["session_id"] == "original-session"
+        assert payload["task_id"] == "task-1"
+        assert payload["approx_tokens"] == 123_456
+        assert payload["message_count"] == 1
+        assert payload["context_length"] == 200_000
+        assert payload["threshold_tokens"] == 196_000
+        compressor.compress.assert_called_once_with(messages, current_tokens=123_456, focus_topic=None, force=False)
+
+    def test_pre_context_compress_plugin_hook_failure_does_not_break_compression(self):
+        """The hook is observer-only; plugin failures must not block compression."""
+        from hermes_state import SessionDB
+
+        def _hook(_name, **_kwargs):
+            raise RuntimeError("plugin exploded")
+
+        with tempfile.TemporaryDirectory() as tmpdir, patch(
+            "hermes_cli.plugins.invoke_hook", side_effect=_hook
+        ):
+            db = SessionDB(db_path=Path(tmpdir) / "test.db")
+            agent = self._make_agent(db)
+
+            compressor = MagicMock()
+            compressor.compress.return_value = [{"role": "user", "content": "summary"}]
+            compressor.compression_count = 0
+            compressor.last_prompt_tokens = 0
+            compressor.last_completion_tokens = 0
+            compressor.context_length = 200_000
+            compressor.threshold_tokens = 196_000
+            compressor._last_summary_error = None
+            compressor._last_compress_aborted = False
+            agent.context_compressor = compressor
+
+            compressed, _prompt = agent._compress_context(
+                [{"role": "user", "content": "m"}], "sys", approx_tokens=100
+            )
+
+        assert compressed == [{"role": "user", "content": "summary"}]
+
 
 class TestSessionCompressEvent:
     """The session:compress event_callback fires after a compression split."""

@@ -710,6 +710,30 @@ def compress_context(
             except Exception as _rel_err:
                 logger.debug("compression lock release failed: %s", _rel_err)
 
+    # Best-effort plugin hook for deterministic handoffs/checkpoints before
+    # the transcript is summarized or dropped.  Return values are ignored;
+    # plugin failures must never block compression.  Fire after acquiring the
+    # compression lock so concurrent paths do not race duplicate handoffs.
+    try:
+        from hermes_cli.plugins import invoke_hook as _invoke_hook
+        import os as _os
+        _invoke_hook(
+            "pre_context_compress",
+            session_id=getattr(agent, "session_id", None),
+            task_id=task_id,
+            cwd=_os.getcwd(),
+            model=getattr(agent, "model", None),
+            platform=getattr(agent, "platform", None),
+            approx_tokens=approx_tokens,
+            message_count=len(messages),
+            context_length=getattr(agent.context_compressor, "context_length", None),
+            threshold_tokens=getattr(agent.context_compressor, "threshold_tokens", None),
+            compression_count=getattr(agent.context_compressor, "compression_count", 0),
+            focus_topic=focus_topic,
+        )
+    except Exception as _hook_err:
+        logger.debug("pre_context_compress hook failed: %s", _hook_err)
+
     # Notify external memory provider before compression discards context
     if agent._memory_manager:
         try:

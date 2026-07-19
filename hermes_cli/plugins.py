@@ -157,6 +157,10 @@ VALID_HOOKS: Set[str] = {
     "pre_api_request",
     "post_api_request",
     "api_request_error",
+    # Observer hook fired immediately before context compression mutates the
+    # in-memory transcript. Plugins must treat this as best-effort only:
+    # return values are ignored and callback failures must not block compression.
+    "pre_context_compress",
     "on_session_start",
     "on_session_end",
     "on_session_finalize",

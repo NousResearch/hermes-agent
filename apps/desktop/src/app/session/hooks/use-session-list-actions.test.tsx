@@ -2,7 +2,16 @@ import { act, renderHook } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import type { SessionInfo, SidebarSessionsResponse } from '@/hermes'
-import { $cronSessions, $messagingSessions, $sessions, $sessionsLoading, setCronSessions, setMessagingSessions, setSessions, setSessionsLoading } from '@/store/session'
+import {
+  $cronSessions,
+  $messagingSessions,
+  $sessions,
+  $sessionsLoading,
+  setCronSessions,
+  setMessagingSessions,
+  setSessions,
+  setSessionsLoading
+} from '@/store/session'
 
 import { useSessionListActions } from './use-session-list-actions'
 
@@ -159,7 +168,9 @@ describe('refreshSessions batches slices into one request', () => {
     const cron = [row('c1', { source: 'cron', title: 'nightly' })]
     const messaging = [row('m1', { source: 'telegram', title: 'tg chat' })]
 
-    listSidebarSessions.mockResolvedValue(sidebar({ sessions: recents, total: 2, profile_totals: { default: 2 } }, cron, messaging))
+    listSidebarSessions.mockResolvedValue(
+      sidebar({ sessions: recents, total: 2, profile_totals: { default: 2 } }, cron, messaging)
+    )
 
     const { result } = renderHook(() => useSessionListActions({ profileScope: 'default' }))
 

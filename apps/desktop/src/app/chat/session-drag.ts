@@ -30,13 +30,13 @@ import type { PointerEvent as ReactPointerEvent } from 'react'
 import { findGroup } from '@/components/pane-shell/tree/model'
 import {
   type DoubleTapContext,
+  radialPosition,
   rectContains,
   slotBefore,
   snapshotStrips,
   snapshotZones,
   startDragSession,
-  type StripSnapshot,
-  subZonePosition
+  type StripSnapshot
 } from '@/components/pane-shell/tree/renderer/drag-session'
 import {
   $layoutTree,
@@ -161,18 +161,33 @@ export function startSessionDrag(
         return { kind: 'group', groupId: zone.id, groupIds: [zone.id], pos: 'center', stack }
       }
 
-      // The composer (and everything in it) is always the link/attach drop;
-      // elsewhere the shared radial targeting decides center vs edge.
-      const pos = composers.some(rect => rectContains(rect, x, y)) ? 'center' : subZonePosition(zones, zone.id, x, y)
+      // Composer only = @session link. Elsewhere: edge = split, body = split
+      // right (video-style "add a chat" — center-as-link was invisible to users
+      // who dropped on the chat and got an @chip or a silent no-op).
+      const overComposer = composers.some(rect => rectContains(rect, x, y))
       const surface = surfaces.find(s => rectContains(s.rect, x, y))
 
-      if (pos === 'center') {
+      if (overComposer) {
         split = null
         link = surface?.composerTarget ?? 'main'
-      } else {
-        split = { anchor: surface?.anchor ?? 'workspace', pos }
-        link = null
+
+        return { kind: 'group', groupId: zone.id, groupIds: [zone.id], pos: 'center' }
       }
+
+      // Slightly smaller center ellipse than pane drags so edge splits are
+      // easier to hit without hunting a thin band.
+      const pos = radialPosition(zone.rect, x, y, 0.48)
+
+      if (pos === 'center') {
+        // Default body drop: open as a right-hand tile (matches "Open in split → Right").
+        split = { anchor: surface?.anchor ?? 'workspace', pos: 'right' }
+        link = null
+
+        return { kind: 'group', groupId: zone.id, groupIds: [zone.id], pos: 'right' }
+      }
+
+      split = { anchor: surface?.anchor ?? 'workspace', pos }
+      link = null
 
       return { kind: 'group', groupId: zone.id, groupIds: [zone.id], pos }
     },

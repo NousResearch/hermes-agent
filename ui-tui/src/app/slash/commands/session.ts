@@ -1,3 +1,4 @@
+import { usageBarsText } from '../../../components/overlayPrimitives.js'
 import { attachedImageNotice, introMsg, toTranscriptMessages } from '../../../domain/messages.js'
 import { sessionScopedModelArg, TUI_SESSION_MODEL_FLAG } from '../../../domain/slash.js'
 import type {
@@ -18,6 +19,8 @@ import { DEFAULT_INDICATOR_STYLE, INDICATOR_STYLES, type IndicatorStyle } from '
 import { patchOverlayState } from '../../overlayStore.js'
 import { patchUiState } from '../../uiStore.js'
 import type { SlashCommand } from '../types.js'
+
+const USAGE_CTA = 'Run /subscription to change plan · /topup to add to your balance'
 
 const TUI_SESSION_MODEL_RE = new RegExp(`(?:^|\\s)${TUI_SESSION_MODEL_FLAG}(?:\\s|$)`)
 
@@ -574,25 +577,61 @@ export const sessionCommands: SlashCommand[] = [
           return
         }
 
+        const sys = ctx.transcript.sys
+
         if (r) {
           patchUiState({
             usage: { calls: r.calls ?? 0, input: r.input ?? 0, output: r.output ?? 0, total: r.total ?? 0 }
           })
         }
 
-        // Nous credits block is agent-independent (a portal fetch), so it shows
-        // even with zero API calls or on a resumed session. Render it whenever
-        // present, before the token panel.
-        const creditsLines = r?.credits_lines ?? []
+        // Nous balance block is agent-independent (a portal fetch), so it shows
+        // even with zero API calls or on a resumed session. Prefer the shared
+        // dollar usage model (two-bar view, dollars-only); fall back to the
+        // legacy text lines only when the model is unavailable.
+        const usageModel = r?.usage
+        const barLines = usageBarsText(usageModel)
+        let showedBalance = false
 
-        if (creditsLines.length) {
-          ctx.transcript.panel('Nous credits', [{ text: creditsLines.join('\n') }])
+        if (usageModel?.available && (barLines.length || usageModel.status === 'free')) {
+          const sections: PanelSection[] = []
+          const plan = usageModel.plan_name ?? (usageModel.status === 'free' ? 'Free' : null)
+
+          if (plan) {
+            sections.push({
+              text: `Plan: ${plan}${usageModel.renews_display ? ` · renews ${usageModel.renews_display}` : ''}`
+            })
+          }
+
+          if (barLines.length) {
+            sections.push({ text: barLines.join('\n') })
+          }
+
+          if (usageModel.status === 'free') {
+            sections.push({ text: '> Free · free models only. Run /subscription to reach paid models.' })
+          } else if (usageModel.status === 'low') {
+            sections.push({
+              text: `! Low balance · ${usageModel.total_spendable_display ?? 'under $5'} left. Run /topup or /subscription.`
+            })
+          }
+
+          ctx.transcript.panel('Balance', sections)
+          showedBalance = true
+        } else {
+          const creditsLines = r?.credits_lines ?? []
+
+          if (creditsLines.length) {
+            ctx.transcript.panel('Nous balance', [{ text: creditsLines.join('\n') }])
+            showedBalance = true
+          }
         }
 
         if (!r?.calls) {
-          if (!creditsLines.length) {
-            ctx.transcript.sys('no API calls yet')
+          if (!showedBalance) {
+            sys('no API calls yet')
           }
+
+          sys(USAGE_CTA)
 
           return
         }
@@ -618,6 +657,8 @@ export const sessionCommands: SlashCommand[] = [
         }
 
         ctx.transcript.panel('Usage', sections)
+
+        sys(USAGE_CTA)
       })
     }
   }

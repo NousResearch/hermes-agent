@@ -1617,12 +1617,28 @@ class HermesACPAgent(acp.Agent):
                             self._send_session_info_update(session_id),
                         )
 
+                # Snapshot the runtime identity; the validator lets the
+                # background titler skip its LLM call if the session's model
+                # changed before it fires (#19027).
+                _title_model = getattr(state.agent, "model", None)
+                _title_provider = getattr(state.agent, "provider", None)
                 maybe_auto_title(
                     self.session_manager._get_db(),
                     session_id,
                     user_text,
                     final_response,
                     state.history,
+                    main_runtime={
+                        "model": getattr(state.agent, "model", None),
+                        "provider": getattr(state.agent, "provider", None),
+                        "base_url": getattr(state.agent, "base_url", None),
+                        "api_key": getattr(state.agent, "api_key", None),
+                        "api_mode": getattr(state.agent, "api_mode", None),
+                    },
+                    runtime_validator=lambda: (
+                        getattr(state.agent, "model", None) == _title_model
+                        and getattr(state.agent, "provider", None) == _title_provider
+                    ),
                     title_callback=_notify_title_update,
                 )
             except Exception:

@@ -368,6 +368,17 @@ current NDoH STGs/EML and specialist guidance, which are updated periodically):
   of notifiable medical conditions.
 - Units: use SI units and SA lab conventions (creatinine µmol/L, glucose/calcium
   mmol/L, blood gases in kPa).
+- Second-line/where first-line fails: know that ART switches and DR-TB regimens
+  follow specific NDoH protocols and specialist input — name the pathway, don't
+  improvise a regimen.
+- Emergency anchors (confirm doses against the current STGs/EML): anaphylaxis →
+  IM adrenaline 1:1000 (adult 0.5 mg, paeds 0.01 mg/kg); severe/eclamptic
+  pre-eclampsia → magnesium sulphate + BP control; status epilepticus →
+  benzodiazepine then load; DKA → fluids + fixed-rate insulin + K⁺ replacement;
+  organophosphate poisoning → atropine (+ pralidoxime); SA snakebite →
+  polyvalent antivenom for progressive cytotoxic/neurotoxic envenomation.
+- Antimicrobial stewardship: prefer narrow-spectrum EML agents, respect local
+  antibiograms/AMR, and stop/de-escalate on culture results.
 
 Rules:
 - When guidance is primarily international (e.g. a US/UK guideline) and may differ

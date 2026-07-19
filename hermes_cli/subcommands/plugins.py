@@ -48,6 +48,17 @@ def build_plugins_parser(subparsers, *, cmd_plugins: Callable) -> None:
     )
     plugins_update.add_argument("name", help="Plugin name to update")
 
+    plugins_inspect = plugins_subparsers.add_parser(
+        "inspect", help="Inspect plugin source without installing or running it"
+    )
+    plugins_inspect.add_argument("identifier", help="Git URL or owner/repo shorthand")
+    plugins_inspect.add_argument(
+        "--ref", dest="requested_ref", help="Exact 40-character lowercase commit SHA"
+    )
+    plugins_inspect.add_argument(
+        "--json", action="store_true", help="Print machine-readable JSON only"
+    )
+
     plugins_remove = plugins_subparsers.add_parser(
         "remove", aliases=["rm", "uninstall"], help="Remove an installed plugin"
     )

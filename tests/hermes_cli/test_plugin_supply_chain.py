@@ -16,11 +16,37 @@ from hermes_cli.plugin_supply_chain import (
     build_capability_report,
     read_provenance_lock,
     validate_full_commit_sha,
+    validate_source_url,
     write_provenance_lock,
 )
 
 
 SHA = "0123456789abcdef0123456789abcdef01234567"
+
+
+@pytest.mark.parametrize(
+    "source_url",
+    [
+        "https://github.com/owner/repo.git",
+        "git@github.com:owner/repo.git",
+        "ssh://git@github.com/owner/repo.git",
+        "file:///tmp/plugin-repo",
+    ],
+)
+def test_validate_source_url_preserves_supported_clone_urls(source_url: str) -> None:
+    assert validate_source_url(source_url) == source_url
+
+
+@pytest.mark.parametrize(
+    "source_url",
+    [
+        "https://user:secret@github.com/owner/repo.git",
+        "https://github.com/owner/repo.git?token=secret",
+    ],
+)
+def test_validate_source_url_rejects_credentials_and_query(source_url: str) -> None:
+    with pytest.raises(ValueError, match="credentials|query"):
+        validate_source_url(source_url)
 
 
 def _provenance(**overrides: str | None) -> PluginProvenance:

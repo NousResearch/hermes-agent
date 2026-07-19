@@ -5,6 +5,8 @@ from __future__ import annotations
 import logging
 import os
 import shutil
+import subprocess
+from argparse import ArgumentParser
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
@@ -21,6 +23,33 @@ from hermes_cli.plugins_cmd import (
     _resolve_subdir_within,
     _sanitize_plugin_name,
 )
+
+
+def _make_inspect_repo(repo: Path, *, subdir: str | None = None) -> tuple[str, Path]:
+    root = repo / subdir if subdir else repo
+    root.mkdir(parents=True)
+    (root / "plugin.yaml").write_text(
+        "name: inspect-me\nversion: 1.2.3\ndescription: Safe metadata\n"
+        "hooks: [pre_tool_call]\nprovides_tools: [z_tool, a_tool]\n"
+        "requires_env: [API_KEY, {name: TOKEN}]\n"
+    )
+    (root / "after-install.md").write_text("do not render me")
+    (root / "dashboard").mkdir()
+    (root / "dashboard" / "manifest.json").write_text("{}")
+    env = {
+        **os.environ,
+        "GIT_AUTHOR_NAME": "t",
+        "GIT_AUTHOR_EMAIL": "t@t",
+        "GIT_COMMITTER_NAME": "t",
+        "GIT_COMMITTER_EMAIL": "t@t",
+    }
+    subprocess.run(["git", "init", "-q"], cwd=repo, check=True, env=env)
+    subprocess.run(["git", "add", "-A"], cwd=repo, check=True, env=env)
+    subprocess.run(["git", "commit", "-q", "-m", "initial"], cwd=repo, check=True, env=env)
+    commit = subprocess.run(
+        ["git", "rev-parse", "HEAD"], cwd=repo, check=True, text=True, capture_output=True
+    ).stdout.strip()
+    return commit, root
 
 
 # ── _sanitize_plugin_name ─────────────────────────────────────────────────
@@ -928,3 +957,142 @@ class TestSubdirInstallE2E:
         identifier = f"file://{repo_root}#does-not-exist"
         with pytest.raises(PluginOperationError, match="does not exist"):
             pc._install_plugin_core(identifier, force=False)
+
+
+class TestInspectPlugin:
+    def test_returns_capabilities_and_commit_without_installing(self, tmp_path, monkeypatch):
+        from hermes_cli import plugins_cmd as pc
+
+        repo = tmp_path / "repo"
+        commit, _ = _make_inspect_repo(repo)
+        hermes_home = tmp_path / "home"
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+
+        result = pc.inspect_plugin_source(f"file://{repo}")
+
+        assert result == {
+            "source_url": f"file://{repo}",
+            "subdir": None,
+            "requested_ref": None,
+            "resolved_commit": commit,
+            "plugin": {
+                "name": "inspect-me",
+                "version": "1.2.3",
+                "description": "Safe metadata",
+            },
+            "capabilities": {
+                "hooks": ["pre_tool_call"],
+                "tools": ["a_tool", "z_tool"],
+                "required_env": ["API_KEY", "TOKEN"],
+                "has_dashboard": True,
+                "has_after_install": True,
+                "warnings": ["CAPABILITY_REPORT_IS_NOT_SECURITY_AUDIT"],
+            },
+        }
+        assert not (hermes_home / "plugins").exists()
+        assert not (hermes_home / ".hermes-plugin-lock.json").exists()
+
+    def test_exact_ref_checkout_is_detached_and_verified(self, tmp_path):
+        from hermes_cli import plugins_cmd as pc
+
+        repo = tmp_path / "repo"
+        requested, root = _make_inspect_repo(repo)
+        (root / "plugin.yaml").write_text("name: later\n")
+        subprocess.run(["git", "add", "-A"], cwd=repo, check=True)
+        subprocess.run(
+            ["git", "-c", "user.name=t", "-c", "user.email=t@t", "commit", "-q", "-m", "later"],
+            cwd=repo,
+            check=True,
+        )
+
+        result = pc.inspect_plugin_source(f"file://{repo}", requested_ref=requested)
+
+        assert result["requested_ref"] == requested
+        assert result["resolved_commit"] == requested
+        assert result["plugin"]["name"] == "inspect-me"
+
+    def test_invalid_ref_fails_before_git_resolution(self):
+        from hermes_cli import plugins_cmd as pc
+
+        with patch.object(pc, "_resolve_git_executable") as git:
+            with pytest.raises(PluginOperationError, match="40 lowercase"):
+                pc.inspect_plugin_source("owner/repo", requested_ref="ABC123")
+        git.assert_not_called()
+
+    @pytest.mark.parametrize("manifest", [None, "", "{}\n", ": : malformed [["])
+    def test_missing_or_malformed_manifest_cleans_temp(self, tmp_path, monkeypatch, manifest):
+        from hermes_cli import plugins_cmd as pc
+
+        repo = tmp_path / "repo"
+        repo.mkdir()
+        if manifest is not None:
+            (repo / "plugin.yaml").write_text(manifest)
+        subprocess.run(["git", "init", "-q"], cwd=repo, check=True)
+        subprocess.run(["git", "add", "-A"], cwd=repo, check=True)
+        subprocess.run(
+            ["git", "-c", "user.name=t", "-c", "user.email=t@t", "commit", "--allow-empty", "-q", "-m", "init"],
+            cwd=repo,
+            check=True,
+        )
+        temp_root = tmp_path / "temps"
+        temp_root.mkdir()
+        monkeypatch.setattr(pc.tempfile, "tempdir", str(temp_root))
+
+        with pytest.raises(PluginOperationError, match="manifest"):
+            pc.inspect_plugin_source(f"file://{repo}")
+        assert list(temp_root.iterdir()) == []
+
+    @pytest.mark.parametrize(
+        "identifier",
+        [
+            "https://user:secret@example.com/owner/repo.git",
+            "https://example.com/owner/repo.git?token=secret",
+        ],
+    )
+    def test_credentials_or_query_are_rejected_before_git(self, identifier):
+        from hermes_cli import plugins_cmd as pc
+
+        with patch.object(pc.subprocess, "run") as git:
+            with pytest.raises(PluginOperationError, match="credentials|query"):
+                pc.inspect_plugin_source(identifier)
+        git.assert_not_called()
+
+    def test_subdir_fragment_is_removed_before_source_validation(self, tmp_path):
+        from hermes_cli import plugins_cmd as pc
+
+        repo = tmp_path / "repo"
+        commit, _ = _make_inspect_repo(repo, subdir="plugins/one")
+        result = pc.inspect_plugin_source(f"file://{repo}#plugins/one")
+        assert result["source_url"] == f"file://{repo}"
+        assert result["subdir"] == "plugins/one"
+        assert result["resolved_commit"] == commit
+
+    def test_subdir_escape_is_rejected(self, tmp_path):
+        from hermes_cli import plugins_cmd as pc
+
+        repo = tmp_path / "repo"
+        _make_inspect_repo(repo)
+        with pytest.raises(PluginOperationError, match="escapes the repository"):
+            pc.inspect_plugin_source(f"file://{repo}#../outside")
+
+    def test_cmd_json_is_machine_only_and_dispatches(self, tmp_path, capsys):
+        from hermes_cli import plugins_cmd as pc
+        from hermes_cli.subcommands.plugins import build_plugins_parser
+
+        repo = tmp_path / "repo"
+        commit, _ = _make_inspect_repo(repo)
+        parser = ArgumentParser()
+        subs = parser.add_subparsers()
+        build_plugins_parser(subs, cmd_plugins=pc.plugins_command)
+        args = parser.parse_args(["plugins", "inspect", f"file://{repo}", "--json"])
+        args.func(args)
+        payload = __import__("json").loads(capsys.readouterr().out)
+        assert payload["resolved_commit"] == commit
+
+    def test_human_output_disclaims_security_audit(self, tmp_path, capsys):
+        from hermes_cli import plugins_cmd as pc
+
+        repo = tmp_path / "repo"
+        _make_inspect_repo(repo)
+        pc.cmd_inspect(f"file://{repo}")
+        assert "not a security audit" in capsys.readouterr().out.lower()

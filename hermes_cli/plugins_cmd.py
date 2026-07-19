@@ -17,6 +17,8 @@ import os
 import shutil
 import subprocess
 import sys
+import tempfile
+from dataclasses import asdict
 from pathlib import Path
 from typing import Any, Optional
 
@@ -444,6 +446,136 @@ def _require_installed_plugin(name: str, plugins_dir: Path, console) -> Path:
 # ---------------------------------------------------------------------------
 # Commands
 # ---------------------------------------------------------------------------
+
+
+def _run_inspect_git(command: list[str], *, cwd: Path | None = None) -> str:
+    try:
+        result = subprocess.run(
+            command,
+            cwd=str(cwd) if cwd else None,
+            capture_output=True,
+            text=True,
+            timeout=60,
+        )
+    except FileNotFoundError as exc:
+        raise PluginOperationError("git is not installed or not in PATH.") from exc
+    except subprocess.TimeoutExpired as exc:
+        raise PluginOperationError("Git operation timed out after 60 seconds.") from exc
+    if result.returncode != 0:
+        detail = (result.stderr or result.stdout or "").strip()
+        raise PluginOperationError(f"Git operation failed:\n{detail}")
+    return result.stdout.strip()
+
+
+def inspect_plugin_source(
+    identifier: str, *, requested_ref: str | None = None
+) -> dict[str, Any]:
+    """Inspect source metadata in a temporary clone without loading or installing it."""
+    from hermes_cli.plugin_supply_chain import (
+        build_capability_report,
+        validate_full_commit_sha,
+        validate_source_url,
+    )
+
+    if requested_ref is not None:
+        try:
+            requested_ref = validate_full_commit_sha(requested_ref)
+        except ValueError as exc:
+            raise PluginOperationError(str(exc)) from exc
+    try:
+        git_url, subdir = _resolve_git_url(identifier)
+        source_url = validate_source_url(git_url)
+    except ValueError as exc:
+        raise PluginOperationError(str(exc)) from exc
+
+    git_exe = _resolve_git_executable()
+    if not git_exe:
+        raise PluginOperationError("git is not installed or not in PATH.")
+
+    with tempfile.TemporaryDirectory() as temporary:
+        clone_root = Path(temporary) / "plugin"
+        _run_inspect_git([git_exe, "clone", source_url, str(clone_root)])
+        if requested_ref is not None:
+            _run_inspect_git(
+                [git_exe, "checkout", "--detach", requested_ref], cwd=clone_root
+            )
+        resolved_commit = _run_inspect_git(
+            [git_exe, "rev-parse", "HEAD"], cwd=clone_root
+        )
+        try:
+            resolved_commit = validate_full_commit_sha(resolved_commit)
+        except ValueError as exc:
+            raise PluginOperationError(f"Git returned an invalid commit: {exc}") from exc
+        if requested_ref is not None and resolved_commit != requested_ref:
+            raise PluginOperationError(
+                "Checked out commit does not exactly match the requested ref."
+            )
+
+        plugin_dir = (
+            _resolve_subdir_within(clone_root, subdir) if subdir else clone_root
+        )
+        manifest_path = plugin_dir / "plugin.yaml"
+        if not manifest_path.is_file():
+            raise PluginOperationError("Plugin manifest plugin.yaml is missing.")
+        manifest = _read_manifest(plugin_dir)
+        if not isinstance(manifest, dict) or not manifest:
+            raise PluginOperationError("Plugin manifest plugin.yaml is malformed.")
+        capability = asdict(build_capability_report(plugin_dir, manifest))
+        capability = {
+            key: list(value) if isinstance(value, tuple) else value
+            for key, value in capability.items()
+        }
+        fallback_name = (
+            subdir.rstrip("/").rsplit("/", 1)[-1]
+            if subdir
+            else _repo_name_from_url(source_url)
+        )
+        return {
+            "source_url": source_url,
+            "subdir": subdir,
+            "requested_ref": requested_ref,
+            "resolved_commit": resolved_commit,
+            "plugin": {
+                "name": manifest.get("name") or fallback_name,
+                "version": manifest.get("version"),
+                "description": manifest.get("description"),
+            },
+            "capabilities": capability,
+        }
+
+
+def cmd_inspect(
+    identifier: str, *, requested_ref: str | None = None, json_output: bool = False
+) -> dict[str, Any]:
+    """Inspect and print a remote plugin's declared metadata."""
+    try:
+        result = inspect_plugin_source(identifier, requested_ref=requested_ref)
+    except PluginOperationError as exc:
+        if json_output:
+            print(json.dumps({"error": str(exc)}, sort_keys=True))
+        else:
+            from rich.console import Console
+
+            Console().print(f"[red]Error:[/red] {exc}")
+        raise SystemExit(1) from exc
+
+    if json_output:
+        print(json.dumps(result, sort_keys=True))
+    else:
+        from rich.console import Console
+
+        console = Console()
+        plugin = result["plugin"]
+        capabilities = result["capabilities"]
+        console.print(f"[bold]{plugin['name']}[/bold] {plugin['version'] or ''}")
+        if plugin["description"]:
+            console.print(plugin["description"])
+        console.print(f"[dim]Source:[/dim] {result['source_url']}")
+        console.print(f"[dim]Commit:[/dim] {result['resolved_commit']}")
+        console.print(f"Hooks: {', '.join(capabilities['hooks']) or '(none)'}")
+        console.print(f"Tools: {', '.join(capabilities['tools']) or '(none)'}")
+        console.print("[yellow]This inspection is not a security audit.[/yellow]")
+    return result
 
 
 def _install_plugin_core(identifier: str, *, force: bool) -> tuple[Path, dict, str]:
@@ -2020,6 +2152,12 @@ def plugins_command(args) -> None:
         )
     elif action == "update":
         cmd_update(args.name)
+    elif action == "inspect":
+        cmd_inspect(
+            args.identifier,
+            requested_ref=getattr(args, "requested_ref", None),
+            json_output=getattr(args, "json", False),
+        )
     elif action in {"remove", "rm", "uninstall"}:
         cmd_remove(args.name)
     elif action == "enable":

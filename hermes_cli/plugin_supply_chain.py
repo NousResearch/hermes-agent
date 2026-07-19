@@ -106,7 +106,8 @@ def _validate_subdir(value: object) -> str | None:
     return value
 
 
-def _validate_source_url(value: object) -> str:
+def validate_source_url(value: object) -> str:
+    """Return a clone-safe provenance URL, rejecting secrets and URL metadata."""
     if not isinstance(value, str) or not value:
         raise ValueError("provenance source_url must be a non-empty string")
     if "://" in value:
@@ -141,7 +142,7 @@ def _validated_provenance(data: Mapping[str, object]) -> PluginProvenance:
     if not isinstance(inspected_at, str) or not inspected_at:
         raise ValueError("provenance inspected_at must be a non-empty string")
     return PluginProvenance(
-        source_url=_validate_source_url(data["source_url"]),
+        source_url=validate_source_url(data["source_url"]),
         subdir=_validate_subdir(data["subdir"]),
         resolved_commit=validate_full_commit_sha(data["resolved_commit"]),
         requested_ref=requested_ref,

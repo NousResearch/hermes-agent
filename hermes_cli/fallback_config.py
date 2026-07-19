@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import os
 from typing import Any
 
@@ -32,10 +33,43 @@ def resolve_entry_api_key(entry: dict[str, Any] | None) -> str | None:
 
 
 def _iter_fallback_entries(raw: Any) -> list[dict[str, Any]]:
+    """Yield normalised ``{provider, model, base_url?}`` dicts from any of
+    the supported ``fallback_providers`` payload shapes.
+
+    Accepts the canonical list-of-dicts, the legacy single-dict, and a
+    JSON-encoded string of either — the last form exists because earlier
+    ``hermes config set fallback_providers [...]`` invocations wrote the
+    value through a YAML serializer that round-tripped the list as a
+    quoted JSON string, and downstream code was silently treating the
+    string as "no chain configured" (hermes-agent #41590). Configs that
+    carry an unparseable string fall through to an empty chain rather than
+    raising — the failure surfaces later when the primary provider hits a
+    quota wall, which is exactly the bug a startup-time crash would hide.
+    """
+    if raw is None:
+        return []
     if isinstance(raw, dict):
         candidates = [raw]
     elif isinstance(raw, list):
         candidates = raw
+    elif isinstance(raw, str):
+        stripped = raw.strip()
+        # Heuristic: only attempt JSON parse for strings that look like
+        # serialised JSON (start with ``[`` or ``{``). Anything else — an
+        # accidental string literal, an env-var name, etc. — is treated as
+        # not-a-chain rather than raising at config-load time.
+        if not stripped or stripped[0] not in "[{":
+            return []
+        try:
+            parsed = json.loads(stripped)
+        except (ValueError, TypeError):
+            return []
+        if isinstance(parsed, dict):
+            candidates = [parsed]
+        elif isinstance(parsed, list):
+            candidates = parsed
+        else:
+            return []
     else:
         return []
 
@@ -75,6 +109,14 @@ def get_fallback_chain(config: dict[str, Any] | None) -> list[dict[str, Any]]:
     order. Legacy ``fallback_model`` entries are appended afterwards unless
     they target the same provider/model/base_url route as an earlier entry.
     The returned list always contains fresh dict copies.
+
+    Both keys accept the legacy single-dict shape, the canonical
+    list-of-dicts shape, and a JSON-encoded string of either — see
+    ``_iter_fallback_entries``. The string form is what
+    ``hermes config set fallback_providers [...]`` produced before the
+    YAML serializer was made list-aware; the silent "no chain" failure on
+    that path was the user-facing symptom for cron jobs hitting hard
+    provider quota walls.
     """
 
     config = config or {}

@@ -504,6 +504,72 @@ class TestSlackThreadContext:
         assert context == ""
 
     @pytest.mark.asyncio
+    async def test_api_empty_thread_is_not_cached_and_retries(self):
+        adapter = _make_adapter()
+        mock_client = adapter._team_clients["T1"]
+        mock_client.conversations_replies = AsyncMock(
+            side_effect=[
+                {"messages": []},
+                {
+                    "messages": [
+                        {"ts": "1000.0", "user": "U1", "text": "Parent"},
+                        {"ts": "1000.2", "user": "U1", "text": "Current"},
+                    ]
+                },
+            ]
+        )
+        adapter._user_name_cache = {("T1", "U1"): "Alice"}
+
+        first = await adapter._fetch_thread_context(
+            channel_id="C1", thread_ts="1000.0", current_ts="1000.1", team_id="T1"
+        )
+        second = await adapter._fetch_thread_context(
+            channel_id="C1", thread_ts="1000.0", current_ts="1000.2", team_id="T1"
+        )
+
+        assert first == ""
+        assert "Alice: Parent" in second
+        assert mock_client.conversations_replies.await_count == 2
+
+    @pytest.mark.asyncio
+    async def test_force_refresh_bypasses_nonempty_context_cache(self):
+        adapter = _make_adapter()
+        mock_client = adapter._team_clients["T1"]
+        mock_client.conversations_replies = AsyncMock(
+            side_effect=[
+                {
+                    "messages": [
+                        {"ts": "1000.0", "user": "U1", "text": "Old parent"},
+                        {"ts": "1000.1", "user": "U1", "text": "Current"},
+                    ]
+                },
+                {
+                    "messages": [
+                        {"ts": "1000.0", "user": "U1", "text": "Old parent"},
+                        {"ts": "1000.15", "user": "U1", "text": "New reply"},
+                        {"ts": "1000.2", "user": "U1", "text": "Current"},
+                    ]
+                },
+            ]
+        )
+        adapter._user_name_cache = {("T1", "U1"): "Alice"}
+
+        first = await adapter._fetch_thread_context(
+            channel_id="C1", thread_ts="1000.0", current_ts="1000.1", team_id="T1"
+        )
+        refreshed = await adapter._fetch_thread_context(
+            channel_id="C1",
+            thread_ts="1000.0",
+            current_ts="1000.2",
+            team_id="T1",
+            force_refresh=True,
+        )
+
+        assert "New reply" not in first
+        assert "New reply" in refreshed
+        assert mock_client.conversations_replies.await_count == 2
+
+    @pytest.mark.asyncio
     async def test_api_failure_returns_empty(self):
         adapter = _make_adapter()
         mock_client = adapter._team_clients["T1"]

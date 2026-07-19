@@ -1361,6 +1361,176 @@ class TestBangPrefixCommands:
 
 
 # ---------------------------------------------------------------------------
+# TestSlackThreadContextRehydration
+# ---------------------------------------------------------------------------
+
+
+class TestSlackThreadContextRehydration:
+    """Restart recovery must not turn into repeated full-thread injection."""
+
+    def _make_thread_event(
+        self,
+        *,
+        text="continue",
+        ts="1234567890.000002",
+        user="U_USER",
+    ):
+        return {
+            "text": text,
+            "user": user,
+            "channel": "C123",
+            "channel_type": "channel",
+            "team": "T123",
+            "ts": ts,
+            "thread_ts": "1111111111.000001",
+        }
+
+    def _prepare_adapter(self, adapter, *, per_user=False, strict_mention=False):
+        adapter.config.extra["strict_mention"] = strict_mention
+        adapter._team_bot_user_ids = {"T123": "U_BOT"}
+        adapter._channel_team = {"C123": "T123"}
+        adapter._has_active_session_for_thread = MagicMock(return_value=True)
+        adapter._fetch_thread_parent_text = AsyncMock(return_value="parent")
+        adapter._user_name_cache = {
+            ("T123", "U_USER"): "User",
+            ("T123", "U_OTHER"): "Other",
+        }
+        adapter._session_store = MagicMock(
+            config=MagicMock(thread_sessions_per_user=per_user)
+        )
+
+    @pytest.mark.asyncio
+    async def test_active_session_rehydrates_once_after_restart(self, adapter):
+        self._prepare_adapter(adapter)
+        adapter._fetch_thread_context = AsyncMock(
+            return_value="[Thread context]\nearlier details\n[End]\n\n"
+        )
+
+        await adapter._handle_slack_message(self._make_thread_event())
+        first_event = adapter.handle_message.await_args.args[0]
+
+        adapter.handle_message.reset_mock()
+        await adapter._handle_slack_message(
+            self._make_thread_event(text="ordinary follow-up", ts="1234567890.000003")
+        )
+        second_event = adapter.handle_message.await_args.args[0]
+
+        adapter._fetch_thread_context.assert_awaited_once_with(
+            channel_id="C123",
+            thread_ts="1111111111.000001",
+            current_ts="1234567890.000002",
+            team_id="T123",
+            force_refresh=False,
+        )
+        assert first_event.text.startswith("[Thread context]\nearlier details")
+        assert second_event.text == "ordinary follow-up"
+
+    @pytest.mark.asyncio
+    async def test_empty_rehydration_retries_next_reply(self, adapter):
+        self._prepare_adapter(adapter)
+        adapter._fetch_thread_context = AsyncMock(
+            side_effect=["", "[Thread context]\nrecovered\n[End]\n\n"]
+        )
+
+        await adapter._handle_slack_message(self._make_thread_event())
+        await adapter._handle_slack_message(
+            self._make_thread_event(text="retry", ts="1234567890.000003")
+        )
+
+        assert adapter._fetch_thread_context.await_count == 2
+        assert adapter.handle_message.await_args.args[0].text.startswith(
+            "[Thread context]\nrecovered"
+        )
+
+    @pytest.mark.asyncio
+    async def test_shared_thread_rehydration_is_deduped_across_users(self, adapter):
+        self._prepare_adapter(adapter, per_user=False)
+        adapter._fetch_thread_context = AsyncMock(
+            return_value="[Thread context]\nshared\n[End]\n\n"
+        )
+
+        await adapter._handle_slack_message(self._make_thread_event(user="U_USER"))
+        adapter.handle_message.reset_mock()
+        await adapter._handle_slack_message(
+            self._make_thread_event(
+                text="other user reply",
+                ts="1234567890.000003",
+                user="U_OTHER",
+            )
+        )
+
+        adapter._fetch_thread_context.assert_awaited_once()
+        assert adapter.handle_message.await_args.args[0].text == "other user reply"
+
+    @pytest.mark.asyncio
+    async def test_per_user_thread_sessions_rehydrate_independently(self, adapter):
+        self._prepare_adapter(adapter, per_user=True)
+        adapter._fetch_thread_context = AsyncMock(
+            return_value="[Thread context]\nshared\n[End]\n\n"
+        )
+
+        await adapter._handle_slack_message(self._make_thread_event(user="U_USER"))
+        await adapter._handle_slack_message(
+            self._make_thread_event(
+                text="other user reply",
+                ts="1234567890.000003",
+                user="U_OTHER",
+            )
+        )
+
+        assert adapter._fetch_thread_context.await_count == 2
+
+    @pytest.mark.asyncio
+    async def test_strict_explicit_mentions_still_refresh_context(self, adapter):
+        self._prepare_adapter(adapter, strict_mention=True)
+        adapter._fetch_thread_context = AsyncMock(
+            side_effect=[
+                "[Thread context]\nfirst snapshot\n[End]\n\n",
+                "[Thread context]\nupdated snapshot\n[End]\n\n",
+            ]
+        )
+
+        await adapter._handle_slack_message(
+            self._make_thread_event(text="<@U_BOT> refresh")
+        )
+        await adapter._handle_slack_message(
+            self._make_thread_event(
+                text="<@U_BOT> refresh again",
+                ts="1234567890.000003",
+            )
+        )
+
+        assert adapter._fetch_thread_context.await_count == 2
+        assert all(
+            awaited.kwargs["force_refresh"] is True
+            for awaited in adapter._fetch_thread_context.await_args_list
+        )
+        assert adapter.handle_message.await_args.args[0].text.startswith(
+            "[Thread context]\nupdated snapshot"
+        )
+
+    @pytest.mark.asyncio
+    async def test_ordinary_followups_never_repeat_successful_rehydration(self, adapter):
+        self._prepare_adapter(adapter)
+        adapter._fetch_thread_context = AsyncMock(
+            return_value="[Thread context]\nonce\n[End]\n\n"
+        )
+
+        for index in range(4):
+            await adapter._handle_slack_message(
+                self._make_thread_event(
+                    text=f"reply {index}",
+                    ts=f"1234567890.00000{index + 2}",
+                )
+            )
+
+        adapter._fetch_thread_context.assert_awaited_once()
+        delivered = [awaited.args[0].text for awaited in adapter.handle_message.await_args_list]
+        assert delivered[0].startswith("[Thread context]\nonce")
+        assert delivered[1:] == ["reply 1", "reply 2", "reply 3"]
+
+
+# ---------------------------------------------------------------------------
 # TestIncomingDocumentHandling
 # ---------------------------------------------------------------------------
 

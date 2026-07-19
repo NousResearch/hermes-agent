@@ -1944,6 +1944,9 @@ from gateway.agent_turn_preflight_runtime_service import (
 from gateway.agent_turn_finish_runtime_service import (
     finish_gateway_agent_turn,
 )
+from gateway.agent_turn_error_runtime_service import (
+    handle_gateway_agent_turn_error,
+)
 from gateway.group_runtime_platform_specs import (
     build_group_archive_runtime_platform_specs,
     build_group_monitoring_runtime_platform_specs,
@@ -12421,118 +12424,20 @@ class GatewayRunner(
 
             
         except Exception as e:
-            # Stop typing indicator on error too, retaining Slack thread/workspace
-            # routing so a failed turn cannot leave its status visible.
-            try:
-                _err_adapter = self._adapter_for_source(source)
-                _stop_with_metadata = getattr(
-                    type(_err_adapter), "_stop_typing_with_metadata", None
-                )
-                _stop_typing = getattr(type(_err_adapter), "stop_typing", None)
-                if _err_adapter and callable(_stop_with_metadata):
-                    await _err_adapter._stop_typing_with_metadata(
-                        source.chat_id,
-                        self._thread_metadata_for_source(
-                            source, self._reply_anchor_for_event(event)
-                        ),
-                    )
-                elif _err_adapter and callable(_stop_typing):
-                    await _err_adapter.stop_typing(source.chat_id)
-            except Exception:
-                pass
-            logger.exception("Agent error in session %s", session_key)
-            # Crash-resilience for failures that happen before AIAgent enters
-            # run_conversation() (for example: provider/httpx client init
-            # failures). In that path the agent cannot persist the current
-            # inbound turn itself, so append the user message here once. If the
-            # agent already reached its early turn-start persistence, the latest
-            # transcript user row will match and we skip the duplicate.
-            try:
-                if 'message_text' in locals() and message_text is not None and session_entry is not None:
-                    _already_persisted = False
-                    try:
-                        _recent_transcript = await self.async_session_store.load_transcript(session_entry.session_id)
-                    except Exception:
-                        _recent_transcript = []
-                    for _msg in reversed(_recent_transcript[-10:]):
-                        if _msg.get("role") == "user":
-                            _expected_user_content = (
-                                persist_user_message
-                                if persist_user_message is not None
-                                else message_text
-                            )
-                            _already_persisted = (_msg.get("content") == _expected_user_content)
-                            break
-                    if not _already_persisted:
-                        _user_entry = {
-                            "role": "user",
-                            "content": (
-                                persist_user_message
-                                if persist_user_message is not None
-                                else message_text
-                            ),
-                            "timestamp": (
-                                persist_user_timestamp
-                                if persist_user_timestamp is not None
-                                else time.time()
-                            ),
-                        }
-                        if getattr(event, "message_id", None):
-                            _user_entry["message_id"] = str(event.message_id)
-                        await self.async_session_store.append_to_transcript(
-                            session_entry.session_id,
-                            _user_entry,
-                        )
-            except Exception:
-                logger.debug("Failed to persist inbound user message after agent exception", exc_info=True)
-            # Log full details server-side only; never expose raw exception
-            # types or messages to end users (info-leakage risk).
-            status_hint = ""
-            status_code = getattr(e, "status_code", None)
-            _hist_len = len(history) if 'history' in locals() else 0
-            if status_code == 401:
-                status_hint = " Check your API key or run `claude /login` to refresh OAuth credentials."
-            elif status_code == 402:
-                status_hint = " Your API balance or quota is exhausted. Check your provider dashboard."
-            elif status_code == 429:
-                # Check if this is a plan usage limit (resets on a schedule) vs a transient rate limit
-                _err_body = getattr(e, "response", None)
-                _err_json = {}
-                try:
-                    if _err_body is not None:
-                        _err_json = _err_body.json().get("error", {})
-                        if not isinstance(_err_json, dict):
-                            _err_json = {}
-                except Exception:
-                    pass
-                if _err_json.get("type") == "usage_limit_reached":
-                    _resets_in = _err_json.get("resets_in_seconds")
-                    if _resets_in and _resets_in > 0:
-                        import math
-                        _hours = math.ceil(_resets_in / 3600)
-                        status_hint = f" Your plan's usage limit has been reached. It resets in ~{_hours}h."
-                    else:
-                        status_hint = " Your plan's usage limit has been reached. Please wait until it resets."
-                else:
-                    status_hint = " You are being rate-limited. Please wait a moment and try again."
-            elif status_code == 529:
-                status_hint = " The API is temporarily overloaded. Please try again shortly."
-            elif status_code in {400, 500}:
-                # 400 with a large session is context overflow.
-                # 500 with a large session often means the payload is too large
-                # for the API to process — treat it the same way.
-                if _hist_len > 50:
-                    return (
-                        "⚠️ Session too large for the model's context window.\n"
-                        "Use /compact to compress the conversation, or "
-                        "/reset to start fresh."
-                    )
-                elif status_code == 400:
-                    status_hint = " The request was rejected by the API."
-            return (
-                f"Sorry, I encountered an unexpected error.{status_hint}\n"
-                "Try again or use /reset to start a fresh session."
+            err = await handle_gateway_agent_turn_error(
+                runner=self,
+                event=event,
+                source=source,
+                session_entry=session_entry,
+                session_key=session_key,
+                history=history,
+                message_text=message_text,
+                persist_user_message=persist_user_message,
+                persist_user_timestamp=persist_user_timestamp,
+                exc=e,
+                logger=logger,
             )
+            return err.response
         finally:
             # Drop any staged must-deliver notes that were never consumed
             # (exception / early return / proxy path that only discards).

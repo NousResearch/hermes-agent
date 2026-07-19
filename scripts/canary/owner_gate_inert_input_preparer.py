@@ -264,12 +264,17 @@ def _fixed_release_source(
         mode=0o700,
         code="owner_gate_inert_input_release_checkout_invalid",
     )
+    # Lazy import avoids the intentional author/preparer module cycle.
+    from scripts.canary import owner_gate_release_author as release_author
     try:
-        observed_tree = outer.verify_local_provenance(
+        observed_tree = release_author.verify_exact_detached_release_source(
             source,
             release_revision=release_revision,
         )
-    except outer.OwnerGateOuterStage0Error as exc:
+    except (
+        outer.OwnerGateOuterStage0Error,
+        release_author.OwnerGateReleaseAuthorError,
+    ) as exc:
         _error("owner_gate_inert_input_release_checkout_invalid", exc)
     if observed_tree != expected_tree:
         _error("owner_gate_inert_input_release_checkout_mismatch")

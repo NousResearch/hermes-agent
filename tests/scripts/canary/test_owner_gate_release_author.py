@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+import itertools
 import json
 import os
 import shutil
@@ -11,7 +12,9 @@ from pathlib import Path
 import pytest
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 
+from scripts.canary import full_canary_owner_launcher as launcher
 from scripts.canary import owner_gate_foundation as foundation
+from scripts.canary import owner_gate_inert_input_preparer as preparer
 from scripts.canary import owner_gate_outer_stage0 as outer
 from scripts.canary import owner_gate_release_author as release_author
 from scripts.canary import owner_gate_trust as trust
@@ -104,26 +107,17 @@ def test_publish_release_source_uses_fixed_detached_no_hardlink_checkout(
     assert _git(destination, "remote", "get-url", "origin") == (
         release_author.FORK_ORIGIN
     )
-    source_commit_object = (
-        source / ".git" / "objects" / revision[:2] / revision[2:]
-    )
-    destination_commit_object = (
-        destination / ".git" / "objects" / revision[:2] / revision[2:]
-    )
-    assert source_commit_object.is_file()
-    assert destination_commit_object.is_file()
-    assert (
-        source_commit_object.stat().st_dev,
-        source_commit_object.stat().st_ino,
-    ) != (
-        destination_commit_object.stat().st_dev,
-        destination_commit_object.stat().st_ino,
-    )
+    assert (destination / ".git").is_dir()
+    assert not (destination / ".git/objects/info/alternates").exists()
+    _git(destination, "fsck", "--full", "--strict", "--no-dangling")
     replay = release_author.publish_release_source(
         source_root=source,
         release_revision=revision,
     )
     assert replay["created"] is False
+    source.rename(tmp_path / "source-moved-away")
+    assert _git(destination, "rev-parse", "HEAD") == revision
+    _git(destination, "fsck", "--full", "--strict", "--no-dangling")
 
 
 def test_publish_release_source_rejects_dirty_or_wrong_origin(
@@ -143,7 +137,6 @@ def test_publish_release_source_rejects_dirty_or_wrong_origin(
             source_root=source,
             release_revision=revision,
         )
-
     untracked.unlink()
     _git(source, "remote", "set-url", "origin", "https://example.invalid/wrong.git")
     with pytest.raises(
@@ -154,6 +147,199 @@ def test_publish_release_source_rejects_dirty_or_wrong_origin(
             source_root=source,
             release_revision=revision,
         )
+
+
+def test_release_source_rejects_alternates_promisor_and_linked_worktree(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    source, revision, _tree = _release_repository(tmp_path)
+    _publication_root(tmp_path, monkeypatch)
+    shared = tmp_path / "shared"
+    subprocess.run(
+        (
+            "/usr/bin/git",
+            "clone",
+            "--shared",
+            "--",
+            str(source),
+            str(shared),
+        ),
+        check=True,
+        stdin=subprocess.DEVNULL,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        env={"PATH": "/usr/bin:/bin", "LC_ALL": "C", "TMPDIR": "/tmp"},
+    )
+    _git(shared, "remote", "set-url", "origin", release_author.FORK_ORIGIN)
+    assert (shared / ".git/objects/info/alternates").exists()
+    with pytest.raises(
+        release_author.OwnerGateReleaseAuthorError,
+        match="owner_gate_release_author_object_store_invalid",
+    ):
+        release_author.publish_release_source(
+            source_root=shared,
+            release_revision=revision,
+        )
+
+    _git(source, "config", "remote.origin.promisor", "true")
+    with pytest.raises(
+        release_author.OwnerGateReleaseAuthorError,
+        match="owner_gate_release_author_object_store_invalid",
+    ):
+        release_author.publish_release_source(
+            source_root=source,
+            release_revision=revision,
+        )
+    _git(source, "config", "--unset", "remote.origin.promisor")
+
+    linked = tmp_path / "linked-worktree"
+    _git(source, "worktree", "add", "--detach", str(linked), revision)
+    assert (linked / ".git").is_file()
+    with pytest.raises(
+        release_author.OwnerGateReleaseAuthorError,
+        match="owner_gate_release_author_object_store_invalid",
+    ):
+        release_author.verify_exact_detached_release_source(
+            linked,
+            release_revision=revision,
+        )
+
+
+def test_release_source_rejects_missing_object_and_existing_hardlink(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    source, revision, _tree = _release_repository(tmp_path)
+    release_base = _publication_root(tmp_path, monkeypatch)
+    release_author.publish_release_source(
+        source_root=source,
+        release_revision=revision,
+    )
+    destination = release_base / revision
+    selected = next(
+        path
+        for path in (destination / ".git/objects").rglob("*")
+        if path.is_file() and not path.is_symlink()
+    )
+    os.link(selected, tmp_path / "object-alias")
+    with pytest.raises(
+        release_author.OwnerGateReleaseAuthorError,
+        match="owner_gate_release_author_object_store_invalid",
+    ):
+        release_author.publish_release_source(
+            source_root=source,
+            release_revision=revision,
+        )
+
+    missing_root = tmp_path / "missing"
+    missing_root.mkdir()
+    missing_source, missing_revision, _missing_tree = _release_repository(
+        missing_root
+    )
+    relative = sorted(set(outer.SOURCE_FILES.values()))[0]
+    blob = _git(
+        missing_source,
+        "rev-parse",
+        f"{missing_revision}:{relative}",
+    )
+    loose = missing_source / ".git/objects" / blob[:2] / blob[2:]
+    assert loose.is_file()
+    loose.unlink()
+    with pytest.raises(
+        release_author.OwnerGateReleaseAuthorError,
+        match="owner_gate_release_author_git_invalid",
+    ):
+        release_author.publish_release_source(
+            source_root=missing_source,
+            release_revision=missing_revision,
+        )
+
+
+def test_publish_release_source_fsync_failure_cleans_pending_and_replays(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    source, revision, _tree = _release_repository(tmp_path)
+    release_base = _publication_root(tmp_path, monkeypatch)
+    real_fsync_tree = release_author._fsync_tree
+    attempts = 0
+
+    def fail_once(path: Path) -> None:
+        nonlocal attempts
+        attempts += 1
+        if attempts == 1:
+            raise release_author.OwnerGateReleaseAuthorError(
+                "owner_gate_release_author_publish_failed"
+            )
+        real_fsync_tree(path)
+
+    monkeypatch.setattr(release_author, "_fsync_tree", fail_once)
+    with pytest.raises(
+        release_author.OwnerGateReleaseAuthorError,
+        match="owner_gate_release_author_publish_failed",
+    ):
+        release_author.publish_release_source(
+            source_root=source,
+            release_revision=revision,
+        )
+    assert not (release_base / revision).exists()
+    assert not (release_base / f".{revision}.pending").exists()
+
+    receipt = release_author.publish_release_source(
+        source_root=source,
+        release_revision=revision,
+    )
+    assert receipt["created"] is True
+
+
+def test_fixed_release_consumer_rejects_skip_worktree_mutation(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    source, revision, tree = _release_repository(tmp_path)
+    release_base = _publication_root(tmp_path, monkeypatch)
+    release_author.publish_release_source(
+        source_root=source,
+        release_revision=revision,
+    )
+    destination = release_base / revision
+    relative = sorted(set(outer.SOURCE_FILES.values()))[0]
+    _git(destination, "update-index", "--skip-worktree", "--", relative)
+    with (destination / relative).open("ab") as stream:
+        stream.write(b"\nmutated-after-publication\n")
+
+    trusted = release_base.parent
+    hermes = trusted.parent
+    monkeypatch.setattr(preparer, "OWNER_HOME", hermes.parent)
+    monkeypatch.setattr(preparer, "TRUSTED_ROOT", trusted)
+    monkeypatch.setattr(preparer, "RELEASE_SOURCE_BASE", release_base)
+    monkeypatch.setattr(preparer, "_hermes_root", lambda: hermes)
+    monkeypatch.setattr(
+        preparer.launcher,
+        "require_trusted_owner_support_activation",
+        lambda *_args, **_kwargs: None,
+    )
+
+    class Runtime:
+        def trusted_owner_support_paths(self) -> tuple[str, str]:
+            return ("/trusted/gcloud", "/trusted/root")
+
+        def sealed_owner_support_manifest(
+            self,
+            *,
+            expected_release_sha: str,
+        ) -> dict[str, str]:
+            return {
+                "release_sha": expected_release_sha,
+                "source_tree_oid": tree,
+            }
+
+    with pytest.raises(
+        launcher.OwnerLauncherError,
+        match="owner_gate_inert_input_release_checkout_invalid",
+    ):
+        preparer._fixed_release_source(revision, Runtime())
 
 
 def test_author_unsigned_trust_publishes_fixed_canonical_manifest(
@@ -177,7 +363,6 @@ def test_author_unsigned_trust_publishes_fixed_canonical_manifest(
         "python_version": "3.11.2",
         "interpreter_sha256": interpreter_sha256,
     }
-    authority = {"interpreter_image": image}
     migration = {"fixture": "validated-migration"}
     inventory = {
         "source_tree_oid": source_tree,
@@ -200,6 +385,8 @@ def test_author_unsigned_trust_publishes_fixed_canonical_manifest(
         resource_ancestor_chain=("organizations/123456789012",),
         interpreter_sha256=interpreter_sha256,
         interpreter_version="3.11.2",
+        interpreter_image=image,
+        attested_at_unix=1_784_300_000,
     )
     authority_parent = tmp_path / "authority"
     authority_parent.mkdir(mode=0o700)
@@ -243,13 +430,13 @@ def test_author_unsigned_trust_publishes_fixed_canonical_manifest(
     def read_immutable(path: Path, *, maximum: int) -> bytes:
         del maximum
         if path == pre_foundation_path:
-            return foundation.canonical_json_bytes(authority)
+            raise AssertionError("validated authority pathname was reread")
         if path == migration_path:
             return foundation.canonical_json_bytes(migration)
         raise AssertionError(path)
 
     monkeypatch.setattr(release_author, "_read_immutable", read_immutable)
-    collector_ids = iter(("1" * 64, "2" * 64, "3" * 64))
+    collector_ids = itertools.cycle(("1" * 64, "2" * 64, "3" * 64))
     monkeypatch.setattr(
         release_author,
         "_collector_key",
@@ -265,26 +452,28 @@ def test_author_unsigned_trust_publishes_fixed_canonical_manifest(
     )
     dummy = tmp_path / "dummy"
 
-    receipt = release_author.author_unsigned_trust(
-        source_root=tmp_path,
-        release_revision=release_revision,
-        wheelhouse_root=tmp_path,
-        wheelhouse_manifest_path=dummy,
-        interpreter_sha256=interpreter_sha256,
-        foundation_source_revision=foundation_revision,
-        foundation_source_tree_oid=foundation_tree,
-        pre_foundation_authority_path=pre_foundation_path,
-        owner_reauthentication_receipt_path=dummy,
-        network_evidence_path=dummy,
-        foundation_collector_public_key_path=dummy,
-        project_ancestry_evidence_path=dummy,
-        direct_iam_identity_authority_path=dummy,
-        network_collector_public_key_path=dummy,
-        cloud_collector_public_key_path=dummy,
-        host_collector_public_key_path=dummy,
-        credential_migration_envelope_path=migration_path,
-        now_unix=1_784_300_000,
-    )
+    author_inputs = {
+        "source_root": tmp_path,
+        "release_revision": release_revision,
+        "wheelhouse_root": tmp_path,
+        "wheelhouse_manifest_path": dummy,
+        "interpreter_sha256": interpreter_sha256,
+        "foundation_source_revision": foundation_revision,
+        "foundation_source_tree_oid": foundation_tree,
+        "pre_foundation_authority_path": pre_foundation_path,
+        "owner_reauthentication_receipt_path": dummy,
+        "network_evidence_path": dummy,
+        "foundation_collector_public_key_path": dummy,
+        "project_ancestry_evidence_path": dummy,
+        "direct_iam_identity_authority_path": dummy,
+        "network_collector_public_key_path": dummy,
+        "cloud_collector_public_key_path": dummy,
+        "host_collector_public_key_path": dummy,
+        "credential_migration_envelope_path": migration_path,
+        "now_unix": 1_784_300_000,
+    }
+    receipt = release_author.author_unsigned_trust(**author_inputs)
+    replay = release_author.author_unsigned_trust(**author_inputs)
 
     output = manifests / f"{release_revision}.trust.unsigned.json"
     value = json.loads(output.read_text(encoding="ascii"))
@@ -292,6 +481,9 @@ def test_author_unsigned_trust_publishes_fixed_canonical_manifest(
     assert output.read_bytes() == foundation.canonical_json_bytes(value)
     assert stat.S_IMODE(output.stat().st_mode) == 0o444
     assert receipt["unsigned_manifest_path"] == str(output)
+    assert replay["unsigned_manifest_sha256"] == receipt[
+        "unsigned_manifest_sha256"
+    ]
     assert receipt["private_key_loaded"] is False
     assert value["package_inventory_sha256"] == foundation.sha256_json(inventory)
     assert value["collector_public_key_ids"] == {
@@ -379,3 +571,60 @@ def test_release_author_cli_has_no_caller_selected_output() -> None:
             "--output",
             "/tmp/caller-selected",
         ])
+
+
+@pytest.mark.parametrize(
+    ("command", "forbidden"),
+    (
+        ("author-unsigned-trust", "--output"),
+        ("sign-trust", "--output"),
+        ("sign-trust", "--unsigned"),
+    ),
+)
+def test_trust_authoring_cli_rejects_caller_selected_manifest_paths(
+    command: str,
+    forbidden: str,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    arguments = [
+        command,
+        "--source-root",
+        "/tmp/source",
+        "--release-revision",
+        "a" * 40,
+        "--wheelhouse-root",
+        "/tmp/wheelhouse",
+        "--wheelhouse-manifest",
+        "/tmp/wheelhouse.json",
+        "--interpreter-sha256",
+        "f" * 64,
+        "--foundation-source-revision",
+        "0" * 40,
+        "--foundation-source-tree-oid",
+        "8" * 40,
+        "--pre-foundation-authority",
+        "/tmp/pre-foundation.json",
+        "--owner-reauth-receipt",
+        "/tmp/owner-reauth.json",
+        "--network-evidence",
+        "/tmp/network.json",
+        "--foundation-collector-public-key",
+        "/tmp/foundation.pub",
+        "--project-ancestry-evidence",
+        "/tmp/ancestry.json",
+        "--direct-iam-identity-authority",
+        "/tmp/direct-iam.json",
+        "--network-collector-public-key",
+        "/tmp/network.pub",
+        "--cloud-collector-public-key",
+        "/tmp/cloud.pub",
+        "--host-collector-public-key",
+        "/tmp/host.pub",
+        "--credential-migration-envelope",
+        "/tmp/migration.json",
+        forbidden,
+        "/tmp/caller-selected",
+    ]
+    with pytest.raises(SystemExit):
+        release_author.main(arguments)
+    assert "unrecognized arguments" in capsys.readouterr().err

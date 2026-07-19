@@ -224,13 +224,21 @@ not a reason to widen the owner launcher.
 
 ### Rollback authority boundary
 
-Before the fsynced `activation_commit_intent` exists, failures use the exact
-`abort-freeze` path and restore every approved database, host, token, service,
-and Caddy preimage. This is the only rollback window. The intent is the
-irreversible forward-only authority boundary: after it exists, recovery must
-never restore or route to v1. The transaction may only converge to verified v2
-or to the fixed 503 maintenance route while preserving the v2 authority
-database and mutation journal, followed by forward recovery.
+Rollback has three deliberately separate phases:
+
+1. Before a cutover plan has been staged, `abort-freeze` may restart only the
+   exact legacy gateway that the freeze stopped. It must attest that database
+   authority, host state, tokens, and Caddy were never changed.
+2. After plan staging but before the fsynced `activation_commit_intent`, the
+   signed cutover transaction performs its own exact preimage rollback for the
+   approved database, host, token, and service changes. Caddy is recovered by
+   its separate signed journal/state machine; `abort-freeze` is no longer a
+   valid recovery command.
+3. The fsynced `activation_commit_intent` is the irreversible forward-only
+   authority boundary. Recovery after it must never restore or route to v1.
+   It may only converge to verified v2 or to the fixed 503 maintenance route
+   while preserving the v2 authority database and mutation journal, followed
+   by forward recovery.
 
 The existing `muncho-auto-deploy-release run <SHA> <PR>` action remains valid
 only before cutover while the loaded production unit still uses the legacy

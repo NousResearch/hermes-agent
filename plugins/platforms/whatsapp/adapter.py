@@ -379,6 +379,8 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
     - allow_from: List of sender IDs allowed in DMs (when dm_policy="allowlist")
     - group_policy: "open" | "allowlist" | "disabled" | "pairing" — which groups are processed (default: "pairing")
     - group_allow_from: List of group JIDs allowed (when group_policy="allowlist")
+    - process_from_me_groups: Allow same-account group messages to reach the
+      normal group-policy and mention gates (default: false)
 
     Behavior (gating, mention parsing, markdown conversion, chunking) is
     provided by ``WhatsAppBehaviorMixin`` so the Cloud API adapter can
@@ -1736,6 +1738,13 @@ def _apply_yaml_config(yaml_cfg: dict, whatsapp_cfg: dict) -> dict | None:
         os.environ["WHATSAPP_ALLOWED_USERS"] = str(af)
     if "group_policy" in whatsapp_cfg and not os.getenv("WHATSAPP_GROUP_POLICY"):
         os.environ["WHATSAPP_GROUP_POLICY"] = str(whatsapp_cfg["group_policy"]).lower()
+    if (
+        "process_from_me_groups" in whatsapp_cfg
+        and not os.getenv("WHATSAPP_PROCESS_FROM_ME_GROUPS")
+    ):
+        os.environ["WHATSAPP_PROCESS_FROM_ME_GROUPS"] = str(
+            whatsapp_cfg["process_from_me_groups"]
+        ).lower()
     gaf = whatsapp_cfg.get("group_allow_from")
     if gaf is not None and not os.getenv("WHATSAPP_GROUP_ALLOWED_USERS"):
         if isinstance(gaf, list):

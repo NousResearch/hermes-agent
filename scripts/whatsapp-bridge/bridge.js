@@ -32,7 +32,10 @@ import { tmpdir } from 'os';
 import qrcode from 'qrcode-terminal';
 import { matchesAllowedUser, parseAllowedUsers } from './allowlist.js';
 import { createOutboundIdTracker } from './outbound_ids.js';
-import { classifyOwnerMessageGate } from './owner_message_gate.js';
+import {
+  classifyFromMeGroupGate,
+  classifyOwnerMessageGate,
+} from './owner_message_gate.js';
 import {
   buildPollPayload,
   buildLocationPayload,
@@ -74,6 +77,12 @@ const FORWARD_OWNER_MESSAGES =
   process.env &&
   typeof process.env.WHATSAPP_FORWARD_OWNER_MESSAGES === 'string' &&
   ['1', 'true', 'yes', 'on'].includes(process.env.WHATSAPP_FORWARD_OWNER_MESSAGES.toLowerCase());
+
+// Internal bridge flag populated from whatsapp.process_from_me_groups in
+// config.yaml. Same-account group messages remain disabled by default.
+const PROCESS_FROM_ME_GROUPS = ['1', 'true', 'yes', 'on'].includes(
+  String(process.env.WHATSAPP_PROCESS_FROM_ME_GROUPS || '').trim().toLowerCase(),
+);
 
 const PORT = parseInt(getArg('port', '3000'), 10);
 const SESSION_DIR = getArg('session', path.join(process.env.HOME || '~', '.hermes', 'whatsapp', 'session'));
@@ -546,16 +555,34 @@ async function startSocket() {
       // Handle fromMe messages based on mode
       let fromOwner = false;
       if (msg.key.fromMe) {
-        if (isGroup || chatId.includes('status')) {
+        if (chatId.includes('status')) {
           emitDebugEvent({
             stage: 'ignored',
-            reason: isGroup ? 'from_me_group' : 'from_me_status',
+            reason: 'from_me_status',
             chatId: redactWhatsAppId(chatId),
           });
           continue;
         }
 
-        if (WHATSAPP_MODE === 'bot') {
+        if (isGroup) {
+          const decision = classifyFromMeGroupGate({
+            mode: WHATSAPP_MODE,
+            enabled: PROCESS_FROM_ME_GROUPS,
+            recentlySent: recentlySentIds,
+            messageId: msg.key.id,
+          });
+          if (decision.action !== 'forward_group') {
+            emitDebugEvent({
+              stage: 'ignored',
+              reason: decision.action === 'drop_echo' ? 'agent_echo' : 'from_me_group',
+              chatId: redactWhatsAppId(chatId),
+              messageId: msg.key.id,
+            });
+            continue;
+          }
+          // The Python adapter remains authoritative for group_policy,
+          // group_allow_from, and mention requirements.
+        } else if (WHATSAPP_MODE === 'bot') {
           // Bot mode: separate bot number. fromMe inbound is either
           //   (a) an echo of our own /send (recentlySentIds will catch it), or
           //   (b) a message the owner typed from their own phone using the

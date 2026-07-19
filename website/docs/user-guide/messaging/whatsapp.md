@@ -38,6 +38,23 @@ bot stops working after a WhatsApp update, pull the latest Hermes version and re
 | **Separate bot number** (recommended) | Dedicate a phone number to the bot. People message that number directly. | Clean UX, multiple users, lower ban risk |
 | **Personal self-chat** | Use your own WhatsApp. You message yourself to talk to the agent. | Quick setup, single user, testing |
 
+### Advanced: Same-Account Groups
+
+If Hermes shares your WhatsApp account and should respond in a dedicated group, enable same-account group intake in `~/.hermes/config.yaml`:
+
+```yaml
+whatsapp:
+  process_from_me_groups: true
+  group_policy: allowlist
+  group_allow_from:
+    - "120363001234567890@g.us"
+  require_mention: true
+  mention_patterns:
+    - '^\s*@?hermes\b'
+```
+
+Run the bridge in `bot` mode for this setup. Messages sent by the linked account are admitted only when `process_from_me_groups` is enabled; Hermes's own outbound replies are suppressed as echoes. Admitted messages still must pass the configured group allowlist and mention gates. Keep the default `false` unless you intentionally use this same-account group pattern.
+
 ---
 
 ## Prerequisites

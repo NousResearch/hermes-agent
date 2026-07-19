@@ -87,18 +87,27 @@ pub(crate) async fn read_decoded_line<R>(
 where
     R: AsyncBufReadExt + Unpin,
 {
-    buf.clear();
+    // Cancel-safety: `buf` is NOT cleared on entry. When this future is
+    // dropped mid-read inside `tokio::select!` (the other stream produced a
+    // line first), `read_until` has already appended any consumed bytes to
+    // `buf`; the next call resumes and appends the rest of the line. Clearing
+    // on entry would silently drop those bytes. We clear only after a full
+    // line has been decoded.
     let n = reader.read_until(b'\n', buf).await?;
-    if n == 0 {
+    if n == 0 && buf.is_empty() {
         return Ok(None);
     }
+    // n == 0 with a non-empty buf means EOF cut off an unterminated line
+    // (possibly accumulated across cancelled reads) -- emit it.
     if buf.last() == Some(&b'\n') {
         buf.pop();
+        if buf.last() == Some(&b'\r') {
+            buf.pop();
+        }
     }
-    if buf.last() == Some(&b'\r') {
-        buf.pop();
-    }
-    Ok(Some(decode_console_bytes(buf)))
+    let line = decode_console_bytes(buf);
+    buf.clear();
+    Ok(Some(line))
 }
 
 /// Hooks the caller installs to receive output.
@@ -493,6 +502,48 @@ info line
                 .unwrap()
                 .as_deref(),
             Some("next")
+        );
+        assert!(read_decoded_line(&mut reader, &mut buf)
+            .await
+            .unwrap()
+            .is_none());
+    }
+
+    #[tokio::test]
+    async fn read_decoded_line_preserves_partial_line_across_cancellation() {
+        use std::time::Duration;
+        use tokio::io::AsyncWriteExt;
+
+        let (mut tx, rx) = tokio::io::duplex(64);
+        let mut reader = BufReader::new(rx);
+        let mut buf = Vec::new();
+
+        tx.write_all(b"partial").await.unwrap();
+        // Poll once, then cancel (drop) the future -- exactly what
+        // tokio::select! does in run_script when the other stream produces
+        // a line first. The consumed bytes must survive in `buf`.
+        let _ = tokio::time::timeout(
+            Duration::from_millis(0),
+            read_decoded_line(&mut reader, &mut buf),
+        )
+        .await;
+
+        tx.write_all(b" line\n").await.unwrap();
+        let line = read_decoded_line(&mut reader, &mut buf).await.unwrap();
+        assert_eq!(line.as_deref(), Some("partial line"));
+    }
+
+    #[tokio::test]
+    async fn read_decoded_line_emits_unterminated_final_line_at_eof() {
+        let data: &[u8] = b"no trailing newline";
+        let mut reader = BufReader::new(data);
+        let mut buf = Vec::new();
+        assert_eq!(
+            read_decoded_line(&mut reader, &mut buf)
+                .await
+                .unwrap()
+                .as_deref(),
+            Some("no trailing newline")
         );
         assert!(read_decoded_line(&mut reader, &mut buf)
             .await

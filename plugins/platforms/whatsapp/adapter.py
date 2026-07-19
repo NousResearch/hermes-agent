@@ -774,7 +774,7 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
         message = f"WhatsApp bridge process exited unexpectedly (code {returncode})."
         if not self.has_fatal_error:
             logger.error("[%s] %s", self.name, message)
-            self._set_fatal_error("whatsapp_bridge_exited", message, retryable=True)
+            self._set_fatal_error("whatsapp_bridge_exited", message, retryable=True, notify=False)
             self._close_bridge_log()
             await self._notify_fatal_error()
         return self.fatal_error_message or message

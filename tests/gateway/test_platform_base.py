@@ -1,5 +1,6 @@
 """Tests for gateway/platforms/base.py — MessageEvent, media extraction, message truncation."""
 
+import asyncio
 import os
 import time
 from unittest.mock import patch
@@ -2113,3 +2114,106 @@ class TestMediaFallbackDoesNotLeakHostPath:
         sent_text = adapter.sent[0]["content"]
         assert "Here's the daily summary." in sent_text
         assert self.SENSITIVE_PATH not in sent_text
+
+
+# ---------------------------------------------------------------------------
+# Auto-notify fatal errors (regression)
+# ---------------------------------------------------------------------------
+
+
+class TestSetFatalErrorNotifiesHandler:
+    """When _set_fatal_error() is called with notify=True (the default),
+    the registered handler must be called automatically.  Adapters that
+    already call _notify_fatal_error() explicitly must pass notify=False
+    to avoid double-notification.
+
+    Regression: _set_fatal_error set fatal state without notifying the
+    gateway handler, so adapters that forgot the second step silently
+    dropped the fatal escalation.
+    """
+
+    @pytest.mark.asyncio
+    async def test_auto_notifies_when_handler_registered(self):
+        """notify=True (default) triggers the handler automatically."""
+        adapter = _CapturingAdapter()
+        handler_called = []
+
+        async def handler(a):
+            handler_called.append(a)
+
+        adapter.set_fatal_error_handler(handler)
+        adapter._set_fatal_error("test_err", "msg", retryable=True)
+
+        # Handler runs as a scheduled task — give the event loop a tick.
+        await asyncio.sleep(0)
+        assert len(handler_called) == 1
+        assert handler_called[0] is adapter
+
+    @pytest.mark.asyncio
+    async def test_no_notify_when_notify_false(self):
+        """notify=False suppresses the auto-notify (adapter will call
+        _notify_fatal_error explicitly)."""
+        adapter = _CapturingAdapter()
+        handler_called = []
+
+        async def handler(a):
+            handler_called.append(a)
+
+        adapter.set_fatal_error_handler(handler)
+        adapter._set_fatal_error("test_err", "msg", retryable=True, notify=False)
+
+        await asyncio.sleep(0)
+        assert len(handler_called) == 0
+
+    @pytest.mark.asyncio
+    async def test_no_notify_when_no_handler(self):
+        """No handler registered — _set_fatal_error must not raise."""
+        adapter = _CapturingAdapter()
+        # No handler set — should be a silent no-op.
+        adapter._set_fatal_error("test_err", "msg", retryable=True)
+        await asyncio.sleep(0)  # no crash
+
+    @pytest.mark.asyncio
+    async def test_duplicate_suppression(self):
+        """Calling _set_fatal_error twice with notify=True should not
+        crash even if the handler raises."""
+        adapter = _CapturingAdapter()
+        call_count = 0
+
+        async def handler(a):
+            nonlocal call_count
+            call_count += 1
+            if call_count == 1:
+                raise RuntimeError("boom")
+
+        adapter.set_fatal_error_handler(handler)
+        adapter._set_fatal_error("err1", "first", retryable=True)
+        await asyncio.sleep(0)
+        assert call_count == 1
+
+        adapter._set_fatal_error("err2", "second", retryable=True)
+        await asyncio.sleep(0)
+        assert call_count == 2
+
+    @pytest.mark.asyncio
+    async def test_fatal_error_state_set_before_notify(self):
+        """The fatal error state must be fully written before the handler
+        runs, so the handler can read it."""
+        adapter = _CapturingAdapter()
+        observed_state = []
+
+        async def handler(a):
+            observed_state.append({
+                "code": a._fatal_error_code,
+                "message": a._fatal_error_message,
+                "retryable": a._fatal_error_retryable,
+            })
+
+        adapter.set_fatal_error_handler(handler)
+        adapter._set_fatal_error("auth_fail", "token expired", retryable=False)
+
+        await asyncio.sleep(0)
+        assert len(observed_state) == 1
+        assert observed_state[0]["code"] == "auth_fail"
+        assert observed_state[0]["message"] == "token expired"
+        assert observed_state[0]["retryable"] is False

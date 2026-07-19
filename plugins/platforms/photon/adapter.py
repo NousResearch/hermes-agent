@@ -579,6 +579,7 @@ class PhotonAdapter(BasePlatformAdapter):
                 "UPSTREAM_STREAM_DEGRADED",
                 message,
                 retryable=True,
+                notify=False,
             )
             try:
                 await self._notify_fatal_error()
@@ -1046,6 +1047,7 @@ class PhotonAdapter(BasePlatformAdapter):
                 "SIDECAR_CRASHED",
                 f"Photon sidecar exited unexpectedly (code {exit_code})",
                 retryable=True,
+                notify=False,
             )
             try:
                 await self._notify_fatal_error()

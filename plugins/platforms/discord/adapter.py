@@ -1018,7 +1018,7 @@ class DiscordAdapter(BasePlatformAdapter):
             message = f"Discord gateway task exited: {exc}"
 
         logger.error("[%s] %s", self.name, message, exc_info=exc if exc else False)
-        self._set_fatal_error("discord_gateway_task_exited", message, retryable=True)
+        self._set_fatal_error("discord_gateway_task_exited", message, retryable=True, notify=False)
 
         async def _notify() -> None:
             try:

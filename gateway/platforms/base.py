@@ -2778,12 +2778,35 @@ class BasePlatformAdapter(ABC):
             return
         self._write_runtime_status_safe("disconnected", platform_state="disconnected", error_code=None, error_message=None)
 
-    def _set_fatal_error(self, code: str, message: str, *, retryable: bool) -> None:
+    def _set_fatal_error(self, code: str, message: str, *, retryable: bool, notify: bool = True) -> None:
         self._running = False
         self._fatal_error_code = code
         self._fatal_error_message = message
         self._fatal_error_retryable = retryable
         self._write_runtime_status_safe("fatal", platform_state="fatal", error_code=code, error_message=message)
+        if notify:
+            self._schedule_fatal_notify()
+
+    def _schedule_fatal_notify(self) -> None:
+        """Schedule ``_notify_fatal_error`` if a handler is registered.
+
+        Adapters call ``_set_fatal_error`` but could forget to notify the
+        gateway.  Auto-notifying here makes the two-step API impossible to
+        misuse.  Adapters that already call ``_notify_fatal_error`` explicitly
+        should pass ``notify=False`` to avoid double-notification.
+        """
+        if self._fatal_error_handler is None:
+            return
+        try:
+            task = asyncio.get_running_loop().create_task(self._notify_fatal_error())
+        except RuntimeError:
+            return
+        try:
+            self._background_tasks.add(task)
+        except TypeError:
+            pass
+        if hasattr(task, "add_done_callback"):
+            task.add_done_callback(self._background_tasks.discard)
 
     def _write_runtime_status_safe(self, context: str, **kwargs) -> None:
         """Write runtime status; log first failure per context at warning, rest at debug.

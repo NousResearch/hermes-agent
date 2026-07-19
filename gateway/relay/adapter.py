@@ -212,6 +212,7 @@ class RelayAdapter(BasePlatformAdapter):
             "relay_disabled",
             "Relay disabled (opted out — recreate the instance to re-enable)",
             retryable=False,
+            notify=False,
         )
         try:
             await self._notify_fatal_error()

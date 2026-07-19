@@ -387,7 +387,7 @@ class IRCAdapter(BasePlatformAdapter):
         finally:
             if self.is_connected:
                 logger.warning("IRC: connection lost, marking disconnected")
-                self._set_fatal_error("connection_lost", "IRC connection closed unexpectedly", retryable=True)
+                self._set_fatal_error("connection_lost", "IRC connection closed unexpectedly", retryable=True, notify=False)
                 await self._notify_fatal_error()
 
     async def _handle_line(self, raw: str) -> None:

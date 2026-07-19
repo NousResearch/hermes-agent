@@ -822,9 +822,9 @@ class TelegramAdapter(BasePlatformAdapter):
         self._drop_delayed_deliveries = True
         super()._mark_disconnected()
 
-    def _set_fatal_error(self, code: str, message: str, *, retryable: bool) -> None:
+    def _set_fatal_error(self, code: str, message: str, *, retryable: bool, notify: bool = True) -> None:
         self._drop_delayed_deliveries = True
-        super()._set_fatal_error(code, message, retryable=retryable)
+        super()._set_fatal_error(code, message, retryable=retryable, notify=notify)
 
     def _should_drop_delayed_delivery(self) -> bool:
         """True once teardown/fatal-error started — delayed flushes must drop.
@@ -2339,7 +2339,7 @@ class TelegramAdapter(BasePlatformAdapter):
                 "Restarting gateway." % MAX_NETWORK_RETRIES
             )
             logger.error("[%s] %s Last error: %s", self.name, message, _redact_telegram_error_text(error))
-            self._set_fatal_error("telegram_network_error", message, retryable=True)
+            self._set_fatal_error("telegram_network_error", message, retryable=True, notify=False)
             await self._notify_fatal_error()
             return
 
@@ -2899,7 +2899,7 @@ class TelegramAdapter(BasePlatformAdapter):
             self.has_fatal_error
             and self.fatal_error_code == "telegram_polling_conflict"
         )
-        self._set_fatal_error("telegram_polling_conflict", message, retryable=False)
+        self._set_fatal_error("telegram_polling_conflict", message, retryable=False, notify=False)
         try:
             if self._app and self._app.updater:
                 await asyncio.wait_for(self._app.updater.stop(), timeout=_UPDATER_STOP_TIMEOUT)

@@ -5960,6 +5960,17 @@ class AIAgent:
         from agent.chat_completion_helpers import build_assistant_message
         return build_assistant_message(self, assistant_message, finish_reason)
 
+    def _strip_trailing_artifact(self, content: str) -> str:
+        """Forwarder — see ``agent.chat_completion_helpers._strip_trailing_artifact``.
+
+        Exposed on the agent so the conversation loop can run the same
+        self-reinforcing trailing-artifact scrub on the user-facing
+        ``final_response`` that ``build_assistant_message`` runs on the persisted
+        message, keeping delivered and stored text in agreement.
+        """
+        from agent.chat_completion_helpers import _strip_trailing_artifact
+        return _strip_trailing_artifact(self, content)
+
     def _needs_thinking_reasoning_pad(self) -> bool:
         """Return True when the active provider enforces reasoning_content echo-back.
 

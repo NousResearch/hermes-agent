@@ -1072,6 +1072,29 @@ DEFAULT_CONFIG = {
         # compounds over a long conversation.  Costs ~70 tokens in the cached
         # system prompt.  Set False to disable globally.
         "parallel_tool_call_guidance": True,
+        # Trailing-artifact scrub — breaks a self-reinforcing loop where an
+        # upstream model emits a spurious isolated token at the end of a turn
+        # (observed: a bare "course"), Hermes stores it verbatim in history,
+        # and the model then imitates its own prior turns and appends that
+        # token every subsequent turn. When enabled, a short isolated trailing
+        # token is stripped at the storage boundary ONLY once it has begun
+        # repeating across recent assistant turns (a one-off is left intact).
+        # Default True. Set False to disable.
+        "strip_trailing_artifacts": True,
+        # Max length (chars) of a trailing token eligible for the artifact
+        # scrub above. Longer trailing words are never touched.
+        "trailing_artifact_max_len": 12,
+        # How many recent assistant turns must already END with the same token
+        # before it is treated as a self-reinforcing artifact and stripped.
+        # Raising this makes the scrub more conservative (require more evidence
+        # of a loop before acting).
+        "trailing_artifact_min_repeats": 2,
+        # Bounded window of recent assistant turns inspected for the contiguous
+        # run of the trailing token. Detection walks assistant turns newest-first
+        # and stops at the first that does NOT end with the token (a break in the
+        # run = no active loop), so this is a defensive cap on how far back a
+        # huge history is scanned. Coerced up to at least min_repeats.
+        "trailing_artifact_window": 8,
         # Local-environment toolchain probe — surfaces Python/pip/uv/PEP-668
         # state in the system prompt when something non-default is detected
         # (e.g. python3 has no pip module, pip→python version mismatch, PEP

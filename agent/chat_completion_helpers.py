@@ -1238,6 +1238,113 @@ def build_api_kwargs(agent, api_messages: list) -> dict:
 
 
 
+# Matches a trailing "isolated stray token" artifact: an optional run of
+# whitespace, then a short ASCII word, at the very end of the content. The
+# word must be bounded on the left by a newline or the start of the string —
+# a stray token the upstream appended as its own line/fragment, NOT a word
+# that ends a real sentence (those are preceded by a letter/space on the same
+# line, and usually terminated by punctuation).
+_TRAILING_ARTIFACT_RE = re.compile(r"(?:\n\s*|\A)\s*([A-Za-z][A-Za-z'-]*)\s*\Z")
+
+
+def _strip_trailing_artifact(agent, content: str) -> str:
+    """Remove a self-reinforcing trailing stray token from assistant content.
+
+    Upstream models occasionally emit a spurious isolated token at the very
+    end of a turn (observed: a bare ``course`` appended as ``…sentence.\\n\\ncourse``
+    or as the entire content of a tool-only turn). Because Hermes stores the
+    assistant output verbatim into conversation history, the model then sees
+    that token ending prior assistant turns and imitates itself, appending it
+    to every subsequent turn — a self-reinforcement loop (the effect is
+    documented in the repetition literature: the more times a fragment repeats
+    in context, the higher the probability of continuing it). Once the loop
+    locks in, it recurs deterministically on every turn and worsens as the
+    contaminated history grows; clearing the token from history breaks it.
+
+    We break the loop at the storage boundary (the same place ``_strip_think_blocks``
+    and secret redaction run) so a scrub here cleans every downstream consumer:
+    API replay, state.db, gateway delivery, compression, title generation.
+
+    Conservative by design — ALL of these must hold before we strip:
+      * The content ends with an isolated short ASCII word (``<= max_len``),
+        sitting on its own after a newline or being the entire content.
+      * That same word already ends at least ``min_repeats`` recent assistant
+        turns in the running history. A first, one-off occurrence is left
+        untouched (it might be a legitimate one-word reply); only a token that
+        has demonstrably begun repeating across turns — the signature of the
+        self-reinforcement loop — is removed. This history check is what keeps
+        the heuristic from eating real content.
+
+    Returns the content unchanged when the feature is disabled, the content
+    doesn't match, or the history check fails.
+    """
+    if not getattr(agent, "_strip_trailing_artifacts", True):
+        return content
+    if not isinstance(content, str) or not content:
+        return content
+
+    max_len = getattr(agent, "_trailing_artifact_max_len", 12)
+    min_repeats = getattr(agent, "_trailing_artifact_min_repeats", 2)
+    # Bounded window of recent assistant turns to inspect for the contiguous
+    # run. Must be >= min_repeats or the loop could never be confirmed.
+    window = max(getattr(agent, "_trailing_artifact_window", 8), min_repeats)
+
+    m = _TRAILING_ARTIFACT_RE.search(content)
+    if not m:
+        return content
+    token = m.group(1)
+    if len(token) > max_len:
+        return content
+    # The whole content being exactly the token is the strongest signal, but
+    # still require the history repetition check below to avoid eating a
+    # legitimate one-word answer ("Yes", "Done").
+
+    # Count how many of the MOST RECENT, CONTIGUOUS assistant turns already end
+    # with this same isolated token. Contiguity is the loop signature: a
+    # self-reinforcing artifact contaminates every turn from some point onward,
+    # so the recent assistant turns form an unbroken run of "…\n<token>". We
+    # walk assistant turns newest-first and STOP at the first one that does not
+    # end with this token — a break in the run means these are unrelated older
+    # occurrences (e.g. a legitimate one-word "Done" ten turns ago), not an
+    # active loop, and must not license stripping. We also cap the walk at a
+    # bounded window of recent assistant turns so a huge history can't be
+    # scanned in full and so detection stays local to the current run.
+    recent = getattr(agent, "_session_messages", None)
+    if not isinstance(recent, list):
+        return content
+    repeats = 0
+    assistant_turns_seen = 0
+    for prior in reversed(recent):
+        if not isinstance(prior, dict) or prior.get("role") != "assistant":
+            continue
+        prior_content = prior.get("content")
+        # A synthetic/scaffolding turn with no string content doesn't break the
+        # contiguous run (it isn't a real assistant reply) — skip it.
+        if not isinstance(prior_content, str) or not prior_content:
+            continue
+        assistant_turns_seen += 1
+        pm = _TRAILING_ARTIFACT_RE.search(prior_content)
+        if pm and pm.group(1) == token:
+            repeats += 1
+            if repeats >= min_repeats:
+                break
+        else:
+            # First recent assistant turn that does NOT end with this token —
+            # the contiguous run is broken, so there is no active loop.
+            break
+        # Bounded window: stop after inspecting at most window recent assistant
+        # turns even if every one matched (defensive cap; the break above
+        # normally ends the walk far sooner).
+        if assistant_turns_seen >= window:
+            break
+    if repeats < min_repeats:
+        return content
+
+    # Strip the matched trailing artifact (and any whitespace it sat on).
+    cleaned = content[: m.start()].rstrip()
+    return cleaned
+
+
 def build_assistant_message(agent, assistant_message, finish_reason: str) -> dict:
     """Build a normalized assistant message dict from an API response message.
 
@@ -1296,6 +1403,16 @@ def build_assistant_message(agent, assistant_message, finish_reason: str) -> dic
     # compression, title generation.
     if isinstance(_san_content, str) and _san_content:
         _san_content = agent._strip_think_blocks(_san_content).strip()
+
+    # Break the self-reinforcing trailing-artifact loop (e.g. a bare "course"
+    # the upstream appended, which the model then imitates from its own prior
+    # turns every subsequent turn). Only strips a short isolated trailing token
+    # that has already begun repeating across recent assistant turns; a one-off
+    # is left intact. Runs at the storage boundary so it also cleans the
+    # verbatim anthropic_content_blocks replay path below. See
+    # _strip_trailing_artifact.
+    if isinstance(_san_content, str) and _san_content:
+        _san_content = _strip_trailing_artifact(agent, _san_content)
 
     # Defence-in-depth: redact credentials (PATs, API keys, Bearer tokens)
     # from assistant content BEFORE the message enters conversation history.
@@ -1388,6 +1505,32 @@ def build_assistant_message(agent, assistant_message, finish_reason: str) -> dic
     # agent/transports/anthropic.py and agent/anthropic_adapter.py.
     ordered_blocks = getattr(assistant_message, "anthropic_content_blocks", None)
     if ordered_blocks:
+        # Keep the verbatim replay list in sync with the trailing-artifact
+        # scrub applied to _san_content above: if the last block is a plain
+        # text block, scrub the same self-reinforcing token from its text so
+        # the interleaved-thinking replay path can't resurrect it. Only text
+        # blocks are touched — thinking/signature/tool_use blocks are left
+        # byte-identical so signed-block replay stays valid.
+        try:
+            if isinstance(ordered_blocks, list) and ordered_blocks:
+                _last = ordered_blocks[-1]
+                if (
+                    isinstance(_last, dict)
+                    and _last.get("type") == "text"
+                    and isinstance(_last.get("text"), str)
+                    and _last["text"]
+                ):
+                    _scrubbed = _strip_trailing_artifact(agent, _last["text"])
+                    if _scrubbed != _last["text"]:
+                        # Copy-on-write: don't mutate the block dict shared with
+                        # the raw API response object.
+                        ordered_blocks = list(ordered_blocks)
+                        _new_last = dict(_last)
+                        _new_last["text"] = _scrubbed
+                        ordered_blocks[-1] = _new_last
+        except Exception:
+            # Never let scrubbing break message construction.
+            ordered_blocks = getattr(assistant_message, "anthropic_content_blocks", None)
         msg["anthropic_content_blocks"] = ordered_blocks
 
     # Codex Responses API: preserve encrypted reasoning items for

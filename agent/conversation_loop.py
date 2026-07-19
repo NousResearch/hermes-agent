@@ -660,6 +660,12 @@ def run_conversation(
     user_message = _ctx.user_message
     original_user_message = _ctx.original_user_message
     messages = _ctx.messages
+    # Expose the running messages list to helpers that need recent history
+    # (e.g. build_assistant_message's trailing-artifact scrub reads recent
+    # assistant turn endings). The list is mutated in place throughout the
+    # loop, so this reference stays live; rollback/compression paths that
+    # rebind `messages` re-set this attr at their own sites.
+    agent._session_messages = messages
     conversation_history = _ctx.conversation_history
     active_system_prompt = _ctx.active_system_prompt
     effective_task_id = _ctx.effective_task_id
@@ -5480,7 +5486,20 @@ def run_conversation(
                     length_continue_retries = 0
                 
                 final_response = agent._strip_think_blocks(final_response).strip()
-                
+
+                # Break the self-reinforcing trailing-artifact loop on the
+                # USER-FACING response too, not just the persisted message. The
+                # scrub below runs inside _build_assistant_message (final_msg),
+                # but final_response is derived separately from raw provider
+                # content (plus any truncated-continuation prefix) and only had
+                # think blocks stripped — so without this the stray token would
+                # still be delivered/returned even while it's scrubbed from
+                # history. Running the identical scrub here keeps delivered and
+                # persisted text in agreement. Ordering: final_msg is not yet
+                # appended to `messages`, so the history window this reads is the
+                # same one _build_assistant_message sees just below.
+                final_response = agent._strip_trailing_artifact(final_response)
+
                 final_msg = agent._build_assistant_message(assistant_message, finish_reason)
 
                 # Pop thinking-only prefill and empty-response retry

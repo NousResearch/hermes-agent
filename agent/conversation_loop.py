@@ -710,6 +710,13 @@ def run_conversation(
         except Exception:
             pass
 
+    # The gateway caches agents across user turns.  Compression state is
+    # per-turn: carrying a prior in-place boundary forward would make a later
+    # uncompressed result look like a compacted transcript to gateway writers.
+    agent._last_compaction_in_place = False
+    agent._last_compression_attempt_recorded = False
+    agent._last_compression_attempt_in_place = None
+
     # ── Per-turn setup (the prologue) ──
     # All once-per-turn setup — stdio guarding, retry-counter resets, user
     # message sanitization, todo/nudge hydration, system-prompt restore-or-
@@ -1340,7 +1347,7 @@ def run_conversation(
             # and preflight compaction sites; see
             # conversation_history_after_compression().
             conversation_history = conversation_history_after_compression(
-                agent, messages
+                agent, messages, conversation_history
             )
             api_call_count -= 1
             agent._api_call_count = api_call_count
@@ -3523,7 +3530,7 @@ def run_conversation(
                             task_id=effective_task_id,
                         )
                         conversation_history = conversation_history_after_compression(
-                            agent, messages
+                            agent, messages, conversation_history
                         )
                         if len(messages) < original_len or old_ctx > _reduced_ctx:
                             agent._buffer_status(
@@ -3778,7 +3785,7 @@ def run_conversation(
                         task_id=effective_task_id,
                     )
                     conversation_history = conversation_history_after_compression(
-                        agent, messages
+                        agent, messages, conversation_history
                     )
 
                     # Re-estimate tokens after compression.  Same-message-count
@@ -4019,7 +4026,7 @@ def run_conversation(
                         task_id=effective_task_id,
                     )
                     conversation_history = conversation_history_after_compression(
-                        agent, messages
+                        agent, messages, conversation_history
                     )
 
                     # Re-estimate tokens after compression.  Same-message-count
@@ -5408,7 +5415,7 @@ def run_conversation(
                         task_id=effective_task_id,
                     )
                     conversation_history = conversation_history_after_compression(
-                        agent, messages
+                        agent, messages, conversation_history
                     )
                 
                 # Save session log incrementally (so progress is visible even if interrupted)

@@ -805,7 +805,7 @@ def build_turn_context(
                     _preflight_compression_blocked = True
                     break  # Cannot compress further: neither rows nor tokens moved
                 conversation_history = conversation_history_after_compression(
-                    agent, messages
+                    agent, messages, conversation_history
                 )
                 agent._empty_content_retries = 0
                 agent._thinking_prefill_retries = 0

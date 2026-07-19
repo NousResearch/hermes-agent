@@ -47,7 +47,7 @@ import { clearActiveSessionTodos } from '@/store/todos'
 import { recordToolDiff } from '@/store/tool-diffs'
 import { reportInstallMethodWarning } from '@/store/updates'
 import { notifyWorkspaceChanged, toolMayMutateFiles } from '@/store/workspace-events'
-import type { RpcEvent } from '@/types/hermes'
+import type { RpcEvent, UsageStats } from '@/types/hermes'
 
 import type { ClientSessionState } from '../../../types'
 
@@ -276,7 +276,8 @@ export function useGatewayEventHandler(deps: GatewayEventDeps) {
               ...state,
               ...statePatch,
               branch: statePatch.branch ?? state.branch,
-              cwd: statePatch.cwd ?? state.cwd
+              cwd: statePatch.cwd ?? state.cwd,
+              usage: statePatch.usage ? { ...state.usage, ...statePatch.usage } as UsageStats : state.usage
             }),
             payload?.stored_session_id || undefined
           )

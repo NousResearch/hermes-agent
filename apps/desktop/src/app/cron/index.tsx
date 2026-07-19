@@ -22,6 +22,8 @@ import {
   deleteCronJob,
   getCronJobRuns,
   getCronJobs,
+  getGlobalModelInfo,
+  getGlobalModelOptions,
   pauseCronJob,
   resumeCronJob,
   type SessionInfo,
@@ -54,7 +56,18 @@ import {
 } from '../overlays/panel'
 import type { SetStatusbarItemGroup } from '../shell/statusbar-controls'
 
-import { cronEditorUpdates, jobIsScriptOnly, validateCronEditor } from './cron-job-model'
+import {
+  buildCronModelOptions,
+  CRON_MODEL_DEFAULT,
+  cronEditorCreatePayload,
+  cronEditorUpdates,
+  cronModelSelectValue,
+  decodeCronModelChoice,
+  ensureCronModelOption,
+  jobIsScriptOnly,
+  type CronModelOption,
+  validateCronEditor
+} from './cron-job-model'
 import { jobState, jobTitle, STATE_DOT } from './job-state'
 
 const DEFAULT_DELIVER = 'local'
@@ -101,6 +114,17 @@ function jobScheduleExpr(job: CronJob): string {
 
 function jobDeliver(job: CronJob): string {
   return asText(job.deliver) || DEFAULT_DELIVER
+}
+
+function jobModelDisplay(job: CronJob, c: Translations['cron']): string {
+  const model = asText(job.model).trim()
+  const provider = asText(job.provider).trim()
+
+  if (!model) {
+    return c.modelDefault
+  }
+
+  return provider ? `${provider} · ${model}` : model
 }
 
 function cronParts(expr: string): null | string[] {
@@ -387,12 +411,16 @@ export function CronView({ onClose, onOpenSession, setStatusbarItemGroup: _setSt
 
   async function handleEditorSave(values: EditorValues) {
     if (editor.mode === 'create') {
-      const created = await createCronJob({
-        prompt: values.prompt,
-        schedule: values.schedule,
-        name: values.name || undefined,
-        deliver: values.deliver || DEFAULT_DELIVER
-      })
+      const created = await createCronJob(
+        cronEditorCreatePayload({
+          deliver: values.deliver || DEFAULT_DELIVER,
+          model: values.model,
+          name: values.name,
+          prompt: values.prompt,
+          provider: values.provider,
+          schedule: values.schedule
+        })
+      )
 
       updateCronJobs(rows => [...rows, created])
       notify({ kind: 'success', title: c.created, message: truncate(jobTitle(created), 60) })
@@ -574,7 +602,8 @@ function CronJobDetail({
             { label: c.frequencyLabel, value: jobScheduleDisplay(job) },
             { label: c.last.replace(/:$/, ''), value: formatTime(job.last_run_at) },
             { label: c.next.replace(/:$/, ''), value: formatTime(job.next_run_at) },
-            { label: c.deliverLabel, value: c.deliveryLabels[deliver] ?? deliver }
+            { label: c.deliverLabel, value: c.deliveryLabels[deliver] ?? deliver },
+            ...(jobIsScriptOnly(job) ? [] : [{ label: c.modelLabel, value: jobModelDisplay(job, c) }])
           ]}
         />
 
@@ -717,6 +746,10 @@ function CronEditorDialog({
   const [schedule, setSchedule] = useState('')
   const [schedulePreset, setSchedulePreset] = useState('daily')
   const [deliver, setDeliver] = useState(DEFAULT_DELIVER)
+  const [modelChoice, setModelChoice] = useState(CRON_MODEL_DEFAULT)
+  const [modelOptions, setModelOptions] = useState<CronModelOption[]>([])
+  const [defaultModelLabel, setDefaultModelLabel] = useState('')
+  const [modelsLoading, setModelsLoading] = useState(false)
   const [saving, setSaving] = useState(false)
   const [error, setError] = useState<null | string>(null)
 
@@ -730,9 +763,50 @@ function CronEditorDialog({
     setSchedule(initial ? jobScheduleExpr(initial) : (SCHEDULE_OPTIONS[0].expr ?? ''))
     setSchedulePreset(initial ? scheduleOptionForExpr(jobScheduleExpr(initial)).value : 'daily')
     setDeliver(initial ? jobDeliver(initial) : DEFAULT_DELIVER)
+    setModelChoice(initial ? cronModelSelectValue(initial) : CRON_MODEL_DEFAULT)
     setError(null)
     setSaving(false)
   }, [initial, open])
+
+  useEffect(() => {
+    if (!open || scriptOnlyJob) {
+      return
+    }
+
+    let cancelled = false
+
+    setModelsLoading(true)
+
+    Promise.all([getGlobalModelOptions(), getGlobalModelInfo().catch(() => null)])
+      .then(([options, info]) => {
+        if (cancelled) {
+          return
+        }
+
+        const pinned = initial
+          ? { model: asText(initial.model) || null, provider: asText(initial.provider) || null }
+          : { model: null, provider: null }
+        const catalog = ensureCronModelOption(buildCronModelOptions(options.providers), pinned)
+
+        setModelOptions(catalog)
+        setDefaultModelLabel(asText(info?.model).trim() || asText(options.model).trim())
+      })
+      .catch(() => {
+        if (!cancelled) {
+          setModelOptions([])
+          setDefaultModelLabel('')
+        }
+      })
+      .finally(() => {
+        if (!cancelled) {
+          setModelsLoading(false)
+        }
+      })
+
+    return () => {
+      cancelled = true
+    }
+  }, [initial, open, scriptOnlyJob])
 
   const selectedScheduleOption =
     SCHEDULE_OPTIONS.find(candidate => candidate.value === schedulePreset) ?? SCHEDULE_OPTIONS[0]
@@ -777,10 +851,14 @@ function CronEditorDialog({
     setError(null)
 
     try {
+      const choice = decodeCronModelChoice(modelChoice)
+
       await onSave({
         deliver,
+        model: choice.model,
         name: name.trim(),
         prompt: prompt.trim(),
+        provider: choice.provider,
         schedule: schedule.trim()
       })
     } catch (err) {
@@ -857,6 +935,34 @@ function CronEditorDialog({
             </Field>
           </div>
 
+          {!scriptOnlyJob ? (
+            <Field htmlFor="cron-model" label={c.modelLabel} optional optionalLabel={c.optional}>
+              <Select
+                disabled={modelsLoading}
+                onValueChange={value => {
+                  setModelChoice(value)
+                  setError(null)
+                }}
+                value={modelChoice}
+              >
+                <SelectTrigger className="h-9 rounded-md" id="cron-model">
+                  <SelectValue placeholder={modelsLoading ? c.modelLoading : c.modelDefault} />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value={CRON_MODEL_DEFAULT}>
+                    {defaultModelLabel ? c.modelDefaultWithName(defaultModelLabel) : c.modelDefault}
+                  </SelectItem>
+                  {modelOptions.map(option => (
+                    <SelectItem key={option.value} value={option.value}>
+                      {option.label}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+              <FieldHint>{c.modelHint}</FieldHint>
+            </Field>
+          ) : null}
+
           {schedulePreset === 'custom' ? (
             <Field htmlFor="cron-schedule" label={c.customScheduleLabel}>
               <Input
@@ -930,8 +1036,10 @@ type EditorState = { mode: 'closed' } | { mode: 'create' } | { job: CronJob; mod
 
 interface EditorValues {
   deliver: string
+  model: null | string
   name: string
   prompt: string
+  provider: null | string
   schedule: string
 }
 

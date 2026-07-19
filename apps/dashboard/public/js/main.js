@@ -437,7 +437,7 @@ function renderTopbar() {
     ),
     form,
     h("div.topbar-actions", {},
-      h("button.btn", {
+      h("button.btn.palette-btn", {
         type: "button", title: "Command palette (Ctrl/⌘+K)",
         onclick: openPalette,
       }, "⌘K"),

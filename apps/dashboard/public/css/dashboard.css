@@ -360,7 +360,11 @@ a { color: inherit; }
   .grid { padding: 12px; gap: 10px; }
   .size-s, .size-m, .size-l, .size-xl { grid-column: span 12; }
   .brand-tag { display: none; }
-  .topbar { flex-wrap: wrap; }
+  .topbar { flex-wrap: wrap; gap: 8px; }
+  .brand { flex: 1; min-width: 0; }         /* brand + actions share the top row */
+  .brand-name { font-size: 16px; }
+  .palette-btn { display: none; }           /* no keyboard shortcut on touch */
+  .topbar-actions { gap: 6px; }
   .search-form { order: 3; min-width: 100%; }
 }
 

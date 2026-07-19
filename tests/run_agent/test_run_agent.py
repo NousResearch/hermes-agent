@@ -155,6 +155,92 @@ def test_computer_use_safety_guidance_reads_security_config(tmp_path, monkeypatc
     assert getattr(configured_agent, "_computer_use_safety_guidance") is False
 
 
+def test_computer_use_safety_guidance_e2e_persists_prompt_across_config_edit(
+    tmp_path, monkeypatch
+):
+    """Use the real agent/tool registry and keep a session prompt immutable."""
+    hermes_home = tmp_path / "hermes-home"
+    hermes_home.mkdir()
+    config_path = hermes_home / "config.yaml"
+    config_path.write_text(
+        "security:\n  computer_use_safety_guidance: false\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+
+    # The test exercises real tool discovery, but must not require a desktop
+    # driver on the host running the suite.
+    from hermes_state import SessionDB
+    from tools.registry import invalidate_check_fn_cache
+
+    monkeypatch.setattr(
+        "tools.computer_use.cua_backend.cua_driver_binary_available",
+        lambda: True,
+    )
+    invalidate_check_fn_cache()
+    session_db = SessionDB(db_path=hermes_home / "state.db")
+    agent_kwargs = {
+        "api_key": "test-key-1234567890",
+        "base_url": "https://openrouter.ai/api/v1",
+        "model": "test-model",
+        "enabled_toolsets": ["computer_use"],
+        "quiet_mode": True,
+        "skip_context_files": True,
+        "skip_memory": True,
+        "session_id": "computer-use-prompt-e2e",
+        "session_db": session_db,
+    }
+
+    try:
+        with patch("run_agent.OpenAI"):
+            first_agent = AIAgent(**agent_kwargs)
+        first_agent.client = MagicMock()
+        first_agent.client.chat.completions.create.return_value = _mock_response(
+            content="first turn"
+        )
+        first_agent.compression_enabled = False
+        first_agent.tool_delay = 0
+
+        first_result = first_agent.run_conversation("first turn")
+        stored_prompt = session_db.get_session(first_agent.session_id)["system_prompt"]
+
+        assert "computer_use" in [tool["function"]["name"] for tool in first_agent.tools]
+        assert first_agent._computer_use_safety_guidance is False
+        assert "# Computer Use" in stored_prompt
+        assert "## Preferred workflow" in stored_prompt
+        assert "## When something is broken" in stored_prompt
+        assert "## Safety" not in stored_prompt
+
+        # A config edit must not mutate the cached/persisted prefix for a live
+        # conversation. A fresh agent for the continuation loads the new flag,
+        # then restores the byte-identical session snapshot instead.
+        config_path.write_text(
+            "security:\n  computer_use_safety_guidance: true\n",
+            encoding="utf-8",
+        )
+        with patch("run_agent.OpenAI"):
+            continuation_agent = AIAgent(**agent_kwargs)
+        continuation_agent.client = MagicMock()
+        continuation_agent.client.chat.completions.create.return_value = _mock_response(
+            content="continued turn"
+        )
+        continuation_agent.compression_enabled = False
+        continuation_agent.tool_delay = 0
+
+        continuation_agent.run_conversation(
+            "continued turn",
+            conversation_history=first_result["messages"],
+        )
+
+        assert continuation_agent._computer_use_safety_guidance is True
+        assert continuation_agent._cached_system_prompt == stored_prompt
+        assert session_db.get_session(continuation_agent.session_id)["system_prompt"] == stored_prompt
+        assert "## Safety" not in continuation_agent._cached_system_prompt
+    finally:
+        session_db.close()
+        invalidate_check_fn_cache()
+
+
 def test_persist_user_message_override_preserves_multimodal_turns(agent):
     multimodal_content = [
         {"type": "text", "text": "What color is this?"},

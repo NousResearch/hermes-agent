@@ -1,6 +1,7 @@
 import { cleanup, fireEvent, render as rtlRender, screen, waitFor } from '@testing-library/react'
 import type { ReactElement } from 'react'
 import { MemoryRouter } from 'react-router-dom'
+import type * as ReactRouterDom from 'react-router-dom'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import type { ToolsetConfig } from '@/types/hermes'
@@ -10,7 +11,7 @@ import type { ToolsetConfig } from '@/types/hermes'
 const navigateSpy = vi.fn()
 
 vi.mock('react-router-dom', async importOriginal => ({
-  ...(await importOriginal<typeof import('react-router-dom')>()),
+  ...(await importOriginal<typeof ReactRouterDom>()),
   useNavigate: () => navigateSpy
 }))
 

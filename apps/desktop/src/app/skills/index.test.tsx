@@ -2,6 +2,7 @@
 import { QueryClientProvider } from '@tanstack/react-query'
 import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { MemoryRouter } from 'react-router-dom'
+import type * as ReactRouterDom from 'react-router-dom'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import type * as HermesApi from '@/hermes'
@@ -40,7 +41,7 @@ vi.mock('@/store/notifications', () => ({
 const navigateSpy = vi.fn()
 
 vi.mock('react-router-dom', async importOriginal => ({
-  ...(await importOriginal<typeof import('react-router-dom')>()),
+  ...(await importOriginal<typeof ReactRouterDom>()),
   useNavigate: () => navigateSpy
 }))
 

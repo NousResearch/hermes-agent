@@ -256,6 +256,81 @@ class TestDiscoveryShape:
         assert result["results"] == []
         assert result["count"] == 0
 
+    def test_title_match_hides_subagent_source(self, db):
+        """Title matches must not surface sessions from excluded sources (subagent)."""
+        db.create_session("s_sub", source="subagent")
+        db.set_session_title("s_sub", "find-me-title")
+        db.append_message("s_sub", role="user", content="subagent work")
+
+        db.create_session("s_cli", source="cli")
+        db.set_session_title("s_cli", "find-me-title-cli")
+        db.append_message("s_cli", role="user", content="cli work")
+
+        # _discover() passes exclude_sources=['subagent', 'tool']
+        result = json.loads(session_search(query="find-me-title", db=db))
+        assert result["success"] is True
+        sids = [r["session_id"] for r in result["results"]]
+        assert "s_sub" not in sids, "subagent source should be excluded"
+        assert "s_cli" in sids
+
+    def test_title_match_respects_role_filter(self, db):
+        """Title anchor must not pick a message whose role is excluded."""
+        db.create_session("s_rf", source="cli")
+        db.set_session_title("s_rf", "tool-heavy-session")
+        db.append_message("s_rf", role="tool", content="tool output only", tool_name="x")
+        # No user/assistant messages — so default role_filter=['user','assistant']
+        # should find nothing
+
+        result = json.loads(session_search(query="tool-heavy", db=db))
+        assert result["count"] == 0
+
+        # With explicit tool role inclusion, should find it
+        result2 = json.loads(session_search(
+            query="tool-heavy", role_filter="tool", db=db
+        ))
+        assert result2["count"] >= 1
+        assert result2["results"][0]["session_id"] == "s_rf"
+
+    def test_title_match_hides_inactive_messages(self, db):
+        """Title search should not anchor on inactive (rewound) messages."""
+        db.create_session("s_inactive", source="cli")
+        db.set_session_title("s_inactive", "rewind-session")
+        msg_id = db.append_message("s_inactive", role="user", content="original message")
+
+        # Rewind the message
+        with db._lock:
+            db._conn.execute(
+                "UPDATE messages SET active = 0 WHERE id = ?", (msg_id,)
+            )
+
+        result = json.loads(session_search(query="rewind-session", db=db))
+        # The only message is inactive; title search should not return it
+        assert result["count"] == 0
+
+    def test_title_match_respects_offset_pagination(self, db):
+        """Title matches must respect pagination — offset skips early results.
+        Tested via search_messages() directly since session_search tool
+        does not expose offset."""
+        db.create_session("s_a", source="cli")
+        db.set_session_title("s_a", "paginate-alpha")
+        db.append_message("s_a", role="user", content="alpha content")
+        db.create_session("s_b", source="cli")
+        db.set_session_title("s_b", "paginate-beta")
+        db.append_message("s_b", role="user", content="beta content")
+
+        # Page 1: offset=0, limit=1
+        page1 = db.search_messages(query="paginate", limit=1, offset=0)
+        assert len(page1) == 1, f"expected 1, got {len(page1)}"
+
+        # Page 2: offset=1, limit=1
+        page2 = db.search_messages(query="paginate", limit=1, offset=1)
+        assert len(page2) == 1, f"expected 1, got {len(page2)}"
+
+        # Should get different sessions on each page
+        sids_page1 = {r["session_id"] for r in page1}
+        sids_page2 = {r["session_id"] for r in page2}
+        assert sids_page1 != sids_page2, "offset should paginate across title results"
+
     def test_limit_clamped_to_max_10(self, db):
         _seed_modpack_sessions(db)
         # Pass huge limit; should not error and should cap

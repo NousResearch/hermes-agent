@@ -5637,10 +5637,9 @@ class SessionDB:
         # (4efec63a3) which required an EXACT title match, this uses
         # substring matching so partial-title / keyword searches work.
         #
-        # Results are appended to matches and flow through the same
-        # context-enrichment and dedup-by-lineage pipeline below,
-        # returning properly formatted discovery results with anchored
-        # views and bookends rather than a bespoke "session_title" path.
+        # The title query carries the same source/role/active filters as
+        # the FTS5 query above.  Results respect offset/limit and are
+        # prepended to FTS5 matches (title hits outrank content hits).
         if raw_query:
             _FTS5_BOOLS = {"AND", "OR", "NOT"}
             title_terms = [
@@ -5650,29 +5649,74 @@ class SessionDB:
             if title_terms:
                 existing_ids = {m.get("id") for m in matches if m.get("id") is not None}
                 with self._lock:
-                    for term in title_terms[:5]:  # cap to 5 terms
+                    # Build LIKE clauses — one per term, OR'd together.
+                    like_clauses: list = []
+                    like_params: list = []
+                    for term in title_terms[:5]:
                         esc = (
                             term.replace("\\", "\\\\")
                             .replace("%", "\\%")
                             .replace("_", "\\_")
                         )
-                        try:
-                            title_cursor = self._conn.execute(
-                                """
-                                SELECT s.id AS session_id,
-                                       (SELECT m2.id FROM messages m2
-                                        WHERE m2.session_id = s.id
-                                        ORDER BY m2.timestamp DESC
-                                        LIMIT 1) AS msg_id
-                                FROM sessions s
-                                WHERE s.title IS NOT NULL
-                                  AND s.title LIKE ? ESCAPE '\\'
-                                LIMIT ?
-                                """,
-                                (f"%{esc}%", limit),
-                            )
-                        except sqlite3.OperationalError:
-                            continue
+                        like_clauses.append("s.title LIKE ? ESCAPE '\\'")
+                        like_params.append(f"%{esc}%")
+
+                    # Session-level source filters (mirror FTS5 query).
+                    session_where: list = [
+                        f"({' OR '.join(like_clauses)})",
+                        "s.title IS NOT NULL",
+                    ]
+                    if exclude_sources is not None:
+                        marks = ",".join("?" for _ in exclude_sources)
+                        session_where.append(f"s.source NOT IN ({marks})")
+                        like_params.extend(exclude_sources)
+                    if source_filter is not None:
+                        marks = ",".join("?" for _ in source_filter)
+                        session_where.append(f"s.source IN ({marks})")
+                        like_params.extend(source_filter)
+
+                    # Anchor-message sub-select filters.
+                    anchor_where: list = ["m2.session_id = s.id"]
+                    if not include_inactive:
+                        anchor_where.append(
+                            "(m2.active = 1 OR m2.compacted = 1)"
+                        )
+                    if role_filter:
+                        marks = ",".join("?" for _ in role_filter)
+                        anchor_where.append(f"m2.role IN ({marks})")
+                        # role_filter params are bound separately below;
+                        # they mirror the FTS5 role_filter params.
+
+                    title_sql = f"""
+                        SELECT s.id AS session_id,
+                               (SELECT m2.id FROM messages m2
+                                WHERE {' AND '.join(anchor_where)}
+                                ORDER BY m2.timestamp DESC
+                                LIMIT 1) AS msg_id
+                        FROM sessions s
+                        WHERE {' AND '.join(session_where)}
+                        ORDER BY s.started_at DESC
+                        LIMIT ? OFFSET ?
+                    """
+                    # Build final param list: role_filter params come
+                    # FIRST (they bind to the sub-select's m2.role IN (?,?)
+                    # which appears earliest in the SQL text), then LIKE
+                    # params, then source params, then limit/offset.
+                    final_params: list = []
+                    if role_filter:
+                        final_params.extend(role_filter)
+                    final_params.extend(like_params)
+                    final_params.extend([limit, offset])
+
+                    try:
+                        title_cursor = self._conn.execute(
+                            title_sql, final_params
+                        )
+                    except sqlite3.OperationalError:
+                        title_cursor = None
+
+                    title_matches: list = []
+                    if title_cursor is not None:
                         for row in title_cursor.fetchall():
                             msg_id = row["msg_id"]
                             if msg_id is None or msg_id in existing_ids:
@@ -5706,8 +5750,13 @@ class SessionDB:
                                 match["snippet"] = decoded[:120]
                             else:
                                 match["snippet"] = ""
-                            matches.append(match)
+                            title_matches.append(match)
                             existing_ids.add(msg_id)
+
+                # Prepend title matches (higher relevance) and trim
+                # FTS5 matches to maintain the total ≤ limit.
+                if title_matches:
+                    matches = title_matches + matches[: max(0, limit - len(title_matches))]
 
         # Add surrounding context (1 message before + after each match).
         # Done outside the lock so we don't hold it across N sequential queries.

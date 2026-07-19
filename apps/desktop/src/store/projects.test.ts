@@ -1,8 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 
-import { $sidebarAgentsGrouped } from '@/store/layout'
-
 import type { SidebarProjectTree } from '@/app/chat/sidebar/projects/workspace-groups'
+import { $sidebarAgentsGrouped } from '@/store/layout'
 
 import {
   $activeProjectId,
@@ -86,7 +85,9 @@ describe('project scope', () => {
 })
 
 describe('projectNameForCwd', () => {
-  const treeNode = (over: Partial<SidebarProjectTree> & Pick<SidebarProjectTree, 'id' | 'label'>): SidebarProjectTree => ({
+  const treeNode = (
+    over: Partial<SidebarProjectTree> & Pick<SidebarProjectTree, 'id' | 'label'>
+  ): SidebarProjectTree => ({
     path: null,
     repos: [],
     sessionCount: 0,

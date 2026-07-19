@@ -865,15 +865,30 @@ export function selectToolsetModel(
   })
 }
 
+export interface SelectToolsetProviderResponse {
+  ok: boolean
+  name: string
+  provider: string
+  /** Present when the selection was scoped to one web capability. */
+  capability?: string
+  /** Present (true) when a managed Nous row was selected but the Portal
+   *  entitlement is missing — the row won't activate until the user signs
+   *  in to Nous Portal. */
+  needs_nous_auth?: boolean
+  /** The managed feature key (e.g. "browser") when needs_nous_auth is set. */
+  feature?: string
+}
+
 export function selectToolsetProvider(
   name: string,
-  provider: string
-): Promise<{ ok: boolean; name: string; provider: string }> {
-  return window.hermesDesktop.api<{ ok: boolean; name: string; provider: string }>({
+  provider: string,
+  capability?: 'search' | 'extract'
+): Promise<SelectToolsetProviderResponse> {
+  return window.hermesDesktop.api<SelectToolsetProviderResponse>({
     ...profileScoped(),
     path: `/api/tools/toolsets/${encodeURIComponent(name)}/provider`,
     method: 'PUT',
-    body: { provider }
+    body: capability ? { provider, capability } : { provider }
   })
 }
 

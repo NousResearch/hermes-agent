@@ -421,7 +421,7 @@ def test_concrete_preflight_binds_instance_profile_key_and_effective_iam() -> No
         elif "os-login" in exact:
             value = profile
         elif "troubleshoot-policy" in exact:
-            value = {"access": "GRANTED"}
+            value = {"overallAccessState": "CAN_ACCESS"}
         else:
             raise AssertionError(exact)
         return subprocess.CompletedProcess(
@@ -447,6 +447,7 @@ def test_concrete_preflight_binds_instance_profile_key_and_effective_iam() -> No
     joined = "\n".join(" ".join(call) for call in calls)
     assert "ai-platform-runtime-01" in joined
     assert "policy-intelligence troubleshoot-policy iam" in joined
+    assert "--format=json(overallAccessState)" in joined
     assert "compute.instances.setMetadata" in joined
     assert "compute.instances.osAdminLogin" in joined
     assert "iap.tunnelInstances.accessViaIAP" in joined

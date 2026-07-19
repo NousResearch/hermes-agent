@@ -348,6 +348,14 @@ TOOL_CATEGORIES = {
                 ],
                 "tts_provider": "deepinfra",
             },
+            {
+                "name": "Supertonic",
+                "badge": "local · free",
+                "tag": "Fast on-device ONNX TTS, 31 languages (~400MB)",
+                "env_vars": [],
+                "tts_provider": "supertonic",
+                "post_setup": "supertonic",
+            },
         ],
     },
     "web": {
@@ -1357,6 +1365,29 @@ def _run_post_setup(post_setup_key: str):
         _print_info("    Default voice: en_US-lessac-medium (downloaded on first TTS call)")
         _print_info("    Full voice list: https://github.com/OHF-Voice/piper1-gpl/blob/main/docs/VOICES.md")
         _print_info("    Switch voices by setting tts.piper.voice in ~/.hermes/config.yaml")
+
+    elif post_setup_key == "supertonic":
+        try:
+            __import__("supertonic")
+            _print_success("    supertonic is already installed")
+        except ImportError:
+            _print_info("    Installing supertonic (~400MB ONNX model downloaded on first use)...")
+            try:
+                result = _pip_install(["-U", "supertonic>=1.3.1,<2", "--quiet"], timeout=300)
+                if result.returncode == 0:
+                    _print_success("    supertonic installed")
+                else:
+                    _print_warning("    supertonic install failed:")
+                    _print_info(f"      {(result.stderr or '').strip()[:300]}")
+                    _print_info('    Run manually: uv pip install -U "supertonic>=1.3.1,<2"')
+                    return
+            except subprocess.TimeoutExpired:
+                _print_warning("    supertonic install timed out (>5min)")
+                _print_info('    Run manually: uv pip install -U "supertonic>=1.3.1,<2"')
+                return
+        _print_info("    Voices: M1–M5 (male) / F1–F5 (female); 31 languages; expression tags <laugh>/<breath>/<sigh>")
+        _print_info("    The ~400MB model downloads on first TTS call to ~/.cache/supertonic3/")
+        _print_info("    Tune via tts.supertonic.* (voice, lang, speed, total_steps) in ~/.hermes/config.yaml")
 
     elif post_setup_key == "ddgs":
         try:

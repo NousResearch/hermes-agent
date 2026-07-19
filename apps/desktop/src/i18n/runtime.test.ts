@@ -53,6 +53,24 @@ describe('desktop i18n runtime translator', () => {
     expect(fieldCopyForSchemaKey(zh.settings.fieldDescriptions, field)).toBe('当后端提供推理内容时予以显示。')
   })
 
+  it('keeps Supertonic field copy localized', () => {
+    const fields = [
+      'tts.supertonic.voice',
+      'tts.supertonic.lang',
+      'tts.supertonic.speed',
+      'tts.supertonic.total_steps'
+    ]
+
+    for (const locale of ['ja', 'zh', 'zh-hant'] as const) {
+      for (const field of fields) {
+        expect(fieldCopyForSchemaKey(TRANSLATIONS[locale].settings.fieldLabels, field))
+          .not.toBe(fieldCopyForSchemaKey(TRANSLATIONS.en.settings.fieldLabels, field))
+        expect(fieldCopyForSchemaKey(TRANSLATIONS[locale].settings.fieldDescriptions, field))
+          .not.toBe(fieldCopyForSchemaKey(TRANSLATIONS.en.settings.fieldDescriptions, field))
+      }
+    }
+  })
+
   it('falls back to English when the active locale cannot resolve a key', () => {
     const boot = TRANSLATIONS.ja.boot as { ready?: string }
     const originalReady = boot.ready

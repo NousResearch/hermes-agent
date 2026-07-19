@@ -494,6 +494,12 @@ export const ja = defineLocale({
         },
         piper: {
           voice: 'Piper 音声'
+        },
+        supertonic: {
+          voice: 'Supertonic 音声',
+          lang: 'Supertonic 言語',
+          speed: 'Supertonic 速度',
+          totalSteps: 'Supertonic 品質ステップ'
         }
       },
       memory: {
@@ -569,6 +575,14 @@ export const ja = defineLocale({
       },
       voice: {
         autoTts: 'アシスタントの応答を自動で読み上げます。'
+      },
+      tts: {
+        supertonic: {
+          voice: '内蔵の音声スタイル。M1〜M5 または F1〜F5。',
+          lang: 'Supertonic 合成に使用する話し言葉のコードです。',
+          speed: '話速は 0.7 から 2.0 の範囲です。',
+          totalSteps: '品質と速度のバランスは 5〜12 ステップです。'
+        }
       },
       stt: {
         enabled: 'ローカルまたはプロバイダーによる音声文字起こしを有効にします。',

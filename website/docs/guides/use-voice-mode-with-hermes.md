@@ -150,6 +150,7 @@ ELEVENLABS_API_KEY=***
 - `elevenlabs` → best quality
 - `openai` → good middle ground
 - `mistral` → multilingual, native Opus
+- `supertonic` → free local TTS with expressive voices
 
 ### If you use `hermes setup`
 

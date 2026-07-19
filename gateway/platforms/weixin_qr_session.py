@@ -43,6 +43,9 @@ DEFAULT_SESSION_TIMEOUT_SECONDS = 480
 _POLL_INTERVAL_SECONDS = 1.0
 # Max QR refreshes before giving up (matches CLI wizard).
 _MAX_QR_REFRESHES = 3
+# Canonical iLink base URL — used as fallback in _normalise_ilink_base_url
+# when the weixin adapter module is not yet imported.
+_CANONICAL_ILINK_BASE_URL = "https://ilinkai.weixin.qq.com"
 
 
 @dataclass
@@ -521,4 +524,10 @@ def _normalise_ilink_base_url(raw_url: str) -> str:
             return raw_url
     except Exception:
         pass
-    return ILINK_BASE_URL
+    # Try to use the canonical URL from the weixin adapter; fall back to
+    # the hardcoded constant if the adapter module isn't imported yet.
+    try:
+        from gateway.platforms.weixin import ILINK_BASE_URL
+        return ILINK_BASE_URL
+    except ImportError:
+        return _CANONICAL_ILINK_BASE_URL

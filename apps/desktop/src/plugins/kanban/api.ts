@@ -20,6 +20,7 @@ import type {
   KanbanTask,
   KanbanTaskDetail,
   OrchestrationSettings,
+  TaskEstimate,
   WorkerLog
 } from './types'
 
@@ -202,6 +203,15 @@ export const createBoard = (slug: string, name: string, projectId?: string) =>
     method: 'POST',
     body: { slug, name, ...(projectId ? { project_id: projectId } : {}) }
   })
+
+/** Rough auxiliary-model estimate for a task (tokens + complexity). Makes a
+ *  model call — gate behind an explicit user action + disclaimer. */
+export const estimateTask = (id: string) =>
+  call<TaskEstimate>(withBoard(`/tasks/${id}/estimate`), { method: 'POST', body: {} })
+
+/** Estimate from typed title/body before a task exists (create dialog). */
+export const estimateNew = (title: string, body: string) =>
+  call<TaskEstimate>('/estimate', { method: 'POST', body: { title, body: body || undefined } })
 
 /** Edit a board's display metadata + default project directory. Pass
  *  `default_workdir: ''` to clear it. Slug is immutable. */

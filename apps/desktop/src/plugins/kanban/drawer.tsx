@@ -10,6 +10,7 @@ import {
   Button,
   cn,
   Codicon,
+  compactNumber,
   DropdownMenu,
   DropdownMenuContent,
   DropdownMenuItem,
@@ -20,6 +21,7 @@ import {
   Loader,
   LogView,
   Textarea,
+  Tip,
   useMutation,
   useQuery,
   useQueryClient,
@@ -31,6 +33,7 @@ import {
   $boardSlug,
   addComment,
   deleteTask,
+  estimateTask,
   fetchLog,
   fetchProfiles,
   fetchTask,
@@ -44,12 +47,14 @@ import {
 } from './api'
 import {
   columnMeta,
+  COMPLEXITY_LABEL,
   type Diagnostic,
   type DiagnosticAction,
   type KanbanAttachment,
   type KanbanEvent,
   type KanbanTaskDetail,
-  SEVERITY_TONE
+  SEVERITY_TONE,
+  type TaskEstimate
 } from './types'
 import {
   ago,
@@ -426,6 +431,73 @@ function AttachmentsSection({
   )
 }
 
+// Rough effort estimate via the auxiliary (auto-routed) model. Tokens +
+// complexity, never dollars — providers don't report cost reliably. Gated
+// behind an explicit click + disclaimer since it makes a model call. The
+// control keeps a stable footprint (spinner swaps in place) so nothing jumps.
+function EstimateSection({ id }: { id: string }) {
+  const [result, setResult] = useState<null | TaskEstimate>(null)
+
+  const est = useMutation({
+    mutationFn: () => estimateTask(id),
+    onError: err => host.notify({ kind: 'error', message: errText(err) }),
+    onSuccess: r => {
+      if (r.ok) {
+        setResult(r)
+      } else {
+        host.notify({ kind: 'warning', message: r.reason || 'Could not estimate' })
+      }
+    }
+  })
+
+  // A new task resets the cached estimate (the drawer reuses one instance).
+  useEffect(() => setResult(null), [id])
+
+  return (
+    <Section label="Estimate">
+      {result?.ok ? (
+        <div className="flex flex-col gap-1">
+          <div className="flex items-center gap-2 text-[0.8125rem]">
+            <span className="font-medium tabular-nums text-(--ui-text-secondary)">
+              ~{compactNumber(result.est_tokens)} tok
+            </span>
+            {result.complexity && (
+              <span className="text-(--ui-text-tertiary)">
+                · {COMPLEXITY_LABEL[result.complexity] ?? result.complexity}
+              </span>
+            )}
+            <Tip label="Re-estimate">
+              <Button
+                aria-label="Re-estimate"
+                className="ml-auto"
+                disabled={est.isPending}
+                onClick={() => est.mutate()}
+                size="icon-xs"
+                variant="ghost"
+              >
+                <Codicon name="refresh" size="0.75rem" spinning={est.isPending} />
+              </Button>
+            </Tip>
+          </div>
+          {result.rationale && (
+            <p className="text-[0.6875rem] leading-relaxed text-(--ui-text-quaternary)">{result.rationale}</p>
+          )}
+        </div>
+      ) : (
+        <div className="flex items-center gap-2">
+          <Button disabled={est.isPending} onClick={() => est.mutate()} size="xs" variant="outline">
+            <Codicon name={est.isPending ? 'loading' : 'dashboard'} size="0.75rem" spinning={est.isPending} />
+            {est.isPending ? 'Estimating…' : 'Estimate effort'}
+          </Button>
+          <Tip label="Runs a quick auxiliary-model call to estimate tokens + complexity. A rough guide, not a bill.">
+            <span className="text-[0.625rem] text-(--ui-text-quaternary)">makes a model call</span>
+          </Tip>
+        </div>
+      )}
+    </Section>
+  )
+}
+
 export function TaskDrawer({
   columns,
   id,
@@ -665,6 +737,8 @@ export function TaskDrawer({
             )}
 
             <DescriptionSection body={task.body} onSave={body => void mutate(() => patchTask(task.id, { body }))()} />
+
+            <EstimateSection id={task.id} />
 
             {task.result && (
               <Section label="Result">

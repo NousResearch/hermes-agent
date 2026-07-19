@@ -144,6 +144,18 @@ export interface KanbanProject {
   color?: null | string
 }
 
+/** POST /tasks/:id/estimate — rough auxiliary-model estimate (never dollars). */
+export interface TaskEstimate {
+  ok: boolean
+  reason?: null | string
+  est_tokens?: number
+  complexity?: 'L' | 'M' | 'S' | null
+  rationale?: null | string
+  model?: null | string
+}
+
+/** Human-readable complexity band (the backend returns the compact letter). */
+export const COMPLEXITY_LABEL: Record<string, string> = { L: 'Large', M: 'Medium', S: 'Small' }
 
 export interface BoardsResponse {
   boards: BoardMeta[]

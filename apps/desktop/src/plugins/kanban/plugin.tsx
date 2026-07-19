@@ -23,6 +23,7 @@ import {
   SIDEBAR_NAV_AREA,
   type SidebarNavContribution,
   STATUSBAR_AREAS,
+  Tip,
   useQuery,
   useValue
 } from '@hermes/plugin-sdk'
@@ -55,18 +56,19 @@ function KanbanCount() {
   }
 
   return (
-    <button
-      className={cn(
-        'inline-flex h-full items-center gap-1 rounded-none px-1.5 text-[0.6875rem] tabular-nums transition-colors',
-        'text-(--ui-text-tertiary) hover:bg-(--chrome-action-hover) hover:text-foreground'
-      )}
-      onClick={() => host.navigate('/kanban')}
-      title={`Kanban — ${count('running')} running, ${count('ready')} ready`}
-      type="button"
-    >
-      <Codicon name="project" size="0.7rem" />
-      <span>{active}</span>
-    </button>
+    <Tip label={`Kanban — ${count('running')} running, ${count('ready')} ready`}>
+      <button
+        className={cn(
+          'inline-flex h-full items-center gap-1 rounded-none px-1.5 text-[0.6875rem] tabular-nums transition-colors',
+          'text-(--ui-text-tertiary) hover:bg-(--chrome-action-hover) hover:text-foreground'
+        )}
+        onClick={() => host.navigate('/kanban')}
+        type="button"
+      >
+        <Codicon name="project" size="0.7rem" />
+        <span>{active}</span>
+      </button>
+    </Tip>
   )
 }
 

@@ -574,6 +574,129 @@ async def test_stream_edit_and_base_final_share_one_real_discord_message(
 
 
 @pytest.mark.asyncio
+async def test_oversized_cached_terminal_edit_records_durable_completion(
+    tmp_path, monkeypatch
+):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    monkeypatch.setattr(
+        "plugins.platforms.discord.adapter._build_operator_card_embed",
+        lambda card: {"kind": card.card_type},
+    )
+    instance = DiscordAdapter(PlatformConfig(enabled=True, token="***"))
+    record_response = Mock()
+    instance._record_discord_response = record_response
+    retained = SimpleNamespace(
+        id=7001,
+        edit=AsyncMock(),
+        to_reference=lambda **_kwargs: object(),
+    )
+    next_message_id = 7002
+
+    async def send_message(**_kwargs):
+        nonlocal next_message_id
+        if next_message_id == 7002:
+            next_message_id += 1
+            return retained
+        message = SimpleNamespace(
+            id=next_message_id,
+            to_reference=lambda **_kwargs: object(),
+        )
+        next_message_id += 1
+        return message
+
+    thread = SimpleNamespace(
+        id=777,
+        send=AsyncMock(side_effect=send_message),
+        fetch_message=AsyncMock(
+            side_effect=lambda message_id: retained
+            if int(message_id) in {42, 7001}
+            else None
+        ),
+    )
+    instance._client = SimpleNamespace(
+        get_channel=lambda channel_id: thread if channel_id == 777 else None,
+        fetch_channel=AsyncMock(),
+    )
+
+    await instance.send(
+        "555",
+        "Working",
+        metadata={
+            "thread_id": "777",
+            "status_key": "task_run",
+            "reply_to_message_id": "42",
+        },
+    )
+    final_text = "Complete final result " * 300
+    result = await instance.send(
+        "555",
+        final_text,
+        metadata={
+            "thread_id": "777",
+            "status_key": "task_run",
+            "status_terminal": True,
+            "notify": True,
+            "reply_to_message_id": "42",
+        },
+    )
+
+    assert result.success is True
+    assert result.continuation_message_ids
+    terminal_receipts = [
+        call.kwargs
+        for call in record_response.call_args_list
+        if call.kwargs.get("final")
+    ]
+    assert terminal_receipts == [
+        {
+            "reply_to": "42",
+            "result": result,
+            "content": final_text,
+            "final": True,
+        }
+    ]
+
+
+@pytest.mark.asyncio
+async def test_partial_oversized_terminal_edit_does_not_record_completion(
+    tmp_path, monkeypatch
+):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    instance = DiscordAdapter(PlatformConfig(enabled=True, token="***"))
+    record_response = Mock()
+    instance._record_discord_response = record_response
+    retained = SimpleNamespace(id=7001, edit=AsyncMock())
+    thread = SimpleNamespace(fetch_message=AsyncMock(return_value=retained))
+    instance._client = SimpleNamespace(
+        get_channel=lambda channel_id: thread if channel_id == 777 else None,
+        fetch_channel=AsyncMock(),
+    )
+    partial_result = SendResult(
+        success=True,
+        message_id="7001",
+        continuation_message_ids=["7002"],
+        raw_response={"partial_overflow": True},
+    )
+    instance._edit_overflow_split = AsyncMock(return_value=partial_result)
+
+    result = await instance.edit_message(
+        "555",
+        "7001",
+        "Incomplete final result " * 300,
+        finalize=True,
+        metadata={
+            "thread_id": "777",
+            "status_terminal": True,
+            "reply_to_message_id": "42",
+        },
+    )
+
+    assert result is partial_result
+    instance._edit_overflow_split.assert_awaited_once()
+    record_response.assert_not_called()
+
+
+@pytest.mark.asyncio
 async def test_gateway_style_running_edit_refreshes_embed_in_routed_thread(
     tmp_path, monkeypatch
 ):

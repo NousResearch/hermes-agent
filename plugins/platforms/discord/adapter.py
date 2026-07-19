@@ -3800,6 +3800,24 @@ class DiscordAdapter(BasePlatformAdapter):
                 channel = await self._client.fetch_channel(int(target_chat_id))
             msg = await channel.fetch_message(int(message_id))
             terminal_status = bool(metadata and metadata.get("status_terminal"))
+
+            async def _record_completed_edit(result: SendResult) -> SendResult:
+                """Persist only complete final edits before returning upstream."""
+                raw_response = result.raw_response
+                partial_overflow = bool(
+                    isinstance(raw_response, dict)
+                    and raw_response.get("partial_overflow")
+                )
+                if finalize and result.success and not partial_overflow:
+                    await asyncio.to_thread(
+                        self._record_discord_response,
+                        reply_to=(metadata or {}).get("reply_to_message_id"),
+                        result=result,
+                        content=content,
+                        final=True,
+                    )
+                return result
+
             operator_card_embed = None
             operator_card_payload = (
                 metadata.get("operator_card") if metadata else None
@@ -3825,12 +3843,14 @@ class DiscordAdapter(BasePlatformAdapter):
             # streaming edits truncate a one-message preview in place.
             if len(formatted) > self.MAX_MESSAGE_LENGTH:
                 if finalize:
-                    return await self._edit_overflow_split(
-                        channel,
-                        msg,
-                        message_id,
-                        content,
-                        clear_embed=terminal_status,
+                    return await _record_completed_edit(
+                        await self._edit_overflow_split(
+                            channel,
+                            msg,
+                            message_id,
+                            content,
+                            clear_embed=terminal_status,
+                        )
                     )
                 formatted = self.truncate_message(
                     formatted, self.MAX_MESSAGE_LENGTH,
@@ -3867,12 +3887,14 @@ class DiscordAdapter(BasePlatformAdapter):
                 # as "error code: 50035 ... Must be 2000 or fewer in length".
                 if self._is_length_overflow_error(edit_err):
                     if finalize:
-                        return await self._edit_overflow_split(
-                            channel,
-                            msg,
-                            message_id,
-                            content,
-                            clear_embed=terminal_status,
+                        return await _record_completed_edit(
+                            await self._edit_overflow_split(
+                                channel,
+                                msg,
+                                message_id,
+                                content,
+                                clear_embed=terminal_status,
+                            )
                         )
                     # Mid-stream: truncate and retry in place (no split).
                     truncated = self.truncate_message(
@@ -3886,15 +3908,7 @@ class DiscordAdapter(BasePlatformAdapter):
                 else:
                     raise
             result = SendResult(success=True, message_id=message_id)
-            if finalize:
-                await asyncio.to_thread(
-                    self._record_discord_response,
-                    reply_to=(metadata or {}).get("reply_to_message_id"),
-                    result=result,
-                    content=content,
-                    final=True,
-                )
-            return result
+            return await _record_completed_edit(result)
         except Exception as e:  # pragma: no cover - defensive logging
             logger.error("[%s] Failed to edit Discord message %s: %s", self.name, message_id, e, exc_info=True)
             return SendResult(success=False, error=str(e))

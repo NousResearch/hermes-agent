@@ -326,6 +326,65 @@ export async function startIsolatedInstance({
   }
 }
 
+// Representative cold-start sampling. A fresh --user-data-dir means a COLD V8
+// code cache and worst-case bundle recompile every run (~+400ms measured); real
+// users reuse their profile, so a warm cache is the representative case. We reuse
+// ONE profile across runs: run 0 warms the cache (discarded), runs 1..N are the
+// warm samples. Each run steps the port so a just-killed instance can't be
+// re-attached, and we pause between runs so the single-instance lock releases.
+export async function coldStartSamples({ runs = 3, port = 9222, devPort = 5174, prod = false, warm = true } = {}) {
+  const pickNumeric = timings => Object.fromEntries(Object.entries(timings).filter(([, v]) => typeof v === 'number'))
+  const samples = []
+
+  if (warm) {
+    // Shared profile across runs: run 0 warms the V8 code cache (discarded),
+    // runs 1..N are the representative warm samples.
+    const home = mkdtempSync(join(tmpdir(), 'hermes-perf-cold-home-'))
+    const userDataDir = mkdtempSync(join(tmpdir(), 'hermes-perf-cold-ud-'))
+    seedConfigFrom(join(homedir(), '.hermes'), home)
+
+    try {
+      for (let i = 0; i <= runs; i++) {
+        const inst = await startIsolatedInstance({
+          port: port + i,
+          devPort: devPort + i,
+          prod,
+          coldStart: true,
+          hermesHome: home,
+          userDataDir,
+          seedConfig: false
+        })
+
+        if (i > 0) {
+          samples.push(pickNumeric(inst.timings))
+        }
+
+        inst.teardown()
+        await sleep(2500) // let the single-instance lock release before reuse
+      }
+    } finally {
+      for (const dir of [home, userDataDir]) {
+        try {
+          rmSync(dir, { recursive: true, force: true })
+        } catch {
+          // best-effort
+        }
+      }
+    }
+  } else {
+    // Worst case: a fresh profile per run → cold code cache every launch
+    // (first-launch-after-install). startIsolatedInstance makes+removes its dirs.
+    for (let i = 0; i < runs; i++) {
+      const inst = await startIsolatedInstance({ port: port + i, devPort: devPort + i, prod, coldStart: true })
+      samples.push(pickNumeric(inst.timings))
+      inst.teardown()
+      await sleep(2500)
+    }
+  }
+
+  return samples
+}
+
 // Read First Contentful Paint + time-to-composer from the renderer, relative to
 // its navigation start (the process-spawn deltas live in `timings`).
 async function readBootMarks(cdp) {

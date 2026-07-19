@@ -451,11 +451,27 @@ HARDLINE_PATTERNS = [
     (_CMDPOS + r'init\s+[06]\b', "init 0/6 (shutdown/reboot)"),
     (_CMDPOS + r'systemctl\s+(poweroff|reboot|halt|kexec)\b', "systemctl poweroff/reboot"),
     (_CMDPOS + r'telinit\s+[06]\b', "telinit 0/6 (shutdown/reboot)"),
+    # In-place edits of the Hermes security policy / credential files.
+    # config.yaml holds approvals.mode and the allowlists; .env holds
+    # credentials. Both are write-protected on the file_tools side, and the
+    # smart-approval adjudicator has approved a `sed -i` on config.yaml even
+    # while describing it correctly — so the agent could rewrite its own
+    # guardrails. Anchored to _CMDPOS so the editor must sit at a real
+    # command position: quoted DATA mentioning these commands (git commit -m
+    # "sed -i ... config.yaml") must not trip the unconditional floor.
+    # `bash -c 'sed -i ...'` payloads are still caught because
+    # _command_detection_variants() surfaces each -c payload as its own
+    # variant with the editor at start-of-string. Indirect path delivery
+    # (xargs / find -exec / $var globs) intentionally stays at the
+    # DANGEROUS/smart level, same as the xargs/find rm rules there.
+    (_CMDPOS + rf'sed\s+-[^\s]*i.*(?:{_HERMES_CONFIG_PATH}|{_HERMES_ENV_PATH})', "in-place edit of Hermes config/env (hardline)"),
+    (_CMDPOS + rf'sed\s+--in-place\b.*(?:{_HERMES_CONFIG_PATH}|{_HERMES_ENV_PATH})', "in-place edit of Hermes config/env (hardline, long flag)"),
+    (_CMDPOS + rf'(?:perl|ruby)\b.*\s-[^\s]*i\b.*(?:{_HERMES_CONFIG_PATH}|{_HERMES_ENV_PATH})', "in-place edit of Hermes config/env (hardline, perl/ruby)"),
 ]
 
 # Pre-compiled variant used by the hot-path matcher. Building these at module
 # load eliminates the ~2.6 ms cold-cache re.compile fan-out on the first
-# terminal() call per process (12 HARDLINE + 47 DANGEROUS patterns, each
+# terminal() call per process (15 HARDLINE + 47 DANGEROUS patterns, each
 # potentially evicted from Python's 512-entry ``re._cache`` by unrelated
 # regex work elsewhere in the agent). DANGEROUS_PATTERNS_COMPILED is built
 # at the end of this module after DANGEROUS_PATTERNS is defined.

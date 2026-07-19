@@ -32,5 +32,5 @@ export const $sessionColorById = computed([$sessions, $projects], (sessions, pro
 // The color for a single session object (the tabs already hold the SessionInfo
 // they render, so they resolve through the same map the sidebar reads).
 export function sessionColorFor(session: null | SessionInfo | undefined): string | undefined {
-  return session ? ($sessionColorById.get()[session.id] ?? undefined) : undefined
+  return session ? $sessionColorById.get()[session.id] : undefined
 }

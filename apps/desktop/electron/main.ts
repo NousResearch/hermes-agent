@@ -26,7 +26,8 @@ import {
   screen,
   session,
   shell,
-  systemPreferences
+  systemPreferences,
+  Tray
 } from 'electron'
 import nodePty from 'node-pty'
 
@@ -149,6 +150,14 @@ import {
   SshConnection
 } from './ssh-connection'
 import { nativeOverlayWidth as computeNativeOverlayWidth, macTitleBarOverlayHeight } from './titlebar-overlay-width'
+import { destroyTray, quitFromTray, restoreMainWindow } from './tray-actions'
+import { petStartupCommand, type TrayPetCommand } from './tray-pet-policy'
+import {
+  DEFAULT_TRAY_PREFERENCES,
+  loadTrayPreferences,
+  saveTrayPreferences,
+  type TrayPreferences
+} from './tray-preferences'
 import { resolveBehindCount, shouldCountCommits } from './update-count'
 import { readLiveUpdateMarker, writeUpdateMarker } from './update-marker'
 import { runRebuildWithRetry } from './update-rebuild'
@@ -164,6 +173,11 @@ import {
 import { isOfficialSshRemote, OFFICIAL_REPO_HTTPS_URL } from './update-remote'
 import { spawnUpdaterProcess } from './updater-process'
 import { fetchMarketplaceThemes, searchMarketplaceThemes } from './vscode-marketplace'
+import {
+  shouldHideMainWindowToTray,
+  shouldQuitAfterAllWindowsClose,
+  shouldShowMainWindowOnStartup
+} from './window-close-policy'
 import {
   computeWindowOptions,
   debounce,
@@ -971,6 +985,13 @@ function registerMediaProtocol() {
 }
 
 let mainWindow = null
+let hermesTray = null
+let isQuitting = false
+let trayPreferences: TrayPreferences = { ...DEFAULT_TRAY_PREFERENCES }
+let trayPreferencesPath = ''
+let trayPetState = { available: false, poppedOut: false }
+let petStartupRequested = false
+let initialMainWindowPending = true
 const backendConnectionState = createBackendConnectionState<ReturnType<typeof spawn>, any>()
 const remoteLiveness = new RemoteLivenessTracker()
 const remoteRevalidation = new RemoteRevalidationCoordinator()
@@ -4765,6 +4786,102 @@ function getAppIconPath() {
   return APP_ICON_PATHS.find(fileExists)
 }
 
+function showMainWindow() {
+  restoreMainWindow({ window: mainWindow, createWindow, focusWindow })
+}
+
+function updateTrayPreferences(next: Partial<TrayPreferences>) {
+  const previous = trayPreferences
+  const candidate = { ...trayPreferences, ...next }
+
+  try {
+    saveTrayPreferences(trayPreferencesPath, candidate)
+    trayPreferences = candidate
+  } catch (error) {
+    trayPreferences = previous
+    rememberLog(`[tray] failed to save preferences: ${error?.message || error}`)
+  }
+
+  rebuildHermesTrayMenu()
+}
+
+function requestPetCommand(command: TrayPetCommand) {
+  if (!mainWindow || mainWindow.isDestroyed()) {
+    return
+  }
+
+  mainWindow.webContents.send('hermes:tray:pet-command', command)
+}
+
+function rebuildHermesTrayMenu() {
+  if (!hermesTray) {
+    return
+  }
+
+  hermesTray.setContextMenu(
+    Menu.buildFromTemplate([
+      { label: 'Show Hermes', click: showMainWindow },
+      { label: 'Hide Hermes', click: () => mainWindow?.hide() },
+      {
+        label: trayPetState.poppedOut ? 'Return pet to Hermes' : 'Show desktop pet',
+        enabled: trayPetState.available,
+        click: () => requestPetCommand(trayPetState.poppedOut ? 'pop-in' : 'pop-out')
+      },
+      { type: 'separator' },
+      {
+        label: 'Start in tray',
+        type: 'checkbox',
+        checked: trayPreferences.startInTray,
+        click: item => updateTrayPreferences({ startInTray: item.checked })
+      },
+      {
+        label: 'Pop out pet on startup',
+        type: 'checkbox',
+        checked: trayPreferences.popOutPetOnStartup,
+        click: item => updateTrayPreferences({ popOutPetOnStartup: item.checked })
+      },
+      { type: 'separator' },
+      {
+        label: 'Quit Hermes',
+        click: () => {
+          quitFromTray({
+            markQuitting: () => {
+              isQuitting = true
+            },
+            quit: () => app.quit()
+          })
+        }
+      }
+    ])
+  )
+}
+
+function createHermesTray() {
+  if (!IS_WINDOWS || hermesTray) {
+    return
+  }
+
+  const icon = getAppIconPath()
+
+  if (!icon) {
+    rememberLog('[tray] no icon asset found; tray mode disabled')
+
+    return
+  }
+
+  try {
+    hermesTray = new Tray(icon)
+    hermesTray.setToolTip('Hermes')
+    rebuildHermesTrayMenu()
+    hermesTray.on('click', showMainWindow)
+    hermesTray.on('double-click', showMainWindow)
+  } catch (error) {
+    hermesTray?.destroy()
+    hermesTray = null
+    rememberLog(`[tray] setup failed; falling back to normal window lifecycle: ${error?.message || error}`)
+  }
+}
+
 function sendOpenUpdatesRequested() {
   if (!mainWindow || mainWindow.isDestroyed()) {
     return
@@ -8436,7 +8553,19 @@ function createWindow() {
   }
 
   mainWindow.once('ready-to-show', () => {
-    if (mainWindow && !mainWindow.isDestroyed()) {
+    const isInitialWindow = initialMainWindowPending
+    initialMainWindowPending = false
+
+    if (
+      mainWindow &&
+      !mainWindow.isDestroyed() &&
+      shouldShowMainWindowOnStartup({
+        isWindows: IS_WINDOWS,
+        trayAvailable: Boolean(hermesTray),
+        startInTray: trayPreferences.startInTray,
+        isInitialWindow
+      })
+    ) {
       mainWindow.show()
     }
 
@@ -8483,7 +8612,21 @@ function createWindow() {
   mainWindow.on('moved', schedulePersistWindowState)
   mainWindow.on('maximize', schedulePersistWindowState)
   mainWindow.on('unmaximize', schedulePersistWindowState)
-  mainWindow.on('close', () => schedulePersistWindowState.flush())
+  mainWindow.on('close', event => {
+    schedulePersistWindowState.flush()
+
+    if (
+      shouldHideMainWindowToTray({
+        isWindows: IS_WINDOWS,
+        trayAvailable: Boolean(hermesTray),
+        isQuitting,
+        isQuittingForHandoff
+      })
+    ) {
+      event.preventDefault()
+      mainWindow?.hide()
+    }
+  })
 
   // the closed wrapper remains truthy, so clear only the window this callback owns.
   const createdMainWindow = mainWindow
@@ -8726,6 +8869,25 @@ ipcMain.handle('hermes:pet-overlay:close', async () => {
   closePetOverlay()
 
   return { ok: true }
+})
+ipcMain.on('hermes:tray:pet-state', (_event, payload) => {
+  trayPetState = {
+    available: Boolean(payload?.available),
+    poppedOut: Boolean(payload?.poppedOut)
+  }
+  rebuildHermesTrayMenu()
+
+  const command = petStartupCommand({
+    enabled: trayPreferences.popOutPetOnStartup,
+    available: trayPetState.available,
+    poppedOut: trayPetState.poppedOut,
+    alreadyRequested: petStartupRequested
+  })
+
+  if (command) {
+    petStartupRequested = true
+    requestPetCommand(command)
+  }
 })
 // Drag/resize: the overlay reports new absolute screen bounds (it already knows
 // the pointer's screen coords). Drag keeps the size constant; the wheel-to-scale
@@ -10563,11 +10725,7 @@ function handleDeepLink(url) {
   }
 
   try {
-    if (mainWindow.isMinimized()) {
-      mainWindow.restore()
-    }
-
-    mainWindow.focus()
+    focusWindow(mainWindow)
     mainWindow.webContents.send('hermes:deep-link', payload)
     rememberLog(`[deeplink] delivered ${kind}/${name}`)
   } catch (err) {
@@ -10659,10 +10817,13 @@ app.whenReady().then(() => {
   registerMediaProtocol()
   installEmbedReferer()
   registerDeepLinkProtocol()
+  trayPreferencesPath = path.join(app.getPath('userData'), 'tray-preferences.json')
+  trayPreferences = loadTrayPreferences(trayPreferencesPath)
   ensureWslWindowsFonts()
   configureSpellChecker()
   registerPowerResumeListeners()
   keepAwake.set(readPersistedKeepAwake())
+  createHermesTray()
   createWindow()
 
   // Win/Linux cold start: the launching hermes:// URL is in our own argv.
@@ -10708,6 +10869,7 @@ function configureSpellChecker() {
 }
 
 app.on('before-quit', event => {
+  isQuitting = true
   if ((sshConnections.size > 0 || sshBootstrapCoordinator.promises().length > 0) && !sshQuitTeardownDone) {
     event.preventDefault()
     sshBootstrapCoordinator.cancelAll()
@@ -10757,6 +10919,12 @@ app.on('before-quit', event => {
 
   flushDesktopLogBufferSync()
   closePreviewWatchers()
+  destroyTray({
+    tray: hermesTray,
+    clear: () => {
+      hermesTray = null
+    }
+  })
 
   // Kill open PTYs before environment teardown to avoid the node-pty#904
   // ThreadSafeFunction SIGABRT race.
@@ -10775,7 +10943,15 @@ app.on('window-all-closed', () => {
   // the bundle and relaunch — without this the script's PID-wait spins to its
   // full timeout and the user is left with an invisible app (or an uninstall
   // that appears to do nothing).
-  if (process.platform !== 'darwin' || isQuittingForHandoff) {
+  if (
+    shouldQuitAfterAllWindowsClose({
+      isWindows: IS_WINDOWS,
+      isMac: IS_MAC,
+      trayAvailable: Boolean(hermesTray),
+      isQuitting,
+      isQuittingForHandoff
+    })
+  ) {
     app.quit()
   }
 })

@@ -1504,8 +1504,11 @@ def init_agent(
                         _init_kwargs["agent_workspace"] = "hermes"
                     except Exception:
                         pass
-                    agent._memory_manager.initialize_all(**_init_kwargs)
-                    _ra().logger.info("Memory provider '%s' activated", _mem_provider_name)
+                    initialized_providers = agent._memory_manager.initialize_all(**_init_kwargs)
+                    if _mem_provider_name in initialized_providers:
+                        _ra().logger.info("Memory provider '%s' activated", _mem_provider_name)
+                    if not agent._memory_manager.providers:
+                        agent._memory_manager = None
                 else:
                     _ra().logger.debug("Memory provider '%s' not found or not available", _mem_provider_name)
                     agent._memory_manager = None

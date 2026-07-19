@@ -4123,10 +4123,12 @@ function fetchHtmlTitleWithCurl(rawUrl: string): Promise<string> {
     .then(parseHtmlTitle)
     .catch(() => '')
 }
+
 const fetchQueuedLinkTitle = createBoundedLinkTitleQueue(fetchHtmlTitleWithCurl, {
   maxConcurrent: LINK_TITLE_MAX_CONCURRENT,
   maxQueued: LINK_TITLE_QUEUE_LIMIT
 })
+
 // Strips known error/captcha titles (e.g. "GetYourGuide – Error", "Just a
 // moment...") so they don't get cached as the resolved title.
 function usableTitle(value: string): string {

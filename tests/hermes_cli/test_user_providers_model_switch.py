@@ -904,6 +904,69 @@ def test_switch_model_resolves_user_provider_credentials(monkeypatch, tmp_path):
     assert result.error_message == ""
 
 
+def test_switch_model_named_provider_validates_with_catalog_config(monkeypatch):
+    """Named providers keep inference routing separate from catalog auth."""
+    validation_calls = []
+    inference_url = "https://inference.example.com/v1"
+    catalog_url = "https://catalog.example.com/models"
+    catalog_headers = {"X-Catalog-Token": "catalog-token"}
+
+    monkeypatch.setattr(
+        "hermes_cli.runtime_provider.resolve_runtime_provider",
+        lambda **kwargs: {
+            "api_key": "gateway-key",
+            "base_url": inference_url,
+            "api_mode": "chat_completions",
+        },
+    )
+
+    def fake_validate(*args, **kwargs):
+        validation_calls.append((args, kwargs))
+        return {
+            "accepted": True,
+            "persist": True,
+            "recognized": True,
+            "message": None,
+        }
+
+    monkeypatch.setattr("hermes_cli.models.validate_requested_model", fake_validate)
+    monkeypatch.setattr("hermes_cli.model_switch.get_model_info", lambda *a, **k: None)
+    monkeypatch.setattr("hermes_cli.model_switch.get_model_capabilities", lambda *a, **k: None)
+
+    result = switch_model(
+        raw_input="catalog-model",
+        current_provider="openai-codex",
+        current_model="gpt-5.4",
+        current_base_url="https://chatgpt.com/backend-api/codex",
+        explicit_provider="private-gateway",
+        user_providers={
+            "private-gateway": {
+                "name": "Private Gateway",
+                "base_url": inference_url,
+                "models_url": catalog_url,
+                "api_key": "gateway-key",
+                "extra_headers": catalog_headers,
+            }
+        },
+        custom_providers=[],
+    )
+
+    assert result.success is True
+    assert result.base_url == inference_url
+    assert validation_calls == [
+        (
+            ("catalog-model", "private-gateway"),
+            {
+                "api_key": "gateway-key",
+                "base_url": inference_url,
+                "api_mode": "chat_completions",
+                "models_url": catalog_url,
+                "headers": catalog_headers,
+            },
+        )
+    ]
+
+
 # =============================================================================
 # Regression: providers: dict ``transport`` field must be honored
 # =============================================================================

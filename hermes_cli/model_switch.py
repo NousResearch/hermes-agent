@@ -1153,6 +1153,7 @@ def switch_model(
     provider_changed = target_provider != current_provider
     provider_label = get_label(target_provider)
     models_url = ""
+    validation_headers: dict[str, str] | None = None
     if target_provider == "custom" and current_base_url:
         provider_label = "Custom endpoint"
     target_pdef: ProviderDef | None = None
@@ -1168,6 +1169,18 @@ def switch_model(
         target_pdef = resolve_user_provider(target_provider, user_providers)
     if target_pdef is not None:
         models_url = target_pdef.models_url
+    if isinstance(user_providers, dict):
+        target_user_cfg = user_providers.get(target_provider)
+        if isinstance(target_user_cfg, dict):
+            validation_headers = _extra_headers_from_config(target_user_cfg) or None
+    if target_provider.startswith("custom:") and isinstance(custom_providers, list):
+        for entry in custom_providers:
+            if not isinstance(entry, dict):
+                continue
+            display_name = str(entry.get("name") or "").strip()
+            if display_name and custom_provider_slug(display_name) == target_provider:
+                validation_headers = _extra_headers_from_config(entry) or None
+                break
     if target_provider.startswith("custom:"):
         custom_pdef = target_pdef
         if custom_pdef is not None:
@@ -1195,6 +1208,7 @@ def switch_model(
             models_url = _user_pdef.models_url
             _ucfg = (user_providers or {}).get(explicit_provider.strip().lower()) \
                 or (user_providers or {}).get(target_provider) or {}
+            validation_headers = _extra_headers_from_config(_ucfg) or None
             _ukey = str(_ucfg.get("api_key", "") or "").strip()
             if _ukey.startswith("${") and _ukey.endswith("}"):
                 _ukey = os.environ.get(_ukey[2:-1], "").strip()
@@ -1271,23 +1285,20 @@ def switch_model(
 
     # --- Validate ---
     try:
+        validation_options: dict[str, Any] = {
+            "api_key": api_key,
+            "base_url": base_url,
+            "api_mode": api_mode or None,
+        }
         if models_url:
-            validation = validate_requested_model(
-                new_model,
-                target_provider,
-                api_key=api_key,
-                base_url=base_url,
-                api_mode=api_mode or None,
-                models_url=models_url,
-            )
-        else:
-            validation = validate_requested_model(
-                new_model,
-                target_provider,
-                api_key=api_key,
-                base_url=base_url,
-                api_mode=api_mode or None,
-            )
+            validation_options["models_url"] = models_url
+        if validation_headers:
+            validation_options["headers"] = validation_headers
+        validation = validate_requested_model(
+            new_model,
+            target_provider,
+            **validation_options,
+        )
     except Exception as e:
         validation = {
             "accepted": False,

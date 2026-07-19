@@ -42,10 +42,14 @@ def server():
     }):
         import importlib
         mod = importlib.import_module("tui_gateway.server")
+        original_methods = dict(mod._methods)
         yield mod
         mod._sessions.clear()
         mod._pending.clear()
         mod._answers.clear()
+        mod._methods.clear()
+        mod._methods.update(original_methods)
+        mod._db = None
 
 
 @pytest.fixture()

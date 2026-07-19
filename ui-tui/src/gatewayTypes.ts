@@ -201,6 +201,7 @@ export interface SessionActivateResponse {
 
 export interface SessionListItem {
   id: string
+  last_active: number
   message_count: number
   preview: string
   source?: string

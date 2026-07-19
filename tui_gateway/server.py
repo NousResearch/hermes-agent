@@ -5891,6 +5891,12 @@ def _(rid, params: dict) -> dict:
                         "title": s.get("title") or "",
                         "preview": s.get("preview") or "",
                         "started_at": s.get("started_at") or 0,
+                        # list_sessions_rich already computes last_active (the
+                        # timestamp of the last message); project it so external
+                        # clients (e.g. qelg/hermes-chat) can display/sort by
+                        # latest activity. Fall back to started_at for sessions
+                        # with no messages yet. See issue #67122.
+                        "last_active": s.get("last_active") or s.get("started_at") or 0,
                         "message_count": s.get("message_count") or 0,
                         "source": s.get("source") or "",
                     }

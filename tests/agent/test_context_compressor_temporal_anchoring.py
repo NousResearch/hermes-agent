@@ -15,7 +15,11 @@ from datetime import datetime, timezone
 from unittest.mock import MagicMock, patch
 
 import hermes_time
-from agent.context_compressor import ContextCompressor, HISTORICAL_TASK_HEADING
+from agent.context_compressor import (
+    ContextCompressor,
+    HISTORICAL_REMAINING_WORK_HEADING,
+    HISTORICAL_TASK_HEADING,
+)
 
 
 def _compressor() -> ContextCompressor:
@@ -112,3 +116,30 @@ def test_anchoring_rule_uses_date_from_hermes_time_now():
 
     prompt = mock_call.call_args.kwargs["messages"][0]["content"]
     assert "2025-12-31" in prompt
+
+
+def test_compaction_prompt_avoids_active_sounding_continuation_guardrail():
+    """The template should preserve possible work as historical context only."""
+    compressor = _compressor()
+    with patch.object(hermes_time, "now", _fixed_now), patch(
+        "agent.context_compressor.call_llm", return_value=_response("summary")
+    ) as mock_call:
+        compressor._generate_summary(_turns())
+
+    prompt = mock_call.call_args.kwargs["messages"][0]["content"]
+    assert "Continuation should pick up exactly here" not in prompt
+    assert "for historical continuity only" in prompt
+    assert "latest user message after the summary explicitly asks to continue" in prompt
+    assert "Do not tell the downstream agent to continue automatically" in prompt
+
+
+def test_deterministic_fallback_remaining_work_is_reference_only():
+    compressor = _compressor()
+    summary = compressor._build_static_fallback_summary(_turns(), reason="test failure")
+
+    assert HISTORICAL_REMAINING_WORK_HEADING in summary
+    assert "For reference only" in summary
+    assert "latest user message explicitly asks to continue it" in summary
+    assert "Otherwise continue only" in summary
+    assert "protected recent messages" in summary
+    assert "Continue from the most recent unfulfilled user ask" not in summary

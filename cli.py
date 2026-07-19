@@ -9750,6 +9750,17 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
                 # adjacency, defending provider role-alternation rules.
                 if partial and tail:
                     compressed = rejoin_compressed_head_and_tail(compressed, tail)
+                # Compression rotation writes the new child transcript from
+                # `compressed`. Some verbatim carried-over messages may already
+                # be stamped as persisted in the parent session. Copy and clear
+                # that parent-session marker before the child flush; otherwise
+                # `_flush_messages_to_session_db()` skips those tail turns and
+                # the rotated child can lose the very exchanges `/compress here`
+                # promised to preserve.
+                compressed = [dict(m) if isinstance(m, dict) else m for m in compressed]
+                for _msg in compressed:
+                    if isinstance(_msg, dict):
+                        _msg.pop("_db_persisted", None)
                 self.conversation_history = compressed
                 # _compress_context ends the old session and creates a new child
                 # session on the agent (run_agent.py::_compress_context). Sync the

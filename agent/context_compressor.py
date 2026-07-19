@@ -2018,7 +2018,10 @@ outstanding.)
 {_bullets(relevant_files, limit=12)}
 
 {HISTORICAL_REMAINING_WORK_HEADING}
-Continue from the most recent unfulfilled user ask and protected tail messages. Verify state with tools before making claims.
+For reference only: the most recent unfulfilled user ask may matter if the
+latest user message explicitly asks to continue it. Otherwise continue only
+from the protected recent messages after this summary. Verify state with tools
+before making claims.
 
 ## Last Dropped Turns
 {_bullets(last_dropped_turns, limit=8)}
@@ -2140,22 +2143,26 @@ Summary generation was unavailable, so this is a best-effort deterministic fallb
 
         # Shared structured template (used by both paths).
         _template_sections = f"""{HISTORICAL_TASK_HEADING}
-[THE SINGLE MOST IMPORTANT FIELD. Capture the user's most recent unfulfilled
-input verbatim — the exact words they used. This includes:
+[THE SINGLE MOST IMPORTANT FIELD. Record the user's most recent potentially
+unfulfilled input verbatim for historical continuity only — the exact words
+they used. This preserves context, but the downstream agent must act on it
+only if the latest user message after the summary explicitly asks to continue
+it or confirms it remains active. This includes:
 - Explicit task assignments ("refactor the auth module")
-- Questions awaiting an answer ("waarom staat X op Y?", "wat zijn de volgende stappen?")
-- Decisions awaiting input ("optie A of B?")
-- Ongoing discussions where the assistant owes the next substantive reply
-A conversation where the user just asked a question IS an active task — the
-task is "answer that question with full context". Do NOT write "None" merely
-because the user did not issue an imperative command; reserve "None" for the
-rare case where the last exchange was fully resolved and the user said
-something like "thanks, that's all".
-If multiple items are outstanding, list only the ones NOT yet completed.
-Continuation should pick up exactly here. Examples:
+- Questions that may have been awaiting an answer ("waarom staat X op Y?", "wat zijn de volgende stappen?")
+- Decisions that may have been awaiting input ("optie A of B?")
+- Ongoing discussions where the assistant may have owed the next substantive reply
+A conversation where the user just asked a question may be historical context
+for a possible active task, but the latest user message after the summary is
+still the only authority on what to do now. Do NOT write "None" merely because
+the user did not issue an imperative command; reserve "None" for the rare case
+where the last exchange was fully resolved and the user said something like
+"thanks, that's all".
+If multiple items appear outstanding, list only the ones NOT yet completed.
+Do not tell the downstream agent to continue automatically. Examples:
 "User asked: 'Now refactor the auth module to use JWT instead of sessions'"
-"User asked: 'Waarom stond provider ineens op openrouter?' — needs investigation + answer"
-"User chose option A; awaiting implementation of step 2"
+"User asked: 'Waarom stond provider ineens op openrouter?' — may need investigation + answer if the latest user message asks to continue"
+"User chose option A; step 2 may remain relevant if the latest user message confirms it"
 If the user's most recent message was a reverse signal (stop, undo, roll
 back, never mind, just verify, change of topic) that supersedes earlier
 work, write the reverse signal verbatim and DO NOT carry forward the

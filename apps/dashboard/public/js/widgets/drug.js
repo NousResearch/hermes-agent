@@ -68,9 +68,35 @@ export default {
         }, h("span", {}, s.label), h("span.drug-caret", { "aria-hidden": "true" }, "▾"));
         return h("div.drug-section", {}, btn, panel);
       });
+      const askName = drug.generic || drug.brand || data.query;
+      const saBlock = h("div.drug-sa", {},
+        h("div.muted.small.drug-sa-note", {},
+          "Label above is US FDA (openFDA). For South African dosing and indications, "
+          + "use SAMF / the EML Standard Treatment Guidelines."),
+        h("div.drug-sa-actions", {},
+          h("button.btn.btn-primary.drug-ask", {
+            type: "button",
+            title: "Ask the SA MedBot for South African dosing guidance",
+            onclick: () => window.dispatchEvent(new CustomEvent("hub:medbot-ask", {
+              detail: {
+                text: `According to South African guidelines (STGs/EML, SAMF), what is the recommended `
+                  + `dosing, key indications and cautions for ${askName} in adults?`,
+              },
+            })),
+          }, "Ask SA MedBot for dosing"),
+          h("a.btn.drug-sa-link", {
+            href: "https://knowledgehub.health.gov.za/elibrary/standard-treatment-guidelines-and-essential-medicines-list",
+            target: "_blank", rel: "noopener noreferrer",
+          }, "EML / STGs"),
+          h("a.btn.drug-sa-link", {
+            href: `https://www.google.com/search?q=${encodeURIComponent(askName + " South Africa SAMF EML dosing")}`,
+            target: "_blank", rel: "noopener noreferrer",
+          }, "Search SA")));
+
       clear(result).append(
         h("div.drug-name", {}, title),
         sub ? h("div.muted.small.drug-sub", {}, sub) : null,
+        saBlock,
         h("div.drug-sections", {}, sections),
         h("div.muted.small.drug-note", {}, "Source: FDA label (openFDA) · reference only, not clinical advice."),
       );

@@ -6,6 +6,11 @@
 import { h, clear } from "../utils.js";
 import { openViewer } from "../viewer.js";
 
+// A single live handler so other widgets (e.g. Drug Reference) can hand the
+// MedBot a question via `window.dispatchEvent(new CustomEvent("hub:medbot-ask",
+// { detail: { text } }))`. Re-registered per mount, so no listener leak.
+let askHandler = null;
+
 export default {
   type: "medbot",
   title: "SA MedBot",
@@ -18,6 +23,34 @@ export default {
     let busy = false;
 
     const persist = (msgs) => store.update((s) => { s.medbot = { history: msgs.slice(-40) }; }, "medbot");
+
+    // Run a query end-to-end (used by the form and by external asks).
+    async function runQuery(text) {
+      text = (text || "").trim();
+      if (!text || busy) return;
+      const msgs = [...history(), { role: "user", content: text }];
+      busy = true;
+      persist([...msgs, { role: "assistant", content: "" }]);
+      draw();
+      let acc = "";
+      let result = null;
+      try {
+        result = await ctx.api.medChatStream(
+          msgs.map((m) => ({ role: m.role, content: m.content })),
+          (delta) => {
+            acc += delta;
+            const last = body.querySelector(".med-log .med-msg:last-child .med-text");
+            if (last) last.textContent = acc;
+            const l = body.querySelector(".med-log");
+            if (l) l.scrollTop = l.scrollHeight;
+          });
+      } catch (err) {
+        acc = acc || `Error: ${err.message}`;
+      }
+      busy = false;
+      persist([...msgs, { role: "assistant", content: acc, sources: result?.sources || [] }]);
+      draw();
+    }
 
     const draw = () => {
       const log = h("div.med-log");
@@ -56,38 +89,15 @@ export default {
       log.scrollTop = log.scrollHeight;
       if (!busy) input.focus();
 
-      async function send() {
-        const text = input.value.trim();
-        if (!text || busy) return;
-        const msgs = [...history(), { role: "user", content: text }];
-        busy = true;
-        // show the user turn + an empty assistant bubble, then stream into it
-        persist([...msgs, { role: "assistant", content: "" }]);
-        draw();
-        let acc = "";
-        let result = null;
-        try {
-          result = await ctx.api.medChatStream(
-            msgs.map((m) => ({ role: m.role, content: m.content })),
-            (delta) => {
-              acc += delta;
-              const last = body.querySelector(".med-log .med-msg:last-child .med-text");
-              if (last) last.textContent = acc;
-              const l = body.querySelector(".med-log");
-              if (l) l.scrollTop = l.scrollHeight;
-            });
-        } catch (err) {
-          acc = acc || `Error: ${err.message}`;
-        }
-        busy = false;
-        persist([...msgs, { role: "assistant", content: acc, sources: result?.sources || [] }]);
-        draw();
-      }
+      function send() { const text = input.value.trim(); if (text) runQuery(text); }
     };
 
     draw();
-    // Ensure a live assistant bubble exists during streaming.
-    const origDraw = draw;
-    ctx.onStore((topic) => { if (topic === "replace") origDraw(); });
+    ctx.onStore((topic) => { if (topic === "replace") draw(); });
+
+    // Accept questions handed over from other widgets (Drug Reference, etc.).
+    if (askHandler) window.removeEventListener("hub:medbot-ask", askHandler);
+    askHandler = (ev) => runQuery(ev.detail?.text);
+    window.addEventListener("hub:medbot-ask", askHandler);
   },
 };

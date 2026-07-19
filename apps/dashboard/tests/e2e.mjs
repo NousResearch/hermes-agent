@@ -676,6 +676,14 @@ await page.locator(".widget-drug .drug-section-btn").first().click();
 await page.waitForTimeout(150);
 check("drug section toggles on click",
   (await page.locator(".widget-drug .drug-panel").first().isHidden()) !== panelHiddenBefore);
+check("drug widget links SA guidelines", (await page.locator(".widget-drug .drug-sa").count()) >= 1);
+// bridge: "Ask SA MedBot for dosing" hands the question to the MedBot on the same page
+const medMsgsBefore = await page.locator(".widget-medbot .med-msg").count();
+await page.locator(".widget-drug .drug-ask").click();
+await page.waitForFunction((n) =>
+  document.querySelectorAll(".widget-medbot .med-msg").length > n, medMsgsBefore, { timeout: 10000 });
+check("drug → MedBot bridge asks a SA dosing question",
+  (await page.locator(".widget-medbot .med-msg.med-user").first().innerText()).toLowerCase().includes("south african"));
 await gotoWidget("medbot");
 check("medbot shows the SA decision-support intro", /South African/i.test(await page.locator(".widget-medbot").innerText()));
 await page.locator(".widget-medbot .med-input").fill("First-line HIV-TB co-infection management?");

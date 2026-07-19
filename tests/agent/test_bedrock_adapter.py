@@ -1305,27 +1305,53 @@ class TestIsAnthropicBedrockModel:
 
 
 class TestEmptyTextBlockFix:
-    """Test that empty text blocks are replaced with space placeholders."""
+    """Test that empty/whitespace text blocks are replaced with a non-whitespace placeholder.
 
-    def test_none_content_gets_space(self):
-        from agent.bedrock_adapter import _convert_content_to_converse
+    Bedrock rejects both empty (#9486) and whitespace-only (#39829) text blocks.
+    """
+
+    def test_none_content_gets_placeholder(self):
+        from agent.bedrock_adapter import _convert_content_to_converse, _EMPTY_CONTENT_PLACEHOLDER
         blocks = _convert_content_to_converse(None)
-        assert blocks[0]["text"] == " "
+        assert blocks[0]["text"] == _EMPTY_CONTENT_PLACEHOLDER
+        assert blocks[0]["text"].strip(), "placeholder must contain non-whitespace text"
 
-    def test_empty_string_gets_space(self):
-        from agent.bedrock_adapter import _convert_content_to_converse
+    def test_empty_string_gets_placeholder(self):
+        from agent.bedrock_adapter import _convert_content_to_converse, _EMPTY_CONTENT_PLACEHOLDER
         blocks = _convert_content_to_converse("")
-        assert blocks[0]["text"] == " "
+        assert blocks[0]["text"] == _EMPTY_CONTENT_PLACEHOLDER
+        assert blocks[0]["text"].strip()
 
-    def test_whitespace_only_gets_space(self):
-        from agent.bedrock_adapter import _convert_content_to_converse
+    def test_whitespace_only_gets_placeholder(self):
+        from agent.bedrock_adapter import _convert_content_to_converse, _EMPTY_CONTENT_PLACEHOLDER
         blocks = _convert_content_to_converse("   ")
-        assert blocks[0]["text"] == " "
+        assert blocks[0]["text"] == _EMPTY_CONTENT_PLACEHOLDER
+        assert blocks[0]["text"].strip()
+
+    def test_whitespace_only_text_part_gets_placeholder(self):
+        """A text part inside a content list that is whitespace-only must also be replaced."""
+        from agent.bedrock_adapter import _convert_content_to_converse, _EMPTY_CONTENT_PLACEHOLDER
+        blocks = _convert_content_to_converse([{"type": "text", "text": "   "}])
+        assert blocks[0]["text"] == _EMPTY_CONTENT_PLACEHOLDER
+        assert blocks[0]["text"].strip()
 
     def test_real_text_preserved(self):
         from agent.bedrock_adapter import _convert_content_to_converse
         blocks = _convert_content_to_converse("Hello")
         assert blocks[0]["text"] == "Hello"
+
+    def test_no_whitespace_only_blocks_in_padding(self):
+        """First/last user-message padding must not produce whitespace-only blocks."""
+        from agent.bedrock_adapter import convert_messages_to_converse
+        # Assistant-first history triggers synthetic user padding at the front
+        _, converse_msgs = convert_messages_to_converse([
+            {"role": "assistant", "content": "I'll help."},
+            {"role": "user", "content": "thanks"},
+        ])
+        for msg in converse_msgs:
+            for block in msg.get("content", []):
+                if "text" in block:
+                    assert block["text"].strip(), f"whitespace-only block found: {block!r}"
 
 
 # ---------------------------------------------------------------------------

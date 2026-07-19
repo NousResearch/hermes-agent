@@ -126,7 +126,7 @@ def _prepare_minimal_install(
             state.write_text(str(count), encoding="utf-8")
             failures = int(os.environ.get("HERMES_TEST_PROBE_FAILURES", "0"))
             if count <= failures:
-                raise RuntimeError(f"synthetic baseline import failure {count}")
+                raise RuntimeError(f"synthetic baseline import failure {count}: caf{chr(233)}")
             if os.environ.get("HERMES_TEST_PROBE_STDERR") == "1":
                 print("synthetic benign stderr", file=sys.stderr)
             """
@@ -160,6 +160,11 @@ def _run_dependency_stage(
     env["HERMES_TEST_PROBE_STATE"] = str(state)
     env["HERMES_TEST_PROBE_FAILURES"] = str(failures)
     env["HERMES_TEST_PROBE_STDERR"] = "1" if emit_stderr else "0"
+    # The canonical test runner starts from `env -i`. Windows PowerShell needs
+    # PATHEXT even to dispatch an absolute .exe path through its call operator.
+    env.setdefault("PATHEXT", ".COM;.EXE;.BAT;.CMD")
+    env.pop("PYTHONIOENCODING", None)
+    env.pop("PYTHONUTF8", None)
     if not standins_in_managed_site_packages:
         env["PYTHONPATH"] = str(install_dir)
 
@@ -182,7 +187,7 @@ def _run_dependency_stage(
         cwd=tmp_path,
         env=env,
         capture_output=True,
-        text=True,
+        encoding="utf-8",
         timeout=120,
     )
     managed_python = install_dir / "venv" / "Scripts" / "python.exe"
@@ -272,6 +277,6 @@ def test_dependency_stage_reports_persistent_import_failure(tmp_path: Path) -> N
     assert "Exit codes: [1, 1, 1]" in reason
     assert f"Environment: executable={managed_python}" in reason
     assert "Captured probe output: Traceback" in reason
-    assert "synthetic baseline import failure 3" in reason
+    assert "synthetic baseline import failure 3: caf\u00e9" in reason
     assert "\n" in reason
     assert "dependencies are not in the venv" not in reason

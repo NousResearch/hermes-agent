@@ -269,7 +269,7 @@ function Invoke-PythonProbeProcess {
             (New-Object System.Text.UTF8Encoding $false)
         )
         $escapedScript = $tempScript.Replace('"', '\"')
-        $arguments = "-I `"$escapedScript`""
+        $arguments = "-I -X utf8 `"$escapedScript`""
         $process = Start-Process -FilePath $PythonExe -ArgumentList $arguments `
             -WorkingDirectory (Get-Location).Path -NoNewWindow -Wait -PassThru `
             -RedirectStandardOutput $tempOut -RedirectStandardError $tempErr

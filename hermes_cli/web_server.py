@@ -4458,7 +4458,30 @@ def get_profiles_sessions_sidebar(
     if not targets:
         targets.append(("default", profiles_mod.get_profile_dir("default")))
 
+    errors: List[Dict[str, str]] = []
+
     recents_scope = (recents_profile or "all").strip() or "all"
+    # Normalize recents_scope against known profile names so the client isn't
+    # required to send the exact case-sensitive string.  An unmatched scope
+    # (empty, wrong case, bare path, etc.) falls back to "default" with a
+    # warning — this prevents the silent-empty-list class of bugs (#67600).
+    if recents_scope != "all":
+        profile_names = {name for name, _ in targets}
+        if recents_scope not in profile_names:
+            lower_scope = recents_scope.lower()
+            matched = next((n for n in profile_names if n.lower() == lower_scope), None)
+            if matched is not None:
+                recents_scope = matched
+            else:
+                errors.append({
+                    "profile": "sidebar",
+                    "error": (
+                        f"recents_profile {recents_profile!r} does not match any known "
+                        f"profile ({', '.join(sorted(profile_names)) or 'none'}); "
+                        f'falling back to "default"'
+                    ),
+                })
+                recents_scope = "default"
     recents_exclude_list = [s for s in (recents_exclude or "").split(",") if s.strip()]
     messaging_exclude_list = [s for s in (messaging_exclude or "").split(",") if s.strip()]
 
@@ -4471,7 +4494,6 @@ def get_profiles_sessions_sidebar(
     messaging_rows: List[Dict[str, Any]] = []
     recents_total = 0
     recents_profile_totals: Dict[str, int] = {}
-    errors: List[Dict[str, str]] = []
     now = time.time()
 
     def _tag(rows: List[Dict[str, Any]], name: str) -> List[Dict[str, Any]]:

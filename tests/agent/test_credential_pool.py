@@ -98,6 +98,50 @@ def test_pool_keeps_single_profile_resolved_op_reference(tmp_path, monkeypatch):
     assert entries[0].access_token == "sk-single-profile"
 
 
+def test_pool_fails_closed_for_unscoped_op_reference_when_multiplex_active(tmp_path, monkeypatch):
+    """A raw profile reference must not borrow a global key outside its scope."""
+    home = tmp_path / "hermes"
+    home.mkdir()
+    (home / ".env").write_text("OPENROUTER_API_KEY=op://profile-a/key\n")
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    monkeypatch.setenv("OPENROUTER_API_KEY", "sk-other-profile")
+
+    scope_token = ss.set_secret_scope(None)
+    ss.set_multiplex_active(True)
+    try:
+        from agent.credential_pool import _seed_from_env
+
+        with pytest.raises(ss.UnscopedSecretError):
+            _seed_from_env("openrouter", [])
+    finally:
+        ss.set_multiplex_active(False)
+        ss.reset_secret_scope(scope_token)
+
+
+def test_pool_uses_scoped_resolution_for_op_reference_when_multiplex_active(tmp_path, monkeypatch):
+    """A scoped profile resolves its own 1Password value, never the global one."""
+    home = tmp_path / "hermes"
+    home.mkdir()
+    (home / ".env").write_text("OPENROUTER_API_KEY=op://profile-a/key\n")
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    monkeypatch.setenv("OPENROUTER_API_KEY", "sk-other-profile")
+
+    scope_token = ss.set_secret_scope({"OPENROUTER_API_KEY": "sk-profile-a"})
+    ss.set_multiplex_active(True)
+    try:
+        from agent.credential_pool import _seed_from_env
+
+        entries = []
+        changed, active_sources = _seed_from_env("openrouter", entries)
+    finally:
+        ss.set_multiplex_active(False)
+        ss.reset_secret_scope(scope_token)
+
+    assert changed is True
+    assert active_sources == {"env:OPENROUTER_API_KEY"}
+    assert [entry.access_token for entry in entries] == ["sk-profile-a"]
+
+
 def test_fill_first_selection_skips_recently_exhausted_entry(tmp_path, monkeypatch):
     monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes"))
     _write_auth_store(

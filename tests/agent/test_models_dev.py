@@ -93,6 +93,21 @@ class TestProviderMapping:
         assert PROVIDER_TO_MODELS_DEV["openai"] == "openai"
         assert PROVIDER_TO_MODELS_DEV["openai-codex"] == "openai"
 
+    def test_all_kimi_variants_mapped(self):
+        """Every kimi-* provider variant must map to the models.dev
+        ``kimi-for-coding`` catalog.  A missing entry causes
+        ``get_model_context_length`` to skip the models.dev lookup (step 5g)
+        and fall through to the generic ``"kimi": 262144`` catch-all in
+        ``DEFAULT_CONTEXT_LENGTHS``, under-reporting the 1M context window
+        that ``k3`` / ``kimi-for-coding`` actually expose.  Regression test
+        for the kimi-coding-c mapping omission (2026-07-19).
+        """
+        for variant in ("kimi", "kimi-coding", "kimi-coding-cn", "kimi-coding-c", "moonshot"):
+            assert PROVIDER_TO_MODELS_DEV.get(variant) == "kimi-for-coding", (
+                f"{variant} missing from PROVIDER_TO_MODELS_DEV - "
+                "context length will under-report to 256K"
+            )
+
 
 class TestExtractContext:
     def test_valid_entry(self):

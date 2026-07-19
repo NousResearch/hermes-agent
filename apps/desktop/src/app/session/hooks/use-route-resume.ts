@@ -138,7 +138,14 @@ export function useRouteResume({
       // Also must NOT fire when create/fork already moved selection + runtime to
       // a new session B while the router still shows stale A (#66057). That looks
       // "stuck on A" but resuming A yanks the UI back off the new chat.
+      //
+      // Scope this suppression to an active pending-create hold only. Once
+      // creatingSessionRef drops (route caught up, user left, or the safety
+      // timeout), a lingering A-route / B-selection mismatch must be able to
+      // self-heal via stuckOnRoutedSession — otherwise ChatView stays in its
+      // route/selection loading state forever after a stuck navigate.
       const selectionMovedAheadOfRoute =
+        creatingSessionRef.current &&
         Boolean(selectedStoredSessionIdRef.current) &&
         selectedStoredSessionIdRef.current !== routedSessionId &&
         Boolean(activeSessionIdRef.current)

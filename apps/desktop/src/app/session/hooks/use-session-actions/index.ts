@@ -259,12 +259,23 @@ export function useSessionActions({
       pendingGuardTimeoutRef.current = setTimeout(() => {
         pendingGuardTimeoutRef.current = null
 
-        if (pendingCreatedStoredSessionIdRef.current === storedId) {
-          releaseCreatingSessionGuard()
+        if (pendingCreatedStoredSessionIdRef.current !== storedId) {
+          return
         }
+
+        // Route never caught up. Retry navigate so ChatView can leave the
+        // route/selection mismatch loading state; then drop the guard so
+        // use-route-resume can self-heal to the URL if navigate still fails.
+        try {
+          navigate(sessionRoute(storedId), { replace: true })
+        } catch {
+          // Ignore — release below still unblocks recovery.
+        }
+
+        releaseCreatingSessionGuard()
       }, CREATE_GUARD_RELEASE_MS)
     },
-    [releaseCreatingSessionGuard, routedSessionId]
+    [navigate, releaseCreatingSessionGuard, routedSessionId]
   )
 
   useEffect(

@@ -1628,12 +1628,16 @@ describe('createBackendSessionForSend creatingSessionRef hold (#66057)', () => {
       await create!()
     })
     expect(creatingSessionRef.current).toBe(true)
+    expect(navigate).toHaveBeenCalledTimes(1)
 
-    // Route stays on A forever — safety timeout must drop the guard so resumes
-    // are not permanently blocked.
+    // Route stays on A forever — safety timeout must retry navigate (reconcile)
+    // and drop the guard so use-route-resume can self-heal if the route still
+    // never moves.
     await act(async () => {
       await vi.advanceTimersByTimeAsync(3_000)
     })
     expect(creatingSessionRef.current).toBe(false)
+    expect(navigate).toHaveBeenCalledTimes(2)
+    expect(navigate).toHaveBeenLastCalledWith('/stored-new', { replace: true })
   })
 })

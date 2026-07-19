@@ -1537,15 +1537,82 @@ class HonchoMemoryProvider(MemoryProvider):
             return tool_error(f"Honcho {tool_name} failed: {e}")
 
     def shutdown(self) -> None:
+        # CPython aborts (SIGABRT, exit 134) when daemon threads are still
+        # blocked in C-level I/O (httpx socket recv) at Py_FinalizeEx.
+        # The precise internal path is not fully characterized — likely
+        # Py_FatalError("Invalid thread state") or a glibc assert in
+        # pthread_mutex_destroy when a daemon thread still holds a lock
+        # during module/state teardown. CPython does not forcibly kill
+        # daemon threads; it abandons them and tears down the interpreter
+        # out from under them. See CPython gh-97940 / bpo-20526.
+        #
+        # Closing the Honcho SDK's underlying httpx.Client is the key step:
+        # it interrupts any worker thread blocked in sock_recv (httpx raises
+        # a connection-closed error that the worker's try/except absorbs),
+        # so the subsequent joins actually complete instead of timing out
+        # against a 30s read poll.
+        #
+        # Worst-case shutdown latency: ~2s (init join) + 2×2s (prefetch/sync)
+        # + manager shutdown (10s async join + 5s/prefetch) + 3×5s re-join
+        # ≈ 30s+ if anything is wedged. Acceptable vs. a crash.
+        if self._init_thread and self._init_thread.is_alive():
+            self._init_thread.join(timeout=2.0)
+
         for t in (self._prefetch_thread, self._sync_thread):
             if t and t.is_alive():
-                t.join(timeout=5.0)
-        # Flush any remaining messages
-        if self._manager and not (self._init_thread and self._init_thread.is_alive() and not self._session_initialized):
+                t.join(timeout=2.0)
+
+        if self._manager:
+            if not (self._init_thread and self._init_thread.is_alive()):
+                try:
+                    self._manager.flush_all()
+                except Exception:
+                    pass
+            # Close the Honcho httpx.Client FIRST so threads blocked in
+            # socket recv are interrupted — otherwise the manager's shutdown()
+            # joins time out against the 30s read poll.
+            self._close_honcho_http_client()
+
+            # Now join the manager's async writer + prefetch threads (they
+            # should unblock quickly after the client close).
             try:
-                self._manager.flush_all()
+                self._manager.shutdown()
             except Exception:
                 pass
+
+        # Re-join tracked threads after the http client close — they may
+        # have been blocked in socket recv during the first join attempt.
+        for t in (self._init_thread, self._prefetch_thread, self._sync_thread):
+            if t and t.is_alive():
+                t.join(timeout=5.0)
+
+    def _close_honcho_http_client(self) -> None:
+        """Close the Honcho SDK's httpx.Client to interrupt in-flight recvs.
+
+        The honcho-ai SDK stores its sync HTTP client on ``Honcho._http``
+        (a ``HonchoHTTPClient`` wrapping ``httpx.Client``). Closing it
+        forces any worker thread blocked in a socket recv to error out,
+        which is required for a clean interpreter shutdown.
+        """
+        client = getattr(self, "_manager", None)
+        client = getattr(client, "_honcho", None) if client else None
+        if client is None:
+            logger.warning(
+                "shutdown_memory_provider: could not locate Honcho SDK client "
+                "(_manager._honcho) — httpx client not closed, daemon threads "
+                "may linger. SDK attribute path may have drifted."
+            )
+            return
+        for attr in ("_http", "_async_http"):
+            http_client = getattr(client, attr, None)
+            if http_client is None:
+                continue
+            closer = getattr(http_client, "close", None)
+            if callable(closer):
+                try:
+                    closer()
+                except Exception:
+                    pass
 
 
 # ---------------------------------------------------------------------------

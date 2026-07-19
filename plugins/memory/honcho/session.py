@@ -143,6 +143,12 @@ class HonchoSessionManager:
         # Async write queue — started lazily on first enqueue
         self._async_queue: queue.Queue | None = None
         self._async_thread: threading.Thread | None = None
+        # Tracked fire-and-forget context-prefetch threads, joined in shutdown()
+        # so none is left blocked in HTTP recv at interpreter teardown (which
+        # aborts CPython — see HonchoMemoryProvider.shutdown).
+        self._context_prefetch_threads: list[threading.Thread] = []
+        self._prefetch_threads_lock = threading.Lock()
+        self._closed = False
         if write_frequency == "async":
             self._async_queue = queue.Queue()
             self._async_thread = threading.Thread(
@@ -546,11 +552,34 @@ class HonchoSessionManager:
                     break
 
     def shutdown(self) -> None:
-        """Gracefully shut down the async writer thread."""
+        """Gracefully shut down background worker threads.
+
+        Joins the async writer and any in-flight context-prefetch threads so
+        none is left blocked in HTTP recv at interpreter teardown (which
+        aborts CPython during Py_FinalizeEx — daemon threads are abandoned,
+        not killed, and the interpreter tears down around them; gh-97940).
+        """
+        if self._closed:
+            return
+        self._closed = True
         if self._async_queue is not None and self._async_thread is not None:
             self.flush_all()
             self._async_queue.put(_ASYNC_SHUTDOWN)
             self._async_thread.join(timeout=10)
+        # Join context-prefetch threads, but keep references to any that
+        # don't join within the timeout so a later shutdown phase can retry.
+        # Snapshot under lock so a concurrent prefetch_context() can't
+        # add a thread after we've snapshotted (TOCTOU → lost thread → SIGABRT).
+        with self._prefetch_threads_lock:
+            prefetch_snapshot = list(self._context_prefetch_threads)
+        alive = []
+        for t in prefetch_snapshot:
+            if t.is_alive():
+                t.join(timeout=5.0)
+                if t.is_alive():
+                    alive.append(t)
+        with self._prefetch_threads_lock:
+            self._context_prefetch_threads = alive
 
     def delete(self, key: str) -> bool:
         """Delete a session from local cache."""
@@ -673,18 +702,28 @@ class HonchoSessionManager:
             return ""
 
     def prefetch_context(self, session_key: str, user_message: str | None = None) -> None:
-        """
-        Fire get_prefetch_context in a background thread, caching the result.
+        """Fire get_prefetch_context in a background thread, caching the result.
 
         Non-blocking. Consumed next turn via pop_context_result(). This avoids
         a synchronous HTTP round-trip blocking every response.
         """
+        if self._closed:
+            return
         def _run():
             result = self.get_prefetch_context(session_key, user_message)
             if result:
                 self.set_context_result(session_key, result)
 
         t = threading.Thread(target=_run, name="honcho-context-prefetch", daemon=True)
+        # Track so shutdown() can join it before interpreter teardown.
+        # Prune completed threads to avoid unbounded list growth in long-lived
+        # sessions (e.g. gateway runs for days/weeks with many turns).
+        # Lock against concurrent shutdown() which snapshots the same list.
+        with self._prefetch_threads_lock:
+            self._context_prefetch_threads = [
+                th for th in self._context_prefetch_threads if th.is_alive()
+            ]
+            self._context_prefetch_threads.append(t)
         t.start()
 
     def set_context_result(self, session_key: str, result: dict[str, str]) -> None:

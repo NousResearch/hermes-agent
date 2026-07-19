@@ -115,3 +115,45 @@ def test_swarm_verifier_and_synthesis_are_dependency_gated(tmp_path):
         assert kb.get_task(conn, created.synthesizer_id).status == "ready"
     finally:
         conn.close()
+
+
+def test_create_swarm_completes_clean_worktree_planning_root(tmp_path):
+    """The planning root is completed by design without producing a diff,
+    so a clean explicit worktree root must not trip the empty-diff
+    completion gate (EmptyDiffCompletionError) and abort graph creation."""
+    import subprocess
+
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    for cmd in (
+        ["git", "init", "-b", "main", str(repo)],
+        ["git", "-C", str(repo), "config", "user.email", "swarm@example.com"],
+        ["git", "-C", str(repo), "config", "user.name", "Swarm Test"],
+    ):
+        subprocess.run(cmd, check=True, capture_output=True, text=True)
+    (repo / "README.md").write_text("hello\n", encoding="utf-8")
+    subprocess.run(["git", "-C", str(repo), "add", "README.md"],
+                   check=True, capture_output=True, text=True)
+    subprocess.run(["git", "-C", str(repo), "commit", "-m", "init"],
+                   check=True, capture_output=True, text=True)
+    worktree = tmp_path / "wt-root"
+    subprocess.run(
+        ["git", "-C", str(repo), "worktree", "add", "-b", "wt/swarm-root",
+         str(worktree), "HEAD"],
+        check=True, capture_output=True, text=True,
+    )
+
+    conn = kb.connect(tmp_path / "kanban.db")
+    try:
+        created = create_swarm(
+            conn,
+            goal="Plan from a clean worktree root.",
+            workers=[SwarmWorkerSpec(profile="researcher", title="Scan", body="Find")],
+            verifier_assignee="reviewer",
+            synthesizer_assignee="writer",
+            workspace_kind="worktree",
+            workspace_path=str(worktree),
+        )
+        assert kb.get_task(conn, created.root_id).status == "done"
+    finally:
+        conn.close()

@@ -4091,6 +4091,28 @@ class ArtifactPreservationError(RuntimeError):
     """Raised when a declared scratch deliverable cannot be preserved."""
 
 
+class EmptyDiffCompletionError(ValueError):
+    """Raised by ``complete_task`` when a worktree task is completed with
+    no committed or uncommitted changes in its worktree.
+
+    Deterministic, fail-closed sibling of ``HallucinatedCardsError``: the
+    rejection is auditable (``completion_blocked_empty_diff`` event) and
+    never mutates task state, so the worker can simply retry.
+    ``metadata["no_diff_expected"]`` skips the check for tasks that
+    legitimately produce no diff (investigation done in a worktree, docs
+    landed elsewhere). Kept as a ``ValueError`` subclass so existing
+    tool-error handlers treat it as a recoverable user error.
+    """
+
+    def __init__(self, completing_task_id: str, workspace_path: str):
+        self.completing_task_id = completing_task_id
+        self.workspace_path = workspace_path
+        super().__init__(
+            f"completion blocked: worktree {workspace_path or '<unknown>'} has "
+            f"no committed or uncommitted changes for task {completing_task_id}"
+        )
+
+
 def complete_task(
     conn: sqlite3.Connection,
     task_id: str,
@@ -4128,6 +4150,13 @@ def complete_task(
     Any suspected phantom references are recorded as a
     ``suspected_hallucinated_references`` event. This pass is advisory
     and never blocks.
+
+    Worktree tasks are additionally gated on having real work: if the
+    task's worktree provably has neither uncommitted changes nor commits
+    beyond its base, completion is blocked with
+    ``EmptyDiffCompletionError`` and a ``completion_blocked_empty_diff``
+    event. Pass ``metadata={"no_diff_expected": True}`` to skip the check
+    for tasks that legitimately produce no diff.
     """
     now = int(time.time())
 
@@ -4157,6 +4186,43 @@ def complete_task(
             raise HallucinatedCardsError(phantom_cards, task_id)
     else:
         verified_cards = []
+
+    # Gate: deterministic empty-diff check for worktree tasks, same
+    # contract as the card gate above (audit event in a tiny txn, then
+    # raise; task state is never mutated on rejection). Only a provably
+    # clean worktree blocks — an indeterminate answer (missing path, not
+    # a git checkout, no derivable base) must never wedge a legitimate
+    # completion, so it is recorded and allowed through.
+    if not (metadata or {}).get("no_diff_expected"):
+        _task = get_task(conn, task_id)
+        if _task is not None and _task.workspace_kind == "worktree":
+            _wt_path = (_task.workspace_path or "").strip()
+            _has_changes = (
+                _worktree_has_changes(Path(_wt_path).expanduser())
+                if _wt_path
+                else None
+            )
+            if _has_changes is False:
+                with write_txn(conn):
+                    _append_event(
+                        conn, task_id, "completion_blocked_empty_diff",
+                        {
+                            "workspace_path": _wt_path,
+                            "branch_name": _task.branch_name,
+                            "summary_preview": (
+                                (summary or result or "").strip().splitlines()[0][:200]
+                                if (summary or result)
+                                else None
+                            ),
+                        },
+                    )
+                raise EmptyDiffCompletionError(task_id, _wt_path)
+            if _has_changes is None and _wt_path:
+                with write_txn(conn):
+                    _append_event(
+                        conn, task_id, "empty_diff_check_indeterminate",
+                        {"workspace_path": _wt_path},
+                    )
 
     metadata = _merge_completion_prose_artifacts(
         conn, task_id, metadata, summary=summary, result=result,
@@ -5708,6 +5774,83 @@ def _git_current_branch(path: Path) -> Optional[str]:
         return None
     branch = (result.stdout or "").strip()
     return branch or None
+
+
+def _default_branch_ref(path: Path) -> Optional[str]:
+    """Best-effort name of the repo's default branch, for diff bases."""
+    try:
+        head = subprocess.run(
+            ["git", "-C", str(path), "symbolic-ref", "--short",
+             "refs/remotes/origin/HEAD"],
+            capture_output=True,
+            text=True,
+            timeout=30,
+            check=False,
+        )
+        if head.returncode == 0 and (head.stdout or "").strip():
+            return (head.stdout or "").strip()
+    except Exception:
+        pass
+    repo_root = _git_toplevel(path)
+    if repo_root is None:
+        return None
+    for candidate in ("main", "master"):
+        if _git_branch_exists(repo_root, candidate):
+            return candidate
+    return None
+
+
+def _worktree_has_changes(path: Path) -> Optional[bool]:
+    """Tri-state work detector for a task worktree.
+
+    Returns ``True`` when the checkout has uncommitted changes (including
+    untracked files) or commits beyond its merge-base with the repo's
+    default branch, ``False`` when it provably has neither, and ``None``
+    when the answer cannot be determined (missing path, not a git
+    checkout, no derivable base). Callers must treat ``None`` as
+    "do not block".
+    """
+    try:
+        if not path.is_dir():
+            return None
+        status = subprocess.run(
+            ["git", "-C", str(path), "status", "--porcelain"],
+            capture_output=True,
+            text=True,
+            timeout=30,
+            check=False,
+        )
+        if status.returncode != 0:
+            return None
+        if (status.stdout or "").strip():
+            return True
+        base = _default_branch_ref(path)
+        if base is None:
+            return None
+        merge_base = subprocess.run(
+            ["git", "-C", str(path), "merge-base", "HEAD", base],
+            capture_output=True,
+            text=True,
+            timeout=30,
+            check=False,
+        )
+        base_sha = (merge_base.stdout or "").strip()
+        if merge_base.returncode != 0 or not base_sha:
+            return None
+        diff = subprocess.run(
+            ["git", "-C", str(path), "diff", "--quiet", base_sha, "HEAD"],
+            capture_output=True,
+            text=True,
+            timeout=60,
+            check=False,
+        )
+        if diff.returncode == 0:
+            return False
+        if diff.returncode == 1:
+            return True
+        return None
+    except Exception:
+        return None
 
 
 def _is_linked_worktree_checkout(path: Path) -> bool:

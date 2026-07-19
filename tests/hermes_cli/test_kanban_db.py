@@ -4959,3 +4959,159 @@ def test_bare_connect_does_not_close_on_context_exit(tmp_path):
     # Still usable after with-block exit (the leak).
     conn.execute("SELECT 1").fetchone()
     conn.close()  # explicit close to avoid leaking THIS test
+
+
+# ---------------------------------------------------------------------------
+# Empty-diff completion gate
+# ---------------------------------------------------------------------------
+
+def _worktree_task(conn, tmp_path: Path, *, materialize: bool = True) -> tuple[str, Path]:
+    """Create a claimed worktree task backed by a real git worktree."""
+    repo = tmp_path / "repo"
+    _init_git_repo(repo)
+    worktree = tmp_path / "wt-task"
+    if materialize:
+        subprocess.run(
+            ["git", "-C", str(repo), "worktree", "add", "-b", "wt/task",
+             str(worktree), "HEAD"],
+            check=True, capture_output=True, text=True,
+        )
+    tid = kb.create_task(
+        conn,
+        title="worktree work",
+        workspace_kind="worktree",
+        workspace_path=str(worktree),
+        branch_name="wt/task",
+    )
+    kb.claim_task(conn, tid)
+    return tid, worktree
+
+
+def test_complete_blocks_empty_diff_worktree(kanban_home, tmp_path):
+    """A worktree task with no changes at all must not be completable —
+    the gate raises, records an audit event, and leaves the task
+    in-flight (same contract as the hallucinated-cards gate)."""
+    with kb.connect() as conn:
+        tid, _ = _worktree_task(conn, tmp_path)
+        with pytest.raises(kb.EmptyDiffCompletionError):
+            kb.complete_task(conn, tid, result="claims work happened")
+        assert kb.get_task(conn, tid).status == "running"
+        kinds = [e.kind for e in kb.list_events(conn, tid)]
+        assert "completion_blocked_empty_diff" in kinds
+
+
+def test_complete_allows_uncommitted_worktree_changes(kanban_home, tmp_path):
+    with kb.connect() as conn:
+        tid, worktree = _worktree_task(conn, tmp_path)
+        (worktree / "work.py").write_text("print('x')\n", encoding="utf-8")
+        assert kb.complete_task(conn, tid, result="done") is True
+        assert kb.get_task(conn, tid).status == "done"
+
+
+def test_complete_allows_committed_worktree_changes(kanban_home, tmp_path):
+    with kb.connect() as conn:
+        tid, worktree = _worktree_task(conn, tmp_path)
+        (worktree / "work.py").write_text("print('x')\n", encoding="utf-8")
+        subprocess.run(["git", "-C", str(worktree), "add", "work.py"],
+                       check=True, capture_output=True, text=True)
+        subprocess.run(["git", "-C", str(worktree), "commit", "-m", "work"],
+                       check=True, capture_output=True, text=True)
+        assert kb.complete_task(conn, tid, result="done") is True
+
+
+def test_complete_empty_diff_escape_hatch(kanban_home, tmp_path):
+    """metadata.no_diff_expected is the documented opt-out for tasks that
+    legitimately produce no diff (investigation, docs landed elsewhere)."""
+    with kb.connect() as conn:
+        tid, _ = _worktree_task(conn, tmp_path)
+        assert kb.complete_task(
+            conn, tid,
+            result="investigation only",
+            metadata={"no_diff_expected": True},
+        ) is True
+        assert kb.get_task(conn, tid).status == "done"
+
+
+def test_complete_missing_worktree_is_indeterminate_and_allowed(kanban_home, tmp_path):
+    """An unresolvable worktree must never block completion — the check
+    records an indeterminate event and lets the completion through."""
+    with kb.connect() as conn:
+        tid, _ = _worktree_task(conn, tmp_path, materialize=False)
+        assert kb.complete_task(conn, tid, result="done elsewhere") is True
+        kinds = [e.kind for e in kb.list_events(conn, tid)]
+        assert "empty_diff_check_indeterminate" in kinds
+
+
+def test_complete_scratch_task_skips_diff_gate(kanban_home):
+    with kb.connect() as conn:
+        tid = kb.create_task(conn, title="research")
+        kb.claim_task(conn, tid)
+        assert kb.complete_task(conn, tid, result="notes written") is True
+
+
+def test_cli_complete_empty_diff_prints_actionable_error(kanban_home, tmp_path, capsys):
+    """``hermes kanban complete`` must surface the empty-diff rejection as
+    an actionable stderr message (still in-flight + both recovery paths),
+    not a raw traceback — parity with the kanban_complete tool handler."""
+    import argparse
+
+    from hermes_cli.kanban import _cmd_complete
+
+    with kb.connect() as conn:
+        tid, _ = _worktree_task(conn, tmp_path)
+
+    rc = _cmd_complete(argparse.Namespace(task_ids=[tid], result=None))
+    assert rc == 1
+    err = capsys.readouterr().err
+    assert "no committed or uncommitted changes" in err
+    assert "still in-flight" in err
+    assert "no_diff_expected" in err
+    with kb.connect() as conn:
+        assert kb.get_task(conn, tid).status == "running"
+
+
+def test_cli_complete_empty_diff_continues_with_remaining_ids(kanban_home, tmp_path, capsys):
+    """A blocked worktree completion must not abort a bulk complete — the
+    remaining ids in the list still get processed."""
+    import argparse
+
+    from hermes_cli.kanban import _cmd_complete
+
+    with kb.connect() as conn:
+        blocked, _ = _worktree_task(conn, tmp_path)
+        ok_tid = kb.create_task(conn, title="scratch work")
+        kb.claim_task(conn, ok_tid)
+
+    rc = _cmd_complete(argparse.Namespace(task_ids=[blocked, ok_tid], result=None))
+    assert rc == 1
+    assert f"Completed {ok_tid}" in capsys.readouterr().out
+    with kb.connect() as conn:
+        assert kb.get_task(conn, blocked).status == "running"
+        assert kb.get_task(conn, ok_tid).status == "done"
+
+
+def test_worktree_has_changes_tristate(tmp_path):
+    repo = tmp_path / "repo"
+    _init_git_repo(repo)
+    worktree = tmp_path / "wt"
+    subprocess.run(
+        ["git", "-C", str(repo), "worktree", "add", "-b", "wt/x",
+         str(worktree), "HEAD"],
+        check=True, capture_output=True, text=True,
+    )
+    # Provably clean.
+    assert kb._worktree_has_changes(worktree) is False
+    # Untracked file counts as work.
+    (worktree / "new.txt").write_text("x\n", encoding="utf-8")
+    assert kb._worktree_has_changes(worktree) is True
+    # Committed-ahead-of-base counts as work.
+    subprocess.run(["git", "-C", str(worktree), "add", "new.txt"],
+                   check=True, capture_output=True, text=True)
+    subprocess.run(["git", "-C", str(worktree), "commit", "-m", "w"],
+                   check=True, capture_output=True, text=True)
+    assert kb._worktree_has_changes(worktree) is True
+    # Indeterminate: missing path / not a git checkout.
+    assert kb._worktree_has_changes(tmp_path / "nope") is None
+    plain = tmp_path / "plain"
+    plain.mkdir()
+    assert kb._worktree_has_changes(plain) is None

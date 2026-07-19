@@ -57,6 +57,15 @@ class TestExtractMediaImages:
         assert "/audio.ogg" in paths
         assert "/screenshot.png" in paths
 
+    def test_markdown_document_extracted(self):
+        content = "Plan file:\nMEDIA:/tmp/xpower-source-store-v2-performance-engineering-plan.md"
+        media, cleaned = BasePlatformAdapter.extract_media(content)
+        assert media == [(
+            "/tmp/xpower-source-store-v2-performance-engineering-plan.md",
+            False,
+        )]
+        assert "MEDIA:" not in cleaned
+
 
 # ---------------------------------------------------------------------------
 # Telegram send_image_file tests

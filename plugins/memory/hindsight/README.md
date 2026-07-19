@@ -99,6 +99,41 @@ Config file: `~/.hermes/hindsight/config.json`
 | `retain_user_prefix` | `User` | Label used before user turns in auto-retained transcripts |
 | `retain_assistant_prefix` | `Assistant` | Label used before assistant turns in auto-retained transcripts |
 
+### Rolling Session Summary
+
+These keys configure the structured rolling session summary lifecycle. Summary
+consumption stays disabled by default and only runs when
+`session_summary_enabled` and `session_summary_enrich_recall_query` are both
+`true`. Hermes uses the rolling summary only to enrich recall queries. It does
+not inject summary prompt blocks and does not add summary text to retain
+extraction context. Hermes currently uses the deterministic local fallback
+generator; real LLM generator fields are parsed and reserved for a future helper.
+
+| Key | Default | Description |
+|-----|---------|-------------|
+| `session_summary_enabled` | `false` | Enables rolling session summary integration |
+| `session_summary_enrich_recall_query` | `false` | Adds bounded rolling summary context after the latest auto-recall query |
+| `session_summary_generator_provider` | — | Reserved LLM provider for future real summary generation |
+| `session_summary_generator_model` | — | Reserved LLM model for future real summary generation |
+| `session_summary_generator_base_url` | — | Reserved OpenAI-compatible summary model endpoint |
+| `session_summary_generator_api_key_env` | `HINDSIGHT_LLM_API_KEY` | Environment variable name for the summary model key |
+| `session_summary_reuse_hindsight_llm_config` | `true` | Reuse local embedded Hindsight LLM config when summary-specific fields are unset |
+| `session_summary_update_every_n_turns` | — | Optional summary refresh cadence independent from `retain_every_n_turns` |
+| `session_summary_min_update_every_n_turns` | `2` | Minimum refresh cadence; prevents per-turn summary LLM calls by default |
+| `session_summary_timeout_seconds` | `20` | Timeout for future background summary generation |
+| `session_summary_max_input_chars` | `16000` | Maximum characters considered by summary generation |
+| `session_summary_max_output_chars` | `2000` | Maximum rendered summary characters |
+| `session_summary_max_recall_query_chars` | `800` | Budget for summary-derived recall query text |
+| `session_summary_recall_query_budget_ratio` | `0.25` | Maximum fraction of summary input budget usable for recall query text |
+| `session_summary_min_latest_query_reserve_chars` | `400` | Latest-query reserve when trimming summary inputs |
+
+Summary inputs are sanitized to user/assistant text only. Tool role logs,
+assistant tool-call payloads, reasoning-only payloads, prompt-injection lines,
+and secret/path/hash canaries are excluded before summary generation. The
+summary store is profile-scoped at `$HERMES_HOME/hindsight/session_summaries.sqlite`
+and uses SQLite/WAL; it does not store raw tool logs or full retained
+transcripts.
+
 ### Integration
 
 | Key | Default | Description |

@@ -494,3 +494,86 @@ class TestAutomaticCompressionStateRefreshAfterLock:
             force=True,
         )
         assert db.get_compression_lock_holder(session_id) is None
+
+
+class TestGateLevelGuardRefresh:
+    """The unblock direction must work from the should_compress() pre-gates.
+
+    compress_context refreshes durable guards internally, but the automatic
+    paths (preflight/turn gates) consult should_compress() first — if a stale
+    in-memory fallback streak (which has no expiry timer) blocks there, the
+    refresh inside compress_context is never reached and the agent stays
+    blocked forever.
+    """
+
+    def test_should_compress_unblocks_after_another_agent_clears_streak(
+        self,
+        refresh_state_db: SessionDB,
+    ):
+        db = refresh_state_db
+        session_id = "GATE_LEVEL_STREAK_CLEAR"
+        db.create_session(session_id, source="telegram")
+        db.set_compression_fallback_streak(session_id, 2)
+        compressor = _bound_context_compressor(db, session_id)
+        assert compressor._fallback_compression_streak == 2
+
+        # Another agent's healthy boundary clears the durable breaker.
+        db.set_compression_fallback_streak(session_id, 0)
+
+        assert compressor.should_compress(10**9) is True
+        assert compressor._fallback_compression_streak == 0
+
+    def test_unblocked_gate_does_not_touch_the_db(
+        self,
+        refresh_state_db: SessionDB,
+    ):
+        db = refresh_state_db
+        session_id = "GATE_LEVEL_HOT_PATH"
+        db.create_session(session_id, source="telegram")
+        compressor = _bound_context_compressor(db, session_id)
+
+        with patch.object(
+            compressor,
+            "_refresh_durable_guards",
+            side_effect=AssertionError("hot path must not refresh"),
+        ):
+            assert compressor._automatic_compression_blocked() is False
+
+
+class TestCooldownPersistFailureIsNotAClearedRow:
+    def test_refresh_keeps_local_cooldown_when_persist_failed(
+        self,
+        refresh_state_db: SessionDB,
+    ):
+        """An empty durable row is not evidence of a clear when OUR write failed.
+
+        _record_compression_failure_cooldown sets the local timer first and
+        persists best-effort. If that persist failed, a later refresh=True
+        finding no DB row must keep the local cooldown (otherwise the #11529
+        thrash guard silently re-opens), until it expires or a successful
+        DB round-trip supersedes it.
+        """
+        db = refresh_state_db
+        session_id = "PERSIST_FAILED_COOLDOWN"
+        db.create_session(session_id, source="telegram")
+        compressor = _bound_context_compressor(db, session_id)
+
+        with patch.object(
+            db,
+            "record_compression_failure_cooldown",
+            side_effect=Exception("disk full"),
+        ):
+            compressor._record_compression_failure_cooldown(60, "rate limited")
+        assert compressor._cooldown_persist_failed is True
+
+        state = compressor.get_active_compression_failure_cooldown(refresh=True)
+        assert state is not None
+        assert compressor._summary_failure_cooldown_until > 0
+        assert compressor._automatic_compression_blocked() is True
+
+        # Once a durable round-trip succeeds, the DB is authoritative again.
+        compressor._record_compression_failure_cooldown(30, "retry later")
+        assert compressor._cooldown_persist_failed is False
+        db.clear_compression_failure_cooldown(session_id)
+        assert compressor.get_active_compression_failure_cooldown(refresh=True) is None
+        assert compressor._summary_failure_cooldown_until == 0.0

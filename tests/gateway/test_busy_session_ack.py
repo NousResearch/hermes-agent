@@ -37,10 +37,16 @@ from gateway.platforms.base import (
 # Helpers
 # ---------------------------------------------------------------------------
 
-def _make_event(text="hello", chat_id="123", platform_val="telegram"):
+def _make_event(
+    text="hello", chat_id="123", platform_val: str | Platform = "telegram"
+):
     """Build a minimal MessageEvent."""
     source = SessionSource(
-        platform=MagicMock(value=platform_val),
+        platform=(
+            platform_val
+            if isinstance(platform_val, Platform)
+            else MagicMock(value=platform_val)
+        ),
         chat_id=chat_id,
         chat_type="private",
         user_id="user1",
@@ -582,7 +588,7 @@ class TestBusySessionAck:
         runner._busy_input_mode = "interrupt"
         adapter = _make_adapter()
 
-        event = _make_event(text="yo")
+        event = _make_event(text="yo", platform_val=Platform.TELEGRAM)
         sk = build_session_key(event.source)
 
         agent = MagicMock()
@@ -613,7 +619,7 @@ class TestBusySessionAck:
         runner._busy_input_mode = "interrupt"
         adapter = _make_adapter()
 
-        event = _make_event(text="yo")
+        event = _make_event(text="yo", platform_val=Platform.TELEGRAM)
         sk = build_session_key(event.source)
 
         agent = MagicMock()

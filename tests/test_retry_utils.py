@@ -5,7 +5,12 @@ import threading
 import agent.retry_utils as retry_utils
 from types import SimpleNamespace
 
-from agent.retry_utils import adaptive_rate_limit_backoff, is_zai_coding_overload_error, jittered_backoff
+from agent.retry_utils import (
+    adaptive_rate_limit_backoff,
+    is_nvidia_nim_rate_limit_error,
+    is_zai_coding_overload_error,
+    jittered_backoff,
+)
 
 
 def test_backoff_is_exponential():
@@ -198,6 +203,42 @@ def test_zai_coding_overload_backoff_grows_after_short_retries(monkeypatch):
         assert policy == "zai_coding_overload_long"
 
     assert waits == [30.0, 60.0, 90.0, 120.0, 120.0, 120.0]
+
+
+def test_nvidia_nim_rate_limit_classifier_is_endpoint_specific():
+    err = SimpleNamespace(status_code=429, body={"status": 429, "title": "Too Many Requests"})
+
+    assert is_nvidia_nim_rate_limit_error(
+        base_url="https://integrate.api.nvidia.com/v1",
+        error=err,
+    )
+    assert is_nvidia_nim_rate_limit_error(
+        base_url="https://integrate.api.nvidia.com/v1/",
+        error=SimpleNamespace(body='{"status":429,"title":"Too Many Requests"}'),
+    )
+    assert not is_nvidia_nim_rate_limit_error(
+        base_url="https://openrouter.ai/api/v1",
+        error=err,
+    )
+
+
+def test_nvidia_nim_rate_limit_backoff_uses_wider_window(monkeypatch):
+    monkeypatch.setattr(retry_utils, "jittered_backoff", lambda *a, **kw: kw["base_delay"])
+    err = SimpleNamespace(status_code=429, body={"status": 429, "title": "Too Many Requests"})
+
+    waits = []
+    for attempt in range(1, 6):
+        wait, policy = adaptive_rate_limit_backoff(
+            attempt,
+            base_url="https://integrate.api.nvidia.com/v1",
+            model="minimaxai/minimax-m3",
+            error=err,
+            default_wait=2.0,
+        )
+        waits.append(wait)
+        assert policy == "nvidia_nim_rate_limit"
+
+    assert waits == [15.0, 30.0, 60.0, 120.0, 120.0]
 
 
 def test_non_zai_backoff_returns_default_wait():

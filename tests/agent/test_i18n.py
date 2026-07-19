@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import re
 from pathlib import Path
 
@@ -12,7 +13,6 @@ from agent import i18n
 
 
 LOCALES_DIR = Path(__file__).resolve().parents[2] / "locales"
-REPO_ROOT = LOCALES_DIR.parent
 
 
 def _load_raw(lang: str) -> dict:
@@ -44,25 +44,16 @@ def test_all_locales_exist():
         assert (LOCALES_DIR / f"{lang}.yaml").is_file(), f"missing locales/{lang}.yaml"
 
 
-def test_runtime_locale_registries_stay_aligned():
-    """Python, Dashboard, and Ink must expose the same language identities.
+def test_shared_locale_registry_is_valid_and_drives_python_runtime():
+    """Language identities and aliases have one machine-readable authority."""
+    registry = json.loads((LOCALES_DIR / "registry.json").read_text(encoding="utf-8"))
+    locales = registry["locales"]
 
-    Each runtime keeps a native typed registry, but this contract prevents one
-    surface from silently accepting or dropping a language that the others do
-    not know. Translation completeness remains a separate per-locale concern.
-    """
-    tui_source = (REPO_ROOT / "ui-tui/src/i18n/types.ts").read_text(encoding="utf-8")
-    tui_block = re.search(r"export const LOCALES = \[(.*?)\] as const", tui_source, re.S)
-    assert tui_block is not None
-    tui_locales = tuple(re.findall(r"['\"]([a-z]+(?:-[a-z]+)?)['\"]", tui_block.group(1)))
-
-    web_source = (REPO_ROOT / "web/src/i18n/types.ts").read_text(encoding="utf-8")
-    web_block = re.search(r"export type Locale\s*=\s*(.*?);", web_source, re.S)
-    assert web_block is not None
-    web_locales = tuple(re.findall(r"['\"]([a-z]+(?:-[a-z]+)?)['\"]", web_block.group(1)))
-
-    assert tui_locales == i18n.SUPPORTED_LANGUAGES
-    assert web_locales == i18n.SUPPORTED_LANGUAGES
+    assert tuple(locales) == i18n.SUPPORTED_LANGUAGES
+    assert registry["default"] == i18n.DEFAULT_LANGUAGE
+    assert all(meta.get("name") and meta.get("triggerLabel") for meta in locales.values())
+    for section in ("aliases", "compatibilityAliases"):
+        assert set(registry[section].values()) <= set(locales)
 
 
 def test_simplified_chinese_catalog_keys_match_english():

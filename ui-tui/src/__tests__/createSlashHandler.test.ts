@@ -184,6 +184,22 @@ describe('createSlashHandler', () => {
     })
   })
 
+  it('shows that a /model --once override applies to only the next turn', async () => {
+    patchUiState({ locale: 'zh', sid: 'sid-abc' })
+
+    const ctx = buildCtx({
+      gateway: {
+        ...buildGateway(),
+        rpc: vi.fn(() => Promise.resolve({ scope: 'once', value: 'x-model' }))
+      }
+    })
+
+    expect(createSlashHandler(ctx)('/model x-model --once')).toBe(true)
+    await vi.waitFor(() => {
+      expect(ctx.transcript.sys).toHaveBeenCalledWith(translate('zh', 'sys.modelSetOnce', { model: 'x-model' }))
+    })
+  })
+
   it('opens the model picker with refresh for /model --refresh', () => {
     patchUiState({ sid: 'sid-abc' })
     const ctx = buildCtx()

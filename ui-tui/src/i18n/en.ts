@@ -1122,6 +1122,7 @@ const catalog = {
   'sys.backgroundUsage': '/background <prompt>',
   'sys.backgroundStarted': 'bg {taskId} started',
   'sys.modelSet': 'model → {model}',
+  'sys.modelSetOnce': 'model → {model} · next turn only',
   'sys.expensiveModelTitle': 'Expensive model selection',
   'sys.expensiveModelDetail': 'This model has unusually high known pricing.',
   'sys.switchAnyway': 'Switch anyway',

@@ -252,9 +252,11 @@ def test_locale_catalogs_ship_in_both_wheel_and_sdist():
     """
     data = tomllib.loads((REPO_ROOT / "pyproject.toml").read_text(encoding="utf-8"))
     data_files = data["tool"]["setuptools"].get("data-files", {})
-    assert data_files.get("locales") == ["locales/*.yaml"], (
+    locale_globs = set(data_files.get("locales", []))
+    assert locale_globs == {"locales/*.yaml", "locales/*.json"}, (
         "pyproject [tool.setuptools.data-files] must declare "
-        'locales = ["locales/*.yaml"] so the wheel ships i18n catalogs'
+        'both locales/*.yaml and locales/*.json so wheels ship catalogs and '
+        "their shared registry"
     )
 
     manifest = (REPO_ROOT / "MANIFEST.in").read_text(encoding="utf-8")
@@ -262,9 +264,10 @@ def test_locale_catalogs_ship_in_both_wheel_and_sdist():
         "MANIFEST.in must `graft locales` so the sdist ships i18n catalogs"
     )
 
-    # Every on-disk catalog has the .yaml extension the globs above match.
+    # Every catalog and the shared registry match the declared wheel globs.
     on_disk = list((REPO_ROOT / "locales").glob("*.yaml"))
     assert on_disk, "expected locales/*.yaml catalogs on disk"
+    assert (REPO_ROOT / "locales/registry.json").is_file()
 
 
 # ---------------------------------------------------------------------------

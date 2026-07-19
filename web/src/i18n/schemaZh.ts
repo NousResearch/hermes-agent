@@ -85,6 +85,7 @@ export const SCHEMA_ZH_LABEL: Record<string, string> = {
   "browser.dialog_policy": "浏览器 → 对话框策略",
   "browser.dialog_timeout_s": "浏览器 → 对话框超时(秒)",
   "browser.engine": "浏览器 → 引擎",
+  "browser.headed": "浏览器 → 显示浏览器窗口",
   "browser.inactivity_timeout": "浏览器 → 无活动超时",
   "browser.record_sessions": "浏览器 → 录制会话",
   "checkpoints.auto_prune": "检查点 → 自动清理",
@@ -129,6 +130,11 @@ export const SCHEMA_ZH_LABEL: Record<string, string> = {
   "discord.auto_thread": "Discord → 自动创建线程",
   "discord.dm_role_auth_guild": "Discord → 私信角色验证服务器",
   "discord.free_response_channels": "Discord → 自由回复频道",
+  "discord.missed_message_backfill.channels": "Discord → 漏消息补拉 → 频道",
+  "discord.missed_message_backfill.enabled": "Discord → 漏消息补拉 → 启用",
+  "discord.missed_message_backfill.limit": "Discord → 漏消息补拉 → 扫描上限",
+  "discord.missed_message_backfill.max_dispatches": "Discord → 漏消息补拉 → 最大派发数",
+  "discord.missed_message_backfill.window_seconds": "Discord → 漏消息补拉 → 回溯时间窗口(秒)",
   "discord.reactions": "Discord → 表情回应",
   "discord.require_mention": "Discord → 需要 @提及",
   "discord.server_actions": "Discord → 服务器操作",
@@ -310,6 +316,18 @@ export const SCHEMA_ZH_DESCRIPTION: Record<string, string> = {
   "display.busy_input_mode": "Agent 运行时收到新输入后的处理方式。",
   "display.show_commentary":
     "是否显示 Codex 模型在处理中产生的进度解说；关闭后，这些内容仅在启用推理显示时可见。",
+  "browser.headed":
+    "以可见窗口运行本地浏览器，并在轮次之间保持窗口打开；空闲会话仍会在达到 browser.inactivity_timeout 后回收。",
+  "discord.missed_message_backfill.enabled":
+    "是否在启动或重连后补处理遗漏的 Discord 消息。",
+  "discord.missed_message_backfill.channels":
+    "要检查的频道 ID，以逗号分隔；留空时使用自由回复频道。",
+  "discord.missed_message_backfill.window_seconds":
+    "只检查该时间窗口内的消息，单位为秒。",
+  "discord.missed_message_backfill.limit":
+    "每次重连最多扫描的消息总数。",
+  "discord.missed_message_backfill.max_dispatches":
+    "每次重连最多补派发的遗漏消息数。",
   "approvals.mode": "危险命令的审批方式。",
   "context.engine": "管理会话上下文所使用的引擎。",
   "human_delay.mode": "模拟真人输入延迟的方式。",

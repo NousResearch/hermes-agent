@@ -1,5 +1,12 @@
 import { createContext } from "react";
 
+import {
+  DEFAULT_LOCALE,
+  LOCALE_METADATA,
+  LOCALES,
+  normalizeLocaleInput,
+} from "@hermes/shared/locale-registry";
+
 import { api } from "../lib/api";
 import { af } from "./af";
 import { de } from "./de";
@@ -38,106 +45,18 @@ const TRANSLATIONS: Record<Locale, TranslationOverlay> = {
   hu,
 };
 
+const missingOverlay = LOCALES.find((locale) => !TRANSLATIONS[locale]);
+if (missingOverlay) {
+  throw new Error(
+    `Dashboard locale ${missingOverlay} is registered without a translation overlay`,
+  );
+}
+
 /** Language picker metadata uses endonyms and deliberately has no flags. */
-export const LOCALE_META: Record<Locale, { name: string }> = {
-  en: { name: "English" },
-  zh: { name: "简体中文" },
-  "zh-hant": { name: "繁體中文" },
-  ja: { name: "日本語" },
-  de: { name: "Deutsch" },
-  es: { name: "Español" },
-  fr: { name: "Français" },
-  tr: { name: "Türkçe" },
-  uk: { name: "Українська" },
-  af: { name: "Afrikaans" },
-  ko: { name: "한국어" },
-  it: { name: "Italiano" },
-  ga: { name: "Gaeilge" },
-  pt: { name: "Português" },
-  ru: { name: "Русский" },
-  hu: { name: "Magyar" },
-};
+export const LOCALE_META = LOCALE_METADATA;
 
-const SUPPORTED_LOCALES = Object.keys(TRANSLATIONS) as Locale[];
 const STORAGE_KEY = "hermes-locale";
-const LOCALE_ALIASES: Record<string, Locale> = {
-  afrikaans: "af",
-  brazilian: "pt",
-  brasileiro: "pt",
-  chinese: "zh",
-  deutsch: "de",
-  english: "en",
-  espanol: "es",
-  español: "es",
-  francais: "fr",
-  français: "fr",
-  france: "fr",
-  french: "fr",
-  gaeilge: "ga",
-  german: "de",
-  hungarian: "hu",
-  irish: "ga",
-  italian: "it",
-  italiano: "it",
-  japanese: "ja",
-  jp: "ja",
-  korean: "ko",
-  magyar: "hu",
-  mandarin: "zh",
-  portuguese: "pt",
-  portugues: "pt",
-  português: "pt",
-  russian: "ru",
-  "simplified-chinese": "zh",
-  spanish: "es",
-  "traditional-chinese": "zh-hant",
-  turkce: "tr",
-  turkish: "tr",
-  türkçe: "tr",
-  ua: "uk",
-  ukrainian: "uk",
-  ukrainisch: "uk",
-  русский: "ru",
-  українська: "uk",
-  日本語: "ja",
-  한국어: "ko",
-};
-
-// Protocol and historical inputs are normalized at this boundary only. They
-// are not product locales and must not enter TRANSLATIONS or LOCALE_META.
-const INTERNAL_COMPATIBILITY_ALIASES: Record<
-  string,
-  Extract<Locale, "zh" | "zh-hant">
-> = {
-  "zh-cn": "zh",
-  "zh-hans": "zh",
-  "zh-hk": "zh-hant",
-  "zh-mo": "zh-hant",
-  "zh-sg": "zh",
-  "zh-tw": "zh-hant",
-};
-
-function isLocale(value: string): value is Locale {
-  return (SUPPORTED_LOCALES as string[]).includes(value);
-}
-
-export function normalizeLocale(value: unknown): Locale | null {
-  if (typeof value !== "string") return null;
-  const normalized = value
-    .trim()
-    .toLowerCase()
-    .replace(/_/g, "-")
-    .replace(/\s+/g, "-");
-  if (!normalized) return null;
-  if (isLocale(normalized)) return normalized;
-  const alias = LOCALE_ALIASES[normalized];
-  if (alias) return alias;
-  const compatibilityAlias = INTERNAL_COMPATIBILITY_ALIASES[normalized];
-  if (compatibilityAlias) return compatibilityAlias;
-  if (normalized.startsWith("zh-")) return null;
-  const primary = normalized.split("-")[0];
-  return isLocale(primary) ? primary : null;
-}
+export const normalizeLocale = normalizeLocaleInput;
 
 function mergeTranslationTree(fallback: unknown, override: unknown): unknown {
   if (
@@ -171,11 +90,18 @@ function mergeTranslationTree(fallback: unknown, override: unknown): unknown {
   return result;
 }
 
+/** Resolve any locale overlay independently against the English source. */
+export function resolveTranslationOverlay(
+  overlay: TranslationOverlay,
+): Translations {
+  return mergeTranslationTree(en, overlay) as Translations;
+}
+
 /** Return a complete catalog, overlaying the locale on the English source. */
 export function resolveTranslations(locale: Locale): Translations {
   return locale === "en"
     ? en
-    : (mergeTranslationTree(en, TRANSLATIONS[locale]) as Translations);
+    : resolveTranslationOverlay(TRANSLATIONS[locale]);
 }
 
 export function getInitialLocale(): Locale {
@@ -185,7 +111,7 @@ export function getInitialLocale(): Locale {
   } catch {
     // SSR or privacy mode.
   }
-  return "en";
+  return DEFAULT_LOCALE;
 }
 
 export function persistLocale(locale: Locale) {

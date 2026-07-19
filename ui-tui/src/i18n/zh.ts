@@ -1089,6 +1089,7 @@ const catalog: Record<TranslationKey, string> = {
   'sys.backgroundUsage': '/background <提示词>',
   'sys.backgroundStarted': '后台任务 {taskId} 已启动',
   'sys.modelSet': '模型 → {model}',
+  'sys.modelSetOnce': '模型 → {model} · 仅下一轮生效',
   'sys.expensiveModelTitle': '模型价格警告',
   'sys.expensiveModelDetail': '该模型的已知价格显著偏高。',
   'sys.switchAnyway': '仍要切换',

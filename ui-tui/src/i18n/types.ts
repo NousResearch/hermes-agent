@@ -1,26 +1,6 @@
-// TUI mirrors the Dashboard locale registry so translators can follow the
-// same workflow: add a locale file, register it, and translations light up
-// without changing feature components.
-export const LOCALES = [
-  'en',
-  'zh',
-  'zh-hant',
-  'ja',
-  'de',
-  'es',
-  'fr',
-  'tr',
-  'uk',
-  'af',
-  'ko',
-  'it',
-  'ga',
-  'pt',
-  'ru',
-  'hu'
-] as const
-
-export type Locale = (typeof LOCALES)[number]
+// Language identity and normalization are shared with Dashboard and Python
+// through locales/registry.json. Each UI still owns its presentation pack.
+export { type Locale, LOCALES } from '@hermes/shared/locale-registry'
 
 export interface LangPack {
   toolVerbs: Record<string, string>

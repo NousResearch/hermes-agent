@@ -138,6 +138,7 @@ export interface ConfigSetResponse {
   credential_warning?: string
   history_reset?: boolean
   info?: SessionInfo
+  scope?: 'global' | 'once' | 'session'
   value?: string
   warning?: string
 }

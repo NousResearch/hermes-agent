@@ -1,3 +1,4 @@
+import { DEFAULT_LOCALE, normalizeLocaleInput } from '@hermes/shared/locale-registry'
 import { createContext, type ReactNode, useContext, useMemo } from 'react'
 
 import { af } from './af.js'
@@ -59,84 +60,6 @@ const CATALOGS = Object.fromEntries(LOCALES.map(locale => [locale, resolveLangPa
 
 const getPack = (locale: Locale): LangPack => CATALOGS[locale] ?? en
 
-const LOCALE_ALIASES: Record<string, Locale> = {
-  afrikaans: 'af',
-  'af-za': 'af',
-  brazilian: 'pt',
-  brasileiro: 'pt',
-  chinese: 'zh',
-  'de-at': 'de',
-  'de-ch': 'de',
-  'de-de': 'de',
-  deutsch: 'de',
-  english: 'en',
-  'en-gb': 'en',
-  'en-us': 'en',
-  espanol: 'es',
-  español: 'es',
-  'es-ar': 'es',
-  'es-es': 'es',
-  'es-mx': 'es',
-  france: 'fr',
-  francais: 'fr',
-  français: 'fr',
-  french: 'fr',
-  'fr-be': 'fr',
-  'fr-ca': 'fr',
-  'fr-ch': 'fr',
-  'fr-fr': 'fr',
-  gaeilge: 'ga',
-  'ga-ie': 'ga',
-  german: 'de',
-  hungarian: 'hu',
-  'hu-hu': 'hu',
-  irish: 'ga',
-  italian: 'it',
-  italiano: 'it',
-  'it-ch': 'it',
-  'it-it': 'it',
-  japanese: 'ja',
-  'ja-jp': 'ja',
-  jp: 'ja',
-  日本語: 'ja',
-  korean: 'ko',
-  'ko-kr': 'ko',
-  한국어: 'ko',
-  magyar: 'hu',
-  mandarin: 'zh',
-  portuguese: 'pt',
-  portugues: 'pt',
-  português: 'pt',
-  'pt-br': 'pt',
-  'pt-pt': 'pt',
-  russian: 'ru',
-  'ru-ru': 'ru',
-  русский: 'ru',
-  spanish: 'es',
-  'simplified-chinese': 'zh',
-  'traditional-chinese': 'zh-hant',
-  turkce: 'tr',
-  turkish: 'tr',
-  türkçe: 'tr',
-  'tr-tr': 'tr',
-  ua: 'uk',
-  ukrainian: 'uk',
-  ukrainisch: 'uk',
-  'uk-ua': 'uk',
-  українська: 'uk'
-}
-
-// Protocol and historical inputs are normalized at this boundary only. They
-// are not product locales and must not enter LOCALES or user-facing metadata.
-const INTERNAL_COMPATIBILITY_ALIASES: Record<string, Extract<Locale, 'zh' | 'zh-hant'>> = {
-  'zh-cn': 'zh',
-  'zh-hans': 'zh',
-  'zh-hk': 'zh-hant',
-  'zh-mo': 'zh-hant',
-  'zh-sg': 'zh',
-  'zh-tw': 'zh-hant'
-}
-
 // ── Locale-specific transient trail patterns ───────────────────
 export const TRAIL_PATTERNS: Record<Locale, { draftPrefix: string; analyzeLabel: string }> = Object.fromEntries(
   LOCALES.map(l => [l, getPack(l).trail])
@@ -156,46 +79,7 @@ const interpolate = (template: string, vars: Record<string, string | number> = {
   template.replace(/\{(\w+)\}/g, (_m, key: string) => String(vars[key] ?? `{${key}}`))
 
 export const normalizeLocale = (value: unknown): Locale => {
-  if (typeof value !== 'string') {
-    return 'en'
-  }
-
-  const raw = value.trim().toLowerCase().replace(/_/g, '-').replace(/\s+/g, '-')
-
-  if (!raw) {
-    return 'en'
-  }
-
-  // Direct matches against the supported set.
-  if ((LOCALES as readonly string[]).includes(raw)) {
-    return raw as Locale
-  }
-
-  const alias = LOCALE_ALIASES[raw]
-
-  if (alias) {
-    return alias
-  }
-
-  const compatibilityAlias = INTERNAL_COMPATIBILITY_ALIASES[raw]
-
-  if (compatibilityAlias) {
-    return compatibilityAlias
-  }
-
-  // Chinese is limited to two explicit language choices here. Do not collapse
-  // extra zh-* values to Simplified/Traditional.
-  if (raw.startsWith('zh-')) {
-    return 'en'
-  }
-
-  const primary = raw.split('-', 1)[0]
-
-  if ((LOCALES as readonly string[]).includes(primary)) {
-    return primary as Locale
-  }
-
-  return 'en'
+  return normalizeLocaleInput(value) ?? DEFAULT_LOCALE
 }
 
 export const translate = (locale: Locale, key: TranslationKey, vars?: Record<string, string | number>) => {

@@ -1,13 +1,6 @@
 import { describe, expect, it } from 'vitest'
 
-// Locale overlays that intentionally stay empty until reviewed translations land.
-import { af } from '../i18n/af.js'
-import { de } from '../i18n/de.js'
-import { en, type TranslationKey, type TuiLocaleOverlay } from '../i18n/en.js'
-import { es } from '../i18n/es.js'
-import { fr } from '../i18n/fr.js'
-import { ga } from '../i18n/ga.js'
-import { hu } from '../i18n/hu.js'
+import { en, type TranslationKey } from '../i18n/en.js'
 import {
   getThinkingVerbs,
   getToolVerb,
@@ -21,33 +14,7 @@ import {
   translateSlashDescription,
   translateStatus
 } from '../i18n/index.js'
-import { it as itLang } from '../i18n/it.js'
-import { ja } from '../i18n/ja.js'
-import { ko } from '../i18n/ko.js'
-import { pt } from '../i18n/pt.js'
-import { ru } from '../i18n/ru.js'
-import { tr } from '../i18n/tr.js'
-import { uk } from '../i18n/uk.js'
-import { zhHant } from '../i18n/zh-hant.js'
 import { zh } from '../i18n/zh.js'
-
-// ── Empty overlays: independent locales fall back to English until translated ──
-const EMPTY_OVERLAYS: [string, TuiLocaleOverlay][] = [
-  ['af', af],
-  ['de', de],
-  ['es', es],
-  ['fr', fr],
-  ['ga', ga],
-  ['hu', hu],
-  ['it', itLang],
-  ['ja', ja],
-  ['ko', ko],
-  ['pt', pt],
-  ['ru', ru],
-  ['tr', tr],
-  ['uk', uk],
-  ['zh-hant', zhHant]
-]
 
 // ─── Locale set ────────────────────────────────────────────────
 
@@ -56,13 +23,9 @@ describe('LOCALES', () => {
     expect(new Set(LOCALES).size).toBe(LOCALES.length)
   })
 
-  it('contains the complete language-pack registry used by this test suite', () => {
+  it('contains the baseline and first complete non-English implementation', () => {
     expect(LOCALES).toContain('en')
     expect(LOCALES).toContain('zh')
-
-    for (const [name] of EMPTY_OVERLAYS) {
-      expect(LOCALES).toContain(name)
-    }
   })
 })
 
@@ -97,17 +60,6 @@ describe('TranslationKey coverage', () => {
     })
 
     expect(mismatches).toEqual([])
-  })
-
-  it('every shell overlay resolves to exactly the same catalog keys as EN', () => {
-    for (const [name, overlay] of EMPTY_OVERLAYS) {
-      const pack = resolveLangPack(overlay)
-      const packKeys = new Set(Object.keys(pack.catalog))
-      const missing = enKeys.filter(k => !packKeys.has(k))
-      const extra = Object.keys(pack.catalog).filter(k => !(k in en.catalog))
-      expect(missing, `${name} missing keys`).toEqual([])
-      expect(extra, `${name} extra keys`).toEqual([])
-    }
   })
 
   it('fills each missing field in a partial locale overlay from EN', () => {
@@ -165,15 +117,15 @@ describe('fallback chain', () => {
     }
   })
 
-  it('translate: ja (empty overlay) returns EN value for known keys', () => {
-    // An untranslated locale resolves through the shared English baseline.
-    const result = translate('ja', 'branding.tagline')
-    expect(result).toBe(en.catalog['branding.tagline'])
+  it('an arbitrary empty overlay resolves known catalog fields from EN', () => {
+    expect(resolveLangPack({}).catalog['branding.tagline']).toBe(en.catalog['branding.tagline'])
   })
 
-  it('translateStatus: shell locale falls back to EN', () => {
+  it('an arbitrary empty overlay resolves status fields from EN', () => {
+    const pack = resolveLangPack({})
+
     for (const key of Object.keys(en.status)) {
-      expect(translateStatus('ja', key)).toBe(en.status[key])
+      expect(pack.status[key]).toBe(en.status[key])
     }
   })
 
@@ -294,46 +246,31 @@ describe('verbStyle', () => {
     expect(shouldEllipsisVerb('zh')).toBe(true)
   })
 
-  it('shell packs inherit EN verbStyle (pad)', () => {
-    for (const [name, overlay] of EMPTY_OVERLAYS) {
-      expect(resolveLangPack(overlay).verbStyle, `${name} verbStyle`).toBe('pad')
-    }
+  it('partial packs inherit EN verbStyle (pad)', () => {
+    expect(resolveLangPack({}).verbStyle).toBe('pad')
   })
 
   it('getThinkingVerbs returns verbs array for each locale', () => {
     expect(getThinkingVerbs('en')).toEqual(en.verbs)
     expect(getThinkingVerbs('zh')).toEqual(zh.verbs)
 
-    for (const [name] of EMPTY_OVERLAYS) {
-      expect(getThinkingVerbs(name as (typeof LOCALES)[number])).toEqual(en.verbs)
+    for (const locale of LOCALES) {
+      expect(getThinkingVerbs(locale).length, `${locale} verbs`).toBeGreaterThan(0)
     }
   })
 })
 
-// ─── Empty locale overlays resolve through EN ─────────────────
+// ─── Independent partial locale overlays resolve through EN ───
 
-describe('shell packs', () => {
-  it('all shell locales are in LOCALES', () => {
-    for (const [name] of EMPTY_OVERLAYS) {
-      expect(LOCALES).toContain(name)
-    }
-  })
+describe('partial locale packs', () => {
+  it('an empty pack is complete at runtime without freezing any named locale', () => {
+    const pack = resolveLangPack({})
 
-  it('empty overlays produce complete English-equivalent runtime packs', () => {
-    for (const [name, overlay] of EMPTY_OVERLAYS) {
-      const pack = resolveLangPack(overlay)
-
-      expect(pack.catalog, `${name} catalog`).toEqual(en.catalog)
-      expect(pack.toolVerbs, `${name} toolVerbs`).toEqual(en.toolVerbs)
-      expect(pack.verbs, `${name} verbs`).toBe(en.verbs)
-      expect(pack.status, `${name} status`).toEqual(en.status)
-      expect(pack.trail, `${name} trail`).toEqual(en.trail)
-    }
-  })
-
-  it('zh-hant remains an empty overlay until reviewed translations land', () => {
-    expect(zhHant).toEqual({})
-    expect(resolveLangPack(zhHant).verbStyle).toBe('pad')
+    expect(pack.catalog).toEqual(en.catalog)
+    expect(pack.toolVerbs).toEqual(en.toolVerbs)
+    expect(pack.verbs).toBe(en.verbs)
+    expect(pack.status).toEqual(en.status)
+    expect(pack.trail).toEqual(en.trail)
   })
 })
 
@@ -360,8 +297,11 @@ describe('slash command presentation', () => {
     expect(translateSlashCategory('zh', 'session', 'Session')).toBe('会话')
   })
 
-  it('keeps English fallback copy for untranslated languages and extensions', () => {
-    expect(translateSlashDescription('zh-hant', 'new', 'wire fallback')).toBe(en.catalog['slash.new'])
+  it('resolves registered packs independently and preserves extension copy', () => {
+    for (const locale of LOCALES) {
+      expect(translateSlashDescription(locale, 'new', 'wire fallback')).not.toBe('wire fallback')
+    }
+
     expect(translateSlashDescription('zh', undefined, 'User-authored command')).toBe('User-authored command')
   })
 })

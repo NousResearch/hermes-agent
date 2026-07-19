@@ -2,11 +2,13 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { api } from "../lib/api";
 import { en } from "./en";
+import { getLocaleFormatters } from "./formatters";
 import {
   formatTranslation,
   normalizeLocale,
   persistConfiguredLocale,
   resolveNavLabel,
+  resolveTranslationOverlay,
   resolveTranslations,
 } from "./runtime";
 import { zh } from "./zh";
@@ -103,45 +105,39 @@ describe("Dashboard i18n framework", () => {
     expect(catalog.theme.fontTitle).toBe("字体");
   });
 
-  it("localizes session import only in the complete Simplified Chinese instance", () => {
+  it("localizes session import in the complete Simplified Chinese instance", () => {
     const simplified = resolveTranslations("zh");
-    const traditional = resolveTranslations("zh-hant");
 
     expect(simplified.sessions.importSessions).toBe("导入会话");
     expect(simplified.sessions.importComplete).toContain("{summary}");
     expect(simplified.sessions.importFailed).not.toBe(en.sessions.importFailed);
-    expect(traditional.sessions.importSessions).toBe(
-      en.sessions.importSessions,
-    );
   });
 
   it("localizes stable MCP OAuth browser failures in Simplified Chinese", () => {
     const simplified = resolveTranslations("zh");
-    const traditional = resolveTranslations("zh-hant");
 
     expect(simplified.mcp.oauthPopupBlocked).not.toBe(en.mcp.oauthPopupBlocked);
     expect(simplified.mcp.oauthWindowClosed).not.toBe(
       en.mcp.oauthWindowClosed,
     );
-    expect(traditional.mcp.oauthPopupBlocked).toBe(en.mcp.oauthPopupBlocked);
   });
 
   it("localizes current Kanban task workflows in Simplified Chinese", () => {
     const simplified = resolveTranslations("zh");
-    const traditional = resolveTranslations("zh-hant");
 
     expect(simplified.kanban.newTaskTitle).not.toBe(en.kanban.newTaskTitle);
     expect(simplified.kanban.boardSettingsTitle).not.toBe(
       en.kanban.boardSettingsTitle,
     );
     expect(simplified.kanban.commentHintTitle).toContain("kanban_show()");
-    expect(traditional.kanban.newTaskTitle).toBe(en.kanban.newTaskTitle);
   });
 
-  it("preserves existing official translations and falls back per missing leaf", () => {
-    const catalog = resolveTranslations("de");
+  it("falls back per missing leaf for an arbitrary independent locale pack", () => {
+    const catalog = resolveTranslationOverlay({
+      common: { save: "Localized save" },
+    });
 
-    expect(catalog.common.save).toBe("Speichern");
+    expect(catalog.common.save).toBe("Localized save");
     expect(catalog.chatSidebar.model).toBe(en.chatSidebar.model);
     expect(catalog.modelPicker.expensiveWarningTitle).toBe(
       en.modelPicker.expensiveWarningTitle,
@@ -163,6 +159,11 @@ describe("Dashboard i18n framework", () => {
         user: "alice",
       }),
     ).toBe("alice via portal; {missing}");
+  });
+
+  it("keeps locale grammar out of feature components", () => {
+    expect(getLocaleFormatters("en").ordinal(21)).toBe("21st");
+    expect(getLocaleFormatters("zh").ordinal(21)).toBe("21");
   });
 
   it("falls back safely for unknown or inherited plugin navigation keys", () => {

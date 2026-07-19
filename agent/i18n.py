@@ -25,11 +25,14 @@ Language resolution order:
     3. ``display.language`` from config.yaml
     4. ``"en"`` (baseline)
 
-Supported languages: en, zh, zh-hant, ja, de, es, fr, tr, uk, af, ko, it, ga, pt, ru, hu.  Unknown values fall back to en.
+Supported language identities, aliases, and picker metadata are declared once
+in ``locales/registry.json`` and shared by Python, Ink TUI, and Dashboard.
+Unknown values fall back to the registered default language.
 """
 
 from __future__ import annotations
 
+import json
 import logging
 import os
 import sysconfig
@@ -39,58 +42,8 @@ from typing import Any
 
 logger = logging.getLogger(__name__)
 
-SUPPORTED_LANGUAGES: tuple[str, ...] = (
-    "en", "zh", "zh-hant", "ja", "de", "es", "fr", "tr", "uk",
-    "af", "ko", "it", "ga", "pt", "ru", "hu",
-)
-DEFAULT_LANGUAGE = "en"
-
-# Accept a few natural aliases so users who type "chinese" / "simplified-chinese" / "jp"
-# get the right catalog instead of silently falling back to English.
-_LANGUAGE_ALIASES: dict[str, str] = {
-    "english": "en", "en-us": "en", "en-gb": "en",
-    # Chinese is exposed as two independent product language choices:
-    # Simplified Chinese and Traditional Chinese. Neither is region-bound.
-    "chinese": "zh", "mandarin": "zh", "simplified-chinese": "zh",
-    "traditional-chinese": "zh-hant",
-    "japanese": "ja", "日本語": "ja", "jp": "ja", "ja-jp": "ja",
-    "german": "de", "deutsch": "de", "de-de": "de", "de-at": "de", "de-ch": "de",
-    "spanish": "es", "español": "es", "espanol": "es", "es-es": "es", "es-mx": "es", "es-ar": "es",
-    "french": "fr", "français": "fr", "francais": "fr", "france": "fr", "fr-fr": "fr", "fr-be": "fr", "fr-ca": "fr", "fr-ch": "fr",
-    "ukrainian": "uk", "ukrainisch": "uk", "українська": "uk", "uk-ua": "uk", "ua": "uk",
-    "turkish": "tr", "turkce": "tr", "türkçe": "tr", "tr-tr": "tr",
-    # Afrikaans — South African Dutch-derived language; "af-ZA" is the common BCP-47 tag.
-    "afrikaans": "af", "af-za": "af",
-    # Korean
-    "korean": "ko", "한국어": "ko", "ko-kr": "ko",
-    # Italian
-    "italian": "it", "italiano": "it", "it-it": "it", "it-ch": "it",
-    # Irish (Gaeilge) — ga is the BCP-47 code
-    "irish": "ga", "gaeilge": "ga", "ga-ie": "ga",
-    # Portuguese — bare "portuguese" routes to European Portuguese; pt-br
-    # is in the same family but rendered identically here (no separate br catalog).
-    "portuguese": "pt", "português": "pt", "portugues": "pt",
-    "pt-pt": "pt", "pt-br": "pt", "brazilian": "pt", "brasileiro": "pt",
-    # Russian
-    "russian": "ru", "русский": "ru", "ru-ru": "ru",
-    # Hungarian
-    "hungarian": "hu", "magyar": "hu", "hu-hu": "hu",
-}
-
-# External protocols and historical configuration may supply region-tagged
-# locale values. Keep that compatibility isolated from the canonical product
-# language registry and user-facing language choices.
-_INTERNAL_COMPATIBILITY_ALIASES: dict[str, str] = {
-    "zh-cn": "zh", "zh-hans": "zh", "zh-sg": "zh",
-    "zh-tw": "zh-hant", "zh-hk": "zh-hant", "zh-mo": "zh-hant",
-}
-
-_catalog_cache: dict[str, dict[str, str]] = {}
-_catalog_lock = threading.Lock()
-
-
 def _locales_dir() -> Path:
-    """Return the directory containing locale YAML files.
+    """Return the directory containing locale catalogs and registry data.
 
     Resolution order, first existing wins:
 
@@ -140,6 +93,48 @@ def _locales_dir() -> Path:
     # Last resort: return the source-style path so _load_catalog's catalog-missing
     # log (logger.debug "i18n catalog missing for %s at %s") stays informative.
     return source_dir
+
+
+def _load_locale_registry() -> dict[str, Any]:
+    """Load and validate the cross-runtime language identity registry."""
+    path = _locales_dir() / "registry.json"
+    try:
+        with path.open("r", encoding="utf-8") as f:
+            registry = json.load(f)
+    except (OSError, ValueError) as exc:
+        raise RuntimeError(f"Failed to load locale registry {path}: {exc}") from exc
+
+    locales = registry.get("locales")
+    default = registry.get("default")
+    if not isinstance(locales, dict) or not locales:
+        raise RuntimeError(f"Locale registry {path} must define a non-empty locales object")
+    if default not in locales:
+        raise RuntimeError(f"Locale registry {path} default {default!r} is not registered")
+
+    for section in ("aliases", "compatibilityAliases"):
+        entries = registry.get(section)
+        if not isinstance(entries, dict):
+            raise RuntimeError(f"Locale registry {path} must define {section}")
+        invalid = {key: value for key, value in entries.items() if value not in locales}
+        if invalid:
+            raise RuntimeError(f"Locale registry {path} has invalid {section}: {invalid}")
+    return registry
+
+
+_LOCALE_REGISTRY = _load_locale_registry()
+SUPPORTED_LANGUAGES: tuple[str, ...] = tuple(_LOCALE_REGISTRY["locales"])
+DEFAULT_LANGUAGE: str = _LOCALE_REGISTRY["default"]
+_LANGUAGE_ALIASES: dict[str, str] = dict(_LOCALE_REGISTRY["aliases"])
+
+# External protocols and historical configuration may supply region-tagged
+# locale values. Keep that compatibility isolated from the canonical product
+# language registry and user-facing language choices.
+_INTERNAL_COMPATIBILITY_ALIASES: dict[str, str] = dict(
+    _LOCALE_REGISTRY["compatibilityAliases"]
+)
+
+_catalog_cache: dict[str, dict[str, str]] = {}
+_catalog_lock = threading.Lock()
 
 
 def normalize_language(value: Any) -> str:

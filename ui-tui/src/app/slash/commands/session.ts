@@ -163,7 +163,9 @@ export const sessionCommands: SlashCommand[] = [
                 )
               }
 
-              ctx.transcript.sys(translate(ctx.ui.locale, 'sys.modelSet', { model: r.value }))
+              ctx.transcript.sys(
+                translate(ctx.ui.locale, r.scope === 'once' ? 'sys.modelSetOnce' : 'sys.modelSet', { model: r.value })
+              )
               ctx.local.maybeWarn(r)
 
               patchUiState(state => ({

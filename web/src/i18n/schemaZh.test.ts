@@ -5,7 +5,7 @@ import {
   resolveSchemaLabel,
   resolveSchemaLeafLabel,
 } from "./schema";
-import { resolveTranslations } from "./runtime";
+import { resolveTranslationOverlay, resolveTranslations } from "./runtime";
 
 const zhSchema = resolveTranslations("zh").schema;
 
@@ -78,6 +78,22 @@ describe("schema localization", () => {
     ).toContain("Codex 模型");
   });
 
+  it("covers schema fields added by browser and Discord reconnect recovery", () => {
+    const fields = {
+      "browser.headed": "浏览器 → 显示浏览器窗口",
+      "discord.missed_message_backfill.enabled": "Discord → 漏消息补拉 → 启用",
+      "discord.missed_message_backfill.channels": "Discord → 漏消息补拉 → 频道",
+      "discord.missed_message_backfill.window_seconds": "Discord → 漏消息补拉 → 回溯时间窗口(秒)",
+      "discord.missed_message_backfill.limit": "Discord → 漏消息补拉 → 扫描上限",
+      "discord.missed_message_backfill.max_dispatches": "Discord → 漏消息补拉 → 最大派发数",
+    };
+
+    for (const [key, expected] of Object.entries(fields)) {
+      expect(resolveSchemaLabel(zhSchema, key, "English fallback")).toBe(expected);
+      expect(resolveSchemaDescription(zhSchema, key, "English fallback")).not.toBe("English fallback");
+    }
+  });
+
   it("provides concise labels for nested editors", () => {
     expect(
       resolveSchemaLeafLabel(
@@ -88,8 +104,8 @@ describe("schema localization", () => {
     ).toBe("最大并发运行次数");
   });
 
-  it("keeps English as the fallback for locale packs without schema wording", () => {
-    const schema = resolveTranslations("zh-hant").schema;
+  it("keeps English as the fallback for any locale pack without schema wording", () => {
+    const schema = resolveTranslationOverlay({}).schema;
 
     expect(resolveSchemaLabel(schema, "display.language", "Language")).toBe(
       "Language",

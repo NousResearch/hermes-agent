@@ -70,7 +70,7 @@ def test_installed_wheel_renders_i18n_strings(tmp_path):
         "import sys;"
         "r = i18n.t('gateway.reset.header_default', lang='en');"
         "s = i18n.t('gateway.status.header', lang='en');"
-        "print(repr(r)); print(repr(s));"
+        "print(repr(r)); print(repr(s)); print(i18n.SUPPORTED_LANGUAGES);"
         "sys.exit(0 if (r != 'gateway.reset.header_default' "
         "and s != 'gateway.status.header') else 1)"
     )
@@ -119,7 +119,9 @@ def test_built_sdist_ships_locale_catalogs(tmp_path):
     with tarfile.open(tarballs[0]) as tf:
         # Members are prefixed with the sdist root dir, e.g.
         # hermes_agent-0.15.1/locales/en.yaml — match on the suffix.
-        catalogs = [m for m in tf.getnames() if "/locales/" in m and m.endswith(".yaml")]
+        members = tf.getnames()
+        catalogs = [m for m in members if "/locales/" in m and m.endswith(".yaml")]
+        registries = [m for m in members if m.endswith("/locales/registry.json")]
 
     # Compare against the canonical language list rather than a hardcoded floor
     # so adding/removing a catalog updates the guard automatically and a dropped
@@ -135,3 +137,4 @@ def test_built_sdist_ships_locale_catalogs(tmp_path):
     assert any(m.endswith("/locales/en.yaml") for m in catalogs), (
         f"sdist missing locales/en.yaml; shipped: {catalogs[:5]}"
     )
+    assert len(registries) == 1, f"sdist must ship one locale registry; found: {registries}"

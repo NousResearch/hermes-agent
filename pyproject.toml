@@ -319,7 +319,7 @@ py-modules = ["run_agent", "model_tools", "toolsets", "batch_runner", "trajector
 # ships it in the sdist. Without this, sealed installs (pip wheel, Nix store
 # venv) drop the catalogs and gateway/CLI commands surface raw i18n keys like
 # `gateway.reset.header_default` (#27632, #35374, #23943).
-locales = ["locales/*.yaml"]
+locales = ["locales/*.yaml", "locales/*.json"]
 # Shipped MCP catalog (optional-mcps/<name>/manifest.yaml). Same bare-data-dir
 # case as locales: data-files ships it in the wheel, `graft optional-mcps` in
 # MANIFEST.in ships it in the sdist. Without this, `hermes mcp catalog` and the

@@ -467,6 +467,15 @@ Newline-delimited JSON-RPC over stdio. Requests from Ink, events from Python. Se
   metadata for the applicable surfaces. Components, commands, schema renderers,
   and bundled Dashboard extensions consume stable translation keys; they must
   not copy business logic or add `if (locale === ...)` presentation branches.
+- `locales/registry.json` is the single authority for language identities,
+  endonyms, compact picker labels, ordinary aliases, and protocol-compatibility
+  aliases. Python and both TypeScript frontends consume that registry directly;
+  do not recreate locale lists or normalization tables in a feature package.
+- To add a language, register it once in `locales/registry.json`, add its Python,
+  Ink, and Dashboard overlay files for the surfaces it supports, and register
+  those overlay modules in each presentation runtime. Partial overlays are valid
+  contributions and inherit English field by field; no existing feature
+  component or named-locale fallback test should need to change.
 - Locale packs overlay English independently. A missing Traditional Chinese or
   any other locale entry falls back directly to English, never through
   Simplified Chinese. Traditional Chinese remains its own language pack even

@@ -28,7 +28,6 @@ import {
 import {
   buildScheduleString,
   describeSchedule,
-  englishOrdinal,
   parseScheduleString,
   type ScheduleBuilderState,
   type ScheduleDescribeStrings,
@@ -40,7 +39,7 @@ import { Toast } from "@nous-research/ui/ui/components/toast";
 import { Card, CardContent } from "@nous-research/ui/ui/components/card";
 import { Input } from "@nous-research/ui/ui/components/input";
 import { Label } from "@nous-research/ui/ui/components/label";
-import { useI18n } from "@/i18n";
+import { getLocaleFormatters, useI18n } from "@/i18n";
 import { usePageHeader } from "@/contexts/usePageHeader";
 import { PluginSlot } from "@/plugins";
 import { Segmented } from "@nous-research/ui/ui/components/segmented";
@@ -529,19 +528,12 @@ export default function CronPage() {
   const { format, t, locale } = useI18n();
   const { setEnd } = usePageHeader();
 
-  // Translation surface for the human-readable schedule describer.
-  // English ordinals are a special case ("1st", "2nd", "23rd"); every
-  // other locale falls back to the plain numeric form, which avoids
-  // shipping incorrect grammar (e.g. naive "1th"/"2th" suffixes that
-  // don't exist in most languages).
-  //
-  // Built inline (not memoized) — the cron page renders a small job
-  // list, this is single-digit microseconds, and a useMemo here would
-  // just add boilerplate.
+  // Translation and grammar belong to the locale layer so adding another
+  // language never introduces language branches into the Cron feature.
   const scheduleDescribeStrings: ScheduleDescribeStrings = {
     ...t.cron.scheduleDescribe,
     weekdaysShort: t.cron.scheduleModes.weekdaysShort,
-    ordinal: locale === "en" ? englishOrdinal : (n: number) => String(n),
+    ordinal: getLocaleFormatters(locale).ordinal,
   };
 
   // New job modal state

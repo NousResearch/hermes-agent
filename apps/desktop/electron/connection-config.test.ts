@@ -93,7 +93,9 @@ test('profileRemoteOverride returns the per-profile remote with defaulted auth m
   assert.deepEqual(profileRemoteOverride(config, 'coder'), {
     url: 'https://coder.example.com/hermes',
     authMode: 'token',
-    token: { value: 'sek' }
+    token: { value: 'sek' },
+    cloudflareAccessClientId: undefined,
+    cloudflareAccessClientSecret: undefined
   })
 })
 
@@ -114,7 +116,31 @@ test('profileRemoteOverride treats a cloud entry as a remote override', () => {
   assert.deepEqual(profileRemoteOverride(config, 'coder'), {
     url: 'https://agent-1.agents.nousresearch.com',
     authMode: 'oauth',
-    token: undefined
+    token: undefined,
+    cloudflareAccessClientId: undefined,
+    cloudflareAccessClientSecret: undefined
+  })
+})
+
+test('profileRemoteOverride carries encrypted Cloudflare Access credentials', () => {
+  const config = {
+    profiles: {
+      coder: {
+        mode: 'remote',
+        url: 'https://gateway.example.com',
+        token: { value: 'hermes' },
+        cloudflareAccessClientId: { encoding: 'safeStorage', value: 'encrypted-id' },
+        cloudflareAccessClientSecret: { encoding: 'safeStorage', value: 'encrypted-secret' }
+      }
+    }
+  }
+
+  assert.deepEqual(profileRemoteOverride(config, 'coder'), {
+    url: 'https://gateway.example.com',
+    authMode: 'token',
+    token: { value: 'hermes' },
+    cloudflareAccessClientId: { encoding: 'safeStorage', value: 'encrypted-id' },
+    cloudflareAccessClientSecret: { encoding: 'safeStorage', value: 'encrypted-secret' }
   })
 })
 

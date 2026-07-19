@@ -145,6 +145,16 @@ gateway-bound nanostores are wiped, query-backed data is invalidated, and the
 new connection repopulates skeletons. This prevents rows or transcripts from
 the previous gateway bleeding into the next one.
 
+### Cloudflare Access-protected remote gateways
+
+For a self-hosted dashboard behind Cloudflare Access, create a Service Auth
+policy for a Cloudflare Access service token, then enter its Client ID and
+Client Secret under **Settings â†’ Gateway**. Desktop stores both values with the
+same secure credential storage used for the Hermes session token and sends the
+standard `CF-Access-Client-Id` / `CF-Access-Client-Secret` headers on every
+gateway REST request and WebSocket upgrade. Header injection is limited to the
+configured remote origin and path prefix.
+
 ### Verification
 
 Run before opening a PR (lint may surface pre-existing warnings but must exit cleanly):

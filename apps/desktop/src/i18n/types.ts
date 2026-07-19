@@ -502,6 +502,11 @@ export interface Translations {
       cloudStatusLabel: (status: string) => string
       remoteUrlTitle: string
       remoteUrlDesc: string
+      cloudflareAccessClientId: string
+      cloudflareAccessClientSecret: string
+      cloudflareAccessDesc: string
+      cloudflareAccessIncomplete: string
+      clearCloudflareAccess: string
       probing: string
       probeError: string
       signedIn: string

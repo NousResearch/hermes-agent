@@ -39,6 +39,13 @@ import { shouldLatchBackendStartFailure } from './backend-start-failure'
 import { detectRemoteDisplay, isWindowsBinaryPathInWsl, isWslEnvironment } from './bootstrap-platform'
 import { runBootstrap } from './bootstrap-runner'
 import {
+  cloudflareAccessHeaders,
+  CloudflareAccessWebSocketHeaderRegistry,
+  hasCloudflareAccessHeaders,
+  mergeCloudflareAccessHeaders,
+  requestMatchesRemoteBase
+} from './cloudflare-access'
+import {
   authModeFromStatus,
   buildGatewayWsUrl,
   buildGatewayWsUrlWithTicket,
@@ -68,6 +75,7 @@ import {
 import { installEmbedReferer } from './embed-referer'
 import { readDirForIpc } from './fs-read-dir'
 import { probeGatewayWebSocket } from './gateway-ws-probe'
+import { probeGatewayWebSocketUpgrade } from './gateway-ws-upgrade-probe'
 import { scanGitRepos } from './git-repo-scan'
 import {
   fileDiffVsHead,
@@ -972,6 +980,8 @@ let backendStartFailure = null
 let bootstrapAbortController = null
 let connectionConfigCache = null
 let connectionConfigCacheMtime = null
+const cloudflareAccessHeaderSessions = new WeakSet()
+const cloudflareAccessWebSocketHeaders = new CloudflareAccessWebSocketHeaderRegistry()
 const hermesLog = []
 const previewWatchers = new Map()
 let previewShortcutActive = false
@@ -3805,7 +3815,8 @@ function fetchJson(url, token, options: any = {}) {
         headers: {
           'Content-Type': contentType,
           'X-Hermes-Session-Token': token,
-          ...(body ? { 'Content-Length': String(body.length) } : {})
+          ...(body ? { 'Content-Length': String(body.length) } : {}),
+          ...(options.headers || {})
         }
       },
       res => {
@@ -3900,7 +3911,8 @@ function fetchPublicJson(url, options: any = {}) {
         method: options.method || 'GET',
         headers: {
           'Content-Type': 'application/json',
-          ...(body ? { 'Content-Length': String(body.length) } : {})
+          ...(body ? { 'Content-Length': String(body.length) } : {}),
+          ...(options.headers || {})
         }
       },
       res => {
@@ -4580,13 +4592,13 @@ function closePreviewWatchers() {
   }
 }
 
-async function waitForHermes(baseUrl, token) {
+async function waitForHermes(baseUrl, token, headers: Record<string, string> = {}) {
   const deadline = Date.now() + 45_000
   let lastError = null
 
   while (Date.now() < deadline) {
     try {
-      await fetchJson(`${baseUrl}/api/status`, token)
+      await fetchJson(`${baseUrl}/api/status`, token, { headers })
 
       return
     } catch (error) {
@@ -5208,6 +5220,7 @@ function getOauthSession() {
   }
 
   oauthSession = session.fromPartition(OAUTH_SESSION_PARTITION)
+  installCloudflareAccessHeaderInjection(oauthSession)
 
   return oauthSession
 }
@@ -5487,6 +5500,10 @@ function fetchJsonViaOauthSession(url, options: any = {}) {
 
     setJsonRequestHeaders(request)
 
+    for (const [name, value] of Object.entries(options.headers || {})) {
+      request.setHeader(name, String(value))
+    }
+
     let timedOut = false
 
     const timer = setTimeout(() => {
@@ -5563,9 +5580,10 @@ function fetchJsonViaOauthSession(url, options: any = {}) {
 // Mint a single-use WS ticket for a gated gateway. Returns the ticket string.
 // Throws (with statusCode 401) if the session cookie is missing/expired —
 // callers treat that as "needs re-login".
-async function mintGatewayWsTicket(baseUrl) {
+async function mintGatewayWsTicket(baseUrl, headers: Record<string, string> = {}) {
   const body = (await fetchJsonViaOauthSession(`${baseUrl}/api/auth/ws-ticket`, {
     method: 'POST',
+    headers,
     timeoutMs: 8_000
   })) as any
 
@@ -5592,15 +5610,20 @@ async function freshGatewayWsUrl(profile) {
   // the wrong profile's DB. A null/empty profile resolves to the primary, so
   // legacy callers and single-profile users are unchanged.
   const connection = await ensureBackend(profile)
+  let wsUrl
 
   if (connection.authMode === 'oauth') {
-    const ticket = await mintGatewayWsTicket(connection.baseUrl)
+    const ticket = await mintGatewayWsTicket(connection.baseUrl, connection.cloudflareAccessHeaders)
 
-    return buildGatewayWsUrlWithTicket(connection.baseUrl, ticket)
+    wsUrl = buildGatewayWsUrlWithTicket(connection.baseUrl, ticket)
+  } else {
+    // Local/token: the cached wsUrl already carries the (long-lived) token.
+    wsUrl = connection.wsUrl
   }
 
-  // Local/token: the cached wsUrl already carries the (long-lived) token.
-  return connection.wsUrl
+  cloudflareAccessWebSocketHeaders.remember(wsUrl, connection.cloudflareAccessHeaders || {})
+
+  return wsUrl
 }
 
 // --- Hermes Cloud discovery + silent per-agent sign-in (cloud-auto-discovery
@@ -5935,6 +5958,75 @@ function decryptDesktopSecret(secret) {
   return value
 }
 
+function cloudflareAccessHeadersForBlock(block: any = {}) {
+  return cloudflareAccessHeaders(
+    decryptDesktopSecret(block.cloudflareAccessClientId),
+    decryptDesktopSecret(block.cloudflareAccessClientSecret)
+  )
+}
+
+// Header injection for Chromium-owned requests (the renderer WebSocket and
+// OAuth login window). Main-process REST attaches the same pair explicitly.
+function configuredCloudflareAccessHeadersForUrl(requestUrl) {
+  if (process.env.HERMES_DESKTOP_REMOTE_URL) {
+    return {}
+  }
+
+  const config = readDesktopConnectionConfig()
+
+  const blocks = [
+    ...Object.values(config.profiles || {}).filter(
+      (entry: any) => entry && modeIsRemoteLike(entry.mode) && String(entry.url || '').trim()
+    ),
+    ...(modeIsRemoteLike(config.mode) && config.remote?.url ? [config.remote] : [])
+  ]
+
+  for (const block of blocks as any[]) {
+    if (requestMatchesRemoteBase(requestUrl, block.url)) {
+      let headers
+
+      try {
+        headers = cloudflareAccessHeadersForBlock(block)
+      } catch {
+        // A hand-edited/incomplete pair must not strand Chromium requests.
+        continue
+      }
+
+      if (hasCloudflareAccessHeaders(headers)) {
+        return headers
+      }
+    }
+  }
+
+  return {}
+}
+
+function installCloudflareAccessHeaderInjection(targetSession, { webSocketsOnly = false } = {}) {
+  if (!targetSession || cloudflareAccessHeaderSessions.has(targetSession)) {
+    return
+  }
+
+  cloudflareAccessHeaderSessions.add(targetSession)
+  targetSession.webRequest.onBeforeSendHeaders({ urls: ['<all_urls>'] }, (details, callback) => {
+    if (webSocketsOnly && details.resourceType !== 'webSocket') {
+      callback({ requestHeaders: details.requestHeaders })
+
+      return
+    }
+
+    const exactHeaders =
+      details.resourceType === 'webSocket' ? cloudflareAccessWebSocketHeaders.resolve(details.url) : {}
+
+    const headers = hasCloudflareAccessHeaders(exactHeaders)
+      ? exactHeaders
+      : configuredCloudflareAccessHeadersForUrl(details.url)
+
+    callback({
+      requestHeaders: mergeCloudflareAccessHeaders(details.requestHeaders, headers)
+    })
+  })
+}
+
 // Validate + normalize the per-profile remote overrides map read from disk.
 // Drops malformed names/entries and keeps only the recognized fields so a
 // hand-edited or stale connection.json can't inject junk into resolution.
@@ -5959,6 +6051,8 @@ function sanitizeConnectionProfiles(raw: Record<string, any>) {
       url?: string
       authMode?: string
       token?: object
+      cloudflareAccessClientId?: object
+      cloudflareAccessClientSecret?: object
       org?: string
     } = {
       mode: modeIsRemoteLike(entry.mode) ? entry.mode : 'local'
@@ -5974,6 +6068,14 @@ function sanitizeConnectionProfiles(raw: Record<string, any>) {
 
     if ((entry as any).token && typeof entry.token === 'object') {
       cleaned.token = entry.token
+    }
+
+    if ((entry as any).cloudflareAccessClientId && typeof entry.cloudflareAccessClientId === 'object') {
+      cleaned.cloudflareAccessClientId = entry.cloudflareAccessClientId
+    }
+
+    if ((entry as any).cloudflareAccessClientSecret && typeof entry.cloudflareAccessClientSecret === 'object') {
+      cleaned.cloudflareAccessClientSecret = entry.cloudflareAccessClientSecret
     }
 
     // Preserve the Hermes Cloud org tag on cloud-mode entries so Settings can
@@ -6090,6 +6192,8 @@ async function sanitizeDesktopConnectionConfig(config = readDesktopConnectionCon
   const envOverride = key ? false : Boolean(process.env.HERMES_DESKTOP_REMOTE_URL)
 
   const remoteToken = decryptDesktopSecret(block.token)
+  const remoteCloudflareAccessClientId = decryptDesktopSecret(block.cloudflareAccessClientId)
+  const remoteCloudflareAccessClientSecret = decryptDesktopSecret(block.cloudflareAccessClientSecret)
   const authMode = normAuthMode(block.authMode)
   const remoteUrl = envOverride ? String(process.env.HERMES_DESKTOP_REMOTE_URL || '') : String(block.url || '')
   // The env override forces a plain remote connection. Otherwise reflect the
@@ -6122,6 +6226,9 @@ async function sanitizeDesktopConnectionConfig(config = readDesktopConnectionCon
     // The persisted Hermes Cloud org (slug/id) for a cloud connection, or '' for
     // remote/local. Lets Settings → Gateway reopen into the same org.
     cloudOrg: mode === 'cloud' ? String(block.org || '') : '',
+    remoteCloudflareAccessClientIdPreview: tokenPreview(remoteCloudflareAccessClientId),
+    remoteCloudflareAccessClientIdSet: Boolean(remoteCloudflareAccessClientId),
+    remoteCloudflareAccessClientSecretSet: Boolean(remoteCloudflareAccessClientSecret),
     remoteTokenPreview: tokenPreview(remoteToken),
     remoteTokenSet: Boolean(remoteToken),
     // The env override only forces the global/primary connection; a per-profile
@@ -6136,15 +6243,39 @@ async function sanitizeDesktopConnectionConfig(config = readDesktopConnectionCon
 // `org` (optional) is the Hermes Cloud org slug/id the instance was discovered
 // under — persisted so Settings can reopen into the same org; omitted from the
 // block when empty so plain remote connections stay unchanged.
-function buildRemoteBlock(remoteUrl, authMode, token, org?: string) {
+function buildRemoteBlock(
+  remoteUrl,
+  authMode,
+  token,
+  cloudflareAccessClientId,
+  cloudflareAccessClientSecret,
+  org?: string
+) {
   if (authMode !== 'oauth' && !decryptDesktopSecret(token)) {
     throw new Error('Remote gateway session token is required.')
   }
 
-  const block: { url: string; authMode: string; token: object; org?: string } = {
+  const accessHeaders = cloudflareAccessHeaders(
+    decryptDesktopSecret(cloudflareAccessClientId),
+    decryptDesktopSecret(cloudflareAccessClientSecret)
+  )
+
+  const block: {
+    url: string
+    authMode: string
+    token?: object
+    cloudflareAccessClientId?: object
+    cloudflareAccessClientSecret?: object
+    org?: string
+  } = {
     url: normalizeRemoteBaseUrl(remoteUrl),
     authMode,
     token
+  }
+
+  if (hasCloudflareAccessHeaders(accessHeaders)) {
+    block.cloudflareAccessClientId = cloudflareAccessClientId
+    block.cloudflareAccessClientSecret = cloudflareAccessClientSecret
   }
 
   const orgValue = typeof org === 'string' ? org.trim() : ''
@@ -6167,15 +6298,13 @@ function coerceDesktopConnectionConfig(input: any = {}, existing = readDesktopCo
 
   // The block being edited: a per-profile entry or the global remote block.
   const rawExistingBlock = key ? existing.profiles?.[key] || {} : existing.remote || {}
-  // Leaving a CLOUD connection unselects it: a cloud block's url/org/token
-  // describe a discovered Hermes Cloud instance, NOT a user-owned remote gateway,
-  // so switching to local or remote must NOT inherit them (otherwise the stale
-  // cloud URL lingers and re-selecting Cloud looks "already connected"). When the
-  // saved block was cloud and the new mode is not cloud, start from an empty
-  // block. (remote↔local toggles still preserve a real remote URL as before.)
+  // Cloud and user-owned remote credentials have different provenance. Crossing
+  // that boundary starts from an empty block so a Cloud URL/session never leaks
+  // into Remote and a remote proxy credential is never sent to a selected Cloud
+  // host. Remote/local toggles still preserve a real remote URL as before.
   const existingMode = key ? existing.profiles?.[key]?.mode : existing.mode
-  const leavingCloud = existingMode === 'cloud' && mode !== 'cloud'
-  const existingBlock = leavingCloud ? {} : rawExistingBlock
+  const changingCloudProvenance = (existingMode === 'cloud') !== (mode === 'cloud')
+  const existingBlock = changingCloudProvenance ? {} : rawExistingBlock
   const remoteUrl = String(input.remoteUrl ?? existingBlock.url ?? '').trim()
   // authMode: explicit input wins; otherwise inherit the saved value, default 'token'.
   const authMode = resolveAuthMode(input.remoteAuthMode, existingBlock.authMode)
@@ -6184,12 +6313,33 @@ function coerceDesktopConnectionConfig(input: any = {}, existing = readDesktopCo
   // (switching cloud→remote drops it), so it stays unset unless mode is cloud.
   const cloudOrg = mode === 'cloud' ? String(input.cloudOrg ?? existingBlock.org ?? '').trim() : ''
   const incomingToken = typeof input.remoteToken === 'string' ? input.remoteToken.trim() : ''
+  const clearCloudflareAccess = input.remoteCloudflareAccessClear === true
+
+  const incomingCloudflareAccessClientId =
+    typeof input.remoteCloudflareAccessClientId === 'string' ? input.remoteCloudflareAccessClientId.trim() : ''
+
+  const incomingCloudflareAccessClientSecret =
+    typeof input.remoteCloudflareAccessClientSecret === 'string' ? input.remoteCloudflareAccessClientSecret.trim() : ''
 
   const nextToken = incomingToken
     ? persistToken
       ? encryptDesktopSecret(incomingToken)
       : { encoding: 'plain', value: incomingToken }
     : existingBlock.token
+
+  const persistSecret = value => (persistToken ? encryptDesktopSecret(value) : { encoding: 'plain', value })
+
+  const nextCloudflareAccessClientId = clearCloudflareAccess
+    ? undefined
+    : incomingCloudflareAccessClientId
+      ? persistSecret(incomingCloudflareAccessClientId)
+      : existingBlock.cloudflareAccessClientId
+
+  const nextCloudflareAccessClientSecret = clearCloudflareAccess
+    ? undefined
+    : incomingCloudflareAccessClientSecret
+      ? persistSecret(incomingCloudflareAccessClientSecret)
+      : existingBlock.cloudflareAccessClientSecret
 
   if (key) {
     // Per-profile scope: a remote/cloud entry pins this profile to its own
@@ -6198,7 +6348,17 @@ function coerceDesktopConnectionConfig(input: any = {}, existing = readDesktopCo
     const profiles = { ...(existing.profiles || {}) }
 
     if (remoteLike) {
-      profiles[key] = { mode, ...buildRemoteBlock(remoteUrl, authMode, nextToken, cloudOrg) }
+      profiles[key] = {
+        mode,
+        ...buildRemoteBlock(
+          remoteUrl,
+          authMode,
+          nextToken,
+          nextCloudflareAccessClientId,
+          nextCloudflareAccessClientSecret,
+          cloudOrg
+        )
+      }
     } else {
       delete profiles[key]
     }
@@ -6211,8 +6371,21 @@ function coerceDesktopConnectionConfig(input: any = {}, existing = readDesktopCo
   }
 
   const nextRemote = remoteLike
-    ? buildRemoteBlock(remoteUrl, authMode, nextToken, cloudOrg)
-    : { url: remoteUrl ? normalizeRemoteBaseUrl(remoteUrl) : remoteUrl, authMode, token: nextToken }
+    ? buildRemoteBlock(
+        remoteUrl,
+        authMode,
+        nextToken,
+        nextCloudflareAccessClientId,
+        nextCloudflareAccessClientSecret,
+        cloudOrg
+      )
+    : {
+        url: remoteUrl ? normalizeRemoteBaseUrl(remoteUrl) : remoteUrl,
+        authMode,
+        token: nextToken,
+        cloudflareAccessClientId: nextCloudflareAccessClientId,
+        cloudflareAccessClientSecret: nextCloudflareAccessClientSecret
+      }
 
   // Preserve per-profile overrides when saving the global connection.
   return { mode, remote: nextRemote, profiles: existing.profiles || {} }
@@ -6223,7 +6396,7 @@ function coerceDesktopConnectionConfig(input: any = {}, existing = readDesktopCo
 // and is shared by the per-profile, env, and global resolution paths. `token`
 // is the DECRYPTED static token (or null in OAuth mode). `source` is a label
 // for diagnostics ('profile' | 'env' | 'settings').
-async function buildRemoteConnection(rawUrl, authMode, token, source) {
+async function buildRemoteConnection(rawUrl, authMode, token, source, accessHeaders: Record<string, string> = {}) {
   const baseUrl = normalizeRemoteBaseUrl(rawUrl)
 
   if (authMode === 'oauth') {
@@ -6248,7 +6421,7 @@ async function buildRemoteConnection(rawUrl, authMode, token, source) {
     let ticket
 
     try {
-      ticket = await mintGatewayWsTicket(baseUrl)
+      ticket = await mintGatewayWsTicket(baseUrl, accessHeaders)
     } catch (error) {
       const err = new Error(
         'Your remote gateway session has expired. ' + 'Open Settings → Gateway and click "Sign in" again.'
@@ -6264,6 +6437,7 @@ async function buildRemoteConnection(rawUrl, authMode, token, source) {
       mode: 'remote',
       source,
       authMode: 'oauth',
+      cloudflareAccessHeaders: accessHeaders,
       // No static token in OAuth mode; REST is cookie-authed via the partition.
       token: null,
       wsUrl: buildGatewayWsUrlWithTicket(baseUrl, ticket)
@@ -6282,6 +6456,7 @@ async function buildRemoteConnection(rawUrl, authMode, token, source) {
     mode: 'remote',
     source,
     authMode: 'token',
+    cloudflareAccessHeaders: accessHeaders,
     token,
     wsUrl: buildGatewayWsUrl(baseUrl, token)
   }
@@ -6304,8 +6479,9 @@ async function resolveRemoteBackend(profile) {
 
   if (override) {
     const token = override.authMode === 'oauth' ? null : decryptDesktopSecret(override.token)
+    const accessHeaders = cloudflareAccessHeadersForBlock(override)
 
-    return buildRemoteConnection(override.url, override.authMode, token, 'profile')
+    return buildRemoteConnection(override.url, override.authMode, token, 'profile', accessHeaders)
   }
 
   // 2. Env override (global, token-auth only).
@@ -6330,8 +6506,9 @@ async function resolveRemoteBackend(profile) {
 
   const authMode = normAuthMode(config.remote?.authMode)
   const token = authMode === 'oauth' ? null : decryptDesktopSecret(config.remote?.token)
+  const accessHeaders = cloudflareAccessHeadersForBlock(config.remote)
 
-  return buildRemoteConnection(config.remote?.url, authMode, token, 'settings')
+  return buildRemoteConnection(config.remote?.url, authMode, token, 'settings', accessHeaders)
 }
 
 // A remote profile's sessions live on its remote host's state.db, not on a local
@@ -6379,15 +6556,22 @@ async function fetchJsonForProfile(profile, path) {
 async function requestJsonForProfile(profile: string, path: string, method: string, body?: string) {
   const conn = await ensureBackend(profile)
   const url = `${conn.baseUrl}${path}`
-  const opts = { method, body, timeoutMs: DEFAULT_FETCH_TIMEOUT_MS }
+
+  const opts = {
+    method,
+    body,
+    headers: conn.cloudflareAccessHeaders || {},
+    timeoutMs: DEFAULT_FETCH_TIMEOUT_MS
+  }
 
   return conn.authMode === 'oauth' ? fetchJsonViaOauthSession(url, opts) : fetchJson(url, conn.token, opts)
 }
 
-async function probeRemoteAuthMode(rawUrl) {
-  // Determine how a remote gateway expects callers to authenticate, WITHOUT
-  // sending any credentials. ``/api/status`` is public on every Hermes
-  // gateway (it backs the portal liveness probe) and reports:
+async function probeRemoteAuthMode(rawInput) {
+  // Determine how a remote gateway expects callers to authenticate without
+  // sending Hermes credentials. Optional upstream proxy credentials are still
+  // attached. ``/api/status`` is public on every Hermes gateway (it backs the
+  // portal liveness probe) and reports:
   //   auth_required: true  → OAuth gate is engaged (cookie + ws-ticket auth)
   //   auth_required: false → loopback/--insecure: legacy session-token auth
   // ``/api/auth/providers`` (also public, only meaningful when gated) gives
@@ -6397,12 +6581,31 @@ async function probeRemoteAuthMode(rawUrl) {
   // OAuth login button vs a session-token entry box. Network/parse failures
   // surface as ``reachable: false`` rather than throwing, so a half-typed or
   // unreachable URL degrades to "can't tell yet" instead of a hard error.
-  const baseUrl = normalizeRemoteBaseUrl(rawUrl)
+  const input = typeof rawInput === 'string' ? { remoteUrl: rawInput } : rawInput || {}
+  const baseUrl = normalizeRemoteBaseUrl(input.remoteUrl)
+  const config = readDesktopConnectionConfig()
+  const key = connectionScopeKey(input.profile)
+  const existingBlock = key ? config.profiles?.[key] || {} : config.remote || {}
+  const clearCloudflareAccess = input.remoteCloudflareAccessClear === true
+
+  const clientId = clearCloudflareAccess
+    ? ''
+    : typeof input.remoteCloudflareAccessClientId === 'string' && input.remoteCloudflareAccessClientId.trim()
+      ? input.remoteCloudflareAccessClientId.trim()
+      : decryptDesktopSecret(existingBlock.cloudflareAccessClientId)
+
+  const clientSecret = clearCloudflareAccess
+    ? ''
+    : typeof input.remoteCloudflareAccessClientSecret === 'string' && input.remoteCloudflareAccessClientSecret.trim()
+      ? input.remoteCloudflareAccessClientSecret.trim()
+      : decryptDesktopSecret(existingBlock.cloudflareAccessClientSecret)
+
+  const accessHeaders = cloudflareAccessHeaders(clientId, clientSecret)
 
   let status
 
   try {
-    status = await fetchPublicJson(`${baseUrl}/api/status`, { timeoutMs: 8_000 })
+    status = await fetchPublicJson(`${baseUrl}/api/status`, { headers: accessHeaders, timeoutMs: 8_000 })
   } catch (error: any) {
     return {
       baseUrl,
@@ -6424,7 +6627,10 @@ async function probeRemoteAuthMode(rawUrl) {
     // an OAuth-redirect one (``supports_password``). A failure here doesn't
     // change the auth mode, so swallow it.
     try {
-      const body = (await fetchPublicJson(`${baseUrl}/api/auth/providers`, { timeoutMs: 8_000 })) as any
+      const body = (await fetchPublicJson(`${baseUrl}/api/auth/providers`, {
+        headers: accessHeaders,
+        timeoutMs: 8_000
+      })) as any
 
       if (Array.isArray(body?.providers)) {
         providers = body.providers
@@ -6461,17 +6667,19 @@ async function testDesktopConnectionConfig(input: any = {}) {
   const wantRemote =
     modeIsRemoteLike(block?.mode) || (!key && modeIsRemoteLike(config.mode)) || (modeIsRemoteLike(input.mode) && block)
 
-  // ``/api/status`` is public on every gateway (no creds needed), so a
-  // reachability test works for local, token, and oauth modes alike — we only
-  // need a base URL. For a remote config we normalize the URL from the input;
-  // for local we fall back to the resolved/started backend.
+  // ``/api/status`` does not need Hermes credentials, so a reachability test
+  // works for local, token, and oauth modes alike. An upstream proxy may still
+  // require its own headers. For a remote config we normalize the URL from the
+  // input; for local we fall back to the resolved/started backend.
   let baseUrl
   let token = null
   let authMode = 'token'
+  let accessHeaders = {}
 
   if (wantRemote && block?.url) {
     baseUrl = normalizeRemoteBaseUrl(block.url)
     authMode = normAuthMode(block.authMode)
+    accessHeaders = cloudflareAccessHeadersForBlock(block)
 
     if (authMode !== 'oauth') {
       token = decryptDesktopSecret(block.token)
@@ -6481,9 +6689,10 @@ async function testDesktopConnectionConfig(input: any = {}) {
     baseUrl = remote.baseUrl
     token = remote.token
     authMode = normAuthMode(remote.authMode)
+    accessHeaders = remote.cloudflareAccessHeaders || {}
   }
 
-  const status = (await fetchJson(`${baseUrl}/api/status`, token, { timeoutMs: 8_000 })) as any
+  const status = (await fetchJson(`${baseUrl}/api/status`, token, { headers: accessHeaders, timeoutMs: 8_000 })) as any
 
   // The HTTP status check above proves the backend is reachable, but the chat
   // surface only works once the renderer's live WebSocket to ``/api/ws``
@@ -6492,13 +6701,17 @@ async function testDesktopConnectionConfig(input: any = {}) {
   // false-positive "reachable" while the real boot still failed with "Could not
   // connect to Hermes gateway". Mirror the renderer's connect here so the test
   // reflects the full path the app actually uses.
-  const wsUrl = await resolveTestWsUrl(baseUrl, authMode, token, { mintTicket: mintGatewayWsTicket })
+  const wsUrl = await resolveTestWsUrl(baseUrl, authMode, token, {
+    mintTicket: url => mintGatewayWsTicket(url, accessHeaders)
+  })
 
   // Skip the WS leg only when the runtime genuinely lacks a WebSocket (so an
   // older Electron/Node never fails the test spuriously); Electron's main
   // process ships a global WebSocket on every supported version.
-  if (wsUrl && typeof globalThis.WebSocket === 'function') {
-    const probe = await probeGatewayWebSocket(wsUrl, { WebSocketImpl: globalThis.WebSocket })
+  if (wsUrl && (typeof globalThis.WebSocket === 'function' || hasCloudflareAccessHeaders(accessHeaders))) {
+    const probe = hasCloudflareAccessHeaders(accessHeaders)
+      ? await probeGatewayWebSocketUpgrade(wsUrl, { headers: accessHeaders })
+      : await probeGatewayWebSocket(wsUrl, { WebSocketImpl: globalThis.WebSocket })
 
     if (!probe.ok) {
       throw new Error(
@@ -6737,7 +6950,7 @@ async function spawnPoolBackend(profile, entry) {
   const remote = await resolveRemoteBackend(profile)
 
   if (remote) {
-    await waitForHermes(remote.baseUrl, remote.token)
+    await waitForHermes(remote.baseUrl, remote.token, remote.cloudflareAccessHeaders)
 
     return {
       ...remote,
@@ -6952,7 +7165,7 @@ async function startHermes() {
 
     if (remote) {
       await advanceBootProgress('backend.remote', `Connecting to remote Hermes backend at ${remote.baseUrl}`, 24)
-      await waitForHermes(remote.baseUrl, remote.token)
+      await waitForHermes(remote.baseUrl, remote.token, remote.cloudflareAccessHeaders)
       updateBootProgress({
         phase: 'backend.ready',
         message: 'Remote Hermes backend is ready',
@@ -6966,6 +7179,7 @@ async function startHermes() {
         mode: 'remote',
         source: remote.source,
         authMode: remote.authMode || 'token',
+        cloudflareAccessHeaders: remote.cloudflareAccessHeaders || {},
         token: remote.token,
         wsUrl: remote.wsUrl,
         logs: hermesLog.slice(-80),
@@ -7672,7 +7886,16 @@ function createWindow() {
   })
 }
 
-ipcMain.handle('hermes:connection', async (_event, profile) => ensureBackend(profile))
+function rendererConnection(connection) {
+  // Upstream proxy credentials are main-process-only. Chromium receives them
+  // through the narrow request-header hook; never serialize them over IPC.
+  const publicConnection = { ...connection }
+  delete publicConnection.cloudflareAccessHeaders
+
+  return publicConnection
+}
+
+ipcMain.handle('hermes:connection', async (_event, profile) => rendererConnection(await ensureBackend(profile)))
 // Reconnect-after-wake recovery. A REMOTE primary backend has no child process,
 // so the 'exit'/'error' handlers that would clear a dead connection promise never
 // fire — once the remote becomes unreachable across a sleep/wake the renderer
@@ -7705,7 +7928,10 @@ ipcMain.handle('hermes:connection:revalidate', async () => {
   const base = conn.baseUrl.replace(/\/+$/, '')
 
   try {
-    await fetchPublicJson(`${base}/api/status`, { timeoutMs: 2_500 })
+    await fetchPublicJson(`${base}/api/status`, {
+      headers: conn.cloudflareAccessHeaders || {},
+      timeoutMs: 2_500
+    })
 
     return { ok: true, rebuilt: false }
   } catch {
@@ -8254,6 +8480,7 @@ async function mergeRemoteProfileSessions(searchParams, remoteProfiles) {
   const primary = await ensureBackend(null)
 
   const base = (await fetchJson(`${primary.baseUrl}/api/profiles/sessions?${searchParams}`, primary.token, {
+    headers: primary.cloudflareAccessHeaders || {},
     method: 'GET',
     timeoutMs: DEFAULT_FETCH_TIMEOUT_MS
   }).catch(() => ({ sessions: [], total: 0, profile_totals: {} }))) as any
@@ -8336,6 +8563,7 @@ ipcMain.handle('hermes:api', async (_event, request) => {
     return fetchJsonViaOauthSession(url, {
       method: request?.method,
       body: request?.body,
+      headers: connection.cloudflareAccessHeaders || {},
       timeoutMs
     })
   }
@@ -8343,6 +8571,7 @@ ipcMain.handle('hermes:api', async (_event, request) => {
   return fetchJson(url, connection.token, {
     method: request?.method,
     body: request?.body,
+    headers: connection.cloudflareAccessHeaders || {},
     upload: request?.upload,
     timeoutMs
   })
@@ -9550,6 +9779,7 @@ app.whenReady().then(() => {
   installMediaPermissions()
   registerMediaProtocol()
   installEmbedReferer()
+  installCloudflareAccessHeaderInjection(session.defaultSession, { webSocketsOnly: true })
   registerDeepLinkProtocol()
   ensureWslWindowsFonts()
   configureSpellChecker()

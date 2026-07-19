@@ -26,6 +26,9 @@ interface GatewaySettingsState {
   envOverride: boolean
   mode: Mode
   remoteAuthMode: AuthMode
+  remoteCloudflareAccessClientIdPreview: string | null
+  remoteCloudflareAccessClientIdSet: boolean
+  remoteCloudflareAccessClientSecretSet: boolean
   remoteOauthConnected: boolean
   remoteTokenPreview: string | null
   remoteTokenSet: boolean
@@ -37,6 +40,9 @@ const EMPTY_STATE: GatewaySettingsState = {
   envOverride: false,
   mode: 'local',
   remoteAuthMode: 'token',
+  remoteCloudflareAccessClientIdPreview: null,
+  remoteCloudflareAccessClientIdSet: false,
+  remoteCloudflareAccessClientSecretSet: false,
   remoteOauthConnected: false,
   remoteTokenPreview: null,
   remoteTokenSet: false,
@@ -127,6 +133,9 @@ export function GatewaySettings({ embedded = false }: { embedded?: boolean } = {
   const [signingIn, setSigningIn] = useState(false)
   const [state, setState] = useState<GatewaySettingsState>(EMPTY_STATE)
   const [remoteToken, setRemoteToken] = useState('')
+  const [remoteCloudflareAccessClientId, setRemoteCloudflareAccessClientId] = useState('')
+  const [remoteCloudflareAccessClientSecret, setRemoteCloudflareAccessClientSecret] = useState('')
+  const [remoteCloudflareAccessClear, setRemoteCloudflareAccessClear] = useState(false)
   const [lastTest, setLastTest] = useState<null | string>(null)
   const [connectedCloudUrl, setConnectedCloudUrl] = useState('')
 
@@ -189,9 +198,12 @@ export function GatewaySettings({ embedded = false }: { embedded?: boolean } = {
     }
 
     setLoading(true)
-    // Clear scope-local entry state so a token from one scope can't leak into
-    // the next when switching profiles.
+    // Clear scope-local entry state so credentials from one scope can't leak
+    // into the next when switching profiles.
     setRemoteToken('')
+    setRemoteCloudflareAccessClientId('')
+    setRemoteCloudflareAccessClientSecret('')
+    setRemoteCloudflareAccessClear(false)
     setLastTest(null)
 
     desktop
@@ -220,6 +232,16 @@ export function GatewaySettings({ embedded = false }: { embedded?: boolean } = {
   // prefers a fresh probe result over the saved value.
   const trimmedUrl = state.remoteUrl.trim()
 
+  const cloudflareClientIdAvailable =
+    Boolean(remoteCloudflareAccessClientId.trim()) ||
+    (!remoteCloudflareAccessClear && state.remoteCloudflareAccessClientIdSet)
+
+  const cloudflareClientSecretAvailable =
+    Boolean(remoteCloudflareAccessClientSecret.trim()) ||
+    (!remoteCloudflareAccessClear && state.remoteCloudflareAccessClientSecretSet)
+
+  const cloudflareAccessComplete = cloudflareClientIdAvailable === cloudflareClientSecretAvailable
+
   // The dashboardUrl of the currently-connected cloud instance (the saved
   // cloud connection's remoteUrl), normalized for comparison against each
   // discovered agent's dashboardUrl so we can highlight the active one and hide
@@ -235,7 +257,7 @@ export function GatewaySettings({ embedded = false }: { embedded?: boolean } = {
     Boolean(connectedCloudUrl && agent.dashboardUrl && normalizeCloudUrl(agent.dashboardUrl) === connectedCloudUrl)
 
   useEffect(() => {
-    if (state.mode !== 'remote' || !trimmedUrl || !/^https?:\/\//i.test(trimmedUrl)) {
+    if (state.mode !== 'remote' || !trimmedUrl || !/^https?:\/\//i.test(trimmedUrl) || !cloudflareAccessComplete) {
       setProbeStatus('idle')
       setProbe(null)
 
@@ -253,7 +275,13 @@ export function GatewaySettings({ embedded = false }: { embedded?: boolean } = {
 
     const timer = setTimeout(() => {
       desktop
-        .probeConnectionConfig(trimmedUrl)
+        .probeConnectionConfig({
+          profile: scope ?? undefined,
+          remoteCloudflareAccessClear,
+          remoteCloudflareAccessClientId: remoteCloudflareAccessClientId.trim() || undefined,
+          remoteCloudflareAccessClientSecret: remoteCloudflareAccessClientSecret.trim() || undefined,
+          remoteUrl: trimmedUrl
+        })
         .then(result => {
           if (seq !== probeSeq.current) {
             return
@@ -273,7 +301,15 @@ export function GatewaySettings({ embedded = false }: { embedded?: boolean } = {
     }, 500)
 
     return () => clearTimeout(timer)
-  }, [state.mode, trimmedUrl])
+  }, [
+    cloudflareAccessComplete,
+    remoteCloudflareAccessClear,
+    remoteCloudflareAccessClientId,
+    remoteCloudflareAccessClientSecret,
+    scope,
+    state.mode,
+    trimmedUrl
+  ])
 
   // Effective auth mode: a reachable probe wins; otherwise fall back to the
   // saved config's mode so a re-open of settings doesn't flicker.
@@ -340,7 +376,7 @@ export function GatewaySettings({ embedded = false }: { embedded?: boolean } = {
   const oauthConnected = state.remoteOauthConnected
 
   const canUseRemote = useMemo(() => {
-    if (!trimmedUrl) {
+    if (!trimmedUrl || !cloudflareAccessComplete) {
       return false
     }
 
@@ -349,17 +385,26 @@ export function GatewaySettings({ embedded = false }: { embedded?: boolean } = {
     }
 
     return Boolean(remoteToken.trim()) || state.remoteTokenSet
-  }, [authMode, oauthConnected, remoteToken, state.remoteTokenSet, trimmedUrl])
+  }, [authMode, cloudflareAccessComplete, oauthConnected, remoteToken, state.remoteTokenSet, trimmedUrl])
 
   const payload = () => ({
     mode: state.mode,
     profile: scope ?? undefined,
     remoteAuthMode: authMode,
+    remoteCloudflareAccessClear,
+    remoteCloudflareAccessClientId: remoteCloudflareAccessClientId.trim() || undefined,
+    remoteCloudflareAccessClientSecret: remoteCloudflareAccessClientSecret.trim() || undefined,
     remoteToken: authMode === 'token' ? remoteToken.trim() || undefined : undefined,
     remoteUrl: trimmedUrl
   })
 
   const save = async (apply: boolean) => {
+    if (state.mode === 'remote' && !cloudflareAccessComplete) {
+      notify({ kind: 'warning', title: g.incompleteTitle, message: g.cloudflareAccessIncomplete })
+
+      return
+    }
+
     if (state.mode === 'remote' && !canUseRemote) {
       notify({
         kind: 'warning',
@@ -379,6 +424,9 @@ export function GatewaySettings({ embedded = false }: { embedded?: boolean } = {
 
       acceptSavedConfig(next)
       setRemoteToken('')
+      setRemoteCloudflareAccessClientId('')
+      setRemoteCloudflareAccessClientSecret('')
+      setRemoteCloudflareAccessClear(false)
       notify({
         kind: 'success',
         title: apply ? g.restartingTitle : g.savedTitle,
@@ -401,6 +449,12 @@ export function GatewaySettings({ embedded = false }: { embedded?: boolean } = {
       return
     }
 
+    if (!cloudflareAccessComplete) {
+      notify({ kind: 'warning', title: g.incompleteTitle, message: g.cloudflareAccessIncomplete })
+
+      return
+    }
+
     setSigningIn(true)
 
     try {
@@ -410,10 +464,16 @@ export function GatewaySettings({ embedded = false }: { embedded?: boolean } = {
         mode: state.mode,
         profile: scope ?? undefined,
         remoteAuthMode: 'oauth',
+        remoteCloudflareAccessClear,
+        remoteCloudflareAccessClientId: remoteCloudflareAccessClientId.trim() || undefined,
+        remoteCloudflareAccessClientSecret: remoteCloudflareAccessClientSecret.trim() || undefined,
         remoteUrl: trimmedUrl
       })
 
       acceptSavedConfig(saved)
+      setRemoteCloudflareAccessClientId('')
+      setRemoteCloudflareAccessClientSecret('')
+      setRemoteCloudflareAccessClear(false)
 
       const result = await window.hermesDesktop.oauthLoginConnectionConfig(trimmedUrl)
 
@@ -679,6 +739,12 @@ export function GatewaySettings({ embedded = false }: { embedded?: boolean } = {
   }
 
   const testRemote = async () => {
+    if (!cloudflareAccessComplete) {
+      notify({ kind: 'warning', title: g.incompleteTitle, message: g.cloudflareAccessIncomplete })
+
+      return
+    }
+
     if (!canUseRemote) {
       notify({
         kind: 'warning',
@@ -693,13 +759,7 @@ export function GatewaySettings({ embedded = false }: { embedded?: boolean } = {
     setLastTest(null)
 
     try {
-      const result = await window.hermesDesktop.testConnectionConfig({
-        mode: 'remote',
-        profile: scope ?? undefined,
-        remoteAuthMode: authMode,
-        remoteToken: authMode === 'token' ? remoteToken.trim() || undefined : undefined,
-        remoteUrl: trimmedUrl
-      })
+      const result = await window.hermesDesktop.testConnectionConfig({ ...payload(), mode: 'remote' })
 
       const message = g.connectedTo(result.baseUrl, result.version ?? undefined)
       setLastTest(message)
@@ -959,6 +1019,75 @@ export function GatewaySettings({ embedded = false }: { embedded?: boolean } = {
             description={g.remoteUrlDesc}
             title={g.remoteUrlTitle}
           />
+
+          <ListRow
+            action={
+              <div className="flex items-center gap-2">
+                <Input
+                  autoComplete="off"
+                  className={cn('h-8 font-mono', CONTROL_TEXT)}
+                  disabled={state.envOverride}
+                  onChange={event => {
+                    setRemoteCloudflareAccessClientId(event.target.value)
+                    setRemoteCloudflareAccessClear(false)
+                  }}
+                  placeholder={
+                    state.remoteCloudflareAccessClientIdSet && !remoteCloudflareAccessClear
+                      ? g.existingToken(state.remoteCloudflareAccessClientIdPreview ?? g.savedToken)
+                      : 'CF-Access-Client-Id'
+                  }
+                  type="password"
+                  value={remoteCloudflareAccessClientId}
+                />
+                {(state.remoteCloudflareAccessClientIdSet || state.remoteCloudflareAccessClientSecretSet) &&
+                !remoteCloudflareAccessClear ? (
+                  <Button
+                    disabled={state.envOverride}
+                    onClick={() => {
+                      setRemoteCloudflareAccessClientId('')
+                      setRemoteCloudflareAccessClientSecret('')
+                      setRemoteCloudflareAccessClear(true)
+                    }}
+                    size="sm"
+                    variant="outline"
+                  >
+                    {g.clearCloudflareAccess}
+                  </Button>
+                ) : null}
+              </div>
+            }
+            description={g.cloudflareAccessDesc}
+            title={g.cloudflareAccessClientId}
+          />
+
+          <ListRow
+            action={
+              <Input
+                autoComplete="off"
+                className={cn('h-8 font-mono', CONTROL_TEXT)}
+                disabled={state.envOverride}
+                onChange={event => {
+                  setRemoteCloudflareAccessClientSecret(event.target.value)
+                  setRemoteCloudflareAccessClear(false)
+                }}
+                placeholder={
+                  state.remoteCloudflareAccessClientSecretSet && !remoteCloudflareAccessClear
+                    ? g.existingToken(g.savedToken)
+                    : 'CF-Access-Client-Secret'
+                }
+                type="password"
+                value={remoteCloudflareAccessClientSecret}
+              />
+            }
+            title={g.cloudflareAccessClientSecret}
+          />
+
+          {!cloudflareAccessComplete ? (
+            <div className="flex items-start gap-2 py-2 text-[length:var(--conversation-caption-font-size)] text-destructive">
+              <AlertCircle className="mt-0.5 size-4 shrink-0" />
+              {g.cloudflareAccessIncomplete}
+            </div>
+          ) : null}
 
           {state.mode === 'remote' && probeStatus === 'probing' ? (
             <div className="flex items-center gap-2 py-3 text-[length:var(--conversation-caption-font-size)] text-(--ui-text-tertiary)">

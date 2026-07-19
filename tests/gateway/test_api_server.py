@@ -989,7 +989,11 @@ class TestCapabilitiesEndpoint:
             assert data["features"]["run_events_sse"] is True
             assert data["features"]["mcp_reload"] is True
             assert data["features"]["session_continuity_header"] == "X-Hermes-Session-Id"
-            assert data["endpoints"]["mcp_reload"] == {"method": "POST", "path": "/v1/mcp/reload"}
+            assert data["endpoints"]["mcp_reload"] == {
+                "method": "POST",
+                "path": "/v1/mcp/reload",
+                "caller_must_quiesce_new_work": True,
+            }
             assert data["endpoints"]["run_status"]["path"] == "/v1/runs/{run_id}"
             assert data["endpoints"]["skills"] == {"method": "GET", "path": "/v1/skills"}
             assert data["endpoints"]["toolsets"] == {"method": "GET", "path": "/v1/toolsets"}

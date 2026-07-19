@@ -2011,7 +2011,11 @@ class APIServerAdapter(BasePlatformAdapter):
                 "health": {"method": "GET", "path": "/health"},
                 "health_detailed": {"method": "GET", "path": "/health/detailed"},
                 "models": {"method": "GET", "path": "/v1/models"},
-                "mcp_reload": {"method": "POST", "path": "/v1/mcp/reload"},
+                "mcp_reload": {
+                    "method": "POST",
+                    "path": "/v1/mcp/reload",
+                    "caller_must_quiesce_new_work": True,
+                },
                 "chat_completions": {"method": "POST", "path": "/v1/chat/completions"},
                 "responses": {"method": "POST", "path": "/v1/responses"},
                 "runs": {"method": "POST", "path": "/v1/runs"},

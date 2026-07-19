@@ -9,6 +9,7 @@ vanished from the backup while the run still printed "Backup complete", so the
 loss only surfaced at restore time. The backup must now name what it dropped.
 """
 
+import logging
 import zipfile
 from argparse import Namespace
 from pathlib import Path
@@ -108,3 +109,37 @@ def test_no_symlinks_prints_no_symlink_block(tmp_path, monkeypatch, capsys):
     out = capsys.readouterr().out
     assert "Symlinks skipped" not in out
     assert "Backup complete" in out
+
+
+def test_pre_update_backup_reports_skipped_subtree_via_log(tmp_path, caplog):
+    """The pre-update/pre-migration full-zip path (_write_full_zip_backup) has
+    no interactive summary, so it must surface the same dropped subtree through
+    its logger instead of dropping it silently."""
+    hermes_home = tmp_path / ".hermes"
+    hermes_home.mkdir()
+    _make_minimal_home(hermes_home)
+
+    outside_tree = tmp_path / "shared-skills"
+    outside_tree.mkdir()
+    (outside_tree / "shared.md").write_text("shared skill body\n")
+    (hermes_home / "profiles").mkdir()
+    (hermes_home / "profiles" / "coder").mkdir()
+    _symlink_or_skip(hermes_home / "profiles" / "coder" / "skills", outside_tree)
+
+    from hermes_cli.backup import create_pre_update_backup
+
+    with caplog.at_level(logging.WARNING, logger="hermes_cli.backup"):
+        out = create_pre_update_backup(hermes_home=hermes_home)
+
+    assert out is not None and out.exists()
+
+    messages = "\n".join(r.getMessage() for r in caplog.records)
+    assert "symlink(s) skipped (not archived)" in messages
+    assert "profiles/coder/skills" in messages
+
+    with zipfile.ZipFile(out) as zf:
+        names = zf.namelist()
+        assert not any(n.startswith("profiles/coder/skills") for n in names)
+        assert "shared skill body\n" not in [
+            zf.read(n).decode("utf-8", "ignore") for n in names
+        ]

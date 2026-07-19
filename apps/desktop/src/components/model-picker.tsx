@@ -202,7 +202,9 @@ function ModelResults({
               </div>
             )}
             {models.map(model => {
-              const isCurrent = model === currentModel && provider.slug === currentProvider
+              const isCurrent =
+                model === currentModel &&
+                normalize(provider.slug) === normalize(currentProvider)
               const price = provider.pricing?.[model]
               const locked = unavailable.has(model)
 

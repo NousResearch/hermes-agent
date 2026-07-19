@@ -688,6 +688,12 @@ class TestHermesInternalDynamicSecrets:
         assert _is_hermes_internal_secret("GATEWAY_RELAY_DELIVERY_KEY")
         assert _is_hermes_internal_secret("GATEWAY_RELAY_SESSION_TOKEN")
 
+    def test_predicate_matches_dashboard_internal_ws_capabilities(self):
+        from tools.environments.local import _is_hermes_internal_secret
+
+        assert _is_hermes_internal_secret("HERMES_TUI_GATEWAY_URL")
+        assert _is_hermes_internal_secret("HERMES_TUI_SIDECAR_URL")
+
     def test_predicate_allows_auxiliary_non_secrets(self):
         """AUXILIARY_*_PROVIDER / _MODEL and GATEWAY_RELAY_* routing hints are
         NOT secrets and must remain visible so tooling that reads them works."""
@@ -728,6 +734,15 @@ class TestHermesInternalDynamicSecrets:
         assert "GATEWAY_RELAY_DELIVERY_KEY" not in result_env
         # Non-secret routing hint stays visible.
         assert result_env.get("GATEWAY_RELAY_URL") == "https://relay.example.com"
+
+    def test_dashboard_internal_ws_capabilities_stripped_from_subprocess(self):
+        result_env = _run_with_env(extra_os_env={
+            "HERMES_TUI_GATEWAY_URL": "ws://dashboard.test/api/ws?internal=secret",
+            "HERMES_TUI_SIDECAR_URL": "ws://dashboard.test/api/pub?internal=secret",
+        })
+
+        assert "HERMES_TUI_GATEWAY_URL" not in result_env
+        assert "HERMES_TUI_SIDECAR_URL" not in result_env
 
     def test_auxiliary_secret_stripped_even_when_passthrough_registered(self):
         """A skill registering AUXILIARY_*_API_KEY as env_passthrough must NOT

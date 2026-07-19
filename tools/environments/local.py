@@ -364,6 +364,10 @@ def _is_hermes_internal_secret(key: str) -> bool:
       ``_ALWAYS_STRIP_KEYS``. Non-secret ``GATEWAY_RELAY_*`` routing hints
       (``GATEWAY_RELAY_URL``, ``GATEWAY_RELAY_PLATFORMS``, …) are NOT matched
       and remain visible.
+    - ``HERMES_TUI_GATEWAY_URL`` / ``HERMES_TUI_SIDECAR_URL`` — dashboard
+      loopback URLs whose query strings carry internal WS capabilities. The
+      TUI transport consumes them before spawning lower-trust children; model
+      commands and generic subprocesses never need to inherit them.
 
     ``code_execution_tool.py`` already catches these via substring matching on
     ``KEY`` / ``SECRET`` / ``TOKEN``; the terminal backend's narrower name-based
@@ -385,6 +389,8 @@ def _is_hermes_internal_secret(key: str) -> bool:
     if upper.startswith("GATEWAY_RELAY_") and (
         upper.endswith("_SECRET") or upper.endswith("_KEY") or upper.endswith("_TOKEN")
     ):
+        return True
+    if upper in {"HERMES_TUI_GATEWAY_URL", "HERMES_TUI_SIDECAR_URL"}:
         return True
     return False
 
@@ -529,6 +535,8 @@ _ALWAYS_STRIP_KEYS: frozenset[str] = frozenset({
     "HASS_TOKEN",
     "EMAIL_PASSWORD",
     "HERMES_DASHBOARD_SESSION_TOKEN",
+    "HERMES_TUI_GATEWAY_URL",
+    "HERMES_TUI_SIDECAR_URL",
     # Remote-compute / infrastructure secrets
     "MODAL_TOKEN_ID",
     "MODAL_TOKEN_SECRET",

@@ -957,6 +957,32 @@ def test_config_set_battery_explicit_off(monkeypatch):
     assert writes == {"display.battery": False}
 
 
+def test_shell_exec_strips_dashboard_internal_ws_capabilities(monkeypatch):
+    captured = {}
+
+    def fake_run(*args, **kwargs):
+        captured["env"] = kwargs.get("env")
+        return types.SimpleNamespace(stdout="", stderr="", returncode=0)
+
+    monkeypatch.setenv(
+        "HERMES_TUI_GATEWAY_URL",
+        "ws://dashboard.test/api/ws?internal=synthetic",
+    )
+    monkeypatch.setenv(
+        "HERMES_TUI_SIDECAR_URL",
+        "ws://dashboard.test/api/pub?internal=synthetic&channel=test",
+    )
+    monkeypatch.setattr(server.subprocess, "run", fake_run)
+
+    response = server._methods["shell.exec"]("shell-env", {"command": "pwd"})
+
+    assert response is not None
+    assert "result" in response
+    assert captured["env"] is not None
+    assert "HERMES_TUI_GATEWAY_URL" not in captured["env"]
+    assert "HERMES_TUI_SIDECAR_URL" not in captured["env"]
+
+
 def test_voice_toggle_returns_configured_record_key(monkeypatch):
     monkeypatch.setattr(
         server,

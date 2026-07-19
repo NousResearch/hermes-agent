@@ -612,11 +612,30 @@ class TestProfileScopedChatPty:
             lambda root, tui_dev=False: (["cat"], None),
             raising=False,
         )
-        argv, cwd, env = web_server._resolve_chat_argv(profile="worker_beta")
+        monkeypatch.setenv("HERMES_DASHBOARD_SESSION_TOKEN", "parent-secret")
+        monkeypatch.setenv(
+            "HERMES_TUI_GATEWAY_URL",
+            "ws://dashboard.test/api/ws?internal=parent-secret",
+        )
+        monkeypatch.setenv(
+            "HERMES_TUI_SIDECAR_URL",
+            "ws://dashboard.test/api/pub?internal=parent-secret&channel=other",
+        )
+        requested_sidecar = (
+            "ws://dashboard.test/api/pub?internal=profile-bound"
+            "&channel=lane-a&profile=worker_beta"
+        )
+        argv, cwd, env = web_server._resolve_chat_argv(
+            profile="worker_beta", sidecar_url=requested_sidecar
+        )
         assert env is not None
         assert env["HERMES_HOME"] == str(isolated_profiles["worker_beta"])
-        # Scoped chat must NOT attach to the dashboard's in-memory gateway.
+        # Scoped chat must NOT attach to the dashboard's in-memory gateway and
+        # may receive only the exact profile/channel sidecar capability minted
+        # for this PTY request.
         assert "HERMES_TUI_GATEWAY_URL" not in env
+        assert env["HERMES_TUI_SIDECAR_URL"] == requested_sidecar
+        assert "HERMES_DASHBOARD_SESSION_TOKEN" not in env
 
     def test_chat_argv_unscoped_keeps_legacy_env(self, isolated_profiles, monkeypatch):
         import hermes_cli.web_server as web_server

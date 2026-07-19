@@ -162,7 +162,7 @@ class TestConcurrency:
 
 
 # ---------------------------------------------------------------------------
-# Process-lifetime internal credential (server-spawned PTY child auth).
+# Audience-bound internal capabilities (server-spawned PTY child auth).
 # Direct unit coverage for internal_ws_credential / consume_internal_credential
 # — _ws_auth_ok exercises these indirectly, but the mint-once, unminted, and
 # empty-value branches are only reachable via direct calls.
@@ -172,60 +172,95 @@ class TestConcurrency:
 class TestInternalCredential:
     def test_minted_once_is_stable(self):
         """Successive calls return the same process-lifetime value."""
-        first = ws_tickets.internal_ws_credential()
-        second = ws_tickets.internal_ws_credential()
+        first = ws_tickets.internal_ws_credential(audience="gateway")
+        second = ws_tickets.internal_ws_credential(audience="gateway")
         assert first == second
         assert len(first) >= 32  # token_urlsafe(32)
 
     def test_round_trip_identity(self):
-        cred = ws_tickets.internal_ws_credential()
-        info = ws_tickets.consume_internal_credential(cred)
+        cred = ws_tickets.internal_ws_credential(audience="gateway")
+        info = ws_tickets.consume_internal_credential(cred, audience="gateway")
         assert info["user_id"] == ws_tickets.INTERNAL_USER_ID
         assert info["provider"] == ws_tickets.INTERNAL_PROVIDER
 
     def test_multi_use(self):
         """Unlike a single-use ticket, the credential survives repeated consume."""
-        cred = ws_tickets.internal_ws_credential()
+        cred = ws_tickets.internal_ws_credential(audience="gateway")
         for _ in range(5):
             assert (
-                ws_tickets.consume_internal_credential(cred)["provider"]
+                ws_tickets.consume_internal_credential(
+                    cred, audience="gateway"
+                )["provider"]
                 == ws_tickets.INTERNAL_PROVIDER
+            )
+
+    def test_credential_is_scoped_to_audience(self):
+        gateway = ws_tickets.internal_ws_credential(audience="gateway")
+        sidecar = ws_tickets.internal_ws_credential(
+            audience="sidecar", binding="worker\0channel-a"
+        )
+
+        assert gateway != sidecar
+        with pytest.raises(TicketInvalid):
+            ws_tickets.consume_internal_credential(sidecar, audience="gateway")
+        with pytest.raises(TicketInvalid):
+            ws_tickets.consume_internal_credential(
+                gateway, audience="sidecar", binding="worker\0channel-a"
+            )
+
+    def test_credential_is_scoped_to_binding(self):
+        cred = ws_tickets.internal_ws_credential(
+            audience="sidecar", binding="worker\0channel-a"
+        )
+
+        assert ws_tickets.consume_internal_credential(
+            cred, audience="sidecar", binding="worker\0channel-a"
+        )["provider"] == ws_tickets.INTERNAL_PROVIDER
+        with pytest.raises(TicketInvalid):
+            ws_tickets.consume_internal_credential(
+                cred, audience="sidecar", binding="worker\0channel-b"
+            )
+        with pytest.raises(TicketInvalid):
+            ws_tickets.consume_internal_credential(
+                cred, audience="sidecar", binding="other\0channel-a"
             )
 
     def test_rejected_before_mint(self):
         """With nothing minted yet, any value is rejected (expected is None)."""
-        # autouse _reset leaves _internal_credential == None at test start.
+        # autouse _reset leaves the derivation key unset at test start.
         with pytest.raises(TicketInvalid):
-            ws_tickets.consume_internal_credential("anything")
+            ws_tickets.consume_internal_credential("anything", audience="gateway")
 
     def test_empty_value_rejected(self):
-        ws_tickets.internal_ws_credential()  # mint so expected is non-None
+        ws_tickets.internal_ws_credential(audience="gateway")
         with pytest.raises(TicketInvalid):
-            ws_tickets.consume_internal_credential("")
+            ws_tickets.consume_internal_credential("", audience="gateway")
 
     def test_wrong_value_rejected(self):
-        ws_tickets.internal_ws_credential()
+        ws_tickets.internal_ws_credential(audience="gateway")
         with pytest.raises(TicketInvalid):
-            ws_tickets.consume_internal_credential("not-the-credential")
+            ws_tickets.consume_internal_credential(
+                "not-the-credential", audience="gateway"
+            )
 
     def test_reset_clears_and_remints(self):
-        first = ws_tickets.internal_ws_credential()
+        first = ws_tickets.internal_ws_credential(audience="gateway")
         _reset_for_tests()
         # The old value no longer validates after reset.
         with pytest.raises(TicketInvalid):
-            ws_tickets.consume_internal_credential(first)
+            ws_tickets.consume_internal_credential(first, audience="gateway")
         # A fresh mint produces a different value.
-        second = ws_tickets.internal_ws_credential()
+        second = ws_tickets.internal_ws_credential(audience="gateway")
         assert second != first
-        assert ws_tickets.consume_internal_credential(second)["user_id"] == (
-            ws_tickets.INTERNAL_USER_ID
-        )
+        assert ws_tickets.consume_internal_credential(
+            second, audience="gateway"
+        )["user_id"] == ws_tickets.INTERNAL_USER_ID
 
     def test_independent_of_ticket_store(self):
         """The internal credential is not a ticket — minting tickets doesn't
         touch it, and consuming the credential doesn't consume tickets."""
-        cred = ws_tickets.internal_ws_credential()
+        cred = ws_tickets.internal_ws_credential(audience="gateway")
         ticket = mint_ticket(user_id="u1", provider="nous")
         # Consuming the internal credential leaves the ticket intact.
-        ws_tickets.consume_internal_credential(cred)
+        ws_tickets.consume_internal_credential(cred, audience="gateway")
         assert consume_ticket(ticket)["user_id"] == "u1"

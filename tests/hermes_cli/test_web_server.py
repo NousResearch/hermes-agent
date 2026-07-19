@@ -9048,7 +9048,9 @@ class TestPtyWebSocket:
         url = captured.get("sidecar_url") or ""
         assert url.startswith("ws://127.0.0.1:9119/api/pub?")
         assert "channel=abc-123" in url
-        assert "token=" in url
+        assert "profile=current" in url
+        assert "internal=" in url
+        assert "token=" not in url
         assert captured["active_session_file"]
 
     def test_pub_broadcasts_to_events_subscribers(self):
@@ -9136,7 +9138,8 @@ def test_resolve_chat_argv_injects_gateway_ws_url(monkeypatch):
     assert env is not None
     gateway_url = env.get("HERMES_TUI_GATEWAY_URL", "")
     assert gateway_url.startswith("ws://127.0.0.1:9119/api/ws?")
-    assert "token=" in gateway_url
+    assert "internal=" in gateway_url
+    assert "token=" not in gateway_url
 
 
 class TestDashboardPluginStaticAssetAllowlist:

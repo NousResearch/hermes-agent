@@ -152,9 +152,25 @@ export class GatewayClient extends EventEmitter {
 
   constructor() {
     super()
+    // Capture capability-bearing URLs before any caller can ask this client to
+    // spawn a subprocess. Keeping them only in private state prevents unrelated
+    // code that runs between construction and start() from inheriting them.
+    this.captureCapabilityUrls()
     // useInput / createGatewayEventHandler can legitimately attach many
     // listeners. Default 10-cap triggers spurious warnings.
     this.setMaxListeners(0)
+  }
+
+  private captureCapabilityUrls(): boolean {
+    const nextAttachUrl = resolveGatewayAttachUrl()
+    const attachChanged = nextAttachUrl !== null && nextAttachUrl !== this.attachUrl
+
+    this.attachUrl = nextAttachUrl ?? this.attachUrl
+    this.sidecarUrl = resolveSidecarUrl() ?? this.sidecarUrl
+    delete process.env.HERMES_TUI_GATEWAY_URL
+    delete process.env.HERMES_TUI_SIDECAR_URL
+
+    return attachChanged
   }
 
   private publish(ev: GatewayEvent) {
@@ -348,6 +364,13 @@ export class GatewayClient extends EventEmitter {
     const env = { ...process.env }
     const pyPath = env.PYTHONPATH?.trim()
 
+    // In spawned mode the Python gateway owns sidecar publishing. Pass the
+    // capability only to that exact child; tui_gateway.entry consumes it
+    // before importing the wider runtime and removes it from os.environ.
+    if (this.sidecarUrl) {
+      env.HERMES_TUI_SIDECAR_URL = this.sidecarUrl
+    }
+
     env.PYTHONPATH = pyPath ? `${root}${delimiter}${pyPath}` : root
     // Tell the gateway child where the Hermes source root is so its import
     // guard can force it ahead of any same-named package in the launch cwd.
@@ -522,11 +545,8 @@ export class GatewayClient extends EventEmitter {
 
   start() {
     const root = process.env.HERMES_PYTHON_SRC_ROOT ?? resolve(import.meta.dirname, '../../')
-    const attachUrl = resolveGatewayAttachUrl()
-    const sidecarUrl = resolveSidecarUrl()
-
-    this.attachUrl = attachUrl
-    this.sidecarUrl = sidecarUrl
+    this.captureCapabilityUrls()
+    const attachUrl = this.attachUrl
     this.resetStartupState()
 
     if (this.proc && !this.proc.killed && this.proc.exitCode === null) {
@@ -722,10 +742,11 @@ export class GatewayClient extends EventEmitter {
   }
 
   request<T = unknown>(method: string, params: Record<string, unknown> = {}): Promise<T> {
-    const attachUrl = resolveGatewayAttachUrl()
+    const attachChanged = this.captureCapabilityUrls()
+    const attachUrl = this.attachUrl
 
     if (attachUrl) {
-      if (this.attachUrl !== attachUrl) {
+      if (attachChanged) {
         // The env var rotated at runtime — restart the transport so
         // switching from spawned-gateway mode to attach mode also
         // tears down the old Python child. Merely closing `this.ws`

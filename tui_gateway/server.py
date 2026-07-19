@@ -16498,8 +16498,11 @@ def _(rid, params: dict) -> dict:
     except ImportError:
         return _err(rid, 5001, "shell.exec unavailable: approval safety module not importable")
     try:
+        from tools.environments.local import hermes_subprocess_env
+
         r = subprocess.run(
             cmd, shell=True, capture_output=True, text=True, timeout=30, cwd=os.getcwd(),
+            env=hermes_subprocess_env(inherit_credentials=True),
             stdin=subprocess.DEVNULL,
         )
         return _ok(

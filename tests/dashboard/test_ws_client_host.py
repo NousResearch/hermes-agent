@@ -225,8 +225,8 @@ class TestGatewayWsUrlHost:
         url = web_server._build_gateway_ws_url()
         assert url is not None
         assert "?" in url
-        # Loopback / ``--insecure`` path uses the session token.
-        assert f"token={web_server._SESSION_TOKEN}" in url
+        assert "internal=" in url
+        assert "token=" not in url
 
     def test_no_bound_host_returns_none(
         self, saved_app_state, clear_ws_host_env

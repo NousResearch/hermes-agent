@@ -14,6 +14,7 @@ pre-existing regression unrelated to dashboard-auth.
 from __future__ import annotations
 
 from types import SimpleNamespace
+from urllib.parse import parse_qs, urlsplit
 
 import pytest
 
@@ -276,30 +277,43 @@ class TestWsAuthOkGated:
 
     def test_internal_credential_accepted(self, gated_app):
         """Server-spawned children present the process-lifetime internal
-        credential via ?internal= and are accepted in gated mode."""
-        cred = internal_ws_credential()
+        gateway capability via ?internal= and are accepted by /api/ws."""
+        cred = internal_ws_credential(audience="gateway")
         ws = _fake_ws(query={"internal": cred})
-        assert web_server._ws_auth_ok(ws) is True
+        assert web_server._ws_auth_ok(ws, internal_audience="gateway") is True
 
     def test_internal_credential_is_multi_use(self, gated_app):
         """Unlike single-use tickets, the internal credential survives
         repeated use so the child can reconnect."""
-        cred = internal_ws_credential()
+        cred = internal_ws_credential(audience="gateway")
         for _ in range(3):
             ws = _fake_ws(query={"internal": cred})
-            assert web_server._ws_auth_ok(ws) is True
+            assert web_server._ws_auth_ok(ws, internal_audience="gateway") is True
+
+    def test_internal_credential_requires_explicit_route_audience(self, gated_app):
+        cred = internal_ws_credential(audience="gateway")
+        ws = _fake_ws(query={"internal": cred}, path="/api/pty")
+
+        assert web_server._ws_auth_ok(ws) is False
 
     def test_wrong_internal_credential_rejected(self, gated_app):
         # Mint the real one so the store is non-empty, then present a bogus value.
-        internal_ws_credential()
+        internal_ws_credential(audience="gateway")
         ws = _fake_ws(query={"internal": "not-the-internal-credential"})
-        assert web_server._ws_auth_ok(ws) is False
+        assert web_server._ws_auth_ok(ws, internal_audience="gateway") is False
 
-    def test_internal_credential_not_accepted_in_loopback(self, loopback_app):
-        """Outside gated mode, ?internal= is meaningless — only ?token= works.
-        A naked internal credential must not authenticate."""
-        cred = internal_ws_credential()
+    def test_internal_gateway_capability_accepted_in_loopback(self, loopback_app):
+        """Server children use the same route-bound capability in every mode."""
+        cred = internal_ws_credential(audience="gateway")
         ws = _fake_ws(query={"internal": cred})
+        assert web_server._ws_auth_ok(ws, internal_audience="gateway") is True
+
+    def test_internal_gateway_capability_still_requires_audience_in_loopback(
+        self, loopback_app
+    ):
+        cred = internal_ws_credential(audience="gateway")
+        ws = _fake_ws(query={"internal": cred})
+
         assert web_server._ws_auth_ok(ws) is False
 
 
@@ -546,26 +560,55 @@ class TestWsHostOriginGuardOrigins:
 
 
 class TestSidecarUrl:
-    def test_loopback_uses_session_token(self, loopback_app):
-        url = web_server._build_sidecar_url("ch-1")
-        assert url is not None
-        assert f"token={web_server._SESSION_TOKEN}" in url
-        assert "ticket=" not in url
-
-    def test_gated_uses_internal_credential(self, gated_app):
+    def test_loopback_uses_bound_internal_capability(self, loopback_app):
         url = web_server._build_sidecar_url("ch-1")
         assert url is not None
         assert "token=" not in url
         assert "ticket=" not in url
+        query = parse_qs(urlsplit(url).query)
+        assert query["profile"] == ["current"]
+        binding = web_server._sidecar_capability_binding("ch-1", "current")
+        assert consume_internal_credential(
+            query["internal"][0], audience="sidecar", binding=binding
+        )["provider"] == "server-internal"
+
+    def test_gated_uses_channel_and_profile_bound_capability(self, gated_app):
+        url = web_server._build_sidecar_url("ch-1", profile="worker")
+        assert url is not None
+        assert "token=" not in url
+        assert "ticket=" not in url
         assert "internal=" in url
-        # The value should be the live process-lifetime internal credential,
-        # multi-use so the child can reconnect /api/pub.
-        cred = url.split("internal=")[1].split("&")[0]
-        info = consume_internal_credential(cred)
+        query = parse_qs(urlsplit(url).query)
+        assert query["channel"] == ["ch-1"]
+        assert query["profile"] == ["worker"]
+        cred = query["internal"][0]
+        binding = web_server._sidecar_capability_binding("ch-1", "worker")
+        info = consume_internal_credential(
+            cred, audience="sidecar", binding=binding
+        )
         assert info["user_id"] == "server-internal"
         assert info["provider"] == "server-internal"
         # Multi-use: a second consume still succeeds (unlike a ticket).
-        assert consume_internal_credential(cred)["provider"] == "server-internal"
+        assert consume_internal_credential(
+            cred, audience="sidecar", binding=binding
+        )["provider"] == "server-internal"
+
+    def test_sidecar_capability_rejects_channel_or_profile_tampering(self, gated_app):
+        url = web_server._build_sidecar_url("ch-1", profile="worker")
+        assert url is not None
+        cred = parse_qs(urlsplit(url).query)["internal"][0]
+
+        for channel, profile in (("ch-2", "worker"), ("ch-1", "other")):
+            ws = _fake_ws(
+                query={"internal": cred, "channel": channel, "profile": profile},
+                path="/api/pub",
+            )
+            binding = web_server._sidecar_capability_binding(channel, profile)
+            assert web_server._ws_auth_ok(
+                ws,
+                internal_audience="sidecar",
+                internal_binding=binding,
+            ) is False
 
     def test_no_bound_host_returns_none(self, gated_app):
         web_server.app.state.bound_host = None
@@ -583,12 +626,15 @@ class TestSidecarUrl:
 
 
 class TestGatewayWsUrl:
-    def test_loopback_uses_session_token(self, loopback_app):
+    def test_loopback_uses_gateway_capability(self, loopback_app):
         url = web_server._build_gateway_ws_url()
         assert url is not None
         assert "/api/ws?" in url
-        assert f"token={web_server._SESSION_TOKEN}" in url
-        assert "internal=" not in url
+        assert "token=" not in url
+        assert "internal=" in url
+        cred = parse_qs(urlsplit(url).query)["internal"][0]
+        ws = _fake_ws(query={"internal": cred}, path="/api/ws")
+        assert web_server._ws_auth_ok(ws, internal_audience="gateway") is True
 
     def test_gated_uses_internal_credential(self, gated_app):
         url = web_server._build_gateway_ws_url()
@@ -597,20 +643,40 @@ class TestGatewayWsUrl:
         assert "token=" not in url
         assert "ticket=" not in url
         assert "internal=" in url
-        cred = url.split("internal=")[1].split("&")[0]
-        # The credential authenticates against _ws_auth_ok in gated mode.
+        cred = parse_qs(urlsplit(url).query)["internal"][0]
+        # The gateway capability authenticates only the /api/ws route.
         ws = _fake_ws(query={"internal": cred})
-        assert web_server._ws_auth_ok(ws) is True
+        assert web_server._ws_auth_ok(ws, internal_audience="gateway") is True
 
-    def test_gated_credential_matches_sidecar(self, gated_app):
-        """Both server-internal builders share one process credential, so a
-        single value authenticates /api/ws and /api/pub alike."""
+    def test_gated_gateway_and_sidecar_capabilities_are_distinct(self, gated_app):
         gw = web_server._build_gateway_ws_url()
-        sc = web_server._build_sidecar_url("ch-1")
+        sc = web_server._build_sidecar_url("ch-1", profile="worker")
         assert gw is not None and sc is not None
-        gw_cred = gw.split("internal=")[1].split("&")[0]
-        sc_cred = sc.split("internal=")[1].split("&")[0]
-        assert gw_cred == sc_cred
+        gw_cred = parse_qs(urlsplit(gw).query)["internal"][0]
+        sc_cred = parse_qs(urlsplit(sc).query)["internal"][0]
+        assert gw_cred != sc_cred
+
+        gateway_ws = _fake_ws(query={"internal": sc_cred}, path="/api/ws")
+        assert web_server._ws_auth_ok(
+            gateway_ws, internal_audience="gateway"
+        ) is False
+
+        sidecar_binding = web_server._sidecar_capability_binding(
+            "ch-1", "worker"
+        )
+        sidecar_ws = _fake_ws(
+            query={
+                "internal": gw_cred,
+                "channel": "ch-1",
+                "profile": "worker",
+            },
+            path="/api/pub",
+        )
+        assert web_server._ws_auth_ok(
+            sidecar_ws,
+            internal_audience="sidecar",
+            internal_binding=sidecar_binding,
+        ) is False
 
     def test_no_bound_host_returns_none(self, gated_app):
         web_server.app.state.bound_host = None

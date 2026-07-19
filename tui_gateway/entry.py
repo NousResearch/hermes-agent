@@ -16,6 +16,12 @@ import signal
 import time
 import traceback
 
+# Consume dashboard capabilities before importing the gateway runtime. Keeping
+# the sidecar URL only in this module prevents shell.exec, terminal tools, and
+# later child processes from inheriting a dashboard bearer through os.environ.
+_SIDECAR_URL = os.environ.pop("HERMES_TUI_SIDECAR_URL", None)
+os.environ.pop("HERMES_TUI_GATEWAY_URL", None)
+
 from tui_gateway._stdin_recovery import handle_spurious_eof
 
 from tui_gateway import server
@@ -48,7 +54,7 @@ def _install_sidecar_publisher() -> None:
     ``/api/pty`` endpoint when a chat tab passes a ``channel`` query param.
     Best-effort: connect failure or runtime drop falls back to stdio-only.
     """
-    url = os.environ.get("HERMES_TUI_SIDECAR_URL")
+    url = _SIDECAR_URL
 
     if not url:
         return

@@ -16820,7 +16820,12 @@ def _ws_auth_mode() -> str:
     return "loopback"
 
 
-def _ws_auth_reason(ws: "WebSocket") -> tuple[Optional[str], str]:
+def _ws_auth_reason(
+    ws: "WebSocket",
+    *,
+    internal_audience: Optional[str] = None,
+    internal_binding: str = "",
+) -> tuple[Optional[str], str]:
     """Validate WS-upgrade auth; return ``(reason, credential)``.
 
     ``reason`` is None when the credential is accepted, else a short
@@ -16830,28 +16835,51 @@ def _ws_auth_reason(ws: "WebSocket") -> tuple[Optional[str], str]:
     ``internal``, ``token``, or ``none``) so the accepted path can log *how*
     a peer authed, not just that it did.
 
-    Loopback / ``--insecure``: legacy ``?token=<_SESSION_TOKEN>`` query
-    parameter, constant-time compared.
+    Browser credentials are mode-specific:
 
-    Gated (public bind, no ``--insecure``): one of two credentials —
+    * Loopback / ``--insecure`` accepts the legacy
+      ``?token=<_SESSION_TOKEN>`` query parameter, constant-time compared.
+    * Gated public binds accept a browser-minted, single-use, 30s-TTL
+      ``?ticket=`` and reject the legacy token path.
 
-    * ``?ticket=<single-use>`` — a browser-minted, single-use, 30s-TTL ticket
-      consumed against the dashboard-auth ticket store. This is what the SPA
-      (and native clients) use.
-    * ``?internal=<process-credential>`` — the process-lifetime internal
-      credential, used only by WS clients the server spawns itself (the
-      embedded-TUI PTY child attaching to ``/api/ws`` and ``/api/pub``). It
-      is multi-use and never expires so the child can reconnect, and is never
-      injected into the SPA — see ``dashboard_auth.ws_tickets`` for the
-      threat model.
-
-    The legacy ``?token=`` path is unconditionally rejected in gated mode
-    (the SPA bundle isn't carrying the token any longer, and a leaked
-    ``_SESSION_TOKEN`` must not grant WS access once the gate is engaged).
+    In every mode, ``?internal=<capability>`` is accepted only when the caller
+    supplies this route's expected audience and optional profile/channel
+    binding. Browser-facing and PTY routes pass no internal audience and
+    therefore reject internal capabilities.
 
     Audit-logs the rejection so operators can debug "WS keeps closing"
     issues from the log.
     """
+    # Internal capabilities authenticate server-spawned loopback clients in
+    # every mode. Validate them before branching to the browser credential
+    # contract; unlike the legacy session token they are never injected into
+    # HTML and are constrained by the accepting route's explicit audience.
+    internal = ws.query_params.get("internal", "")
+    if internal:
+        from hermes_cli.dashboard_auth.audit import AuditEvent, audit_log
+        from hermes_cli.dashboard_auth.ws_tickets import (
+            TicketInvalid,
+            consume_internal_credential,
+        )
+
+        if not internal_audience:
+            return "internal_wrong_audience", "internal"
+        try:
+            consume_internal_credential(
+                internal,
+                audience=internal_audience,
+                binding=internal_binding,
+            )
+            return None, "internal"
+        except TicketInvalid as exc:
+            audit_log(
+                AuditEvent.WS_TICKET_REJECTED,
+                reason=f"internal: {exc}",
+                ip=(ws.client.host if ws.client else ""),
+                path=ws.url.path,
+            )
+            return "internal_invalid", "internal"
+
     auth_required = bool(getattr(app.state, "auth_required", False))
     if auth_required:
         # Lazy import — keeps this function importable in test harnesses
@@ -16859,26 +16887,8 @@ def _ws_auth_reason(ws: "WebSocket") -> tuple[Optional[str], str]:
         from hermes_cli.dashboard_auth.audit import AuditEvent, audit_log
         from hermes_cli.dashboard_auth.ws_tickets import (
             TicketInvalid,
-            consume_internal_credential,
             consume_ticket,
         )
-
-        # Server-spawned children (PTY child → /api/ws, /api/pub) present the
-        # multi-use internal credential rather than a single-use ticket, so
-        # they survive reconnects and slow cold boots.
-        internal = ws.query_params.get("internal", "")
-        if internal:
-            try:
-                consume_internal_credential(internal)
-                return None, "internal"
-            except TicketInvalid as exc:
-                audit_log(
-                    AuditEvent.WS_TICKET_REJECTED,
-                    reason=f"internal: {exc}",
-                    ip=(ws.client.host if ws.client else ""),
-                    path=ws.url.path,
-                )
-                return "internal_invalid", "internal"
 
         ticket = ws.query_params.get("ticket", "")
         if not ticket:
@@ -16904,9 +16914,18 @@ def _ws_auth_reason(ws: "WebSocket") -> tuple[Optional[str], str]:
     return "token_mismatch", "token"
 
 
-def _ws_auth_ok(ws: "WebSocket") -> bool:
+def _ws_auth_ok(
+    ws: "WebSocket",
+    *,
+    internal_audience: Optional[str] = None,
+    internal_binding: str = "",
+) -> bool:
     """True when the WS-upgrade credential is accepted. See _ws_auth_reason."""
-    return _ws_auth_reason(ws)[0] is None
+    return _ws_auth_reason(
+        ws,
+        internal_audience=internal_audience,
+        internal_binding=internal_binding,
+    )[0] is None
 
 # Per-channel subscriber registry used by /api/pub (PTY-side gateway → dashboard)
 # and /api/events (dashboard → browser sidebar).  Keyed by an opaque channel id
@@ -16965,7 +16984,12 @@ def _resolve_chat_argv(
         profile_dir = _resolve_profile_dir(requested)
 
     argv, cwd = _make_tui_argv(PROJECT_ROOT / "ui-tui", tui_dev=False)
-    env = os.environ.copy()
+    from tools.environments.local import hermes_subprocess_env
+
+    # Start from the centralized spawn policy rather than copying the dashboard
+    # process environment. This keeps infrastructure/session credentials out of
+    # the PTY child; the exact TUI capabilities are added below after sanitization.
+    env = hermes_subprocess_env(inherit_credentials=True)
     try:
         from hermes_cli.config import apply_terminal_config_to_env
         apply_terminal_config_to_env(env=env)
@@ -17067,13 +17091,9 @@ def _resolve_client_ws_host() -> Optional[str]:
 def _build_gateway_ws_url() -> Optional[str]:
     """ws:// URL the PTY child should attach to for JSON-RPC gateway traffic.
 
-    Loopback / ``--insecure``: ``?token=<_SESSION_TOKEN>``.
-
-    Gated mode: the legacy token path is rejected by ``_ws_auth_ok``, so the
-    server-spawned PTY child authenticates with the process-lifetime internal
-    credential (``?internal=``). It must NOT use a single-use browser ticket:
-    the child reads this URL once at startup and reuses it on every reconnect,
-    and a 30s-TTL ticket can expire before a slow cold boot even dials.
+    All modes use a gateway-audience internal capability. Browser credentials
+    retain their existing mode-specific behavior; the server child never needs
+    the broad legacy dashboard token and can reuse this URL on reconnect.
     """
     host = _resolve_client_ws_host()
     port = getattr(app.state, "bound_port", None)
@@ -17087,12 +17107,11 @@ def _build_gateway_ws_url() -> Optional[str]:
         else f"{host}:{port}"
     )
 
-    if getattr(app.state, "auth_required", False):
-        from hermes_cli.dashboard_auth.ws_tickets import internal_ws_credential
+    from hermes_cli.dashboard_auth.ws_tickets import internal_ws_credential
 
-        qs = urllib.parse.urlencode({"internal": internal_ws_credential()})
-    else:
-        qs = urllib.parse.urlencode({"token": _SESSION_TOKEN})
+    qs = urllib.parse.urlencode(
+        {"internal": internal_ws_credential(audience="gateway")}
+    )
 
     return f"ws://{netloc}/api/ws?{qs}"
 
@@ -17128,19 +17147,19 @@ async def _resolve_chat_argv_async(
         )
 
 
-def _build_sidecar_url(channel: str) -> Optional[str]:
+def _sidecar_capability_binding(channel: str, profile: Optional[str]) -> str:
+    """Return an unambiguous binding for one profile-scoped event publisher."""
+    return f"{(profile or 'current').strip() or 'current'}\0{channel}"
+
+
+def _build_sidecar_url(
+    channel: str, *, profile: Optional[str] = None
+) -> Optional[str]:
     """ws:// URL the PTY child should publish events to, or None when unbound.
 
-    Loopback / ``--insecure``: uses ``?token=<_SESSION_TOKEN>``.
-
-    Gated mode: authenticates with the process-lifetime internal credential
-    (``?internal=``), the same one ``_build_gateway_ws_url`` uses. The PTY
-    child is a server-spawned process we trust; the credential is multi-use
-    and never expires, so the child can reconnect ``/api/pub`` without a new
-    URL. (This previously minted a single-use 30s ticket, which meant the
-    child could not reconnect and could miss the window on a slow cold boot.)
-    Connections authenticated this way are recorded under the
-    ``server-internal`` identity in the audit log.
+    Authenticates with a multi-use capability bound to the sidecar
+    audience plus the requested profile and channel. It cannot authenticate
+    the broader ``/api/ws`` gateway or another profile/channel publisher.
     """
     host = _resolve_client_ws_host()
     port = getattr(app.state, "bound_port", None)
@@ -17150,16 +17169,19 @@ def _build_sidecar_url(channel: str) -> Optional[str]:
 
     netloc = f"[{host}]:{port}" if ":" in host and not host.startswith("[") else f"{host}:{port}"
 
-    if getattr(app.state, "auth_required", False):
-        # Gated mode — use the internal credential so the WS upgrade survives
-        # _ws_auth_ok and the child can reconnect.
-        from hermes_cli.dashboard_auth.ws_tickets import internal_ws_credential
+    from hermes_cli.dashboard_auth.ws_tickets import internal_ws_credential
 
-        qs = urllib.parse.urlencode(
-            {"internal": internal_ws_credential(), "channel": channel}
-        )
-    else:
-        qs = urllib.parse.urlencode({"token": _SESSION_TOKEN, "channel": channel})
+    normalized_profile = (profile or "current").strip() or "current"
+    binding = _sidecar_capability_binding(channel, normalized_profile)
+    qs = urllib.parse.urlencode(
+        {
+            "internal": internal_ws_credential(
+                audience="sidecar", binding=binding
+            ),
+            "channel": channel,
+            "profile": normalized_profile,
+        }
+    )
 
     return f"ws://{netloc}/api/pub?{qs}"
 
@@ -17852,7 +17874,9 @@ async def pty_ws(ws: WebSocket) -> None:
     resume = raw_resume
     profile = ws.query_params.get("profile") or None
     channel = _channel_or_close_code(ws)
-    sidecar_url = _build_sidecar_url(channel) if channel else None
+    sidecar_url = (
+        _build_sidecar_url(channel, profile=profile) if channel else None
+    )
     force_fresh = (ws.query_params.get("fresh") or "").strip().lower() in {
         "1",
         "true",
@@ -17988,7 +18012,7 @@ async def gateway_ws(ws: WebSocket) -> None:
         await ws.close(code=4403)
         return
 
-    if not _ws_auth_ok(ws):
+    if not _ws_auth_ok(ws, internal_audience="gateway"):
         await ws.close(code=4401)
         return
 
@@ -18019,17 +18043,23 @@ async def pub_ws(ws: WebSocket) -> None:
         await ws.close(code=4403)
         return
 
-    if not _ws_auth_ok(ws):
+    channel = _channel_or_close_code(ws)
+    if not channel:
+        await ws.close(code=4400)
+        return
+    profile = (ws.query_params.get("profile") or "current").strip() or "current"
+    sidecar_binding = _sidecar_capability_binding(channel, profile)
+
+    if not _ws_auth_ok(
+        ws,
+        internal_audience="sidecar",
+        internal_binding=sidecar_binding,
+    ):
         await ws.close(code=4401)
         return
 
     if not _ws_request_is_allowed(ws):
         await ws.close(code=4403)
-        return
-
-    channel = _channel_or_close_code(ws)
-    if not channel:
-        await ws.close(code=4400)
         return
 
     await ws.accept()

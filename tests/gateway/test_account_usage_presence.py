@@ -93,6 +93,16 @@ class _Adapter:
         return self.restore_result
 
 
+class _ApplyResultAdapter(_Adapter):
+    def __init__(self, *args, apply_results, **kwargs):
+        super().__init__(*args, **kwargs)
+        self._apply_results = iter(apply_results)
+
+    async def apply_account_usage_presence(self, payload, baseline):
+        self.applied.append((payload, baseline))
+        return next(self._apply_results)
+
+
 def _config(**overrides) -> AccountUsagePresenceConfig:
     data = {
         "enabled": True,
@@ -390,6 +400,59 @@ async def test_baseline_is_persisted_before_mutation_and_restored_on_stop(tmp_pa
         ({"display_name": "Hermes"}, {"display_name": "owned-75"})
     ]
     assert not state_path.exists() or json.loads(state_path.read_text())["entries"] == {}
+
+
+@pytest.mark.asyncio
+async def test_later_false_apply_keeps_prior_owned_journal_for_stop(tmp_path):
+    state_path = tmp_path / "journal.json"
+    telegram = _ApplyResultAdapter(
+        "telegram",
+        capabilities=AccountUsagePresenceCapabilities(display_name=True),
+        baseline={"display_name": "Hermes"},
+        apply_results=(True, False),
+    )
+    snapshots = iter((_snapshot(used_percent=25), _snapshot(used_percent=26)))
+    controller = AccountUsagePresenceController(
+        _config(platforms=["telegram"]),
+        lambda: {"telegram": telegram},
+        fetcher=lambda provider: next(snapshots),
+        state_path=state_path,
+    )
+
+    await controller.refresh_once()
+    await controller.refresh_once()
+
+    entry = json.loads(state_path.read_text(encoding="utf-8"))["entries"]["telegram"]
+    assert entry["phase"] == "owned"
+    assert entry["baseline"] == {"display_name": "Hermes"}
+    assert entry["owned"] == {"display_name": "owned-75"}
+
+    await controller.stop()
+
+    assert telegram.restored == [
+        ({"display_name": "Hermes"}, {"display_name": "owned-75"})
+    ]
+
+
+@pytest.mark.asyncio
+async def test_initial_false_apply_discards_never_owned_pending_journal(tmp_path):
+    state_path = tmp_path / "journal.json"
+    telegram = _ApplyResultAdapter(
+        "telegram",
+        capabilities=AccountUsagePresenceCapabilities(display_name=True),
+        baseline={"display_name": "Hermes"},
+        apply_results=(False,),
+    )
+    controller = AccountUsagePresenceController(
+        _config(platforms=["telegram"]),
+        lambda: {"telegram": telegram},
+        fetcher=lambda provider: _snapshot(),
+        state_path=state_path,
+    )
+
+    await controller.refresh_once()
+
+    assert json.loads(state_path.read_text(encoding="utf-8"))["entries"] == {}
 
 
 @pytest.mark.asyncio

@@ -553,6 +553,9 @@ class AccountUsagePresenceController:
                 continue
 
             entry = self._journal.get(state_key)
+            prior_owned_entry = (
+                entry if entry is not None and entry.phase == "owned" else None
+            )
             baseline = entry.baseline if entry is not None else None
             if entry is None:
                 capture = getattr(adapter, "capture_account_usage_presence_baseline", None)
@@ -641,7 +644,10 @@ class AccountUsagePresenceController:
             if not changed:
                 if pending_entry is not None:
                     candidate = dict(self._journal)
-                    candidate.pop(state_key, None)
+                    if prior_owned_entry is None:
+                        candidate.pop(state_key, None)
+                    else:
+                        candidate[state_key] = prior_owned_entry
                     if self._persist_journal(candidate):
                         self._journal = candidate
                 continue

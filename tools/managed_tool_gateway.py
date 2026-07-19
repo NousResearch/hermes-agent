@@ -37,7 +37,11 @@ def _read_nous_provider_state() -> Optional[dict]:
         path = auth_json_path()
         if not path.is_file():
             return None
-        data = json.loads(path.read_text())
+        # auth.json is written as UTF-8; read it the same way so a non-ASCII
+        # byte (e.g. an accented provider label) doesn't raise
+        # UnicodeDecodeError on Windows (cp1252), which this except would
+        # silently swallow — making the Nous provider look absent.
+        data = json.loads(path.read_text(encoding="utf-8-sig"))
         providers = data.get("providers", {})
         if not isinstance(providers, dict):
             return None

@@ -19,9 +19,20 @@ npm run perf                  # attaches, runs the CI suite, gates on baseline
 # One scenario, with a CPU profile:
 npm run perf -- stream --cpuprofile --tokens 800
 
+# Representative PRODUCTION numbers (minified React, not the ~3x-slower dev build):
+npm run perf -- cold-start stream keystroke transcript --spawn --prod
+
 # Re-capture the baseline on your reference device, then commit baseline.json:
-npm run perf -- --update-baseline
+npm run perf -- cold-start stream keystroke transcript --spawn --prod --update-baseline
 ```
+
+## Dev vs prod
+
+By default the harness measures the **dev** renderer (fast to spin up, good for
+relative regression checks). Pass `--prod` (with `--spawn`) to build a
+production renderer *with the probe included* (`VITE_PERF_PROBE=1`) and measure
+minified React — the representative shipped numbers. The committed baseline is
+captured with `--prod`.
 
 ## Why isolation matters
 
@@ -40,13 +51,16 @@ directly via `window.__PERF_DRIVE__`, so no LLM credits are spent.
 | `stream --real` | backend | same, from a real LLM stream | measure-real-stream, profile-real-stream |
 | `keystroke` | ci | composer keystroke → paint latency | measure-latency, profile-typing, leak-typing |
 | `transcript` | ci | large-transcript mount + paint cost | (new) |
+| `cold-start` | cold | launch → CDP → driver → first paint (fresh spawn/run) | (new) |
+| `first-token` | backend | Enter → first assistant token painted (TTFT) | (new) |
 | `submit` | backend | Enter → cleared → user msg painted, scroll jump | measure-submit, measure-jump |
 | `session-switch` | backend | route → first-paint → settle | profile-session-switch |
 | `profile-switch` | backend | rail click → sidebar settled | measure-profile-switch |
 
-`ci` scenarios need no backend/credits and are gated against `baseline.json`.
-`backend` scenarios need a live backend (and `--spawn` or a real session) and
-are report-only.
+`ci` + `cold` scenarios need no backend/credits and are gated against
+`baseline.json` (`cold-start` requires `--spawn` since it measures a fresh
+launch, and must be run in its own invocation). `backend` scenarios need a live
+backend (and `--spawn` or a real session/credits) and are report-only.
 
 CPU profiling is a cross-cutting `--cpuprofile` flag on any scenario (it wraps
 the run in `Profiler.start/stop` and prints a top-self-time table), replacing

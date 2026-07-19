@@ -105,15 +105,30 @@ async function waitForConnected(cdp, timeoutMs) {
   return false
 }
 
-function runNode(scriptRelPath, args = []) {
+function runProcess(command, args, { env } = {}) {
   return new Promise((resolveRun, reject) => {
-    const child = spawn(process.execPath, [join(DESKTOP_DIR, scriptRelPath), ...args], {
+    const child = spawn(command, args, {
       cwd: DESKTOP_DIR,
-      stdio: 'inherit'
+      stdio: 'inherit',
+      env: env ? { ...process.env, ...env } : process.env
     })
     child.on('error', reject)
-    child.on('exit', code => (code === 0 ? resolveRun() : reject(new Error(`${scriptRelPath} exited ${code}`))))
+    child.on('exit', code => (code === 0 ? resolveRun() : reject(new Error(`${command} ${args[0]} exited ${code}`))))
   })
+}
+
+function runNode(scriptRelPath, args = []) {
+  return runProcess(process.execPath, [join(DESKTOP_DIR, scriptRelPath), ...args])
+}
+
+// Build a production renderer WITH the perf probe included (VITE_PERF_PROBE=1),
+// plus the prod electron-main bundle, so the harness can measure a real,
+// minified React build instead of the ~3x-slower dev build. Slow (a full vite
+// build); do it once, then run/attach many times.
+export async function buildProdRenderer() {
+  const viteBin = resolveViteBin()
+  await runProcess(process.execPath, [viteBin, 'build'], { env: { VITE_PERF_PROBE: '1' } })
+  await runNode('scripts/bundle-electron-main.mjs')
 }
 
 /** Attach to a renderer already listening on `port` (launched via perf:serve or with --remote-debugging-port). */
@@ -129,9 +144,29 @@ export async function attach({ port = 9222, match } = {}) {
  * and return `{ cdp, teardown, devUrl, port }`. `teardown` kills both children
  * and removes any temp dirs it created.
  */
+// Chromium switches that stop frame-production throttling for a window that
+// isn't foregrounded (the perf window usually sits behind the IDE/terminal).
+const ANTI_THROTTLE_FLAGS = [
+  '--disable-background-timer-throttling',
+  '--disable-renderer-backgrounding',
+  '--disable-backgrounding-occluded-windows',
+  '--disable-features=CalculateNativeWinOcclusion'
+]
+
+/**
+ * Spawn an isolated instance and connect the perf driver. Two render modes:
+ *   · dev (default): vite dev server + dev electron-main bundle.
+ *   · prod (`prod: true`): a production build (call buildProdRenderer first);
+ *     electron loads dist/index.html — representative, minified React.
+ * `coldStart: true` skips the gateway-connect wait and settle (for launch-time
+ * measurement) and returns `timings` (spawn→CDP, spawn→driver) plus renderer
+ * boot marks (FCP, time-to-composer).
+ */
 export async function startIsolatedInstance({
   port = 9222,
   devPort = 5174,
+  prod = false,
+  coldStart = false,
   hermesHome,
   userDataDir,
   seedConfig = true,
@@ -151,9 +186,8 @@ export async function startIsolatedInstance({
 
   const home = hermesHome ?? mkTemp('hermes-perf-home-')
   const userData = userDataDir ?? mkTemp('hermes-perf-ud-')
-  const devUrl = `http://127.0.0.1:${devPort}`
+  const devUrl = prod ? null : `http://127.0.0.1:${devPort}`
 
-  // Only seed a temp home we created — never scribble into a user-provided one.
   if (seedConfig && !hermesHome) {
     seedConfigFrom(join(homedir(), '.hermes'), home)
   }
@@ -177,61 +211,56 @@ export async function startIsolatedInstance({
   }
 
   try {
-    // 1. Renderer: reuse an already-running dev server, else start one.
-    if (!(await reachable(devUrl))) {
-      const viteBin = resolveViteBin()
-      const vite = spawn(process.execPath, [viteBin, '--host', '127.0.0.1', '--port', String(devPort)], {
-        cwd: DESKTOP_DIR,
-        stdio: ['ignore', 'inherit', 'inherit']
-      })
-      children.push(vite)
-      await waitFor(() => reachable(devUrl), { timeoutMs: 60000, label: `vite dev server on :${devPort}` })
+    if (prod) {
+      // Renderer + main are expected pre-built (buildProdRenderer). Cheap to
+      // re-bundle main so an isolated run always matches current source.
+      await runNode('scripts/bundle-electron-main.mjs')
+    } else {
+      if (!(await reachable(devUrl))) {
+        const viteBin = resolveViteBin()
+        const vite = spawn(process.execPath, [viteBin, '--host', '127.0.0.1', '--port', String(devPort)], {
+          cwd: DESKTOP_DIR,
+          stdio: ['ignore', 'inherit', 'inherit']
+        })
+        children.push(vite)
+        await waitFor(() => reachable(devUrl), { timeoutMs: 60000, label: `vite dev server on :${devPort}` })
+      }
+
+      await runNode('scripts/bundle-electron-main.mjs', ['--dev'])
     }
 
-    // 2. Electron main bundle (dev variant) — same step the dev script runs.
-    await runNode('scripts/bundle-electron-main.mjs', ['--dev'])
-
-    // 3. Isolated Electron. --user-data-dir gives it its own single-instance
-    //    lock scope; HERMES_HOME gives it its own backend + sessions.
+    // Isolated Electron: own --user-data-dir (single-instance lock scope) + own
+    // HERMES_HOME (backend + sessions). No DEV_SERVER env in prod → dist load.
     const electronBin = require('electron')
+    const env = {
+      ...process.env,
+      HERMES_HOME: home,
+      HERMES_DESKTOP_BOOT_FAKE: '1',
+      HERMES_DESKTOP_BOOT_FAKE_STEP_MS: String(bootFakeStepMs),
+      XCURSOR_SIZE: '24'
+    }
+
+    if (devUrl) {
+      env.HERMES_DESKTOP_DEV_SERVER = devUrl
+    }
+
+    const spawnAt = Date.now()
     const electron = spawn(
       electronBin,
-      [
-        '.',
-        `--user-data-dir=${userData}`,
-        `--remote-debugging-port=${port}`,
-        // The perf window usually opens behind the user's other windows, and
-        // Chromium throttles frame production for backgrounded/occluded windows
-        // (~17fps), which shows up as choppy frames with ZERO longtasks and
-        // wrecks the stream frame-pacing metric. Disable every throttle path so
-        // measurements reflect real render cost regardless of window state
-        // (CalculateNativeWinOcclusion is the macOS/Windows occlusion detector).
-        '--disable-background-timer-throttling',
-        '--disable-renderer-backgrounding',
-        '--disable-backgrounding-occluded-windows',
-        '--disable-features=CalculateNativeWinOcclusion'
-      ],
-      {
-        cwd: DESKTOP_DIR,
-        stdio: ['ignore', 'inherit', 'inherit'],
-        env: {
-          ...process.env,
-          HERMES_HOME: home,
-          HERMES_DESKTOP_DEV_SERVER: devUrl,
-          HERMES_DESKTOP_BOOT_FAKE: '1',
-          HERMES_DESKTOP_BOOT_FAKE_STEP_MS: String(bootFakeStepMs),
-          XCURSOR_SIZE: '24'
-        }
-      }
+      ['.', `--user-data-dir=${userData}`, `--remote-debugging-port=${port}`, ...ANTI_THROTTLE_FLAGS],
+      { cwd: DESKTOP_DIR, stdio: ['ignore', 'inherit', 'inherit'], env }
     )
     children.push(electron)
 
-    // 4. Wait for the renderer + the perf driver to be live.
+    // Wait for the renderer + perf driver. In prod the target URL is file://,
+    // so don't match on the dev port.
     let cdp = null
+    let cdpAt = 0
     await waitFor(
       async () => {
         try {
-          cdp = await CDP.connect({ port, match: String(devPort), timeoutMs: 2000 })
+          cdp = await CDP.connect({ port, match: devUrl ? String(devPort) : undefined, timeoutMs: 2000 })
+          cdpAt = cdpAt || Date.now()
 
           return await cdp.eval('!!(window.__PERF_DRIVE__ && window.__PERF_DRIVE__.stream)')
         } catch {
@@ -245,41 +274,46 @@ export async function startIsolatedInstance({
       },
       { timeoutMs: 120000, label: 'isolated renderer + __PERF_DRIVE__' }
     )
+    const driverAt = Date.now()
 
-    // Electron throttles rAF/timers for a window that isn't foregrounded
-    // (per-window backgroundThrottling, which the Chromium CLI flags above don't
-    // override). Focus emulation makes the renderer behave as if focused so
-    // frame-pacing measurements are real even though the perf window sits behind
-    // the user's other windows — WITHOUT actually stealing OS focus.
     try {
-      // Behave as if focused so frame-pacing isn't throttled while the perf
-      // window sits behind the user's IDE/terminal — WITHOUT stealing OS focus.
       await cdp.send('Emulation.setFocusEmulationEnabled', { enabled: true })
     } catch {
-      // Older CDP / not supported — fall back to the anti-throttle flags above.
+      // Older CDP / not supported — fall back to the anti-throttle flags.
     }
 
-    // Wait for the gateway socket to actually open. A booting/absent backend
-    // retries on a 1–15s backoff, and that churn contaminates frame-pacing
-    // (the `stream` scenario). Best-effort: proceed after the timeout so the
-    // backend-independent scenarios (keystroke, transcript) still run.
-    const connected = await waitForConnected(cdp, connectTimeoutMs)
-
-    if (!connected) {
-      console.warn(
-        `[perf] gateway did not connect within ${connectTimeoutMs}ms — ` +
-          'stream/frame numbers may be inflated by reconnect churn.'
-      )
+    // Renderer-side boot marks (relative to its own navigation start).
+    const bootMarks = await readBootMarks(cdp)
+    const timings = {
+      spawn_to_cdp_ms: cdpAt ? cdpAt - spawnAt : null,
+      spawn_to_driver_ms: driverAt - spawnAt,
+      ...bootMarks
     }
 
-    // Let residual cold-start work (vite dep pre-bundling, initial paint) drain.
-    await sleep(settleMs)
+    let connected = true
+
+    if (!coldStart) {
+      // Steady-state scenarios: wait for the gateway to connect (reconnect churn
+      // contaminates frame pacing) and let residual cold-start work drain.
+      connected = await waitForConnected(cdp, connectTimeoutMs)
+
+      if (!connected) {
+        console.warn(
+          `[perf] gateway did not connect within ${connectTimeoutMs}ms — ` +
+            'stream/frame numbers may be inflated by reconnect churn.'
+        )
+      }
+
+      await sleep(settleMs)
+    }
 
     return {
       connected,
       cdp,
       devUrl,
       port,
+      prod,
+      timings,
       teardown: () => {
         cdp?.close()
         teardown()
@@ -288,6 +322,27 @@ export async function startIsolatedInstance({
   } catch (err) {
     teardown()
     throw err
+  }
+}
+
+// Read First Contentful Paint + time-to-composer from the renderer, relative to
+// its navigation start (the process-spawn deltas live in `timings`).
+async function readBootMarks(cdp) {
+  try {
+    return await cdp.eval(`(() => {
+      const paints = performance.getEntriesByType('paint')
+      const fcp = paints.find(p => p.name === 'first-contentful-paint')
+      const composer = document.querySelector('[data-slot="composer-rich-input"]')
+      return {
+        fcp_ms: fcp ? Math.round(fcp.startTime) : null,
+        // performance.now() at read time ≈ time since nav start; only meaningful
+        // right after boot (cold-start reads it immediately).
+        nav_to_read_ms: Math.round(performance.now()),
+        composer_present: !!composer
+      }
+    })()`)
+  } catch {
+    return { fcp_ms: null, nav_to_read_ms: null, composer_present: false }
   }
 }
 

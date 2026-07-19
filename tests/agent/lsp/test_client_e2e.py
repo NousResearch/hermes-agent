@@ -10,6 +10,7 @@ from __future__ import annotations
 import asyncio
 import os
 import sys
+import warnings
 from pathlib import Path
 
 import pytest
@@ -141,3 +142,51 @@ async def test_client_diagnostics_are_deduped(tmp_path: Path):
         assert len(diags) == 1
     finally:
         await client.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_lsp_time_monotonic_migration_no_deprecation_warning(tmp_path: Path):
+    """#49762 behavioral coverage for the asyncio.get_event_loop().time() ->
+    time.monotonic() migration in agent/lsp/client.py.
+
+    The migration's purpose is to stop emitting the Python 3.10+
+    ``DeprecationWarning`` from ``asyncio.get_event_loop()`` when there is
+    no running event loop. ``_handle_publish_diagnostics`` (a synchronous
+    notification handler dispatched from the active async reader loop) and
+    the async waiters (``wait_for_diagnostics`` / ``_wait_for_fresh_push``)
+    all read the monotonic clock via ``time.monotonic()``.
+
+    This test drives a real client against the mock server and asserts that
+    exercising the publish path produces no ``DeprecationWarning`` attributed
+    to ``asyncio.get_event_loop`` / ``loop.time()``. It is behavioral, not a
+    source-spelling check: it fails if a future refactor reintroduces
+    ``get_event_loop().time()`` on any of the migrated sites.
+    """
+    f = tmp_path / "x.py"
+    f.write_text("print('hi')\n")
+
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter("always")
+        client = _client(tmp_path, "errors")
+        await client.start()
+        try:
+            version = await client.open_file(str(f), language_id="python")
+            # Deadline / debounce math runs on time.monotonic(); if the old
+            # get_event_loop().time() were still in place, the synchronous
+            # publish handler would raise a DeprecationWarning here.
+            await client.wait_for_diagnostics(str(f), version, mode="document")
+            diags = client.diagnostics_for(str(f))
+            assert len(diags) == 1
+        finally:
+            await client.shutdown()
+
+    loop_time_warnings = [
+        w
+        for w in caught
+        if issubclass(w.category, DeprecationWarning)
+        and "get_event_loop" in str(w.message)
+    ]
+    assert not loop_time_warnings, (
+        f"migration regressed: get_event_loop() deprecation still emitted: "
+        f"{[str(w.message) for w in loop_time_warnings]}"
+    )

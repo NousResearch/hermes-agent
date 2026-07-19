@@ -860,22 +860,28 @@ class HermesACPAgent(acp.Agent):
             )
             return
 
-        # Remember for re-application after agent rebuilds (e.g. model switch).
+        # Remember names for toolset preservation across agent rebuilds (model switch).
+        # Live MCP connections stay process-global; we do NOT re-register on rebuild.
         state.mcp_servers = list(mcp_servers)
 
-    def _reapply_session_mcp_servers(self, state: SessionState) -> None:
-        """Re-bind session-scoped ACP MCP servers onto a freshly rebuilt agent."""
-        mcp_servers = getattr(state, "mcp_servers", None) or []
-        if not mcp_servers:
-            return
-        try:
-            self._apply_session_mcp_servers(state, mcp_servers)
-        except Exception:
-            logger.warning(
-                "Session %s: failed to re-apply ACP MCP servers after agent rebuild",
-                state.session_id,
-                exc_info=True,
-            )
+    def _model_switch_agent_kwargs(self, state: SessionState) -> dict[str, Any]:
+        """Carry forward runtime toolset state when rebuilding the agent for a model switch.
+
+        ACP client MCP servers are already registered globally at session start.
+        Reconnecting them on every switch can block for discovery (up to ~120s);
+        preserve the expanded toolsets instead.
+        """
+        enabled = getattr(state.agent, "enabled_toolsets", None)
+        disabled = getattr(state.agent, "disabled_toolsets", None)
+        mcp_names = [
+            getattr(server, "name", None)
+            for server in (getattr(state, "mcp_servers", None) or [])
+        ]
+        return {
+            "enabled_toolsets": list(enabled) if enabled is not None else None,
+            "disabled_toolsets": list(disabled) if disabled is not None else None,
+            "mcp_server_names": [name for name in mcp_names if name],
+        }
 
     # ---- ACP lifecycle ------------------------------------------------------
 
@@ -1811,8 +1817,8 @@ class HermesACPAgent(acp.Agent):
             cwd=state.cwd,
             model=new_model,
             requested_provider=target_provider,
+            **self._model_switch_agent_kwargs(state),
         )
-        self._reapply_session_mcp_servers(state)
         self.session_manager.save_session(state.session_id)
         provider_label = getattr(state.agent, "provider", None) or target_provider or current_provider
         logger.info("Session %s: model switched to %s", state.session_id, new_model)
@@ -2059,8 +2065,8 @@ class HermesACPAgent(acp.Agent):
                 requested_provider=requested_provider,
                 base_url=current_base_url,
                 api_mode=current_api_mode,
+                **self._model_switch_agent_kwargs(state),
             )
-            self._reapply_session_mcp_servers(state)
             self.session_manager.save_session(session_id)
             logger.info(
                 "Session %s: model switched to %s via provider %s",

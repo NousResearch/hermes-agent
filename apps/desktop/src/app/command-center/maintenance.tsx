@@ -63,6 +63,13 @@ function formatBytes(size: number, locale: string): string {
 }
 
 function formatDateTime(value: string, locale: string): string {
+  // Latin-script locales keep upstream's raw pass-through: `last_run_at` is an
+  // `isoformat()` string straight from agent/curator.py, and upstream rendered
+  // it verbatim. Only Arabic gets a localized, digit-shaped rendering.
+  if (locale !== 'ar') {
+    return value
+  }
+
   const date = new Date(value)
 
   return Number.isNaN(date.valueOf()) ? value : dateTimeFor(locale).format(date)

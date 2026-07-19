@@ -52,7 +52,7 @@ describe('NodeContextMenu Arabic copy', () => {
     fireEvent.click(screen.getByRole('button', { name: 'حذف الذاكرة' }))
 
     expect(screen.getByRole('dialog', { name: 'حذف ذاكرة الاختبار؟' })).toBeTruthy()
-    expect(screen.getByText('ستُحذف هذه الذاكرة نهائيا.')).toBeTruthy()
+    expect(screen.getByText('ستُحذف هذه الذاكرة نهائيًا.')).toBeTruthy()
     expect(screen.getByRole('button', { name: 'إلغاء' })).toBeTruthy()
     expect(screen.getByRole('button', { name: 'حذف' })).toBeTruthy()
   })

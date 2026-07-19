@@ -880,8 +880,7 @@ export const en: Translations = {
     },
     computerUse: {
       linuxNote: 'Drives your desktop via the X11/XWayland accessibility stack — no permission prompt.',
-      windowsNote:
-        'First run may trigger a Windows SmartScreen prompt for the cua-driver UIAccess worker — allow it.',
+      windowsNote: 'First run may trigger a Windows SmartScreen prompt for the cua-driver UIAccess worker — allow it.',
       granted: 'Granted',
       notGranted: 'Not granted',
       unknown: 'Unknown',
@@ -1025,7 +1024,9 @@ export const en: Translations = {
     configured: 'Configured',
     needsKeys: 'Needs keys',
     toolsetsEnabled: (enabled, total) => `${enabled}/${total} toolsets enabled`,
-    toolCount: count => `${count} ${count === 1 ? 'tool' : 'tools'}`,
+    // Upstream rendered this unbranched — `1 tools` included. Locales with real
+    // number agreement (see ar) override it; English must not gain a plural rule.
+    toolCount: count => `${count} tools`,
     toolsetNames: {},
     toolsetDescriptions: {},
     configureToolset: label => `Configure ${label}`,
@@ -1118,7 +1119,7 @@ export const en: Translations = {
       previewFailed: 'Skill preview failed',
       scanFailed: 'Security scan failed',
       searchFailed: 'Hub search failed'
-    },
+    }
     // English must stay byte-identical to `prettyName(category)` from
     // `lib/text.ts` — that is what upstream rendered for every category.
     // Other locales translate freely.
@@ -1129,7 +1130,7 @@ export const en: Translations = {
     subtitle: (nodes, clusters) => `${nodes} skills across ${clusters} categories`,
     close: 'Close memory graph',
     refresh: 'Refresh',
-    memory: 'memory',
+    memory: 'Memory',
     filterAll: 'All',
     filterUsed: 'Used',
     filterLearned: 'Learned',
@@ -1153,6 +1154,8 @@ export const en: Translations = {
     resetToMine: 'Back to my map',
     skill: 'Skill',
     // Tooltip meta badges — bare lowercase tags in English, never Title Case.
+    // `memoryBadge` is the badge twin of the Title-Case `memory` label above.
+    memoryBadge: 'memory',
     profileMemory: 'profile memory',
     learned: 'learned',
     pinned: 'pinned',
@@ -2450,7 +2453,10 @@ export const en: Translations = {
       yoloOn: 'YOLO on — auto-approving dangerous commands. Click to turn off. Shift+click toggles it globally.',
       yoloOff: 'YOLO off — click to auto-approve dangerous commands. Shift+click toggles it globally.',
       modelNone: 'none',
-      noModel: 'No model',
+      noModel: 'no model',
+      // Title-case sibling: stands in for the *model name* itself in menus and
+      // the status bar, which is where lib/model-status-label.ts hardcoded it.
+      noModelName: 'No model',
       switchModel: 'Switch model',
       openModelPicker: 'Open model picker',
       modelPinned: 'pinned by you; new chats use this instead of the Settings default',
@@ -2834,7 +2840,10 @@ export const en: Translations = {
     newChatsProfile: name => `New chats will use profile ${name}.`,
     setProfileFailed: 'Failed to set profile',
     sttDisabled: 'Speech-to-text is disabled in settings.',
-    stopFailed: 'Could not stop the process',
+    stopFailed: 'Stop failed',
+    // Distinct from `stopFailed`: this one fronts a background-process kill,
+    // which upstream hardcoded separately in store/composer-status.ts.
+    stopProcessFailed: 'Could not stop the process',
     regenerateFailed: 'Regenerate failed',
     editFailed: 'Edit failed',
     resumeFailed: 'Resume failed',

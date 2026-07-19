@@ -222,7 +222,7 @@ export const ar: Translations = {
   keybinds: {
     title: 'اختصارات لوحة المفاتيح',
     subtitle: open => `انقر اختصارًا لإعادة تعيينه · يفتح ${open} هذه اللوحة مجددًا.`,
-    search: 'البحث في الاختصارات',
+    search: 'البحث في الاختصارات…',
     rebind: 'إعادة تعيين',
     reset: 'استعادة الافتراضي',
     resetAll: 'استعادة الكل',
@@ -344,7 +344,7 @@ export const ar: Translations = {
       keybinds: 'اختصارات لوحة المفاتيح',
       keysTools: 'الأدوات',
       keysSettings: 'الإعدادات',
-      mcp: 'بروتوكول سياق النموذج',
+      mcp: 'MCP',
       archivedChats: 'المحادثات المؤرشفة',
       about: 'حول',
       billing: 'الفوترة',
@@ -441,7 +441,7 @@ export const ar: Translations = {
       config: 'البحث في الإعدادات...',
       gateway: 'اتصال البوابة...',
       keys: 'البحث في مفاتيح الواجهة البرمجية...',
-      mcp: 'البحث في خوادم بروتوكول سياق النموذج...',
+      mcp: 'البحث في خوادم MCP...',
       sessions: 'البحث في الجلسات المؤرشفة...'
     },
     modeOptions: {
@@ -453,7 +453,7 @@ export const ar: Translations = {
       title: 'المظهر',
       uiScaleTitle: 'مقياس الواجهة',
       uiScaleDesc: (percent: number) =>
-        `يضبط حجم النصّ وعناصر التحكّم في التطبيق كلّه. ويمكن استخدام اختصارات التكبير والتصغير وإعادة الضبط. الحالي: ${percent}%.`,
+        `يضبط حجم النصّ وعناصر التحكّم في التطبيق كلّه. ويمكن أيضًا استخدام Cmd/Ctrl مع + و - و 0. الحالي: ${percent}%.`,
       translucencyTitle: 'شفافية النافذة',
       translucencyDesc: 'شاهد سطح مكتبك عبر النافذة كاملة. لنظامي ماك وويندوز فقط.',
       backdropTitle: 'خلفية المحادثة',
@@ -495,8 +495,8 @@ export const ar: Translations = {
       installed: name => `ثُبّتت «${name}».`,
       removeTheme: 'إزالة السمة',
       importedBadge: 'مستوردة',
-      marketplaceHeader: 'من متجر فيجوال ستوديو كود',
-      searchThemesPlaceholder: 'ابحث في سماتك أو متجر فيجوال ستوديو كود…',
+      marketplaceHeader: 'من متجر VS Code',
+      searchThemesPlaceholder: 'ابحث في سماتك أو متجر VS Code…',
       noInstalledThemes: query => `لا توجد سمة مثبّتة تطابق «${query}».`,
       themeNames: {
         nous: 'Nous',
@@ -591,14 +591,14 @@ export const ar: Translations = {
       terminal: {
         cwd: 'مجلد العمل',
         backend: 'واجهة التنفيذ الخلفية',
-        modalMode: 'وضع صندوق مودال الرملي',
+        modalMode: 'وضع صندوق Modal الرملي',
         timeout: 'مهلة الأمر',
         persistentShell: 'صدفة مستمرة',
         envPassthrough: 'تمرير متغيرات البيئة',
-        dockerImage: 'صورة دوكر',
-        singularityImage: 'صورة سنجيولاريتي',
-        modalImage: 'صورة مودال',
-        daytonaImage: 'صورة دايتونا'
+        dockerImage: 'صورة Docker',
+        singularityImage: 'صورة Singularity',
+        modalImage: 'صورة Modal',
+        daytonaImage: 'صورة Daytona'
       },
       fileReadMaxChars: 'حد قراءة الملفات',
       toolOutput: {
@@ -610,7 +610,7 @@ export const ar: Translations = {
       approvals: {
         mode: 'وضع الموافقات',
         timeout: 'مهلة الموافقة',
-        mcpReloadConfirm: 'تأكيد إعادة تحميل بروتوكول سياق النموذج'
+        mcpReloadConfirm: 'تأكيد إعادة تحميل MCP'
       },
       commandAllowlist: 'قائمة الأوامر المسموح بها',
       security: { redactSecrets: 'حجب الأسرار', allowPrivateUrls: 'السماح بالروابط الخاصة' },
@@ -704,7 +704,7 @@ export const ar: Translations = {
       low: 'منخفض',
       medium: 'متوسط',
       high: 'عالٍ',
-      xhigh: 'أقصى',
+      xhigh: 'فائق',
       builtin: 'مدمج',
       honcho: 'Honcho',
       local: 'محلي',
@@ -750,13 +750,13 @@ export const ar: Translations = {
       terminal: {
         cwd: 'مجلد المشروع الافتراضي لعمليات الأدوات والطرفية.',
         backend: 'بيئة تنفيذ أوامر الطرفية.',
-        modalMode: 'وضع صندوق مودال الرملي.',
+        modalMode: 'وضع صندوق Modal الرملي.',
         persistentShell: 'يحافظ على حالة الصدفة بين الأوامر عندما تدعمها الواجهة الخلفية.',
         envPassthrough: 'متغيرات البيئة التي تُمرر إلى تنفيذ الأدوات.',
-        dockerImage: 'صورة الحاوية المستخدمة عندما تكون واجهة التنفيذ الخلفية دوكر.',
-        singularityImage: 'الصورة المستخدمة عندما تكون واجهة التنفيذ الخلفية سنجيولاريتي.',
-        modalImage: 'الصورة المستخدمة عندما تكون واجهة التنفيذ الخلفية مودال.',
-        daytonaImage: 'الصورة المستخدمة عندما تكون واجهة التنفيذ الخلفية دايتونا.'
+        dockerImage: 'صورة الحاوية المستخدمة عندما تكون واجهة التنفيذ الخلفية Docker.',
+        singularityImage: 'الصورة المستخدمة عندما تكون واجهة التنفيذ الخلفية Singularity.',
+        modalImage: 'الصورة المستخدمة عندما تكون واجهة التنفيذ الخلفية Modal.',
+        daytonaImage: 'الصورة المستخدمة عندما تكون واجهة التنفيذ الخلفية Daytona.'
       },
       codeExecution: { mode: 'مدى تقييد تنفيذ الشيفرة بالمشروع الحالي.' },
       fileReadMaxChars: 'أقصى عدد من المحارف التي يقرأها هرمس في عملية قراءة ملف واحدة.',
@@ -898,12 +898,12 @@ export const ar: Translations = {
       couldNotStart: 'تعذر بدء الاتصال.',
       timedOut: 'انتهت المهلة. أعد المحاولة.',
       connectionFailed: 'فشل الاتصال.',
-      connectViaOauth: 'الاتصال عبر التفويض',
+      connectViaOauth: 'الاتصال عبر OAuth',
       reconnect: 'إعادة الاتصال',
       connect: 'اتصال',
       apiKeySet: 'مفتاح الواجهة مضبوط',
-      oauthSet: 'التفويض مضبوط',
-      waitingForConsent: 'في انتظار الموافقة في المتصفح...',
+      oauthSet: 'OAuth مضبوط',
+      waitingForConsent: 'في انتظار الموافقة في المتصفح…',
       cancel: 'إلغاء',
       providerNames: { hindsight: 'Hindsight' },
       fieldLabels: {
@@ -983,8 +983,7 @@ export const ar: Translations = {
       localDesc: 'تشغّل واجهة هرمس خلفية خاصة على الجهاز المحلي. هذا هو الافتراضي ويعمل دون اتصال.',
       remoteTitle: 'بوابة بعيدة',
       remoteDesc: 'تصل غلاف سطح المكتب بواجهة هرمس خلفية بعيدة.',
-      remoteAuthHint:
-        'تستخدم البوابات المستضافة أو أوث أو اسم مستخدم وكلمة مرور، وقد تستخدم البوابات الذاتية رمز جلسة.',
+      remoteAuthHint: 'تستخدم البوابات المستضافة OAuth أو اسم مستخدم وكلمة مرور، وقد تستخدم البوابات الذاتية رمز جلسة.',
       cloudTitle: 'سحابة هرمس',
       cloudDesc: 'سجّل الدخول مرة واحدة إلى سحابة هرمس واختر من الوكلاء في حسابك — دون لصق أي رابط.',
       cloudSignInTitle: 'سحابة هرمس',
@@ -1026,9 +1025,9 @@ export const ar: Translations = {
       signInWith: provider => `تسجيل الدخول عبر ${provider}`,
       authTitle: 'المصادقة',
       authSignedInPassword: 'تستخدم هذه البوابة اسم مستخدم وكلمة مرور. أنت مسجل الدخول، وتُجدّد الجلسة تلقائيًا.',
-      authSignedInOauth: 'تستخدم هذه البوابة أو أوث. أنت مسجل الدخول، وتُجدّد الجلسة تلقائيًا.',
+      authSignedInOauth: 'تستخدم هذه البوابة OAuth. أنت مسجل الدخول، وتُجدّد الجلسة تلقائيًا.',
       authNeedsPassword: 'تستخدم هذه البوابة اسم مستخدم وكلمة مرور. سجّل الدخول لتفويض تطبيق سطح المكتب.',
-      authNeedsOauth: provider => `تستخدم هذه البوابة أو أوث. سجّل الدخول عبر ${provider} لتفويض تطبيق سطح المكتب.`,
+      authNeedsOauth: provider => `تستخدم هذه البوابة OAuth. سجّل الدخول عبر ${provider} لتفويض تطبيق سطح المكتب.`,
       tokenTitle: 'رمز الجلسة',
       tokenDesc: 'رمز جلسة لوحة التحكم المستخدم للوصول عبر REST وWebSocket. اتركه فارغًا للإبقاء على الرمز المحفوظ.',
       existingToken: value => `الرمز الحالي ${value}`,
@@ -1048,7 +1047,7 @@ export const ar: Translations = {
       enterUrlFirst: 'أدخل رابطًا بعيدًا أولًا.',
       restartingTitle: 'جارٍ إعادة تشغيل اتصال البوابة',
       savedTitle: 'حُفظت إعدادات البوابة',
-      restartingMessage: 'سيعيد هرمس لسطح المكتب الاتصال بالإعدادات المحفوظة.',
+      restartingMessage: 'سيعيد هرمس لسطح المكتب الاتصال بالإعدادات المحفوظة؛ ويبقى الغلاف مفتوحًا.',
       savedMessage: 'حُفظت لإعادة التشغيل التالية.',
       connectedTo: (baseUrl, version) => `متصل بـ ${baseUrl}${version ? ` · هرمس ${version}` : ''}`,
       reachableTitle: 'يمكن الوصول إلى البوابة البعيدة',
@@ -1095,8 +1094,8 @@ export const ar: Translations = {
         OPENVIKING_API_KEY: 'مفتاح OpenViking',
         OPENVIKING_ENDPOINT: 'نقطة OpenViking',
         PARALLEL_API_KEY: 'مفتاح Parallel',
-        RETAINDB_API_KEY: 'مفتاح ريتين دي بي',
-        RETAINDB_BASE_URL: 'الرابط الأساسي لريتين دي بي',
+        RETAINDB_API_KEY: 'مفتاح RetainDB',
+        RETAINDB_BASE_URL: 'الرابط الأساسي لـ RetainDB',
         SEARXNG_URL: 'رابط SearXNG',
         SUPERMEMORY_API_KEY: 'مفتاح Supermemory',
         TAVILY_API_KEY: 'مفتاح Tavily',
@@ -1121,7 +1120,7 @@ export const ar: Translations = {
       fieldDescriptions: {
         AGENT_BROWSER_ENGINE:
           'محرك التصفح في الوضع المحلي: تلقائي لاستخدام كروم افتراضيًا، أو لايت باندا الأسرع من دون لقطات، أو كروم صراحة.',
-        BRAVE_SEARCH_API_KEY: 'رمز اشتراك واجهة بحث بريف؛ تتيح الفئة المجانية ألفي استعلام شهريًا.',
+        BRAVE_SEARCH_API_KEY: 'رمز اشتراك واجهة بحث Brave البرمجية؛ تتيح الفئة المجانية 2000 استعلام شهريًا.',
         BROWSER_USE_API_KEY: 'مفتاح Browser Use للمتصفح السحابي؛ وهو اختياري لأن المتصفح المحلي يعمل بدونه.',
         BROWSERBASE_API_KEY: 'مفتاح Browserbase للمتصفح السحابي؛ وهو اختياري لأن المتصفح المحلي يعمل بدونه.',
         BROWSERBASE_PROJECT_ID: 'معرّف مشروع Browserbase؛ لا يلزم إلا عند استخدام المتصفح السحابي.',
@@ -1133,7 +1132,7 @@ export const ar: Translations = {
         FAL_KEY: 'مفتاح FAL لتوليد الصور والفيديو.',
         FIRECRAWL_API_KEY: 'مفتاح Firecrawl للبحث في الويب واستخراج الصفحات.',
         FIRECRAWL_API_URL: 'رابط واجهة Firecrawl للنسخ المستضافة ذاتيًا.',
-        FIRECRAWL_BROWSER_TTL: 'مدة بقاء جلسة متصفح Firecrawl بالثواني؛ الافتراضي ثلاثمئة.',
+        FIRECRAWL_BROWSER_TTL: 'مدة بقاء جلسة متصفح Firecrawl بالثواني؛ وقيمته الافتراضية 300.',
         FIRECRAWL_GATEWAY_URL: 'رابط بديل دقيق لبوابة Firecrawl، مخصص لمشتركي Nous.',
         GITHUB_TOKEN: 'رمز GitHub لمركز المهارات، يرفع حدود الاستدعاء ويفعّل نشر المهارات.',
         HERMES_LANGFUSE_BASE_URL: 'رابط خادم Langfuse.',
@@ -1149,8 +1148,8 @@ export const ar: Translations = {
         OPENVIKING_API_KEY: 'مفتاح OpenViking؛ اتركه فارغًا في وضع التطوير المحلي.',
         OPENVIKING_ENDPOINT: 'رابط خادم OpenViking.',
         PARALLEL_API_KEY: 'مفتاح Parallel للبحث في الويب واستخراج المحتوى.',
-        RETAINDB_API_KEY: 'مفتاح ريتين دي بي للذاكرة المستمرة.',
-        RETAINDB_BASE_URL: 'الرابط الأساسي لنسخة ريتين دي بي المستضافة ذاتيًا.',
+        RETAINDB_API_KEY: 'مفتاح RetainDB للذاكرة المستمرة.',
+        RETAINDB_BASE_URL: 'الرابط الأساسي لنسخة RetainDB المستضافة ذاتيًا.',
         SEARXNG_URL: 'رابط نسخة SearXNG للبحث المجاني المستضاف ذاتيًا.',
         SUPERMEMORY_API_KEY: 'مفتاح Supermemory للذاكرة المستمرة ضمن المحادثة.',
         TAVILY_API_KEY: 'مفتاح Tavily للبحث في الويب واستخراج المحتوى.',
@@ -1174,26 +1173,26 @@ export const ar: Translations = {
       }
     },
     mcp: {
-      loading: 'جارٍ تحميل خوادم بروتوكول سياق النموذج...',
-      failedLoad: 'فشل تحميل إعداد بروتوكول سياق النموذج',
+      loading: 'جارٍ تحميل خوادم MCP...',
+      failedLoad: 'فشل تحميل إعداد MCP',
       nameRequiredTitle: 'الاسم مطلوب',
-      nameRequiredMessage: 'أعط هذا الخادم مفتاح إعداد.',
+      nameRequiredMessage: 'أعط خادم MCP هذا مفتاح إعداد.',
       objectRequired: 'يجب أن يكون إعداد الخادم كائن JSON',
-      invalidJson: 'بيانات JSON للخادم غير صالحة',
+      invalidJson: 'بيانات JSON غير صالحة لـ MCP',
       saveFailed: 'فشل الحفظ',
       removeFailed: 'فشلت الإزالة',
       gatewayUnavailableTitle: 'البوابة غير متاحة',
-      gatewayUnavailableMessage: 'أعد اتصال البوابة قبل إعادة تحميل الأدوات.',
-      reloadedTitle: 'أُعيد تحميل أدوات بروتوكول سياق النموذج',
+      gatewayUnavailableMessage: 'أعد اتصال البوابة قبل إعادة تحميل MCP.',
+      reloadedTitle: 'أُعيد تحميل أدوات MCP',
       reloadedMessage: 'تُطبق مخططات الأدوات الجديدة على الدورات الجديدة.',
-      reloadFailed: 'فشلت إعادة تحميل بروتوكول سياق النموذج',
-      savedTitle: 'حُفظ الخادم',
-      savedMessage: name => `يُطبق ${name} بعد إعادة تحميل بروتوكول سياق النموذج.`,
+      reloadFailed: 'فشلت إعادة تحميل MCP',
+      savedTitle: 'حُفظ خادم MCP',
+      savedMessage: name => `يُطبق ${name} بعد إعادة تحميل MCP.`,
       newServer: 'خادم جديد',
-      reload: 'إعادة تحميل الأدوات',
+      reload: 'إعادة تحميل MCP',
       reloading: 'جارٍ إعادة التحميل...',
-      emptyTitle: 'لا توجد خوادم',
-      emptyDesc: 'أضف خادم stdio أو HTTP لإتاحة الأدوات.',
+      emptyTitle: 'لا توجد خوادم MCP',
+      emptyDesc: 'أضف خادم stdio أو HTTP لإتاحة أدوات MCP.',
       disabled: 'معطّل',
       editServer: 'تعديل الخادم',
       name: 'الاسم',
@@ -1202,7 +1201,14 @@ export const ar: Translations = {
       saveServer: 'حفظ الخادم',
       test: 'اختبار الاتصال',
       testing: 'جارٍ الاختبار...',
-      testOk: count => `متصل — ${count} أداة متاحة`,
+      testOk: count =>
+        count === 1
+          ? 'متصل — أداة واحدة متاحة'
+          : count === 2
+            ? 'متصل — أداتان متاحتان'
+            : count <= 10
+              ? `متصل — ${count} أدوات متاحة`
+              : `متصل — ${count} أداة متاحة`,
       testFailed: 'فشل الاتصال',
       enableServer: name => `تفعيل ${name}`,
       disableServer: name => `تعطيل ${name}`,
@@ -1211,8 +1217,8 @@ export const ar: Translations = {
       toggleFailed: name => `فشل تبديل ${name}`,
       tabServers: 'الخوادم',
       tabCatalog: 'الكتالوج',
-      catalogLoading: 'جارٍ تحميل كتالوج بروتوكول سياق النموذج...',
-      catalogLoadFailed: 'فشل تحميل كتالوج بروتوكول سياق النموذج',
+      catalogLoading: 'جارٍ تحميل كتالوج MCP...',
+      catalogLoadFailed: 'فشل تحميل كتالوج MCP',
       catalogEmpty: 'لا توجد مدخلات في الكتالوج.',
       catalogInstalled: 'مثبت',
       catalogEnabled: 'مفعل',
@@ -1238,7 +1244,7 @@ export const ar: Translations = {
       enableTool: tool => `تفعيل ${tool}`,
       disableTool: tool => `تعطيل ${tool}`,
       noOutput: 'لا مخرجات بعد.',
-      authOauth: 'أو أوث',
+      authOauth: 'OAuth',
       authApiKey: 'مفتاح الواجهة البرمجية'
     },
     model: {
@@ -1269,7 +1275,7 @@ export const ar: Translations = {
       moaTitle: 'مزيج الوكلاء',
       moaDesc: 'اضبط إعدادات مسبقة مسماة تظهر كنماذج ضمن مزود مزيج الوكلاء. النموذج الجامع هو النموذج المنفذ.',
       moaPreset: 'الإعداد المسبق',
-      moaSetDefault: 'تعيين افتراضيا',
+      moaSetDefault: 'تعيين كافتراضي',
       moaDelete: 'حذف',
       moaNewPreset: 'إعداد مسبق جديد',
       moaAddPreset: 'إضافة إعداد مسبق',
@@ -1280,7 +1286,7 @@ export const ar: Translations = {
       moaAddReference: 'إضافة نموذج مرجعي',
       moaPresets: 'إعدادات مزيج الوكلاء',
       moaPrefix: 'مزيج',
-      otherProviders: 'مزودين آخرين',
+      otherProviders: 'مزوّدون آخرون',
       staleAuxWarning: (count, names) => ({
         before:
           count === 1
@@ -1298,32 +1304,32 @@ export const ar: Translations = {
         compression: { label: 'الضغط', hint: 'ضغط السياق' },
         skills_hub: { label: 'مركز المهارات', hint: 'البحث عن المهارات' },
         approval: { label: 'الموافقة', hint: 'الموافقة التلقائية الذكية' },
-        mcp: { label: 'بروتوكول سياق النموذج', hint: 'توجيه أدوات بروتوكول سياق النموذج' },
+        mcp: { label: 'MCP', hint: 'توجيه أدوات MCP' },
         title_generation: { label: 'إنشاء العناوين', hint: 'عناوين الجلسات' },
         curator: { label: 'القيّم', hint: 'مراجعة استخدام المهارات' }
       }
     },
     computerUse: {
-      linuxNote: 'يتحكم في سطح المكتب عبر منظومة الإتاحة لإكس دون مطالبة أذونات.',
-      windowsNote: 'قد يعرض التشغيل الأول مطالبة الحماية في ويندوز لعامل إتاحة برنامج التحكم؛ اسمح له.',
+      linuxNote: 'يتحكم في سطح المكتب عبر منظومة الإتاحة في X11/XWayland، دون مطالبة أذونات.',
+      windowsNote: 'قد يعرض التشغيل الأول مطالبة SmartScreen في ويندوز لعامل cua-driver UIAccess؛ اسمح له.',
       granted: 'ممنوح',
       notGranted: 'غير ممنوح',
       unknown: 'غير معروف',
       readStatusFailed: 'تعذر قراءة حالة التحكم بالحاسوب',
       requestFailed: 'تعذر طلب الأذونات',
       approveTitle: 'الموافقة في إعدادات النظام',
-      approveMessage: 'سيعرض ماك حوار أذونات منسوبا إلى كوا درايفر. وافق عليه ثم عد إلى هنا.',
+      approveMessage: 'سيعرض ماك حوار أذونات منسوبًا إلى CuaDriver. وافق عليه ثم عد إلى هنا.',
       checking: 'جارٍ فحص حالة التحكم بالحاسوب…',
       unsupported: platform => `التحكم بالحاسوب غير مدعوم على هذه المنصة (${platform}).`,
-      installDriver: 'ثبّت مشغل كوا درايفر أدناه للتحكم في هذا الجهاز.',
+      installDriver: 'ثبّت الواجهة الخلفية cua-driver أدناه للتحكم في هذا الجهاز.',
       grantAfterInstall: ' ثم امنحه إذني الإتاحة وتسجيل الشاشة هنا.',
       grantIdentity:
-        'ترتبط الأذونات بهوية كوا درايفر نفسه (com.trycua.driver)، لا بهرمس، لذلك يُنسب الحوار إلى العملية التي تتحكم في ماك.',
+        'ترتبط الأذونات بهوية CuaDriver نفسه (com.trycua.driver)، لا بهرمس، لذلك يُنسب الحوار إلى العملية التي تتحكم في ماك.',
       recheck: 'إعادة الفحص',
       accessibility: 'الإتاحة',
-      accessibilityHint: 'يتيح لكوا درايفر النقر والكتابة وقراءة شجرة الإتاحة.',
+      accessibilityHint: 'يتيح لـ cua-driver النقر والكتابة وقراءة شجرة الإتاحة.',
       screenRecording: 'تسجيل الشاشة',
-      screenRecordingHint: 'يتيح لكوا درايفر التقاط صور لنوافذ التطبيقات.',
+      screenRecordingHint: 'يتيح لـ cua-driver التقاط صور لنوافذ التطبيقات.',
       driverHealth: 'سلامة المشغل',
       ready: 'جاهز',
       notReady: 'غير جاهز',
@@ -1355,8 +1361,7 @@ export const ar: Translations = {
       noKeysMatch: 'لا مزوّد يطابق بحثك.',
       localEndpoint: {
         title: 'نقطة نهاية محلية أو مخصصة',
-        description:
-          'وجّه هرمس إلى أي نقطة نهاية متوافقة مع واجهة أوبن أي آي، مثل زيفرا وفي إل إل إم ولاما دوت سي بلس بلس وأولاما وغيرها.'
+        description: 'وجّه هرمس إلى أي نقطة نهاية متوافقة مع OpenAI، مثل Zyphra وvLLM وllama.cpp وOllama وغيرها.'
       },
       loading: 'جارٍ تحميل المزوّدين...',
       providerNames: {
@@ -1410,7 +1415,7 @@ export const ar: Translations = {
         'Fireworks AI': 'وصول مباشر إلى النماذج المستضافة لدى Fireworks.',
         'GitHub Copilot': 'وصول إلى نماذج GitHub Copilot.',
         'Google AI Studio': 'وصول مباشر إلى نماذج Gemini من استوديو Google.',
-        HuggingFace: 'أكثر من عشرين نموذجًا مفتوحًا عبر مزوّدي الاستدلال.',
+        HuggingFace: 'أكثر من 20 نموذجًا مفتوحًا عبر مزوّدي الاستدلال.',
         'Kilo Code': 'وصول إلى نماذج Kilo Code.',
         'Kimi / Kimi Coding Plan': 'نماذج Kimi ونقاط البرمجة من Moonshot.',
         'Kimi / Moonshot (China)': 'نقطة Moonshot داخل الصين.',
@@ -1449,7 +1454,7 @@ export const ar: Translations = {
       deleteConfirm: title => `حذف «${title}» نهائيًا؟ لا يمكن التراجع عن ذلك.`,
       defaultDirTitle: 'مجلد المشروع الافتراضي',
       defaultDirDesc: 'تبدأ الجلسات الجديدة في هذا المجلد ما لم تختر غيره. اتركه فارغًا لاستخدام مجلد المنزل.',
-      defaultDirUpdated: 'حُدّث مجلد المشروع الافتراضي؛ ابدأ محادثة جديدة لتطبيقه',
+      defaultDirUpdated: 'حُدّث مجلد المشروع الافتراضي؛ ابدأ محادثة جديدة (Ctrl/⌘+N) لتطبيقه',
       defaultsTo: label => `الافتراضي هو ${label}.`,
       change: 'تغيير',
       choose: 'اختيار',
@@ -1494,7 +1499,8 @@ export const ar: Translations = {
       postSetupFailed: step => `فشل تشغيل إعداد ${step}`,
       loadingModels: 'جارٍ تحميل كتالوج النماذج...',
       modelSectionTitle: 'النموذج',
-      modelCount: count => `${count} نموذج`,
+      modelCount: count =>
+        count === 1 ? 'نموذج واحد' : count === 2 ? 'نموذجان' : count <= 10 ? `${count} نماذج` : `${count} نموذجًا`,
       modelInUse: 'قيد الاستخدام',
       modelDefault: 'افتراضي',
       modelInactiveHint: 'اختر هذه الواجهة أولًا لتغيير نموذجها.',
@@ -1542,9 +1548,9 @@ export const ar: Translations = {
       },
       providerTags: {
         'Managed Firecrawl billed to your subscription': 'Firecrawl مُدار وتُحتسب تكلفته على اشتراكك.',
-        'Run your own Firecrawl instance (Docker)': 'شغّل نسخة Firecrawl خاصة بك عبر دوكر.',
+        'Run your own Firecrawl instance (Docker)': 'شغّل نسخة Firecrawl خاصة بك عبر Docker.',
         'Free-tier API key — 2k queries/mo, search only.':
-          'مفتاح من الفئة المجانية يتيح ألفي استعلام شهريًا، للبحث فقط.',
+          'مفتاح من الفئة المجانية يتيح 2000 استعلام شهريًا، للبحث فقط.',
         'Search via the ddgs Python package — no API key (pair with any extract provider)':
           'بحث عبر حزمة ddgs لبايثون بلا مفتاح، ويمكن إقرانه بأي مزوّد استخراج.',
         'Semantic + neural web search with content extraction.': 'بحث دلالي وعصبي في الويب مع استخراج المحتوى.',
@@ -1566,7 +1572,7 @@ export const ar: Translations = {
         'Pick from flux-2-klein, flux-2-pro, gpt-image, nano-banana, etc. — text-to-image & image editing':
           'اختر من FLUX 2 Klein وFLUX 2 Pro وGPT Image وNano Banana وغيرها، لتحويل النص إلى صورة وتحرير الصور.',
         'Krea 2 foundation model — Medium ($0.03), Large ($0.06), Medium Turbo ($0.015). Style transfer, moodboards, reference-guided generation. Direct key or managed Nous Subscription gateway.':
-          'نموذج Krea 2 الأساسي بثلاث فئات؛ يدعم نقل الأسلوب ولوحات المزاج والتوليد الموجّه بالمراجع، عبر مفتاح مباشر أو بوابة اشتراك Nous.',
+          'نموذج Krea 2 الأساسي — Medium بسعر 0.03 دولار، وLarge بسعر 0.06 دولار، وMedium Turbo بسعر 0.015 دولار. يدعم نقل الأسلوب ولوحات المزاج والتوليد الموجّه بالمراجع، عبر مفتاح مباشر أو بوابة اشتراك Nous المُدارة.',
         'Reference-grounded image generation via Nous Portal (OpenRouter-backed)':
           'توليد صور مستند إلى المراجع عبر Nous Portal المدعومة بـ OpenRouter.',
         'gpt-image-2 at low/medium/high quality tiers — text-to-image & image editing':
@@ -1576,13 +1582,13 @@ export const ar: Translations = {
         'Gemini Flash Image & more via OpenRouter; uses OPENROUTER_API_KEY':
           'Gemini Flash Image ونماذج أخرى عبر OpenRouter، باستخدام مفتاحه البرمجي.',
         'grok-imagine-image - text-to-image & image editing; uses xAI Grok OAuth or XAI_API_KEY. xAI Imagine storage is enabled so generated media gets a reusable public URL without an automatic expiry. xAI may bill for stored files and public URL hosting. Disable this with `image_gen.xai.storage.enabled: false` or set `expires_after` to change the retention.':
-          'Grok Imagine للصور يحوّل النص إلى صورة ويحرر الصور عبر مصادقة Grok أو مفتاح xAI. التخزين مفعّل لمنح الوسائط رابطًا عامًا قابلًا لإعادة الاستخدام، وقد تترتب عليه تكلفة؛ ويمكن تعطيله أو تغيير مدة الاحتفاظ من الإعدادات.',
+          'Grok Imagine للصور يحوّل النص إلى صورة ويحرر الصور عبر مصادقة Grok أو مفتاح xAI. تخزين xAI Imagine مفعّل، فتحصل الوسائط المولّدة على رابط عام قابل لإعادة الاستخدام بلا انتهاء تلقائي، وقد تفرض xAI رسومًا على الملفات المخزّنة واستضافة الروابط العامة. عطّله بـ `image_gen.xai.storage.enabled: false` أو اضبط `expires_after` لتغيير مدة الاحتفاظ.',
         'Managed FAL video generation billed to your subscription':
           'توليد فيديو مُدار عبر FAL وتُحتسب تكلفته على اشتراكك.',
         'LTX, Pixverse, Veo 3.1, Seedance 2.0, Kling 4K, Happy Horse — text-to-video & image-to-video':
           'نماذج LTX وPixVerse وVeo 3.1 وSeedance 2.0 وKling 4K وHappy Horse، لتحويل النص أو الصورة إلى فيديو.',
         'grok-imagine-video for text/reference; grok-imagine-video-1.5 for image-to-video; edit/extend: pass the stored public HTTPS MP4 (`video` / `public_url` from a prior Imagine result); uses xAI Grok OAuth or XAI_API_KEY. xAI Imagine storage is enabled so generated media gets a reusable public URL without an automatic expiry. xAI may bill for stored files and public URL hosting. Disable this with `video_gen.xai.storage.enabled: false` or set `expires_after` to change the retention.':
-          'Grok Imagine للفيديو يدعم النص والمراجع وتحويل الصورة إلى فيديو وتحرير الفيديو أو تمديده، عبر مصادقة Grok أو مفتاح xAI. التخزين مفعّل لمنح الوسائط رابطًا عامًا قابلًا لإعادة الاستخدام، وقد تترتب عليه تكلفة؛ ويمكن تعطيله أو تغيير مدة الاحتفاظ من الإعدادات.',
+          'Grok Imagine للفيديو: grok-imagine-video للنص والمراجع، وgrok-imagine-video-1.5 لتحويل الصورة إلى فيديو؛ وللتحرير أو التمديد مرّر ملف MP4 العام المخزّن (`video` أو `public_url` من نتيجة Imagine سابقة). يعمل بمصادقة Grok أو مفتاح xAI. تخزين xAI Imagine مفعّل، فتحصل الوسائط المولّدة على رابط عام قابل لإعادة الاستخدام بلا انتهاء تلقائي، وقد تفرض xAI رسومًا على الملفات المخزّنة واستضافة الروابط العامة. عطّله بـ `video_gen.xai.storage.enabled: false` أو اضبط `expires_after` لتغيير مدة الاحتفاظ.',
         'Browser login at accounts.x.ai — no API key required':
           'تسجيل دخول بالمتصفح إلى حساب xAI، ولا يحتاج إلى مفتاح.',
         'Direct xAI API billing via XAI_API_KEY': 'فوترة مباشرة لواجهة xAI عبر مفتاحها البرمجي.',
@@ -1592,16 +1598,16 @@ export const ar: Translations = {
         'High quality voices': 'أصوات عالية الجودة.',
         'Grok voices — uses xAI Grok OAuth or XAI_API_KEY': 'أصوات Grok عبر مصادقة Grok أو مفتاح xAI.',
         'Most natural voices': 'الأصوات الأكثر طبيعية.',
-        'Multilingual, native Opus': 'متعدد اللغات مع دعم أصلي لتنسيق أوبس.',
-        '30 prebuilt voices, controllable via prompts': 'ثلاثون صوتًا جاهزًا يمكن التحكم فيها بالتوجيهات.',
+        'Multilingual, native Opus': 'متعدد اللغات مع دعم أصلي لتنسيق Opus.',
+        '30 prebuilt voices, controllable via prompts': '30 صوتًا جاهزًا يمكن التحكم فيها بالتوجيهات.',
         'Lightweight local ONNX TTS (~25MB), no API key':
-          'تحويل محلي خفيف للنص إلى كلام، بحجم يقارب خمسة وعشرين ميجابايت، وبلا مفتاح.',
+          'تحويل محلي خفيف للنص إلى كلام بتقنية ONNX، بحجم يقارب 25 ميجابايت، وبلا مفتاح.',
         'Local neural TTS, 44 languages (voices ~20-90MB)':
-          'تحويل عصبي محلي للنص إلى كلام يدعم أربعًا وأربعين لغة، بأصوات بين عشرين وتسعين ميجابايت تقريبًا.',
-        'REST API integration': 'تكامل عبر واجهة برمجية بأسلوب ريست.',
+          'تحويل عصبي محلي للنص إلى كلام يدعم 44 لغة، بأصوات بين 20 و90 ميجابايت تقريبًا.',
+        'REST API integration': 'تكامل عبر واجهة REST البرمجية.',
         'PKCE OAuth — opens the setup wizard': 'مصادقة آمنة تفتح معالج الإعداد.',
         'Background computer-use via cua-driver — does NOT steal your cursor or focus. Works with any model.':
-          'تحكم بالحاسوب في الخلفية عبر مشغّل كوا درايفر، من دون الاستحواذ على المؤشر أو التركيز، ويعمل مع أي نموذج.'
+          'تحكم بالحاسوب في الخلفية عبر cua-driver، من دون الاستحواذ على المؤشر أو التركيز، ويعمل مع أي نموذج.'
       },
       providerBadgeTerms: {
         subscription: 'اشتراك',
@@ -1617,7 +1623,7 @@ export const ar: Translations = {
       },
       envVarPrompts: {
         FIRECRAWL_API_URL: 'رابط نسخة Firecrawl الخاصة بك',
-        BRAVE_SEARCH_API_KEY: 'مفتاح واجهة بحث بريف من الفئة المجانية',
+        BRAVE_SEARCH_API_KEY: 'مفتاح واجهة بحث Brave من الفئة المجانية',
         EXA_API_KEY: 'مفتاح واجهة Exa البرمجية',
         FIRECRAWL_API_KEY: 'مفتاح واجهة Firecrawl البرمجية',
         PARALLEL_API_KEY: 'مفتاح واجهة Parallel البرمجية',
@@ -1641,28 +1647,28 @@ export const ar: Translations = {
       },
       modelDetails: {
         '<1s': 'أقل من ثانية',
-        '~6s': 'نحو ست ثوان',
+        '~6s': 'نحو 6 ثوانٍ',
         '~2s': 'نحو ثانيتين',
-        '~8s': 'نحو ثماني ثوان',
-        '~15s': 'نحو خمس عشرة ثانية',
-        '~20s': 'نحو عشرين ثانية',
-        '~5s': 'نحو خمس ثوان',
-        '~12s': 'نحو اثنتي عشرة ثانية',
-        '~15-25s': 'نحو خمس عشرة إلى خمس وعشرين ثانية',
-        '~25-60s': 'نحو خمس وعشرين إلى ستين ثانية',
-        '~8-15s': 'نحو ثماني إلى خمس عشرة ثانية',
-        '~40s': 'نحو أربعين ثانية',
+        '~8s': 'نحو 8 ثوانٍ',
+        '~15s': 'نحو 15 ثانية',
+        '~20s': 'نحو 20 ثانية',
+        '~5s': 'نحو 5 ثوانٍ',
+        '~12s': 'نحو 12 ثانية',
+        '~15-25s': 'نحو 15 إلى 25 ثانية',
+        '~25-60s': 'نحو 25 إلى 60 ثانية',
+        '~8-15s': 'نحو 8 إلى 15 ثانية',
+        '~40s': 'نحو 40 ثانية',
         '~2min': 'نحو دقيقتين',
-        '~5-10s': 'نحو خمس إلى عشر ثوان',
-        '~10-20s': 'نحو عشر إلى عشرين ثانية',
-        '~30-60s': 'نحو ثلاثين إلى ستين ثانية',
-        '~30-90s': 'نحو ثلاثين إلى تسعين ثانية',
-        '~60-120s': 'نحو ستين إلى مئة وعشرين ثانية',
-        '~120-300s': 'نحو مئة وعشرين إلى ثلاثمئة ثانية',
-        '~60-240s': 'نحو ستين إلى مئتين وأربعين ثانية',
+        '~5-10s': 'نحو 5 إلى 10 ثوانٍ',
+        '~10-20s': 'نحو 10 إلى 20 ثانية',
+        '~30-60s': 'نحو 30 إلى 60 ثانية',
+        '~30-90s': 'نحو 30 إلى 90 ثانية',
+        '~60-120s': 'نحو 60 إلى 120 ثانية',
+        '~120-300s': 'نحو 120 إلى 300 ثانية',
+        '~60-240s': 'نحو 60 إلى 240 ثانية',
         'Fast, crisp text': 'سريع مع نص واضح.',
         'Studio photorealism': 'واقعية فوتوغرافية بمستوى الاستوديو.',
-        'Bilingual EN/CN, 6B': 'ثنائي اللغة للإنجليزية والصينية، بستة مليارات معلمة.',
+        'Bilingual EN/CN, 6B': 'ثنائي اللغة للإنجليزية والصينية، بـ6 مليارات معلمة.',
         'Gemini 3 Pro, reasoning depth, text rendering': 'Gemini 3 Pro، بعمق استدلال وإخراج جيد للنص.',
         'Prompt adherence': 'التزام قوي بالتوجيه.',
         'SOTA text rendering + CJK, world-aware photorealism':
@@ -1689,35 +1695,35 @@ export const ar: Translations = {
         'Fast, high-quality': 'سريع وعالي الجودة.',
         'Higher fidelity / detail; slower than the standard model.': 'دقة وتفاصيل أعلى، لكنه أبطأ من النموذج القياسي.',
         '22B model with native audio generation. Affordable.':
-          'نموذج باثنتين وعشرين مليار معلمة مع توليد صوت أصلي وتكلفة معقولة.',
+          'نموذج بـ22 مليار معلمة مع توليد صوت أصلي وتكلفة معقولة.',
         'Affordable. Negative prompts. 1-15s durations.':
-          'تكلفة معقولة، ويدعم التوجيهات السلبية ومددًا من ثانية إلى خمس عشرة ثانية.',
+          'تكلفة معقولة، ويدعم التوجيهات السلبية ومددًا من 1 إلى 15 ثانية.',
         'Google DeepMind. Cinematic, native audio, strong prompt adherence.':
           'من Google DeepMind؛ سينمائي بصوت أصلي والتزام قوي بالتوجيه.',
         'ByteDance. Cinematic, synchronized audio + lip-sync, 4-15s.':
-          'من ByteDance؛ سينمائي بصوت متزامن ومزامنة للشفاه ومدد من أربع إلى خمس عشرة ثانية.',
+          'من ByteDance؛ سينمائي بصوت متزامن ومزامنة للشفاه ومدد من 4 إلى 15 ثانية.',
         '4K output, native audio (Chinese/English), 3-15s.':
-          'إخراج فائق الدقة وصوت أصلي بالصينية والإنجليزية، ومدد من ثلاث إلى خمس عشرة ثانية.',
+          'إخراج 4K وصوت أصلي بالصينية والإنجليزية، ومدد من 3 إلى 15 ثانية.',
         'Alibaba. New model, sparse public docs — conservative defaults.':
           'من Alibaba؛ نموذج جديد قليل التوثيق العام مع إعدادات افتراضية محافظة.',
         'Text-to-video; legacy image-to-video fallback.': 'تحويل النص إلى فيديو، مع بديل قديم لتحويل الصورة إلى فيديو.',
         'Latest xAI image-to-video model.': 'أحدث نموذج من xAI لتحويل الصورة إلى فيديو.',
-        '$0.006/MP': '٠٫٠٠٦ دولار لكل ميجابكسل',
-        '$0.03/MP': '٠٫٠٣ دولار لكل ميجابكسل',
-        '$0.005/MP': '٠٫٠٠٥ دولار لكل ميجابكسل',
-        '$0.15/image (1K)': '٠٫١٥ دولار للصورة بدقة ألف',
-        '$0.034/image': '٠٫٠٣٤ دولار للصورة',
-        '$0.04–0.06/image': 'من ٠٫٠٤ إلى ٠٫٠٦ دولار للصورة',
-        '$0.03-0.09/image': 'من ٠٫٠٣ إلى ٠٫٠٩ دولار للصورة',
-        '$0.25/image': '٠٫٢٥ دولار للصورة',
-        '$0.02/MP': '٠٫٠٢ دولار لكل ميجابكسل',
-        '$0.030 (text) / $0.035 (style refs)': '٠٫٠٣ دولار للنص، و٠٫٠٣٥ لمراجع الأسلوب',
-        '$0.060 (text) / $0.065 (style refs)': '٠٫٠٦ دولار للنص، و٠٫٠٦٥ لمراجع الأسلوب',
+        '$0.006/MP': '0.006 دولار لكل ميجابكسل',
+        '$0.03/MP': '0.03 دولار لكل ميجابكسل',
+        '$0.005/MP': '0.005 دولار لكل ميجابكسل',
+        '$0.15/image (1K)': '0.15 دولار للصورة بدقة 1K',
+        '$0.034/image': '0.034 دولار للصورة',
+        '$0.04–0.06/image': 'من 0.04 إلى 0.06 دولار للصورة',
+        '$0.03-0.09/image': 'من 0.03 إلى 0.09 دولار للصورة',
+        '$0.25/image': '0.25 دولار للصورة',
+        '$0.02/MP': '0.02 دولار لكل ميجابكسل',
+        '$0.030 (text) / $0.035 (style refs)': '0.030 دولار للنص، و0.035 لمراجع الأسلوب',
+        '$0.060 (text) / $0.065 (style refs)': '0.060 دولار للنص، و0.065 لمراجع الأسلوب',
         '$0.030 (text) / $0.035 (style refs) / $0.040 (moodboards)':
-          '٠٫٠٣ دولار للنص، و٠٫٠٣٥ لمراجع الأسلوب، و٠٫٠٤ للوحات المزاج',
+          '0.030 دولار للنص، و0.035 لمراجع الأسلوب، و0.040 للوحات المزاج',
         '$0.060 (text) / $0.065 (style refs) / $0.070 (moodboards)':
-          '٠٫٠٦ دولار للنص، و٠٫٠٦٥ لمراجع الأسلوب، و٠٫٠٧ للوحات المزاج',
-        '$0.015 (text) / $0.0175 (style refs)': '٠٫٠١٥ دولار للنص، و٠٫٠١٧٥ لمراجع الأسلوب',
+          '0.060 دولار للنص، و0.065 لمراجع الأسلوب، و0.070 للوحات المزاج',
+        '$0.015 (text) / $0.0175 (style refs)': '0.015 دولار للنص، و0.0175 لمراجع الأسلوب',
         varies: 'متغير',
         cheap: 'اقتصادي',
         premium: 'متميز',
@@ -1730,7 +1736,7 @@ export const ar: Translations = {
   skills: {
     tabSkills: 'المهارات',
     tabToolsets: 'مجموعات الأدوات',
-    tabMcp: 'بروتوكول سياق النموذج',
+    tabMcp: 'MCP',
     tabHub: 'تصفح المركز',
     all: 'الكل',
     searchSkills: 'البحث في المهارات...',
@@ -1800,7 +1806,7 @@ export const ar: Translations = {
       discord: 'جلب الرسائل والبحث عن الأعضاء وإنشاء سلاسل',
       discord_admin: 'عرض القنوات والأدوار وتثبيت الرسائل وإسناد الأدوار',
       yuanbao: 'معلومات المجموعات واستعلامات الأعضاء والرسائل الخاصة',
-      computer_use: 'التحكم في سطح المكتب عبر مشغّل كوا درايفر'
+      computer_use: 'التحكم في سطح المكتب عبر cua-driver'
     },
     configureToolset: label => `ضبط ${label}`,
     toggleToolset: label => `تبديل مجموعة أدوات ${label}`,
@@ -1851,7 +1857,7 @@ export const ar: Translations = {
     skillArchivedTitle: 'أُرشفت المهارة',
     skillArchivedMessage: 'قابلة للاستعادة عبر hermes curator restore.',
     hub: {
-      searchPlaceholder: 'ابحث في مركز المهارات (الرسمي، GitHub، المجتمع)...',
+      searchPlaceholder: 'ابحث في مركز المهارات',
       search: 'بحث',
       searching: 'جارٍ البحث...',
       connectingHubs: 'جارٍ الاتصال بمراكز المهارات...',
@@ -1859,13 +1865,18 @@ export const ar: Translations = {
       featured: 'مهارات مميزة',
       landingHint: 'ابحث في المركز لتصفح المهارات القابلة للتثبيت من الفهرس الرسمي وGitHub ومصادر المجتمع.',
       noResults: 'لا توجد مهارات مطابقة في المركز.',
-      resultCount: (count, ms) => `${count} نتيجة${ms !== null ? ` خلال ${ms} م.ث` : ''}`,
+      resultCount: (count, ms) => {
+        const results =
+          count === 1 ? 'نتيجة واحدة' : count === 2 ? 'نتيجتان' : count <= 10 ? `${count} نتائج` : `${count} نتيجة`
+
+        return ms !== null ? `${results} خلال ${ms} م.ث` : results
+      },
       timedOut: sources => `انتهت المهلة: ${sources}`,
       installed: 'مثبتة',
       install: 'تثبيت',
       installing: 'جارٍ التثبيت...',
       uninstall: 'إزالة',
-      uninstalling: 'جارٍ الإزالة…',
+      uninstalling: 'جارٍ الإزالة...',
       updateAll: 'تحديث المثبتة',
       updating: 'جارٍ التحديث...',
       preview: 'معاينة',
@@ -1885,7 +1896,8 @@ export const ar: Translations = {
       policyAllow: 'التثبيت مسموح',
       policyAsk: 'راجع قبل التثبيت',
       policyBlock: 'التثبيت محظور بالسياسة',
-      findings: count => `${count} ملاحظة`,
+      findings: count =>
+        count === 1 ? 'ملاحظة واحدة' : count === 2 ? 'ملاحظتان' : count <= 10 ? `${count} ملاحظات` : `${count} ملاحظة`,
       noFindings: 'لا توجد ملاحظات أمنية.',
       installStarted: name => `جارٍ تثبيت ${name}...`,
       uninstallStarted: name => `جارٍ إزالة ${name}...`,
@@ -1930,7 +1942,21 @@ export const ar: Translations = {
 
   starmap: {
     title: 'مخطّط الذاكرة',
-    subtitle: (nodes, clusters) => `${nodes} مهارة عبر ${clusters} فئة`,
+    subtitle: (nodes, clusters) => {
+      const skills =
+        nodes === 1 ? 'مهارة واحدة' : nodes === 2 ? 'مهارتان' : nodes <= 10 ? `${nodes} مهارات` : `${nodes} مهارة`
+
+      const categories =
+        clusters === 1
+          ? 'فئة واحدة'
+          : clusters === 2
+            ? 'فئتان'
+            : clusters <= 10
+              ? `${clusters} فئات`
+              : `${clusters} فئة`
+
+      return `${skills} عبر ${categories}`
+    },
     close: 'إغلاق مخطّط الذاكرة',
     refresh: 'تحديث',
     memory: 'الذاكرة',
@@ -1951,31 +1977,36 @@ export const ar: Translations = {
     importMap: 'استيراد مخطّط',
     importBtn: 'تحميل',
     importEmpty: 'الصق رمز مخطّط لتحميله.',
-    importSuccess: nodes => `حُمِّل مخطّطٌ به ${nodes} ${nodes === 1 ? 'عقدة' : 'عقدة'}.`,
+    importSuccess: nodes => {
+      const label = nodes === 1 ? 'عقدة واحدة' : nodes === 2 ? 'عقدتان' : nodes <= 10 ? `${nodes} عقد` : `${nodes} عقدة`
+
+      return `حُمِّل مخطّطٌ به ${label}.`
+    },
     importedBadge: 'مخطّط مستورَد',
     resetToMine: 'العودة إلى مخطّطي',
     skill: 'مهارة',
+    memoryBadge: 'ذاكرة',
     profileMemory: 'ذاكرة الملف الشخصي',
     learned: 'متعلَّمة',
     pinned: 'مثبّتة',
     unknown: 'غير معروف',
     coreAge: 'المركز أقدم · الأطراف أحدث',
     playTimeline: 'تشغيل خط الزمن',
-    pauseTimeline: 'إيقاف خط الزمن مؤقتا',
+    pauseTimeline: 'إيقاف خط الزمن مؤقتًا',
     timelineScrubber: 'شريط خط الزمن',
     editNode: kind => (kind === 'skill' ? 'تحرير المهارة…' : 'تحرير الذاكرة…'),
     archiveSkill: 'أرشفة المهارة',
     deleteMemory: 'حذف الذاكرة',
     editTitle: label => `تحرير ${label}`,
     deleteMemoryTitle: label => `حذف ${label}؟`,
-    deleteMemoryDescription: 'ستُحذف هذه الذاكرة نهائيا.'
+    deleteMemoryDescription: 'ستُحذف هذه الذاكرة نهائيًا.'
   },
 
   agents: {
     close: 'إغلاق الوكلاء',
     title: 'شجرة التفويض',
     subtitle: 'نشاط الوكلاء الفرعيين المباشر للدورة الحالية.',
-    emptyTitle: 'لا وكلاء فرعيين نشطون',
+    emptyTitle: 'لا يوجد وكلاء فرعيون نشطون',
     emptyDesc: 'عندما تفوّض دورة عملًا، يظهر تقدم الوكلاء الفرعيين هنا.',
     running: 'يعمل',
     failed: 'فشل',
@@ -2011,7 +2042,7 @@ export const ar: Translations = {
     ageHours: hours => `قبل ${hours} س`,
     durationSeconds: seconds => `${seconds} ث`,
     durationMinutes: (minutes, seconds) => `${minutes} د ${seconds} ث`,
-    tokens: value => `${value} وحدة`
+    tokens: value => `${value} توكن`
   },
 
   commandCenter: {
@@ -2027,7 +2058,7 @@ export const ar: Translations = {
     commandCenter: 'مركز الأوامر',
     appearance: 'المظهر',
     settings: 'الإعدادات',
-    changeTheme: 'تغيير السمة...',
+    changeTheme: 'تغيير السمة',
     pets: {
       title: 'الحيوانات',
       placeholder: 'ابحث عن حيوان…',
@@ -2043,7 +2074,7 @@ export const ar: Translations = {
       toggleFailed: 'تعذّر تبديل حالة الحيوان.',
       noneAvailable: 'لا حيوانات متاحة — اختر واحدًا أدناه لتثبيته.'
     },
-    changeColorMode: 'تغيير وضع الألوان...',
+    changeColorMode: 'تغيير وضع الألوان…',
     generatePet: {
       title: 'توليد حيوان',
       placeholder: 'صِف حيوانًا لتوليده…',
@@ -2068,7 +2099,7 @@ export const ar: Translations = {
       remixConfirmTitle: 'إعادة مزج هذا الشكل؟',
       remixConfirmBody: 'يولّد هذا مجموعة جديدة من المسودّات منطلقًا من هذا الشكل. قد يستغرق عدة دقائق.',
       genericError: 'فشل التوليد — أعد المحاولة أو اختر اقتراحًا.',
-      referenceImageTooLarge: 'الصورة المرجعية كبيرة جدًّا. استخدم واحدةً أصغر من ١٦ ميغابايت.',
+      referenceImageTooLarge: 'الصورة المرجعية كبيرة جدًّا. استخدم واحدةً أصغر من 16 ميغابايت.',
       referenceImageInvalid: 'تعذّر قراءة تلك الصورة المرجعية. جرّب صيغة PNG أو JPG أو WebP أو GIF.',
       reference: 'صورة مرجعية',
       addReference: 'إضافة صورة مرجعية',
@@ -2084,7 +2115,7 @@ export const ar: Translations = {
       startOver: 'البدء من جديد'
     },
     installTheme: {
-      title: 'تثبيت سمة...',
+      title: 'تثبيت سمة…',
       pageTitle: 'تثبيت السمة',
       placeholder: 'البحث في متجر VS Code...',
       loading: 'جارٍ البحث في المتجر...',
@@ -2096,26 +2127,26 @@ export const ar: Translations = {
       installs: count => `عمليات التثبيت: ${count}`
     },
     settingsFields: 'حقول الإعدادات',
-    mcpServers: 'خوادم بروتوكول سياق النموذج',
+    mcpServers: 'خوادم MCP',
     archivedChats: 'المحادثات المؤرشفة',
     sections: { maintenance: 'الصيانة', sessions: 'الجلسات', system: 'النظام', usage: 'الاستخدام' },
     sectionDescriptions: {
       maintenance: 'التشخيص والنسخ الاحتياطي وبيانات الذاكرة',
       sessions: 'البحث في الجلسات وإدارتها',
       system: 'الحالة والسجلات وإجراءات النظام',
-      usage: 'نشاط الوحدات والتكلفة والمهارات عبر الزمن'
+      usage: 'نشاط التوكنات والتكلفة والمهارات عبر الزمن'
     },
     nav: {
       newChat: { title: 'جلسة جديدة', detail: 'بدء جلسة جديدة' },
       settings: { title: 'الإعدادات', detail: 'ضبط هرمس لسطح المكتب' },
-      skills: { title: 'المهارات والأدوات', detail: 'تفعيل المهارات ومجموعات الأدوات والمزوّدين' },
+      skills: { title: 'المهارات والأدوات', detail: 'المهارات والأدوات وخوادم MCP' },
       messaging: { title: 'المراسلة', detail: 'إعداد تيليجرام وسلاك وديسكورد وغيرها' },
       artifacts: { title: 'المخرجات', detail: 'تصفح المخرجات المنشأة' }
     },
     sectionEntries: {
       sessions: { title: 'لوحة الجلسات', detail: 'البحث في الجلسات وتثبيتها وإدارتها' },
       system: { title: 'لوحة النظام', detail: 'حالة البوابة والسجلات وإعادة التشغيل والتحديث' },
-      usage: { title: 'لوحة الاستخدام', detail: 'نشاط الوحدات والتكلفة والمهارات' }
+      usage: { title: 'لوحة الاستخدام', detail: 'نشاط التوكنات والتكلفة والمهارات' }
     },
     providerNavigate: 'التنقل',
     providerSessions: 'الجلسات',
@@ -2143,7 +2174,7 @@ export const ar: Translations = {
     days: count => `${count} ي`,
     statSessions: 'الجلسات',
     statApiCalls: 'استدعاءات الواجهة البرمجية',
-    statTokens: 'الوحدات الداخلة والخارجة',
+    statTokens: 'توكنات الإدخال والإخراج',
     statCost: 'التكلفة المقدرة',
     actualCost: cost => `الفعلية ${cost}`,
     loadingUsage: 'جارٍ تحميل الاستخدام...',
@@ -2156,7 +2187,7 @@ export const ar: Translations = {
             ? `لا استخدام خلال آخر ${period} أيام.`
             : `لا استخدام خلال آخر ${period} يومًا.`,
     retry: 'إعادة المحاولة',
-    dailyTokens: 'الوحدات اليومية',
+    dailyTokens: 'التوكنات اليومية',
     dayUsageTooltip: (day, input, output) => `اليوم ${day} · إدخال ${input} · إخراج ${output}`,
     input: 'إدخال',
     output: 'إخراج',
@@ -2172,13 +2203,13 @@ export const ar: Translations = {
     maintenance: {
       runOps: 'التشخيص',
       doctor: 'تشغيل الفاحص',
-      doctorDesc: 'فحص صحة التثبيت والإعداد والمزودات',
+      doctorDesc: 'فحص صحة التثبيت والإعداد والمزوّدين',
       securityAudit: 'التدقيق الأمني',
       securityAuditDesc: 'فحص الإعداد والمهارات بحثًا عن إعدادات خطرة',
       backup: 'إنشاء نسخة احتياطية',
       backupDesc: 'ضغط الإعداد والذكريات والمهارات والجلسات',
       debugShare: 'مشاركة التصحيح',
-      debugShareDesc: 'رفع تقرير مموه مع السجلات والحصول على روابط قابلة للمشاركة (تُحذف تلقائيًا خلال ٦ ساعات)',
+      debugShareDesc: 'رفع تقرير مموه مع السجلات والحصول على روابط قابلة للمشاركة (تُحذف تلقائيًا خلال 6 ساعات)',
       debugShareRunning: 'جارٍ رفع تقرير التصحيح...',
       debugShareLinks: 'روابط المشاركة',
       debugShareFailed: 'فشلت مشاركة التصحيح',
@@ -2269,7 +2300,7 @@ export const ar: Translations = {
       google_chat: 'اربط هرمس بمحادثات Google عبر النشر والاشتراك السحابي.',
       wecom: 'بوت مجموعة في وي كوم للإرسال فقط عبر خطاف ويب.',
       wecom_callback: 'تكامل ثنائي الاتجاه مع وي كوم عبر تطبيق رد الاتصال.',
-      weixin: 'اربط حساب وي تشات شخصيا عبر واجهة بوت آي لينك من تنسنت.',
+      weixin: 'اربط حساب وي تشات شخصيًا عبر واجهة بوت آي لينك من تنسنت.',
       qqbot: 'اربط هرمس ببوت كيو كيو من منصته المفتوحة.',
       teams: 'اربط هرمس بقنوات مايكروسوفت تيمز ومحادثاته.',
       yuanbao: 'اربط هرمس بخدمة يوانباو من تنسنت.',
@@ -2362,7 +2393,7 @@ export const ar: Translations = {
         label: 'معرّفات مستخدمي ديسكورد المسموح لهم',
         help: 'موصى به. معرّفات مستخدمي ديسكورد مفصولة بفواصل.'
       },
-      DISCORD_REPLY_TO_MODE: { label: 'أسلوب الرد', help: 'الرسالة الأولى أو كل الرسائل أو الإيقاف.' },
+      DISCORD_REPLY_TO_MODE: { label: 'أسلوب الرد', help: 'first أو all أو off.' },
       DISCORD_ALLOW_ALL_USERS: {
         label: 'السماح لجميع مستخدمي ديسكورد',
         help: 'للتطوير فقط. عند تفعيله يستطيع أي شخص مراسلة البوت دون قائمة سماح.'
@@ -2389,12 +2420,12 @@ export const ar: Translations = {
       QQBOT_HOME_CHANNEL_NAME: { label: 'اسم قناة كيو كيو الرئيسية' },
       SLACK_BOT_TOKEN: {
         label: 'رمز بوت سلاك',
-        help: 'استخدم رمز البوت من صفحة أو أوث والأذونات بعد تثبيت تطبيق سلاك.',
+        help: 'استخدم رمز البوت من صفحة OAuth & Permissions بعد تثبيت تطبيق سلاك.',
         placeholder: 'الصق رمز بوت سلاك'
       },
       SLACK_APP_TOKEN: {
         label: 'رمز تطبيق سلاك',
-        help: 'استخدم رمز مستوى التطبيق المطلوب لوضع المقبس.',
+        help: 'استخدم رمز مستوى التطبيق المطلوب لـ Socket Mode.',
         placeholder: 'الصق رمز تطبيق سلاك'
       },
       SLACK_ALLOWED_USERS: {
@@ -2503,9 +2534,9 @@ export const ar: Translations = {
       SIGNAL_HTTP_URL: {
         label: 'رابط جسر سيجنال',
         placeholder: 'http://127.0.0.1:8080',
-        help: 'رابط جسر سيجنال البرمجي الذي يعمل حاليًا.'
+        help: 'رابط جسر signal-cli REST الذي يعمل حاليًا.'
       },
-      SIGNAL_ACCOUNT: { label: 'رقم الهاتف', help: 'الرقم المسجل في جسر سيجنال.' },
+      SIGNAL_ACCOUNT: { label: 'رقم الهاتف', help: 'الرقم المسجل في جسر signal-cli.' },
       SIGNAL_ALLOWED_USERS: {
         label: 'مستخدمو سيجنال المسموح لهم',
         help: 'موصى به. معرّفات سيجنال مفصولة بفواصل.'
@@ -2557,7 +2588,7 @@ export const ar: Translations = {
       },
       EMAIL_SMTP_PORT: {
         label: 'منفذ خادم الإرسال',
-        help: 'منفذ خادم إرسال البريد، وقيمته الافتراضية ٥٨٧.'
+        help: 'منفذ خادم إرسال البريد، وقيمته الافتراضية 587.'
       },
       TWILIO_ACCOUNT_SID: {
         label: 'معرّف حساب تويليو',
@@ -2940,7 +2971,7 @@ export const ar: Translations = {
         label: 'تفعيل الويب هوك',
         help: 'يفعّل محوّل خطاف الويب لاستقبال الأحداث من GitHub وجيت لاب وغيرهما.'
       },
-      WEBHOOK_PORT: { label: 'منفذ الويب هوك', help: 'منفذ خادم الويب للخطاف، وقيمته الافتراضية ٨٦٤٤.' },
+      WEBHOOK_PORT: { label: 'منفذ الويب هوك', help: 'منفذ خادم الويب للخطاف، وقيمته الافتراضية 8644.' },
       WEBHOOK_SECRET: { label: 'سر الويب هوك', help: 'سر عام للتحقق من توقيعات خطاف الويب.' }
     },
     platformIntro: {
@@ -2995,9 +3026,9 @@ export const ar: Translations = {
     allProfiles: 'جميع الملفات الشخصية',
     showAllProfiles: 'إظهار جميع الملفات الشخصية',
     switchToProfile: name => `الانتقال إلى ${name}`,
-    manageProfiles: 'إدارة الملفات الشخصية...',
+    manageProfiles: 'إدارة الملفات الشخصية…',
     actionsFor: name => `إجراءات ${name}`,
-    color: 'اللون...',
+    color: 'اللون…',
     colorFor: name => `لون ${name}`,
     setColor: color => `ضبط اللون ${color}`,
     autoColor: 'تلقائي',
@@ -3118,7 +3149,7 @@ export const ar: Translations = {
     dayFallback: value => `اليوم رقم ${value}`,
     everyDayAt: time => `كل يوم عند ${time}`,
     weekdaysAt: time => `أيام العمل عند ${time}`,
-    everyDayOfWeekAt: (day, time) => `كل ${day} عند ${time}`,
+    everyDayOfWeekAt: (day, time) => `${day} من كل أسبوع عند ${time}`,
     monthlyOnDayAt: (dayOfMonth, time) => `شهريًا في اليوم ${dayOfMonth} عند ${time}`,
     topOfHour: 'عند بداية كل ساعة',
     everyHourAt: minute => `كل ساعة عند :${minute}`,
@@ -3160,7 +3191,7 @@ export const ar: Translations = {
     editTitle: 'تعديل المهمة المجدولة',
     createTitle: 'مهمة مجدولة جديدة',
     editDesc: 'حدّث الجدول أو الموجّه أو وجهة التسليم. تُطبق التغييرات في التشغيل التالي.',
-    createDesc: 'جدول موجّهًا ليعمل تلقائيًا. استخدم تعبيرًا زمنيًا أو عبارة طبيعية مثل «كل خمس عشرة دقيقة».',
+    createDesc: 'جدول موجّهًا ليعمل تلقائيًا. استخدم تعبيرًا زمنيًا أو عبارة طبيعية مثل «كل 15 دقيقة».',
     nameLabel: 'الاسم',
     namePlaceholder: 'الموجز الصباحي',
     promptLabel: 'الموجّه',
@@ -3602,10 +3633,11 @@ export const ar: Translations = {
     copy: 'نسخ',
     copied: 'نُسخ',
     done: 'تم',
-    applyingBody: 'ستتولى أداة تحديث هرمس العملية في نافذتها، ثم تعيد فتح هرمس عند الانتهاء.',
+    applyingBody:
+      'ستتولى أداة تحديث هرمس العملية في نافذتها، ثم تعيد فتح هرمس تلقائيًا عند الانتهاء. رجاءً لا تفتح هرمس بنفسك أثناء التحديث.',
     applyingBodyBackend:
       'تطبّق الواجهة الخلفية البعيدة التحديث وستُعاد تشغيلها. يعيد هرمس الاتصال تلقائيًا عند عودتها.',
-    applyingClose: 'سيُغلق هرمس لتطبيق التحديث.',
+    applyingClose: 'ستُغلق هذه النافذة أثناء تنفيذ التحديث، ثم يعاود هرمس الفتح من تلقاء نفسه.',
     errorTitle: 'لم يكتمل التحديث',
     errorBody: 'لم تُفقد أي بيانات. يمكنك إعادة المحاولة الآن.',
     notNow: 'ليس الآن',
@@ -3642,14 +3674,20 @@ export const ar: Translations = {
       'فشلت إحدى خطوات التثبيت. قد يحدث هذا على ويندوز إذا كان مثيل آخر من سطر أوامر هرمس أو سطح المكتب يعمل. أوقف أي مثيلات عاملة ثم أعد المحاولة. راجع التفاصيل أدناه أو سجل سطح المكتب للنص الكامل.',
     activeDesc:
       'هذا إعداد لمرة واحدة. ينزّل مثبّت هرمس التبعيات ويضبط جهازك. ستتجاوز عمليات التشغيل التالية هذه الخطوة.',
-    progress: (completed, total) =>
-      total === 1
-        ? `اكتملت ${completed} من خطوة واحدة`
-        : total === 2
-          ? `اكتملت ${completed} من خطوتين`
-          : total <= 10
-            ? `اكتملت ${completed} من ${total} خطوات`
-            : `اكتملت ${completed} من ${total} خطوة`,
+    progress: (completed, total) => {
+      const outOf =
+        total === 1 ? 'خطوة واحدة' : total === 2 ? 'خطوتين' : total <= 10 ? `${total} خطوات` : `${total} خطوة`
+
+      if (completed === 1) {
+        return `اكتملت خطوة واحدة من ${outOf}`
+      }
+
+      if (completed === 2) {
+        return `اكتملت خطوتان من ${outOf}`
+      }
+
+      return `اكتملت ${completed} من ${outOf}`
+    },
     currentStage: stage => ` — الآن: ${stage}`,
     fetchingManifest: 'جارٍ جلب بيان المثبّت...',
     error: 'خطأ',
@@ -3679,17 +3717,17 @@ export const ar: Translations = {
     recommended: 'موصى به',
     connected: 'متصل',
     featuredPitch: 'اشتراك واحد وأكثر من 300 نموذج متقدم؛ الطريقة الموصى بها لتشغيل هرمس',
-    fireworksPitch: 'واجهة نماذج مباشرة لنماذج متقدمة تستضيفها فايرووركس',
+    fireworksPitch: 'واجهة نماذج مباشرة لنماذج متقدمة تستضيفها Fireworks',
     openRouterPitch: 'مفتاح واحد ومئات النماذج؛ خيار افتراضي جيد',
     openRouterName: 'OpenRouter',
     providerNames: {
       nous: 'Nous Portal',
-      'openai-codex': 'OpenAI Codex',
+      'openai-codex': 'OpenAI OAuth (ChatGPT)',
       'minimax-oauth': 'MiniMax',
       'qwen-oauth': 'Qwen Code',
       'xai-oauth': 'xAI Grok',
-      anthropic: 'Anthropic',
-      'claude-code': 'Claude Code'
+      anthropic: 'Anthropic API Key',
+      'claude-code': 'Anthropic OAuth: Required Extra Usage Credits to Use Subscription'
     },
     apiKeyOptions: {
       fireworks: {
@@ -3705,7 +3743,8 @@ export const ar: Translations = {
       xai: { short: 'نماذج Grok', description: 'وصول مباشر إلى نماذج xAI Grok.' },
       local: {
         short: 'مستضاف ذاتيًا',
-        description: 'وجّه هرمس إلى نقطة نهاية محلية أو مستضافة ذاتيًا متوافقة مع OpenAI.'
+        description:
+          'وجّه هرمس إلى نقطة نهاية محلية أو مستضافة ذاتيًا متوافقة مع OpenAI (vLLM أو llama.cpp أو Ollama وغيرها).'
       }
     },
     backToSignIn: 'العودة إلى تسجيل الدخول',
@@ -3747,7 +3786,7 @@ export const ar: Translations = {
     freeTier: 'الفئة المجانية',
     pro: 'احترافي',
     free: 'مجاني',
-    price: (input, output) => `${input} إدخال / ${output} إخراج لكل مليون وحدة`,
+    price: (input, output) => `${input} إدخال / ${output} إخراج لكل مليون توكن`,
     change: 'تغيير',
     startChatting: 'بدء',
     docs: provider => `توثيق ${provider}`,
@@ -3809,7 +3848,7 @@ export const ar: Translations = {
     proNeedsSubscription: 'تحتاج النماذج الاحترافية إلى اشتراك Nous مدفوع.',
     free: 'مجاني',
     freeTier: 'الفئة المجانية',
-    priceTitle: 'سعر الإدخال والإخراج لكل مليون وحدة'
+    priceTitle: 'سعر الإدخال والإخراج لكل مليون توكن'
   },
 
   modelVisibility: {
@@ -3840,8 +3879,8 @@ export const ar: Translations = {
       minimal: 'أدنى',
       low: 'منخفض',
       medium: 'متوسط',
-      high: 'مرتفع',
-      xhigh: 'عالٍ جدًا',
+      high: 'عالٍ',
+      xhigh: 'فائق',
       max: 'أقصى',
       ultra: 'خارق',
       updateFailed: 'فشل تحديث خيار النموذج',
@@ -3885,7 +3924,7 @@ export const ar: Translations = {
             : count <= 10
               ? `متأخر عن ${branch} بـ ${count} إيداعات`
               : `متأخر عن ${branch} بـ ${count} إيداعًا`,
-      tokensShort: value => `${value} وحدة`,
+      tokensShort: value => `${value} توكن`,
       reasoningShort: {
         none: 'إيقاف',
         minimal: 'أدنى',
@@ -3937,7 +3976,7 @@ export const ar: Translations = {
       contextUsagePanel: {
         categories: {
           conversation: 'المحادثة',
-          mcp: 'بروتوكول سياق النموذج',
+          mcp: 'MCP',
           memory: 'الذاكرة',
           rules: 'القواعد',
           skills: 'المهارات',
@@ -3947,9 +3986,9 @@ export const ar: Translations = {
         },
         empty: 'لا بيانات سياق بعد',
         loading: 'جارٍ تحميل التفصيل…',
-        percentFull: percent => `ممتلئ ${percent}٪`,
+        percentFull: percent => `ممتلئ ${percent}%`,
         title: 'استخدام السياق',
-        tokenSummary: (used, max) => `${used} / ${max} رمز`
+        tokenSummary: (used, max) => `${used} / ${max} توكن`
       },
       openContextUsage: 'فتح تفصيل استخدام السياق',
       session: 'الجلسة',
@@ -3960,6 +3999,7 @@ export const ar: Translations = {
         'وضع التجاوز التلقائي معطّل؛ انقر للموافقة تلقائيًا على الأوامر الخطرة، أو انقر مع مفتاح التبديل لتبديله عامًا.',
       modelNone: 'لا شيء',
       noModel: 'لا نموذج',
+      noModelName: 'لا نموذج',
       switchModel: 'تبديل النموذج',
       openModelPicker: 'فتح منتقي النموذج',
       modelPinned: 'مثبّت باختيارك؛ تستخدم المحادثات الجديدة هذا بدل الإعداد الافتراضي',
@@ -3985,7 +4025,7 @@ export const ar: Translations = {
     previewUnavailable: 'المعاينة غير متاحة',
     couldNotPreview: path => `تعذرت معاينة ${path}`,
     noProjectTitle: 'لا يوجد مشروع',
-    noProjectBody: 'اضبط مجلد عمل من شريط الحالة لتصفح الملفات.',
+    noProjectBody: 'افتح مشروعًا لتصفح ملفاته ومراجعة التغييرات.',
     noProjectOpen: 'لا مشروع مفتوح',
     noDiffs: 'لا فروق',
     unreadableTitle: 'غير قابل للقراءة',
@@ -4009,7 +4049,7 @@ export const ar: Translations = {
     tab: 'المعاينة',
     closeTab: label => `إغلاق ${label}`,
     closeOthers: 'إغلاق الأخرى',
-    closeToRight: 'إغلاق ما على اليمين',
+    closeToRight: 'إغلاق التبويبات التالية',
     closeAll: 'إغلاق الكل',
     closePane: 'إغلاق لوحة المعاينة',
     loading: 'جارٍ تحميل المعاينة',
@@ -4136,7 +4176,7 @@ export const ar: Translations = {
       'هذه المحادثة ما تزال تعمل (أو تنتظر إدخالك). إغلاق التبويب يخفيها — تحتفظ الجلسة بتقدّمها ويمكن إعادة فتحها من الشريط الجانبي.',
     closeRunningConfirm: 'إغلاق التبويب',
     closeOthers: 'إغلاق البقية',
-    closeToRight: 'إغلاق ما على اليمين',
+    closeToRight: 'إغلاق التبويبات التالية',
     closeAll: 'إغلاق الكل',
     split: dir => `تقسيم ${dir}`,
     move: dir => `نقل ${dir}`,
@@ -4387,6 +4427,7 @@ export const ar: Translations = {
     setProfileFailed: 'فشل ضبط الملف الشخصي',
     sttDisabled: 'تحويل الكلام إلى نص معطّل في الإعدادات.',
     stopFailed: 'فشل الإيقاف',
+    stopProcessFailed: 'تعذّر إيقاف العملية',
     regenerateFailed: 'فشلت إعادة الإنشاء',
     editFailed: 'فشل التعديل',
     resumeFailed: 'فشل الاستئناف',

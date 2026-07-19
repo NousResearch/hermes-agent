@@ -350,7 +350,7 @@ gateway:
     label_output_tokens:      "توكنات الإخراج: {count}"
     label_total:              "الإجمالي: {count}"
     breakdown_header:         "🧩 **تفصيل السياق** _(تقديريّ)_"
-    breakdown_line:           "• {label}: ~{count} ({pct}٪)"
+    breakdown_line:           "• {label}: ~{count} ({pct}%)"
     breakdown_cat_system_prompt: "موجّه النظام"
     breakdown_cat_tool_definitions: "تعريفات الأدوات"
     breakdown_cat_rules:      "القواعد"
@@ -373,7 +373,7 @@ gateway:
     reset_wrong_provider:     "تصفير الاستخدام المُجمَّع متاح فقط على مزوّد openai-codex. بدّل المزوّد أولًا عبر `/model`."
 
   credits:
-    not_logged_in:            "لست مسجّل الدخول إلى مدخل نوس. سجّل الدخول لعرض رصيدك وإعادة الشحن."
+    not_logged_in:            "لست مسجّل الدخول إلى Nous Portal. سجّل الدخول لعرض رصيدك وإعادة الشحن."
 
   verbose:
     not_enabled:           "الأمر `/verbose` غير مفعّل لمنصات المراسلة.\n\nفعّله في `config.yaml`:\n```yaml\ndisplay:\n  tool_progress_command: true\n```"

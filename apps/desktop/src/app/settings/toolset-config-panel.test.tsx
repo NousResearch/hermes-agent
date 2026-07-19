@@ -203,7 +203,7 @@ describe('ToolsetConfigPanel', () => {
 
     expect(await screen.findByText('OpenAI')).toBeTruthy()
     expect(screen.getByText('مدفوع')).toBeTruthy()
-    expect(await screen.findByText('نحو أربعين ثانية')).toBeTruthy()
+    expect(await screen.findByText('نحو 40 ثانية')).toBeTruthy()
     expect(screen.getByText('متوازن، وهو الافتراضي.')).toBeTruthy()
     expect(screen.getByText('متغير')).toBeTruthy()
   })

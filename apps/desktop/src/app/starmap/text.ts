@@ -27,7 +27,7 @@ export function metaBadges(n: StarmapNode, t: Translations, locale: string): str
   const out: string[] = [formatDate(n.timestamp, locale, t.starmap.unknown)]
 
   if (n.kind === 'memory') {
-    out.push(n.memorySource === 'profile' ? t.starmap.profileMemory : t.starmap.memory)
+    out.push(n.memorySource === 'profile' ? t.starmap.profileMemory : t.starmap.memoryBadge)
   } else {
     // The raw backend slug is the badge, exactly as it always was — prettifying
     // it here would rewrite `smart-home` into `Smart Home` for English users.

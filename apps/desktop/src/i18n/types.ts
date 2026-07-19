@@ -1020,6 +1020,7 @@ export interface Translations {
     importedBadge: string
     resetToMine: string
     skill: string
+    memoryBadge: string
     profileMemory: string
     learned: string
     pinned: string
@@ -2035,6 +2036,7 @@ export interface Translations {
       yoloOff: string
       modelNone: string
       noModel: string
+      noModelName: string
       switchModel: string
       openModelPicker: string
       modelPinned: string
@@ -2367,6 +2369,7 @@ export interface Translations {
     setProfileFailed: string
     sttDisabled: string
     stopFailed: string
+    stopProcessFailed: string
     regenerateFailed: string
     editFailed: string
     resumeFailed: string

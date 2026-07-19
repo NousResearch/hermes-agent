@@ -249,17 +249,39 @@ def test_resolve_discovery_timeout_reads_config(monkeypatch):
     assert mcp_startup._resolve_discovery_timeout(None) == 8.0
 
 
+def test_resolve_discovery_timeout_default_is_remote_cold_start_sane(monkeypatch):
+    from hermes_cli import mcp_startup
+    import hermes_cli.config as cfg
+
+    monkeypatch.setattr(cfg, "load_config", lambda: {})
+
+    default = mcp_startup._resolve_discovery_timeout(None)
+
+    assert 10.0 <= default <= 30.0
+
+
 def test_resolve_discovery_timeout_falls_back_on_bad_value(monkeypatch):
     from hermes_cli import mcp_startup
     import hermes_cli.config as cfg
 
     # Non-positive / unparsable → DEFAULT_CONFIG value, never hang.
-    default = float(cfg.DEFAULT_CONFIG.get("mcp_discovery_timeout", 1.5))
+    default = float(cfg.DEFAULT_CONFIG.get("mcp_discovery_timeout", 15.0))
     monkeypatch.setattr(cfg, "load_config", lambda: {"mcp_discovery_timeout": 0})
     assert mcp_startup._resolve_discovery_timeout(None) == default
 
     monkeypatch.setattr(cfg, "load_config", lambda: {"mcp_discovery_timeout": "oops"})
     assert mcp_startup._resolve_discovery_timeout(None) == default
+
+
+def test_resolve_discovery_timeout_uses_default_when_config_load_fails(monkeypatch):
+    from hermes_cli import mcp_startup
+    import hermes_cli.config as cfg
+
+    monkeypatch.setattr(cfg, "load_config", lambda: (_ for _ in ()).throw(RuntimeError("boom")))
+
+    default = mcp_startup._resolve_discovery_timeout(None)
+
+    assert 10.0 <= default <= 30.0
 
 
 def test_stale_generation_refresh_does_not_clobber_newer(monkeypatch):

@@ -56,19 +56,22 @@ def _resolve_discovery_timeout(explicit: "float | None") -> float:
     Reads ``mcp_discovery_timeout`` from config.yaml, defaulting to the value in
     ``DEFAULT_CONFIG`` (single source of truth) when the key is absent. Kept lazy
     and fail-safe — a missing/invalid value or a broken config falls back to a
-    short safe bound so startup can never hang or crash.
+    finite safe bound so startup can never hang or crash.
     """
     if explicit is not None:
         return explicit
     try:
         from hermes_cli.config import load_config, DEFAULT_CONFIG
 
-        default = float(DEFAULT_CONFIG.get("mcp_discovery_timeout", 1.5))
-        raw = (load_config() or {}).get("mcp_discovery_timeout", default)
-        val = float(raw)
-        return val if val > 0 else default
+        default = float(DEFAULT_CONFIG.get("mcp_discovery_timeout", 15.0))
+        try:
+            raw = (load_config() or {}).get("mcp_discovery_timeout", default)
+            val = float(raw)
+            return val if val > 0 else default
+        except Exception:
+            return default
     except Exception:
-        return 1.5
+        return 15.0
 
 
 def _discover_mcp_tools_without_interactive_oauth() -> None:
@@ -98,6 +101,26 @@ def wait_for_mcp_discovery(timeout: "float | None" = None) -> None:
     if thread is None or not thread.is_alive():
         return
     thread.join(timeout=_resolve_discovery_timeout(timeout))
+
+
+def ensure_mcp_discovery_before_agent_build(
+    *,
+    logger,
+    timeout: "float | None" = None,
+    thread_name: str = "cli-mcp-discovery",
+) -> None:
+    """Give configured MCP tools a bounded chance to register before AIAgent.
+
+    Non-interactive first turns can build ``AIAgent`` before the normal banner
+    or tool-list paths touch ``get_tool_definitions()``.  This keeps startup
+    fail-open while preserving the existing background discovery path, including
+    OAuth prompt suppression and the configured timeout bound.
+    """
+    try:
+        start_background_mcp_discovery(logger=logger, thread_name=thread_name)
+        wait_for_mcp_discovery(timeout=timeout)
+    except Exception:
+        logger.debug("MCP discovery readiness check failed before agent build", exc_info=True)
 
 
 def mcp_discovery_in_flight() -> bool:

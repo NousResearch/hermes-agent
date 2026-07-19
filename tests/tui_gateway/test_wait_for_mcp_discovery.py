@@ -7,6 +7,7 @@ discovery thread before building — bounded, so a dead server can't re-introduc
 the startup hang, and a no-op once discovery has finished.
 """
 
+import builtins
 import threading
 import time
 
@@ -75,4 +76,34 @@ def test_hung_thread_is_bounded_by_timeout():
         assert t.is_alive()  # thread still running; we did not block on it
     finally:
         stop.set()
+        _restore_thread_slot(saved)
+
+
+def test_import_failure_fallback_bound_is_remote_cold_start_sane(monkeypatch):
+    """If the shared resolver cannot import, the emergency bound is still
+    long enough for ordinary cold remote startup and finite."""
+    saved = entry._mcp_discovery_thread
+    original_import = builtins.__import__
+    joined = {}
+
+    class FakeThread:
+        def is_alive(self):
+            return True
+
+        def join(self, timeout=None):
+            joined["timeout"] = timeout
+
+    def fake_import(name, *args, **kwargs):
+        if name == "hermes_cli.mcp_startup":
+            raise ImportError("blocked for test")
+        return original_import(name, *args, **kwargs)
+
+    try:
+        entry._mcp_discovery_thread = FakeThread()
+        monkeypatch.setattr(builtins, "__import__", fake_import)
+
+        entry.wait_for_mcp_discovery()
+
+        assert 10.0 <= joined["timeout"] <= 30.0
+    finally:
         _restore_thread_slot(saved)

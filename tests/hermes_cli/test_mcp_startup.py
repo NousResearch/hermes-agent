@@ -14,6 +14,7 @@ import pytest
 import cli as cli_mod
 from hermes_cli import main as main_mod
 from hermes_cli import mcp_startup
+from hermes_cli import oneshot as oneshot_mod
 
 
 @pytest.fixture(autouse=True)
@@ -198,8 +199,51 @@ def test_cli_get_tool_definitions_briefly_waits_for_fast_mcp_thread(monkeypatch)
     assert not thread.is_alive()
 
 
-def test_init_agent_waits_for_mcp_discovery_before_agent_build(monkeypatch):
-    waited = {"done": False}
+def test_ensure_mcp_discovery_starts_and_waits_for_configured_servers(monkeypatch):
+    events: list[str] = []
+
+    class SuppressInteractiveOAuth:
+        def __enter__(self):
+            events.append("oauth-enter")
+
+        def __exit__(self, *_exc):
+            events.append("oauth-exit")
+
+    def _discover():
+        events.append("discover")
+
+    monkeypatch.setitem(
+        sys.modules,
+        "hermes_cli.config",
+        types.SimpleNamespace(
+            read_raw_config=lambda: {"mcp_servers": {"demo": {"transport": "stdio"}}},
+        ),
+    )
+    monkeypatch.setitem(
+        sys.modules,
+        "tools.mcp_oauth",
+        types.SimpleNamespace(
+            suppress_interactive_oauth=lambda: SuppressInteractiveOAuth(),
+        ),
+    )
+    monkeypatch.setitem(
+        sys.modules,
+        "tools.mcp_tool",
+        types.SimpleNamespace(discover_mcp_tools=_discover),
+    )
+
+    mcp_startup.ensure_mcp_discovery_before_agent_build(
+        logger=types.SimpleNamespace(debug=lambda *_a, **_k: None),
+        timeout=1.0,
+    )
+
+    assert events == ["oauth-enter", "discover", "oauth-exit"]
+    assert mcp_startup._mcp_discovery_thread is not None
+    assert not mcp_startup._mcp_discovery_thread.is_alive()
+
+
+def test_init_agent_ensures_mcp_discovery_before_agent_build(monkeypatch):
+    calls: list[str] = []
 
     cli = cli_mod.HermesCLI(compact=True)
     cli._session_db = object()
@@ -211,14 +255,75 @@ def test_init_agent_waits_for_mcp_discovery_before_agent_build(monkeypatch):
 
     monkeypatch.setattr(
         mcp_startup,
-        "wait_for_mcp_discovery",
-        lambda timeout=0.75: waited.__setitem__("done", True),
+        "ensure_mcp_discovery_before_agent_build",
+        lambda *, logger, timeout=None, thread_name="cli-mcp-discovery": calls.append("mcp"),
+        raising=False,
     )
 
     def _fake_agent(*_a, **_k):
-        assert waited["done"] is True
+        calls.append("agent")
         return types.SimpleNamespace()
 
     monkeypatch.setattr(cli_mod, "AIAgent", _fake_agent)
 
     assert cli._init_agent() is True
+    assert calls == ["mcp", "agent"]
+
+
+def test_oneshot_run_agent_ensures_mcp_discovery_before_agent_build(monkeypatch):
+    calls: list[str] = []
+
+    monkeypatch.setitem(
+        sys.modules,
+        "hermes_cli.config",
+        types.SimpleNamespace(load_config=lambda: {"model": {"default": "demo-model"}}),
+    )
+    monkeypatch.setitem(
+        sys.modules,
+        "hermes_cli.models",
+        types.SimpleNamespace(detect_provider_for_model=lambda *_a, **_k: None),
+    )
+    monkeypatch.setitem(
+        sys.modules,
+        "hermes_cli.runtime_provider",
+        types.SimpleNamespace(
+            resolve_runtime_provider=lambda **_k: {
+                "api_key": "key",
+                "base_url": "https://example.test/v1",
+                "provider": "openai",
+                "api_mode": "chat_completions",
+            }
+        ),
+    )
+    monkeypatch.setitem(
+        sys.modules,
+        "hermes_cli.tools_config",
+        types.SimpleNamespace(_get_platform_tools=lambda *_a, **_k: {"terminal"}),
+    )
+    monkeypatch.setattr(oneshot_mod, "_create_session_db_for_oneshot", lambda: object())
+    monkeypatch.setattr(oneshot_mod, "get_fallback_chain", lambda _cfg: [])
+    monkeypatch.setattr(
+        mcp_startup,
+        "ensure_mcp_discovery_before_agent_build",
+        lambda *, logger, timeout=None, thread_name="cli-mcp-discovery": calls.append("mcp"),
+        raising=False,
+    )
+
+    class FakeAgent:
+        def __init__(self, *_a, **_k):
+            calls.append("agent")
+
+        def run_conversation(self, prompt):
+            return {"final_response": f"ok: {prompt}"}
+
+    monkeypatch.setitem(
+        sys.modules,
+        "run_agent",
+        types.SimpleNamespace(AIAgent=FakeAgent),
+    )
+
+    response, result = oneshot_mod._run_agent("hello")
+
+    assert response == "ok: hello"
+    assert result["final_response"] == "ok: hello"
+    assert calls == ["mcp", "agent"]

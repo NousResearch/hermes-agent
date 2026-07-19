@@ -179,6 +179,40 @@ def test_non_stream_preserves_raw_provider_response_identity(relay_turn):
     assert result is raw_response
 
 
+def test_non_stream_defers_logical_success_and_reuses_scope_for_retry(relay_turn):
+    _relay, turn = relay_turn
+    metadata = {"api_mode": "custom", "api_request_id": "request-retry"}
+
+    first = relay_llm.execute(
+        {"model": "test-model", "messages": []},
+        lambda _request: {"content": "invalid"},
+        session_id="session-1",
+        name="test-provider",
+        model_name="test-model",
+        metadata=metadata,
+        defer_logical_completion=True,
+    )
+    first_handle = turn.logical_llm_calls["request-retry"]
+
+    second = relay_llm.execute(
+        {"model": "test-model", "messages": []},
+        lambda _request: {"content": "valid"},
+        session_id="session-1",
+        name="test-provider",
+        model_name="test-model",
+        metadata=metadata,
+        defer_logical_completion=True,
+    )
+
+    assert first == {"content": "invalid"}
+    assert second == {"content": "valid"}
+    assert turn.logical_llm_calls == {"request-retry": first_handle}
+
+    relay_llm.complete_logical_call("request-retry", outcome="success")
+
+    assert turn.logical_llm_calls == {}
+
+
 def test_non_stream_result_survives_logical_scope_close_failure(
     relay_turn, monkeypatch
 ):
@@ -228,6 +262,51 @@ async def test_async_non_stream_preserves_raw_provider_response_identity(relay_t
     )
 
     assert result is raw_response
+
+
+@pytest.mark.asyncio
+async def test_async_non_stream_defers_logical_success_for_validation(relay_turn):
+    _relay, turn = relay_turn
+
+    async def provider(_request):
+        return {"content": "pending-validation"}
+
+    await relay_llm.execute_current_async(
+        {"model": "test-model", "messages": []},
+        provider,
+        name="test-provider",
+        model_name="test-model",
+        metadata={"api_mode": "custom", "api_request_id": "request-async-defer"},
+        defer_logical_completion=True,
+    )
+
+    assert "request-async-defer" in turn.logical_llm_calls
+
+    relay_llm.complete_logical_call("request-async-defer", outcome="success")
+
+    assert turn.logical_llm_calls == {}
+
+
+def test_stream_defers_logical_success_for_response_validation(relay_turn):
+    _relay, turn = relay_turn
+
+    stream = relay_llm.stream(
+        {"model": "test-model", "messages": []},
+        lambda _request: iter([{"delta": "pending-validation"}]),
+        session_id="session-1",
+        name="test-provider",
+        model_name="test-model",
+        finalizer=lambda: {"content": "pending-validation"},
+        metadata={"api_mode": "custom", "api_request_id": "request-stream-defer"},
+        defer_logical_completion=True,
+    )
+
+    assert list(stream) == [{"delta": "pending-validation"}]
+    assert "request-stream-defer" in turn.logical_llm_calls
+
+    relay_llm.complete_logical_call("request-stream-defer", outcome="success")
+
+    assert turn.logical_llm_calls == {}
 
 
 def test_current_attempt_bypasses_relay_without_an_active_turn(monkeypatch):

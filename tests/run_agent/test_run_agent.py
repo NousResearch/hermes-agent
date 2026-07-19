@@ -6080,6 +6080,50 @@ class TestRetryExhaustion:
         assert "Invalid API response" in result["error"]
         assert result.get("final_response") == result["error"]
 
+    def test_invalid_response_retry_completes_one_logical_call(self, agent):
+        self._setup_agent(agent)
+        agent.client.chat.completions.create.side_effect = [
+            SimpleNamespace(choices=[], model="test/model", usage=None),
+            _mock_response(content="recovered"),
+        ]
+        relay_attempts = []
+        logical_completions = []
+
+        def execute(request, callback, **kwargs):
+            relay_attempts.append(kwargs)
+            return callback(request)
+
+        from agent import conversation_loop as _conv_loop
+
+        with (
+            patch.object(agent, "_persist_session"),
+            patch.object(agent, "_save_trajectory"),
+            patch.object(agent, "_cleanup_task_resources"),
+            patch("run_agent.time", self._make_fast_time_mock()),
+            patch.object(_conv_loop, "time", self._make_fast_time_mock()),
+            patch.object(_conv_loop, "jittered_backoff", lambda *a, **k: 0.0),
+            patch("agent.relay_llm.execute", side_effect=execute),
+            patch(
+                "agent.relay_llm.complete_logical_call",
+                side_effect=lambda request_id, *, outcome: logical_completions.append(
+                    (request_id, outcome)
+                ),
+            ),
+        ):
+            result = agent.run_conversation("hello")
+
+        assert result["completed"] is True
+        assert len(relay_attempts) == 2
+        assert all(
+            attempt["defer_logical_completion"] is True
+            for attempt in relay_attempts
+        )
+        request_ids = {
+            attempt["metadata"]["api_request_id"] for attempt in relay_attempts
+        }
+        assert len(request_ids) == 1
+        assert logical_completions == [(request_ids.pop(), "success")]
+
     def test_content_filter_refusal_surfaced_not_retried(self, agent):
         """A model refusal must be surfaced immediately, NOT laundered into
         the empty-response retry loop and reported as "rate limited" / "no

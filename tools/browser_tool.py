@@ -229,8 +229,17 @@ DEFAULT_COMMAND_TIMEOUT = 30
 MIN_OPEN_TIMEOUT = 60
 MIN_FIRST_OPEN_TIMEOUT = 120
 
-# Max tokens for snapshot content before summarization
-SNAPSHOT_SUMMARIZE_THRESHOLD = 8000
+# Max chars for snapshot content before truncation/summarization. Aligned
+# with web_tools.DEFAULT_EXTRACT_CHAR_LIMIT (15000) — the snapshot and
+# web_extract paths share the same truncate-and-store pattern, so the model
+# gets the same per-page budget from both.
+SNAPSHOT_SUMMARIZE_THRESHOLD = 15000
+
+# Hard ceiling on the full-snapshot file written to cache/web when a snapshot
+# is truncated or LLM-summarized. Mirrors web_tools.MAX_STORED_TEXT_CHARS —
+# the model only ever sees the truncated view; the stored copy exists for
+# read_file paging and must not write unbounded bytes to disk.
+MAX_STORED_SNAPSHOT_CHARS = 2_000_000
 
 # Commands that legitimately return empty stdout (e.g. close, record).
 _EMPTY_OK_COMMANDS: frozenset = frozenset({"close", "record"})
@@ -874,6 +883,40 @@ def _get_browser_engine() -> str:
         _cached_browser_engine = "auto"
 
     return _cached_browser_engine
+
+
+_cached_headed_mode: Optional[bool] = None
+_headed_mode_resolved = False
+
+
+def _is_headed_mode() -> bool:
+    """Return True when the browser should launch in headed (visible) mode.
+
+    Reads ``config["browser"]["headed"]`` with ``AGENT_BROWSER_HEADED`` env
+    var as fallback.  Result is cached after the first call.
+    """
+    global _cached_headed_mode, _headed_mode_resolved
+    if _headed_mode_resolved:
+        return _cached_headed_mode  # type: ignore[return-value]
+
+    _headed_mode_resolved = True
+    _cached_headed_mode = False
+
+    try:
+        from hermes_cli.config import read_raw_config
+        cfg = read_raw_config()
+        val = cfg.get("browser", {}).get("headed")
+        if val is not None:
+            _cached_headed_mode = str(val).strip().lower() in ("true", "1", "yes")
+    except Exception as e:
+        logger.debug("Could not read browser.headed from config: %s", e)
+
+    if not _cached_headed_mode:
+        env_val = os.environ.get("AGENT_BROWSER_HEADED", "").strip()
+        if env_val and env_val.lower() in ("true", "1", "yes"):
+            _cached_headed_mode = True
+
+    return _cached_headed_mode
 
 
 def _should_inject_engine(engine: str) -> bool:
@@ -1833,7 +1876,7 @@ BROWSER_TOOL_SCHEMAS = [
     },
     {
         "name": "browser_snapshot",
-        "description": "Get a text-based snapshot of the current page's accessibility tree. Returns interactive elements with ref IDs (like @e1, @e2) for browser_click and browser_type. full=false (default): compact view with interactive elements. full=true: complete page content. Snapshots over 8000 chars are truncated or LLM-summarized. Requires browser_navigate first. Note: browser_navigate already returns a compact snapshot — use this to refresh after interactions that change the page, or with full=true for complete content.",
+        "description": "Get a text-based snapshot of the current page's accessibility tree. Returns interactive elements with ref IDs (like @e1, @e2) for browser_click and browser_type. full=false (default): compact view with interactive elements. full=true: complete page content. Snapshots over 15000 chars are truncated or LLM-summarized; when that happens the complete snapshot is saved to a file and the output includes its path so you can page through the rest with read_file. Requires browser_navigate first. Note: browser_navigate already returns a compact snapshot — use this to refresh after interactions that change the page, or with full=true for complete content.",
         "parameters": {
             "type": "object",
             "properties": {
@@ -2338,8 +2381,10 @@ def _run_browser_command(
         # --session creates a local browser instance and silently ignores --cdp.
         backend_args = ["--cdp", session_info["cdp_url"]]
     else:
-        # Local mode — launch a headless Chromium instance
+        # Local mode — launch Chromium (headless by default, headed when configured)
         backend_args = ["--session", session_info["session_name"]]
+        if _is_headed_mode():
+            backend_args.append("--headed")
 
     # Lightpanda engine injection (local mode only, agent-browser v0.25.3+).
     # Use the resolved session backend rather than global cloud-provider state:
@@ -2579,14 +2624,62 @@ def _run_browser_command(
     return result
 
 
+def _store_full_snapshot(snapshot_text: str) -> Optional[str]:
+    """Write a full page snapshot to cache/web and return its absolute path.
+
+    Called whenever a snapshot exceeds SNAPSHOT_SUMMARIZE_THRESHOLD and the
+    model is about to receive a truncated or LLM-summarized view. Mirrors
+    ``web_tools._store_full_text``: the file lands in the same cache/web
+    directory (mounted read-only into remote backends via
+    credential_files._CACHE_DIRS) so the agent's read_file/terminal tools can
+    page through the complete accessibility tree — including element refs that
+    the truncated view dropped — on any backend.
+
+    The stored copy is secret-redacted (same force-redaction boundary as
+    ``_redact_browser_output``) since page-rendered API keys or tokens must
+    not be written to disk unmasked. The filename is keyed on a content hash,
+    so repeated snapshots of the same page state dedupe to one file. Returns
+    None on failure (storage is best-effort; the truncated view is still
+    returned to the model).
+    """
+    try:
+        import hashlib
+        from hermes_constants import get_hermes_dir
+        from agent.redact import redact_sensitive_text
+
+        content = redact_sensitive_text(snapshot_text, force=True)
+        if len(content) > MAX_STORED_SNAPSHOT_CHARS:
+            content = (
+                content[:MAX_STORED_SNAPSHOT_CHARS]
+                + f"\n\n[... stored copy truncated at {MAX_STORED_SNAPSHOT_CHARS:,} chars "
+                f"of {len(content):,} ...]"
+            )
+        cache_dir = get_hermes_dir("cache/web", "web_cache")
+        cache_dir.mkdir(parents=True, exist_ok=True)
+        digest = hashlib.sha256(content.encode("utf-8")).hexdigest()[:10]
+        path = cache_dir / f"browser-snapshot-{digest}.txt"
+        path.write_text(content, encoding="utf-8")
+        return str(path)
+    except Exception as exc:  # noqa: BLE001
+        logger.debug("Failed to store full browser snapshot: %s", exc)
+        return None
+
+
 def _extract_relevant_content(
     snapshot_text: str,
     user_task: Optional[str] = None
 ) -> str:
     """Use LLM to extract relevant content from a snapshot based on the user's task.
 
-    Falls back to simple truncation when no auxiliary text model is configured.
+    The full snapshot is stored to cache/web first (summarization is lossy —
+    the pointer lets the agent read anything the summary dropped). Falls back
+    to simple truncation when no auxiliary text model is configured.
     """
+    stored_path = _store_full_snapshot(snapshot_text)
+    stored_note = (
+        f'\n\n[Summarized from a {len(snapshot_text):,}-char snapshot. Full snapshot '
+        f'saved to: {stored_path} — read it with read_file if anything is missing.]'
+    ) if stored_path else ""
     if user_task:
         extraction_prompt = (
             f"You are a content extractor for a browser automation agent.\n\n"
@@ -2628,41 +2721,59 @@ def _extract_relevant_content(
         if model:
             call_kwargs["model"] = model
         response = call_llm(**call_kwargs)
-        extracted = (response.choices[0].message.content or "").strip() or _truncate_snapshot(snapshot_text)
+        extracted = (response.choices[0].message.content or "").strip()
+        if not extracted:
+            # _truncate_snapshot stores its own pointer (dedupes to the same
+            # cache file by content hash), so return it without stored_note.
+            return _truncate_snapshot(snapshot_text)
         # Redact any secrets the auxiliary LLM may have echoed back.
-        return redact_sensitive_text(extracted)
+        return redact_sensitive_text(extracted) + stored_note
     except Exception:
         return _truncate_snapshot(snapshot_text)
 
 
-def _truncate_snapshot(snapshot_text: str, max_chars: int = 8000) -> str:
+def _truncate_snapshot(snapshot_text: str, max_chars: int = SNAPSHOT_SUMMARIZE_THRESHOLD) -> str:
     """Structure-aware truncation for snapshots.
 
     Cuts at line boundaries so that accessibility tree elements are never
-    split mid-line, and appends a note telling the agent how much was
-    omitted.
+    split mid-line. The full snapshot is saved to cache/web (same pattern as
+    web_extract's truncate-and-store) and the appended note tells the agent
+    exactly where the complete text lives and how to page through it with
+    read_file — element refs beyond the cut are in the file, not lost.
 
     Args:
         snapshot_text: The snapshot text to truncate
         max_chars: Maximum characters to keep
 
     Returns:
-        Truncated text with indicator if truncated
+        Truncated text with a stored-full-text pointer if truncated
     """
     if len(snapshot_text) <= max_chars:
         return snapshot_text
 
+    stored_path = _store_full_snapshot(snapshot_text)
+
     lines = snapshot_text.split('\n')
     result: list[str] = []
     chars = 0
+    # Reserve space for the truncation note (the stored-path variant is the
+    # longer of the two). Clamp so tiny max_chars values still keep content.
+    reserve = min(110 + len(stored_path or ""), max_chars // 2)
     for line in lines:
-        if chars + len(line) + 1 > max_chars - 80:  # reserve space for note
+        if chars + len(line) + 1 > max_chars - reserve:
             break
         result.append(line)
         chars += len(line) + 1
     remaining = len(lines) - len(result)
     if remaining > 0:
-        result.append(f'\n[... {remaining} more lines truncated, use browser_snapshot for full content]')
+        if stored_path:
+            next_line = len(result) + 1
+            result.append(
+                f'\n[... {remaining} more lines truncated — full snapshot: '
+                f'read_file path="{stored_path}" offset={next_line} limit=200]'
+            )
+        else:
+            result.append(f'\n[... {remaining} more lines truncated, use browser_snapshot for full content]')
     return '\n'.join(result)
 
 
@@ -3447,11 +3558,8 @@ _SENSITIVE_BROWSER_EVAL_TOKENS: tuple[tuple[str, str], ...] = (
 def _allow_unsafe_browser_evaluate() -> bool:
     """Return whether sensitive browser JS evaluation is explicitly allowed.
 
-    ``browser_console(expression=...)`` is useful for read-only DOM inspection,
-    but a malicious page or prompt injection can try to steer the agent into
-    evaluating code that reads cookies/storage/form values or performs network
-    exfiltration.  Keep harmless expressions (``document.title`` etc.) working,
-    while requiring a config opt-in for the dangerous primitives.
+    When true, ``browser_console(expression=...)`` runs without the
+    sensitive-primitive denylist even if ``browser.restrict_evaluate`` is set.
     """
     try:
         from hermes_cli.config import read_raw_config
@@ -3460,6 +3568,30 @@ def _allow_unsafe_browser_evaluate() -> bool:
         return is_truthy_value(cfg_get(cfg, "browser", "allow_unsafe_evaluate"), default=False)
     except Exception as e:
         logger.debug("Could not read browser.allow_unsafe_evaluate from config: %s", e)
+        return False
+
+
+def _restrict_browser_evaluate() -> bool:
+    """Return whether the sensitive-primitive eval denylist is enabled.
+
+    Off by default. ``browser_console(expression=...)`` is the agent's only
+    programmatic page-inspection path, and the denylist blocks the *names* of
+    common primitives (``fetch``, ``cookie``, ``querySelector(...input...)``)
+    rather than any actual exfiltration — which also blocks a large class of
+    legitimate DOM extraction (any selector or page script text containing
+    those words). Egress itself is still gated by the SSRF/private-URL guards
+    in ``_browser_eval`` regardless of this setting. Users who want the
+    strict vocabulary denylist (e.g. when browsing hostile pages with a
+    logged-in profile) opt in with ``browser.restrict_evaluate: true``;
+    ``browser.allow_unsafe_evaluate: true`` overrides it back off.
+    """
+    try:
+        from hermes_cli.config import read_raw_config
+
+        cfg = read_raw_config()
+        return is_truthy_value(cfg_get(cfg, "browser", "restrict_evaluate"), default=False)
+    except Exception as e:
+        logger.debug("Could not read browser.restrict_evaluate from config: %s", e)
         return False
 
 
@@ -3519,7 +3651,16 @@ def _risky_browser_eval_reason(expression: str) -> Optional[str]:
 
 
 def _enforce_browser_eval_policy(expression: str) -> Optional[str]:
-    """Fail closed for sensitive browser JS evaluation unless config opts in."""
+    """Block sensitive browser JS evaluation when the opt-in denylist is on.
+
+    The denylist is opt-in (``browser.restrict_evaluate: true``) because it
+    gates on primitive *names*, which cripples legitimate DOM extraction —
+    see ``_restrict_browser_evaluate``. Network egress to private/internal
+    addresses is enforced separately in ``_browser_eval`` and does not depend
+    on this policy.
+    """
+    if not _restrict_browser_evaluate():
+        return None
     if _allow_unsafe_browser_evaluate():
         return None
     reason = _risky_browser_eval_reason(expression)
@@ -3527,28 +3668,18 @@ def _enforce_browser_eval_policy(expression: str) -> Optional[str]:
         return None
     return (
         "Blocked: browser_console(expression=...) tried to use sensitive browser "
-        f"JavaScript primitive ({reason}). Use browser_snapshot/browser_get_images/"
-        "browser_console without expression for normal inspection, or set "
-        "browser.allow_unsafe_evaluate: true in config.yaml only for trusted pages "
-        "when this access is explicitly required."
+        f"JavaScript primitive ({reason}) while browser.restrict_evaluate is "
+        "enabled. Use browser_snapshot/browser_get_images/browser_console "
+        "without expression for normal inspection, or set "
+        "browser.restrict_evaluate: false in config.yaml to allow "
+        "programmatic evaluation."
     )
 
 
 def _browser_eval(expression: str, task_id: Optional[str] = None) -> str:
     """Evaluate a JavaScript expression in the page context and return the result."""
-    if _is_camofox_mode():
-        return _camofox_eval(expression, task_id)
-
     effective_task_id = _last_session_key(task_id or "default")
 
-    # ── Private-network guard (eval return-value path) ──────────────────────
-    # browser_snapshot / browser_vision re-check the page URL before returning
-    # content, but eval returns arbitrary JS results directly — an attacker can
-    # read a private page via `fetch('http://127.0.0.1/secret')` or by reading
-    # the DOM after `location.href = 'http://127.0.0.1/'`, never touching
-    # snapshot/vision.  Close both sub-paths on the same gating condition:
-    #   1. Pre-scan the expression for private-host URL literals (direct fetch).
-    #   2. After eval, re-check the page URL (navigate-then-read).
     if _eval_ssrf_guard_active(effective_task_id):
         blocked_literal = _expression_targets_private_url(expression)
         if blocked_literal:
@@ -3561,6 +3692,19 @@ def _browser_eval(expression: str, task_id: Optional[str] = None) -> str:
                     "browser mode."
                 ),
             }, ensure_ascii=False)
+
+    # Camofox keeps its own raw-``task_id``-keyed session map, so pass the raw
+    # id (matching every other Camofox tool) rather than the resolved
+    # agent-browser session key.  The literal pre-scan above already ran.
+    if _is_camofox_mode():
+        return _camofox_eval(expression, task_id)
+
+    # ── Private-network guard (eval return-value path) ──────────────────────
+    # The literal pre-scan above closes the direct-fetch sub-path
+    # (`fetch('http://127.0.0.1/secret')`).  The post-eval page-URL recheck
+    # below closes the navigate-then-read sub-path (`location.href = '...'`
+    # then read the DOM) — eval returns arbitrary JS results directly, never
+    # touching snapshot/vision, so both sub-paths gate on the same condition.
 
     # --- Fast path: route through the supervisor's persistent CDP WS ---------
     # When a CDPSupervisor is alive for this task_id, ``Runtime.evaluate`` runs
@@ -3688,13 +3832,39 @@ def _browser_eval(expression: str, task_id: Optional[str] = None) -> str:
     return json.dumps(_copy_fallback_warning(response, result), ensure_ascii=False, default=str)
 
 
+def _camofox_current_page_private_url(tab_id: str, user_id: str) -> Optional[str]:
+    """Return the Camofox page URL when it targets a private/internal address.
+
+    Camofox analogue of ``_current_page_private_url`` (evaluate endpoint instead
+    of the agent-browser CLI).  Returns ``None`` when the page is public, the URL
+    can't be determined, or the probe errors (fail-open on probe failure,
+    matching the snapshot/vision guards — do not change to fail-closed without
+    also changing the sibling).
+    """
+    try:
+        from tools.browser_camofox import _post
+
+        data = _post(
+            f"/tabs/{tab_id}/evaluate",
+            body={"expression": "window.location.href", "userId": user_id},
+        )
+        current_url = str(data.get("result") if isinstance(data, dict) else data or "")
+        current_url = current_url.strip().strip('"').strip("'")
+        if current_url and (_is_always_blocked_url(current_url) or not _is_safe_url(current_url)):
+            return current_url
+    except Exception as exc:
+        logger.debug("_camofox_current_page_private_url: probe failed (%s)", exc)
+    return None
+
+
 def _camofox_eval(expression: str, task_id: Optional[str] = None) -> str:
-    """Evaluate JS via Camofox's /tabs/{tab_id}/eval endpoint (if available)."""
+    """Evaluate JS via Camofox's /tabs/{tab_id}/evaluate endpoint (if available)."""
     from tools.browser_camofox import _ensure_tab, _post
     try:
         tab_info = _ensure_tab(task_id or "default")
         tab_id = tab_info.get("tab_id") or tab_info.get("id")
-        resp = _post(f"/tabs/{tab_id}/evaluate", body={"expression": expression, "userId": tab_info["user_id"]})
+        user_id = tab_info["user_id"]
+        resp = _post(f"/tabs/{tab_id}/evaluate", body={"expression": expression, "userId": user_id})
 
         # Camofox returns the result in a JSON envelope
         raw_result = resp.get("result") if isinstance(resp, dict) else resp
@@ -3704,6 +3874,18 @@ def _camofox_eval(expression: str, task_id: Optional[str] = None) -> str:
                 parsed = json.loads(raw_result)
             except (json.JSONDecodeError, ValueError):
                 pass
+
+        if _eval_ssrf_guard_active(task_id or "default"):
+            _blocked_url = _camofox_current_page_private_url(tab_id, user_id)
+            if _blocked_url:
+                return json.dumps({
+                    "success": False,
+                    "error": (
+                        "Blocked: page URL targets a private or internal address "
+                        f"({_blocked_url}). This may have been caused by a "
+                        "JavaScript navigation via browser_console."
+                    ),
+                }, ensure_ascii=False)
 
         return json.dumps({
             "success": True,

@@ -1247,14 +1247,38 @@ clone_repo() {
 
                 if [ "$restore_now" = "yes" ]; then
                     log_info "Restoring local changes..."
-                    if git stash apply "$autostash_ref"; then
+                    local restore_output=""
+                    local restore_ok="yes"
+                    if restore_output="$(git stash apply "$autostash_ref" 2>&1)"; then
+                        restore_ok="yes"
+                    else
+                        restore_ok="no"
+                    fi
+                    local conflicted_files=""
+                    conflicted_files="$(git diff --name-only --diff-filter=U || true)"
+                    if [ "$restore_ok" = "yes" ] && [ -z "$conflicted_files" ]; then
                         git stash drop "$autostash_ref" >/dev/null
                         log_warn "Local changes were restored on top of the updated codebase."
                         log_warn "Review git diff / git status if Hermes behaves unexpectedly."
                     else
-                        log_error "Update succeeded, but restoring local changes failed. Your changes are still preserved in git stash."
-                        log_info "Resolve manually with: git stash apply $autostash_ref"
-                        exit 1
+                        log_error "Update pulled new code, but restoring local changes hit conflicts."
+                        if [ -n "$restore_output" ]; then
+                            printf '%s\n' "$restore_output"
+                        fi
+                        if [ -n "$conflicted_files" ]; then
+                            printf '\nConflicted files:\n'
+                            while IFS= read -r file; do
+                                [ -n "$file" ] && printf '  • %s\n' "$file"
+                            done <<EOF
+$conflicted_files
+EOF
+                        fi
+                        printf '\n'
+                        log_info "Your stashed changes are preserved — nothing is lost."
+                        log_info "  Stash ref: $autostash_ref"
+                        git reset --hard HEAD >/dev/null 2>&1 || true
+                        log_info "Working tree reset to clean state."
+                        log_info "Restore your changes later with: git stash apply $autostash_ref"
                     fi
                 else
                     log_info "Skipped restoring local changes."
@@ -2687,7 +2711,7 @@ _electron_dir() {
     fi
 }
 
-# True when dist/ holds a usable Electron binary (#38673 / run-electron-builder.cjs).
+# True when dist/ holds a usable Electron binary (#38673 / run-electron-builder.mjs).
 _electron_dist_ok() {
     local install_dir="$1"
     local electron_dir

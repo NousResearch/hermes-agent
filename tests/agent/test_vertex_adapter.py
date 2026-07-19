@@ -149,6 +149,69 @@ def test_missing_google_auth_returns_none(monkeypatch):
     assert va.get_vertex_credentials() == (None, None)
 
 
+def test_multiplex_scope_takes_precedence_over_raw_environ(vertex_adapter, monkeypatch):
+    """In a multiplex gateway, a profile's own secret scope must win over a
+    stale value in process os.environ left behind by another profile's
+    dotenv load at boot — otherwise Profile B's turn could resolve Profile
+    A's Vertex project (or worse, its credentials file path)."""
+    from agent import secret_scope
+
+    monkeypatch.setenv("VERTEX_PROJECT_ID", "other-profile-project")
+
+    secret_scope.set_multiplex_active(True)
+    token = secret_scope.set_secret_scope({"VERTEX_PROJECT_ID": "this-profile-project"})
+    try:
+        assert vertex_adapter._resolve_project_override() == "this-profile-project"
+    finally:
+        secret_scope.reset_secret_scope(token)
+        secret_scope.set_multiplex_active(False)
+
+
+def test_multiplex_unscoped_read_fails_closed(vertex_adapter, monkeypatch):
+    """A credential read with no profile scope installed while multiplexing
+    is active must raise rather than silently fall back to (possibly another
+    profile's) raw os.environ value."""
+    from agent import secret_scope
+
+    monkeypatch.setenv("VERTEX_PROJECT_ID", "leaked-project")
+    secret_scope.set_multiplex_active(True)
+    try:
+        with pytest.raises(secret_scope.UnscopedSecretError):
+            vertex_adapter._resolve_project_override()
+    finally:
+        secret_scope.set_multiplex_active(False)
+
+
+def test_adc_refuses_foreign_profile_google_application_credentials(
+    vertex_adapter, monkeypatch, tmp_path
+):
+    """When this profile's scope defines no Vertex credentials, but os.environ
+    still carries a *different* profile's GOOGLE_APPLICATION_CREDENTIALS (left
+    there by python-dotenv at gateway boot), ADC must not silently mint a
+    token under that foreign service account."""
+    from agent import secret_scope
+
+    sa_file = tmp_path / "other_profile_sa.json"
+    sa_file.write_text('{"project_id": "other-profile"}')
+    monkeypatch.setenv("GOOGLE_APPLICATION_CREDENTIALS", str(sa_file))
+
+    secret_scope.set_multiplex_active(True)
+    token = secret_scope.set_secret_scope({})  # this profile defines nothing
+    try:
+        assert vertex_adapter.get_vertex_credentials() == (None, None)
+    finally:
+        secret_scope.reset_secret_scope(token)
+        secret_scope.set_multiplex_active(False)
+
+
+def test_adc_still_works_when_not_multiplexed(vertex_adapter):
+    """Single-profile (non-gateway) installs must see zero behavior change:
+    ADC still resolves normally when multiplexing is off, scope or not."""
+    token, base = vertex_adapter.get_vertex_config()
+    assert token == "ya29.FAKE"
+    assert "adc-project" in base
+
+
 def test_adc_failure_falls_back_to_service_account(monkeypatch, tmp_path):
     """When ADC refresh fails but a service-account JSON exists, use the SA."""
     for var in ("VERTEX_PROJECT_ID", "VERTEX_REGION", "GOOGLE_CLOUD_PROJECT"):

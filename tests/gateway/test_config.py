@@ -1408,3 +1408,199 @@ class TestMultiplexProfilesEnvOverride:
         for noise in ("", "   ", "maybe", "2"):
             monkeypatch.setenv("GATEWAY_MULTIPLEX_PROFILES", noise)
             assert _env_multiplex_profiles_override() is None, repr(noise)
+
+
+class TestExplicitDisableSurvivesEnvOverrides:
+    """Regression tests for the generic disabled_platforms safeguard.
+
+    Several env-var branches in _apply_env_overrides (API Server, Feishu,
+    WeCom, DingTalk, …) unconditionally set ``.enabled = True`` when their
+    credential env vars are present, without checking the
+    ``_enabled_explicit`` marker that the YAML shared-key loop installs when
+    the user wrote ``platforms.<name>.enabled: false``.
+
+    The safeguard at the top of _apply_env_overrides collects all explicitly
+    disabled platforms, and the cleanup loop at the end re-disables them so the
+    explicit ``enabled: false`` survives the env-driven force-enable.  These
+    tests verify that safeguard for representative direct branches.
+    """
+
+    def test_api_server_explicit_disabled_survives_env_override(self, monkeypatch):
+        """API Server: explicit enabled: false must stay disabled when
+        API_SERVER_KEY would otherwise force-enable it, while credential-
+        derived fields are still populated."""
+        config = GatewayConfig(
+            platforms={
+                Platform.API_SERVER: PlatformConfig(
+                    enabled=False,
+                    extra={"_enabled_explicit": True},
+                ),
+            },
+        )
+        monkeypatch.setenv("API_SERVER_KEY", "sk-test-key")
+        monkeypatch.setenv("API_SERVER_HOST", "0.0.0.0")
+        monkeypatch.setenv("API_SERVER_PORT", "8765")
+
+        _apply_env_overrides(config)
+
+        api = config.platforms[Platform.API_SERVER]
+        assert api.enabled is False, (
+            "explicit enabled: false must survive API_SERVER_KEY env override"
+        )
+        # Credential-derived fields must still be populated
+        assert api.extra.get("key") == "sk-test-key"
+        assert api.extra.get("host") == "0.0.0.0"
+        assert api.extra.get("port") == 8765
+        assert Platform.API_SERVER not in config.get_connected_platforms()
+
+    def test_api_server_explicit_disabled_survives_api_server_enabled_env(self, monkeypatch):
+        """Same for API_SERVER_ENABLED=true env var."""
+        config = GatewayConfig(
+            platforms={
+                Platform.API_SERVER: PlatformConfig(
+                    enabled=False,
+                    extra={"_enabled_explicit": True},
+                ),
+            },
+        )
+        monkeypatch.setenv("API_SERVER_ENABLED", "true")
+
+        _apply_env_overrides(config)
+
+        assert config.platforms[Platform.API_SERVER].enabled is False
+
+    def test_feishu_explicit_disabled_survives_env_override(self, monkeypatch):
+        """Feishu: explicit enabled: false must stay disabled when
+        FEISHU_APP_ID + FEISHU_APP_SECRET would otherwise force-enable it,
+        while credential-derived fields are still populated."""
+        config = GatewayConfig(
+            platforms={
+                Platform.FEISHU: PlatformConfig(
+                    enabled=False,
+                    extra={"_enabled_explicit": True},
+                ),
+            },
+        )
+        monkeypatch.setenv("FEISHU_APP_ID", "cli_test_id")
+        monkeypatch.setenv("FEISHU_APP_SECRET", "test_secret")
+
+        _apply_env_overrides(config)
+
+        feishu = config.platforms[Platform.FEISHU]
+        assert feishu.enabled is False, (
+            "explicit enabled: false must survive FEISHU_APP_ID/SECRET env override"
+        )
+        # Credential-derived fields survive
+        assert feishu.extra.get("app_id") == "cli_test_id"
+        assert feishu.extra.get("app_secret") == "test_secret"
+        assert Platform.FEISHU not in config.get_connected_platforms()
+
+    def test_wecom_explicit_disabled_survives_env_override(self, monkeypatch):
+        """WeCom: explicit enabled: false must stay disabled when
+        WECOM_BOT_ID + WECOM_SECRET would otherwise force-enable it,
+        while credential-derived fields are still populated."""
+        config = GatewayConfig(
+            platforms={
+                Platform.WECOM: PlatformConfig(
+                    enabled=False,
+                    extra={"_enabled_explicit": True},
+                ),
+            },
+        )
+        monkeypatch.setenv("WECOM_BOT_ID", "test_bot")
+        monkeypatch.setenv("WECOM_SECRET", "test_secret")
+
+        _apply_env_overrides(config)
+
+        wecom = config.platforms[Platform.WECOM]
+        assert wecom.enabled is False, (
+            "explicit enabled: false must survive WECOM_BOT_ID/SECRET env override"
+        )
+        # Credential-derived fields survive
+        assert wecom.extra.get("bot_id") == "test_bot"
+        assert wecom.extra.get("secret") == "test_secret"
+        assert Platform.WECOM not in config.get_connected_platforms()
+
+    def test_dingtalk_explicit_disabled_survives_env_override(self, monkeypatch):
+        """DingTalk — same pattern via the generic safeguard."""
+        config = GatewayConfig(
+            platforms={
+                Platform.DINGTALK: PlatformConfig(
+                    enabled=False,
+                    extra={"_enabled_explicit": True},
+                ),
+            },
+        )
+        monkeypatch.setenv("DINGTALK_CLIENT_ID", "test_cid")
+        monkeypatch.setenv("DINGTALK_CLIENT_SECRET", "test_secret")
+
+        _apply_env_overrides(config)
+
+        dingtalk = config.platforms[Platform.DINGTALK]
+        assert dingtalk.enabled is False
+        assert dingtalk.extra.get("client_id") == "test_cid"
+        assert dingtalk.extra.get("client_secret") == "test_secret"
+        assert Platform.DINGTALK not in config.get_connected_platforms()
+
+    def test_slack_uses_enable_from_env_and_honors_explicit_disabled(self, monkeypatch):
+        """Slack uses _enable_from_env which already checks _enabled_explicit.
+        Verify the safeguard holds for this path too."""
+        config = GatewayConfig(
+            platforms={
+                Platform.SLACK: PlatformConfig(
+                    enabled=False,
+                    extra={"_enabled_explicit": True},
+                ),
+            },
+        )
+        monkeypatch.setenv("SLACK_BOT_TOKEN", "xoxb-test-token")
+
+        _apply_env_overrides(config)
+
+        slack = config.platforms[Platform.SLACK]
+        assert slack.enabled is False
+        assert slack.token == "xoxb-test-token"
+        assert Platform.SLACK not in config.get_connected_platforms()
+
+    def test_no_explicit_marker_allows_env_force_enable(self, monkeypatch):
+        """Without _enabled_explicit, env vars still force-enable the
+        platform — regression guard: the safeguard must not block legitimate
+        env-only setups (no YAML config exists for this platform)."""
+        config = GatewayConfig(platforms={})
+        monkeypatch.setenv("API_SERVER_KEY", "sk-legit-key")
+
+        _apply_env_overrides(config)
+
+        api = config.platforms[Platform.API_SERVER]
+        assert api.enabled is True
+        assert api.extra.get("key") == "sk-legit-key"
+
+    def test_yaml_marker_lifecycle(self, tmp_path, monkeypatch):
+        """_enabled_explicit marker set during YAML loading does not leak
+        into the final config object's extra dicts after _apply_env_overrides
+        runs, while credential-derived fields survive."""
+        hermes_home = tmp_path / ".hermes"
+        hermes_home.mkdir()
+        config_path = hermes_home / "config.yaml"
+        config_path.write_text(
+            "platforms:\n"
+            "  api_server:\n"
+            "    enabled: false\n",
+            encoding="utf-8",
+        )
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+        # Set env vars that would normally force-enable API Server
+        monkeypatch.setenv("API_SERVER_KEY", "sk-test-key")
+
+        config = load_gateway_config()
+
+        api = config.platforms[Platform.API_SERVER]
+        assert api.enabled is False, (
+            "explicit enabled: false from YAML must survive env override"
+        )
+        assert "_enabled_explicit" not in api.extra, (
+            "internal marker must be stripped from final config"
+        )
+        # Credential-derived fields survive
+        assert api.extra.get("key") == "sk-test-key"
+        assert Platform.API_SERVER not in config.get_connected_platforms()

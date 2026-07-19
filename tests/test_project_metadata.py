@@ -186,6 +186,31 @@ def test_pyproject_pins_match_lazy_deps_pins():
     )
 
 
+def test_wecom_callback_dependencies_are_available_to_default_test_environment():
+    """Keep the WeCom runtime and default callback-test dependencies aligned.
+
+    The callback adapter's public install hint is ``hermes-agent[wecom]`` and
+    its requirements check needs ``aiohttp``, core ``httpx``, and
+    ``defusedxml``.  The default test suite also collects its callback tests,
+    so ``[dev]`` must include the complete WeCom extra rather than manually
+    duplicating one parser pin.
+    """
+    from tools.lazy_deps import LAZY_DEPS
+
+    optional_dependencies = _load_optional_dependencies()
+    wecom_pins = _exact_pins(optional_dependencies["wecom"])
+    lazy_pins = _exact_pins(LAZY_DEPS["platform.wecom_callback"])
+
+    assert wecom_pins == lazy_pins, (
+        "[wecom] and LAZY_DEPS['platform.wecom_callback'] must declare the "
+        "same runtime dependencies"
+    )
+    assert "hermes-agent[wecom]" in optional_dependencies["dev"], (
+        "[dev] must include [wecom] because the default test suite collects "
+        "tests/gateway/test_wecom_callback.py"
+    )
+
+
 def test_dev_extra_excluded_from_all():
     """End-user installs should not pull test/lint/debug tooling."""
     optional_dependencies = _load_optional_dependencies()

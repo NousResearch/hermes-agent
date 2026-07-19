@@ -1589,7 +1589,9 @@ daytona = [
     { name = "daytona" },
 ]
 dev = [
+    { name = "aiohttp" },
     { name = "debugpy" },
+    { name = "defusedxml" },
     { name = "mcp" },
     { name = "pytest" },
     { name = "pytest-asyncio" },
@@ -1724,6 +1726,7 @@ web = [
     { name = "uvicorn", extra = ["standard"] },
 ]
 wecom = [
+    { name = "aiohttp" },
     { name = "defusedxml" },
 ]
 youtube = [
@@ -1739,6 +1742,7 @@ requires-dist = [
     { name = "aiohttp", marker = "extra == 'slack'", specifier = "==3.14.1" },
     { name = "aiohttp", marker = "extra == 'sms'", specifier = "==3.14.1" },
     { name = "aiohttp", marker = "extra == 'teams'", specifier = "==3.14.1" },
+    { name = "aiohttp", marker = "extra == 'wecom'", specifier = "==3.14.1" },
     { name = "aiohttp-socks", marker = "extra == 'matrix'", specifier = "==0.11.0" },
     { name = "aiosqlite", marker = "extra == 'matrix'", specifier = "==0.22.1" },
     { name = "alibabacloud-dingtalk", marker = "extra == 'dingtalk'", specifier = "==2.2.42" },
@@ -1789,6 +1793,7 @@ requires-dist = [
     { name = "hermes-agent", extras = ["termux"], marker = "extra == 'termux-all'" },
     { name = "hermes-agent", extras = ["web"], marker = "extra == 'all'" },
     { name = "hermes-agent", extras = ["web"], marker = "extra == 'termux-all'" },
+    { name = "hermes-agent", extras = ["wecom"], marker = "extra == 'dev'" },
     { name = "hermes-agent", extras = ["youtube"], marker = "extra == 'all'" },
     { name = "hindsight-client", marker = "extra == 'hindsight'", specifier = "==0.6.1" },
     { name = "honcho-ai", marker = "extra == 'honcho'", specifier = "==2.2.0" },

@@ -164,6 +164,14 @@ def _resolve_path(filepath: str, task_id: str = "default") -> Path | PurePosixPa
 # (gateway/run.py); the file/terminal-tool layer must do likewise so CLI
 # sessions get the same protection. See references/worktree-cwd-discipline.md.
 _TERMINAL_CWD_SENTINELS = frozenset({"", ".", "./", "auto", "cwd"})
+
+# First segments that strongly suggest an absolute path missing its leading "/".
+# E.g. "home/user/foo" is almost certainly "/home/user/foo", not a relative
+# path joined onto the cwd.  Small local models produce this mistake often.
+_ABSOLUTE_SHAPED_ROOTS = frozenset({
+    "home", "Users", "tmp", "var", "etc", "root", "opt", "usr",
+    "mnt", "proc", "sys", "dev", "srv", "run", "boot", "media",
+})
 _CONTAINER_PATH_BACKENDS_FALLBACK = frozenset({"docker", "singularity", "modal", "daytona"})
 
 
@@ -376,6 +384,10 @@ def _resolve_path_for_task(filepath: str, task_id: str = "default") -> Path | Pu
         expanded = _expand_tilde(filepath)
         if posixpath.isabs(expanded):
             return _normalize_without_host_deref(expanded)
+        first_segment = expanded.split("/")[0] if "/" in expanded else expanded
+        if first_segment in _ABSOLUTE_SHAPED_ROOTS:
+            abs_candidate = "/" + expanded
+            return _normalize_without_host_deref(abs_candidate)
         resolved = _resolve_base_dir(task_id, container_paths=True) / expanded
         return _normalize_without_host_deref(resolved)
 
@@ -388,12 +400,26 @@ def _resolve_path_for_task(filepath: str, task_id: str = "default") -> Path | Pu
 
         if ntpath.isabs(expanded):
             return Path(ntpath.normpath(expanded))
+        first_segment = expanded.split("\\")[0] if "\\" in expanded else (expanded.split("/")[0] if "/" in expanded else expanded)
+        if first_segment.lower() in {"users", "windows", "program files", "programdata", "temp", "perflogs"}:
+            abs_candidate = "\\" + expanded if not expanded.startswith("\\") else expanded
+            return Path(ntpath.normpath(abs_candidate))
         joined = ntpath.join(str(_resolve_base_dir(task_id, container_paths=False)), expanded)
         return Path(ntpath.normpath(joined))
 
     p = Path(expanded)
     if p.is_absolute():
         return p.resolve()
+
+    # Guard against absolute-shaped relative paths (missing leading "/").
+    # Models sometimes emit "home/user/foo" instead of "/home/user/foo";
+    # joining that onto the cwd silently doubles the tree prefix.
+    first_segment = p.parts[0] if p.parts else ""
+    if first_segment in _ABSOLUTE_SHAPED_ROOTS:
+        abs_candidate = Path("/") / p
+        if abs_candidate.exists():
+            return abs_candidate.resolve()
+
     resolved = _resolve_base_dir(task_id, container_paths=False) / p
     return resolved.resolve()
 

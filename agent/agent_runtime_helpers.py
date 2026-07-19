@@ -859,6 +859,58 @@ def recover_with_credential_pool(
     pool = agent._credential_pool
     if pool is None:
         return False, has_retried_429
+    credential_id = getattr(agent, "_credential_pool_entry_id", None)
+    api_key_hint = getattr(agent, "api_key", None)
+
+    def _mark_exhausted(status: int, *, include_api_key_hint: bool = False):
+        base_kwargs = {"status_code": status, "error_context": error_context}
+        identity_kwargs = {}
+        if include_api_key_hint or api_key_hint:
+            # Billing recovery on main already passes this hint even when it is
+            # None; keep that call contract while adding the stronger entry ID.
+            identity_kwargs["api_key_hint"] = api_key_hint
+        if credential_id:
+            identity_kwargs["credential_id"] = credential_id
+        if not identity_kwargs:
+            return pool.mark_exhausted_and_rotate(**base_kwargs)
+        try:
+            return pool.mark_exhausted_and_rotate(
+                **base_kwargs,
+                **identity_kwargs,
+            )
+        except TypeError as exc:
+            # Compatibility with lightweight pool doubles / older pool
+            # implementations that predate identity-targeted recovery. Python
+            # rejects unsupported kwargs before entering those methods, so a
+            # retry is safe only for this exact signature-mismatch shape.
+            message = str(exc)
+            if "unexpected keyword argument" not in message or not any(
+                f"'{name}'" in message for name in identity_kwargs
+            ):
+                raise
+            return pool.mark_exhausted_and_rotate(**base_kwargs)
+
+    def _try_refresh_current():
+        identity_kwargs = {}
+        if credential_id:
+            identity_kwargs["credential_id"] = credential_id
+        if api_key_hint:
+            identity_kwargs["api_key_hint"] = api_key_hint
+        if identity_kwargs:
+            try:
+                return pool.try_refresh_current(**identity_kwargs)
+            except TypeError as exc:
+                message = str(exc)
+                if "unexpected keyword argument" not in message or not any(
+                    f"'{name}'" in message for name in identity_kwargs
+                ):
+                    raise
+                # Compatibility with pool doubles and older implementations:
+                # main already exposes key-based matching for reloaded pools.
+                try_refresh_matching = getattr(pool, "try_refresh_matching", None)
+                if callable(try_refresh_matching) and api_key_hint:
+                    return try_refresh_matching(api_key_hint)
+        return pool.try_refresh_current()
 
     # Defensive guard: if a fallback provider is active and its provider name
     # doesn't match the pool's provider, the pool belongs to the PRIMARY
@@ -936,13 +988,9 @@ def recover_with_credential_pool(
 
     if effective_reason == FailoverReason.billing:
         rotate_status = status_code if status_code is not None else 402
-        next_entry = pool.mark_exhausted_and_rotate(
-            status_code=rotate_status,
-            error_context=error_context,
-            # Runtime credentials can be resolved by a separate pool instance,
-            # leaving this recovery pool without ``current_id``. Match the key
-            # that actually failed instead of quarantining a different account.
-            api_key_hint=getattr(agent, "api_key", None),
+        next_entry = _mark_exhausted(
+            rotate_status,
+            include_api_key_hint=True,
         )
         if next_entry is not None:
             _ra().logger.info(
@@ -967,7 +1015,7 @@ def recover_with_credential_pool(
                 current_last_status,
             )
             rotate_status = status_code if status_code is not None else 429
-            next_entry = pool.mark_exhausted_and_rotate(status_code=rotate_status, error_context=error_context)
+            next_entry = _mark_exhausted(rotate_status)
             if next_entry is not None:
                 _ra().logger.info(
                     "Credential %s (rate limit, pre-exhausted) — rotated to pool entry %s",
@@ -991,7 +1039,7 @@ def recover_with_credential_pool(
         if not has_retried_429 and not usage_limit_reached:
             return False, True
         rotate_status = status_code if status_code is not None else 429
-        next_entry = pool.mark_exhausted_and_rotate(status_code=rotate_status, error_context=error_context)
+        next_entry = _mark_exhausted(rotate_status)
         if next_entry is not None:
             _ra().logger.info(
                 "Credential %s (rate limit) — rotated to pool entry %s",
@@ -1059,7 +1107,7 @@ def recover_with_credential_pool(
                 agent.provider or "provider",
             )
             return False, has_retried_429
-        refreshed = pool.try_refresh_current()
+        refreshed = _try_refresh_current()
         if refreshed is not None:
             # ``try_refresh_current()`` re-mints a fresh OAuth token and reports
             # success even when the upstream keeps rejecting it — a single-entry
@@ -1091,7 +1139,7 @@ def recover_with_credential_pool(
         # Refresh failed — rotate to next credential instead of giving up.
         # The failed entry is already marked exhausted by try_refresh_current().
         rotate_status = status_code if status_code is not None else 401
-        next_entry = pool.mark_exhausted_and_rotate(status_code=rotate_status, error_context=error_context)
+        next_entry = _mark_exhausted(rotate_status)
         if next_entry is not None:
             _ra().logger.info(
                 "Credential %s (auth refresh failed) — rotated to pool entry %s",
@@ -1381,6 +1429,7 @@ def restore_primary_runtime(agent) -> bool:
                 pool_matches_primary = False
         if pool is not None and pool_provider and not pool_matches_primary:
             agent._credential_pool = None
+            agent._credential_pool_entry_id = None
             try:
                 from agent.credential_pool import load_pool
 
@@ -2050,9 +2099,15 @@ def switch_model(agent, new_model, new_provider, api_key='', base_url='', api_mo
             # A pool bound to the old provider is worse than no pool: the
             # recovery guard rejects it and every later 401/429 skips rotation.
             agent._credential_pool = None
+            agent._credential_pool_entry_id = None
             try:
                 from agent.credential_pool import load_pool
                 agent._credential_pool = load_pool(new_provider)
+                identity_lookup = getattr(
+                    agent._credential_pool, "entry_id_for_api_key", None
+                )
+                if callable(identity_lookup):
+                    agent._credential_pool_entry_id = identity_lookup(api_key)
             except Exception as _pool_exc:  # noqa: BLE001
                 logger.warning(
                     "switch_model: credential pool reload failed for %s (%s); "

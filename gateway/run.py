@@ -2110,6 +2110,7 @@ def _resolve_runtime_agent_kwargs() -> dict:
         "command": runtime.get("command"),
         "args": list(runtime.get("args") or []),
         "credential_pool": runtime.get("credential_pool"),
+        "credential_pool_entry_id": runtime.get("credential_pool_entry_id"),
         "max_tokens": max_tokens,
     }
 
@@ -2132,6 +2133,7 @@ def _resolve_runtime_agent_kwargs_for_provider(provider: str) -> dict:
         "command": runtime.get("command"),
         "args": list(runtime.get("args") or []),
         "credential_pool": runtime.get("credential_pool"),
+        "credential_pool_entry_id": runtime.get("credential_pool_entry_id"),
     }
 
 
@@ -2191,6 +2193,7 @@ def _try_resolve_fallback_provider() -> dict | None:
                     "command": runtime.get("command"),
                     "args": list(runtime.get("args") or []),
                     "credential_pool": runtime.get("credential_pool"),
+        "credential_pool_entry_id": runtime.get("credential_pool_entry_id"),
                     "model": entry.get("model"),
                 }
             except Exception as fb_exc:
@@ -4109,6 +4112,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 "api_mode": override.get("api_mode"),
                 "max_tokens": override.get("max_tokens"),
                 "credential_pool": override.get("credential_pool"),
+                "credential_pool_entry_id": override.get("credential_pool_entry_id"),
             }
             if override_runtime.get("api_key"):
                 if override_runtime.get("credential_pool") is None:
@@ -4223,6 +4227,28 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 _last_good["*"] = model
 
         return model, runtime_kwargs
+
+    async def _resolve_session_agent_runtime_off_loop(
+        self,
+        *,
+        source: Optional[SessionSource] = None,
+        session_key: Optional[str] = None,
+        user_config: Optional[dict] = None,
+    ) -> tuple[str, dict]:
+        """Resolve session credentials without blocking the gateway event loop.
+
+        Credential-pool selection may perform bounded OAuth refresh or Codex
+        live-usage probes. Keep the synchronous resolver contract for CLI and
+        agent worker threads, while async gateway surfaces use a dedicated
+        worker call. ``asyncio.to_thread`` copies profile/session contextvars
+        without sharing the separately-mockable model-turn executor contract.
+        """
+        return await asyncio.to_thread(
+            self._resolve_session_agent_runtime,
+            source=source,
+            session_key=session_key,
+            user_config=user_config,
+        )
 
     def _resolve_turn_agent_config(self, user_message: str, model: str, runtime_kwargs: dict) -> dict:
         """Build the effective model/runtime config for a single turn.
@@ -11554,7 +11580,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     # than consulting process-global compatibility mirrors.
                     vision_runtime = None
                     try:
-                        turn_model, runtime_kwargs = self._resolve_session_agent_runtime(
+                        turn_model, runtime_kwargs = await self._resolve_session_agent_runtime_off_loop(
                             source=source,
                             session_key=session_key,
                         )
@@ -11760,7 +11786,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 # self.model/self.base_url), so using them here always raised
                 # AttributeError, silently caught below, meaning this feature
                 # never ran.
-                _msg_model, _msg_runtime = self._resolve_session_agent_runtime(
+                _msg_model, _msg_runtime = await self._resolve_session_agent_runtime_off_loop(
                     source=source,
                     session_key=session_key,
                     user_config=_msg_cfg,
@@ -12310,7 +12336,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                                 pass
 
                 try:
-                    _hyg_model, _hyg_runtime = self._resolve_session_agent_runtime(
+                    _hyg_model, _hyg_runtime = await self._resolve_session_agent_runtime_off_loop(
                         source=source,
                         session_key=session_key,
                         user_config=_hyg_data if isinstance(_hyg_data, dict) else None,
@@ -12416,7 +12442,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     try:
                         from run_agent import AIAgent
 
-                        _hyg_model, _hyg_runtime = self._resolve_session_agent_runtime(
+                        _hyg_model, _hyg_runtime = await self._resolve_session_agent_runtime_off_loop(
                             source=source,
                             session_key=session_key,
                             user_config=_hyg_data if isinstance(_hyg_data, dict) else None,
@@ -14655,7 +14681,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
 
         try:
             user_config = _load_gateway_config()
-            model, runtime_kwargs = self._resolve_session_agent_runtime(
+            model, runtime_kwargs = await self._resolve_session_agent_runtime_off_loop(
                 source=source,
                 user_config=user_config,
             )
@@ -17396,6 +17422,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 override["api_key"] = runtime.get("api_key")
                 override["api_mode"] = runtime.get("api_mode")
                 override["credential_pool"] = runtime.get("credential_pool")
+                override["credential_pool_entry_id"] = runtime.get("credential_pool_entry_id")
                 if not override.get("base_url"):
                     override["base_url"] = runtime.get("base_url")
             except Exception:

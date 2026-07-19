@@ -52,6 +52,14 @@ class ClientConnectorError(Exception):
     """Stand-in for ``aiohttp.ClientConnectorError``."""
 
 
+class ConnectionClosedOK(Exception):
+    """Stand-in for ``websockets.exceptions.ConnectionClosedOK`` (Feishu/Lark)."""
+
+
+class ConnectionClosedException(Exception):
+    """Stand-in for ``lark_oapi`` ConnectionClosedException."""
+
+
 class SomeUnrelatedBug(Exception):
     """A non-transient error that should NOT be swallowed."""
 
@@ -70,6 +78,8 @@ class SomeUnrelatedBug(Exception):
         ReadTimeout,
         PoolTimeout,
         ClientConnectorError,
+        ConnectionClosedOK,
+        ConnectionClosedException,
     ],
 )
 def test_transient_classifier_matches_known_network_errors(exc_cls):

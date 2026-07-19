@@ -259,6 +259,14 @@ def _is_transient_network_error(exc: BaseException) -> bool:
         "ServerDisconnectedError",
         "ClientConnectorError",
         "ClientOSError",
+        # websockets clean / unclean peer closes from platform WS clients
+        # (Feishu/Lark lark_oapi receive loop — issue #67358). A normal
+        # close frame must not kill the entire gateway process via the
+        # asyncio "Task exception was never retrieved" default path.
+        "ConnectionClosed",
+        "ConnectionClosedOK",
+        "ConnectionClosedError",
+        "ConnectionClosedException",  # lark_oapi wrapper name
     }
     while cur is not None and depth < 12:
         ident = id(cur)

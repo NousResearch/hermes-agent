@@ -1336,8 +1336,17 @@ def _run_official_feishu_ws_client(ws_client: Any, adapter: Any) -> None:
     _apply_runtime_ws_overrides()
     try:
         ws_client.start()
-    except Exception:
-        pass
+    except Exception as exc:
+        # Normal WebSocket close frames (1000 OK) and transient disconnects
+        # must not escape the worker thread as unhandled loop task crashes
+        # (see #67358). Auto-reconnect is owned by the Lark client when
+        # enabled; we only log so gateway systemd does not see TEMPFAIL.
+        logger.warning(
+            "[Feishu] WebSocket client exited: %s: %s",
+            type(exc).__name__,
+            exc,
+            exc_info=True,
+        )
     finally:
         ws_client_module.websockets.connect = original_connect
         if original_configure is not None:

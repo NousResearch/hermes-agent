@@ -505,8 +505,8 @@ class SlackAdapter(BasePlatformAdapter):
         # Optional slash-command namespace prefix (e.g. "myorg-") so multiple
         # gateway apps can share one Slack workspace without their global,
         # non-namespaced slash commands colliding. Resolved once here from
-        # HERMES_SLACK_COMMAND_PREFIX or platforms.slack.extra.command_prefix;
-        # "" (the default) leaves every command name unchanged. It is baked
+        # platforms.slack.extra.command_prefix; "" (the default) leaves
+        # every command name unchanged. It is baked
         # into the routing regex and stripped again in _handle_slash_command.
         from hermes_cli.commands import slack_command_prefix
 

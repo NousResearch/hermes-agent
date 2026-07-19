@@ -158,7 +158,10 @@ class TestSlackManifestWarnings:
         from hermes_cli import commands as cmds
         from hermes_cli.slack_cli import slack_manifest_command
 
-        monkeypatch.setenv("HERMES_SLACK_COMMAND_PREFIX", "myorg-")
+        monkeypatch.setattr(
+            "hermes_cli.config.read_raw_config",
+            lambda: {"platforms": {"slack": {"extra": {"command_prefix": "myorg-"}}}},
+        )
         long_name = "x" * 30  # 30 + len("myorg-") = 36 > 32-char Slack limit
         monkeypatch.setattr(
             cmds,

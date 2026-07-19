@@ -177,6 +177,11 @@ class TestSlashCommandSessionIsolation:
 # ---------------------------------------------------------------------------
 
 
+def _config_with_prefix(prefix):
+    """Fake config.yaml payload for the manifest-side prefix lookup."""
+    return {"platforms": {"slack": {"extra": {"command_prefix": prefix}}}}
+
+
 class TestSlackCommandPrefix:
     """Namespace prefix so multiple gateway apps can share one workspace."""
 
@@ -191,8 +196,7 @@ class TestSlackCommandPrefix:
         return a
 
     @pytest.mark.asyncio
-    async def test_prefixed_native_slash_is_stripped_and_routed(self, monkeypatch):
-        monkeypatch.delenv("HERMES_SLACK_COMMAND_PREFIX", raising=False)
+    async def test_prefixed_native_slash_is_stripped_and_routed(self):
         adapter = self._make({"command_prefix": "myorg-"})
         assert adapter._command_prefix == "myorg-"
 
@@ -211,8 +215,7 @@ class TestSlackCommandPrefix:
         assert event.message_type == MessageType.COMMAND
 
     @pytest.mark.asyncio
-    async def test_prefixed_hermes_routes_freeform_question(self, monkeypatch):
-        monkeypatch.delenv("HERMES_SLACK_COMMAND_PREFIX", raising=False)
+    async def test_prefixed_hermes_routes_freeform_question(self):
         adapter = self._make({"command_prefix": "myorg-"})
 
         await adapter._handle_slash_command(
@@ -230,27 +233,7 @@ class TestSlackCommandPrefix:
         assert event.message_type == MessageType.TEXT
 
     @pytest.mark.asyncio
-    async def test_env_prefix_overrides_config(self, monkeypatch):
-        monkeypatch.setenv("HERMES_SLACK_COMMAND_PREFIX", "env-")
-        adapter = self._make({"command_prefix": "cfg-"})
-        assert adapter._command_prefix == "env-"
-
-        await adapter._handle_slash_command(
-            {
-                "command": "/env-new",
-                "text": "",
-                "user_id": "U1",
-                "channel_id": "C1",
-                "team_id": "T1",
-            }
-        )
-
-        event = adapter.handle_message.await_args.args[0]
-        assert event.text == "/new"
-
-    @pytest.mark.asyncio
-    async def test_no_prefix_default_leaves_commands_unchanged(self, monkeypatch):
-        monkeypatch.delenv("HERMES_SLACK_COMMAND_PREFIX", raising=False)
+    async def test_no_prefix_default_leaves_commands_unchanged(self):
         adapter = self._make({})
         assert adapter._command_prefix == ""
 
@@ -270,7 +253,9 @@ class TestSlackCommandPrefix:
     def test_manifest_prepends_prefix(self, monkeypatch):
         from hermes_cli.commands import slack_app_manifest
 
-        monkeypatch.setenv("HERMES_SLACK_COMMAND_PREFIX", "myorg-")
+        monkeypatch.setattr(
+            "hermes_cli.config.read_raw_config", lambda: _config_with_prefix("myorg-")
+        )
         slashes = slack_app_manifest()["features"]["slash_commands"]
 
         assert slashes
@@ -280,7 +265,9 @@ class TestSlackCommandPrefix:
     def test_manifest_silent_when_all_prefixed_names_fit(self, monkeypatch, caplog):
         from hermes_cli import commands as cmds
 
-        monkeypatch.setenv("HERMES_SLACK_COMMAND_PREFIX", "myorg-")
+        monkeypatch.setattr(
+            "hermes_cli.config.read_raw_config", lambda: _config_with_prefix("myorg-")
+        )
         monkeypatch.setattr(
             cmds,
             "slack_native_slashes",
@@ -296,8 +283,8 @@ class TestSlackCommandPrefix:
     def test_manifest_default_has_no_prefix(self, monkeypatch):
         from hermes_cli.commands import slack_app_manifest
 
-        # Empty env value is authoritative — avoids reading a real config file.
-        monkeypatch.setenv("HERMES_SLACK_COMMAND_PREFIX", "")
+        # Empty config is authoritative — avoids reading a real config file.
+        monkeypatch.setattr("hermes_cli.config.read_raw_config", lambda: {})
         slashes = slack_app_manifest()["features"]["slash_commands"]
 
         assert any(s["command"] == "/hermes" for s in slashes)
@@ -306,7 +293,9 @@ class TestSlackCommandPrefix:
     def test_manifest_skips_prefixed_name_over_slack_limit(self, monkeypatch, caplog):
         from hermes_cli import commands as cmds
 
-        monkeypatch.setenv("HERMES_SLACK_COMMAND_PREFIX", "myorg-")
+        monkeypatch.setattr(
+            "hermes_cli.config.read_raw_config", lambda: _config_with_prefix("myorg-")
+        )
         long_name = "x" * 30  # 30 + len("myorg-") = 35 > 32-char Slack limit
         monkeypatch.setattr(
             cmds,
@@ -333,7 +322,9 @@ class TestSlackCommandPrefix:
         # 27-char prefix: "hermes" (6) no longer fits (33 > 32) but "model"
         # (5) still does — the warning must not advise the dead fallback.
         prefix = "x" * 26 + "-"
-        monkeypatch.setenv("HERMES_SLACK_COMMAND_PREFIX", prefix)
+        monkeypatch.setattr(
+            "hermes_cli.config.read_raw_config", lambda: _config_with_prefix(prefix)
+        )
         monkeypatch.setattr(
             cmds,
             "slack_native_slashes",

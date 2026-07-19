@@ -1307,25 +1307,22 @@ def _slack_command_prefix_from_config() -> str | None:
 def slack_command_prefix(extra: dict | None = None) -> str:
     """Resolve the Slack slash-command namespace prefix.
 
-    Precedence: the ``HERMES_SLACK_COMMAND_PREFIX`` environment variable, then
-    ``platforms.slack.extra.command_prefix`` (passed in as *extra* by the Slack
-    adapter, or read from config.yaml when generating the manifest), then ``""``
-    (no prefix — the unchanged default).
+    Resolved from ``platforms.slack.extra.command_prefix`` — passed in as
+    *extra* by the Slack adapter, or read from config.yaml when generating
+    the manifest. Defaults to ``""`` (no prefix — the unchanged default).
 
     The prefix is prepended to every generated slash-command name in the
     manifest and stripped again on the receive side, so the two always agree.
     This lets multiple gateway apps share one Slack workspace without their
     (workspace-global, non-namespaced) slash commands colliding.
     """
-    raw = os.environ.get("HERMES_SLACK_COMMAND_PREFIX")
-    if raw is None:
-        # With a platform ``extra`` dict (the adapter already loaded config),
-        # read only from it — don't touch disk. Without one (manifest CLI),
-        # fall back to reading config.yaml directly.
-        if extra is not None:
-            raw = extra.get("command_prefix")
-        else:
-            raw = _slack_command_prefix_from_config()
+    # With a platform ``extra`` dict (the adapter already loaded config),
+    # read only from it — don't touch disk. Without one (manifest CLI),
+    # fall back to reading config.yaml directly.
+    if extra is not None:
+        raw = extra.get("command_prefix")
+    else:
+        raw = _slack_command_prefix_from_config()
     if not raw:
         return ""
     return _sanitize_slack_prefix(str(raw))

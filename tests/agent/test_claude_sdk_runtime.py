@@ -534,7 +534,7 @@ class TestMcpEnvMinimal:
                        "ANTHROPIC_AUTH_TOKEN", "ANTHROPIC_API_KEY"):
             assert secret not in env, f"{secret} leaked into the MCP argv env"
         assert "PYTHONPATH" in env
-        assert env["HERMES_MCP_SESSION_ID"] == "sess-9"
+        assert env["HERMES_SESSION_ID"] == "sess-9"
         assert env["HERMES_HOME"] == "/tmp/hermes-test-home"
 
     def test_state_db_override_rides_the_mcp_env(self, monkeypatch):
@@ -630,7 +630,10 @@ class TestHermesSessionIdPlumbing:
         finally:
             session.close()
         env = holder["client"].options["mcp_servers"]["hermes-tools"]["env"]
-        assert env["HERMES_MCP_SESSION_ID"] == "sess-42"
+        assert env["HERMES_SESSION_ID"] == "sess-42"
+        # The invented pre-fix name must never come back: the shim consumer
+        # reads only the canonical HERMES_SESSION_ID.
+        assert "HERMES_MCP_SESSION_ID" not in env
 
     def test_no_session_id_no_env_var(self):
         session, holder = _make_session(script=[ResultMessage(result="ok")])
@@ -639,6 +642,7 @@ class TestHermesSessionIdPlumbing:
         finally:
             session.close()
         env = holder["client"].options["mcp_servers"]["hermes-tools"]["env"]
+        assert "HERMES_SESSION_ID" not in env
         assert "HERMES_MCP_SESSION_ID" not in env
 
     def test_runtime_passes_agent_session_id(self, monkeypatch):

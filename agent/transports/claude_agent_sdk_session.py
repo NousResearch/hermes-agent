@@ -170,8 +170,12 @@ def _build_hermes_tools_mcp_config(
     env["PYTHONPATH"] = _hermes_repo_root() + os.pathsep + os.environ.get("PYTHONPATH", "")
     if hermes_session_id:
         # Lets the stateless session_search shim exclude the calling
-        # session's own lineage from recall results (#26567).
-        env["HERMES_MCP_SESSION_ID"] = str(hermes_session_id)
+        # session's own lineage from recall results (#26567). The shim reads
+        # the canonical HERMES_SESSION_ID — set explicitly with THIS
+        # session's id rather than allowlisting the ambient variable, so a
+        # multi-session host can never leak a sibling session's id into the
+        # subprocess.
+        env["HERMES_SESSION_ID"] = str(hermes_session_id)
     return {
         "type": "stdio",
         "command": sys.executable,

@@ -50,6 +50,7 @@ import type {
   MemoryStatus,
   MemoryProviderInfo,
   CredentialPoolProvider,
+  CredentialPoolSettings,
   CheckpointsResponse,
   HooksResponse,
   HookEntry,
@@ -172,6 +173,8 @@ const HOOK_EVENTS_FALLBACK = [
   "on_session_end",
 ];
 
+const DEAD_MANUAL_PRUNE_TTL_MAX_HOURS = 24 * 365;
+
 const MEMORY_STATUS_LABEL: Record<MemoryProviderInfo["status"], string> = {
   ready: "ready",
   needs_config: "needs setup",
@@ -196,6 +199,8 @@ export default function SystemPage() {
   const [stats, setStats] = useState<SystemStats | null>(null);
   const [memory, setMemory] = useState<MemoryStatus | null>(null);
   const [pool, setPool] = useState<CredentialPoolProvider[]>([]);
+  const [poolSettings, setPoolSettings] = useState<CredentialPoolSettings | null>(null);
+  const [savingPoolSettings, setSavingPoolSettings] = useState(false);
   const [checkpoints, setCheckpoints] = useState<CheckpointsResponse | null>(
     null,
   );
@@ -270,7 +275,10 @@ export default function SystemPage() {
         if (s.status === "fulfilled") setStatus(s.value);
         if (st.status === "fulfilled") setStats(st.value);
         if (m.status === "fulfilled") setMemory(m.value);
-        if (p.status === "fulfilled") setPool(p.value.providers);
+        if (p.status === "fulfilled") {
+          setPool(p.value.providers);
+          setPoolSettings(p.value.settings);
+        }
         if (c.status === "fulfilled") setCheckpoints(c.value);
         if (h.status === "fulfilled") setHooks(h.value);
         if (cur.status === "fulfilled") setCurator(cur.value);
@@ -359,6 +367,31 @@ export default function SystemPage() {
       showToast(`Failed to add credential: ${e}`, "error");
     } finally {
       setAddingCred(false);
+    }
+  };
+
+  const savePoolSettings = async () => {
+    if (!poolSettings) return;
+    if (
+      !Number.isFinite(poolSettings.dead_manual_prune_ttl_hours) ||
+      poolSettings.dead_manual_prune_ttl_hours < 0 ||
+      poolSettings.dead_manual_prune_ttl_hours > DEAD_MANUAL_PRUNE_TTL_MAX_HOURS
+    ) {
+      showToast(
+        `Prune TTL must be between 0 and ${DEAD_MANUAL_PRUNE_TTL_MAX_HOURS} hours`,
+        "error",
+      );
+      return;
+    }
+    setSavingPoolSettings(true);
+    try {
+      const result = await api.updateCredentialPoolSettings(poolSettings);
+      setPoolSettings(result.settings);
+      showToast("Credential cleanup settings saved", "success");
+    } catch (e) {
+      showToast(`Failed to save credential cleanup settings: ${e}`, "error");
+    } finally {
+      setSavingPoolSettings(false);
     }
   };
 
@@ -1149,6 +1182,68 @@ export default function SystemPage() {
         </H2>
         <Card>
           <CardContent className="flex flex-col gap-4 py-4">
+            {poolSettings && (
+              <div className="flex flex-col gap-3 border-b border-border pb-4">
+                <div className="flex flex-wrap items-end gap-4">
+                  <div className="flex items-center gap-2.5">
+                    <Checkbox
+                      checked={poolSettings.prune_dead_manual_entries}
+                      disabled={savingPoolSettings}
+                      id="prune-dead-manual-credentials"
+                      onCheckedChange={(checked) =>
+                        setPoolSettings((current) =>
+                          current
+                            ? { ...current, prune_dead_manual_entries: checked === true }
+                            : current,
+                        )
+                      }
+                    />
+                    <Label htmlFor="prune-dead-manual-credentials">
+                      Prune dead manual credentials
+                    </Label>
+                  </div>
+                  <div className="grid gap-2">
+                    <Label htmlFor="dead-manual-prune-ttl">
+                      Dead manual credential prune TTL (hours)
+                    </Label>
+                    <Input
+                      className="w-36"
+                      disabled={savingPoolSettings || !poolSettings.prune_dead_manual_entries}
+                      id="dead-manual-prune-ttl"
+                      max={DEAD_MANUAL_PRUNE_TTL_MAX_HOURS}
+                      min={0}
+                      onChange={(event) =>
+                        setPoolSettings((current) =>
+                          current
+                            ? {
+                                ...current,
+                                dead_manual_prune_ttl_hours: Number(event.target.value),
+                              }
+                            : current,
+                        )
+                      }
+                      step={1}
+                      type="number"
+                      value={poolSettings.dead_manual_prune_ttl_hours}
+                    />
+                  </div>
+                  <Button
+                    className="ml-auto uppercase"
+                    disabled={savingPoolSettings}
+                    onClick={savePoolSettings}
+                    prefix={savingPoolSettings ? <Spinner /> : undefined}
+                    size="sm"
+                  >
+                    Save cleanup settings
+                  </Button>
+                </div>
+                <p className="text-xs text-muted-foreground">
+                  Dead credentials never re-enter rotation. Disable pruning to keep
+                  their labels and failure details visible until re-authentication or
+                  explicit removal.
+                </p>
+              </div>
+            )}
             <div className="grid grid-cols-1 sm:grid-cols-4 gap-3 items-end">
               <div className="grid gap-2">
                 <Label htmlFor="cred-provider">Provider</Label>
@@ -1179,12 +1274,40 @@ export default function SystemPage() {
                   {prov.provider}
                 </span>
                 {prov.entries.map((entry) => (
-                  <div key={`${prov.provider}-${entry.index}`} className="flex items-center gap-3 border border-border bg-background/40 px-3 py-2">
-                    <span className="text-sm font-medium">{entry.label}</span>
-                    <span className="font-mono text-xs text-muted-foreground">{entry.token_preview}</span>
-                    <Badge tone="outline">{entry.auth_type}</Badge>
-                    {entry.last_status && <Badge tone="secondary">{entry.last_status}</Badge>}
-                    <Button ghost size="icon" className="ml-auto text-destructive" aria-label="Remove credential" onClick={() => credDelete.requestDelete(`${prov.provider}|${entry.index}`)}>
+                  <div
+                    key={`${prov.provider}-${entry.index}`}
+                    className="flex items-start gap-3 border border-border bg-background/40 px-3 py-2"
+                  >
+                    <div className="min-w-0 flex-1">
+                      <div className="flex flex-wrap items-center gap-3">
+                        <span className="max-w-64 truncate text-sm font-medium" title={entry.label ?? undefined}>
+                          {entry.label || "Unlabelled credential"}
+                        </span>
+                        <span className="font-mono text-xs text-muted-foreground">{entry.token_preview}</span>
+                        <Badge tone="outline">{entry.auth_type}</Badge>
+                        {entry.last_status && (
+                          <Badge tone={entry.last_status === "dead" ? "destructive" : "secondary"}>
+                            {entry.last_status}
+                          </Badge>
+                        )}
+                      </div>
+                      {entry.last_status === "dead" && (
+                        <p className="mt-1 text-xs text-muted-foreground">
+                          {entry.last_error_reason || "Permanent authentication failure"}
+                          {entry.last_status_at
+                            ? ` · Marked dead ${new Date(entry.last_status_at * 1000).toLocaleString()}`
+                            : ""}
+                          {" · Re-authenticate or remove this credential."}
+                        </p>
+                      )}
+                    </div>
+                    <Button
+                      aria-label="Remove credential"
+                      className="text-destructive"
+                      ghost
+                      onClick={() => credDelete.requestDelete(`${prov.provider}|${entry.index}`)}
+                      size="icon"
+                    >
                       <Trash2 />
                     </Button>
                   </div>

@@ -7,6 +7,8 @@ contract and the CLI-config parity (servers/keys written via the API are
 visible to the CLI data layer), not specific catalog values.
 """
 
+import json
+
 import pytest
 
 
@@ -252,6 +254,183 @@ class TestCredentialPoolEndpoints:
             "/api/credentials/pool", json={"provider": "", "api_key": ""}
         )
         assert r.status_code == 400
+
+    def test_prune_settings_round_trip_preserves_concurrent_config(
+        self, monkeypatch
+    ):
+        import hermes_cli.config as config_mod
+
+        config_mod.save_config(
+            {"model": {"default": "test/model"}, "unrelated": {"keep": True}}
+        )
+        initial = self.client.get("/api/credentials/pool").json()["settings"]
+        assert initial == {
+            "prune_dead_manual_entries": True,
+            "dead_manual_prune_ttl_hours": 24.0,
+        }
+
+        real_save = config_mod.save_config
+
+        def save_after_concurrent_writer(payload, **kwargs):
+            assert kwargs.get("merge_existing") is True
+            real_save(
+                {"ui": {"theme": "dark"}},
+                merge_existing=True,
+            )
+            return real_save(payload, **kwargs)
+
+        monkeypatch.setattr(config_mod, "save_config", save_after_concurrent_writer)
+        response = self.client.put(
+            "/api/credentials/pool/settings",
+            json={
+                "prune_dead_manual_entries": False,
+                "dead_manual_prune_ttl_hours": 72,
+            },
+        )
+        assert response.status_code == 200
+        config = config_mod.load_config()
+        assert config["model"]["default"] == "test/model"
+        assert config["unrelated"] == {"keep": True}
+        assert config["ui"]["theme"] == "dark"
+        assert config["credential_pool"] == response.json()["settings"]
+
+    @pytest.mark.parametrize("bad_ttl", [-1, True, None, "72", "nan", "inf", 8761, 1e308])
+    def test_prune_settings_reject_invalid_ttl(self, bad_ttl):
+        response = self.client.put(
+            "/api/credentials/pool/settings",
+            json={
+                "prune_dead_manual_entries": True,
+                "dead_manual_prune_ttl_hours": bad_ttl,
+            },
+        )
+        assert response.status_code in {400, 422}
+
+    @pytest.mark.parametrize("bad_toggle", [None, 0, 1, "false", "true"])
+    def test_prune_settings_reject_invalid_toggle(self, bad_toggle):
+        response = self.client.put(
+            "/api/credentials/pool/settings",
+            json={
+                "prune_dead_manual_entries": bad_toggle,
+                "dead_manual_prune_ttl_hours": 24,
+            },
+        )
+        assert response.status_code == 422
+
+    def test_dead_entry_summary_exposes_only_canonical_tombstone_metadata(self):
+        import time
+
+        from agent.credential_pool import load_pool
+
+        sentinel = "sentinel-access-a"
+        self.client.post(
+            "/api/credentials/pool",
+            json={
+                "provider": "openrouter",
+                "api_key": sentinel,
+                "label": "account-a",
+            },
+        )
+        pool = load_pool("openrouter")
+        entry = pool.entries()[0]
+        entry.last_status = "dead"
+        entry.last_status_at = time.time()
+        entry.last_error_reason = "account identifier: sentinel-access-a"
+        pool._persist()
+
+        payload = self.client.get("/api/credentials/pool").json()
+        summary = payload["providers"][0]["entries"][0]
+        assert summary["last_status"] == "dead"
+        assert summary["last_error_reason"] == "permanent_auth_failure"
+        assert isinstance(summary["last_status_at"], float)
+        assert summary["last_status_at"] <= time.time()
+        assert sentinel not in json.dumps(payload)
+
+        entry.last_status_at = 1e308
+        pool._persist()
+        payload = self.client.get("/api/credentials/pool").json()
+        assert payload["providers"][0]["entries"][0]["last_status_at"] is None
+
+    def test_credential_pool_settings_are_profile_scoped(
+        self, tmp_path, monkeypatch
+    ):
+        import yaml
+
+        import hermes_cli.web_server as web_server
+        from hermes_constants import get_hermes_home
+
+        root_home = get_hermes_home()
+        profile_a = tmp_path / "profile-a"
+        profile_b = tmp_path / "profile-b"
+        profile_a.mkdir()
+        profile_b.mkdir()
+        (root_home / "config.yaml").write_text(
+            "credential_pool:\n  prune_dead_manual_entries: true\n  dead_manual_prune_ttl_hours: 24\n",
+            encoding="utf-8",
+        )
+        (profile_a / "config.yaml").write_text(
+            "credential_pool:\n  prune_dead_manual_entries: true\n  dead_manual_prune_ttl_hours: 48\n",
+            encoding="utf-8",
+        )
+        (profile_b / "config.yaml").write_text(
+            "credential_pool:\n  prune_dead_manual_entries: true\n  dead_manual_prune_ttl_hours: 96\n",
+            encoding="utf-8",
+        )
+        profiles = {"profile-a": profile_a, "profile-b": profile_b}
+        monkeypatch.setattr(
+            web_server,
+            "_resolve_profile_dir",
+            lambda name: profiles[name],
+        )
+
+        response = self.client.put(
+            "/api/credentials/pool/settings?profile=profile-b",
+            json={
+                "prune_dead_manual_entries": False,
+                "dead_manual_prune_ttl_hours": 72,
+            },
+        )
+        assert response.status_code == 200
+        assert self.client.get(
+            "/api/credentials/pool?profile=profile-b"
+        ).json()["settings"] == response.json()["settings"]
+
+        root = yaml.safe_load((root_home / "config.yaml").read_text())
+        first = yaml.safe_load((profile_a / "config.yaml").read_text())
+        second = yaml.safe_load((profile_b / "config.yaml").read_text())
+        assert root["credential_pool"]["dead_manual_prune_ttl_hours"] == 24
+        assert first["credential_pool"]["dead_manual_prune_ttl_hours"] == 48
+        assert second["credential_pool"] == response.json()["settings"]
+
+    def test_config_partial_save_is_serialized_across_processes(self):
+        import os
+        import subprocess
+        import sys
+        import time
+
+        from hermes_cli.config import (
+            _config_file_lock,
+            get_config_path,
+            load_config,
+            save_config,
+        )
+
+        save_config({"base": {"keep": True}})
+        child_code = (
+            "from hermes_cli.config import save_config; "
+            "save_config({'writer_b': {'value': 2}}, merge_existing=True)"
+        )
+        env = os.environ.copy()
+        with _config_file_lock(get_config_path()):
+            child = subprocess.Popen([sys.executable, "-c", child_code], env=env)
+            time.sleep(0.2)
+            assert child.poll() is None
+            save_config({"writer_a": {"value": 1}}, merge_existing=True)
+        assert child.wait(timeout=10) == 0
+
+        config = load_config()
+        assert config["base"] == {"keep": True}
+        assert config["writer_a"] == {"value": 1}
+        assert config["writer_b"] == {"value": 2}
 
     def test_env_seeded_delete_stays_deleted(self):
         """#55217: DELETE must suppress the source or load_pool() resurrects it.

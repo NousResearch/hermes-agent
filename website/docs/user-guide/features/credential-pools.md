@@ -143,9 +143,22 @@ The pool handles different errors differently:
 | **429 Rate Limit** | Retry same key once (transient). Second consecutive 429 rotates to next key | 1 hour |
 | **402 Billing/Quota** | Immediately rotate to next key | 24 hours |
 | **401 Auth Expired** | Try refreshing the OAuth token first. Rotate only if refresh fails | — |
+| **Permanent OAuth Failure** | Mark the credential `dead`, exclude it from rotation, and show re-auth/remove guidance | Until explicit action or configured pruning |
 | **All keys exhausted** | Fall through to `fallback_model` if configured | — |
 
 The `has_retried_429` flag resets on every successful API call, so a single transient 429 doesn't trigger rotation.
+
+### Dead manual credential cleanup
+
+Manual credentials marked `dead` are excluded from rotation immediately. Hermes preserves them as visible tombstones for 24 hours by default, then removes them during a later pool availability check. You can disable that cleanup or change the retention window in `config.yaml`:
+
+```yaml
+credential_pool:
+  prune_dead_manual_entries: false
+  dead_manual_prune_ttl_hours: 72
+```
+
+Set `prune_dead_manual_entries: false` to retain dead manual credentials until you re-authenticate or remove them explicitly. The TTL accepts values from 0 through 8,760 hours; disable pruning for indefinite retention. Singleton-seeded credentials are never auto-pruned because their backing auth source would recreate them on the next pool load. `hermes auth list` and the dashboard credential-pool section show the dead status, failure reason, marked-dead time, and suggested action without displaying raw tokens.
 
 ## Custom Endpoint Pools
 
@@ -188,7 +201,7 @@ Hermes automatically discovers credentials from multiple sources and seeds the p
 | Custom endpoint config | `model.api_key` in config.yaml | Yes (custom endpoints) |
 | Manual entries | Added via `hermes auth add` | Persisted in auth.json |
 
-Auto-seeded entries are updated on each pool load — if you remove an env var, its pool entry is automatically pruned. Manual entries (added via `hermes auth add`) are never auto-pruned.
+Auto-seeded entries are updated on each pool load — if you remove an env var, its pool entry is automatically pruned. Manual entries persist unless removed explicitly, except manual entries marked `dead`, which follow the configurable cleanup policy above.
 
 Borrowed runtime secrets (for example env vars, Bitwarden/Vault/keyring/systemd references, and custom config values) are reference-only at the `auth.json` boundary. Hermes can use the resolved value in memory for the current run, but it persists only metadata such as the source ref, label, status, request counters, and a non-reversible fingerprint. Manual entries and Hermes-owned OAuth/device-code state keep the durable tokens they need to refresh.
 

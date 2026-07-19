@@ -1,10 +1,11 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 
-import { api } from "./api";
+import { api, setManagementProfile } from "./api";
 
 const SESSION_HEADER = "X-Hermes-Session-Token";
 
 afterEach(() => {
+  setManagementProfile("");
   vi.restoreAllMocks();
   vi.unstubAllGlobals();
 });
@@ -46,6 +47,30 @@ describe("api.getModelOptions", () => {
       "/api/model/options?profile=default&refresh=1&include_unconfigured=1",
       expect.objectContaining({ credentials: "include" }),
     );
+  });
+});
+
+describe("credential pool profile scoping", () => {
+  it("routes reads and mutations to the selected management profile", async () => {
+    vi.stubGlobal("window", {});
+    setManagementProfile("profile-b");
+    const fetchMock = jsonFetchMock({ providers: [], settings: {} });
+    vi.stubGlobal("fetch", fetchMock);
+
+    await api.getCredentialPool();
+    await api.updateCredentialPoolSettings({
+      prune_dead_manual_entries: false,
+      dead_manual_prune_ttl_hours: 72,
+    });
+    await api.addCredentialPoolEntry("openrouter", "sentinel-access-a", "account-a");
+    await api.removeCredentialPoolEntry("openrouter", 1);
+
+    expect(fetchMock.mock.calls.map(([url]) => url)).toEqual([
+      "/api/credentials/pool?profile=profile-b",
+      "/api/credentials/pool/settings?profile=profile-b",
+      "/api/credentials/pool?profile=profile-b",
+      "/api/credentials/pool/openrouter/1?profile=profile-b",
+    ]);
   });
 });
 

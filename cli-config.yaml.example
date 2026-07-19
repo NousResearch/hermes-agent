@@ -140,6 +140,17 @@ model:
 #         stale_timeout_seconds: 1800  # Longer non-stream stale timeout for slow large-context turns
 
 # =============================================================================
+# Credential Pool Cleanup
+# =============================================================================
+# Manual credentials marked DEAD are excluded from rotation immediately. By
+# default Hermes removes those tombstones after 24 hours. Disable pruning to
+# keep labels and failure details visible until explicit re-authentication or
+# removal, or change the TTL to retain them for longer.
+credential_pool:
+  prune_dead_manual_entries: true
+  dead_manual_prune_ttl_hours: 24
+
+# =============================================================================
 # OpenRouter Provider Routing (only applies when using OpenRouter)
 # =============================================================================
 # Control how requests are routed across providers on OpenRouter.

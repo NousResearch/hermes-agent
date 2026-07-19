@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import math
 import os
 import random
 import threading
@@ -84,11 +85,17 @@ _TERMINAL_AUTH_REASONS = frozenset({
     "refresh_token_reused", # Single-use refresh token consumed by another process
 })
 
-# How long a DEAD manual credential is preserved before being pruned.
+# How long a DEAD manual credential is preserved before being pruned by
+# default. Operators can disable or tune this through config.yaml:
+#
+#   credential_pool:
+#     prune_dead_manual_entries: false
+#     dead_manual_prune_ttl_hours: 24
+#
 # Manual entries (``manual:*``) are independent credentials with no singleton
-# to re-seed from, so pruning them after a quiet window cleans up dead state
-# without losing recoverability — the user always has the option to re-add
-# via ``hermes auth add``.
+# to re-seed from, so pruning them after a quiet window can clean up dead state.
+# Preserving tombstones can be more useful when operators need the label and
+# failure reason to remain visible until explicit re-authentication or removal.
 #
 # Singleton-seeded entries (``device_code``, ``claude_code``)
 # are NOT pruned because ``_seed_from_singletons`` would just re-create them
@@ -96,6 +103,71 @@ _TERMINAL_AUTH_REASONS = frozenset({
 # the cleanup.  They remain in the pool marked DEAD until an explicit re-auth
 # write-side sync (``_save_codex_tokens`` etc.) clears the status.
 DEAD_MANUAL_PRUNE_TTL_SECONDS = 24 * 60 * 60  # 24 hours
+MAX_DEAD_MANUAL_PRUNE_TTL_HOURS = 24 * 365  # one year; disable for indefinite retention
+
+
+def display_safe_dead_reason(reason: object) -> Optional[str]:
+    """Return a canonical, display-safe DEAD reason without provider text."""
+    if not isinstance(reason, str) or not reason.strip():
+        return None
+    normalized = reason.strip().lower()
+    if normalized in _TERMINAL_AUTH_REASONS:
+        return normalized
+    return "permanent_auth_failure"
+
+
+def display_safe_status_timestamp(value: object) -> Optional[float]:
+    """Return a finite, platform-representable status timestamp."""
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return None
+    timestamp = float(value)
+    if not math.isfinite(timestamp):
+        return None
+    try:
+        datetime.fromtimestamp(timestamp, tz=timezone.utc)
+    except (OverflowError, OSError, ValueError):
+        return None
+    return timestamp
+
+
+def get_dead_manual_prune_settings() -> tuple[bool, float]:
+    """Return ``(enabled, ttl_seconds)`` for DEAD manual pruning.
+
+    Invalid values fall back to the historical behavior instead of breaking
+    credential-pool loading or accidentally disabling cleanup.
+    """
+    enabled = True
+    ttl_seconds = float(DEAD_MANUAL_PRUNE_TTL_SECONDS)
+    config = _load_config_safe()
+    if not isinstance(config, dict):
+        return enabled, ttl_seconds
+    pool_config = config.get("credential_pool")
+    if not isinstance(pool_config, dict):
+        return enabled, ttl_seconds
+
+    raw_enabled = pool_config.get("prune_dead_manual_entries")
+    if isinstance(raw_enabled, bool):
+        enabled = raw_enabled
+    elif isinstance(raw_enabled, str):
+        normalized = raw_enabled.strip().lower()
+        if normalized in {"1", "true", "yes", "on"}:
+            enabled = True
+        elif normalized in {"0", "false", "no", "off"}:
+            enabled = False
+
+    raw_ttl_hours = pool_config.get("dead_manual_prune_ttl_hours")
+    if raw_ttl_hours is not None and not isinstance(raw_ttl_hours, bool):
+        try:
+            ttl_hours = float(raw_ttl_hours)
+        except (TypeError, ValueError):
+            ttl_hours = -1.0
+        if (
+            math.isfinite(ttl_hours)
+            and 0 <= ttl_hours <= MAX_DEAD_MANUAL_PRUNE_TTL_HOURS
+        ):
+            ttl_seconds = ttl_hours * 3600.0
+
+    return enabled, ttl_seconds
 
 AUTH_TYPE_OAUTH = "oauth"
 AUTH_TYPE_API_KEY = "api_key"
@@ -1522,6 +1594,7 @@ class CredentialPool:
         now = time.time()
         cleared_any = False
         entries_to_prune: List[str] = []
+        dead_manual_prune_settings: Optional[tuple[bool, float]] = None
         available: List[PooledCredential] = []
         for entry in self._entries:
             # Borrowed credentials persist as metadata-only references and are
@@ -1573,23 +1646,31 @@ class CredentialPool:
                     entry = synced
                     cleared_any = True
             if entry.last_status == STATUS_DEAD:
-                # Manual DEAD credentials get pruned after a 24h quiet window
-                # so the pool doesn't accumulate dead entries forever.  The
-                # user can always re-add via ``hermes auth add``.  Singleton-
-                # seeded DEAD entries are kept so the audit trail (label,
-                # last_error_reason, timestamps) stays visible — pruning them
-                # would just be undone by ``_seed_from_singletons`` on the
-                # next load anyway.
+                # Manual DEAD credentials can be pruned after a quiet window
+                # so the pool does not accumulate dead entries forever. The
+                # cleanup policy is configurable so labels and failure details
+                # can remain visible as tombstones until explicit action.
+                # Singleton-seeded DEAD entries are always kept because pruning
+                # them would just be undone by ``_seed_from_singletons``.
                 if _is_manual_source(entry.source):
+                    if dead_manual_prune_settings is None:
+                        dead_manual_prune_settings = get_dead_manual_prune_settings()
+                    prune_enabled, prune_ttl_seconds = dead_manual_prune_settings
                     dead_at = entry.last_status_at or 0
-                    if dead_at and now - dead_at > DEAD_MANUAL_PRUNE_TTL_SECONDS:
+                    if (
+                        prune_enabled
+                        and dead_at
+                        and now - dead_at > prune_ttl_seconds
+                    ):
                         _label = entry.label or entry.id[:8]
                         logger.warning(
                             "credential pool: pruning DEAD manual entry %s "
-                            "(reason=%s, age=%.1fh) — re-add via `hermes auth add %s`",
+                            "(reason=%s, age=%.1fh, ttl=%.1fh) — re-add via `hermes auth add %s`",
                             _label,
-                            entry.last_error_reason or "unknown",
+                            display_safe_dead_reason(entry.last_error_reason)
+                            or "unknown",
                             (now - dead_at) / 3600.0,
+                            prune_ttl_seconds / 3600.0,
                             self.provider,
                         )
                         # Mark for removal after the loop completes; we can't

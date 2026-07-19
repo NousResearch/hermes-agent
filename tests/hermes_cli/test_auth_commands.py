@@ -1114,6 +1114,71 @@ def test_auth_list_shows_auth_failure_when_exhausted_entry_is_unauthorized(monke
     assert "left" not in out
 
 
+def test_auth_list_shows_dead_tombstone_reason_timestamp_and_action(monkeypatch, capsys):
+    from hermes_cli.auth_commands import auth_list_command
+
+    class _Entry:
+        id = "credential-a"
+        label = "account-a"
+        auth_type = "oauth"
+        source = "manual:device_code"
+        last_status = "dead"
+        last_error_code = 401
+        last_error_reason = "token_invalidated"
+        last_status_at = 1000.0
+
+    class _Pool:
+        def entries(self):
+            return [_Entry()]
+
+        def peek(self):
+            return None
+
+    monkeypatch.setattr("hermes_cli.auth_commands.load_pool", lambda provider: _Pool())
+
+    class _Args:
+        provider = "openai-codex"
+
+    auth_list_command(_Args())
+
+    out = capsys.readouterr().out
+    assert "dead token_invalidated (401)" in out
+    assert "marked 1970-01-01T00:16:40Z" in out
+    assert "re-auth or remove" in out
+    assert "sentinel-access" not in out
+
+
+def test_auth_list_handles_unrepresentable_dead_timestamp(monkeypatch, capsys):
+    from hermes_cli.auth_commands import auth_list_command
+
+    class _Entry:
+        id = "credential-a"
+        label = "account-a"
+        auth_type = "oauth"
+        source = "manual:device_code"
+        last_status = "dead"
+        last_error_code = 401
+        last_error_reason = "token_invalidated"
+        last_status_at = 1e308
+
+    class _Pool:
+        def entries(self):
+            return [_Entry()]
+
+        def peek(self):
+            return None
+
+    monkeypatch.setattr("hermes_cli.auth_commands.load_pool", lambda provider: _Pool())
+
+    class _Args:
+        provider = "openai-codex"
+
+    auth_list_command(_Args())
+    out = capsys.readouterr().out
+    assert "dead token_invalidated (401) (re-auth or remove)" in out
+    assert "marked" not in out
+
+
 def test_auth_list_prefers_explicit_reset_time(monkeypatch, capsys):
     from hermes_cli.auth_commands import auth_list_command
 

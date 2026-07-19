@@ -976,6 +976,31 @@ class TestSendMethods(unittest.TestCase):
         self.assertEqual(info["subject"], "Test")
 
 
+def _configure_seed_imap(mock_imap, *, count, uids=()):
+    """Configure a mock IMAP connection for connect()'s seen-UID seeding.
+
+    connect() seeds ``_seen_uids`` by SELECTing INBOX (whose response carries
+    the message count) and then FETCHing the most recent ``_seen_uids_max``
+    *sequence numbers* to read their UIDs — it deliberately does not issue
+    ``UID SEARCH ALL``, which returns every UID on one multi-MB line.
+
+    ``count`` is the mailbox size reported by SELECT; ``uids`` are the UIDs the
+    FETCH should report, numbered from the start of the fetched range.
+    """
+    mock_imap.select.return_value = ("OK", [str(count).encode()])
+    start = max(1, count - len(uids) + 1) if uids else 1
+    mock_imap.fetch.return_value = (
+        "OK",
+        [b"%d (UID %s)" % (start + i, u) for i, u in enumerate(uids)],
+    )
+    # Also answer UID SEARCH the way a real server would. connect() must not
+    # use it, but serving it keeps the "no UID SEARCH ALL" assertions honest:
+    # a regression back to the search path fails on that assertion rather than
+    # on an unconfigured-mock error.
+    mock_imap.uid.return_value = ("OK", [b" ".join(uids)])
+    return mock_imap
+
+
 class TestConnectDisconnect(unittest.TestCase):
     """Test IMAP/SMTP connection lifecycle."""
 
@@ -997,7 +1022,7 @@ class TestConnectDisconnect(unittest.TestCase):
         adapter = self._make_adapter()
 
         mock_imap = MagicMock()
-        mock_imap.uid.return_value = ("OK", [b"1 2 3"])
+        _configure_seed_imap(mock_imap, count=3, uids=(b"101", b"102", b"103"))
 
         with patch("imaplib.IMAP4_SSL", return_value=mock_imap), \
              patch("smtplib.SMTP") as mock_smtp:
@@ -1008,12 +1033,99 @@ class TestConnectDisconnect(unittest.TestCase):
 
             self.assertTrue(result)
             self.assertTrue(adapter._running)
-            # Should have skipped existing messages
-            self.assertEqual(len(adapter._seen_uids), 3)
+            # Existing messages are seeded as "seen" so they are not dispatched.
+            self.assertEqual(adapter._seen_uids, {b"101", b"102", b"103"})
             # Cleanup
             adapter._running = False
             if adapter._poll_task:
                 adapter._poll_task.cancel()
+
+    def test_connect_seeds_only_recent_window_on_large_mailbox(self):
+        """A mailbox larger than _seen_uids_max seeds via a bounded FETCH range.
+
+        Regression test for the endless reconnect loop on large INBOXes:
+        ``UID SEARCH ALL`` returned every UID on a single line, overflowing
+        imaplib's 1 MB ``_MAXLINE`` cap (a 423k-message Gmail INBOX produced a
+        ~2.8 MB line) and aborting connect(). connect() must instead FETCH only
+        the newest ``_seen_uids_max`` sequence numbers.
+        """
+        import asyncio
+        adapter = self._make_adapter()
+
+        count = 423832
+        window = adapter._seen_uids_max
+        seeded = tuple(str(431000 + i).encode() for i in range(window))
+
+        mock_imap = MagicMock()
+        _configure_seed_imap(mock_imap, count=count, uids=seeded)
+
+        with patch("imaplib.IMAP4_SSL", return_value=mock_imap), \
+             patch("smtplib.SMTP") as mock_smtp:
+            mock_smtp.return_value = MagicMock()
+
+            result = asyncio.run(adapter.connect())
+
+            self.assertTrue(result)
+            adapter._running = False
+            if adapter._poll_task:
+                adapter._poll_task.cancel()
+
+        # The bounded range covers exactly the newest _seen_uids_max messages.
+        expected_lo = count - window + 1
+        mock_imap.fetch.assert_called_once_with(f"{expected_lo}:{count}", "(UID)")
+
+        # And the unbounded whole-mailbox search must not be issued at all.
+        search_all_calls = [
+            c for c in mock_imap.uid.call_args_list
+            if c.args and c.args[0] == "search" and "ALL" in c.args
+        ]
+        self.assertEqual(
+            search_all_calls, [],
+            "connect() must not issue UID SEARCH ALL — on a large mailbox its "
+            "single-line response overflows imaplib._MAXLINE and wedges the "
+            "platform in a reconnect loop.",
+        )
+        self.assertEqual(len(adapter._seen_uids), window)
+
+    def test_connect_seeds_whole_small_mailbox_from_first_message(self):
+        """A mailbox smaller than _seen_uids_max is fetched from sequence 1."""
+        import asyncio
+        adapter = self._make_adapter()
+
+        mock_imap = MagicMock()
+        _configure_seed_imap(mock_imap, count=5, uids=(b"1", b"2", b"3", b"4", b"5"))
+
+        with patch("imaplib.IMAP4_SSL", return_value=mock_imap), \
+             patch("smtplib.SMTP") as mock_smtp:
+            mock_smtp.return_value = MagicMock()
+            result = asyncio.run(adapter.connect())
+            self.assertTrue(result)
+            adapter._running = False
+            if adapter._poll_task:
+                adapter._poll_task.cancel()
+
+        # lo clamps to 1 rather than going negative.
+        mock_imap.fetch.assert_called_once_with("1:5", "(UID)")
+
+    def test_connect_empty_mailbox_skips_fetch(self):
+        """An empty INBOX seeds nothing and issues no FETCH."""
+        import asyncio
+        adapter = self._make_adapter()
+
+        mock_imap = MagicMock()
+        _configure_seed_imap(mock_imap, count=0)
+
+        with patch("imaplib.IMAP4_SSL", return_value=mock_imap), \
+             patch("smtplib.SMTP") as mock_smtp:
+            mock_smtp.return_value = MagicMock()
+            result = asyncio.run(adapter.connect())
+            self.assertTrue(result)
+            adapter._running = False
+            if adapter._poll_task:
+                adapter._poll_task.cancel()
+
+        mock_imap.fetch.assert_not_called()
+        self.assertEqual(adapter._seen_uids, set())
 
     def test_connect_imap_failure(self):
         """IMAP connection failure returns False."""
@@ -1031,7 +1143,8 @@ class TestConnectDisconnect(unittest.TestCase):
         adapter = self._make_adapter()
 
         mock_imap = MagicMock()
-        mock_imap.uid.return_value = ("OK", [b""])
+        # IMAP must genuinely succeed so the failure under test is SMTP's.
+        _configure_seed_imap(mock_imap, count=0)
 
         with patch("imaplib.IMAP4_SSL", return_value=mock_imap), \
              patch("smtplib.SMTP", side_effect=Exception("SMTP down")):
@@ -1413,7 +1526,8 @@ class TestImapIdExtensionForNetEase(unittest.TestCase):
         adapter = self._make_adapter()
 
         mock_imap = MagicMock()
-        mock_imap.uid.return_value = ("OK", [b""])
+        # Let the IMAP phase run to completion so ordering is exercised fully.
+        _configure_seed_imap(mock_imap, count=0)
 
         with patch("imaplib.IMAP4_SSL", return_value=mock_imap), \
              patch("smtplib.SMTP") as mock_smtp:

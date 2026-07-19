@@ -2829,9 +2829,11 @@ def link_tasks(conn: sqlite3.Connection, parent_id: str, child_id: str) -> None:
         # claim, unblock, and manual promotion.
         guard_reason, _ = _dependency_release_guard(conn, child_id)
         if guard_reason:
-            conn.execute(
-                "UPDATE tasks SET status = 'todo' WHERE id = ? AND status = 'ready'",
-                (child_id,),
+            _demote_invalidated_dependents(
+                conn,
+                parent_id,
+                reason="invalid_dependency_linked",
+                only_child_id=child_id,
             )
         _append_event(
             conn, child_id, "linked",
@@ -3482,6 +3484,7 @@ def _demote_invalidated_dependents(
     parent_task_id: str,
     *,
     reason: str,
+    only_child_id: Optional[str] = None,
 ) -> int:
     """Quarantine every released descendant of an invalidated completion.
 
@@ -3494,17 +3497,23 @@ def _demote_invalidated_dependents(
     *current* dependency snapshot remains authoritative.
     """
     demoted = 0
-    pending_parents = [parent_task_id]
+    pending_parents: list[tuple[str, Optional[str]]] = [
+        (parent_task_id, only_child_id)
+    ]
     visited: set[str] = set()
     while pending_parents:
-        immediate_parent = pending_parents.pop()
-        children = conn.execute(
+        immediate_parent, child_filter = pending_parents.pop()
+        query = (
             "SELECT t.id, t.status, t.current_run_id FROM tasks t "
             "JOIN task_links l ON l.child_id = t.id "
             "WHERE l.parent_id = ? "
-            "AND t.status IN ('ready', 'running', 'done')",
-            (immediate_parent,),
-        ).fetchall()
+            "AND t.status IN ('ready', 'review', 'running', 'done')"
+        )
+        params: list[object] = [immediate_parent]
+        if child_filter is not None:
+            query += " AND t.id = ?"
+            params.append(child_filter)
+        children = conn.execute(query, params).fetchall()
         for child in children:
             child_id = child["id"]
             if child_id in visited:
@@ -3522,7 +3531,7 @@ def _demote_invalidated_dependents(
                 # current dependency snapshot. Its own unfinished state still
                 # cannot release grandchildren, so inspect that subtree too.
                 if child["status"] in ("ready", "running"):
-                    pending_parents.append(child_id)
+                    pending_parents.append((child_id, None))
                 continue
 
             payload = {
@@ -3537,11 +3546,11 @@ def _demote_invalidated_dependents(
                 if child["current_run_id"] is not None
                 else None
             )
-            if child_status == "ready":
+            if child_status in ("ready", "review"):
                 cur = conn.execute(
                     "UPDATE tasks SET status = 'todo', block_kind = 'dependency' "
-                    "WHERE id = ? AND status = 'ready'",
-                    (child_id,),
+                    "WHERE id = ? AND status = ?",
+                    (child_id, child_status),
                 )
             elif child_status == "running":
                 cur = conn.execute(
@@ -3614,7 +3623,7 @@ def _demote_invalidated_dependents(
                 run_id=run_id,
             )
             demoted += 1
-            pending_parents.append(child_id)
+            pending_parents.append((child_id, None))
     return demoted
 
 
@@ -3766,9 +3775,10 @@ def claim_review_task(
     Returns the claimed ``Task`` on success, ``None`` if the task was
     already claimed (or is not in ``review`` status).
 
-    Unlike ``claim_task`` (which handles ``ready -> running``), this
-    does NOT check parent dependencies — the task already passed that
-    gate on its original ``todo -> ready -> running`` transition.
+    Review is a second claimable lane, so it re-checks the same dependency
+    completion predicate as ``claim_task``. A parent can be invalidated after
+    the task first reached ``review``; that stale review must return to ``todo``
+    rather than dispatch against a contradictory BUILD receipt.
 
     Creates a new run entry so the review agent's lifecycle is tracked
     independently from the original worker run.
@@ -3777,6 +3787,33 @@ def claim_review_task(
     lock = claimer or _claimer_id()
     expires = now + _resolve_claim_ttl_seconds(ttl_seconds)
     with write_txn(conn):
+        guard_reason, invalid_dependencies = _dependency_release_guard(
+            conn, task_id,
+        )
+        dependency_override = bool(
+            guard_reason
+            and _audited_dependency_override_matches(
+                conn, task_id, guard_reason, invalid_dependencies,
+            )
+        )
+        if guard_reason and not dependency_override:
+            conn.execute(
+                "UPDATE tasks SET status = 'todo' "
+                "WHERE id = ? AND status = 'review' AND claim_lock IS NULL",
+                (task_id,),
+            )
+            _append_event(
+                conn,
+                task_id,
+                "claim_rejected",
+                {
+                    "reason": "invalid_parent_completion",
+                    "details": guard_reason,
+                    "invalid_dependencies": invalid_dependencies,
+                    "source_status": "review",
+                },
+            )
+            return None
         cur = conn.execute(
             """
             UPDATE tasks
@@ -3823,7 +3860,8 @@ def claim_review_task(
         _append_event(
             conn, task_id, "claimed",
             {"lock": lock, "expires": expires, "run_id": run_id,
-             "source_status": "review"},
+             "source_status": "review",
+             "dependency_override": dependency_override},
             run_id=run_id,
         )
         return get_task(conn, task_id)
@@ -3835,25 +3873,40 @@ def heartbeat_claim(
     *,
     ttl_seconds: Optional[int] = None,
     claimer: Optional[str] = None,
+    expected_run_id: Optional[int] = None,
 ) -> bool:
     """Extend a running claim.  Returns True if we still own it.
 
     Workers that know they'll exceed 15 minutes should call this every
     few minutes to keep ownership.
+
+    ``expected_run_id`` fences dispatcher workers whose claim-lock value may
+    be reused by the same long-lived dispatcher across retries. A stale worker
+    must not extend the newer attempt merely because both inherited the same
+    dispatcher lock.
     """
     expires = int(time.time()) + _resolve_claim_ttl_seconds(ttl_seconds)
     lock = claimer or _claimer_id()
     with write_txn(conn):
-        cur = conn.execute(
+        sql = (
             "UPDATE tasks SET claim_expires = ? "
-            "WHERE id = ? AND status = 'running' AND claim_lock = ?",
-            (expires, task_id, lock),
+            "WHERE id = ? AND status = 'running' AND claim_lock = ?"
         )
+        params: tuple[object, ...] = (expires, task_id, lock)
+        if expected_run_id is not None:
+            sql += " AND current_run_id = ?"
+            params += (int(expected_run_id),)
+        cur = conn.execute(sql, params)
         if cur.rowcount == 1:
-            run_id = _current_run_id(conn, task_id)
+            run_id = (
+                int(expected_run_id)
+                if expected_run_id is not None
+                else _current_run_id(conn, task_id)
+            )
             if run_id is not None:
                 conn.execute(
-                    "UPDATE task_runs SET claim_expires = ? WHERE id = ?",
+                    "UPDATE task_runs SET claim_expires = ? "
+                    "WHERE id = ? AND ended_at IS NULL",
                     (expires, run_id),
                 )
             return True
@@ -4116,6 +4169,8 @@ def _verify_created_cards(
     conn: sqlite3.Connection,
     completing_task_id: str,
     claimed_ids: Iterable[str],
+    *,
+    run_id: Optional[int] = None,
 ) -> tuple[list[str], list[str]]:
     """Partition ``claimed_ids`` into (verified, phantom).
 
@@ -4156,13 +4211,27 @@ def _verify_created_cards(
         return [], ordered
     completing_assignee = row["assignee"]
 
-    # Batch-fetch existence + created_by in one query.
+    run_claim_event_id: Optional[int] = None
+    if run_id is not None:
+        run_row = conn.execute(
+            "SELECT MIN(id) AS event_id FROM task_events "
+            "WHERE task_id = ? AND run_id = ? AND kind = 'claimed'",
+            (completing_task_id, int(run_id)),
+        ).fetchone()
+        if run_row is None or run_row["event_id"] is None:
+            return [], ordered
+        run_claim_event_id = int(run_row["event_id"])
+
+    # Batch-fetch existence + provenance in one query.
     placeholders = ",".join(["?"] * len(ordered))
     rows = conn.execute(
-        f"SELECT id, created_by FROM tasks WHERE id IN ({placeholders})",
+        f"SELECT t.id, t.created_by, "
+        f"       (SELECT MIN(e.id) FROM task_events e "
+        f"         WHERE e.task_id = t.id AND e.kind = 'created') AS created_event_id "
+        f"FROM tasks t WHERE t.id IN ({placeholders})",
         tuple(ordered),
     ).fetchall()
-    found = {r["id"]: r["created_by"] for r in rows}
+    found = {r["id"]: r for r in rows}
 
     # Pull the set of cards linked as children of the completing task.
     # Cheap: one query, indexed on parent_id.
@@ -4171,10 +4240,17 @@ def _verify_created_cards(
     verified: list[str] = []
     phantom: list[str] = []
     for cid in ordered:
-        created_by = found.get(cid)
-        if created_by is None:
+        card = found.get(cid)
+        if card is None:
             phantom.append(cid)
             continue
+        if run_claim_event_id is not None and (
+            card["created_event_id"] is None
+            or int(card["created_event_id"]) <= run_claim_event_id
+        ):
+            phantom.append(cid)
+            continue
+        created_by = card["created_by"]
         # Accept if any of the three trust conditions holds.
         if completing_assignee and created_by == completing_assignee:
             verified.append(cid)
@@ -4283,6 +4359,7 @@ _SEVERE_FINDING_RE = re.compile(
 )
 _EXACT_GIT_OID_RE = re.compile(r"^(?:[0-9a-f]{40}|[0-9a-f]{64})$", re.IGNORECASE)
 _BUILD_STEP_KEYS = frozenset({"build", "implement", "implementation"})
+_BUILD_COMPLETION_CONTRACT = "build-receipt-v1"
 _POST_STAGE_BENIGN_EVENT_KINDS = frozenset({"heartbeat"})
 
 
@@ -4376,6 +4453,13 @@ def _build_receipt_reason(metadata: Optional[dict]) -> Optional[str]:
     if not has_artifact:
         return "BUILD receipt requires an artifact handle"
 
+    diff_sha256 = metadata.get("diff_sha256")
+    if not (
+        isinstance(diff_sha256, str)
+        and re.fullmatch(r"[0-9a-fA-F]{64}", diff_sha256.strip())
+    ):
+        return "BUILD receipt requires diff_sha256 as a full 64-hex digest"
+
     verification = metadata.get("verification_summary", metadata.get("verification"))
     if not (
         (isinstance(verification, str) and verification.strip())
@@ -4447,7 +4531,7 @@ def completion_validity(
         return False, f"parent status is {task['status']}"
 
     completed = conn.execute(
-        "SELECT id, run_id FROM task_events "
+        "SELECT id, run_id, payload FROM task_events "
         "WHERE task_id = ? AND kind = 'completed' ORDER BY id DESC LIMIT 1",
         (task_id,),
     ).fetchone()
@@ -4501,7 +4585,21 @@ def completion_validity(
     if invalidating is not None:
         return False, f"completion was invalidated by {invalidating['kind']}"
 
-    if _normalized_step_key(task["current_step_key"]) in _BUILD_STEP_KEYS:
+    try:
+        completed_payload = (
+            json.loads(completed["payload"]) if completed["payload"] else {}
+        )
+    except (TypeError, json.JSONDecodeError):
+        completed_payload = {}
+    if not isinstance(completed_payload, dict):
+        completed_payload = {}
+    completion_contract = completed_payload.get("completion_contract")
+    if completion_contract not in (None, _BUILD_COMPLETION_CONTRACT):
+        return False, f"unsupported completion contract {completion_contract!r}"
+    if (
+        _normalized_step_key(task["current_step_key"]) in _BUILD_STEP_KEYS
+        and completion_contract == _BUILD_COMPLETION_CONTRACT
+    ):
         receipt_reason = _build_receipt_reason(metadata)
         if receipt_reason:
             return False, receipt_reason
@@ -4593,6 +4691,84 @@ def _dependency_release_guard(
     return "; ".join(details), invalid
 
 
+def _material_event_watermark(
+    conn: sqlite3.Connection,
+    task_id: str,
+) -> Optional[int]:
+    """Return the latest event that can change a dependency override decision."""
+    non_heartbeat = conn.execute(
+        "SELECT MAX(id) AS event_id FROM task_events "
+        "WHERE task_id = ? AND kind != 'heartbeat'",
+        (task_id,),
+    ).fetchone()
+    material_heartbeat = conn.execute(
+        "SELECT MAX(id) AS event_id FROM task_events "
+        "WHERE task_id = ? AND kind = 'heartbeat' AND ("
+        "      (payload IS NOT NULL AND json_valid(payload) = 0) "
+        "   OR (json_valid(payload) = 1 "
+        "       AND json_type(payload, '$.note') = 'text' "
+        "       AND trim(json_extract(payload, '$.note')) != '')"
+        ")",
+        (task_id,),
+    ).fetchone()
+    candidates = [
+        int(row["event_id"])
+        for row in (non_heartbeat, material_heartbeat)
+        if row is not None and row["event_id"] is not None
+    ]
+    return max(candidates) if candidates else None
+
+
+def _dependency_override_snapshot(
+    conn: sqlite3.Connection,
+    task_id: str,
+    invalid_dependencies: list[str],
+) -> list[dict]:
+    """Capture the exact invalid dependency generation authorized by an override."""
+    snapshot: list[dict] = []
+    for dependency in sorted(invalid_dependencies):
+        if dependency == "@rework-lineage":
+            rework_tasks, history_error = _required_rework_tasks_from_history(
+                conn, task_id,
+            )
+            event = conn.execute(
+                "SELECT MAX(id) AS event_id FROM task_events "
+                "WHERE task_id = ? AND kind IN ("
+                "  'completion_rejected_non_pass', 'completion_invalidated', "
+                "  'linked', 'unlinked'"
+                ")",
+                (task_id,),
+            ).fetchone()
+            snapshot.append({
+                "dependency": dependency,
+                "event_id": (
+                    int(event["event_id"])
+                    if event is not None and event["event_id"] is not None
+                    else None
+                ),
+                "required_rework_tasks": rework_tasks,
+                "history_error": history_error,
+            })
+            continue
+
+        row = conn.execute(
+            "SELECT status, current_run_id, completed_at FROM tasks WHERE id = ?",
+            (dependency,),
+        ).fetchone()
+        snapshot.append({
+            "dependency": dependency,
+            "status": row["status"] if row is not None else None,
+            "current_run_id": (
+                int(row["current_run_id"])
+                if row is not None and row["current_run_id"] is not None
+                else None
+            ),
+            "completed_at": row["completed_at"] if row is not None else None,
+            "event_id": _material_event_watermark(conn, dependency),
+        })
+    return snapshot
+
+
 def _audited_dependency_override_matches(
     conn: sqlite3.Connection,
     task_id: str,
@@ -4621,12 +4797,16 @@ def _audited_dependency_override_matches(
     reason = payload.get("reason")
     recorded = payload.get("invalid_dependencies")
     recorded_guard = payload.get("dependency_guard")
+    recorded_snapshot = payload.get("dependency_snapshot")
     return (
         isinstance(reason, str)
         and bool(reason.strip())
         and recorded_guard == dependency_guard
         and isinstance(recorded, list)
         and sorted(str(item) for item in recorded) == sorted(invalid_dependencies)
+        and isinstance(recorded_snapshot, list)
+        and recorded_snapshot
+        == _dependency_override_snapshot(conn, task_id, invalid_dependencies)
     )
 
 
@@ -4643,7 +4823,7 @@ def _verify_completion_cards_or_raise(
     if not created_cards:
         return []
     verified_cards, phantom_cards = _verify_created_cards(
-        conn, task_id, created_cards
+        conn, task_id, created_cards, run_id=run_id,
     )
     if not phantom_cards:
         return verified_cards
@@ -4916,7 +5096,7 @@ def stage_task_completion(
         return False
 
     verified_rework_cards, _ = _verify_created_cards(
-        conn, task_id, created_cards,
+        conn, task_id, created_cards, run_id=expected_run_id,
     )
 
     rejection_reason = _completion_rejection_reason(
@@ -5051,6 +5231,52 @@ def stage_task_completion(
                 "verified_cards": verified_cards,
                 "summary": ((summary or result or "").strip().splitlines()[0][:400] or None),
             },
+            run_id=expected_run_id,
+        )
+    return True
+
+
+def record_staged_completion_protocol_violation(
+    conn: sqlite3.Connection,
+    task_id: str,
+    *,
+    expected_run_id: int,
+    reason: str,
+) -> bool:
+    """Record one run-fenced material action after a completion intent."""
+    expected_run_id = int(expected_run_id)
+    reason = str(reason).strip()[:500]
+    if not reason:
+        raise ValueError("protocol-violation reason is required")
+    with write_txn(conn):
+        current = conn.execute(
+            "SELECT t.status AS task_status, t.current_run_id, "
+            "       r.status AS run_status, r.ended_at "
+            "FROM tasks t JOIN task_runs r ON r.id = t.current_run_id "
+            "WHERE t.id = ?",
+            (task_id,),
+        ).fetchone()
+        if (
+            current is None
+            or current["task_status"] != "running"
+            or current["current_run_id"] != expected_run_id
+            or current["run_status"] != "completion_pending"
+            or current["ended_at"] is not None
+        ):
+            return False
+        duplicate = conn.execute(
+            "SELECT 1 FROM task_events "
+            "WHERE task_id = ? AND run_id = ? AND kind = 'protocol_violation' "
+            "AND json_extract(payload, '$.reason') = ? LIMIT 1",
+            (task_id, expected_run_id, reason),
+        ).fetchone()
+        if duplicate is not None:
+            return False
+        _append_event(
+            conn,
+            task_id,
+            "protocol_violation",
+            {"reason": reason, "source": "post_completion_tool_call"},
             run_id=expected_run_id,
         )
     return True
@@ -5227,7 +5453,7 @@ def complete_task(
             return False
 
     verified_rework_cards, _ = _verify_created_cards(
-        conn, task_id, created_cards,
+        conn, task_id, created_cards, run_id=expected_run_id,
     )
 
     rejection_reason = _completion_rejection_reason(
@@ -5369,6 +5595,8 @@ def complete_task(
             "result_len": len(result) if result else 0,
             "summary": ev_summary or None,
         }
+        if _task_is_build_step(conn, task_id):
+            completed_payload["completion_contract"] = _BUILD_COMPLETION_CONTRACT
         if verified_cards:
             completed_payload["verified_cards"] = verified_cards
         # Carry artifact paths in the event payload so the gateway
@@ -6288,6 +6516,13 @@ def promote_task(
                 "forced": force,
                 "dependency_guard": guard_reason if force else None,
                 "invalid_dependencies": invalid_dependencies if force else [],
+                "dependency_snapshot": (
+                    _dependency_override_snapshot(
+                        conn, task_id, invalid_dependencies,
+                    )
+                    if force and guard_reason
+                    else []
+                ),
             },
         )
 

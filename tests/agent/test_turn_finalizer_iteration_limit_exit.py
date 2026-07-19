@@ -97,6 +97,7 @@ def _finalize(
     exit_reason,
     api_call_count=60,
     pending_verification_response=None,
+    messages=None,
 ):
     return finalize_turn(
         agent,
@@ -104,7 +105,7 @@ def _finalize(
         api_call_count=api_call_count,
         interrupted=False,
         failed=False,
-        messages=[{"role": "user", "content": "task"}],
+        messages=(messages or [{"role": "user", "content": "task"}]),
         conversation_history=[],
         effective_task_id="task",
         turn_id="turn",
@@ -429,7 +430,7 @@ def test_incident_rejected_completion_then_budget_timeout_never_releases_child(
             ],
         },
     })
-    assert "non-pass handoff" in json.loads(output)["error"]
+    assert "rejected this invalid completion handoff" in json.loads(output)["error"]
 
     with kb.connect() as conn:
         parent_task = kb.get_task(conn, parent)
@@ -494,3 +495,57 @@ def test_clean_turn_finalizes_staged_completion_and_promotes_child(
         assert child_task is not None and child_task.status == "ready"
         assert run is not None and run.outcome == "completed"
         assert run.id == run_id
+
+
+def test_tool_call_after_completion_intent_quarantines_run(monkeypatch, tmp_path):
+    monkeypatch.setattr("hermes_cli.plugins.invoke_hook", lambda *_a, **_kw: [])
+    kb, parent, child, run_id = _seed_worker_parent_child(monkeypatch, tmp_path)
+    from tools import kanban_tools as kt
+
+    output = kt._handle_complete({
+        "summary": "Implementation appears complete.",
+        "metadata": {"changed_files": ["hermes_cli/kanban_db.py"]},
+    })
+    assert json.loads(output)["ok"] is True
+
+    messages = [
+        {"role": "user", "content": "task"},
+        {
+            "role": "assistant",
+            "tool_calls": [{
+                "id": "complete-1",
+                "type": "function",
+                "function": {"name": "kanban_complete", "arguments": "{}"},
+            }],
+        },
+        {"role": "tool", "tool_call_id": "complete-1", "content": output},
+        {
+            "role": "assistant",
+            "tool_calls": [{
+                "id": "terminal-1",
+                "type": "function",
+                "function": {"name": "terminal", "arguments": "{}"},
+            }],
+        },
+        {"role": "tool", "tool_call_id": "terminal-1", "content": "late work"},
+        {"role": "assistant", "content": "done"},
+    ]
+    result = _finalize(
+        _LimitAgent(budget_remaining=1),
+        final_response="done",
+        exit_reason="text_response(finish_reason=stop)",
+        messages=messages,
+    )
+    assert result["completed"] is True
+
+    with kb.connect() as conn:
+        parent_task = kb.get_task(conn, parent)
+        child_task = kb.get_task(conn, child)
+        run = kb.get_run(conn, run_id)
+        assert parent_task is not None and parent_task.status == "blocked"
+        assert child_task is not None and child_task.status == "todo"
+        assert run is not None and run.outcome == "invalid_completion"
+        assert any(
+            event.kind == "protocol_violation" and event.run_id == run_id
+            for event in kb.list_events(conn, parent)
+        )

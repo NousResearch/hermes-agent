@@ -106,16 +106,22 @@ def _default_task_id(arg: Optional[str]) -> Optional[str]:
 
 
 def _worker_run_id(task_id: str) -> Optional[int]:
-    """Return this worker's dispatcher run id when it is scoped to task_id."""
+    """Return a run fence, rejecting a malformed dispatcher worker context."""
     if os.environ.get("HERMES_KANBAN_TASK") != task_id:
         return None
     raw = os.environ.get("HERMES_KANBAN_RUN_ID")
     if not raw:
-        return None
+        raise ValueError(
+            f"dispatcher worker for {task_id} has no HERMES_KANBAN_RUN_ID; "
+            "refusing an unfenced lifecycle mutation"
+        )
     try:
         return int(raw)
-    except ValueError:
-        return None
+    except ValueError as exc:
+        raise ValueError(
+            f"dispatcher worker for {task_id} has invalid "
+            "HERMES_KANBAN_RUN_ID; refusing an unfenced lifecycle mutation"
+        ) from exc
 
 
 def _stamp_worker_session_metadata(
@@ -259,29 +265,35 @@ def heartbeat_current_worker_from_env() -> bool:
         return False
     _auto_heartbeat_last_attempt = now
     try:
+        run_id = _worker_run_id(tid)
+        if run_id is None:
+            return False
         kb, conn = _connect()
         try:
             claim_lock = os.environ.get("HERMES_KANBAN_CLAIM_LOCK")
             try:
-                kb.heartbeat_claim(conn, tid, claimer=claim_lock)
+                claim_extended = kb.heartbeat_claim(
+                    conn,
+                    tid,
+                    claimer=claim_lock,
+                    expected_run_id=run_id,
+                )
             except Exception:
+                claim_extended = False
                 logger.debug("auto-heartbeat: heartbeat_claim failed", exc_info=True)
-            run_id_raw = os.environ.get("HERMES_KANBAN_RUN_ID")
-            run_id: Optional[int]
             try:
-                run_id = int(run_id_raw) if run_id_raw else None
-            except (TypeError, ValueError):
-                run_id = None
-            try:
-                kb.heartbeat_worker(conn, tid, note=None, expected_run_id=run_id)
+                event_recorded = kb.heartbeat_worker(
+                    conn, tid, note=None, expected_run_id=run_id
+                )
             except Exception:
+                event_recorded = False
                 logger.debug("auto-heartbeat: heartbeat_worker failed", exc_info=True)
         finally:
             try:
                 conn.close()
             except Exception:
                 pass
-        return True
+        return claim_extended and event_recorded
     except Exception:
         logger.debug("auto-heartbeat: bridge failed", exc_info=True)
         return False
@@ -807,19 +819,25 @@ def _handle_heartbeat(args: dict, **kw) -> str:
     try:
         kb, conn = _connect(board=board)
         try:
+            worker_run_id = _worker_run_id(tid)
             # Extend the claim TTL first. The dispatcher pins
             # HERMES_KANBAN_CLAIM_LOCK in the worker env at spawn time
             # (see _default_spawn in kanban_db.py); falling back to the
             # default _claimer_id() covers locally-driven workers that
             # never went through the dispatcher path.
             claim_lock = os.environ.get("HERMES_KANBAN_CLAIM_LOCK")
-            kb.heartbeat_claim(conn, tid, claimer=claim_lock)
+            kb.heartbeat_claim(
+                conn,
+                tid,
+                claimer=claim_lock,
+                expected_run_id=worker_run_id,
+            )
 
             ok = kb.heartbeat_worker(
                 conn,
                 tid,
                 note=note,
-                expected_run_id=_worker_run_id(tid),
+                expected_run_id=worker_run_id,
             )
             if not ok:
                 return tool_error(

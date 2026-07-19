@@ -66,6 +66,40 @@ def _drop_verification_continuation_scaffolding(messages) -> None:
     ]
 
 
+def _has_material_tool_call_after_kanban_complete(messages) -> bool:
+    """Return True when a worker kept using tools after completion intent."""
+    tool_messages: list[list[str]] = []
+    last_completion_index: int | None = None
+    for message in messages:
+        if not isinstance(message, dict) or message.get("role") != "assistant":
+            continue
+        names: list[str] = []
+        for tool_call in message.get("tool_calls") or []:
+            if isinstance(tool_call, dict):
+                function = tool_call.get("function")
+                if isinstance(function, dict) and isinstance(function.get("name"), str):
+                    names.append(function["name"])
+                elif isinstance(tool_call.get("name"), str):
+                    names.append(tool_call["name"])
+            else:
+                function = getattr(tool_call, "function", None)
+                name = getattr(function, "name", None) or getattr(tool_call, "name", None)
+                if isinstance(name, str):
+                    names.append(name)
+        if not names:
+            continue
+        tool_messages.append(names)
+        if "kanban_complete" in names:
+            last_completion_index = len(tool_messages) - 1
+    if last_completion_index is None:
+        return False
+    return any(
+        name != "kanban_complete"
+        for names in tool_messages[last_completion_index:]
+        for name in names
+    )
+
+
 def finalize_turn(
     agent,
     *,
@@ -647,6 +681,16 @@ def finalize_turn(
         try:
             _conn = _kb.connect()
             try:
+                if _has_material_tool_call_after_kanban_complete(messages):
+                    _kb.record_staged_completion_protocol_violation(
+                        _conn,
+                        _kanban_task,
+                        expected_run_id=_kanban_run_id,
+                        reason=(
+                            "worker invoked another tool after kanban_complete; "
+                            "completion is terminal for its run"
+                        ),
+                    )
                 finalized = _kb.finalize_staged_completion(
                     _conn,
                     _kanban_task,

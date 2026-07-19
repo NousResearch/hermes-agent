@@ -2025,6 +2025,44 @@ def test_dashboard_direct_status_change_within_same_state_is_noop_for_runs(kanba
         conn.close()
 
 
+@pytest.mark.parametrize("target_status", ["ready", "review"])
+def test_dashboard_direct_claimable_status_rejects_done_parent_with_invalid_history(
+    kanban_home, target_status,
+):
+    """Dashboard drag-drop uses completion validity, not the status column."""
+    from plugins.kanban.dashboard.plugin_api import _set_status_direct
+
+    conn = kb.connect()
+    try:
+        parent = kb.create_task(conn, title="contradictory parent", assignee="worker")
+        assert kb.claim_task(conn, parent) is not None
+        parent_run = kb.latest_run(conn, parent)
+        assert parent_run is not None
+        kb._record_task_failure(
+            conn,
+            parent,
+            error="timed out",
+            outcome="timed_out",
+            release_claim=True,
+            end_run=True,
+            expected_run_id=parent_run.id,
+        )
+        conn.execute(
+            "UPDATE tasks SET status = 'done', completed_at = 1 WHERE id = ?",
+            (parent,),
+        )
+        conn.commit()
+        child = kb.create_task(conn, title="gated child", parents=[parent])
+        child_task = kb.get_task(conn, child)
+        assert child_task is not None and child_task.status == "todo"
+
+        assert _set_status_direct(conn, child, target_status) is False
+        child_task = kb.get_task(conn, child)
+        assert child_task is not None and child_task.status == "todo"
+    finally:
+        conn.close()
+
+
 def test_cli_bulk_complete_with_summary_rejects(kanban_home):
     conn = kb.connect()
     try:

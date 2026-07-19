@@ -167,10 +167,24 @@ def worker_env(monkeypatch, tmp_path):
     try:
         tid = kb.create_task(conn, title="worker-test", assignee="test-worker")
         kb.claim_task(conn, tid)
+        run = kb.latest_run(conn, tid)
+        assert run is not None
     finally:
         conn.close()
     monkeypatch.setenv("HERMES_KANBAN_TASK", tid)
+    monkeypatch.setenv("HERMES_KANBAN_RUN_ID", str(run.id))
     return tid
+
+
+def _finalize_worker_completion(task_id: str) -> None:
+    from hermes_cli import kanban_db as kb
+
+    with kb.connect() as conn:
+        run = kb.latest_run(conn, task_id)
+        assert run is not None
+        assert kb.finalize_staged_completion(
+            conn, task_id, expected_run_id=run.id,
+        )
 
 
 def test_show_defaults_to_env_task_id(worker_env):
@@ -301,6 +315,8 @@ def test_complete_happy_path(worker_env):
     d = json.loads(out)
     assert d["ok"] is True
     assert d["task_id"] == worker_env
+    assert d["staged"] is True
+    _finalize_worker_completion(worker_env)
     # Verify via kernel
     from hermes_cli import kanban_db as kb
     conn = kb.connect()
@@ -386,6 +402,7 @@ def test_complete_metadata_round_trips_through_show(worker_env):
         "metadata": handoff,
     })
     assert json.loads(complete_out)["ok"] is True
+    _finalize_worker_completion(worker_env)
 
     show_out = kt._handle_show({"task_id": worker_env})
     shown = json.loads(show_out)
@@ -454,6 +471,28 @@ def test_complete_with_result_only(worker_env):
     assert d["ok"] is True
 
 
+@pytest.mark.parametrize("run_value", [None, "not-a-run-id"])
+def test_worker_complete_fails_closed_without_valid_run_fence(
+    monkeypatch, worker_env, run_value,
+):
+    from tools import kanban_tools as kt
+
+    if run_value is None:
+        monkeypatch.delenv("HERMES_KANBAN_RUN_ID", raising=False)
+    else:
+        monkeypatch.setenv("HERMES_KANBAN_RUN_ID", run_value)
+
+    out = json.loads(kt._handle_complete({"summary": "unfenced completion"}))
+    assert "refusing an unfenced lifecycle mutation" in out.get("error", "")
+
+    from hermes_cli import kanban_db as kb
+    with kb.connect() as conn:
+        task = kb.get_task(conn, worker_env)
+        run = kb.latest_run(conn, worker_env)
+        assert task is not None and task.status == "running"
+        assert run is not None and run.ended_at is None
+
+
 def test_complete_with_artifacts_lands_in_event_payload(worker_env):
     """``artifacts=[...]`` rides into the completed event payload so the
     gateway notifier can upload them as native attachments. See the
@@ -466,6 +505,7 @@ def test_complete_with_artifacts_lands_in_event_payload(worker_env):
         "artifacts": ["/tmp/q3-revenue.png", "/tmp/q3-report.pdf"],
     })
     assert json.loads(out)["ok"] is True
+    _finalize_worker_completion(worker_env)
 
     conn = kb.connect()
     try:
@@ -633,6 +673,7 @@ def test_complete_retry_with_empty_created_cards_succeeds(worker_env):
         "created_cards": [],
     }))
     assert ok.get("ok") is True
+    _finalize_worker_completion(worker_env)
 
     conn = kb.connect()
     try:
@@ -696,9 +737,12 @@ def test_complete_goal_mode_rejected_by_judge(monkeypatch, tmp_path):
             body="Must achieve X with verified evidence.", goal_mode=True
         )
         kb.claim_task(conn, goal_task_id)
+        goal_run = kb.latest_run(conn, goal_task_id)
+        assert goal_run is not None
     finally:
         conn.close()
     monkeypatch.setenv("HERMES_KANBAN_TASK", goal_task_id)
+    monkeypatch.setenv("HERMES_KANBAN_RUN_ID", str(goal_run.id))
 
     # Mock the judge to reject the completion. The gate only runs when a
     # judge is reachable, so force the availability probe True as well.
@@ -754,9 +798,12 @@ def test_complete_goal_mode_allows_when_judge_unavailable(monkeypatch, tmp_path)
             body="Must achieve X with verified evidence.", goal_mode=True
         )
         kb.claim_task(conn, goal_task_id)
+        goal_run = kb.latest_run(conn, goal_task_id)
+        assert goal_run is not None
     finally:
         conn.close()
     monkeypatch.setenv("HERMES_KANBAN_TASK", goal_task_id)
+    monkeypatch.setenv("HERMES_KANBAN_RUN_ID", str(goal_run.id))
 
     # No judge reachable. judge_goal must not even be consulted; if it were,
     # this stub would reject — so reaching "done" proves the probe short-circuit.
@@ -769,6 +816,7 @@ def test_complete_goal_mode_allows_when_judge_unavailable(monkeypatch, tmp_path)
     out = kt._handle_complete({"summary": "done enough"})
     d = json.loads(out)
     assert d.get("ok") is True
+    _finalize_worker_completion(goal_task_id)
 
     conn2 = kb.connect()
     try:
@@ -819,9 +867,12 @@ def _make_goal_mode_worker_env(monkeypatch, tmp_path):
             body="Must achieve X.", goal_mode=True,
         )
         kb.claim_task(conn, goal_task_id)
+        goal_run = kb.latest_run(conn, goal_task_id)
+        assert goal_run is not None
     finally:
         conn.close()
     monkeypatch.setenv("HERMES_KANBAN_TASK", goal_task_id)
+    monkeypatch.setenv("HERMES_KANBAN_RUN_ID", str(goal_run.id))
     return goal_task_id
 
 
@@ -1459,6 +1510,7 @@ def test_worker_lifecycle_through_tools(worker_env):
         "metadata": {"child_task": child_out["task_id"]},
     }))
     assert comp["ok"]
+    _finalize_worker_completion(worker_env)
 
     # Verify final state
     from hermes_cli import kanban_db as kb
@@ -2059,7 +2111,10 @@ def test_board_param_routes_heartbeat_to_alt_board(monkeypatch, tmp_path):
     with kb.connect(board="alt") as conn:
         tid = kb.create_task(conn, title="alt hb", assignee="alt-worker")
         kb.claim_task(conn, tid)
+        run = kb.latest_run(conn, tid)
+        assert run is not None
     monkeypatch.setenv("HERMES_KANBAN_TASK", tid)
+    monkeypatch.setenv("HERMES_KANBAN_RUN_ID", str(run.id))
 
     from tools import kanban_tools as kt
     out = kt._handle_heartbeat({"note": "alive on alt", "board": "alt"})

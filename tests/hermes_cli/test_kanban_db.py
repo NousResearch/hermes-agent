@@ -620,6 +620,7 @@ def test_valid_exact_head_build_receipt_promotes_child_exactly_once(kanban_home)
         "base_sha": "b" * 40,
         "changed_files": ["hermes_cli/kanban_db.py"],
         "artifact": "bundle:kanban-build-guard.bundle",
+        "diff_sha256": "c" * 64,
         "verification_summary": "235 DB tests and adversarial probes passed",
         "blocking_findings": [],
     }
@@ -715,17 +716,45 @@ def test_build_receipt_requires_at_least_one_changed_file(kanban_home):
         assert parent_task is not None and parent_task.status == "blocked"
 
 
+def test_build_receipt_requires_diff_artifact_digest(kanban_home):
+    with kb.connect() as conn:
+        parent = kb.create_task(conn, title="implementation", assignee="engineer")
+        conn.execute(
+            "UPDATE tasks SET current_step_key = 'build' WHERE id = ?", (parent,)
+        )
+        assert kb.claim_task(conn, parent) is not None
+        run = kb.latest_run(conn, parent)
+        assert run is not None
+        with pytest.raises(kb.InvalidCompletionHandoffError, match="diff_sha256"):
+            kb.stage_task_completion(
+                conn,
+                parent,
+                expected_run_id=run.id,
+                summary="BUILD claims success with an unhashed diff artifact.",
+                metadata={
+                    "final_head": "a" * 40,
+                    "base_sha": "b" * 40,
+                    "changed_files": ["hermes_cli/kanban_db.py"],
+                    "artifact": "bundle:guard.bundle",
+                    "verification_summary": "targeted tests passed",
+                    "blocking_findings": [],
+                },
+            )
+        parent_task = kb.get_task(conn, parent)
+        assert parent_task is not None and parent_task.status == "blocked"
+
+
 def test_fix_required_rework_must_be_linked_before_review_readies(kanban_home):
     with kb.connect() as conn:
         review = kb.create_task(conn, title="security review", assignee="security")
+        assert kb.claim_task(conn, review) is not None
+        run = kb.latest_run(conn, review)
+        assert run is not None
         rework = kb.create_task(
             conn,
             title="required implementation rework",
             created_by="security",
         )
-        assert kb.claim_task(conn, review) is not None
-        run = kb.latest_run(conn, review)
-        assert run is not None
 
         with pytest.raises(kb.InvalidCompletionHandoffError, match="non-pass verdict"):
             kb.stage_task_completion(
@@ -767,6 +796,69 @@ def test_fix_required_rework_must_be_linked_before_review_readies(kanban_home):
         assert kb.complete_task(conn, rework, summary="Rework implemented and verified.")
         review_task = kb.get_task(conn, review)
         assert review_task is not None and review_task.status == "ready"
+
+
+def test_run_scoped_created_cards_rejects_preexisting_same_profile_task(kanban_home):
+    with kb.connect() as conn:
+        review = kb.create_task(conn, title="security review", assignee="security")
+        preexisting = kb.create_task(
+            conn,
+            title="unrelated old implementation",
+            created_by="security",
+        )
+        assert kb.claim_task(conn, review) is not None
+        run = kb.latest_run(conn, review)
+        assert run is not None
+
+        with pytest.raises(kb.HallucinatedCardsError):
+            kb.stage_task_completion(
+                conn,
+                review,
+                expected_run_id=run.id,
+                summary="Review passed, but claimed an unrelated old card.",
+                created_cards=[preexisting],
+            )
+        review_task = kb.get_task(conn, review)
+        assert review_task is not None and review_task.status == "running"
+        assert not any(
+            event.kind == "completion_staged"
+            for event in kb.list_events(conn, review)
+        )
+
+
+def test_linking_invalid_parent_fences_running_child(kanban_home):
+    with kb.connect() as conn:
+        parent = kb.create_task(conn, title="new incomplete prerequisite")
+        child = kb.create_task(conn, title="already running child", assignee="engineer")
+        assert kb.claim_task(conn, child) is not None
+        child_run = kb.latest_run(conn, child)
+        assert child_run is not None
+
+        kb.link_tasks(conn, parent, child)
+
+        child_task = kb.get_task(conn, child)
+        ended_run = kb.get_run(conn, child_run.id)
+        assert child_task is not None and child_task.status == "todo"
+        assert child_task.current_run_id is None
+        assert ended_run is not None and ended_run.outcome == "dependency_invalidated"
+
+
+def test_linking_invalid_parent_invalidates_done_descendant_chain(kanban_home):
+    with kb.connect() as conn:
+        parent = kb.create_task(conn, title="new incomplete prerequisite")
+        child = kb.create_task(conn, title="formerly complete child")
+        assert kb.complete_task(conn, child, summary="Completed before the new edge.")
+        grandchild = kb.create_task(conn, title="released descendant", parents=[child])
+        grandchild_task = kb.get_task(conn, grandchild)
+        assert grandchild_task is not None and grandchild_task.status == "ready"
+
+        kb.link_tasks(conn, parent, child)
+
+        child_task = kb.get_task(conn, child)
+        grandchild_task = kb.get_task(conn, grandchild)
+        assert child_task is not None and child_task.status == "blocked"
+        assert grandchild_task is not None and grandchild_task.status == "todo"
+        assert not kb.valid_completion(conn, child)
 
 
 def test_late_same_run_timeout_invalidates_completion_and_force_is_audited(
@@ -898,6 +990,40 @@ def test_late_parent_failure_invalidates_completed_descendant_chain(kanban_home)
         assert kb.claim_task(conn, grandchild) is None
 
 
+def test_late_parent_failure_demotes_review_lane_before_review_claim(kanban_home):
+    with kb.connect() as conn:
+        parent = kb.create_task(conn, title="implementation", assignee="engineer")
+        review = kb.create_task(
+            conn, title="review", assignee="security", parents=[parent]
+        )
+        assert kb.claim_task(conn, parent) is not None
+        parent_run = kb.latest_run(conn, parent)
+        assert parent_run is not None
+        assert kb.complete_task(
+            conn,
+            parent,
+            summary="Implementation appeared complete before its watchdog fired.",
+            expected_run_id=parent_run.id,
+        )
+        conn.execute(
+            "UPDATE tasks SET status = 'review' WHERE id = ?",
+            (review,),
+        )
+
+        assert kb._record_task_failure(
+            conn,
+            parent,
+            error="late same-run timeout invalidated the implementation",
+            outcome="timed_out",
+            release_claim=True,
+            end_run=True,
+            expected_run_id=parent_run.id,
+        )
+        review_task = kb.get_task(conn, review)
+        assert review_task is not None and review_task.status == "todo"
+        assert kb.claim_review_task(conn, review) is None
+
+
 def test_forced_dependency_override_does_not_survive_parent_state_change(
     kanban_home,
 ):
@@ -935,6 +1061,34 @@ def test_forced_dependency_override_does_not_survive_parent_state_change(
         # Even if a stale/manual writer reopens the child, the old override was
         # authorized for a different parent state and must not satisfy claim.
         conn.execute("UPDATE tasks SET status = 'ready' WHERE id = ?", (child,))
+        assert kb.claim_task(conn, child) is None
+        child_task = kb.get_task(conn, child)
+        assert child_task is not None and child_task.status == "todo"
+
+
+def test_forced_dependency_override_is_bound_to_parent_event_generation(
+    kanban_home,
+):
+    with kb.connect() as conn:
+        parent = kb.create_task(conn, title="implementation", assignee="engineer")
+        child = kb.create_task(conn, title="review", parents=[parent])
+        ok, error = kb.promote_task(
+            conn,
+            child,
+            actor="operator",
+            force=True,
+            reason="temporary recovery while parent is ready",
+        )
+        assert ok and error is None
+
+        # Return the parent to the same visible status and therefore the same
+        # human-readable guard string. The intervening lifecycle generation
+        # still invalidates the old override authorization.
+        assert kb.block_task(conn, parent, reason="temporary operator hold")
+        assert kb.unblock_task(conn, parent)
+        parent_task = kb.get_task(conn, parent)
+        assert parent_task is not None and parent_task.status == "ready"
+
         assert kb.claim_task(conn, child) is None
         child_task = kb.get_task(conn, child)
         assert child_task is not None and child_task.status == "todo"
@@ -1017,6 +1171,33 @@ def test_historical_done_compatibility_rejects_only_contradictory_history(
         legacy_child_task = kb.get_task(conn, legacy_child)
         assert legacy_child_task is not None
         assert legacy_child_task.status == "ready"
+
+        # Pre-contract BUILD completions commonly have a completed event/run
+        # but no exact-head receipt. They remain dependency-compatible unless
+        # their terminal history is contradictory; only new BUILD writes carry
+        # the build-receipt-v1 contract marker.
+        historical_build = kb.create_task(
+            conn, title="historical BUILD", assignee="engineer"
+        )
+        assert kb.claim_task(conn, historical_build) is not None
+        historical_run = kb.latest_run(conn, historical_build)
+        assert historical_run is not None
+        assert kb.complete_task(
+            conn,
+            historical_build,
+            summary="Historical implementation completion without a receipt.",
+            expected_run_id=historical_run.id,
+        )
+        conn.execute(
+            "UPDATE tasks SET current_step_key = 'build' WHERE id = ?",
+            (historical_build,),
+        )
+        historical_child = kb.create_task(
+            conn, title="historical BUILD child", parents=[historical_build]
+        )
+        historical_child_task = kb.get_task(conn, historical_child)
+        assert historical_child_task is not None
+        assert historical_child_task.status == "ready"
 
         contradictory = kb.create_task(
             conn, title="done row with timed-out terminal history",
@@ -1945,6 +2126,38 @@ def test_heartbeat_extends_claim(kanban_home):
         assert ok
         new = kb.get_task(conn, t).claim_expires
         assert new > int(time.time()) + 3000
+
+
+def test_stale_run_heartbeat_cannot_extend_newer_claim(kanban_home):
+    with kb.connect() as conn:
+        task_id = kb.create_task(conn, title="retry", assignee="worker")
+        lock = "host:dispatcher"
+        assert kb.claim_task(conn, task_id, claimer=lock) is not None
+        stale_run = kb.latest_run(conn, task_id)
+        assert stale_run is not None
+
+        assert kb.reclaim_task(conn, task_id, reason="retry")
+        assert kb.claim_task(conn, task_id, claimer=lock) is not None
+        current_run = kb.latest_run(conn, task_id)
+        assert current_run is not None and current_run.id != stale_run.id
+
+        conn.execute("UPDATE tasks SET claim_expires = 0 WHERE id = ?", (task_id,))
+        conn.execute(
+            "UPDATE task_runs SET claim_expires = 0 WHERE id = ?",
+            (current_run.id,),
+        )
+        conn.commit()
+
+        assert not kb.heartbeat_claim(
+            conn,
+            task_id,
+            claimer=lock,
+            expected_run_id=stale_run.id,
+        )
+        task = kb.get_task(conn, task_id)
+        refreshed_run = kb.latest_run(conn, task_id)
+        assert task is not None and task.claim_expires == 0
+        assert refreshed_run is not None and refreshed_run.claim_expires == 0
 
 
 def test_heartbeat_uses_env_default_ttl(kanban_home, monkeypatch):

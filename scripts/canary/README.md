@@ -377,6 +377,29 @@ with one atomic no-replace rename at
 `~/.hermes/trusted/owner-gate-release-sources/<release-sha>`. A conflicting
 destination or fixed `.pending` path fails closed.
 
+For the separately reviewed final successor, initialize its full release-bound
+collector keys, bootstrap its trusted owner runtime, and author the v1 passkey
+migration envelope only through the pathless sealed launcher action:
+
+```bash
+python -m scripts.canary.trusted_signer_author \
+  --release-revision <final-release-sha> \
+  --mode full-release
+
+/Users/emillomliev/.local/share/uv/python/\
+cpython-3.11.15-macos-aarch64-none/bin/python3.11 \
+  -I -S -B -X pycache_prefix=/var/empty/muncho-canary \
+  /absolute/clean/hermes-agent/scripts/canary/full_canary_owner_launcher.py \
+  --release-sha <final-release-sha> \
+  --author-v1-credential-migration
+```
+
+The credential action accepts no source, key, credential, IAP, output, or
+runtime path. It activates only the sealed release-bound owner-support source
+and site roots, then writes the fixed migration artifacts below that release's
+private signer directory. Do not invoke the credential author with an ambient
+virtual environment or a caller-built `sys.path`.
+
 After Foundation A, the same edge author can build the canonical unsigned
 release trust manifest from the exact offline package inventory, the one
 Foundation collector key used by both network and ancestry evidence, the three

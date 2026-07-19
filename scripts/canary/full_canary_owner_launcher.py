@@ -20256,6 +20256,14 @@ def _cli_parser() -> argparse.ArgumentParser:
         ),
     )
     actions.add_argument(
+        "--author-v1-credential-migration",
+        action="store_true",
+        help=(
+            "author the fixed release-bound v1 passkey migration envelope "
+            "through the sealed owner runtime"
+        ),
+    )
+    actions.add_argument(
         "--publish-stopped-release",
         action="store_true",
         help="publish the exact fork revision while every canary service is stopped",
@@ -20498,6 +20506,13 @@ def main(argv: Sequence[str] | None = None) -> int:
         )
         _validate_storage_growth_cli_arguments(arguments)
         if (
+            arguments.author_v1_credential_migration
+            and arguments.external_iam_policy_sha256 is not None
+        ):
+            raise OwnerLauncherError(
+                "owner_gate_v1_credential_author_cli_invalid"
+            )
+        if (
             not arguments.rotate_host_identity_receipt
             and any(item is not None for item in host_rotation_bindings)
         ):
@@ -20559,6 +20574,38 @@ def main(argv: Sequence[str] | None = None) -> int:
         )
         require_local_launcher_provenance(release_sha)
         _install_canonical_launcher_bridge(release_sha)
+        if arguments.author_v1_credential_migration:
+            from scripts.canary import owner_gate_v1_credential_author
+            from scripts.canary import owner_gate_v1_credential_migration
+
+            credential_error: BaseException | None = None
+            try:
+                receipt = (
+                    owner_gate_v1_credential_author.author_live_migration(
+                        release_sha
+                    )
+                )
+            except BaseException as exc:
+                credential_error = exc
+            command = gcloud_executable.trusted_command_prefix()
+            _validate_owner_interpreter_invocation(command[0])
+            require_trusted_owner_support_activation(
+                gcloud_executable,
+                release_sha=release_sha,
+            )
+            require_local_launcher_provenance(release_sha)
+            if credential_error is not None:
+                if isinstance(
+                    credential_error,
+                    (
+                        owner_gate_v1_credential_author.V1CredentialAuthorError,
+                        owner_gate_v1_credential_migration.V1CredentialMigrationError,
+                    ),
+                ):
+                    raise OwnerLauncherError(str(credential_error)) from None
+                raise credential_error
+            _emit_canonical_line(receipt)
+            return 0
         if (
             arguments.preflight_owner_gate_inert_inputs
             or arguments.prepare_owner_gate_inert_inputs

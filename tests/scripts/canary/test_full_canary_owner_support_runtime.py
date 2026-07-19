@@ -537,6 +537,111 @@ print(json.dumps({{
     assert not list(root.rglob("__pycache__"))
 
 
+def test_credential_collector_uses_sealed_support_without_git_checkout(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    root = _real_import_support_tree(tmp_path, monkeypatch)
+    tree = _capture(root)
+    manifest = launcher._validate_owner_support_manifest(
+        str(root),
+        release_sha=RELEASE_SHA,
+    )
+    source = root / "source"
+    site = root / "site-packages"
+    collector = (
+        source / "scripts/canary/owner_gate_v1_credential_migration.py"
+    )
+    assert collector.is_file()
+    assert not (source / ".git").exists()
+    probe = f"""
+import hashlib
+import json
+import runpy
+import sys
+
+namespace = runpy.run_path({str(launcher.__file__)!r})
+namespace["activate_trusted_owner_support"].__globals__["_canonical_owner_home"] = (
+    lambda: {str(tmp_path)!r}
+)
+BootstrapRuntime = namespace["TrustedGcloudExecutable"]
+bootstrap_runtime = object.__new__(BootstrapRuntime)
+bootstrap_runtime._production_runtime = True
+bootstrap_runtime._release_sha = {RELEASE_SHA!r}
+bootstrap_runtime._owner_support_root = {str(root)!r}
+bootstrap_runtime._owner_support_source = {str(source)!r}
+bootstrap_runtime._owner_support_site = {str(site)!r}
+bootstrap_runtime._owner_support_fingerprint = {tree!r}
+bootstrap_runtime._owner_support_manifest = {manifest!r}
+namespace["activate_trusted_owner_support"](
+    bootstrap_runtime,
+    release_sha={RELEASE_SHA!r},
+)
+
+from scripts.canary import full_canary_owner_launcher as sealed_launcher
+from scripts.canary import owner_gate_v1_credential_migration as migration
+
+sealed_launcher._canonical_owner_home = lambda: {str(tmp_path)!r}
+runtime = object.__new__(sealed_launcher.TrustedGcloudExecutable)
+runtime._production_runtime = True
+runtime._release_sha = {RELEASE_SHA!r}
+runtime._owner_support_root = {str(root)!r}
+runtime._owner_support_source = {str(source)!r}
+runtime._owner_support_site = {str(site)!r}
+runtime._owner_support_fingerprint = {tree!r}
+runtime._owner_support_manifest = {manifest!r}
+runtime.trusted_command_prefix = lambda: (sys.executable,)
+
+raw, digest = migration._collector_source(
+    {RELEASE_SHA!r},
+    trusted_runtime=runtime,
+)
+expected = open({str(collector)!r}, "rb").read()
+print(json.dumps({{
+    "digest": digest,
+    "expected_digest": hashlib.sha256(expected).hexdigest(),
+    "raw_matches": raw == expected,
+    "origin": migration.__file__,
+}}, sort_keys=True, separators=(",", ":")))
+"""
+    completed = subprocess.run(
+        (
+            sys.executable,
+            "-I",
+            "-S",
+            "-B",
+            "-X",
+            "pycache_prefix=/var/empty/muncho-canary",
+            "-c",
+            probe,
+        ),
+        stdin=subprocess.DEVNULL,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        env={
+            "HOME": str(tmp_path),
+            "LANG": "C",
+            "LC_ALL": "C",
+            "PATH": "/usr/bin:/bin:/usr/sbin:/sbin",
+        },
+        check=False,
+        timeout=60,
+    )
+
+    assert completed.returncode == 0, completed.stderr.decode(
+        "utf-8", errors="replace"
+    )
+    result = json.loads(completed.stdout)
+    assert result == {
+        "digest": hashlib.sha256(collector.read_bytes()).hexdigest(),
+        "expected_digest": hashlib.sha256(collector.read_bytes()).hexdigest(),
+        "origin": str(collector),
+        "raw_matches": True,
+    }
+    assert not list(root.rglob("*.pyc"))
+    assert not list(root.rglob("__pycache__"))
+
+
 def test_sealed_author_and_apply_has_one_exact_hostile_ambient_safe_command(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

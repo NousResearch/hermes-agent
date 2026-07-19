@@ -770,3 +770,107 @@ def test_sanitize_preserves_populated_tool_calls():
     out = sanitize_api_messages(list(messages))
     assistant = [m for m in out if m.get("role") == "assistant"][0]
     assert [tc["id"] for tc in assistant["tool_calls"]] == ["call_Z"]
+
+
+def test_sanitize_drops_fully_empty_assistant_message():
+    """sanitize_api_messages drops an assistant turn with no content, no
+    tool_calls, and no reasoning.
+
+    Interrupted generations can flush an empty assistant shell into the
+    history; strict providers (Kimi/Moonshot, ZAI) then reject every request
+    with HTTP 400 "the message at position N with role 'assistant' must not
+    be empty", wedging the session when the shell sits in the
+    compaction-protected tail.
+    """
+    from agent.agent_runtime_helpers import sanitize_api_messages
+
+    messages = [
+        {"role": "user", "content": "hi"},
+        {"role": "assistant", "content": ""},
+        {"role": "user", "content": "proceed"},
+        {"role": "assistant", "content": None},
+        {"role": "assistant", "content": "real answer"},
+    ]
+    out = sanitize_api_messages(list(messages))
+    assistants = [m for m in out if m.get("role") == "assistant"]
+    assert len(assistants) == 1
+    assert assistants[0]["content"] == "real answer"
+
+
+def test_sanitize_empty_assistant_with_empty_tool_calls_is_dropped():
+    """An assistant turn whose only payload was ``tool_calls: []`` becomes
+    fully empty once the key is normalized away, and is dropped too."""
+    from agent.agent_runtime_helpers import sanitize_api_messages
+
+    messages = [
+        {"role": "user", "content": "hi"},
+        {"role": "assistant", "content": "", "tool_calls": []},
+    ]
+    out = sanitize_api_messages(list(messages))
+    assert [m["role"] for m in out] == ["user"]
+
+
+def test_sanitize_keeps_thinking_only_and_tool_call_assistants():
+    """Negative controls: reasoning-bearing and tool_call-bearing assistant
+    turns with empty visible content must NOT be dropped here — thinking-only
+    turns belong to drop_thinking_only_and_merge_users (per-provider), and
+    tool_call turns are load-bearing for tool-result pairing."""
+    from agent.agent_runtime_helpers import sanitize_api_messages
+
+    messages = [
+        {"role": "user", "content": "hi"},
+        {"role": "assistant", "content": "", "reasoning_content": "thinking..."},
+        {"role": "assistant", "content": None,
+         "tool_calls": [{"id": "call_E", "type": "function",
+                         "function": {"name": "foo", "arguments": "{}"}}]},
+        {"role": "tool", "tool_call_id": "call_E", "content": "r"},
+    ]
+    out = sanitize_api_messages(list(messages))
+    assistants = [m for m in out if m.get("role") == "assistant"]
+    assert len(assistants) == 2
+    assert assistants[0].get("reasoning_content") == "thinking..."
+    assert [tc["id"] for tc in assistants[1]["tool_calls"]] == ["call_E"]
+
+
+def test_thinking_block_only_assistant_is_thinking_only():
+    """A turn whose ONLY content is Anthropic-style thinking blocks (no
+    top-level reasoning field) must classify as thinking-only. Previously it
+    fell through BOTH _is_thinking_only_assistant (verdict consulted only
+    top-level reasoning fields) and _is_empty_assistant (thinking block =
+    payload), reached the chat-completions wire converter, lost its thinking
+    blocks, and hit strict providers (Kimi/Moonshot) as an empty assistant —
+    HTTP 400 "must not be empty", wedging the session (observed 2026-07-19
+    via OpenRouter; request dump 20260719_063158_ca3fef)."""
+    from run_agent import AIAgent
+
+    shell = {"role": "assistant",
+             "content": [{"type": "thinking", "thinking": "planning..."}]}
+    assert AIAgent._is_thinking_only_assistant(shell) is True
+    assert AIAgent._is_empty_assistant(shell) is False  # division of labor
+
+
+def test_drop_thinking_only_drops_thinking_block_shell_and_merges():
+    from agent.agent_runtime_helpers import drop_thinking_only_and_merge_users
+
+    messages = [
+        {"role": "user", "content": "do the thing"},
+        {"role": "assistant",
+         "content": [{"type": "thinking", "thinking": "planning..."}]},
+        {"role": "user", "content": "go"},
+    ]
+    out = drop_thinking_only_and_merge_users(list(messages))
+    assert all(m.get("role") != "assistant" for m in out)
+    assert len([m for m in out if m.get("role") == "user"]) == 1  # merged
+
+
+def test_mixed_thinking_and_text_assistant_is_kept():
+    """Thinking blocks alongside real text are normal output — must be kept."""
+    from run_agent import AIAgent
+    from agent.agent_runtime_helpers import drop_thinking_only_and_merge_users
+
+    msg = {"role": "assistant",
+           "content": [{"type": "thinking", "thinking": "hmm"},
+                       {"type": "text", "text": "Here is the answer."}]}
+    assert AIAgent._is_thinking_only_assistant(msg) is False
+    out = drop_thinking_only_and_merge_users([{"role": "user", "content": "q"}, msg])
+    assert msg in out

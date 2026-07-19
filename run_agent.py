@@ -3874,7 +3874,15 @@ class AIAgent:
             return False
         if msg.get("tool_calls"):
             return False
-        # Does it have any actual output?
+        # Does it have any actual output? Track reasoning seen as
+        # Anthropic-style content thinking-blocks: a turn whose ONLY content
+        # is thinking blocks is thinking-only even without a top-level
+        # reasoning field. (Previously such a turn fell through BOTH this
+        # predicate and _is_empty_assistant, reached the chat-completions
+        # wire converter, had its thinking blocks stripped, and hit strict
+        # providers as an empty assistant → HTTP 400 wedge; observed live
+        # with Kimi/Moonshot via OpenRouter on 2026-07-19.)
+        saw_thinking_block = False
         content = msg.get("content")
         if isinstance(content, str):
             if content.strip():
@@ -3887,6 +3895,7 @@ class AIAgent:
                     continue
                 btype = block.get("type")
                 if btype in {"thinking", "redacted_thinking"}:
+                    saw_thinking_block = True
                     continue
                 if btype == "text":
                     text = block.get("text", "")
@@ -3898,6 +3907,8 @@ class AIAgent:
         elif content is not None and content != "":
             return False
         # Content is empty-ish. Is there reasoning to make it thinking-only?
+        if saw_thinking_block:
+            return True
         reasoning = msg.get("reasoning_content") or msg.get("reasoning")
         if isinstance(reasoning, str) and reasoning.strip():
             return True
@@ -3916,6 +3927,62 @@ class AIAgent:
                 for item in codex_items
             )
         return False
+
+    @staticmethod
+    def _is_empty_assistant(msg: Dict[str, Any]) -> bool:
+        """Return True if ``msg`` is an assistant turn with no payload at all.
+
+        No visible text, no tool_calls, and no reasoning of any form.
+        Interrupted/aborted generations can flush such an empty shell into the
+        history, and a compaction window whose protected tail contains one
+        replays it forever. Strict OpenAI-compatible providers (Kimi/Moonshot,
+        ZAI) then reject every subsequent request with HTTP 400 "the message at
+        position N with role 'assistant' must not be empty" — wedging the
+        session. Distinct from ``_is_thinking_only_assistant``, which requires
+        a reasoning payload: a thinking-only turn is dropped per-provider by
+        ``drop_thinking_only_and_merge_users``; a fully-empty turn carries
+        nothing for any provider and is safe to drop from the wire copy
+        unconditionally.
+        """
+        if not isinstance(msg, dict) or msg.get("role") != "assistant":
+            return False
+        if msg.get("tool_calls"):
+            return False
+        content = msg.get("content")
+        if isinstance(content, str):
+            if content.strip():
+                return False
+        elif isinstance(content, list):
+            for block in content:
+                if not isinstance(block, dict):
+                    if block:  # non-empty non-dict string etc.
+                        return False
+                    continue
+                btype = block.get("type")
+                if btype in {"thinking", "redacted_thinking"}:
+                    return False  # reasoning payload — thinking-only, not empty
+                if btype == "text":
+                    text = block.get("text", "")
+                    if isinstance(text, str) and text.strip():
+                        return False
+                    continue
+                # tool_use, image, document, etc. — real payload
+                return False
+        elif content is not None and content != "":
+            return False
+        # Content is empty-ish — any reasoning payload makes it thinking-only
+        # (another filter's decision), not fully empty.
+        for key in ("reasoning", "reasoning_content"):
+            val = msg.get(key)
+            if isinstance(val, str) and val.strip():
+                return False
+        rd = msg.get("reasoning_details")
+        if isinstance(rd, list) and rd:
+            return False
+        codex_items = msg.get("codex_reasoning_items")
+        if isinstance(codex_items, list) and codex_items:
+            return False
+        return True
 
     @staticmethod
     def _drop_thinking_only_and_merge_users(

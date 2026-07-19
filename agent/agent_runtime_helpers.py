@@ -2688,6 +2688,35 @@ def sanitize_api_messages(messages: List[Dict[str, Any]]) -> List[Dict[str, Any]
             dropped_empty_tool_calls,
         )
 
+    # --- Drop fully-empty assistant messages ---
+    # An assistant turn with no visible content, no tool_calls, and no
+    # reasoning payload carries nothing for any provider, and strict
+    # OpenAI-compatible backends (Kimi/Moonshot, ZAI) reject the whole request
+    # with HTTP 400 "the message at position N with role 'assistant' must not
+    # be empty". Such shells reach here from interrupted/aborted generations
+    # flushed into the history; when one lands in the compaction-protected
+    # tail, every subsequent call replays it and the session wedges
+    # permanently. Runs AFTER the empty-tool_calls normalization above (an
+    # assistant turn whose only payload was ``tool_calls: []`` is exactly this
+    # case once the key is dropped) and BEFORE the tool_call/result pairing
+    # passes below, so surviving-id bookkeeping sees the cleaned list.
+    # Thinking-only turns (reasoning but no text) are NOT dropped here —
+    # ``drop_thinking_only_and_merge_users`` owns that per-provider decision.
+    # Per-call wire copy only; the stored trajectory is never rewritten.
+    cleaned: List[Dict[str, Any]] = []
+    dropped_empty_assistant = 0
+    for msg in messages:
+        if _ra().AIAgent._is_empty_assistant(msg):
+            dropped_empty_assistant += 1
+            continue
+        cleaned.append(msg)
+    if dropped_empty_assistant:
+        messages = cleaned
+        _ra().logger.debug(
+            "Pre-call sanitizer: dropped %d fully-empty assistant message(s)",
+            dropped_empty_assistant,
+        )
+
     # --- Repair tool_calls whose function.name is empty/missing ---
     # Some providers (and partially-streamed responses) emit a tool_call with
     # id="call_xxx" but function.name="". Downstream Responses-API adapters

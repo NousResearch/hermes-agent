@@ -26,6 +26,7 @@ import {
 } from '@/lib/model-status-label'
 import { normalize } from '@/lib/text'
 import { cn } from '@/lib/utils'
+import { $customModels, mergeCustomModels } from '@/store/custom-models'
 import { $modelPresets, applyModelPreset, modelPresetKey } from '@/store/model-presets'
 import {
   $visibleModels,
@@ -80,6 +81,7 @@ export function ModelMenuPanel({ gateway, onSelectModel, requestGateway }: Model
   const currentReasoningEffort = useStore($currentReasoningEffort)
   const modelPresets = useStore($modelPresets)
   const visibleModels = useStore($visibleModels)
+  const customModels = useStore($customModels)
 
   const modelOptions = useQuery({
     queryKey: ['model-options', activeSessionId || 'global'],
@@ -197,8 +199,14 @@ export function ModelMenuPanel({ gateway, onSelectModel, requestGateway }: Model
 
   const groups = useMemo(
     () =>
-      groupModels(pickerProviders, search, { model: optionsModel, provider: optionsProvider }, effectiveVisibleModels),
-    [pickerProviders, search, optionsModel, optionsProvider, effectiveVisibleModels]
+      groupModels(
+        pickerProviders,
+        search,
+        { model: optionsModel, provider: optionsProvider },
+        effectiveVisibleModels,
+        customModels
+      ),
+    [pickerProviders, search, optionsModel, optionsProvider, effectiveVisibleModels, customModels]
   )
 
   return (
@@ -381,13 +389,17 @@ function groupModels(
   providers: ModelOptionProvider[],
   search: string,
   current: { model: string; provider: string },
-  visible: Set<string> | null
+  visible: Set<string> | null,
+  customModels: Record<string, string[]> = {}
 ): ProviderGroup[] {
   const q = normalize(search)
   const groups: ProviderGroup[] = []
 
   for (const provider of providers) {
-    const allFamilies = collapseModelFamilies(provider.models ?? [])
+    // Custom (user-typed) models join the provider's curated list so they are
+    // reachable from the composer menu, not only the picker dialog.
+    const customIds = new Set(customModels[provider.slug] ?? [])
+    const allFamilies = collapseModelFamilies(mergeCustomModels(provider.slug, provider.models, customModels))
 
     if (allFamilies.length === 0) {
       continue
@@ -422,7 +434,11 @@ function groupModels(
         ? allFamilies.find(family => family.id === current.model || family.fastId === current.model)?.id
         : undefined
 
-    const families = allFamilies.filter(family => shown.has(family.id) || family.id === activeId)
+    // Custom entries are always shown (they bypass the curated top-N cut and
+    // the visibility selection — the user explicitly typed them).
+    const families = allFamilies.filter(
+      family => shown.has(family.id) || family.id === activeId || customIds.has(family.id)
+    )
 
     if (families.length > 0) {
       groups.push({ families, provider })

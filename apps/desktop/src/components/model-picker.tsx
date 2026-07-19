@@ -1,3 +1,4 @@
+import { useStore } from '@nanostores/react'
 import { useQuery } from '@tanstack/react-query'
 import { useState } from 'react'
 
@@ -5,6 +6,7 @@ import { useI18n } from '@/i18n'
 import { requestModelOptions } from '@/lib/model-options'
 import { currentPickerSelection } from '@/lib/model-status-label'
 import { normalize } from '@/lib/text'
+import { $customModels, addCustomModel, isCustomModel, mergeCustomModels, removeCustomModel } from '@/store/custom-models'
 import type { ModelOptionProvider, ModelPricing } from '@/types/hermes'
 
 import type { HermesGateway } from '../hermes'
@@ -15,6 +17,7 @@ import { InlineNotice } from './notifications'
 import { Button } from './ui/button'
 import { Command, CommandEmpty, CommandGroup, CommandInput, CommandItem, CommandList } from './ui/command'
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from './ui/dialog'
+import { Input } from './ui/input'
 import { Skeleton } from './ui/skeleton'
 
 interface ModelPickerDialogProps {
@@ -52,6 +55,10 @@ export function ModelPickerDialog({
   // it and do a plain substring filter that preserves array order — matching
   // the `hermes model` CLI picker, which shows the curated list verbatim.
   const [search, setSearch] = useState('')
+  const [showCustomInput, setShowCustomInput] = useState(false)
+  const [customProvider, setCustomProvider] = useState('')
+  const [customModelDraft, setCustomModelDraft] = useState('')
+  const customModels = useStore($customModels)
 
   const modelOptions = useQuery({
     queryKey: ['model-options', sessionId || 'global'],
@@ -89,6 +96,34 @@ export function ModelPickerDialog({
     onOpenChange(false)
   }
 
+  const resetCustomInput = () => {
+    setShowCustomInput(false)
+    setCustomProvider('')
+    setCustomModelDraft('')
+  }
+
+  const openCustomInput = () => {
+    setCustomProvider(optionsProvider || currentProvider || providers[0]?.slug || '')
+    setShowCustomInput(true)
+  }
+
+  // Persist the typed model against its provider, then select it immediately —
+  // going through the same onSelect({ provider, model }) contract as backend
+  // rows so custom picks apply exactly like curated ones.
+  const submitCustomModel = () => {
+    const slug = customProvider.trim()
+    const model = customModelDraft.trim()
+
+    if (!slug || !model) {
+      return
+    }
+
+    addCustomModel(slug, model)
+    onSelect({ provider: slug, model })
+    resetCustomInput()
+    onOpenChange(false)
+  }
+
   return (
     <Dialog onOpenChange={onOpenChange} open={open}>
       <DialogContent className={cn('max-h-[85vh] max-w-2xl gap-0 overflow-hidden p-0', contentClassName)}>
@@ -100,23 +135,42 @@ export function ModelPickerDialog({
           </DialogDescription>
         </DialogHeader>
 
-        <Command className="rounded-none bg-card" shouldFilter={false}>
-          <CommandInput autoFocus onValueChange={setSearch} placeholder={copy.search} value={search} />
-          <CommandList className="max-h-96">
-            {!loading && !error && <CommandEmpty>{copy.noModels}</CommandEmpty>}
-            <ModelResults
-              currentModel={optionsModel || currentModel}
-              currentProvider={optionsProvider || currentProvider}
-              error={error}
-              loading={loading}
-              onSelectModel={selectModel}
-              providers={providers}
-              search={search}
-            />
-          </CommandList>
-        </Command>
+        {showCustomInput ? (
+          <CustomModelForm
+            draft={customModelDraft}
+            onCancel={resetCustomInput}
+            onDraftChange={setCustomModelDraft}
+            onProviderChange={setCustomProvider}
+            onSubmit={submitCustomModel}
+            provider={customProvider}
+            providers={providers}
+          />
+        ) : (
+          <Command className="rounded-none bg-card" shouldFilter={false}>
+            <CommandInput autoFocus onValueChange={setSearch} placeholder={copy.search} value={search} />
+            <CommandList className="max-h-96">
+              {!loading && !error && <CommandEmpty>{copy.noModels}</CommandEmpty>}
+              <ModelResults
+                currentModel={optionsModel || currentModel}
+                currentProvider={optionsProvider || currentProvider}
+                customModels={customModels}
+                error={error}
+                loading={loading}
+                onRemoveCustom={removeCustomModel}
+                onSelectModel={selectModel}
+                providers={providers}
+                search={search}
+              />
+            </CommandList>
+          </Command>
+        )}
 
         <DialogFooter className="flex-row items-center justify-end gap-2 bg-card p-3">
+          {!showCustomInput && (
+            <Button className="mr-auto" onClick={openCustomInput} variant="ghost">
+              {copy.customModel.add}
+            </Button>
+          )}
           <Button onClick={addProvider} variant="ghost">
             {copy.addProvider}
           </Button>
@@ -129,12 +183,84 @@ export function ModelPickerDialog({
   )
 }
 
+function CustomModelForm({
+  provider,
+  providers,
+  draft,
+  onProviderChange,
+  onDraftChange,
+  onSubmit,
+  onCancel
+}: {
+  provider: string
+  providers: ModelOptionProvider[]
+  draft: string
+  onProviderChange: (slug: string) => void
+  onDraftChange: (value: string) => void
+  onSubmit: () => void
+  onCancel: () => void
+}) {
+  const { t } = useI18n()
+  const copy = t.modelPicker.customModel
+
+  return (
+    <div className="space-y-3 border-b border-border bg-card px-4 py-3">
+      <p className="text-sm font-medium">{copy.heading}</p>
+      {providers.length > 0 && (
+        <div className="space-y-1.5">
+          <span className="text-xs text-muted-foreground">{copy.provider}</span>
+          <div className="flex flex-wrap gap-1.5">
+            {providers.map(p => (
+              <Button
+                className="text-xs"
+                key={p.slug}
+                onClick={() => onProviderChange(p.slug)}
+                size="sm"
+                variant={provider === p.slug ? 'default' : 'outline'}
+              >
+                {p.name}
+              </Button>
+            ))}
+          </div>
+        </div>
+      )}
+      <div className="space-y-1.5">
+        <span className="text-xs text-muted-foreground">{copy.modelId}</span>
+        <div className="flex gap-2">
+          <Input
+            autoFocus
+            className="font-mono"
+            disabled={!provider}
+            onChange={event => onDraftChange(event.target.value)}
+            onKeyDown={event => {
+              if (event.key === 'Enter') {
+                event.preventDefault()
+                onSubmit()
+              }
+            }}
+            placeholder={copy.placeholder}
+            value={draft}
+          />
+          <Button disabled={!provider || !draft.trim()} onClick={onSubmit} size="sm">
+            {copy.addButton}
+          </Button>
+          <Button onClick={onCancel} size="sm" variant="outline">
+            {t.common.cancel}
+          </Button>
+        </div>
+      </div>
+    </div>
+  )
+}
+
 function ModelResults({
   loading,
   error,
   providers,
   currentModel,
   currentProvider,
+  customModels,
+  onRemoveCustom,
   onSelectModel,
   search
 }: {
@@ -143,6 +269,8 @@ function ModelResults({
   providers: ModelOptionProvider[]
   currentModel: string
   currentProvider: string
+  customModels: Record<string, string[]>
+  onRemoveCustom: (provider: string, model: string) => void
   onSelectModel: (provider: ModelOptionProvider, model: string) => void
   search: string
 }) {
@@ -175,16 +303,22 @@ function ModelResults({
     provider.name.toLowerCase().includes(q) ||
     provider.slug.toLowerCase().includes(q)
 
-  // Only configured providers (those with curated models) are selectable
-  // here. Switching to a NOT-yet-configured provider goes through the
-  // "Add provider" footer button, which opens the full onboarding selector.
-  const configured = providers.filter(p => (p.models ?? []).length > 0)
+  // A provider is selectable when it has curated models OR the user added a
+  // custom model to it — so a custom entry survives a picker reopen even when
+  // the provider's backend catalog is empty. Switching to a NOT-yet-configured
+  // provider still goes through the "Add provider" footer button.
+  const configured = providers.filter(
+    p => (p.models ?? []).length > 0 || (customModels[p.slug] ?? []).length > 0
+  )
 
   return (
     <>
       {configured.map(provider => {
-        // Preserve the backend's curated order — filter in place, no re-sort.
-        const models = (provider.models ?? []).filter(m => matches(provider, m))
+        // Preserve the backend's curated order, then append custom entries —
+        // filter in place, no re-sort.
+        const models = mergeCustomModels(provider.slug, provider.models, customModels).filter(m =>
+          matches(provider, m)
+        )
 
         if (models.length === 0) {
           return null
@@ -203,6 +337,7 @@ function ModelResults({
             )}
             {models.map(model => {
               const isCurrent = model === currentModel && provider.slug === currentProvider
+              const custom = isCustomModel(provider.slug, model, customModels)
               const price = provider.pricing?.[model]
               const locked = unavailable.has(model)
 
@@ -224,6 +359,26 @@ function ModelResults({
                   value={`${provider.slug}:${model}`}
                 >
                   <span className="min-w-0 flex-1 truncate">{model}</span>
+                  {custom && (
+                    <>
+                      <span className="shrink-0 rounded-sm bg-muted px-1 py-0.5 text-[0.62rem] uppercase tracking-wide text-muted-foreground">
+                        {copy.customModel.badge}
+                      </span>
+                      <button
+                        aria-label={copy.customModel.remove}
+                        className="shrink-0 rounded-sm px-1 text-xs text-muted-foreground hover:text-foreground"
+                        onClick={event => {
+                          event.stopPropagation()
+                          onRemoveCustom(provider.slug, model)
+                        }}
+                        onPointerDown={event => event.stopPropagation()}
+                        title={copy.customModel.remove}
+                        type="button"
+                      >
+                        ✕
+                      </button>
+                    </>
+                  )}
                   {locked && (
                     <span className="shrink-0 text-[0.62rem] uppercase tracking-wide opacity-80">{copy.pro}</span>
                   )}

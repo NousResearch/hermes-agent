@@ -1,6 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 
-import { $sidebarAgentsGrouped } from '@/store/layout'
+import { $sidebarProjectsOpen } from '@/store/layout'
 
 import {
   $activeProjectId,
@@ -126,7 +126,7 @@ describe('pickProjectFolder', () => {
 describe('createProject', () => {
   beforeEach(() => {
     vi.clearAllMocks()
-    $sidebarAgentsGrouped.set(false)
+    $sidebarProjectsOpen.set(false)
     $activeProjectId.set(null)
     $projectsRpcAvailable.set(null)
   })
@@ -150,7 +150,7 @@ describe('createProject', () => {
 
     expect(result).toEqual(created)
     expect(request).toHaveBeenCalledWith('projects.create', expect.objectContaining({ name: 'Demo' }))
-    expect($sidebarAgentsGrouped.get()).toBe(true)
+    expect($sidebarProjectsOpen.get()).toBe(true)
     expect($activeProjectId.get()).toBe('p_new')
   })
 

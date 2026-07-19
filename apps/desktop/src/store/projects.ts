@@ -8,7 +8,7 @@ import { desktopGit } from '@/lib/desktop-git'
 import { isMissingRpcMethod } from '@/lib/gateway-rpc'
 import { persistentAtom } from '@/lib/persisted'
 import { activeGateway, ensureActiveGatewayOpen } from '@/store/gateway'
-import { setSidebarAgentsGrouped } from '@/store/layout'
+import { setSidebarProjectsOpen } from '@/store/layout'
 import { notify } from '@/store/notifications'
 import { requestFreshSession } from '@/store/profile'
 import { $selectedStoredSessionId, $sessions, sessionMatchesStoredId, workspaceCwdForNewSession } from '@/store/session'
@@ -199,10 +199,9 @@ export async function followActiveSessionCwd(cwd: string): Promise<void> {
   const projectId = projectIdForCwd(target)
 
   if (projectId) {
-    // The Projects tree only renders in grouped mode, so flip the sidebar into
-    // it — otherwise following from the flat Sessions list would change scope
-    // invisibly. Then drill into the thread's project.
-    setSidebarAgentsGrouped(true)
+    // Ensure the independent Projects section is visible before drilling into
+    // the thread's project, so the scope change is never hidden.
+    setSidebarProjectsOpen(true)
 
     if (projectId !== $projectScope.get()) {
       enterProject(projectId)
@@ -488,7 +487,7 @@ export async function createProject(input: CreateProjectInput): Promise<ProjectI
       $activeProjectId.set(created.id)
     }
 
-    setSidebarAgentsGrouped(true)
+    setSidebarProjectsOpen(true)
   }
 
   reconcileProjects()

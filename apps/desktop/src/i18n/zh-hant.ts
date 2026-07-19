@@ -1453,6 +1453,7 @@ export const zhHant = defineLocale({
     noSessions: '尚無工作階段',
     projects: {
       sectionLabel: '專案',
+      empty: '尚無專案 — 點選 + 建立',
       newButton: '新增專案',
       createTitle: '新增專案',
       createDesc: '為工作區命名並新增一個或多個資料夾。',

@@ -20,7 +20,9 @@ export const FILE_BROWSER_MAX_WIDTH = '20rem'
 export const SIDEBAR_SESSIONS_PAGE_SIZE = 50
 
 const SIDEBAR_PINNED_STORAGE_KEY = 'hermes.desktop.pinnedSessions'
-const SIDEBAR_AGENTS_GROUPED_STORAGE_KEY = 'hermes.desktop.agentsGroupedByWorkspace'
+// Keep the existing storage key so the former Projects-view preference migrates
+// naturally into the independent Projects section's open state.
+const SIDEBAR_PROJECTS_OPEN_STORAGE_KEY = 'hermes.desktop.agentsGroupedByWorkspace'
 const SIDEBAR_CRON_OPEN_STORAGE_KEY = 'hermes.desktop.sidebarCronOpen'
 const SIDEBAR_MESSAGING_OPEN_STORAGE_KEY = 'hermes.desktop.sidebarMessagingOpen'
 const SIDEBAR_SESSION_ORDER_STORAGE_KEY = 'hermes.desktop.sessionOrder'
@@ -134,7 +136,7 @@ export const $sidebarMessagingOpenIds = persistentAtom(
   [] as string[],
   Codecs.stringArray
 )
-export const $sidebarAgentsGrouped = persistentAtom(SIDEBAR_AGENTS_GROUPED_STORAGE_KEY, false, Codecs.bool)
+export const $sidebarProjectsOpen = persistentAtom(SIDEBAR_PROJECTS_OPEN_STORAGE_KEY, false, Codecs.bool)
 // When true, the sessions sidebar moves to the right and the file browser +
 // preview rail move to the left — a mirror of the default layout.
 export const $panesFlipped = persistentAtom(PANES_FLIPPED_STORAGE_KEY, false, Codecs.bool)
@@ -268,8 +270,8 @@ export function toggleSidebarMessagingOpen(sourceId: string) {
   )
 }
 
-export function setSidebarAgentsGrouped(grouped: boolean) {
-  $sidebarAgentsGrouped.set(grouped)
+export function setSidebarProjectsOpen(open: boolean) {
+  $sidebarProjectsOpen.set(open)
 }
 
 // Write an order list only when it actually changed, so an identical drag

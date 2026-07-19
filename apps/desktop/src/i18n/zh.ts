@@ -1756,6 +1756,7 @@ export const zh: Translations = {
     noSessions: '暂无会话',
     projects: {
       sectionLabel: '项目',
+      empty: '暂无项目 — 点击 + 创建',
       newButton: '新建项目',
       createTitle: '新建项目',
       createDesc: '为工作区命名并添加一个或多个文件夹。',

@@ -28,6 +28,7 @@ def execute(
     name: str,
     model_name: str,
     metadata: dict[str, Any] | None = None,
+    defer_logical_completion: bool = False,
 ) -> Any:
     """Run one non-streaming physical provider attempt through Relay."""
     runtime, session, parent = relay_runtime.resolve_execution_context(session_id)
@@ -81,10 +82,10 @@ def execute(
             raise callback_error
         raise
 
-    if "value" in raw_response and _json_equal(managed, raw_response["json"]):
+    if not defer_logical_completion:
         _complete_logical(logical, outcome="success")
+    if "value" in raw_response and _json_equal(managed, raw_response["json"]):
         return raw_response["value"]
-    _complete_logical(logical, outcome="success")
     return managed
 
 
@@ -96,6 +97,7 @@ async def execute_async(
     name: str,
     model_name: str,
     metadata: dict[str, Any] | None = None,
+    defer_logical_completion: bool = False,
 ) -> Any:
     """Run one asynchronous physical provider attempt through Relay."""
     runtime, session, parent = relay_runtime.resolve_execution_context(session_id)
@@ -147,7 +149,8 @@ async def execute_async(
             raise callback_error
         raise
 
-    _complete_logical(logical, outcome="success")
+    if not defer_logical_completion:
+        _complete_logical(logical, outcome="success")
     if "value" in raw_response and _json_equal(managed, raw_response["json"]):
         return raw_response["value"]
     return managed
@@ -160,6 +163,7 @@ def execute_current(
     name: str,
     model_name: str,
     metadata: dict[str, Any] | None = None,
+    defer_logical_completion: bool = False,
 ) -> Any:
     """Run a provider attempt under the inherited Hermes turn when present."""
     turn = relay_runtime.active_turn()
@@ -172,6 +176,7 @@ def execute_current(
         name=name,
         model_name=model_name,
         metadata=metadata,
+        defer_logical_completion=defer_logical_completion,
     )
 
 
@@ -182,6 +187,7 @@ async def execute_current_async(
     name: str,
     model_name: str,
     metadata: dict[str, Any] | None = None,
+    defer_logical_completion: bool = False,
 ) -> Any:
     """Run an async provider attempt under the inherited turn when present."""
     turn = relay_runtime.active_turn()
@@ -194,6 +200,7 @@ async def execute_current_async(
         name=name,
         model_name=model_name,
         metadata=metadata,
+        defer_logical_completion=defer_logical_completion,
     )
 
 
@@ -205,6 +212,7 @@ def stream_current(
     model_name: str,
     finalizer: Callable[[], Any],
     metadata: dict[str, Any] | None = None,
+    defer_logical_completion: bool = False,
 ) -> Any:
     """Run a provider stream under the inherited Hermes turn when present."""
     turn = relay_runtime.active_turn()
@@ -218,6 +226,7 @@ def stream_current(
         model_name=model_name,
         finalizer=finalizer,
         metadata=metadata,
+        defer_logical_completion=defer_logical_completion,
     )
 
 
@@ -235,6 +244,7 @@ def stream(
     accept_chunk: Callable[[Any], bool] | None = None,
     completed_response_predicate: Callable[[Any], bool] | None = None,
     metadata: dict[str, Any] | None = None,
+    defer_logical_completion: bool = False,
 ) -> "ManagedLlmStream":
     """Return a synchronous view of one Relay-managed provider stream."""
     return ManagedLlmStream(
@@ -250,6 +260,7 @@ def stream(
         accept_chunk=accept_chunk,
         completed_response_predicate=completed_response_predicate,
         metadata=metadata,
+        defer_logical_completion=defer_logical_completion,
     )
 
 
@@ -271,6 +282,7 @@ class ManagedLlmStream(Iterator[Any]):
         accept_chunk: Callable[[Any], bool] | None,
         completed_response_predicate: Callable[[Any], bool] | None,
         metadata: dict[str, Any] | None,
+        defer_logical_completion: bool,
     ) -> None:
         self.final_response: Any = None
         self._loop: asyncio.AbstractEventLoop | None = None
@@ -278,6 +290,7 @@ class ManagedLlmStream(Iterator[Any]):
         self._closed = False
         self._callback_error: BaseException | None = None
         self._logical: tuple[relay_runtime.RelayTurnContext, Any, str] | None = None
+        self._defer_logical_completion = defer_logical_completion
         self._on_chunk = on_chunk
         self._chunk_adapter = chunk_adapter or _namespace
         self._accept_chunk = accept_chunk
@@ -392,8 +405,9 @@ class ManagedLlmStream(Iterator[Any]):
         try:
             chunk = self._loop.run_until_complete(next_chunk())
         except StopAsyncIteration:
-            _complete_logical(self._logical, outcome="success")
-            self._logical = None
+            if not self._defer_logical_completion:
+                _complete_logical(self._logical, outcome="success")
+                self._logical = None
             self.close()
             raise StopIteration from None
         except BaseException as exc:
@@ -617,6 +631,17 @@ def _complete_logical(
         with turn.logical_llm_lock:
             if turn.logical_llm_calls.get(request_id) is handle:
                 turn.logical_llm_calls.pop(request_id, None)
+
+
+def complete_logical_call(api_request_id: str, *, outcome: str) -> None:
+    """Complete the active turn's logical LLM call after caller validation."""
+    turn = relay_runtime.active_turn()
+    if turn is None or not api_request_id:
+        return
+    with turn.logical_llm_lock:
+        handle = turn.logical_llm_calls.get(api_request_id)
+    if handle is not None:
+        _complete_logical((turn, handle, api_request_id), outcome=outcome)
 
 
 def _provider_request(

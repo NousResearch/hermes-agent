@@ -1465,6 +1465,7 @@ def run_conversation(
                             ),
                             "retry_count": retry_count,
                         },
+                        defer_logical_completion=True,
                     )
 
                 from hermes_cli.middleware import run_llm_execution_middleware
@@ -1744,6 +1745,13 @@ def run_conversation(
                                 f"{int(sleep_end - time.time())}s remaining"
                             )
                     continue  # Retry the API call
+
+                from agent import relay_llm
+
+                relay_llm.complete_logical_call(
+                    api_request_id,
+                    outcome="success",
+                )
 
                 # Check finish_reason before proceeding
                 if agent.api_mode == "codex_responses":

@@ -1270,6 +1270,7 @@ def run_codex_stream(agent, api_kwargs: dict, client: Any = None, on_first_delta
                 ),
                 "retry_count": attempt,
             },
+            defer_logical_completion=True,
         )
 
         def _interrupt_or_superseded() -> bool:

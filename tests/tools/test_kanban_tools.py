@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import json
 import os
+from unittest.mock import Mock
 
 import pytest
 
@@ -1811,6 +1812,205 @@ def multi_board_env(monkeypatch, tmp_path):
     }
 
 
+@pytest.fixture
+def scoped_board_env(monkeypatch, multi_board_env):
+    """Task-scoped worker pinned to the default board for override tests."""
+    monkeypatch.setenv("HERMES_KANBAN_TASK", multi_board_env["default_seed"])
+    monkeypatch.setenv("HERMES_KANBAN_BOARD", "default")
+    return multi_board_env
+
+
+def _board_snapshot(default_seed: str, alt_seed: str):
+    """Capture the visible state for the default/alt boards."""
+    from hermes_cli import kanban_db as kb
+
+    snapshot = {}
+    for board_name, task_id in (("default", default_seed), ("alt", alt_seed)):
+        with kb.connect(board=board_name) as conn:
+            task = kb.get_task(conn, task_id)
+            assert task is not None
+            snapshot[board_name] = {
+                "task_count": conn.execute(
+                    "SELECT COUNT(*) FROM tasks"
+                ).fetchone()[0],
+                "link_count": conn.execute(
+                    "SELECT COUNT(*) FROM task_links"
+                ).fetchone()[0],
+                "comment_count": conn.execute(
+                    "SELECT COUNT(*) FROM task_comments"
+                ).fetchone()[0],
+                "attachment_count": conn.execute(
+                    "SELECT COUNT(*) FROM task_attachments"
+                ).fetchone()[0],
+                "task": {
+                    "status": task.status,
+                    "claim_lock": task.claim_lock,
+                    "claim_expires": task.claim_expires,
+                    "last_heartbeat_at": task.last_heartbeat_at,
+                    "comment_count": len(kb.list_comments(conn, task_id)),
+                    "attachment_count": len(kb.list_attachments(conn, task_id)),
+                    "parents": tuple(kb.parent_ids(conn, task_id)),
+                    "children": tuple(kb.child_ids(conn, task_id)),
+                },
+            }
+    return snapshot
+
+
+@pytest.mark.parametrize(
+    ("case_name", "invoke"),
+    [
+        (
+            "show",
+            lambda kt, default_seed, _: kt._handle_show(
+                {"task_id": default_seed, "board": "alt"}
+            ),
+        ),
+        (
+            "complete",
+            lambda kt, default_seed, _: kt._handle_complete(
+                {"task_id": default_seed, "summary": "cross-board", "board": "alt"}
+            ),
+        ),
+        (
+            "block",
+            lambda kt, default_seed, _: kt._handle_block(
+                {"task_id": default_seed, "reason": "cross-board", "board": "alt"}
+            ),
+        ),
+        (
+            "heartbeat",
+            lambda kt, default_seed, _: kt._handle_heartbeat(
+                {"task_id": default_seed, "note": "cross-board", "board": "alt"}
+            ),
+        ),
+        (
+            "comment",
+            lambda kt, default_seed, _: kt._handle_comment(
+                {"task_id": default_seed, "body": "cross-board", "board": "alt"}
+            ),
+        ),
+        (
+            "attach",
+            lambda kt, default_seed, _: kt._handle_attach(
+                {
+                    "task_id": default_seed,
+                    "filename": "note.txt",
+                    "content_base64": "ZGF0YQ==",
+                    "board": "alt",
+                }
+            ),
+        ),
+        (
+            "attach_url",
+            lambda kt, default_seed, _: kt._handle_attach_url(
+                {
+                    "task_id": default_seed,
+                    "url": "https://example.com/file.txt",
+                    "board": "alt",
+                }
+            ),
+        ),
+        (
+            "attachments",
+            lambda kt, default_seed, _: kt._handle_attachments(
+                {"task_id": default_seed, "board": "alt"}
+            ),
+        ),
+        (
+            "create",
+            lambda kt, _, __: kt._handle_create(
+                {"title": "cross-board", "assignee": "worker", "board": "alt"}
+            ),
+        ),
+        (
+            "link",
+            lambda kt, default_seed, alt_seed: kt._handle_link(
+                {
+                    "parent_id": default_seed,
+                    "child_id": alt_seed,
+                    "board": "alt",
+                }
+            ),
+        ),
+    ],
+)
+def test_task_scoped_board_override_rejects_cross_board_without_side_effects(
+    scoped_board_env, monkeypatch, case_name, invoke
+):
+    from tools import kanban_tools as kt
+
+    before = _board_snapshot(
+        scoped_board_env["default_seed"], scoped_board_env["alt_seed"]
+    )
+    connect_mock = Mock(
+        side_effect=AssertionError(
+            f"{case_name} should not connect before the task-scoped board guard"
+        )
+    )
+    monkeypatch.setattr(kt, "_connect", connect_mock)
+    download_mock = Mock(
+        side_effect=AssertionError(
+            "kanban_attach_url should not fetch before the task-scoped board guard"
+        )
+    )
+    monkeypatch.setattr(kt, "_download_url_with_cap", download_mock)
+
+    out = invoke(
+        kt,
+        scoped_board_env["default_seed"],
+        scoped_board_env["alt_seed"],
+    )
+    err = json.loads(out).get("error", "")
+    assert "board" in err.lower(), f"got {err!r}"
+    assert connect_mock.call_count == 0
+    assert download_mock.call_count == 0
+    assert _board_snapshot(
+        scoped_board_env["default_seed"], scoped_board_env["alt_seed"]
+    ) == before
+
+
+def test_task_scoped_explicit_board_requires_env_board(scoped_board_env, monkeypatch):
+    from tools import kanban_tools as kt
+
+    monkeypatch.delenv("HERMES_KANBAN_BOARD", raising=False)
+    connect_mock = Mock(
+        side_effect=AssertionError(
+            "board-scoped calls should fail before connecting when env board is missing"
+        )
+    )
+    monkeypatch.setattr(kt, "_connect", connect_mock)
+
+    out = kt._handle_show(
+        {"task_id": scoped_board_env["default_seed"], "board": "alt"}
+    )
+    err = json.loads(out).get("error", "")
+    assert "HERMES_KANBAN_BOARD" in err, f"got {err!r}"
+    assert connect_mock.call_count == 0
+
+
+def test_task_scoped_explicit_board_matches_env_board(scoped_board_env):
+    from tools import kanban_tools as kt
+
+    out = kt._handle_show(
+        {"task_id": scoped_board_env["default_seed"], "board": "default"}
+    )
+    d = json.loads(out)
+    assert d["task"]["id"] == scoped_board_env["default_seed"]
+    assert d["task"]["status"] == "ready"
+
+
+@pytest.mark.parametrize("board", ["", "  "])
+def test_task_scoped_blank_board_falls_back_to_env_board(scoped_board_env, board):
+    from tools import kanban_tools as kt
+
+    out = kt._handle_show(
+        {"task_id": scoped_board_env["default_seed"], "board": board}
+    )
+    d = json.loads(out)
+    assert d["task"]["id"] == scoped_board_env["default_seed"]
+    assert d["task"]["status"] == "ready"
+
+
 def test_board_param_routes_create_to_alt_board(multi_board_env):
     """kanban_create with ``board="alt"`` must write into the alt board's DB,
     not the default one."""
@@ -2001,6 +2201,7 @@ def test_board_param_routes_heartbeat_to_alt_board(monkeypatch, tmp_path):
         tid = kb.create_task(conn, title="alt hb", assignee="alt-worker")
         kb.claim_task(conn, tid)
     monkeypatch.setenv("HERMES_KANBAN_TASK", tid)
+    monkeypatch.setenv("HERMES_KANBAN_BOARD", "alt")
 
     from tools import kanban_tools as kt
     out = kt._handle_heartbeat({"note": "alive on alt", "board": "alt"})

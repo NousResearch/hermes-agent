@@ -179,6 +179,37 @@ def _connect(board: Optional[str] = None):
     return kb, kb.connect(board=board)
 
 
+def _resolve_task_scoped_board(board: Optional[str]) -> Optional[str]:
+    """Resolve a per-call board override with task-scope safety checks.
+
+    When ``HERMES_KANBAN_TASK`` is set and the caller passes ``board=``,
+    require ``HERMES_KANBAN_BOARD``, compare both values after the existing
+    slug normalization, and refuse mismatches before any board DB is opened.
+    Calls without an explicit ``board`` are left alone so the normal
+    environment-driven resolution chain still applies.
+    """
+    if board is None:
+        return None
+    from hermes_cli import kanban_db as kb
+
+    board_slug = kb._normalize_board_slug(board)
+    if board_slug is None:
+        return None
+    if not os.environ.get("HERMES_KANBAN_TASK"):
+        return board_slug
+    env_board = os.environ.get("HERMES_KANBAN_BOARD")
+    if not env_board:
+        raise ValueError(
+            "HERMES_KANBAN_BOARD is required when board is explicit in a task-scoped worker"
+        )
+    env_board_slug = kb._normalize_board_slug(env_board)
+    if board_slug != env_board_slug:
+        raise ValueError(
+            f"board {board_slug!r} does not match task board {env_board_slug!r}"
+        )
+    return board_slug
+
+
 _GOAL_MODE_BLOCK_ALLOWED_KINDS = frozenset({"dependency", "needs_input"})
 
 
@@ -372,8 +403,8 @@ def _handle_show(args: dict, **kw) -> str:
         return tool_error(
             "task_id is required (or set HERMES_KANBAN_TASK in the env)"
         )
-    board = args.get("board")
     try:
+        board = _resolve_task_scoped_board(args.get("board"))
         kb, conn = _connect(board=board)
         try:
             task = kb.get_task(conn, tid)
@@ -588,8 +619,8 @@ def _handle_complete(args: dict, **kw) -> str:
             f"metadata must be an object/dict, got {type(metadata).__name__}"
         )
     metadata = _stamp_worker_session_metadata(tid, metadata)
-    board = args.get("board")
     try:
+        board = _resolve_task_scoped_board(args.get("board"))
         kb, conn = _connect(board=board)
         try:
             # Goal-mode pre-completion judge gate (Issue #38367).
@@ -687,8 +718,8 @@ def _handle_block(args: dict, **kw) -> str:
         return tool_error("reason is required — explain what input you need")
     reason = redact_sensitive_text(str(reason), force=True)
     kind = args.get("kind")
-    board = args.get("board")
     try:
+        board = _resolve_task_scoped_board(args.get("board"))
         kb, conn = _connect(board=board)
         if kind is not None and kind not in kb.VALID_BLOCK_KINDS:
             conn.close()
@@ -769,8 +800,8 @@ def _handle_heartbeat(args: dict, **kw) -> str:
     if ownership_err:
         return ownership_err
     note = args.get("note")
-    board = args.get("board")
     try:
+        board = _resolve_task_scoped_board(args.get("board"))
         kb, conn = _connect(board=board)
         try:
             # Extend the claim TTL first. The dispatcher pins
@@ -823,8 +854,8 @@ def _handle_comment(args: dict, **kw) -> str:
     # Cross-task commenting itself remains unrestricted (see #19713) —
     # comments are the deliberate handoff channel between tasks.
     author = os.environ.get("HERMES_PROFILE") or "worker"
-    board = args.get("board")
     try:
+        board = _resolve_task_scoped_board(args.get("board"))
         kb, conn = _connect(board=board)
         try:
             cid = kb.add_comment(conn, tid, author=author, body=str(body))
@@ -869,8 +900,8 @@ def _handle_attach(args: dict, **kw) -> str:
     except (binascii.Error, ValueError) as e:
         return tool_error(f"content_base64 is not valid base64: {e}")
     content_type = args.get("content_type")
-    board = args.get("board")
     try:
+        board = _resolve_task_scoped_board(args.get("board"))
         _, conn = _connect(board=board)
         try:
             att_id = kb.store_attachment_bytes(
@@ -986,8 +1017,8 @@ def _handle_attach_url(args: dict, **kw) -> str:
         leaf = unquote(urlparse(url).path.rsplit("/", 1)[-1]).strip()
         filename = leaf or "download"
     content_type = args.get("content_type")
-    board = args.get("board")
     try:
+        board = _resolve_task_scoped_board(args.get("board"))
         data, fetched_ct = _download_url_with_cap(url, kb.KANBAN_ATTACHMENT_MAX_BYTES)
     except ValueError as e:
         return tool_error(f"kanban_attach_url: {e}")
@@ -1025,8 +1056,8 @@ def _handle_attachments(args: dict, **kw) -> str:
         return tool_error(
             "task_id is required (or set HERMES_KANBAN_TASK in the env)"
         )
-    board = args.get("board")
     try:
+        board = _resolve_task_scoped_board(args.get("board"))
         kb, conn = _connect(board=board)
         try:
             if kb.get_task(conn, tid) is None:
@@ -1117,8 +1148,8 @@ def _handle_create(args: dict, **kw) -> str:
         return tool_error(
             f"parents must be a list of task ids, got {type(parents).__name__}"
         )
-    board = args.get("board")
     try:
+        board = _resolve_task_scoped_board(args.get("board"))
         kb, conn = _connect(board=board)
         try:
             # Inherit the spawning worker's own task workspace when the
@@ -1310,8 +1341,8 @@ def _handle_link(args: dict, **kw) -> str:
     child_id = args.get("child_id")
     if not parent_id or not child_id:
         return tool_error("both parent_id and child_id are required")
-    board = args.get("board")
     try:
+        board = _resolve_task_scoped_board(args.get("board"))
         kb, conn = _connect(board=board)
         try:
             kb.link_tasks(conn, parent_id=parent_id, child_id=child_id)

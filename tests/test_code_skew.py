@@ -5,7 +5,7 @@ crash; these prove the guard that turns it into a clear "restart the gateway"
 message before a model switch can hit it.
 """
 
-import ast
+import os
 import subprocess
 import sys
 from pathlib import Path
@@ -110,39 +110,80 @@ class TestBootstrapBytecodePurge:
         assert gateway_bootstrap.purge_stale_gateway_pycache_before_import() is True
         assert not stale_pyc.exists()
 
-    def test_every_supported_launcher_bootstraps_before_gateway_run_import(self):
+    def test_supported_launchers_bootstrap_before_gateway_run_import(self, tmp_path):
+        """Exercise each real launcher with an isolated HERMES_HOME.
+
+        ``sitecustomize`` wraps the canonical bootstrap in the child process,
+        then intercepts the fresh ``gateway.run`` import. The import hook exits
+        before gateway startup, so this verifies import order without a live
+        gateway or source-code inspection.
+        """
         project_root = Path(__file__).parents[1]
+        hermes_home = tmp_path / "hermes-home"
+        hermes_home.mkdir()
+        head = subprocess.check_output(
+            ["git", "-C", str(project_root), "rev-parse", "HEAD"], text=True
+        ).strip()
+        (hermes_home / ".gateway_boot_fingerprint").write_text(f"git:HEAD:{head}")
+        probe_dir = tmp_path / "probe"
+        probe_dir.mkdir()
+        marker = tmp_path / "bootstrap-marker"
+        (probe_dir / "sitecustomize.py").write_text(
+            """
+import os
+import sys
+from pathlib import Path
+from hermes_cli import gateway_bootstrap
+
+marker = Path(os.environ["HERMES_LAUNCHER_PROBE"])
+expected_home = Path(os.environ["HERMES_HOME"]).resolve()
+original_purge = gateway_bootstrap.purge_stale_gateway_pycache_before_import
+
+def probe_purge():
+    assert gateway_bootstrap.get_hermes_home().resolve() == expected_home
+    marker.write_text("bootstrap-ran", encoding="utf-8")
+    return original_purge()
+
+gateway_bootstrap.purge_stale_gateway_pycache_before_import = probe_purge
+
+class GatewayRunImportProbe:
+    def find_spec(self, fullname, path=None, target=None):
+        if fullname == "gateway.run":
+            assert marker.read_text(encoding="utf-8") == "bootstrap-ran"
+            marker.write_text("bootstrap-before-gateway-run", encoding="utf-8")
+            raise SystemExit(0)
+        return None
+
+sys.meta_path.insert(0, GatewayRunImportProbe())
+""".lstrip(),
+            encoding="utf-8",
+        )
+        env = {
+            **os.environ,
+            "HERMES_HOME": str(hermes_home),
+            "HERMES_LAUNCHER_PROBE": str(marker),
+            "PYTHONPATH": os.pathsep.join((str(probe_dir), str(project_root))),
+        }
+        hermes_cli = Path(sys.executable).parent / "hermes"
+        assert hermes_cli.exists(), f"Canonical Hermes console script missing: {hermes_cli}"
         launchers = (
-            project_root / "cli.py",
-            project_root / "hermes_cli" / "gateway.py",
-            project_root / "scripts" / "hermes-gateway",
+            [sys.executable, "cli.py", "--gateway"],
+            [str(hermes_cli), "gateway", "run", "--no-supervise", "--force"],
+            [sys.executable, "scripts/hermes-gateway", "run"],
         )
 
-        for launcher in launchers:
-            tree = ast.parse(launcher.read_text(encoding="utf-8"), filename=str(launcher))
-            bootstrap_imports = [
-                node.lineno
-                for node in ast.walk(tree)
-                if isinstance(node, ast.ImportFrom)
-                and node.module == "hermes_cli.gateway_bootstrap"
-            ]
-            purge_calls = [
-                node.lineno
-                for node in ast.walk(tree)
-                if isinstance(node, ast.Call)
-                and isinstance(node.func, ast.Name)
-                and node.func.id == "purge_stale_gateway_pycache_before_import"
-            ]
-            gateway_run_imports = [
-                node.lineno
-                for node in ast.walk(tree)
-                if isinstance(node, ast.ImportFrom) and node.module == "gateway.run"
-            ]
-
-            assert bootstrap_imports, f"{launcher} must import the pre-import bootstrap"
-            assert purge_calls, f"{launcher} must invoke the pre-import bootstrap"
-            assert gateway_run_imports, f"{launcher} must import gateway.run"
-            assert min(bootstrap_imports) < min(purge_calls) < min(gateway_run_imports)
+        for command in launchers:
+            marker.unlink(missing_ok=True)
+            result = subprocess.run(
+                command,
+                capture_output=True,
+                cwd=project_root,
+                env=env,
+                text=True,
+                timeout=30,
+            )
+            assert result.returncode == 0, result.stderr
+            assert marker.read_text(encoding="utf-8") == "bootstrap-before-gateway-run"
     def test_guard_falls_back_to_manual_when_restart_fails(self, monkeypatch):
         """If request_restart returns False (e.g. already restarting), the
         guard falls back to the manual restart message."""

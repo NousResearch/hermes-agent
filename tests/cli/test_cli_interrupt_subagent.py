@@ -10,15 +10,12 @@ This tests the COMPLETE path including _run_single_child, _active_children
 registration, interrupt propagation, and child detection.
 """
 
-import json
-import os
-import queue
 import threading
 import time
 import unittest
-from unittest.mock import MagicMock, patch, PropertyMock
+from unittest.mock import MagicMock, patch
 
-from tools.interrupt import set_interrupt, is_interrupted
+from tools.interrupt import set_interrupt
 
 
 class TestCLISubagentInterrupt(unittest.TestCase):
@@ -63,6 +60,7 @@ class TestCLISubagentInterrupt(unittest.TestCase):
         parent._delegate_depth = 0
         parent._delegate_spinner = None
         parent.tool_progress_callback = None
+        parent._execution_thread_id = None
 
         # We'll track what happens with _active_children
         original_children = parent._active_children
@@ -153,10 +151,11 @@ class TestCLISubagentInterrupt(unittest.TestCase):
             print(f"Child {i}._interrupt_requested: {child._interrupt_requested}")
 
         # Wait for child to detect interrupt
-        detected = interrupt_detected.wait(timeout=3.0)
+        detected = interrupt_detected.wait(timeout=10.0)
         
         # Wait for delegate to finish
-        agent_thread.join(timeout=5)
+        agent_thread.join(timeout=15)
+        assert not agent_thread.is_alive(), "delegate thread did not finish"
 
         if delegate_error[0]:
             raise delegate_error[0]

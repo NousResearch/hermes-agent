@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import inspect
 import logging
 import time
 from typing import Any
@@ -282,59 +283,109 @@ def _model_label(runner: Any) -> str:
     return " ".join(bit for bit in model_bits if bit).strip()
 
 
-def render_status_command(
+async def _await_maybe(value: Any) -> Any:
+    """Await coroutine results from AsyncSessionDB wrappers; pass through plain values."""
+    if inspect.isawaitable(value):
+        return await value
+    return value
+
+
+def _int_value(value: Any) -> int:
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return 0
+
+
+async def render_status_command(
     runner: Any,
     event: Any,
     *,
     now_ts: float | None = None,
     pending_sentinel: Any = None,
+    extras_only: bool = False,
 ) -> str:
+    """Render /status.
+
+    When ``extras_only`` is True, return only the QQ/runtime observability
+    sections (approvals, auto-vision, group archive, background jobs). The
+    caller is expected to prepend the mainline cockpit status first.
+    """
     now_ts = time.time() if now_ts is None else float(now_ts)
     source = event.source
-    session_entry = runner.session_store.get_or_create_session(source)
+    # Prefer async session store when available (mainline path / tests).
+    if hasattr(runner, "async_session_store"):
+        try:
+            session_entry = await runner.async_session_store.get_or_create_session(source)
+        except Exception:
+            session_entry = runner.session_store.get_or_create_session(source)
+    else:
+        session_entry = runner.session_store.get_or_create_session(source)
     connected_platforms = [p.value for p in runner.adapters.keys()]
     session_key = session_entry.session_key
-    is_running = session_key in getattr(runner, "_running_agents", {})
+    agent = getattr(runner, "_running_agents", {}).get(session_key)
+    is_running = agent is not None and (
+        pending_sentinel is None or agent is not pending_sentinel
+    )
 
-    title = None
-    if getattr(runner, "_session_db", None):
-        try:
-            title = runner._session_db.get_session_title(session_entry.session_id)
-        except Exception:
+    lines: list[str] = []
+    if not extras_only:
+        title = None
+        db_total_tokens = 0
+        session_db = getattr(runner, "_session_db", None)
+        if session_db is not None:
+            try:
+                title = await _await_maybe(session_db.get_session_title(session_entry.session_id))
+            except Exception:
+                title = None
+            # Token totals live in SQLite SessionDB (not SessionEntry).
+            try:
+                row = await _await_maybe(session_db.get_session(session_entry.session_id))
+                if isinstance(row, dict):
+                    db_total_tokens = (
+                        _int_value(row.get("input_tokens"))
+                        + _int_value(row.get("output_tokens"))
+                        + _int_value(row.get("cache_read_tokens"))
+                        + _int_value(row.get("cache_write_tokens"))
+                        + _int_value(row.get("reasoning_tokens"))
+                    )
+            except Exception:
+                db_total_tokens = 0
+        if not isinstance(title, str) or not title.strip():
             title = None
 
-    lines = [
-        "📊 **Hermes Gateway Status**",
-        "",
-        f"**Session ID:** `{session_entry.session_id}`",
-    ]
-    if title:
-        lines.append(f"**Title:** {title}")
-    lines.extend(
-        [
-            f"**Created:** {session_entry.created_at.strftime('%Y-%m-%d %H:%M')}",
-            f"**Last Activity:** {session_entry.updated_at.strftime('%Y-%m-%d %H:%M')}",
-            f"**Tokens:** {session_entry.total_tokens:,}",
-            f"**Agent Running:** {'Yes ⚡' if is_running else 'No'}",
-        ]
-    )
-
-    if is_running:
-        foreground = _runtime_foreground_line(
-            runner,
-            session_key=session_key,
-            pending_sentinel=pending_sentinel,
-            now_ts=now_ts,
-        )
-        if foreground:
-            lines.append(f"**Foreground:** {foreground}")
-
-    lines.extend(
-        [
+        lines = [
+            "📊 **Hermes Gateway Status**",
             "",
-            f"**Connected Platforms:** {', '.join(connected_platforms)}",
+            f"**Session ID:** `{session_entry.session_id}`",
         ]
-    )
+        if title:
+            lines.append(f"**Title:** {title}")
+        lines.extend(
+            [
+                f"**Created:** {session_entry.created_at.strftime('%Y-%m-%d %H:%M')}",
+                f"**Last Activity:** {session_entry.updated_at.strftime('%Y-%m-%d %H:%M')}",
+                f"**Cumulative API tokens (re-sent each call):** {db_total_tokens:,}",
+                f"**Agent Running:** {'Yes ⚡' if is_running else 'No'}",
+            ]
+        )
+
+        if is_running:
+            foreground = _runtime_foreground_line(
+                runner,
+                session_key=session_key,
+                pending_sentinel=pending_sentinel,
+                now_ts=now_ts,
+            )
+            if foreground:
+                lines.append(f"**Foreground:** {foreground}")
+
+        lines.extend(
+            [
+                "",
+                f"**Connected Platforms:** {', '.join(connected_platforms)}",
+            ]
+        )
 
     pending_approval_count = _pending_approval_count(runner, session_key=session_key)
     group_archive_summary: dict[str, Any] = {}

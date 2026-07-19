@@ -53,7 +53,6 @@ from gateway.qq_social_policy import get_social_policy
 from gateway.qq_social_requests import record_social_request_event, update_social_request_status
 from gateway.platforms.base import (
     BasePlatformAdapter,
-    MessageAttachment,
     MessageEvent,
     MessageType,
     SendResult,
@@ -598,6 +597,19 @@ class QqNapCatAdapter(BasePlatformAdapter):
             return False
         return True
 
+    def _session_key_for_source(self, source) -> str:
+        """Build the effective session key for a source routed by this adapter."""
+        from gateway.session import build_session_key
+
+        extra = getattr(self.config, "extra", None) or {}
+        group_sessions_per_user = bool(extra.get("group_sessions_per_user", True))
+        thread_sessions_per_user = bool(extra.get("thread_sessions_per_user", False))
+        return build_session_key(
+            source,
+            group_sessions_per_user=group_sessions_per_user,
+            thread_sessions_per_user=thread_sessions_per_user,
+        )
+
     def _has_group_followup_window(self, payload: Dict[str, Any]) -> bool:
         group_id = str(payload.get("group_id") or "").strip()
         if not group_id:
@@ -742,7 +754,7 @@ class QqNapCatAdapter(BasePlatformAdapter):
     def _should_process_group_message(self, payload: Dict[str, Any]) -> bool:
         return self._group_message_triggers_ai(payload)
 
-    async def connect(self) -> bool:
+    async def connect(self, *, is_reconnect: bool = False) -> bool:
         if not QQ_NAPCAT_AVAILABLE:
             logger.error("QQ NapCat: aiohttp is not installed")
             return False
@@ -1224,7 +1236,9 @@ class QqNapCatAdapter(BasePlatformAdapter):
         if omitted_count > 0:
             merged_lines.append(f"[已截取最近 {len(selected)} 条，省略 {omitted_count} 条更早消息]")
 
-        merged_attachments = []
+        merged_media_urls: list[str] = []
+        merged_media_types: list[str] = []
+        merged_media_sources: list[str] = []
         for item in selected:
             if item.event.media_urls or item.event.message_type in {
                 MessageType.PHOTO,
@@ -1233,7 +1247,11 @@ class QqNapCatAdapter(BasePlatformAdapter):
                 MessageType.DOCUMENT,
             }:
                 await self._populate_media(item.event, item.payload)
-                merged_attachments.extend(item.event.ensure_attachments())
+                merged_media_urls.extend(list(item.event.media_urls or []))
+                merged_media_types.extend(list(item.event.media_types or []))
+                merged_media_sources.extend(
+                    list(getattr(item.event, "media_sources", None) or [])
+                )
 
             speaker = str(item.event.source.user_name or item.event.source.user_id or "unknown").strip()
             merged_lines.append(f"{speaker}: {self._describe_group_message(item)}")
@@ -1246,7 +1264,7 @@ class QqNapCatAdapter(BasePlatformAdapter):
         if trigger_metadata:
             merged_metadata.update(trigger_metadata)
 
-        return MessageEvent(
+        event = MessageEvent(
             text="\n".join(line for line in merged_lines if line),
             message_type=MessageType.TEXT,
             source=latest.event.source,
@@ -1259,10 +1277,13 @@ class QqNapCatAdapter(BasePlatformAdapter):
             },
             message_id=latest.event.message_id,
             metadata=merged_metadata or None,
-            attachments=merged_attachments,
+            media_urls=merged_media_urls,
+            media_types=merged_media_types,
             reply_to_message_id=latest.event.reply_to_message_id,
             timestamp=latest.event.timestamp,
         )
+        event.media_sources = merged_media_sources
+        return event
 
     async def _flush_group_batch(self, group_id: str) -> None:
         current_task = asyncio.current_task()
@@ -1434,6 +1455,8 @@ class QqNapCatAdapter(BasePlatformAdapter):
         segments = payload.get("message")
         if not isinstance(segments, list):
             return
+        if not hasattr(event, "media_sources") or event.media_sources is None:
+            event.media_sources = []
 
         for segment in segments:
             seg_type = str(segment.get("type") or "").lower()
@@ -1453,19 +1476,12 @@ class QqNapCatAdapter(BasePlatformAdapter):
                 logger.debug("QQ NapCat: failed to cache %s segment: %s", seg_type, exc)
                 continue
             if cached_path:
-                event.add_attachment(
-                    MessageAttachment(
-                        kind="image" if seg_type == "image" else (
-                            "audio" if seg_type == "record" else (
-                                "video" if seg_type == "video" else "document"
-                            )
-                        ),
-                        mime_type=mime_type,
-                        local_path=cached_path,
-                        remote_url=self._preferred_media_source(seg_type, data, cached_path),
-                        analysis_ref=self._preferred_media_source(seg_type, data, cached_path),
-                    )
-                )
+                if not hasattr(event, "media_sources") or event.media_sources is None:
+                    event.media_sources = []
+                preferred = self._preferred_media_source(seg_type, data, cached_path)
+                event.media_urls.append(cached_path)
+                event.media_types.append(mime_type)
+                event.media_sources.append(preferred)
 
     @staticmethod
     def _should_skip_media_segment(seg_type: str, data: Dict[str, Any]) -> bool:
@@ -1506,10 +1522,6 @@ class QqNapCatAdapter(BasePlatformAdapter):
         if os.path.isabs(url) and os.path.exists(url):
             return url, self._mime_for_segment(seg_type, url)
 
-        if seg_type == "image":
-            image_path = await cache_image_from_url(url, ext=_guess_ext_from_name(url, ".jpg"))
-            return image_path, self._mime_for_segment(seg_type, image_path)
-
         from tools.url_safety import is_safe_url
 
         if not is_safe_url(url):
@@ -1519,6 +1531,13 @@ class QqNapCatAdapter(BasePlatformAdapter):
             response = await client.get(url)
             response.raise_for_status()
             raw = response.content
+
+        if seg_type == "image":
+            from gateway.platforms.base import cache_image_from_bytes
+
+            ext = _guess_ext_from_name(url, ".jpg")
+            image_path = cache_image_from_bytes(raw, ext=ext)
+            return image_path, self._mime_for_segment(seg_type, image_path)
 
         if seg_type == "record":
             ext = _guess_ext_from_name(url, ".ogg")

@@ -1,11 +1,30 @@
-"""Test that hermes_cli.setup exposes shutil for Matrix E2EE auto-install."""
-import shutil
+"""Test that setup.py has shutil available for Matrix E2EE auto-install."""
+import ast
+
+
+
+def _parse_setup_imports():
+    """Parse setup.py and return top-level import names."""
+    with open("hermes_cli/setup.py") as f:
+        tree = ast.parse(f.read())
+    names = set()
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            for alias in node.names:
+                names.add(alias.name)
+        elif isinstance(node, ast.ImportFrom):
+            for alias in node.names:
+                names.add(alias.name)
+    return names
 
 
 class TestSetupShutilImport:
-    def test_setup_module_exposes_shutil_runtime(self):
-        """setup module should expose the stdlib shutil module at runtime."""
-        import hermes_cli.setup as setup_module
-
-        assert setup_module.shutil is shutil
-        assert setup_module.shutil.which("python") == shutil.which("python")
+    def test_shutil_imported_at_module_level(self):
+        """shutil must be imported at module level so setup_gateway can use it
+        for the mautrix auto-install path."""
+        names = _parse_setup_imports()
+        assert "shutil" in names, (
+            "shutil is not imported at the top of hermes_cli/setup.py. "
+            "This causes a NameError when the Matrix E2EE auto-install "
+            "tries to call shutil.which('uv')."
+        )

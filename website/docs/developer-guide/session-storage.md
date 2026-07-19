@@ -11,10 +11,12 @@ Source file: `hermes_state.py`
 
 ```
 ~/.hermes/state.db (SQLite, WAL mode)
-├── sessions          — Session metadata, token counts, billing
-├── messages          — Full message history per session
-├── messages_fts      — FTS5 virtual table for full-text search
-└── schema_version    — Single-row table tracking migration state
+├── sessions              — Session metadata, token counts, billing
+├── messages              — Full message history per session
+├── messages_fts          — FTS5 virtual table (content + tool_name + tool_calls)
+├── messages_fts_trigram  — FTS5 virtual table with trigram tokenizer (CJK / substring search)
+├── state_meta            — Key/value metadata table
+└── schema_version        — Single-row table tracking migration state
 ```
 
 Key design decisions:
@@ -57,6 +59,7 @@ CREATE TABLE IF NOT EXISTS sessions (
     cost_source TEXT,
     pricing_version TEXT,
     title TEXT,
+    api_call_count INTEGER DEFAULT 0,
     FOREIGN KEY (parent_session_id) REFERENCES sessions(id)
 );
 
@@ -82,8 +85,10 @@ CREATE TABLE IF NOT EXISTS messages (
     token_count INTEGER,
     finish_reason TEXT,
     reasoning TEXT,
+    reasoning_content TEXT,
     reasoning_details TEXT,
-    codex_reasoning_items TEXT
+    codex_reasoning_items TEXT,
+    codex_message_items TEXT
 );
 
 CREATE INDEX IF NOT EXISTS idx_messages_session ON messages(session_id, timestamp);
@@ -91,7 +96,7 @@ CREATE INDEX IF NOT EXISTS idx_messages_session ON messages(session_id, timestam
 
 Notes:
 - `tool_calls` is stored as a JSON string (serialized list of tool call objects)
-- `reasoning_details` and `codex_reasoning_items` are stored as JSON strings
+- `reasoning_details`, `codex_reasoning_items`, and `codex_message_items` are stored as JSON strings
 - `reasoning` stores the raw reasoning text for providers that expose it
 - Timestamps are Unix epoch floats (`time.time()`)
 
@@ -128,10 +133,9 @@ END;
 
 ## Schema Version and Migrations
 
-Current schema version: **6**
+Current schema version: **21**
 
-The `schema_version` table stores a single integer. On initialization,
-`_init_schema()` checks the current version and applies migrations sequentially:
+The `schema_version` table stores a single integer. Simple column additions are handled declaratively by `_reconcile_columns()` (which diffs live columns against `SCHEMA_SQL` and ADDs any missing ones). The version-gated chain is reserved for data migrations and index/FTS changes that can't be expressed declaratively:
 
 | Version | Change |
 |---------|--------|
@@ -141,10 +145,18 @@ The `schema_version` table stores a single integer. On initialization,
 | 4 | Add unique index on `title` (NULLs allowed, non-NULL must be unique) |
 | 5 | Add billing columns: `cache_read_tokens`, `cache_write_tokens`, `reasoning_tokens`, `billing_provider`, `billing_base_url`, `billing_mode`, `estimated_cost_usd`, `actual_cost_usd`, `cost_status`, `cost_source`, `pricing_version` |
 | 6 | Add reasoning columns to messages: `reasoning`, `reasoning_details`, `codex_reasoning_items` |
+| 7 | Add `reasoning_content` column to messages |
+| 8 | Add `api_call_count` column to sessions |
+| 9 | Add `codex_message_items` column to messages for Codex Responses message id/phase replay |
+| 10 | Add `messages_fts_trigram` virtual table (trigram tokenizer for CJK / substring search) and backfill existing rows |
+| 11 | Re-index `messages_fts` and `messages_fts_trigram` to cover `tool_name` + `tool_calls` and switch from external-content to inline mode; drop old triggers and backfill every message row |
+| 16 | Tag delegate subagent rows in `model_config` (`$._delegate_from`) so session pickers stay clean after parent deletes orphan them |
+| 18 | Gateway metadata consolidation — backfill `display_name` / `origin_json` / `expiry_finalized` from `sessions.json` |
+| 20 | Per-model usage attribution — seed `session_model_usage` rows from historical per-session aggregate totals |
 
-Each migration uses `ALTER TABLE ADD COLUMN` wrapped in try/except to handle
-the column-already-exists case (idempotent). The version number is bumped after
-each successful migration block.
+Versions not listed above were declarative column additions handled by `_reconcile_columns()` (version bump only, no data migration).
+
+Declarative column adds use `ALTER TABLE ADD COLUMN` wrapped in try/except to handle the column-already-exists case (idempotent). The version number is bumped after each successful migration block.
 
 
 ## Write Contention Handling

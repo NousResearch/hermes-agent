@@ -968,65 +968,14 @@ def test_auto_vision_prunes_expired_and_old_cache_entries(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_shared_thread_image_only_turn_uses_shared_auto_vision_enrichment(monkeypatch):
-    runner = GatewayRunner.__new__(GatewayRunner)
-    runner.config = SimpleNamespace(thread_sessions_per_user=False)
-    runner.session_store = SimpleNamespace(
-        get_or_create_session=lambda source: SimpleNamespace(
-            session_id="sid-1",
-            session_key="qq:group:thread",
-            created_at=1,
-            updated_at=2,
-            was_auto_reset=False,
-            last_prompt_tokens=0,
-        ),
-        load_transcript=lambda session_id: [],
-        has_any_sessions=lambda: True,
-        append_to_transcript=lambda *args, **kwargs: None,
-        update_session=lambda *args, **kwargs: None,
-    )
-    runner.hooks = SimpleNamespace(emit=AsyncMock())
-    runner.adapters = {}
-    runner._try_handle_direct_gateway_shortcuts = lambda event, conversation_history: None
-    runner._configured_admin_user_ids = lambda platform: []
-    runner._is_admin_user = lambda source: False
-    runner._set_session_env = lambda context: None
-    runner._resolve_auto_background_dispatch = lambda *args, **kwargs: None
-    runner._vision_orchestrator = SimpleNamespace(prepare_turn=AsyncMock())
-    runner._enrich_message_with_vision = AsyncMock(
+async def test_shared_thread_image_only_turn_uses_shared_auto_vision_enrichment():
+    """Foreground prep should enrich image-only turns via auto-vision path."""
+    from gateway.foreground_turn_runtime_service import prepare_gateway_foreground_message
+    from gateway.run import _image_vision_inputs_from_event
+
+    enrich = AsyncMock(
         return_value="[The user sent an image~ Here's what I can see:\n测试图片描述]"
     )
-    runner._enrich_message_with_transcription = AsyncMock(side_effect=lambda text, paths: text)
-    runner._run_agent = AsyncMock(
-        return_value={
-            "final_response": "ok",
-            "messages": [
-                {
-                    "role": "user",
-                    "content": "[Alice] [The user sent an image~ Here's what I can see:\n测试图片描述]",
-                },
-                {"role": "assistant", "content": "ok"},
-            ],
-            "history_offset": 0,
-            "tools": [],
-            "last_prompt_tokens": 0,
-        }
-    )
-    runner._has_setup_skill = lambda: False
-    runner._should_send_voice_reply = lambda *args, **kwargs: False
-    runner._session_db = None
-    runner._show_reasoning = False
-
-    monkeypatch.setattr(
-        "gateway.run.build_session_context",
-        lambda *args, **kwargs: SimpleNamespace(
-            shared_session_kind=None,
-            admin_user_ids=[],
-            is_admin_user=False,
-        ),
-    )
-    monkeypatch.setattr("gateway.run.build_session_context_prompt", lambda *args, **kwargs: "")
-
     event = MessageEvent(
         text="",
         message_type=MessageType.PHOTO,
@@ -1047,11 +996,23 @@ async def test_shared_thread_image_only_turn_uses_shared_auto_vision_enrichment(
         ],
     )
 
-    response = await runner._handle_message_with_agent(event, event.source, "qq:group:thread")
+    prepared = await prepare_gateway_foreground_message(
+        event=event,
+        source=event.source,
+        session_id="sid-1",
+        history=[],
+        thread_sessions_per_user=False,
+        hooks=SimpleNamespace(emit=AsyncMock()),
+        adapters={},
+        image_vision_inputs_from_event=_image_vision_inputs_from_event,
+        enrich_message_with_vision=enrich,
+        auto_vision_degraded_note=lambda _path, pending: "degraded",
+        enrich_message_with_transcription=AsyncMock(side_effect=lambda text, paths: text),
+        has_setup_skill=lambda: False,
+        expand_context_references=AsyncMock(side_effect=lambda text: text),
+    )
 
-    assert response == "ok"
-    runner._vision_orchestrator.prepare_turn.assert_not_awaited()
-    runner._enrich_message_with_vision.assert_awaited_once()
-    assert runner._run_agent.await_args.kwargs["message"] == (
+    enrich.assert_awaited_once()
+    assert prepared.message_text == (
         "[Alice] [The user sent an image~ Here's what I can see:\n测试图片描述]"
     )

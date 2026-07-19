@@ -6,7 +6,7 @@ Implements a multi-strategy matching chain to robustly find and replace text,
 accommodating variations in whitespace, indentation, and escaping common
 in LLM-generated code.
 
-The 8-strategy chain (inspired by OpenCode), tried in order:
+The 9-strategy chain (inspired by OpenCode), tried in order:
 1. Exact match - Direct string comparison
 2. Line-trimmed - Strip leading/trailing whitespace per line
 3. Whitespace normalized - Collapse multiple spaces/tabs to single space
@@ -21,7 +21,7 @@ Multi-occurrence matching is handled via the replace_all flag.
 Usage:
     from tools.fuzzy_match import fuzzy_find_and_replace
     
-    new_content, match_count, error = fuzzy_find_and_replace(
+    new_content, match_count, strategy, error = fuzzy_find_and_replace(
         content="def foo():\\n    pass",
         old_string="def foo():",
         new_string="def bar():",
@@ -48,27 +48,27 @@ def _unicode_normalize(text: str) -> str:
 
 
 def fuzzy_find_and_replace(content: str, old_string: str, new_string: str,
-                            replace_all: bool = False) -> Tuple[str, int, Optional[str]]:
+                            replace_all: bool = False) -> Tuple[str, int, Optional[str], Optional[str]]:
     """
     Find and replace text using a chain of increasingly fuzzy matching strategies.
-    
+
     Args:
         content: The file content to search in
         old_string: The text to find
         new_string: The replacement text
         replace_all: If True, replace all occurrences; if False, require uniqueness
-    
+
     Returns:
-        Tuple of (new_content, match_count, error_message)
-        - If successful: (modified_content, number_of_replacements, None)
-        - If failed: (original_content, 0, error_description)
+        Tuple of (new_content, match_count, strategy_name, error_message)
+        - If successful: (modified_content, number_of_replacements, strategy_used, None)
+        - If failed: (original_content, 0, None, error_description)
     """
     if not old_string:
-        return content, 0, "old_string cannot be empty"
-    
+        return content, 0, None, "old_string cannot be empty"
+
     if old_string == new_string:
-        return content, 0, "old_string and new_string are identical"
-    
+        return content, 0, None, "old_string and new_string are identical"
+
     # Try each matching strategy in order
     strategies: List[Tuple[str, Callable]] = [
         ("exact", _strategy_exact),
@@ -77,49 +77,342 @@ def fuzzy_find_and_replace(content: str, old_string: str, new_string: str,
         ("indentation_flexible", _strategy_indentation_flexible),
         ("escape_normalized", _strategy_escape_normalized),
         ("trimmed_boundary", _strategy_trimmed_boundary),
+        ("unicode_normalized", _strategy_unicode_normalized),
         ("block_anchor", _strategy_block_anchor),
         ("context_aware", _strategy_context_aware),
     ]
-    
+
     for strategy_name, strategy_fn in strategies:
         matches = strategy_fn(content, old_string)
-        
+
         if matches:
             # Found matches with this strategy
             if len(matches) > 1 and not replace_all:
-                return content, 0, (
+                return content, 0, None, (
                     f"Found {len(matches)} matches for old_string. "
                     f"Provide more context to make it unique, or use replace_all=True."
                 )
-            
-            # Perform replacement
-            new_content = _apply_replacements(content, matches, new_string)
-            return new_content, len(matches), None
-    
+
+            # Escape-drift guard: when the matched strategy is NOT `exact`,
+            # we matched via some form of normalization. If new_string
+            # contains shell/JSON-style escape sequences (\' or \") that
+            # would be written literally into the file but the matched
+            # region of the file has no such sequences, this is almost
+            # certainly tool-call serialization drift — the model typed
+            # an apostrophe/quote and the transport added a stray
+            # backslash. Writing new_string as-is would corrupt the file.
+            # Block with a helpful error so the model re-reads and retries
+            # instead of the caller silently persisting garbage (or not).
+            if strategy_name != "exact":
+                drift_err = _detect_escape_drift(content, matches, old_string, new_string)
+                if drift_err:
+                    return content, 0, None, drift_err
+
+            # Perform replacement. When the matched strategy is NOT `exact`,
+            # the file's indentation may differ from what the LLM sent in
+            # old_string/new_string — e.g. LLM used 2-space indent but the
+            # file is 4-space. Shift new_string by the indentation delta so
+            # the replacement matches the file's actual indent pattern.
+            # LLMs frequently serialize tabs / carriage returns in JSON
+            # tool-call arguments as the two-character sequences ``\t`` and
+            # ``\r`` (backslash + letter) instead of the real control bytes.
+            # If we write new_string verbatim, the file ends up with literal
+            # backslash sequences where the surrounding code uses real tabs.
+            #
+            # Strategy: only unescape when the matched region of the file
+            # *actually contains* the corresponding real control character.
+            # That mirrors the region-based heuristic in
+            # ``_detect_escape_drift`` and keeps legitimate writes of the
+            # literal two-character string ``"\t"`` (e.g. patching Python
+            # source that contains a tab string literal in source text)
+            # untouched — those files have a backslash+t in the matched
+            # region, not a real tab, so we leave new_string alone.
+            #
+            # ``\n`` is intentionally excluded: newlines serialize correctly
+            # through JSON, and rewriting backslash-n would mangle escape
+            # sequences in source code constants far more often than help.
+            effective_new = _maybe_unescape_new_string(
+                new_string, content, matches,
+            )
+            # Unicode-preservation guard: when strategy 7 (unicode_normalized)
+            # matched, the file has Unicode characters (em-dashes, smart quotes,
+            # ellipsis) but old_string/new_string from the LLM are ASCII
+            # equivalents.  Writing new_string verbatim would silently corrupt
+            # the file's Unicode — em-dashes become two hyphens, smart quotes
+            # become straight quotes.  Align the replacement with the file's
+            # actual Unicode so only the LLM's intended changes are applied
+            # and unchanged portions keep their original characters.
+            if strategy_name == "unicode_normalized":
+                effective_new = _preserve_unicode_in_replacement(
+                    content, matches, old_string, effective_new,
+                )
+            new_content = _apply_replacements(
+                content, matches, effective_new,
+                old_string=old_string if strategy_name != "exact" else None,
+            )
+            return new_content, len(matches), strategy_name, None
+
     # No strategy found a match
-    return content, 0, "Could not find a match for old_string in the file"
+    return content, 0, None, "Could not find a match for old_string in the file"
 
 
-def _apply_replacements(content: str, matches: List[Tuple[int, int]], new_string: str) -> str:
+def _detect_escape_drift(content: str, matches: List[Tuple[int, int]],
+                         old_string: str, new_string: str) -> Optional[str]:
+    """Detect tool-call escape-drift artifacts in new_string.
+
+    Looks for ``\\'`` or ``\\"`` sequences that are present in both
+    old_string and new_string (i.e. the model copy-pasted them as "context"
+    it intended to preserve) but don't exist in the matched region of the
+    file. That pattern indicates the transport layer inserted spurious
+    shell-style escapes around apostrophes or quotes — writing new_string
+    verbatim would literally insert ``\\'`` into source code.
+
+    Returns an error string if drift is detected, None otherwise.
+    """
+    # Cheap pre-check: bail out unless new_string actually contains a
+    # suspect escape sequence. This keeps the guard free for all the
+    # common, correct cases.
+    if "\\'" not in new_string and '\\"' not in new_string:
+        return None
+
+    # Aggregate matched regions of the file — that's what new_string will
+    # replace. If the suspect escapes are present there already, the
+    # model is genuinely preserving them (valid for some languages /
+    # escaped strings); accept the patch.
+    matched_regions = "".join(content[start:end] for start, end in matches)
+
+    for suspect in ("\\'", '\\"'):
+        if suspect in new_string and suspect in old_string and suspect not in matched_regions:
+            plain = suspect[1]  # "'" or '"'
+            return (
+                f"Escape-drift detected: old_string and new_string contain "
+                f"the literal sequence {suspect!r} but the matched region of "
+                f"the file does not. This is almost always a tool-call "
+                f"serialization artifact where an apostrophe or quote got "
+                f"prefixed with a spurious backslash. Re-read the file with "
+                f"read_file and pass old_string/new_string without "
+                f"backslash-escaping {plain!r} characters."
+            )
+    return None
+
+
+def _leading_whitespace(line: str) -> str:
+    """Return the leading whitespace prefix of a line (spaces/tabs)."""
+    i = 0
+    while i < len(line) and line[i] in (" ", "\t"):
+        i += 1
+    return line[:i]
+
+
+def _first_meaningful_line(text: str) -> Optional[str]:
+    """Return the first line of ``text`` that has any non-whitespace content.
+
+    Returns ``None`` if no such line exists (text is empty or all whitespace).
+    """
+    for line in text.split("\n"):
+        if line.strip():
+            return line
+    return None
+
+
+def _reindent_replacement(file_region: str, old_string: str, new_string: str) -> str:
+    """Adjust ``new_string`` so its indentation matches ``file_region``.
+
+    Used after a non-exact fuzzy match: the LLM may have sent old_string and
+    new_string with a different indent than the file actually has (e.g.
+    2-space indent in tool args vs 4-space indent on disk). The fuzzy
+    strategy successfully matched anyway, but writing ``new_string`` verbatim
+    would corrupt the file's indentation.
+
+    Approach:
+
+    1. For each non-blank line in ``new_string``, compute its indent
+       *relative* to the shallowest non-blank line of ``old_string`` (the
+       LLM's base indent).
+    2. Anchor that relative indent onto the file's actual base indent (the
+       leading whitespace of the file_region's first non-blank line).
+    3. Re-emit each non-blank line as ``file_base + (line_indent - llm_base)``.
+
+    Blank lines and lines less-indented than the LLM's base are anchored
+    directly to the file's base indent.
+
+    No-op cases (returns ``new_string`` unchanged):
+    - file_region or old_string has no meaningful line
+    - LLM base indent equals file base indent
+    - new_string is empty
+    """
+    if not new_string:
+        return new_string
+
+    old_first = _first_meaningful_line(old_string)
+    file_first = _first_meaningful_line(file_region)
+    if old_first is None or file_first is None:
+        return new_string
+
+    old_indent = _leading_whitespace(old_first)
+    file_indent = _leading_whitespace(file_first)
+
+    if old_indent == file_indent:
+        return new_string
+
+    # Re-indent each line of new_string. Strategy: replace the LLM's base
+    # indent prefix with the file's base indent prefix, preserving any
+    # additional indent the LLM added on top. This is the same approach
+    # Roo Code uses (multi-search-replace.ts:466-500). It preserves the
+    # LLM's intended *relative* nesting between lines while anchoring to
+    # the file's actual indent style.
+    out_lines: List[str] = []
+    for line in new_string.split("\n"):
+        if not line.strip():
+            # Blank lines: leave whitespace untouched.
+            out_lines.append(line)
+            continue
+        line_indent = _leading_whitespace(line)
+        if line_indent.startswith(old_indent):
+            # Common case: line has the LLM's base indent (possibly plus
+            # extra). Swap base prefix for the file's base prefix.
+            remainder = line[len(old_indent):]
+            out_lines.append(file_indent + remainder)
+        else:
+            # Line is less-indented than the LLM's base — e.g. a dedent at
+            # the start of new_string. Anchor to the file's base.
+            out_lines.append(file_indent + line.lstrip(" \t"))
+    return "\n".join(out_lines)
+
+
+def _maybe_unescape_new_string(new_string: str,
+                               content: str,
+                               matches: List[Tuple[int, int]]) -> str:
+    """Conditionally unescape ``\\t``/``\\r`` in new_string.
+
+    LLMs frequently send the two-character sequences ``\\t`` (backslash + t)
+    and ``\\r`` (backslash + r) inside JSON tool-call arguments where they
+    meant a real tab or carriage-return byte. Writing the string verbatim
+    corrupts tab-indented files with literal backslash-letter pairs.
+
+    The unescape is only applied per-sequence when the *matched region of
+    the file* actually contains the corresponding control character — that
+    is, we only convert ``\\t`` -> tab when the file region we're replacing
+    contains a real tab byte. Files that legitimately contain the literal
+    two-character string ``"\\t"`` (e.g. a Python source line that defines
+    ``sep = "\\t"``) get a backslash+t in the matched region instead of a
+    tab, so we leave new_string alone.
+
+    ``\\n`` is intentionally excluded: newlines serialize correctly through
+    JSON and rewriting backslash-n would corrupt escape sequences in
+    string literals far more often than it would help.
+    """
+    # Cheap pre-check — bail out unless new_string actually contains one of
+    # the suspect sequences. Keeps the common case free.
+    if "\\t" not in new_string and "\\r" not in new_string:
+        return new_string
+
+    matched_regions = "".join(content[start:end] for start, end in matches)
+    out = new_string
+    if "\\t" in out and "\t" in matched_regions:
+        out = out.replace("\\t", "\t")
+    if "\\r" in out and "\r" in matched_regions:
+        out = out.replace("\\r", "\r")
+    return out
+
+
+def _preserve_unicode_in_replacement(
+    content: str, matches: List[Tuple[int, int]],
+    old_string: str, new_string: str,
+) -> str:
+    """Preserve Unicode characters from the file in the replacement string.
+
+    When strategy 7 (unicode_normalized) matched, the file has Unicode
+    characters (em-dashes, smart quotes, ellipsis, non-breaking spaces)
+    but old_string/new_string from the LLM are ASCII equivalents.
+    Writing new_string verbatim would silently corrupt the file's
+    Unicode — em-dashes become two hyphens, smart quotes become
+    straight quotes.
+
+    This function aligns the replacement with the file's actual Unicode
+    by diffing old_string→new_string and applying only the actual edits
+    to the file's original text, preserving Unicode for unchanged portions.
+    """
+    # Aggregate the matched file regions
+    file_region = "".join(content[start:end] for start, end in matches)
+
+    # Normalize both for comparison
+    norm_old = _unicode_normalize(old_string)
+    norm_file = _unicode_normalize(file_region)
+
+    # If the normalized forms don't match, the strategy shouldn't have
+    # fired — fall back to direct replacement.
+    if norm_old != norm_file:
+        return new_string
+
+    # Build position maps from normalized space back to original space
+    # for both old_string and file_region.  UNICODE_MAP replacements can
+    # expand characters (em-dash → '--'), so normalized positions don't
+    # map 1:1 to original positions.  Reuse the module-level
+    # _build_orig_to_norm_map, then invert it (same inversion as
+    # _map_positions_norm_to_orig) to get norm→orig lookups.
+    file_orig_to_norm = _build_orig_to_norm_map(file_region)
+    file_norm_to_orig: dict[int, int] = {}
+    for orig_pos, np in enumerate(file_orig_to_norm[:-1]):
+        if np not in file_norm_to_orig:
+            file_norm_to_orig[np] = orig_pos
+
+    # Diff norm_old → new_string to find the actual edits
+    sm = SequenceMatcher(None, norm_old, new_string)
+    opcodes = sm.get_opcodes()
+
+    # Apply edits to file_region, preserving Unicode for unchanged spans
+    result_parts: List[str] = []
+    for tag, i1, i2, j1, j2 in opcodes:
+        if tag == "equal":
+            # Keep the original file_region text for this span
+            orig_start = file_norm_to_orig.get(i1, 0)
+            orig_end = orig_start
+            while (
+                orig_end < len(file_region)
+                and file_orig_to_norm[orig_end] < i2
+            ):
+                orig_end += 1
+            result_parts.append(file_region[orig_start:orig_end])
+        elif tag == "replace":
+            result_parts.append(new_string[j1:j2])
+        elif tag == "delete":
+            pass  # skip deleted portion
+        elif tag == "insert":
+            result_parts.append(new_string[j1:j2])
+
+    return "".join(result_parts)
+
+
+def _apply_replacements(content: str, matches: List[Tuple[int, int]],
+                        new_string: str, old_string: Optional[str] = None) -> str:
     """
     Apply replacements at the given positions.
-    
+
     Args:
         content: Original content
         matches: List of (start, end) positions to replace
         new_string: Replacement text
-    
+        old_string: When non-None, signals that the match came from a
+            non-exact fuzzy strategy; ``new_string`` is re-indented to
+            match the file's actual indentation before substitution.
+
     Returns:
         Content with replacements applied
     """
     # Sort matches by position (descending) to replace from end to start
     # This preserves positions of earlier matches
     sorted_matches = sorted(matches, key=lambda x: x[0], reverse=True)
-    
+
     result = content
     for start, end in sorted_matches:
-        result = result[:start] + new_string + result[end:]
-    
+        if old_string is not None:
+            file_region = content[start:end]
+            adjusted = _reindent_replacement(file_region, old_string, new_string)
+        else:
+            adjusted = new_string
+        result = result[:start] + adjusted + result[end:]
+
     return result
 
 
@@ -136,7 +429,12 @@ def _strategy_exact(content: str, pattern: str) -> List[Tuple[int, int]]:
         if pos == -1:
             break
         matches.append((pos, pos + len(pattern)))
-        start = pos + 1
+        # Advance past the whole match, not just one char, so self-overlapping
+        # patterns (e.g. "aa" in "aaaa") produce non-overlapping spans matching
+        # str.replace() semantics. Advancing by 1 yielded overlapping matches
+        # that corrupt the file under replace_all=True (reverse-order apply on
+        # stale offsets).
+        start = pos + len(pattern)
     return matches
 
 
@@ -258,9 +556,90 @@ def _strategy_trimmed_boundary(content: str, pattern: str) -> List[Tuple[int, in
     return matches
 
 
+def _build_orig_to_norm_map(original: str) -> List[int]:
+    """Build a list mapping each original character index to its normalized index.
+
+    Because UNICODE_MAP replacements may expand characters (e.g. em-dash → '--',
+    ellipsis → '...'), the normalised string can be longer than the original.
+    This map lets us convert positions in the normalised string back to the
+    corresponding positions in the original string.
+
+    Returns a list of length ``len(original) + 1``; entry ``i`` is the
+    normalised index that character ``i`` maps to.
+    """
+    result: List[int] = []
+    norm_pos = 0
+    for char in original:
+        result.append(norm_pos)
+        repl = UNICODE_MAP.get(char)
+        norm_pos += len(repl) if repl is not None else 1
+    result.append(norm_pos)  # sentinel: one past the last character
+    return result
+
+
+def _map_positions_norm_to_orig(
+    orig_to_norm: List[int],
+    norm_matches: List[Tuple[int, int]],
+) -> List[Tuple[int, int]]:
+    """Convert (start, end) positions in the normalised string to original positions."""
+    # Invert the map: norm_pos -> first original position with that norm_pos
+    norm_to_orig_start: dict[int, int] = {}
+    for orig_pos, norm_pos in enumerate(orig_to_norm[:-1]):
+        if norm_pos not in norm_to_orig_start:
+            norm_to_orig_start[norm_pos] = orig_pos
+
+    results: List[Tuple[int, int]] = []
+    orig_len = len(orig_to_norm) - 1  # number of original characters
+
+    for norm_start, norm_end in norm_matches:
+        if norm_start not in norm_to_orig_start:
+            continue
+        orig_start = norm_to_orig_start[norm_start]
+
+        # Walk forward until orig_to_norm[orig_end] >= norm_end
+        orig_end = orig_start
+        while orig_end < orig_len and orig_to_norm[orig_end] < norm_end:
+            orig_end += 1
+
+        results.append((orig_start, orig_end))
+
+    return results
+
+
+def _strategy_unicode_normalized(content: str, pattern: str) -> List[Tuple[int, int]]:
+    """Strategy 7: Unicode normalisation.
+
+    Normalises smart quotes, em/en-dashes, ellipsis, and non-breaking spaces
+    to their ASCII equivalents in both *content* and *pattern*, then runs
+    exact and line_trimmed matching on the normalised copies.
+
+    Positions are mapped back to the *original* string via
+    ``_build_orig_to_norm_map`` — necessary because some UNICODE_MAP
+    replacements expand a single character into multiple ASCII characters,
+    making a naïve position copy incorrect.
+    """
+    # Normalize both sides. Either the content or the pattern (or both) may
+    # carry unicode variants — e.g. content has an em-dash that should match
+    # the LLM's ASCII '--', or vice-versa.  Skip only when neither changes.
+    norm_pattern = _unicode_normalize(pattern)
+    norm_content = _unicode_normalize(content)
+    if norm_content == content and norm_pattern == pattern:
+        return []
+
+    norm_matches = _strategy_exact(norm_content, norm_pattern)
+    if not norm_matches:
+        norm_matches = _strategy_line_trimmed(norm_content, norm_pattern)
+
+    if not norm_matches:
+        return []
+
+    orig_to_norm = _build_orig_to_norm_map(content)
+    return _map_positions_norm_to_orig(orig_to_norm, norm_matches)
+
+
 def _strategy_block_anchor(content: str, pattern: str) -> List[Tuple[int, int]]:
     """
-    Strategy 7: Match by anchoring on first and last lines.
+    Strategy 8: Match by anchoring on first and last lines.
     Adjusted with permissive thresholds and unicode normalization.
     """
     # Normalize both strings for comparison while keeping original content for offset calculation
@@ -290,8 +669,10 @@ def _strategy_block_anchor(content: str, pattern: str) -> List[Tuple[int, int]]:
     matches = []
     candidate_count = len(potential_matches)
     
-    # Thresholding logic: 0.10 for unique matches (max flexibility), 0.30 for multiple candidates
-    threshold = 0.10 if candidate_count == 1 else 0.30
+    # Thresholding logic: 0.50 for unique matches, 0.70 for multiple candidates.
+    # Previous values (0.10 / 0.30) were dangerously loose — a 10% middle-section
+    # similarity could match completely unrelated blocks.
+    threshold = 0.50 if candidate_count == 1 else 0.70
 
     for i in potential_matches:
         if pattern_line_count <= 2:
@@ -314,7 +695,7 @@ def _strategy_block_anchor(content: str, pattern: str) -> List[Tuple[int, int]]:
 
 def _strategy_context_aware(content: str, pattern: str) -> List[Tuple[int, int]]:
     """
-    Strategy 8: Line-by-line similarity with 50% threshold.
+    Strategy 9: Line-by-line similarity with 50% threshold.
     
     Finds blocks where at least 50% of lines have high similarity.
     """
@@ -366,8 +747,7 @@ def _calculate_line_positions(content_lines: List[str], start_line: int,
     """
     start_pos = sum(len(line) + 1 for line in content_lines[:start_line])
     end_pos = sum(len(line) + 1 for line in content_lines[:end_line]) - 1
-    if end_pos >= content_length:
-        end_pos = content_length
+    end_pos = min(content_length, end_pos)
     return start_pos, end_pos
 
 
@@ -473,10 +853,98 @@ def _map_normalized_positions(original: str, normalized: str,
         else:
             orig_end = orig_start + (norm_end - norm_start)
         
-        # Expand to include trailing whitespace that was normalized
-        while orig_end < len(original) and original[orig_end] in ' \t':
-            orig_end += 1
+        # Expand to include trailing whitespace that was normalized,
+        # but only when the normalized match itself ended with whitespace.
+        # When the match ends with a non-space character, the first
+        # whitespace in the original is a word boundary and must not be
+        # consumed.  See https://github.com/NousResearch/hermes-agent/issues/52491
+        if norm_end < len(normalized) and normalized[norm_end - 1] == ' ':
+            while orig_end < len(original) and original[orig_end] in ' \t':
+                orig_end += 1
         
         original_matches.append((orig_start, min(orig_end, len(original))))
     
     return original_matches
+
+
+def find_closest_lines(old_string: str, content: str, context_lines: int = 2, max_results: int = 3) -> str:
+    """Find lines in content most similar to old_string for "did you mean?" feedback.
+
+    Returns a formatted string showing the closest matching lines with context,
+    or empty string if no useful match is found.
+    """
+    if not old_string or not content:
+        return ""
+
+    old_lines = old_string.splitlines()
+    content_lines = content.splitlines()
+
+    if not old_lines or not content_lines:
+        return ""
+
+    # Use first line of old_string as anchor for search
+    anchor = old_lines[0].strip()
+    if not anchor:
+        # Try second line if first is blank
+        candidates = [l.strip() for l in old_lines if l.strip()]
+        if not candidates:
+            return ""
+        anchor = candidates[0]
+
+    # Score each line in content by similarity to anchor
+    scored = []
+    for i, line in enumerate(content_lines):
+        stripped = line.strip()
+        if not stripped:
+            continue
+        ratio = SequenceMatcher(None, anchor, stripped).ratio()
+        if ratio > 0.3:
+            scored.append((ratio, i))
+
+    if not scored:
+        return ""
+
+    # Take top matches
+    scored.sort(key=lambda x: -x[0])
+    top = scored[:max_results]
+
+    parts = []
+    seen_ranges = set()
+    for _, line_idx in top:
+        start = max(0, line_idx - context_lines)
+        end = min(len(content_lines), line_idx + len(old_lines) + context_lines)
+        key = (start, end)
+        if key in seen_ranges:
+            continue
+        seen_ranges.add(key)
+        snippet = "\n".join(
+            f"{start + j + 1:4d}| {content_lines[start + j]}"
+            for j in range(end - start)
+        )
+        parts.append(snippet)
+
+    if not parts:
+        return ""
+
+    return "\n---\n".join(parts)
+
+
+def format_no_match_hint(error: Optional[str], match_count: int,
+                         old_string: str, content: str) -> str:
+    """Return a '\\n\\nDid you mean...' snippet for plain no-match errors.
+
+    Gated so the hint only fires for actual "old_string not found" failures.
+    Ambiguous-match ("Found N matches"), escape-drift, and identical-strings
+    errors all have ``match_count == 0`` but a "did you mean?" snippet would
+    be misleading — those failed for unrelated reasons.
+
+    Returns an empty string when there's nothing useful to append.
+    """
+    if match_count != 0:
+        return ""
+    if not error or not error.startswith("Could not find"):
+        return ""
+    hint = find_closest_lines(old_string, content)
+    if not hint:
+        return ""
+    return "\n\nDid you mean one of these sections?\n" + hint

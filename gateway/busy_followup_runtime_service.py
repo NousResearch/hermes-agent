@@ -23,14 +23,49 @@ def _queue_followup_event(
     session_key: str,
     event: Any,
 ) -> None:
-    """Queue one follow-up event on the adapter, preserving adapter-specific behavior."""
+    """Queue one follow-up event on the adapter, preserving adapter-specific behavior.
+
+    Prefer a real ``queue_message`` implementation. MagicMock adapters (unit
+    tests) auto-create that attribute, so fall back to writing
+    ``_pending_messages`` when the call does not actually stage the event.
+    """
 
     if not adapter:
         return
-    if hasattr(adapter, "queue_message"):
-        adapter.queue_message(session_key, event)
-    else:
-        adapter._pending_messages[session_key] = event
+    pending = getattr(adapter, "_pending_messages", None)
+    queue_fn = getattr(type(adapter), "queue_message", None)
+    if callable(queue_fn):
+        try:
+            queue_fn(adapter, session_key, event)
+            if isinstance(pending, dict) and session_key in pending:
+                return
+        except Exception:
+            pass
+    if isinstance(pending, dict):
+        pending[session_key] = event
+
+
+def _queue_followup_on_runner(
+    *,
+    runner: Any,
+    adapter: Any,
+    session_key: str,
+    event: Any,
+) -> None:
+    """Queue a busy-session follow-up using runner FIFO when available."""
+
+    queue_fn = getattr(runner, "_queue_or_replace_pending_event", None)
+    if callable(queue_fn):
+        try:
+            queue_fn(session_key, event)
+            return
+        except Exception:
+            pass
+    _queue_followup_event(
+        adapter=adapter,
+        session_key=session_key,
+        event=event,
+    )
 
 
 def _consume_adapter_pending_message(
@@ -40,8 +75,18 @@ def _consume_adapter_pending_message(
 ) -> None:
     """Consume one pending adapter message when the adapter exposes that hook."""
 
-    if adapter and hasattr(adapter, "get_pending_message"):
-        adapter.get_pending_message(session_key)
+    if not adapter:
+        return
+    get_fn = getattr(type(adapter), "get_pending_message", None)
+    if callable(get_fn):
+        try:
+            get_fn(adapter, session_key)
+            return
+        except Exception:
+            pass
+    pending = getattr(adapter, "_pending_messages", None)
+    if isinstance(pending, dict):
+        pending.pop(session_key, None)
 
 
 def _queue_text_followup(
@@ -49,23 +94,57 @@ def _queue_text_followup(
     adapter: Any,
     event: Any,
     session_key: str,
+    runner: Any = None,
 ) -> None:
-    """Queue an explicit text follow-up via a synthetic text event."""
+    """Queue an explicit /queue follow-up, preserving media + reply context."""
 
-    if not adapter:
+    if not adapter and runner is None:
         return
+    queued_text = event.get_command_args().strip()
+    media_urls = list(getattr(event, "media_urls", None) or [])
+    media_types = list(getattr(event, "media_types", None) or [])
+    has_media = bool(media_urls)
+    message_type = getattr(event, "message_type", None)
+    if has_media and message_type is not None:
+        queued_type = message_type
+    else:
+        queued_type = MessageType.TEXT
     queued_event = MessageEvent(
-        text=event.get_command_args().strip(),
-        message_type=MessageType.TEXT,
+        text=queued_text,
+        message_type=queued_type,
         source=event.source,
         raw_message=getattr(event, "raw_message", None),
         message_id=event.message_id,
+        media_urls=media_urls,
+        media_types=media_types,
         metadata=dict(getattr(event, "metadata", None) or {}) or None,
         reply_to_message_id=getattr(event, "reply_to_message_id", None),
         reply_to_text=getattr(event, "reply_to_text", None),
+        reply_to_author_id=getattr(event, "reply_to_author_id", None),
+        reply_to_author_name=getattr(event, "reply_to_author_name", None),
+        reply_to_is_own_message=bool(
+            getattr(event, "reply_to_is_own_message", False)
+        ),
         auto_skill=getattr(event, "auto_skill", None),
+        channel_prompt=getattr(event, "channel_prompt", None),
+        internal=bool(getattr(event, "internal", False)),
         timestamp=getattr(event, "timestamp", None),
     )
+    if runner is not None:
+        enqueue_fifo = getattr(runner, "_enqueue_fifo", None)
+        if callable(enqueue_fifo) and adapter is not None:
+            try:
+                enqueue_fifo(session_key, queued_event, adapter)
+                return
+            except Exception:
+                pass
+        _queue_followup_on_runner(
+            runner=runner,
+            adapter=adapter,
+            session_key=session_key,
+            event=queued_event,
+        )
+        return
     _queue_followup_event(
         adapter=adapter,
         session_key=session_key,
@@ -80,11 +159,31 @@ def _busy_ack_or_fallback(
     interrupting: bool,
     fallback_busy_ack: Callable[[Any, str], str],
 ) -> str:
-    """Return the adapter-specific busy ack or the generic QQ fallback."""
+    """Return the adapter-specific busy ack or the generic QQ fallback.
 
-    if adapter and hasattr(adapter, "_busy_followup_ack"):
-        return adapter._busy_followup_ack(event, interrupting=interrupting)
-    return fallback_busy_ack(event.source, event.text)
+    Only accept real ``str`` acks. MagicMock adapters auto-create
+    ``_busy_followup_ack`` and would otherwise poison the return value.
+    """
+
+    if adapter is not None:
+        ack_fn = getattr(type(adapter), "_busy_followup_ack", None)
+        if callable(ack_fn):
+            try:
+                ack = ack_fn(adapter, event, interrupting=interrupting)
+            except TypeError:
+                try:
+                    ack = ack_fn(adapter, event)
+                except Exception:
+                    ack = None
+            except Exception:
+                ack = None
+            if isinstance(ack, str):
+                return ack
+    try:
+        fallback = fallback_busy_ack(event.source, event.text)
+    except Exception:
+        return ""
+    return fallback if isinstance(fallback, str) else ""
 
 
 async def handle_gateway_busy_followup(
@@ -138,33 +237,72 @@ async def handle_gateway_busy_followup(
     cmd_def_inner = _resolve_cmd_inner(evt_cmd) if evt_cmd else None
 
     if cmd_def_inner and cmd_def_inner.name == "stop":
-        running_agent = runner._running_agents.get(session_key)
-        if running_agent and running_agent is not pending_agent_sentinel:
-            running_agent.interrupt("Stop requested")
-        _consume_adapter_pending_message(
-            adapter=adapter,
-            session_key=session_key,
-        )
-        runner._pending_messages.pop(session_key, None)
-        if session_key in runner._running_agents:
-            del runner._running_agents[session_key]
+        # Prefer the full hard-stop path so adapter interrupt hooks, pending
+        # queue drain, generation invalidation, and cache eviction stay aligned
+        # with the cold-path /stop handler.
+        interrupt_and_clear = getattr(runner, "_interrupt_and_clear_session", None)
+        if callable(interrupt_and_clear):
+            try:
+                from gateway.run import _INTERRUPT_REASON_STOP
+            except Exception:
+                _INTERRUPT_REASON_STOP = "Stop requested"
+            await interrupt_and_clear(
+                session_key,
+                source,
+                interrupt_reason=_INTERRUPT_REASON_STOP,
+                invalidation_reason="stop_command",
+            )
+        else:
+            running_agent = runner._running_agents.get(session_key)
+            if running_agent and running_agent is not pending_agent_sentinel:
+                running_agent.interrupt("Stop requested")
+            _consume_adapter_pending_message(
+                adapter=adapter,
+                session_key=session_key,
+            )
+            runner._pending_messages.pop(session_key, None)
+            if session_key in runner._running_agents:
+                del runner._running_agents[session_key]
         logger.info("HARD STOP for session %s — session lock released", session_key[:20])
-        return GatewayBusyFollowupResult(
-            handled=True,
-            response="⚡ Force-stopped. The session is unlocked — you can send a new message.",
-        )
+        # Prefer i18n stop text when available; fall back for partial runners.
+        try:
+            from agent.i18n import t
+            from gateway.platforms.base import EphemeralReply
+
+            return GatewayBusyFollowupResult(
+                handled=True,
+                response=EphemeralReply(t("gateway.stop.stopped")),
+            )
+        except Exception:
+            return GatewayBusyFollowupResult(
+                handled=True,
+                response="⚡ Force-stopped. The session is unlocked — you can send a new message.",
+            )
 
     if cmd_def_inner and cmd_def_inner.name == "new":
-        running_agent = runner._running_agents.get(session_key)
-        if running_agent and running_agent is not pending_agent_sentinel:
-            running_agent.interrupt("Session reset requested")
-        _consume_adapter_pending_message(
-            adapter=adapter,
-            session_key=session_key,
-        )
-        runner._pending_messages.pop(session_key, None)
-        if session_key in runner._running_agents:
-            del runner._running_agents[session_key]
+        interrupt_and_clear = getattr(runner, "_interrupt_and_clear_session", None)
+        if callable(interrupt_and_clear):
+            try:
+                from gateway.run import _INTERRUPT_REASON_RESET
+            except Exception:
+                _INTERRUPT_REASON_RESET = "Session reset requested"
+            await interrupt_and_clear(
+                session_key,
+                source,
+                interrupt_reason=_INTERRUPT_REASON_RESET,
+                invalidation_reason="new_command",
+            )
+        else:
+            running_agent = runner._running_agents.get(session_key)
+            if running_agent and running_agent is not pending_agent_sentinel:
+                running_agent.interrupt("Session reset requested")
+            _consume_adapter_pending_message(
+                adapter=adapter,
+                session_key=session_key,
+            )
+            runner._pending_messages.pop(session_key, None)
+            if session_key in runner._running_agents:
+                del runner._running_agents[session_key]
         return GatewayBusyFollowupResult(
             handled=True,
             response=await runner._handle_reset_command(event),
@@ -172,7 +310,8 @@ async def handle_gateway_busy_followup(
 
     if evt_cmd in ("queue", "q"):
         queued_text = event.get_command_args().strip()
-        if not queued_text:
+        has_media = bool(getattr(event, "media_urls", None))
+        if not queued_text and not has_media:
             return GatewayBusyFollowupResult(
                 handled=True,
                 response="Usage: /queue <prompt>",
@@ -181,10 +320,22 @@ async def handle_gateway_busy_followup(
             adapter=adapter,
             event=event,
             session_key=session_key,
+            runner=runner,
         )
+        depth_fn = getattr(runner, "_queue_depth", None)
+        depth = 1
+        if callable(depth_fn):
+            try:
+                depth = int(depth_fn(session_key, adapter=adapter) or 1)
+            except Exception:
+                depth = 1
+        if depth <= 1:
+            ack = "Queued for the next turn."
+        else:
+            ack = f"Queued for the next turn. ({depth} queued)"
         return GatewayBusyFollowupResult(
             handled=True,
-            response="Queued for the next turn.",
+            response=ack,
         )
 
     if cmd_def_inner and cmd_def_inner.name == "model":
@@ -202,6 +353,67 @@ async def handle_gateway_busy_followup(
         return GatewayBusyFollowupResult(
             handled=True,
             response=await runner._handle_deny_command(event),
+        )
+
+    # /steer must be handled before the generic pending/queue path so a
+    # still-booting sentinel (or queue busy mode) doesn't swallow the
+    # dedicated mid-run inject / turn-boundary fallback semantics.
+    if cmd_def_inner and cmd_def_inner.name == "steer":
+        steer_text = event.get_command_args().strip()
+        if not steer_text:
+            return GatewayBusyFollowupResult(
+                handled=True,
+                response="Usage: /steer <prompt>",
+            )
+        running_agent = runner._running_agents.get(session_key)
+        if running_agent is pending_agent_sentinel:
+            if adapter:
+                queued_event = MessageEvent(
+                    text=steer_text,
+                    message_type=MessageType.TEXT,
+                    source=event.source,
+                    message_id=event.message_id,
+                    channel_prompt=getattr(event, "channel_prompt", None),
+                )
+                adapter._pending_messages[session_key] = queued_event
+            return GatewayBusyFollowupResult(
+                handled=True,
+                response="Agent still starting — /steer queued for the next turn.",
+            )
+        if running_agent and hasattr(running_agent, "steer"):
+            try:
+                accepted = bool(running_agent.steer(steer_text))
+            except Exception as exc:
+                logger.warning("Steer failed for session %s: %s", session_key[:20], exc)
+                return GatewayBusyFollowupResult(
+                    handled=True,
+                    response=f"⚠️ Steer failed: {exc}",
+                )
+            if accepted:
+                preview = steer_text[:60] + ("..." if len(steer_text) > 60 else "")
+                return GatewayBusyFollowupResult(
+                    handled=True,
+                    response=(
+                        f"⏩ Steer queued — arrives after the next tool call: '{preview}'"
+                    ),
+                )
+            return GatewayBusyFollowupResult(
+                handled=True,
+                response="Steer rejected (empty payload).",
+            )
+        # Running agent missing or lacks steer() — fall back to queue.
+        if adapter:
+            queued_event = MessageEvent(
+                text=steer_text,
+                message_type=MessageType.TEXT,
+                source=event.source,
+                message_id=event.message_id,
+                channel_prompt=getattr(event, "channel_prompt", None),
+            )
+            adapter._pending_messages[session_key] = queued_event
+        return GatewayBusyFollowupResult(
+            handled=True,
+            response="No active agent — /steer queued for the next turn.",
         )
 
     explicit_followup = getattr(source, "chat_type", "") == "dm"
@@ -280,7 +492,8 @@ async def handle_gateway_busy_followup(
             "PRIORITY photo follow-up for session %s — queueing without interrupt",
             session_key[:20],
         )
-        _queue_followup_event(
+        _queue_followup_on_runner(
+            runner=runner,
             adapter=adapter,
             session_key=session_key,
             event=event,
@@ -300,7 +513,8 @@ async def handle_gateway_busy_followup(
                 handled=True,
                 response="⚡ Force-stopped. The agent was still starting — session unlocked.",
             )
-        _queue_followup_event(
+        _queue_followup_on_runner(
+            runner=runner,
             adapter=adapter,
             session_key=session_key,
             event=event,
@@ -331,7 +545,8 @@ async def handle_gateway_busy_followup(
             session_key[:20],
             force_queue_reason,
         )
-        _queue_followup_event(
+        _queue_followup_on_runner(
+            runner=runner,
             adapter=adapter,
             session_key=session_key,
             event=event,
@@ -351,7 +566,8 @@ async def handle_gateway_busy_followup(
             "PRIORITY queue for session %s — deferring follow-up without interrupt",
             session_key[:20],
         )
-        _queue_followup_event(
+        _queue_followup_on_runner(
+            runner=runner,
             adapter=adapter,
             session_key=session_key,
             event=event,
@@ -374,15 +590,17 @@ async def handle_gateway_busy_followup(
 
     if busy_input_mode == "smart":
         should_interrupt = False
-        if adapter and hasattr(adapter, "_should_interrupt_busy_followup"):
+        should_fn = getattr(type(adapter), "_should_interrupt_busy_followup", None) if adapter else None
+        if callable(should_fn):
             try:
+                started_at = getattr(adapter, "_active_session_started_at", None)
                 if (
-                    hasattr(adapter, "_active_session_started_at")
-                    and session_key not in adapter._active_session_started_at
+                    isinstance(started_at, dict)
+                    and session_key not in started_at
                     and session_key in runner._running_agents_ts
                 ):
-                    adapter._active_session_started_at[session_key] = runner._running_agents_ts[session_key]
-                should_interrupt = bool(adapter._should_interrupt_busy_followup(session_key, event))
+                    started_at[session_key] = runner._running_agents_ts[session_key]
+                should_interrupt = bool(should_fn(adapter, session_key, event))
             except Exception as exc:
                 logger.debug(
                     "smart busy follow-up decision failed for %s: %s",
@@ -394,7 +612,8 @@ async def handle_gateway_busy_followup(
                 "PRIORITY smart-queue for session %s — deferring follow-up during grace window",
                 session_key[:20],
             )
-            _queue_followup_event(
+            _queue_followup_on_runner(
+                runner=runner,
                 adapter=adapter,
                 session_key=session_key,
                 event=event,
@@ -419,16 +638,31 @@ async def handle_gateway_busy_followup(
             "PRIORITY smart-interrupt for session %s — switching to fresher follow-up",
             session_key[:20],
         )
-        _queue_followup_event(
+        _queue_followup_on_runner(
+            runner=runner,
             adapter=adapter,
             session_key=session_key,
             event=event,
         )
         running_agent.interrupt(event.text)
-        busy_ack = ""
-        if adapter and hasattr(adapter, "_busy_followup_ack"):
-            busy_ack = adapter._busy_followup_ack(event, interrupting=True)
+        busy_ack = _busy_ack_or_fallback(
+            adapter=adapter,
+            event=event,
+            interrupting=True,
+            fallback_busy_ack=fallback_busy_ack,
+        )
         return GatewayBusyFollowupResult(handled=True, response=busy_ack or None)
+
+    # Remaining slash commands (/restart, /background, /help, …) keep their
+    # dedicated busy-path handlers in GatewayRunner._handle_message.
+    if cmd_def_inner or evt_cmd:
+        return GatewayBusyFollowupResult(handled=False)
+
+    # Upstream interrupt / FIFO path for plain text follow-ups is also owned by
+    # the runner (acks, subagent demotion, telegram grace). Fall through so
+    # those behaviors stay intact; this service only owns queue/smart/QQ paths.
+    if busy_input_mode in {"interrupt", "steer"}:
+        return GatewayBusyFollowupResult(handled=False)
 
     logger.debug("PRIORITY interrupt for session %s", session_key[:20])
     running_agent.interrupt(event.text)

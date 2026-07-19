@@ -6,11 +6,27 @@ abort remaining cleanup steps.  These tests exercise the actual production
 code paths — not a copy of the try/except pattern.
 """
 
-import atexit
-import weakref
-from unittest.mock import MagicMock, patch, call
+from unittest.mock import MagicMock, patch
 
 import pytest
+
+
+@pytest.fixture(autouse=True)
+def _mock_runtime_provider(monkeypatch):
+    """run_job calls resolve_runtime_provider which can try real network
+    auto-detection (~4s of socket timeouts in hermetic CI). Mock it out
+    since these tests don't care about provider resolution — the agent
+    is mocked too."""
+    import hermes_cli.runtime_provider as rp
+    def _fake_resolve(*args, **kwargs):
+        return {
+            "provider": "openrouter",
+            "api_key": "test-key",
+            "base_url": "https://openrouter.ai/api/v1",
+            "model": "test/model",
+            "api_mode": "chat_completions",
+        }
+    monkeypatch.setattr(rp, "resolve_runtime_provider", _fake_resolve)
 
 
 class TestCronJobCleanup:

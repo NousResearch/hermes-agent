@@ -6,12 +6,12 @@ from unittest.mock import AsyncMock
 import pytest
 
 from gateway.config import Platform, PlatformConfig
-from gateway.platforms.base import MessageEvent, MessageType
+from gateway.platforms.base import MessageEvent, MessageType, ProcessingOutcome
 from gateway.session import SessionSource
 
 
 def _make_adapter(**extra_env):
-    from gateway.platforms.telegram import TelegramAdapter
+    from plugins.platforms.telegram.adapter import TelegramAdapter
 
     adapter = object.__new__(TelegramAdapter)
     adapter.platform = Platform.TELEGRAM
@@ -175,33 +175,33 @@ async def test_on_processing_start_handles_missing_ids(monkeypatch):
 
 @pytest.mark.asyncio
 async def test_on_processing_complete_success(monkeypatch):
-    """Successful processing should set check mark reaction."""
+    """Successful processing should set thumbs-up reaction."""
     monkeypatch.setenv("TELEGRAM_REACTIONS", "true")
     adapter = _make_adapter()
     event = _make_event()
 
-    await adapter.on_processing_complete(event, success=True)
+    await adapter.on_processing_complete(event, ProcessingOutcome.SUCCESS)
 
     adapter._bot.set_message_reaction.assert_awaited_once_with(
         chat_id=123,
         message_id=456,
-        reaction="\u2705",
+        reaction="\U0001f44d",
     )
 
 
 @pytest.mark.asyncio
 async def test_on_processing_complete_failure(monkeypatch):
-    """Failed processing should set cross mark reaction."""
+    """Failed processing should set thumbs-down reaction."""
     monkeypatch.setenv("TELEGRAM_REACTIONS", "true")
     adapter = _make_adapter()
     event = _make_event()
 
-    await adapter.on_processing_complete(event, success=False)
+    await adapter.on_processing_complete(event, ProcessingOutcome.FAILURE)
 
     adapter._bot.set_message_reaction.assert_awaited_once_with(
         chat_id=123,
         message_id=456,
-        reaction="\u274c",
+        reaction="\U0001f44e",
     )
 
 
@@ -212,9 +212,66 @@ async def test_on_processing_complete_skipped_when_disabled(monkeypatch):
     adapter = _make_adapter()
     event = _make_event()
 
-    await adapter.on_processing_complete(event, success=True)
+    await adapter.on_processing_complete(event, ProcessingOutcome.SUCCESS)
 
     adapter._bot.set_message_reaction.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_on_processing_complete_cancelled_clears_reaction(monkeypatch):
+    """Cancelled processing should clear the in-progress reaction.
+
+    Without this clear, the 👀 reaction lingers on the user's message
+    indefinitely (until another agent run swaps it for 👍/👎). On a
+    ``/stop`` that ends a session, that reaction never gets cleaned up.
+    """
+    monkeypatch.setenv("TELEGRAM_REACTIONS", "true")
+    adapter = _make_adapter()
+    event = _make_event()
+
+    await adapter.on_processing_complete(event, ProcessingOutcome.CANCELLED)
+
+    # set_message_reaction with reaction=None clears all reactions on the
+    # message (Bot API documented semantics; equivalent to Bot API 10.0's
+    # deleteMessageReaction but works on PTB 22.6 already).
+    adapter._bot.set_message_reaction.assert_awaited_once_with(
+        chat_id=123,
+        message_id=456,
+        reaction=None,
+    )
+
+
+@pytest.mark.asyncio
+async def test_on_processing_complete_cancelled_skipped_when_disabled(monkeypatch):
+    """Cancelled processing should not call the API when reactions are off."""
+    monkeypatch.delenv("TELEGRAM_REACTIONS", raising=False)
+    adapter = _make_adapter()
+    event = _make_event()
+
+    await adapter.on_processing_complete(event, ProcessingOutcome.CANCELLED)
+
+    adapter._bot.set_message_reaction.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_clear_reactions_handles_api_error_gracefully(monkeypatch):
+    """API errors during clear should not propagate."""
+    monkeypatch.setenv("TELEGRAM_REACTIONS", "true")
+    adapter = _make_adapter()
+    adapter._bot.set_message_reaction = AsyncMock(side_effect=RuntimeError("no perms"))
+
+    result = await adapter._clear_reactions("123", "456")
+    assert result is False
+
+
+@pytest.mark.asyncio
+async def test_clear_reactions_returns_false_without_bot(monkeypatch):
+    """_clear_reactions should return False when bot is not available."""
+    adapter = _make_adapter()
+    adapter._bot = None
+
+    result = await adapter._clear_reactions("123", "456")
+    assert result is False
 
 
 # ── config.py bridging ───────────────────────────────────────────────

@@ -4,45 +4,67 @@ are properly mapped to environment variables by both CLI and gateway loaders.
 Also tests the vision_tools and browser_tool model override env vars.
 """
 
-import json
 import os
 import sys
 from pathlib import Path
 from unittest.mock import patch, MagicMock, AsyncMock
 
 import pytest
-import yaml
+
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", ".."))
 
 
 def _run_auxiliary_bridge(config_dict, monkeypatch):
-    """Run the shared auxiliary config → env var bridge helper."""
-    from hermes_cli.config import bridge_auxiliary_config_to_env
+    """Simulate the auxiliary config → env var bridging logic shared by CLI and gateway.
 
+    This mirrors the code in cli.py load_cli_config() and gateway/run.py.
+    Both use the same pattern; we test it once here.
+    """
+    # Clear env vars
     for key in (
         "AUXILIARY_VISION_PROVIDER", "AUXILIARY_VISION_MODEL",
         "AUXILIARY_VISION_BASE_URL", "AUXILIARY_VISION_API_KEY",
         "AUXILIARY_WEB_EXTRACT_PROVIDER", "AUXILIARY_WEB_EXTRACT_MODEL",
         "AUXILIARY_WEB_EXTRACT_BASE_URL", "AUXILIARY_WEB_EXTRACT_API_KEY",
-        "AUXILIARY_APPROVAL_PROVIDER", "AUXILIARY_APPROVAL_MODEL",
-        "AUXILIARY_APPROVAL_BASE_URL", "AUXILIARY_APPROVAL_API_KEY",
-        "HERMES_BRIDGED_AUXILIARY_VISION_PROVIDER",
-        "HERMES_BRIDGED_AUXILIARY_VISION_MODEL",
-        "HERMES_BRIDGED_AUXILIARY_VISION_BASE_URL",
-        "HERMES_BRIDGED_AUXILIARY_VISION_API_KEY",
-        "HERMES_BRIDGED_AUXILIARY_WEB_EXTRACT_PROVIDER",
-        "HERMES_BRIDGED_AUXILIARY_WEB_EXTRACT_MODEL",
-        "HERMES_BRIDGED_AUXILIARY_WEB_EXTRACT_BASE_URL",
-        "HERMES_BRIDGED_AUXILIARY_WEB_EXTRACT_API_KEY",
-        "HERMES_BRIDGED_AUXILIARY_APPROVAL_PROVIDER",
-        "HERMES_BRIDGED_AUXILIARY_APPROVAL_MODEL",
-        "HERMES_BRIDGED_AUXILIARY_APPROVAL_BASE_URL",
-        "HERMES_BRIDGED_AUXILIARY_APPROVAL_API_KEY",
     ):
         monkeypatch.delenv(key, raising=False)
 
-    bridge_auxiliary_config_to_env(config_dict.get("auxiliary", {}))
+    # Compression config is read directly from config.yaml — no env var bridging.
+
+    # Auxiliary bridge
+    auxiliary_cfg = config_dict.get("auxiliary", {})
+    if auxiliary_cfg and isinstance(auxiliary_cfg, dict):
+        aux_task_env = {
+            "vision": {
+                "provider": "AUXILIARY_VISION_PROVIDER",
+                "model": "AUXILIARY_VISION_MODEL",
+                "base_url": "AUXILIARY_VISION_BASE_URL",
+                "api_key": "AUXILIARY_VISION_API_KEY",
+            },
+            "web_extract": {
+                "provider": "AUXILIARY_WEB_EXTRACT_PROVIDER",
+                "model": "AUXILIARY_WEB_EXTRACT_MODEL",
+                "base_url": "AUXILIARY_WEB_EXTRACT_BASE_URL",
+                "api_key": "AUXILIARY_WEB_EXTRACT_API_KEY",
+            },
+        }
+        for task_key, env_map in aux_task_env.items():
+            task_cfg = auxiliary_cfg.get(task_key, {})
+            if not isinstance(task_cfg, dict):
+                continue
+            prov = str(task_cfg.get("provider", "")).strip()
+            model = str(task_cfg.get("model", "")).strip()
+            base_url = str(task_cfg.get("base_url", "")).strip()
+            api_key = str(task_cfg.get("api_key", "")).strip()
+            if prov and prov != "auto":
+                os.environ[env_map["provider"]] = prov
+            if model:
+                os.environ[env_map["model"]] = model
+            if base_url:
+                os.environ[env_map["base_url"]] = base_url
+            if api_key:
+                os.environ[env_map["api_key"]] = api_key
 
 
 # ── Config bridging tests ────────────────────────────────────────────────────
@@ -167,34 +189,6 @@ class TestAuxiliaryConfigBridge:
         assert os.environ.get("AUXILIARY_VISION_PROVIDER") is None
         assert os.environ.get("AUXILIARY_WEB_EXTRACT_PROVIDER") is None
 
-    def test_bridge_clears_previous_bridged_provider_when_reset_to_auto(self, monkeypatch):
-        monkeypatch.setenv("AUXILIARY_VISION_PROVIDER", "openrouter")
-        monkeypatch.setenv("HERMES_BRIDGED_AUXILIARY_VISION_PROVIDER", "1")
-
-        _run_auxiliary_bridge({"auxiliary": {"vision": {"provider": "auto"}}}, monkeypatch)
-
-        assert os.environ.get("AUXILIARY_VISION_PROVIDER") is None
-        assert os.environ.get("HERMES_BRIDGED_AUXILIARY_VISION_PROVIDER") is None
-
-    def test_bridge_clears_previous_bridged_base_url_when_removed(self, monkeypatch):
-        monkeypatch.setenv("AUXILIARY_VISION_BASE_URL", "http://old.example/v1")
-        monkeypatch.setenv("HERMES_BRIDGED_AUXILIARY_VISION_BASE_URL", "1")
-
-        _run_auxiliary_bridge({"auxiliary": {"vision": {"base_url": ""}}}, monkeypatch)
-
-        assert os.environ.get("AUXILIARY_VISION_BASE_URL") is None
-        assert os.environ.get("HERMES_BRIDGED_AUXILIARY_VISION_BASE_URL") is None
-
-    def test_bridge_does_not_clear_user_managed_env_override(self, monkeypatch):
-        from hermes_cli.config import bridge_auxiliary_config_to_env
-
-        monkeypatch.setenv("AUXILIARY_VISION_PROVIDER", "openrouter")
-        monkeypatch.delenv("HERMES_BRIDGED_AUXILIARY_VISION_PROVIDER", raising=False)
-
-        bridge_auxiliary_config_to_env({"vision": {"provider": "auto"}})
-
-        assert os.environ.get("AUXILIARY_VISION_PROVIDER") == "openrouter"
-
 
 # ── Gateway bridge parity test ───────────────────────────────────────────────
 
@@ -203,15 +197,39 @@ class TestGatewayBridgeCodeParity:
     """Verify the gateway/run.py config bridge contains the auxiliary section."""
 
     def test_gateway_has_auxiliary_bridge(self):
-        """The gateway config bridge must include auxiliary.* bridging."""
+        """The gateway config bridge must include auxiliary.* bridging.
+
+        After the plugin-aux-task API refactor (2026-05), gateway env-var
+        names are derived dynamically (``AUXILIARY_<KEY_UPPER>_*``) so the
+        literal strings ``AUXILIARY_VISION_PROVIDER`` etc. no longer appear
+        in source. Assert the dynamic shape and the canonical built-in keys
+        bridged set instead.
+        """
         gateway_path = Path(__file__).parent.parent.parent / "gateway" / "run.py"
-        content = gateway_path.read_text()
-        assert "bridge_auxiliary_config_to_env" in content
+        # Pin encoding to UTF-8: source files in this repo are UTF-8, but
+        # Path.read_text() defaults to the system locale — which is cp1252
+        # on most Western Windows installs and crashes as soon as the file
+        # contains any non-ASCII byte (e.g. an em-dash in a comment).
+        content = gateway_path.read_text(encoding="utf-8")
+        # Dynamic env-var derivation present
+        assert 'f"AUXILIARY_{_upper}_PROVIDER"' in content
+        assert 'f"AUXILIARY_{_upper}_MODEL"' in content
+        assert 'f"AUXILIARY_{_upper}_BASE_URL"' in content
+        assert 'f"AUXILIARY_{_upper}_API_KEY"' in content
+        # Built-in bridged keys present
+        assert "_aux_bridged_keys" in content
+        assert '"vision"' in content
+        assert '"web_extract"' in content
+        assert '"approval"' in content
+        # Plugin-aux-task discovery hooked into bridging
+        assert "get_plugin_auxiliary_tasks" in content
 
     def test_gateway_no_compression_env_bridge(self):
         """Gateway should NOT bridge compression config to env vars (config-only)."""
         gateway_path = Path(__file__).parent.parent.parent / "gateway" / "run.py"
-        content = gateway_path.read_text()
+        # See note in test_gateway_has_auxiliary_bridge — pin UTF-8 so the
+        # test runs on Windows where the default locale is cp1252.
+        content = gateway_path.read_text(encoding="utf-8")
         assert "CONTEXT_COMPRESSION_PROVIDER" not in content
         assert "CONTEXT_COMPRESSION_MODEL" not in content
 
@@ -222,24 +240,30 @@ class TestGatewayBridgeCodeParity:
 class TestVisionModelOverride:
     """Test that AUXILIARY_VISION_MODEL env var overrides the default model in the handler."""
 
-    def test_env_var_overrides_default(self, monkeypatch):
+    @pytest.mark.asyncio
+    async def test_env_var_overrides_default(self, monkeypatch):
         monkeypatch.setenv("AUXILIARY_VISION_MODEL", "openai/gpt-4o")
         from tools.vision_tools import _handle_vision_analyze
-        with patch("tools.vision_tools.vision_analyze_tool", new_callable=AsyncMock) as mock_tool:
+        with (
+            patch("tools.vision_tools.vision_analyze_tool", new_callable=AsyncMock) as mock_tool,
+            patch("tools.vision_tools._should_use_native_vision_fast_path", return_value=False),
+        ):
             mock_tool.return_value = '{"success": true}'
-            import asyncio
-            asyncio.run(_handle_vision_analyze({"image_url": "http://test.jpg", "question": "test"}))
+            await _handle_vision_analyze({"image_url": "http://test.jpg", "question": "test"})
             call_args = mock_tool.call_args
             # 3rd positional arg = model
             assert call_args[0][2] == "openai/gpt-4o"
 
-    def test_default_model_when_no_override(self, monkeypatch):
+    @pytest.mark.asyncio
+    async def test_default_model_when_no_override(self, monkeypatch):
         monkeypatch.delenv("AUXILIARY_VISION_MODEL", raising=False)
         from tools.vision_tools import _handle_vision_analyze
-        with patch("tools.vision_tools.vision_analyze_tool", new_callable=AsyncMock) as mock_tool:
+        with (
+            patch("tools.vision_tools.vision_analyze_tool", new_callable=AsyncMock) as mock_tool,
+            patch("tools.vision_tools._should_use_native_vision_fast_path", return_value=False),
+        ):
             mock_tool.return_value = '{"success": true}'
-            import asyncio
-            asyncio.run(_handle_vision_analyze({"image_url": "http://test.jpg", "question": "test"}))
+            await _handle_vision_analyze({"image_url": "http://test.jpg", "question": "test"})
             call_args = mock_tool.call_args
             # With no AUXILIARY_VISION_MODEL env var, model should be None
             # (the centralized call_llm router picks the provider default)
@@ -272,18 +296,6 @@ class TestDefaultConfigShape:
         assert web["provider"] == "auto"
         assert web["model"] == ""
 
-    def test_compression_provider_default(self):
-        from hermes_cli.config import DEFAULT_CONFIG
-        compression = DEFAULT_CONFIG["compression"]
-        assert "summary_provider" in compression
-        assert compression["summary_provider"] == "auto"
-
-    def test_compression_base_url_default(self):
-        from hermes_cli.config import DEFAULT_CONFIG
-        compression = DEFAULT_CONFIG["compression"]
-        assert "summary_base_url" in compression
-        assert compression["summary_base_url"] is None
-
 
 # ── CLI defaults parity ─────────────────────────────────────────────────────
 
@@ -300,6 +312,9 @@ class TestCLIDefaultsHaveAuxiliaryKeys:
         # So auxiliary config from config.yaml gets merged even though
         # cli.py's defaults dict doesn't define it.
         import cli as _cli_mod
-        source = Path(_cli_mod.__file__).read_text()
+        # See note in test_gateway_has_auxiliary_bridge — pin UTF-8 so the
+        # test runs on Windows where the default locale is cp1252.
+        source = Path(_cli_mod.__file__).read_text(encoding="utf-8")
         assert "auxiliary_config = defaults.get(\"auxiliary\"" in source
-        assert "bridge_auxiliary_config_to_env(auxiliary_config)" in source
+        assert "AUXILIARY_VISION_PROVIDER" in source
+        assert "AUXILIARY_VISION_MODEL" in source

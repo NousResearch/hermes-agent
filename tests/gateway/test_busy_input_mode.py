@@ -23,6 +23,9 @@ class _StubAdapter(BasePlatformAdapter):
             ),
             platform,
         )
+        # Unit tests assert immediate pending visibility; skip the real
+        # queue-mode text debounce window.
+        self._busy_text_debounce_seconds = 0.0
 
     async def connect(self):
         return True
@@ -348,7 +351,10 @@ class TestGatewayRunnerBusyInputMode:
 
         assert result is None
         running_agent.interrupt.assert_called_once_with("stop current work")
-        assert runner._pending_messages[session_key] == "stop current work"
+        # Upstream delivers the interrupting text via agent._interrupt_message /
+        # adapter._pending_messages (Level 1). runner._pending_messages is no
+        # longer written on the Level 2 interrupt path (write-only dead store).
+        assert session_key not in runner._pending_messages
 
     @pytest.mark.asyncio
     async def test_interrupt_mode_denies_blocking_approval_before_followup(self, monkeypatch):

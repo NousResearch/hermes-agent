@@ -7,115 +7,65 @@ the provider's config schema. Writes config to config.yaml + .env.
 
 from __future__ import annotations
 
-import getpass
 import os
 import sys
+import shlex
 from pathlib import Path
 
 from hermes_constants import get_hermes_home
+from hermes_cli.secret_prompt import masked_secret_prompt
+
+_CANCELLED = -1
 
 
 # ---------------------------------------------------------------------------
 # Curses-based interactive picker (same pattern as hermes tools)
 # ---------------------------------------------------------------------------
 
-def _curses_select(title: str, items: list[tuple[str, str]], default: int = 0) -> int:
+def _curses_select(
+    title: str,
+    items: list[tuple[str, str]],
+    default: int = 0,
+    *,
+    cancel_returns: int | None = None,
+) -> int:
     """Interactive single-select with arrow keys.
 
     items: list of (label, description) tuples.
-    Returns selected index, or default on escape/quit.
+    Returns selected index, or cancel_returns/default on escape/quit.
     """
-    try:
-        import curses
-        result = [default]
+    from hermes_cli.curses_ui import curses_radiolist
 
-        def _menu(stdscr):
-            curses.curs_set(0)
-            if curses.has_colors():
-                curses.start_color()
-                curses.use_default_colors()
-                curses.init_pair(1, curses.COLOR_GREEN, -1)
-                curses.init_pair(2, curses.COLOR_YELLOW, -1)
-                curses.init_pair(3, curses.COLOR_CYAN, -1)
-            cursor = default
+    if cancel_returns is None:
+        cancel_returns = default
 
-            while True:
-                stdscr.clear()
-                max_y, max_x = stdscr.getmaxyx()
+    # Format (label, desc) tuples into display strings
+    display_items = [
+        f"{label} - {desc}" if desc else label
+        for label, desc in items
+    ]
+    result = curses_radiolist(title, display_items, selected=default, cancel_returns=cancel_returns)
+    _clear_interactive_transition()
+    return result
 
-                # Title
-                try:
-                    stdscr.addnstr(0, 0, title, max_x - 1,
-                                   curses.A_BOLD | (curses.color_pair(2) if curses.has_colors() else 0))
-                    stdscr.addnstr(1, 0, "  ↑↓ navigate  ⏎ select  q quit", max_x - 1,
-                                   curses.color_pair(3) if curses.has_colors() else curses.A_DIM)
-                except curses.error:
-                    pass
 
-                for i, (label, desc) in enumerate(items):
-                    y = i + 3
-                    if y >= max_y - 1:
-                        break
-                    arrow = "→" if i == cursor else " "
-                    line = f" {arrow}  {label}"
-                    if desc:
-                        line += f"  {desc}"
+def _print_cancelled_setup() -> None:
+    print("\n  Cancelled. No changes saved.\n")
 
-                    attr = curses.A_NORMAL
-                    if i == cursor:
-                        attr = curses.A_BOLD
-                        if curses.has_colors():
-                            attr |= curses.color_pair(1)
-                    try:
-                        stdscr.addnstr(y, 0, line[:max_x - 1], max_x - 1, attr)
-                    except curses.error:
-                        pass
 
-                stdscr.refresh()
-                key = stdscr.getch()
-
-                if key in (curses.KEY_UP, ord('k')):
-                    cursor = (cursor - 1) % len(items)
-                elif key in (curses.KEY_DOWN, ord('j')):
-                    cursor = (cursor + 1) % len(items)
-                elif key in (curses.KEY_ENTER, 10, 13):
-                    result[0] = cursor
-                    return
-                elif key in (27, ord('q')):
-                    return
-
-        curses.wrapper(_menu)
-        return result[0]
-
-    except Exception:
-        # Fallback: numbered input
-        print(f"\n  {title}\n")
-        for i, (label, desc) in enumerate(items):
-            marker = "→" if i == default else " "
-            d = f"  {desc}" if desc else ""
-            print(f"  {marker} {i + 1}. {label}{d}")
-        while True:
-            try:
-                val = input(f"\n  Select [1-{len(items)}] ({default + 1}): ")
-                if not val:
-                    return default
-                idx = int(val) - 1
-                if 0 <= idx < len(items):
-                    return idx
-            except (ValueError, EOFError):
-                return default
+def _clear_interactive_transition() -> None:
+    """Clear stale curses content before entering a follow-up setup screen."""
+    if not sys.stdout.isatty():
+        return
+    sys.stdout.write("\033[2J\033[H")
+    sys.stdout.flush()
 
 
 def _prompt(label: str, default: str | None = None, secret: bool = False) -> str:
     """Prompt for a value with optional default and secret masking."""
     suffix = f" [{default}]" if default else ""
     if secret:
-        sys.stdout.write(f"  {label}{suffix}: ")
-        sys.stdout.flush()
-        if sys.stdin.isatty():
-            val = getpass.getpass(prompt="")
-        else:
-            val = sys.stdin.readline().strip()
+        val = masked_secret_prompt(f"  {label}{suffix}: ")
     else:
         sys.stdout.write(f"  {label}{suffix}: ")
         sys.stdout.flush()
@@ -130,16 +80,18 @@ def _prompt(label: str, default: str | None = None, secret: bool = False) -> str
 def _install_dependencies(provider_name: str) -> None:
     """Install pip dependencies declared in plugin.yaml."""
     import subprocess
-    from pathlib import Path as _Path
+    from plugins.memory import find_provider_dir
 
-    plugin_dir = _Path(__file__).parent.parent / "plugins" / "memory" / provider_name
+    plugin_dir = find_provider_dir(provider_name)
+    if not plugin_dir:
+        return
     yaml_path = plugin_dir / "plugin.yaml"
     if not yaml_path.exists():
         return
 
     try:
         import yaml
-        with open(yaml_path) as f:
+        with open(yaml_path, encoding="utf-8") as f:
             meta = yaml.safe_load(f) or {}
     except Exception:
         return
@@ -170,30 +122,22 @@ def _install_dependencies(provider_name: str) -> None:
 
     print(f"\n  Installing dependencies: {', '.join(missing)}")
 
-    import shutil
-    uv_path = shutil.which("uv")
-    if not uv_path:
-        print(f"  ⚠ uv not found — cannot install dependencies")
-        print(f"  Install uv: curl -LsSf https://astral.sh/uv/install.sh | sh")
-        print(f"  Then re-run: hermes memory setup")
-        return
+    from hermes_cli.tools_config import _pip_install
 
+    manual_cmd = f"uv pip install {' '.join(missing)}"
     try:
-        subprocess.run(
-            [uv_path, "pip", "install", "--python", sys.executable, "--quiet"] + missing,
-            check=True, timeout=120,
-            capture_output=True,
-        )
-        print(f"  ✓ Installed {', '.join(missing)}")
-    except subprocess.CalledProcessError as e:
-        print(f"  ⚠ Failed to install {', '.join(missing)}")
-        stderr = (e.stderr or b"").decode()[:200]
-        if stderr:
-            print(f"    {stderr}")
-        print(f"  Run manually: uv pip install --python {sys.executable} {' '.join(missing)}")
+        result = _pip_install(["--quiet"] + missing, timeout=120)
+        if result.returncode == 0:
+            print(f"  ✓ Installed {', '.join(missing)}")
+        else:
+            print(f"  ⚠ Failed to install {', '.join(missing)}")
+            stderr = (result.stderr or "")[:200]
+            if stderr:
+                print(f"    {stderr}")
+            print(f"  Run manually: {manual_cmd}")
     except Exception as e:
         print(f"  ⚠ Install failed: {e}")
-        print(f"  Run manually: uv pip install --python {sys.executable} {' '.join(missing)}")
+        print(f"  Run manually: {manual_cmd}")
 
     # Also show external dependencies (non-pip) if any
     ext_deps = meta.get("external_dependencies", [])
@@ -204,7 +148,7 @@ def _install_dependencies(provider_name: str) -> None:
         if check_cmd:
             try:
                 subprocess.run(
-                    check_cmd, shell=True, capture_output=True, timeout=5
+                    shlex.split(check_cmd), check=True, capture_output=True, timeout=5
                 )
             except Exception:
                 if install_cmd:
@@ -270,6 +214,8 @@ def cmd_setup_provider(provider_name: str) -> None:
 
     name, _, provider = match
 
+    _clear_interactive_transition()
+
     _install_dependencies(name)
 
     config = load_config()
@@ -285,7 +231,7 @@ def cmd_setup_provider(provider_name: str) -> None:
     config["memory"]["provider"] = name
     save_config(config)
     print(f"\n  Memory provider: {name}")
-    print(f"  Activation saved to config.yaml\n")
+    print("  Activation saved to config.yaml\n")
 
 
 def cmd_setup(args) -> None:
@@ -306,14 +252,17 @@ def cmd_setup(args) -> None:
     items.append(("Built-in only", "— MEMORY.md / USER.md (default)"))
 
     builtin_idx = len(items) - 1
-    selected = _curses_select("Memory provider setup", items, default=builtin_idx)
+    selected = _curses_select("Memory provider setup", items, default=builtin_idx, cancel_returns=_CANCELLED)
+    if selected == _CANCELLED:
+        _print_cancelled_setup()
+        return
 
     config = load_config()
     if not isinstance(config.get("memory"), dict):
         config["memory"] = {}
 
     # Built-in only
-    if selected >= len(providers) or selected < 0:
+    if selected >= len(providers):
         config["memory"]["provider"] = ""
         save_config(config)
         print("\n  ✓ Memory provider: built-in only")
@@ -321,6 +270,8 @@ def cmd_setup(args) -> None:
         return
 
     name, _, provider = providers[selected]
+
+    _clear_interactive_transition()
 
     # Install pip dependencies if declared in plugin.yaml
     _install_dependencies(name)
@@ -374,7 +325,10 @@ def cmd_setup(args) -> None:
                 current_idx = 0
                 if current and current in choices:
                     current_idx = choices.index(current)
-                sel = _curses_select(f"  {desc}", choice_items, default=current_idx)
+                sel = _curses_select(f"  {desc}", choice_items, default=current_idx, cancel_returns=_CANCELLED)
+                if sel == _CANCELLED:
+                    _print_cancelled_setup()
+                    return
                 provider_config[key] = choices[sel]
             elif is_secret:
                 # Prompt for secret
@@ -396,6 +350,9 @@ def cmd_setup(args) -> None:
                 val = _prompt(desc, default=str(effective_default) if effective_default else None)
                 if val:
                     provider_config[key] = val
+                    # Also write to .env if this field has an env_var
+                    if env_var and env_var not in env_writes:
+                        env_writes[env_var] = val
 
     # Write activation key to config.yaml
     config["memory"]["provider"] = name
@@ -414,12 +371,12 @@ def cmd_setup(args) -> None:
         _write_env_vars(env_path, env_writes)
 
     print(f"\n  Memory provider: {name}")
-    print(f"  Activation saved to config.yaml")
+    print("  Activation saved to config.yaml")
     if provider_config:
-        print(f"  Provider config saved")
+        print("  Provider config saved")
     if env_writes:
-        print(f"  API keys saved to .env")
-    print(f"\n  Start a new session to activate.\n")
+        print("  API keys saved to .env")
+    print("\n  Start a new session to activate.\n")
 
 
 def _write_env_vars(env_path: Path, env_writes: dict) -> None:
@@ -428,7 +385,7 @@ def _write_env_vars(env_path: Path, env_writes: dict) -> None:
 
     existing_lines = []
     if env_path.exists():
-        existing_lines = env_path.read_text().splitlines()
+        existing_lines = env_path.read_text(encoding="utf-8").splitlines()
 
     updated_keys = set()
     new_lines = []
@@ -444,7 +401,13 @@ def _write_env_vars(env_path: Path, env_writes: dict) -> None:
         if key not in updated_keys:
             new_lines.append(f"{key}={val}")
 
-    env_path.write_text("\n".join(new_lines) + "\n")
+    env_path.write_text("\n".join(new_lines) + "\n", encoding="utf-8")
+    # Restrict permissions — .env holds API keys and tokens.
+    try:
+        import stat
+        env_path.chmod(stat.S_IRUSR | stat.S_IWUSR)  # 0600
+    except OSError:
+        pass  # Windows or read-only FS
 
 
 # ---------------------------------------------------------------------------
@@ -459,48 +422,59 @@ def cmd_status(args) -> None:
     mem_config = config.get("memory", {})
     provider_name = mem_config.get("provider", "")
 
-    print(f"\nMemory status\n" + "─" * 40)
-    print(f"  Built-in:  always active")
+    print("\nMemory status\n" + "─" * 40)
+    print("  Built-in:  always active")
     print(f"  Provider:  {provider_name or '(none — built-in only)'}")
+
+    providers = _get_available_providers()
+    provider = None
+    for pname, _, candidate in providers:
+        if pname == provider_name:
+            provider = candidate
+            break
 
     if provider_name:
         provider_config = mem_config.get(provider_name, {})
-        if provider_config:
+        display_config = provider_config
+        if provider and hasattr(provider, "get_status_config"):
+            try:
+                display_config = provider.get_status_config(provider_config)
+            except Exception as e:
+                display_config = dict(provider_config) if isinstance(provider_config, dict) else provider_config
+                if isinstance(display_config, dict):
+                    display_config["status_config_error"] = str(e)
+
+        if display_config:
             print(f"\n  {provider_name} config:")
-            for key, val in provider_config.items():
+            for key, val in display_config.items():
                 print(f"    {key}: {val}")
 
-        providers = _get_available_providers()
-        found = any(name == provider_name for name, _, _ in providers)
-        if found:
-            print(f"\n  Plugin:    installed ✓")
-            for pname, _, p in providers:
-                if pname == provider_name:
-                    if p.is_available():
-                        print(f"  Status:    available ✓")
-                    else:
-                        print(f"  Status:    not available ✗")
-                        schema = p.get_config_schema() if hasattr(p, "get_config_schema") else []
-                        secrets = [f for f in schema if f.get("secret")]
-                        if secrets:
-                            print(f"  Missing:")
-                            for s in secrets:
-                                env_var = s.get("env_var", "")
-                                url = s.get("url", "")
-                                is_set = bool(os.environ.get(env_var))
-                                mark = "✓" if is_set else "✗"
-                                line = f"    {mark} {env_var}"
-                                if url and not is_set:
-                                    line += f"  → {url}"
-                                print(line)
-                    break
+        if provider:
+            print("\n  Plugin:    installed ✓")
+            if provider.is_available():
+                print("  Status:    available ✓")
+            else:
+                print("  Status:    not available ✗")
+                schema = provider.get_config_schema() if hasattr(provider, "get_config_schema") else []
+                # Check all fields that have env_var (both secret and non-secret)
+                required_fields = [f for f in schema if f.get("env_var")]
+                if required_fields:
+                    print("  Missing:")
+                    for f in required_fields:
+                        env_var = f.get("env_var", "")
+                        url = f.get("url", "")
+                        is_set = bool(os.environ.get(env_var))
+                        mark = "✓" if is_set else "✗"
+                        line = f"    {mark} {env_var}"
+                        if url and not is_set:
+                            line += f"  → {url}"
+                        print(line)
         else:
-            print(f"\n  Plugin:    NOT installed ✗")
+            print("\n  Plugin:    NOT installed ✗")
             print(f"  Install the '{provider_name}' memory plugin to ~/.hermes/plugins/")
 
-    providers = _get_available_providers()
     if providers:
-        print(f"\n  Installed plugins:")
+        print("\n  Installed plugins:")
         for pname, desc, _ in providers:
             active = " ← active" if pname == provider_name else ""
             print(f"    • {pname}  ({desc}){active}")
@@ -516,7 +490,11 @@ def memory_command(args) -> None:
     """Route memory subcommands."""
     sub = getattr(args, "memory_command", None)
     if sub == "setup":
-        cmd_setup(args)
+        provider = getattr(args, "provider", None)
+        if provider:
+            cmd_setup_provider(provider)
+        else:
+            cmd_setup(args)
     elif sub == "status":
         cmd_status(args)
     else:

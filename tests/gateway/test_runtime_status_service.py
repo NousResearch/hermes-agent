@@ -5,6 +5,8 @@ from datetime import datetime
 from types import SimpleNamespace
 from unittest.mock import MagicMock
 
+import pytest
+
 from gateway.config import Platform
 from gateway.background_jobs import BackgroundJobStore
 from gateway.session import SessionEntry, SessionSource, build_session_key
@@ -112,7 +114,8 @@ def test_build_runtime_status_summary_collects_live_runtime_snapshot(tmp_path):
     assert summary["direct_shortcuts"]["recent_count"] == 1
 
 
-def test_render_status_command_renders_status_lines_with_foreground_and_background():
+@pytest.mark.asyncio
+async def test_render_status_command_renders_status_lines_with_foreground_and_background():
     from gateway.runtime_status_service import render_status_command
 
     source = _make_source()
@@ -207,7 +210,7 @@ def test_render_status_command_renders_status_lines_with_foreground_and_backgrou
 
     event = SimpleNamespace(source=source)
 
-    result = render_status_command(runner, event, pending_sentinel=sentinel)
+    result = await render_status_command(runner, event, pending_sentinel=sentinel)
 
     assert "Hermes Gateway Status" in result
     assert "状态页会话" in result

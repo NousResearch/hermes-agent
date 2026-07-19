@@ -765,7 +765,7 @@ async def test_recent_same_user_group_session_allows_follow_up_after_restart():
             config=None,
             list_sessions=MagicMock(
                 return_value=[
-                    SessionEntry(
+                    SimpleNamespace(
                         session_key=session_key,
                         session_id="sess-1",
                         created_at=datetime.now() - timedelta(minutes=5),
@@ -817,7 +817,7 @@ async def test_recent_project_group_session_allows_cross_user_follow_up_after_re
             config=None,
             list_sessions=MagicMock(
                 return_value=[
-                    SessionEntry(
+                    SimpleNamespace(
                         session_key=session_key,
                         session_id="sess-2",
                         created_at=datetime.now() - timedelta(minutes=5),
@@ -870,7 +870,7 @@ async def test_recent_group_session_without_visible_reply_does_not_restore_follo
             config=None,
             list_sessions=MagicMock(
                 return_value=[
-                    SessionEntry(
+                    SimpleNamespace(
                         session_key=session_key,
                         session_id="sess-3",
                         created_at=datetime.now() - timedelta(minutes=5),

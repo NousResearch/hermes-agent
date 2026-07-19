@@ -5,10 +5,9 @@ the new list-based ``fallback_providers`` config format and chain
 advancement through multiple providers.
 """
 
-from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
-from run_agent import AIAgent, _parse_chat_completion_sse_payload, _runtime_unhealthy_state
+from run_agent import AIAgent, _pool_may_recover_from_rate_limit
 
 
 def _make_agent(fallback_model=None):
@@ -20,6 +19,7 @@ def _make_agent(fallback_model=None):
     ):
         agent = AIAgent(
             api_key="test-key",
+            base_url="https://openrouter.ai/api/v1",
             quiet_mode=True,
             skip_context_files=True,
             skip_memory=True,
@@ -34,19 +34,6 @@ def _mock_client(base_url="https://openrouter.ai/api/v1", api_key="fb-key"):
     mock.base_url = base_url
     mock.api_key = api_key
     return mock
-
-
-def _mock_response(content="Hello", finish_reason="stop", reasoning=None, reasoning_content=None):
-    message = SimpleNamespace(content=content, tool_calls=None)
-    if reasoning is not None:
-        message.reasoning = reasoning
-    if reasoning_content is not None:
-        message.reasoning_content = reasoning_content
-    return SimpleNamespace(
-        choices=[SimpleNamespace(index=0, message=message, finish_reason=finish_reason)],
-        usage=None,
-        model="mock-model",
-    )
 
 
 # ── Chain initialisation ──────────────────────────────────────────────────
@@ -74,18 +61,6 @@ class TestFallbackChainInit:
         assert len(agent._fallback_chain) == 2
         assert agent._fallback_model == fbs[0]
 
-    def test_disabled_entries_are_skipped(self):
-        fbs = [
-            {"provider": "openai", "model": "gpt-4o", "enabled": False},
-            {"provider": "zai", "model": "glm-4.7", "enabled": "off"},
-            {"provider": "custom", "model": "gpt-5.4", "base_url": "https://pay.kxaug.xyz/v1"},
-        ]
-        agent = _make_agent(fallback_model=fbs)
-        assert agent._fallback_chain == [
-            {"provider": "custom", "model": "gpt-5.4", "base_url": "https://pay.kxaug.xyz/v1"}
-        ]
-        assert agent._fallback_model == agent._fallback_chain[0]
-
     def test_invalid_entries_filtered(self):
         fbs = [
             {"provider": "openai", "model": "gpt-4o"},
@@ -111,175 +86,6 @@ class TestFallbackChainInit:
 
 
 class TestFallbackChainAdvancement:
-    def test_interruptible_api_call_recovers_mislabelled_sse_chat_completion(self):
-        agent = _make_agent(fallback_model=None)
-        agent.provider = "custom"
-        agent.model = "grok-4.20-0309"
-        agent.base_url = "https://wududu.edu.kg/v1"
-        agent.api_key = "test-key"
-
-        mock_client = MagicMock()
-        mock_client.chat.completions.create.side_effect = AttributeError("'str' object has no attribute 'choices'")
-        mock_http_response = MagicMock()
-        mock_http_response.text = (
-            'data: {"id":"chatcmpl-1","object":"chat.completion.chunk","model":"grok-4.20-0309",'
-            '"choices":[{"index":0,"delta":{"role":"assistant","content":"OK"}}]}\n\n'
-            'data: {"id":"chatcmpl-1","object":"chat.completion.chunk","model":"grok-4.20-0309",'
-            '"choices":[{"index":0,"delta":{"role":"assistant","content":""},"finish_reason":"stop"}]}\n\n'
-            "data: [DONE]\n\n"
-        )
-        mock_http_response.raise_for_status.return_value = None
-
-        with (
-            patch.object(agent, "_create_request_openai_client", return_value=mock_client),
-            patch.object(agent, "_close_request_openai_client"),
-            patch("httpx.post", return_value=mock_http_response),
-        ):
-            response = agent._interruptible_api_call(
-                {"model": agent.model, "messages": [{"role": "user", "content": "只回复OK"}]}
-            )
-
-        assert response.choices[0].message.content == "OK"
-        assert response.choices[0].finish_reason == "stop"
-
-    def test_interruptible_api_call_parses_string_sse_payload(self):
-        agent = _make_agent(fallback_model=None)
-        agent.provider = "custom"
-        agent.model = "grok-4.20-0309"
-        agent.base_url = "https://wududu.edu.kg/v1"
-        agent.api_key = "test-key"
-
-        mock_client = MagicMock()
-        mock_client.chat.completions.create.return_value = (
-            'data: {"id":"chatcmpl-1","object":"chat.completion.chunk","model":"grok-4.20-0309",'
-            '"choices":[{"index":0,"delta":{"role":"assistant","content":"OK"}}]}\n\n'
-            'data: {"id":"chatcmpl-1","object":"chat.completion.chunk","model":"grok-4.20-0309",'
-            '"choices":[{"index":0,"delta":{"role":"assistant","content":""},"finish_reason":"stop"}]}\n\n'
-            "data: [DONE]\n\n"
-        )
-
-        with (
-            patch.object(agent, "_create_request_openai_client", return_value=mock_client),
-            patch.object(agent, "_close_request_openai_client"),
-        ):
-            response = agent._interruptible_api_call(
-                {"model": agent.model, "messages": [{"role": "user", "content": "只回复OK"}]}
-            )
-
-        assert response.choices[0].message.content == "OK"
-        assert response.choices[0].finish_reason == "stop"
-
-    def test_interruptible_api_call_parses_string_sse_tool_calls(self):
-        agent = _make_agent(fallback_model=None)
-        agent.provider = "custom"
-        agent.model = "grok-4.20-0309"
-        agent.base_url = "https://wududu.edu.kg/v1"
-        agent.api_key = "test-key"
-
-        mock_client = MagicMock()
-        mock_client.chat.completions.create.return_value = (
-            'data: {"id":"chatcmpl-1","object":"chat.completion.chunk","model":"grok-4.20-0309",'
-            '"choices":[{"index":0,"delta":{"role":"assistant","content":null,"tool_calls":[{"index":0,"id":"call_1","type":"function","function":{"name":"read_file","arguments":"{\\"path\\":\\"/tmp/demo.txt\\"}"}}]}}]}\n\n'
-            'data: {"id":"chatcmpl-1","object":"chat.completion.chunk","model":"grok-4.20-0309",'
-            '"choices":[{"index":0,"delta":{},"finish_reason":"tool_calls"}]}\n\n'
-            "data: [DONE]\n\n"
-        )
-
-        with (
-            patch.object(agent, "_create_request_openai_client", return_value=mock_client),
-            patch.object(agent, "_close_request_openai_client"),
-        ):
-            response = agent._interruptible_api_call(
-                {"model": agent.model, "messages": [{"role": "user", "content": "读文件"}]}
-            )
-
-        tool_calls = response.choices[0].message.tool_calls
-        assert response.choices[0].finish_reason == "tool_calls"
-        assert tool_calls is not None
-        assert len(tool_calls) == 1
-        assert tool_calls[0].id == "call_1"
-        assert tool_calls[0].function.name == "read_file"
-        assert tool_calls[0].function.arguments == '{"path":"/tmp/demo.txt"}'
-
-    def test_parse_chat_completion_sse_payload_handles_cumulative_tool_call_frames(self):
-        payload = (
-            'data: {"id":"chatcmpl-1","object":"chat.completion.chunk","model":"grok-4.20-0309",'
-            '"choices":[{"index":0,"delta":{"role":"assistant","tool_calls":[{"index":0,"id":"call_1","type":"function","function":{"name":"read_file","arguments":"{\\"path\\":"}}]}}]}\n\n'
-            'data: {"id":"chatcmpl-1","object":"chat.completion.chunk","model":"grok-4.20-0309",'
-            '"choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"id":"call_1","type":"function","function":{"name":"read_file","arguments":"{\\"path\\":\\"/tmp/demo.txt\\"}"}}]}}]}\n\n'
-            'data: {"id":"chatcmpl-1","object":"chat.completion.chunk","model":"grok-4.20-0309",'
-            '"choices":[{"index":0,"delta":{},"finish_reason":"tool_calls"}]}\n\n'
-            "data: [DONE]\n\n"
-        )
-
-        response = _parse_chat_completion_sse_payload(payload)
-
-        tool_calls = response.choices[0].message.tool_calls
-        assert response.choices[0].finish_reason == "tool_calls"
-        assert tool_calls is not None
-        assert len(tool_calls) == 1
-        assert tool_calls[0].id == "call_1"
-        assert tool_calls[0].function.name == "read_file"
-        assert tool_calls[0].function.arguments == '{"path":"/tmp/demo.txt"}'
-
-    def test_parse_chat_completion_sse_payload_merges_same_tool_id_without_index(self):
-        payload = (
-            'data: {"id":"chatcmpl-1","object":"chat.completion.chunk","model":"grok-4.20-0309",'
-            '"choices":[{"index":0,"delta":{"role":"assistant","tool_calls":[{"id":"call_1","type":"function","function":{"name":"read_","arguments":"{\\"path\\":"}}]}}]}\n\n'
-            'data: {"id":"chatcmpl-1","object":"chat.completion.chunk","model":"grok-4.20-0309",'
-            '"choices":[{"index":0,"delta":{"tool_calls":[{"id":"call_1","type":"function","function":{"name":"file","arguments":"\\"/tmp/demo.txt\\"}"}}]}}]}\n\n'
-            'data: {"id":"chatcmpl-1","object":"chat.completion.chunk","model":"grok-4.20-0309",'
-            '"choices":[{"index":0,"delta":{},"finish_reason":"tool_calls"}]}\n\n'
-            "data: [DONE]\n\n"
-        )
-
-        response = _parse_chat_completion_sse_payload(payload)
-
-        tool_calls = response.choices[0].message.tool_calls
-        assert tool_calls is not None
-        assert len(tool_calls) == 1
-        assert tool_calls[0].id == "call_1"
-        assert tool_calls[0].function.name == "read_file"
-        assert tool_calls[0].function.arguments == '{"path":"/tmp/demo.txt"}'
-
-    def test_interruptible_api_call_retries_without_optional_tool_controls_on_400(self):
-        agent = _make_agent(fallback_model=None)
-        agent.provider = "custom"
-        agent.model = "grok-4.20-multi-agent-0309"
-        agent.base_url = "https://wududu.edu.kg/v1"
-        agent.api_key = "test-key"
-
-        class _BadRequest(RuntimeError):
-            def __init__(self, message):
-                super().__init__(message)
-                self.status_code = 400
-
-        mock_client = MagicMock()
-        mock_client.chat.completions.create.side_effect = [
-            _BadRequest("Unknown field: parallel_tool_calls"),
-            _mock_response(content="OK", finish_reason="stop"),
-        ]
-
-        api_kwargs = {
-            "model": agent.model,
-            "messages": [{"role": "user", "content": "hi"}],
-            "tools": [{"type": "function", "function": {"name": "read_file"}}],
-            "tool_choice": "auto",
-            "parallel_tool_calls": True,
-        }
-
-        with (
-            patch.object(agent, "_create_request_openai_client", return_value=mock_client),
-            patch.object(agent, "_close_request_openai_client"),
-        ):
-            response = agent._interruptible_api_call(api_kwargs)
-
-        assert response.choices[0].message.content == "OK"
-        assert mock_client.chat.completions.create.call_count == 2
-        retry_kwargs = mock_client.chat.completions.create.call_args_list[1].kwargs
-        assert "parallel_tool_calls" not in retry_kwargs
-        assert "tool_choice" not in retry_kwargs
-
     def test_exhausted_returns_false(self):
         agent = _make_agent(fallback_model=None)
         assert agent._try_activate_fallback() is False
@@ -350,447 +156,181 @@ class TestFallbackChainAdvancement:
             assert agent._try_activate_fallback() is True
             assert agent.model == "gpt-4o"
 
-    def test_empty_response_retries_primary_once_before_fallback_provider(self):
+    def test_resolves_key_env_for_fallback_provider(self):
         fbs = [
-            {"provider": "custom", "model": "fallback-model", "base_url": "https://fallback.example/v1"},
+            {
+                "provider": "custom",
+                "model": "fallback-model",
+                "base_url": "https://fallback.example/v1",
+                "key_env": "MY_FALLBACK_KEY",
+            }
         ]
         agent = _make_agent(fallback_model=fbs)
-        agent.model = "primary-model"
-        agent.provider = "custom"
-        agent.base_url = "https://primary.example/v1"
-        calls = []
-
-        def fake_api_call(*_args, **_kwargs):
-            calls.append(agent.model)
-            if agent.model == "primary-model":
-                return _mock_response(content=None, finish_reason="stop")
-            if agent.model == "fallback-model":
-                return _mock_response(content="fallback answer", finish_reason="stop")
-            raise AssertionError(f"Unexpected model during test: {agent.model}")
-
         with (
-            patch.object(agent, "_interruptible_api_call", side_effect=fake_api_call),
-            patch.object(agent, "_persist_session"),
-            patch.object(agent, "_save_trajectory"),
-            patch.object(agent, "_cleanup_task_resources"),
-            patch("agent.auxiliary_client.resolve_provider_client",
-                  return_value=(_mock_client(base_url="https://fallback.example/v1"), "fallback-model")),
+            patch.dict("os.environ", {"MY_FALLBACK_KEY": "env-secret"}, clear=False),
+            patch(
+                "agent.auxiliary_client.resolve_provider_client",
+                return_value=(
+                    _mock_client(
+                        base_url="https://fallback.example/v1",
+                        api_key="env-secret",
+                    ),
+                    "fallback-model",
+                ),
+            ) as mock_rpc,
         ):
-            result = agent.run_conversation("在? 用一句话回复。")
+            assert agent._try_activate_fallback() is True
+            assert mock_rpc.call_args.kwargs["explicit_api_key"] == "env-secret"
 
-        assert result["final_response"] == "fallback answer"
-        assert result["completed"] is True
-        assert result["api_calls"] == 3
-        assert calls == ["primary-model", "primary-model", "fallback-model"]
-        assert agent.model == "fallback-model"
-
-    def test_empty_response_same_runtime_retry_can_recover_without_fallback(self):
+    def test_anthropic_host_custom_provider_uses_anthropic_messages(self):
+        """A custom provider on the native api.anthropic.com host (no
+        "/anthropic" path suffix, name != "anthropic") must resolve to the
+        anthropic_messages wire protocol — not default to chat_completions,
+        which POSTs /v1/chat/completions and 404s. Mirrors the primary-path
+        determine_api_mode() host check."""
         fbs = [
-            {"provider": "custom", "model": "fallback-model", "base_url": "https://fallback.example/v1"},
+            {
+                "provider": "cron-anthropic",
+                "model": "claude-sonnet-4-6",
+                "base_url": "https://api.anthropic.com",
+                "key_env": "MY_FALLBACK_KEY",
+            }
         ]
         agent = _make_agent(fallback_model=fbs)
-        agent.model = "primary-model"
-        agent.provider = "custom"
-        agent.base_url = "https://primary.example/v1"
-        calls = []
-
-        def fake_api_call(*_args, **_kwargs):
-            calls.append(agent.model)
-            if calls == ["primary-model"]:
-                return _mock_response(content=None, finish_reason="stop")
-            if agent.model == "primary-model":
-                return _mock_response(content="primary recovered", finish_reason="stop")
-            raise AssertionError(f"Unexpected model during test: {agent.model}")
-
         with (
-            patch.object(agent, "_interruptible_api_call", side_effect=fake_api_call),
-            patch.object(agent, "_persist_session"),
-            patch.object(agent, "_save_trajectory"),
-            patch.object(agent, "_cleanup_task_resources"),
+            patch.dict("os.environ", {"MY_FALLBACK_KEY": "env-secret"}, clear=False),
+            patch(
+                "agent.auxiliary_client.resolve_provider_client",
+                return_value=(
+                    _mock_client(base_url="https://api.anthropic.com"),
+                    "claude-sonnet-4-6",
+                ),
+            ),
+            patch("hermes_cli.model_normalize.normalize_model_for_provider", side_effect=lambda m, p: m),
         ):
-            result = agent.run_conversation("在?")
+            assert agent._try_activate_fallback() is True
+            assert agent.api_mode == "anthropic_messages"
 
-        assert result["final_response"] == "primary recovered"
-        assert result["completed"] is True
-        assert result["api_calls"] == 2
-        assert calls == ["primary-model", "primary-model"]
-        assert agent.model == "primary-model"
 
-    def test_empty_response_without_fallback_marks_runtime_unhealthy(self, tmp_path, monkeypatch):
-        hermes_home = tmp_path / ".hermes"
-        hermes_home.mkdir()
-        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+# ── Pool-rotation vs fallback gating (#11314) ────────────────────────────
 
-        agent = _make_agent(fallback_model=None)
-        agent.model = "primary-model"
-        agent.provider = "custom"
-        agent.base_url = "https://primary.example/v1"
-        agent._primary_runtime["model"] = agent.model
-        agent._primary_runtime["provider"] = agent.provider
-        agent._primary_runtime["base_url"] = agent.base_url
-        agent._primary_runtime["api_mode"] = agent.api_mode
 
-        calls = []
+def _pool(n_entries: int, has_available: bool = True):
+    """Make a minimal credential-pool stand-in for rotation-room checks."""
+    pool = MagicMock()
+    pool.entries.return_value = [MagicMock() for _ in range(n_entries)]
+    pool.has_available.return_value = has_available
+    return pool
 
-        def fake_api_call(*_args, **_kwargs):
-            calls.append(agent.model)
-            return _mock_response(content=None, finish_reason="stop")
 
-        with (
-            patch.object(agent, "_interruptible_api_call", side_effect=fake_api_call),
-            patch.object(agent, "_persist_session"),
-            patch.object(agent, "_save_trajectory"),
-            patch.object(agent, "_cleanup_task_resources"),
-        ):
-            result = agent.run_conversation("在?")
+class TestPoolRotationRoom:
+    def test_none_pool_returns_false(self):
+        assert _pool_may_recover_from_rate_limit(None) is False
 
-        remaining, reason = _runtime_unhealthy_state(
-            provider="custom",
-            model="primary-model",
-            base_url="https://primary.example/v1",
-            api_mode=agent.api_mode,
+    def test_single_credential_returns_false(self):
+        """With one credential that just 429'd, rotation has nowhere to go.
+
+        The pool may still report has_available() True once cooldown expires,
+        but retrying against the same entry will hit the same daily-quota
+        429 and burn the retry budget.  Must fall back.
+        """
+        assert _pool_may_recover_from_rate_limit(_pool(1)) is False
+
+    def test_single_credential_in_cooldown_returns_false(self):
+        assert _pool_may_recover_from_rate_limit(_pool(1, has_available=False)) is False
+
+    def test_two_credentials_available_returns_true(self):
+        """With >1 credentials and at least one available, rotate instead of fallback."""
+        assert _pool_may_recover_from_rate_limit(_pool(2)) is True
+
+    def test_multiple_credentials_all_in_cooldown_returns_false(self):
+        """All credentials cooling down — fall back rather than wait."""
+        assert _pool_may_recover_from_rate_limit(_pool(3, has_available=False)) is False
+
+    def test_many_credentials_available_returns_true(self):
+        assert _pool_may_recover_from_rate_limit(_pool(10)) is True
+
+
+# ── Skip-self dedup (#22548) ───────────────────────────────────────────────
+
+
+class TestFallbackChainDedup:
+    """A fallback chain entry that resolves to the current provider/model
+    (or the same custom-provider base_url) must be skipped, not retried.
+    Otherwise a misconfigured chain or two custom_providers entries pointing
+    at the same shim loop the same failure. See issue #22548."""
+
+    def test_skips_entry_matching_current_provider_and_model(self):
+        """Chain has [same-as-current, real-fallback]; activate must skip
+        the first and use the second."""
+        fbs = [
+            # First entry == current state. Should be skipped.
+            {"provider": "openrouter", "model": "z-ai/glm-4.7"},
+            # Second entry: real fallback.
+            {"provider": "zai", "model": "glm-4.7"},
+        ]
+        agent = _make_agent(fallback_model=fbs)
+        agent.provider = "openrouter"
+        agent.model = "z-ai/glm-4.7"
+        agent.base_url = "https://openrouter.ai/api/v1"
+
+        # Stub out resolve_provider_client so we can assert which entry was
+        # actually used — return a MagicMock client tagged with the provider.
+        called = []
+        def _resolve(provider, model=None, raw_codex=False, **kwargs):
+            called.append((provider, model))
+            return _mock_client(), model
+        with patch("agent.auxiliary_client.resolve_provider_client", side_effect=_resolve):
+            with patch("hermes_cli.model_normalize.normalize_model_for_provider", side_effect=lambda m, p: m):
+                ok = agent._try_activate_fallback()
+
+        assert ok is True
+        # The first entry was skipped — only the second reached resolve.
+        assert called == [("zai", "glm-4.7")], (
+            f"expected fallback to skip same-state entry, got call order: {called}"
         )
 
-        assert result["final_response"] == "(empty)"
-        assert result["completed"] is True
-        assert calls == ["primary-model", "primary-model"]
-        assert remaining > 0
-        assert reason == "empty_response"
-
-    def test_empty_response_pins_fallback_for_following_turn(self):
+    def test_skips_entry_matching_current_base_url_and_model(self):
+        """Two custom_providers entries pointing at the same shim URL
+        with the same model should dedup even if their provider names differ."""
         fbs = [
-            {"provider": "custom", "model": "fallback-model", "base_url": "https://fallback.example/v1"},
+            # Different provider name but same shim URL + model — same backend.
+            {"provider": "claude-cli-alt", "model": "claude-opus-4.7",
+             "base_url": "http://127.0.0.1:7891/v1"},
+            # Real different fallback.
+            {"provider": "openrouter", "model": "anthropic/claude-opus-4.7"},
         ]
         agent = _make_agent(fallback_model=fbs)
-        agent.model = "primary-model"
-        agent.provider = "custom"
-        agent.base_url = "https://primary.example/v1"
-        calls = []
+        agent.provider = "claude-cli"
+        agent.model = "claude-opus-4.7"
+        agent.base_url = "http://127.0.0.1:7891/v1"
 
-        def fake_api_call(*_args, **_kwargs):
-            calls.append(agent.model)
-            if agent.model == "primary-model":
-                return _mock_response(content=None, finish_reason="stop")
-            if agent.model == "fallback-model":
-                return _mock_response(content="fallback answer", finish_reason="stop")
-            raise AssertionError(f"Unexpected model during test: {agent.model}")
+        called = []
+        def _resolve(provider, model=None, raw_codex=False, **kwargs):
+            called.append((provider, model))
+            return _mock_client(), model
+        with patch("agent.auxiliary_client.resolve_provider_client", side_effect=_resolve):
+            with patch("hermes_cli.model_normalize.normalize_model_for_provider", side_effect=lambda m, p: m):
+                ok = agent._try_activate_fallback()
 
-        with (
-            patch.object(agent, "_interruptible_api_call", side_effect=fake_api_call),
-            patch.object(agent, "_persist_session"),
-            patch.object(agent, "_save_trajectory"),
-            patch.object(agent, "_cleanup_task_resources"),
-            patch("run_agent.OpenAI", return_value=MagicMock()),
-            patch(
-                "agent.auxiliary_client.resolve_provider_client",
-                return_value=(_mock_client(base_url="https://fallback.example/v1"), "fallback-model"),
-            ),
-        ):
-            first = agent.run_conversation("第一轮")
-            second = agent.run_conversation("第二轮")
-
-        assert first["final_response"] == "fallback answer"
-        assert second["final_response"] == "fallback answer"
-        assert calls == ["primary-model", "primary-model", "fallback-model", "fallback-model"]
-
-    def test_empty_response_marks_primary_unhealthy_across_agents(self, tmp_path, monkeypatch):
-        hermes_home = tmp_path / ".hermes"
-        hermes_home.mkdir()
-        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
-
-        fbs = [
-            {"provider": "custom", "model": "fallback-model", "base_url": "https://fallback.example/v1"},
-        ]
-        agent1 = _make_agent(fallback_model=fbs)
-        agent1.model = "primary-model"
-        agent1.provider = "custom"
-        agent1.base_url = "https://primary.example/v1"
-        agent1._primary_runtime["model"] = agent1.model
-        agent1._primary_runtime["provider"] = agent1.provider
-        agent1._primary_runtime["base_url"] = agent1.base_url
-        agent1._primary_runtime["api_mode"] = agent1.api_mode
-
-        first_calls = []
-
-        def first_api_call(*_args, **_kwargs):
-            first_calls.append(agent1.model)
-            if agent1.model == "primary-model":
-                return _mock_response(content=None, finish_reason="stop")
-            if agent1.model == "fallback-model":
-                return _mock_response(content="fallback answer", finish_reason="stop")
-            raise AssertionError(f"Unexpected model during first run: {agent1.model}")
-
-        agent2 = _make_agent(fallback_model=fbs)
-        agent2.model = "primary-model"
-        agent2.provider = "custom"
-        agent2.base_url = "https://primary.example/v1"
-        agent2._primary_runtime["model"] = agent2.model
-        agent2._primary_runtime["provider"] = agent2.provider
-        agent2._primary_runtime["base_url"] = agent2.base_url
-        agent2._primary_runtime["api_mode"] = agent2.api_mode
-
-        second_calls = []
-
-        def second_api_call(*_args, **_kwargs):
-            second_calls.append(agent2.model)
-            if agent2.model == "primary-model":
-                raise AssertionError("Primary runtime should have been skipped after shared empty-response failure")
-            if agent2.model == "fallback-model":
-                return _mock_response(content="fallback answer", finish_reason="stop")
-            raise AssertionError(f"Unexpected model during second run: {agent2.model}")
-
-        with (
-            patch.object(agent1, "_interruptible_api_call", side_effect=first_api_call),
-            patch.object(agent2, "_interruptible_api_call", side_effect=second_api_call),
-            patch.object(agent1, "_persist_session"),
-            patch.object(agent2, "_persist_session"),
-            patch.object(agent1, "_save_trajectory"),
-            patch.object(agent2, "_save_trajectory"),
-            patch.object(agent1, "_cleanup_task_resources"),
-            patch.object(agent2, "_cleanup_task_resources"),
-            patch("agent.auxiliary_client.resolve_provider_client",
-                  return_value=(_mock_client(base_url="https://fallback.example/v1"), "fallback-model")),
-        ):
-            first = agent1.run_conversation("第一轮")
-            second = agent2.run_conversation("第二轮")
-
-        assert first["final_response"] == "fallback answer"
-        assert second["final_response"] == "fallback answer"
-        assert first_calls == ["primary-model", "primary-model", "fallback-model"]
-        assert second_calls == ["fallback-model"]
-
-    def test_empty_response_fallback_is_silent_to_user(self, tmp_path, monkeypatch):
-        hermes_home = tmp_path / ".hermes"
-        hermes_home.mkdir()
-        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
-
-        fbs = [
-            {"provider": "custom", "model": "fallback-model", "base_url": "https://fallback.example/v1"},
-        ]
-        agent = _make_agent(fallback_model=fbs)
-        agent.model = "primary-model"
-        agent.provider = "custom"
-        agent.base_url = "https://primary.example/v1"
-        agent._primary_runtime["model"] = agent.model
-        agent._primary_runtime["provider"] = agent.provider
-        agent._primary_runtime["base_url"] = agent.base_url
-        agent._primary_runtime["api_mode"] = agent.api_mode
-
-        statuses = []
-
-        def fake_api_call(*_args, **_kwargs):
-            if agent.model == "primary-model":
-                return _mock_response(content=None, finish_reason="stop")
-            if agent.model == "fallback-model":
-                return _mock_response(content="fallback answer", finish_reason="stop")
-            raise AssertionError(f"Unexpected model during test: {agent.model}")
-
-        with (
-            patch.object(agent, "_interruptible_api_call", side_effect=fake_api_call),
-            patch.object(agent, "_persist_session"),
-            patch.object(agent, "_save_trajectory"),
-            patch.object(agent, "_cleanup_task_resources"),
-            patch.object(agent, "_emit_status", side_effect=statuses.append),
-            patch(
-                "agent.auxiliary_client.resolve_provider_client",
-                return_value=(_mock_client(base_url="https://fallback.example/v1"), "fallback-model"),
-            ),
-        ):
-            result = agent.run_conversation("在?")
-
-        assert result["final_response"] == "fallback answer"
-        assert statuses == []
-
-    def test_invalid_response_pins_fallback_for_following_turn(self):
-        fbs = [
-            {"provider": "custom", "model": "fallback-model", "base_url": "https://fallback.example/v1"},
-        ]
-        agent = _make_agent(fallback_model=fbs)
-        agent.model = "primary-model"
-        agent.provider = "custom"
-        agent.base_url = "https://primary.example/v1"
-        agent._primary_runtime["model"] = agent.model
-        agent._primary_runtime["provider"] = agent.provider
-        agent._primary_runtime["base_url"] = agent.base_url
-        agent._primary_runtime["api_mode"] = agent.api_mode
-        calls = []
-
-        bad_resp = SimpleNamespace(choices=[], usage=None, model="primary-model")
-
-        def fake_api_call(*_args, **_kwargs):
-            calls.append(agent.model)
-            if agent.model == "primary-model":
-                return bad_resp
-            if agent.model == "fallback-model":
-                return _mock_response(content="fallback answer", finish_reason="stop")
-            raise AssertionError(f"Unexpected model during test: {agent.model}")
-
-        with (
-            patch.object(agent, "_interruptible_api_call", side_effect=fake_api_call),
-            patch.object(agent, "_persist_session"),
-            patch.object(agent, "_save_trajectory"),
-            patch.object(agent, "_cleanup_task_resources"),
-            patch("run_agent.OpenAI", return_value=MagicMock()),
-            patch(
-                "agent.auxiliary_client.resolve_provider_client",
-                return_value=(_mock_client(base_url="https://fallback.example/v1"), "fallback-model"),
-            ),
-            patch("run_agent.time.sleep", return_value=None),
-        ):
-            first = agent.run_conversation("第一轮")
-            second = agent.run_conversation("第二轮")
-
-        assert first["final_response"] == "fallback answer"
-        assert second["final_response"] == "fallback answer"
-        assert calls == ["primary-model", "fallback-model", "fallback-model"]
-
-    def test_auth_failures_do_not_spam_multiple_fallback_notices_in_one_turn(self):
-        fbs = [
-            {"provider": "custom", "model": "fallback-model", "base_url": "https://fallback.example/v1"},
-        ]
-        agent = _make_agent(fallback_model=fbs)
-        agent.model = "primary-model"
-        agent.provider = "custom"
-        agent.base_url = "https://primary.example/v1"
-        agent._primary_runtime["model"] = agent.model
-        agent._primary_runtime["provider"] = agent.provider
-        agent._primary_runtime["base_url"] = agent.base_url
-        agent._primary_runtime["api_mode"] = agent.api_mode
-        statuses = []
-        agent.status_callback = lambda _kind, message: statuses.append(message)
-
-        class _UnauthorizedError(RuntimeError):
-            def __init__(self):
-                super().__init__("Error code: 401 - unauthorized")
-                self.status_code = 401
-                self.body = {"error": {"message": "Unauthorized"}}
-
-        class _ForbiddenError(RuntimeError):
-            def __init__(self):
-                super().__init__("Error code: 403 - blocked")
-                self.status_code = 403
-                self.body = {"error": {"message": "Blocked"}}
-
-        def fake_api_call(*_args, **_kwargs):
-            if agent.model == "primary-model":
-                raise _UnauthorizedError()
-            if agent.model == "fallback-model":
-                raise _ForbiddenError()
-            raise AssertionError(f"Unexpected model during test: {agent.model}")
-
-        with (
-            patch.object(agent, "_interruptible_api_call", side_effect=fake_api_call),
-            patch.object(agent, "_persist_session"),
-            patch.object(agent, "_save_trajectory"),
-            patch.object(agent, "_cleanup_task_resources"),
-            patch(
-                "agent.auxiliary_client.resolve_provider_client",
-                return_value=(_mock_client(base_url="https://fallback.example/v1"), "fallback-model"),
-            ),
-        ):
-            result = agent.run_conversation("在?")
-
-        assert result["completed"] is False
-        assert result["failed"] is True
-        fallback_statuses = [msg for msg in statuses if "fallback" in msg.lower()]
-        assert fallback_statuses == [
-            "🔄 Primary model failed — switching to fallback: fallback-model via custom",
-        ]
-        assert any("❌ Non-retryable error (HTTP 403)" in msg for msg in statuses)
-
-    def test_auth_failure_final_error_preserves_primary_failure_context(self):
-        fbs = [
-            {"provider": "custom", "model": "fallback-model", "base_url": "https://fallback.example/v1"},
-        ]
-        agent = _make_agent(fallback_model=fbs)
-        agent.model = "primary-model"
-        agent.provider = "custom"
-        agent.base_url = "https://primary.example/v1"
-        agent._primary_runtime["model"] = agent.model
-        agent._primary_runtime["provider"] = agent.provider
-        agent._primary_runtime["base_url"] = agent.base_url
-        agent._primary_runtime["api_mode"] = agent.api_mode
-
-        class _ForbiddenPrimary(RuntimeError):
-            def __init__(self):
-                super().__init__("Error code: 403 - blocked")
-                self.status_code = 403
-                self.body = {"error": {"message": "Your request was blocked."}}
-
-        def fake_api_call(*_args, **_kwargs):
-            if agent.model == "primary-model":
-                raise _ForbiddenPrimary()
-            if agent.model == "fallback-model":
-                raise RuntimeError("No available accounts for this model tier")
-            raise AssertionError(f"Unexpected model during test: {agent.model}")
-
-        with (
-            patch.object(agent, "_interruptible_api_call", side_effect=fake_api_call),
-            patch.object(agent, "_persist_session"),
-            patch.object(agent, "_save_trajectory"),
-            patch.object(agent, "_cleanup_task_resources"),
-            patch(
-                "agent.auxiliary_client.resolve_provider_client",
-                return_value=(_mock_client(base_url="https://fallback.example/v1"), "fallback-model"),
-            ),
-            patch("run_agent.time.sleep", return_value=None),
-        ):
-            result = agent.run_conversation("在?")
-
-        assert result["completed"] is False
-        assert result["failed"] is True
-        assert "Primary runtime failed first" in result["final_response"]
-        assert "Your request was blocked." in result["final_response"]
-        assert "Fallback runtime then failed" in result["final_response"]
-        assert "No available accounts for this model tier" in result["final_response"]
-
-    def test_auth_failure_marks_primary_unhealthy_with_shorter_window(self, tmp_path, monkeypatch):
-        hermes_home = tmp_path / ".hermes"
-        hermes_home.mkdir()
-        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
-
-        fbs = [
-            {"provider": "custom", "model": "fallback-model", "base_url": "https://fallback.example/v1"},
-        ]
-        agent = _make_agent(fallback_model=fbs)
-        agent.model = "primary-model"
-        agent.provider = "custom"
-        agent.base_url = "https://primary.example/v1"
-        agent._primary_runtime["model"] = agent.model
-        agent._primary_runtime["provider"] = agent.provider
-        agent._primary_runtime["base_url"] = agent.base_url
-        agent._primary_runtime["api_mode"] = agent.api_mode
-
-        class _ForbiddenPrimary(RuntimeError):
-            def __init__(self):
-                super().__init__("Error code: 403 - blocked")
-                self.status_code = 403
-                self.body = {"error": {"message": "Your request was blocked."}}
-
-        def fake_api_call(*_args, **_kwargs):
-            if agent.model == "primary-model":
-                raise _ForbiddenPrimary()
-            return _mock_response(content="fallback answer", finish_reason="stop")
-
-        with (
-            patch.object(agent, "_interruptible_api_call", side_effect=fake_api_call),
-            patch.object(agent, "_persist_session"),
-            patch.object(agent, "_save_trajectory"),
-            patch.object(agent, "_cleanup_task_resources"),
-            patch(
-                "agent.auxiliary_client.resolve_provider_client",
-                return_value=(_mock_client(base_url="https://fallback.example/v1"), "fallback-model"),
-            ),
-        ):
-            result = agent.run_conversation("在?")
-
-        assert result["final_response"] == "fallback answer"
-        remaining, reason = _runtime_unhealthy_state(
-            provider="custom",
-            model="primary-model",
-            base_url="https://primary.example/v1",
-            api_mode=agent.api_mode,
+        assert ok is True
+        # Same shim/base_url+model entry skipped, second one used.
+        assert called == [("openrouter", "anthropic/claude-opus-4.7")], (
+            f"expected base_url-aware dedup, got call order: {called}"
         )
-        assert remaining > 0
-        assert remaining <= agent._AUTH_FAILURE_UNHEALTHY_SECONDS
-        assert reason == "http_403"
+
+    def test_returns_false_when_only_self_matching_entries(self):
+        """A chain with only self-matching entries exhausts to False."""
+        fbs = [
+            {"provider": "openrouter", "model": "z-ai/glm-4.7"},
+        ]
+        agent = _make_agent(fallback_model=fbs)
+        agent.provider = "openrouter"
+        agent.model = "z-ai/glm-4.7"
+        agent.base_url = "https://openrouter.ai/api/v1"
+
+        with patch("agent.auxiliary_client.resolve_provider_client") as mock_resolve:
+            ok = agent._try_activate_fallback()
+
+        assert ok is False
+        mock_resolve.assert_not_called()

@@ -1,6 +1,8 @@
 from gateway.config import GatewayConfig, Platform
-from gateway.shared_group_history_runtime_service import prepare_history_for_agent
-from gateway.run import _simplify_shared_group_history_for_agent
+from gateway.shared_group_history_runtime_service import (
+    prepare_history_for_agent,
+    simplify_shared_group_history_for_agent,
+)
 from gateway.session import SessionContext, SessionSource, build_session_context_prompt
 
 
@@ -46,7 +48,7 @@ def test_simplify_shared_group_history_drops_internal_artifacts_and_tool_traces(
         },
     ]
 
-    cleaned = _simplify_shared_group_history_for_agent(history)
+    cleaned = simplify_shared_group_history_for_agent(history)
 
     assert cleaned == [
         {"role": "user", "content": "[QQ项目群合并消息，共 1 条]\n發發發: 前一个正常问题"},

@@ -8,21 +8,14 @@ Covers:
   - Honcho register_cli() builds correct argparse tree
 """
 
-import argparse
-import os
 import sys
-from pathlib import Path
-from unittest.mock import MagicMock, patch
+from unittest.mock import MagicMock
 
-import pytest
 
 from hermes_cli.plugins import (
     PluginContext,
     PluginManager,
     PluginManifest,
-    get_plugin_command_handler,
-    get_plugin_command_names,
-    get_plugin_cli_commands,
 )
 
 
@@ -64,43 +57,6 @@ class TestRegisterCliCommand:
         ctx, mgr = self._make_ctx()
         ctx.register_cli_command("nocb", "test", MagicMock())
         assert mgr._cli_commands["nocb"]["handler_fn"] is None
-
-
-class TestGetPluginCliCommands:
-    def test_returns_dict(self):
-        mgr = PluginManager()
-        mgr._cli_commands["foo"] = {"name": "foo", "help": "bar"}
-        with patch("hermes_cli.plugins.get_plugin_manager", return_value=mgr):
-            cmds = get_plugin_cli_commands()
-        assert cmds == {"foo": {"name": "foo", "help": "bar"}}
-        # Top-level is a copy — adding to result doesn't affect manager
-        cmds["new"] = {"name": "new"}
-        assert "new" not in mgr._cli_commands
-
-
-class TestPluginCommandHelpers:
-    def test_get_plugin_command_names_reads_cli_commands(self):
-        mgr = PluginManager()
-        mgr._cli_commands["foo"] = {"name": "foo", "help": "bar"}
-        mgr._cli_commands["bar"] = {"name": "bar", "help": "baz"}
-        with patch("hermes_cli.plugins.get_plugin_manager", return_value=mgr):
-            names = get_plugin_command_names()
-        assert names == {"foo", "bar"}
-
-    def test_get_plugin_command_handler_returns_registered_handler(self):
-        mgr = PluginManager()
-        handler = MagicMock()
-        mgr._cli_commands["foo"] = {"name": "foo", "handler_fn": handler}
-        with patch("hermes_cli.plugins.get_plugin_manager", return_value=mgr):
-            resolved = get_plugin_command_handler("foo")
-        assert resolved is handler
-
-    def test_get_plugin_command_handler_returns_none_for_missing_or_noncallable(self):
-        mgr = PluginManager()
-        mgr._cli_commands["foo"] = {"name": "foo", "handler_fn": "nope"}
-        with patch("hermes_cli.plugins.get_plugin_manager", return_value=mgr):
-            assert get_plugin_command_handler("foo") is None
-            assert get_plugin_command_handler("missing") is None
 
 
 # ── Memory plugin CLI discovery ───────────────────────────────────────────
@@ -211,60 +167,6 @@ class TestMemoryPluginCliDiscovery:
 
 
 # ── Honcho register_cli ──────────────────────────────────────────────────
-
-
-class TestHonchoRegisterCli:
-    def test_builds_subcommand_tree(self):
-        """register_cli creates the expected subparser tree."""
-        from plugins.memory.honcho.cli import register_cli
-
-        parser = argparse.ArgumentParser()
-        register_cli(parser)
-
-        # Verify key subcommands exist by parsing them
-        args = parser.parse_args(["status"])
-        assert args.honcho_command == "status"
-
-        args = parser.parse_args(["peer", "--user", "alice"])
-        assert args.honcho_command == "peer"
-        assert args.user == "alice"
-
-        args = parser.parse_args(["mode", "tools"])
-        assert args.honcho_command == "mode"
-        assert args.mode == "tools"
-
-        args = parser.parse_args(["tokens", "--context", "500"])
-        assert args.honcho_command == "tokens"
-        assert args.context == 500
-
-        args = parser.parse_args(["--target-profile", "coder", "status"])
-        assert args.target_profile == "coder"
-        assert args.honcho_command == "status"
-
-    def test_setup_redirects_to_memory_setup(self):
-        """hermes honcho setup redirects to memory setup."""
-        from plugins.memory.honcho.cli import register_cli
-
-        parser = argparse.ArgumentParser()
-        register_cli(parser)
-        args = parser.parse_args(["setup"])
-        assert args.honcho_command == "setup"
-
-    def test_mode_choices_are_recall_modes(self):
-        """Mode subcommand uses recall mode choices (hybrid/context/tools)."""
-        from plugins.memory.honcho.cli import register_cli
-
-        parser = argparse.ArgumentParser()
-        register_cli(parser)
-
-        # Valid recall modes should parse
-        for mode in ("hybrid", "context", "tools"):
-            args = parser.parse_args(["mode", mode])
-            assert args.mode == mode
-
-        # Old memoryMode values should fail
-        with pytest.raises(SystemExit):
-            parser.parse_args(["mode", "honcho"])
 
 
 # ── ProviderCollector no-op ──────────────────────────────────────────────

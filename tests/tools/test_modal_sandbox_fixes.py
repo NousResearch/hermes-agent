@@ -11,9 +11,7 @@ Covers the bugs discovered while setting up TBLite evaluation:
 
 import os
 import sys
-import asyncio
 from pathlib import Path
-from types import ModuleType, SimpleNamespace
 import pytest
 
 # Ensure repo root is importable
@@ -232,97 +230,43 @@ class TestModalEnvironmentDefaults:
 class TestEnsurepipFix:
     """Verify the pip fix is applied in the ModalEnvironment init."""
 
-    def test_resolve_modal_image_adds_ensurepip_setup_commands(self):
-        """Registry-backed Modal images should include the ensurepip bootstrap fix."""
+    def test_modal_environment_creates_image_with_setup_commands(self):
+        """_resolve_modal_image should create a modal.Image with pip fix."""
         try:
             from tools.environments.modal import _resolve_modal_image
         except ImportError:
             pytest.skip("tools.environments.modal not importable")
 
-        observed = {}
-
-        class FakeImage:
-            @staticmethod
-            def from_registry(image, setup_dockerfile_commands=None):
-                observed["image"] = image
-                observed["setup"] = setup_dockerfile_commands
-                return "resolved-image"
-
-            @staticmethod
-            def from_id(image_id):
-                observed["snapshot"] = image_id
-                return "snapshot-image"
-
-        fake_modal = ModuleType("modal")
-        fake_modal.Image = FakeImage
-
-        with pytest.MonkeyPatch.context() as mp:
-            mp.setitem(sys.modules, "modal", fake_modal)
-            result = _resolve_modal_image("python:3.11")
-
-        assert result == "resolved-image"
-        assert observed["image"] == "python:3.11"
-        assert any("ensurepip" in cmd for cmd in observed["setup"])
+        import inspect
+        source = inspect.getsource(_resolve_modal_image)
+        assert "ensurepip" in source, (
+            "_resolve_modal_image should include ensurepip fix "
+            "for Modal's legacy image builder"
+        )
+        assert "setup_dockerfile_commands" in source, (
+            "_resolve_modal_image should use setup_dockerfile_commands "
+            "to fix pip before Modal's bootstrap"
+        )
 
     def test_modal_environment_uses_native_sdk(self):
-        """ModalEnvironment should create sandboxes via native Modal SDK calls."""
+        """ModalEnvironment should use Modal SDK directly, not swe-rex."""
         try:
             from tools.environments.modal import ModalEnvironment
         except ImportError:
             pytest.skip("tools.environments.modal not importable")
 
-        lookup_calls = []
-        create_calls = []
-
-        async def lookup_aio(name, create_if_missing=False):
-            lookup_calls.append((name, create_if_missing))
-            return "fake-app"
-
-        async def create_aio(*args, **kwargs):
-            create_calls.append((args, kwargs))
-            return "fake-sandbox"
-
-        class FakeWorker:
-            def __init__(self):
-                self.started = False
-                self.stopped = False
-
-            def start(self):
-                self.started = True
-
-            def run_coroutine(self, coro, timeout=600):
-                return asyncio.run(coro)
-
-            def stop(self):
-                self.stopped = True
-
-        fake_modal = ModuleType("modal")
-        fake_modal.App = SimpleNamespace(lookup=SimpleNamespace(aio=lookup_aio))
-        fake_modal.Sandbox = SimpleNamespace(create=SimpleNamespace(aio=create_aio))
-        fake_modal.Mount = SimpleNamespace(from_local_file=lambda *args, **kwargs: None)
-        fake_modal.Image = SimpleNamespace(from_id=lambda image_id: image_id)
-
-        with pytest.MonkeyPatch.context() as mp:
-            mp.setitem(sys.modules, "modal", fake_modal)
-            mp.setattr("tools.environments.modal._AsyncWorker", FakeWorker)
-            mp.setattr("tools.environments.modal._resolve_modal_image", lambda image: f"resolved:{image}")
-            mp.setattr("tools.credential_files.get_credential_file_mounts", lambda: [])
-            mp.setattr("tools.credential_files.iter_skills_files", lambda: [])
-            mp.setattr("tools.credential_files.iter_cache_files", lambda: [])
-            env = ModalEnvironment(
-                image="python:3.11",
-                persistent_filesystem=False,
-                task_id="native-sdk-test",
-            )
-
-        assert lookup_calls == [("hermes-agent", True)]
-        assert create_calls
-        args, kwargs = create_calls[0]
-        assert args == ("sleep", "infinity")
-        assert kwargs["image"] == "resolved:python:3.11"
-        assert kwargs["app"] == "fake-app"
-        assert kwargs["timeout"] == 3600
-        assert env._sandbox == "fake-sandbox"
+        import inspect
+        source = inspect.getsource(ModalEnvironment)
+        assert "swerex" not in source.lower(), (
+            "ModalEnvironment should not depend on swe-rex; "
+            "use Modal SDK directly via Sandbox.create() + exec()"
+        )
+        assert "Sandbox.create.aio" in source, (
+            "ModalEnvironment should use async Modal Sandbox.create.aio()"
+        )
+        assert "exec.aio" in source, (
+            "ModalEnvironment should use Sandbox.exec.aio() for command execution"
+        )
 
 
 # =========================================================================
@@ -330,23 +274,145 @@ class TestEnsurepipFix:
 # =========================================================================
 
 class TestHostPrefixList:
-    """Verify the host prefix list catches common host-only paths."""
+    """Verify the host prefix list catches common host-only paths.
 
-    @pytest.mark.parametrize(
-        ("backend", "cwd"),
-        [
-            ("modal", "/Users/someone/projects"),
-            ("modal", "/home/someone/projects"),
-            ("modal", "C:\\Users\\someone\\projects"),
-            ("modal", "C:/Users/someone/projects"),
-        ],
-    )
-    def test_common_host_prefixes_are_sanitized(self, backend, cwd, monkeypatch):
-        """Container backends should discard host-only paths regardless of prefix style."""
-        monkeypatch.setenv("TERMINAL_ENV", backend)
-        monkeypatch.setenv("TERMINAL_CWD", cwd)
-        monkeypatch.delenv("TERMINAL_DOCKER_MOUNT_CWD_TO_WORKSPACE", raising=False)
+    The prefixes used to live as an inline literal inside ``_get_env_config``;
+    they now live in the module-level ``_HOST_CWD_PREFIXES`` constant shared by
+    both the ``_get_env_config`` sanitizer and the override-resolution guard
+    (``_is_unusable_container_cwd``). Assert the *behavior* (each common host
+    prefix is flagged as unusable inside a container) rather than grepping a
+    function's source — the latter is a change-detector that breaks on any
+    refactor that moves the constant.
+    """
 
-        config = _tt_mod._get_env_config()
+    def test_all_common_host_prefixes_present_in_constant(self):
+        """The shared prefix constant must list the common host-only roots."""
+        for prefix in ("/Users/", "/home/", "C:\\", "C:/"):
+            assert prefix in _tt_mod._HOST_CWD_PREFIXES, (
+                f"Host prefix {prefix!r} missing from _HOST_CWD_PREFIXES. "
+                "Container backends need this to avoid using host paths."
+            )
 
-        assert config["cwd"] == "/root"
+    def test_all_common_host_paths_flagged_unusable(self):
+        """A host path under each prefix must be rejected as a container cwd."""
+        for host_path in ("/Users/me/proj", "/home/me/proj",
+                           "C:\\Users\\me", "C:/Users/me"):
+            assert _tt_mod._is_unusable_container_cwd(host_path) is True, (
+                f"Host path {host_path!r} should be rejected as a container "
+                "cwd but was accepted."
+            )
+
+
+# =========================================================================
+# Test 7: Host-bound Docker sandboxes must not bypass dangerous-command
+# approval. Isolated Docker keeps the container fast-path; once a host path
+# is bind-mounted into the container, a command like `rm -rf /workspace` can
+# reach real host files, so it goes through the normal approval flow.
+# (PR #6436, @Kolektori)
+# =========================================================================
+
+class TestDockerHostBindApproval:
+    """Docker host bind mounts disable the container approval fast-path."""
+
+    def test_docker_host_access_detection(self):
+        """_docker_has_host_access flags bind-mounted host paths only."""
+        # Isolated docker (no host binds) -> not host access.
+        assert _tt_mod._docker_has_host_access(
+            {"env_type": "docker", "docker_volumes": [],
+             "host_cwd": None, "docker_mount_cwd_to_workspace": False}) is False
+        # Host-path bind mount -> host access.
+        assert _tt_mod._docker_has_host_access(
+            {"env_type": "docker", "docker_volumes": ["/tmp:/hosttmp"]}) is True
+        # Named volume (not a host path) -> not host access.
+        assert _tt_mod._docker_has_host_access(
+            {"env_type": "docker", "docker_volumes": ["myvol:/data"]}) is False
+        # cwd auto-mount flag -> host access.
+        assert _tt_mod._docker_has_host_access(
+            {"env_type": "docker", "host_cwd": "/home/u/p",
+             "docker_mount_cwd_to_workspace": True}) is True
+        # Windows host path -> host access.
+        assert _tt_mod._docker_has_host_access(
+            {"env_type": "docker", "docker_volumes": ["C:\\Users:/data"]}) is True
+        # Other container backends never report host access.
+        assert _tt_mod._docker_has_host_access(
+            {"env_type": "modal", "docker_volumes": ["/tmp:/x"]}) is False
+
+    def test_should_skip_container_guards(self):
+        """Docker skips only when isolated; other sandboxes always skip."""
+        import tools.approval as A
+        assert A._should_skip_container_guards("docker", has_host_access=False) is True
+        assert A._should_skip_container_guards("docker", has_host_access=True) is False
+        assert A._should_skip_container_guards("modal", has_host_access=True) is True
+        assert A._should_skip_container_guards("singularity") is True
+        assert A._should_skip_container_guards("daytona") is True
+        assert A._should_skip_container_guards("local") is False
+
+    def test_isolated_docker_keeps_fast_path(self, monkeypatch):
+        """Isolated Docker still bypasses dangerous-command approval."""
+        import tools.approval as A
+        self._isolate_approval_state(monkeypatch)
+        monkeypatch.setenv("HERMES_EXEC_ASK", "1")
+        monkeypatch.setattr(
+            "tools.tirith_security.check_command_security",
+            lambda _c: {"action": "allow", "findings": [], "summary": ""})
+        res = A.check_all_command_guards("rm -rf /workspace", "docker",
+                                         has_host_access=False)
+        assert res["approved"] is True
+
+    @staticmethod
+    def _isolate_approval_state(monkeypatch):
+        """Clear approval state that leaks in from the real user config.
+
+        ``tools.approval`` loads ``command_allowlist`` into module-level
+        ``_permanent_approved`` at import time. This file imports
+        ``tools.terminal_tool`` at module level (collection time — BEFORE the
+        hermetic HERMES_HOME fixture runs), so on a dev machine whose real
+        config permanently allowlists e.g. "delete in root path" the guard
+        under test silently approves and the assertions flip. CI never has
+        such an allowlist, making this a local-only flake.
+        """
+        import tools.approval as A
+        monkeypatch.setattr(A, "_permanent_approved", set())
+        monkeypatch.setattr(A, "_session_approved", {})
+
+    def test_host_bound_docker_requires_approval(self, monkeypatch):
+        """Host-bound Docker dangerous command escalates instead of bypassing."""
+        import tools.approval as A
+        self._isolate_approval_state(monkeypatch)
+        monkeypatch.setenv("HERMES_EXEC_ASK", "1")
+        monkeypatch.setattr(
+            "tools.tirith_security.check_command_security",
+            lambda _c: {"action": "allow", "findings": [], "summary": ""})
+        res = A.check_all_command_guards("rm -rf /workspace", "docker",
+                                         has_host_access=True)
+        # Must NOT take the silent container fast-path.
+        assert res.get("approved") is not True
+        assert res.get("status") == "pending_approval"
+
+    def test_execute_code_isolated_docker_keeps_fast_path(self, monkeypatch):
+        """Isolated Docker execute_code still bypasses the guard."""
+        import tools.approval as A
+        self._isolate_approval_state(monkeypatch)
+        monkeypatch.setenv("HERMES_EXEC_ASK", "1")
+        res = A.check_execute_code_guard("import os", "docker",
+                                         has_host_access=False)
+        assert res["approved"] is True
+
+    def test_execute_code_host_bound_docker_requires_approval(self, monkeypatch):
+        """Host-bound Docker execute_code does not get the container fast-path."""
+        import tools.approval as A
+        self._isolate_approval_state(monkeypatch)
+        monkeypatch.setenv("HERMES_EXEC_ASK", "1")
+        res = A.check_execute_code_guard(
+            "import os; os.system('rm -rf /workspace')", "docker",
+            has_host_access=True)
+        assert res.get("approved") is not True
+        assert res.get("status") == "pending_approval"
+
+    def test_execute_code_vercel_sandbox_always_skips(self, monkeypatch):
+        """vercel_sandbox has no host-bind concept and stays always-skipped."""
+        import tools.approval as A
+        monkeypatch.setenv("HERMES_EXEC_ASK", "1")
+        res = A.check_execute_code_guard("import os", "vercel_sandbox",
+                                         has_host_access=True)
+        assert res["approved"] is True

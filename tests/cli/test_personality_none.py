@@ -1,6 +1,6 @@
 """Tests for /personality none — clearing personality overlay."""
 import pytest
-from unittest.mock import MagicMock, patch, mock_open
+from unittest.mock import MagicMock, patch
 import yaml
 
 
@@ -143,6 +143,18 @@ class TestGatewayPersonalityNone:
             result = await runner._handle_personality_command(event)
 
         assert "none" in result.lower()
+
+    @pytest.mark.asyncio
+    async def test_empty_personality_list_uses_profile_display_path(self, tmp_path):
+        runner = self._make_runner(personalities={})
+        (tmp_path / "config.yaml").write_text(yaml.dump({"agent": {"personalities": {}}}))
+
+        with patch("gateway.run._hermes_home", tmp_path), \
+             patch("hermes_constants.display_hermes_home", return_value="~/.hermes/profiles/coder"):
+            event = self._make_event("")
+            result = await runner._handle_personality_command(event)
+
+        assert result == "No personalities configured in `~/.hermes/profiles/coder/config.yaml`"
 
 
 class TestPersonalityDictFormat:

@@ -8,7 +8,6 @@ deduplication, text cleanup, and extension routing.
 Based on PR #1636 by sudoingX (salvaged + hardened).
 """
 
-import os
 from unittest.mock import patch
 
 import pytest
@@ -49,13 +48,6 @@ def _extract(content: str, existing_files: set[str] | None = None):
 
 class TestBasicDetection:
 
-    def test_document_extensions_are_not_auto_detected_from_bare_paths(self):
-        paths, cleaned = _extract(
-            "整理好的表在 /root/projects/fafafa-page/vsop87d/VSOP87D_Moon_DingShuo.pas 发你"
-        )
-        assert paths == []
-        assert "/root/projects/fafafa-page/vsop87d/VSOP87D_Moon_DingShuo.pas" in cleaned
-
     def test_absolute_path_image(self):
         paths, cleaned = _extract("Here is the screenshot /root/screenshots/game.png enjoy")
         assert paths == ["/root/screenshots/game.png"]
@@ -80,6 +72,58 @@ class TestBasicDetection:
             paths, _ = _extract(text)
             assert len(paths) == 1, f"Failed for {ext}"
             assert paths[0] == f"/tmp/pic{ext}"
+
+    def test_document_extensions(self):
+        """Documents (PDF, Word, plain text, etc.) ship as file uploads."""
+        for ext in (".pdf", ".docx", ".doc", ".odt", ".rtf", ".txt", ".md"):
+            text = f"Report at /tmp/report{ext} attached"
+            paths, _ = _extract(text)
+            assert len(paths) == 1, f"Failed for {ext}"
+            assert paths[0] == f"/tmp/report{ext}"
+
+    def test_spreadsheet_and_data_extensions(self):
+        """Spreadsheets and structured data ship as file uploads."""
+        for ext in (".xlsx", ".xls", ".csv", ".tsv", ".json", ".xml", ".yaml", ".yml"):
+            text = f"Data at /tmp/data{ext} ready"
+            paths, _ = _extract(text)
+            assert len(paths) == 1, f"Failed for {ext}"
+            assert paths[0] == f"/tmp/data{ext}"
+
+    def test_presentation_extensions(self):
+        """Presentations ship as file uploads."""
+        for ext in (".pptx", ".ppt", ".odp"):
+            text = f"Deck at /tmp/deck{ext} done"
+            paths, _ = _extract(text)
+            assert len(paths) == 1, f"Failed for {ext}"
+            assert paths[0] == f"/tmp/deck{ext}"
+
+    def test_audio_extensions(self):
+        """Audio files are detected and routed by the gateway dispatch."""
+        for ext in (".mp3", ".wav", ".ogg", ".m4a", ".flac"):
+            text = f"Audio at /tmp/sound{ext} ready"
+            paths, _ = _extract(text)
+            assert len(paths) == 1, f"Failed for {ext}"
+            assert paths[0] == f"/tmp/sound{ext}"
+
+    def test_archive_extensions(self):
+        """Archives ship as file uploads."""
+        for ext in (".zip", ".tar", ".gz", ".tgz", ".bz2", ".7z"):
+            text = f"Archive at /tmp/bundle{ext} ready"
+            paths, _ = _extract(text)
+            assert len(paths) == 1, f"Failed for {ext}"
+            assert paths[0] == f"/tmp/bundle{ext}"
+
+    def test_html_extension(self):
+        paths, _ = _extract("Open /tmp/report.html in browser")
+        assert paths == ["/tmp/report.html"]
+
+    def test_chart_pdf_path(self):
+        """Common case: agent renders a chart via matplotlib and references the file."""
+        text = "Here is the comparison chart: /tmp/q3-sales.pdf"
+        paths, cleaned = _extract(text)
+        assert paths == ["/tmp/q3-sales.pdf"]
+        assert "/tmp/q3-sales.pdf" not in cleaned
+        assert "comparison chart" in cleaned
 
     def test_case_insensitive_extension(self):
         paths, _ = _extract("See /tmp/PHOTO.PNG and /tmp/vid.MP4 now")
@@ -275,9 +319,16 @@ class TestEdgeCases:
         assert paths == []
         assert cleaned == ""
 
-    def test_unrecognized_extensions_do_not_match(self):
-        """Unknown extensions should not be matched."""
-        paths, _ = _extract("See /tmp/data.foobar and /tmp/script.unknown")
+    def test_no_media_extensions(self):
+        """Extensions outside the supported list should not be matched.
+
+        ``.py`` and ``.log`` are intentionally excluded because (a) most
+        source files are quoted in inline code or fenced blocks anyway,
+        and (b) auto-shipping arbitrary source files would be a
+        surprise.  Documents (.pdf, .docx), data (.csv, .json),
+        archives (.zip), and presentations (.pptx) ARE matched.
+        """
+        paths, _ = _extract("See /tmp/script.py and /tmp/server.log here")
         assert paths == []
 
     def test_path_with_spaces_not_matched(self):
@@ -285,9 +336,35 @@ class TestEdgeCases:
         paths, _ = _extract("File at /tmp/my file.png here")
         assert paths == []
 
-    def test_windows_path_not_matched(self):
-        """Windows-style paths should not match."""
-        paths, _ = _extract("See C:\\Users\\test\\image.png")
+    @pytest.mark.parametrize(
+        "content,expected",
+        [
+            # Backslash separators (native Windows style)
+            ("See C:\\Users\\test\\image.png here", "C:\\Users\\test\\image.png"),
+            # Forward slashes with drive letter (common in cross-platform code)
+            ("See C:/Users/test/image.png here", "C:/Users/test/image.png"),
+            # Non-C: drive
+            ("Video at D:/data/clip.mp4 ready", "D:/data/clip.mp4"),
+            # Lowercase drive letter
+            ("Path e:/audio/track.mp3 done", "e:/audio/track.mp3"),
+        ],
+    )
+    def test_windows_drive_letter_paths_matched(self, content, expected):
+        """Windows drive-letter paths (C:/..., C:\\...) must be detected (#34632).
+
+        Prior behavior anchored on (?:~/|/) only, which silently dropped
+        Windows absolute paths so the agent's bare-path references were
+        sent as text instead of native uploads.
+        """
+        paths, cleaned = _extract(content)
+        assert paths == [expected]
+        assert expected not in cleaned
+
+    def test_relative_windows_path_not_matched(self):
+        """A bare Windows-style filename without a drive letter must still
+        not match (e.g. ``foo\\bar.png`` is treated as relative, like its
+        Unix sibling ``foo/bar.png``)."""
+        paths, _ = _extract("File at foo\\bar.png here")
         assert paths == []
 
     def test_relative_path_not_matched(self):

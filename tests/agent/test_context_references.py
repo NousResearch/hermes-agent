@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import subprocess
 from pathlib import Path
+from unittest.mock import patch
 
 import pytest
 
@@ -83,6 +84,24 @@ def test_parse_references_strips_trailing_punctuation():
     assert refs[1].target == "https://example.com/docs"
 
 
+def test_parse_quoted_references_with_spaces_and_preserve_unquoted_ranges():
+    from agent.context_references import parse_context_references
+
+    refs = parse_context_references(
+        'review @file:"C:\\Users\\Simba\\My Project\\main.py":7-9 '
+        'and @folder:"docs and specs" plus @file:src/main.py:1-2'
+    )
+
+    assert [ref.kind for ref in refs] == ["file", "folder", "file"]
+    assert refs[0].target == r"C:\Users\Simba\My Project\main.py"
+    assert refs[0].line_start == 7
+    assert refs[0].line_end == 9
+    assert refs[1].target == "docs and specs"
+    assert refs[2].target == "src/main.py"
+    assert refs[2].line_start == 1
+    assert refs[2].line_end == 2
+
+
 def test_expand_file_range_and_folder_listing(sample_repo: Path):
     from agent.context_references import preprocess_context_references
 
@@ -106,6 +125,55 @@ def test_expand_file_range_and_folder_listing(sample_repo: Path):
     assert not result.warnings
 
 
+def test_folder_listing_falls_back_when_rg_is_blocked(sample_repo: Path):
+    from agent.context_references import preprocess_context_references
+
+    real_run = subprocess.run
+
+    def blocked_rg(*args, **kwargs):
+        cmd = args[0] if args else kwargs.get("args")
+        if isinstance(cmd, list) and cmd and cmd[0] == "rg":
+            raise PermissionError("rg blocked by policy")
+        return real_run(*args, **kwargs)
+
+    with patch("agent.context_references.subprocess.run", side_effect=blocked_rg):
+        result = preprocess_context_references(
+            "Review @folder:src/",
+            cwd=sample_repo,
+            context_length=100_000,
+        )
+
+    assert result.expanded
+    assert "src/" in result.message
+    assert "main.py" in result.message
+    assert "helper.py" in result.message
+    assert not result.warnings
+
+
+def test_expand_quoted_file_reference_with_spaces(tmp_path: Path):
+    from agent.context_references import preprocess_context_references
+
+    workspace = tmp_path / "repo"
+    folder = workspace / "docs and specs"
+    folder.mkdir(parents=True)
+    file_path = folder / "release notes.txt"
+    file_path.write_text("line 1\nline 2\nline 3\n", encoding="utf-8")
+
+    result = preprocess_context_references(
+        'Review @file:"docs and specs/release notes.txt":2-3',
+        cwd=workspace,
+        context_length=100_000,
+    )
+
+    assert result.expanded
+    assert result.message.startswith("Review")
+    assert "line 1" not in result.message
+    assert "line 2" in result.message
+    assert "line 3" in result.message
+    assert "release notes.txt" in result.message
+    assert not result.warnings
+
+
 def test_expand_git_diff_staged_and_log(sample_repo: Path):
     from agent.context_references import preprocess_context_references
 
@@ -124,19 +192,38 @@ def test_expand_git_diff_staged_and_log(sample_repo: Path):
     assert "VALUE = 2" in result.message
 
 
-def test_binary_and_missing_files_become_warnings(sample_repo: Path):
+def test_missing_file_becomes_warning(sample_repo: Path):
     from agent.context_references import preprocess_context_references
 
     result = preprocess_context_references(
-        "Check @file:blob.bin and @file:nope.txt",
+        "Check @file:nope.txt",
         cwd=sample_repo,
         context_length=100_000,
     )
 
     assert result.expanded
-    assert len(result.warnings) == 2
-    assert "binary" in result.message.lower()
+    assert len(result.warnings) == 1
     assert "not found" in result.message.lower()
+
+
+def test_binary_file_yields_actionable_block_not_a_dead_warning(sample_repo: Path):
+    from agent.context_references import preprocess_context_references
+
+    result = preprocess_context_references(
+        "Check @file:blob.bin",
+        cwd=sample_repo,
+        context_length=100_000,
+    )
+
+    assert result.expanded
+    # The whole point: a binary attachment must NOT degrade into a discouraging
+    # warning that makes the model give up — it gets an actionable content block.
+    assert not result.warnings
+    assert "blob.bin" in result.message
+    assert "binary" in result.message.lower()
+    assert "not supported" not in result.message.lower()
+    # And it must point the agent at the file so it can act on it with tools.
+    assert str(sample_repo / "blob.bin") in result.message
 
 
 def test_soft_budget_warns_and_hard_budget_refuses(sample_repo: Path):
@@ -266,3 +353,95 @@ async def test_blocks_sensitive_home_and_hermes_paths(tmp_path: Path, monkeypatc
     assert "API_KEY=super-secret" not in result.message
     assert "PRIVATE-KEY" not in result.message
     assert any("sensitive credential" in warning for warning in result.warnings)
+
+
+@pytest.mark.asyncio
+async def test_blocks_canonical_read_denylist_credential_stores(tmp_path: Path, monkeypatch):
+    """@file expansion must honour the canonical read deny-list.
+
+    The narrow in-module list historically missed the real credential stores
+    (provider keys, OAuth tokens, MCP tokens, project-local .env). Because the
+    gateway routes untrusted remote message text through reference expansion,
+    a chat peer could otherwise attach `@file:~/.hermes/auth.json` and read the
+    operator's keys into context. These must all be refused, with their secret
+    bodies kept out of the expanded message.
+    """
+    from agent.context_references import preprocess_context_references_async
+
+    monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / ".hermes"))
+
+    hermes_home = tmp_path / ".hermes"
+    (hermes_home).mkdir(parents=True)
+
+    auth_json = hermes_home / "auth.json"
+    auth_json.write_text('{"openai": "sk-AUTHJSON-SECRET"}\n', encoding="utf-8")
+
+    oauth = hermes_home / ".anthropic_oauth.json"
+    oauth.write_text('{"access_token": "OAUTH-SECRET"}\n', encoding="utf-8")
+
+    mcp_token = hermes_home / "mcp-tokens" / "github.json"
+    mcp_token.parent.mkdir(parents=True)
+    mcp_token.write_text('{"token": "MCP-TOKEN-SECRET"}\n', encoding="utf-8")
+
+    project_env = tmp_path / "project" / ".env"
+    project_env.parent.mkdir(parents=True)
+    project_env.write_text("DB_PASSWORD=ENV-SECRET\n", encoding="utf-8")
+
+    result = await preprocess_context_references_async(
+        "inspect @file:.hermes/auth.json and @file:.hermes/.anthropic_oauth.json "
+        "and @file:.hermes/mcp-tokens/github.json and @file:project/.env",
+        cwd=tmp_path,
+        allowed_root=tmp_path,
+        context_length=100_000,
+    )
+
+    assert result.expanded
+    for secret in (
+        "sk-AUTHJSON-SECRET",
+        "OAUTH-SECRET",
+        "MCP-TOKEN-SECRET",
+        "ENV-SECRET",
+    ):
+        assert secret not in result.message
+    assert sum("sensitive credential" in warning for warning in result.warnings) == 4
+
+
+@pytest.mark.asyncio
+async def test_canonical_guard_fails_closed_when_lookup_raises(tmp_path: Path, monkeypatch):
+    """If the canonical read guard raises, the reference must fail CLOSED.
+
+    The guard exists specifically to cover credential stores the narrow local
+    list misses (auth.json, ...). If get_read_block_error ever raised, silently
+    falling through to the local list would re-open that exact hole — and the
+    gateway feeds untrusted remote text here, so a chat peer could then attach
+    auth.json. The reference must be refused and the secret kept out of the
+    expanded message.
+    """
+    from agent.context_references import preprocess_context_references_async
+
+    monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / ".hermes"))
+
+    hermes_home = tmp_path / ".hermes"
+    hermes_home.mkdir(parents=True)
+    auth_json = hermes_home / "auth.json"
+    auth_json.write_text('{"openai": "sk-AUTHJSON-SECRET"}\n', encoding="utf-8")
+
+    def _boom(_path):
+        raise RuntimeError("guard resolution failed")
+
+    monkeypatch.setattr("agent.file_safety.get_read_block_error", _boom)
+
+    result = await preprocess_context_references_async(
+        "inspect @file:.hermes/auth.json",
+        cwd=tmp_path,
+        allowed_root=tmp_path,
+        context_length=100_000,
+    )
+
+    assert "sk-AUTHJSON-SECRET" not in result.message
+    assert any(
+        "credential deny-list" in warning or "sensitive credential" in warning
+        for warning in result.warnings
+    )

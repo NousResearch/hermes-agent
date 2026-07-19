@@ -82,7 +82,8 @@ async def test_no_reply_marker_suppresses_outbound_message_but_still_persists_se
 
     result = await runner._handle_message(event)
 
-    assert result is None
+    # Upstream uses empty string (not None) as the stable "no delivery" signal.
+    assert not result
     assert runner.session_store.append_to_transcript.called
     runner._send_voice_reply.assert_not_awaited()
     runner._deliver_media_from_response.assert_not_awaited()
@@ -289,7 +290,8 @@ async def test_empty_placeholder_suppresses_outbound_message_but_still_persists_
 
     result = await runner._handle_message(event)
 
-    assert result is None
+    # Upstream uses empty string (not None) as the stable "no delivery" signal.
+    assert not result
     assert runner.session_store.append_to_transcript.called
     runner._send_voice_reply.assert_not_awaited()
     runner._deliver_media_from_response.assert_not_awaited()
@@ -609,7 +611,8 @@ async def test_no_reply_marker_in_qq_group_from_admin_without_alias_stays_silent
 
     result = await runner._handle_message(event)
 
-    assert result is None
+    # Upstream uses empty string (not None) as the stable "no delivery" signal.
+    assert not result
 
 
 @pytest.mark.asyncio

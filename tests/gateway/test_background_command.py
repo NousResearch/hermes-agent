@@ -4,14 +4,16 @@ Tests the _handle_background_command handler (run a prompt in a separate
 background session) across gateway messenger platforms.
 """
 
-import os
-from unittest.mock import MagicMock, patch
+import asyncio
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from gateway.config import GatewayConfig, Platform, PlatformConfig
+from gateway.config import Platform
 from gateway.platforms.base import MessageEvent
 from gateway.session import SessionSource
+
+
 def _make_event(text="/background", platform=Platform.TELEGRAM,
                 user_id="12345", chat_id="67890"):
     """Build a MessageEvent for testing."""
@@ -28,26 +30,14 @@ def _make_runner():
     """Create a bare GatewayRunner with minimal mocks."""
     from gateway.run import GatewayRunner
     runner = object.__new__(GatewayRunner)
-    runner.config = GatewayConfig(
-        platforms={
-            Platform.TELEGRAM: PlatformConfig(enabled=True, token="***", extra={}),
-        }
-    )
     runner.adapters = {}
     runner._voice_mode = {}
     runner._session_db = None
     runner._reasoning_config = None
     runner._provider_routing = {}
     runner._fallback_model = None
-    runner._effective_model = None
-    runner._effective_provider = None
-    runner._session_model_overrides = {}
     runner._running_agents = {}
     runner._background_tasks = set()
-    runner._load_reasoning_config = lambda: None
-    runner._launch_background_worker = MagicMock(
-        return_value={"launcher_type": "subprocess", "launcher_pid": 4321}
-    )
 
     mock_store = MagicMock()
     runner.session_store = mock_store
@@ -93,25 +83,61 @@ class TestHandleBackgroundCommand:
 
     @pytest.mark.asyncio
     async def test_valid_prompt_starts_task(self):
-        """Running /background with a prompt persists a job and launches a worker."""
+        """Running /background with a prompt returns confirmation and starts task."""
         runner = _make_runner()
-        runner._launch_background_worker = MagicMock(
-            return_value={"launcher_type": "subprocess", "launcher_pid": 4321}
-        )
 
-        with patch("gateway.run.asyncio.create_task", side_effect=AssertionError("legacy in-process background path should not run")):
+        # Patch asyncio.create_task to capture the coroutine
+        created_tasks = []
+        original_create_task = asyncio.create_task
+
+        def capture_task(coro, *args, **kwargs):
+            # Close the coroutine to avoid warnings
+            coro.close()
+            mock_task = MagicMock()
+            created_tasks.append(mock_task)
+            return mock_task
+
+        with patch("gateway.run.asyncio.create_task", side_effect=capture_task):
             event = _make_event(text="/background Summarize the top HN stories")
             result = await runner._handle_background_command(event)
 
         assert "🔄" in result
-        assert "task" in result.lower() or "任务" in result
+        assert "Background task started" in result
         assert "bg_" in result  # task ID starts with bg_
         assert "Summarize the top HN stories" in result
-        runner._launch_background_worker.assert_called_once()
+        assert len(created_tasks) == 1  # background task was created
 
-        jobs = runner._background_jobs_for_source(event.source)
-        assert len(jobs) == 1
-        assert jobs[0]["status"] == "queued"
+    @pytest.mark.asyncio
+    async def test_telegram_dm_topic_passes_trigger_anchor_to_task(self):
+        """Telegram private-topic completion sends need the original command message id."""
+        runner = _make_runner()
+        runner._run_background_task = AsyncMock()
+
+        def capture_task(coro, *args, **kwargs):
+            coro.close()
+            mock_task = MagicMock()
+            return mock_task
+
+        source = SessionSource(
+            platform=Platform.TELEGRAM,
+            user_id="12345",
+            chat_id="67890",
+            chat_type="dm",
+            thread_id="20197",
+        )
+        event = MessageEvent(
+            text="/background summarize",
+            source=source,
+            message_id="463",
+            reply_to_message_id="462",
+        )
+
+        with patch("gateway.run.asyncio.create_task", side_effect=capture_task):
+            result = await runner._handle_background_command(event)
+
+        assert "Background task started" in result
+        runner._run_background_task.assert_called_once()
+        assert runner._run_background_task.call_args.kwargs["event_message_id"] == "463"
 
     @pytest.mark.asyncio
     async def test_prompt_truncated_in_preview(self):
@@ -158,58 +184,275 @@ class TestHandleBackgroundCommand:
                 result = await runner._handle_background_command(event)
                 assert "Background task started" in result
 
-    @pytest.mark.asyncio
-    async def test_btw_uses_durable_background_launcher(self):
-        """Running /btw should use the durable background launcher, not in-process task execution."""
-        runner = _make_runner()
 
-        with patch("gateway.run.asyncio.create_task", side_effect=AssertionError("legacy /btw create_task path should not run")):
-            event = _make_event(text="/btw what module owns session title sanitization?")
-            result = await runner._handle_btw_command(event)
+# ---------------------------------------------------------------------------
+# _run_background_task
+# ---------------------------------------------------------------------------
 
-        assert "/btw" in result
-        assert "Reply will appear here shortly" in result
-        runner._launch_background_worker.assert_called_once()
-        jobs = runner._background_jobs_for_source(event.source)
-        assert len(jobs) == 1
-        assert jobs[0]["kind"] == "btw"
+
+class TestRunBackgroundTask:
+    """Tests for GatewayRunner._run_background_task (the actual execution)."""
 
     @pytest.mark.asyncio
-    async def test_btw_reuses_stored_transcript_snapshot(self):
-        """When the chat is idle, /btw should snapshot the stored transcript into the durable job."""
+    async def test_no_adapter_returns_silently(self):
+        """When no adapter is available, the task returns without error."""
         runner = _make_runner()
-        event = _make_event(text="/btw summarize the current thread")
-        runner.session_store.load_transcript.return_value = [
-            {"role": "user", "content": "hello"},
-            {"role": "assistant", "content": "hi"},
+        source = SessionSource(
+            platform=Platform.TELEGRAM,
+            user_id="12345",
+            chat_id="67890",
+            user_name="testuser",
+        )
+        # No adapters set — should not raise
+        await runner._run_background_task("test prompt", source, "bg_test")
+
+    @pytest.mark.asyncio
+    async def test_no_credentials_sends_error(self):
+        """When provider credentials are missing, an error is sent."""
+        runner = _make_runner()
+        mock_adapter = AsyncMock()
+        mock_adapter.send = AsyncMock()
+        runner.adapters[Platform.TELEGRAM] = mock_adapter
+
+        source = SessionSource(
+            platform=Platform.TELEGRAM,
+            user_id="12345",
+            chat_id="67890",
+            user_name="testuser",
+        )
+
+        with patch("gateway.run._resolve_runtime_agent_kwargs", return_value={"api_key": None}):
+            await runner._run_background_task("test prompt", source, "bg_test")
+
+        # Should have sent an error message
+        mock_adapter.send.assert_called_once()
+        call_args = mock_adapter.send.call_args
+        assert "failed" in call_args[1].get("content", call_args[0][1] if len(call_args[0]) > 1 else "").lower()
+
+    @pytest.mark.asyncio
+    async def test_successful_task_sends_result(self):
+        """When the agent completes successfully, the result is sent."""
+        runner = _make_runner()
+        mock_adapter = AsyncMock()
+        mock_adapter.send = AsyncMock()
+        mock_adapter.extract_media = MagicMock(return_value=([], "Hello from background!"))
+        mock_adapter.extract_images = MagicMock(return_value=([], "Hello from background!"))
+        runner.adapters[Platform.TELEGRAM] = mock_adapter
+
+        source = SessionSource(
+            platform=Platform.TELEGRAM,
+            user_id="12345",
+            chat_id="67890",
+            user_name="testuser",
+        )
+
+        mock_result = {"final_response": "Hello from background!", "messages": []}
+
+        with patch("gateway.run._resolve_runtime_agent_kwargs", return_value={"api_key": "test-key"}), \
+             patch("run_agent.AIAgent") as MockAgent:
+            mock_agent_instance = MagicMock()
+            mock_agent_instance.shutdown_memory_provider = MagicMock()
+            mock_agent_instance.close = MagicMock()
+            mock_agent_instance.run_conversation.return_value = mock_result
+            MockAgent.return_value = mock_agent_instance
+
+            await runner._run_background_task("say hello", source, "bg_test")
+
+        # Should have sent the result
+        mock_adapter.send.assert_called_once()
+        call_args = mock_adapter.send.call_args
+        content = call_args[1].get("content", call_args[0][1] if len(call_args[0]) > 1 else "")
+        assert "Background task complete" in content
+        assert "Hello from background!" in content
+        mock_agent_instance.shutdown_memory_provider.assert_called_once()
+        mock_agent_instance.close.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_media_files_routed_by_type(self, monkeypatch):
+        """Result media is routed to the type-specific sender, not send_document.
+
+        A TTS clip should arrive as a voice bubble, a video as a video, an
+        image as a native image, and everything else as a document.
+        """
+        from gateway import run as gateway_run
+
+        runner = _make_runner()
+        runner._resolve_session_agent_runtime = MagicMock(
+            return_value=("test-model", {"api_key": "test-key"})
+        )
+        runner._resolve_session_reasoning_config = MagicMock(return_value=None)
+        runner._load_service_tier = MagicMock(return_value=None)
+        runner._resolve_turn_agent_config = MagicMock(
+            return_value={
+                "model": "test-model",
+                "runtime": {"api_key": "test-key"},
+                "request_overrides": None,
+            }
+        )
+        runner._run_in_executor_with_context = AsyncMock(
+            return_value={"final_response": "see attached", "messages": []}
+        )
+        monkeypatch.setattr(gateway_run, "_load_gateway_config", lambda: {})
+
+        # Four real files so the media-delivery path validator accepts them
+        # (default mode requires the file to exist as a regular file).
+        import os as _os
+        import tempfile as _tempfile
+        _tmpdir = _tempfile.mkdtemp(prefix="bg_media_")
+        _ogg = _os.path.join(_tmpdir, "clip.ogg")
+        _mp4 = _os.path.join(_tmpdir, "render.mp4")
+        _png = _os.path.join(_tmpdir, "chart.png")
+        _pdf = _os.path.join(_tmpdir, "report.pdf")
+        for _p in (_ogg, _mp4, _png, _pdf):
+            with open(_p, "wb") as _fh:
+                _fh.write(b"x")
+        # ogg flagged as voice, mp4 video, png image, pdf doc.
+        media = [
+            (_ogg, True),
+            (_mp4, False),
+            (_png, False),
+            (_pdf, False),
         ]
 
-        result = await runner._handle_btw_command(event)
+        mock_adapter = AsyncMock()
+        mock_adapter.send = AsyncMock()
+        mock_adapter.send_voice = AsyncMock()
+        mock_adapter.send_video = AsyncMock()
+        mock_adapter.send_image_file = AsyncMock()
+        mock_adapter.send_document = AsyncMock()
+        mock_adapter.send_image = AsyncMock()
+        # No text, no markdown images — just the four media attachments.
+        mock_adapter.extract_media = MagicMock(return_value=(media, ""))
+        mock_adapter.extract_images = MagicMock(return_value=([], ""))
+        # Non-telegram platform so every audio ext routes through send_voice.
+        runner.adapters[Platform.DISCORD] = mock_adapter
 
-        assert "Reply will appear here shortly" in result
-        runner.session_store.get_or_create_session.assert_called_once()
-        runner.session_store.load_transcript.assert_called_once()
-        jobs = runner._background_jobs_for_source(event.source)
-        assert len(jobs) == 1
-        assert jobs[0]["conversation_history"] == [
-            {"role": "user", "content": "hello"},
-            {"role": "assistant", "content": "hi"},
-        ]
+        source = SessionSource(
+            platform=Platform.DISCORD,
+            user_id="12345",
+            chat_id="67890",
+            user_name="testuser",
+        )
+
+        try:
+            await runner._run_background_task("make stuff", source, "bg_test")
+
+            mock_adapter.send_voice.assert_called_once()
+            assert mock_adapter.send_voice.call_args.kwargs["audio_path"] == _ogg
+            mock_adapter.send_video.assert_called_once()
+            assert mock_adapter.send_video.call_args.kwargs["video_path"] == _mp4
+            mock_adapter.send_image_file.assert_called_once()
+            assert mock_adapter.send_image_file.call_args.kwargs["image_path"] == _png
+            mock_adapter.send_document.assert_called_once()
+            assert mock_adapter.send_document.call_args.kwargs["file_path"] == _pdf
+        finally:
+            import shutil as _shutil
+            _shutil.rmtree(_tmpdir, ignore_errors=True)
 
     @pytest.mark.asyncio
-    async def test_btw_rejects_second_active_job_for_same_chat(self):
-        """A second /btw should be rejected while the first durable BTW job is still active."""
+    async def test_telegram_dm_topic_completion_preserves_reply_anchor_metadata(self, monkeypatch):
+        """Background completion metadata must let Telegram send thread id plus reply id."""
+        from gateway import run as gateway_run
+
         runner = _make_runner()
-        event = _make_event(text="/btw first question")
+        runner._resolve_session_agent_runtime = MagicMock(
+            return_value=("test-model", {"api_key": "test-key"})
+        )
+        runner._resolve_session_reasoning_config = MagicMock(return_value=None)
+        runner._load_service_tier = MagicMock(return_value=None)
+        runner._resolve_turn_agent_config = MagicMock(
+            return_value={
+                "model": "test-model",
+                "runtime": {"api_key": "test-key"},
+                "request_overrides": None,
+            }
+        )
+        runner._run_in_executor_with_context = AsyncMock(
+            return_value={"final_response": "done", "messages": []}
+        )
+        monkeypatch.setattr(gateway_run, "_load_gateway_config", lambda: {})
 
-        first = await runner._handle_btw_command(event)
-        second = await runner._handle_btw_command(_make_event(text="/btw second question"))
+        mock_adapter = AsyncMock()
+        mock_adapter.send = AsyncMock()
+        mock_adapter.extract_media = MagicMock(return_value=([], "done"))
+        mock_adapter.extract_images = MagicMock(return_value=([], "done"))
+        runner.adapters[Platform.TELEGRAM] = mock_adapter
 
-        assert "Reply will appear here shortly" in first
-        assert second == "A /btw is already running for this chat. Wait for it to finish."
-        runner._launch_background_worker.assert_called_once()
-        jobs = runner._background_jobs_for_source(event.source)
-        assert len(jobs) == 1
+        source = SessionSource(
+            platform=Platform.TELEGRAM,
+            user_id="12345",
+            chat_id="67890",
+            chat_type="dm",
+            thread_id="20197",
+        )
+
+        await runner._run_background_task(
+            "say hello",
+            source,
+            "bg_test",
+            event_message_id="463",
+        )
+
+        mock_adapter.send.assert_called_once()
+        assert mock_adapter.send.call_args.kwargs["metadata"] == {
+            "thread_id": "20197",
+            "telegram_dm_topic_reply_fallback": True,
+            "direct_messages_topic_id": "20197",
+            "telegram_reply_to_message_id": "463",
+        }
+
+    @pytest.mark.asyncio
+    async def test_agent_cleanup_runs_when_background_agent_raises(self):
+        """Temporary background agents must be cleaned up on error paths too."""
+        runner = _make_runner()
+        mock_adapter = AsyncMock()
+        mock_adapter.send = AsyncMock()
+        runner.adapters[Platform.TELEGRAM] = mock_adapter
+
+        source = SessionSource(
+            platform=Platform.TELEGRAM,
+            user_id="12345",
+            chat_id="67890",
+            user_name="testuser",
+        )
+
+        with patch("gateway.run._resolve_runtime_agent_kwargs", return_value={"api_key": "test-key"}), \
+             patch("run_agent.AIAgent") as MockAgent:
+            mock_agent_instance = MagicMock()
+            mock_agent_instance.shutdown_memory_provider = MagicMock()
+            mock_agent_instance.close = MagicMock()
+            mock_agent_instance.run_conversation.side_effect = RuntimeError("boom")
+            MockAgent.return_value = mock_agent_instance
+
+            await runner._run_background_task("say hello", source, "bg_test")
+
+        mock_adapter.send.assert_called_once()
+        mock_agent_instance.shutdown_memory_provider.assert_called_once()
+        mock_agent_instance.close.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_exception_sends_error_message(self):
+        """When the agent raises an exception, an error message is sent."""
+        runner = _make_runner()
+        mock_adapter = AsyncMock()
+        mock_adapter.send = AsyncMock()
+        runner.adapters[Platform.TELEGRAM] = mock_adapter
+
+        source = SessionSource(
+            platform=Platform.TELEGRAM,
+            user_id="12345",
+            chat_id="67890",
+            user_name="testuser",
+        )
+
+        with patch("gateway.run._resolve_runtime_agent_kwargs", side_effect=RuntimeError("boom")):
+            await runner._run_background_task("test prompt", source, "bg_test")
+
+        mock_adapter.send.assert_called_once()
+        call_args = mock_adapter.send.call_args
+        content = call_args[1].get("content", call_args[0][1] if len(call_args[0]) > 1 else "")
+        assert "failed" in content.lower()
+
 
 # ---------------------------------------------------------------------------
 # /background in help and known_commands
@@ -263,6 +506,7 @@ class TestBackgroundInCLICommands:
 
     def test_background_autocompletes(self):
         """The /background command appears in autocomplete results."""
+        pytest.importorskip("prompt_toolkit")
         from hermes_cli.commands import SlashCommandCompleter
         from prompt_toolkit.document import Document
 

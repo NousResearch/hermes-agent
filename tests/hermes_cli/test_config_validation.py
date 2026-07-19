@@ -253,6 +253,20 @@ class TestUnknownTopLevelKeys:
         assert _EXTRA_KNOWN_ROOT_KEYS.issubset(_KNOWN_ROOT_KEYS)
         assert _KNOWN_ROOT_KEYS == frozenset(DEFAULT_CONFIG.keys()) | _EXTRA_KNOWN_ROOT_KEYS
 
+    def test_hermes_written_roots_not_flagged_as_unknown(self):
+        """Roots Hermes itself writes/reads must not warn as unknown (#67397)."""
+        issues = validate_config_structure({
+            "model": {"provider": "openrouter"},
+            "known_plugin_toolsets": {"cli": ["spotify"]},
+            "group_sessions_per_user": True,
+            "thread_sessions_per_user": False,
+        })
+        unknown = [i for i in issues if "Unknown top-level config key" in i.message]
+        messages = " ".join(i.message for i in unknown)
+        assert "known_plugin_toolsets" not in messages
+        assert "group_sessions_per_user" not in messages
+        assert "thread_sessions_per_user" not in messages
+
     def test_provider_like_unknown_root_keeps_misplaced_message(self):
         """Preserve existing base_url/api_key root-level guidance (not generic unknown)."""
         issues = validate_config_structure({

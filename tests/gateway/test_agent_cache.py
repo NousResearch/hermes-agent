@@ -9,6 +9,7 @@ Verifies that the agent cache correctly:
 - Preserves frozen system prompt across turns
 """
 
+import os
 import threading
 from unittest.mock import MagicMock, patch
 
@@ -353,6 +354,10 @@ class TestExtractCacheBustingConfig:
 
         config_path = tmp_path / "honcho.json"
         config_path.write_text("{}")
+        initial_mtime_ns = 1_700_000_000_000_000_000
+        mtime_step_ns = 2_000_000_000
+        os.utime(config_path, ns=(initial_mtime_ns, initial_mtime_ns))
+        first_mtime_ns = config_path.stat().st_mtime_ns
         parse_calls = []
 
         class FakeConfig:
@@ -382,6 +387,10 @@ class TestExtractCacheBustingConfig:
         assert parse_calls == [config_path]
 
         config_path.write_text("{\n  \"changed\": true\n}")
+        next_mtime_ns = initial_mtime_ns + mtime_step_ns
+        os.utime(config_path, ns=(next_mtime_ns, next_mtime_ns))
+        second_mtime_ns = config_path.stat().st_mtime_ns
+        assert second_mtime_ns != first_mtime_ns
         third = GatewayRunner._extract_honcho_cache_busting_config()
 
         assert third == first

@@ -5,6 +5,8 @@ shared slash-command pipeline (`/model` in CLI/gateway/Telegram) historically
 only looked at `providers:`.
 """
 
+import pytest
+
 import hermes_cli.providers as providers_mod
 from hermes_cli.model_switch import list_authenticated_providers, switch_model
 from hermes_cli.providers import resolve_provider_full
@@ -16,6 +18,12 @@ _MOCK_VALIDATION = {
     "recognized": True,
     "message": None,
 }
+
+
+@pytest.fixture(autouse=True)
+def _no_live_model_discovery(monkeypatch):
+    """Custom-provider picker tests must not depend on local /v1/models servers."""
+    monkeypatch.setattr("hermes_cli.models.fetch_api_models", lambda *a, **k: None)
 
 
 def test_list_authenticated_providers_includes_custom_providers(monkeypatch):

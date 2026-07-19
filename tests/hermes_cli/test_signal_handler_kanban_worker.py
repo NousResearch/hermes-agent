@@ -142,6 +142,7 @@ def _cleanup(proc: subprocess.Popen) -> None:
     sys.platform == "win32",
     reason="SIGTERM semantics differ on Windows; kanban dispatcher is POSIX-only",
 )
+@pytest.mark.live_system_guard_bypass
 def test_sigterm_with_kanban_task_env_terminates_quickly():
     """With HERMES_KANBAN_TASK set, SIGTERM should kill the process in <2s
     even when a non-daemon thread is still alive."""
@@ -150,19 +151,19 @@ def test_sigterm_with_kanban_task_env_terminates_quickly():
         t0 = time.time()
         os.kill(proc.pid, signal.SIGTERM)
 
-        # Should die in <2s. The handler sleeps ~50ms, then os._exit(0)
-        # is immediate. Give generous headroom for slow CI runners.
-        deadline = t0 + 2.0
-        while time.time() < deadline:
-            if not _is_alive_like_dispatcher(proc.pid):
-                elapsed = time.time() - t0
-                assert elapsed < 2.0
-                return
-            time.sleep(0.02)
-        pytest.fail(
-            "process still alive 2s after SIGTERM with HERMES_KANBAN_TASK set "
-            "(dispatcher would keep extending claim) — fix regressed"
-        )
+        # Reap the child while preserving the dispatcher's strict <2s exit
+        # contract. On Android/Termux, an exited child can otherwise remain
+        # visible as a live PID until its parent waits.
+        try:
+            proc.wait(timeout=2.0)
+        except subprocess.TimeoutExpired:
+            pytest.fail(
+                "process still alive 2s after SIGTERM with HERMES_KANBAN_TASK set "
+                "(dispatcher would keep extending claim) — fix regressed"
+            )
+        elapsed = time.time() - t0
+        assert elapsed < 2.0
+        assert not _is_alive_like_dispatcher(proc.pid)
     finally:
         _cleanup(proc)
 
@@ -171,6 +172,7 @@ def test_sigterm_with_kanban_task_env_terminates_quickly():
     sys.platform == "win32",
     reason="SIGTERM semantics differ on Windows; kanban dispatcher is POSIX-only",
 )
+@pytest.mark.live_system_guard_bypass
 def test_sigterm_without_kanban_task_env_uses_keyboard_interrupt_path():
     """Without HERMES_KANBAN_TASK, the original KeyboardInterrupt path runs.
 

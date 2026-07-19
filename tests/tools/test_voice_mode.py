@@ -1,7 +1,9 @@
 """Tests for tools.voice_mode -- all mocked, no real microphone or API calls."""
 
 import os
+import shutil
 import struct
+import tempfile
 import time
 import wave
 from pathlib import Path
@@ -9,6 +11,10 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
+
+def _short_unix_socket_dir():
+    """AF_UNIX paths are capped (~108 bytes); pytest tmp_path is too deep on Termux."""
+    return Path(tempfile.mkdtemp(prefix="hv-"))
 
 def _non_wsl_proc_version(real_open):
     """Return an open() shim that makes host WSL detection deterministic."""
@@ -80,37 +86,45 @@ class TestPulseSocketReachable:
         from tools.voice_mode import _pulse_socket_reachable
         assert _pulse_socket_reachable() is False
 
-    def test_stale_socket_file_not_reachable(self, monkeypatch, tmp_path):
+    def test_stale_socket_file_not_reachable(self, monkeypatch):
         """A socket file with no listener should not count as reachable."""
         import socket as _socket
-        sock_path = tmp_path / "pulse" / "native"
-        sock_path.parent.mkdir(parents=True)
-        # Create + bind, then close so the path is a stale socket file.
-        s = _socket.socket(_socket.AF_UNIX, _socket.SOCK_STREAM)
-        s.bind(str(sock_path))
-        s.close()
-        monkeypatch.delenv("PULSE_SERVER", raising=False)
-        monkeypatch.delenv("PULSE_RUNTIME_PATH", raising=False)
-        monkeypatch.setenv("XDG_RUNTIME_DIR", str(tmp_path))
-        from tools.voice_mode import _pulse_socket_reachable
-        assert _pulse_socket_reachable() is False
-
-    def test_listening_socket_reachable_via_xdg_runtime(self, monkeypatch, tmp_path):
-        """A live PulseAudio-style socket under XDG_RUNTIME_DIR is reachable (#35622)."""
-        import socket as _socket
-        sock_path = tmp_path / "pulse" / "native"
-        sock_path.parent.mkdir(parents=True)
-        server = _socket.socket(_socket.AF_UNIX, _socket.SOCK_STREAM)
-        server.bind(str(sock_path))
-        server.listen(1)
+        runtime_dir = _short_unix_socket_dir()
         try:
+            sock_path = runtime_dir / "pulse" / "native"
+            sock_path.parent.mkdir(parents=True)
+            # Create + bind, then close so the path is a stale socket file.
+            s = _socket.socket(_socket.AF_UNIX, _socket.SOCK_STREAM)
+            s.bind(str(sock_path))
+            s.close()
             monkeypatch.delenv("PULSE_SERVER", raising=False)
             monkeypatch.delenv("PULSE_RUNTIME_PATH", raising=False)
-            monkeypatch.setenv("XDG_RUNTIME_DIR", str(tmp_path))
+            monkeypatch.setenv("XDG_RUNTIME_DIR", str(runtime_dir))
+            from tools.voice_mode import _pulse_socket_reachable
+            assert _pulse_socket_reachable() is False
+        finally:
+            shutil.rmtree(runtime_dir, ignore_errors=True)
+
+    def test_listening_socket_reachable_via_xdg_runtime(self, monkeypatch):
+        """A live PulseAudio-style socket under XDG_RUNTIME_DIR is reachable (#35622)."""
+        import socket as _socket
+        runtime_dir = _short_unix_socket_dir()
+        server = None
+        try:
+            sock_path = runtime_dir / "pulse" / "native"
+            sock_path.parent.mkdir(parents=True)
+            server = _socket.socket(_socket.AF_UNIX, _socket.SOCK_STREAM)
+            server.bind(str(sock_path))
+            server.listen(1)
+            monkeypatch.delenv("PULSE_SERVER", raising=False)
+            monkeypatch.delenv("PULSE_RUNTIME_PATH", raising=False)
+            monkeypatch.setenv("XDG_RUNTIME_DIR", str(runtime_dir))
             from tools.voice_mode import _pulse_socket_reachable
             assert _pulse_socket_reachable() is True
         finally:
-            server.close()
+            if server is not None:
+                server.close()
+            shutil.rmtree(runtime_dir, ignore_errors=True)
 
     def test_listening_socket_reachable_via_pulse_server_env(self, monkeypatch, tmp_path):
         import socket as _socket
@@ -278,6 +292,9 @@ class TestDetectAudioEnvironment:
         monkeypatch.delenv("SSH_CONNECTION", raising=False)
         monkeypatch.delenv("PULSE_SERVER", raising=False)
         monkeypatch.setattr("tools.voice_mode._pulse_socket_reachable", lambda: False)
+        monkeypatch.setattr("tools.voice_mode._termux_voice_capture_available", lambda: False)
+        monkeypatch.setattr("tools.voice_mode._termux_microphone_command", lambda: None)
+        monkeypatch.setattr("tools.voice_mode._termux_api_app_installed", lambda: False)
 
         mock_sd = MagicMock()
         mock_sd.query_devices.side_effect = Exception("device query failed")
@@ -473,8 +490,11 @@ class TestCheckVoiceRequirements:
 
     def test_missing_audio_packages(self, monkeypatch):
         monkeypatch.setattr("tools.voice_mode._audio_available", lambda: False)
+        monkeypatch.setattr("tools.voice_mode._termux_voice_capture_available", lambda: False)
         monkeypatch.setattr("tools.voice_mode.detect_audio_environment",
                             lambda: {"available": False, "warnings": ["Audio libraries not installed"]})
+        monkeypatch.setattr("tools.transcription_tools._load_stt_config", lambda: {"enabled": True, "provider": "openai"})
+        monkeypatch.setattr("tools.transcription_tools._get_provider", lambda cfg: "openai")
         monkeypatch.setenv("VOICE_TOOLS_OPENAI_KEY", "sk-test-key")
 
         from tools.voice_mode import check_voice_requirements
@@ -1416,20 +1436,31 @@ class TestConfigurableSilenceParams:
 class TestSubprocessTimeoutKill:
     """Bug: proc.wait(timeout) raised TimeoutExpired but process was not killed."""
 
+    @pytest.mark.live_system_guard_bypass
     def test_timeout_kills_process(self):
         import subprocess
-        proc = subprocess.Popen(["sleep", "600"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-        pid = proc.pid
-        assert proc.poll() is None
+        import sys
 
+        proc = subprocess.Popen(
+            [sys.executable, "-c", "import time; time.sleep(600)"],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        )
         try:
-            proc.wait(timeout=0.1)
-        except subprocess.TimeoutExpired:
-            proc.kill()
-            proc.wait()
+            assert proc.poll() is None
 
-        assert proc.poll() is not None
-        assert proc.returncode is not None
+            try:
+                proc.wait(timeout=0.1)
+            except subprocess.TimeoutExpired:
+                proc.kill()
+                proc.wait()
+
+            assert proc.poll() is not None
+            assert proc.returncode is not None
+        finally:
+            if proc.poll() is None:
+                proc.kill()
+                proc.wait(timeout=2)
 
 
 class TestStreamLeakOnStartFailure:

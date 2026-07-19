@@ -98,6 +98,13 @@ def _make_fake_zip(binary_bytes: bytes) -> bytes:
     return buf.getvalue()
 
 
+def _force_supported_bws_platform(monkeypatch):
+    """Keep installer-path tests hermetic on unsupported hosts (Android/Termux)."""
+    monkeypatch.setattr(bw, "_platform_asset_name", lambda: f"bws-aarch64-unknown-linux-gnu-{bw._BWS_VERSION}.zip")
+    monkeypatch.setattr(bw, "_platform_binary_name", lambda: "bws")
+
+
+
 # ---------------------------------------------------------------------------
 # _safe_extract_member — zip-slip containment
 # ---------------------------------------------------------------------------
@@ -164,6 +171,7 @@ def test_safe_extract_member_rejects_absolute_path(tmp_path):
 
 
 def test_install_bws_rejects_malicious_member(hermes_home, monkeypatch):
+    _force_supported_bws_platform(monkeypatch)
     # Build an archive whose only matching member escapes the temp dir.
     buf = io.BytesIO()
     with zipfile.ZipFile(buf, "w") as zf:
@@ -187,6 +195,7 @@ def test_install_bws_rejects_malicious_member(hermes_home, monkeypatch):
 
 
 def test_install_bws_happy_path(hermes_home, monkeypatch):
+    _force_supported_bws_platform(monkeypatch)
     fake_binary = b"#!/bin/sh\necho 'bws fake 2.0.0'\n"
     zip_bytes = _make_fake_zip(fake_binary)
     asset_name = bw._platform_asset_name()
@@ -213,6 +222,7 @@ def test_install_bws_happy_path(hermes_home, monkeypatch):
 
 
 def test_install_bws_checksum_mismatch(hermes_home, monkeypatch):
+    _force_supported_bws_platform(monkeypatch)
     zip_bytes = _make_fake_zip(b"contents")
     asset_name = bw._platform_asset_name()
     wrong_checksum = "0" * 64
@@ -231,6 +241,7 @@ def test_install_bws_checksum_mismatch(hermes_home, monkeypatch):
 
 
 def test_install_bws_missing_checksum_entry(hermes_home, monkeypatch):
+    _force_supported_bws_platform(monkeypatch)
     zip_bytes = _make_fake_zip(b"x")
 
     def fake_download(url, dest):

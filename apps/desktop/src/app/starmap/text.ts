@@ -1,19 +1,23 @@
-import type { Translations } from '@/i18n'
+import { translateNow, type Translations } from '@/i18n'
+import { dateFor } from '@/lib/time'
 import type { StarmapNode } from '@/types/hermes'
 
-const localeTag = (locale: string): string => (locale === 'ar' ? 'ar-EG' : locale)
+// Resolved lazily, never as a default argument: the ring-label loops call
+// formatDate once per ring and only the undated ones need the fallback.
+// English resolves to the bare `unknown` this function has always returned.
+function unknownDate(supplied?: string): string {
+  return supplied ?? translateNow('starmap.unknown')
+}
 
-export function formatDate(ts: null | number | undefined, locale: string, unknown = 'unknown'): string {
+export function formatDate(ts: null | number | undefined, locale: string, unknown?: string): string {
   if (!ts) {
-    return unknown
+    return unknownDate(unknown)
   }
 
   try {
-    return new Intl.DateTimeFormat(localeTag(locale), { day: 'numeric', month: 'short', year: 'numeric' }).format(
-      new Date(ts * 1000)
-    )
+    return dateFor(locale).format(new Date(ts * 1000))
   } catch {
-    return unknown
+    return unknownDate(unknown)
   }
 }
 
@@ -25,7 +29,10 @@ export function metaBadges(n: StarmapNode, t: Translations, locale: string): str
   if (n.kind === 'memory') {
     out.push(n.memorySource === 'profile' ? t.starmap.profileMemory : t.starmap.memory)
   } else {
-    out.push(t.skills.categoryLabels?.[n.category.trim().toLowerCase()] ?? n.category)
+    // The raw backend slug is the badge, exactly as it always was — prettifying
+    // it here would rewrite `smart-home` into `Smart Home` for English users.
+    // Arabic has no readable fallback for a slug, so it alone maps the label.
+    out.push((locale === 'ar' && t.skills.categoryLabels?.[n.category.trim().toLowerCase()]) || n.category)
 
     if (n.createdBy === 'agent') {
       out.push(t.starmap.learned)

@@ -1,4 +1,5 @@
 import { translateNow } from '@/i18n'
+import { normalize } from '@/lib/text'
 
 // Known effort keys; translateNow resolves the active locale's badge and
 // falls back to the English catalog for locales without reasoningShort.
@@ -8,7 +9,7 @@ const REASONING_KEYS = new Set(['none', 'minimal', 'low', 'medium', 'high', 'xhi
 type ReasoningLabels = Partial<Record<string, string>>
 
 export function reasoningEffortLabel(effort: string, labels?: ReasoningLabels): string {
-  const key = effort.trim().toLowerCase()
+  const key = normalize(effort)
 
   if (!key) {
     return ''

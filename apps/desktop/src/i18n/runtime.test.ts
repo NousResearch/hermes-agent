@@ -28,14 +28,6 @@ describe('desktop i18n runtime translator', () => {
     expect(translateNow('notifications.updateReadyMessage', 2)).toBe('2 new changes available.')
   })
 
-  it('translates backend timeout summaries for Arabic notifications', () => {
-    setRuntimeI18nLocale('ar')
-
-    expect(translateNow('notifications.errors.backendTimeout', '15')).toBe(
-      'لم يستجب هرمس خلال ١٥ ثانية. تحقق من الاتصال ثم أعد المحاولة.'
-    )
-  })
-
   it('preserves technical error details in localized onboarding failures', () => {
     setRuntimeI18nLocale('ar')
 
@@ -43,7 +35,6 @@ describe('desktop i18n runtime translator', () => {
       'connection reset'
     )
     expect(translateNow('onboarding.runtime.pollingFailed', 'request timed out')).toContain('request timed out')
-    expect(translateNow('onboarding.runtime.unexpectedError', 'invalid response')).toContain('invalid response')
   })
 
   it('translates migrated overlap keys for newly supported locales', () => {

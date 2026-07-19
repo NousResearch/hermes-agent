@@ -138,8 +138,6 @@ export const en: Translations = {
     updateReadyMessage: count => `${count} new change${count === 1 ? '' : 's'} available.`,
     seeWhatsNew: "See what's new",
     errors: {
-      backendTimeout: seconds =>
-        `Hermes did not respond within ${seconds} seconds. Check the connection and try again.`,
       elevenLabsNeedsKey: 'ElevenLabs STT needs ELEVENLABS_API_KEY.',
       elevenLabsRejectedKey: 'ElevenLabs rejected the API key (401).',
       methodNotAllowed:
@@ -586,14 +584,15 @@ export const en: Translations = {
       save: 'Save',
       connectFailed: 'Failed to start connection',
       couldNotStart: 'Could not start the connection.',
-      timedOut: 'Timed out. Try again.',
+      timedOut: 'Timed out — try again.',
       connectionFailed: 'Connection failed.',
       connectViaOauth: 'Connect via OAuth',
       reconnect: 'Reconnect',
       connect: 'Connect',
-      apiKeySet: 'API key set',
-      oauthSet: 'OAuth set',
-      waitingForConsent: 'Waiting for browser consent...',
+      // Stream/credential-kind markers rendered as lowercase inline hints.
+      apiKeySet: 'api key set',
+      oauthSet: 'oauth set',
+      waitingForConsent: 'Waiting for browser consent…',
       cancel: 'Cancel',
       providerNames: { hindsight: 'Hindsight' },
       fieldLabels: {
@@ -880,8 +879,9 @@ export const en: Translations = {
       }
     },
     computerUse: {
-      linuxNote: 'Drives your desktop through the X11 or XWayland accessibility stack without a permission prompt.',
-      windowsNote: 'First run may trigger a Windows SmartScreen prompt for the driver accessibility worker. Allow it.',
+      linuxNote: 'Drives your desktop via the X11/XWayland accessibility stack — no permission prompt.',
+      windowsNote:
+        'First run may trigger a Windows SmartScreen prompt for the cua-driver UIAccess worker — allow it.',
       granted: 'Granted',
       notGranted: 'Not granted',
       unknown: 'Unknown',
@@ -890,14 +890,14 @@ export const en: Translations = {
       approveTitle: 'Approve in System Settings',
       approveMessage: 'macOS will show a permission dialog attributed to CuaDriver. Approve it, then return here.',
       checking: 'Checking Computer Use status…',
-      unsupported: platform => `Computer Use is not supported on this platform (${platform}).`,
+      unsupported: platform => `Computer Use isn't supported on this platform (${platform}).`,
       installDriver: 'Install the cua-driver backend below to drive this machine.',
       grantAfterInstall: ' Then grant Accessibility and Screen Recording here.',
       grantIdentity:
-        "Grants attach to CuaDriver's own identity (com.trycua.driver), not Hermes, so the dialog is attributed to the process that drives your Mac.",
+        "Grants attach to CuaDriver's own identity (com.trycua.driver), not Hermes — so the dialog is attributed to the process that drives your Mac.",
       recheck: 'Recheck',
       accessibility: 'Accessibility',
-      accessibilityHint: 'Lets cua-driver post clicks and keystrokes and read the accessibility tree.',
+      accessibilityHint: 'Lets cua-driver post clicks, keystrokes, and read the accessibility tree.',
       screenRecording: 'Screen Recording',
       screenRecordingHint: 'Lets cua-driver capture screenshots of app windows.',
       driverHealth: 'Driver health',
@@ -1053,6 +1053,12 @@ export const en: Translations = {
       bundled: 'Built-in',
       hub: 'Hub'
     },
+    // Row badges carry `normal-case`, which exists specifically to stop the
+    // capitalization the detail pills above use. English stays lowercase.
+    provenanceBadge: {
+      agent: 'learned',
+      hub: 'hub'
+    },
     emptyNoneFound: noun => `No ${noun} found`,
     emptyNothingMatches: query => `Nothing matches “${query}”.`,
     emptyNoneAvailable: noun => `No ${noun} available yet.`,
@@ -1113,23 +1119,9 @@ export const en: Translations = {
       scanFailed: 'Security scan failed',
       searchFailed: 'Hub search failed'
     },
-    categoryLabels: {
-      apple: 'Apple',
-      'autonomous-ai-agents': 'Autonomous AI Agents',
-      creative: 'Creative',
-      'data-science': 'Data Science',
-      email: 'Email',
-      general: 'General',
-      github: 'GitHub',
-      media: 'Media',
-      mlops: 'MLOps',
-      'note-taking': 'Note Taking',
-      productivity: 'Productivity',
-      research: 'Research',
-      'smart-home': 'Smart Home',
-      'social-media': 'Social Media',
-      'software-development': 'Software Development'
-    }
+    // English must stay byte-identical to `prettyName(category)` from
+    // `lib/text.ts` — that is what upstream rendered for every category.
+    // Other locales translate freely.
   },
 
   starmap: {
@@ -1137,7 +1129,7 @@ export const en: Translations = {
     subtitle: (nodes, clusters) => `${nodes} skills across ${clusters} categories`,
     close: 'Close memory graph',
     refresh: 'Refresh',
-    memory: 'Memory',
+    memory: 'memory',
     filterAll: 'All',
     filterUsed: 'Used',
     filterLearned: 'Learned',
@@ -1160,13 +1152,14 @@ export const en: Translations = {
     importedBadge: 'imported map',
     resetToMine: 'Back to my map',
     skill: 'Skill',
-    profileMemory: 'Profile memory',
-    learned: 'Learned',
-    pinned: 'Pinned',
-    unknown: 'Unknown',
+    // Tooltip meta badges — bare lowercase tags in English, never Title Case.
+    profileMemory: 'profile memory',
+    learned: 'learned',
+    pinned: 'pinned',
+    unknown: 'unknown',
     coreAge: 'core = oldest · outer = newer',
     playTimeline: 'Play timeline',
-    pauseTimeline: 'Pause timeline',
+    pauseTimeline: 'Pause',
     timelineScrubber: 'Timeline scrubber',
     editNode: kind => `Edit ${kind}…`,
     archiveSkill: 'Archive skill',
@@ -1266,7 +1259,7 @@ export const en: Translations = {
       addReference: 'Add a reference',
       removeReference: 'Remove reference',
       unavailableTitle: 'Add an image backend to generate',
-      unavailableDesc: 'Hatching a custom pet needs a provider that can use a reference image.',
+      unavailableDesc: 'Hatching a custom pet needs a provider that can ground on a reference image.',
       setupImageGeneration: 'Set up image generation',
       grabKeyFrom: 'Grab a key from',
       nousPortal: 'Nous Portal',
@@ -2029,7 +2022,8 @@ export const en: Translations = {
   statusStack: {
     agents: 'Agents',
     background: count => `${count} Background`,
-    backgroundProcess: 'Background process',
+    // Fallback title for a command we could not read — rendered inline, lowercase.
+    backgroundProcess: 'background process',
     subagents: count => `${count} Subagent${count === 1 ? '' : 's'}`,
     todos: (done, total) => `Tasks ${done}/${total}`,
     running: 'Running',
@@ -2274,14 +2268,14 @@ export const en: Translations = {
         const list =
           labels.length === 1 ? labels[0] : `${labels.slice(0, -1).join(', ')} and ${labels[labels.length - 1]}`
 
-        return `${list} now run through your Nous subscription. No separate API keys are needed.`
+        return `${list} now run through your Nous subscription — no separate API keys needed.`
       },
       gatewayToolLabels: {
         browser: 'browser automation',
         image_gen: 'image generation',
         tts: 'text-to-speech',
         video_gen: 'video generation',
-        web: 'web search and extraction'
+        web: 'web search & extract'
       },
       providerUnavailable: detail =>
         detail
@@ -2296,14 +2290,16 @@ export const en: Translations = {
       enterValueFirst: 'Enter a value first.',
       enterEndpointFirst: 'Enter the endpoint URL first.',
       endpointUnreachable: url => `Could not reach ${url}.`,
+      // The probe answered but rejected us: we know the endpoint is up, so the
+      // message deliberately omits the URL the other branch interpolates.
+      endpointUnreachableGeneric: 'Could not reach that endpoint.',
       endpointNoModels: url =>
-        `Connected to ${url}, but it advertised no models. Start a model on that endpoint and try again.`,
+        `Connected to ${url}, but it advertised no models at /v1/models. Start a model on that endpoint and try again.`,
       endpointSavedButUnreachable: url => `Saved, but Hermes still cannot reach ${url}.`,
-      localEndpoint: 'Local or custom endpoint',
+      localEndpoint: 'Local / custom endpoint',
       couldNotSaveProvider: provider => `Could not save ${provider}`,
       couldNotSaveEndpoint: 'Could not save local endpoint',
-      couldNotChangeModel: 'Could not change model',
-      unexpectedError: detail => (detail ? `The operation failed: ${detail}` : 'The operation failed. Try again.')
+      couldNotChangeModel: 'Could not change model'
     }
   },
 
@@ -2727,8 +2723,9 @@ export const en: Translations = {
       copyPath: 'Copy path',
       outputAlt: 'Tool output',
       rawResponse: 'Raw response',
-      standardOutput: 'standard output',
-      standardError: 'standard error',
+      // Stream names, not prose — English keeps the literal `stdout`/`stderr`.
+      standardOutput: 'stdout',
+      standardError: 'stderr',
       payload: 'Tool payload',
       copyActivity: 'Copy activity',
       recoveredOne: 'Recovered after 1 failed step',
@@ -2837,7 +2834,7 @@ export const en: Translations = {
     newChatsProfile: name => `New chats will use profile ${name}.`,
     setProfileFailed: 'Failed to set profile',
     sttDisabled: 'Speech-to-text is disabled in settings.',
-    stopFailed: 'Stop failed',
+    stopFailed: 'Could not stop the process',
     regenerateFailed: 'Regenerate failed',
     editFailed: 'Edit failed',
     resumeFailed: 'Resume failed',

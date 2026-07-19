@@ -31,6 +31,7 @@ import {
 import { type Translations, useI18n } from '@/i18n'
 import { AlertTriangle } from '@/lib/icons'
 import { asText } from '@/lib/text'
+import { dateLocaleTag } from '@/lib/time'
 import { $cronFocusJobId, $cronJobs, setCronFocusJobId, setCronJobs, updateCronJobs } from '@/store/cron'
 import { notify, notifyError } from '@/store/notifications'
 
@@ -113,10 +114,6 @@ function dayName(value: string, c: Translations['cron']): string {
   return c.days[value] ?? c.dayFallback(value)
 }
 
-function localeTag(locale: string): string {
-  return locale === 'ar' ? 'ar-EG' : locale
-}
-
 function formatCronTime(minute: string, hour: string, locale: string): string {
   const numericHour = Number(hour)
   const numericMinute = Number(minute)
@@ -125,7 +122,7 @@ function formatCronTime(minute: string, hour: string, locale: string): string {
     return `${hour}:${minute}`
   }
 
-  return new Date(2000, 0, 1, numericHour, numericMinute).toLocaleTimeString(localeTag(locale), {
+  return new Date(2000, 0, 1, numericHour, numericMinute).toLocaleTimeString(dateLocaleTag(locale), {
     hour: 'numeric',
     minute: '2-digit'
   })
@@ -233,7 +230,7 @@ function formatTime(iso: null | string | undefined, locale: string): string {
     return iso
   }
 
-  return date.toLocaleString(localeTag(locale))
+  return date.toLocaleString(dateLocaleTag(locale))
 }
 
 function matchesQuery(job: CronJob, q: string): boolean {
@@ -617,7 +614,7 @@ function formatRunTime(seconds: null | number | undefined, locale: string): stri
 
   const date = new Date(seconds * 1000)
 
-  return Number.isNaN(date.valueOf()) ? '—' : date.toLocaleString(localeTag(locale))
+  return Number.isNaN(date.valueOf()) ? '—' : date.toLocaleString(dateLocaleTag(locale))
 }
 
 // Runs are produced by the background scheduler tick (no UI signal), so poll

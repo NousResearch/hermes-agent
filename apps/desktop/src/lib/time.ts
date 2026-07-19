@@ -8,22 +8,67 @@ export const HOUR = 3_600_000
 export const DAY = 86_400_000
 
 // ── Absolute date/time formatters ──────────────────────────────────────────
-// `hh:mm` clock (thread today/yesterday lines).
-export const fmtClock = new Intl.DateTimeFormat(undefined, { hour: 'numeric', minute: '2-digit' })
-
-// Compact "day + clock", no year/seconds (artifacts, thread fallback, cron runs).
-export const fmtDayTime = new Intl.DateTimeFormat(undefined, {
+const DAY_TIME_OPTIONS: Intl.DateTimeFormatOptions = {
   day: 'numeric',
   hour: 'numeric',
   minute: '2-digit',
   month: 'short'
-})
+}
+
+const DATE_TIME_OPTIONS: Intl.DateTimeFormatOptions = { dateStyle: 'medium', timeStyle: 'short' }
+const DATE_OPTIONS: Intl.DateTimeFormatOptions = { day: 'numeric', month: 'short', year: 'numeric' }
+
+// `hh:mm` clock (thread today/yesterday lines).
+export const fmtClock = new Intl.DateTimeFormat(undefined, { hour: 'numeric', minute: '2-digit' })
+
+// Compact "day + clock", no year/seconds (artifacts, thread fallback, cron runs).
+export const fmtDayTime = new Intl.DateTimeFormat(undefined, DAY_TIME_OPTIONS)
 
 // Medium date + short time (command center session detail).
-export const fmtDateTime = new Intl.DateTimeFormat(undefined, { dateStyle: 'medium', timeStyle: 'short' })
+export const fmtDateTime = new Intl.DateTimeFormat(undefined, DATE_TIME_OPTIONS)
 
 // Date only, "5 Jun 2026" (starmap tooltip).
-export const fmtDate = new Intl.DateTimeFormat(undefined, { day: 'numeric', month: 'short', year: 'numeric' })
+export const fmtDate = new Intl.DateTimeFormat(undefined, DATE_OPTIONS)
+
+// ── UI-locale-aware date formatters ────────────────────────────────────────
+// Dates keep following the OS/browser locale, exactly as they always have: an
+// en-GB user must still read `15 Jun 2025` whichever UI language is selected,
+// so every non-Arabic locale resolves to `undefined` and reuses the shared
+// instance above. Arabic is the sole opt-in — its digits and month names have
+// no Latin fallback. Instances are built once per locale and cached, never
+// rebuilt inside a render loop.
+
+/** `undefined` (= OS/browser locale) unless the UI locale needs its own script. */
+export function dateLocaleTag(locale: string): string | undefined {
+  return locale === 'ar' ? 'ar-EG' : undefined
+}
+
+function byLocale(shared: Intl.DateTimeFormat, options: Intl.DateTimeFormatOptions) {
+  const cache = new Map<string, Intl.DateTimeFormat>()
+
+  return (locale: string): Intl.DateTimeFormat => {
+    const tag = dateLocaleTag(locale)
+
+    if (tag === undefined) {
+      return shared
+    }
+
+    const cached = cache.get(tag)
+
+    if (cached) {
+      return cached
+    }
+
+    const formatter = new Intl.DateTimeFormat(tag, options)
+    cache.set(tag, formatter)
+
+    return formatter
+  }
+}
+
+export const dayTimeFor = byLocale(fmtDayTime, DAY_TIME_OPTIONS)
+export const dateTimeFor = byLocale(fmtDateTime, DATE_TIME_OPTIONS)
+export const dateFor = byLocale(fmtDate, DATE_OPTIONS)
 
 // ── Relative time ──────────────────────────────────────────────────────────
 const rtf = new Intl.RelativeTimeFormat(undefined, { numeric: 'auto', style: 'short' })

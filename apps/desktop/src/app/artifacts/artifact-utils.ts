@@ -24,7 +24,6 @@ const PATH_RE = /(^|[\s("'`])((?:\/|~\/|\.\.?\/)[^\s"'`<>]+(?:\.[a-z0-9]{1,8})?)
 const IMAGE_EXT_RE = /\.(?:png|jpe?g|gif|webp|svg|bmp)(?:\?.*)?$/i
 const FILE_EXT_RE = /\.(?:png|jpe?g|gif|webp|svg|bmp|pdf|txt|json|md|csv|zip|tar|gz|mp3|wav|mp4|mov)(?:\?.*)?$/i
 const KEY_HINT_RE = /(path|file|url|image|artifact|output|download|result|target)/i
-const PATH_TEMPLATE_RE = /%(?:0\d+)?d|[*?[\]{}]/
 
 function artifactSessionTitle(session: SessionInfo, untitledSession: string): string {
   return session.title?.trim() || session.preview?.trim() || untitledSession
@@ -60,10 +59,6 @@ function looksLikePathOrUrl(value: string): boolean {
 }
 
 function looksLikeArtifact(value: string): boolean {
-  if (/[\r\n]|\\[rn]/.test(value) || PATH_TEMPLATE_RE.test(value)) {
-    return false
-  }
-
   if (/^(?:https?:\/\/|data:image\/)/.test(value)) {
     return true
   }
@@ -172,17 +167,9 @@ function collectStringValues(
   }
 }
 
-function collectArtifactsFromText(
-  text: string,
-  pushValue: (value: string) => void,
-  ignoreRelativeWebReferences = false
-): void {
+function collectArtifactsFromText(text: string, pushValue: (value: string) => void): void {
   for (const match of text.matchAll(MARKDOWN_IMAGE_RE)) {
-    const value = match[2] || ''
-
-    if (!ignoreRelativeWebReferences || !looksLikePathOrUrl(value)) {
-      pushValue(value)
-    }
+    pushValue(match[2] || '')
   }
 
   for (const match of text.matchAll(MARKDOWN_LINK_RE)) {
@@ -193,10 +180,6 @@ function collectArtifactsFromText(
     }
 
     const value = match[2] || ''
-
-    if (ignoreRelativeWebReferences && looksLikePathOrUrl(value)) {
-      continue
-    }
 
     if (looksLikeArtifact(value)) {
       pushValue(value)
@@ -212,19 +195,7 @@ function collectArtifactsFromText(
   }
 
   for (const match of text.matchAll(PATH_RE)) {
-    const value = match[2] || ''
-    const start = match.index ?? 0
-    const prefix = text.slice(Math.max(0, start - 24), start + 1)
-
-    if (ignoreRelativeWebReferences && looksLikePathOrUrl(value)) {
-      continue
-    }
-
-    if (value.startsWith('/') && /(?:href|src)\s*=\s*["']$/i.test(prefix)) {
-      continue
-    }
-
-    pushValue(value)
+    pushValue(match[2] || '')
   }
 }
 
@@ -232,9 +203,7 @@ function collectArtifactsFromMessage(message: SessionMessage, pushValue: (value:
   const text = messageText(message)
 
   if (text) {
-    const isFetchedWebDocument = message.role === 'tool' && /URL:\s*https?:\/\//i.test(text)
-
-    collectArtifactsFromText(text, pushValue, isFetchedWebDocument)
+    collectArtifactsFromText(text, pushValue)
   }
 
   if (message.role !== 'tool' && !Array.isArray(message.tool_calls)) {

@@ -25,6 +25,7 @@ import {
   Wrench
 } from '@/lib/icons'
 import { exportSession } from '@/lib/session-export'
+import { dateTimeFor } from '@/lib/time'
 import { cn } from '@/lib/utils'
 import { upsertDesktopActionTask } from '@/store/activity'
 import { $pinnedSessionIds, pinSession, unpinSession } from '@/store/layout'
@@ -71,7 +72,7 @@ function formatTimestamp(value: null | number | undefined, locale: string): stri
     return ''
   }
 
-  return new Intl.DateTimeFormat(localeTag(locale), { dateStyle: 'medium', timeStyle: 'short' }).format(date)
+  return dateTimeFor(locale).format(date)
 }
 
 function useDebouncedValue<T>(value: T, delayMs: number): T {

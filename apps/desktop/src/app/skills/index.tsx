@@ -116,12 +116,12 @@ function skillSubtitle(skill: SkillInfo, t: Translations): React.ReactNode {
       <span className="truncate">{category}</span>
       {provenance === 'agent' && (
         <Badge className="shrink-0 normal-case" variant="default">
-          {t.skills.provenance.agent}
+          {t.skills.provenanceBadge.agent}
         </Badge>
       )}
       {provenance === 'hub' && (
         <Badge className="shrink-0 normal-case" variant="muted">
-          {t.skills.provenance.hub}
+          {t.skills.provenanceBadge.hub}
         </Badge>
       )}
     </>

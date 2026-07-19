@@ -155,8 +155,6 @@ export const ar: Translations = {
             : `${count} تغييرًا جديدًا متاحًا.`,
     seeWhatsNew: 'عرض الجديد',
     errors: {
-      backendTimeout: seconds =>
-        `لم يستجب هرمس خلال ${Number.isFinite(Number(seconds)) ? Number(seconds).toLocaleString('ar-EG') : seconds} ثانية. تحقق من الاتصال ثم أعد المحاولة.`,
       elevenLabsNeedsKey: 'يتطلب تحويل الكلام إلى نص من ElevenLabs المفتاح ELEVENLABS_API_KEY.',
       elevenLabsRejectedKey: 'رفض ElevenLabs مفتاح الواجهة البرمجية (401).',
       methodNotAllowed:
@@ -1834,6 +1832,10 @@ export const ar: Translations = {
     provenance: {
       agent: 'مُتعلَّمة',
       bundled: 'مدمجة',
+      hub: 'المركز'
+    },
+    provenanceBadge: {
+      agent: 'مُتعلَّمة',
       hub: 'المركز'
     },
     emptyNoneFound: noun => `لم يُعثر على ${noun}`,
@@ -3783,14 +3785,14 @@ export const ar: Translations = {
       enterValueFirst: 'أدخل قيمة أولًا.',
       enterEndpointFirst: 'أدخل رابط نقطة النهاية أولًا.',
       endpointUnreachable: url => `تعذر الوصول إلى ${url}.`,
+      endpointUnreachableGeneric: 'تعذر الوصول إلى نقطة النهاية تلك.',
       endpointNoModels: url =>
-        `تم الاتصال بـ ${url}، لكنه لم يعلن عن أي نماذج. شغّل نموذجًا على نقطة النهاية ثم أعد المحاولة.`,
+        `تم الاتصال بـ ${url}، لكنه لم يعلن عن أي نماذج على /v1/models. شغّل نموذجًا على نقطة النهاية ثم أعد المحاولة.`,
       endpointSavedButUnreachable: url => `حُفظ الإعداد، لكن هرمس ما زال لا يستطيع الوصول إلى ${url}.`,
-      localEndpoint: 'نقطة نهاية محلية أو مخصصة',
+      localEndpoint: 'نقطة نهاية محلية / مخصصة',
       couldNotSaveProvider: provider => `تعذر حفظ ${provider}`,
       couldNotSaveEndpoint: 'تعذر حفظ نقطة النهاية المحلية',
-      couldNotChangeModel: 'تعذر تغيير النموذج',
-      unexpectedError: detail => (detail ? `فشلت العملية: ${detail}` : 'فشلت العملية. أعد المحاولة.')
+      couldNotChangeModel: 'تعذر تغيير النموذج'
     }
   },
 

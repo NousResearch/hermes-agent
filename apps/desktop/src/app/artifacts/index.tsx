@@ -23,6 +23,7 @@ import { ExternalLink, ExternalLinkIcon, hostPathLabel, urlSlugTitleLabel, useLi
 import { FileImage, FileText, FolderOpen, Link2, Loader2, RefreshCw } from '@/lib/icons'
 import { downloadGatewayMediaFile, isRemoteGateway } from '@/lib/media'
 import { normalize } from '@/lib/text'
+import { dayTimeFor } from '@/lib/time'
 import { cn } from '@/lib/utils'
 import { notifyError } from '@/store/notifications'
 
@@ -41,12 +42,7 @@ import {
 } from './artifact-utils'
 
 function formatArtifactTime(timestamp: number, locale: string): string {
-  return new Intl.DateTimeFormat(locale === 'ar' ? 'ar-EG' : locale, {
-    day: 'numeric',
-    hour: 'numeric',
-    minute: '2-digit',
-    month: 'short'
-  }).format(new Date(timestamp))
+  return dayTimeFor(locale).format(new Date(timestamp))
 }
 
 function pageRangeLabel(total: number, page: number, pageSize: number, a: Translations['artifacts']): string {

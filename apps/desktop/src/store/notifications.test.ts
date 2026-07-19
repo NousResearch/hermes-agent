@@ -4,21 +4,45 @@ import { setRuntimeI18nLocale } from '@/i18n'
 
 import { $notifications, clearNotifications, notifyError } from './notifications'
 
-describe('notification error localization', () => {
+const BACKEND_TIMEOUT = 'Timed out connecting to Hermes backend after 15000ms'
+
+describe('notification error reporting', () => {
   afterEach(() => {
     clearNotifications()
     setRuntimeI18nLocale('en')
   })
 
-  it('summarizes backend timeouts in Arabic without exposing the English transport error', () => {
-    setRuntimeI18nLocale('ar')
-
-    notifyError(new Error('Timed out connecting to Hermes backend after 15000ms'), 'تعذر تحميل الحالة')
+  // The localization layer must never swallow a diagnostic an English user
+  // could read before it existed. Transport errors have no catalog entry on
+  // purpose: they pass through verbatim so the text stays searchable.
+  it('keeps the transport error text visible instead of summarizing it away', () => {
+    notifyError(new Error(BACKEND_TIMEOUT), 'Could not load status')
 
     expect($notifications.get()[0]).toMatchObject({
-      detail: undefined,
-      message: 'لم يستجب هرمس خلال ١٥ ثانية. تحقق من الاتصال ثم أعد المحاولة.',
-      title: 'تعذر تحميل الحالة'
+      message: BACKEND_TIMEOUT,
+      title: 'Could not load status'
     })
+  })
+
+  it('keeps the same transport detail visible in Arabic', () => {
+    setRuntimeI18nLocale('ar')
+
+    notifyError(new Error(BACKEND_TIMEOUT), 'تعذر تحميل الحالة')
+
+    const shown = $notifications.get()[0]
+
+    expect(shown?.title).toBe('تعذر تحميل الحالة')
+    expect(`${shown?.message} ${shown?.detail ?? ''}`).toContain(BACKEND_TIMEOUT)
+  })
+
+  // Rules that *did* exist upstream still summarize, and still keep the raw
+  // provider text as the expandable detail line.
+  it('summarizes a known provider error without dropping its raw text', () => {
+    notifyError(new Error('Incorrect API key provided: sk-123. Error code: 401'), 'Could not save key')
+
+    const shown = $notifications.get()[0]
+
+    expect(shown?.message).toBe('OpenAI rejected the API key (401 invalid_api_key).')
+    expect(shown?.detail).toContain('Incorrect API key provided')
   })
 })

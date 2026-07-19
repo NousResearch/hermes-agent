@@ -669,12 +669,7 @@ export async function submitOnboardingCode(ctx: OnboardingContext) {
       })
     }
   } catch (error) {
-    setFlow({
-      status: 'error',
-      provider,
-      start,
-      message: translateNow('onboarding.runtime.unexpectedError', errMessage(error))
-    })
+    setFlow({ status: 'error', provider, start, message: errMessage(error) })
   }
 }
 
@@ -797,7 +792,7 @@ export async function saveOnboardingApiKey(
   } catch (error) {
     notifyError(error, translateNow('onboarding.runtime.couldNotSaveProvider', label))
 
-    return { ok: false, message: translateNow('onboarding.runtime.unexpectedError', errMessage(error)) }
+    return { ok: false, message: errMessage(error) }
   }
 }
 
@@ -834,7 +829,7 @@ export async function saveOnboardingLocalEndpoint(baseUrl: string, apiKey: strin
     const probe = await validateProviderCredential('OPENAI_BASE_URL', url, key)
 
     if (!probe.ok && probe.reachable) {
-      return { ok: false, message: probe.message || translateNow('onboarding.runtime.endpointUnreachable', url) }
+      return { ok: false, message: probe.message || translateNow('onboarding.runtime.endpointUnreachableGeneric') }
     }
 
     if (!probe.reachable) {
@@ -876,7 +871,7 @@ export async function saveOnboardingLocalEndpoint(baseUrl: string, apiKey: strin
   } catch (error) {
     notifyError(error, translateNow('onboarding.runtime.couldNotSaveEndpoint'))
 
-    return { ok: false, message: translateNow('onboarding.runtime.unexpectedError', errMessage(error)) }
+    return { ok: false, message: errMessage(error) }
   }
 }
 

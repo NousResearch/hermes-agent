@@ -1156,6 +1156,10 @@ export const zh: Translations = {
       bundled: '内置',
       hub: '技能中心'
     },
+    provenanceBadge: {
+      agent: '习得',
+      hub: '技能中心'
+    },
     emptyNoneFound: noun => `未找到${noun}`,
     emptyNothingMatches: query => `没有匹配“${query}”的内容。`,
     emptyNoneAvailable: noun => `暂无可用的${noun}。`,
@@ -1349,7 +1353,7 @@ export const zh: Translations = {
       addReference: '添加参考图',
       removeReference: '移除参考图',
       unavailableTitle: '添加图像后端以开始生成',
-      unavailableDesc: '生成自定义宠物需要可使用参考图的提供方。',
+      unavailableDesc: '生成自定义宠物需要可基于参考图的提供方。',
       setupImageGeneration: '设置图像生成',
       grabKeyFrom: '获取密钥：',
       nousPortal: 'Nous Portal',

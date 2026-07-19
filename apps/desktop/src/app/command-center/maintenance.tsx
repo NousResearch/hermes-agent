@@ -21,6 +21,7 @@ import {
 } from '@/hermes'
 import { useI18n } from '@/i18n'
 import { AlertCircle } from '@/lib/icons'
+import { dateTimeFor } from '@/lib/time'
 import { cn } from '@/lib/utils'
 import { upsertDesktopActionTask } from '@/store/activity'
 import { notify, notifyError } from '@/store/notifications'
@@ -29,38 +30,42 @@ import type { ActionStatusResponse } from '@/types/hermes'
 const ACTION_POLL_MS = 1200
 const ACTION_POLL_LIMIT = 240 // ~5 minutes of polling before giving up.
 
-function localeTag(locale: string): string {
-  return locale === 'ar' ? 'ar-EG' : locale
-}
-
 function formatBytes(size: number, locale: string): string {
   if (size <= 0) {
     return ''
   }
 
-  const number = new Intl.NumberFormat(localeTag(locale), { maximumFractionDigits: 1, minimumFractionDigits: 1 })
-  const units =
-    locale === 'ar'
-      ? { byte: 'بايت', kilobyte: 'كيلوبايت', megabyte: 'ميغابايت' }
-      : { byte: 'B', kilobyte: 'KB', megabyte: 'MB' }
+  // Latin-script locales keep upstream's plain `toFixed`/raw output: grouping
+  // separators would turn `1024.0 MB` into `1,024.0 MB` for English readers.
+  if (locale !== 'ar') {
+    if (size >= 1024 * 1024) {
+      return `${(size / (1024 * 1024)).toFixed(1)} MB`
+    }
+
+    if (size >= 1024) {
+      return `${(size / 1024).toFixed(1)} KB`
+    }
+
+    return `${size} B`
+  }
+
+  const number = new Intl.NumberFormat('ar-EG', { maximumFractionDigits: 1, minimumFractionDigits: 1 })
 
   if (size >= 1024 * 1024) {
-    return `${number.format(size / (1024 * 1024))} ${units.megabyte}`
+    return `${number.format(size / (1024 * 1024))} ميغابايت`
   }
 
   if (size >= 1024) {
-    return `${number.format(size / 1024)} ${units.kilobyte}`
+    return `${number.format(size / 1024)} كيلوبايت`
   }
 
-  return `${new Intl.NumberFormat(localeTag(locale)).format(size)} ${units.byte}`
+  return `${new Intl.NumberFormat('ar-EG').format(size)} بايت`
 }
 
 function formatDateTime(value: string, locale: string): string {
   const date = new Date(value)
 
-  return Number.isNaN(date.valueOf())
-    ? value
-    : new Intl.DateTimeFormat(localeTag(locale), { dateStyle: 'medium', timeStyle: 'short' }).format(date)
+  return Number.isNaN(date.valueOf()) ? value : dateTimeFor(locale).format(date)
 }
 
 /** Maintenance panel — desktop parity for `hermes doctor` / `security audit` /

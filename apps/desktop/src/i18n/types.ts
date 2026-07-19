@@ -189,7 +189,6 @@ export interface Translations {
     updateReadyMessage: (count: number) => string
     seeWhatsNew: string
     errors: {
-      backendTimeout?: (seconds: string) => string
       elevenLabsNeedsKey: string
       elevenLabsRejectedKey: string
       methodNotAllowed: string
@@ -934,6 +933,7 @@ export interface Translations {
     bulkNoChange: string
     usageCount: (count: number | string) => string
     provenance: Record<'agent' | 'bundled' | 'hub', string>
+    provenanceBadge: Record<'agent' | 'hub', string>
     emptyNoneFound: (noun: string) => string
     emptyNothingMatches: (query: string) => string
     emptyNoneAvailable: (noun: string) => string
@@ -1884,13 +1884,13 @@ export interface Translations {
       enterValueFirst: string
       enterEndpointFirst: string
       endpointUnreachable: (url: string) => string
+      endpointUnreachableGeneric: string
       endpointNoModels: (url: string) => string
       endpointSavedButUnreachable: (url: string) => string
       localEndpoint: string
       couldNotSaveProvider: (provider: string) => string
       couldNotSaveEndpoint: string
       couldNotChangeModel: string
-      unexpectedError: (detail?: string) => string
     }
   }
 

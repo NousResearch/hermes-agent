@@ -34,6 +34,7 @@ import { useOnProfileSwitch } from '../hooks/use-on-profile-switch'
 
 import { CONTROL_TEXT } from './constants'
 import { getNested, setNested } from './helpers'
+import { AUX_MODEL_TASK_KEYS, ModelRoutingOverview } from './model-routing-overview'
 import { ListRow, Pill, SectionHeading } from './primitives'
 import { useDeepLinkHighlight } from './use-deep-link-highlight'
 
@@ -104,24 +105,6 @@ const effortLabelKey = (v: string) => v as 'high' | 'low' | 'max' | 'medium' | '
 function isProviderReady(p?: ModelOptionProvider): boolean {
   return !!p && (p.authenticated !== false || (p.models?.length ?? 0) > 0)
 }
-
-// Mirrors `_AUX_TASK_SLOTS` in hermes_cli/web_server.py. Friendly labels and
-// hints make the assignments readable; raw task keys (vision, mcp, …) are
-// opaque to most users.
-interface AuxTaskMeta {
-  key: string
-}
-
-const AUX_TASKS: readonly AuxTaskMeta[] = [
-  { key: 'vision' },
-  { key: 'web_extract' },
-  { key: 'compression' },
-  { key: 'skills_hub' },
-  { key: 'approval' },
-  { key: 'mcp' },
-  { key: 'title_generation' },
-  { key: 'curator' }
-]
 
 const NO_PROVIDERS: readonly ModelOptionProvider[] = [{ name: '—', slug: '', models: [] }]
 
@@ -221,7 +204,7 @@ export function ModelSettings({ onMainModelChanged }: ModelSettingsProps) {
   useDeepLinkHighlight({
     elementId: task => `aux-task-${task}`,
     param: 'aux',
-    ready: task => AUX_TASKS.some(meta => meta.key === task)
+    ready: task => AUX_MODEL_TASK_KEYS.some(key => key === task)
   })
 
   // Every profile-scoped async here captures this and bails before writing back,
@@ -855,6 +838,8 @@ export function ModelSettings({ onMainModelChanged }: ModelSettingsProps) {
         )}
       </section>
 
+      <ModelRoutingOverview auxiliary={auxiliary} mainModel={mainModel} />
+
       <section>
         <div className="mb-2.5 flex items-center justify-between">
           <SectionHeading icon={Cpu} title={m.auxiliaryTitle} />
@@ -879,21 +864,21 @@ export function ModelSettings({ onMainModelChanged }: ModelSettingsProps) {
           </div>
         )}
         <div className="grid gap-1">
-          {AUX_TASKS.map(meta => {
-            const copy = m.tasks[meta.key] ?? { label: meta.key, hint: meta.key }
-            const current = auxiliary?.tasks.find(entry => entry.task === meta.key)
+          {AUX_MODEL_TASK_KEYS.map(key => {
+            const copy = m.tasks[key] ?? { label: key, hint: key }
+            const current = auxiliary?.tasks.find(entry => entry.task === key)
             const isAuto = !current || !current.provider || current.provider === 'auto'
-            const isEditing = editingAuxTask === meta.key
+            const isEditing = editingAuxTask === key
 
             return (
-              <div className="scroll-mt-6 rounded-lg" id={`aux-task-${meta.key}`} key={meta.key}>
+              <div className="scroll-mt-6 rounded-lg" id={`aux-task-${key}`} key={key}>
                 <ListRow
                   action={
                     !isEditing && (
                       <div className="flex shrink-0 items-center gap-1.5">
                         <Button
                           disabled={!mainModel || applying}
-                          onClick={() => void setAuxiliaryToMain(meta.key)}
+                          onClick={() => void setAuxiliaryToMain(key)}
                           size="sm"
                           variant="text"
                         >
@@ -901,7 +886,7 @@ export function ModelSettings({ onMainModelChanged }: ModelSettingsProps) {
                         </Button>
                         <Button
                           disabled={!providers.length || applying}
-                          onClick={() => beginAuxiliaryEdit(meta.key)}
+                          onClick={() => beginAuxiliaryEdit(key)}
                           size="sm"
                           variant="textStrong"
                         >
@@ -945,7 +930,7 @@ export function ModelSettings({ onMainModelChanged }: ModelSettingsProps) {
                         </Select>
                         <Button
                           disabled={!auxDraft.provider || !auxDraft.model || applying}
-                          onClick={() => void applyAuxiliaryDraft(meta.key)}
+                          onClick={() => void applyAuxiliaryDraft(key)}
                           size="sm"
                         >
                           {applying ? m.applying : t.common.apply}

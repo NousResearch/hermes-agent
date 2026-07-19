@@ -771,6 +771,15 @@ export const ja = defineLocale({
       provider: 'プロバイダー',
       model: 'モデル',
       applying: '適用中...',
+      routingTitle: 'モデルルーティング',
+      routingDesc: '各 Hermes レーンを処理するプロバイダーとモデルを確認できます。自動レーンはメインを使用します。',
+      routingLaneCount: count => `${count} レーン`,
+      mainLane: 'メインチャット',
+      mainLaneHint: '会話ターン',
+      primary: 'メイン',
+      usesMain: 'メインを使用',
+      dedicated: '専用',
+      routingUnavailable: '利用不可',
       auxiliaryTitle: '補助モデル',
       resetAllToMain: 'すべてメインにリセット',
       auxiliaryDesc:
@@ -787,6 +796,9 @@ export const ja = defineLocale({
         approval: { label: '承認', hint: 'スマート自動承認' },
         mcp: { label: 'MCP', hint: 'MCP ツールルーティング' },
         title_generation: { label: 'タイトル生成', hint: 'セッションタイトル' },
+        triage_specifier: { label: 'トリアージ仕様化', hint: 'Kanban 仕様の詳細化' },
+        kanban_decomposer: { label: 'Kanban 分解', hint: 'タスク分解' },
+        profile_describer: { label: 'プロフィール説明', hint: 'プロフィール要約' },
         curator: { label: 'キュレーター', hint: 'スキル使用レビュー' }
       }
     },

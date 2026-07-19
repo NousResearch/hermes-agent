@@ -248,7 +248,8 @@ describe('ModelSettings', () => {
   it('renders the auxiliary task rows', async () => {
     await renderModelSettings()
 
-    expect(await screen.findByText('Vision')).toBeTruthy()
+    expect(await screen.findByRole('region', { name: 'Model routing' })).toBeTruthy()
+    expect((await screen.findAllByText('Vision')).length).toBeGreaterThan(0)
     expect(screen.getAllByText('auto · use main model').length).toBeGreaterThan(0)
   })
 
@@ -285,7 +286,7 @@ describe('ModelSettings', () => {
 
     // The switch-time notice names the pinned provider and offers a reset.
     expect(await screen.findByText(/still run on/)).toBeTruthy()
-    expect(screen.getByText('nous')).toBeTruthy()
+    expect(screen.getAllByText('nous').length).toBeGreaterThan(0)
   })
 
   it('shows a persistent banner when a loaded aux slot mismatches the main provider', async () => {

@@ -627,6 +627,15 @@ export interface Translations {
       reasoning: string
       reasoningOff: string
       defaultsFailed: string
+      routingTitle: string
+      routingDesc: string
+      routingLaneCount: (count: number) => string
+      mainLane: string
+      mainLaneHint: string
+      primary: string
+      usesMain: string
+      dedicated: string
+      routingUnavailable: string
       auxiliaryTitle: string
       resetAllToMain: string
       auxiliaryDesc: string

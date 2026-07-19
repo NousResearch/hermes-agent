@@ -503,6 +503,8 @@ def auth_remove_command(args) -> None:
 
 def _switch_codex_pool_and_singleton(
     selected_id: str,
+    *,
+    fallback_entries: list[PooledCredential] | None = None,
 ) -> PooledCredential | None:
     """Atomically promote a Codex OAuth pool entry and mirror singleton state.
 
@@ -517,15 +519,22 @@ def _switch_codex_pool_and_singleton(
         auth_store = auth_mod._load_auth_store()
         pool_store = auth_store.get("credential_pool")
         if not isinstance(pool_store, dict):
-            return None
+            pool_store = {}
+            auth_store["credential_pool"] = pool_store
         payloads = pool_store.get("openai-codex")
-        if not isinstance(payloads, list):
+        if isinstance(payloads, list) and payloads:
+            entries = [
+                PooledCredential.from_dict("openai-codex", payload)
+                for payload in payloads
+                if isinstance(payload, dict)
+            ]
+        elif fallback_entries:
+            # Profile reads may inherit this provider from the global auth
+            # store. Match generic pool-switch behavior by materializing that
+            # inherited pool into the active profile before reordering it.
+            entries = [replace(entry) for entry in fallback_entries]
+        else:
             return None
-        entries = [
-            PooledCredential.from_dict("openai-codex", payload)
-            for payload in payloads
-            if isinstance(payload, dict)
-        ]
         selected = next((entry for entry in entries if entry.id == selected_id), None)
         if selected is None or selected.auth_type != AUTH_TYPE_OAUTH:
             return None
@@ -566,11 +575,10 @@ def _switch_codex_pool_and_singleton(
         state = auth_mod._load_provider_state(auth_store, "openai-codex") or {}
         if not isinstance(state, dict):
             state = {}
-        tokens = state.get("tokens")
-        if not isinstance(tokens, dict):
-            tokens = {}
-        tokens["access_token"] = access_token
-        tokens["refresh_token"] = refresh_token
+        tokens = {
+            "access_token": access_token,
+            "refresh_token": refresh_token,
+        }
         state["tokens"] = tokens
         state["auth_mode"] = state.get("auth_mode") or "chatgpt"
         if selected_promoted.last_refresh:
@@ -600,7 +608,10 @@ def auth_switch_command(args) -> None:
     selected = None
     synced_singleton = False
     if provider == "openai-codex" and matched.auth_type == AUTH_TYPE_OAUTH:
-        selected = _switch_codex_pool_and_singleton(matched.id)
+        selected = _switch_codex_pool_and_singleton(
+            matched.id,
+            fallback_entries=pool.entries(),
+        )
         synced_singleton = selected is not None
     else:
         selected = pool.activate_index(index)

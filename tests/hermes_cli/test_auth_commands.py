@@ -970,6 +970,7 @@ def test_auth_switch_syncs_codex_singleton_without_changing_active_provider(tmp_
                     "tokens": {
                         "access_token": "acctA-at",
                         "refresh_token": "acctA-rt",
+                        "account_id": "acctA-id",
                     },
                     "auth_mode": "chatgpt",
                     "label": "account-A",
@@ -1102,6 +1103,86 @@ def test_auth_switch_codex_uses_fresh_on_disk_tokens(tmp_path, monkeypatch):
     assert acct_b["id"] == "acctB"
     assert acct_b["access_token"] == "acctB-fresh-at"
     assert acct_b["refresh_token"] == "acctB-fresh-rt"
+
+
+def test_auth_switch_codex_materializes_global_fallback_in_profile(tmp_path, monkeypatch):
+    global_root = tmp_path / "global-hermes"
+    profile_root = tmp_path / "profile-hermes"
+    global_root.mkdir()
+    profile_root.mkdir()
+    monkeypatch.setenv("HERMES_HOME", str(profile_root))
+    monkeypatch.setattr(
+        "hermes_constants.get_default_hermes_root",
+        lambda: global_root,
+    )
+
+    global_payload = {
+        "version": 1,
+        "providers": {
+            "openai-codex": {
+                "tokens": {
+                    "access_token": "acctA-at",
+                    "refresh_token": "acctA-rt",
+                },
+                "auth_mode": "chatgpt",
+                "label": "account-A",
+            },
+        },
+        "credential_pool": {
+            "openai-codex": [
+                {
+                    "id": "acctA",
+                    "label": "account-A",
+                    "auth_type": "oauth",
+                    "priority": 0,
+                    "source": "device_code",
+                    "access_token": "acctA-at",
+                    "refresh_token": "acctA-rt",
+                },
+                {
+                    "id": "acctB",
+                    "label": "account-B",
+                    "auth_type": "oauth",
+                    "priority": 1,
+                    "source": "manual:device_code",
+                    "access_token": "acctB-at",
+                    "refresh_token": "acctB-rt",
+                },
+            ]
+        },
+    }
+    global_auth_path = global_root / "auth.json"
+    global_auth_path.write_text(json.dumps(global_payload, indent=2))
+    profile_auth_path = profile_root / "auth.json"
+    profile_auth_path.write_text(
+        json.dumps(
+            {"version": 1, "providers": {}, "active_provider": "openrouter"},
+            indent=2,
+        )
+    )
+
+    from hermes_cli.auth_commands import auth_switch_command
+
+    class _Args:
+        provider = "openai-codex"
+        target = "account-B"
+
+    auth_switch_command(_Args())
+
+    profile_payload = json.loads(profile_auth_path.read_text())
+    assert profile_payload["active_provider"] == "openrouter"
+    assert [
+        (entry["id"], entry["source"])
+        for entry in profile_payload["credential_pool"]["openai-codex"]
+    ] == [
+        ("acctB", "device_code"),
+        ("acctA", "manual:device_code"),
+    ]
+    assert profile_payload["providers"]["openai-codex"]["tokens"] == {
+        "access_token": "acctB-at",
+        "refresh_token": "acctB-rt",
+    }
+    assert json.loads(global_auth_path.read_text()) == global_payload
 
 
 def test_auth_switch_codex_requires_refresh_token(tmp_path, monkeypatch):

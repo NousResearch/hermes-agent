@@ -226,11 +226,31 @@ class TestAuthClassifier:
         assert hint is not None
         assert "setup-token" in hint
 
+    def test_hint_preserves_underlying_error(self):
+        # A hit RETIRES the session, so the true error must survive in the
+        # message — a misclassification that also swallows the evidence is
+        # undebuggable.
+        hint = classify_auth_failure("HTTP 401 unauthorized: oauth token expired")
+        assert "401 unauthorized" in hint
+
     def test_negative_control_ordinary_error_no_hint(self):
         # RED-first: an unrelated failure must surface verbatim, never as a
         # re-auth redirect.
         assert classify_auth_failure("connection reset by peer") is None
         assert classify_auth_failure("") is None
+
+    def test_negative_control_overbroad_substrings(self):
+        # RED-first against the original hint list: codex's
+        # _OAUTH_REFRESH_FAILURE_HINTS has "401 unauthorized", never bare
+        # "401", and no bare "credentials" — a tool id or an MCP server's
+        # own file complaint must not retire the session as an auth failure.
+        assert classify_auth_failure("tool_use toolu_401abc failed at 4012") is None
+        assert (
+            classify_auth_failure(
+                "mcp server hermes-tools: could not read credentials file"
+            )
+            is None
+        )
 
 
 # ---------- session (fake client) ----------

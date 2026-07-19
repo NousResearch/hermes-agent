@@ -39,10 +39,13 @@ from agent.transports.claude_sdk_event_projector import ClaudeSdkEventProjector
 logger = logging.getLogger(__name__)
 
 
-# Hermes' tools.terminal.security_mode → SDK permission_mode.
-# "auto" parity note: codex's default profile is workspace-write; the closest
-# SDK mode is acceptEdits (file edits auto-approved inside cwd, everything
-# else goes through can_use_tool / fail-closed).
+# HERMES_TERMINAL_SECURITY_MODE → SDK permission_mode. A deploy-side env
+# knob read at session construction (default "auto"), mirroring the codex
+# session's identical switch — no config key backs it in either runtime.
+# "auto" parity note: codex's default profile is workspace-write; the
+# closest SDK mode is acceptEdits (file edits auto-approved inside cwd).
+# Non-default modes route tool calls through can_use_tool / fail-closed —
+# reachable only when an operator exports the variable.
 _HERMES_TO_SDK_PERMISSION_MODE = {
     "auto": "acceptEdits",
     "approval-required": "default",
@@ -51,36 +54,45 @@ _HERMES_TO_SDK_PERMISSION_MODE = {
 }
 
 # Substrings in SDK/CLI errors that signal broken subscription credentials.
-# Conservative on purpose — mirrors codex's _classify_oauth_failure contract.
+# Conservative on purpose — mirrors codex's _OAUTH_REFRESH_FAILURE_HINTS
+# contract: every needle is a phrase, never a bare token. Bare "401" matched
+# tool ids and byte offsets; bare "credentials" matched an MCP server
+# complaining about its OWN files — and a hit retires the session, so a
+# false positive is a wrong shutdown.
 _AUTH_FAILURE_HINTS = (
     "not logged in",
     "please run /login",
     "invalid api key",
     "authentication_error",
-    "401",
+    "401 unauthorized",
     "unauthorized",
     "oauth token",
     "token has expired",
     "expired token",
     "invalid bearer token",
     "setup-token",
-    "credentials",
 )
 
 
 def classify_auth_failure(*parts: str) -> Optional[str]:
     """Return a user-friendly re-auth hint if the strings look like a Claude
-    subscription auth failure; otherwise None."""
+    subscription auth failure; otherwise None. The hint keeps the underlying
+    error text: a hit retires the session, so the evidence must survive the
+    redirect (codex surfaces the original error the same way)."""
     haystack = " ".join(p for p in parts if p).lower()
     if not haystack:
         return None
     for needle in _AUTH_FAILURE_HINTS:
         if needle in haystack:
+            original = next((p.strip() for p in parts if p and p.strip()), "")
+            if len(original) > 400:
+                original = original[:400] + "…"
             return (
                 "Claude authentication failed — the subscription OAuth token "
                 "looks expired or invalid. Refresh it with `claude setup-token` "
                 "(or `claude login` on this machine) and update "
-                "CLAUDE_CODE_OAUTH_TOKEN, then retry."
+                "CLAUDE_CODE_OAUTH_TOKEN, then retry. "
+                f"(underlying error: {original})"
             )
     return None
 

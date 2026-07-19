@@ -38,7 +38,14 @@ def _make_agent(session_db, session_id, *, in_place):
     # test exercises the DB-mutation path, not summarization quality.
     def _fake_compress(messages, current_tokens=None, focus_topic=None, force=False):
         return [
-            {"role": "user", "content": "[CONTEXT COMPACTION] summary of prior turns"},
+            {
+                "role": "user",
+                "content": (
+                    "[CONTEXT COMPACTION] summary of prior turns\n\n"
+                    "## Blocked\nNone.\n\n## Key Decisions\nNone."
+                ),
+                "_compressed_summary": True,
+            },
             {"role": "assistant", "content": "recent reply"},
         ]
 
@@ -98,7 +105,7 @@ class TestInPlaceCompaction:
                 "- Decision: retain multimodal content | Rationale: preserve provider input | "
                 "Rejected: flattening blocks | Scope: compressed transcript"
             )):
-                compressed, _ = compress_context(
+                compressed, new_system_prompt = compress_context(
                     agent,
                     messages,
                     approx_tokens=100_000,
@@ -123,6 +130,9 @@ class TestInPlaceCompaction:
                 db.get_meta(_COMPRESSION_CHECKPOINT_META_PREFIX + sid) or "{}"
             )
             assert checkpoint["decisions"][0]["decision"] == "retain multimodal content"
+            session_row = db.get_session(sid)
+            assert session_row is not None
+            assert session_row["system_prompt"] == new_system_prompt
 
     def test_static_fallback_with_tool_error_commits_opaque_checkpoint(self):
         from agent.conversation_compression import (
@@ -538,9 +548,15 @@ class TestRotationFallbackWhenFlagOff:
             agent._last_flushed_db_idx = 5
 
             messages = [{"role": "user", "content": f"m{i}"} for i in range(8)]
-            compressed, _ = compress_context(
-                agent, messages, approx_tokens=100_000, system_message="sys"
-            )
+            with patch.object(
+                db,
+                "replace_messages",
+                side_effect=AssertionError("rotation must persist in one transaction"),
+            ) as replace_probe:
+                compressed, new_system_prompt = compress_context(
+                    agent, messages, approx_tokens=100_000, system_message="sys"
+                )
+            replace_probe.assert_not_called()
 
             # Identity rotated to a fresh id.
             assert agent.session_id != sid
@@ -556,6 +572,9 @@ class TestRotationFallbackWhenFlagOff:
             # still resume it without duplicating the two handoff messages.
             assert agent._last_flushed_db_idx == 2
             child_id = child[0]["id"]
+            child_row = db.get_session(child_id)
+            assert child_row is not None
+            assert child_row["system_prompt"] == new_system_prompt
             assert db.get_meta(_COMPRESSION_CHECKPOINT_META_PREFIX + sid) is None
             child_checkpoint = json.loads(
                 db.get_meta(_COMPRESSION_CHECKPOINT_META_PREFIX + child_id) or "{}"
@@ -576,6 +595,43 @@ class TestRotationFallbackWhenFlagOff:
             assert persisted[1].get("content") == "recent reply"
             # Rotation mode does NOT set the in-place signal.
             assert getattr(agent, "_last_compaction_in_place", False) is False
+
+    def test_atomic_rotation_rolls_back_parent_child_and_checkpoint_on_insert_failure(self):
+        from agent.conversation_compression import _COMPRESSION_CHECKPOINT_META_PREFIX
+        from hermes_state import SessionDB
+
+        with tempfile.TemporaryDirectory() as tmp:
+            db = SessionDB(db_path=Path(tmp) / "t.db")
+            parent = "rotation-parent"
+            child = "rotation-child"
+            _seed(db, parent, "atomic-rotation", n=4)
+            checkpoint_key = _COMPRESSION_CHECKPOINT_META_PREFIX + child
+
+            with (
+                patch.object(
+                    db,
+                    "_insert_message_rows",
+                    side_effect=OSError("injected transcript failure"),
+                ),
+                pytest.raises(OSError, match="injected transcript failure"),
+            ):
+                db.rotate_session_with_messages(
+                    parent_session_id=parent,
+                    child_session_id=child,
+                    source="cli",
+                    messages=[{"role": "user", "content": "compacted handoff"}],
+                    model="test/model",
+                    system_prompt="new system prompt",
+                    state_meta={checkpoint_key: '{"version":1}'},
+                )
+
+            parent_row = db.get_session(parent)
+            assert parent_row is not None
+            assert parent_row["ended_at"] is None
+            assert parent_row["end_reason"] is None
+            assert db.get_session(child) is None
+            assert db.get_messages_as_conversation(child) == []
+            assert db.get_meta(checkpoint_key) is None
 
 
 class TestInPlaceSignalForGateway:

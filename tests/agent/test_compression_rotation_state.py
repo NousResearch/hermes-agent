@@ -126,21 +126,24 @@ class TestOrphanRollbackOnCreateFailure:
         db.create_session(parent, source="cli")
         agent = _build_agent_with_db(db, parent)
 
-        # Make the CHILD create_session raise, but let the initial parent
-        # end_session/reopen work. We patch create_session to blow up.
-        real_create = db.create_session
-
+        # Make the atomic parent-end + child/checkpoint/transcript transaction fail.
         def _boom(*a, **k):
             raise RuntimeError("FOREIGN KEY constraint failed")
 
-        with patch.object(db, "create_session", side_effect=_boom):
+        with patch.object(db, "rotate_session_with_messages", side_effect=_boom):
             agent._compress_context(_msgs(), "sys", approx_tokens=120_000)
 
         # The live id must roll back to the still-indexed parent — NOT a
         # phantom child id that has no row in state.db.
         assert agent.session_id == parent
-        assert db.get_session(parent) is not None
-        _ = real_create  # silence unused
+        parent_row = db.get_session(parent)
+        assert parent_row is not None
+        assert parent_row["ended_at"] is None
+        conn = db._conn
+        assert conn is not None
+        assert conn.execute(
+            "SELECT COUNT(*) FROM sessions WHERE parent_session_id = ?", (parent,)
+        ).fetchone()[0] == 0
 
 
 class TestPlatformForwardedAtBoundary:

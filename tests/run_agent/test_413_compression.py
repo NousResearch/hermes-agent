@@ -570,7 +570,16 @@ class TestPreflightCompression:
 
         def _fake_compress(messages, current_tokens=None, focus_topic=None):
             events.append(("compress", "started"))
-            return [{"role": "user", "content": f"{SUMMARY_PREFIX}\nPrevious conversation"}]
+            return [
+                {
+                    "role": "user",
+                    "content": (
+                        f"{SUMMARY_PREFIX}\nPrevious conversation\n\n"
+                        "## Blocked\nNone.\n\n## Key Decisions\nNone."
+                    ),
+                    "_compressed_summary": True,
+                }
+            ]
 
         with (
             patch.object(agent.context_compressor, "compress", side_effect=_fake_compress),

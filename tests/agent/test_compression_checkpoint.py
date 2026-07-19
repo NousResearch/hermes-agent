@@ -106,6 +106,21 @@ def test_unknown_checkpoint_source_fails_closed():
         build_compression_checkpoint(SUMMARY, session_id="s-unknown", source="summary-text")
 
 
+@pytest.mark.parametrize(
+    "summary, missing",
+    [
+        ("## Goal\nShip it.", "Blocked, Key Decisions"),
+        ("## Blocked\nNone.", "Key Decisions"),
+        ("## Key Decisions\nNone.", "Blocked"),
+        ("## Blocked\n\n## Key Decisions\nNone.", "Blocked"),
+    ],
+)
+def test_model_checkpoint_requires_both_nonempty_state_sections(summary, missing):
+    with pytest.raises(ValueError, match=r"missing required section") as exc_info:
+        build_compression_checkpoint(summary, session_id="s-missing-sections")
+    assert missing in str(exc_info.value)
+
+
 def test_blocker_pipeline_is_preserved_and_resolved_entries_are_dropped():
     checkpoint = build_compression_checkpoint(
         """## Blocked
@@ -138,7 +153,7 @@ def test_resume_action_preserves_internal_whitespace_exactly():
         "## Blocked\n- Blocker: verify whitespace | Evidence: pending | "
         "Failed attempts: none | Artifact state: unchanged | Required input: none | Resume: "
         + command
-        + " | Status: unresolved",
+        + " | Status: unresolved\n\n## Key Decisions\nNone.",
         session_id="s-exact-whitespace",
     )
 
@@ -176,7 +191,8 @@ def test_resume_action_preserves_quoted_label_like_pipeline_text():
     checkpoint = build_compression_checkpoint(
         "## Blocked\n- Blocker: verify quoted pipeline | Evidence: pending | "
         "Failed attempts: none | Artifact state: unchanged | Required input: none | Resume: "
-        + command,
+        + command
+        + "\n\n## Key Decisions\nNone.",
         session_id="s-exact-label",
     )
 
@@ -193,7 +209,9 @@ def test_checkpoint_bounds_fail_closed_without_truncating_state():
 
     with pytest.raises(ValueError, match="size limit"):
         build_compression_checkpoint(
-            "## Key Decisions\n- Decision: " + ("x" * 2001),
+            "## Key Decisions\n- Decision: "
+            + ("x" * 2001)
+            + "\n\n## Blocked\nNone.",
             session_id="bounded",
         )
 
@@ -216,12 +234,13 @@ def test_free_form_colons_fail_closed_instead_of_creating_partial_schema():
     [
         (
             "## Key Decisions\n- Decision: ship | Rationale:  | "
-            "Rejected: later | Scope: parser",
+            "Rejected: later | Scope: parser\n\n## Blocked\nNone.",
             "rationale",
         ),
         (
             "## Blocked\n- Blocker: CI | Evidence:  | Failed attempts: none | "
-            "Artifact state: clean | Required input: token | Resume: pytest -q",
+            "Artifact state: clean | Required input: token | Resume: pytest -q\n\n"
+            "## Key Decisions\nNone.",
             "evidence",
         ),
     ],
@@ -276,7 +295,7 @@ def test_reinjection_removes_persisted_stale_checkpoint_and_state_sections():
     }
     current = build_compression_checkpoint(
         "## Key Decisions\n- Decision: current choice | Rationale: current | "
-        "Rejected: old choice | Scope: current scope",
+        "Rejected: old choice | Scope: current scope\n\n## Blocked\nNone.",
         session_id="current",
     )
 
@@ -341,7 +360,7 @@ def test_reinjection_sanitizes_stale_state_across_multimodal_text_blocks():
     }
     current = build_compression_checkpoint(
         "## Key Decisions\n- Decision: current choice | Rationale: current | "
-        "Rejected: superseded option | Scope: multimodal",
+        "Rejected: superseded option | Scope: multimodal\n\n## Blocked\nNone.",
         session_id="current-multimodal",
     )
 
@@ -427,9 +446,12 @@ class _FailingCheckpointDB:
     def get_compression_lock_holder(self, session_id):
         return None
 
-    def archive_and_compact(self, _session_id, _messages, *, state_meta):
+    def archive_and_compact(
+        self, _session_id, _messages, *, state_meta, system_prompt=None
+    ):
         self.calls.append("archive")
         assert set(state_meta) == {_COMPRESSION_CHECKPOINT_META_PREFIX + "s-fail"}
+        assert system_prompt == "rebuilt system"
         raise OSError("disk full")
 
 

@@ -1953,6 +1953,9 @@ class SessionDB:
         cwd: str = None,
         profile_name: str = None,
         state_meta: Optional[Dict[str, str]] = None,
+        _initial_messages: Optional[List[Dict[str, Any]]] = None,
+        _end_parent_session_id: Optional[str] = None,
+        _end_parent_reason: str = "compression",
     ) -> None:
         """Insert a session row, enriching NULL metadata on conflict.
 
@@ -1971,8 +1974,24 @@ class SessionDB:
         a persisted, now-inactive row belongs to the caller's chat/thread before
         switching to it (IDOR scoping — without them the ``sessions`` table has
         no chat/thread to compare).
+
+        Private ``_initial_messages`` / ``_end_parent_session_id`` are used by
+        :meth:`rotate_session_with_messages` so parent end, child row, state
+        metadata, transcript, and counters share one transaction.
         """
         def _do(conn):
+            if _initial_messages is not None:
+                if conn.execute(
+                    "SELECT 1 FROM sessions WHERE id = ? LIMIT 1",
+                    (session_id,),
+                ).fetchone() is not None:
+                    raise ValueError(f"rotation child session already exists: {session_id}")
+            if _end_parent_session_id:
+                conn.execute(
+                    "UPDATE sessions SET ended_at = ?, end_reason = ? "
+                    "WHERE id = ? AND ended_at IS NULL",
+                    (time.time(), _end_parent_reason, _end_parent_session_id),
+                )
             conn.execute(
                 """INSERT INTO sessions (
                    id, source, user_id, session_key, chat_id, chat_type, thread_id,
@@ -2013,12 +2032,54 @@ class SessionDB:
                     "ON CONFLICT(key) DO UPDATE SET value = excluded.value",
                     tuple(state_meta.items()),
                 )
+            if _initial_messages is not None:
+                inserted, tool_calls_total = self._insert_message_rows(
+                    conn, session_id, _initial_messages
+                )
+                conn.execute(
+                    "UPDATE sessions SET message_count = ?, tool_call_count = ? WHERE id = ?",
+                    (inserted, tool_calls_total, session_id),
+                )
         self._execute_write(_do)
 
     def create_session(self, session_id: str, source: str, **kwargs) -> str:
         """Create a new session record. Returns the session_id."""
         self._insert_session_row(session_id, source, **kwargs)
         return session_id
+
+    def rotate_session_with_messages(
+        self,
+        *,
+        parent_session_id: str,
+        child_session_id: str,
+        source: str,
+        messages: List[Dict[str, Any]],
+        end_reason: str = "compression",
+        **kwargs,
+    ) -> str:
+        """Atomically end a parent and create its populated continuation.
+
+        The child session row, state metadata (including compression checkpoint),
+        system prompt, compacted transcript, and counters commit together. Any
+        failure rolls the entire rotation back, leaving the parent live and no
+        partial child behind.
+        """
+        if not parent_session_id or not child_session_id:
+            raise ValueError("rotation requires parent and child session ids")
+        if parent_session_id == child_session_id:
+            raise ValueError("rotation child session id must differ from parent")
+        if not messages:
+            raise ValueError("rotation requires a non-empty compacted transcript")
+        self._insert_session_row(
+            child_session_id,
+            source,
+            parent_session_id=parent_session_id,
+            _initial_messages=messages,
+            _end_parent_session_id=parent_session_id,
+            _end_parent_reason=end_reason,
+            **kwargs,
+        )
+        return child_session_id
 
     def record_gateway_session_peer(
         self,
@@ -4431,6 +4492,7 @@ class SessionDB:
         compacted_messages: List[Dict[str, Any]],
         *,
         state_meta: Optional[Dict[str, str]] = None,
+        system_prompt: Optional[str] = None,
     ) -> int:
         """Non-destructive in-place compaction for a single durable session id.
 
@@ -4486,6 +4548,11 @@ class SessionDB:
                 "UPDATE sessions SET message_count = ?, tool_call_count = ? WHERE id = ?",
                 (inserted, tool_calls_total, session_id),
             )
+            if system_prompt is not None:
+                conn.execute(
+                    "UPDATE sessions SET system_prompt = ? WHERE id = ?",
+                    (system_prompt, session_id),
+                )
             return inserted
 
         return self._execute_write(_do)

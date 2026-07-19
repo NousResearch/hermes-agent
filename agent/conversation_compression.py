@@ -265,8 +265,23 @@ def build_compression_checkpoint(
     if source != "model":
         raise ValueError(f"unknown compression checkpoint source: {source}")
 
-    decision_entries = _checkpoint_entries(_summary_section(summary, "Key Decisions"))
-    blocker_entries = _checkpoint_entries(_summary_section(summary, "Blocked"))
+    decision_section = _summary_section(summary, "Key Decisions")
+    blocker_section = _summary_section(summary, "Blocked")
+    missing_sections = [
+        heading
+        for heading, section in (
+            ("Blocked", blocker_section),
+            ("Key Decisions", decision_section),
+        )
+        if not section.strip()
+    ]
+    if missing_sections:
+        raise ValueError(
+            "compression checkpoint model summary is missing required section(s): "
+            + ", ".join(missing_sections)
+        )
+    decision_entries = _checkpoint_entries(decision_section)
+    blocker_entries = _checkpoint_entries(blocker_section)
     if len(decision_entries) + len(blocker_entries) > _MAX_CHECKPOINT_ENTRIES:
         raise ValueError("compression checkpoint exceeds entry limit")
 
@@ -1845,9 +1860,14 @@ def compress_context(
                             agent.session_id,
                             compressed,
                             state_meta=_target_state_meta,
+                            system_prompt=new_system_prompt,
                         )
                     else:
-                        agent._session_db.archive_and_compact(agent.session_id, compressed)
+                        agent._session_db.archive_and_compact(
+                            agent.session_id,
+                            compressed,
+                            system_prompt=new_system_prompt,
+                        )
                     _committed_checkpoint = _target_checkpoint
                     # Reset the flush identity set so the next turn's appends are
                     # diffed against the COMPACTED transcript: the compacted dicts
@@ -1872,7 +1892,6 @@ def compress_context(
                         pass  # plugin engines retain their legacy best-effort behavior
                     # Propagate title to the new session with auto-numbering
                     old_title = agent._session_db.get_session_title(agent.session_id)
-                    agent._session_db.end_session(agent.session_id, "compression")
                     old_session_id = agent.session_id
                     agent.session_id = f"{datetime.now().strftime('%Y%m%d_%H%M%S')}_{uuid.uuid4().hex[:6]}"
                     # Ordering contract: the agent thread updates the contextvar here;
@@ -1906,14 +1925,16 @@ def compress_context(
                         _create_kwargs = {
                             "model": agent.model,
                             "model_config": agent._session_init_model_config,
-                            "parent_session_id": old_session_id,
+                            "system_prompt": new_system_prompt,
                         }
                         if _target_state_meta:
                             _create_kwargs["state_meta"] = _target_state_meta
-                        agent._session_db.create_session(
-                            session_id=agent.session_id,
+                        agent._session_db.rotate_session_with_messages(
+                            parent_session_id=old_session_id,
+                            child_session_id=agent.session_id,
                             source=agent.platform
                             or os.environ.get("HERMES_SESSION_SOURCE", "cli"),
+                            messages=compressed,
                             **_create_kwargs,
                         )
                         _committed_checkpoint = _target_checkpoint
@@ -1943,12 +1964,8 @@ def compress_context(
                             set_session_context(agent.session_id)
                         except Exception:
                             pass
-                        # Re-open the parent: it was ended above, but we're
-                        # continuing on it, so it must not stay closed.
-                        try:
-                            agent._session_db.reopen_session(old_session_id)
-                        except Exception:
-                            pass
+                        # Parent end + child/checkpoint/transcript are one DB
+                        # transaction, so a failure leaves the parent live.
                         old_session_id = None  # no rotation happened
                         # The parent row already exists in state.db, so mark the
                         # session as created — _ensure_db_session would otherwise
@@ -1975,16 +1992,13 @@ def compress_context(
 
                 # Shared post-write steps (both modes target agent.session_id, which
                 # in-place keeps and rotation has already reassigned to the new id):
-                # refresh the stored system prompt and reset the flush cursor so the
-                # next turn re-bases its append diff.
-                agent._session_db.update_system_prompt(agent.session_id, new_system_prompt)
+                # The DB boundary already committed the system prompt with the
+                # checkpoint and transcript. Reset only the in-memory flush cursor.
                 if in_place:
                     agent._last_flushed_db_idx = 0
                 else:
-                    # A headless turn can be killed before its finalizer. Persist
-                    # the rotated child's compacted handoff at the boundary so
-                    # the new session is immediately resumable.
-                    agent._session_db.replace_messages(agent.session_id, compressed)
+                    # The atomic rotation already persisted the compacted handoff,
+                    # so a headless process is immediately resumable.
                     agent._last_flushed_db_idx = len(compressed)
                     agent._flushed_db_message_session_id = agent.session_id
                     agent._flushed_db_message_ids = {

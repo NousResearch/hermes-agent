@@ -1474,6 +1474,7 @@ def prewarm_picker_cache_async() -> Optional["_threading.Thread"]:
                 current_model=ctx.current_model,
                 user_providers=ctx.user_providers,
                 custom_providers=ctx.custom_providers,
+                excluded_providers=ctx.excluded_providers or [],
             )
         except Exception:
             # Best-effort warmup — never surface errors into the session.
@@ -1497,6 +1498,7 @@ def list_authenticated_providers(
     probe_custom_providers: bool = True,
     probe_current_custom_provider: bool = False,
     for_picker: bool = False,
+    excluded_providers: list | None = None,
 ) -> List[dict]:
     """Detect which providers have credentials and list their curated models.
 
@@ -1568,6 +1570,11 @@ def list_authenticated_providers(
     def _can_probe_custom_provider(*, row_is_current: bool) -> bool:
         return bool(probe_custom_providers or (probe_current_custom_provider and row_is_current))
 
+    # Normalize the excluded-providers list once for fast membership checks.
+    # Compared against hermes_id / mdev_id (section 1), pid / hermes_slug
+    # (section 2) and canonical slug (section 2b) so a single entry like
+    # ``copilot`` hides the provider regardless of which key it surfaces under.
+    _excluded: set = {str(p).strip().lower() for p in (excluded_providers or []) if p}
     # Effective base URLs of every built-in row we emit (normalized lower+rstrip).
     # Section 4 uses this to hide ``custom_providers`` entries that point at the
     # same endpoint as a built-in (e.g. a user-defined "my-dashscope" on
@@ -1707,6 +1714,8 @@ def list_authenticated_providers(
         # The first one with valid credentials wins (#10526).
         if mdev_id in seen_mdev_ids:
             continue
+        if hermes_id.lower() in _excluded or mdev_id.lower() in _excluded:
+            continue
         pdata = data.get(mdev_id)
         if not isinstance(pdata, dict):
             continue
@@ -1807,6 +1816,8 @@ def list_authenticated_providers(
         # Resolve Hermes slug — e.g. "github-copilot" → "copilot"
         hermes_slug = _mdev_to_hermes.get(pid, pid)
         if hermes_slug.lower() in seen_slugs:
+            continue
+        if pid.lower() in _excluded or hermes_slug.lower() in _excluded:
             continue
 
         # Check if credentials exist
@@ -1976,6 +1987,8 @@ def list_authenticated_providers(
 
     for _cp in _canon_provs:
         if _cp.slug.lower() in seen_slugs:
+            continue
+        if _cp.slug.lower() in _excluded:
             continue
 
         # Check credentials via PROVIDER_REGISTRY (auth.py)
@@ -2480,6 +2493,7 @@ def list_picker_providers(
     max_models: int | None = None,
     current_model: str = "",
     include_moa: bool = False,
+    excluded_providers: list | None = None,
 ) -> List[dict]:
     """Interactive-picker variant of :func:`list_authenticated_providers`.
 
@@ -2510,6 +2524,7 @@ def list_picker_providers(
         max_models=max_models,
         current_model=current_model,
         for_picker=True,
+        excluded_providers=excluded_providers,
     )
     if include_moa:
         providers = _prepend_moa_picker_provider(providers, current_provider=current_provider)

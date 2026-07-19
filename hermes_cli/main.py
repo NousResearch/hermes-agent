@@ -10132,26 +10132,26 @@ def _cmd_update_impl(args, gateway_mode: bool):
                 text=True,
             )
             if pull_result.returncode != 0:
-                # ff-only failed — local and remote have diverged (e.g. upstream
-                # force-pushed or rebase).  Since local changes are already
-                # stashed, reset to match the remote exactly.
-                print(
-                    "  ⚠ Fast-forward not possible (history diverged), resetting to match remote..."
-                )
-                reset_result = subprocess.run(
-                    git_cmd + ["reset", "--hard", f"origin/{branch}"],
-                    cwd=PROJECT_ROOT,
-                    capture_output=True,
-                    text=True,
-                )
-                if reset_result.returncode != 0:
-                    print(f"✗ Failed to reset to origin/{branch}.")
-                    if reset_result.stderr.strip():
-                        print(f"  {reset_result.stderr.strip()}")
-                    print(
-                        f"  Try manually: git fetch origin && git reset --hard origin/{branch}"
-                    )
-                    sys.exit(1)
+                # ff-only failed — local history has diverged from
+                # origin/{branch} (local commits, or an upstream force-push).
+                # A self-updater must FAIL CLOSED here, never destroy local
+                # work: the old reset-fallback silently discarded a local
+                # commit on 2026-07-19 (it "reset to match the remote" on any
+                # divergence, which erases local-only commits that the
+                # pre-pull stash never covers). Refuse, explain, leave HEAD,
+                # branches, untracked files, and the stash exactly as found.
+                # No auto-stash tricks, no auto-rebase — the human decides.
+                print("✗ Update refused: fast-forward not possible (local history has diverged).")
+                reason = (pull_result.stderr or pull_result.stdout or "").strip()
+                if reason:
+                    first_lines = "\n    ".join(reason.splitlines()[:3])
+                    print(f"  git said: {first_lines}")
+                print("  Nothing was changed: local commits, branches, and files are untouched.")
+                print("  See what diverged:")
+                print(f"    git -C {PROJECT_ROOT} log --oneline origin/{branch}..HEAD")
+                print("  Then either move your commits to a branch, rebase them onto the")
+                print(f"  remote, or intentionally discard them — and re-run `hermes update`.")
+                sys.exit(1)
 
             # Post-pull syntax guard: validate critical-path files actually
             # parse before declaring the update successful. If a bad commit

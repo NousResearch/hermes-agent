@@ -1222,13 +1222,21 @@ clone_repo() {
             git remote set-branches origin "$BRANCH" 2>/dev/null || true
             git fetch origin "$BRANCH"
             git checkout "$BRANCH"
-            # Managed installs should follow origin/$BRANCH exactly. If the
-            # checkout has diverged (or has local-only commits), ff-only pull
-            # cannot succeed — mirror ``hermes update`` and reset to the
-            # fetched remote so bootstrap/install can recover.
+            # Managed installs should follow origin/$BRANCH — but an updater
+            # must FAIL CLOSED when history has diverged, never reset over
+            # local-only commits (the old reset fallback silently destroyed a
+            # local commit on 2026-07-19; the pre-update stash never covers
+            # commits). Refuse with the reason, preserve everything, and let
+            # the human resolve the divergence.
             if ! git pull --ff-only origin "$BRANCH"; then
-                log_warn "Fast-forward not possible; resetting managed install to origin/$BRANCH..."
-                git reset --hard "origin/$BRANCH"
+                log_error "Update refused: fast-forward not possible (local history has diverged)."
+                log_error "Nothing was changed: local commits, branches, and files are untouched."
+                log_error "See what diverged:  git log --oneline origin/$BRANCH..HEAD"
+                if [ -n "$autostash_ref" ]; then
+                    log_error "Local changes remain stashed as $autostash_ref — restore with: git stash apply"
+                fi
+                log_error "Move local commits to a branch, rebase them, or discard them intentionally — then re-run."
+                exit 1
             fi
 
             if [ -n "$autostash_ref" ]; then

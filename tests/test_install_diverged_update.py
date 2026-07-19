@@ -41,27 +41,28 @@ def _extract_install_ps1_branch_update_block() -> str:
     return match["block"]
 
 
-def test_install_sh_resets_when_ff_only_pull_fails() -> None:
+def test_install_sh_fails_closed_when_ff_only_pull_fails() -> None:
     block = _extract_install_sh_update_block()
 
     assert 'git pull --ff-only origin "$BRANCH"' in block
-    assert 'git reset --hard "origin/$BRANCH"' in block
-    assert "Fast-forward not possible" in block
+    # Fail-closed contract (2026-07-19): an updater must never reset over
+    # local-only commits. The reset fallback is gone; the block refuses,
+    # explains, and preserves everything.
+    assert 'git reset --hard' not in block
+    assert "Update refused" in block
+    assert "fast-forward not possible" in block.lower()
+    assert "untouched" in block
+    assert "exit 1" in block
 
-    pull_idx = block.find('git pull --ff-only origin "$BRANCH"')
-    reset_idx = block.find('git reset --hard "origin/$BRANCH"')
-    assert pull_idx != -1 and reset_idx != -1
-    assert pull_idx < reset_idx, "ff-only pull must be attempted before reset fallback"
 
 
-def test_install_ps1_resets_when_ff_only_pull_fails() -> None:
+def test_install_ps1_fails_closed_when_ff_only_pull_fails() -> None:
     block = _extract_install_ps1_branch_update_block()
 
     assert "pull --ff-only origin $Branch" in block
-    assert 'reset --hard "origin/$Branch"' in block
-    assert "Fast-forward not possible" in block
+    assert 'reset --hard "origin/$Branch"' not in block
+    assert "Update refused" in block
+    assert "fail-closed" in block
+    assert "untouched" in block
 
-    pull_idx = block.find("pull --ff-only origin $Branch")
-    reset_idx = block.find('reset --hard "origin/$Branch"')
-    assert pull_idx != -1 and reset_idx != -1
-    assert pull_idx < reset_idx, "ff-only pull must be attempted before reset fallback"
+

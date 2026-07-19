@@ -568,22 +568,28 @@ def _make_update_side_effect(
     return side_effect, recorded
 
 
-def test_cmd_update_falls_back_to_reset_when_ff_only_fails(monkeypatch, tmp_path, capsys):
-    """When --ff-only fails (diverged history), update resets to origin/{branch}."""
+def test_cmd_update_fails_closed_when_ff_only_fails(monkeypatch, tmp_path, capsys):
+    """When --ff-only fails (diverged history), update REFUSES and never
+    resets — a self-updater must not destroy local commits (2026-07-19
+    incident: the old reset fallback silently discarded a local commit;
+    the pre-pull stash never covers commits)."""
     _setup_update_mocks(monkeypatch, tmp_path)
     monkeypatch.setattr("shutil.which", lambda name: "/usr/bin/uv" if name == "uv" else None)
 
     side_effect, recorded = _make_update_side_effect(ff_only_fails=True)
     monkeypatch.setattr(hermes_main.subprocess, "run", side_effect)
 
-    hermes_main.cmd_update(SimpleNamespace())
+    with pytest.raises(SystemExit) as exc_info:
+        hermes_main.cmd_update(SimpleNamespace())
+    assert exc_info.value.code == 1
 
     reset_calls = [c for c in recorded if "reset" in c and "--hard" in c]
-    assert len(reset_calls) == 1
-    assert reset_calls[0] == ["git", "reset", "--hard", "origin/main"]
+    assert reset_calls == [], "fail-closed: no reset may run on divergence"
 
     out = capsys.readouterr().out
-    assert "Fast-forward not possible" in out
+    assert "Update refused" in out
+    assert "untouched" in out
+    assert "log --oneline origin/main..HEAD" in out
 
 
 def test_cmd_update_no_reset_when_ff_only_succeeds(monkeypatch, tmp_path):

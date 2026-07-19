@@ -761,18 +761,11 @@ def _finalize_session(session: dict | None, end_reason: str = "tui_close") -> No
     try:
         from tools.async_delegation import interrupt_for_session
 
-        _own_sid = str(session.get("_sid") or "")
-        if not _own_sid:
-            try:
-                with _sessions_lock:
-                    for _cand_sid, _cand in _sessions.items():
-                        if _cand is session:
-                            _own_sid = _cand_sid
-                            break
-            except Exception:
-                _own_sid = ""
+        _own_sid, _owned_session_key = _session_async_delegation_selectors(
+            session, sid_hint=str(session.get("_sid") or "")
+        )
         interrupt_for_session(
-            session_key=str(session_key or "") if _tui_owns_lifecycle else "",
+            session_key=_owned_session_key,
             origin_ui_session_id=_own_sid,
             reason=end_reason,
         )
@@ -946,14 +939,69 @@ def _ws_session_is_orphaned(session: dict | None) -> bool:
     return session.get("transport") is _detached_ws_transport
 
 
-def _session_has_active_delegations(sid: str) -> bool:
-    """True when UI session ``sid`` still owns live background work."""
-    if not sid:
+def _session_owns_durable_lifecycle(session_id: str | None) -> bool:
+    """Whether this TUI/desktop session may end its durable DB row by key."""
+    if not session_id:
+        return True
+    try:
+        db = _get_db()
+        if db is None:
+            return True
+        # Don't end gateway-originated sessions — the gateway owns their
+        # lifecycle. The TUI is only a viewer there (#60609).
+        row = db.get_session(session_id)
+        source = (row or {}).get("source", "")
+        return not _is_gateway_owned_source(source)
+    except Exception:
+        return True
+
+
+def _session_async_delegation_selectors(
+    session: dict | None, *, sid_hint: str = ""
+) -> tuple[str, str]:
+    """Ownership selectors for async background work tied to one UI session."""
+    if not session:
+        return "", ""
+    own_sid = str(sid_hint or session.get("_sid") or "")
+    if not own_sid:
+        try:
+            with _sessions_lock:
+                for _cand_sid, _cand in _sessions.items():
+                    if _cand is session:
+                        own_sid = _cand_sid
+                        break
+        except Exception:
+            own_sid = ""
+    agent = session.get("agent")
+    session_key = str(session.get("session_key") or "")
+    session_id = getattr(agent, "session_id", None) or session_key
+    owned_session_key = session_key if _session_owns_durable_lifecycle(session_id) else ""
+    return own_sid, owned_session_key
+
+
+def _session_has_active_delegations(sid: str, session: dict | None = None) -> bool:
+    """True when UI session ``sid`` still owns live background work.
+
+    Matches by the live UI sid AND — when the TUI owns the durable lifecycle
+    (never for gateway-viewer tabs, #60609) — by the durable session_key, so a
+    delegation dispatched from an earlier tab of the same resumed session still
+    keeps it alive.
+    """
+    if session is None:
+        with _sessions_lock:
+            session = _sessions.get(sid)
+    own_sid, owned_session_key = _session_async_delegation_selectors(
+        session, sid_hint=sid
+    )
+    if not own_sid and not owned_session_key:
         return False
     try:
-        from tools.async_delegation import active_for_session
+        from tools.async_delegation import has_live_for_session
 
-        return active_for_session(sid) > 0
+        return has_live_for_session(
+            session_key=owned_session_key,
+            origin_ui_session_id=own_sid,
+        )
     except Exception:
         logger.debug(
             "Failed to query active delegations for UI session %s",
@@ -993,7 +1041,7 @@ def _schedule_ws_orphan_reap(sid: str) -> None:
             current = _sessions.get(sid)
             if not _ws_session_is_orphaned(current):
                 return
-            if _session_has_active_delegations(sid):
+            if _session_has_active_delegations(sid, current):
                 reschedule = True
             else:
                 session = _pop_session_by_id(sid)
@@ -1079,7 +1127,7 @@ def _transport_is_dead(transport) -> bool:
 def _session_is_evictable(sid: str, session: dict, now: float) -> bool:
     if session.get("running") or _session_pending_kind(sid):
         return False
-    if _session_has_active_delegations(sid):
+    if _session_has_active_delegations(sid, session):
         return False
     ready = session.get("agent_ready")
     # Lazy watch sessions (subagent spectator windows) never start a build,
@@ -1172,7 +1220,7 @@ def _session_is_lru_evictable(sid: str, session: dict) -> bool:
     # moment it loses its client.
     if session.get("running") or _session_pending_kind(sid):
         return False
-    if _session_has_active_delegations(sid):
+    if _session_has_active_delegations(sid, session):
         return False
     ready = session.get("agent_ready")
     if ready is not None and not ready.is_set() and not session.get("lazy"):

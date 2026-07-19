@@ -178,6 +178,39 @@ def _admission_identity(
     )
 
 
+def _validate_durable_admission_route(
+    conn: sqlite3.Connection,
+    *,
+    board_id: str,
+    root_task_id: str,
+    generation: int,
+    expected_identity: str,
+) -> None:
+    """Fail closed unless one immutable route still matches admission authority."""
+
+    rows = conn.execute(
+        """
+        SELECT platform, chat_id, thread_id, route_identity
+          FROM project_finalization_notification_routes
+         WHERE board_id=? AND root_task_id=? AND generation=?
+           AND platform='telegram'
+         ORDER BY chat_id, thread_id
+        """,
+        (board_id, root_task_id, generation),
+    ).fetchall()
+    if len(rows) != 1:
+        raise ValueError("admitted project has ambiguous durable Telegram route")
+    route = rows[0]
+    durable_identity = notification_route_identity(
+        route["platform"], route["chat_id"], route["thread_id"] or None
+    )
+    if (
+        route["route_identity"] != expected_identity
+        or durable_identity != expected_identity
+    ):
+        raise ValueError("admitted project durable Telegram route conflicts with admission")
+
+
 def resolve_project_telegram_destination(
     conn: sqlite3.Connection,
     *,
@@ -327,8 +360,6 @@ def admit_existing_project(
 
     canonical_profile = normalize_profile_name(checker_profile)
     validate_profile_name(canonical_profile)
-    if not profile_exists(canonical_profile):
-        raise ValueError(f"checker profile does not exist: {canonical_profile}")
     validate_notification_policy(notification_policy)
     if notification_policy != "project_summary":
         raise ValueError("production admission requires notification_policy='project_summary'")
@@ -338,6 +369,67 @@ def admit_existing_project(
 
     ensure_project_finalization_schema(conn)
     with write_txn(conn):
+        existing_rows = conn.execute(
+            """
+            SELECT * FROM project_finalizations
+             WHERE board_id = ? AND root_task_id = ?
+             ORDER BY generation
+            """,
+            (board_id, root_task_id),
+        ).fetchall()
+        if existing_rows:
+            admitted = [row for row in existing_rows if row["admission_key"] is not None]
+            if len(admitted) != 1:
+                raise ValueError("project admission conflicts with existing durable project state")
+            existing = admitted[0]
+            durable_route_identity = existing["notification_route_identity"]
+            if not isinstance(durable_route_identity, str) or not durable_route_identity:
+                raise ValueError("project admission conflicts with existing durable project state")
+            admission_key = _admission_identity(
+                board_id=board_id,
+                root_task_id=root_task_id,
+                required_task_ids=required_ids,
+                checker_profile=canonical_profile,
+                notification_route_identity_value=durable_route_identity,
+                notification_policy=notification_policy,
+                retention_days=retention_days,
+                repair_budget=repair_budget,
+            )
+            if existing["admission_key"] != admission_key:
+                raise ValueError("project admission conflicts with existing durable project state")
+            persisted_required = {
+                row["task_id"]
+                for row in conn.execute(
+                    """
+                    SELECT task_id FROM project_finalization_members
+                     WHERE board_id = ? AND root_task_id = ? AND generation = ?
+                       AND membership_kind = 'required' AND required = 1
+                    """,
+                    (board_id, root_task_id, int(existing["generation"])),
+                )
+            }
+            if persisted_required != set(required_ids):
+                raise ValueError("project admission conflicts with required task membership")
+            _validate_durable_admission_route(
+                conn,
+                board_id=board_id,
+                root_task_id=root_task_id,
+                generation=int(existing["generation"]),
+                expected_identity=durable_route_identity,
+            )
+            finalization = get_project_finalization(
+                conn,
+                board_id=board_id,
+                root_task_id=root_task_id,
+                generation=int(existing["generation"]),
+            )
+            assert finalization is not None
+            return AtomicProjectAdmission(
+                ADMISSION_ALREADY_ADMITTED, finalization, admission_key
+            )
+
+        if not profile_exists(canonical_profile):
+            raise ValueError(f"checker profile does not exist: {canonical_profile}")
         placeholders = ",".join("?" for _ in required_ids)
         rows = conn.execute(
             f"SELECT * FROM tasks WHERE id IN ({placeholders}) ORDER BY id",
@@ -403,52 +495,6 @@ def admit_existing_project(
             retention_days=retention_days,
             repair_budget=repair_budget,
         )
-
-        existing_rows = conn.execute(
-            """
-            SELECT * FROM project_finalizations
-             WHERE board_id = ? AND root_task_id = ?
-             ORDER BY generation
-            """,
-            (board_id, root_task_id),
-        ).fetchall()
-        if existing_rows:
-            admitted = [row for row in existing_rows if row["admission_key"] is not None]
-            if len(admitted) != 1 or admitted[0]["admission_key"] != admission_key:
-                raise ValueError("project admission conflicts with existing durable project state")
-            existing = admitted[0]
-            persisted_required = {
-                row["task_id"]
-                for row in conn.execute(
-                    """
-                    SELECT task_id FROM project_finalization_members
-                     WHERE board_id = ? AND root_task_id = ? AND generation = ?
-                       AND membership_kind = 'required' AND required = 1
-                    """,
-                    (board_id, root_task_id, int(existing["generation"])),
-                )
-            }
-            if persisted_required != set(required_ids):
-                raise ValueError("project admission conflicts with required task membership")
-            finalization = get_project_finalization(
-                conn,
-                board_id=board_id,
-                root_task_id=root_task_id,
-                generation=int(existing["generation"]),
-            )
-            assert finalization is not None
-            _persist_admitted_telegram_route(
-                conn,
-                board_id=board_id,
-                root_task_id=root_task_id,
-                generation=int(existing["generation"]),
-                route=route,
-                route_identity=route_identity,
-                created_at=current_time,
-            )
-            return AtomicProjectAdmission(
-                ADMISSION_ALREADY_ADMITTED, finalization, admission_key
-            )
 
         pending_identity = _pending_checker_identity(
             admission_key, generation=1, repair_index=0
@@ -768,9 +814,9 @@ def register_project_checker(
                 evaluation_time=current_time,
             )
             if (
-                evaluation.failure_reason != "checker_required"
-                or evaluation.candidate_snapshot_version
+                evaluation.candidate_snapshot_version
                 != action.candidate_snapshot_version
+                or not _checker_registration_evaluation_is_current(evaluation)
             ):
                 return AtomicCheckerRegistration(REGISTRATION_STALE_SNAPSHOT)
 
@@ -1003,6 +1049,32 @@ def _normalize_checker_evidence(evidence: Sequence[Mapping[str, object]]) -> tup
     return tuple(normalized)
 
 
+def _implementation_non_success_evaluation(evaluation: Any) -> bool:
+    """Recognize only evaluator outcomes caused by required implementation work."""
+
+    return (
+        (
+            evaluation.evaluation_state == "BLOCKED"
+            and evaluation.terminal_outcome == "BLOCKED"
+            and evaluation.failure_reason == "external_or_human_block"
+        )
+        or (
+            evaluation.evaluation_state == "FAILED"
+            and evaluation.terminal_outcome == "FAILED"
+            and evaluation.failure_reason == "unrecovered_internal_failure"
+        )
+    )
+
+
+def _checker_registration_evaluation_is_current(evaluation: Any) -> bool:
+    """Allow only a pending checker or an exact implementation terminal candidate."""
+
+    return (
+        evaluation.failure_reason == "checker_required"
+        or _implementation_non_success_evaluation(evaluation)
+    )
+
+
 def submit_project_checker_verdict(
     conn: sqlite3.Connection,
     *,
@@ -1107,6 +1179,10 @@ def submit_project_checker_verdict(
             != project_row["checker_candidate_snapshot_version"]
         ):
             raise ValueError("checker candidate is stale")
+        if _implementation_non_success_evaluation(evaluation) and verdict != "FAIL_TERMINAL":
+            raise ValueError(
+                "implementation non-success candidates require a FAIL_TERMINAL verdict"
+            )
 
         payload: dict[str, object] = {
             "protocol": "project-checker-verdict-v1",

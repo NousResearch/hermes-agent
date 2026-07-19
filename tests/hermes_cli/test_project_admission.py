@@ -172,6 +172,60 @@ def test_admission_exact_replay_and_conflict_are_distinct(board):
         )
 
 
+def test_admission_exact_replay_uses_durable_route_after_root_notifier_gc(board):
+    root, implementation, created = _admitted(board)
+    route_before = board.execute(
+        """
+        SELECT route_identity FROM project_finalization_notification_routes
+         WHERE board_id='board-a' AND root_task_id=? AND generation=1
+        """,
+        (root,),
+    ).fetchall()
+    counts_before = {
+        "projects": board.execute("SELECT COUNT(*) FROM project_finalizations").fetchone()[0],
+        "members": board.execute("SELECT COUNT(*) FROM project_finalization_members").fetchone()[0],
+        "routes": board.execute(
+            "SELECT COUNT(*) FROM project_finalization_notification_routes"
+        ).fetchone()[0],
+    }
+    assert len(route_before) == 1
+    assert kb.remove_notify_sub(
+        board,
+        task_id=root,
+        platform="telegram",
+        chat_id="-100-private",
+        thread_id="42",
+    )
+
+    replay = admit_existing_project(
+        board,
+        board_id="board-a",
+        root_task_id=root,
+        required_task_ids=(implementation,),
+        checker_profile="checker-profile",
+        now=101,
+    )
+
+    route_after = board.execute(
+        """
+        SELECT route_identity FROM project_finalization_notification_routes
+         WHERE board_id='board-a' AND root_task_id=? AND generation=1
+        """,
+        (root,),
+    ).fetchall()
+    counts_after = {
+        "projects": board.execute("SELECT COUNT(*) FROM project_finalizations").fetchone()[0],
+        "members": board.execute("SELECT COUNT(*) FROM project_finalization_members").fetchone()[0],
+        "routes": board.execute(
+            "SELECT COUNT(*) FROM project_finalization_notification_routes"
+        ).fetchone()[0],
+    }
+    assert replay.disposition == ADMISSION_ALREADY_ADMITTED
+    assert replay.admission_key == created.admission_key
+    assert route_after == route_before
+    assert counts_after == counts_before
+
+
 def test_admitted_project_reopen_fails_closed_without_explicit_readmission(board):
     root, _, _ = _admitted(board)
     # Reopen must also reject a historical admitted terminal row.  Construct

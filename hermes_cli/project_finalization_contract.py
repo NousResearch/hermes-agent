@@ -1930,6 +1930,32 @@ def _validate_admitted_checker_authority(
         raise ValueError("checker verdict run does not match aggregate authority")
 
 
+def _validate_admitted_terminal_checker_binding(
+    row: sqlite3.Row,
+    *,
+    outcome: str,
+    candidate_snapshot_version: str,
+) -> None:
+    """Require PASS for every COMPLETE and exact checker proof for admissions."""
+
+    if outcome == "COMPLETE" and row["checker_verdict"] != "PASS":
+        raise ValueError("COMPLETE requires a PASS verdict")
+    if row["admission_key"] is None:
+        return
+    expected_verdict = "PASS" if outcome == "COMPLETE" else "FAIL_TERMINAL"
+    if row["checker_verdict"] != expected_verdict:
+        raise ValueError(
+            f"{outcome} requires a {expected_verdict} checker verdict"
+        )
+    if (
+        row["checker_candidate_snapshot_version"] != candidate_snapshot_version
+        or row["checker_candidate_id"] != candidate_snapshot_version
+    ):
+        raise ValueError(
+            "admitted terminal checker authority must match the terminal candidate"
+        )
+
+
 def freeze_terminal_candidate(
     conn: sqlite3.Connection,
     *,
@@ -1989,15 +2015,11 @@ def freeze_terminal_candidate(
             or evaluation.candidate_snapshot_version != candidate_snapshot_version
         ):
             raise ValueError("terminal candidate no longer matches live evaluation")
-        if outcome == "COMPLETE":
-            if row["checker_verdict"] != "PASS":
-                raise ValueError("COMPLETE requires a PASS verdict")
-            if row["admission_key"] is not None and (
-                row["checker_candidate_snapshot_version"]
-                != candidate_snapshot_version
-                or row["checker_candidate_id"] != candidate_snapshot_version
-            ):
-                raise ValueError("COMPLETE requires a PASS bound to the terminal candidate")
+        _validate_admitted_terminal_checker_binding(
+            row,
+            outcome=outcome,
+            candidate_snapshot_version=candidate_snapshot_version,
+        )
 
         _validate_immutable_persisted_value(row, "terminal_intent", outcome)
         _validate_immutable_persisted_value(
@@ -2031,23 +2053,12 @@ def freeze_terminal_candidate(
             if accepted is not None:
                 raise ValueError("cannot replace artifacts after accepted delivery")
 
-        clear_checker = bool(
-            row["admission_key"] is not None
-            and outcome != "COMPLETE"
-            and row["checker_verdict"] is not None
-            and (
-                row["checker_candidate_snapshot_version"]
-                != candidate_snapshot_version
-                or row["checker_candidate_id"] != candidate_snapshot_version
-            )
-        )
         unchanged = (
             row["terminal_intent"] == outcome
             and row["terminal_candidate_snapshot_version"]
             == candidate_snapshot_version
             and row["state"] == "delivery_pending"
             and not clear_artifacts
-            and not clear_checker
         )
         if unchanged:
             return _row_to_project_finalization(row)
@@ -2058,9 +2069,6 @@ def freeze_terminal_candidate(
                SET terminal_intent=?,
                    terminal_candidate_snapshot_version=?,
                    state='delivery_pending',
-                   checker_verdict=CASE WHEN ? THEN NULL ELSE checker_verdict END,
-                   checker_candidate_snapshot_version=CASE WHEN ? THEN NULL ELSE checker_candidate_snapshot_version END,
-                   checker_candidate_id=CASE WHEN ? THEN NULL ELSE checker_candidate_id END,
                    final_report_path=CASE WHEN ? THEN NULL ELSE final_report_path END,
                    final_report_sha256=CASE WHEN ? THEN NULL ELSE final_report_sha256 END,
                    manifest_path=CASE WHEN ? THEN NULL ELSE manifest_path END,
@@ -2076,9 +2084,6 @@ def freeze_terminal_candidate(
             (
                 outcome,
                 candidate_snapshot_version,
-                clear_checker,
-                clear_checker,
-                clear_checker,
                 clear_artifacts,
                 clear_artifacts,
                 clear_artifacts,
@@ -2214,6 +2219,8 @@ def record_terminal_outcome(
         _validate_immutable_persisted_value(row, "terminal_outcome", outcome)
         if row["terminal_outcome"] == outcome:
             return _row_to_project_finalization(row)
+        if row["admission_key"] is not None and row["terminal_candidate_snapshot_version"] is None:
+            raise ValueError("admitted terminal outcome requires a frozen terminal candidate")
         if row["terminal_candidate_snapshot_version"] is not None:
             if (
                 row["terminal_intent"] != outcome
@@ -2228,6 +2235,11 @@ def record_terminal_outcome(
             ):
                 raise ValueError("current finalization lock is required")
             _validate_admitted_checker_authority(conn, row)
+            _validate_admitted_terminal_checker_binding(
+                row,
+                outcome=outcome,
+                candidate_snapshot_version=row["terminal_candidate_snapshot_version"],
+            )
 
         conn.execute(
             """

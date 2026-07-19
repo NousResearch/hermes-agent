@@ -164,6 +164,20 @@ class ProjectFinalizationService:
                 return await self._finalize(conn, current, evaluation, "COMPLETE", result.plus(processed=1), now)
             if evaluation.evaluation_state in {"BLOCKED", "FAILED"}:
                 outcome = "BLOCKED" if evaluation.evaluation_state == "BLOCKED" else "FAILED"
+                # An implementation-level non-success is still a terminal
+                # candidate that requires independent checker authority.  In
+                # particular, a stale PASS from an older successful candidate
+                # must never authorize delivery for a newly blocked/failed
+                # implementation snapshot.
+                if (
+                    current.admission_key is not None
+                    and not self._has_current_terminal_checker(
+                        current, evaluation, outcome
+                    )
+                ):
+                    return self._reconcile_checker(
+                        conn, current, evaluation, result.plus(processed=1), now
+                    )
                 return await self._finalize(conn, current, evaluation, outcome, result.plus(processed=1), now)
             # MALFORMED is deliberately non-repairing and never claims success.
             return result.plus(processed=1, skipped=1)
@@ -203,6 +217,22 @@ class ProjectFinalizationService:
         if destination.status != DESTINATION_FOUND or not destination.route_identity:
             return ()
         return (destination.route_identity,)
+
+    @staticmethod
+    def _has_current_terminal_checker(
+        current: Any, evaluation: ProjectEvaluation, outcome: str
+    ) -> bool:
+        """Return whether an admitted non-success has matching checker proof."""
+
+        expected_verdict = "PASS" if outcome == "COMPLETE" else "FAIL_TERMINAL"
+        return (
+            current.checker_verdict == expected_verdict
+            and evaluation.checker_task_id == current.final_checker_task_id
+            and current.final_checker_task_id in evaluation.successful_task_ids
+            and current.checker_candidate_snapshot_version
+            == evaluation.candidate_snapshot_version
+            and current.checker_candidate_id == evaluation.candidate_snapshot_version
+        )
 
     def _reconcile_checker(self, conn: sqlite3.Connection, current: Any, evaluation: ProjectEvaluation, result: ProjectFinalizationTickResult, now: int) -> ProjectFinalizationTickResult:
         if not self._owns_lock(current, now):

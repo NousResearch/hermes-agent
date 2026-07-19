@@ -20,6 +20,7 @@ from hermes_cli.project_finalization_contract import (
     list_project_members,
     register_project_member,
 )
+from hermes_cli.project_finalizer import evaluate_project
 
 
 BOARD = "board-e2e"
@@ -531,6 +532,211 @@ def test_admitted_project_passes_checker_delivers_once_and_replays_safely(
         for task in kb.list_tasks(conn, include_archived=True)
         for event in kb.list_events(conn, task.id)
     ) == 3
+
+
+def _assert_admitted_implementation_non_success(
+    production_board, *, scenario: str, expected_outcome: str
+) -> None:
+    conn, db_path, workspace = production_board
+    root = kb.create_task(
+        conn, title=f"{scenario} project", assignee="builder-sol",
+        workspace_kind="dir", workspace_path=str(workspace),
+    )
+    kb.add_notify_sub(conn, task_id=root, platform="telegram", chat_id=CHAT_ID, thread_id=THREAD_ID)
+    kb.set_task_contract(conn, root, _contract())
+    implementation = kb.create_task(
+        conn, title="Bounded implementation", assignee="builder-sol",
+        workspace_kind="dir", workspace_path=str(workspace), parents=(root,), contract=_contract(),
+    )
+    runtime.admit_existing_project(
+        conn, board_id=BOARD, root_task_id=root, required_task_ids=(implementation,),
+        checker_profile=CHECKER_PROFILE, now=900,
+    )
+    assert kb.complete_task(conn, root, result="root completed")
+    kb.recompute_ready(conn)
+    if scenario == "internal_failure":
+        # Make the bounded retry policy itself terminal, so ordinary checker
+        # completion cannot requeue the implementation between verdict and
+        # finalization.
+        conn.execute("UPDATE tasks SET max_retries=1 WHERE id=?", (implementation,))
+    implementation_claim = kb.claim_task(conn, implementation, claimer="implementation-worker")
+    assert implementation_claim is not None
+    if scenario == "needs_input":
+        assert kb.block_task(
+            conn, implementation, reason="operator decision required", kind="needs_input",
+            expected_run_id=implementation_claim.current_run_id,
+        )
+    else:
+        assert kb._record_task_failure(
+            conn, implementation, "worker crashed", outcome="crashed", failure_limit=1,
+            release_claim=True, end_run=True,
+        )
+
+    deliveries: list[str] = []
+
+    async def accepted_delivery(platform, chat_id, thread_id, message):
+        assert (platform, chat_id, thread_id) == ("telegram", CHAT_ID, THREAD_ID)
+        deliveries.append(message)
+        return {"provider_message_id": f"{scenario}-message"}
+
+    service = ProjectFinalizationService(
+        lambda: kb.connect(db_path), owner=f"{scenario}-finalizer", now=lambda: 1000,
+        deliver=accepted_delivery, enabled=True, canary_scope=(f"{BOARD}/{root}",),
+    )
+    first = asyncio.run(service.tick(board_id=BOARD))
+    aggregate = get_project_finalization(conn, board_id=BOARD, root_task_id=root, generation=1)
+    assert first.checkers_reconciled == 1
+    assert first.delivered == first.terminalized == 0
+    assert aggregate is not None and aggregate.checker_verdict is None
+    checker_claim = kb.claim_task(conn, aggregate.final_checker_task_id, claimer="independent-checker")
+    assert checker_claim is not None and checker_claim.current_run_id is not None
+    evidence = ({"kind": "test", "reference": f"production-{scenario}", "summary": "terminal candidate reviewed"},)
+    for invalid in ("PASS", "FAIL_REPAIRABLE"):
+        with pytest.raises(ValueError, match="FAIL_TERMINAL"):
+            runtime.submit_project_checker_verdict(
+                conn, board_id=BOARD, task_id=aggregate.final_checker_task_id,
+                run_id=checker_claim.current_run_id, worker_profile=CHECKER_PROFILE,
+                verdict=invalid, reason="must not relabel non-success", evidence=evidence, now=1001,
+            )
+    verdict_kwargs = {
+        "board_id": BOARD,
+        "task_id": aggregate.final_checker_task_id,
+        "run_id": checker_claim.current_run_id,
+        "worker_profile": CHECKER_PROFILE,
+        "verdict": "FAIL_TERMINAL",
+        "reason": "terminal implementation non-success",
+        "evidence": evidence,
+        "now": 1002,
+    }
+    if scenario == "needs_input":
+        with pytest.raises(RuntimeError, match="crash after verdict commit"):
+            runtime.submit_project_checker_verdict(
+                conn,
+                inject_failure=lambda stage: (
+                    (_ for _ in ()).throw(RuntimeError("crash after verdict commit"))
+                    if stage == "after_verdict_commit"
+                    else None
+                ),
+                **verdict_kwargs,
+            )
+        assert kb.get_task(conn, aggregate.final_checker_task_id).status == "running"
+        crash_window = asyncio.run(service.tick(board_id=BOARD))
+        assert crash_window.delivered == crash_window.terminalized == 0
+        assert crash_window.failures == ()
+        assert deliveries == []
+    assert runtime.submit_project_checker_verdict(conn, **verdict_kwargs).completed
+    current = get_project_finalization(conn, board_id=BOARD, root_task_id=root, generation=1)
+    live_evaluation = evaluate_project(
+        conn, board_id=BOARD, root_task_id=root, generation=1, evaluation_time=1000
+    )
+    assert current is not None
+    assert current.checker_candidate_snapshot_version == live_evaluation.candidate_snapshot_version
+    assert current.checker_candidate_id == live_evaluation.candidate_snapshot_version
+
+    finalized = asyncio.run(service.tick(board_id=BOARD))
+    terminal = get_project_finalization(conn, board_id=BOARD, root_task_id=root, generation=1)
+    assert finalized.delivered == finalized.terminalized == 1
+    assert terminal is not None and terminal.terminal_outcome == expected_outcome
+    assert terminal.checker_verdict == "FAIL_TERMINAL"
+    assert deliveries == [
+        "\n".join((
+            f"Result: {expected_outcome}", f"Root: {root}", "Checker: FAIL_TERMINAL",
+            "Artifacts: final-report.md, manifest.json, usage-summary.json",
+        ))
+    ]
+    restarted = ProjectFinalizationService(
+        lambda: kb.connect(db_path), owner=f"{scenario}-restart", now=lambda: 1010,
+        deliver=accepted_delivery, enabled=True, canary_scope=(f"{BOARD}/{root}",),
+    )
+    replay = asyncio.run(restarted.tick(board_id=BOARD))
+    assert replay.delivered == replay.terminalized == 0
+    assert len(deliveries) == 1
+
+
+def test_admitted_needs_input_registers_checker_then_terminalizes_once(production_board):
+    _assert_admitted_implementation_non_success(
+        production_board, scenario="needs_input", expected_outcome="BLOCKED"
+    )
+
+
+def test_admitted_internal_failure_registers_checker_then_terminalizes_once(production_board):
+    _assert_admitted_implementation_non_success(
+        production_board, scenario="internal_failure", expected_outcome="FAILED"
+    )
+
+
+def test_stale_pass_cannot_deliver_a_new_non_success_candidate(production_board):
+    conn, db_path, workspace = production_board
+    root = kb.create_task(
+        conn, title="Stale PASS candidate", assignee="builder-sol",
+        workspace_kind="dir", workspace_path=str(workspace),
+    )
+    kb.add_notify_sub(conn, task_id=root, platform="telegram", chat_id=CHAT_ID, thread_id=THREAD_ID)
+    kb.set_task_contract(conn, root, _contract())
+    implementation = kb.create_task(
+        conn, title="Initially successful implementation", assignee="builder-sol",
+        workspace_kind="dir", workspace_path=str(workspace), parents=(root,), contract=_contract(),
+    )
+    runtime.admit_existing_project(
+        conn, board_id=BOARD, root_task_id=root, required_task_ids=(implementation,),
+        checker_profile=CHECKER_PROFILE, now=1100,
+    )
+    assert kb.complete_task(conn, root, result="root complete")
+    kb.recompute_ready(conn)
+    assert kb.complete_task(conn, implementation, result="initial implementation complete")
+    deliveries: list[str] = []
+
+    async def accepted_delivery(_platform, _chat_id, _thread_id, message):
+        deliveries.append(message)
+        return {"provider_message_id": "stale-pass-message"}
+
+    service = ProjectFinalizationService(
+        lambda: kb.connect(db_path), owner="stale-pass-finalizer", now=lambda: 1200,
+        deliver=accepted_delivery, enabled=True, canary_scope=(f"{BOARD}/{root}",),
+    )
+    assert asyncio.run(service.tick(board_id=BOARD)).checkers_reconciled == 1
+    first = get_project_finalization(conn, board_id=BOARD, root_task_id=root, generation=1)
+    assert first is not None
+    first_claim = kb.claim_task(conn, first.final_checker_task_id, claimer="first-checker")
+    assert first_claim is not None and first_claim.current_run_id is not None
+    evidence = ({"kind": "review", "reference": "initial-pass", "summary": "original candidate passed"},)
+    assert runtime.submit_project_checker_verdict(
+        conn, board_id=BOARD, task_id=first.final_checker_task_id,
+        run_id=first_claim.current_run_id, worker_profile=CHECKER_PROFILE, verdict="PASS",
+        reason="the original candidate passed", evidence=evidence, now=1201,
+    ).completed
+
+    # This required-work mutation precedes every terminal fence and provider
+    # acceptance. It makes a new BLOCKED candidate that cannot inherit PASS.
+    conn.execute("UPDATE tasks SET status='blocked', block_kind='needs_input' WHERE id=?", (implementation,))
+    rotated = asyncio.run(service.tick(board_id=BOARD))
+    aggregate = get_project_finalization(conn, board_id=BOARD, root_task_id=root, generation=1)
+    assert rotated.checkers_reconciled == 1
+    assert rotated.delivered == rotated.terminalized == 0
+    assert deliveries == []
+    assert aggregate is not None and aggregate.checker_verdict is None
+    assert aggregate.final_checker_task_id != first.final_checker_task_id
+    fresh_claim = kb.claim_task(conn, aggregate.final_checker_task_id, claimer="fresh-checker")
+    assert fresh_claim is not None and fresh_claim.current_run_id is not None
+    assert runtime.submit_project_checker_verdict(
+        conn, board_id=BOARD, task_id=aggregate.final_checker_task_id,
+        run_id=fresh_claim.current_run_id, worker_profile=CHECKER_PROFILE, verdict="FAIL_TERMINAL",
+        reason="changed candidate needs external input", evidence=evidence, now=1202,
+    ).completed
+    finalized = asyncio.run(service.tick(board_id=BOARD))
+    terminal = get_project_finalization(conn, board_id=BOARD, root_task_id=root, generation=1)
+    assert finalized.delivered == finalized.terminalized == 1
+    assert terminal is not None and terminal.terminal_outcome == "BLOCKED"
+    assert terminal.checker_verdict == "FAIL_TERMINAL"
+    assert len(deliveries) == 1 and "Checker: FAIL_TERMINAL" in deliveries[0]
+    assert "Checker: PASS" not in deliveries[0]
+    restarted = ProjectFinalizationService(
+        lambda: kb.connect(db_path), owner="stale-pass-restart", now=lambda: 1210,
+        deliver=accepted_delivery, enabled=True, canary_scope=(f"{BOARD}/{root}",),
+    )
+    replay = asyncio.run(restarted.tick(board_id=BOARD))
+    assert replay.delivered == replay.terminalized == 0
+    assert len(deliveries) == 1
 
 
 def test_admitted_route_survives_root_subscription_gc_before_checker_registration(

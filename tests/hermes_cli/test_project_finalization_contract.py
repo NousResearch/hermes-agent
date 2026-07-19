@@ -53,6 +53,7 @@ from hermes_cli.project_finalization_contract import (
     record_failure_envelope,
     record_cleanup_journal,
     PROJECT_SCHEMA_SQL,
+    _validate_admitted_terminal_checker_binding,
 )
 
 
@@ -715,6 +716,39 @@ def test_checker_verdict_only_by_designated_and_idempotent():
         rec2 = record_checker_verdict(conn, board_id="b", root_task_id="rt", generation=1,
                                       checker_task_id="thechk", verdict="PASS")
         assert rec2.evaluated_at == rec.evaluated_at
+    finally:
+        _close_and_unlink(conn, path)
+
+
+def test_legacy_complete_still_requires_a_pass_checker_verdict():
+    conn, path = _make_temp_db()
+    try:
+        ensure_project_finalization_schema(conn)
+        create_project_finalization(
+            conn, board_id="legacy", root_task_id="root", final_checker_task_id="chk"
+        )
+        row = conn.execute(
+            "SELECT * FROM project_finalizations WHERE board_id='legacy' AND root_task_id='root'"
+        ).fetchone()
+        with pytest.raises(ValueError, match="COMPLETE requires a PASS verdict"):
+            _validate_admitted_terminal_checker_binding(
+                row, outcome="COMPLETE", candidate_snapshot_version="legacy-candidate"
+            )
+
+        record_checker_verdict(
+            conn,
+            board_id="legacy",
+            root_task_id="root",
+            generation=1,
+            checker_task_id="chk",
+            verdict="PASS",
+        )
+        passed = conn.execute(
+            "SELECT * FROM project_finalizations WHERE board_id='legacy' AND root_task_id='root'"
+        ).fetchone()
+        _validate_admitted_terminal_checker_binding(
+            passed, outcome="COMPLETE", candidate_snapshot_version="legacy-candidate"
+        )
     finally:
         _close_and_unlink(conn, path)
 

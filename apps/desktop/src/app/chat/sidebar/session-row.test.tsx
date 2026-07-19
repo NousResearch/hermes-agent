@@ -44,7 +44,14 @@ vi.mock('@/lib/session-source', () => ({
 vi.mock('@/lib/time', () => ({ coarseElapsed: () => ({ unit: 'minute' as const, value: 5 }) }))
 
 vi.mock('@/store/composer-status', () => ({ $backgroundRunningSessionIds: atom<string[]>([]) }))
-vi.mock('@/store/session', () => ({ $unreadFinishedSessionIds: atom<string[]>([]) }))
+vi.mock('@/store/session', () => ({
+  $sessions: atom<Record<string, unknown>>({}),
+  $unreadFinishedSessionIds: atom<string[]>([])
+}))
+// session-row.tsx reads the idle-dot project color from this derived store
+// directly — mock it here rather than letting it recompute from $sessions/
+// $projects, since this file only exercises the Tip wrapping, not coloring.
+vi.mock('@/store/session-color', () => ({ $sessionColorById: atom<Record<string, string>>({}) }))
 vi.mock('@/store/session-states', () => ({
   $attentionSessionIds: atom<string[]>([]),
   openSessionTile: vi.fn()

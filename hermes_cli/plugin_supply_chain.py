@@ -210,6 +210,8 @@ def read_provenance_lock(
         metadata = os.fstat(descriptor)
         if not stat.S_ISREG(metadata.st_mode):
             raise ValueError("provenance lock must be a regular file")
+        if metadata.st_nlink != 1:
+            raise ValueError("provenance lock must have a single link")
         if before is not None and (
             stat.S_ISLNK(before.st_mode)
             or (before.st_dev, before.st_ino) != (metadata.st_dev, metadata.st_ino)

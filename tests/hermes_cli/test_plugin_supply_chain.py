@@ -292,3 +292,12 @@ def test_write_provenance_lock_is_owner_only(tmp_path: Path) -> None:
     lock_path = write_provenance_lock(tmp_path, _provenance())
 
     assert stat.S_IMODE(lock_path.stat().st_mode) == 0o600
+
+
+@pytest.mark.skipif(os.name != "posix" or not hasattr(os, "link"), reason="hardlinks require POSIX")
+def test_read_provenance_lock_rejects_hardlinked_file(tmp_path: Path) -> None:
+    lock_path = write_provenance_lock(tmp_path, _provenance())
+    os.link(lock_path, tmp_path / "second-link")
+
+    with pytest.raises(ValueError, match="single link"):
+        read_provenance_lock(tmp_path)

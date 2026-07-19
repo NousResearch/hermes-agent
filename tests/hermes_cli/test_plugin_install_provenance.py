@@ -3,7 +3,9 @@ from __future__ import annotations
 import dataclasses
 import json
 import os
+import stat
 import subprocess
+from contextlib import contextmanager
 from argparse import ArgumentParser
 from pathlib import Path
 from unittest.mock import patch
@@ -462,3 +464,88 @@ def test_cli_install_parser_dispatches_requested_ref():
         handler.assert_called_once_with("owner/repo", force=False, enable=False, requested_ref=sha)
     finally:
         patch.stopall()
+
+
+def test_force_install_publication_uses_target_operation_lock(tmp_path, monkeypatch):
+    repo = tmp_path / "repo"
+    _repo(repo)
+    plugins = tmp_path / "plugins"
+    plugins.mkdir()
+    target = plugins / "pinned-plugin"
+    target.mkdir()
+    (target / "old").write_text("yes")
+    monkeypatch.setattr(pc, "_plugins_dir", lambda: plugins)
+    events = []
+
+    @contextmanager
+    def recording_lock(locked_target):
+        events.append(("enter", locked_target))
+        yield
+        events.append(("exit", locked_target))
+
+    monkeypatch.setattr(pc, "_plugin_operation_lock", recording_lock)
+    real_replace = pc.os.replace
+
+    def assert_locked_during_publish(src, dst):
+        if Path(dst) == target:
+            assert events == [("enter", target)]
+        return real_replace(src, dst)
+
+    monkeypatch.setattr(pc.os, "replace", assert_locked_during_publish)
+    pc._install_plugin_core(f"file://{repo}", force=True)
+
+    assert events == [("enter", target), ("exit", target)]
+
+
+@pytest.mark.skipif(os.name != "posix", reason="POSIX permission bits only")
+def test_operation_lock_is_stable_and_owner_only(tmp_path, monkeypatch):
+    plugins = tmp_path / "plugins"
+    plugins.mkdir()
+    target = plugins / "demo"
+    monkeypatch.setattr(pc, "_plugins_dir", lambda: plugins)
+
+    with pc._plugin_operation_lock(target):
+        lock_dir = plugins / ".operation-locks"
+        lock_path = next(lock_dir.glob("*.lock"))
+        inode = lock_path.stat().st_ino
+        assert stat.S_IMODE(lock_dir.stat().st_mode) == 0o700
+        assert stat.S_IMODE(lock_path.stat().st_mode) == 0o600
+
+    assert lock_path.is_file()
+    with pc._plugin_operation_lock(target):
+        assert lock_path.stat().st_ino == inode
+
+
+def test_operation_lock_fallback_rejects_dangling_symlink_lock_path(tmp_path, monkeypatch):
+    plugins = tmp_path / "plugins"
+    plugins.mkdir()
+    target = plugins / "demo"
+    monkeypatch.setattr(pc, "_plugins_dir", lambda: plugins)
+    with pc._plugin_operation_lock(target):
+        lock_path = next((plugins / ".operation-locks").glob("*.lock"))
+    lock_path.unlink()
+    outside = tmp_path / "outside"
+    lock_path.symlink_to(outside)
+    monkeypatch.delattr(pc.os, "O_NOFOLLOW", raising=False)
+
+    with pytest.raises(pc.PluginOperationError, match="unsafe|regular"):
+        with pc._plugin_operation_lock(target):
+            pass
+    assert not outside.exists()
+
+
+@pytest.mark.skipif(not hasattr(os, "link"), reason="hardlinks unavailable")
+def test_operation_lock_rejects_hardlinked_lock_path(tmp_path, monkeypatch):
+    plugins = tmp_path / "plugins"
+    plugins.mkdir()
+    target = plugins / "demo"
+    monkeypatch.setattr(pc, "_plugins_dir", lambda: plugins)
+    with pc._plugin_operation_lock(target):
+        lock_path = next((plugins / ".operation-locks").glob("*.lock"))
+    os.link(lock_path, tmp_path / "second-link")
+
+    with pytest.raises(pc.PluginOperationError, match="single link"):
+        with pc._plugin_operation_lock(target):
+            pass
+
+    assert lock_path.is_file()

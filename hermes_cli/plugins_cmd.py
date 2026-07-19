@@ -10,6 +10,7 @@ rendered with Rich Markdown.  Otherwise a default confirmation is shown.
 from __future__ import annotations
 
 import functools
+import hashlib
 import importlib.metadata
 import json
 import logging
@@ -20,6 +21,8 @@ import stat
 import subprocess
 import sys
 import tempfile
+import threading
+from contextlib import contextmanager
 from dataclasses import asdict, dataclass
 from datetime import datetime, timezone
 from pathlib import Path
@@ -40,6 +43,9 @@ from hermes_cli.plugin_supply_chain import (
 )
 
 logger = logging.getLogger(__name__)
+
+_OPERATION_MUTEXES_GUARD = threading.Lock()
+_OPERATION_MUTEXES: dict[str, threading.Lock] = {}
 
 
 @functools.lru_cache(maxsize=1)
@@ -109,6 +115,78 @@ def _plugins_dir() -> Path:
     plugins = get_hermes_home() / "plugins"
     plugins.mkdir(parents=True, exist_ok=True)
     return plugins
+
+
+@contextmanager
+def _plugin_operation_lock(target: Path):
+    """Serialize all Hermes install/update operations for one canonical target."""
+    canonical_target = target.resolve(strict=False)
+    plugins_root = _plugins_dir().resolve(strict=True)
+    try:
+        canonical_target.relative_to(plugins_root)
+    except ValueError:
+        raise PluginOperationError("Plugin operation lock target must remain under plugins root.")
+    key = hashlib.sha256(os.fsencode(str(canonical_target))).hexdigest()
+    with _OPERATION_MUTEXES_GUARD:
+        mutex = _OPERATION_MUTEXES.setdefault(key, threading.Lock())
+
+    with mutex:
+        lock_dir = plugins_root / ".operation-locks"
+        try:
+            lock_dir.mkdir(mode=0o700, exist_ok=True)
+            directory_metadata = lock_dir.lstat()
+            if stat.S_ISLNK(directory_metadata.st_mode) or not stat.S_ISDIR(directory_metadata.st_mode):
+                raise PluginOperationError("Plugin operation lock directory is unsafe.")
+            if os.name == "posix":
+                os.chmod(lock_dir, 0o700)
+            lock_path = lock_dir / f"{key}.lock"
+            nofollow = getattr(os, "O_NOFOLLOW", 0)
+            before = None
+            if not nofollow:
+                try:
+                    before = lock_path.lstat()
+                except FileNotFoundError:
+                    pass
+                if before is not None and not stat.S_ISREG(before.st_mode):
+                    raise PluginOperationError("Plugin operation lock must be a regular file.")
+            flags = os.O_RDWR | os.O_CREAT | nofollow
+            descriptor = os.open(lock_path, flags, 0o600)
+        except (OSError, ValueError) as exc:
+            raise PluginOperationError("Plugin operation lock is unsafe or unavailable.") from exc
+        try:
+            metadata = os.fstat(descriptor)
+            if not stat.S_ISREG(metadata.st_mode):
+                raise PluginOperationError("Plugin operation lock must be a regular file.")
+            if metadata.st_nlink != 1:
+                raise PluginOperationError("Plugin operation lock must have a single link.")
+            if before is not None and (before.st_dev, before.st_ino) != (
+                metadata.st_dev,
+                metadata.st_ino,
+            ):
+                raise PluginOperationError("Plugin operation lock must be a regular file.")
+            if os.name == "posix":
+                os.fchmod(descriptor, 0o600)
+                import fcntl
+
+                fcntl.flock(descriptor, fcntl.LOCK_EX)
+            else:
+                import msvcrt
+
+                if metadata.st_size == 0:
+                    os.write(descriptor, b"\0")
+                    os.fsync(descriptor)
+                os.lseek(descriptor, 0, os.SEEK_SET)
+                msvcrt.locking(descriptor, msvcrt.LK_LOCK, 1)
+            try:
+                yield
+            finally:
+                if os.name == "posix":
+                    fcntl.flock(descriptor, fcntl.LOCK_UN)
+                else:
+                    os.lseek(descriptor, 0, os.SEEK_SET)
+                    msvcrt.locking(descriptor, msvcrt.LK_UNLCK, 1)
+        finally:
+            os.close(descriptor)
 
 
 def _sanitize_plugin_name(
@@ -913,15 +991,8 @@ def _install_plugin_core(
                     f"but this installer only supports up to {_SUPPORTED_MANIFEST_VERSION}. "
                     f"Run {recommended_update_command()} to update Hermes."
                 ) from None
-        if target.exists() and not force:
-            raise PluginOperationError(
-                f"Plugin '{plugin_name}' already exists. Use force reinstall "
-                f"or run `hermes plugins update {plugin_name}`."
-            )
-
         staging_root = Path(tempfile.mkdtemp(prefix=".install-", dir=plugins_dir))
         staged = staging_root / "payload"
-        backup: Path | None = None
         try:
             shutil.copytree(source_dir, staged, symlinks=True)
             from rich.console import Console
@@ -940,24 +1011,30 @@ def _install_plugin_core(
                 write_provenance_lock(staged, provenance)
             except Exception as exc:
                 raise PluginOperationError("Failed to write plugin provenance lock.") from exc
-
-            try:
-                if target.exists():
-                    backup = Path(tempfile.mkdtemp(prefix=".backup-", dir=plugins_dir))
-                    backup.rmdir()
-                    os.replace(target, backup)
-                os.replace(staged, target)
-            except OSError as exc:
-                if backup is not None and backup.exists():
-                    _restore_plugin_backup(backup, target)
-                raise PluginOperationError("Failed to publish plugin installation.") from exc
-
-            if backup is not None and backup.exists():
+            with _plugin_operation_lock(target):
+                if target.exists() and not force:
+                    raise PluginOperationError(
+                        f"Plugin '{plugin_name}' already exists. Use force reinstall "
+                        f"or run `hermes plugins update {plugin_name}`."
+                    )
+                backup: Path | None = None
                 try:
-                    shutil.rmtree(backup)
-                except OSError:
-                    logger.warning("Installed plugin, but failed to clean up previous installation backup")
-            return InstallResult(target, installed_manifest, installed_name, provenance, capabilities)
+                    if target.exists():
+                        backup = Path(tempfile.mkdtemp(prefix=".backup-", dir=plugins_dir))
+                        backup.rmdir()
+                        os.replace(target, backup)
+                    os.replace(staged, target)
+                except OSError as exc:
+                    if backup is not None and backup.exists():
+                        _restore_plugin_backup(backup, target)
+                    raise PluginOperationError("Failed to publish plugin installation.") from exc
+
+                if backup is not None and backup.exists():
+                    try:
+                        shutil.rmtree(backup)
+                    except OSError:
+                        logger.warning("Installed plugin, but failed to clean up previous installation backup")
+                return InstallResult(target, installed_manifest, installed_name, provenance, capabilities)
         finally:
             shutil.rmtree(staging_root, ignore_errors=True)
 
@@ -1068,45 +1145,39 @@ def cmd_update(name: str) -> None:
         sys.exit(1)
 
     try:
-        provenance = _update_provenance_preflight(target, name)
+        with _plugin_operation_lock(target):
+            provenance = _update_provenance_preflight(target, name)
+            if not (target / ".git").exists():
+                console.print(
+                    f"[red]Error:[/red] Plugin '{name}' was not installed from git "
+                    f"(no .git directory). Cannot update."
+                )
+                sys.exit(1)
+            console.print(f"[dim]Updating {name}...[/dim]")
+            ok, output = _git_pull_plugin_dir(target)
+            if not ok:
+                console.print(f"[red]Error:[/red] {output}")
+                sys.exit(1)
+            if provenance is not None:
+                try:
+                    _refresh_update_provenance(target, provenance)
+                except Exception:
+                    console.print(
+                        "[red]Error:[/red] Plugin updated, but provenance lock refresh failed."
+                    )
+                    sys.exit(1)
+            _copy_example_files(target, console)
+            out = output.strip()
+            if "Already up to date" in out:
+                console.print(
+                    f"[green]✓[/green] Plugin [bold]{name}[/bold] is already up to date."
+                )
+            else:
+                console.print(f"[green]✓[/green] Plugin [bold]{name}[/bold] updated.")
+                console.print(f"[dim]{out}[/dim]")
     except PluginOperationError as exc:
         console.print(f"[red]Error:[/red] {exc}")
         sys.exit(1)
-
-    if not (target / ".git").exists():
-        console.print(
-            f"[red]Error:[/red] Plugin '{name}' was not installed from git "
-            f"(no .git directory). Cannot update."
-        )
-        sys.exit(1)
-
-    console.print(f"[dim]Updating {name}...[/dim]")
-
-    ok, output = _git_pull_plugin_dir(target)
-    if not ok:
-        console.print(f"[red]Error:[/red] {output}")
-        sys.exit(1)
-
-    if provenance is not None:
-        try:
-            _refresh_update_provenance(target, provenance)
-        except Exception:
-            console.print(
-                "[red]Error:[/red] Plugin updated, but provenance lock refresh failed."
-            )
-            sys.exit(1)
-
-    # Copy any new .example files
-    _copy_example_files(target, console)
-
-    out = output.strip()
-    if "Already up to date" in out:
-        console.print(
-            f"[green]✓[/green] Plugin [bold]{name}[/bold] is already up to date."
-        )
-    else:
-        console.print(f"[green]✓[/green] Plugin [bold]{name}[/bold] updated.")
-        console.print(f"[dim]{out}[/dim]")
 
 
 def cmd_remove(name: str) -> None:
@@ -2422,36 +2493,33 @@ def dashboard_update_user_plugin(name: str) -> dict[str, Any]:
         }
 
     try:
-        provenance = _update_provenance_preflight(target, name)
+        with _plugin_operation_lock(target):
+            provenance = _update_provenance_preflight(target, name)
+            if not (target / ".git").exists():
+                return {
+                    "ok": False,
+                    "error": f"Plugin '{name}' is not a git checkout; cannot pull updates.",
+                }
+            ok, msg = _git_pull_plugin_dir(target)
+            if not ok:
+                return {"ok": False, "error": msg}
+            if provenance is not None:
+                try:
+                    _refresh_update_provenance(target, provenance)
+                except Exception:
+                    return {
+                        "ok": False,
+                        "updated": True,
+                        "error": "Plugin updated, but provenance lock refresh failed.",
+                        "name": name,
+                    }
+            from rich.console import Console
+
+            _copy_example_files(target, Console())
+            unchanged = "Already up to date" in msg
+            return {"ok": True, "name": name, "output": msg, "unchanged": unchanged}
     except PluginOperationError as exc:
         return {"ok": False, "error": str(exc), "name": name}
-
-    if not (target / ".git").exists():
-        return {
-            "ok": False,
-            "error": f"Plugin '{name}' is not a git checkout; cannot pull updates.",
-        }
-
-    ok, msg = _git_pull_plugin_dir(target)
-    if not ok:
-        return {"ok": False, "error": msg}
-
-    if provenance is not None:
-        try:
-            _refresh_update_provenance(target, provenance)
-        except Exception:
-            return {
-                "ok": False,
-                "updated": True,
-                "error": "Plugin updated, but provenance lock refresh failed.",
-                "name": name,
-            }
-
-    from rich.console import Console
-
-    _copy_example_files(target, Console())
-    unchanged = "Already up to date" in msg
-    return {"ok": True, "name": name, "output": msg, "unchanged": unchanged}
 
 
 def _update_provenance_preflight(

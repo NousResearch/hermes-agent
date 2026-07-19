@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import os
 import subprocess
+from contextlib import contextmanager
 from pathlib import Path
 from unittest.mock import Mock
 
@@ -245,3 +246,46 @@ def test_lock_refresh_failure_is_partial_for_cli_and_dashboard(tmp_path, monkeyp
     result = pc.dashboard_update_user_plugin("demo")
     assert result == {"ok": False, "updated": True, "error": "Plugin updated, but provenance lock refresh failed.", "name": "demo"}
     copy.assert_not_called()
+
+
+@pytest.mark.parametrize("surface", ["cli", "dashboard"])
+def test_update_rechecks_pin_only_after_operation_lock_is_acquired(
+    tmp_path, monkeypatch, capsys, surface
+):
+    target = _installed(tmp_path, monkeypatch)
+    write_provenance_lock(target, _provenance(requested_ref=None))
+    pull = Mock()
+    monkeypatch.setattr(pc, "_git_pull_plugin_dir", pull)
+
+    @contextmanager
+    def pin_before_yield(locked_target):
+        assert locked_target == target
+        write_provenance_lock(target, _provenance(requested_ref="a" * 40))
+        yield
+
+    monkeypatch.setattr(pc, "_plugin_operation_lock", pin_before_yield)
+
+    if surface == "cli":
+        with pytest.raises(SystemExit):
+            pc.cmd_update("demo")
+        assert "Pinned plugins cannot be updated" in capsys.readouterr().out
+    else:
+        result = pc.dashboard_update_user_plugin("demo")
+        assert result["ok"] is False
+        assert "Pinned plugins cannot be updated" in result["error"]
+    pull.assert_not_called()
+
+
+@pytest.mark.skipif(os.name != "posix" or not hasattr(os, "link"), reason="hardlinks require POSIX")
+def test_update_rejects_hardlinked_provenance_before_git(tmp_path, monkeypatch, capsys):
+    target = _installed(tmp_path, monkeypatch)
+    lock_path = write_provenance_lock(target, _provenance())
+    os.link(lock_path, target / "second-link")
+    pull = Mock()
+    monkeypatch.setattr(pc, "_git_pull_plugin_dir", pull)
+
+    with pytest.raises(SystemExit):
+        pc.cmd_update("demo")
+
+    pull.assert_not_called()
+    assert "malformed or unreadable" in capsys.readouterr().out

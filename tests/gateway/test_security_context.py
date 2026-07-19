@@ -3,10 +3,18 @@ from contextlib import nullcontext
 from dataclasses import replace
 from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
+from unittest.mock import AsyncMock, Mock
 
 import pytest
 
-from gateway.config import GatewayConfig, Platform, PlatformConfig, SecurityContextTrustGrant
+import gateway.security_context as security_module
+from gateway.config import (
+    GatewayConfig,
+    HomeChannel,
+    Platform,
+    PlatformConfig,
+    SecurityContextTrustGrant,
+)
 from gateway.platform_registry import PlatformEntry, platform_registry
 from gateway.platforms.base import BasePlatformAdapter, MessageEvent, MessageType, SendResult
 from gateway.security_context import (
@@ -23,7 +31,7 @@ from gateway.security_context import (
 )
 from gateway.session import SessionSource, build_session_key
 
-_AUTH_TIME = datetime(2026, 1, 1, tzinfo=timezone.utc)
+_AUTH_TIME = datetime.now(timezone.utc)
 
 
 def _context(
@@ -39,7 +47,10 @@ def _context(
     domains=("daily",),
     toolsets=("web",),
     actions=("teams.reply",),
-    authenticated_at=_AUTH_TIME,
+    expose_private_context=False,
+    expose_memory=False,
+    expose_identity=True,
+    authenticated_at=None,
     evidence_source="test",
 ):
     return SecurityContext(
@@ -53,8 +64,11 @@ def _context(
         allowed_tools=frozenset(tools),
         denied_tools=frozenset(denied),
         allowed_actions=frozenset(actions),
+        expose_private_context=expose_private_context,
+        expose_memory=expose_memory,
+        expose_identity=expose_identity,
         policy_revision=revision,
-        authenticated_at=authenticated_at,
+        authenticated_at=authenticated_at or datetime.now(timezone.utc),
         evidence_source=evidence_source,
     )
 
@@ -97,7 +111,12 @@ class _LiveTrustedAdapter(BasePlatformAdapter):
         self.effects.append(("revalidate", tool_name))
 
 
-def _grant(adapter_class=_Adapter, *, platform="telegram", plugin_name="secure-plugin"):
+def _grant(
+    adapter_class: type = _Adapter,
+    *,
+    platform="telegram",
+    plugin_name="secure-plugin",
+):
     return SecurityContextTrustGrant(
         platform=platform,
         adapter_module=adapter_class.__module__,
@@ -119,7 +138,7 @@ def _entry(adapter, *, plugin_name="secure-plugin", trusted=False):
 
 
 def test_capability_hash_ignores_freshness_metadata():
-    base = _context()
+    base = _context(authenticated_at=_AUTH_TIME)
     refreshed = _context(
         authenticated_at=_AUTH_TIME + timedelta(minutes=10),
         evidence_source="graph-live-refresh",
@@ -131,6 +150,85 @@ def test_capability_hash_ignores_freshness_metadata():
     assert build_session_key(SessionSource(**source, security_context=refreshed)) == (
         build_session_key(SessionSource(**source, security_context=base))
     )
+
+
+@pytest.mark.asyncio
+async def test_context_freshness_is_enforced_at_admission_and_dispatch():
+    adapter = _Adapter()
+    capability = issue_adapter_security_capability(
+        adapter, asyncio.get_running_loop(), adapter.revalidate_security_context
+    )
+    stale = _context(
+        authenticated_at=datetime.now(timezone.utc) - timedelta(minutes=6)
+    )
+
+    with pytest.raises(SecurityContextError, match="security_context_expired"):
+        bind_context_to_adapter(stale, capability)
+
+    future = _context(
+        authenticated_at=datetime.now(timezone.utc) + timedelta(seconds=31)
+    )
+    with pytest.raises(SecurityContextError, match="security_context_from_future"):
+        bind_context_to_adapter(future, capability)
+
+    bound = bind_context_to_adapter(_context(), capability)
+    stale_after_admission = replace(
+        bound,
+        authenticated_at=datetime.now(timezone.utc) - timedelta(minutes=6),
+    )
+    with pytest.raises(SecurityContextError, match="security_context_expired"):
+        await capability.revalidate_async(stale_after_admission, "web_search")
+    with pytest.raises(SecurityContextError, match="security_context_expired"):
+        capability.revalidate_sync(stale_after_admission, "web_search")
+
+
+@pytest.mark.asyncio
+async def test_context_expiring_during_revalidation_denies_async_and_sync_dispatch(
+    monkeypatch,
+):
+    adapter = _Adapter()
+    capability = issue_adapter_security_capability(
+        adapter, asyncio.get_running_loop(), adapter.revalidate_security_context
+    )
+    bound = bind_context_to_adapter(_context(), capability)
+
+    async_freshness = Mock(
+        side_effect=[None, SecurityContextError("security_context_expired")]
+    )
+    monkeypatch.setattr(
+        security_module, "require_fresh_security_context", async_freshness
+    )
+    with pytest.raises(SecurityContextError, match="security_context_expired"):
+        await capability.revalidate_async(bound, "teams.reply")
+
+    sync_freshness = Mock(
+        side_effect=[None, SecurityContextError("security_context_expired")]
+    )
+    monkeypatch.setattr(
+        security_module, "require_fresh_security_context", sync_freshness
+    )
+    with pytest.raises(SecurityContextError, match="security_context_expired"):
+        await asyncio.to_thread(capability.revalidate_sync, bound, "web_search")
+
+
+def test_context_freshness_exact_age_and_clock_skew_boundaries():
+    now = datetime(2026, 1, 1, tzinfo=timezone.utc)
+    security_module.require_fresh_security_context(
+        _context(authenticated_at=now - timedelta(seconds=300)), now=now
+    )
+    security_module.require_fresh_security_context(
+        _context(authenticated_at=now + timedelta(seconds=30)), now=now
+    )
+    with pytest.raises(SecurityContextError, match="security_context_expired"):
+        security_module.require_fresh_security_context(
+            _context(authenticated_at=now - timedelta(seconds=300, microseconds=1)),
+            now=now,
+        )
+    with pytest.raises(SecurityContextError, match="security_context_from_future"):
+        security_module.require_fresh_security_context(
+            _context(authenticated_at=now + timedelta(seconds=30, microseconds=1)),
+            now=now,
+        )
 
 
 @pytest.mark.parametrize(
@@ -146,6 +244,9 @@ def test_capability_hash_ignores_freshness_metadata():
         {"tools": ("web_extract",)},
         {"denied": ("terminal",)},
         {"actions": ("teams.reply", "teams.delete")},
+        {"expose_private_context": True},
+        {"expose_memory": True},
+        {"expose_identity": False},
         {"revision": "r2"},
     ],
 )
@@ -159,6 +260,50 @@ def test_capability_hash_rejects_stale_supplied_digest():
     base = _context()
     with pytest.raises(SecurityContextError, match="capability_hash_mismatch"):
         replace(base, capability_hash="0" * 64, policy_revision="r2")
+
+
+@pytest.mark.parametrize(
+    "field", ["expose_private_context", "expose_memory", "expose_identity"]
+)
+def test_exposure_capabilities_require_booleans(field):
+    with pytest.raises(SecurityContextError, match=f"invalid_{field}"):
+        _context(**{field: "yes"})
+
+
+def test_agent_context_options_are_explicit_and_legacy_context_is_unchanged():
+    from gateway.security_context import agent_context_options
+
+    assert agent_context_options(None) == {
+        "skip_context_files": False,
+        "load_soul_identity": False,
+        "skip_memory": False,
+    }
+    assert agent_context_options(
+        _context(
+            authority="arbitrary-label",
+            bundle="arbitrary-bundle",
+            expose_private_context=True,
+            expose_memory=True,
+            expose_identity=False,
+        )
+    ) == {
+        "skip_context_files": False,
+        "load_soul_identity": False,
+        "skip_memory": False,
+    }
+    assert agent_context_options(
+        _context(
+            authority="another-label",
+            bundle="another-bundle",
+            expose_private_context=False,
+            expose_memory=False,
+            expose_identity=True,
+        )
+    ) == {
+        "skip_context_files": True,
+        "load_soul_identity": True,
+        "skip_memory": True,
+    }
 
 
 def test_session_key_isolated_with_collision_free_security_discriminator():
@@ -457,6 +602,101 @@ async def test_direct_synthetic_entry_cannot_bypass_trusted_adapter_context(monk
         )
         assert await runner._handle_message(event) is None
         assert entered == []
+    finally:
+        platform_registry.unregister("telegram")
+        if prior is not None:
+            platform_registry.register(prior)
+
+
+@pytest.mark.asyncio
+async def test_trusted_adapter_handoff_denies_before_destination_mutation():
+    """A context-free handoff must fail before creating or rebinding its lane."""
+    from gateway.run import GatewayRunner
+
+    prior = platform_registry.get("telegram")
+    adapter = _LiveTrustedAdapter()
+    adapter.create_handoff_thread = AsyncMock(return_value="new-thread")
+    runner = object.__new__(GatewayRunner)
+    runner.config = GatewayConfig(
+        platforms={
+            Platform.TELEGRAM: PlatformConfig(
+                enabled=True,
+                token="test-token",
+                home_channel=HomeChannel(
+                    platform=Platform.TELEGRAM,
+                    chat_id="home-chat",
+                    name="Home",
+                ),
+            )
+        },
+        security_context_trust_grants=(
+            _grant(adapter_class=_LiveTrustedAdapter),
+        ),
+    )
+    runner.adapters = {Platform.TELEGRAM: adapter}
+    runner.session_store = object()
+    runner._async_session_store = SimpleNamespace(
+        _store=runner.session_store,
+        get_or_create_session=AsyncMock(),
+        switch_session=AsyncMock(),
+    )
+    runner._evict_cached_agent = Mock()
+    runner._release_running_agent_state = Mock()
+
+    try:
+        platform_registry.register(
+            PlatformEntry(
+                name="telegram",
+                label="Trusted Base Test",
+                adapter_factory=lambda cfg: adapter,
+                check_fn=lambda: True,
+                source="plugin",
+                plugin_name="secure-plugin",
+                trusted_security_context=True,
+            )
+        )
+        assert platform_registry.create_adapter("telegram", object()) is adapter
+        runner._install_adapter_security_preflight(adapter)
+
+        handoff = {
+            "id": "cli-session",
+            "title": "CLI work",
+            "handoff_platform": "telegram",
+        }
+        with pytest.raises(
+            SecurityContextError, match="handoff_security_context_missing"
+        ):
+            await runner._process_handoff(handoff)
+
+        runner.config = replace(
+            runner.config, security_context_trust_grants=()
+        )
+        with pytest.raises(
+            SecurityContextError, match="handoff_security_context_missing"
+        ):
+            await runner._process_handoff(handoff)
+
+        platform_registry.register(
+            PlatformEntry(
+                name="telegram",
+                label="Replacement",
+                adapter_factory=lambda cfg: _OtherAdapter(),
+                check_fn=lambda: True,
+                source="plugin",
+                plugin_name="replacement",
+                trusted_security_context=False,
+            )
+        )
+        with pytest.raises(
+            SecurityContextError, match="handoff_security_context_missing"
+        ):
+            await runner._process_handoff(handoff)
+
+        adapter.create_handoff_thread.assert_not_awaited()
+        runner.async_session_store.get_or_create_session.assert_not_awaited()
+        runner.async_session_store.switch_session.assert_not_awaited()
+        runner._evict_cached_agent.assert_not_called()
+        runner._release_running_agent_state.assert_not_called()
     finally:
         platform_registry.unregister("telegram")
         if prior is not None:

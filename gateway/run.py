@@ -7987,6 +7987,19 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 f"platform '{platform_name}' is not active in this gateway"
             )
 
+        # Trusted adapters require an adapter-bound context at intake. A CLI
+        # handoff has no such live inbound context, so fail closed before thread
+        # creation, session lookup/switch, cache eviction, or worker release.
+        # A future internal handoff capability must be explicit rather than
+        # silently manufacturing provenance here.
+        if (
+            getattr(adapter, "_host_security_context_trusted_instance", False)
+            or self._adapter_has_live_security_trust(adapter)
+        ):
+            from gateway.security_context import SecurityContextError
+
+            raise SecurityContextError("handoff_security_context_missing")
+
         # Home channel must be configured
         home = self.config.get_home_channel(platform)
         if not home or not home.chat_id:
@@ -9554,6 +9567,11 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 setter(None)
             return
 
+        # Permanent for this adapter object: later grant removal or registry
+        # replacement must revoke trust, not downgrade the instance into the
+        # legacy context-free handoff path.
+        adapter._host_security_context_trusted_instance = True
+
         async def _preflight(event):
             if not self._adapter_has_live_security_trust(adapter):
                 capability.revoke()
@@ -10054,8 +10072,8 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         if is_internal:
             pass
         elif getattr(source, "security_context", None) is not None:
-            # Authentication and authorization were completed by the reviewed
-            # adapter against Graph + Entra and bound into the immutable context.
+            # Authentication and authorization were completed by the trusted
+            # adapter and bound into the immutable security context.
             pass
         elif source.user_id is None:
             # Messages with no user identity (Telegram service messages,
@@ -19694,6 +19712,8 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             # ephemeral prompt from _get_system_prompt_for_channel.
             combined_ephemeral = context_prompt or ""
             _security_context = getattr(source, "security_context", None)
+            from gateway.security_context import agent_context_options
+            _agent_context_options = agent_context_options(_security_context)
             if _security_context is not None:
                 from gateway.security_context import build_security_context_prompt
                 combined_ephemeral = (
@@ -20099,15 +20119,9 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     chat_type=source.chat_type,
                     thread_id=source.thread_id,
                     gateway_session_key=session_key,
-                    skip_context_files=bool(
-                        _security_context is not None
-                        and _security_context.authority != "tier0_owner"
-                    ),
-                    load_soul_identity=bool(_security_context is not None),
-                    skip_memory=bool(
-                        _security_context is not None
-                        and _security_context.authority != "tier0_owner"
-                    ),
+                    skip_context_files=_agent_context_options["skip_context_files"],
+                    load_soul_identity=_agent_context_options["load_soul_identity"],
+                    skip_memory=_agent_context_options["skip_memory"],
                     session_db=getattr(self._session_db, "_db", self._session_db),
                     # Reload from disk — do not reuse the startup snapshot (#60955).
                     fallback_model=self._refresh_fallback_model(),

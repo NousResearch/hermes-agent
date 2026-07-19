@@ -36,6 +36,21 @@ _CAPABILITY_SENTINEL = object()
 
 
 DEFAULT_REVALIDATION_TIMEOUT_SECONDS = 10.0
+MAX_SECURITY_CONTEXT_AGE_SECONDS = 300.0
+MAX_SECURITY_CONTEXT_CLOCK_SKEW_SECONDS = 30.0
+
+
+
+def require_fresh_security_context(
+    context: "SecurityContext", *, now: datetime | None = None
+) -> None:
+    """Reject stale or implausibly future-dated capability evidence."""
+    current = now or datetime.now(timezone.utc)
+    age = (current - context.authenticated_at).total_seconds()
+    if age > MAX_SECURITY_CONTEXT_AGE_SECONDS:
+        raise SecurityContextError("security_context_expired")
+    if age < -MAX_SECURITY_CONTEXT_CLOCK_SKEW_SECONDS:
+        raise SecurityContextError("security_context_from_future")
 
 
 class AdapterSecurityCapability:
@@ -80,6 +95,7 @@ class AdapterSecurityCapability:
     async def revalidate_async(
         self, context: "SecurityContext", dispatch_name: str
     ) -> None:
+        require_fresh_security_context(context)
         if not self._active or self._adapter_ref() is None or self._loop.is_closed():
             raise SecurityContextError("security_adapter_unavailable")
         try:
@@ -93,6 +109,7 @@ class AdapterSecurityCapability:
                 self._revalidator(context, dispatch_name),
                 timeout=self._revalidation_timeout_seconds,
             )
+            require_fresh_security_context(context)
         except asyncio.TimeoutError as exc:
             raise SecurityContextError("security_revalidation_timeout") from exc
         except PermissionError:
@@ -101,6 +118,7 @@ class AdapterSecurityCapability:
             raise SecurityContextError("security_revalidation_failed") from exc
 
     def revalidate_sync(self, context: "SecurityContext", tool_name: str) -> None:
+        require_fresh_security_context(context)
         if not self._active or self._adapter_ref() is None or self._loop.is_closed():
             raise SecurityContextError("security_adapter_unavailable")
         try:
@@ -116,6 +134,7 @@ class AdapterSecurityCapability:
         )
         try:
             future.result(timeout=self._revalidation_timeout_seconds)
+            require_fresh_security_context(context)
         except concurrent.futures.TimeoutError as exc:
             future.cancel()
             raise SecurityContextError("security_revalidation_timeout") from exc
@@ -163,6 +182,7 @@ def bind_context_to_adapter(
         raise SecurityContextError("untrusted_security_context_type")
     if not isinstance(capability, AdapterSecurityCapability):
         raise SecurityContextError("missing_adapter_security_capability")
+    require_fresh_security_context(context)
     existing = context._adapter_capability
     if existing is not None and existing is not capability:
         raise SecurityContextError("security_context_provenance_mismatch")
@@ -201,6 +221,9 @@ class SecurityContext:
     allowed_tools: frozenset[str] = field(default_factory=frozenset)
     denied_tools: frozenset[str] = field(default_factory=frozenset)
     allowed_actions: frozenset[str] = field(default_factory=frozenset)
+    expose_private_context: bool = False
+    expose_memory: bool = False
+    expose_identity: bool = True
     policy_revision: str = ""
     authenticated_at: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
     evidence_source: str = "live"
@@ -223,6 +246,11 @@ class SecurityContext:
             object.__setattr__(self, name, _clean_set(getattr(self, name), field_name=name))
         if self.allowed_tools & self.denied_tools:
             raise SecurityContextError("tool_allow_deny_overlap")
+        for name in (
+            "expose_private_context", "expose_memory", "expose_identity",
+        ):
+            if not isinstance(getattr(self, name), bool):
+                raise SecurityContextError(f"invalid_{name}")
         when = self.authenticated_at
         if not isinstance(when, datetime) or when.tzinfo is None:
             raise SecurityContextError("authenticated_at_must_be_timezone_aware")
@@ -249,6 +277,9 @@ class SecurityContext:
             "allowed_tools": sorted(self.allowed_tools),
             "denied_tools": sorted(self.denied_tools),
             "allowed_actions": sorted(self.allowed_actions),
+            "expose_private_context": self.expose_private_context,
+            "expose_memory": self.expose_memory,
+            "expose_identity": self.expose_identity,
             "policy_revision": self.policy_revision,
         }
 
@@ -280,9 +311,34 @@ class SecurityContext:
             "domains": sorted(self.domains),
             "capability_bundle": self.capability_bundle,
             "capability_hash": self.capability_hash,
+            "expose_private_context": self.expose_private_context,
+            "expose_memory": self.expose_memory,
+            "expose_identity": self.expose_identity,
             "policy_revision": self.policy_revision,
             "evidence_source": self.evidence_source,
         }
+
+
+def agent_context_options(context: SecurityContext | None) -> dict[str, bool]:
+    """Translate explicit exposure capabilities into ``AIAgent`` options.
+
+    A missing security context is the legacy gateway path and retains the
+    agent's existing context, identity, and memory defaults.
+    """
+    if context is None:
+        return {
+            "skip_context_files": False,
+            "load_soul_identity": False,
+            "skip_memory": False,
+        }
+    if not isinstance(context, SecurityContext):
+        raise SecurityContextError("untrusted_security_context_type")
+    context.verify()
+    return {
+        "skip_context_files": not context.expose_private_context,
+        "load_soul_identity": context.expose_identity,
+        "skip_memory": not context.expose_memory,
+    }
 
 
 def bind_security_context(context: SecurityContext | None) -> contextvars.Token:

@@ -1,0 +1,5 @@
+name: sference-provider
+kind: model-provider
+version: 1.0.0
+description: Sference — hosted LLM inference on bare-metal GPUs
+author: Sference

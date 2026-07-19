@@ -565,3 +565,17 @@ def test_run_slash_board_override_does_not_change_boards_show_current(kanban_hom
     out = kc.run_slash("--board beta boards show")
 
     assert "Current board: alpha" in out
+
+
+def test_run_slash_create_with_model_override_persists(kanban_home):
+    """Creating a task with --model must persist the model_override in the DB."""
+    out = kc.run_slash("create 'test-model-task' --assignee alice --model gpt-5.6-sol --json")
+    task_data = json.loads(out)
+    task_id = task_data["id"]
+
+    # Verify via the DB directly that model_override is stored.
+    with kb.connect_closing() as conn:
+        task = kb.get_task(conn, task_id)
+
+    assert task.model_override == "gpt-5.6-sol"
+    assert task.title == "test-model-task"

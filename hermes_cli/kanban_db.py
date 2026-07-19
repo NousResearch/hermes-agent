@@ -8643,20 +8643,9 @@ def _default_spawn(
         for sk in task.skills:
             if sk:
                 cmd.extend(["--skills", sk])
-    worker_toolsets = _resolve_worker_cli_toolsets(env.get("HERMES_HOME"))
-    if worker_toolsets:
-        cmd.extend(["--toolsets", ",".join(worker_toolsets)])
-    cmd.extend([
-        "chat",
-        "-q", prompt,
-    ])
     if task.model_override:
-        # -m/--model AFTER the chat subcommand so the chat subparser does
-        # NOT overwrite it with its own default (None). On Python argparse
-        # the subparser's default for a redefined flag wins over the
-        # top-level value, making model_override silently disappear.
-        # See #67459.
         cmd.extend(["-m", task.model_override])
+    worker_toolsets = _resolve_worker_cli_toolsets(env.get("HERMES_HOME"))
     if task.goal_mode:
         # Goal-mode workers must take the fully-quiet single-query path:
         # the kanban goal-loop hook (_run_kanban_goal_loop_q) only runs in

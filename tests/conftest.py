@@ -360,6 +360,33 @@ def _hermetic_environment(tmp_path, monkeypatch):
     (fake_hermes_home / "skills").mkdir()
     monkeypatch.setenv("HERMES_HOME", str(fake_hermes_home))
 
+    # 3b. Repin cron.jobs' import-time path constants to the same tempdir.
+    #     cron/jobs.py bakes HERMES_DIR/CRON_DIR/JOBS_FILE/TICKER_*_FILE/
+    #     OUTPUT_DIR at module import — i.e. from the process's LAUNCH
+    #     environment — and _current_cron_store() falls back to those baked
+    #     constants, so the step-3 env redirect never reaches them: any test
+    #     that called create_job()/save_jobs() outside use_cron_store() wrote
+    #     the REAL launch-env store (a live ~/.hermes/cron/jobs.json collected
+    #     65 pytest fixture jobs from repeated single-file runs of
+    #     tests/cron/test_ticker_stall_60703.py this way). use_cron_store()'s
+    #     ContextVar override cannot cover ticker/worker THREADS either — a
+    #     new thread starts with a fresh context and falls back to the module
+    #     globals — so the globals themselves must point at the tempdir. The
+    #     unconditional import is deliberate: the repin must exist before the
+    #     first test touches cron state. monkeypatch restores after each test.
+    import cron.jobs as _cron_jobs
+    _fake_cron_dir = fake_hermes_home / "cron"
+    monkeypatch.setattr(_cron_jobs, "HERMES_DIR", fake_hermes_home)
+    monkeypatch.setattr(_cron_jobs, "CRON_DIR", _fake_cron_dir)
+    monkeypatch.setattr(_cron_jobs, "JOBS_FILE", _fake_cron_dir / "jobs.json")
+    monkeypatch.setattr(
+        _cron_jobs, "TICKER_HEARTBEAT_FILE", _fake_cron_dir / "ticker_heartbeat"
+    )
+    monkeypatch.setattr(
+        _cron_jobs, "TICKER_SUCCESS_FILE", _fake_cron_dir / "ticker_last_success"
+    )
+    monkeypatch.setattr(_cron_jobs, "OUTPUT_DIR", _fake_cron_dir / "output")
+
     # 4. Deterministic locale / timezone / hashseed. CI runs in UTC with
     #    C.UTF-8 locale; local dev often doesn't. Pin everything.
     monkeypatch.setenv("TZ", "UTC")

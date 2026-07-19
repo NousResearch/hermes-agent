@@ -12,9 +12,15 @@ import pytest
 
 @pytest.fixture
 def temp_home(tmp_path, monkeypatch):
-    """Isolated HERMES_HOME so jobs.json doesn't touch the real store."""
+    """Isolated HERMES_HOME so get_hermes_home() readers see tmp_path.
+
+    NOTE: cron.jobs BAKES its store paths at module import, so this env
+    redirect alone never isolated the jobs store — the global
+    _hermetic_environment fixture (tests/conftest.py step 3b) repins the
+    baked constants to the per-test home, which is what actually guards
+    the real store.
+    """
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
-    # cron.jobs caches no home at import; get_hermes_home() reads the env live.
     yield tmp_path
 
 

@@ -165,7 +165,7 @@ class TestResolveChannelPrompts:
         adapter.handle_message = AsyncMock()
 
         interaction = SimpleNamespace(
-            guild=SimpleNamespace(name="Wetlands"),
+            guild=SimpleNamespace(id=300, name="Wetlands"),
             channel=SimpleNamespace(id=200, parent=None),
             user=SimpleNamespace(id=1, display_name="Brenner"),
         )

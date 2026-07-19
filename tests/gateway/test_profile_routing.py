@@ -231,6 +231,49 @@ class TestParentChatIdMatching:
                          guild_id="111")
         assert r.matches("discord", guild_id="111", chat_id="333", parent_chat_id="444")
 
+    # ── Regression: Discord adapter thread profile-routing bug ──────────
+    # The Discord adapter had two build_source() call sites that failed to
+    # pass parent_chat_id, causing threads under routed channels to fall
+    # back to the default profile. The invariant: when a SessionSource is
+    # built for a thread whose parent channel has a profile_route, the
+    # routed profile must match the parent's route.
+    def test_thread_without_parent_chat_id_falls_to_default(self):
+        """Without parent_chat_id, a thread under a routed channel gets no profile."""
+        routes = parse_profile_routes([
+            {"name": "swe_channel", "platform": "discord", "profile": "swe",
+             "guild_id": "1510765896195641534",
+             "chat_id": "1526740285835579476"},
+        ])
+        match = match_profile_route(
+            routes, "discord",
+            guild_id="1510765896195641534",
+            chat_id="thread_9999",
+            thread_id="thread_9999",
+            # parent_chat_id NOT passed — the buggy behavior
+        )
+        assert match is None, (
+            "Without parent_chat_id, thread should NOT match the parent channel's route"
+        )
+
+    def test_thread_with_parent_chat_id_routes_to_parent_channel_profile(self):
+        """With parent_chat_id, a thread under a routed channel gets the parent's profile."""
+        routes = parse_profile_routes([
+            {"name": "swe_channel", "platform": "discord", "profile": "swe",
+             "guild_id": "1510765896195641534",
+             "chat_id": "1526740285835579476"},
+        ])
+        match = match_profile_route(
+            routes, "discord",
+            guild_id="1510765896195641534",
+            chat_id="thread_9999",
+            thread_id="thread_9999",
+            parent_chat_id="1526740285835579476",
+        )
+        assert match is not None, (
+            "With parent_chat_id, thread MUST match the parent channel's route"
+        )
+        assert match.profile == "swe"
+
 
 class TestForumPostMatching:
     """Test that forum posts match via parent_chat_id (direct parent)."""

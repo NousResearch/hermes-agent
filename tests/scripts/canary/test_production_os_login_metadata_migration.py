@@ -149,6 +149,24 @@ def _authority(boundary: FakeBoundary) -> tuple[dict, dict]:
     return dict(plan), dict(approval)
 
 
+def test_preflight_freshness_is_measured_after_slow_observation(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    clock = {"now": NOW}
+
+    class SlowBoundary(FakeBoundary):
+        def observe(self) -> migration.ObservedState:
+            clock["now"] += 31
+            self.now = clock["now"]
+            return super().observe()
+
+    monkeypatch.setattr(migration.time, "time", lambda: clock["now"])
+
+    preflight = migration.collect_migration_preflight(SlowBoundary())
+
+    assert preflight["observed_at_unix"] == NOW + 31
+
+
 def _intent(
     boundary: FakeBoundary,
     plan: Mapping[str, object],

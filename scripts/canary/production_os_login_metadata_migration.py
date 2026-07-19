@@ -762,8 +762,9 @@ def collect_migration_preflight(
     *,
     now_unix: int | None = None,
 ) -> Mapping[str, Any]:
+    observed = boundary.observe()
     current = int(time.time()) if now_unix is None else now_unix
-    receipt = validate_preflight_receipt(boundary.observe().receipt, now_unix=current)
+    receipt = validate_preflight_receipt(observed.receipt, now_unix=current)
     if receipt["state"] != "legacy_instance_ssh_keys":
         raise OsLoginMetadataMigrationError("os_login_metadata_migration_not_required")
     return receipt

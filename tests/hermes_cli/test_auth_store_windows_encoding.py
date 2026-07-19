@@ -241,3 +241,81 @@ class TestAuthJsonSiblingReaders:
         assert provider is not None
         assert provider.get("agent_key") == "k"
 
+    def test_read_shared_nous_state_reads_non_ascii_store(
+        self, tmp_path, monkeypatch, windows_default_encoding
+    ):
+        """hermes_cli.auth._read_shared_nous_state must read a non-ASCII store.
+
+        The shared Nous store (``nous_auth.json``) is written as UTF-8. A
+        non-ASCII field (e.g. an accented display name) must not cause the
+        read to raise under the Windows-default-encoding fixture and be
+        silently swallowed — which would drop the user's shared OAuth
+        credentials and force a device-code re-login.
+        """
+        # The shared-store path has a seat belt that refuses to resolve to the
+        # real user's store under pytest; pin it to a tmp dir explicitly.
+        shared_dir = tmp_path / "shared"
+        monkeypatch.setenv("HERMES_SHARED_AUTH_DIR", str(shared_dir))
+
+        payload = {
+            "refresh_token": "rt",
+            "access_token": "at",
+            # Non-ASCII display name → UTF-8 bytes cp1252 cannot decode.
+            "display_name": "Réne — Noël",
+        }
+        _write_utf8(shared_dir / "nous_auth.json", payload)
+
+        provider = auth._read_shared_nous_state()
+        assert provider is not None
+        assert provider["access_token"] == "at"
+        assert provider["refresh_token"] == "rt"
+        # The non-ASCII field round-trips intact.
+        assert provider["display_name"] == "Réne — Noël"
+
+    def test_has_any_provider_configured_reads_non_ascii_auth_store(
+        self, hermes_home, monkeypatch, windows_default_encoding
+    ):
+        """hermes_cli.main._has_any_provider_configured reads auth.json.
+
+        When the active provider's auth.json store contains a non-ASCII
+        label, the read must not raise under the Windows-default-encoding
+        fixture (which would be swallowed and make a configured provider
+        look absent, wrongly re-triggering the setup wizard).
+        """
+        store = {
+            "version": auth.AUTH_STORE_VERSION,
+            "active_provider": "openai-codex",
+            "providers": {
+                "openai-codex": {
+                    "auth_mode": "chatgpt",
+                    "label": "工作账号",  # non-ASCII CJK
+                    "tokens": {"access_token": "a", "refresh_token": "r"},
+                }
+            },
+        }
+        _write_utf8(hermes_home / "auth.json", store)
+
+        import hermes_cli.auth as auth_mod
+        import hermes_cli.main as main_mod
+
+        # No provider env vars, no .env, and PROVIDER_REGISTRY lookups report
+        # not-logged-in — so the function reaches the auth.json branch and the
+        # result is driven by reading the (non-ASCII) store + the active
+        # provider's status. The active provider IS logged in, so the UTF-8
+        # read must succeed and surface True.
+        def fake_status(provider_id=None):
+            if provider_id == "openai-codex":
+                return {"logged_in": True}
+            return {"logged_in": False}
+
+        monkeypatch.setattr(auth_mod, "get_auth_status", fake_status)
+        # _has_any_provider_configured imports get_auth_status lazily from
+        # hermes_cli.auth; patch it on the source module so the local import
+        # sees the fake.
+        monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+        monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+        monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
+        monkeypatch.delenv("OPENAI_BASE_URL", raising=False)
+
+        assert main_mod._has_any_provider_configured() is True
+

@@ -234,7 +234,11 @@ def _live_process_metadata(pid: int) -> dict[str, Any] | None:
         return None
 
 
-def _live_gateway_identity(runtime: dict[str, Any] | None) -> dict[str, Any] | None:
+def _live_gateway_identity(
+    runtime: dict[str, Any] | None,
+    *,
+    allow_start_time_change: bool = False,
+) -> dict[str, Any] | None:
     """Return an OS-validated gateway identity for a running status record."""
     if not isinstance(runtime, dict) or not _gateway_was_running(runtime):
         return None
@@ -255,7 +259,8 @@ def _live_gateway_identity(runtime: dict[str, Any] | None) -> dict[str, Any] | N
             return None
         live_start = live.get("start_time")
         if (
-            recorded_start is not None
+            not allow_start_time_change
+            and recorded_start is not None
             and live_start is not None
             and recorded_start != live_start
         ):
@@ -316,6 +321,25 @@ def _capture_gateway_runtime() -> dict[str, Any] | None:
     return captured
 
 
+def _pre_update_gateway_intent_error() -> str | None:
+    """Reject ambiguous persisted gateway lifecycle states before mutation."""
+    try:
+        from gateway.status import read_runtime_status
+
+        runtime = read_runtime_status()
+    except Exception:
+        return None
+    if not isinstance(runtime, dict):
+        return None
+    state = runtime.get("gateway_state")
+    if state in {"running", "healthy", "stopped"}:
+        return None
+    return (
+        "could not establish explicit pre-update gateway intent: "
+        f"gateway state is {state or 'unknown'}; refusing to update"
+    )
+
+
 def _gateway_process_identity(runtime: dict[str, Any] | None) -> tuple[int, Any] | None:
     if not isinstance(runtime, dict):
         return None
@@ -330,7 +354,7 @@ def _gateway_was_running(runtime: dict[str, Any] | None) -> bool:
     if not isinstance(runtime, dict):
         return False
     state = runtime.get("gateway_state")
-    return state not in {None, "stopped", "startup_failed", "failed"}
+    return state in {"running", "healthy"}
 
 
 def _verify_health(
@@ -368,8 +392,11 @@ def _verify_health(
                 reason = runtime.get("exit_reason") or "gateway reported unhealthy state"
                 return False, str(reason)
 
-            if was_running and state == "running":
-                new_identity = _live_gateway_identity(runtime)
+            if was_running and state in {"running", "healthy"}:
+                new_identity = _live_gateway_identity(
+                    runtime,
+                    allow_start_time_change=True,
+                )
                 if new_identity is not None and old_identity is not None:
                     old_pid, old_start = old_identity
                     if isinstance(new_identity, tuple):
@@ -379,9 +406,11 @@ def _verify_health(
                             new_identity["pid"],
                             new_identity.get("start_time"),
                         )
-                    if old_pid != new_pid:
+                    if (old_pid, old_start) != (new_pid, new_start):
                         return True, f"gateway state: running (new process {new_pid})"
-                    return False, "gateway restart did not produce a distinct process identity"
+                    last_detail = (
+                        "gateway restart is still using the pre-update process identity"
+                    )
                 else:
                     last_detail = "could not verify the live gateway process identity after restart"
             elif was_running:
@@ -589,6 +618,7 @@ class _SchedulerHandle:
     scheduler_type: str
     path: Path
     _rollback_fn: Callable[[], None]
+    removed: bool = False
     _rolled_back: bool = False
 
     def rollback(self) -> None:
@@ -852,7 +882,7 @@ def _enable_launchd(
     )
 
 
-def _disable_launchd() -> tuple[str, Path, bool]:
+def _disable_launchd() -> _SchedulerHandle:
     plist_path = _launchd_plist_path()
     prior_file = _snapshot_file(plist_path)
     existed = prior_file is not None
@@ -862,14 +892,38 @@ def _disable_launchd() -> tuple[str, Path, bool]:
         raise RuntimeError(
             "launchd job is loaded without its scheduler file; refusing to unload it"
         )
-    _require_command_success(
-        _run_launchctl(["bootout", target, str(plist_path)]),
-        "launchctl bootout",
-        allow_missing=True,
+    try:
+        _require_command_success(
+            _run_launchctl(["bootout", target, str(plist_path)]),
+            "launchctl bootout",
+            allow_missing=True,
+        )
+        if existed:
+            plist_path.unlink()
+    except Exception as exc:
+        try:
+            _restore_launchd(
+                target=target,
+                plist_path=plist_path,
+                prior_file=prior_file,
+                prior_state=prior_state,
+            )
+        except Exception as rollback_exc:
+            raise RuntimeError(
+                f"{exc}; scheduler rollback failed: {rollback_exc}"
+            ) from exc
+        raise
+    return _SchedulerHandle(
+        "launchd",
+        plist_path,
+        lambda: _restore_launchd(
+            target=target,
+            plist_path=plist_path,
+            prior_file=prior_file,
+            prior_state=prior_state,
+        ),
+        removed=existed,
     )
-    if existed:
-        plist_path.unlink()
-    return "launchd", plist_path, existed
 
 
 def _systemd_user_dir() -> Path:
@@ -1122,7 +1176,20 @@ def _enable_systemd(
     )
 
 
-def _disable_systemd() -> tuple[str, Path, bool]:
+def _verify_systemd_disabled(timer_name: str) -> None:
+    state = _systemd_state(timer_name)
+    if (
+        state.get("load_state") != "not-found"
+        or state.get("active_state") != "inactive"
+    ):
+        raise RuntimeError(
+            "systemd timer was not fully removed: expected LoadState=not-found "
+            f"and ActiveState=inactive, got LoadState={state.get('load_state')!r} "
+            f"and ActiveState={state.get('active_state')!r}"
+        )
+
+
+def _disable_systemd() -> _SchedulerHandle:
     service_path, timer_path = _systemd_paths()
     prior_service = _snapshot_file(service_path)
     prior_timer = _snapshot_file(timer_path)
@@ -1130,25 +1197,54 @@ def _disable_systemd() -> tuple[str, Path, bool]:
     if not shutil.which("systemctl"):
         if existed:
             raise RuntimeError("systemctl is unavailable; scheduler files were kept")
-        return "systemd-user", timer_path, False
+        return _SchedulerHandle("systemd-user", timer_path, lambda: None)
 
     prior_state = _systemd_state(timer_path.name)
     if not existed and prior_state.get("loaded"):
         raise RuntimeError(
             "systemd timer is loaded without scheduler files; refusing to unload it"
         )
-    _require_command_success(
-        _systemctl_user(["disable", "--now", timer_path.name]),
-        "systemctl --user disable --now",
-        allow_missing=True,
+    try:
+        _require_command_success(
+            _systemctl_user(["disable", "--now", timer_path.name]),
+            "systemctl --user disable --now",
+            allow_missing=True,
+        )
+        service_path.unlink(missing_ok=True)
+        timer_path.unlink(missing_ok=True)
+        _require_command_success(
+            _systemctl_user(["daemon-reload"]),
+            "systemctl --user daemon-reload",
+        )
+        _verify_systemd_disabled(timer_path.name)
+    except Exception as exc:
+        try:
+            _restore_systemd(
+                service_path=service_path,
+                timer_path=timer_path,
+                timer_name=timer_path.name,
+                prior_service=prior_service,
+                prior_timer=prior_timer,
+                prior_state=prior_state,
+            )
+        except Exception as rollback_exc:
+            raise RuntimeError(
+                f"{exc}; scheduler rollback failed: {rollback_exc}"
+            ) from exc
+        raise
+    return _SchedulerHandle(
+        "systemd-user",
+        timer_path,
+        lambda: _restore_systemd(
+            service_path=service_path,
+            timer_path=timer_path,
+            timer_name=timer_path.name,
+            prior_service=prior_service,
+            prior_timer=prior_timer,
+            prior_state=prior_state,
+        ),
+        removed=existed,
     )
-    _require_command_success(
-        _systemctl_user(["daemon-reload"]),
-        "systemctl --user daemon-reload",
-    )
-    service_path.unlink(missing_ok=True)
-    timer_path.unlink(missing_ok=True)
-    return "systemd-user", timer_path, existed
 
 
 def _enable_scheduler(
@@ -1161,7 +1257,7 @@ def _enable_scheduler(
     raise RuntimeError(f"auto-update scheduling is not supported on {sys.platform}")
 
 
-def _disable_scheduler(status: dict[str, Any]) -> tuple[str | None, Path | None, bool]:
+def _disable_scheduler(status: dict[str, Any]) -> _SchedulerHandle | None:
     scheduler = status.get("schedulerType")
     if status.get("enabled") is True or scheduler or status.get("schedulerPath"):
         expected_identity = _scheduler_identity()
@@ -1180,12 +1276,10 @@ def _disable_scheduler(status: dict[str, Any]) -> tuple[str | None, Path | None,
         if status.get("schedulerPath") != str(expected_path):
             raise RuntimeError("schedulerPath does not match the configured scheduler")
     if scheduler == "launchd" or sys.platform == "darwin":
-        kind, path, existed = _disable_launchd()
-        return kind, path, existed
+        return _disable_launchd()
     if scheduler == "systemd-user" or sys.platform.startswith("linux"):
-        kind, path, existed = _disable_systemd()
-        return kind, path, existed
-    return None, None, False
+        return _disable_systemd()
+    return None
 
 
 def cmd_auto_enable(args) -> None:
@@ -1245,23 +1339,42 @@ def cmd_auto_enable(args) -> None:
 
 def cmd_auto_disable(_args) -> None:
     status = read_status()
+    scheduler_handle: _SchedulerHandle | None = None
     try:
-        scheduler_type, scheduler_path, removed = _disable_scheduler(status)
+        scheduler_handle = _disable_scheduler(status)
+        try:
+            update_status_fields(
+                mode="manual",
+                enabled=False,
+                schedule=None,
+                planSchedule=[],
+                schedulerType=None,
+                schedulerPath=None,
+                schedulerIdentity=None,
+                logPath=str(get_log_path()),
+            )
+        except Exception as status_exc:
+            if scheduler_handle is None:
+                raise RuntimeError(
+                    f"could not persist disabled scheduler status: {status_exc}"
+                ) from status_exc
+            try:
+                scheduler_handle.rollback()
+            except Exception as rollback_exc:
+                raise RuntimeError(
+                    f"could not persist disabled scheduler status: {status_exc}; "
+                    f"scheduler rollback failed: {rollback_exc}"
+                ) from status_exc
+            raise RuntimeError(
+                f"could not persist disabled scheduler status: {status_exc}"
+            ) from status_exc
     except Exception as exc:
         print(f"✗ Could not disable auto-update scheduler: {exc}", file=sys.stderr)
         raise SystemExit(1) from exc
     was_enabled = bool(status.get("enabled"))
 
-    update_status_fields(
-        mode="manual",
-        enabled=False,
-        schedule=None,
-        planSchedule=[],
-        schedulerType=None,
-        schedulerPath=None,
-        schedulerIdentity=None,
-        logPath=str(get_log_path()),
-    )
+    removed = scheduler_handle.removed if scheduler_handle is not None else False
+    scheduler_path = scheduler_handle.path if scheduler_handle is not None else None
     if removed or was_enabled:
         print("✓ Hermes auto-update disabled.")
         if scheduler_path:
@@ -1635,6 +1748,14 @@ def _cmd_auto_run_now_locked_impl(args) -> None:
                 STATUS_UPDATE_FAILED,
                 "update check reported an available git update without an expected latest SHA",
                 EXIT_UPDATE_FAILED,
+            )
+
+        intent_error = _pre_update_gateway_intent_error()
+        if intent_error:
+            raise AutoUpdateError(
+                STATUS_HEALTH_FAILED,
+                intent_error,
+                EXIT_HEALTH_FAILED,
             )
 
         backup = create_pre_update_backup()

@@ -10257,8 +10257,6 @@ def cmd_update(args):
     """Run one source-checkout update under the shared single-flight lock."""
     if getattr(args, "_update_lock_held", False):
         return _cmd_update_locked(args)
-    if not (PROJECT_ROOT / ".git").exists():
-        return _cmd_update_locked(args)
 
     try:
         update_lock = acquire_update_lock(PROJECT_ROOT)

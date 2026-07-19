@@ -1,7 +1,9 @@
 """Tests for cmd_update — branch fallback when remote branch doesn't exist."""
 
 import hashlib
+import os
 import subprocess
+import sys
 from types import SimpleNamespace
 from unittest.mock import patch
 
@@ -322,6 +324,71 @@ class TestCmdUpdateBranchFallback:
 
         assert exc.value.code != 0
         assert "already running" in capsys.readouterr().err
+
+    def test_manual_pip_update_cannot_modify_while_scheduled_update_holds_lock(
+        self, tmp_path
+    ):
+        """The non-git manual path must contend with the scheduled lock owner."""
+        install_root = tmp_path / "pip-install"
+        install_root.mkdir()
+        state_home = tmp_path / "state"
+        marker = tmp_path / "manual-modified"
+        env = os.environ.copy()
+        env["PYTHONPATH"] = os.pathsep.join(
+            part for part in [str(PROJECT_ROOT), env.get("PYTHONPATH")] if part
+        )
+        env["XDG_STATE_HOME"] = str(state_home)
+
+        scheduled_holder = subprocess.Popen(
+            [
+                sys.executable,
+                "-c",
+                (
+                    "from pathlib import Path; "
+                    "from hermes_cli import update_auto; "
+                    "import sys, time; "
+                    "lock = update_auto.acquire_update_lock(Path(sys.argv[1])); "
+                    "print('scheduled-locked', flush=True); "
+                    "time.sleep(2); lock.release()"
+                ),
+                str(install_root),
+            ],
+            env=env,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+        )
+        try:
+            assert scheduled_holder.stdout is not None
+            assert scheduled_holder.stdout.readline().strip() == "scheduled-locked"
+
+            manual = subprocess.run(
+                [
+                    sys.executable,
+                    "-c",
+                    (
+                        "from pathlib import Path; "
+                        "from types import SimpleNamespace; "
+                        "from hermes_cli import main; "
+                        "import sys; "
+                        "main.PROJECT_ROOT = Path(sys.argv[1]); "
+                        "main._cmd_update_locked = "
+                        "lambda _args: Path(sys.argv[2]).write_text('modified'); "
+                        "main.cmd_update(SimpleNamespace())"
+                    ),
+                    str(install_root),
+                    str(marker),
+                ],
+                env=env,
+                capture_output=True,
+                text=True,
+            )
+
+            assert manual.returncode != 0
+            assert not marker.exists()
+            assert "already running" in manual.stderr
+        finally:
+            scheduled_holder.wait(timeout=5)
 
     @patch("shutil.which", return_value=None)
     @patch("subprocess.run")

@@ -2584,6 +2584,7 @@ DEFAULT_CONFIG = {
         "require_mention": True,       # Require @mention to respond in channels
         "free_response_channels": "",  # Comma-separated channel IDs where bot responds without mention
         "allowed_channels": "",        # If set, bot ONLY responds in these channel IDs (whitelist)
+        "allow_bots": "all",           # Bot senders: none | mentions | all (compatibility default)
         "channel_prompts": {},         # Per-channel ephemeral system prompts
     },
 

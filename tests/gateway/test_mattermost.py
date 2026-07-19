@@ -2,7 +2,6 @@
 import json
 import os
 import time
-from types import SimpleNamespace
 from unittest.mock import MagicMock, patch, AsyncMock
 
 import pytest
@@ -861,43 +860,68 @@ class TestMattermostBotIdentity:
         assert adapter._api_get.await_count == 2
 
 
+def _make_mattermost_auth_runner():
+    from gateway.run import GatewayRunner
+
+    runner = object.__new__(GatewayRunner)
+    runner.adapters = {}
+    runner.pairing_stores = {}
+    runner.pairing_store = MagicMock()
+    runner.pairing_store.is_approved.return_value = False
+    return runner
+
+
+def _make_mattermost_bot_source():
+    from gateway.session import Platform, SessionSource
+
+    return SessionSource(
+        platform=Platform.MATTERMOST,
+        chat_id="chan_456",
+        chat_type="channel",
+        user_id="moviepilot_bot",
+        user_name="moviepilot",
+        is_bot=True,
+    )
+
+
 class TestMattermostBotYamlConfig:
-    def test_yaml_allow_bots_bridges_to_runtime_env(self, monkeypatch):
-        from plugins.platforms.mattermost.adapter import _apply_yaml_config
+    def test_default_config_preserves_historical_all_policy(self):
+        from hermes_cli.config import DEFAULT_CONFIG
 
+        assert DEFAULT_CONFIG["mattermost"]["allow_bots"] == "all"
+
+    def test_gateway_loader_bridges_yaml_policy_into_authorization(
+        self, tmp_path, monkeypatch
+    ):
+        hermes_home = tmp_path / ".hermes"
+        hermes_home.mkdir()
+        (hermes_home / "config.yaml").write_text(
+            "mattermost:\n  allow_bots: none\n",
+            encoding="utf-8",
+        )
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
         monkeypatch.delenv("MATTERMOST_ALLOW_BOTS", raising=False)
+        monkeypatch.setenv("MATTERMOST_ALLOWED_USERS", "human_user")
+        monkeypatch.setenv("MATTERMOST_ALLOW_ALL_USERS", "false")
+        monkeypatch.setenv("GATEWAY_ALLOW_ALL_USERS", "false")
 
-        _apply_yaml_config({}, {"allow_bots": "none"})
+        from gateway.config import load_gateway_config
+
+        load_gateway_config()
 
         assert os.environ["MATTERMOST_ALLOW_BOTS"] == "none"
+        assert _make_mattermost_auth_runner()._is_user_authorized(
+            _make_mattermost_bot_source()
+        ) is False
 
 
 class TestMattermostBotAuthorization:
-    @staticmethod
-    def _runner():
-        from gateway.run import GatewayRunner
-
-        runner = object.__new__(GatewayRunner)
-        runner.pairing_store = SimpleNamespace(is_approved=lambda *_args, **_kwargs: False)
-        return runner
-
-    @staticmethod
-    def _source():
-        from gateway.session import Platform, SessionSource
-
-        return SessionSource(
-            platform=Platform.MATTERMOST,
-            chat_id="chan_456",
-            chat_type="channel",
-            user_id="moviepilot_bot",
-            user_name="moviepilot",
-            is_bot=True,
-        )
-
     def test_allow_bots_all_bypasses_human_allowlist(self, monkeypatch):
         monkeypatch.setenv("MATTERMOST_ALLOW_BOTS", "all")
         monkeypatch.setenv("MATTERMOST_ALLOWED_USERS", "human_user")
-        assert self._runner()._is_user_authorized(self._source()) is True
+        assert _make_mattermost_auth_runner()._is_user_authorized(
+            _make_mattermost_bot_source()
+        ) is True
 
 # ---------------------------------------------------------------------------
 # File upload (send_image)

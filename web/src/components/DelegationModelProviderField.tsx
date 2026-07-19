@@ -70,6 +70,8 @@ export function DelegationModelProviderField({
         if (!cancelled) setLoadFailed(true);
       })
       .finally(() => {
+        // Gate the loading flag on `cancelled` so an unmount-then-remount
+        // can't show a "not loading, but no options" flicker.
         if (!cancelled) setIsLoading(false);
       });
 
@@ -163,7 +165,9 @@ export function DelegationModelProviderField({
         ))}
       </Select>
       {isLoading ? (
-        <p className="text-xs text-text-secondary">{c.delegationLoading}</p>
+        <p aria-live="polite" className="text-xs text-text-secondary">
+          {c.delegationLoading}
+        </p>
       ) : null}
 
       {isInherit ? (

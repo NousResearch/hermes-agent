@@ -113,7 +113,9 @@ export default {
     const tokens = Number(opts.tokens ?? 400)
     const intervalMs = Number(opts.intervalMs ?? 16)
     const flushMinMs = Number(opts.flushMinMs ?? 33)
-    const chunk = opts.chunk ?? '**word** in _italic_ with `code`, a [link](https://x.dev) and prose. '
+    // No raw autolink in the default chunk — a resolvable URL triggers link
+    // embeds / DNS lookups that add noise unrelated to render cost.
+    const chunk = opts.chunk ?? '**word** in _italic_ with `code` and a bit of ordinary prose. '
     const real = Boolean(opts.real)
 
     await cdp.send('Runtime.enable')

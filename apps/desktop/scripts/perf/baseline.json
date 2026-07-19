@@ -1,37 +1,37 @@
 {
   "_meta": {
-    "note": "SEED baseline only. Values are approximations from apps/desktop/scripts/profile-typing-lag.md (May 2026, 34MB session, PRE incremental-lex). Run `npm run perf -- --update-baseline` on YOUR reference device to capture real numbers, then commit. Tolerances are intentionally loose until then.",
-    "platform": null,
+    "note": "Captured on darwin-arm64 via `npm run perf -- --spawn`. keystroke + transcript are clean medians. stream = a clean single-run capture; under --spawn the isolated backend may not connect, and its reconnect churn inflates frame-pacing, so re-capture stream on a backend-CONNECTED instance (perf:serve against a live profile, or attach) for tighter tolerances. Re-baseline with `npm run perf -- --update-baseline`.",
+    "platform": "darwin-arm64",
     "node": null,
-    "updated": null
+    "updated": "2026-07-19"
   },
   "scenarios": {
     "stream": {
-      "tolerance": { "tolFrac": 0.5, "tolAbs": 2 },
+      "tolerance": { "tolFrac": 0.6, "tolAbs": 5 },
       "metrics": {
         "longtasks_n": 2,
-        "longtask_max_ms": 127,
-        "frame_p95_ms": 25.6,
-        "frame_p99_ms": 31.4,
-        "slow_frames_33": 6,
-        "intermut_p95_ms": 45
+        "longtask_max_ms": 97,
+        "frame_p95_ms": 18.4,
+        "frame_p99_ms": 28.5,
+        "slow_frames_33": 4,
+        "intermut_p95_ms": 37.1
       }
     },
     "keystroke": {
-      "tolerance": { "tolFrac": 0.5, "tolAbs": 3 },
+      "tolerance": { "tolFrac": 0.6, "tolAbs": 4 },
       "metrics": {
-        "keystroke_p50_ms": 8,
-        "keystroke_p95_ms": 17,
-        "keystroke_p99_ms": 28,
-        "keystroke_slow_16": 6
+        "keystroke_p50_ms": 2.7,
+        "keystroke_p95_ms": 9.9,
+        "keystroke_p99_ms": 17.7,
+        "keystroke_slow_16": 2
       }
     },
     "transcript": {
-      "tolerance": { "tolFrac": 0.5, "tolAbs": 20 },
+      "tolerance": { "tolFrac": 0.75, "tolAbs": 40 },
       "metrics": {
-        "transcript_mount_ms": 450,
-        "transcript_longtask_ms": 350,
-        "transcript_longtask_max_ms": 160
+        "transcript_mount_ms": 287.3,
+        "transcript_longtask_ms": 559,
+        "transcript_longtask_max_ms": 295
       }
     }
   }

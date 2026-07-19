@@ -12,7 +12,7 @@
 // spent regardless of the isolated backend.
 
 import { spawn } from 'node:child_process'
-import { copyFileSync, existsSync, mkdtempSync, rmSync } from 'node:fs'
+import { copyFileSync, existsSync, mkdtempSync, readFileSync, rmSync } from 'node:fs'
 import { createRequire } from 'node:module'
 import { homedir, tmpdir } from 'node:os'
 import { dirname, join, resolve } from 'node:path'
@@ -69,6 +69,20 @@ function seedConfigFrom(sourceHome, targetHome) {
   }
 }
 
+// Resolve the vite CLI entry via its package.json `bin` (Vite 8's `exports`
+// blocks importing `vite/bin/vite.js` directly).
+function resolveViteBin() {
+  const pkgPath = require.resolve('vite/package.json')
+  const pkg = JSON.parse(readFileSync(pkgPath, 'utf8'))
+  const rel = typeof pkg.bin === 'string' ? pkg.bin : pkg.bin?.vite
+
+  if (!rel) {
+    throw new Error('could not resolve the vite CLI from vite/package.json')
+  }
+
+  return join(dirname(pkgPath), rel)
+}
+
 function runNode(scriptRelPath, args = []) {
   return new Promise((resolveRun, reject) => {
     const child = spawn(process.execPath, [join(DESKTOP_DIR, scriptRelPath), ...args], {
@@ -99,7 +113,8 @@ export async function startIsolatedInstance({
   hermesHome,
   userDataDir,
   seedConfig = true,
-  bootFakeStepMs = 120
+  bootFakeStepMs = 120,
+  settleMs = 2500
 } = {}) {
   const children = []
   const tempDirs = []
@@ -141,7 +156,7 @@ export async function startIsolatedInstance({
   try {
     // 1. Renderer: reuse an already-running dev server, else start one.
     if (!(await reachable(devUrl))) {
-      const viteBin = require.resolve('vite/bin/vite.js')
+      const viteBin = resolveViteBin()
       const vite = spawn(process.execPath, [viteBin, '--host', '127.0.0.1', '--port', String(devPort)], {
         cwd: DESKTOP_DIR,
         stdio: ['ignore', 'inherit', 'inherit']
@@ -193,6 +208,11 @@ export async function startIsolatedInstance({
       },
       { timeoutMs: 120000, label: 'isolated renderer + __PERF_DRIVE__' }
     )
+
+    // Let cold-start contention (vite dep pre-bundling, first backend-connect
+    // attempts, initial paint) drain before scenarios measure, so numbers
+    // reflect steady state rather than launch noise.
+    await sleep(settleMs)
 
     return {
       cdp,

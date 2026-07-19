@@ -7983,6 +7983,12 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         # engages drain on the first tick.
         self._spawn_supervised(self._drain_control_watcher, "drain_control_watcher")
 
+        # Start background MCP config watcher — hot-reloads MCP connections when
+        # config.yaml's mcp_servers section changes, so `hermes mcp add/remove`
+        # and manual edits take effect without restarting the gateway. Gated by
+        # the `mcp_config_watch` config flag (default on), checked inside.
+        asyncio.create_task(self._mcp_config_watcher())
+
         logger.info("Press Ctrl+C to stop")
         
         return True
@@ -15356,6 +15362,69 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
 
 
 
+    async def _reload_mcp_connections(self) -> "tuple[set, set, set, list]":
+        """Disconnect, re-discover (reads config.yaml fresh), and refresh cached
+        agents' MCP tool lists. Returns ``(added, removed, reconnected, new_tools)``.
+
+        Event-independent core shared by the ``/reload-mcp`` slash command
+        (``_execute_mcp_reload``) and the automatic config watcher
+        (``_mcp_config_watcher``). Refreshing cached agents here — not just the
+        global ``_servers`` registry — is what lets EXISTING sessions see
+        added/removed MCP tools on their next turn without ``/new``.
+        """
+        loop = asyncio.get_running_loop()
+        from tools.mcp_tool import shutdown_mcp_servers, discover_mcp_tools, _servers, _lock
+
+        # Capture old server names before shutdown.
+        with _lock:
+            old_servers = set(_servers.keys())
+
+        # Shutdown existing connections, then reconnect by re-discovering
+        # (discover_mcp_tools reads config.yaml fresh).
+        await loop.run_in_executor(None, shutdown_mcp_servers)
+        new_tools = await loop.run_in_executor(None, discover_mcp_tools)
+
+        with _lock:
+            connected_servers = set(_servers.keys())
+
+        added = connected_servers - old_servers
+        removed = old_servers - connected_servers
+        reconnected = connected_servers & old_servers
+
+        # Refresh cached agents so existing sessions see new MCP tools on their
+        # next turn — without this, the user would have to `/new` (discarding
+        # conversation history) to pick up a just-added/reconnected server.
+        try:
+            from tools.mcp_tool import refresh_agent_mcp_tools
+            _cache = getattr(self, "_agent_cache", None)
+            _cache_lock = getattr(self, "_agent_cache_lock", None)
+            if _cache_lock is not None and _cache:
+                with _cache_lock:
+                    for _sess_key, _entry in list(_cache.items()):
+                        try:
+                            _agent = _entry[0] if isinstance(_entry, tuple) else _entry
+                        except Exception:
+                            continue
+                        if _agent is None:
+                            continue
+                        # Preserve each cached agent's build-time toolset
+                        # selection EXACTLY: a gateway session built with a
+                        # restricted enabled_toolsets (e.g. ["safe"]) must NOT
+                        # silently gain tools after a reload. This is the
+                        # opposite of the interactive CLI/TUI /reload-mcp, which
+                        # is a single user re-applying their own config edit;
+                        # gateway agents are per-session and may be deliberately
+                        # locked down. (Contract asserted by
+                        # test_reload_mcp_preserves_per_agent_toolset_overrides.)
+                        refresh_agent_mcp_tools(_agent, quiet_mode=True)
+        except Exception as _exc:
+            logger.debug(
+                "Failed to update cached agent tools after MCP reload: %s",
+                _exc,
+            )
+
+        return added, removed, reconnected, new_tools
+
     async def _execute_mcp_reload(self, event: MessageEvent) -> str:
         """Actually disconnect, reconnect, and notify MCP tool changes.
 
@@ -15363,28 +15432,9 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         wrapper can invoke the same path whether the user confirmed via
         button, text reply, or has the confirm gate disabled.
         """
-        loop = asyncio.get_running_loop()
         try:
-            from tools.mcp_tool import shutdown_mcp_servers, discover_mcp_tools, _servers, _lock
-
-            # Capture old server names before shutdown
-            with _lock:
-                old_servers = set(_servers.keys())
-
-            # Read new config before shutting down, so we know what will be added/removed
-            # Shutdown existing connections
-            await loop.run_in_executor(None, shutdown_mcp_servers)
-
-            # Reconnect by discovering tools (reads config.yaml fresh)
-            new_tools = await loop.run_in_executor(None, discover_mcp_tools)
-
-            # Compute what changed
-            with _lock:
-                connected_servers = set(_servers.keys())
-
-            added = connected_servers - old_servers
-            removed = old_servers - connected_servers
-            reconnected = connected_servers & old_servers
+            added, removed, reconnected, new_tools = await self._reload_mcp_connections()
+            connected_servers = reconnected | added
 
             lines = [t("gateway.reload_mcp.header")]
             if reconnected:
@@ -15397,41 +15447,6 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 lines.append(t("gateway.reload_mcp.none_connected"))
             else:
                 lines.append(t("gateway.reload_mcp.tools_available", tools=len(new_tools), servers=len(connected_servers)))
-
-            # Refresh cached agents so existing sessions see new MCP tools on
-            # their next turn — without this, the user has to `/new` (which
-            # discards conversation history) to pick up tools from a server
-            # that was just added or reconnected. The user has already
-            # consented to the prompt-cache invalidation via the slash-confirm
-            # gate in _handle_reload_mcp_command before we reach this point.
-            try:
-                from tools.mcp_tool import refresh_agent_mcp_tools
-                _cache = getattr(self, "_agent_cache", None)
-                _cache_lock = getattr(self, "_agent_cache_lock", None)
-                if _cache_lock is not None and _cache:
-                    with _cache_lock:
-                        for _sess_key, _entry in list(_cache.items()):
-                            try:
-                                _agent = _entry[0] if isinstance(_entry, tuple) else _entry
-                            except Exception:
-                                continue
-                            if _agent is None:
-                                continue
-                            # Preserve each cached agent's build-time toolset
-                            # selection EXACTLY: a gateway session built with a
-                            # restricted enabled_toolsets (e.g. ["safe"]) must
-                            # NOT silently gain tools after a reload. This is the
-                            # opposite of the interactive CLI/TUI /reload-mcp,
-                            # which is a single user re-applying their own config
-                            # edit; gateway agents are per-session and may be
-                            # deliberately locked down. (Contract is asserted by
-                            # test_reload_mcp_preserves_per_agent_toolset_overrides.)
-                            refresh_agent_mcp_tools(_agent, quiet_mode=True)
-            except Exception as _exc:
-                logger.debug(
-                    "Failed to update cached agent tools after MCP reload: %s",
-                    _exc,
-                )
 
             # Inject a message at the END of the session history so the
             # model knows tools changed on its next turn.  Appended after
@@ -15462,6 +15477,95 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         except Exception as e:
             logger.warning("MCP reload failed: %s", e)
             return t("gateway.reload_mcp.failed", error=e)
+
+    async def _mcp_config_watcher(self, interval: float = 5.0) -> None:
+        """Background task: hot-reload MCP servers when config.yaml's
+        ``mcp_servers`` section changes, so gateway/headless deployments pick up
+        ``hermes mcp add/remove`` (and manual config edits) WITHOUT a restart.
+
+        This is the gateway analogue of the interactive TUI's config watcher
+        (``cli.HermesCLI._check_config_mcp_changes``, driven from its
+        ``process_loop``): users running the always-on gateway previously had to
+        restart the process for a config edit to take effect. Gated by the
+        ``mcp_config_watch`` config flag (default on). Cheap: a ``stat()`` every
+        ``interval`` seconds with an mtime fast-path; only an actual mcp_servers
+        change reconnects. Cancelled with the gateway's other background tasks
+        when ``self._running`` flips false on shutdown.
+        """
+        try:
+            from hermes_cli.config import load_config
+            if not (load_config() or {}).get("mcp_config_watch", True):
+                logger.debug("MCP config watcher disabled (mcp_config_watch=false)")
+                return
+        except Exception:
+            pass  # config unreadable — default to watching
+
+        from hermes_cli.config import get_config_path
+        cfg_path = get_config_path()
+
+        # Seed state from the on-disk config so an UNCHANGED config after startup
+        # does not spuriously reload on the first tick; the first real edit after
+        # this bumps mtime and triggers the reload.
+        try:
+            self._mcp_watch_mtime = cfg_path.stat().st_mtime
+        except OSError:
+            self._mcp_watch_mtime = 0.0
+        try:
+            import yaml as _yaml
+            with open(cfg_path, encoding="utf-8") as _f:
+                self._mcp_watch_servers = (_yaml.safe_load(_f) or {}).get("mcp_servers") or {}
+        except Exception:
+            self._mcp_watch_servers = {}
+
+        await asyncio.sleep(interval)  # let the gateway finish starting up
+        while self._running:
+            try:
+                await self._check_config_mcp_changes()
+            except Exception:
+                logger.debug("MCP config watcher tick failed", exc_info=True)
+            await asyncio.sleep(interval)
+
+    async def _check_config_mcp_changes(self) -> None:
+        """One tick of the gateway MCP-config watcher: reload MCP connections
+        when config.yaml's ``mcp_servers`` section changed on disk.
+
+        Change detection is shared with the TUI via
+        ``hermes_cli.mcp_startup.detect_mcp_servers_change`` and runs off the
+        event loop (``asyncio.to_thread``) so a large config parse can't stall
+        the gateway. The reconnect itself runs in an executor inside
+        ``_reload_mcp_connections``, so a hung MCP server can't block the loop.
+        """
+        from hermes_cli.config import get_config_path
+        from hermes_cli.mcp_startup import detect_mcp_servers_change
+
+        cfg_path = get_config_path()
+        if not cfg_path.exists():
+            return
+
+        changed, self._mcp_watch_mtime, self._mcp_watch_servers = await asyncio.to_thread(
+            detect_mcp_servers_change,
+            cfg_path,
+            self._mcp_watch_mtime,
+            self._mcp_watch_servers,
+        )
+        if not changed:
+            return
+
+        logger.info(
+            "MCP config changed on disk — hot-reloading gateway MCP connections"
+        )
+        added, removed, reconnected, new_tools = await self._reload_mcp_connections()
+        _delta = []
+        if added:
+            _delta.append("added: " + ", ".join(sorted(added)))
+        if removed:
+            _delta.append("removed: " + ", ".join(sorted(removed)))
+        logger.info(
+            "MCP hot-reload complete: %d tool(s), %d server(s)%s",
+            len(new_tools),
+            len(reconnected | added),
+            (" (" + "; ".join(_delta) + ")") if _delta else "",
+        )
 
 
 

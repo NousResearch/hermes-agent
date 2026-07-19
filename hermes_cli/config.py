@@ -1409,6 +1409,18 @@ DEFAULT_CONFIG = {
     # small so a slow/dead server adds little to first-response latency.
     "mcp_discovery_timeout": 1.5,
 
+    # When true (default), long-running surfaces (the gateway and the
+    # interactive TUI) poll config.yaml every few seconds and hot-reload MCP
+    # connections whenever the ``mcp_servers`` section changes — so
+    # ``hermes mcp add/remove`` and manual edits take effect WITHOUT a restart
+    # or a ``/new`` session. The poll is a cheap ``stat()`` with an mtime
+    # fast-path; only an actual mcp_servers change triggers a reconnect, and a
+    # hung server can't stall the process (reload runs off the main loop). Set
+    # false to require an explicit ``/reload-mcp`` (or restart) instead — e.g.
+    # on locked-down headless deployments whose MCP config never changes at
+    # runtime.
+    "mcp_config_watch": True,
+
     # Tool-output truncation thresholds. When terminal output or a
     # single read_file page exceeds these limits, Hermes truncates the
     # payload sent to the model (keeping head + tail for terminal,

@@ -128,3 +128,61 @@ def join_mcp_discovery(timeout: "float | None" = None) -> bool:
         return True
     thread.join(timeout=timeout)
     return not thread.is_alive()
+
+
+# ─── Config hot-reload change detection ──────────────────────────────────────
+
+def detect_mcp_servers_change(
+    cfg_path,
+    prev_mtime: float,
+    prev_servers: dict,
+) -> "tuple[bool, float, dict]":
+    """Detect whether config.yaml's ``mcp_servers`` section changed on disk.
+
+    Shared by the interactive TUI (``cli.HermesCLI._check_config_mcp_changes``)
+    and the long-running gateway
+    (``gateway.run.GatewayRunner._check_config_mcp_changes``) so both surfaces
+    auto-reload MCP connections on a config edit using one change-detection
+    implementation, without a restart or a new session.
+
+    Returns ``(changed, new_mtime, new_mcp_servers)``:
+
+    * ``changed`` is True ONLY when the ``mcp_servers`` subtree differs from
+      ``prev_servers`` — editing any OTHER config section never triggers a
+      reload.
+    * ``new_mtime`` is the file's current mtime, advanced even when the edit was
+      to an unrelated section or the file was mid-write, so callers don't
+      re-``stat``/re-parse the same bytes on every poll tick.
+    * ``new_mcp_servers`` is the freshly-parsed ``mcp_servers`` map when
+      ``changed`` is True, otherwise ``prev_servers`` unchanged.
+
+    Never raises: a missing file, an ``OSError`` from ``stat()``, or
+    invalid/partial YAML (e.g. an editor mid-save) is reported as "no change",
+    so a background watcher can poll safely.
+    """
+    import yaml as _yaml
+
+    try:
+        mtime = cfg_path.stat().st_mtime
+    except OSError:
+        return False, prev_mtime, prev_servers
+
+    # Fast path: file untouched since the last check — skip the parse entirely.
+    if mtime == prev_mtime:
+        return False, prev_mtime, prev_servers
+
+    try:
+        with open(cfg_path, encoding="utf-8") as f:
+            new_cfg = _yaml.safe_load(f) or {}
+    except Exception:
+        # File changed but is unreadable/partial (mid-write) or invalid YAML.
+        # Adopt the new mtime so we don't re-parse the same broken bytes every
+        # tick, but report no change — the next good write bumps mtime again.
+        return False, mtime, prev_servers
+
+    new_mcp = new_cfg.get("mcp_servers") or {}
+    if new_mcp == prev_servers:
+        # Some OTHER config section was edited; mcp_servers is identical.
+        return False, mtime, prev_servers
+
+    return True, mtime, new_mcp

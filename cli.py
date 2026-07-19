@@ -9995,8 +9995,6 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
         known state.  When a change is detected, triggers _reload_mcp() and
         informs the user so they know the tool list has been refreshed.
         """
-        import yaml as _yaml
-
         CONFIG_WATCH_INTERVAL = 5.0  # seconds between config.yaml stat() calls
 
         now = time.monotonic()
@@ -10009,27 +10007,15 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
         if not cfg_path.exists():
             return
 
-        try:
-            mtime = cfg_path.stat().st_mtime
-        except OSError:
+        # Change detection (mtime fast-path + mcp_servers deep-compare) is shared
+        # with the gateway watcher via detect_mcp_servers_change so both surfaces
+        # behave identically.
+        from hermes_cli.mcp_startup import detect_mcp_servers_change
+        changed, self._config_mtime, self._config_mcp_servers = detect_mcp_servers_change(
+            cfg_path, self._config_mtime, self._config_mcp_servers
+        )
+        if not changed:
             return
-
-        if mtime == self._config_mtime:
-            return  # File unchanged — fast path
-
-        # File changed — check whether mcp_servers section changed
-        self._config_mtime = mtime
-        try:
-            with open(cfg_path, encoding="utf-8") as f:
-                new_cfg = _yaml.safe_load(f) or {}
-        except Exception:
-            return
-
-        new_mcp = new_cfg.get("mcp_servers") or {}
-        if new_mcp == self._config_mcp_servers:
-            return  # mcp_servers unchanged (some other section was edited)
-
-        self._config_mcp_servers = new_mcp
         # Notify user and reload.  Run in a separate thread with a hard
         # timeout so a hung MCP server cannot block the process_loop
         # indefinitely (which would freeze the entire TUI).

@@ -239,6 +239,32 @@ def _server_error_status(event: Mapping[str, Any]) -> int | None:
     return None
 
 
+def _is_omit_sentinel(value: Any) -> bool:
+    """Return True for OpenAI SDK Omit sentinels that must never be stringified."""
+    if value is None:
+        return True
+    type_name = type(value).__name__
+    module_name = getattr(type(value), "__module__", "") or ""
+    if type_name == "Omit" and "openai" in module_name:
+        return True
+    # Defensive: stringified Omit should never leak into wire headers either.
+    text = str(value)
+    return text.startswith("<openai.Omit object at ") or text.startswith("<Omit object at ")
+
+
+def _header_value_to_str(value: Any) -> str | None:
+    """Coerce a header value to a wire-safe string, or None to drop it."""
+    if _is_omit_sentinel(value):
+        return None
+    if isinstance(value, bool):
+        return "true" if value else "false"
+    if isinstance(value, (str, int, float)):
+        text = str(value).strip()
+        return text or None
+    # Mappings / objects / sentinels are not valid HTTP header values.
+    return None
+
+
 def _build_headers(
     *,
     api_kwargs: Mapping[str, Any],
@@ -246,14 +272,34 @@ def _build_headers(
     api_key: Any,
     headers: Mapping[str, Any] | None,
 ) -> dict[str, str]:
+    """Build WebSocket handshake headers without leaking SDK Omit sentinels.
+
+    OpenAI clients put ``Omit`` placeholders for unset organization/project into
+    ``default_headers``. Those must be skipped — ``str(Omit())`` becomes the
+    useless ``<openai.Omit object at 0x...>`` value seen by relays.
+    Prefer the SDK's ``_custom_headers`` map for caller-supplied headers.
+    """
     result: dict[str, str] = {}
-    for candidate in (
-        getattr(client, "default_headers", None),
-        headers,
-        api_kwargs.get("extra_headers"),
-    ):
-        if isinstance(candidate, Mapping):
-            result.update({str(key): str(value) for key, value in candidate.items()})
+
+    def merge(candidate: Any) -> None:
+        if not isinstance(candidate, Mapping):
+            return
+        for key, value in candidate.items():
+            text = _header_value_to_str(value)
+            if text is None:
+                continue
+            # Last writer wins, but keep original casing of the latest key.
+            lower = str(key).lower()
+            for existing in list(result):
+                if existing.lower() == lower:
+                    result.pop(existing, None)
+            result[str(key)] = text
+
+    # Order: SDK default string headers → custom headers → explicit overrides.
+    merge(getattr(client, "default_headers", None))
+    merge(getattr(client, "_custom_headers", None))
+    merge(headers)
+    merge(api_kwargs.get("extra_headers"))
 
     key = api_key if api_key is not None else getattr(client, "api_key", None)
     if isinstance(key, str) and key and key != "no-key-required":

@@ -92,6 +92,46 @@ def test_build_ws_wire_body_removes_sdk_only_fields_and_merges_extra_body():
     }
 
 
+def test_build_headers_drops_openai_omit_sentinels():
+    from agent.codex_responses_ws_transport import _build_headers
+
+    class _Omit:
+        __module__ = "openai"
+
+        def __str__(self) -> str:
+            return "<openai.Omit object at 0xdeadbeef>"
+
+    class _Client:
+        default_headers = {
+            "Accept": "application/json",
+            "Authorization": "Bearer from-default",
+            "OpenAI-Organization": _Omit(),
+            "OpenAI-Project": _Omit(),
+            "X-Stainless-Lang": "python",
+        }
+        _custom_headers = {
+            "X-Custom-From-SDK": "yes",
+            "OpenAI-Organization": _Omit(),
+        }
+        api_key = "sk-should-not-override-existing-auth"
+
+    headers = _build_headers(
+        api_kwargs={"extra_headers": {"X-Relay": "1", "OpenAI-Project": _Omit()}},
+        client=_Client(),
+        api_key="sk-unused",
+        headers={"X-Explicit": "ok"},
+    )
+
+    assert headers["Accept"] == "application/json"
+    assert headers["Authorization"] == "Bearer from-default"
+    assert headers["X-Custom-From-SDK"] == "yes"
+    assert headers["X-Relay"] == "1"
+    assert headers["X-Explicit"] == "ok"
+    assert "OpenAI-Organization" not in headers
+    assert "OpenAI-Project" not in headers
+    assert not any("Omit object" in str(v) for v in headers.values())
+
+
 def test_build_generic_ws_identity_includes_ws_url_and_transport():
     from agent.codex_responses_ws_transport import build_generic_ws_identity
 

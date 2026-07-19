@@ -3457,7 +3457,7 @@ DEFAULT_CONFIG = {
     },
 
     # Config schema version - bump this when adding new required fields
-    "_config_version": 33,
+    "_config_version": 34,
 }
 
 # =============================================================================
@@ -3480,6 +3480,12 @@ ENV_VARS_BY_VERSION: Dict[int, List[str]] = {
 # selection step (Nous Portal / OpenRouter / Custom endpoint), so this
 # dict is intentionally empty — no single env var is universally required.
 REQUIRED_ENV_VARS = {}
+
+_RETIRED_TOOLSET_NAMES = frozenset({
+    # Removed with the agent-callable send_message toolset cleanup; older
+    # configs can still persist it under platform_toolsets.*.
+    "messaging",
+})
 
 # Optional environment variables that enhance functionality
 OPTIONAL_ENV_VARS = {
@@ -5794,6 +5800,65 @@ def _persist_migration(config: Dict[str, Any]) -> None:
     save_config(config)
 
 
+def _prune_retired_toolset_names(config: Dict[str, Any]) -> List[str]:
+    """Remove retired built-in toolset names from persisted selections."""
+    try:
+        from toolsets import validate_toolset
+    except Exception:
+        validate_toolset = None
+
+    mcp_cfg = config.get("mcp_servers")
+    mcp_names = {str(name) for name in mcp_cfg} if isinstance(mcp_cfg, dict) else set()
+    preserved_invalid = mcp_names | {"no_mcp"}
+    removed: List[str] = []
+
+    def _is_retired(name: str) -> bool:
+        if name not in _RETIRED_TOOLSET_NAMES:
+            return False
+        if name in preserved_invalid:
+            return False
+        if validate_toolset is not None and validate_toolset(name):
+            return False
+        return True
+
+    platform_toolsets = config.get("platform_toolsets")
+    if isinstance(platform_toolsets, dict):
+        for platform_name, raw_toolsets in list(platform_toolsets.items()):
+            if not isinstance(raw_toolsets, list):
+                continue
+            kept = []
+            changed = False
+            for raw_name in raw_toolsets:
+                name = str(raw_name)
+                if _is_retired(name):
+                    removed.append(f"platform_toolsets.{platform_name}.{name}")
+                    changed = True
+                    continue
+                kept.append(raw_name)
+            if changed:
+                platform_toolsets[platform_name] = kept
+        config["platform_toolsets"] = platform_toolsets
+
+    agent_cfg = config.get("agent")
+    if isinstance(agent_cfg, dict):
+        enabled_toolsets = agent_cfg.get("enabled_toolsets")
+        if isinstance(enabled_toolsets, list):
+            kept = []
+            changed = False
+            for raw_name in enabled_toolsets:
+                name = str(raw_name)
+                if _is_retired(name):
+                    removed.append(f"agent.enabled_toolsets.{name}")
+                    changed = True
+                    continue
+                kept.append(raw_name)
+            if changed:
+                agent_cfg["enabled_toolsets"] = kept
+                config["agent"] = agent_cfg
+
+    return removed
+
+
 def migrate_config(interactive: bool = True, quiet: bool = False) -> Dict[str, Any]:
     """
     Migrate config to latest version, prompting for new required fields.
@@ -6366,6 +6431,26 @@ def migrate_config(interactive: bool = True, quiet: bool = False) -> Dict[str, A
                     "  ✓ Removed deprecated delegation.max_async_children — "
                     "delegation.max_concurrent_children now caps background "
                     "delegations too."
+                )
+
+    # ── Version 33 → 34: prune retired persisted toolset names ──
+    # The old messaging toolset was removed with the agent-callable
+    # send_message cleanup. Configs that saved it under platform_toolsets.* or
+    # agent.enabled_toolsets now produce "Unknown toolsets: messaging" on every
+    # CLI start. Remove only retired built-in names; preserve MCP server names
+    # and custom/plugin entries that may resolve after plugin discovery.
+    if current_ver < 34:
+        config = read_raw_config()
+        removed_toolsets = _prune_retired_toolset_names(config)
+        if removed_toolsets:
+            _persist_migration(config)
+            results["config_added"].append(
+                f"pruned retired toolsets ({len(removed_toolsets)})"
+            )
+            if not quiet:
+                print(
+                    "  ✓ Removed retired toolset entries from config.yaml: "
+                    f"{', '.join(removed_toolsets)}"
                 )
 
     # ── Post-migration: disable exfiltration-shaped MCP stdio entries ──

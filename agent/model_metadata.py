@@ -319,7 +319,10 @@ DEFAULT_CONTEXT_LENGTHS = {
     "grok-3": 131072,           # grok-3, grok-3-mini, grok-3-fast, grok-3-mini-fast
     "grok-2": 131072,           # grok-2, grok-2-1212, grok-2-latest
     "grok": 131072,             # catch-all (grok-beta, unknown grok-*)
-    # Kimi
+    # Kimi — K3 ships with a 1M context window (verified: platform.kimi.ai/docs/overview).
+    # Longest-key-first substring matching ensures "kimi-k3" resolves to 1M
+    # while older/unknown Kimi models still hit the generic 256K fallback.
+    "kimi-k3": 1_000_000,
     "kimi": 262144,
     # Upstage Solar — api.upstage.ai/v1/models does not return context_length,
     # so these fallbacks keep token budgeting / compression from probing down

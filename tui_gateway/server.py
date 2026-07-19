@@ -11962,6 +11962,35 @@ def _(rid, params, pdb, conn) -> dict:
     return _ok(rid, {"active_id": pdb.get_active_id(conn)})
 
 
+@_projects_method("projects.bind_conversation")
+def _(rid, params, pdb, conn) -> dict:
+    proj = _require_project(pdb, conn, params)
+    binding = pdb.bind_conversation(
+        conn,
+        proj.id,
+        platform=str(params.get("platform") or ""),
+        chat_id=str(params.get("chat_id") or ""),
+        thread_id=params.get("thread_id"),
+        alias=params.get("alias"),
+    )
+    return _ok(rid, {"binding": binding.to_dict(), "project": pdb.get_project(conn, binding.project_id).to_dict()})
+
+
+@_projects_method("projects.unbind_conversation")
+def _(rid, params, pdb, conn) -> dict:
+    project_id = str(params.get("id") or "").strip() or None
+    if project_id and pdb.get_project(conn, project_id) is None:
+        raise _NoProject
+    removed = pdb.unbind_conversation(
+        conn,
+        platform=str(params.get("platform") or ""),
+        chat_id=str(params.get("chat_id") or ""),
+        thread_id=params.get("thread_id"),
+        project_id=project_id,
+    )
+    return _ok(rid, {"removed": removed})
+
+
 @_projects_method("projects.for_cwd")
 def _(rid, params, pdb, conn) -> dict:
     cwd = _completion_cwd({"cwd": str(params.get("cwd") or "").strip()} if params.get("cwd") else {})
@@ -12149,6 +12178,11 @@ def _project_tree_row(r: dict) -> dict:
         "cwd": r.get("cwd"),
         "git_branch": r.get("git_branch"),
         "git_repo_root": r.get("git_repo_root"),
+        "chat_id": r.get("chat_id"),
+        "chat_type": r.get("chat_type"),
+        "thread_id": r.get("thread_id"),
+        "display_name": r.get("display_name"),
+        "origin_json": r.get("origin_json"),
     }
 
 

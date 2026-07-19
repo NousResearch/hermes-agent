@@ -12,7 +12,7 @@ import { setSidebarAgentsGrouped } from '@/store/layout'
 import { notify } from '@/store/notifications'
 import { requestFreshSession } from '@/store/profile'
 import { $selectedStoredSessionId, $sessions, sessionMatchesStoredId, workspaceCwdForNewSession } from '@/store/session'
-import type { ProjectInfo, ProjectsPayload } from '@/types/hermes'
+import type { ConversationBindingInfo, ProjectInfo, ProjectsPayload } from '@/types/hermes'
 
 // First-class, per-profile Projects (named, multi-folder workspaces). State is
 // served by the live gateway's `projects.*` JSON-RPC methods, which wrap the
@@ -691,6 +691,93 @@ export async function deleteProject(id: string): Promise<void> {
 export async function setActiveProject(id: null | string): Promise<void> {
   const res = await gatewayRequest<{ active_id: null | string }>('projects.set_active', { id })
   $activeProjectId.set(res.active_id ?? null)
+}
+
+export interface BindConversationInput {
+  projectId: string
+  platform: string
+  chatId: string
+  threadId?: null | string
+  alias?: null | string
+}
+
+const bindingKey = (binding: Pick<ConversationBindingInfo, 'chat_id' | 'platform' | 'thread_id'>): string =>
+  JSON.stringify({ chat_id: binding.chat_id, platform: binding.platform, thread_id: binding.thread_id ?? null })
+
+export async function bindConversationToProject(input: BindConversationInput): Promise<ConversationBindingInfo> {
+  const snap = snapshotProjects()
+  const platform = input.platform.trim().toLowerCase()
+  const threadId = input.threadId?.trim() || null
+
+  const optimistic: ConversationBindingInfo = {
+    alias: input.alias?.trim() || null,
+    chat_id: input.chatId,
+    created_at: 0,
+    platform,
+    project_id: input.projectId,
+    target_key: JSON.stringify({ chat_id: input.chatId, platform, thread_id: threadId }),
+    thread_id: threadId,
+    updated_at: 0
+  }
+
+  const target = bindingKey(optimistic)
+
+  $projects.set(
+    snap.projects.map(project => {
+      const withoutTarget = (project.conversation_bindings ?? []).filter(binding => bindingKey(binding) !== target)
+
+      return project.id === input.projectId
+        ? { ...project, conversation_bindings: [...withoutTarget, optimistic] }
+        : { ...project, conversation_bindings: withoutTarget }
+    })
+  )
+
+  let saved: ConversationBindingInfo | null = null
+  await persistOrRollback(snap, async () => {
+    const res = await gatewayRequest<{ binding: ConversationBindingInfo }>('projects.bind_conversation', {
+      id: input.projectId,
+      platform,
+      chat_id: input.chatId,
+      thread_id: threadId,
+      alias: input.alias ?? null
+    })
+
+    saved = res.binding
+  })
+  reconcileProjects()
+
+  return saved ?? optimistic
+}
+
+export async function unbindConversationFromProject(
+  input: Omit<BindConversationInput, 'alias' | 'projectId'> & { projectId?: null | string }
+): Promise<void> {
+  const snap = snapshotProjects()
+  const platform = input.platform.trim().toLowerCase()
+  const threadId = input.threadId?.trim() || null
+
+  const target = JSON.stringify({
+    chat_id: input.chatId,
+    platform,
+    thread_id: threadId
+  })
+
+  $projects.set(
+    snap.projects.map(project => ({
+      ...project,
+      conversation_bindings: (project.conversation_bindings ?? []).filter(binding => bindingKey(binding) !== target)
+    }))
+  )
+
+  await persistOrRollback(snap, () =>
+    gatewayRequest('projects.unbind_conversation', {
+      id: input.projectId ?? null,
+      platform,
+      chat_id: input.chatId,
+      thread_id: threadId
+    })
+  )
+  reconcileProjects()
 }
 
 // ── Project management dialog ────────────────────────────────────────────────

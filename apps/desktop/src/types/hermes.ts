@@ -322,6 +322,9 @@ export interface SessionCreateResponse {
 
 export interface SessionInfo {
   archived?: boolean
+  chat_id?: null | string
+  chat_type?: null | string
+  display_name?: null | string
   cwd?: null | string
   /** Git branch checked out in {@link cwd} when the session started/resumed.
    *  The sidebar groups main-checkout sessions by this so feature-branch work
@@ -345,6 +348,7 @@ export interface SessionInfo {
   message_count: number
   model: null | string
   output_tokens: number
+  origin_json?: null | string
   /** Parent conversation when this row is a /branch fork. */
   parent_session_id?: null | string
   preview: null | string
@@ -352,6 +356,7 @@ export interface SessionInfo {
   started_at: number
   title: null | string
   tool_call_count: number
+  thread_id?: null | string
   /** Origin platform when this session was handed off from a messaging
    *  platform (e.g. a Telegram thread continued in the desktop app). The live
    *  {@link source} becomes local (tui/desktop) after a handoff, so the origin
@@ -366,6 +371,17 @@ export interface SessionInfo {
   profile?: string
   /** True when {@link profile} is the default profile. */
   is_default_profile?: boolean
+}
+
+export interface ConversationBindingInfo {
+  project_id: string
+  platform: string
+  chat_id: string
+  thread_id: null | string
+  alias: null | string
+  target_key: string
+  created_at: number
+  updated_at: number
 }
 
 export interface SessionMessage {
@@ -647,6 +663,7 @@ export interface ProjectInfo {
   archived: boolean
   created_at: number
   folders: ProjectFolder[]
+  conversation_bindings?: ConversationBindingInfo[]
 }
 
 export interface ProjectsPayload {

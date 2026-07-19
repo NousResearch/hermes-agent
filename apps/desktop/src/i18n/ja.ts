@@ -1587,7 +1587,18 @@ export const ja = defineLocale({
       removeWorktreeDirty:
         'このワークツリーにはコミットされていない変更があります。強制削除（変更を破棄）するか、レーンを隠してディスク上に残します。',
       forceRemove: '強制削除',
-      enter: label => `${label} を開く`
+      enter: label => `${label} を開く`,
+      reorder: label => `${label} を並べ替え`,
+      toggle: label => `${label} のセッションを切り替え`,
+      back: 'すべてのプロジェクト',
+      topicProjectAction: 'プロジェクト連携',
+      topicProjectTitle: 'トピックのプロジェクト',
+      topicProjectDesc:
+        'このメッセージングトピックを 1 つの Hermes プロジェクトにリンクします。デスクトップの返信は引き続きデスクトップ内に留まります。',
+      topicProjectPlaceholder: 'プロジェクトを選択',
+      topicAliasPlaceholder: 'ローカルトピック名',
+      topicLink: '連携を保存',
+      topicUnlink: 'リンク解除'
     },
     newSessionIn: label => `${label} で新しいセッション`,
     showMoreIn: (count, label) => `${label} でさらに ${count} 件を表示`,

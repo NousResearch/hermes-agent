@@ -5,11 +5,13 @@ import { $sidebarAgentsGrouped } from '@/store/layout'
 
 import {
   $activeProjectId,
+  $projects,
   $projectScope,
   $projectsRpcAvailable,
   $projectTree,
   $worktreeRefreshToken,
   ALL_PROJECTS,
+  bindConversationToProject,
   createProject,
   enterProject,
   exitProjectScope,
@@ -17,7 +19,8 @@ import {
   pickProjectFolder,
   projectNameForCwd,
   refreshProjects,
-  refreshWorktrees
+  refreshWorktrees,
+  unbindConversationFromProject
 } from './projects'
 
 vi.mock('@/i18n', () => ({
@@ -257,5 +260,111 @@ describe('projects RPC capability', () => {
     expect(notify).toHaveBeenCalledWith(
       expect.objectContaining({ kind: 'warning', message: 'sidebar.projects.staleBackend' })
     )
+  })
+})
+
+describe('conversation bindings', () => {
+  beforeEach(() => {
+    vi.clearAllMocks()
+    $projects.set([
+      {
+        archived: false,
+        board_slug: null,
+        color: null,
+        created_at: 0,
+        description: null,
+        folders: [],
+        icon: null,
+        id: 'p_first',
+        name: 'First',
+        primary_path: null,
+        slug: 'first'
+      },
+      {
+        archived: false,
+        board_slug: null,
+        color: null,
+        created_at: 0,
+        description: null,
+        folders: [],
+        icon: null,
+        id: 'p_second',
+        name: 'Second',
+        primary_path: null,
+        slug: 'second'
+      }
+    ])
+  })
+
+  it('moves one conversation target to the selected project optimistically', async () => {
+    activeGateway.mockReturnValue({
+      connectionState: 'open',
+      request: vi.fn(async (method: string) =>
+        method === 'projects.bind_conversation'
+          ? {
+              binding: {
+                alias: 'Alias',
+                chat_id: 'chat',
+                created_at: 1,
+                platform: 'telegram',
+                project_id: 'p_second',
+                target_key: '',
+                thread_id: null,
+                updated_at: 1
+              }
+            }
+          : { active_id: null, projects: $projects.get(), scoped_session_ids: [] }
+      )
+    } as never)
+
+    await bindConversationToProject({
+      alias: 'Alias',
+      chatId: 'chat',
+      platform: 'Telegram',
+      projectId: 'p_second',
+      threadId: ''
+    })
+
+    const byId = new Map($projects.get().map(project => [project.id, project]))
+    expect(byId.get('p_first')?.conversation_bindings ?? []).toHaveLength(0)
+    expect(byId.get('p_second')?.conversation_bindings?.[0]).toMatchObject({
+      alias: 'Alias',
+      chat_id: 'chat',
+      platform: 'telegram',
+      thread_id: null
+    })
+  })
+
+  it('removes a binding optimistically', async () => {
+    $projects.set([
+      {
+        ...$projects.get()[0],
+        conversation_bindings: [
+          {
+            alias: null,
+            chat_id: 'chat',
+            created_at: 0,
+            platform: 'telegram',
+            project_id: 'p_first',
+            target_key: '',
+            thread_id: 'topic',
+            updated_at: 0
+          }
+        ]
+      }
+    ])
+    activeGateway.mockReturnValue({
+      connectionState: 'open',
+      request: vi.fn(async () => ({ active_id: null, projects: $projects.get(), removed: true, scoped_session_ids: [] }))
+    } as never)
+
+    await unbindConversationFromProject({
+      chatId: 'chat',
+      platform: 'telegram',
+      projectId: 'p_first',
+      threadId: 'topic'
+    })
+
+    expect($projects.get()[0].conversation_bindings).toEqual([])
   })
 })

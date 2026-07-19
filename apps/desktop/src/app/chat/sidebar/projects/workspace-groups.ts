@@ -26,6 +26,9 @@ export interface SidebarSessionGroup {
   // worktrees (`<repo>/.worktrees/t_*`) into one row, so a heavy board doesn't
   // spray hundreds of throwaway branch lanes across the sidebar.
   isKanban?: boolean
+  // True for Project lanes backed by explicit messaging conversation bindings
+  // rather than filesystem folders.
+  isConversation?: boolean
   loadingMore?: boolean
   mode?: 'profile' | 'source' | 'workspace'
   onLoadMore?: () => void

@@ -100,6 +100,7 @@ export type {
   ComputerUseStatus,
   ConfigFieldSchema,
   ConfigSchemaResponse,
+  ConversationBindingInfo,
   CronJob,
   CronJobCreatePayload,
   CronJobSchedule,

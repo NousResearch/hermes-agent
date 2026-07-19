@@ -97,6 +97,29 @@ COMMON_LOCAL_BIN_DIRS = ("/opt/homebrew/bin", "/usr/local/bin")
 
 GROQ_BASE_URL = os.getenv("GROQ_BASE_URL", "https://api.groq.com/openai/v1")
 OPENAI_BASE_URL = os.getenv("STT_OPENAI_BASE_URL", "https://api.openai.com/v1")
+# Shared audio credential guard (single source of truth; a real cloud key is
+# never sent to a private/self-hosted base_url). ``_base_url_is_private`` /
+# ``_PLACEHOLDER_OPENAI_KEY`` are re-exported for backward compatibility.
+from hermes_cli.audio_key_guard import (
+    base_url_is_private as _base_url_is_private,
+    resolve_provider_key as _resolve_provider_key,
+    PLACEHOLDER_KEY as _PLACEHOLDER_OPENAI_KEY,
+)
+
+
+def _clamp_stt_timeout(timeout, default: float = 30.0) -> float:
+    """Coerce + clamp an STT client timeout to a sane band (1..600s). Mirrors
+    the TTS-side clamp so a broken ``stt.openai.timeout`` (0, negative, string,
+    NaN) can't disable the timeout or pin a worker forever."""
+    try:
+        val = float(timeout) if timeout is not None else default
+    except (TypeError, ValueError):
+        return default
+    if val != val:  # NaN
+        return default
+    return min(max(val, 1.0), 600.0)
+
+
 XAI_STT_BASE_URL = os.getenv("XAI_STT_BASE_URL", "https://api.x.ai/v1")
 ELEVENLABS_STT_BASE_URL = os.getenv("ELEVENLABS_STT_BASE_URL", "https://api.elevenlabs.io/v1")
 # DeepInfra STT base URL now resolved via hermes_cli.models.deepinfra_base_url (shared).
@@ -1353,6 +1376,10 @@ def _transcribe_openai(
     api_key: Optional[str] = None,
     base_url: Optional[str] = None,
     provider_label: str = "openai",
+    response_format: Optional[str] = None,
+    timeout: Optional[float] = None,
+    language: Optional[str] = None,
+    request_format: Optional[str] = None,
 ) -> Dict[str, Any]:
     """Transcribe via the OpenAI ``audio.transcriptions.create`` SDK shape.
 
@@ -1361,6 +1388,16 @@ def _transcribe_openai(
     ``base_url`` to skip the OpenAI-only auth chain, and a
     ``provider_label`` so the response carries the right ``provider``
     name.
+
+    ``response_format`` and ``timeout`` let self-hosted / OpenAI-compatible
+    servers override the defaults (some only implement ``json`` responses;
+    CPU-bound servers need more than 30s). ``language`` is forwarded as an
+    ISO-639-1 hint when set (empty/None = auto-detect).
+
+    ``request_format`` selects the upload shape: ``multipart`` (default,
+    the standard OpenAI file upload) or ``json`` — a JSON body with the
+    audio base64-encoded as ``input_audio: {data, format}``, matching the
+    OpenWebUI contract for servers that only accept JSON.
     """
     if api_key is None:
         try:
@@ -1368,6 +1405,13 @@ def _transcribe_openai(
         except ValueError as exc:
             return {"success": False, "transcript": "", "error": str(exc)}
         base_url = base_url or fallback_base
+
+    if str(request_format or "").strip().lower() in ("json", "json_base64"):
+        return _transcribe_openai_json_b64(
+            file_path, model_name, api_key, base_url,
+            provider_label=provider_label,
+            response_format=response_format, timeout=timeout, language=language,
+        )
 
     if not _HAS_OPENAI:
         return {"success": False, "transcript": "", "error": "openai package not installed"}
@@ -1381,13 +1425,20 @@ def _transcribe_openai(
 
     try:
         from openai import OpenAI, APIError, APIConnectionError, APITimeoutError
-        client = OpenAI(api_key=api_key, base_url=base_url, timeout=30, max_retries=0)
+        client_timeout = _clamp_stt_timeout(timeout)
+        client = OpenAI(api_key=api_key, base_url=base_url, timeout=client_timeout, max_retries=0)
+        resolved_format = response_format or ("text" if model_name == "whisper-1" else "json")
+        create_kwargs: Dict[str, Any] = {
+            "model": model_name,
+            "response_format": resolved_format,
+        }
+        if language:
+            create_kwargs["language"] = language
         try:
             with open(file_path, "rb") as audio_file:
                 transcription = client.audio.transcriptions.create(
-                    model=model_name,
                     file=audio_file,
-                    response_format="text" if model_name == "whisper-1" else "json",
+                    **create_kwargs,
                 )
 
             transcript_text = _extract_transcript_text(transcription)
@@ -1413,6 +1464,84 @@ def _transcribe_openai(
     except Exception as e:
         logger.error("%s transcription failed: %s", provider_label, e, exc_info=True)
         return {"success": False, "transcript": "", "error": f"Transcription failed: {e}"}
+
+def _transcribe_openai_json_b64(
+    file_path: str,
+    model_name: str,
+    api_key: str,
+    base_url: Optional[str],
+    provider_label: str = "openai",
+    response_format: Optional[str] = None,
+    timeout: Optional[float] = None,
+    language: Optional[str] = None,
+) -> Dict[str, Any]:
+    """JSON/base64 upload variant for OpenAI-compatible STT servers.
+
+    POSTs ``{model, input_audio: {data: <b64>, format: <ext>}, ...}`` to
+    ``{base_url}/audio/transcriptions`` with a JSON body — the OpenWebUI
+    ``api_request_format: json`` contract, for servers that don't accept
+    multipart uploads.
+    """
+    import base64
+
+    try:
+        import requests
+    except ImportError:
+        return {"success": False, "transcript": "", "error": "requests package not installed"}
+
+    client_timeout = _clamp_stt_timeout(timeout)
+    base = (base_url or OPENAI_BASE_URL).rstrip("/")
+    ext = (Path(file_path).suffix or "").lstrip(".").lower() or "wav"
+    if ext == "oga":
+        ext = "ogg"
+    # Same response_format default as the multipart path so identical config
+    # behaves the same regardless of request_format.
+    resolved_format = response_format or ("text" if model_name == "whisper-1" else "json")
+
+    try:
+        with open(file_path, "rb") as fh:
+            audio_b64 = base64.b64encode(fh.read()).decode("utf-8")
+        payload: Dict[str, Any] = {
+            "model": model_name,
+            "input_audio": {"data": audio_b64, "format": ext},
+        }
+        if resolved_format:
+            payload["response_format"] = resolved_format
+        if language:
+            payload["language"] = language
+        resp = requests.post(
+            f"{base}/audio/transcriptions",
+            json=payload,
+            headers={"Authorization": f"Bearer {api_key}"},
+            timeout=client_timeout,
+        )
+        if resp.status_code != 200:
+            snippet = (resp.text or "")[:200]
+            return {
+                "success": False,
+                "transcript": "",
+                "error": f"API error: HTTP {resp.status_code}: {snippet}",
+            }
+        try:
+            data = resp.json()
+            transcript_text = str(data.get("text") or "").strip() if isinstance(data, dict) else str(data).strip()
+        except ValueError:
+            transcript_text = (resp.text or "").strip()
+        logger.info(
+            "Transcribed %s via %s json-b64 (%s, %d chars)",
+            Path(file_path).name, provider_label, model_name, len(transcript_text),
+        )
+        return {"success": True, "transcript": transcript_text, "provider": provider_label}
+    except PermissionError:
+        return {"success": False, "transcript": "", "error": f"Permission denied: {file_path}"}
+    except requests.exceptions.Timeout as e:
+        return {"success": False, "transcript": "", "error": f"Request timeout: {e}"}
+    except requests.exceptions.ConnectionError as e:
+        return {"success": False, "transcript": "", "error": f"Connection error: {e}"}
+    except Exception as e:
+        logger.error("%s json-b64 transcription failed: %s", provider_label, e, exc_info=True)
+        return {"success": False, "transcript": "", "error": f"Transcription failed: {e}"}
+
 
 # ---------------------------------------------------------------------------
 # Provider: mistral (Voxtral Transcribe API)
@@ -1489,6 +1618,12 @@ def _transcribe_xai(file_path: str, model_name: str) -> Dict[str, Any]:
         or creds.get("base_url")
         or XAI_STT_BASE_URL
     ).strip().rstrip("/")
+    # Never send the real xAI cloud key to a config-overridden private/LAN
+    # base_url; a config stt.xai.api_key is honoured for self-hosted-with-auth.
+    api_key = _resolve_provider_key(xai_config.get("api_key"), api_key, base_url)
+    if not api_key:
+        return {"success": False, "transcript": "",
+                "error": "No xAI credentials found. Configure xAI OAuth in `hermes model` or set XAI_API_KEY"}
     language = str(
         xai_config.get("language")
         or os.getenv("HERMES_LOCAL_STT_LANGUAGE")
@@ -1583,6 +1718,11 @@ def _transcribe_elevenlabs(file_path: str, model_name: str) -> Dict[str, Any]:
         or get_env_value("ELEVENLABS_STT_BASE_URL")
         or ELEVENLABS_STT_BASE_URL
     ).strip().rstrip("/")
+    # Never send the real ElevenLabs cloud key to a config-overridden private
+    # base_url; a config stt.elevenlabs.api_key wins for self-hosted-with-auth.
+    api_key = _resolve_provider_key(elevenlabs_config.get("api_key"), api_key, base_url)
+    if not api_key:
+        return {"success": False, "transcript": "", "error": "ELEVENLABS_API_KEY not set"}
     language_code = str(elevenlabs_config.get("language_code") or "").strip()
     tag_audio_events = is_truthy_value(elevenlabs_config.get("tag_audio_events", False))
     diarize = is_truthy_value(elevenlabs_config.get("diarize", False))
@@ -1679,6 +1819,9 @@ def _transcribe_deepinfra(file_path: str, model_name: str) -> Dict[str, Any]:
     if not isinstance(di_config, dict):
         di_config = {}
     base_url = deepinfra_base_url(di_config)
+    # Never send the real DeepInfra cloud key to a config-overridden private
+    # base_url; a config stt.deepinfra.api_key wins for self-hosted-with-auth.
+    api_key = _resolve_provider_key(di_config.get("api_key"), api_key, base_url)
 
     if not model_name:
         candidates = deepinfra_model_ids("stt")
@@ -1709,7 +1852,11 @@ def _transcribe_deepinfra(file_path: str, model_name: str) -> Dict[str, Any]:
 # ---------------------------------------------------------------------------
 
 
-def transcribe_audio(file_path: str, model: Optional[str] = None) -> Dict[str, Any]:
+def transcribe_audio(
+    file_path: str,
+    model: Optional[str] = None,
+    language: Optional[str] = None,
+) -> Dict[str, Any]:
     """
     Transcribe an audio file using the configured STT provider.
 
@@ -1720,6 +1867,13 @@ def transcribe_audio(file_path: str, model: Optional[str] = None) -> Dict[str, A
     Args:
         file_path: Absolute path to the audio file to transcribe.
         model:     Override the model. If None, uses config or provider default.
+        language:  Optional ISO-639-1 language hint. Forwarded to providers
+                   that accept one (OpenAI-compatible); None = auto-detect.
+                   Falls back to ``stt.<provider>.language`` from config.
+
+    ``stt.openai.request_format`` ("multipart" default | "json") selects the
+    upload shape for OpenAI-compatible servers; "json" sends a base64
+    ``input_audio`` JSON body (OpenWebUI contract).
 
     Returns:
         dict with keys:
@@ -1765,7 +1919,14 @@ def transcribe_audio(file_path: str, model: Optional[str] = None) -> Dict[str, A
     if provider == "openai":
         openai_cfg = stt_config.get("openai") or {}
         model_name = model or openai_cfg.get("model", DEFAULT_STT_MODEL)
-        return _transcribe_openai(file_path, model_name)
+        return _transcribe_openai(
+            file_path,
+            model_name,
+            response_format=openai_cfg.get("response_format"),
+            timeout=openai_cfg.get("timeout"),
+            language=language or openai_cfg.get("language"),
+            request_format=openai_cfg.get("request_format"),
+        )
 
     if provider == "mistral":
         mistral_cfg = stt_config.get("mistral") or {}
@@ -1846,13 +2007,36 @@ def transcribe_audio(file_path: str, model: Optional[str] = None) -> Dict[str, A
 
 
 def _resolve_openai_audio_client_config() -> tuple[str, str]:
-    """Return direct OpenAI audio config or a managed gateway fallback."""
+    """Return direct OpenAI audio config or a managed gateway fallback.
+
+    A configured ``stt.openai.base_url`` points at a self-hosted or otherwise
+    OpenAI-compatible transcription server and is authoritative: it is honoured
+    regardless of where the API key is resolved from. Env keys
+    (``VOICE_TOOLS_OPENAI_KEY`` / ``OPENAI_API_KEY``) are commonly set for
+    *chat* against ``api.openai.com``; without this, a config that only sets
+    ``base_url`` would silently send self-hosted STT traffic to OpenAI with an
+    unrelated key. Self-hosted servers frequently need no auth, so a configured
+    ``base_url`` also makes the key optional (a placeholder Bearer is sent).
+
+    Env keys are only attached to non-private https targets: a private or
+    http base_url gets the config key or the placeholder, never an env key —
+    otherwise a real OpenAI key would be sent (in cleartext, for http) to a
+    LAN server it was not issued for.
+    """
     stt_config = _load_stt_config()
     openai_cfg = stt_config.get("openai") or {}
     cfg_api_key = openai_cfg.get("api_key", "")
     cfg_base_url = openai_cfg.get("base_url", "")
+    if cfg_base_url:
+        if cfg_api_key:
+            api_key = cfg_api_key
+        elif _base_url_is_private(cfg_base_url):
+            api_key = _PLACEHOLDER_OPENAI_KEY
+        else:
+            api_key = resolve_openai_audio_api_key() or _PLACEHOLDER_OPENAI_KEY
+        return api_key, cfg_base_url
     if cfg_api_key:
-        return cfg_api_key, (cfg_base_url or OPENAI_BASE_URL)
+        return cfg_api_key, OPENAI_BASE_URL
 
     direct_api_key = resolve_openai_audio_api_key()
     if direct_api_key:

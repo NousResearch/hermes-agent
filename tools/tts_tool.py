@@ -182,6 +182,14 @@ DEFAULT_KITTENTTS_VOICE = "Jasper"
 DEFAULT_PIPER_VOICE = "en_US-lessac-medium"  # balanced size/quality
 DEFAULT_OPENAI_VOICE = "alloy"
 DEFAULT_OPENAI_BASE_URL = "https://api.openai.com/v1"
+# Shared audio credential guard (single source of truth; a real cloud key is
+# never sent to a private/self-hosted base_url). ``_tts_base_url_is_private`` /
+# ``_PLACEHOLDER_OPENAI_KEY`` are re-exported for backward compatibility.
+from hermes_cli.audio_key_guard import (
+    base_url_is_private as _tts_base_url_is_private,
+    resolve_provider_key as _resolve_provider_key,
+    PLACEHOLDER_KEY as _PLACEHOLDER_OPENAI_KEY,
+)
 DEFAULT_MINIMAX_MODEL = "speech-02-hd"
 DEFAULT_MINIMAX_VOICE_ID = "English_expressive_narrator"
 DEFAULT_MINIMAX_BASE_URL = "https://api.minimax.io/v1/t2a_v2"
@@ -1054,8 +1062,10 @@ def _generate_openai_tts(
         output_path: Where to save the audio file.
         tts_config: TTS config dict (used for ``tts.openai`` sub-block
             and the global ``speed`` default).
-        api_key: Bearer token. When None, resolved from the OpenAI auth
-            chain (config → env → managed gateway).
+        api_key: Bearer token. When None, resolved from ``tts.openai.api_key``,
+            then the OpenAI auth chain (env → managed gateway). A configured
+            ``tts.openai.base_url`` is treated as a self-hosted server and may
+            be keyless (a placeholder Bearer is sent).
         base_url: API base URL. When None, falls back to
             ``tts.openai.base_url`` then the OpenAI default.
         model: Model id. When None, reads ``tts.openai.model``.
@@ -1072,11 +1082,32 @@ def _generate_openai_tts(
     fallback_base: Optional[str] = None
     is_managed = False
     explicit_base_url = base_url is not None
-    if api_key is None:
-        api_key, fallback_base, is_managed = _resolve_openai_audio_client_config()
 
     # ``tts.openai: null`` in YAML yields None — coalesce so .get() is safe.
     oai_config = (tts_config.get("openai") if isinstance(tts_config, dict) else None) or {}
+
+    if api_key is None:
+        # A self-hosted ``tts.openai.base_url`` is authoritative: honour a
+        # config ``api_key`` and allow keyless servers (placeholder Bearer),
+        # mirroring the STT side. Only fall back to the env/managed auth chain
+        # when config supplies neither base_url nor api_key.
+        cfg_api_key = (oai_config.get("api_key") or "").strip()
+        cfg_base_url = (oai_config.get("base_url") or "").strip()
+        if cfg_base_url:
+            # Env keys are only attached to non-private https targets: a
+            # private/http base_url gets the config key or the placeholder,
+            # never an env key (a real OpenAI key must not travel — in
+            # cleartext, for http — to a LAN server it was not issued for).
+            if cfg_api_key:
+                api_key = cfg_api_key
+            elif _tts_base_url_is_private(cfg_base_url):
+                api_key = _PLACEHOLDER_OPENAI_KEY
+            else:
+                api_key = resolve_openai_audio_api_key() or _PLACEHOLDER_OPENAI_KEY
+        elif cfg_api_key:
+            api_key = cfg_api_key
+        else:
+            api_key, fallback_base, is_managed = _resolve_openai_audio_client_config()
     if model is None:
         model = oai_config.get("model", DEFAULT_OPENAI_MODEL)
     if voice is None:
@@ -1113,8 +1144,23 @@ def _generate_openai_tts(
 
     response_format = _tts_response_format_from_path(output_path)
 
+    # Honour tts.openai.timeout for self-hosted / slow servers (SDK default is
+    # otherwise used). Clamped so a broken config can't disable the timeout or
+    # pin the worker forever.
+    _timeout = None
+    try:
+        _raw_timeout = oai_config.get("timeout")
+        if _raw_timeout not in (None, ""):
+            _timeout = min(max(float(_raw_timeout), 1.0), 600.0)
+    except (TypeError, ValueError):
+        _timeout = None
+
     OpenAIClient = _import_openai_client()
-    client = OpenAIClient(api_key=api_key, base_url=base_url)
+    client = (
+        OpenAIClient(api_key=api_key, base_url=base_url, timeout=_timeout)
+        if _timeout is not None
+        else OpenAIClient(api_key=api_key, base_url=base_url)
+    )
     try:
         create_kwargs: Dict[str, Any] = {
             "model": model,
@@ -1181,12 +1227,16 @@ def _generate_deepinfra_tts(text: str, output_path: str, tts_config: Dict[str, A
                 "api.deepinfra.com so the live catalog can be fetched."
             )
         model = candidates[0]
+    di_base_url = deepinfra_base_url(di_config)
+    # Never send the real DeepInfra cloud key to a config-overridden private
+    # base_url; a config tts.deepinfra.api_key wins for self-hosted-with-auth.
+    di_key = _resolve_provider_key(di_config.get("api_key"), api_key, di_base_url)
     return _generate_openai_tts(
         text,
         output_path,
         tts_config,
-        api_key=api_key,
-        base_url=deepinfra_base_url(di_config),
+        api_key=di_key,
+        base_url=di_base_url,
         model=model,
         voice=di_config.get("voice", DEFAULT_DEEPINFRA_TTS_VOICE),
         speed=float(di_config.get("speed", tts_config.get("speed", 1.0))),
@@ -1364,6 +1414,11 @@ def _generate_xai_tts(text: str, output_path: str, tts_config: Dict[str, Any]) -
         or get_env_value("XAI_BASE_URL")
         or DEFAULT_XAI_BASE_URL
     ).strip().rstrip("/")
+    # Never send the real xAI cloud key to a config-overridden private/LAN
+    # base_url; a config tts.xai.api_key wins for self-hosted-with-auth.
+    api_key = _resolve_provider_key(xai_config.get("api_key"), api_key, base_url)
+    if not api_key:
+        raise ValueError("No xAI credentials found. Configure xAI OAuth in `hermes model` or set XAI_API_KEY.")
 
     # Match the documented minimal POST /v1/tts shape by default. Only send
     # output_format when Hermes actually needs a non-default format/override.
@@ -1462,6 +1517,12 @@ def _generate_minimax_tts(text: str, output_path: str, tts_config: Dict[str, Any
     if group_id and "GroupId=" not in base_url:
         sep = "&" if "?" in base_url else "?"
         base_url = f"{base_url}{sep}GroupId={group_id}"
+
+    # Never send the real MiniMax cloud key to a config-overridden private/LAN
+    # base_url; a config tts.minimax.api_key wins for self-hosted-with-auth.
+    api_key = _resolve_provider_key(mm_config.get("api_key"), api_key, base_url)
+    if not api_key:
+        raise ValueError("MINIMAX_API_KEY not set. Get one at https://platform.minimax.io/")
 
     headers = {
         "Content-Type": "application/json",
@@ -1821,6 +1882,14 @@ def _generate_gemini_tts(text: str, output_path: str, tts_config: Dict[str, Any]
         or get_env_value("GEMINI_BASE_URL")
         or DEFAULT_GEMINI_TTS_BASE_URL
     ).strip().rstrip("/")
+    # Never send the real Gemini cloud key (query-param ``key``) to a config-
+    # overridden private base_url; a config tts.gemini.api_key wins for
+    # self-hosted-with-auth.
+    api_key = _resolve_provider_key(gemini_config.get("api_key"), api_key, base_url)
+    if not api_key:
+        raise ValueError(
+            "GEMINI_API_KEY not set. Get one at https://aistudio.google.com/app/apikey"
+        )
     persona_prompt = _read_gemini_persona_prompt(gemini_config)
     tts_script = text
     if _gemini_audio_tags_enabled(gemini_config, model):
@@ -2637,6 +2706,10 @@ def check_tts_requirements() -> bool:
             _import_openai_client()
         except ImportError:
             return False
+        oai_cfg = (tts_config.get("openai") if isinstance(tts_config, dict) else None) or {}
+        if (oai_cfg.get("base_url") or "").strip() or (oai_cfg.get("api_key") or "").strip():
+            # Self-hosted / config-credentialed OpenAI-compatible server.
+            return True
         return _has_openai_audio_backend()
     if provider == "deepinfra":
         try:

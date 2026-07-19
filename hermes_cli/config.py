@@ -2168,6 +2168,9 @@ DEFAULT_CONFIG = {
             "model": "gpt-4o-mini-tts",
             "voice": "alloy",
             # Voices: alloy, echo, fable, onyx, nova, shimmer
+            # For a self-hosted / OpenAI-compatible server, add:
+            #   "base_url": "http://host:port/v1"  (authoritative when set)
+            #   "api_key": "..."  (omit for auth-less servers)
         },
         "gemini": {
             "model": "gemini-2.5-flash-preview-tts",
@@ -2234,6 +2237,13 @@ DEFAULT_CONFIG = {
         },
         "openai": {
             "model": "whisper-1",  # whisper-1, gpt-4o-mini-transcribe, gpt-4o-transcribe
+            # For a self-hosted / OpenAI-compatible server (llama.cpp/whisper.cpp), add:
+            #   "base_url": "http://host:port/v1"  (authoritative when set)
+            #   "api_key": "..."  (omit for auth-less servers)
+            #   "response_format": "json"  (override the whisper-1/json heuristic)
+            #   "timeout": 60  (seconds; raise for slow CPU servers, default 30)
+            #   "language": "de"  (ISO-639-1 hint; "" = auto-detect)
+            #   "request_format": "multipart"  (or "json" — base64 input_audio JSON body)
         },
         "mistral": {
             "model": "voxtral-mini-latest",  # voxtral-mini-latest, voxtral-mini-2602

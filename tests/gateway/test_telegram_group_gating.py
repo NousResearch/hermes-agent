@@ -686,6 +686,19 @@ def test_free_response_topics_bypass_mention_requirement_only_for_topic():
     assert adapter._should_process_message(_group_message("hello everyone", chat_id=-201, thread_id=31)) is False
 
 
+def test_free_response_topic_precedes_chat_mention_and_observation_gates():
+    adapter = _make_adapter(
+        require_mention=False,
+        require_mention_chats=["-200"],
+        free_response_topics=["-200:31"],
+        observe_unmentioned_group_messages=True,
+    )
+    message = _group_message("hello everyone", chat_id=-200, thread_id=31)
+
+    assert adapter._should_process_message(message) is True
+    assert adapter._should_observe_unmentioned_group_message(message) is False
+
+
 def test_free_response_topics_treat_missing_thread_as_general_topic():
     adapter = _make_adapter(require_mention=True, free_response_topics=["-200:1"])
 

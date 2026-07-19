@@ -11,6 +11,8 @@ This mirrors the kimi-k2 handling already shipped for the opencode-go relay
 
 from __future__ import annotations
 
+import json
+
 import pytest
 
 
@@ -176,6 +178,13 @@ class TestKimiFullKwargsIntegration:
     def test_non_text_assistant_payloads_remain_on_wire(self, kimi_profile):
         from agent.transports.chat_completions import ChatCompletionsTransport
 
+        script = """python3 - <<'PY'
+import json
+payload = {"nested": {"quote": "it's still intact"}}
+print(json.dumps(payload))
+PY
+""" + ("# preserve this long tool argument\n" * 100)
+        arguments = json.dumps({"cmd": script, "timeout": 120})
         messages = [
             {
                 "role": "assistant",
@@ -184,7 +193,10 @@ class TestKimiFullKwargsIntegration:
                     {
                         "id": "call-1",
                         "type": "function",
-                        "function": {"name": "status", "arguments": "{}"},
+                        "function": {
+                            "name": "execute_code",
+                            "arguments": arguments,
+                        },
                     }
                 ],
             },
@@ -204,3 +216,6 @@ class TestKimiFullKwargsIntegration:
         )
 
         assert kwargs["messages"] == messages
+        assert kwargs["messages"][0]["tool_calls"][0]["function"][
+            "arguments"
+        ] == arguments

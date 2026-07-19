@@ -697,6 +697,36 @@ async def test_update_cron_job_rejects_id_mutation(isolated_profiles):
 
 
 @pytest.mark.asyncio
+async def test_update_cron_job_rejects_unknown_field_as_422(isolated_profiles):
+    """Regression for #67625: the dashboard adapter surfaces a 422
+    (validation error) listing every unknown key, rather than silently
+    dropping the update."""
+    from hermes_cli import web_server
+
+    job = web_server._call_cron_for_profile(
+        "worker_alpha",
+        "create_job",
+        prompt="original prompt",
+        schedule="every 1h",
+        name="typo-job",
+    )
+
+    with pytest.raises(HTTPException) as exc:
+        await web_server.update_cron_job(
+            job["id"],
+            web_server.CronJobUpdate(updates={"promt": "typo value"}),
+            profile="worker_alpha",
+        )
+
+    assert exc.value.status_code == 422
+    assert "promt" in exc.value.detail
+    # Original prompt untouched.
+    refreshed = web_server._call_cron_for_profile("worker_alpha", "get_job", job["id"])
+    assert refreshed["prompt"] == "original prompt"
+    assert "promt" not in refreshed
+
+
+@pytest.mark.asyncio
 async def test_cron_delete_with_profile_deletes_only_target_profile(isolated_profiles):
     from hermes_cli import web_server
 

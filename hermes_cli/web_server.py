@@ -10503,6 +10503,21 @@ def _validate_dashboard_cron_effective_job(job: Dict[str, Any]) -> None:
         )
 
 
+_DASHBOARD_ALLOWED_UPDATE_FIELDS = frozenset({
+    # Mirrors cron.jobs._VALID_JOB_FIELDS so rejection here catches
+    # unknown keys before the IPC round-trip (#67625).
+    "name", "prompt", "skill", "skills", "model", "provider",
+    "base_url", "script", "context_from", "enabled_toolsets",
+    "workdir", "no_agent", "schedule", "schedule_display",
+    "repeat", "enabled", "state", "paused_at", "paused_reason",
+    "description", "deliver", "origin", "metadata",
+    # ``id`` is allowed as a payload key but rejected by
+    # cron.jobs.update_job as immutable — the immutable guard's HTTP
+    # 400 error is more idiomatic than a 422 validation error.
+    "id",
+})
+
+
 def _normalize_dashboard_cron_updates(
     updates: Dict[str, Any],
     profile_home: Path,
@@ -10512,8 +10527,25 @@ def _normalize_dashboard_cron_updates(
     This intentionally stays in the dashboard adapter layer: cron/jobs.py is the
     source of truth for scheduling behaviour; the dashboard only translates form
     payloads into the shapes that existing core functions already accept.
+
+    Mirrors the unknown-key whitelist from ``cron.jobs.update_job`` (#67625).
+    Rejecting here — before the IPC round-trip — surfaces a 422 to the form
+    with a useful field-level error rather than the generic 400 from the
+    ``update_job`` ValueError. Keep this list in sync with
+    ``cron.jobs._VALID_JOB_FIELDS``; divergence here is a trivial diff alarm.
     """
     normalized = dict(updates or {})
+
+    unknown = sorted(set(normalized) - _DASHBOARD_ALLOWED_UPDATE_FIELDS)
+    if unknown:
+        raise HTTPException(
+            status_code=422,
+            detail=(
+                f"Unknown update field(s): {', '.join(unknown)}. Use one of "
+                "the documented fields, or store extension data under "
+                "``metadata`` (dict)."
+            ),
+        )
 
     for key in ("model", "provider", "workdir"):
         if key in normalized:

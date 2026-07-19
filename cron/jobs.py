@@ -356,6 +356,29 @@ def _jobs_lock():
 # into output writes/deletes.
 _IMMUTABLE_JOB_FIELDS = frozenset({"id"})
 
+# Whitelist of fields ``update_job`` accepts in the ``updates`` payload.
+# Unknown keys are rejected (issue #67625) — silent pass-through created
+# the illusion that typos / stale-client fields took effect and cluttered
+# jobs.json with garbage that downstream consumers then depended on.
+#
+# Special case: ``metadata`` (dict) is reserved for explicit extension
+# storage so users have a sanctioned place to keep integration-specific
+# bookkeeping instead of inventing top-level keys.
+_VALID_JOB_FIELDS = frozenset({
+    "name", "prompt", "skill", "skills", "model", "provider", "base_url",
+    "script", "context_from", "enabled_toolsets", "workdir", "no_agent",
+    "schedule", "schedule_display", "repeat", "enabled", "state",
+    "paused_at", "paused_reason", "description",
+    "next_run_at", "last_run_at", "last_status", "last_error",
+    "last_delivery_error", "deliver", "origin", "attach_to_session",
+    "provider_snapshot", "model_snapshot", "created_at",
+    "created_by_user_id",
+    # Fragmentation of arbitrary bookkeeping. Kept opaque downstream
+    # (get_job/scheduler only inspect known fields) so it's safe to store
+    # without colliding with future schema additions.
+    "metadata",
+})
+
 
 def _job_output_dir(job_id: str) -> Path:
     """Resolve a job's output directory, rejecting any path-escape attempt.
@@ -1340,6 +1363,19 @@ def update_job(job_id: str, updates: Dict[str, Any]) -> Optional[Dict[str, Any]]
         raise ValueError(
             f"Cron job field(s) cannot be updated: {', '.join(sorted(bad_fields))}"
         )
+
+    # Whitelist guard (#67625): reject unknown keys instead of silently
+    # persisting them. Typos like ``promt`` (instead of ``prompt``) used to
+    # round-trip through the API as success while leaving the real field
+    # untouched, and stale-client custom keys accumulated in jobs.json.
+    if updates:
+        unknown = sorted(set(updates) - _VALID_JOB_FIELDS)
+        if unknown:
+            raise ValueError(
+                "Cron job update contains unknown field(s): "
+                f"{', '.join(unknown)}. Use one of the documented fields, "
+                "or store extension data under ``metadata`` (dict)."
+            )
 
     with _jobs_lock():
         jobs = load_jobs()

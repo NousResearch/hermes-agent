@@ -1,7 +1,7 @@
 import { useStore } from '@nanostores/react'
 import { useEffect, useRef } from 'react'
 
-import { playSpeechText } from '@/lib/voice-playback'
+import { playSpeechText, stopVoicePlayback } from '@/lib/voice-playback'
 import { notifyError } from '@/store/notifications'
 import { $messages } from '@/store/session'
 import { $voicePlayback } from '@/store/voice-playback'
@@ -74,6 +74,14 @@ export function useAutoSpeakReplies({
     // ($voicePlayback → idle), which frees us to read the next held reply.
     const stops = [$messages.subscribe(speakLatest), $voicePlayback.listen(speakLatest)]
 
-    return () => stops.forEach(f => f())
+    return () => {
+      stops.forEach(f => f())
+      // Stop any playback that was triggered by a stale subscription during a
+      // session switch — $messages.set() fires synchronously before React runs
+      // effect cleanup, so a stale speakLatest can start playback for the wrong
+      // session.  Unsubscribing above prevents future callbacks; stopping
+      // playback here silences the one that already slipped through.
+      stopVoicePlayback()
+    }
   }, [enabled, sessionId])
 }

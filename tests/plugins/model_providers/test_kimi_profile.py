@@ -15,6 +15,11 @@ import json
 
 import pytest
 
+_IMAGE_BLOCK = {
+    "type": "image_url",
+    "image_url": {"url": "data:image/png;base64,AA=="},
+}
+
 
 @pytest.fixture
 def kimi_profile():
@@ -173,6 +178,52 @@ class TestKimiFullKwargsIntegration:
 
         assert kwargs["messages"] == [
             {"role": "user", "content": "ping\n\npong"}
+        ]
+
+    @pytest.mark.parametrize(
+        ("first_content", "second_content", "expected_content"),
+        [
+            (
+                [_IMAGE_BLOCK],
+                "then continue",
+                [_IMAGE_BLOCK, {"type": "text", "text": "then continue"}],
+            ),
+            (
+                "inspect this",
+                [_IMAGE_BLOCK],
+                [{"type": "text", "text": "inspect this"}, _IMAGE_BLOCK],
+            ),
+        ],
+        ids=["list-then-string", "string-then-list"],
+    )
+    def test_null_assistant_merge_preserves_mixed_multimodal_users(
+        self,
+        kimi_profile,
+        first_content,
+        second_content,
+        expected_content,
+    ):
+        from agent.transports.chat_completions import ChatCompletionsTransport
+
+        kwargs = ChatCompletionsTransport().build_kwargs(
+            model="kimi-k2-turbo-preview",
+            messages=[
+                {"role": "user", "content": first_content},
+                {
+                    "role": "assistant",
+                    "content": "",
+                    "codex_message_items": [{"type": "message"}],
+                },
+                {"role": "user", "content": second_content},
+            ],
+            tools=None,
+            provider_profile=kimi_profile,
+            base_url="https://api.moonshot.ai/v1",
+            provider_name="kimi-coding",
+        )
+
+        assert kwargs["messages"] == [
+            {"role": "user", "content": expected_content}
         ]
 
     def test_non_text_assistant_payloads_remain_on_wire(self, kimi_profile):

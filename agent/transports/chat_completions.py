@@ -202,6 +202,19 @@ def _drop_null_assistant_messages(
                 )
             elif isinstance(previous_content, list) and isinstance(current_content, list):
                 previous_copy["content"] = list(previous_content) + list(current_content)
+            elif isinstance(previous_content, list) and isinstance(current_content, str):
+                previous_copy["content"] = list(previous_content)
+                if current_content:
+                    previous_copy["content"].append(
+                        {"type": "text", "text": current_content}
+                    )
+            elif isinstance(previous_content, str) and isinstance(current_content, list):
+                previous_copy["content"] = []
+                if previous_content:
+                    previous_copy["content"].append(
+                        {"type": "text", "text": previous_content}
+                    )
+                previous_copy["content"].extend(current_content)
             else:
                 merged.append(message)
                 continue

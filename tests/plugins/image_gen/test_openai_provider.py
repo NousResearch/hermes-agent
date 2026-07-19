@@ -187,6 +187,57 @@ class TestSourceImageLoading:
 
 
 class TestGenerate:
+    def test_per_call_controls_return_all_generated_images(self, provider):
+        first = _b64_png()
+        second = _b64_png()
+        fake_client = MagicMock()
+        fake_client.images.generate.return_value = SimpleNamespace(data=[
+            SimpleNamespace(b64_json=first, url=None, revised_prompt=None),
+            SimpleNamespace(b64_json=second, url=None, revised_prompt=None),
+        ])
+
+        with _patched_openai(fake_client):
+            result = provider.generate(
+                "draw variants",
+                size="1024x1024",
+                quality="high",
+                n=2,
+                output_format="webp",
+            )
+
+        call_kwargs = fake_client.images.generate.call_args.kwargs
+        assert call_kwargs["size"] == "1024x1024"
+        assert call_kwargs["quality"] == "high"
+        assert call_kwargs["n"] == 2
+        assert call_kwargs["output_format"] == "webp"
+        assert result["n"] == 2
+        assert result["output_format"] == "webp"
+        assert len(result["images"]) == 2
+        assert result["image"] == result["images"][0]
+
+    def test_edit_forwards_per_call_controls(self, provider, tmp_path):
+        source = tmp_path / "source.png"
+        source.write_bytes(bytes.fromhex(_PNG_HEX))
+        fake_client = MagicMock()
+        fake_client.images.edit.return_value = _fake_response(b64=_b64_png())
+
+        with _patched_openai(fake_client):
+            result = provider.generate(
+                "edit this",
+                image_url=str(source),
+                size="1024x1024",
+                quality="high",
+                n=2,
+                output_format="webp",
+            )
+
+        assert result["success"] is True
+        call_kwargs = fake_client.images.edit.call_args.kwargs
+        assert call_kwargs["size"] == "1024x1024"
+        assert call_kwargs["quality"] == "high"
+        assert call_kwargs["n"] == 2
+        assert call_kwargs["output_format"] == "webp"
+
     def test_empty_prompt_rejected(self, provider):
         result = provider.generate("", aspect_ratio="square")
         assert result["success"] is False

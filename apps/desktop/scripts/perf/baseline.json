@@ -1,9 +1,9 @@
 {
   "_meta": {
-    "note": "Median of 5 runs, darwin-arm64, `--spawn --prod` (PRODUCTION minified renderer, real boot — no fake-boot). Representative shipped numbers, not dev-inflated. cold-start uses a fresh unique-port spawn per run and its marks are process-spawn wall clock (spawn_to_*) or renderer nav-relative (dom_*). Re-baseline per device with `--update-baseline`; tolerances are loose for cross-machine/disk variance.",
+    "note": "Median of 5 runs, darwin-arm64, `--spawn --prod` (PRODUCTION minified renderer, real boot — no fake-boot). Representative shipped numbers, not dev-inflated. cold-start reuses one profile so the V8 code cache is WARM (what users get after first launch, ~1.0s); a fresh-profile first launch is ~+400ms (measure with `--cold-fresh`). Marks are process-spawn wall clock (spawn_to_*) or renderer nav-relative (dom_*). Re-baseline per device with `--update-baseline`; tolerances loose for cross-machine/disk variance.",
     "platform": "darwin-arm64",
     "node": "v24.11.0",
-    "updated": "2026-07-19T22:59:21.605Z"
+    "updated": "2026-07-19T23:16:01.227Z"
   },
   "scenarios": {
     "stream": {
@@ -49,11 +49,11 @@
         "tolAbs": 150
       },
       "metrics": {
-        "spawn_to_cdp_ms": 1098,
-        "spawn_to_driver_ms": 1482,
-        "dom_interactive_ms": 794,
-        "dom_content_loaded_ms": 1057,
-        "nav_to_read_ms": 1209
+        "spawn_to_cdp_ms": 606,
+        "spawn_to_driver_ms": 984,
+        "dom_interactive_ms": 324,
+        "dom_content_loaded_ms": 574,
+        "nav_to_read_ms": 721
       }
     }
   }

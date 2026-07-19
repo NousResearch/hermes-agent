@@ -29,7 +29,7 @@ import { fileURLToPath } from 'node:url'
 
 import { withCpuProfile } from './lib/cdp.mjs'
 import { compareScenario, loadBaseline, updateBaseline } from './lib/baseline.mjs'
-import { attach, buildProdRenderer, startIsolatedInstance } from './lib/launch.mjs'
+import { attach, buildProdRenderer, coldStartSamples, startIsolatedInstance } from './lib/launch.mjs'
 import { cpuProfileTopSelf, median } from './lib/stats.mjs'
 import { CI_SCENARIOS, SCENARIOS } from './scenarios/index.mjs'
 
@@ -149,20 +149,11 @@ async function main() {
       process.exit(2)
     }
 
-    const perRun = []
+    // Representative WARM-cache samples (see coldStartSamples). Pass --cold-fresh
+    // to instead measure the worst-case first-launch (cold code cache).
+    const perRun = await coldStartSamples({ runs, port, devPort, prod, warm: !('cold-fresh' in flags) })
 
-    for (let i = 0; i < runs; i++) {
-      // Unique debug + dev port per run: a just-killed instance can keep :9222
-      // held for a beat, and reusing it makes the next CDP.connect attach to the
-      // dying instance (garbage timings). Stepping the port sidesteps the race.
-      const inst = await startIsolatedInstance({ port: port + i, devPort: devPort + i, prod, coldStart: true })
-      // Forward every numeric boot mark; only the baseline keys are gated, the
-      // rest (dom_interactive, main_script_kb, …) are reported for composition.
-      perRun.push(Object.fromEntries(Object.entries(inst.timings).filter(([, v]) => typeof v === 'number')))
-      inst.teardown()
-    }
-
-    record('cold-start', 'cold', medianMetrics(perRun), { runs })
+    record('cold-start', 'cold', medianMetrics(perRun), { runs, warm: !('cold-fresh' in flags) })
   }
 
   // Steady-state scenarios share one persistent connection.

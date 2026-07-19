@@ -1885,6 +1885,23 @@ def _get_model_config_dict() -> dict[str, Any]:
     return {}
 
 
+def _effective_model_base_url() -> str:
+    """Return a canonical model-config base URL for cache identity."""
+    raw = str(_get_model_config_dict().get("base_url", "") or "").strip()
+    if not raw:
+        return ""
+
+    parsed = urllib.parse.urlparse(raw)
+    host = (parsed.netloc or "").lower()
+    path = (parsed.path or "").rstrip("/")
+    if path.endswith("/v1"):
+        path = path[:-3].rstrip("/")
+    if host:
+        suffix = path if path else ""
+        return f"{parsed.scheme.lower()}://{host}{suffix}"
+    return raw.lower().rstrip("/")
+
+
 def _base_url_looks_like_anthropic_messages(base_url: str) -> bool:
     normalized = str(base_url or "").strip().lower().rstrip("/")
     if not normalized:
@@ -2744,6 +2761,10 @@ def _credential_fingerprint(provider: str) -> str:
         except Exception:
             pass
 
+    effective_base_url = _effective_model_base_url()
+    if effective_base_url:
+        parts.append(f"effective_base_url={effective_base_url}")
+
     blob = "|".join(parts).encode("utf-8", errors="replace")
     # blake2b for cache-key fingerprinting only — not for credential storage.
     # We never reverse this hash; collisions are harmless (worst case: cache
@@ -2779,6 +2800,21 @@ def _save_provider_models_cache(data: dict) -> None:
         pass
 
 
+def _cache_slot_key(provider: str) -> str:
+    """Return a cache slot segregated by the effective configured endpoint."""
+    effective_base_url = _effective_model_base_url()
+    if not effective_base_url:
+        return provider
+
+    import hashlib
+
+    endpoint_hash = hashlib.blake2b(
+        effective_base_url.encode("utf-8", errors="replace"),
+        digest_size=8,
+    ).hexdigest()
+    return f"{provider}+base_url={endpoint_hash}"
+
+
 def cached_provider_model_ids(
     provider: Optional[str],
     *,
@@ -2796,7 +2832,8 @@ def cached_provider_model_ids(
 
     cache = _load_provider_models_cache()
     fp = _credential_fingerprint(normalized)
-    entry = cache.get(normalized)
+    slot = _cache_slot_key(normalized)
+    entry = cache.get(slot)
     now = time.time()
 
     if (
@@ -2812,7 +2849,7 @@ def cached_provider_model_ids(
     # Cache miss / stale / forced refresh — call the live path.
     live = provider_model_ids(normalized, force_refresh=force_refresh)
     if live:
-        cache[normalized] = {
+        cache[slot] = {
             "fp": fp,
             "at": now,
             "models": list(live),
@@ -2848,8 +2885,9 @@ def clear_provider_models_cache(provider: Optional[str] = None) -> None:
             return
         cache = _load_provider_models_cache()
         normalized = normalize_provider(provider) or provider or ""
-        if normalized in cache:
-            del cache[normalized]
+        slot = _cache_slot_key(normalized)
+        if slot in cache:
+            del cache[slot]
             _save_provider_models_cache(cache)
     except Exception:
         pass

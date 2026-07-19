@@ -608,6 +608,24 @@ def compress_context(
             force=force,
         )
 
+    # claude_cli runtime: Claude Code owns native session compaction via
+    # ``--resume`` (same ownsNativeCompaction posture as OpenClaw). Hermes'
+    # HTTP aux compression would hit the Anthropic extra-usage path on a Max
+    # setup-token profile and only rewrite a local mirror that is not re-sent
+    # to ``claude -p``. Skip cleanly — no noisy aux failure.
+    if getattr(agent, "api_mode", None) == "claude_cli":
+        logger.info(
+            "claude_cli: skipping Hermes HTTP context compression "
+            "(Claude owns native session compaction via --resume)"
+        )
+        existing_prompt = getattr(agent, "_cached_system_prompt", None)
+        if not existing_prompt:
+            try:
+                existing_prompt = agent._build_system_prompt(system_message)
+            except Exception:
+                existing_prompt = system_message or ""
+        return messages, existing_prompt
+
     # Every automatic entrypoint must honor compressor-owned cooldown and
     # breaker state. Gateway hygiene constructs a fresh AIAgent, so the
     # persisted fallback streak is loaded by bind_session_state() before this.

@@ -1,45 +1,32 @@
-"""Hermes-tools-as-MCP server for the codex_app_server runtime.
+"""Hermes-tools-as-MCP server for codex_app_server + claude_cli runtimes.
 
-When the user runs `openai/*` turns through the codex app-server, codex
-owns the loop and builds its own tool list. By default, that means
-Hermes' richer tool surface — web search, browser automation,
-delegate_task subagents, vision analysis, persistent memory, skills,
-cross-session search, image generation, TTS — is unreachable.
+When the user runs turns through an external coding CLI (codex app-server
+or Claude Code via ``claude -p``), that CLI owns the model loop and builds
+its own tool list. By default Hermes' richer tool surface is unreachable.
 
-This module exposes a curated subset of those Hermes tools to the
-spawned codex subprocess via stdio MCP. Codex registers it as a normal
-MCP server (per `~/.codex/config.toml [mcp_servers.hermes-tools]`) and
-the user gets full Hermes capability inside a Codex turn.
+This module exposes a curated subset of Hermes tools to the spawned CLI
+subprocess via stdio MCP. Codex registers it in
+``~/.codex/config.toml [mcp_servers.hermes-tools]``; Claude CLI receives
+an equivalent entry via ``--mcp-config`` (see
+``agent.transports.claude_cli.build_hermes_mcp_config``).
 
-Scope (what we expose):
-  - web_search, web_extract              — Firecrawl, no codex equivalent
-  - browser_navigate / _click / _type /  — Camofox/Browserbase automation
-    _snapshot / _scroll / _back / _press /
-    _get_images / _console / _vision
-  - vision_analyze                       — image inspection by vision model
-  - image_generate                       — image generation
-  - skill_view, skills_list              — Hermes' skill library
-  - text_to_speech                       — TTS
-  - kanban_* (complete/block/comment/    — kanban worker + orchestrator
-    heartbeat/show/list/create/            handoff (stateless: read env var,
-    unblock/link)                          write ~/.hermes/kanban.db)
+Profiles (``HERMES_TOOLS_MCP_PROFILE`` env, default ``codex``):
+  - ``codex``  — Hermes-only tools that Codex lacks (no terminal/fs;
+                 Codex's built-ins cover those).
+  - ``claude`` — Hermes core tools INCLUDING terminal/fs/search, because
+                 Claude's native Bash/Edit/Write/Read are disallowed so
+                 the model must call Hermes tools only (no double-agent).
 
-What we DO NOT expose:
-  - terminal / shell                     — codex's own shell tool
-  - read_file / write_file / patch       — codex's apply_patch + shell
-  - search_files / process               — codex's shell
-  - clarify                              — codex's own UX
-  - delegate_task / memory /             — `_AGENT_LOOP_TOOLS` in Hermes
-    session_search / todo                  (model_tools.py). They require
-                                           the running AIAgent context to
-                                           dispatch (mid-loop state), so a
-                                           stateless MCP callback can't
-                                           drive them. See the inline
-                                           comment on EXPOSED_TOOLS below.
+Shared exclusions (both profiles):
+  - delegate_task / memory / session_search / todo —
+    ``_AGENT_LOOP_TOOLS`` in Hermes (model_tools.py). They require the
+    running AIAgent mid-loop state; a stateless MCP callback can't drive
+    them.
 
 Run with: python -m agent.transports.hermes_tools_mcp_server
-Spawned by: CodexAppServerSession.ensure_started() when the runtime is
-            active and config opts in.
+Spawned by: Codex (config.toml) or Claude CLI (``--mcp-config``) as a
+            stdio MCP child. The tool round-trip is owned by the CLI;
+            Hermes hosts this server and projects stream events.
 """
 
 from __future__ import annotations
@@ -97,19 +84,24 @@ def _signature_from_schema(schema: dict | None) -> tuple[inspect.Signature, dict
     return inspect.Signature(params, return_annotation=str), annots
 
 
-# Tools we expose. Each name MUST match a registered Hermes tool that
-# `model_tools.handle_function_call()` can dispatch.
-#
-# What we deliberately DO NOT expose:
-#   - terminal / shell / read_file / write_file / patch / search_files /
-#     process — codex's built-ins cover these and approval routes through
-#     codex's own UI.
-#   - delegate_task / memory / session_search / todo — these are
-#     `_AGENT_LOOP_TOOLS` in Hermes (model_tools.py:493). They require
-#     the running AIAgent context to dispatch (mid-loop state), so a
-#     stateless MCP callback can't drive them. Hermes' default runtime
-#     keeps these working; the codex_app_server runtime cannot.
-EXPOSED_TOOLS: tuple[str, ...] = (
+# MCP server name registered with FastMCP / clients. Claude prefixes tools
+# as ``mcp__hermes-tools__<name>``; codex uses the bare server name.
+MCP_SERVER_NAME = "hermes-tools"
+
+# Agent-loop tools that need live AIAgent mid-loop state — never expose
+# via the stateless MCP callback (either profile).
+AGENT_LOOP_TOOLS_EXCLUDED: frozenset[str] = frozenset(
+    {
+        "delegate_task",
+        "memory",
+        "session_search",
+        "todo",
+    }
+)
+
+# Hermes-only tools shared by both profiles (codex lacks these; claude
+# gets them too once native freelancing is blocked).
+_HERMES_SPECIFIC_TOOLS: tuple[str, ...] = (
     "web_search",
     "web_extract",
     "browser_navigate",
@@ -128,25 +120,53 @@ EXPOSED_TOOLS: tuple[str, ...] = (
     "skills_list",
     "text_to_speech",
     # Kanban worker handoff tools — gated on HERMES_KANBAN_TASK env var
-    # (set by the kanban dispatcher when spawning a worker). Without these
-    # in the callback, a worker spawned with openai_runtime=codex_app_server
-    # could do the work but couldn't report completion back to the kernel,
-    # making it hang until timeout. Stateless dispatch — they just read
-    # the env var and write to ~/.hermes/kanban.db.
+    # (set by the kanban dispatcher when spawning a worker). Stateless
+    # dispatch — they read the env var and write ~/.hermes/kanban.db.
     "kanban_complete",
     "kanban_block",
     "kanban_comment",
     "kanban_heartbeat",
     "kanban_show",
     "kanban_list",
-    # NOTE: kanban_create / kanban_unblock / kanban_link are orchestrator-
-    # only — the kanban tool gates them on HERMES_KANBAN_TASK being unset.
-    # They're exposed here for orchestrator agents running on the codex
-    # runtime that need to dispatch new tasks.
+    # Orchestrator-only kanban tools (gated on HERMES_KANBAN_TASK unset).
     "kanban_create",
     "kanban_unblock",
     "kanban_link",
 )
+
+# Codex profile: do NOT expose terminal/fs — codex's built-ins cover them
+# and route approvals through codex's own UI.
+CODEX_EXPOSED_TOOLS: tuple[str, ...] = _HERMES_SPECIFIC_TOOLS
+
+# Claude profile: include Hermes terminal/fs/search so the model can act
+# without Claude's native Bash/Edit/Write/Read (those are disallowed by
+# the claude_cli runtime). Still excludes _AGENT_LOOP_TOOLS.
+CLAUDE_CORE_TOOLS: tuple[str, ...] = (
+    "terminal",
+    "process",
+    "read_file",
+    "write_file",
+    "patch",
+    "search_files",
+    "execute_code",
+)
+
+CLAUDE_EXPOSED_TOOLS: tuple[str, ...] = CLAUDE_CORE_TOOLS + _HERMES_SPECIFIC_TOOLS
+
+# Back-compat alias — existing codex tests + migration import EXPOSED_TOOLS.
+EXPOSED_TOOLS: tuple[str, ...] = CODEX_EXPOSED_TOOLS
+
+
+def get_exposed_tools(profile: Optional[str] = None) -> tuple[str, ...]:
+    """Return the tool name tuple for the given MCP profile.
+
+    ``profile`` defaults to ``HERMES_TOOLS_MCP_PROFILE`` env (``codex`` if
+    unset). Unknown profiles fall back to the codex surface.
+    """
+    resolved = (profile or os.environ.get("HERMES_TOOLS_MCP_PROFILE") or "codex").strip().lower()
+    if resolved in {"claude", "claude_cli", "claude-cli"}:
+        return CLAUDE_EXPOSED_TOOLS
+    return CODEX_EXPOSED_TOOLS
 
 
 def _build_server() -> Any:
@@ -166,14 +186,18 @@ def _build_server() -> Any:
         handle_function_call,
     )
 
+    profile = (os.environ.get("HERMES_TOOLS_MCP_PROFILE") or "codex").strip().lower()
+    tool_names = get_exposed_tools(profile)
+
     mcp = FastMCP(
-        "hermes-tools",
+        MCP_SERVER_NAME,
         instructions=(
             "Hermes Agent's tool surface, exposed for use inside a Codex "
-            "session. Use these for capabilities Codex's built-in toolset "
-            "doesn't cover: web search/extract, browser automation, "
-            "subagent delegation, vision, image generation, persistent "
-            "memory, skills, and cross-session search."
+            "or Claude Code session. Prefer these Hermes tools over any "
+            "native filesystem/exec tools the host CLI may advertise. "
+            "Capabilities include terminal/file (claude profile), web "
+            "search/extract, browser automation, vision, image generation, "
+            "skills, TTS, and kanban handoff."
         ),
     )
 
@@ -187,7 +211,7 @@ def _build_server() -> Any:
 
     exposed_count = 0
 
-    for name in EXPOSED_TOOLS:
+    for name in tool_names:
         spec = all_defs.get(name)
         if spec is None:
             logger.debug(
@@ -238,9 +262,10 @@ def _build_server() -> Any:
         exposed_count += 1
 
     logger.info(
-        "hermes-tools MCP server registered %d/%d tools",
+        "hermes-tools MCP server (profile=%s) registered %d/%d tools",
+        profile,
         exposed_count,
-        len(EXPOSED_TOOLS),
+        len(tool_names),
     )
     return mcp
 

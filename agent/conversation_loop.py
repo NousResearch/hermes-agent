@@ -711,6 +711,56 @@ def run_conversation(
             should_review_memory=_should_review_memory,
         )
 
+    # Claude CLI runtime: if api_mode == claude_cli (explicit config or
+    # default-when-token), hand the turn to a `claude -p` subprocess
+    # (Anthropic Max subscription via setup token + clean env + Hermes MCP
+    # tools + multi-turn --resume). See agent/transports/claude_cli_session.py.
+    # Phase 2c: host-global concurrency cap may raise ClaudeCliConcurrencyError
+    # after a bounded wait — activate the profile fallback (grok/gpt) and fall
+    # through into the normal chat_completions / anthropic_messages loop.
+    if agent.api_mode == "claude_cli":
+        from agent.transports.claude_cli import ClaudeCliConcurrencyError
+
+        try:
+            return agent._run_claude_cli_turn(
+                user_message=user_message,
+                original_user_message=original_user_message,
+                messages=messages,
+                effective_task_id=effective_task_id,
+                should_review_memory=_should_review_memory,
+            )
+        except ClaudeCliConcurrencyError as _claude_conc_exc:
+            logger.warning(
+                "claude_cli concurrency saturated — trying fallback: %s",
+                _claude_conc_exc,
+            )
+            try:
+                agent._buffer_status(
+                    "⚠️ Claude CLI concurrency cap reached — switching to fallback..."
+                )
+            except Exception:
+                pass
+            if agent._try_activate_fallback(reason=FailoverReason.rate_limit):
+                # Fallback rewrote provider/model/api_mode; continue into the
+                # normal agent loop with the new backend.
+                pass
+            else:
+                return {
+                    "final_response": (
+                        f"Claude CLI concurrency cap reached and no fallback "
+                        f"provider is available: {_claude_conc_exc}. "
+                        f"Raise model.claude_cli.max_concurrent, free a running "
+                        f"session, or configure fallback_providers."
+                    ),
+                    "messages": messages,
+                    "api_calls": 0,
+                    "completed": False,
+                    "partial": True,
+                    "error": str(_claude_conc_exc),
+                    "agent_persisted": False,
+                    "claude_cli_concurrency_saturated": True,
+                }
+
     while (api_call_count < agent.max_iterations and agent.iteration_budget.remaining > 0) or agent._budget_grace_call:
         # Reset per-turn checkpoint dedup so each iteration can take one snapshot
         agent._checkpoint_mgr.new_turn()

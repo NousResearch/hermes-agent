@@ -3664,6 +3664,16 @@ class AIAgent:
         except Exception:
             pass
 
+        # 5b. Close claude_cli multi-turn session mapping (process-local
+        # Claude session files under ~/.claude/projects remain on disk).
+        try:
+            claude_sess = getattr(self, "_claude_cli_session", None)
+            if claude_sess is not None:
+                claude_sess.close()
+                self._claude_cli_session = None
+        except Exception:
+            pass
+
         # 6. Free conversation history.  Mirrors _release_evicted_agent_soft's
         # soft-eviction clear — close() is the hard teardown for true session
         # boundaries (/new, /reset, session expiry), so the message list won't
@@ -6409,6 +6419,26 @@ class AIAgent:
         """Forwarder — see ``agent.codex_runtime.run_codex_app_server_turn``."""
         from agent.codex_runtime import run_codex_app_server_turn
         return run_codex_app_server_turn(self, user_message=user_message, original_user_message=original_user_message, messages=messages, effective_task_id=effective_task_id, should_review_memory=should_review_memory)
+
+    def _run_claude_cli_turn(
+        self,
+        *,
+        user_message: str,
+        original_user_message: Any,
+        messages: List[Dict[str, Any]],
+        effective_task_id: str,
+        should_review_memory: bool = False,
+    ) -> Dict[str, Any]:
+        """Forwarder — see ``agent.claude_runtime.run_claude_cli_turn``."""
+        from agent.claude_runtime import run_claude_cli_turn
+        return run_claude_cli_turn(
+            self,
+            user_message=user_message,
+            original_user_message=original_user_message,
+            messages=messages,
+            effective_task_id=effective_task_id,
+            should_review_memory=should_review_memory,
+        )
 
 def main(
     query: str = None,

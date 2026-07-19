@@ -138,6 +138,8 @@ class TestModuleSurface:
         assert callable(m._build_server)
         assert isinstance(m.EXPOSED_TOOLS, tuple)
         assert len(m.EXPOSED_TOOLS) > 0
+        assert callable(m.get_exposed_tools)
+        assert isinstance(m.CLAUDE_EXPOSED_TOOLS, tuple)
 
     def test_exposed_tools_are_safe_subset(self):
         """We MUST NOT expose tools codex already has, because codex'
@@ -154,6 +156,17 @@ class TestModuleSurface:
             f"these tools must NOT be exposed via the codex callback "
             f"because codex has built-in equivalents: {leaked}"
         )
+
+    def test_claude_profile_includes_terminal_fs(self):
+        """Claude profile must expose terminal/fs (native tools blocked)."""
+        from agent.transports.hermes_tools_mcp_server import (
+            CLAUDE_EXPOSED_TOOLS,
+            get_exposed_tools,
+        )
+        tools = set(get_exposed_tools("claude"))
+        for required in ("terminal", "read_file", "write_file", "patch", "search_files"):
+            assert required in tools
+        assert set(CLAUDE_EXPOSED_TOOLS) == tools
 
     def test_expected_hermes_specific_tools_listed(self):
         """The Hermes-specific tools should be present so users on the

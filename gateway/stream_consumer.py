@@ -227,6 +227,7 @@ class GatewayStreamConsumer:
         *,
         final: bool = False,
         expect_edits: bool = False,
+        status_terminal: bool | None = None,
     ) -> dict | None:
         """Return per-send metadata for stream-created messages.
 
@@ -246,6 +247,11 @@ class GatewayStreamConsumer:
             meta["expect_edits"] = True
         if final:
             meta["notify"] = True
+        if (
+            (final if status_terminal is None else status_terminal)
+            and meta.get("status_key")
+        ):
+            meta["status_terminal"] = True
         return meta or None
 
     @property
@@ -289,6 +295,7 @@ class GatewayStreamConsumer:
         message_id: str,
         content: str,
         finalize: bool = False,
+        status_terminal: bool | None = None,
     ):
         """Edit via the adapter, passing routing metadata when supported."""
         kwargs = {
@@ -307,7 +314,13 @@ class GatewayStreamConsumer:
                     param.kind is inspect.Parameter.VAR_KEYWORD
                     for param in params.values()
                 ):
-                    kwargs["metadata"] = self.metadata
+                    edit_metadata = dict(self.metadata)
+                    if (
+                        (finalize if status_terminal is None else status_terminal)
+                        and edit_metadata.get("status_key")
+                    ):
+                        edit_metadata["status_terminal"] = True
+                    kwargs["metadata"] = edit_metadata
             except (TypeError, ValueError):
                 pass
         return await self.adapter.edit_message(**kwargs)
@@ -1774,6 +1787,7 @@ class GatewayStreamConsumer:
                         message_id=self._message_id,
                         content=text,
                         finalize=finalize,
+                        status_terminal=finalize and is_turn_final,
                     )
                     if result.success:
                         self._already_sent = True
@@ -1928,6 +1942,7 @@ class GatewayStreamConsumer:
                     metadata=self._metadata_for_send(
                         final=finalize,
                         expect_edits=True,
+                        status_terminal=finalize and is_turn_final,
                     ),
                 )
                 if result.success:

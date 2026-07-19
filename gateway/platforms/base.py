@@ -5126,6 +5126,11 @@ class BasePlatformAdapter(ABC):
                 # metadata stays unmarked and progress bubbles remain
                 # thread-strict.
                 _final_thread_metadata = _mark_notify_metadata(_thread_metadata)
+                _status_key = getattr(event, "_status_key", None)
+                if _status_key:
+                    _final_thread_metadata = dict(_final_thread_metadata or {})
+                    _final_thread_metadata["status_key"] = str(_status_key)
+                    _final_thread_metadata["status_terminal"] = True
 
                 # Auto-TTS: if voice message, generate audio FIRST (before sending text)
                 # Gated via ``_should_auto_tts_for_chat``: fires when the chat has

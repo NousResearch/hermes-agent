@@ -1,11 +1,13 @@
 """Tests for gateway proxy mode — forwarding messages to a remote API server."""
 
+import asyncio
+
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
 from gateway.config import Platform, StreamingConfig
-from gateway.platforms.base import resolve_proxy_url
+from gateway.platforms.base import SendResult, resolve_proxy_url
 from gateway.run import GatewayRunner
 from gateway.session import SessionSource
 
@@ -279,6 +281,98 @@ class TestRunAgentViaProxy:
 
         # Verify response was assembled
         assert result["final_response"] == "Hello world"
+
+    @pytest.mark.asyncio
+    async def test_discord_proxy_stream_uses_per_run_status_identity(self, monkeypatch):
+        monkeypatch.setenv("GATEWAY_PROXY_URL", "http://host:8642")
+        runner = _make_runner()
+        source = _make_source(Platform.DISCORD)
+        source.chat_id = "555"
+        source.thread_id = "777"
+        adapter = MagicMock()
+        adapter.SUPPORTS_MESSAGE_EDITING = True
+        adapter.send_typing = AsyncMock()
+        adapter.send = AsyncMock(
+            return_value=SendResult(success=True, message_id="7001")
+        )
+        runner.adapters[Platform.DISCORD] = adapter
+        runner._session_run_generation["discord:555:thread:777"] = 4
+        runner.config.streaming.enabled = True
+        runner.config.streaming.transport = "edit"
+
+        captured = {}
+
+        class _CapturingConsumer:
+            def __init__(self, **kwargs):
+                captured.update(kwargs)
+                self.metadata = kwargs["metadata"]
+                self.adapter = kwargs["adapter"]
+                self.chat_id = kwargs["chat_id"]
+                self.content = ""
+                self._finished = asyncio.Event()
+
+            async def run(self):
+                await self._finished.wait()
+                final_metadata = dict(self.metadata)
+                if final_metadata.get("status_key"):
+                    final_metadata["status_terminal"] = True
+                await self.adapter.send(
+                    self.chat_id,
+                    self.content,
+                    metadata=final_metadata,
+                )
+
+            def on_delta(self, content):
+                self.content += content
+
+            def finish(self):
+                self._finished.set()
+
+        resp = _FakeSSEResponse(
+            status=200,
+            sse_chunks=[
+                b'data: {"choices":[{"delta":{"content":"done"}}]}\n\n'
+                b'data: [DONE]\n\n'
+            ],
+        )
+        session = _FakeSession(resp)
+
+        with patch("gateway.run._load_gateway_config", return_value={}):
+            with _patch_aiohttp(session):
+                with patch("aiohttp.ClientTimeout"):
+                    with patch(
+                        "gateway.display_config.resolve_display_setting",
+                        return_value=True,
+                    ):
+                        with patch(
+                            "gateway.stream_consumer.GatewayStreamConsumer",
+                            _CapturingConsumer,
+                        ):
+                            result = await runner._run_agent_via_proxy(
+                                message="hi",
+                                context_prompt="",
+                                history=[],
+                                source=source,
+                                session_id="sess-123",
+                                session_key="discord:555:thread:777",
+                                run_generation=4,
+                                event_message_id="42",
+                            )
+
+        assert result["final_response"] == "done"
+        assert captured["metadata"] == {
+            "thread_id": "777",
+            "status_key": "task_run:message:42",
+        }
+        adapter.send.assert_awaited_once_with(
+            "555",
+            "done",
+            metadata={
+                "thread_id": "777",
+                "status_key": "task_run:message:42",
+                "status_terminal": True,
+            },
+        )
 
     @pytest.mark.asyncio
     async def test_handles_http_error(self, monkeypatch):

@@ -27,6 +27,7 @@ except ModuleNotFoundError:
 import asyncio
 import concurrent.futures
 import dataclasses
+import hashlib
 import inspect
 import json
 import logging
@@ -500,6 +501,31 @@ def render_notice_line(notice) -> str:
     return str(getattr(notice, "text", "") or "").strip()
 
 
+def _discord_task_run_status_key(
+    platform: Any,
+    *,
+    event_message_id: Any = None,
+    session_key: Any = None,
+    run_generation: Any = None,
+) -> Optional[str]:
+    """Return one stable status identity for a single Discord agent run.
+
+    The inbound reply anchor is the best identity because Discord message ids
+    are unique and every seam already receives it. Synthetic/recovery events
+    can lack an anchor; hash their session generation instead so sequential
+    runs in the same thread still never overwrite each other's final answer.
+    """
+    platform_value = getattr(platform, "value", platform)
+    if str(platform_value or "").lower() != "discord":
+        return None
+    anchor = str(event_message_id or "").strip()
+    if anchor:
+        return f"task_run:message:{anchor}"
+    fallback = f"{session_key or 'session'}:{run_generation or 0}"
+    digest = hashlib.sha256(fallback.encode("utf-8")).hexdigest()[:20]
+    return f"task_run:generation:{digest}"
+
+
 async def _send_or_update_status_coro(adapter, chat_id, status_key, content, metadata):
     """Route a status message through adapter.send_or_update_status when supported.
 
@@ -507,9 +533,14 @@ async def _send_or_update_status_coro(adapter, chat_id, status_key, content, met
     Telegram) edit the previous bubble for the same status_key instead of
     appending a new one. Adapters without the method fall back to plain send.
     """
+    routed_status_key = (
+        (metadata or {}).get("status_key")
+        if isinstance(metadata, dict)
+        else None
+    ) or status_key
     sender = getattr(adapter, "send_or_update_status", None)
     if callable(sender):
-        return await sender(chat_id, status_key, content, metadata=metadata)
+        return await sender(chat_id, routed_status_key, content, metadata=metadata)
     return await adapter.send(chat_id, content, metadata=metadata)
 
 
@@ -12851,6 +12882,19 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             # below; a /new or another lifecycle transition may move
             # session_entry.session_id while the old run is still unwinding.
             _run_start_session_id = session_entry.session_id
+            _run_reply_anchor = self._reply_anchor_for_event(event)
+            _task_status_key = _discord_task_run_status_key(
+                source.platform,
+                event_message_id=_run_reply_anchor,
+                session_key=session_key,
+                run_generation=run_generation,
+            )
+            if _task_status_key:
+                # BasePlatformAdapter owns the final send after this handler
+                # returns. Carry the same key used by Discord progress,
+                # streaming, status, and heartbeat paths so that final send
+                # replaces their retained card instead of appending a bubble.
+                event._status_key = _task_status_key
             agent_result = await self._run_agent(
                 message=message_text,
                 context_prompt=context_prompt,
@@ -12859,7 +12903,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 session_id=_run_start_session_id,
                 session_key=session_key,
                 run_generation=run_generation,
-                event_message_id=self._reply_anchor_for_event(event),
+                event_message_id=_run_reply_anchor,
                 channel_prompt=event.channel_prompt,
                 moa_config=getattr(event, "_moa_config", None),
                 persist_user_message=persist_user_message,
@@ -18464,6 +18508,15 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         )
 
         _thread_metadata: Optional[Dict[str, Any]] = self._thread_metadata_for_source(source, event_message_id)
+        _proxy_status_key = _discord_task_run_status_key(
+            source.platform,
+            event_message_id=event_message_id,
+            session_key=session_key,
+            run_generation=run_generation,
+        )
+        if _proxy_status_key:
+            _thread_metadata = dict(_thread_metadata or {})
+            _thread_metadata["status_key"] = _proxy_status_key
 
         if _streaming_enabled:
             try:
@@ -18858,6 +18911,12 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         
         user_config = _load_gateway_config()
         platform_key = _platform_config_key(source.platform)
+        _task_run_status_key = _discord_task_run_status_key(
+            source.platform,
+            event_message_id=event_message_id,
+            session_key=session_key,
+            run_generation=run_generation,
+        )
 
         from hermes_cli.tools_config import _get_platform_tools
         enabled_toolsets = sorted(_get_platform_tools(user_config, platform_key))
@@ -19335,6 +19394,9 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             else {"thread_id": _progress_thread_id}
         ) if _progress_thread_id else None
         _progress_metadata = _non_conversational_metadata(_progress_metadata, platform=source.platform)
+        if _task_run_status_key:
+            _progress_metadata = dict(_progress_metadata or {})
+            _progress_metadata["status_key"] = _task_run_status_key
         _progress_reply_to = (
             event_message_id
             if source.platform in (Platform.FEISHU, Platform.MATTERMOST) and source.thread_id and event_message_id
@@ -19788,6 +19850,9 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             }
         else:
             _status_thread_metadata = self._thread_metadata_for_source(source, event_message_id) if _progress_thread_id else None
+        if _task_run_status_key:
+            _status_thread_metadata = dict(_status_thread_metadata or {})
+            _status_thread_metadata["status_key"] = _task_run_status_key
 
         def _status_callback_sync(event_type: str, message: str) -> None:
             if not _status_adapter or not _run_still_current():
@@ -21326,7 +21391,20 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 )
                 try:
                     _notify_res = None
-                    if _heartbeat_msg_id:
+                    _heartbeat_metadata = _non_conversational_metadata(
+                        _status_thread_metadata,
+                        platform=source.platform,
+                    )
+                    if isinstance(_heartbeat_metadata, dict) and _heartbeat_metadata.get("status_key"):
+                        # Discord's keyed status-card send owns both the edit
+                        # and stale-identity fallback. Calling it on every tick
+                        # keeps heartbeat/progress/stream/final on one message.
+                        _notify_res = await _notify_adapter.send(
+                            source.chat_id,
+                            _heartbeat_text,
+                            metadata=_heartbeat_metadata,
+                        )
+                    elif _heartbeat_msg_id:
                         try:
                             _notify_res = await _notify_adapter.edit_message(
                                 source.chat_id,
@@ -21340,14 +21418,14 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                         _notify_res = await _notify_adapter.send(
                             source.chat_id,
                             _heartbeat_text,
-                            metadata=_non_conversational_metadata(_status_thread_metadata, platform=source.platform),
+                            metadata=_heartbeat_metadata,
                         )
-                        if getattr(_notify_res, "success", False) and getattr(
-                            _notify_res, "message_id", None
-                        ):
-                            _heartbeat_msg_id = str(_notify_res.message_id)
-                            if _cleanup_progress:
-                                _cleanup_msg_ids.append(_heartbeat_msg_id)
+                    if getattr(_notify_res, "success", False) and getattr(
+                        _notify_res, "message_id", None
+                    ):
+                        _heartbeat_msg_id = str(_notify_res.message_id)
+                        if _cleanup_progress:
+                            _cleanup_msg_ids.append(_heartbeat_msg_id)
                 except Exception as _ne:
                     logger.debug("Long-running notification error: %s", _ne)
 

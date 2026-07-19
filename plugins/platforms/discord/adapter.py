@@ -959,6 +959,10 @@ class DiscordAdapter(BasePlatformAdapter):
     # Discord message limits
     MAX_MESSAGE_LENGTH = 2000
     _SPLIT_THRESHOLD = 1900  # near the 2000-char split point
+    # Status identity is process-local delivery state, not history. Keep recent
+    # run identities for retries/final replacement without retaining every run
+    # for the lifetime of a busy gateway process.
+    _STATUS_MESSAGE_CACHE_LIMIT = 512
     supports_code_blocks = True  # Discord markdown renders fenced code blocks natively
     splits_long_messages = True  # send() chunks via truncate_message(MAX_MESSAGE_LENGTH)
 
@@ -1008,6 +1012,13 @@ class DiscordAdapter(BasePlatformAdapter):
         # race when per-user thread sessions are enabled.
         self._workspace_headers = WorkspaceHeaderStore()
         self._workspace_header_locks: Dict[tuple[str, str], asyncio.Lock] = {}
+        # One mutable task-run card per (parent chat, routed thread, status
+        # key).  Discord thread sessions can share a parent chat id, so the
+        # thread component is required to prevent cross-workspace edits.
+        self._status_message_ids: Dict[tuple[str, str, str], str] = {}
+        self._status_message_fingerprints: Dict[tuple[str, str, str], str] = {}
+        self._status_message_locks: Dict[tuple[str, str, str], asyncio.Lock] = {}
+        self._status_message_users: Dict[tuple[str, str, str], int] = {}
         # Persistent typing indicator loops per channel (DMs don't reliably
         # show the standard typing gateway event for bots)
         self._typing_tasks: Dict[str, asyncio.Task] = {}
@@ -2996,6 +3007,20 @@ class DiscordAdapter(BasePlatformAdapter):
         Forum channels (type 15) reject direct messages — a thread post is
         created automatically.
         """
+        status_key = (metadata or {}).get("status_key")
+        if status_key:
+            # Gateway progress, heartbeat, streaming, and final-delivery seams
+            # all use normal send/edit calls. A metadata key lets those paths
+            # share the keyed-card lifecycle without platform checks at every
+            # call site. send_or_update_status strips the key before its direct
+            # transport write, preventing recursion.
+            return await self.send_or_update_status(
+                chat_id,
+                str(status_key),
+                content,
+                metadata=metadata,
+                reply_to=reply_to,
+            )
         if not self._client:
             return SendResult(success=False, error="Not connected")
 
@@ -3154,6 +3179,229 @@ class DiscordAdapter(BasePlatformAdapter):
             )
             return result
 
+    @staticmethod
+    def _task_run_operator_card(status_key: str, content: str) -> Dict[str, Any]:
+        """Build the bounded rich presentation for a non-terminal run update."""
+        summary = str(content or "").strip() or "Task is still running."
+        if len(summary) > 500:
+            summary = summary[:499].rstrip() + "…"
+        identity = hashlib.sha256(str(status_key).encode("utf-8")).hexdigest()[:20]
+        return {
+            "kind": "operator_card",
+            "version": 1,
+            "card_type": "task_run",
+            "title": "Task running",
+            "severity": "info",
+            "summary": summary,
+            "fields": [],
+            "actions": [],
+            "links": [],
+            "state_ref": f"discord-task-run:{identity}",
+        }
+
+    @staticmethod
+    def _plain_status_metadata(
+        metadata: Optional[Dict[str, Any]],
+    ) -> Optional[Dict[str, Any]]:
+        """Keep routing markers while stripping rich/status-only controls."""
+        if not metadata:
+            return None
+        plain = {
+            key: value
+            for key, value in metadata.items()
+            if key not in {"operator_card", "status_terminal", "status_key"}
+        }
+        return plain or None
+
+    def _cache_status_message(
+        self,
+        key: tuple[str, str, str],
+        message_id: str,
+        fingerprint: str,
+    ) -> None:
+        """Cache one identity and evict the oldest inactive status runs.
+
+        Dict insertion order supplies a small LRU without another dependency.
+        A locked key may be sending or editing, so eviction skips it even when
+        that means temporarily exceeding the cap until a later successful run.
+        """
+        self._status_message_ids.pop(key, None)
+        self._status_message_fingerprints.pop(key, None)
+        self._status_message_ids[key] = message_id
+        self._status_message_fingerprints[key] = fingerprint
+
+        while len(self._status_message_ids) > self._STATUS_MESSAGE_CACHE_LIMIT:
+            evict_key = next(
+                (
+                    candidate
+                    for candidate in self._status_message_ids
+                    if candidate != key
+                    and self._status_message_users.get(candidate, 0) == 0
+                ),
+                None,
+            )
+            if evict_key is None:
+                break
+            self._status_message_ids.pop(evict_key, None)
+            self._status_message_fingerprints.pop(evict_key, None)
+            self._status_message_locks.pop(evict_key, None)
+            self._status_message_users.pop(evict_key, None)
+
+    async def send_or_update_status(
+        self,
+        chat_id: str,
+        status_key: str,
+        content: str,
+        *,
+        metadata: Optional[Dict[str, Any]] = None,
+        reply_to: Optional[str] = None,
+    ) -> SendResult:
+        """Create or update one Discord task-run card for a routed status key.
+
+        Running updates use the operator-card renderer. A terminal update
+        replaces the retained message with the complete plaintext result and
+        removes the embed. Any stale-message edit failure gets exactly one
+        fresh plaintext send; a first rich-send/embed failure does the same.
+        """
+        thread_id = str((metadata or {}).get("thread_id") or "")
+        key = (str(chat_id), thread_id, str(status_key))
+        lock = self._status_message_locks.setdefault(key, asyncio.Lock())
+        # Register before awaiting the lock. The count covers the acquired
+        # caller and queued callers, making eviction/removal safe without
+        # relying on private asyncio.Lock waiter internals.
+        self._status_message_users[key] = self._status_message_users.get(key, 0) + 1
+        try:
+            async with lock:
+                terminal = bool((metadata or {}).get("status_terminal"))
+                status_metadata: Optional[Dict[str, Any]] = dict(metadata or {})
+                status_metadata.pop("status_key", None)
+                if terminal:
+                    status_metadata.pop("operator_card", None)
+                elif "operator_card" not in status_metadata:
+                    status_metadata["operator_card"] = self._task_run_operator_card(
+                        status_key, content
+                    )
+                if not status_metadata:
+                    status_metadata = None
+
+                fingerprint = repr(
+                    (
+                        str(content),
+                        terminal,
+                        (status_metadata or {}).get("operator_card"),
+                    )
+                )
+                cached_id = self._status_message_ids.get(key)
+                if (
+                    cached_id is not None
+                    and self._status_message_fingerprints.get(key) == fingerprint
+                ):
+                    self._cache_status_message(key, cached_id, fingerprint)
+                    return SendResult(success=True, message_id=cached_id)
+
+                edit_failed = False
+                if cached_id is not None:
+                    result = await self.edit_message(
+                        chat_id=str(chat_id),
+                        message_id=cached_id,
+                        content=content,
+                        finalize=terminal,
+                        metadata=status_metadata,
+                    )
+                    if result.success:
+                        retained_id = str(result.message_id or cached_id)
+                        self._cache_status_message(key, retained_id, fingerprint)
+                        return result
+                    edit_failed = True
+                    self._status_message_ids.pop(key, None)
+                    self._status_message_fingerprints.pop(key, None)
+
+                # Terminal results are deliberately plaintext so the operator gets
+                # the full answer rather than the card summary's 500-character cap.
+                # After a stale edit, go straight to one plaintext send as well.
+                send_metadata = (
+                    self._plain_status_metadata(status_metadata)
+                    if terminal or edit_failed
+                    else status_metadata
+                )
+                send_kwargs: Dict[str, Any] = {
+                    "chat_id": str(chat_id),
+                    "content": content,
+                    "metadata": send_metadata,
+                }
+                if reply_to is not None:
+                    send_kwargs["reply_to"] = reply_to
+                result = await self.send(
+                    **send_kwargs,
+                )
+
+                # A first rich send can fail because Discord rejected the embed.
+                # Retry exactly once without the rich payload; never recursively
+                # enter this method or the generic send retry loop.
+                if (
+                    not result.success
+                    and not terminal
+                    and not edit_failed
+                    and status_metadata
+                    and "operator_card" in status_metadata
+                ):
+                    fallback_kwargs: Dict[str, Any] = {
+                        "chat_id": str(chat_id),
+                        "content": content,
+                        "metadata": self._plain_status_metadata(status_metadata),
+                    }
+                    if reply_to is not None:
+                        fallback_kwargs["reply_to"] = reply_to
+                    result = await self.send(**fallback_kwargs)
+
+                if result.success and result.message_id:
+                    self._cache_status_message(
+                        key,
+                        str(result.message_id),
+                        fingerprint,
+                    )
+                return result
+        finally:
+            remaining_users = self._status_message_users.get(key, 1) - 1
+            if remaining_users > 0:
+                self._status_message_users[key] = remaining_users
+            else:
+                self._status_message_users.pop(key, None)
+            # Failed first sends have no useful retained identity. Remove their
+            # now-unlocked lock so repeated failures cannot grow the lock map.
+            if (
+                key not in self._status_message_ids
+                and self._status_message_locks.get(key) is lock
+                and remaining_users == 0
+            ):
+                self._status_message_locks.pop(key, None)
+
+    async def _send_with_retry(
+        self,
+        chat_id: str,
+        content: str,
+        reply_to: Optional[str] = None,
+        metadata: Any = None,
+        max_retries: int = 2,
+        base_delay: float = 2.0,
+    ) -> SendResult:
+        """Keep keyed-card fallback single-shot; retain normal send retries."""
+        if metadata and metadata.get("status_key"):
+            return await self.send(
+                chat_id=chat_id,
+                content=content,
+                reply_to=reply_to,
+                metadata=metadata,
+            )
+        return await super()._send_with_retry(
+            chat_id=chat_id,
+            content=content,
+            reply_to=reply_to,
+            metadata=metadata,
+            max_retries=max_retries,
+            base_delay=base_delay,
+        )
+
     async def _send_to_forum(
         self,
         forum_channel: Any,
@@ -3307,14 +3555,40 @@ class DiscordAdapter(BasePlatformAdapter):
         re-split, looping forever (the Telegram #48648 lesson).  The complete
         text is delivered when ``finalize=True`` via ``_edit_overflow_split``.
         """
+        status_key = (metadata or {}).get("status_key")
+        if status_key:
+            # Stream consumers call edit_message directly after their first
+            # send. Route those updates back through the keyed lifecycle so
+            # heartbeat, stream finalization, and BasePlatformAdapter's final
+            # delivery share the same lock, fingerprint, and fallback policy.
+            return await self.send_or_update_status(
+                chat_id,
+                str(status_key),
+                content,
+                metadata=metadata,
+            )
         if not self._client:
             return SendResult(success=False, error="Not connected")
         try:
-            channel = self._client.get_channel(int(chat_id))
+            target_chat_id = (metadata or {}).get("thread_id") or chat_id
+            channel = self._client.get_channel(int(target_chat_id))
             if not channel:
-                channel = await self._client.fetch_channel(int(chat_id))
+                channel = await self._client.fetch_channel(int(target_chat_id))
             msg = await channel.fetch_message(int(message_id))
-            formatted = self.format_message(content)
+            terminal_status = bool(metadata and metadata.get("status_terminal"))
+            operator_card_embed = None
+            operator_card_payload = (
+                metadata.get("operator_card") if metadata else None
+            )
+            if operator_card_payload is not None:
+                operator_card = OperatorCard.from_mapping(operator_card_payload)
+                formatted = render_operator_card_text(
+                    operator_card,
+                    max_length=self.MAX_MESSAGE_LENGTH,
+                )
+                operator_card_embed = _build_operator_card_embed(operator_card)
+            else:
+                formatted = self.format_message(content)
 
             _preview_key = (str(chat_id), str(message_id))
             _saturated_preview = False
@@ -3328,7 +3602,11 @@ class DiscordAdapter(BasePlatformAdapter):
             if len(formatted) > self.MAX_MESSAGE_LENGTH:
                 if finalize:
                     return await self._edit_overflow_split(
-                        channel, msg, message_id, content,
+                        channel,
+                        msg,
+                        message_id,
+                        content,
+                        clear_embed=terminal_status,
                     )
                 formatted = self.truncate_message(
                     formatted, self.MAX_MESSAGE_LENGTH,
@@ -3348,7 +3626,14 @@ class DiscordAdapter(BasePlatformAdapter):
                 self._last_overflow_preview.pop(_preview_key, None)
 
             try:
-                await msg.edit(content=formatted)
+                edit_kwargs: Dict[str, Any] = {"content": formatted}
+                if terminal_status:
+                    # A final result replaces the card; omitting embed=None
+                    # would leave the stale running embed attached.
+                    edit_kwargs["embed"] = None
+                elif operator_card_embed is not None:
+                    edit_kwargs["embed"] = operator_card_embed
+                await msg.edit(**edit_kwargs)
                 if _saturated_preview:
                     self._last_overflow_preview[_preview_key] = formatted
             except Exception as edit_err:
@@ -3359,7 +3644,11 @@ class DiscordAdapter(BasePlatformAdapter):
                 if self._is_length_overflow_error(edit_err):
                     if finalize:
                         return await self._edit_overflow_split(
-                            channel, msg, message_id, content,
+                            channel,
+                            msg,
+                            message_id,
+                            content,
+                            clear_embed=terminal_status,
                         )
                     # Mid-stream: truncate and retry in place (no split).
                     truncated = self.truncate_message(
@@ -3406,6 +3695,8 @@ class DiscordAdapter(BasePlatformAdapter):
         msg: Any,
         message_id: str,
         content: str,
+        *,
+        clear_embed: bool = False,
     ) -> SendResult:
         """Deliver an oversized final edit across message + continuations.
 
@@ -3429,12 +3720,20 @@ class DiscordAdapter(BasePlatformAdapter):
         if len(chunks) <= 1:
             # Defensive: caller's pre-flight should guarantee >1 chunk, but if
             # not, just edit normally.
-            await msg.edit(content=chunks[0] if chunks else formatted)
+            edit_kwargs: Dict[str, Any] = {
+                "content": chunks[0] if chunks else formatted
+            }
+            if clear_embed:
+                edit_kwargs["embed"] = None
+            await msg.edit(**edit_kwargs)
             return SendResult(success=True, message_id=message_id)
 
         # Step 1 — edit the existing message with the first chunk.
         try:
-            await msg.edit(content=chunks[0])
+            edit_kwargs: Dict[str, Any] = {"content": chunks[0]}
+            if clear_embed:
+                edit_kwargs["embed"] = None
+            await msg.edit(**edit_kwargs)
         except Exception as e:
             logger.error(
                 "[%s] Overflow split: first-chunk edit failed: %s",

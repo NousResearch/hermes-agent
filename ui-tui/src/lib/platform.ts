@@ -34,6 +34,13 @@ export const isMacActionFallback = (
 export const isAction = (key: { ctrl: boolean; meta: boolean; super?: boolean }, ch: string, target: string): boolean =>
   isActionMod(key) && ch.toLowerCase() === target
 
+/** Match a literal Ctrl chord, excluding terminal-forwarded Cmd/Alt events. */
+export const isLiteralCtrl = (
+  key: { ctrl: boolean; meta: boolean; super?: boolean },
+  ch: string,
+  target: string
+): boolean => key.ctrl && !key.meta && key.super !== true && ch.toLowerCase() === target
+
 export const isRemoteShell = (env: NodeJS.ProcessEnv = process.env): boolean =>
   Boolean(env.SSH_CONNECTION || env.SSH_CLIENT || env.SSH_TTY)
 

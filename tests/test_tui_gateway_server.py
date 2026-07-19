@@ -10969,3 +10969,72 @@ def test_get_usage_clamps_post_compression_sentinel():
     usage = server._get_usage(agent)
     assert "context_used" not in usage
     assert "context_percent" not in usage
+
+
+def test_resolve_model_without_env_or_config_never_returns_anthropic_placeholder(monkeypatch):
+    """Regression for #52410: an unconfigured setup must never fall back to a
+    hardcoded Anthropic flagship placeholder. That placeholder was persisted as
+    the sticky session binding and permanently 404'd the session even after the
+    config was fixed. The silent default must be a cost-safe catalog model."""
+    monkeypatch.delenv("HERMES_MODEL", raising=False)
+    monkeypatch.delenv("HERMES_INFERENCE_MODEL", raising=False)
+    monkeypatch.setattr(server, "_load_cfg", lambda: {})
+
+    resolved = server._resolve_model()
+
+    assert resolved != "anthropic/claude-sonnet-4"
+    assert not resolved.startswith("anthropic/")
+
+
+def test_resolve_model_silent_default_import_failure_uses_safe_fallback(monkeypatch):
+    """If the catalog lookup blows up, the last-resort fallback is the cheap
+    catalog default, never an expensive Anthropic flagship the user didn't pick."""
+    import hermes_cli.models
+
+    monkeypatch.delenv("HERMES_MODEL", raising=False)
+    monkeypatch.delenv("HERMES_INFERENCE_MODEL", raising=False)
+    monkeypatch.setattr(server, "_load_cfg", lambda: {})
+
+    def _boom():
+        raise RuntimeError("catalog unavailable")
+
+    monkeypatch.setattr(
+        hermes_cli.models, "get_preferred_silent_default_model", _boom
+    )
+
+    assert server._resolve_model() == "z-ai/glm-5.2"
+
+
+def test_session_db_row_without_override_persists_no_anthropic_placeholder(monkeypatch):
+    """End-to-end guard for the persist path (#52410): with no env seed, no
+    config preference and no composer override, the sticky session row must
+    bind a routable model. The old hardcoded Anthropic placeholder must never
+    reach the DB, or resume resurrects it as the session's permanent model."""
+    created = []
+
+    class _FakeDB:
+        def create_session(self, key, source=None, model=None, model_config=None, parent_session_id=None, cwd=None):
+            created.append({"model": model, "model_config": model_config})
+
+    monkeypatch.delenv("HERMES_MODEL", raising=False)
+    monkeypatch.delenv("HERMES_INFERENCE_MODEL", raising=False)
+    monkeypatch.setattr(server, "_load_cfg", lambda: {})
+    monkeypatch.setattr(server, "_get_db", lambda: _FakeDB())
+
+    server._ensure_session_db_row({"session_key": "k1", "model_override": None})
+
+    assert len(created) == 1
+    persisted = str(created[0]["model"] or "")
+    assert persisted != "anthropic/claude-sonnet-4"
+    assert not persisted.startswith("anthropic/")
+
+
+def test_stored_session_runtime_overrides_treats_empty_model_as_unset():
+    """Resume must ignore an empty stored model instead of resurrecting it as
+    an override: only a non-empty row model produces model_override."""
+    assert "model_override" not in server._stored_session_runtime_overrides(
+        {"model": "", "model_config": None}
+    )
+    assert "model_override" not in server._stored_session_runtime_overrides(
+        {"model": None, "model_config": {"model": "  "}}
+    )

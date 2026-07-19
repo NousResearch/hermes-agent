@@ -331,6 +331,7 @@ async def test_status_identity_cache_evicts_oldest_inactive_runs(adapter):
         ("555", "777", "run-5"),
     }
     assert set(adapter._status_message_ids) == expected_keys
+    assert set(adapter._status_message_groups) == expected_keys
     assert set(adapter._status_message_fingerprints) == expected_keys
     assert set(adapter._status_message_locks) == expected_keys
     assert set(adapter._status_message_terminal) == expected_keys
@@ -378,6 +379,7 @@ async def test_failed_new_status_does_not_retain_an_orphan_lock(adapter):
 
     assert result.success is False
     assert adapter._status_message_ids == {}
+    assert adapter._status_message_groups == {}
     assert adapter._status_message_fingerprints == {}
     assert adapter._status_message_locks == {}
     assert adapter._status_message_terminal == {}
@@ -736,3 +738,96 @@ async def test_keyed_oversized_terminal_continuation_failure_falls_back_fresh_on
     assert instance._status_message_ids[key] == fallback_ids[0]
     assert instance._status_message_terminal[key] is True
     assert instance._last_self_message_id["777"] == fallback_ids[-1]
+
+
+@pytest.mark.asyncio
+async def test_oversized_streamed_terminal_transform_removes_prior_chunks(
+    tmp_path,
+    monkeypatch,
+):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    monkeypatch.setattr(
+        "plugins.platforms.discord.adapter._build_operator_card_embed",
+        lambda card: {"kind": card.card_type},
+    )
+    instance = DiscordAdapter(PlatformConfig(enabled=True, token="***"))
+    retained = SimpleNamespace(
+        id=7001,
+        edit=AsyncMock(),
+        delete=AsyncMock(),
+        to_reference=lambda **_kwargs: object(),
+    )
+    messages = {7001: retained}
+    next_message_id = 7002
+
+    async def send_message(**_kwargs):
+        nonlocal next_message_id
+        message = SimpleNamespace(
+            id=next_message_id,
+            edit=AsyncMock(),
+            delete=AsyncMock(),
+            to_reference=lambda **_kwargs: object(),
+        )
+        messages[next_message_id] = message
+        next_message_id += 1
+        return message
+
+    async def fetch_message(message_id):
+        return messages[int(message_id)]
+
+    thread = SimpleNamespace(
+        id=777,
+        send=AsyncMock(side_effect=send_message),
+        fetch_message=AsyncMock(side_effect=fetch_message),
+    )
+    instance._client = SimpleNamespace(
+        get_channel=lambda channel_id: thread if channel_id == 777 else None,
+        fetch_channel=AsyncMock(),
+    )
+
+    # Seed the retained running card without consuming the continuation ID
+    # allocator used by the oversized terminal edit below.
+    instance._status_message_ids[("555", "777", "task_run:message:42")] = "7001"
+    instance._status_message_groups[("555", "777", "task_run:message:42")] = (
+        "7001",
+    )
+    raw_final = "Raw streamed answer " * 300
+    first_terminal = await instance.send(
+        "555",
+        raw_final,
+        metadata={
+            "thread_id": "777",
+            "status_key": "task_run:message:42",
+            "status_terminal": True,
+        },
+    )
+    key = ("555", "777", "task_run:message:42")
+    raw_group = instance._status_message_groups[key]
+
+    assert first_terminal.success is True
+    assert len(raw_group) > 1
+    assert raw_group[0] == "7001"
+    assert instance._status_message_ids[key] == "7001"
+
+    transformed = "Plugin-transformed complete answer"
+    transformed_terminal = await instance.send(
+        "555",
+        transformed,
+        metadata={
+            "thread_id": "777",
+            "status_key": "task_run:message:42",
+            "status_terminal": True,
+        },
+    )
+
+    assert transformed_terminal.success is True
+    assert instance._status_message_ids[key] == "7001"
+    assert instance._status_message_groups[key] == ("7001",)
+    assert retained.edit.await_args.kwargs == {
+        "content": transformed,
+        "embed": None,
+    }
+    for stale_id in raw_group[1:]:
+        messages[int(stale_id)].delete.assert_awaited_once()
+    retained.delete.assert_not_awaited()
+    assert instance._last_self_message_id["777"] == "7001"

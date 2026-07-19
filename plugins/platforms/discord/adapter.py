@@ -1027,6 +1027,9 @@ class DiscordAdapter(BasePlatformAdapter):
         # key).  Discord thread sessions can share a parent chat id, so the
         # thread component is required to prevent cross-workspace edits.
         self._status_message_ids: Dict[tuple[str, str, str], str] = {}
+        self._status_message_groups: Dict[
+            tuple[str, str, str], tuple[str, ...]
+        ] = {}
         self._status_message_fingerprints: Dict[tuple[str, str, str], str] = {}
         self._status_message_locks: Dict[tuple[str, str, str], asyncio.Lock] = {}
         self._status_message_users: Dict[tuple[str, str, str], int] = {}
@@ -3231,6 +3234,7 @@ class DiscordAdapter(BasePlatformAdapter):
         message_id: str,
         fingerprint: str,
         *,
+        message_ids: Optional[tuple[str, ...]] = None,
         terminal: bool = False,
     ) -> None:
         """Cache one identity and evict the oldest inactive status runs.
@@ -3243,6 +3247,8 @@ class DiscordAdapter(BasePlatformAdapter):
         self._status_message_fingerprints.pop(key, None)
         self._status_message_ids[key] = message_id
         self._status_message_fingerprints[key] = fingerprint
+        if message_ids is not None:
+            self._status_message_groups[key] = message_ids
         if terminal:
             self._status_message_terminal[key] = True
 
@@ -3259,26 +3265,19 @@ class DiscordAdapter(BasePlatformAdapter):
             if evict_key is None:
                 break
             self._status_message_ids.pop(evict_key, None)
+            self._status_message_groups.pop(evict_key, None)
             self._status_message_fingerprints.pop(evict_key, None)
             self._status_message_locks.pop(evict_key, None)
             self._status_message_users.pop(evict_key, None)
             self._status_message_terminal.pop(evict_key, None)
 
-    def _restore_terminal_status_to_conversation(
-        self,
-        *,
-        chat_id: str,
-        thread_id: str,
-        original_message_id: Optional[str],
+    @staticmethod
+    def _status_result_message_ids(
         result: SendResult,
-    ) -> None:
-        """Make a completed card visible to history backfill again.
-
-        Running task cards are deliberately excluded from conversational
-        history.  Once the card becomes the assistant's final answer, every
-        chunk belongs to the conversation and the fast-path history cursor
-        must point at the last visible chunk.
-        """
+        *,
+        original_message_id: Optional[str] = None,
+    ) -> tuple[str, ...]:
+        """Return every visible message ID owned by one status result."""
         message_ids: list[str] = []
 
         def _append(message_id: Any) -> None:
@@ -3291,11 +3290,75 @@ class DiscordAdapter(BasePlatformAdapter):
         if isinstance(raw_response, dict):
             for message_id in raw_response.get("message_ids", ()) or ():
                 _append(message_id)
+            for message_id in raw_response.get("continuation_message_ids", ()) or ():
+                _append(message_id)
         for message_id in result.continuation_message_ids or ():
             _append(message_id)
         _append(result.message_id)
+        return tuple(message_ids)
 
-        self._nonconversational_messages.discard_many(message_ids)
+    async def _delete_replaced_status_messages(
+        self,
+        *,
+        chat_id: str,
+        thread_id: str,
+        previous_message_ids: tuple[str, ...],
+        retained_message_ids: tuple[str, ...],
+    ) -> None:
+        """Best-effort remove stale chunks after their replacement succeeds."""
+        retained = set(retained_message_ids)
+        stale = [
+            message_id
+            for message_id in previous_message_ids
+            if message_id not in retained
+        ]
+        if not stale or not self._client:
+            return
+        target_chat_id = thread_id or str(chat_id)
+        try:
+            channel = self._client.get_channel(int(target_chat_id))
+            if not channel:
+                channel = await self._client.fetch_channel(int(target_chat_id))
+            if not channel:
+                return
+        except Exception:
+            logger.debug(
+                "[%s] Failed to resolve channel for stale status-chunk cleanup",
+                self.name,
+                exc_info=True,
+            )
+            return
+
+        deleted: list[str] = []
+        for message_id in stale:
+            try:
+                message = await channel.fetch_message(int(message_id))
+                await message.delete()
+                deleted.append(message_id)
+            except Exception:
+                logger.debug(
+                    "[%s] Failed to delete replaced status chunk %s",
+                    self.name,
+                    message_id,
+                    exc_info=True,
+                )
+        self._nonconversational_messages.discard_many(deleted)
+
+    def _restore_terminal_status_to_conversation(
+        self,
+        *,
+        chat_id: str,
+        thread_id: str,
+        message_ids: tuple[str, ...],
+    ) -> None:
+        """Make a completed card visible to history backfill again.
+
+        Running task cards are deliberately excluded from conversational
+        history.  Once the card becomes the assistant's final answer, every
+        chunk belongs to the conversation and the fast-path history cursor
+        must point at the last visible chunk.
+        """
+        self._nonconversational_messages.discard_many(list(message_ids))
         if message_ids:
             self._last_self_message_id[thread_id or str(chat_id)] = message_ids[-1]
 
@@ -3344,6 +3407,10 @@ class DiscordAdapter(BasePlatformAdapter):
                     )
                 )
                 cached_id = self._status_message_ids.get(key)
+                cached_group = self._status_message_groups.get(
+                    key,
+                    (cached_id,) if cached_id is not None else (),
+                )
                 if (
                     not terminal
                     and cached_id is not None
@@ -3366,6 +3433,7 @@ class DiscordAdapter(BasePlatformAdapter):
                     return SendResult(success=True, message_id=cached_id)
 
                 edit_failed = False
+                replaced_message_ids: tuple[str, ...] = ()
                 if cached_id is not None:
                     result = await self.edit_message(
                         chat_id=str(chat_id),
@@ -3379,19 +3447,28 @@ class DiscordAdapter(BasePlatformAdapter):
                         isinstance(raw_response, dict)
                         and raw_response.get("partial_overflow")
                     )
+                    result_group = self._status_result_message_ids(
+                        result,
+                        original_message_id=cached_id,
+                    )
                     if result.success and not partial_overflow:
-                        retained_id = str(result.message_id or cached_id)
+                        await self._delete_replaced_status_messages(
+                            chat_id=str(chat_id),
+                            thread_id=thread_id,
+                            previous_message_ids=cached_group,
+                            retained_message_ids=result_group,
+                        )
                         if terminal:
                             self._restore_terminal_status_to_conversation(
                                 chat_id=str(chat_id),
                                 thread_id=thread_id,
-                                original_message_id=cached_id,
-                                result=result,
+                                message_ids=result_group,
                             )
                         self._cache_status_message(
                             key,
-                            retained_id,
+                            cached_id,
                             fingerprint,
+                            message_ids=result_group,
                             terminal=terminal,
                         )
                         return result
@@ -3402,7 +3479,11 @@ class DiscordAdapter(BasePlatformAdapter):
                     # stale-edit fallback below to make exactly one fresh
                     # plaintext send of the complete answer.
                     edit_failed = True
+                    replaced_message_ids = tuple(
+                        dict.fromkeys((*cached_group, *result_group))
+                    )
                     self._status_message_ids.pop(key, None)
+                    self._status_message_groups.pop(key, None)
                     self._status_message_fingerprints.pop(key, None)
 
                 # Terminal results are deliberately plaintext so the operator gets
@@ -3444,17 +3525,24 @@ class DiscordAdapter(BasePlatformAdapter):
                     result = await self.send(**fallback_kwargs)
 
                 if result.success and result.message_id:
+                    result_group = self._status_result_message_ids(result)
+                    await self._delete_replaced_status_messages(
+                        chat_id=str(chat_id),
+                        thread_id=thread_id,
+                        previous_message_ids=replaced_message_ids,
+                        retained_message_ids=result_group,
+                    )
                     if terminal:
                         self._restore_terminal_status_to_conversation(
                             chat_id=str(chat_id),
                             thread_id=thread_id,
-                            original_message_id=cached_id,
-                            result=result,
+                            message_ids=result_group,
                         )
                     self._cache_status_message(
                         key,
-                        str(result.message_id),
+                        result_group[0],
                         fingerprint,
+                        message_ids=result_group,
                         terminal=terminal,
                     )
                 return result
@@ -3472,6 +3560,7 @@ class DiscordAdapter(BasePlatformAdapter):
                 and remaining_users == 0
             ):
                 self._status_message_locks.pop(key, None)
+                self._status_message_groups.pop(key, None)
                 self._status_message_terminal.pop(key, None)
 
     async def _send_with_retry(

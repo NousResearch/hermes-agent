@@ -4703,6 +4703,8 @@ def _web_ui_build_input_hash(web_dir: Path) -> str | None:
         "vite.config.js",
         "tsconfig.json",
         "tsconfig.build.json",
+        "tsconfig.app.json",
+        "tsconfig.node.json",
     ):
         mp = web_dir / meta
         if mp.is_file():
@@ -5094,20 +5096,25 @@ def _run_npm_install_deterministic(
     )
 
 
-def _build_web_ui(web_dir: Path, *, fatal: bool = False) -> bool:
+def _build_web_ui(web_dir: Path, *, fatal: bool = False, force: bool = False) -> bool:
     """Build the web UI frontend if npm is available.
 
     Args:
         web_dir: Path to the dashboard frontend source directory.
         fatal: If True, print error guidance and return False on failure
                instead of a soft warning (used by ``hermes web``).
+        force: When True, bypass the staleness skip in ``_web_ui_build_needed``
+               and always rebuild. Wired through from ``hermes update`` so a
+               changed lockfile/source tree can never be skipped on mtime alone
+               (HOTFIX-HERMES-UPDATER-01). Without this parameter the update
+               call ``_build_web_ui(web_dir, force=...)`` would raise TypeError.
 
     Returns True if the build succeeded or was skipped (no package.json).
     """
     if not (web_dir / "package.json").exists():
         return True
 
-    if not _web_ui_build_needed(web_dir):
+    if not _web_ui_build_needed(web_dir, force=force):
         return True
 
     # Console-encoding-safe print: Windows consoles default to cp1252

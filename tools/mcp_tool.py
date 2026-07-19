@@ -4270,15 +4270,15 @@ def _make_tool_handler(server_name: str, tool_name: str, tool_timeout: float):
 
         try:
             result = _call_once()
-            # Check if the MCP tool itself returned an error
-            try:
-                parsed = json.loads(result)
-                if "error" in parsed:
-                    _bump_server_error(server_name)
-                else:
-                    _reset_server_error(server_name)  # success — reset
-            except (json.JSONDecodeError, TypeError):
-                _reset_server_error(server_name)  # non-JSON = success
+            # A completed tools/call round-trip is direct evidence the
+            # transport is alive — even when the payload is a tool-level
+            # error (result.isError: a DNS failure, HTTP 4xx/5xx, a crashed
+            # page). Those are the tool's business errors, not server
+            # unreachability; counting them branded a healthy server
+            # "unreachable" after three bad URLs and short-circuited every
+            # other tool on it (#11113). Only transport-level failures
+            # (the except paths below) feed the breaker.
+            _reset_server_error(server_name)
             return result
         except InterruptedError:
             return _interrupted_call_result()

@@ -170,6 +170,131 @@ def test_circuit_breaker_half_opens_after_cooldown(monkeypatch, tmp_path):
         _cleanup(mcp_tool, "srv")
 
 
+def test_tool_level_error_does_not_trip_breaker(monkeypatch, tmp_path):
+    """Tool-level errors (result.isError: DNS failure, HTTP 4xx/5xx, page
+    crash) prove the transport is ALIVE — they must not count toward the
+    breaker. Under the old counting, three bad URLs branded a healthy
+    Playwright server "unreachable" and short-circuited every tool on it
+    (#11113)."""
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+
+    from tools import mcp_tool
+    from tools.mcp_tool import _make_tool_handler
+
+    call_count = {"n": 0}
+
+    async def _call_tool_dns_error(*a, **kw):
+        call_count["n"] += 1
+        result = MagicMock()
+        result.isError = True
+        block = MagicMock()
+        block.text = "net::ERR_NAME_NOT_RESOLVED navigating to https://bad.example"
+        result.content = [block]
+        result.structuredContent = None
+        return result
+
+    _install_stub_server(mcp_tool, "srv", _call_tool_dns_error)
+    mcp_tool._ensure_mcp_loop()
+
+    try:
+        handler = _make_tool_handler("srv", "browser_navigate", 10.0)
+
+        attempts = mcp_tool._CIRCUIT_BREAKER_THRESHOLD + 2
+        for i in range(attempts):
+            parsed = json.loads(handler({}))
+            # Every call must reach the session and surface the real tool
+            # error — never the breaker's "unreachable" short-circuit.
+            assert "error" in parsed, parsed
+            assert "unreachable" not in parsed["error"].lower(), (
+                f"breaker tripped on tool-level errors after {i + 1} calls"
+            )
+            assert "ERR_NAME_NOT_RESOLVED" in parsed["error"], parsed
+
+        assert call_count["n"] == attempts, "every call should reach the session"
+        assert mcp_tool._server_error_counts.get("srv", 0) == 0, (
+            "tool-level errors must not accumulate breaker strikes"
+        )
+    finally:
+        _cleanup(mcp_tool, "srv")
+
+
+def test_tool_level_error_resets_prior_transport_strikes(monkeypatch, tmp_path):
+    """A completed round-trip — even one carrying a tool error — is evidence
+    of reachability, so it resets strikes accumulated from earlier transport
+    failures ("consecutive failures" semantics)."""
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+
+    from tools import mcp_tool
+    from tools.mcp_tool import _make_tool_handler
+
+    async def _call_tool_http_500(*a, **kw):
+        result = MagicMock()
+        result.isError = True
+        block = MagicMock()
+        block.text = "HTTP 500 from upstream API"
+        result.content = [block]
+        result.structuredContent = None
+        return result
+
+    _install_stub_server(mcp_tool, "srv", _call_tool_http_500)
+    mcp_tool._ensure_mcp_loop()
+
+    try:
+        # Two transport strikes already on the board (one below threshold).
+        mcp_tool._server_error_counts["srv"] = (
+            mcp_tool._CIRCUIT_BREAKER_THRESHOLD - 1
+        )
+
+        handler = _make_tool_handler("srv", "tool1", 10.0)
+        parsed = json.loads(handler({}))
+        assert "HTTP 500" in parsed.get("error", ""), parsed
+
+        assert mcp_tool._server_error_counts.get("srv", 0) == 0, (
+            "a completed round-trip must reset consecutive-failure strikes"
+        )
+    finally:
+        _cleanup(mcp_tool, "srv")
+
+
+def test_transport_exceptions_still_trip_breaker(monkeypatch, tmp_path):
+    """Transport-level failures (exceptions out of the call, timeouts,
+    connection loss) remain the breaker's business: threshold consecutive
+    failures short-circuit subsequent calls (#10447 retry-burn protection)."""
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+
+    from tools import mcp_tool
+    from tools.mcp_tool import _make_tool_handler
+
+    call_count = {"n": 0}
+
+    async def _call_tool_transport_dead(*a, **kw):
+        call_count["n"] += 1
+        raise ConnectionError("connection lost")
+
+    _install_stub_server(mcp_tool, "srv", _call_tool_transport_dead)
+    mcp_tool._ensure_mcp_loop()
+
+    try:
+        handler = _make_tool_handler("srv", "tool1", 10.0)
+
+        for _ in range(mcp_tool._CIRCUIT_BREAKER_THRESHOLD):
+            parsed = json.loads(handler({}))
+            assert "error" in parsed
+
+        assert (
+            mcp_tool._server_error_counts.get("srv", 0)
+            >= mcp_tool._CIRCUIT_BREAKER_THRESHOLD
+        )
+
+        # Next call short-circuits without touching the session.
+        before = call_count["n"]
+        parsed = json.loads(handler({}))
+        assert "unreachable" in parsed.get("error", "").lower(), parsed
+        assert call_count["n"] == before, "tripped breaker must short-circuit"
+    finally:
+        _cleanup(mcp_tool, "srv")
+
+
 def test_circuit_breaker_reopens_on_probe_failure(monkeypatch, tmp_path):
     """If the half-open probe fails, the breaker must re-arm the
     cooldown (not let every subsequent call through).

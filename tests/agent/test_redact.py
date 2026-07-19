@@ -36,6 +36,13 @@ class TestKnownPrefixes:
         result = redact_sensitive_text("github_pat_abc123def456ghi789jklmno")
         assert "abc123def456" not in result
 
+    def test_1password_service_account_token(self):
+        # 1Password service-account tokens: "ops_" prefix + long base64url body
+        token = "ops_" + "abcdEFGH1234" * 6
+        result = redact_sensitive_text(token)
+        assert "abcdEFGH1234abcdEFGH1234" not in result
+        assert "..." in result
+
     def test_slack_token(self):
         token = "xoxb-" + "0" * 12 + "-" + "a" * 14
         result = redact_sensitive_text(token)

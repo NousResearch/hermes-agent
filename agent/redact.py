@@ -110,6 +110,7 @@ _PREFIX_PATTERNS = [
     r"fw-[A-Za-z0-9]{30,}",             # Fireworks AI API key
     r"fw_[A-Za-z0-9]{30,}",             # Fireworks AI API key
     r"fpk_[A-Za-z0-9]{30,}",            # Fireworks AI project key
+    r"ops_[A-Za-z0-9._=-]{30,}",        # 1Password service-account token
 ]
 
 # ENV assignment patterns: KEY=value where KEY contains a secret-like name.

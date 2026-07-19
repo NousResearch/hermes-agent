@@ -1,8 +1,11 @@
 export type ApplicationMenuLocale = 'ar' | 'en'
 
 export interface ApplicationMenuCopy {
-  // Takes the app name so `HERMES_DESKTOP_APP_NAME` rebrands still work.
+  // These three carry the app name, so `HERMES_DESKTOP_APP_NAME` rebrands keep
+  // working and the English wording matches what Electron's own roles produce.
   about: (appName: string) => string
+  hide: (appName: string) => string
+  quit: (appName: string) => string
   actualSize: string
   checkForUpdates: string
   close: string
@@ -15,11 +18,9 @@ export interface ApplicationMenuCopy {
   front: string
   fullscreen: string
   help: string
-  hide: string
   hideOthers: string
   minimize: string
   paste: string
-  quit: string
   redo: string
   reload: string
   selectAll: string
@@ -48,11 +49,11 @@ const ENGLISH_COPY: ApplicationMenuCopy = {
   front: 'Bring All to Front',
   fullscreen: 'Toggle Full Screen',
   help: 'Help',
-  hide: 'Hide Hermes',
+  hide: appName => `Hide ${appName}`,
   hideOthers: 'Hide Others',
   minimize: 'Minimize',
   paste: 'Paste',
-  quit: 'Quit Hermes',
+  quit: appName => `Quit ${appName}`,
   redo: 'Redo',
   reload: 'Reload',
   selectAll: 'Select All',
@@ -81,11 +82,11 @@ const ARABIC_COPY: ApplicationMenuCopy = {
   front: 'إحضار الكل إلى المقدمة',
   fullscreen: 'تبديل ملء الشاشة',
   help: 'مساعدة',
-  hide: 'إخفاء هرمس',
+  hide: appName => `إخفاء ${appName}`,
   hideOthers: 'إخفاء التطبيقات الأخرى',
   minimize: 'تصغير',
   paste: 'لصق',
-  quit: 'إنهاء هرمس',
+  quit: appName => `إنهاء ${appName}`,
   redo: 'إعادة',
   reload: 'إعادة التحميل',
   selectAll: 'تحديد الكل',

@@ -4750,18 +4750,18 @@ function buildApplicationMenu() {
 
   if (IS_MAC) {
     template.push({
-      label: copy.appName,
+      label: APP_NAME,
       submenu: [
-        { label: copy.about, click: () => showAboutPanelFresh() },
+        { label: copy.about(APP_NAME), click: () => showAboutPanelFresh() },
         checkForUpdatesItem,
         { type: 'separator' },
         { label: copy.services, role: 'services' },
         { type: 'separator' },
-        { label: copy.hide, role: 'hide' },
+        { label: copy.hide(APP_NAME), role: 'hide' },
         { label: copy.hideOthers, role: 'hideOthers' },
         { label: copy.unhide, role: 'unhide' },
         { type: 'separator' },
-        { label: copy.quit, role: 'quit' }
+        { label: copy.quit(APP_NAME), role: 'quit' }
       ]
     })
   }
@@ -4780,7 +4780,7 @@ function buildApplicationMenu() {
             click: () => sendClosePreviewRequested(),
             label: copy.close
           }
-        : { label: copy.quit, role: 'quit' }
+        : { label: copy.quit(APP_NAME), role: 'quit' }
     ]
   })
   template.push({

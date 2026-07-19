@@ -361,6 +361,38 @@ def _resolve_base_dir(
     return base.resolve()
 
 
+# Root directories that, when seen as the first path segment without a leading
+# "/", strongly indicate the model intended an absolute path but dropped the
+# leading slash (e.g. "home/user/dev/notes/x.md" instead of
+# "/home/user/dev/notes/x.md").  Used by _coerce_missing_leading_slash() below.
+_ABSOLUTE_PATH_ROOTS = (
+    "home/", "Users/", "tmp/", "etc/", "usr/", "var/",
+    "opt/", "mnt/", "data/", "root/", "boot/", "private/",
+)
+
+
+def _coerce_missing_leading_slash(filepath: str) -> str:
+    """Prepend "/" to cwd-shaped relative paths that look like absolute paths.
+
+    Models sometimes emit an absolute path without its leading slash, e.g.
+    ``home/user/dev/notes/x.md``.  Left untreated, ``_resolve_path_for_task``
+    joins this with the task base directory and produces a doubled path like
+    ``/home/user/dev/home/user/dev/notes/x.md`` (issue #67185).
+
+    Only the *first segment* is inspected, so legitimate relative paths such as
+    ``home/notes.md`` or ``etc/config`` under a project are *not* rewritten —
+    the coercion only fires when the first segment is a known filesystem root
+    AND the resolved doubled path would escape the workspace root.  This keeps
+    the correction conservative and avoids changing the meaning of real
+    relative paths.
+    """
+    if not filepath or filepath.startswith(("/", "~")):
+        return filepath
+    if filepath.startswith(_ABSOLUTE_PATH_ROOTS):
+        return "/" + filepath
+    return filepath
+
+
 def _resolve_path_for_task(filepath: str, task_id: str = "default") -> Path | PurePosixPath:
     """Resolve *filepath* against the task's absolute base directory.
 
@@ -373,7 +405,7 @@ def _resolve_path_for_task(filepath: str, task_id: str = "default") -> Path | Pu
     """
     container_paths = _uses_container_paths(task_id)
     if container_paths:
-        expanded = _expand_tilde(filepath)
+        expanded = _expand_tilde(_coerce_missing_leading_slash(filepath))
         if posixpath.isabs(expanded):
             return _normalize_without_host_deref(expanded)
         resolved = _resolve_base_dir(task_id, container_paths=True) / expanded
@@ -382,7 +414,7 @@ def _resolve_path_for_task(filepath: str, task_id: str = "default") -> Path | Pu
     # Host paths only — never rewrite Linux paths inside a container/WSL env.
     from tools.environments.local import _msys_to_windows_path
 
-    expanded = _expand_tilde(_msys_to_windows_path(filepath))
+    expanded = _expand_tilde(_msys_to_windows_path(_coerce_missing_leading_slash(filepath)))
     if sys.platform == "win32":
         import ntpath
 

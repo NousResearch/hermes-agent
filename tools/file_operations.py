@@ -956,23 +956,6 @@ class ShellFileOperations(FileOperations):
                         suffix = path[1 + len(username):]  # e.g. "/rest/of/path"
                         return user_home + suffix
         
-        # Detect cwd-shaped relative paths that look like absolute paths
-        # missing their leading "/".  When a model emits a path like
-        # "home/user/dev/notes/x.md" (an absolute path without the leading
-        # slash), write_file silently creates a doubled path like
-        # "/home/user/dev/home/user/dev/notes/x.md" by joining the relative
-        # path with the cwd.  Catch the most common patterns and prepend
-        # the missing "/" so the file lands where the model intended.
-        #
-        # Common root directories that indicate an absolute path was intended.
-        _ABSOLUTE_PATH_ROOTS = (
-            "home/", "Users/", "tmp/", "etc/", "usr/", "var/",
-            "opt/", "mnt/", "data/", "root/", "boot/", "private/",
-        )
-        if path.startswith(_ABSOLUTE_PATH_ROOTS) and not path.startswith("/"):
-            corrected = "/" + path
-            return corrected
-        
         return path
     
     def _escape_shell_arg(self, arg: str) -> str:

@@ -100,6 +100,40 @@ def test_absolute_input_path_ignores_base(_isolated_cwd, monkeypatch):
     assert resolved == Path(abs_target).resolve()
 
 
+def test_cwd_shaped_relative_path_gets_leading_slash(_isolated_cwd, monkeypatch):
+    """A cwd-shaped relative path missing its leading "/" is treated as absolute.
+
+    Regression for issue #67185: a model emitting ``home/user/dev/notes/x.md``
+    (an absolute path without the leading slash) used to be joined with the
+    task base directory, producing a doubled path like
+    ``/home/user/dev/home/user/dev/notes/x.md``.  The coercion in
+    ``_resolve_path_for_task`` now prepends the missing "/" so the file lands
+    where the model intended instead of being silently nested under the cwd.
+    """
+    workspace, decoy = _isolated_cwd
+    monkeypatch.setenv("TERMINAL_CWD", str(workspace))
+
+    resolved = ft._resolve_path_for_task("home/user/dev/notes/x.md", task_id="default")
+
+    assert str(resolved) == "/home/user/dev/notes/x.md"
+    # Must NOT be doubled under the workspace root.
+    assert str(workspace) not in str(resolved)
+
+
+def test_coerce_missing_leading_slash_helper():
+    """Unit test for the _coerce_missing_leading_slash helper itself."""
+    assert ft._coerce_missing_leading_slash("home/user/dev/notes/x.md") == "/home/user/dev/notes/x.md"
+    assert ft._coerce_missing_leading_slash("Users/shakti/notes.md") == "/Users/shakti/notes.md"
+    assert ft._coerce_missing_leading_slash("tmp/foo.txt") == "/tmp/foo.txt"
+    # Already-absolute paths are left alone.
+    assert ft._coerce_missing_leading_slash("/home/user/dev/notes/x.md") == "/home/user/dev/notes/x.md"
+    # Tilde paths are left alone (handled by _expand_tilde).
+    assert ft._coerce_missing_leading_slash("~/notes.md") == "~/notes.md"
+    # Legitimate relative paths not starting with a known root are left alone.
+    assert ft._coerce_missing_leading_slash("src/main.py") == "src/main.py"
+    assert ft._coerce_missing_leading_slash("notes.md") == "notes.md"
+
+
 def test_container_absolute_input_path_does_not_follow_host_symlink(tmp_path, monkeypatch):
     """Docker paths are sandbox-local and must not be host-dereferenced.
 

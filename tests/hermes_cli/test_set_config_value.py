@@ -7,7 +7,11 @@ from unittest.mock import patch
 
 import pytest
 
-from hermes_cli.config import set_config_value, config_command
+from hermes_cli.config import (
+    config_command,
+    cron_model_drift_guard_enabled,
+    set_config_value,
+)
 
 
 @pytest.fixture(autouse=True)
@@ -417,6 +421,48 @@ class TestCronModelDriftConfigWarning:
         captured = capsys.readouterr()
         assert "Set model.name = display-only-name" in captured.out
         assert "fail closed" not in captured.out
+
+    def test_explicit_opt_out_suppresses_warning(
+        self,
+        _isolated_hermes_home,
+        capsys,
+    ):
+        _write_cron_jobs(
+            _isolated_hermes_home,
+            [
+                {
+                    "id": "model-drift-job",
+                    "enabled": True,
+                    "model": None,
+                    "model_snapshot": "old-model",
+                }
+            ],
+        )
+
+        set_config_value("cron.model_drift_guard", "false")
+        capsys.readouterr()
+        set_config_value("model.default", "new-model")
+
+        import yaml
+        reloaded = yaml.safe_load(_read_config(_isolated_hermes_home))
+        captured = capsys.readouterr()
+        assert reloaded["cron"]["model_drift_guard"] is False
+        assert "Set model.default = new-model" in captured.out
+        assert "fail closed" not in captured.out
+
+    @pytest.mark.parametrize(
+        ("configured_value", "expected"),
+        [
+            (False, False),
+            (True, True),
+            ("false", True),
+            (0, True),
+            (None, True),
+        ],
+    )
+    def test_only_literal_false_disables_guard(self, configured_value, expected):
+        config = {"cron": {"model_drift_guard": configured_value}}
+        assert cron_model_drift_guard_enabled(config) is expected
 
 
 # ---------------------------------------------------------------------------

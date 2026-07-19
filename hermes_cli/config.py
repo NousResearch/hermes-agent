@@ -2683,6 +2683,11 @@ DEFAULT_CONFIG = {
     },
 
     "cron": {
+        # Fail closed when an unpinned job's current global model/provider
+        # differs from its creation-time snapshot. This prevents unattended
+        # jobs from silently inheriting a paid default. Set to false only when
+        # jobs should deliberately track changing global inference defaults.
+        "model_drift_guard": True,
         # Active cron SCHEDULER provider (Axis B — the trigger that decides
         # WHEN a due job fires). Empty string = the built-in in-process 60s
         # ticker (default). Name an installed provider (plugins/cron_providers/<name>/ or
@@ -8212,6 +8217,29 @@ def _cron_model_drift_axis_for_config_key(key: str) -> Optional[str]:
     return None
 
 
+def cron_model_drift_guard_enabled(
+    config: Optional[Dict[str, Any]] = None,
+) -> bool:
+    """Return whether cron must fail closed on unpinned inference drift.
+
+    Only the literal YAML boolean ``false`` disables this spend-safety guard.
+    Missing, malformed, or non-boolean values stay fail-closed. When *config*
+    is omitted, load the active merged configuration so CLI warnings honor the
+    same user/managed setting as the scheduler.
+    """
+    if config is None:
+        try:
+            config = load_config()
+        except Exception:
+            return True
+    if not isinstance(config, dict):
+        return True
+    cron_config = config.get("cron")
+    if not isinstance(cron_config, dict):
+        return True
+    return cron_config.get("model_drift_guard", True) is not False
+
+
 def _load_cron_jobs_for_config_warning() -> List[Dict[str, Any]]:
     """Best-effort direct read of the active profile's cron jobs database."""
     jobs_path = get_hermes_home() / "cron" / "jobs.json"
@@ -8246,6 +8274,8 @@ def warn_unpinned_cron_jobs_after_model_config_change(
     """
     axis = _cron_model_drift_axis_for_config_key(key)
     if axis is None:
+        return
+    if not cron_model_drift_guard_enabled():
         return
 
     new_value = str(value or "").strip().lower()

@@ -22,7 +22,7 @@ Cron jobs can:
 All of this is available to Hermes itself through the `cronjob` tool, so you can create, pause, edit, and remove jobs by asking in plain language — no CLI required.
 
 :::tip
-At creation, an unpinned job (one you don't give an explicit `provider`/`model`) follows the global default selected by `hermes model` — and Hermes **snapshots** that provider and model on the job. If the global default later changes, the job **fails closed**: it skips the run, makes no inference call, and sends an alert telling you to pin the provider/model explicitly (`cronjob action=update job_id=… provider=… model=…`) to proceed. This prevents an unattended job from silently inheriting a switch to a paid provider/model and spending money you didn't intend (#44585). To make a job deliberately track your global default, pin it to the new values after changing them. `hermes setup --portal` is the lowest-friction option for unattended runs since OAuth refresh is automatic. See [Nous Portal](/integrations/nous-portal).
+At creation, an unpinned job (one you don't give an explicit `provider`/`model`) follows the global default selected by `hermes model` — and Hermes **snapshots** that provider and model on the job. If the global default later changes, the job **fails closed**: it skips the run, makes no inference call, and sends an alert telling you to pin the provider/model explicitly (`cronjob action=update job_id=… provider=… model=…`) to proceed. This prevents an unattended job from silently inheriting a switch to a paid provider/model and spending money you didn't intend (#44585). To make a job deliberately track your global default, pin it to the new values after changing them. Operators who intentionally maintain large fleets of unpinned jobs can [disable the drift guard](#letting-unpinned-jobs-track-global-defaults). `hermes setup --portal` is the lowest-friction option for unattended runs since OAuth refresh is automatic. See [Nous Portal](/integrations/nous-portal).
 :::
 
 :::warning
@@ -60,6 +60,33 @@ Every morning at 9am, check Hacker News for AI news and send me a summary on Tel
 ```
 
 Hermes will use the unified `cronjob` tool internally.
+
+## Letting unpinned jobs track global defaults
+
+The model/provider drift guard is enabled by default. If your unpinned cron
+jobs should deliberately follow every global model or provider change, disable
+it in `config.yaml`:
+
+```yaml
+cron:
+  model_drift_guard: false
+```
+
+Or use the config command:
+
+```bash
+hermes config set cron.model_drift_guard false
+```
+
+This disables both the runtime block and the warning shown when global
+inference settings change. Existing snapshots remain stored, so setting the
+option back to `true` re-enables protection without recreating jobs.
+
+:::warning
+With the guard disabled, unattended unpinned jobs immediately inherit changed
+global defaults. A switch to a paid provider or model can therefore spend money
+on every scheduled run.
+:::
 
 ## Skill-backed cron jobs
 

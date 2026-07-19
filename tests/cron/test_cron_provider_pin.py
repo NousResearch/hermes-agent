@@ -243,12 +243,22 @@ class TestCreateJobSnapshot:
         assert job["model_snapshot"] is None
 
 
-def _run_with_current_provider_and_model(job, current_provider, current_model, tmp_path):
+def _run_with_current_provider_and_model(
+    job,
+    current_provider,
+    current_model,
+    tmp_path,
+    *,
+    model_drift_guard=None,
+):
     """Drive run_job with resolved provider pinned and config.yaml model.default
     set to ``current_model`` (the unpinned-model fire-time source)."""
-    (tmp_path / "config.yaml").write_text(
-        f"model:\n  default: {current_model}\n"
-    )
+    config_yaml = f"model:\n  default: {current_model}\n"
+    if model_drift_guard is not None:
+        config_yaml += (
+            f"cron:\n  model_drift_guard: {str(model_drift_guard).lower()}\n"
+        )
+    (tmp_path / "config.yaml").write_text(config_yaml)
     fake_db = MagicMock()
     with patch("cron.scheduler._hermes_home", tmp_path), \
          patch("cron.scheduler._get_hermes_home", return_value=tmp_path), \
@@ -334,3 +344,23 @@ class TestModelDriftGuard:
             )
         assert agent_constructed is True
         assert success is True
+
+    def test_explicit_opt_out_allows_provider_and_model_drift(self, tmp_path):
+        """The opt-out lets large unpinned fleets track changing defaults."""
+        job = _base_job(
+            provider_snapshot="old-provider",
+            model_snapshot="old-model",
+        )
+        success, output, final_response, error, agent_constructed = \
+            _run_with_current_provider_and_model(
+                job,
+                "new-provider",
+                "new-model",
+                tmp_path,
+                model_drift_guard=False,
+            )
+
+        assert agent_constructed is True
+        assert success is True
+        assert final_response == "ok"
+        assert error is None

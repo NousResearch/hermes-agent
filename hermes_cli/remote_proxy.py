@@ -1,7 +1,7 @@
 """``hermes dashboard proxy`` — a hardened API-only reverse proxy for remote access.
 
-The desktop app's remote-gateway mode and the web dashboard both speak to the
-backend over ``/api/*``. Exposing the whole dashboard server to a tunnel or
+The desktop app's remote-gateway mode speaks to the backend over ``/api/*``.
+Exposing the whole dashboard server to a tunnel or
 reverse proxy therefore over-shares: the SPA HTML embeds the dashboard session
 token, and several ``/api`` routes perform machine-lifecycle operations
 (update, gateway restart, backup download) that are safe from localhost but
@@ -21,10 +21,12 @@ copy). It:
   attribution;
 - strips hop-by-hop headers in both directions.
 
-It deliberately does NOT do authentication: the upstream dashboard server
-keeps enforcing its own session-token / OAuth auth on every ``/api`` route.
-The proxy reduces surface; it does not replace auth. Bind it to loopback and
-point a tunnel (Cloudflare, Tailscale funnel, SSH -R, ...) at it.
+It deliberately does NOT duplicate authentication: the loopback dashboard
+server keeps enforcing its session token on every protected HTTP and WebSocket
+route. Browser OAuth is intentionally unavailable because the proxy does not
+forward ``/login`` or ``/auth/callback``. Bind it to loopback, configure a fixed
+``HERMES_DASHBOARD_SESSION_TOKEN`` for the backend, and point a tunnel
+(Cloudflare, Tailscale funnel, SSH -R, ...) at the proxy.
 """
 
 # NOTE: no `from __future__ import annotations` here. The FastAPI handlers
@@ -200,11 +202,18 @@ def create_proxy_app(
             finally:
                 await upstream_response.aclose()
 
-        return StreamingResponse(
+        response = StreamingResponse(
             _body(),
             status_code=upstream_response.status_code,
-            headers=dict(filtered_headers(upstream_response.headers.items())),
         )
+        # Starlette's mapping-style ``headers=`` argument collapses repeated
+        # fields. Preserve the raw list so multiple Set-Cookie values and other
+        # repeatable end-to-end headers survive the proxy boundary.
+        response.raw_headers = [
+            (name.lower().encode("latin-1"), value.encode("latin-1"))
+            for name, value in filtered_headers(upstream_response.headers.multi_items())
+        ]
+        return response
 
     @app.api_route(
         "/{path:path}",
@@ -230,7 +239,15 @@ def create_proxy_app(
     async def _proxy_ws(websocket: WebSocket, path: str):
         import websockets as ws_client
 
-        if classify_request("/" + path, deny_routes) != "forward":
+        verdict = classify_request("/" + path, deny_routes)
+        if verdict != "forward":
+            if verdict == "deny":
+                client_host = websocket.client.host if websocket.client else "?"
+                if deny_log is not None:
+                    _audit_denied(deny_log, "WS", "/" + path, client_host)
+                logger.warning(
+                    "remote-proxy denied WS /%s from %s", path, client_host
+                )
             # 4403: policy close. Accept first so the close frame is delivered.
             await websocket.accept()
             await websocket.close(code=4403)

@@ -45,6 +45,8 @@ class TestClassification:
         "/index.html",
         "/assets/index.js",
         "/health",
+        "/login",
+        "/auth/callback",
         "/apiary",  # prefix trick must not match /api
     ])
     def test_non_api_is_not_found(self, path):
@@ -106,7 +108,12 @@ def test_forwarded_request_streams_upstream_response(tmp_path, monkeypatch):
         return httpx.Response(
             200,
             json={"ok": True},
-            headers={"X-Upstream": "yes", "Connection": "keep-alive"},
+            headers=[
+                ("X-Upstream", "yes"),
+                ("Set-Cookie", "access=one; Path=/"),
+                ("Set-Cookie", "refresh=two; Path=/"),
+                ("Connection", "keep-alive"),
+            ],
         )
 
     real_async_client = httpx.AsyncClient
@@ -127,11 +134,43 @@ def test_forwarded_request_streams_upstream_response(tmp_path, monkeypatch):
     assert response.status_code == 200
     assert response.json() == {"ok": True}
     assert response.headers["X-Upstream"] == "yes"
+    assert response.headers.get_list("set-cookie") == [
+        "access=one; Path=/",
+        "refresh=two; Path=/",
+    ]
     # Hop-by-hop from upstream must not be forwarded back.
     assert "connection" not in {k.lower() for k in response.headers}
     # The upstream saw the pass-through auth header and the query string.
     assert seen[0].headers["X-Hermes-Session"] == "abc"
     assert str(seen[0].url).endswith("/api/sessions?limit=5")
+
+
+def test_proxy_preserves_real_loopback_backend_token_auth(tmp_path, monkeypatch):
+    import hermes_cli.web_server as web_server
+
+    real_async_client = httpx.AsyncClient
+
+    def _in_process_backend(*args, **kwargs):
+        kwargs["transport"] = httpx.ASGITransport(app=web_server.app)
+        return real_async_client(*args, **kwargs)
+
+    monkeypatch.setattr(httpx, "AsyncClient", _in_process_backend)
+    monkeypatch.setattr(web_server.app.state, "auth_required", False, raising=False)
+    monkeypatch.setattr(web_server.app.state, "bound_host", "127.0.0.1", raising=False)
+
+    app = create_proxy_app(
+        upstream="http://127.0.0.1:9119",
+        deny_log=tmp_path / "denied.log",
+    )
+    with TestClient(app) as client:
+        denied = client.get("/api/config/raw")
+        allowed = client.get(
+            "/api/config/raw",
+            headers={web_server._SESSION_HEADER_NAME: web_server._SESSION_TOKEN},
+        )
+
+    assert denied.status_code == 401
+    assert allowed.status_code == 200
 
 
 def test_denied_route_is_403_and_audited(tmp_path, monkeypatch):
@@ -180,6 +219,8 @@ def test_non_api_is_404_and_never_reaches_upstream(tmp_path, monkeypatch):
         assert client.get("/").status_code == 404
         assert client.get("/index.html").status_code == 404
         assert client.get("/assets/index-abc.js").status_code == 404
+        assert client.get("/login").status_code == 404
+        assert client.get("/auth/callback").status_code == 404
     assert called == [], "the SPA and static assets must never cross the proxy"
 
 
@@ -196,3 +237,6 @@ def test_denied_websocket_is_policy_closed(tmp_path):
             with pytest.raises(StarletteWSDisconnect) as excinfo:
                 ws.receive_text()
             assert excinfo.value.code == 4403
+
+    logged = (tmp_path / "denied.log").read_text(encoding="utf-8")
+    assert "DENIED WS /api/console" in logged

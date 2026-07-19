@@ -4,9 +4,9 @@ sidebar_position: 5
 
 # Remote Access
 
-Reach your Hermes backend from another machine — the desktop app's remote
-gateway mode, the web dashboard from a phone, or any JSON-RPC/WS client —
-without exposing more of the machine than the API itself.
+Reach your Hermes backend from another machine using the desktop app's remote
+gateway mode or another API client, without exposing more of the machine than
+the API itself.
 
 The desktop's remote gateway settings expect "an already-running Hermes
 backend on another machine or behind a trusted proxy". This page is that
@@ -28,19 +28,24 @@ Tunnelling the whole dashboard server over-shares in three ways:
    `~/.hermes/logs/remote-proxy-denied.log` so a surprise attempt has a
    timestamp and source.
 
-Authentication is unchanged: every forwarded request still hits the backend's
-own session-token or OAuth checks. The proxy reduces surface; it does not
-replace auth, and it must not be your only line of defence.
+Authentication is unchanged: every protected forwarded request still hits the
+loopback backend's session-token checks. The proxy reduces surface and does not
+replace that token gate. Browser OAuth is intentionally unavailable because
+`/login` and `/auth/callback` do not cross this API-only proxy.
 
 ## Setup
 
 Run the backend and the proxy on the machine that hosts Hermes:
 
 ```bash
-# 1. The backend, loopback-only (the default). `hermes dashboard` works too.
+# 1. Generate a fixed backend session token in this shell.
+export HERMES_DASHBOARD_SESSION_TOKEN="$(python -c 'print(__import__("secrets").token_urlsafe(32))')"
+printf '%s\n' "$HERMES_DASHBOARD_SESSION_TOKEN"
+
+# 2. Start the loopback-only backend. `hermes dashboard` works too.
 hermes serve --port 9119
 
-# 2. The hardened remote surface.
+# 3. In another terminal, start the remote surface.
 hermes dashboard proxy --port 9123 --upstream http://127.0.0.1:9119
 ```
 
@@ -57,9 +62,16 @@ tailscale serve 9123
 ssh -N -R 9123:127.0.0.1:9123 you@your-vps
 ```
 
-In the desktop app, set the remote gateway URL to the tunnel hostname and
-sign in as usual — token and OAuth flows pass through the proxy untouched,
-WebSockets included.
+In the desktop app, select token authentication, set the remote gateway URL to
+the tunnel hostname, and enter the value of
+`HERMES_DASHBOARD_SESSION_TOKEN`. Desktop sends it in
+`X-Hermes-Session-Token` for HTTP and `?token=` for WebSockets. Missing or
+incorrect tokens are rejected by the loopback backend after passing through
+the proxy.
+
+This API-only topology does not support the browser dashboard or browser OAuth.
+Use the normal authenticated non-loopback dashboard deployment when those
+surfaces are required.
 
 ## Denied routes
 
@@ -101,6 +113,8 @@ Denied requests return `403` with a one-line body and are appended to
   proxy and local clients.
 - The proxy is stateless: restart it freely, run it under launchd/systemd
   alongside the gateway, or only when travelling.
+- Keep `HERMES_DASHBOARD_SESSION_TOKEN` secret and stable across backend
+  restarts. Changing it requires updating the saved token in Desktop.
 - WebSocket routes (`/api/ws`, `/api/events`, `/api/console`, `/api/pty`)
   pass through with the same deny-list applied. If you do not want a remote
   terminal at all, add `--deny-route /api/pty`.

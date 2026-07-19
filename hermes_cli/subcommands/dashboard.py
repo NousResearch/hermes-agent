@@ -208,7 +208,8 @@ def build_dashboard_parser(
     # Hermes backend ... behind a trusted proxy"; this IS that proxy: only
     # /api/* is forwarded (the SPA HTML, which inlines the session token,
     # never crosses the tunnel), lifecycle routes are denied by default, and
-    # denials are audit-logged. Auth stays enforced by the upstream server.
+    # denials are audit-logged. The loopback backend's session token remains
+    # authoritative; browser OAuth routes are intentionally not exposed.
     dashboard_proxy_parser = dashboard_subparsers.add_parser(
         "proxy",
         help="Run a hardened API-only reverse proxy for remote access",
@@ -216,10 +217,10 @@ def build_dashboard_parser(
             "Expose the local Hermes backend to a tunnel safely: forwards only "
             "/api/* (HTTP + WebSocket), denies machine-lifecycle routes "
             "(update, gateway start/stop/restart, backup/import) by default, "
-            "and audit-logs denied requests. The upstream server keeps "
-            "enforcing its own session-token/OAuth auth — this proxy reduces "
-            "surface, it does not replace auth. Point your tunnel (Cloudflare, "
-            "Tailscale, SSH -R) at this listener."
+            "and audit-logs denied requests. The loopback backend keeps "
+            "enforcing its session token. Browser OAuth routes are not "
+            "exposed. Point your tunnel (Cloudflare, Tailscale, SSH -R) at "
+            "this listener."
         ),
     )
     dashboard_proxy_parser.add_argument(

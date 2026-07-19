@@ -286,3 +286,125 @@ def test_make_tui_argv_dev_prebuilds_hermes_ink(monkeypatch, main_mod, tmp_path)
 
 
 
+def test_print_tui_exit_summary_prefers_actual_active_session_file(
+    monkeypatch, capsys, tmp_path
+):
+    import hermes_cli.main as main_mod
+
+    seen = []
+
+    class _FakeDB:
+        def get_session(self, session_id):
+            seen.append(session_id)
+            return {
+                "message_count": 1,
+                "input_tokens": 0,
+                "output_tokens": 0,
+                "cache_read_tokens": 0,
+                "cache_write_tokens": 0,
+                "reasoning_tokens": 0,
+            }
+
+        def get_session_title(self, _session_id):
+            return "actual"
+
+        def close(self):
+            return None
+
+    active = tmp_path / "active.json"
+    active.write_text('{"session_id":"actual_session"}', encoding="utf-8")
+    monkeypatch.setitem(
+        sys.modules, "hermes_state", types.SimpleNamespace(SessionDB=lambda: _FakeDB())
+    )
+
+    main_mod._print_tui_exit_summary("startup_resume", str(active))
+    out = capsys.readouterr().out
+
+    assert seen == ["actual_session"]
+    assert "hermes --tui --resume actual_session" in out
+    assert "startup_resume" not in out
+
+
+def test_termux_fast_cli_launch_oneshot_forwards_worktree(monkeypatch, main_mod):
+    """-z with -w must forward worktree=True through the Termux fast path
+    too (#67458 — both dispatches used to drop the flag)."""
+    captured = {}
+
+    monkeypatch.setenv("TERMUX_VERSION", "1")
+    monkeypatch.delenv("HERMES_TUI", raising=False)
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        ["hermes", "-z", "hello", "--model", "gpt-test", "--provider", "openai", "-w"],
+    )
+    monkeypatch.setattr(main_mod, "_prepare_agent_startup", lambda args: None)
+    monkeypatch.setitem(
+        sys.modules,
+        "hermes_cli.oneshot",
+        types.SimpleNamespace(
+            run_oneshot=lambda prompt, **kwargs: captured.update(
+                {"prompt": prompt, **kwargs}
+            )
+            or 0
+        ),
+    )
+
+    def _fake_exit(rc):
+        raise SystemExit(rc)
+
+    monkeypatch.setattr(main_mod.os, "_exit", _fake_exit)
+
+    with pytest.raises(SystemExit):
+        main_mod._try_termux_fast_cli_launch()
+
+    assert captured["worktree"] is True
+
+
+def test_main_top_level_oneshot_forwards_worktree(monkeypatch, main_mod):
+    """-z with -w must forward worktree=True to run_oneshot (#67458 — the
+    flag used to be accepted but silently dropped at this dispatch)."""
+    captured = {}
+
+    import hermes_cli.config as config_mod
+
+    monkeypatch.setattr(sys, "argv", ["hermes", "-z", "hello", "-w"])
+    monkeypatch.setitem(
+        sys.modules,
+        "hermes_cli.plugins",
+        types.SimpleNamespace(discover_plugins=lambda: None),
+    )
+    monkeypatch.setitem(
+        sys.modules,
+        "tools.mcp_tool",
+        types.SimpleNamespace(discover_mcp_tools=lambda: None),
+    )
+    monkeypatch.setattr(config_mod, "load_config", lambda: {})
+    monkeypatch.setattr(config_mod, "get_container_exec_info", lambda: None)
+    monkeypatch.setitem(
+        sys.modules,
+        "agent.shell_hooks",
+        types.SimpleNamespace(
+            register_from_config=lambda _cfg, accept_hooks=False: None
+        ),
+    )
+    monkeypatch.setitem(
+        sys.modules,
+        "hermes_cli.oneshot",
+        types.SimpleNamespace(
+            run_oneshot=lambda prompt, **kwargs: captured.update(
+                {"prompt": prompt, **kwargs}
+            )
+            or 0
+        ),
+    )
+
+    def _fake_exit(rc):
+        raise SystemExit(rc)
+
+    monkeypatch.setattr(main_mod.os, "_exit", _fake_exit)
+
+    with pytest.raises(SystemExit) as exc:
+        main_mod.main()
+
+    assert exc.value.code == 0
+    assert captured["worktree"] is True

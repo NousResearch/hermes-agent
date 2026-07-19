@@ -173,6 +173,7 @@ def run_oneshot(
     provider: Optional[str] = None,
     toolsets: object = None,
     usage_file: Optional[str] = None,
+    worktree: bool = False,
 ) -> int:
     """Execute a single prompt and print only the final content block.
 
@@ -187,6 +188,13 @@ def run_oneshot(
             cost, token counts, model, api_calls) is written there after the
             run — even when the run fails — so pipelines can account for
             spend per invocation.
+        worktree: Run the agent in a disposable git worktree on a dedicated
+            branch (same isolation as ``-w`` in interactive chat) instead of
+            the current checkout. Setup failure is a hard error — a script
+            that asked for isolation must never silently write to the live
+            branch (#67458). Unlike interactive chat, the ``worktree: true``
+            config default is NOT honored here: one-shot is script-facing,
+            so isolation is opt-in per invocation via the explicit flag.
 
     Returns the exit code.  The caller owns process termination.
     """
@@ -215,6 +223,42 @@ def run_oneshot(
         sys.stderr.write(toolsets_error)
         return 2
     use_config_toolsets = _normalize_toolsets(toolsets) is None
+
+    # ── Git worktree isolation (#67458) ──
+    # Mirrors interactive chat (cli.main): prune stale worktrees, create a
+    # fresh one, and point TERMINAL_CWD at it so the terminal/file tools
+    # operate inside the isolated checkout. Runs BEFORE the stdout/stderr
+    # redirect so setup errors reach the terminal. When the flag was given
+    # but setup fails, refuse to run — silently falling back to the live
+    # branch is the exact failure mode this flag exists to prevent.
+    wt_info = None
+    _cleanup_worktree = None
+    if worktree:
+        try:
+            from cli import (
+                CLI_CONFIG,
+                _cleanup_worktree,
+                _git_repo_root,
+                _prune_stale_worktrees,
+                _setup_worktree,
+            )
+
+            repo = _git_repo_root()
+            if repo:
+                _prune_stale_worktrees(repo)
+            wt_info = _setup_worktree(sync_base=CLI_CONFIG.get("worktree_sync", True))
+        except Exception as exc:
+            sys.stderr.write(f"hermes -z: failed to create worktree: {exc}\n")
+            return 2
+        if not wt_info:
+            sys.stderr.write(
+                "hermes -z: -w/--worktree was requested but worktree setup "
+                "failed (not a git repository?). Refusing to run without "
+                "isolation.\n"
+            )
+            return 2
+        _prev_terminal_cwd = os.environ.get("TERMINAL_CWD")
+        os.environ["TERMINAL_CWD"] = wt_info["path"]
 
     # Auto-approve any shell / tool approvals.  Non-interactive by
     # definition — a prompt would hang forever.
@@ -263,6 +307,26 @@ def run_oneshot(
             devnull.close()
         except Exception:
             pass
+        if wt_info is not None and _cleanup_worktree is not None:
+            # Same lifecycle as interactive chat's atexit hook: remove the
+            # disposable worktree, keeping the branch with any commits. The
+            # helper print()s its outcome ("cleaned up" / "has unpushed
+            # commits, keeping") — route that to stderr: one-shot's contract
+            # is that stdout carries ONLY the final response, and the
+            # unpushed-commits notice fires precisely in -w's main use case
+            # (the agent committed something).
+            try:
+                with redirect_stdout(real_stderr):
+                    _cleanup_worktree(wt_info)
+            except Exception:
+                pass
+            # Restore the caller's terminal cwd: the worktree path is gone
+            # now, and in-process callers (tests, embedding) shouldn't keep
+            # inheriting a dangling TERMINAL_CWD.
+            if _prev_terminal_cwd is None:
+                os.environ.pop("TERMINAL_CWD", None)
+            else:
+                os.environ["TERMINAL_CWD"] = _prev_terminal_cwd
 
     if failure is not None:
         # Re-raise control-flow exceptions so the parent handles them as usual

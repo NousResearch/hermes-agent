@@ -449,6 +449,15 @@ export const en: Translations = {
     failedToLoadRaw: "Failed to load raw config",
     configImported: "Config imported — review and save",
     invalidJson: "Invalid JSON file",
+    delegationInheritFromMain: "Inherit from main agent",
+    delegationInheritUnknown: "the main agent's model",
+    delegationCurrentlyInheriting: (model: string) =>
+      `Currently inheriting: ${model}`,
+    delegationLoadFailed:
+      "Couldn't load provider catalog — type provider and model IDs directly.",
+    delegationProviderLabel: "Subagent provider",
+    delegationModelLabel: "Subagent model",
+    delegationCustomModelPlaceholder: "Custom model ID…",
     categories: {
       general: "General",
       agent: "Agent",

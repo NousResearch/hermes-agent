@@ -394,6 +394,16 @@ export const tr: Translations = {
     failedToLoadRaw: "Ham yapılandırma yüklenemedi",
     configImported: "Yapılandırma içe aktarıldı — gözden geçirip kaydedin",
     invalidJson: "Geçersiz JSON dosyası",
+
+    delegationInheritFromMain: "Inherit from main agent",
+    delegationInheritUnknown: "the main agent's model",
+    delegationCurrentlyInheriting: (model: string) =>
+      `Currently inheriting: ${model}`,
+    delegationLoadFailed:
+      "Couldn't load provider catalog — type provider and model IDs directly.",
+    delegationProviderLabel: "Subagent provider",
+    delegationModelLabel: "Subagent model",
+    delegationCustomModelPlaceholder: "Custom model ID…",
     categories: {
       general: "Genel",
       agent: "Agent",

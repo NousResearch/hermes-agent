@@ -394,6 +394,16 @@ export const it: Translations = {
     failedToLoadRaw: "Caricamento configurazione grezza non riuscito",
     configImported: "Configurazione importata — controlla e salva",
     invalidJson: "File JSON non valido",
+
+    delegationInheritFromMain: "Inherit from main agent",
+    delegationInheritUnknown: "the main agent's model",
+    delegationCurrentlyInheriting: (model: string) =>
+      `Currently inheriting: ${model}`,
+    delegationLoadFailed:
+      "Couldn't load provider catalog — type provider and model IDs directly.",
+    delegationProviderLabel: "Subagent provider",
+    delegationModelLabel: "Subagent model",
+    delegationCustomModelPlaceholder: "Custom model ID…",
     categories: {
       general: "Generale",
       agent: "Agente",

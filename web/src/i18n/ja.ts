@@ -393,6 +393,16 @@ export const ja: Translations = {
     failedToLoadRaw: "生の設定の読み込みに失敗しました",
     configImported: "設定をインポートしました — 確認して保存してください",
     invalidJson: "無効な JSON ファイル",
+
+    delegationInheritFromMain: "Inherit from main agent",
+    delegationInheritUnknown: "the main agent's model",
+    delegationCurrentlyInheriting: (model: string) =>
+      `Currently inheriting: ${model}`,
+    delegationLoadFailed:
+      "Couldn't load provider catalog — type provider and model IDs directly.",
+    delegationProviderLabel: "Subagent provider",
+    delegationModelLabel: "Subagent model",
+    delegationCustomModelPlaceholder: "Custom model ID…",
     categories: {
       general: "一般",
       agent: "エージェント",

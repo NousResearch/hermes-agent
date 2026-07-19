@@ -393,6 +393,16 @@ export const ko: Translations = {
     failedToLoadRaw: "원본 설정 로드에 실패했습니다",
     configImported: "설정을 가져왔습니다 — 검토 후 저장하세요",
     invalidJson: "잘못된 JSON 파일입니다",
+
+    delegationInheritFromMain: "Inherit from main agent",
+    delegationInheritUnknown: "the main agent's model",
+    delegationCurrentlyInheriting: (model: string) =>
+      `Currently inheriting: ${model}`,
+    delegationLoadFailed:
+      "Couldn't load provider catalog — type provider and model IDs directly.",
+    delegationProviderLabel: "Subagent provider",
+    delegationModelLabel: "Subagent model",
+    delegationCustomModelPlaceholder: "Custom model ID…",
     categories: {
       general: "일반",
       agent: "에이전트",

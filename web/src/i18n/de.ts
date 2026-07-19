@@ -394,6 +394,16 @@ export const de: Translations = {
     failedToLoadRaw: "Rohe Konfiguration konnte nicht geladen werden",
     configImported: "Konfiguration importiert — überprüfen und speichern",
     invalidJson: "Ungültige JSON-Datei",
+
+    delegationInheritFromMain: "Inherit from main agent",
+    delegationInheritUnknown: "the main agent's model",
+    delegationCurrentlyInheriting: (model: string) =>
+      `Currently inheriting: ${model}`,
+    delegationLoadFailed:
+      "Couldn't load provider catalog — type provider and model IDs directly.",
+    delegationProviderLabel: "Subagent provider",
+    delegationModelLabel: "Subagent model",
+    delegationCustomModelPlaceholder: "Custom model ID…",
     categories: {
       general: "Allgemein",
       agent: "Agent",

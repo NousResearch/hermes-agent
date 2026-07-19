@@ -395,6 +395,16 @@ export const uk: Translations = {
     failedToLoadRaw: "Не вдалося завантажити сирий конфіг",
     configImported: "Конфігурацію імпортовано — перегляньте та збережіть",
     invalidJson: "Недійсний файл JSON",
+
+    delegationInheritFromMain: "Inherit from main agent",
+    delegationInheritUnknown: "the main agent's model",
+    delegationCurrentlyInheriting: (model: string) =>
+      `Currently inheriting: ${model}`,
+    delegationLoadFailed:
+      "Couldn't load provider catalog — type provider and model IDs directly.",
+    delegationProviderLabel: "Subagent provider",
+    delegationModelLabel: "Subagent model",
+    delegationCustomModelPlaceholder: "Custom model ID…",
     categories: {
       general: "Загальне",
       agent: "Агент",

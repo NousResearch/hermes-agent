@@ -394,6 +394,16 @@ export const af: Translations = {
     failedToLoadRaw: "Kon nie rou konfigurasie laai nie",
     configImported: "Konfigurasie ingevoer — kontroleer en stoor",
     invalidJson: "Ongeldige JSON-lêer",
+
+    delegationInheritFromMain: "Inherit from main agent",
+    delegationInheritUnknown: "the main agent's model",
+    delegationCurrentlyInheriting: (model: string) =>
+      `Currently inheriting: ${model}`,
+    delegationLoadFailed:
+      "Couldn't load provider catalog — type provider and model IDs directly.",
+    delegationProviderLabel: "Subagent provider",
+    delegationModelLabel: "Subagent model",
+    delegationCustomModelPlaceholder: "Custom model ID…",
     categories: {
       general: "Algemeen",
       agent: "Agent",

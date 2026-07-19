@@ -41,6 +41,10 @@ import { getNestedValue, setNestedValue } from "@/lib/nested";
 import { useToast } from "@nous-research/ui/hooks/use-toast";
 import { Toast } from "@nous-research/ui/ui/components/toast";
 import { AutoField } from "@/components/AutoField";
+import {
+  DelegationModelProviderField,
+  isDelegationModelPickerKey,
+} from "@/components/DelegationModelProviderField";
 import { Button } from "@nous-research/ui/ui/components/button";
 import { ListItem } from "@nous-research/ui/ui/components/list-item";
 import { Spinner } from "@nous-research/ui/ui/components/spinner";
@@ -418,12 +422,32 @@ export default function ConfigPage() {
             </div>
           )}
           <div className="py-1">
-            <AutoField
-              schemaKey={key}
-              schema={s}
-              value={getNestedValue(config, key)}
-              onChange={(v) => setConfig(setNestedValue(config, key, v))}
-            />
+            {key === "delegation.model" ? (
+              /* The picker owns both `delegation.model` and
+                 `delegation.provider` rendering and writes — skip the
+                 generic AutoField here and write both keys atomically on
+                 every change so we never persist a half-pair. */
+              <DelegationModelProviderField
+                config={config}
+                onChange={next => {
+                  let updated = setNestedValue(config, "delegation.model", next.model)
+                  updated = setNestedValue(updated, "delegation.provider", next.provider)
+                  setConfig(updated)
+                }}
+              />
+            ) : isDelegationModelPickerKey(key) ? (
+              /* `delegation.provider` is rendered inside the picker above.
+                 This branch exists so the AutoField for this key doesn't
+                 render a duplicate free-text input below it. */
+              null
+            ) : (
+              <AutoField
+                schemaKey={key}
+                schema={s}
+                value={getNestedValue(config, key)}
+                onChange={(v) => setConfig(setNestedValue(config, key, v))}
+              />
+            )}
           </div>
         </div>
       );

@@ -17,6 +17,11 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any, NamedTuple, Optional
 
+from agent.secret_scope import (
+    build_profile_secret_scope,
+    reset_secret_scope,
+    set_secret_scope,
+)
 from hermes_constants import (
     get_hermes_home,
     get_hermes_home_override,
@@ -1566,6 +1571,7 @@ def _start_agent_build(sid: str, session: dict) -> None:
         worker = None
         notify_registered = False
         home_token = None
+        secret_token = None
         profile_home = current.get("profile_home")
         try:
             tokens = _set_session_context(key)
@@ -1575,6 +1581,12 @@ def _start_agent_build(sid: str, session: dict) -> None:
             session_db = None
             if profile_home:
                 home_token = set_hermes_home_override(profile_home)
+                try:
+                    from agent.secret_scope import build_profile_secret_scope, set_secret_scope
+
+                    secret_token = set_secret_scope(build_profile_secret_scope(Path(profile_home)))
+                except Exception:
+                    pass
                 try:
                     from hermes_state import SessionDB
 
@@ -1687,6 +1699,13 @@ def _start_agent_build(sid: str, session: dict) -> None:
         finally:
             if home_token is not None:
                 reset_hermes_home_override(home_token)
+            if secret_token is not None:
+                try:
+                    from agent.secret_scope import reset_secret_scope
+
+                    reset_secret_scope(secret_token)
+                except Exception:
+                    pass
             # _attach_worker already closed the worker if this session was
             # reaped mid-build; only the late notify registration can still
             # leak (session.close unregistered before _build registered it).
@@ -6350,6 +6369,11 @@ def _(rid, params: dict) -> dict:
     home_token = (
         set_hermes_home_override(str(profile_home)) if profile_home is not None else None
     )
+    secret_token = (
+        set_secret_scope(build_profile_secret_scope(Path(str(profile_home))))
+        if profile_home is not None
+        else None
+    )
     try:
         db.reopen_session(target)
         # One lineage SELECT feeds both projections (see the interactive resume
@@ -6393,6 +6417,8 @@ def _(rid, params: dict) -> dict:
     finally:
         if home_token is not None:
             reset_hermes_home_override(home_token)
+        if secret_token is not None:
+            reset_secret_scope(secret_token)
 
     # Double-checked locking: another concurrent resume may have created the
     # live session while we were building. Re-check under the lock; if it won,
@@ -6423,6 +6449,11 @@ def _(rid, params: dict) -> dict:
                 if profile_home is not None
                 else None
             )
+            init_secret_token = (
+                set_secret_scope(build_profile_secret_scope(Path(str(profile_home))))
+                if profile_home is not None
+                else None
+            )
             try:
                 _init_session(
                     sid,
@@ -6437,6 +6468,8 @@ def _(rid, params: dict) -> dict:
             finally:
                 if init_home_token is not None:
                     reset_hermes_home_override(init_home_token)
+                if init_secret_token is not None:
+                    reset_secret_scope(init_secret_token)
             if sid in _sessions:
                 if stored_runtime_overrides.get("model_override") is not None:
                     _sessions[sid]["model_override"] = stored_runtime_overrides[
@@ -9875,6 +9908,7 @@ def _run_prompt_submit(rid, sid: str, session: dict, text: Any) -> None:
         approval_token = None
         session_tokens = []
         home_token = None  # per-turn HERMES_HOME override for a resumed remote profile
+        secret_token = None
         goal_followup = None  # set by the post-turn goal hook below
         one_turn_restore = session.pop("one_turn_model_restore", None)
         try:
@@ -9891,6 +9925,7 @@ def _run_prompt_submit(rid, sid: str, session: dict, text: Any) -> None:
             _profile_home_str = session.get("profile_home")
             if _profile_home_str:
                 home_token = set_hermes_home_override(_profile_home_str)
+                secret_token = set_secret_scope(build_profile_secret_scope(Path(_profile_home_str)))
             # The sudo password callback is thread-local (tools.terminal_tool
             # _callback_tls), so wiring it on the build thread doesn't reach this
             # turn thread — terminal sudo prompts would fall through to /dev/tty
@@ -10309,6 +10344,8 @@ def _run_prompt_submit(rid, sid: str, session: dict, text: Any) -> None:
                 pass
             if home_token is not None:
                 reset_hermes_home_override(home_token)
+            if secret_token is not None:
+                reset_secret_scope(secret_token)
             _clear_session_context(session_tokens)
             with session["history_lock"]:
                 session["running"] = False

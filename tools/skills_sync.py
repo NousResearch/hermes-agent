@@ -759,9 +759,11 @@ def _rmtree_writable(path: Path) -> None:
     def _on_error(func, fpath, exc_info):
         # Unlinking a child requires the parent dir to be writable, so chmod
         # the parent as well as the failing path, then retry.
+        # Merge owner rwx into the existing mode instead of replacing it, so
+        # group/other permissions survive (see #67496).
         for target in (os.path.dirname(fpath), fpath):
             try:
-                os.chmod(target, stat.S_IRWXU)
+                os.chmod(target, os.stat(target).st_mode | stat.S_IRWXU)
             except OSError:
                 pass
         func(fpath)

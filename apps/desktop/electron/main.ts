@@ -104,7 +104,7 @@ import {
   TEXT_PREVIEW_SOURCE_MAX_BYTES
 } from './hardening'
 import { createLinkTitleWindow, guardLinkTitleSession, readLinkTitleWindowTitle } from './link-title-window'
-import { ensureMainWindow } from './main-window-lifecycle'
+import { deliverDeepLink, ensureMainWindow, focusMainWindow } from './main-window-lifecycle'
 import { serializeJsonBody, setJsonRequestHeaders } from './oauth-net-request'
 import { decideProfileDeleteAction, profileNameFromDeleteRequest, resolveRouteProfile } from './profile-delete-routing'
 import {
@@ -7348,19 +7348,7 @@ function wireCommonWindowHandlers(win, { zoom = true }: { zoom?: boolean } = {})
 const sessionWindows = createSessionWindowRegistry()
 
 function focusWindow(win) {
-  if (!win || win.isDestroyed()) {
-    return
-  }
-
-  if (win.isMinimized()) {
-    win.restore()
-  }
-
-  if (!win.isVisible()) {
-    win.show()
-  }
-
-  win.focus()
+  focusMainWindow(win)
 }
 
 function spawnSecondaryWindow({
@@ -9617,8 +9605,7 @@ function handleDeepLink(url) {
   }
 
   try {
-    focusWindow(mainWindow)
-    mainWindow.webContents.send('hermes:deep-link', payload)
+    deliverDeepLink(mainWindow, payload)
     rememberLog(`[deeplink] delivered ${kind}/${name}`)
   } catch (err) {
     rememberLog(`[deeplink] delivery failed: ${err.message}`)

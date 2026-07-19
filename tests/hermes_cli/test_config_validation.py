@@ -247,6 +247,23 @@ class TestUnknownTopLevelKeys:
         unknown = [i for i in issues if "Unknown top-level config key" in i.message]
         assert unknown == [], f"Unexpected unknown-key warnings: {[i.message for i in unknown]}"
 
+    def test_hermes_written_roots_not_flagged_unknown(self):
+        """Keys Hermes itself reads/writes must not warn as unknown (#67478).
+
+        group_sessions_per_user is a top-level bool bridged into GatewayConfig;
+        known_plugin_toolsets is a dict written by `hermes tools`. Both are absent
+        from DEFAULT_CONFIG, so they must live in _EXTRA_KNOWN_ROOT_KEYS.
+        """
+        for key in ("group_sessions_per_user", "known_plugin_toolsets"):
+            assert key in _KNOWN_ROOT_KEYS
+        issues = validate_config_structure({
+            "model": {"provider": "openrouter"},
+            "group_sessions_per_user": True,
+            "known_plugin_toolsets": {"telegram": ["web_search"]},
+        })
+        unknown = [i for i in issues if "Unknown top-level config key" in i.message]
+        assert unknown == [], f"Unexpected unknown-key warnings: {[i.message for i in unknown]}"
+
     def test_known_root_keys_derived_from_default_config(self):
         """_KNOWN_ROOT_KEYS must be DEFAULT_CONFIG.keys() plus extras — single source of truth."""
         assert set(DEFAULT_CONFIG.keys()).issubset(_KNOWN_ROOT_KEYS)

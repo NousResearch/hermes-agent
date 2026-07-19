@@ -799,7 +799,10 @@ class TestTimeWindowShape:
         assert result["sessions_considered"] == 2
 
     def test_time_window_truncation_flag(self, db, monkeypatch):
-        monkeypatch.setattr("tools.session_search_tool._MAX_TIME_WINDOW_MESSAGES", 5)
+        # Small per-root budget forces truncation after a contiguous prefix.
+        monkeypatch.setattr(
+            "tools.session_search_tool._MAX_TIME_WINDOW_PER_ROOT_CHARS", 200
+        )
         now = int(time.time())
         db.create_session("s_trunc", source="cli")
         for i in range(12):
@@ -811,8 +814,10 @@ class TestTimeWindowShape:
             db=db,
         ))
         assert result["success"] is True
+        messages = result["results"][0]["messages"]
+        contents = [m["content"] for m in messages]
         assert result["results"][0]["truncated"] is True
-        assert result["results"][0]["message_count"] == 5
-        contents = [m["content"] for m in result["results"][0]["messages"]]
-        assert contents[0] == "0"
-        assert contents[-1] == "11"
+        assert result["results"][0]["total_messages"] == 12
+        assert 0 < len(messages) < 12
+        # Messages must be a contiguous prefix of the in-window sequence.
+        assert contents == [str(i) for i in range(len(messages))]

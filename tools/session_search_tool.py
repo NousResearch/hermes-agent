@@ -2,7 +2,7 @@
 """
 Session Search Tool - Long-Term Conversation Recall
 
-Single-shape tool with three calling modes (inferred from args, no explicit
+Single-shape tool with five calling shapes (inferred from args, no explicit
 mode parameter):
 
   1. DISCOVERY — pass ``query``. Runs FTS5, dedupes hits by session lineage,
@@ -15,12 +15,19 @@ mode parameter):
      scroll forward / backward, re-anchor on the last / first message id of
      the returned window.
 
-  3. BROWSE — no args. Returns recent sessions chronologically (titles,
+  3. READ — pass ``session_id`` only (no anchor). Dumps the whole session.
+     Optionally pass ``profile`` to read another profile's session DB.
+
+  4. TIME-WINDOW — pass ``window_start`` + ``window_end``. Returns messages
+     whose timestamps fall inside the interval, grouped by session lineage
+     root. Use for temporal recap questions.
+
+  5. BROWSE — no args. Returns recent sessions chronologically (titles,
      previews, timestamps).
 
-All three modes operate on the SQLite session DB via the FTS5 index and
-the get_anchored_view / get_messages_around primitives in hermes_state.
-No LLM calls anywhere — every shape returns actual messages from the DB.
+All five shapes operate on the SQLite session DB; the discovery shape uses
+FTS5 and the anchored-view primitives in hermes_state. No LLM calls
+anywhere — every shape returns actual messages from the DB.
 
 History: PR #20238 (JabberELF) seeded a fast/summary dual-mode split; the
 toolkit expansion in PR #26419 (yoniebans) added the anchored drill-down,
@@ -56,9 +63,13 @@ _DEMOTED_SESSION_SOURCES = ("cron",)
 # the handful of distinct sessions a typical query returns.
 _DISCOVER_SCAN_LIMIT = 300
 
-# Per-session message cap for the time-window shape. If a single session has
-# more messages inside the window, the result is clipped to head+tail.
-_MAX_TIME_WINDOW_MESSAGES = 300
+# Per-root character budget for the time-window shape. The tool returns a
+# contiguous prefix of messages for each session root until the budget is
+# exhausted, then sets truncated=true. A per-message content cap keeps a
+# single enormous message from consuming the whole budget.
+_MAX_TIME_WINDOW_PER_ROOT_CHARS = 80_000
+_MAX_TIME_WINDOW_MESSAGE_CONTENT_CHARS = 4_000
+_MAX_TIME_WINDOW_TOOL_CALLS_CHARS = 4_000
 
 
 def _format_timestamp(ts: Union[int, float, str, None]) -> str:
@@ -166,22 +177,83 @@ def _order_for_recall(raw_results: List[Dict[str, Any]]) -> List[Dict[str, Any]]
     )
 
 
-def _shape_message(m: Dict[str, Any], anchor_id: Optional[int] = None) -> Dict[str, Any]:
+def _summarize_tool_calls(tool_calls: Any, max_tool_calls_chars: Optional[int] = None) -> Any:
+    """Return a compact tool_calls payload if the full JSON exceeds a budget.
+
+    Keeps id/type and the tool name; drops the arguments payload so the model
+    still sees what was invoked without carrying large structured inputs.
+    """
+    if not tool_calls or max_tool_calls_chars is None:
+        return tool_calls, False
+    try:
+        encoded = json.dumps(tool_calls, ensure_ascii=False)
+    except (TypeError, ValueError):
+        return tool_calls, False
+    if len(encoded) <= max_tool_calls_chars:
+        return tool_calls, False
+
+    summarized = []
+    for call in tool_calls:
+        if not isinstance(call, dict):
+            summarized.append(call)
+            continue
+        summary = {}
+        for k in ("id", "type"):
+            if k in call:
+                summary[k] = call[k]
+        name = None
+        # OpenAI-style function calls
+        fn = call.get("function") or call.get("tool") or {}
+        if isinstance(fn, dict):
+            name = fn.get("name")
+        # Anthropic-style or flat name key
+        if name is None:
+            name = call.get("name")
+        if name is not None:
+            if isinstance(fn, dict):
+                summary["function"] = {"name": name}
+            else:
+                summary["name"] = name
+        summarized.append(summary)
+    return summarized, True
+
+
+def _shape_message(
+    m: Dict[str, Any],
+    anchor_id: Optional[int] = None,
+    max_content_chars: Optional[int] = None,
+    max_tool_calls_chars: Optional[int] = None,
+) -> Dict[str, Any]:
     """Slim a message row for the tool response. Keeps content even if empty."""
+    content = m.get("content")
+    content_truncated = False
+    if content is not None and max_content_chars and len(content) > max_content_chars:
+        content = content[:max_content_chars]
+        content_truncated = True
+    tool_calls = m.get("tool_calls")
+    tool_calls_truncated = False
+    if tool_calls and max_tool_calls_chars is not None:
+        tool_calls, tool_calls_truncated = _summarize_tool_calls(
+            tool_calls, max_tool_calls_chars
+        )
     entry = {
         "id": m.get("id"),
         "role": m.get("role"),
-        "content": m.get("content"),
+        "content": content,
         "timestamp": m.get("timestamp"),
     }
     if m.get("tool_name"):
         entry["tool_name"] = m.get("tool_name")
-    if m.get("tool_calls"):
-        entry["tool_calls"] = m.get("tool_calls")
+    if tool_calls:
+        entry["tool_calls"] = tool_calls
     if m.get("tool_call_id"):
         entry["tool_call_id"] = m.get("tool_call_id")
     if anchor_id is not None and m.get("id") == anchor_id:
         entry["anchor"] = True
+    if content_truncated:
+        entry["content_truncated"] = True
+    if tool_calls_truncated:
+        entry["tool_calls_truncated"] = True
     # Strip None values to keep payload tight, but always keep content
     # (absent content is meaningful — tool-call-only assistant turns).
     return {k: v for k, v in entry.items() if v is not None or k in ("content",)}
@@ -674,6 +746,10 @@ def _time_window(
     if window_end < window_start:
         window_start, window_end = window_end, window_start
 
+    # Match discovery's default role set unless the caller asks for something else.
+    if not role_filter:
+        role_filter = ["user", "assistant"]
+
     try:
         rows = db.search_messages_by_time_window(
             start=window_start,
@@ -738,25 +814,38 @@ def _time_window(
     results = []
     for root in selected:
         group = groups[root]
-        messages = group["messages"]
-        messages.sort(key=lambda m: (m.get("timestamp", 0), m.get("id", 0)))
+        raw_messages = group["messages"]
+        raw_messages.sort(key=lambda m: (m.get("timestamp", 0), m.get("id", 0)))
+        shaped_messages = []
+        total_chars = 0
         truncated = False
-        if len(messages) > _MAX_TIME_WINDOW_MESSAGES:
-            head = _MAX_TIME_WINDOW_MESSAGES // 2
-            tail = _MAX_TIME_WINDOW_MESSAGES - head
-            messages = messages[:head] + messages[-tail:]
-            truncated = True
-        first_ts = messages[0].get("timestamp") if messages else None
-        last_ts = messages[-1].get("timestamp") if messages else None
+        for m in raw_messages:
+            shaped = _shape_message(
+                m,
+                max_content_chars=_MAX_TIME_WINDOW_MESSAGE_CONTENT_CHARS,
+                max_tool_calls_chars=_MAX_TIME_WINDOW_TOOL_CALLS_CHARS,
+            )
+            m_chars = len(json.dumps(shaped, ensure_ascii=False))
+            if total_chars + m_chars > _MAX_TIME_WINDOW_PER_ROOT_CHARS:
+                if not shaped_messages:
+                    shaped_messages.append(shaped)
+                    total_chars += m_chars
+                truncated = True
+                break
+            total_chars += m_chars
+            shaped_messages.append(shaped)
+        first_ts = shaped_messages[0].get("timestamp") if shaped_messages else None
+        last_ts = shaped_messages[-1].get("timestamp") if shaped_messages else None
         results.append({
             "session_id": root,
             "source": group["source"],
             "model": group["model"],
             "title": group["title"],
-            "message_count": len(messages),
+            "message_count": len(shaped_messages),
+            "total_messages": len(raw_messages),
             "window_first_message": _format_timestamp(first_ts),
             "window_last_message": _format_timestamp(last_ts),
-            "messages": [_shape_message(m) for m in messages],
+            "messages": shaped_messages,
             "truncated": truncated,
         })
 
@@ -799,10 +888,12 @@ def session_search(
 ) -> str:
     """Single-shape tool. Mode inferred from which args are set.
 
-    Discovery: pass ``query``.
-    Scroll:    pass ``session_id`` + ``around_message_id``.
-    Read:      pass ``session_id`` (no anchor) — dumps the whole session.
-    Browse:    pass nothing.
+    Discovery:    pass ``query``.
+    Scroll:       pass ``session_id`` + ``around_message_id``.
+    Read:         pass ``session_id`` (no anchor) — dumps the whole session.
+    Time-window:  pass ``window_start`` + ``window_end`` — dumps messages
+                  in a bounded interval, grouped by session lineage root.
+    Browse:       pass nothing.
 
     Pass ``profile`` to read another profile's sessions (e.g. resolving an
     ``@session:<profile>/<id>`` link). Scroll wins over read/discovery when an
@@ -1036,9 +1127,11 @@ SESSION_SEARCH_SCHEMA = {
             "limit": {
                 "type": "integer",
                 "description": (
-                    "Discovery shape only. Max sessions to return (default 3, max 10). "
-                    "Bump to 5–10 when the topic likely spans several sessions and you "
-                    "want to pick the right one to scroll into."
+                    "Discovery and time-window shapes. Max sessions to return "
+                    "(default 3, max 10). For discovery, bump to 5–10 when the topic "
+                    "likely spans several sessions and you want to pick the right one "
+                    "to scroll into. For time-window, it caps the number of root "
+                    "sessions returned."
                 ),
                 "default": 3,
             },
@@ -1082,10 +1175,10 @@ SESSION_SEARCH_SCHEMA = {
             "role_filter": {
                 "type": "string",
                 "description": (
-                    "Optional. Comma-separated roles to include. Discovery defaults to "
-                    "'user,assistant' (tool output is usually noise). Pass "
-                    "'user,assistant,tool' to include tool output (debugging tool "
-                    "behaviour) or 'tool' to search tool output only."
+                    "Optional. Comma-separated roles to include. Discovery and "
+                    "time-window default to 'user,assistant' (tool output is usually "
+                    "noise). Pass 'user,assistant,tool' to include tool output "
+                    "(debugging tool behaviour) or 'tool' to search tool output only."
                 ),
             },
             "profile": {

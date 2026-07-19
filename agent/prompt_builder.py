@@ -176,11 +176,8 @@ MEMORY_GUIDANCE = (
     "'User prefers concise responses' ✓ — 'Always respond concisely' ✗. "
     "'Project uses pytest with xdist' ✓ — 'Run tests with pytest -n 4' ✗. "
     "Imperative phrasing gets re-read as a directive in later sessions and can "
-    "Procedures and "
-    "workflows belong in skills, not memory.\n"
-    "When two memories are related, link them with [[memory-slug]] in the body. "
-    "A [[link]] that doesn't match an existing memory yet is fine — it marks "
-    "something worth capturing later, not an error."
+    "cause repeated work or override the user's current request. Procedures and "
+    "workflows belong in skills, not memory."
 )
 
 SESSION_SEARCH_GUIDANCE = (
@@ -367,21 +364,8 @@ TASK_COMPLETION_GUIDANCE = (
     "approach, ask the user). NEVER substitute plausible-looking fabricated "
     "output (made-up data, invented file contents, synthesised API responses) "
     "for results you couldn't actually produce. Reporting a blocker honestly "
-    "is always better than inventing a result."
-)
-
-# Universal outcome-reporting guidance — applied to ALL models.
-#
-# Modeled on Claude Code's harness directive: "Report outcomes faithfully:
-# if tests fail, say so with the output; if a step was skipped, say that;
-# when something is done and verified, state it plainly without hedging."
-# Addresses a cross-model failure mode where agents gloss over failures
-# or soft-pedal results — the human debugging from the other side needs
-# ground truth, not a smoothed-over summary.
-#
-# Injected unconditionally — the guidance is model-agnostic and costs ≅100
-# tokens, paid once at install and amortised via prefix caching.
-OUTCOME_REPORTING_GUIDANCE = (
+    "is always better than inventing a result.\n"
+    "\n"
     "# Reporting outcomes\n"
     "When reporting results to the user, be direct and faithful:\n"
     "- If a test, build, or command **failed**, say exactly that — include "

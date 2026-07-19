@@ -35,7 +35,6 @@ from agent.prompt_builder import (
     KANBAN_GUIDANCE,
     MEMORY_GUIDANCE,
     OPENAI_MODEL_EXECUTION_GUIDANCE,
-    OUTCOME_REPORTING_GUIDANCE,
     PARALLEL_TOOL_CALL_GUIDANCE,
     PLATFORM_HINTS,
     SESSION_SEARCH_GUIDANCE,
@@ -208,12 +207,6 @@ def build_system_prompt_parts(agent: Any, system_message: Optional[str] = None) 
     # users who want a leaner prompt can turn it off.
     if getattr(agent, "_task_completion_guidance", True) and agent.valid_tool_names:
         stable_parts.append(TASK_COMPLETION_GUIDANCE)
-
-    # Universal outcome-reporting guidance.  Applied to ALL models —
-    # the failure mode (glossing over failures, hedging on completion)
-    # is not model-family specific.
-    if getattr(agent, "_outcome_reporting_guidance", True) and agent.valid_tool_names:
-        stable_parts.append(OUTCOME_REPORTING_GUIDANCE)
 
     # Universal parallel-tool-call guidance.  Tells the model to batch
     # independent tool calls into one assistant turn rather than emitting one

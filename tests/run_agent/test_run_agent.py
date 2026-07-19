@@ -1731,6 +1731,51 @@ class TestTaskCompletionGuidance:
             assert TASK_COMPLETION_GUIDANCE not in a._build_system_prompt()
 
 
+
+class TestCronRestraintGuidance:
+    """Tests for the cron/schedule restraint guidance — injected only when the
+    cronjob tool is loaded (``agent/prompt_builder.py`` CRON_RESTRAINT_GUIDANCE)."""
+
+    def _make_agent(self, model="anthropic/claude-opus-4.8",
+                    tools=("terminal", "web_search")):
+        with (
+            patch(
+                "run_agent.get_tool_definitions",
+                return_value=_make_tool_defs(*tools),
+            ),
+            patch("run_agent.check_toolset_requirements", return_value={}),
+            patch("run_agent.OpenAI"),
+            patch(
+                "hermes_cli.config.load_config",
+                return_value={"agent": {}},
+            ),
+        ):
+            a = AIAgent(
+                model=model,
+                api_key="test-key-1234567890",
+                base_url="https://openrouter.ai/api/v1",
+                quiet_mode=True,
+                skip_context_files=True,
+                skip_memory=True,
+            )
+            a.client = MagicMock()
+            return a
+
+    def test_injects_when_cronjob_tool_loaded(self):
+        """CRON_RESTRAINT_GUIDANCE must appear when cronjob is in the tool set."""
+        from agent.prompt_builder import CRON_RESTRAINT_GUIDANCE
+        agent = self._make_agent(tools=("cronjob", "terminal", "web_search"))
+        prompt = agent._build_system_prompt()
+        assert CRON_RESTRAINT_GUIDANCE in prompt
+
+    def test_absent_when_cronjob_tool_not_loaded(self):
+        """CRON_RESTRAINT_GUIDANCE must NOT appear when cronjob is absent."""
+        from agent.prompt_builder import CRON_RESTRAINT_GUIDANCE
+        agent = self._make_agent(tools=("terminal", "web_search"))
+        prompt = agent._build_system_prompt()
+        assert CRON_RESTRAINT_GUIDANCE not in prompt
+
+
 class TestEnvironmentProbeIntegration:
     """Tests for the local Python toolchain probe wiring (config.yaml
     ``agent.environment_probe``).  The probe itself is unit-tested in

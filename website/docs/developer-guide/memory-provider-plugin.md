@@ -12,16 +12,22 @@ Memory provider plugins give Hermes Agent persistent, cross-session knowledge be
 Memory providers are one of two **provider plugin** types. The other is [Context Engine Plugins](/developer-guide/context-engine-plugin), which replace the built-in context compressor. Both follow the same pattern: single-select, config-driven, managed via `hermes plugins`.
 :::
 
+:::info Standalone distribution
+New memory providers should be published as standalone plugin repositories rather than new directories under `plugins/memory/`. Users can install them into `$HERMES_HOME/plugins/<name>/` or through a package installer / entry point; existing bundled providers still use the in-tree layout.
+:::
+
 ## Directory Structure
 
-Each memory provider lives in `plugins/memory/<name>/`:
+For a standalone provider, ship the same plugin shape in an unpacked plugin directory such as `$HERMES_HOME/plugins/my-provider/`:
 
 ```
-plugins/memory/my-provider/
+$HERMES_HOME/plugins/my-provider/
 ├── __init__.py      # MemoryProvider implementation + register() entry point
 ├── plugin.yaml      # Metadata (name, description, hooks)
 └── README.md        # Setup instructions, config reference, tools
 ```
+
+Existing bundled providers use the same file shape under `plugins/memory/<name>/` inside the Hermes repo.
 
 ## The MemoryProvider ABC
 

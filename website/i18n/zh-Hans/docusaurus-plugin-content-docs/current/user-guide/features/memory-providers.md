@@ -1,12 +1,12 @@
 ---
 sidebar_position: 4
 title: "Memory Providers"
-description: "外部记忆提供者插件 — Honcho、OpenViking、Mem0、Hindsight、Holographic、RetainDB、ByteRover、Supermemory"
+description: "外部记忆提供者插件 — 用于持久召回的内置与独立提供商选项"
 ---
 
 # Memory Providers
 
-Hermes Agent 内置 8 个外部记忆提供者插件，为 Agent 提供跨会话的持久化知识，超越内置的 MEMORY.md 和 USER.md。同一时间只能激活**一个**外部提供者——内置记忆始终与其并行工作。
+Hermes Agent 支持外部记忆提供者插件，为 Agent 提供跨会话的持久化知识，超越内置的 MEMORY.md 和 USER.md。下列提供者同时包含内置提供商和使用同一插件发现路径的独立社区提供商。同一时间只能激活**一个**外部提供者——内置记忆始终与其并行工作。
 
 ## 快速开始
 
@@ -22,8 +22,12 @@ hermes memory off        # 禁用外部提供者
 
 ```yaml
 memory:
-  provider: openviking   # 或 honcho, mem0, hindsight, holographic, retaindb, byterover, supermemory
+  provider: openviking   # 例如 honcho, mem0, hindsight, holographic, retaindb, byterover, supermemory, memori, scope-recall
 ```
+
+:::info 独立提供商
+新的 memory backend 应作为独立插件发布，而不是在 `plugins/memory/` 下新增目录。将其安装到 `$HERMES_HOME/plugins/` 或通过包安装器安装后，再用 `hermes memory setup`、`hermes plugins` 或 `memory.provider` 选择提供商。
+:::
 
 ## 工作原理
 
@@ -522,6 +526,68 @@ echo 'SUPERMEMORY_API_KEY=***' >> ~/.hermes/.env
 
 ---
 
+### Memori
+
+使用 Memori Cloud 的结构化长期记忆，支持后台已完成轮次捕获、工具感知轮次上下文，以及用于事实、摘要、配额、注册和反馈的显式召回工具。
+
+| | |
+|---|---|
+| **适合场景** | 由 Agent 控制召回，并带有结构化项目与会话归属 |
+| **依赖** | `pip install hermes-memori` + `hermes-memori install` + [Memori API key](https://app.memorilabs.ai/signup) |
+| **数据存储** | Memori Cloud |
+| **费用** | Memori 定价 |
+
+**工具：** `memori_recall`（搜索长期记忆）、`memori_recall_summary`（摘要上下文）、`memori_quota`（用量/配额）、`memori_signup`（请求注册邮件）、`memori_feedback`（发送集成反馈）
+
+**安装：**
+```bash
+pip install hermes-memori
+hermes-memori install
+hermes config set memory.provider memori
+hermes memory setup
+```
+
+---
+
+### Scope Recall
+
+本地优先的范围化记忆，具备当前轮召回、SQLite truth 存储、可选向量 companion，以及保守的治理工具。持久 `user`、`memory`、`project`、`ops` 记录可在同一用户 + Agent 身份的窗口或聊天间跟随；`general` 草稿和原始 journal 证据则保持在当前运行范围内。
+
+| | |
+|---|---|
+| **适合场景** | 可审计的本地召回，共享持久事实并隔离聊天/线程草稿边界 |
+| **依赖** | `python -m pip install "hermes-scope-recall[lancedb]"` + `hermes-scope-recall install` |
+| **数据存储** | 本地 SQLite truth store + 可选 LanceDB、SQLite 或 PGVector companion |
+| **费用** | 本地免费；如配置外部 embedding API，可能产生对应费用 |
+
+**工具（compact profile 默认 6 个）：** `scope_recall_store`、`scope_recall_search`、`scope_recall_context`、`scope_recall_profile`、`scope_recall_memory`、`scope_recall_entity`。设置 `tool_schema_profile: standard` 可暴露扩展的非维护工具表面；operator-only maintenance tools 仍仅在 `maintenance_tools_enabled=true` 时暴露。
+
+**安装：**
+```bash
+python -m pip install "hermes-scope-recall[lancedb]"
+hermes-scope-recall install --hermes-home "${HERMES_HOME:-$HOME/.hermes}"
+hermes config set memory.provider scope-recall
+hermes memory setup
+
+# 可选本地冒烟检查
+hermes-scope-recall verify --hermes-home "${HERMES_HOME:-$HOME/.hermes}"
+hermes memory status
+```
+
+如果目标 CPU 上 LanceDB/PyArrow wheel 不安全，可不安装 `[lancedb]` extra，并配置 `vector.backend: sqlite-bruteforce`；无论哪种方式，SQLite 都仍是真实来源。
+
+**主要特性：**
+- 当前轮召回——基于当前用户查询检索，而不是上一话题遗留的排队上下文
+- SQLite truth store——持久记录可审计；向量索引是可重建 companion
+- 范围化记忆边界——持久目标可显式共享，本地草稿保留在当前聊天/线程/会话范围内
+- 混合检索——lexical/FTS/BM25 候选 + 向量候选 + RRF 排序
+- 治理与可观测性——inspect、explain、benchmark、feedback、export，以及 operator-only maintenance 路径
+- Secret index 支持——可搜索凭据元数据可指向外部 vault，不存储明文 secret
+
+**支持：** [GitHub](https://github.com/410979729/scope-recall-hermes) · [PyPI](https://pypi.org/project/hermes-scope-recall/) · 相关 RFC [#42864](https://github.com/NousResearch/hermes-agent/issues/42864)
+
+---
+
 ## 提供者对比
 
 | 提供者 | 存储 | 费用 | 工具数 | 依赖 | 独特特性 |
@@ -534,14 +600,16 @@ echo 'SUPERMEMORY_API_KEY=***' >> ~/.hermes/.env
 | **RetainDB** | 云端 | $20/月 | 5 | `requests` | 增量压缩 |
 | **ByteRover** | 本地/云端 | 免费/付费 | 3 | `brv` CLI | 预压缩提取 |
 | **Supermemory** | 云端 | 付费 | 4 | `supermemory` | 上下文隔离 + 会话图谱导入 + 多容器 |
+| **Memori** | 云端 | 免费/付费 | 5 | `hermes-memori` | 工具感知记忆 + 结构化召回 |
+| **Scope Recall** | 本地 | 免费 | 默认 6 | `hermes-scope-recall` + 可选向量后端 | 范围化当前轮召回 + SQLite truth/vector companion |
 
 ## Profile 隔离
 
 每个提供者的数据按 [profile](/user-guide/profiles) 隔离：
 
-- **本地存储提供者**（Holographic、ByteRover）使用 `$HERMES_HOME/` 路径，各 profile 路径不同
-- **配置文件提供者**（Honcho、Mem0、Hindsight、Supermemory）将配置存储在 `$HERMES_HOME/` 中，每个 profile 拥有独立凭证
-- **云端提供者**（RetainDB）自动派生 profile 范围的项目名称
+- **本地存储提供者**（Holographic、ByteRover、Scope Recall）使用 `$HERMES_HOME/` 路径，各 profile 路径不同
+- **配置文件提供者**（Honcho、Mem0、Hindsight、Supermemory、Scope Recall）将配置存储在 `$HERMES_HOME/` 中，每个 profile 拥有独立设置及适用时的凭证
+- **云端提供者**（RetainDB、Memori）自动派生或配置 profile 范围的项目名称
 - **环境变量提供者**（OpenViking）通过每个 profile 的 `.env` 文件配置
 
 ## 构建记忆提供者

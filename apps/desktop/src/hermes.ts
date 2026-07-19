@@ -52,6 +52,7 @@ import type {
   SkillInfo,
   StarmapGraph,
   StatusResponse,
+  TerminalBackendsResponse,
   ToolsetConfig,
   ToolsetInfo,
   ToolsetModelsResponse
@@ -575,12 +576,14 @@ export function saveHermesConfig(config: HermesConfigRecord): Promise<{ ok: bool
 // surface=declared serves the curated desktop schema; the dashboard consumes the raw plugin schema.
 export function getMemoryProviderConfig(provider: string): Promise<MemoryProviderConfig> {
   return window.hermesDesktop.api<MemoryProviderConfig>({
+    ...profileScoped(),
     path: `/api/memory/providers/${encodeURIComponent(provider)}/config?surface=declared`
   })
 }
 
 export function saveMemoryProviderConfig(provider: string, values: Record<string, string>): Promise<{ ok: boolean }> {
   return window.hermesDesktop.api<{ ok: boolean }>({
+    ...profileScoped(),
     path: `/api/memory/providers/${encodeURIComponent(provider)}/config?surface=declared`,
     method: 'PUT',
     body: { values }
@@ -880,6 +883,22 @@ export function runToolsetPostSetup(name: string, key: string): Promise<ActionRe
     path: `/api/tools/toolsets/${encodeURIComponent(name)}/post-setup`,
     method: 'POST',
     body: { key }
+  })
+}
+
+export function getTerminalBackends(): Promise<TerminalBackendsResponse> {
+  return window.hermesDesktop.api<TerminalBackendsResponse>({
+    ...profileScoped(),
+    path: '/api/tools/terminal/backends'
+  })
+}
+
+export function selectTerminalBackend(backend: string): Promise<{ ok: boolean; backend: string }> {
+  return window.hermesDesktop.api<{ ok: boolean; backend: string }>({
+    ...profileScoped(),
+    path: '/api/tools/terminal/backend',
+    method: 'PUT',
+    body: { backend }
   })
 }
 

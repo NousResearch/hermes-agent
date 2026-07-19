@@ -133,6 +133,8 @@ async def test_secondary_reconnect_recovers_profile_journal_after_startup_offlin
 
     class RecoveringAdapter:
         platform = Platform.TELEGRAM
+        has_fatal_error = False
+        fatal_error_retryable = True
         account_usage_presence_capabilities = AccountUsagePresenceCapabilities(
             display_name=True
         )
@@ -155,10 +157,13 @@ async def test_secondary_reconnect_recovers_profile_journal_after_startup_offlin
     runner = _runner(GatewayConfig(multiplex_profiles=True))
     runner._profile_adapters = {}
     runner._profile_failed_platforms = {}
-    runner._running = True
+    runner._pending_secondary_profile_reconnects = {}
+    runner._background_tasks = set()
+    runner._running = False
     runner._create_adapter = lambda platform, config: adapter
     runner._configure_profile_adapter = lambda adapter, profile, platform: None
-    runner._connect_adapter_with_timeout = AsyncMock(return_value=True)
+    runner._connect_adapter_with_timeout = AsyncMock(side_effect=[False, True])
+    runner._safe_adapter_disconnect = AsyncMock()
     runner._sync_voice_mode_state_to_adapter = lambda adapter: None
     monkeypatch.setattr(
         "gateway.config.load_gateway_config",
@@ -167,10 +172,20 @@ async def test_secondary_reconnect_recovers_profile_journal_after_startup_offlin
         ),
     )
 
-    await runner._recover_secondary_profile_account_usage_presence()
+    connected = await runner._start_one_profile_adapters(
+        "work",
+        profile_home,
+        {},
+    )
+
+    assert connected == 0
+    assert ("work", Platform.TELEGRAM) in runner._pending_secondary_profile_reconnects
     assert json.loads(state_path.read_text(encoding="utf-8"))["entries"]
 
-    await runner._run_secondary_profile_reconnect("work", Platform.TELEGRAM)
+    runner._running = True
+    runner._schedule_pending_secondary_profile_reconnects()
+    reconnect_task = runner._profile_failed_platforms["work"][Platform.TELEGRAM]
+    await reconnect_task
 
     assert runner._profile_adapters["work"][Platform.TELEGRAM] is adapter
     assert adapter.remote_state == {"display_name": "Hermes"}

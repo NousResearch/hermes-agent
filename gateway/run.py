@@ -7915,6 +7915,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         self._wire_teams_pipeline_runtime()
 
         self._running = True
+        self._schedule_pending_secondary_profile_reconnects()
         self._update_runtime_status("running")
         # Loop-liveness heartbeat (#66892): an asyncio task so a frozen loop
         # stops refreshing ``state/gateway.heartbeat``. Cancelled with the
@@ -9558,9 +9559,15 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 else:
                     logger.warning("✗ %s failed to connect (profile: %s)", platform.value, profile_name)
                     await self._safe_adapter_disconnect(adapter, platform)
+                    self._remember_secondary_profile_startup_failure(
+                        profile_name, platform, adapter
+                    )
             except Exception as e:
                 logger.error("✗ %s error (profile: %s): %s", platform.value, profile_name, e)
                 await self._safe_adapter_disconnect(adapter, platform)
+                self._remember_secondary_profile_startup_failure(
+                    profile_name, platform, adapter
+                )
         return connected
 
     def _configure_profile_adapter(
@@ -9707,6 +9714,37 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             self._background_tasks = background_tasks
         background_tasks.add(task)
         task.add_done_callback(background_tasks.discard)
+
+    def _remember_secondary_profile_startup_failure(
+        self,
+        profile_name: str,
+        platform: Platform,
+        adapter: BasePlatformAdapter,
+    ) -> None:
+        """Retain retryable secondary startup failures until the runner is live."""
+        if (
+            getattr(adapter, "has_fatal_error", False)
+            and not getattr(adapter, "fatal_error_retryable", True)
+        ):
+            return
+        pending = getattr(self, "_pending_secondary_profile_reconnects", None)
+        if not isinstance(pending, dict):
+            pending = {}
+            self._pending_secondary_profile_reconnects = pending
+        pending[(profile_name, platform)] = adapter
+
+    def _schedule_pending_secondary_profile_reconnects(self) -> None:
+        """Publish startup failures after ``_running`` enables reconnect loops."""
+        pending = getattr(self, "_pending_secondary_profile_reconnects", None)
+        if not isinstance(pending, dict) or not pending:
+            return
+        self._pending_secondary_profile_reconnects = {}
+        for (profile_name, platform), adapter in pending.items():
+            self._schedule_secondary_profile_reconnect(
+                profile_name,
+                platform,
+                adapter,
+            )
 
     def _make_profile_fatal_error_handler(
         self, profile_name: str, platform: Platform

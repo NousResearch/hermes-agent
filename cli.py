@@ -3888,20 +3888,21 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
         else:
             self.api_key = api_key or os.getenv("OPENAI_API_KEY") or os.getenv("OPENROUTER_API_KEY")
         # Max turns priority: CLI arg > config file > env var > default
+        # All paths go through resolve_turn_limit() so that agent.max_turns
+        # accepts "none"/"unlimited" (→ sys.maxsize) in addition to ints.
+        # See hermes_cli.config.resolve_turn_limit for the full spelling table.
+        from hermes_cli.config import resolve_turn_limit as _resolve_turn_limit
         if max_turns is not None:  # CLI arg was explicitly set
-            self.max_turns = max_turns
-        elif CLI_CONFIG["agent"].get("max_turns"):
-            self.max_turns = CLI_CONFIG["agent"]["max_turns"]
-        elif CLI_CONFIG.get("max_turns"):  # Backwards compat: root-level max_turns
-            self.max_turns = CLI_CONFIG["max_turns"]
-        elif os.getenv("HERMES_MAX_ITERATIONS"):
-            try:
-                self.max_turns = int(os.getenv("HERMES_MAX_ITERATIONS", ""))
-            except (TypeError, ValueError):
-                self.max_turns = 90
+            self.max_turns = _resolve_turn_limit(max_turns)
+        elif CLI_CONFIG["agent"].get("max_turns") is not None:
+            self.max_turns = _resolve_turn_limit(CLI_CONFIG["agent"]["max_turns"])
+        elif CLI_CONFIG.get("max_turns") is not None:  # Backwards compat: root-level max_turns
+            self.max_turns = _resolve_turn_limit(CLI_CONFIG["max_turns"])
         else:
-            self.max_turns = 90
-        
+            # Env var bridge (set by gateway/run.py from config.yaml, or by the
+            # user directly). Empty/unset → default 90.
+            self.max_turns = _resolve_turn_limit(os.getenv("HERMES_MAX_ITERATIONS"))
+
         # Parse and validate toolsets
         self.enabled_toolsets = toolsets
         self.disabled_toolsets = CLI_CONFIG["agent"].get("disabled_toolsets") or []

@@ -31,6 +31,16 @@ describe('platform action modifier', () => {
   })
 })
 
+describe('isLiteralCtrl', () => {
+  it('rejects Cmd/Alt-forwarded Ctrl+X events used by non-QWERTY paste', async () => {
+    const { isLiteralCtrl } = await importPlatform('darwin')
+
+    expect(isLiteralCtrl({ ctrl: true, meta: false, super: false }, 'x', 'x')).toBe(true)
+    expect(isLiteralCtrl({ ctrl: true, meta: true, super: false }, 'x', 'x')).toBe(false)
+    expect(isLiteralCtrl({ ctrl: true, meta: false, super: true }, 'x', 'x')).toBe(false)
+  })
+})
+
 describe('isCopyShortcut', () => {
   it('keeps Ctrl+C as the local non-macOS copy chord', async () => {
     const { isCopyShortcut } = await importPlatform('linux')

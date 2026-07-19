@@ -491,7 +491,12 @@ def build_system_prompt_parts(agent: Any, system_message: Optional[str] = None) 
             # Retry without the new kwarg so context files still load (the stale
             # callee just keeps its old fallback behavior), and say so once —
             # silent version skew is how these bugs go unnoticed (#64333).
-            if "allow_install_tree_fallback" not in str(exc):
+            # Match CPython's exact unexpected-keyword diagnostic rather than a
+            # bare substring: a callee that *accepts* the parameter but raises an
+            # internal TypeError merely mentioning it must still propagate, not
+            # be retried and have its real failure masked.
+            if ("unexpected keyword argument 'allow_install_tree_fallback'"
+                    not in str(exc)):
                 raise
             global _WARNED_CONTEXT_FILES_KWARG_SKEW
             if not _WARNED_CONTEXT_FILES_KWARG_SKEW:

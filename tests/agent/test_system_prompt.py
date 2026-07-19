@@ -123,6 +123,28 @@ class TestContextFilesKwargSkew:
         with pytest.raises(TypeError, match="something else entirely"):
             _run_with_context_files(_make_agent(platform="cli"), boom)
 
+    def test_accepting_callee_internal_typeerror_naming_kwarg_propagates(
+        self, monkeypatch
+    ):
+        """A callee that *accepts* allow_install_tree_fallback but raises its own
+        internal TypeError mentioning the parameter must propagate — not be
+        mistaken for signature skew, retried, and have its real failure masked."""
+        import agent.system_prompt as sp
+
+        monkeypatch.setattr(sp, "_WARNED_CONTEXT_FILES_KWARG_SKEW", False)
+        calls = []
+
+        def build(cwd=None, skip_soul=False, context_length=None,
+                  allow_install_tree_fallback=False):
+            calls.append(True)
+            raise TypeError(
+                "allow_install_tree_fallback must be bool, not str")
+
+        with pytest.raises(TypeError, match="must be bool"):
+            _run_with_context_files(_make_agent(platform="cli"), build)
+        # Never retried: the accepting callee was invoked exactly once.
+        assert len(calls) == 1
+
 
 def _stable_prompt(agent):
     with (

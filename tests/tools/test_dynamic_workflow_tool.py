@@ -225,6 +225,89 @@ def test_dispatch_ready_applies_completion_called_before_delegate_returns(monkey
     assert node["summary"] == "Instant terminal result"
 
 
+@pytest.mark.parametrize("status", ["completed", "failed", "cancelled"])
+def test_dispatch_ready_records_terminal_synchronous_fallback_once(monkeypatch, status):
+    calls = []
+
+    def fake_delegate_task(**kwargs):
+        calls.append(kwargs)
+        return json.dumps(
+            {
+                "results": [
+                    {
+                        "status": status,
+                        "summary": f"Synchronous {status} result",
+                    }
+                ],
+                "total_duration_seconds": 0.1,
+            }
+        )
+
+    from tools import delegate_tool
+
+    monkeypatch.setattr(delegate_tool, "delegate_task", fake_delegate_task)
+    created = _call(
+        {
+            "action": "create",
+            "workflow_id": f"wf_sync_{status}",
+            "objective": "Keep synchronous fallback terminal",
+            "dispatch_ready": True,
+            "nodes": [{"node_id": "worker", "goal": "Finish inline"}],
+        },
+        parent_agent=object(),
+    )
+    retried = _call(
+        {"action": "dispatch_ready", "workflow_id": f"wf_sync_{status}"},
+        parent_agent=object(),
+    )
+
+    assert created["workflow"]["nodes"][0]["status"] == status
+    assert retried["dispatched"] == []
+    assert len(calls) == 1
+
+
+@pytest.mark.parametrize(
+    "first_result",
+    [
+        {"error": "background dispatch unavailable"},
+        {"results": [{"status": "not-a-terminal-status"}]},
+    ],
+)
+def test_dispatch_ready_keeps_error_or_malformed_fallback_retryable(monkeypatch, first_result):
+    calls = []
+
+    def fake_delegate_task(**kwargs):
+        calls.append(kwargs)
+        if len(calls) == 1:
+            return json.dumps(first_result)
+        return json.dumps(
+            {"results": [{"status": "completed", "summary": "Retry result"}]}
+        )
+
+    from tools import delegate_tool
+
+    monkeypatch.setattr(delegate_tool, "delegate_task", fake_delegate_task)
+    created = _call(
+        {
+            "action": "create",
+            "workflow_id": "wf_retryable_fallback",
+            "objective": "Retry only untrusted fallback",
+            "dispatch_ready": True,
+            "nodes": [{"node_id": "worker", "goal": "Try work"}],
+        },
+        parent_agent=object(),
+    )
+    retried = _call(
+        {"action": "dispatch_ready", "workflow_id": "wf_retryable_fallback"},
+        parent_agent=object(),
+    )
+
+    assert created["workflow"]["nodes"][0]["status"] == "pending"
+    assert created["dispatch_errors"]
+    assert retried["workflow"]["nodes"][0]["status"] == "completed"
+    assert len(calls) == 2
+
+
 def test_create_rejects_per_node_toolset_override():
     result = _call(
         {

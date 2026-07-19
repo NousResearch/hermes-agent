@@ -248,23 +248,18 @@ def _node_status_from_async(status: Any) -> Optional[str]:
     return None
 
 
-def _apply_async_record(node: Dict[str, Any], record: Dict[str, Any]) -> bool:
-    """Apply one terminal async-delegation record to its workflow node."""
-    delegation_id = str(record.get("delegation_id") or "").strip()
-    if (
-        not delegation_id
-        or node.get("status") != "dispatched"
-        or node.get("delegation_id") != delegation_id
-    ):
+def _apply_terminal_result(node: Dict[str, Any], result: Dict[str, Any]) -> bool:
+    """Apply one terminal delegated-worker result to a workflow node."""
+    if node.get("status") not in {"pending", "dispatched"}:
         return False
-    next_status = _node_status_from_async(record.get("status"))
+    next_status = _node_status_from_async(result.get("status"))
     if not next_status:
         return False
 
     node["status"] = next_status
-    node["summary"] = _cap_text(record.get("summary"))
-    node["error"] = _cap_text(record.get("error")) if record.get("error") else None
-    node["completed_at"] = record.get("completed_at") or _now()
+    node["summary"] = _cap_text(result.get("summary"))
+    node["error"] = _cap_text(result.get("error")) if result.get("error") else None
+    node["completed_at"] = result.get("completed_at") or _now()
     for key in (
         "duration_seconds",
         "api_calls",
@@ -275,10 +270,23 @@ def _apply_async_record(node: Dict[str, Any], record: Dict[str, Any]) -> bool:
         "exit_reason",
         "model",
     ):
-        if key in record and record.get(key) is not None:
-            node[key] = record.get(key)
-    node["async_completion_reconciled"] = True
+        if key in result and result.get(key) is not None:
+            node[key] = result.get(key)
     node["updated_at"] = _now()
+    return True
+
+
+def _apply_async_record(node: Dict[str, Any], record: Dict[str, Any]) -> bool:
+    """Apply one terminal async-delegation record to its workflow node."""
+    delegation_id = str(record.get("delegation_id") or "").strip()
+    if (
+        not delegation_id
+        or node.get("status") != "dispatched"
+        or node.get("delegation_id") != delegation_id
+        or not _apply_terminal_result(node, record)
+    ):
+        return False
+    node["async_completion_reconciled"] = True
     return True
 
 
@@ -468,6 +476,13 @@ def _dispatch_ready(workflow: Dict[str, Any], parent_agent: Any, max_dispatch: i
                 if _apply_async_record(node, record):
                     workflow["updated_at"] = _now()
                     break
+        elif (
+            isinstance(parsed.get("results"), list)
+            and len(parsed["results"]) == 1
+            and isinstance(parsed["results"][0], dict)
+            and _apply_terminal_result(node, parsed["results"][0])
+        ):
+            workflow["updated_at"] = _now()
         else:
             errors.append({"node_id": node_id, "error": parsed.get("error") or parsed})
 

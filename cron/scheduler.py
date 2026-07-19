@@ -1912,6 +1912,29 @@ def _deliver_result(job: dict, content: str, adapters=None, loop=None) -> Option
                             user_id=origin_user_id,
                             chat_name=origin.get("chat_name"),
                         )
+                    # Explicit thread: ensure session exists before mirror
+                    # (the session may not have started yet — e.g. a daily cron
+                    # before the user's first message in that thread).
+                    # Uses chat_type="group" to match Telegram forum-topic session
+                    # key format (test_session.py:1076-1105). Does NOT suppress
+                    # _maybe_mirror_cron_delivery — that writes the brief once the
+                    # session exists.
+                    if not thread_seeded and not inchannel_seeded and mirror_this_target and thread_id and not in_channel_surface:
+                        try:
+                            from gateway.config import Platform
+                            from gateway.session import SessionSource
+                            _store = getattr(runtime_adapter, "_session_store", None)
+                            if _store is not None:
+                                _source = SessionSource(
+                                    platform=Platform(platform_name.lower()),
+                                    chat_id=str(chat_id),
+                                    chat_type="group",
+                                    user_id="system:cron",
+                                    thread_id=str(thread_id),
+                                )
+                                _store.get_or_create_session(_source)
+                        except Exception:
+                            pass
                     _maybe_mirror_cron_delivery(
                         job, platform_name, chat_id, mirror_text,
                         thread_id=thread_id, user_id=origin_user_id,

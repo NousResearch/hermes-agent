@@ -574,6 +574,21 @@ class _PollingLifecycleAbort(RuntimeError):
     """Internal control flow for polling startup fenced by teardown."""
 
 
+class _NamedFileWrapper:
+    def __init__(self, file_obj, name):
+        self._file = file_obj
+        self.name = name
+
+    def __getattr__(self, name):
+        return getattr(self._file, name)
+
+    def read(self, *args, **kwargs):
+        return self._file.read(*args, **kwargs)
+
+    def seek(self, *args, **kwargs):
+        return self._file.seek(*args, **kwargs)
+
+
 class TelegramAdapter(BasePlatformAdapter):
     """
     Telegram bot adapter.
@@ -6754,7 +6769,8 @@ class TelegramAdapter(BasePlatformAdapter):
                 reply_to_mode=self._reply_to_mode
             )
 
-            with open(file_path, "rb") as f:
+            with open(file_path, "rb") as raw_f:
+                f = _NamedFileWrapper(raw_f, display_name)
                 msg = await self._send_with_dm_topic_reply_anchor_retry(
                     self._bot.send_document,
                     {

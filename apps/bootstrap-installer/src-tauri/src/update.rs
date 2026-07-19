@@ -733,6 +733,13 @@ fn update_child_env(install_root: &Path) -> Vec<(String, OsString)> {
         "HERMES_HOME".to_string(),
         hermes_home.as_os_str().to_os_string(),
     )];
+    // `hermes update` is a Python CLI writing to a pipe here, so CPython
+    // block-buffers its stdout: nothing reaches run_streamed (and the live
+    // log UI) until 8 KB accumulate or the process exits. Long quiet steps —
+    // the pre-update backup can zip multi-GB archives for minutes — render as
+    // a frozen stage, and users cancel a healthy update. Force line-by-line
+    // output instead.
+    envs.push(("PYTHONUNBUFFERED".to_string(), OsString::from("1")));
     if let Some(path) = path_with_prepended_entries(&[
         hermes_home.join("node").join("bin"),
         venv_bin_dir(install_root),
@@ -1047,6 +1054,16 @@ mod tests {
     }
 
     #[test]
+    fn update_child_env_forces_unbuffered_python() {
+        let envs = update_child_env(Path::new("/x/hermes-agent"));
+        assert!(
+            envs.iter()
+                .any(|(k, v)| k == "PYTHONUNBUFFERED" && v.to_str() == Some("1")),
+            "update children must run unbuffered so long steps stream to the live log"
+        );
+    }
+
+    #[test]
     fn lock_probe_paths_include_desktop_app_payload() {
         let root = Path::new("/x/hermes-agent");
         let probes = install_lock_probe_paths(root);
@@ -1056,7 +1073,12 @@ mod tests {
             "venv shim remains part of the update lock probe"
         );
         assert!(
-            probes.iter().any(|p| p.ends_with(Path::new("resources/app.asar"))),
+            // Windows/Linux payloads live under `resources/`, the macOS bundle
+            // under `Contents/Resources/` — Path::ends_with is case-sensitive.
+            probes.iter().any(|p| {
+                p.ends_with(Path::new("resources/app.asar"))
+                    || p.ends_with(Path::new("Resources/app.asar"))
+            }),
             "packaged app.asar must be probed so repair/re-clone waits for the old desktop to exit"
         );
     }

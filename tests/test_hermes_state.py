@@ -2168,6 +2168,221 @@ class TestDeleteAndExport:
         assert len(exports) == 1
         assert exports[0]["source"] == "cli"
 
+    def test_import_exported_session_round_trips(self, db, tmp_path):
+        db.create_session(
+            session_id="s1",
+            source="cli",
+            model="test-model",
+            model_config={"temperature": 0.2},
+            user_id="user-1",
+            cwd="/workspace",
+        )
+        db.set_session_title("s1", "Imported session")
+        db.update_session_cwd(
+            "s1",
+            "/workspace/project",
+            git_branch="feature/import",
+            git_repo_root="/workspace/project",
+        )
+        db.append_message("s1", role="user", content="Hello", timestamp=10)
+        db.append_message(
+            "s1",
+            role="assistant",
+            content="Hi",
+            timestamp=11,
+            tool_calls=[{"id": "call-1", "function": {"name": "noop"}}],
+            reasoning_details=[{"type": "summary", "text": "short"}],
+        )
+        db.end_session("s1", "complete")
+
+        exported = db.export_session("s1")
+        exported["handoff_state"] = "active"
+        exported["handoff_platform"] = "telegram"
+        exported["handoff_error"] = "stale runtime state"
+        exported["rewind_count"] = 3
+        target = SessionDB(db_path=tmp_path / "target_state.db")
+        try:
+            result = target.import_sessions([exported])
+            assert result["ok"] is True
+            assert result["imported"] == 1
+            assert result["skipped"] == 0
+
+            imported = target.get_session("s1")
+            assert imported["title"] == "Imported session"
+            assert imported["source"] == "cli"
+            assert imported["model"] == "test-model"
+            assert imported["cwd"] == "/workspace/project"
+            assert imported["git_branch"] == "feature/import"
+            assert imported["git_repo_root"] == "/workspace/project"
+            assert imported["message_count"] == 2
+            assert imported["tool_call_count"] == 1
+            assert imported["handoff_state"] is None
+            assert imported["handoff_platform"] is None
+            assert imported["handoff_error"] is None
+            assert imported["rewind_count"] == 0
+
+            messages = target.get_messages("s1")
+            assert [m["role"] for m in messages] == ["user", "assistant"]
+            assert messages[0]["content"] == "Hello"
+            assert messages[1]["tool_calls"][0]["id"] == "call-1"
+
+            duplicate = target.import_sessions([exported])
+            assert duplicate["imported"] == 0
+            assert duplicate["skipped"] == 1
+            assert duplicate["skipped_ids"] == ["s1"]
+        finally:
+            target.close()
+
+    def test_import_sessions_restores_valid_parents_and_detaches_missing(self, db):
+        result = db.import_sessions(
+            [
+                {
+                    "id": "child",
+                    "source": "cli",
+                    "parent_session_id": "parent",
+                    "messages": [],
+                },
+                {"id": "parent", "source": "cli", "messages": []},
+                {
+                    "id": "orphan",
+                    "source": "cli",
+                    "parent_session_id": "missing",
+                    "messages": [],
+                },
+            ]
+        )
+
+        assert result["ok"] is True
+        assert result["imported"] == 3
+        assert result["detached"] == 1
+        assert db.get_session("child")["parent_session_id"] == "parent"
+        assert db.get_session("orphan")["parent_session_id"] is None
+
+    def test_import_sessions_rejects_invalid_batch_atomically(self, db):
+        result = db.import_sessions(
+            [
+                {"id": "valid", "source": "cli", "messages": []},
+                {"source": "cli", "messages": []},
+            ]
+        )
+
+        assert result["ok"] is False
+        assert result["imported"] == 0
+        assert result["errors"] == [
+            {"index": 1, "error": "session id is required"}
+        ]
+        assert db.get_session("valid") is None
+
+    def test_import_sessions_detaches_cycle_and_lineage_still_terminates(self, db):
+        result = db.import_sessions(
+            [
+                {
+                    "id": "a",
+                    "source": "cli",
+                    "parent_session_id": "b",
+                    "end_reason": "compression",
+                    "messages": [],
+                },
+                {
+                    "id": "b",
+                    "source": "cli",
+                    "parent_session_id": "a",
+                    "end_reason": "compression",
+                    "messages": [],
+                },
+            ]
+        )
+
+        assert result["ok"] is True
+        assert result["detached"] == 1
+        assert db.get_session("a")["parent_session_id"] is None
+        assert db.get_session("b")["parent_session_id"] == "a"
+        assert db.get_compression_lineage("a") == ["a", "b"]
+
+    def test_import_sessions_detaches_self_parent(self, db):
+        result = db.import_sessions(
+            [
+                {
+                    "id": "self",
+                    "source": "cli",
+                    "parent_session_id": "self",
+                    "end_reason": "compression",
+                    "messages": [],
+                }
+            ]
+        )
+
+        assert result["ok"] is True
+        assert result["detached"] == 1
+        assert db.get_session("self")["parent_session_id"] is None
+
+    def test_compression_lineage_terminates_for_preexisting_cycle(self, db):
+        db.create_session("a", "cli")
+        db.end_session("a", "compression")
+        db.create_session("b", "cli", parent_session_id="a")
+        db.end_session("b", "compression")
+        db._conn.execute("UPDATE sessions SET parent_session_id = ? WHERE id = ?", ("b", "a"))
+        db._conn.commit()
+
+        lineage = db.get_compression_lineage("a")
+        assert set(lineage) == {"a", "b"}
+        assert len(lineage) == 2
+        assert set(db.export_session_lineage("a")["lineage_session_ids"]) == {"a", "b"}
+
+    @pytest.mark.parametrize(
+        ("payload", "error"),
+        [
+            (
+                {"id": "bad-json", "model_config": "{not-json", "messages": []},
+                "model_config must be valid JSON",
+            ),
+            (
+                {"id": "bad-text", "user_id": {"not": "text"}, "messages": []},
+                "user_id must be a string",
+            ),
+            (
+                {"id": "missing-role", "messages": [{"content": "x"}]},
+                "messages[0].role must be a non-empty string",
+            ),
+            (
+                {"id": "null-role", "messages": [{"role": None, "content": "x"}]},
+                "messages[0].role must be a non-empty string",
+            ),
+        ],
+    )
+    def test_import_sessions_rejects_invalid_metadata(self, db, payload, error):
+        result = db.import_sessions([payload])
+
+        assert result["ok"] is False
+        assert result["errors"] == [{"index": 0, "session_id": payload["id"], "error": error}]
+        assert db.get_session(payload["id"]) is None
+
+    def test_import_sessions_rejects_oversized_payloads_atomically(self, db):
+        oversized = "x" * (SessionDB._IMPORT_MAX_SESSION_BYTES + 1)
+        result = db.import_sessions(
+            [{"id": "oversized", "messages": [{"role": "user", "content": oversized}]}]
+        )
+
+        assert result["ok"] is False
+        assert result["errors"][0]["error"] == "session exceeds the import size limit"
+        assert db.get_session("oversized") is None
+
+        result = db.import_sessions(
+            [
+                {
+                    "id": "too-many-messages",
+                    "messages": [
+                        {"role": "user", "content": "x"}
+                    ]
+                    * (SessionDB._IMPORT_MAX_MESSAGES_PER_SESSION + 1),
+                }
+            ]
+        )
+
+        assert result["ok"] is False
+        assert result["errors"][0]["error"] == "messages exceeds the per-session import limit"
+        assert db.get_session("too-many-messages") is None
+
 
 # =========================================================================
 # Prune
@@ -2775,6 +2990,12 @@ class TestSessionTitle:
         session = db.get_session("s1")
         assert session["title"] == "Updated Title"
 
+    def test_auto_title_only_sets_an_empty_title(self, db):
+        db.create_session(session_id="s1", source="cli")
+        assert db.set_auto_title_if_empty("s1", "Generated Title") is True
+        assert db.set_auto_title_if_empty("s1", "Replacement Title") is False
+        assert db.get_session_title("s1") == "Generated Title"
+
     def test_title_in_search_sessions(self, db):
         db.create_session(session_id="s1", source="cli")
         db.set_session_title("s1", "Debugging Auth")
@@ -2829,6 +3050,81 @@ class TestSessionTitle:
         session = db.get_session("s1")
         assert session["title"] == "Before End"
         assert session["ended_at"] is not None
+
+
+class TestSessionTitleIndexRepair:
+    @staticmethod
+    def _seed_legacy_database(tmp_path, *, duplicate_titles):
+        db_path = tmp_path / "legacy_titles.db"
+        session_db = SessionDB(db_path=db_path)
+        session_db.create_session("older", "cli")
+        session_db.append_message("older", role="user", content="keep older message")
+        session_db.create_session("newer", "cli")
+        session_db.append_message(
+            "newer", role="assistant", content="keep newer message"
+        )
+        session_db.create_session("unique", "cli")
+        session_db.set_session_title("unique", "unique-title")
+        session_db.close()
+
+        with sqlite3.connect(db_path) as conn:
+            conn.execute("DROP INDEX idx_sessions_title_unique")
+            if duplicate_titles:
+                conn.execute(
+                    "UPDATE sessions SET title = 'shared-title' "
+                    "WHERE id IN ('older', 'newer')"
+                )
+
+        return db_path
+
+    def test_duplicate_titles_are_repaired_without_deleting_sessions(self, tmp_path):
+        db_path = self._seed_legacy_database(tmp_path, duplicate_titles=True)
+
+        reopened = SessionDB(db_path=db_path)
+        try:
+            conn = reopened._conn
+            assert conn is not None
+            rows = {
+                row["id"]: row
+                for row in conn.execute(
+                    "SELECT id, title FROM sessions ORDER BY rowid"
+                ).fetchall()
+            }
+            assert set(rows) == {"older", "newer", "unique"}
+            assert rows["older"]["title"] is None
+            assert rows["newer"]["title"] == "shared-title"
+            assert rows["unique"]["title"] == "unique-title"
+            assert reopened.get_messages("older")[0]["content"] == "keep older message"
+            assert reopened.get_messages("newer")[0]["content"] == "keep newer message"
+            index = conn.execute(
+                "SELECT sql FROM sqlite_master "
+                "WHERE type = 'index' AND name = 'idx_sessions_title_unique'"
+            ).fetchone()
+            assert index is not None
+        finally:
+            reopened.close()
+
+    def test_repaired_index_rejects_future_duplicate_title(self, tmp_path):
+        db_path = self._seed_legacy_database(tmp_path, duplicate_titles=True)
+
+        reopened = SessionDB(db_path=db_path)
+        try:
+            reopened.create_session("future", "cli")
+            with pytest.raises(ValueError, match="already in use"):
+                reopened.set_session_title("future", "shared-title")
+        finally:
+            reopened.close()
+
+    def test_clean_legacy_database_keeps_existing_titles(self, tmp_path):
+        db_path = self._seed_legacy_database(tmp_path, duplicate_titles=False)
+
+        reopened = SessionDB(db_path=db_path)
+        try:
+            assert reopened.get_session_title("unique") == "unique-title"
+            assert reopened.get_session_title("older") is None
+            assert reopened.get_session_title("newer") is None
+        finally:
+            reopened.close()
 
 
 class TestSessionTitleLineage:
@@ -4965,6 +5261,75 @@ class TestApplyWalProbe:
         assert not any("checkpoint_fullfsync" in sql for sql in conn.executed), (
             "checkpoint_fullfsync must not be issued off macOS"
         )
+        assert not any("synchronous=FULL" in sql for sql in conn.executed), (
+            "synchronous=FULL must not be issued off macOS"
+        )
+
+    def test_macos_synchronous_full_enforced_fresh(self, tmp_path, monkeypatch):
+        """On Darwin, apply_wal_with_fallback enforces synchronous=FULL (issue #63531)."""
+        import sqlite3
+        import hermes_state
+        from hermes_state import apply_wal_with_fallback
+
+        class _TracingConn(sqlite3.Connection):
+            def __init__(self, *a, **kw):
+                super().__init__(*a, **kw)
+                self.executed = []
+
+            def execute(self, sql, params=()):
+                self.executed.append(sql)
+                return super().execute(sql, params)
+
+        monkeypatch.setattr(hermes_state.sys, "platform", "darwin")
+
+        db_path = tmp_path / "macos_fresh_sync.db"
+        conn = _TracingConn(str(db_path))
+        try:
+            result = apply_wal_with_fallback(conn)
+        finally:
+            conn.close()
+
+        assert result == "wal"
+        assert any("synchronous=FULL" in sql for sql in conn.executed), (
+            "synchronous=FULL must be enforced on macOS"
+        )
+
+    def test_macos_synchronous_full_enforced_already_wal(self, tmp_path, monkeypatch):
+        """synchronous=FULL is enforced even when DB is already in WAL mode (issue #63531)."""
+        import sqlite3
+        import hermes_state
+        from hermes_state import apply_wal_with_fallback
+
+        class _TracingConn(sqlite3.Connection):
+            def __init__(self, *a, **kw):
+                super().__init__(*a, **kw)
+                self.executed = []
+
+            def execute(self, sql, params=()):
+                self.executed.append(sql)
+                return super().execute(sql, params)
+
+        # Prime the file into WAL mode first (simulating an existing WAL DB).
+        db_path = tmp_path / "macos_wal_sync.db"
+        with sqlite3.connect(str(db_path)) as seed:
+            seed.execute("PRAGMA journal_mode=WAL")
+
+        monkeypatch.setattr(hermes_state.sys, "platform", "darwin")
+
+        conn = _TracingConn(str(db_path))
+        try:
+            result = apply_wal_with_fallback(conn)
+        finally:
+            conn.close()
+
+        assert result == "wal"
+        # The early-return path for existing WAL must also enforce synchronous=FULL.
+        assert any("synchronous=FULL" in sql for sql in conn.executed), (
+            "synchronous=FULL must be enforced even on existing WAL DBs"
+        )
+        assert not any("journal_mode=WAL" in sql for sql in conn.executed), (
+            "set-pragma must not run when already in WAL mode"
+        )
 
     def test_apply_wal_concurrent_connects_no_eio(self, tmp_path):
         """20 threads calling connect() on the same DB must not see disk I/O error."""
@@ -5343,6 +5708,34 @@ def test_gateway_session_peer_round_trip_and_recovery(db):
     assert recovered["id"] == "gw-session"
 
 
+def test_gateway_session_recovery_reopens_ws_orphan_reap_rows(db):
+    """Rows wrongly ended by the TUI ws-orphan reaper must be recoverable (#63207)."""
+    db.create_session(
+        "reaped-gw-session",
+        "telegram",
+        user_id="user-1",
+        session_key="agent:main:telegram:dm:chat-1",
+        chat_id="chat-1",
+        chat_type="dm",
+    )
+    db.append_message("reaped-gw-session", "user", "hello")
+    db.end_session("reaped-gw-session", "ws_orphan_reap")
+
+    recovered = db.find_latest_gateway_session_for_peer(
+        source="telegram",
+        user_id="user-1",
+        session_key="agent:main:telegram:dm:chat-1",
+        chat_id="chat-1",
+        chat_type="dm",
+    )
+    assert recovered["id"] == "reaped-gw-session"
+
+    db.reopen_session("reaped-gw-session")
+    row = db.get_session("reaped-gw-session")
+    assert row["ended_at"] is None
+    assert row["end_reason"] is None
+
+
 def test_gateway_session_recovery_reopens_legacy_agent_close_rows(db):
     db.create_session(
         "closed-gw-session",
@@ -5574,6 +5967,14 @@ def test_expired_compression_failure_cooldown_is_ignored(db):
     db.record_compression_failure_cooldown("s1", time.time() - 60.0, "stale")
 
     assert db.get_compression_failure_cooldown("s1") is None
+
+
+def test_compression_fallback_streak_round_trips(db):
+    db.create_session("s1", "cli")
+
+    assert db.get_compression_fallback_streak("s1") == 0
+    db.set_compression_fallback_streak("s1", 2)
+    assert db.get_compression_fallback_streak("s1") == 2
 
 
 def test_refresh_compression_lock_requires_holder_and_preserves_reclaimability(db, monkeypatch):

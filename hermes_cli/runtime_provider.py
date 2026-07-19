@@ -11,7 +11,13 @@ from typing import Any, Dict, Optional
 logger = logging.getLogger(__name__)
 
 from hermes_cli import auth as auth_mod
-from agent.credential_pool import CredentialPool, PooledCredential, get_custom_provider_pool_key, load_pool
+from agent.credential_pool import (
+    CredentialPool,
+    PooledCredential,
+    credential_pool_matches_provider,
+    get_custom_provider_pool_key,
+    load_pool,
+)
 from agent.secret_scope import get_secret as _get_secret
 from hermes_cli.auth import (
     AuthError,
@@ -1731,7 +1737,19 @@ def resolve_runtime_provider(
                 if not pool_api_key or not _agent_key_is_usable(nous_state, min_ttl):
                     logger.debug("Nous pool entry agent_key still unavailable, falling through to runtime resolution")
                     pool_api_key = ""
-        if entry is not None and pool_api_key:
+        if (
+            entry is not None
+            and pool_api_key
+            and credential_pool_matches_provider(
+                pool,
+                provider,
+                base_url=(
+                    getattr(entry, "runtime_base_url", None)
+                    or getattr(entry, "base_url", None)
+                    or ""
+                ),
+            )
+        ):
             return _resolve_runtime_from_pool_entry(
                 provider=provider,
                 entry=entry,
@@ -1957,8 +1975,15 @@ def resolve_runtime_provider(
         # Dual-path routing: Claude models use AnthropicBedrock SDK for full
         # feature parity (prompt caching, thinking budgets, adaptive thinking).
         # Non-Claude models use the Converse API for multi-model support.
+        #
+        # Exception: Bearer Token auth (AWS_BEARER_TOKEN_BEDROCK) is NOT
+        # supported by the AnthropicBedrock SDK (it only does SigV4 signing —
+        # a bearer-only setup fails at runtime with "could not resolve
+        # credentials from session"). Route these users through the Converse
+        # API regardless of model. Ref: #28156.
         _current_model = str(target_model or model_cfg.get("default") or "").strip()
-        if is_anthropic_bedrock_model(_current_model):
+        _has_bearer_token = bool(os.environ.get("AWS_BEARER_TOKEN_BEDROCK", "").strip())
+        if is_anthropic_bedrock_model(_current_model) and not _has_bearer_token:
             # Claude on Bedrock → AnthropicBedrock SDK → anthropic_messages path
             runtime = {
                 "provider": "bedrock",

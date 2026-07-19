@@ -102,6 +102,7 @@ import shutil
 import sys
 import threading
 import time
+from types import SimpleNamespace
 from typing import Callable
 from datetime import datetime
 from typing import Any, Coroutine, Dict, List, Optional
@@ -574,6 +575,53 @@ def _prepend_path(env: dict, directory: str) -> dict:
     return updated
 
 
+# Safety cap on nextCursor pagination loops so a misbehaving server that
+# returns a cursor forever cannot spin discovery indefinitely. 50 pages at
+# the common 50-100 items/page covers thousands of tools/resources/prompts.
+_MCP_LIST_MAX_PAGES = 50
+
+
+async def _paginate_full_list(list_method, items_attr: str, server_name: str):
+    """Drain a paginated MCP ``list_*`` call by following ``nextCursor``.
+
+    The MCP spec allows servers to paginate ``tools/list``,
+    ``resources/list``, and ``prompts/list`` responses via an opaque
+    ``nextCursor`` token. The Python SDK's ``ClientSession.list_*`` methods
+    fetch exactly one page per call, so a client that never passes the
+    cursor back silently sees only the first page — on a paginated server
+    every tool/resource/prompt past page 1 would be invisible to the agent.
+
+    Args:
+        list_method: Bound ``session.list_tools`` / ``list_resources`` /
+            ``list_prompts`` coroutine function.
+        items_attr: Result attribute holding the page's items
+            (``"tools"``, ``"resources"``, or ``"prompts"``).
+        server_name: For log messages.
+
+    Returns:
+        Combined list of items across all pages. Callers must hold the
+        server's ``_rpc_lock`` for the duration so pages come from a
+        consistent snapshot.
+    """
+    items: list = []
+    cursor = None
+    for _ in range(_MCP_LIST_MAX_PAGES):
+        result = await (list_method(cursor=cursor) if cursor else list_method())
+        items.extend(getattr(result, items_attr, None) or [])
+        cursor = getattr(result, "nextCursor", None)
+        # Per the MCP spec the cursor is an opaque string; anything else
+        # (including mock objects in tests) means "no more pages".
+        if not isinstance(cursor, str) or not cursor:
+            break
+    else:
+        logger.warning(
+            "MCP server '%s': %s pagination exceeded %d pages; "
+            "truncating at %d items",
+            server_name, items_attr, _MCP_LIST_MAX_PAGES, len(items),
+        )
+    return items
+
+
 def _resolve_stdio_command(command: str, env: dict) -> tuple[str, dict]:
     """Resolve a stdio MCP command against the exact subprocess environment.
 
@@ -624,10 +672,9 @@ def _resolve_stdio_command(command: str, env: dict) -> tuple[str, dict]:
 def _wrap_command_with_watchdog(command: str, args: list) -> tuple[str, list]:
     """Wrap a stdio MCP server command in the parent-death watchdog supervisor.
 
-    See ``tools/mcp_stdio_watchdog.py`` module docstring for the full
-    rationale. Returns the (command, args) unchanged on any platform/failure
-    where the wrap can't safely apply, so this can never be the reason a
-    previously-working MCP server stops starting.
+    On POSIX, the watchdog records this process's PID and later detects parent
+    death directly through ``getppid()``. Returns the (command, args) unchanged
+    on non-POSIX platforms or if the PID cannot be read.
     """
     if os.name != "posix":
         # Relies on process groups (os.getpgid/os.killpg); no POSIX
@@ -637,18 +684,12 @@ def _wrap_command_with_watchdog(command: str, args: list) -> tuple[str, list]:
         return command, args
     try:
         my_pid = os.getpid()
-        try:
-            import psutil
-            create_time = psutil.Process(my_pid).create_time()
-        except ImportError:
-            create_time = time.time()
     except Exception:
         # Never let watchdog bookkeeping failure block a real MCP connection.
         return command, args
     watchdog_args = [
         os.path.join(os.path.dirname(os.path.abspath(__file__)), "mcp_stdio_watchdog.py"),
         "--ppid", str(my_pid),
-        "--create-time", repr(create_time),
         "--",
         command,
         *args,
@@ -712,6 +753,169 @@ def _cache_mcp_image_block(block) -> str:
         return ""
 
     return f"MEDIA:{image_path}"
+
+
+# ---------------------------------------------------------------------------
+# MCP resource blocks (ResourceLink / EmbeddedResource / AudioContent)
+# ---------------------------------------------------------------------------
+
+# Hard cap on decoded resource bytes materialized from an MCP tool result.
+# Prevents a misbehaving server from filling the cache disk via one block.
+_MCP_RESOURCE_MAX_BYTES = 50 * 1024 * 1024
+
+# Base64 expands raw bytes by ~4/3; reject oversized payloads before decoding
+# so a multi-GB blob string is never transiently doubled in memory.
+_MCP_RESOURCE_MAX_B64_CHARS = _MCP_RESOURCE_MAX_BYTES * 4 // 3 + 4
+
+
+def _mcp_resource_filename(uri: str, mime_type: str) -> str:
+    """Derive a safe display filename for an MCP resource.
+
+    Only the last path segment of the URI is considered, and only as a
+    *name hint* — `cache_document_from_bytes` re-sanitizes and prefixes it,
+    so remote path components can't influence the cache location.
+    """
+    import mimetypes
+    import re as _re
+    from pathlib import Path
+    from urllib.parse import urlparse, unquote
+
+    name = ""
+    if uri:
+        try:
+            name = Path(unquote(urlparse(str(uri)).path or "")).name
+        except (ValueError, TypeError):
+            name = ""
+    # Strip control characters (newlines/ANSI escapes from hostile URIs would
+    # otherwise land in the filename and the transcript marker) and cap the
+    # length, preserving the extension.
+    name = _re.sub(r"[\x00-\x1f\x7f]", "", name).strip()
+    if len(name) > 150:
+        stem, dot, ext = name.rpartition(".")
+        if dot and 0 < len(ext) <= 12:
+            name = stem[: 150 - len(ext) - 1] + "." + ext
+        else:
+            name = name[:150]
+    if not name or name in {".", ".."}:
+        normalized = (mime_type or "").split(";", 1)[0].strip().lower()
+        ext = mimetypes.guess_extension(normalized) or ".bin"
+        name = f"resource{ext}"
+    return name
+
+
+def _cache_mcp_audio_block(block) -> str:
+    """Cache an MCP ``AudioContent`` block and return a ``MEDIA:`` tag.
+
+    Returns an empty string when *block* is not audio or on any failure —
+    same fail-open contract as ``_cache_mcp_image_block``.
+    """
+    import base64
+
+    data = getattr(block, "data", None)
+    mime_type = str(getattr(block, "mimeType", None) or "").split(";", 1)[0].strip().lower()
+    if data is None or not mime_type.startswith("audio/"):
+        return ""
+    if len(data) > _MCP_RESOURCE_MAX_B64_CHARS:
+        return f"[MCP audio resource too large to cache: ~{len(data) * 3 // 4} bytes]"
+    try:
+        raw_bytes = base64.b64decode(data)
+    except (TypeError, ValueError) as exc:
+        logger.warning("MCP audio block decode failed (%s): %s", mime_type, exc)
+        return ""
+    if len(raw_bytes) > _MCP_RESOURCE_MAX_BYTES:
+        return f"[MCP audio resource too large to cache: {len(raw_bytes)} bytes]"
+    try:
+        from gateway.platforms.base import cache_audio_from_bytes
+        import mimetypes
+
+        ext = (
+            {"audio/wav": ".wav", "audio/x-wav": ".wav", "audio/wave": ".wav"}.get(mime_type)
+            or mimetypes.guess_extension(mime_type)
+            or ".ogg"
+        )
+        audio_path = cache_audio_from_bytes(raw_bytes, ext=ext)
+    except ImportError:
+        logger.debug("MCP audio caching skipped — gateway.platforms.base unavailable")
+        return ""
+    except Exception as exc:
+        logger.warning("MCP audio block cache failed: %s", exc)
+        return ""
+    return f"MEDIA:{audio_path}"
+
+
+def _render_mcp_resource_block(block, server_name: str = "") -> str:
+    """Render an MCP ``ResourceLink`` or ``EmbeddedResource`` block as text.
+
+    - ``EmbeddedResource`` with text contents → the text itself.
+    - ``EmbeddedResource`` with blob contents → bytes are decoded (size-capped)
+      and materialized into the Hermes document cache; returns a marker with
+      the local path so file/terminal tools can consume it.
+    - ``ResourceLink`` → the URI plus a pointer at the server's read_resource
+      tool. No network fetch happens here; the link is only readable through
+      the originating MCP session.
+
+    Returns an empty string for non-resource blocks. Failures are logged and
+    reported inline rather than silently dropping the block.
+    """
+    block_type = getattr(block, "type", "")
+
+    if block_type == "resource_link" or (
+        hasattr(block, "uri") and not hasattr(block, "resource") and block_type != "text"
+    ):
+        uri = getattr(block, "uri", None)
+        if not uri:
+            return ""
+        name = getattr(block, "name", "") or ""
+        mime = getattr(block, "mimeType", "") or ""
+        details = f"uri={uri}"
+        if name:
+            details += f", name={name}"
+        if mime:
+            details += f", mimeType={mime}"
+        reader = (
+            mcp_prefixed_tool_name(server_name, "read_resource")
+            if server_name
+            else "the MCP server's read_resource tool"
+        )
+        return f"[MCP resource link: {details} — fetch it with {reader}]"
+
+    resource = getattr(block, "resource", None)
+    if resource is None:
+        return ""
+
+    text = getattr(resource, "text", None)
+    if text is not None:
+        return str(text)
+
+    blob = getattr(resource, "blob", None)
+    if blob is None:
+        return ""
+
+    import base64
+
+    uri = str(getattr(resource, "uri", "") or "")
+    mime = str(getattr(resource, "mimeType", "") or "")
+    if len(blob) > _MCP_RESOURCE_MAX_B64_CHARS:
+        return f"[MCP embedded resource too large to cache: ~{len(blob) * 3 // 4} bytes, uri={uri}]"
+    try:
+        raw_bytes = base64.b64decode(blob)
+    except (TypeError, ValueError) as exc:
+        logger.warning("MCP embedded resource decode failed (%s): %s", mime or uri, exc)
+        return f"[MCP embedded resource could not be decoded: {mime or uri}]"
+    if len(raw_bytes) > _MCP_RESOURCE_MAX_BYTES:
+        return f"[MCP embedded resource too large to cache: {len(raw_bytes)} bytes, uri={uri}]"
+    try:
+        from gateway.platforms.base import cache_document_from_bytes
+
+        path = cache_document_from_bytes(raw_bytes, _mcp_resource_filename(uri, mime))
+    except ImportError:
+        logger.debug("MCP resource caching skipped — gateway.platforms.base unavailable")
+        return f"[MCP embedded resource received ({len(raw_bytes)} bytes, {mime or 'unknown type'}) but document cache unavailable in this process]"
+    except Exception as exc:
+        logger.warning("MCP embedded resource cache failed: %s", exc)
+        return f"[MCP embedded resource could not be cached: {mime or uri}]"
+    detail = mime or "unknown type"
+    return f"[MCP resource saved to {path} ({detail}, {len(raw_bytes)} bytes) — read it with read_file or terminal tools]"
 
 
 # ---------------------------------------------------------------------------
@@ -1774,10 +1978,11 @@ class MCPServerTask:
             # Capture old tool names for change diff
             old_tool_names = set(self._registered_tool_names)
 
-            # 1. Fetch current tool list from server
+            # 1. Fetch current tool list from server (follow nextCursor)
             async with self._rpc_lock:
-                tools_result = await self.session.list_tools()
-            new_mcp_tools = tools_result.tools if hasattr(tools_result, "tools") else []
+                new_mcp_tools = await _paginate_full_list(
+                    self.session.list_tools, "tools", self.name
+                )
 
             # 2. Re-register with fresh tool list. Avoid nuke-and-repave for
             # all names: live agent turns may already have tool-call IDs
@@ -2579,12 +2784,9 @@ class MCPServerTask:
             self._register_discovered_tools_if_needed()
             return
         async with self._rpc_lock:
-            tools_result = await self.session.list_tools()
-        self._tools = (
-            tools_result.tools
-            if hasattr(tools_result, "tools")
-            else []
-        )
+            self._tools = await _paginate_full_list(
+                self.session.list_tools, "tools", self.name
+            )
         self._register_discovered_tools_if_needed()
 
     def _register_discovered_tools_if_needed(self) -> None:
@@ -3037,6 +3239,15 @@ def _signal_reconnect(server: Any) -> bool:
     else:
         event.set()
     return True
+
+
+def reconnect_mcp_server(server_name: str) -> bool:
+    """Ask a currently-live MCP server to rebuild after external re-auth."""
+    with _lock:
+        server = _servers.get(server_name)
+    if server is None:
+        return False
+    return _signal_reconnect(server)
 
 
 def _wait_for_server_session_ready(
@@ -3611,6 +3822,27 @@ def _wrap_with_home_override(coro: "Coroutine") -> "Coroutine":
     return _scoped()
 
 
+def _wrap_with_dashboard_oauth_flow(coro):
+    """Propagate a dashboard OAuth flow onto the dedicated MCP loop task."""
+    try:
+        from tools.mcp_dashboard_oauth import (
+            dashboard_oauth_flow,
+            get_dashboard_oauth_flow,
+        )
+
+        flow = get_dashboard_oauth_flow()
+    except Exception:
+        return coro
+    if flow is None:
+        return coro
+
+    async def _scoped():
+        with dashboard_oauth_flow(flow):
+            return await coro
+
+    return _scoped()
+
+
 def _run_on_mcp_loop(coro_or_factory, timeout: float = 30):
     """Schedule a coroutine on the MCP event loop and block until done.
 
@@ -3645,6 +3877,7 @@ def _run_on_mcp_loop(coro_or_factory, timeout: float = 30):
     # task's own context (task-local — concurrent calls carrying different
     # scopes don't interfere). No-op when no override is active.
     coro = _wrap_with_home_override(coro)
+    coro = _wrap_with_dashboard_oauth_flow(coro)
 
     future = safe_schedule_threadsafe(
         coro, loop,
@@ -3676,6 +3909,13 @@ def _run_on_mcp_loop(coro_or_factory, timeout: float = 30):
         try:
             return future.result(timeout=wait_timeout)
         except concurrent.futures.TimeoutError:
+            # On supported Python versions, concurrent.futures.TimeoutError
+            # aliases the built-in TimeoutError, so result(timeout=...) also
+            # raises it for a coroutine's own timeout.
+            # Resolve a done future without a timeout to propagate its stored
+            # outcome, including completion racing with this polling timeout.
+            if future.done():
+                return future.result()
             continue
 
 
@@ -3947,8 +4187,15 @@ def _make_tool_handler(server_name: str, tool_name: str, tool_timeout: float):
             if result.isError:
                 error_text = ""
                 for block in (result.content or []):
-                    if hasattr(block, "text"):
+                    if getattr(block, "text", None):
                         error_text += block.text
+                        continue
+                    # EmbeddedResource blocks inside error payloads carry
+                    # their text under .resource.text — previously dropped,
+                    # leaving a bare "MCP tool returned an error".
+                    res_text = getattr(getattr(block, "resource", None), "text", None)
+                    if res_text:
+                        error_text += str(res_text)
                 return json.dumps({
                     "error": _sanitize_error(
                         error_text or "MCP tool returned an error"
@@ -3974,6 +4221,34 @@ def _make_tool_handler(server_name: str, tool_name: str, tool_timeout: float):
                 image_tag = _cache_mcp_image_block(block)
                 if image_tag:
                     parts.append(image_tag)
+                    continue
+                audio_tag = _cache_mcp_audio_block(block)
+                if audio_tag:
+                    parts.append(audio_tag)
+                    continue
+                # ResourceLink / EmbeddedResource blocks (PDFs, archives,
+                # office docs, ...). Previously these were silently dropped,
+                # so document-oriented MCP tools appeared to return metadata
+                # only (enterprise customer report, 2026-07).
+                resource_text = _render_mcp_resource_block(block, server_name)
+                if resource_text:
+                    parts.append(resource_text)
+                    continue
+                # Benign empty renders (empty text blocks, empty text
+                # resources, audio in a process without the gateway cache)
+                # aren't data loss — log at debug. Warn only for genuinely
+                # unrecognized block shapes.
+                block_type = getattr(block, "type", None) or type(block).__name__
+                if block_type in {"text", "resource", "audio", "image"}:
+                    logger.debug(
+                        "MCP %s: content block type %r rendered empty",
+                        server_name, block_type,
+                    )
+                else:
+                    logger.warning(
+                        "MCP %s: dropping unsupported content block type %r",
+                        server_name, block_type,
+                    )
             text_result = "\n".join(parts) if parts else ""
 
             # Combine content + structuredContent when both are present.
@@ -4055,9 +4330,11 @@ def _make_list_resources_handler(server_name: str, tool_timeout: float):
         async def _call():
             _mark_server_call_started(server)
             async with server._rpc_lock:
-                result = await server.session.list_resources()
+                all_resources = await _paginate_full_list(
+                    server.session.list_resources, "resources", server_name
+                )
             resources = []
-            for r in (result.resources if hasattr(result, "resources") else []):
+            for r in all_resources:
                 entry = {}
                 if hasattr(r, "uri"):
                     entry["uri"] = str(r.uri)
@@ -4124,10 +4401,17 @@ def _make_read_resource_handler(server_name: str, tool_timeout: float):
             parts: List[str] = []
             contents = result.contents if hasattr(result, "contents") else []
             for block in contents:
-                if hasattr(block, "text"):
+                if getattr(block, "text", None) is not None:
                     parts.append(block.text)
-                elif hasattr(block, "blob"):
-                    parts.append(f"[binary data, {len(block.blob)} bytes]")
+                elif getattr(block, "blob", None) is not None:
+                    # Materialize binary resource contents into the document
+                    # cache instead of discarding them (same contract as
+                    # EmbeddedResource blocks in tool results).
+                    rendered = _render_mcp_resource_block(
+                        SimpleNamespace(type="resource", resource=block),
+                        server_name,
+                    )
+                    parts.append(rendered or f"[binary data, {len(block.blob)} bytes]")
             return json.dumps({"result": "\n".join(parts) if parts else ""}, ensure_ascii=False)
 
         def _call_once():
@@ -4173,9 +4457,11 @@ def _make_list_prompts_handler(server_name: str, tool_timeout: float):
         async def _call():
             _mark_server_call_started(server)
             async with server._rpc_lock:
-                result = await server.session.list_prompts()
+                all_prompts = await _paginate_full_list(
+                    server.session.list_prompts, "prompts", server_name
+                )
             prompts = []
-            for p in (result.prompts if hasattr(result, "prompts") else []):
+            for p in all_prompts:
                 entry = {}
                 if hasattr(p, "name"):
                     entry["name"] = p.name

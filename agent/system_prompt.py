@@ -360,11 +360,12 @@ def build_system_prompt_parts(agent: Any, system_message: Optional[str] = None) 
         from tools import tool_search as _ts
         _ts_cfg = _ts.load_config()
         if getattr(_ts_cfg, "defer_core_tools", False):
+            _visible = getattr(agent, "valid_tool_names", None) or set()
             _deferred = [
                 (n, ((td.get("function") or {}).get("description") or "").split(".")[0].strip())
                 for td in (getattr(agent, "_pre_assembly_tool_defs", None) or [])
                 for n in [(td.get("function") or {}).get("name", "")]
-                if n and _ts.is_deferrable_tool_name(n, config=_ts_cfg)
+                if n and n not in _visible and _ts.is_deferrable_tool_name(n, config=_ts_cfg)
             ]
             if _deferred:
                 _manifest_lines = [

@@ -2589,6 +2589,121 @@ class TestWebServerEndpoints:
         assert len(data["category_order"]) > 0
         assert "general" in data["category_order"]
 
+    def _schema_provider_options(self, key):
+        resp = self.client.get("/api/config/schema")
+        assert resp.status_code == 200
+        return resp.json()["fields"][key]["options"]
+
+    def test_config_schema_merges_custom_command_tts_provider(self):
+        """A tts.providers.<name> command block appears in tts.provider options,
+        appended AFTER the built-ins (original order preserved, no re-sort)."""
+        from hermes_cli.config import load_config, save_config
+        from hermes_cli.web_server import CONFIG_SCHEMA
+
+        builtins = list(CONFIG_SCHEMA["tts.provider"]["options"])
+
+        cfg = load_config()
+        cfg.setdefault("tts", {}).setdefault("providers", {})["mycustomtts"] = {
+            "type": "command",
+            "command": "mytts --text {text} --out {output}",
+        }
+        save_config(cfg)
+
+        options = self._schema_provider_options("tts.provider")
+        assert options[: len(builtins)] == builtins  # built-in order kept
+        assert "mycustomtts" in options
+        assert options.count("mycustomtts") == 1
+        # The module-level schema must NOT have been mutated.
+        assert "mycustomtts" not in CONFIG_SCHEMA["tts.provider"]["options"]
+
+    def test_config_schema_merges_custom_command_stt_provider(self):
+        from hermes_cli.config import load_config, save_config
+
+        cfg = load_config()
+        cfg.setdefault("stt", {}).setdefault("providers", {})["mywhisper"] = {
+            "command": "whisper-cli {input}",  # type: omitted → command implied
+        }
+        save_config(cfg)
+
+        options = self._schema_provider_options("stt.provider")
+        assert "mywhisper" in options
+
+    def test_config_schema_excludes_builtin_name_collisions(self):
+        """A providers.EDGE command block must NOT be offered — the runtime
+        rejects built-in names as command providers (case-insensitively)."""
+        from hermes_cli.config import load_config, save_config
+
+        cfg = load_config()
+        cfg.setdefault("tts", {}).setdefault("providers", {})["EDGE"] = {
+            "type": "command",
+            "command": "fake-edge {text}",
+        }
+        save_config(cfg)
+
+        options = self._schema_provider_options("tts.provider")
+        lowered = [o.lower() for o in options]
+        assert lowered.count("edge") == 1  # only the built-in entry
+
+    def test_config_schema_excludes_non_command_blocks(self):
+        """Built-in-shaped blocks (voice/model, no command) and non-dicts are
+        not offered as providers."""
+        from hermes_cli.config import load_config, save_config
+
+        cfg = load_config()
+        tts = cfg.setdefault("tts", {})
+        tts.setdefault("providers", {})["notacommand"] = {"voice": "en-US-Foo"}
+        tts["stringy"] = "oops"
+        save_config(cfg)
+
+        options = self._schema_provider_options("tts.provider")
+        assert "notacommand" not in options
+        assert "stringy" not in options
+
+    def test_config_schema_preserves_current_custom_provider_value(self):
+        """A custom active tts.provider without a providers.<name> block stays
+        selectable (current-value preservation, matching desktop behavior)."""
+        from hermes_cli.config import load_config, save_config
+
+        cfg = load_config()
+        cfg.setdefault("tts", {})["provider"] = "orphancustom"
+        save_config(cfg)
+
+        options = self._schema_provider_options("tts.provider")
+        assert "orphancustom" in options
+
+    def test_config_schema_reflects_config_changes_without_restart(self):
+        """Options are computed per-request — adding a provider after the
+        first schema fetch shows up on the next fetch."""
+        from hermes_cli.config import load_config, save_config
+
+        before = self._schema_provider_options("tts.provider")
+        assert "latecomer" not in before
+
+        cfg = load_config()
+        cfg.setdefault("tts", {}).setdefault("providers", {})["latecomer"] = {
+            "type": "command",
+            "command": "late {text}",
+        }
+        save_config(cfg)
+
+        after = self._schema_provider_options("tts.provider")
+        assert "latecomer" in after
+
+    def test_config_schema_legacy_toplevel_command_provider(self):
+        """The legacy top-level ``tts.<name>`` command block (runtime
+        back-compat fallback) is also offered."""
+        from hermes_cli.config import load_config, save_config
+
+        cfg = load_config()
+        cfg.setdefault("tts", {})["legacytts"] = {
+            "type": "command",
+            "command": "legacy {text}",
+        }
+        save_config(cfg)
+
+        options = self._schema_provider_options("tts.provider")
+        assert "legacytts" in options
+
     def test_get_config_defaults(self):
         resp = self.client.get("/api/config/defaults")
         assert resp.status_code == 200

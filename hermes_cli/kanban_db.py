@@ -8384,14 +8384,15 @@ def _default_spawn(
     cmd.extend([
         "chat",
         "-q", prompt,
+        # Every dispatcher worker is an automation caller, not an interactive
+        # chat.  The fully-quiet query path preserves the result's failure
+        # classification in the process exit code, including EX_TEMPFAIL for
+        # provider quota walls.  Without it, an ordinary worker can exhaust
+        # all provider retries, print the failure, and still exit rc=0; the
+        # reaper then misclassifies the untouched running card as a lifecycle
+        # protocol violation.
+        "-Q",
     ])
-    if task.goal_mode:
-        # Goal-mode workers must take the fully-quiet single-query path:
-        # the kanban goal-loop hook (_run_kanban_goal_loop_q) only runs in
-        # cli.py's quiet branch. Without -Q the worker gets exactly one
-        # turn, prints text, exits rc=0, and the dispatcher records a
-        # protocol violation (incident 2026-06-09 t_d9cbe312).
-        cmd.append("-Q")
     # Redirect output to a per-task log under <board-root>/logs/.
     # Anchored at the board root (not the shared kanban root), so
     # `hermes kanban log` on a specific board reads its own file and

@@ -558,3 +558,33 @@ describe('isMacActionFallback', () => {
     expect(isMacActionFallback({ ctrl: true, meta: false, super: false }, 'w', 'w')).toBe(false)
   })
 })
+
+describe('isExitShortcut — documented Ctrl+D exit (#24377)', () => {
+  it('accepts raw Ctrl+D on macOS, where the action modifier is Cmd', async () => {
+    const { isExitShortcut } = await importPlatform('darwin')
+
+    expect(isExitShortcut({ ctrl: true, meta: false, super: false }, 'd')).toBe(true)
+    expect(isExitShortcut({ ctrl: true, meta: false, super: false }, 'D')).toBe(true)
+  })
+
+  it('preserves Cmd+D on macOS via both legacy meta and kitty-style super', async () => {
+    const { isExitShortcut } = await importPlatform('darwin')
+
+    expect(isExitShortcut({ ctrl: false, meta: true, super: false }, 'd')).toBe(true)
+    expect(isExitShortcut({ ctrl: false, meta: false, super: true }, 'd')).toBe(true)
+  })
+
+  it('accepts Ctrl+D and rejects Meta+D on Linux', async () => {
+    const { isExitShortcut } = await importPlatform('linux')
+
+    expect(isExitShortcut({ ctrl: true, meta: false, super: false }, 'd')).toBe(true)
+    expect(isExitShortcut({ ctrl: false, meta: true, super: false }, 'd')).toBe(false)
+  })
+
+  it('never fires for other keys or bare d', async () => {
+    const { isExitShortcut } = await importPlatform('darwin')
+
+    expect(isExitShortcut({ ctrl: true, meta: false, super: false }, 'x')).toBe(false)
+    expect(isExitShortcut({ ctrl: false, meta: false, super: false }, 'd')).toBe(false)
+  })
+})

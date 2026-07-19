@@ -540,6 +540,16 @@ export default class App extends PureComponent<Props, State> {
         // Process the input chunk
         this.processInput(chunk)
       }
+
+      // stdin can end underneath us (terminal-driver Ctrl+D outside raw
+      // mode, parent closing the pipe). 'readable' fires one final time
+      // with nothing to read; without this check the TUI keeps rendering
+      // against a dead input stream instead of exiting (#24377).
+      if (this.props.stdin.readableEnded) {
+        this.handleExit()
+
+        return
+      }
     } catch (error) {
       // In Bun, an uncaught throw inside a stream 'readable' handler can
       // permanently wedge the stream: data stays buffered and 'readable'

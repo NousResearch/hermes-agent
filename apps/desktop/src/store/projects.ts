@@ -340,6 +340,30 @@ export async function fetchProjectSessions(projectId: string): Promise<SidebarPr
   }
 }
 
+/** Explicitly organize an existing session under a Project without changing its cwd. */
+export async function assignSessionToProject(sessionId: string, projectId: string): Promise<void> {
+  try {
+    await gatewayRequest('projects.assign_session', { project_id: projectId, session_id: sessionId })
+    markProjectsRpcSuccess()
+    await refreshProjectTree()
+  } catch (err) {
+    markProjectsRpcFailure(err)
+    throw err
+  }
+}
+
+/** Remove a session's explicit Project organization without deleting the session. */
+export async function unassignSessionFromProject(sessionId: string): Promise<void> {
+  try {
+    await gatewayRequest('projects.unassign_session', { session_id: sessionId })
+    markProjectsRpcSuccess()
+    await refreshProjectTree()
+  } catch (err) {
+    markProjectsRpcFailure(err)
+    throw err
+  }
+}
+
 // One filesystem scan per app run: the heavy disk walk happens once, the result
 // is cached in the backend, and later opens read the cache. Desktop-only (needs
 // the native crawler); elsewhere discovery falls back to session-derived repos.

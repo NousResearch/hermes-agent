@@ -31,6 +31,9 @@ import {
   DropdownMenuContent,
   DropdownMenuItem,
   DropdownMenuSeparator,
+  DropdownMenuSub,
+  DropdownMenuSubContent,
+  DropdownMenuSubTrigger,
   DropdownMenuTrigger
 } from '@/components/ui/dropdown-menu'
 import { Input } from '@/components/ui/input'
@@ -40,6 +43,7 @@ import { triggerHaptic } from '@/lib/haptics'
 import { exportSession } from '@/lib/session-export'
 import { activeGateway } from '@/store/gateway'
 import { notify, notifyError } from '@/store/notifications'
+import { $projects, assignSessionToProject, unassignSessionFromProject } from '@/store/projects'
 import { $activeSessionId, $selectedStoredSessionId, setSessions } from '@/store/session'
 import { $sessionTiles, openSessionTile } from '@/store/session-states'
 import { canOpenSessionWindow, openSessionInNewWindow } from '@/store/windows'
@@ -397,9 +401,62 @@ export function SessionActionsMenu({ children, align = 'end', sideOffset = 6, ..
           sideOffset={sideOffset}
         >
           {renderItems(DROPDOWN_KIT)}
+          <ProjectAssignmentItems sessionId={actions.sessionId} />
         </DropdownMenuContent>
       </DropdownMenu>
       {renameDialog}
+    </>
+  )
+}
+
+function ProjectAssignmentItems({ sessionId }: { sessionId: string }) {
+  const { t } = useI18n()
+  const projects = useStore($projects)
+  const assignableProjects = projects.filter(project => !project.archived)
+  const r = t.sidebar.row
+
+  if (!sessionId) {
+    return null
+  }
+
+  const reportFailure = (err: unknown) => notifyError(err, r.projectAssignmentFailed)
+
+  return (
+    <>
+      <DropdownMenuSeparator />
+      <DropdownMenuSub>
+        <DropdownMenuSubTrigger>
+          <Codicon name="folder" size="0.875rem" />
+          <span>{r.addToProject}</span>
+        </DropdownMenuSubTrigger>
+        <DropdownMenuSubContent>
+          {assignableProjects.length ? (
+            assignableProjects.map(project => (
+              <DropdownMenuItem
+                key={project.id}
+                onSelect={() => {
+                  triggerHaptic('selection')
+                  void assignSessionToProject(sessionId, project.id).catch(reportFailure)
+                }}
+              >
+                <Codicon name="folder" size="0.875rem" />
+                <span>{project.name}</span>
+              </DropdownMenuItem>
+            ))
+          ) : (
+            <DropdownMenuItem disabled>{t.sidebar.projectEmpty}</DropdownMenuItem>
+          )}
+        </DropdownMenuSubContent>
+      </DropdownMenuSub>
+      <DropdownMenuItem
+        onSelect={() => {
+          triggerHaptic('selection')
+          void unassignSessionFromProject(sessionId).catch(reportFailure)
+        }}
+      >
+        <Codicon name="folder-opened" size="0.875rem" />
+        <span>{r.removeFromProject}</span>
+      </DropdownMenuItem>
     </>
   )
 }

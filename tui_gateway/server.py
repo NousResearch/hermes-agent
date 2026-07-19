@@ -11962,6 +11962,19 @@ def _(rid, params, pdb, conn) -> dict:
     return _ok(rid, {"active_id": pdb.get_active_id(conn)})
 
 
+@_projects_method("projects.assign_session")
+def _(rid, params, pdb, conn) -> dict:
+    proj = _require_project(pdb, conn, {"id": params.get("project_id")})
+    pdb.assign_session(conn, str(params.get("session_id") or ""), proj.id)
+    return _ok(rid, {"project_id": proj.id, "session_id": str(params.get("session_id") or "")})
+
+
+@_projects_method("projects.unassign_session")
+def _(rid, params, pdb, conn) -> dict:
+    session_id = str(params.get("session_id") or "")
+    return _ok(rid, {"removed": pdb.unassign_session(conn, session_id), "session_id": session_id})
+
+
 @_projects_method("projects.for_cwd")
 def _(rid, params, pdb, conn) -> dict:
     cwd = _completion_cwd({"cwd": str(params.get("cwd") or "").strip()} if params.get("cwd") else {})
@@ -12154,7 +12167,7 @@ def _project_tree_row(r: dict) -> dict:
 
 def _project_tree_inputs(
     db, session_limit: int, *, include_discovered: bool
-) -> tuple[list[dict], list[dict], list[dict], str | None]:
+) -> tuple[list[dict], list[dict], list[dict], str | None, dict[str, str | None]]:
     """Gather (sessions, projects, discovered_repos, active_id) for build_tree.
 
     ``include_discovered`` is the zero-session-repo overview tier; the entered
@@ -12181,11 +12194,12 @@ def _project_tree_inputs(
 
     with pdb.connect_closing() as conn:
         projects = [p.to_dict() for p in pdb.list_projects(conn)]
+        assignment_ids = pdb.assigned_project_ids(conn, [s["id"] for s in sessions])
         active_id = pdb.get_active_id(conn)
         # backfill stays off the hot tree path — grouping uses the live resolver.
         discovered = _discover_repos_payload(db, conn=conn, backfill=False) if include_discovered else []
 
-    return sessions, projects, discovered, active_id
+    return sessions, projects, discovered, active_id, assignment_ids
 
 
 def _build_project_tree(
@@ -12194,7 +12208,7 @@ def _build_project_tree(
     """Gather inputs and run the one authoritative builder. Returns (tree, active_id)."""
     from tui_gateway import project_tree
 
-    sessions, projects, discovered, active_id = _project_tree_inputs(
+    sessions, projects, discovered, active_id, assignment_ids = _project_tree_inputs(
         db, session_limit, include_discovered=include_discovered
     )
     tree = project_tree.build_tree(
@@ -12202,6 +12216,7 @@ def _build_project_tree(
         sessions,
         discovered,
         _resolve_cwd_git,
+        explicit_session_projects=assignment_ids,
         preview_limit=preview_limit,
         hydrate=hydrate,
         is_junk_root=_is_repo_junk,

@@ -12,7 +12,7 @@ import { clearQueuedPrompts } from '@/store/composer-queue'
 import { $pinnedSessionIds } from '@/store/layout'
 import { clearNotifications, notify, notifyError } from '@/store/notifications'
 import { $activeGatewayProfile, $newChatProfile, ensureGatewayProfile, normalizeProfileKey } from '@/store/profile'
-import { resolveNewSessionCwd, tombstoneSessions, untombstoneSessions } from '@/store/projects'
+import { tombstoneSessions, untombstoneSessions } from '@/store/projects'
 import {
   $activeSessionStoredIdRotation,
   $currentCwd,
@@ -46,7 +46,8 @@ import {
   setSessionStartedAt,
   setSessionsTotal,
   setTurnStartedAt,
-  setYoloActive
+  setYoloActive,
+  workspaceCwdForNewSession
 } from '@/store/session'
 import {
   closeSessionTile,
@@ -283,9 +284,9 @@ export function useSessionActions({
       setNewChatWorkspaceTarget(hasWorkspaceTarget ? workspaceTarget : undefined)
 
       if (!hasWorkspaceTarget) {
-        // In a project → the repo's default-branch checkout; not in a project →
-        // detached. So cmd-n does not inherit an unrelated linked worktree.
-        setCurrentCwd(resolveNewSessionCwd())
+        // A global new chat never inherits the sidebar's project scope. Project
+        // entry points pass an explicit one-shot workspace target instead.
+        setCurrentCwd(workspaceCwdForNewSession())
       } else if (workspaceTarget === null) {
         setCurrentCwdTransient('')
       } else if (typeof workspaceTarget === 'string') {
@@ -309,8 +310,8 @@ export function useSessionActions({
 
       try {
         // An explicit one-shot workspace target (null → detached, string → that
-        // folder) wins; otherwise the live cwd, then the project-aware default
-        // (resolveNewSessionCwd — a project's new session keeps its repo cwd).
+        // folder) wins; otherwise the live cwd, then the global new-session
+        // default. Project entry points always set an explicit target.
         const workspaceTarget = $newChatWorkspaceTarget.get()
 
         const cwd =
@@ -318,7 +319,7 @@ export function useSessionActions({
             ? ''
             : typeof workspaceTarget === 'string'
               ? workspaceTarget.trim()
-              : $currentCwd.get().trim() || resolveNewSessionCwd()
+              : $currentCwd.get().trim() || workspaceCwdForNewSession()
 
         const params = await desktopSessionCreateParams(cwd)
         const created = await requestGateway<SessionCreateResponse>('session.create', params)
@@ -411,9 +412,9 @@ export function useSessionActions({
   const openNewSessionTile = useCallback(
     async (dir: TileDock = 'right') => {
       try {
-        // Fresh tile → the resolved new-session cwd (project/default), not the
-        // primary composer's live cwd.
-        const params = await desktopSessionCreateParams(resolveNewSessionCwd().trim())
+        // Fresh tiles follow the same global default as the primary composer,
+        // never the sidebar's project scope or a different session's cwd.
+        const params = await desktopSessionCreateParams(workspaceCwdForNewSession().trim())
         const created = await requestGateway<SessionCreateResponse>('session.create', params)
         const stored = created.stored_session_id
 

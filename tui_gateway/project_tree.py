@@ -267,12 +267,17 @@ def _session_time(session: dict) -> float:
     return float(session.get("last_active") or session.get("started_at") or 0)
 
 
-def _build_repos(sessions: list[dict], resolve: Optional[Resolve], hydrate: bool) -> list[dict]:
+def _build_repos(
+    sessions: list[dict], resolve: Optional[Resolve], hydrate: bool, fallback_cwd: str = ""
+) -> list[dict]:
     """Build the ``repo -> lane -> sessions`` subtree for a set of sessions."""
     lanes: dict[str, dict] = {}  # lane_key -> {group, repo_key, repo_label, repo_path}
 
     for session in sessions:
-        cwd = (session.get("cwd") or "").strip()
+        # A detached session can be explicitly organized into a Project. Use the
+        # Project's primary path to choose a display lane only; preserve the
+        # session row itself, including its empty cwd, as backend truth.
+        cwd = (session.get("cwd") or "").strip() or fallback_cwd
         if not cwd:
             continue
 
@@ -471,6 +476,7 @@ def build_tree(
     discovered_repos: list[dict],
     resolve: Optional[Resolve] = None,
     *,
+    explicit_session_projects: Optional[dict[str, Optional[str]]] = None,
     preview_limit: int = 3,
     hydrate: bool = False,
     is_junk_root: Optional[Callable[[str], bool]] = None,
@@ -497,11 +503,20 @@ def build_tree(
     _junk = is_junk_root or (lambda _root: False)
     _junk_cwd = is_junk_cwd or (lambda _cwd: False)
     folder_index = _FolderIndex(active_projects)
+    projects_by_id = {project["id"]: project for project in active_projects}
+    assignments = explicit_session_projects or {}
 
     by_project: dict[str, list[dict]] = {}
     unowned: list[dict] = []
     for session in sessions:
-        owner = _project_for_session(session, folder_index, resolve)
+        session_id = str(session.get("id") or "")
+        if session_id in assignments:
+            # An explicit None means the user deliberately moved this session
+            # to No project. Do not reattach it just because its cwd happens
+            # to live beneath a Project folder.
+            owner = projects_by_id.get(assignments[session_id] or "")
+        else:
+            owner = _project_for_session(session, folder_index, resolve)
         if owner:
             by_project.setdefault(owner["id"], []).append(session)
         else:
@@ -525,7 +540,9 @@ def build_tree(
         psessions = by_project.get(project["id"], [])
         scoped_ids.extend(s["id"] for s in psessions if s.get("id"))
         repos = _seed_folder_repos(
-            _build_repos(psessions, resolve, hydrate), project.get("folders") or [], resolve
+            _build_repos(psessions, resolve, hydrate, (project.get("primary_path") or "").strip()),
+            project.get("folders") or [],
+            resolve,
         )
         result.append(
             _project_node(

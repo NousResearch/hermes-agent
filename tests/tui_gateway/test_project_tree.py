@@ -296,6 +296,65 @@ def test_explicit_project_claims_sessions_and_beats_auto():
     assert any(p["id"] == "/www/other" and p["isAuto"] for p in tree["projects"])
 
 
+def test_explicit_session_assignment_overrides_cwd_derived_project_without_changing_cwd():
+    source = _project("p_source", "Source", ["/www/source"])
+    target = _project("p_target", "Target", ["/www/target"])
+    session = _session("/www/source", branch="main")
+
+    tree = pt.build_tree(
+        [source, target],
+        [session],
+        [],
+        resolve=lambda _cwd: None,
+        explicit_session_projects={session["id"]: "p_target"},
+        hydrate=True,
+    )
+    by_id = {project["id"]: project for project in tree["projects"]}
+
+    assert by_id["p_source"]["sessionCount"] == 0
+    assert by_id["p_target"]["sessionCount"] == 1
+    placed = by_id["p_target"]["repos"][0]["groups"][0]["sessions"][0]
+    assert placed["cwd"] == "/www/source"
+
+
+def test_explicit_session_assignment_keeps_a_detached_session_visible_without_changing_its_cwd():
+    target = _project("p_target", "Target", ["/www/target"])
+    session = _session(None)
+
+    tree = pt.build_tree(
+        [target],
+        [session],
+        [],
+        resolve=lambda _cwd: None,
+        explicit_session_projects={session["id"]: "p_target"},
+        hydrate=True,
+    )
+    project = tree["projects"][0]
+    placed = project["repos"][0]["groups"][0]["sessions"][0]
+
+    assert project["sessionCount"] == 1
+    assert placed["cwd"] is None
+
+
+def test_explicit_no_project_override_beats_cwd_derived_membership():
+    project = _project("p_app", "App", ["/www/app"])
+    session = _session("/www/app", branch="main")
+
+    tree = pt.build_tree(
+        [project],
+        [session],
+        [],
+        resolve=lambda _cwd: None,
+        explicit_session_projects={session["id"]: None},
+        hydrate=True,
+    )
+    by_id = {node["id"]: node for node in tree["projects"]}
+
+    assert by_id["p_app"]["sessionCount"] == 0
+    assert by_id["/www/app"]["isAuto"] is True
+    assert by_id["/www/app"]["sessionCount"] == 1
+
+
 def test_scoped_session_ids_is_union_of_placed_sessions():
     project = _project("p_app", "App", ["/www/app"])
     resolve = _resolver(

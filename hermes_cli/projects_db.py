@@ -85,6 +85,20 @@ CREATE TABLE IF NOT EXISTS project_meta (
     value  TEXT
 );
 
+-- Explicit session organization is separate from a session's cwd. A user can
+-- place an existing detached or out-of-tree conversation in a Project without
+-- changing where its backend runs.
+CREATE TABLE IF NOT EXISTS project_session_assignments (
+    session_id  TEXT PRIMARY KEY,
+    -- NULL is an explicit "No project" override. Its presence means do not
+    -- fall back to cwd-derived Project membership for this session.
+    project_id  TEXT REFERENCES projects(id) ON DELETE CASCADE,
+    assigned_at INTEGER NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_project_session_assignments_project
+    ON project_session_assignments(project_id);
+
 -- Git repos found by scanning the filesystem (desktop "repo-first" discovery).
 -- Cached here so the overview is instant after the first scan instead of
 -- re-walking the disk every time the Projects view opens.
@@ -616,6 +630,53 @@ def get_active_id(conn: sqlite3.Connection) -> Optional[str]:
         "SELECT value FROM project_meta WHERE key = ?", (_ACTIVE_META_KEY,)
     ).fetchone()
     return row["value"] if row else None
+
+
+# ---------------------------------------------------------------------------
+# Explicit session membership
+# ---------------------------------------------------------------------------
+
+def assign_session(conn: sqlite3.Connection, session_id: str, project_id: str) -> None:
+    """Assign one stored session to a Project, replacing any old assignment."""
+    sid = str(session_id or "").strip()
+    if not sid:
+        raise ValueError("session_id must not be empty")
+    if get_project(conn, project_id) is None:
+        raise ValueError(f"no such project: {project_id}")
+    with write_txn(conn):
+        conn.execute(
+            "INSERT INTO project_session_assignments (session_id, project_id, assigned_at) VALUES (?, ?, ?) "
+            "ON CONFLICT(session_id) DO UPDATE SET project_id = excluded.project_id, assigned_at = excluded.assigned_at",
+            (sid, project_id, _now()),
+        )
+
+
+def unassign_session(conn: sqlite3.Connection, session_id: str) -> bool:
+    """Explicitly place a session in No project without touching its cwd."""
+    sid = str(session_id or "").strip()
+    if not sid:
+        raise ValueError("session_id must not be empty")
+    with write_txn(conn):
+        conn.execute(
+            "INSERT INTO project_session_assignments (session_id, project_id, assigned_at) VALUES (?, NULL, ?) "
+            "ON CONFLICT(session_id) DO UPDATE SET project_id = NULL, assigned_at = excluded.assigned_at",
+            (sid, _now()),
+        )
+    return True
+
+
+def assigned_project_ids(conn: sqlite3.Connection, session_ids: Iterable[str]) -> dict[str, Optional[str]]:
+    """Return explicit Project (or No-project) overrides keyed by stored session id."""
+    ids = [str(sid).strip() for sid in session_ids if str(sid).strip()]
+    if not ids:
+        return {}
+    placeholders = ",".join("?" for _ in ids)
+    rows = conn.execute(
+        "SELECT session_id, project_id FROM project_session_assignments "
+        f"WHERE session_id IN ({placeholders})",
+        ids,
+    ).fetchall()
+    return {row["session_id"]: row["project_id"] for row in rows}
 
 
 # ---------------------------------------------------------------------------

@@ -617,6 +617,7 @@ export default function AnalyticsPage() {
                 <a href="/config" className="underline">
                   {analyticsCopy.hiddenConfigLink ?? t.app.nav.config}
                 </a>
+                .
               </p>
             </div>
           </CardContent>

@@ -47,7 +47,7 @@ export const ar: Translations = {
     openFullView: 'فتح العرض الكامل',
     openDiagram: 'فتح المخطّط',
     holdModifierToZoom: 'اضغط على مفتاح الأوامر للتكبير',
-    resizePane: _id => 'تغيير حجم الجزء',
+    resizePane: id => `تغيير حجم ${id}`,
     tryHint: term => `جرّب «${term}»`,
     on: 'مفعّل',
     off: 'معطّل'

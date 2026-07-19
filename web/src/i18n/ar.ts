@@ -1261,7 +1261,7 @@ export const ar: Translations = {
     hiddenBody2:
       "في النماذج ذات الاستدعاءات المساعدة الكثيفة، مثل Kimi K2.6 وMiniMax M2.7، قد يكون الإجمالي المحلي أقل من فاتورة المزوّد بعشرة إلى مئة ضعف. إخفاء هذه الأرقام أكثر أمانًا من جعلها تبدو مرجعية.",
     hiddenBody3:
-      "راجع لوحة مزوّدك مثل OpenRouter أو Anthropic للاستخدام والفوترة الفعلية. ولإعادة تفعيل التقدير المحلي لأغراض التصحيح، اضبط dashboard.show_token_analytics: true في الإعدادات.",
+      "راجع لوحة مزوّدك مثل OpenRouter أو Anthropic للاستخدام والفوترة الفعلية. ولإعادة تفعيل التقدير المحلي لأغراض التصحيح، اضبط dashboard.show_token_analytics: true في",
     hiddenConfigLink: "الإعدادات",
   },
 

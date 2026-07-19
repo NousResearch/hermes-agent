@@ -1192,8 +1192,10 @@ export const en: Translations = {
       "The token, cost, and per-day analytics on this page are a local debug estimate. They only count successful main-agent responses with a usable usage block, and silently exclude auxiliary calls (context compression, title generation, vision, session search, web extract, smart approvals, MCP routing, plugin LLM access) plus provider-side retries and fallback attempts. Cache writes are missing entirely.",
     hiddenBody2:
       "On models with heavy auxiliary traffic (Kimi K2.6, MiniMax M2.7) the local total can be 10x–100x lower than what your provider bills. Hiding these numbers is safer than letting them look authoritative.",
+    // The trailing "Config" is rendered as a link by the caller — don't repeat
+    // it here or the sentence ends "…in Config. Config".
     hiddenBody3:
-      "Check your provider dashboard (OpenRouter, Anthropic, etc.) for actual usage and billing. To re-enable the local debug estimate anyway, set dashboard.show_token_analytics: true in Config.",
+      "Check your provider dashboard (OpenRouter, Anthropic, etc.) for actual usage and billing. To re-enable the local debug estimate anyway, set dashboard.show_token_analytics: true in",
     hiddenConfigLink: "Config",
   },
 

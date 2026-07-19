@@ -103,6 +103,20 @@ def _is_alive_like_dispatcher(pid: int) -> bool:
                         break
         except (FileNotFoundError, PermissionError, OSError):
             pass
+    else:
+        # macOS/BSD have no /proc: after os._exit the child is a zombie until
+        # its parent reaps it, and os.kill(pid, 0) still succeeds for a zombie.
+        # Reap it non-blockingly so a cleanly-exited child is counted as dead
+        # (mirrors the Linux "State: Z => dead" branch above).
+        try:
+            reaped_pid, _ = os.waitpid(pid, os.WNOHANG)
+            if reaped_pid == pid:
+                return False
+        except ChildProcessError:
+            # Already reaped elsewhere (e.g. Popen.poll) => dead.
+            return False
+        except OSError:
+            pass
     return True
 
 

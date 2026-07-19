@@ -696,6 +696,17 @@ class TestResolveWithRefresh:
 
 
 class TestRunOauthSetupToken:
+    @pytest.fixture(autouse=True)
+    def _no_real_keychain(self, monkeypatch):
+        # read_claude_code_credentials() reads the macOS Keychain first (Darwin
+        # only). On a dev Mac with real Claude Code creds that shadows the
+        # tmp_path fixture files these tests set up, so isolate it to force the
+        # file/env credential paths under test. No-op on Linux CI (no Keychain).
+        monkeypatch.setattr(
+            "agent.anthropic_adapter._read_claude_code_credentials_from_keychain",
+            lambda: None,
+        )
+
     def test_raises_when_claude_not_installed(self, monkeypatch):
         monkeypatch.setattr("shutil.which", lambda _: None)
         with pytest.raises(FileNotFoundError, match="claude.*CLI.*not installed"):

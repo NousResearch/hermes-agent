@@ -7637,6 +7637,35 @@ class TestInterruptVprintForceTrue:
 # ===================================================================
 
 
+def _original_source(fn):
+    """Return fn's source, transparently unwrapping a plugin wrapper.
+
+    A host plugin (claude-bpx attribution) may replace a module function with a
+    closure-based wrapper at import time without setting ``__wrapped__``. These
+    tests assert on the ORIGINAL function's source, so recover it: prefer
+    inspect.unwrap, else look for the original callable captured in the
+    wrapper's closure. On CI (no such plugin) getsource(fn) already works.
+    """
+    import inspect
+    unwrapped = inspect.unwrap(fn)
+    try:
+        src = inspect.getsource(unwrapped)
+    except (OSError, TypeError):
+        src = ""
+    if "anthropic_messages" in src or "build_anthropic_client" in src:
+        return src
+    for cell in (getattr(fn, "__closure__", None) or ()):
+        val = getattr(cell, "cell_contents", None)
+        if callable(val) and val is not fn:
+            try:
+                inner = inspect.getsource(val)
+            except (OSError, TypeError):
+                continue
+            if "anthropic_messages" in inner or "build_anthropic_client" in inner:
+                return inner
+    return src
+
+
 class TestAnthropicInterruptHandler:
     """_interruptible_api_call must handle Anthropic mode when interrupted."""
 
@@ -7644,7 +7673,7 @@ class TestAnthropicInterruptHandler:
         """The interrupt handler must check api_mode == 'anthropic_messages'."""
         import inspect
         from agent.chat_completion_helpers import interruptible_api_call
-        source = inspect.getsource(interruptible_api_call)
+        source = _original_source(interruptible_api_call)
         assert "anthropic_messages" in source, \
             "interruptible_api_call must handle Anthropic interrupt (api_mode check)"
 
@@ -7652,7 +7681,7 @@ class TestAnthropicInterruptHandler:
         """After interrupting, the Anthropic client should be rebuilt."""
         import inspect
         from agent.chat_completion_helpers import interruptible_api_call
-        source = inspect.getsource(interruptible_api_call)
+        source = _original_source(interruptible_api_call)
         assert "build_anthropic_client" in source, \
             "interruptible_api_call must rebuild Anthropic client after interrupt"
 
@@ -7660,7 +7689,7 @@ class TestAnthropicInterruptHandler:
         """_streaming_api_call must also handle Anthropic interrupt."""
         import inspect
         from agent.chat_completion_helpers import interruptible_streaming_api_call
-        source = inspect.getsource(interruptible_streaming_api_call)
+        source = _original_source(interruptible_streaming_api_call)
         assert "anthropic_messages" in source, \
             "interruptible_streaming_api_call must handle Anthropic interrupt"
 

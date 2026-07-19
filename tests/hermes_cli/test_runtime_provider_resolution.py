@@ -303,6 +303,9 @@ def test_resolve_runtime_provider_codex(monkeypatch):
 
 def test_resolve_runtime_provider_qwen_oauth(monkeypatch):
     monkeypatch.setattr(rp, "resolve_provider", lambda *a, **k: "qwen-oauth")
+    # Isolate the credential pool so a real host qwen-oauth pool entry does not
+    # short-circuit resolution before the mocked resolve_qwen_runtime_credentials.
+    monkeypatch.setattr(rp, "load_pool", lambda *a, **k: None)
     monkeypatch.setattr(
         rp,
         "resolve_qwen_runtime_credentials",
@@ -363,6 +366,9 @@ def test_qwen_oauth_auto_fallthrough_on_auth_failure(monkeypatch):
     from hermes_cli.auth import AuthError
 
     monkeypatch.setattr(rp, "resolve_provider", lambda *a, **k: "qwen-oauth")
+    # Isolate the credential pool so a real host qwen-oauth pool entry does not
+    # short-circuit resolution before the mocked resolve_qwen_runtime_credentials.
+    monkeypatch.setattr(rp, "load_pool", lambda *a, **k: None)
     monkeypatch.setattr(
         rp,
         "resolve_qwen_runtime_credentials",

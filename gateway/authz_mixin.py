@@ -113,7 +113,11 @@ class GatewayAuthorizationMixin:
         if not platform:
             return None
         profile_name = (profile or "").strip() or None
-        account_name = (account or "").strip() or None
+        # Coerce defensively: a MagicMock/SimpleNamespace source auto-creates
+        # a truthy ``account`` attribute (AGENTS.md pitfall #17), which must
+        # read as "default account", not trip the fail-closed account branch.
+        account_name = account.strip() if isinstance(account, str) else None
+        account_name = account_name or None
         if account_name == "default":
             account_name = None
         if profile_name and profile_name != "default":

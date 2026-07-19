@@ -220,6 +220,22 @@ async def test_failed_account_connect_skips_without_blocking_others(runner):
 
 
 @pytest.mark.asyncio
+async def test_failed_initial_connect_queues_for_reconnect(runner):
+    """A transient startup connect failure for a named account must enter
+    the reconnect queue, not vanish — otherwise the account is offline until
+    the next full gateway restart (teknium1 review finding)."""
+    _wire_lifecycle_mocks(runner, [False])  # connect returns False (retryable)
+    cfg = PlatformConfig(
+        enabled=True,
+        token="123:default",
+        extra={"accounts": {"support": {"token": "456:support"}}},
+    )
+    connected = await runner._start_account_adapters(Platform.TELEGRAM, cfg)
+    assert connected == 0
+    assert (Platform.TELEGRAM, "support") in runner._failed_account_adapters
+
+
+@pytest.mark.asyncio
 async def test_no_accounts_is_a_noop(runner):
     _wire_lifecycle_mocks(runner, [])
     cfg = PlatformConfig(enabled=True, token="123:default")
@@ -253,3 +269,35 @@ def test_telegram_adapter_stamps_account_on_inbound_source():
     # Default account stays unset — single-bot gateways are unchanged.
     default_adapter = TelegramAdapter(PlatformConfig(enabled=True, token="1:y"))
     assert default_adapter._source_from_message_for_auth(message).account is None
+
+
+def test_build_source_stamps_account_on_normal_event_path():
+    """The normal inbound path — every platform's regular traffic flows
+    through BasePlatformAdapter.build_source(), NOT the auth helper. If the
+    account isn't stamped here, named-bot messages get the default session
+    key and route replies out the default bot (the feature silently no-ops).
+    Regression guard for that exact miss."""
+    from gateway.platforms.base import BasePlatformAdapter
+
+    # build_source is a concrete method on the ABC; call it unbound with a
+    # minimal stand-in carrying the two attributes it reads off self.
+    class _Stub:
+        platform = Platform.TELEGRAM
+        account_name = "support"
+
+        def _resolve_profile_for_source(self, *a, **kw):
+            return None
+
+    src = BasePlatformAdapter.build_source(
+        _Stub(), chat_id="777", chat_type="dm", user_id="42"
+    )
+    assert src.account == "support"
+
+    # Default adapter (no account_name attr set) → account stays None.
+    class _DefaultStub(_Stub):
+        account_name = None
+
+    default_src = BasePlatformAdapter.build_source(
+        _DefaultStub(), chat_id="777", chat_type="dm", user_id="42"
+    )
+    assert default_src.account is None

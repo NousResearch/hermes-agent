@@ -1136,8 +1136,11 @@ def build_session_key(
     # received the message is intrinsic to the event, and reading it here
     # guarantees the adapter-level guard and the session store derive the
     # same key for the same event (per-key guards diverging is the #64934
-    # bug class). ``getattr`` guards bare test fixtures (AGENTS.md pitfall).
+    # bug class). isinstance-guard bare test fixtures whose auto-attributes
+    # read as a truthy non-string (AGENTS.md pitfall #17).
     account = getattr(source, "account", None)
+    if not isinstance(account, str):
+        account = None
     ns = _session_key_namespace(profile, account)
     platform = source.platform.value
     slack_scope_id = (

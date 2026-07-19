@@ -11123,12 +11123,6 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                         error_message=None,
                     )
                     logger.info("✓ %s connected", platform.value)
-                    # Named bot accounts on this platform (#8287) start after
-                    # the default account; each is independent and a failed
-                    # account never blocks the others.
-                    connected_count += await self._start_account_adapters(
-                        platform, platform_config
-                    )
                 else:
                     logger.warning("✗ %s failed to connect", platform.value)
                     # Defensive cleanup: a failed connect() may have
@@ -11215,6 +11209,17 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                         platform, adapter
                     ),
                 }
+
+            # Named bot accounts (#8287) start independently of the default
+            # adapter's outcome: a bad/absent default token must never keep a
+            # healthy named bot offline. _start_account_adapters is a no-op
+            # when no accounts are configured, so single-bot platforms are
+            # unaffected. (The accounts-only branch above already handled the
+            # no-default-credential case and `continue`d before reaching here.)
+            connected_count += await self._start_account_adapters(
+                platform, platform_config
+            )
+
             if await self._abort_startup_if_shutdown_requested():
                 return True
 
@@ -13838,6 +13843,25 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             for adapter in account_adapters:
                 yield platform, adapter, getattr(adapter.config, "home_channel", None)
 
+    def _queue_account_reconnect(
+        self, platform: Platform, account_name: str, config: "PlatformConfig"
+    ) -> None:
+        """Queue a named account for background reconnection (#8287), keyed by
+        (platform, account). Idempotent — an already-queued account keeps its
+        existing backoff state. Shared by initial-startup failures and the
+        fatal-error path so both feed the one account reconnect watcher."""
+        key = (platform, account_name)
+        if key not in self._failed_account_adapters:
+            self._failed_account_adapters[key] = {
+                "config": config,
+                "attempts": 1,
+                "next_retry": time.monotonic() + 30,
+            }
+            logger.info(
+                "%s account %r queued for background reconnection",
+                platform.value, account_name,
+            )
+
     def _wire_account_adapter(self, adapter: BasePlatformAdapter) -> None:
         """Wire a named-account adapter's handlers — identical to a default
         adapter's wiring in the startup loop (#8287). Shared by account
@@ -13901,12 +13925,22 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     platform.value, account_name, exc,
                 )
                 await self._safe_adapter_disconnect(adapter, platform)
+                self._queue_account_reconnect(platform, account_name, account_config)
                 continue
             if not success:
                 logger.warning(
                     "✗ %s account %r failed to connect", platform.value, account_name
                 )
                 await self._safe_adapter_disconnect(adapter, platform)
+                # Queue retryable initial failures so a transient startup
+                # blip (network, provider hiccup) is retried by the account
+                # reconnect watcher — mirrors the default adapter's path.
+                # Non-retryable fatal errors are left alone (a bad token
+                # shouldn't spin forever).
+                if getattr(adapter, "fatal_error_retryable", True):
+                    self._queue_account_reconnect(
+                        platform, account_name, account_config
+                    )
                 continue
             self._account_adapters.setdefault(platform, {})[account_name] = adapter
             self._sync_voice_mode_state_to_adapter(adapter)

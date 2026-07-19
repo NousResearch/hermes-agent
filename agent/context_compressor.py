@@ -1593,6 +1593,16 @@ class ContextCompressor(ContextEngine):
         # and re-evaluate so a stale local block cannot outlive the durable
         # state that justified it. The unblocked hot path above never pays
         # for the DB reads.
+        if (
+            self._summary_failure_cooldown_until <= time.monotonic()
+            and self._fallback_compression_streak < 2
+        ):
+            # Blocked solely by the in-memory ineffective-compression
+            # counter, which is not durable — there is nothing in the DB
+            # that could unblock it, so skip the refresh (otherwise this
+            # branch would re-read the DB on every gate check for the rest
+            # of the session).
+            return True
         self._refresh_durable_guards()
         return self._automatic_compression_blocked_locally()
 

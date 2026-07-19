@@ -577,3 +577,22 @@ class TestCooldownPersistFailureIsNotAClearedRow:
         db.clear_compression_failure_cooldown(session_id)
         assert compressor.get_active_compression_failure_cooldown(refresh=True) is None
         assert compressor._summary_failure_cooldown_until == 0.0
+
+    def test_ineffective_count_only_block_skips_durable_refresh(
+        self,
+        refresh_state_db: SessionDB,
+    ):
+        """A block owed solely to the in-memory ineffective counter (which is
+        not durable) must not re-read the DB on every gate check."""
+        db = refresh_state_db
+        session_id = "INEFFECTIVE_ONLY_BLOCK"
+        db.create_session(session_id, source="telegram")
+        compressor = _bound_context_compressor(db, session_id)
+        compressor._ineffective_compression_count = 2
+
+        with patch.object(
+            compressor,
+            "_refresh_durable_guards",
+            side_effect=AssertionError("nothing durable to refresh"),
+        ):
+            assert compressor._automatic_compression_blocked() is True

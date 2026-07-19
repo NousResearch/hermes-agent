@@ -13,12 +13,12 @@ describe('useSlashCompletions', () => {
     const { result } = renderHook(() => useSlashCompletions({ gateway: { request } as never }))
 
     await act(async () => {
-      result.current.adapter.search('')
+      result.current.adapter.search!('')
       await vi.advanceTimersByTimeAsync(60)
     })
 
     expect(request).toHaveBeenCalledWith('commands.catalog')
-    expect(result.current.adapter.search('')).toEqual([
+    expect(result.current.adapter.search!('')).toEqual([
       expect.objectContaining({
         id: '/test-skill|0',
         label: 'test-skill',

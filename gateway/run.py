@@ -1932,6 +1932,7 @@ from gateway.platforms.base import (
     MessageType,
     _prefix_within_utf16_limit,
     _reply_anchor_for_event,
+    _signal_quote_author_for_source,
     merge_pending_message_event,
     utf16_len,
 )
@@ -15656,18 +15657,24 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         reply_to_message_id: Optional[str] = None,
     ) -> Optional[Dict[str, Any]]:
         """Build the metadata dict platforms need for thread-aware replies."""
+        reply_anchor = reply_to_message_id or getattr(source, "message_id", None)
         metadata = self._thread_metadata_for_target(
             getattr(source, "platform", None),
             getattr(source, "chat_id", None),
             getattr(source, "thread_id", None),
             chat_type=getattr(source, "chat_type", None),
-            reply_to_message_id=reply_to_message_id or getattr(source, "message_id", None),
+            reply_to_message_id=reply_anchor,
         )
         if getattr(source, "platform", None) == Platform.SLACK:
             team_id = getattr(source, "scope_id", None)
             if team_id:
                 metadata = dict(metadata or {})
                 metadata["slack_team_id"] = str(team_id)
+        signal_quote_author = _signal_quote_author_for_source(source, reply_anchor)
+        if signal_quote_author is not None:
+            metadata = dict(metadata or {})
+            metadata["signal_quote_timestamp"] = str(reply_anchor)
+            metadata["signal_quote_author"] = signal_quote_author
         return metadata
 
     def _thread_metadata_for_target(

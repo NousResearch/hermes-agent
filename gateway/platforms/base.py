@@ -42,6 +42,28 @@ def _platform_name(platform) -> str:
     return str(value or "").lower()
 
 
+def _signal_quote_author_for_source(
+    source,
+    reply_to_message_id: str | None,
+) -> str | None:
+    """Return the original Signal sender for an automatic native quote.
+
+    A Signal quote identifies both the message timestamp and its author.  The
+    chat destination is not enough for groups, where ``chat_id`` is the group
+    rather than the member who sent the triggering message.
+    """
+    if (
+        reply_to_message_id is None
+        or _platform_name(getattr(source, "platform", None)) != "signal"
+    ):
+        return None
+    for attr in ("user_id_alt", "user_id"):
+        value = getattr(source, attr, None)
+        if value is not None and str(value).strip():
+            return str(value).strip()
+    return None
+
+
 def _float_env(name: str, default: float) -> float:
     raw = os.environ.get(name, "").strip()
     if not raw:
@@ -62,19 +84,27 @@ def _thread_metadata_for_source(source, reply_to_message_id: str | None = None) 
     synthetic/resumed sends that have no reply anchor fall back to Telegram's
     ``direct_messages_topic_id`` when the Bot API supports it.
     """
+    platform_name = _platform_name(getattr(source, "platform", None))
     thread_id = getattr(source, "thread_id", None)
     metadata = {"thread_id": thread_id} if thread_id is not None else {}
     # Slack workspace identity is durable routing state, not ephemeral event
     # metadata. Carry it on every outbound path (including unthreaded sends)
     # so a multi-workspace Socket Mode gateway never falls back to its primary
     # WebClient after an async, stream, or recovery boundary.
-    if _platform_name(getattr(source, "platform", None)) == "slack":
+    if platform_name == "slack":
         scope_id = getattr(source, "scope_id", None)
         if scope_id:
             metadata["slack_team_id"] = str(scope_id)
+    signal_quote_author = _signal_quote_author_for_source(
+        source,
+        reply_to_message_id,
+    )
+    if signal_quote_author is not None:
+        metadata["signal_quote_timestamp"] = str(reply_to_message_id)
+        metadata["signal_quote_author"] = signal_quote_author
     if not metadata:
         return None
-    if _platform_name(getattr(source, "platform", None)) == "telegram" and getattr(source, "chat_type", None) == "dm":
+    if platform_name == "telegram" and getattr(source, "chat_type", None) == "dm":
         metadata["telegram_dm_topic_reply_fallback"] = True
         tid = str(thread_id)
         if tid and tid not in {"", "1"}:

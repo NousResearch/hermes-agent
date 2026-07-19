@@ -235,6 +235,71 @@ def _looks_like_e164_number(value: str) -> bool:
     return digits.isdigit() and 7 <= len(digits) <= 15
 
 
+def _parse_signal_timestamp(value: Any) -> Optional[int]:
+    """Parse a positive JSON-safe Signal timestamp without coercion surprises."""
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, int):
+        timestamp = value
+    elif isinstance(value, str):
+        raw = value.strip()
+        if not raw or not raw.isascii() or not raw.isdigit():
+            return None
+        timestamp = int(raw)
+    else:
+        return None
+    if timestamp <= 0 or timestamp > 9_223_372_036_854_775_807:
+        return None
+    return timestamp
+
+
+def _is_valid_signal_quote_author(value: Any) -> bool:
+    """Return whether signal-cli can parse *value* as one quoted sender."""
+    if not isinstance(value, str):
+        return False
+    author = value.strip()
+    if _looks_like_e164_number(author):
+        return True
+    if author.startswith("PNI:"):
+        author = author[4:]
+    elif author.startswith("u:"):
+        return bool(author[2:].strip())
+    try:
+        uuid.UUID(author)
+        return True
+    except (ValueError, AttributeError, TypeError):
+        return False
+
+
+def _signal_quote_params(
+    reply_to: Any,
+    metadata: Optional[Dict[str, Any]],
+) -> Dict[str, Any]:
+    """Build an atomic, validated signal-cli native quote payload.
+
+    signal-cli requires ``quoteAuthor`` whenever ``quoteTimestamp`` is set.
+    If either half is unavailable or invalid, return no quote parameters so a
+    normal reply is still delivered instead of failing the entire send RPC.
+    """
+    if not isinstance(metadata, dict):
+        return {}
+    timestamp_source = (
+        reply_to
+        if reply_to is not None
+        else metadata.get("signal_quote_timestamp")
+    )
+    timestamp = _parse_signal_timestamp(timestamp_source)
+    if timestamp is None:
+        return {}
+    author = metadata.get("signal_quote_author")
+    if not _is_valid_signal_quote_author(author):
+        return {}
+    return {
+        "quoteTimestamp": timestamp,
+        "quoteAuthor": author.strip(),
+    }
+
+
 def check_signal_requirements() -> bool:
     """Check if Signal runtime dependencies are available."""
     return True
@@ -733,8 +798,11 @@ class SignalAdapter(BasePlatformAdapter):
                 # WhatsApp/Slack/BlueBubbles/Mattermost).
                 msg_type = MessageType.DOCUMENT
 
-        # Parse timestamp from envelope data (milliseconds since epoch)
-        ts_ms = envelope_data.get("timestamp", 0)
+        # The data-message timestamp is the quote/reaction/receipt identity.
+        # It normally matches the envelope timestamp, which remains a
+        # compatibility fallback for older signal-cli envelope shapes.
+        raw_ts_ms = data_message.get("timestamp") or envelope_data.get("timestamp", 0)
+        ts_ms = _parse_signal_timestamp(raw_ts_ms) or 0
         if ts_ms:
             try:
                 timestamp = datetime.fromtimestamp(ts_ms / 1000, tz=timezone.utc)
@@ -1076,12 +1144,7 @@ class SignalAdapter(BasePlatformAdapter):
             else:
                 params["textStyles"] = text_styles
 
-        if reply_to is not None:
-            try:
-                params["quoteTimestamp"] = int(reply_to)
-                params["quoteAuthor"] = chat_id
-            except (ValueError, TypeError):
-                pass
+        params.update(_signal_quote_params(reply_to, metadata))
 
         if chat_id.startswith("group:"):
             params["groupId"] = chat_id[6:]
@@ -1257,6 +1320,7 @@ class SignalAdapter(BasePlatformAdapter):
             "account": self.account,
             "message": "",
         }
+        base_params.update(_signal_quote_params(None, metadata))
         if chat_id.startswith("group:"):
             base_params["groupId"] = chat_id[6:]
         else:
@@ -1379,6 +1443,8 @@ class SignalAdapter(BasePlatformAdapter):
         chat_id: str,
         image_url: str,
         caption: Optional[str] = None,
+        reply_to: Optional[str] = None,
+        metadata: Optional[Dict[str, Any]] = None,
         **kwargs,
     ) -> SendResult:
         """Send an image. Supports http(s):// and file:// URLs."""
@@ -1408,6 +1474,7 @@ class SignalAdapter(BasePlatformAdapter):
             "message": caption or "",
             "attachments": [file_path],
         }
+        params.update(_signal_quote_params(reply_to, metadata))
 
         if chat_id.startswith("group:"):
             params["groupId"] = chat_id[6:]
@@ -1429,6 +1496,8 @@ class SignalAdapter(BasePlatformAdapter):
         file_path: str,
         media_label: str,
         caption: Optional[str] = None,
+        reply_to: Optional[str] = None,
+        metadata: Optional[Dict[str, Any]] = None,
     ) -> SendResult:
         """Send any file as a Signal attachment via RPC.
 
@@ -1450,6 +1519,7 @@ class SignalAdapter(BasePlatformAdapter):
             "message": caption or "",
             "attachments": [file_path],
         }
+        params.update(_signal_quote_params(reply_to, metadata))
 
         if chat_id.startswith("group:"):
             params["groupId"] = chat_id[6:]
@@ -1471,10 +1541,19 @@ class SignalAdapter(BasePlatformAdapter):
         file_path: str,
         caption: Optional[str] = None,
         filename: Optional[str] = None,
+        reply_to: Optional[str] = None,
+        metadata: Optional[Dict[str, Any]] = None,
         **kwargs,
     ) -> SendResult:
         """Send a document/file attachment."""
-        return await self._send_attachment(chat_id, file_path, "File", caption)
+        return await self._send_attachment(
+            chat_id=chat_id,
+            file_path=file_path,
+            media_label="File",
+            caption=caption,
+            reply_to=reply_to,
+            metadata=metadata,
+        )
 
     async def send_image_file(
         self,
@@ -1482,6 +1561,7 @@ class SignalAdapter(BasePlatformAdapter):
         image_path: str,
         caption: Optional[str] = None,
         reply_to: Optional[str] = None,
+        metadata: Optional[Dict[str, Any]] = None,
         **kwargs,
     ) -> SendResult:
         """Send a local image file as a native Signal attachment.
@@ -1489,7 +1569,14 @@ class SignalAdapter(BasePlatformAdapter):
         Called by the gateway media delivery flow when MEDIA: tags containing
         image paths are extracted from agent responses.
         """
-        return await self._send_attachment(chat_id, image_path, "Image", caption)
+        return await self._send_attachment(
+            chat_id=chat_id,
+            file_path=image_path,
+            media_label="Image",
+            caption=caption,
+            reply_to=reply_to,
+            metadata=metadata,
+        )
 
     async def send_voice(
         self,
@@ -1497,6 +1584,7 @@ class SignalAdapter(BasePlatformAdapter):
         audio_path: str,
         caption: Optional[str] = None,
         reply_to: Optional[str] = None,
+        metadata: Optional[Dict[str, Any]] = None,
         **kwargs,
     ) -> SendResult:
         """Send an audio file as a Signal attachment.
@@ -1504,7 +1592,14 @@ class SignalAdapter(BasePlatformAdapter):
         Signal does not distinguish voice messages from file attachments at
         the API level, so this routes through the same RPC send path.
         """
-        return await self._send_attachment(chat_id, audio_path, "Audio", caption)
+        return await self._send_attachment(
+            chat_id=chat_id,
+            file_path=audio_path,
+            media_label="Audio",
+            caption=caption,
+            reply_to=reply_to,
+            metadata=metadata,
+        )
 
     async def send_video(
         self,
@@ -1512,10 +1607,18 @@ class SignalAdapter(BasePlatformAdapter):
         video_path: str,
         caption: Optional[str] = None,
         reply_to: Optional[str] = None,
+        metadata: Optional[Dict[str, Any]] = None,
         **kwargs,
     ) -> SendResult:
         """Send a video file as a Signal attachment."""
-        return await self._send_attachment(chat_id, video_path, "Video", caption)
+        return await self._send_attachment(
+            chat_id=chat_id,
+            file_path=video_path,
+            media_label="Video",
+            caption=caption,
+            reply_to=reply_to,
+            metadata=metadata,
+        )
 
     # ------------------------------------------------------------------
     # Typing Indicators

@@ -1100,11 +1100,9 @@ async def qr_login(
                     # domain (e.g. ilinkai.wechat.com instead of
                     # ilinkai.weixin.qq.com). Always normalise to the canonical
                     # endpoint to avoid silent session failures.
+                    from gateway.platforms.weixin_qr_session import _normalise_ilink_base_url
                     candidate = f"https://{redirect_host}"
-                    if "ilinkai.weixin.qq.com" in candidate:
-                        current_base_url = candidate
-                    else:
-                        current_base_url = ILINK_BASE_URL
+                    current_base_url = _normalise_ilink_base_url(candidate)
             elif status == "expired":
                 refresh_count += 1
                 if refresh_count > 3:
@@ -1142,8 +1140,9 @@ async def qr_login(
                 # confirmation response. Always normalise to the canonical
                 # ILINK_BASE_URL to avoid silent session failures caused by
                 # the wrong domain being saved to .env.
+                from gateway.platforms.weixin_qr_session import _normalise_ilink_base_url
                 raw_base_url = str(status_resp.get("baseurl") or ILINK_BASE_URL)
-                base_url = ILINK_BASE_URL if "ilinkai.weixin.qq.com" not in raw_base_url else raw_base_url
+                base_url = _normalise_ilink_base_url(raw_base_url)
                 user_id = str(status_resp.get("ilink_user_id") or "")
                 if not account_id or not token:
                     logger.error("weixin: QR confirmed but credential payload was incomplete")

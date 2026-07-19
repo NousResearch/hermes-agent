@@ -1080,6 +1080,12 @@ class WhatsAppOnboardingStart(BaseModel):
 class WhatsAppOnboardingApply(BaseModel):
     mode: Optional[str] = None
     allowed_users: Optional[str] = None
+
+class WeixinOnboardingStart(BaseModel):
+    profile: Optional[str] = None
+
+
+class WeixinOnboardingApply(BaseModel):
     profile: Optional[str] = None
 
 
@@ -8660,7 +8666,7 @@ async def start_weixin_onboarding(body: WeixinOnboardingStart, profile: Optional
         raise HTTPException(status_code=500, detail=str(exc)) from exc
 
     manager = _weixin_qr_manager()
-    return manager.start_session(hermes_home)
+    return manager.start_session(hermes_home, profile=effective_profile or "")
 
 
 @app.get("/api/messaging/weixin/onboarding/{session_id}/status")
@@ -8701,15 +8707,26 @@ async def apply_weixin_onboarding(
         )
 
     effective_profile = body.profile or profile
+
+    # Reject profile mismatch: the session was started under a specific
+    # profile, and applying under a different one would write credentials
+    # to the wrong profile's .env/config.
+    session = manager.get_session(session_id)
+    if session and session.profile and effective_profile and session.profile != effective_profile:
+        raise HTTPException(
+            status_code=409,
+            detail="The management profile changed since the QR session was started. "
+            "Please cancel and start a new setup under the correct profile.",
+        )
+
     try:
         with _profile_scope(effective_profile):
             save_env_value("WEIXIN_ACCOUNT_ID", credentials["account_id"])
             save_env_value("WEIXIN_TOKEN", credentials["token"])
             # Defensive: ensure the base URL is always the canonical iLink
             # endpoint, even if the QR session somehow captured a stale one.
-            base_url = credentials["base_url"]
-            if "ilinkai.weixin.qq.com" not in base_url:
-                base_url = "https://ilinkai.weixin.qq.com"
+            from gateway.platforms.weixin_qr_session import _normalise_ilink_base_url
+            base_url = _normalise_ilink_base_url(credentials["base_url"])
             save_env_value("WEIXIN_BASE_URL", base_url)
             _write_platform_enabled("weixin", True)
     except HTTPException:

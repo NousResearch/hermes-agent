@@ -637,6 +637,15 @@ export default function ChannelsPage() {
                     showToast={showToast}
                   />
                 )}
+                {platform.id === "weixin" && (
+                  <WeixinOnboardingPanel
+                    onChanged={load}
+                    onRestartNeeded={() => setRestartNeeded(true)}
+                    platform={platform}
+                    setRestartNeeded={setRestartNeeded}
+                    showToast={showToast}
+                  />
+                )}
               </CardContent>
             </Card>
           );

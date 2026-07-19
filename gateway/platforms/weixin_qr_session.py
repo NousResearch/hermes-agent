@@ -29,7 +29,6 @@ import asyncio
 import base64
 import io
 import logging
-import secrets
 import threading
 import time
 import uuid
@@ -52,6 +51,7 @@ class WeixinQRSession:
 
     session_id: str
     hermes_home: str
+    profile: str = ""  # Bound at creation; apply must match.
     bot_type: str = "3"
     created_at_ts: float = field(default_factory=time.time)
     expires_at_ts: float = 0.0
@@ -126,8 +126,11 @@ class WeixinQRSessionManager:
             return loop
 
     def _prune_expired(self) -> None:
-        """Evict expired sessions. Caller must hold ``self._lock``."""
+        """Evict expired and stale terminal sessions. Caller must hold ``self._lock``."""
         now = time.time()
+        # Sessions still in a non-terminal state whose deadline has passed.
+        # The background task may still be running — cancel it so it doesn't
+        # race with eviction.
         expired = [
             sid
             for sid, session in self._sessions.items()
@@ -143,10 +146,24 @@ class WeixinQRSessionManager:
             if session and session._task and not session._task.done():
                 session._task.cancel()
 
+        # Evict terminal sessions after a 5-minute retention window so the
+        # UI has time to display the final state (confirmed/failed/expired/
+        # cancelled) before the session is garbage-collected.
+        _TERMINAL_RETENTION = 300  # seconds
+        stale_terminal = [
+            sid
+            for sid, session in self._sessions.items()
+            if session.state in {"confirmed", "failed", "expired", "cancelled"}
+            and session.expires_at_ts + _TERMINAL_RETENTION <= now
+        ]
+        for sid in stale_terminal:
+            self._sessions.pop(sid, None)
+
     def start_session(
         self,
         hermes_home: str,
         *,
+        profile: str = "",
         bot_type: str = "3",
         timeout_seconds: int = DEFAULT_SESSION_TIMEOUT_SECONDS,
     ) -> Dict[str, Any]:
@@ -163,6 +180,7 @@ class WeixinQRSessionManager:
             session = WeixinQRSession(
                 session_id=session_id,
                 hermes_home=hermes_home,
+                profile=profile,
                 bot_type=bot_type,
                 created_at_ts=now,
                 expires_at_ts=now + timeout_seconds,
@@ -218,6 +236,11 @@ class WeixinQRSessionManager:
                 return None
             return dict(session.credentials) if session.credentials else None
 
+    def get_session(self, session_id: str) -> Optional[WeixinQRSession]:
+        """Return the raw session object (for profile validation on apply)."""
+        with self._lock:
+            return self._sessions.get(session_id)
+
     # ------------------------------------------------------------------
     # Background task implementation
     # ------------------------------------------------------------------
@@ -245,12 +268,15 @@ class WeixinQRSessionManager:
             import aiohttp
 
             connector = _make_ssl_connector()
-            ssl_ctx = _get_ssl_context() if connector is None else None
+            if connector is None:
+                # _make_ssl_connector() returns None when called outside an
+                # event loop (aiohttp 3.13+). Build a TCPConnector from the
+                # pre-built SSL context instead.
+                ssl_ctx = _get_ssl_context()
+                connector = aiohttp.TCPConnector(ssl=ssl_ctx) if ssl_ctx else None
             session_kwargs = {"trust_env": True}
             if connector is not None:
                 session_kwargs["connector"] = connector
-            elif ssl_ctx is not None:
-                session_kwargs["ssl"] = ssl_ctx
             async with aiohttp.ClientSession(**session_kwargs) as aiohttp_session:
                 session._aiohttp_session = aiohttp_session
                 session._current_base_url = ILINK_BASE_URL
@@ -375,6 +401,13 @@ class WeixinQRSessionManager:
 
         # Render QR as base64 PNG for inline <img> rendering.
         session.qr_image_base64 = _render_qr_png_base64(session.qr_payload)
+        if not session.qr_image_base64:
+            session.state = "failed"
+            session.error_message = (
+                "QR rendering failed — the 'qrcode' package may be missing. "
+                "Install it with: pip install qrcode"
+            )
+            return False
         return True
 
     async def _handle_confirmed(
@@ -398,7 +431,7 @@ class WeixinQRSessionManager:
         # normalise to the canonical ILINK_BASE_URL to avoid silent session
         # failures caused by the wrong domain.
         raw_base_url = str(status_resp.get("baseurl") or ILINK_BASE_URL)
-        base_url = ILINK_BASE_URL if "ilinkai.weixin.qq.com" not in raw_base_url else raw_base_url
+        base_url = _normalise_ilink_base_url(raw_base_url)
         user_id = str(status_resp.get("ilink_user_id") or "")
 
         if not account_id or not token:
@@ -438,7 +471,7 @@ def _render_qr_png_base64(data: str) -> str:
     """Render a QR code as a base64-encoded PNG string.
 
     Falls back to empty string if the ``qrcode`` package is unavailable.
-    The frontend will then display the raw URL as a fallback link.
+    The frontend will show an error message in that case.
     """
     try:
         import qrcode
@@ -467,3 +500,25 @@ _weixin_qr_sessions = WeixinQRSessionManager()
 def get_weixin_qr_session_manager() -> WeixinQRSessionManager:
     """Return the process-global WeixinQRSessionManager."""
     return _weixin_qr_sessions
+
+
+def _normalise_ilink_base_url(raw_url: str) -> str:
+    """Normalise an iLink base URL to the canonical endpoint.
+
+    iLink sometimes returns ``ilinkai.wechat.com`` (missing ``.qq.com``) or
+    other variant domains.  Parse the URL and require an exact HTTPS hostname
+    match against ``ilinkai.weixin.qq.com`` before retaining a server-provided
+    URL; otherwise fall back to the canonical ``ILINK_BASE_URL``.
+    """
+    from urllib.parse import urlparse
+
+    try:
+        parsed = urlparse(raw_url)
+        if (
+            parsed.scheme == "https"
+            and parsed.hostname == "ilinkai.weixin.qq.com"
+        ):
+            return raw_url
+    except Exception:
+        pass
+    return ILINK_BASE_URL

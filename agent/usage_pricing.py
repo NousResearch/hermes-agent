@@ -1083,6 +1083,15 @@ def normalize_usage(
             cache_read_tokens = _to_int(
                 getattr(response_usage, "prompt_cache_hit_tokens", 0)
             )
+        if not cache_read_tokens:
+            # Kimi/Moonshot's native API (api.moonshot.cn / .ai) reports
+            # context-cache hits as a top-level usage.cached_tokens, not the
+            # OpenAI nested prompt_tokens_details.cached_tokens shape. Without
+            # this, direct Kimi sessions always showed 0 cache-hit tokens and
+            # were billed at the full input rate (#65722).
+            cache_read_tokens = _to_int(
+                getattr(response_usage, "cached_tokens", 0)
+            )
         cache_write_tokens = _to_int(
             getattr(details, "cache_write_tokens", 0) if details else 0
         )

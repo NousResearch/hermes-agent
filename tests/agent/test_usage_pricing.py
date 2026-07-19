@@ -77,6 +77,56 @@ def test_normalize_usage_nested_details_win_over_deepseek_top_level():
     assert normalized.input_tokens == 1100
 
 
+def test_normalize_usage_reads_kimi_top_level_cached_tokens():
+    """Kimi/Moonshot's native API reports context-cache hits as a top-level
+    usage.cached_tokens, not OpenAI's nested prompt_tokens_details.cached_tokens.
+    Before this fix, direct Kimi sessions normalized to cache_read_tokens=0 —
+    cache hits were invisible and billed at the full input rate (#65722)."""
+    usage = SimpleNamespace(
+        prompt_tokens=2000,
+        completion_tokens=300,
+        cached_tokens=1200,
+    )
+
+    normalized = normalize_usage(usage, provider="moonshot", api_mode="chat_completions")
+
+    assert normalized.cache_read_tokens == 1200
+    assert normalized.input_tokens == 800
+    assert normalized.output_tokens == 300
+
+
+def test_normalize_usage_nested_details_win_over_kimi_top_level():
+    """When both shapes are present, the OpenAI nested value wins and the
+    Kimi top-level cached_tokens is not double-read."""
+    usage = SimpleNamespace(
+        prompt_tokens=2000,
+        completion_tokens=100,
+        prompt_tokens_details=SimpleNamespace(cached_tokens=700),
+        cached_tokens=1200,
+    )
+
+    normalized = normalize_usage(usage, provider="moonshot", api_mode="chat_completions")
+
+    assert normalized.cache_read_tokens == 700
+    assert normalized.input_tokens == 1300
+
+
+def test_normalize_usage_deepseek_top_level_wins_over_kimi_field():
+    """DeepSeek's prompt_cache_hit_tokens is consulted before the Kimi
+    cached_tokens fallback, so a DeepSeek response carrying only its native
+    field is not shadowed and the Kimi branch is not double-read."""
+    usage = SimpleNamespace(
+        prompt_tokens=2000,
+        completion_tokens=100,
+        prompt_cache_hit_tokens=1500,
+    )
+
+    normalized = normalize_usage(usage, provider="deepseek", api_mode="chat_completions")
+
+    assert normalized.cache_read_tokens == 1500
+    assert normalized.input_tokens == 500
+
+
 def test_normalize_usage_openai_reads_top_level_anthropic_cache_fields():
     """Some OpenAI-compatible proxies (OpenRouter, Cline) expose
     Anthropic-style cache token counts at the top level of the usage object when

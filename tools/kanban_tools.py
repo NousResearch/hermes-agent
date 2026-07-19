@@ -701,24 +701,27 @@ def _handle_block(args: dict, **kw) -> str:
         # as terminal, identically to `done`, regardless of kind. Without
         # this, a worker that learns kanban_complete is gated can just call
         # kanban_block(reason="anything") to escape the loop instead.
-        # Restrict goal_mode tasks to the kinds that represent a genuine
-        # external blocker the worker cannot resolve itself; `capability`
-        # and `transient` (or an unset kind) route back through
-        # kanban_complete, which the judge now gates.
+        # Restrict goal_mode tasks to kinds that represent a genuine external
+        # blocker the worker cannot resolve itself; `capability` and
+        # `transient` still route back through kanban_complete / the judge.
+        #
+        # Schema marks ``kind`` optional ("Omit only if none apply"). Meet
+        # that contract on goal_mode by coercing a missing kind to
+        # ``needs_input`` rather than rejecting the call (#59764 Part a).
         task = kb.get_task(conn, tid)
-        if (
-            task
-            and task.goal_mode
-            and kind not in _GOAL_MODE_BLOCK_ALLOWED_KINDS
-        ):
-            conn.close()
-            return tool_error(
-                f"goal_mode tasks can only block with kind in "
-                f"{sorted(_GOAL_MODE_BLOCK_ALLOWED_KINDS)} (got {kind!r}). "
-                f"If the task is actually finished or cannot proceed for "
-                f"another reason, call kanban_complete instead — the "
-                f"completion judge will evaluate it."
-            )
+        if task and task.goal_mode:
+            if kind is None:
+                kind = "needs_input"
+            elif kind not in _GOAL_MODE_BLOCK_ALLOWED_KINDS:
+                conn.close()
+                return tool_error(
+                    f"goal_mode tasks can only block with kind in "
+                    f"{sorted(_GOAL_MODE_BLOCK_ALLOWED_KINDS)} (got {kind!r}). "
+                    f"Omit kind to default to 'needs_input'. If the task is "
+                    f"actually finished or cannot proceed for another reason, "
+                    f"call kanban_complete instead — the completion judge will "
+                    f"evaluate it."
+                )
         try:
             ok = kb.block_task(
                 conn, tid,
@@ -1525,6 +1528,10 @@ KANBAN_BLOCK_SCHEMA = {
         "needed), 'needs_input' (you need a human decision/answer), "
         "'capability' (a hard wall: no access, missing credentials, an action "
         "no agent can do), or 'transient' (a flaky failure that may clear). "
+        "On goal_mode tasks only 'dependency' and 'needs_input' are accepted; "
+        "omitting ``kind`` defaults to 'needs_input'. 'capability' and "
+        "'transient' are not valid exits from goal_mode — use kanban_complete "
+        "and let the completion judge evaluate instead. "
         "``reason`` is shown to the human on the board. If a task keeps "
         "getting unblocked and re-blocked for the same reason, it is "
         "auto-escalated to triage. Use for genuine blockers only — don't "
@@ -1551,7 +1558,9 @@ KANBAN_BLOCK_SCHEMA = {
                 "description": (
                     "Why you're blocked. 'dependency' waits in todo and "
                     "resumes automatically; the others surface to a human. "
-                    "Omit only if none apply."
+                    "On goal_mode tasks only 'dependency' and 'needs_input' "
+                    "are allowed; if omitted, goal_mode defaults to "
+                    "'needs_input'. On non-goal tasks, omit only if none apply."
                 ),
             },
             "board": _board_schema_prop(),

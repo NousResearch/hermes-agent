@@ -15358,7 +15358,7 @@ def _run_kanban_goal_loop_q(cli: "HermesCLI", first_response: str) -> None:
     def _block(reason: str) -> None:
         c = _kb.connect()
         try:
-            _kb.block_task(c, task_id, reason=reason)
+            _kb.block_task(c, task_id, reason=reason, kind="needs_input")
         finally:
             try:
                 c.close()

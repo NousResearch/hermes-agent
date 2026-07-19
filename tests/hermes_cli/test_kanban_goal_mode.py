@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import sqlite3
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -296,3 +297,95 @@ def test_loop_stops_if_task_reclaimed(monkeypatch):
         first_response="x",
     )
     assert res["outcome"] == "stopped"
+
+
+# ---------------------------------------------------------------------------
+# Goal loop / kanban_block dispatch contract
+# ---------------------------------------------------------------------------
+
+def test_quiet_goal_loop_auto_block_uses_goal_mode_allowed_kind(
+    kanban_home, monkeypatch
+):
+    """The internal goal-loop blocker must not generate a rejected kind."""
+    with kb.connect() as conn:
+        tid = kb.create_task(
+            conn,
+            title="goal task",
+            assignee="worker",
+            goal_mode=True,
+            goal_max_turns=1,
+        )
+        assert kb.claim_task(conn, tid, claimer="worker") is not None
+
+    monkeypatch.setenv("HERMES_KANBAN_TASK", tid)
+    _patch_judge(monkeypatch, ["continue"])
+
+    from cli import _run_kanban_goal_loop_q
+
+    fake_cli = SimpleNamespace(
+        agent=SimpleNamespace(
+            run_conversation=lambda **_: pytest.fail("budget should block first")
+        ),
+        conversation_history=[],
+        session_id="s1",
+    )
+
+    _run_kanban_goal_loop_q(fake_cli, "not done yet")
+
+    with kb.connect() as conn:
+        task = kb.get_task(conn, tid)
+    assert task.status == "blocked"
+    assert task.block_kind == "needs_input"
+
+
+def test_goal_mode_kanban_block_rejects_invalid_kind(kanban_home, monkeypatch):
+    with kb.connect() as conn:
+        tid = kb.create_task(
+            conn,
+            title="goal task",
+            assignee="worker",
+            goal_mode=True,
+        )
+        assert kb.claim_task(conn, tid, claimer="worker") is not None
+
+    monkeypatch.setenv("HERMES_KANBAN_TASK", tid)
+
+    from tools import kanban_tools
+
+    monkeypatch.setattr(kanban_tools, "_goal_judge_available", lambda: True)
+    result = kanban_tools._handle_block(
+        {"task_id": tid, "reason": "blocked", "kind": "kanban_block"}
+    )
+
+    assert "kind must be one of" in result
+
+
+def test_goal_mode_kanban_block_omitted_kind_defaults_to_needs_input(
+    kanban_home, monkeypatch
+):
+    """Model-facing path: omit kind on a goal_mode task → needs_input (#59764)."""
+    with kb.connect() as conn:
+        tid = kb.create_task(
+            conn,
+            title="goal task",
+            assignee="worker",
+            goal_mode=True,
+        )
+        assert kb.claim_task(conn, tid, claimer="worker") is not None
+
+    monkeypatch.setenv("HERMES_KANBAN_TASK", tid)
+
+    from tools import kanban_tools
+    import json
+
+    result = kanban_tools._handle_block(
+        {"task_id": tid, "reason": "need repo credentials"}
+    )
+    payload = json.loads(result)
+    assert payload.get("ok") is True
+    assert payload.get("block_kind") == "needs_input"
+
+    with kb.connect() as conn:
+        task = kb.get_task(conn, tid)
+    assert task.status == "blocked"
+    assert task.block_kind == "needs_input"

@@ -668,6 +668,10 @@ def build_parser(parent_subparsers: argparse._SubParsersAction) -> argparse.Argu
                         help=f"Auto-block a task after this many consecutive non-success attempts "
                              f"(spawn_failed, timed_out, or crashed; default: {kb.DEFAULT_SPAWN_FAILURE_LIMIT})")
     p_disp.add_argument("--json", action="store_true")
+    p_disp.add_argument(
+        "--task", action="append", dest="task_ids", default=None,
+        help="Dispatch specific task(s) by ID (repeatable; bypasses max_in_progress cap)",
+    )
 
     # --- daemon (deprecated) ---
     p_daemon = sub.add_parser(
@@ -2263,6 +2267,7 @@ def _cmd_dispatch(args: argparse.Namespace) -> int:
             failure_limit=getattr(args, "failure_limit", kb.DEFAULT_SPAWN_FAILURE_LIMIT),
             default_assignee=default_assignee,
             max_in_progress_per_profile=max_in_progress_per_profile,
+            only_task_ids=getattr(args, "task_ids", None),
         )
     if getattr(args, "json", False):
         print(json.dumps({

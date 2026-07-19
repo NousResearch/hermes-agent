@@ -1779,7 +1779,7 @@
                   tx(t, "orchestration.defaultTag", "default"),
               })),
             h("div", { className: "text-[10px] text-muted-foreground" },
-              tx(t, "orchestration.rootOwner", "Owns the root task after fan-out.")),
+              tx(t, "orchestration.rootOwner", "Owns the root task after fan-out (wakes back up to judge completion). Does not drive how tasks split — configure the decomposer model under auxiliary.kanban_decomposer.")),
           ),
           h("div", { className: "flex flex-col gap-1" },
             h(Label, { className: "text-xs text-muted-foreground" },
@@ -1817,8 +1817,8 @@
             ),
             h("div", { className: "text-[10px] text-muted-foreground" },
               settings.auto_decompose
-                ? tx(t, "orchestration.autoDescription", "The dispatcher decomposes new triage tasks automatically.")
-                : tx(t, "orchestration.manualDescription", "Triage tasks stay in triage until you click Decompose.")),
+                ? tx(t, "orchestration.autoDescription", "Orchestration: Auto — the dispatcher decomposes new triage tasks automatically every tick. Click to switch to Manual (pre-PR behavior).")
+                : tx(t, "orchestration.manualDescription", "Orchestration: Manual — triage tasks stay in triage until you click ⚗ Decompose on each card. Click to switch to Auto.")),
           ),
         ) : h("div", { className: "text-xs text-muted-foreground" },
           tx(t, "orchestration.loading", "Loading…")),
@@ -2257,7 +2257,7 @@
         }),
       ),
       h("div", { className: "flex flex-col gap-1",
-                 title: tx(t, "tooltips.tenantFilter", "Tenants are free-form tags on a task.") },
+                 title: tx(t, "tooltips.tenantFilter", "Tenants are free-form tags on a task (e.g. customer, project, team). Set them via the task drawer or kanban_create.") },
         h(Label, { className: "text-xs text-muted-foreground" }, tx(t, "tenant", "Tenant")),
         h(Select, Object.assign({
           value: props.tenantFilter,
@@ -2304,7 +2304,7 @@
       h(Button, {
         onClick: props.onNudgeDispatch,
         size: "sm",
-        title: tx(t, "tooltips.nudgeDispatcher", "Wake the dispatcher to claim ready tasks now."),
+        title: tx(t, "tooltips.nudgeDispatcher", "Wake the dispatcher to claim ready tasks now instead of waiting for the next tick. Use this after adding tasks if you want them picked up immediately."),
       }, tx(t, "nudgeDispatcher", "Nudge dispatcher")),
       h(Button, {
         onClick: props.onRefresh,
@@ -2319,7 +2319,7 @@
           props.setIncludeArchived(false);
         },
         size: "sm",
-        title: tx(t, "tooltips.clearFilters", "Clear all active filters."),
+        title: tx(t, "tooltips.clearFilters", "Clear all active filters (search, tenant, assignee, archived)."),
       }, tx(t, "extra.clearFilters", "Clear filters")),
     );
   }
@@ -2360,7 +2360,7 @@
             count: props.count,
           })); },
         size: "sm",
-        title: tx(t, "bulk.unblockTitle", "Unblock selected tasks."),
+        title: tx(t, "bulk.unblockTitle", "Unblock selected tasks (promote to Ready)."),
       }, tx(t, "bulk.unblock", "Unblock")),
       h(Button, {
         onClick: function () {
@@ -2406,7 +2406,7 @@
         }, tx(t, "bulk.setPriority", "Set priority")),
       ),
       h("div", { className: "hermes-kanban-bulk-reassign",
-                 title: tx(t, "bulk.reassignTitle", "Reassign selected tasks.") },
+                 title: tx(t, "bulk.reassignTitle", "Reassign selected tasks to a different Hermes profile. Pick a profile (or unassign) and click Apply.") },
         h(Select, Object.assign({
           value: assignee,
           className: "h-7 text-xs",
@@ -2429,7 +2429,7 @@
         }, tx(t, "apply", "Apply")),
       ),
       h("label", { className: "hermes-kanban-bulk-reclaim-first",
-        title: tx(t, "bulk.reclaimFirstTitle", "Reclaim active claims before reassigning") },
+        title: tx(t, "bulk.reclaimFirstTitle", "Reclaim any active claims before reassigning") },
         h(Checkbox, {
           checked: reclaimFirst,
           onCheckedChange: function (checked) { setReclaimFirst(checked === true); },
@@ -2440,7 +2440,7 @@
       h(Button, {
         onClick: props.onSelectAllVisible,
         size: "sm",
-        title: tx(t, "bulk.selectAllVisibleTitle", "Select all visible cards."),
+        title: tx(t, "bulk.selectAllVisibleTitle", "Select all visible cards across columns."),
       }, tx(t, "bulk.selectAllVisible", "Select all visible")),
       h(Button, {
         onClick: props.onClear,
@@ -3131,7 +3131,7 @@
                   : tx(t, "assigneePlaceholder", "assignee"),
                 className: "h-8 text-sm",
                 title: props.columnName === "triage"
-                  ? tx(t, "tooltips.assigneeInput", "Hermes profile that will spec this task.")
+                  ? tx(t, "tooltips.assigneeInput", "Hermes profile that will spec this task (default: the dispatcher's configured specifier). Leave blank to let the dispatcher pick.")
                   : tx(t, "tooltips.workerAssigneeInput", "Hermes profile to assign."),
                 style: { textTransform: "none" },
                 autoCapitalize: "none",
@@ -3147,7 +3147,7 @@
                 onChange: function (e) { setPriority(e.target.value); },
                 placeholder: "pri",
                 className: "h-8 text-sm",
-                title: tx(t, "tooltips.priorityInput", "Priority. Higher is claimed first."),
+                title: tx(t, "tooltips.priorityInput", "Priority. Higher-priority tasks are claimed first by the dispatcher. 0 = default."),
               }),
             ),
           ),
@@ -3159,7 +3159,7 @@
               onChange: function (e) { setSkills(e.target.value); },
               placeholder: tx(t, "skillsPlaceholder",
                 "skills (optional, comma-separated): translation, github-code-review"),
-              title: tx(t, "tooltips.skillsInput", "Force-load these skills into the worker."),
+              title: tx(t, "tooltips.skillsInput", "Force-load these skills into the worker (in addition to the built-in kanban-worker)."),
               className: "h-8 text-sm",
             }),
           ),
@@ -3168,7 +3168,7 @@
             h("div", { className: "flex gap-2" },
               h(Select, Object.assign({
                 value: workspaceKind,
-                title: tx(t, "tooltips.workspaceKind", "Choose whether task files are temporary or preserved."),
+                title: tx(t, "tooltips.workspaceKind", "Choose whether task files are temporary or preserved after completion."),
                 className: "h-8 text-sm flex-1",
               }, selectChangeHandler(setWorkspaceKind)),
                 h(SelectOption, { value: "scratch" },
@@ -3209,7 +3209,7 @@
           h("div", { className: "flex gap-2 items-center" },
             h("label", {
               className: "flex items-center gap-1.5 text-xs cursor-pointer select-none",
-              title: tx(t, "tooltips.goalMode", "Goal mode keeps the worker going."),
+              title: tx(t, "tooltips.goalMode", "Goal mode: the worker keeps going in the same session until a judge agrees the card is done (or the turn budget runs out, which blocks it for review). Best for open-ended cards one shot rarely finishes."),
             },
               h("input", {
                 type: "checkbox",

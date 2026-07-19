@@ -2055,6 +2055,7 @@ export const ja = defineLocale({
       xhigh: '特高',
       max: '最大',
       ultra: 'ウルトラ',
+      auto: '自動',
       updateFailed: 'モデルオプションの更新に失敗しました',
       fastFailed: '高速モードの更新に失敗しました'
     },

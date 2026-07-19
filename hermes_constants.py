@@ -833,7 +833,7 @@ def apply_subprocess_home_env(env: dict[str, str]) -> None:
 
 
 VALID_REASONING_EFFORTS = (
-    "minimal", "low", "medium", "high", "xhigh", "max", "ultra",
+    "minimal", "low", "medium", "high", "xhigh", "max", "ultra", "auto",
 )
 
 
@@ -841,7 +841,7 @@ def parse_reasoning_effort(effort) -> dict | None:
     """Parse a reasoning effort level into a config dict.
 
     Valid levels: "none", "minimal", "low", "medium", "high", "xhigh", "max",
-    "ultra".
+    "ultra", "auto".
     Returns None when the input is empty or unrecognized (caller uses default).
     Returns {"enabled": False} for "none" (aliases: "false", "disabled", and
     YAML boolean False — users write ``reasoning_effort: false``/``off``/``no``
@@ -1254,6 +1254,165 @@ def apply_ipv4_preference(force: bool = False) -> None:
 PARTIAL_STREAM_STUB_ID = "partial-stream-stub"
 
 FINISH_REASON_LENGTH = "length"
+
+
+# ─── Dynamic Reasoning ─────────────────────────────────────────────────────────
+
+# Task-complexity keywords that bias toward higher reasoning effort.
+# Short exact substrings checked against the last user message.
+_COMPLEXITY_HIGH_KEYWORDS = frozenset({
+    "debug", "fix", "complex", "architect", "design",
+    "refactor", "optimize", "analyze", "implement",
+    "review", "evaluate", "migrate", "integration",
+    "architecture", "benchmark", "vulnerability",
+    # Chinese high-complexity keywords — map to the same semantic concepts.
+    # Use `in` (substring matching), which is safe for CJK because these
+    # are multi-char compounds that don't embed inside other words.
+    "设计", "架构", "优化", "重构", "分析",
+    "调试", "修复", "实现", "评估", "审核",
+    "迁移", "集成", "基准", "漏洞", "复杂", "部署",
+})
+
+_COMPLEXITY_LOW_KEYWORDS = frozenset({
+    "hello", "hi", "hey", "thanks", "thank", "yes",
+    "no", "ok", "okay", "sure", "bye", "goodbye",
+})
+
+
+# Model capability tiers — different models benefit differently from
+# high reasoning effort. Small/fast models see diminishing returns;
+# large reasoning models can leverage max/ultra levels effectively.
+_MODEL_TIER_PATTERNS = {
+    "low": frozenset({
+        "flash", "mini", "haiku", "nano", "tiny", "light",
+        "fast", "mimo",
+    }),
+    "high": frozenset({
+        "pro", "opus", "ultra", "o3", "o4", "o4-mini", "max",
+    }),
+}
+
+
+def _model_tier(model: str | None) -> str:
+    """Classify a model name into reasoning-capability tier.
+
+    Returns one of ``"low"``, ``"mid"``,  or ``"high"``.
+
+    * **low**  — small/cheap models where high reasoning is wasteful.
+    * **mid**  — balanced models (default tier when model is unknown).
+    * **high** — premium reasoning models that leverage max/ultra effort.
+    """
+    if not model:
+        return "mid"
+    m = model.lower()
+    for kw in _MODEL_TIER_PATTERNS["high"]:
+        if kw in m:
+            return "high"
+    for kw in _MODEL_TIER_PATTERNS["low"]:
+        if kw in m:
+            return "low"
+    return "mid"
+
+
+def compute_dynamic_reasoning_effort(
+    messages: list | None,
+    model: str | None = None,
+) -> str:
+    """Determine a concrete reasoning-effort level from the task context.
+
+    Examines the last user message (length, code blocks, complexity
+    keywords) and selects a model-appropriate reasoning effort.
+
+    When *model* is provided, the output is adjusted to the model's
+    capability tier (e.g. Flash models never exceed ``medium``; Pro
+    models can reach ``ultra`` for the hardest tasks).
+
+    Returns one of the VALID_REASONING_EFFORTS concrete levels (never
+    ``auto`` — this function *resolves* auto).
+    """
+    if not messages:
+        return "medium"
+
+    # Locate the last user message.
+    last_content = ""
+    for msg in reversed(messages):
+        if isinstance(msg, dict) and msg.get("role") == "user":
+            raw = msg.get("content", "")
+            if isinstance(raw, list):
+                # Multi-part content (text + images). Concatenate text parts.
+                texts = [p.get("text", "") for p in raw if isinstance(p, dict) and p.get("type") == "text"]
+                last_content = " ".join(texts)
+            else:
+                last_content = str(raw or "")
+            break
+
+    text = last_content.strip()
+    msg_len = len(text)
+
+    # Heuristic scoring.
+    score = 0
+
+    # Length factor — with CJK character weighting.
+    # Each CJK (Chinese/Japanese/Korean) character carries roughly 2x the
+    # semantic density of ASCII, so a 10-character Chinese query like
+    # "帮我设计一个系统" is semantically equivalent to ~30 ASCII chars.
+    cjk_count = sum(1 for c in text if '\u4e00' <= c <= '\u9fff'
+                    or '\u3040' <= c <= '\u30ff'
+                    or '\uac00' <= c <= '\ud7af')
+    effective_len = msg_len + cjk_count * 2  # each CJK char ≈ 3 ASCII chars
+
+    if effective_len < 30:
+        score -= 1
+    elif effective_len > 2000:
+        score += 2
+    elif effective_len > 800:
+        score += 1
+
+    # Code blocks → complex.
+    if "```" in text or "`" in text:
+        score += 1
+
+    # Keywords — use word-boundary matching to avoid substring false positives
+    # (e.g. "yes" in "yesterday", "no" in "notify").
+    import re
+    text_lower = text.lower()
+    # Count distinct high-complexity keywords; cap at +2 so that
+    # "设计+架构" scores properly without runaway overcounting.
+    kw_matches = sum(1 for kw in _COMPLEXITY_HIGH_KEYWORDS if kw in text_lower)
+    if kw_matches:
+        score += min(kw_matches, 2)
+    # Low-keyword penalty: only apply when almost ALL words are simple greetings
+    # (avoids false positives like "no, the deadlock happens in acquire when...").
+    if msg_len < 100:
+        words = set(re.findall(r"[a-z]+", text_lower))
+        if words and len(words) <= 2 and words.issubset(_COMPLEXITY_LOW_KEYWORDS):
+            score -= 1
+
+    # Map score to effort, adjusted for model capability tier.
+    tier = _model_tier(model)
+
+    if tier == "low":
+        # Small/cheap models: high reasoning is wasted — cap at medium.
+        if score <= -1:
+            return "low"
+        return "medium"  # never exceeds medium
+
+    if tier == "high":
+        # Premium reasoning models: leverage max levels for hard tasks.
+        if score <= -1:
+            return "low"
+        if score >= 2:
+            return "ultra"
+        if score >= 1:
+            return "high"
+        return "medium"
+
+    # Mid-range (default): low → medium → high
+    if score <= -1:
+        return "low"
+    elif score >= 2:
+        return "high"
+    return "medium"
 
 
 OPENROUTER_BASE_URL = "https://openrouter.ai/api/v1"

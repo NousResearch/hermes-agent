@@ -1757,6 +1757,7 @@ export interface Translations {
       xhigh: string
       max: string
       ultra: string
+      auto: string
       updateFailed: string
       fastFailed: string
     }

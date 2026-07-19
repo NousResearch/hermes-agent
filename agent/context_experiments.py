@@ -71,24 +71,49 @@ def _locked_state(path: Path) -> Iterator[None]:
 
     with _STATE_LOCK:
         path.parent.mkdir(parents=True, exist_ok=True)
+        lock_path = path.with_suffix(path.suffix + ".lock")
         lock_fd = None
+        lock_held = False
         try:
-            lock_fd = open(path.with_suffix(path.suffix + ".lock"), "a+", encoding="utf-8")
             if fcntl is not None:
+                lock_fd = open(lock_path, "a+", encoding="utf-8")
                 fcntl.flock(lock_fd, fcntl.LOCK_EX)
             elif msvcrt is not None:
-                getattr(msvcrt, "locking")(lock_fd.fileno(), getattr(msvcrt, "LK_LOCK"), 1)
+                # msvcrt.locking() locks from the current file position and
+                # requires that byte to already exist.  Seed the lock file
+                # before reopening it in r+ mode so the lock always starts at
+                # byte zero, including on the first use.
+                with open(lock_path, "ab") as seed_fd:
+                    if seed_fd.tell() == 0:
+                        seed_fd.write(b"\x00")
+                lock_fd = open(lock_path, "r+", encoding="utf-8")
+                lock_fd.seek(0)
+                getattr(msvcrt, "locking")(
+                    lock_fd.fileno(), getattr(msvcrt, "LK_LOCK"), 1
+                )
+            else:
+                raise OSError("context experiment state locking unavailable")
+            lock_held = True
         except (OSError, IOError) as exc:
             logger.warning("context experiment state lock unavailable: %s", exc)
+            if lock_fd is not None:
+                try:
+                    lock_fd.close()
+                except OSError:
+                    pass
+            raise
         try:
             yield
         finally:
             if lock_fd is not None:
                 try:
-                    if fcntl is not None:
+                    if lock_held and fcntl is not None:
                         fcntl.flock(lock_fd, fcntl.LOCK_UN)
-                    elif msvcrt is not None:
-                        getattr(msvcrt, "locking")(lock_fd.fileno(), getattr(msvcrt, "LK_UNLCK"), 1)
+                    elif lock_held and msvcrt is not None:
+                        lock_fd.seek(0)
+                        getattr(msvcrt, "locking")(
+                            lock_fd.fileno(), getattr(msvcrt, "LK_UNLCK"), 1
+                        )
                 except (OSError, IOError):
                     pass
                 try:

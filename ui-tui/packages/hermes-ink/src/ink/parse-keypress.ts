@@ -154,8 +154,10 @@ function parseTerminalResponse(s: string): TerminalResponse | null {
       // Without the DEC-private '?' marker, CSI row;col R is ambiguous with
       // modified F3 keys (Shift+F3 = CSI 1;2 R, etc.). F3 always uses row 1,
       // so only treat the standard form as a cursor position report when
-      // row > 1. Row-1 reports without '?' fall through to parseKeypress.
-      if (!hasPrivateMarker && row === 1) {
+      // row > 1. Row <= 1 reports without '?' fall through to parseKeypress:
+      // row 1 preserves F3, and row 0 is an invalid DSR report (terminal
+      // coordinates are 1-indexed) that should remain unclassified.
+      if (!hasPrivateMarker && row <= 1) {
         return null
       }
 

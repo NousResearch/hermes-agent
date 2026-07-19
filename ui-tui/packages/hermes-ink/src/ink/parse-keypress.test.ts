@@ -178,6 +178,15 @@ describe('cursor position report parsing', () => {
     expect(key.kind).not.toBe('response')
   })
 
+  it('does NOT treat CSI 0;col R as a cursor position report (invalid row-zero DSR)', () => {
+    // Terminal coordinates are 1-indexed, so a plain DSR report with row 0 is
+    // invalid. Without the ? marker it must remain unclassified rather than be
+    // reported as a cursor position (guard is row <= 1, not row === 1).
+    const [[key]] = parseMultipleKeypresses(INITIAL_STATE, '\x1b[0;5R')
+
+    expect(key.kind).not.toBe('response')
+  })
+
   it('treats DECXCPR at row 1 as a cursor position report (? disambiguates from F3)', () => {
     const [[key]] = parseMultipleKeypresses(INITIAL_STATE, '\x1b[?1;2R')
 

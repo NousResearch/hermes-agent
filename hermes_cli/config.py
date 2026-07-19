@@ -1196,6 +1196,19 @@ DEFAULT_CONFIG = {
         "reasoning_overrides": {},
     },
 
+    "codex": {
+        "mcp_elicitation": {
+            # Third-party MCP server names that codex app-server may
+            # auto-accept EMPTY confirmation-form elicitations from (no
+            # requested fields, no OAuth/URL flow — those are always
+            # declined regardless of this list). Empty by default: fails
+            # closed for every server except the separately-trusted
+            # upstream `hermes-tools` callback. See
+            # agent.codex_runtime._configured_mcp_elicitation_servers.
+            "auto_accept_servers": [],
+        },
+    },
+
     "terminal": {
         "backend": "local",
         "modal_mode": "auto",

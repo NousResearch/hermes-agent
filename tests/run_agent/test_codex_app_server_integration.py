@@ -94,6 +94,40 @@ class TestConfiguredMcpElicitationServers:
         assert _configured_mcp_elicitation_servers(config) == frozenset()
 
 
+class TestConfiguredMcpElicitationServersLoaderDefaults:
+    """Loader-level coverage: DEFAULT_CONFIG's empty ``codex`` policy default
+    (and an explicit user override) actually reach
+    ``_configured_mcp_elicitation_servers`` through the real config merge,
+    not just via a hand-built dict."""
+
+    def test_default_config_has_no_trusted_servers(self, monkeypatch, tmp_path):
+        # No config.yaml at all — load_config() must fall back to
+        # DEFAULT_CONFIG's "codex.mcp_elicitation.auto_accept_servers": [].
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        from hermes_cli.config import load_config
+
+        config = load_config()
+        assert config["codex"]["mcp_elicitation"]["auto_accept_servers"] == []
+        assert _configured_mcp_elicitation_servers(config) == frozenset()
+
+    def test_explicit_user_policy_flows_through_loader(self, monkeypatch, tmp_path):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        (tmp_path / "config.yaml").write_text(
+            "codex:\n"
+            "  mcp_elicitation:\n"
+            "    auto_accept_servers:\n"
+            "      - obsidian\n"
+            "      - deep_research\n",
+            encoding="utf-8",
+        )
+        from hermes_cli.config import load_config
+
+        config = load_config()
+        assert _configured_mcp_elicitation_servers(config) == frozenset(
+            {"obsidian", "deep_research"}
+        )
+
+
 class TestRunConversationCodexPath:
     def test_codex_app_server_policy_is_passed_to_session(self, fake_session, monkeypatch):
         monkeypatch.setattr(

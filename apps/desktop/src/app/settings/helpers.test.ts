@@ -3,13 +3,43 @@ import { describe, expect, it } from 'vitest'
 import type { HermesConfigRecord } from '@/types/hermes'
 
 import { defineFieldCopy, fieldCopyForSchemaKey, schemaKeyToFieldCopyKey } from './field-copy'
-import { enumOptionsFor, getNested, providerGroup, setNested, stripToolsetLabel, toolsetDisplayLabel } from './helpers'
+import {
+  enumOptionsFor,
+  getNested,
+  isExternalMemoryProvider,
+  providerGroup,
+  sectionFieldEntries,
+  setNested,
+  stripToolsetLabel,
+  toolsetDisplayLabel
+} from './helpers'
 
 describe('settings helpers', () => {
-  it('lists Hindsight as a built-in desktop memory provider option', () => {
+  it('lists the desktop memory provider options in their declared order', () => {
     const options = enumOptionsFor('memory.provider', '', {})
 
-    expect(options).toContain('hindsight')
+    // Built-in memory is not a provider plugin; the empty sentinel is the
+    // only built-in-shaped entry (#49513).
+    expect(options).toEqual(['', 'honcho', 'hindsight'])
+  })
+
+  it('keeps a legacy literal builtin value visible as the current selection', () => {
+    const options = enumOptionsFor('memory.provider', 'builtin', {})
+
+    expect(options).toEqual(['', 'honcho', 'hindsight', 'builtin'])
+  })
+
+  describe('isExternalMemoryProvider', () => {
+    it('treats only real plugin names as external providers', () => {
+      expect(isExternalMemoryProvider('honcho')).toBe(true)
+      expect(isExternalMemoryProvider('hindsight')).toBe(true)
+    })
+
+    it('treats built-in aliases and empty values as not external', () => {
+      for (const value of ['', 'builtin', 'built-in', 'Builtin', 'none', '  ', undefined, null, 7]) {
+        expect(isExternalMemoryProvider(value)).toBe(false)
+      }
+    })
   })
 
   describe('defineFieldCopy', () => {
@@ -174,6 +204,41 @@ describe('settings helpers', () => {
       const opts = enumOptionsFor('tts.provider', 'my-custom-command-tts', config)
       expect(opts).toContain('my-custom-command-tts')
       expect(opts).toContain('xai')
+    })
+  })
+
+  describe('sectionFieldEntries', () => {
+    it('renders memory.provider from config even when the backend schema omits it', () => {
+      const schema = { 'memory.memory_enabled': { type: 'boolean' as const } }
+      const config: HermesConfigRecord = { memory: { memory_enabled: true, provider: '' } }
+
+      const memoryKeys = (sectionFieldEntries(schema, config).get('memory') ?? []).map(([key]) => key)
+
+      expect(memoryKeys).toContain('memory.provider')
+    })
+
+    it('infers the field type from the config value when the schema omits the key', () => {
+      const config: HermesConfigRecord = { memory: { provider: '', memory_enabled: true, memory_char_limit: 2200 } }
+
+      const fields = new Map(sectionFieldEntries({}, config).get('memory') ?? [])
+
+      expect(fields.get('memory.provider')?.type).toBe('string')
+      expect(fields.get('memory.memory_enabled')?.type).toBe('boolean')
+      expect(fields.get('memory.memory_char_limit')?.type).toBe('number')
+    })
+
+    it('prefers the backend schema entry over inference when both exist', () => {
+      const schema = { 'memory.provider': { type: 'select' as const, options: ['honcho'] } }
+      const config: HermesConfigRecord = { memory: { provider: 'honcho' } }
+
+      const field = new Map(sectionFieldEntries(schema, config).get('memory') ?? []).get('memory.provider')
+
+      expect(field?.type).toBe('select')
+      expect(field?.options).toEqual(['honcho'])
+    })
+
+    it('hides declared keys absent from both schema and config', () => {
+      expect(sectionFieldEntries({}, {}).get('memory') ?? []).toHaveLength(0)
     })
   })
 })

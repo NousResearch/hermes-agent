@@ -1,4 +1,5 @@
 import type { UsageModelData } from '@hermes/shared/billing'
+
 import type { SessionInfo, SlashCategory, SubagentStatus, Usage } from './types.js'
 
 export interface GatewaySkin {
@@ -48,11 +49,20 @@ export interface SlashExecResponse {
 
 // Wire shapes now live in @hermes/shared for reuse by TypeScript clients.
 export type {
-  BillingCardInfo, BillingMonthlyCap, BillingAutoReload, BillingStateResponse,
-  BillingErrorPayload, BillingChargeResponse, BillingChargeStatusResponse,
-  BillingMutationResponse, SubscriptionTierOption, SubscriptionStateResponse,
-  SubscriptionPreviewResponse, SubscriptionUpgradeResponse,
-  UsageBarData, UsageModelData,
+  BillingAutoReload,
+  BillingCardInfo,
+  BillingChargeResponse,
+  BillingChargeStatusResponse,
+  BillingErrorPayload,
+  BillingMonthlyCap,
+  BillingMutationResponse,
+  BillingStateResponse,
+  SubscriptionPreviewResponse,
+  SubscriptionStateResponse,
+  SubscriptionTierOption,
+  SubscriptionUpgradeResponse,
+  UsageBarData,
+  UsageModelData
 } from '@hermes/shared/billing'
 
 export type CommandDispatchResponse =

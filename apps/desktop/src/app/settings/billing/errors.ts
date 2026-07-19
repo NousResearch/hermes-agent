@@ -93,7 +93,6 @@ export const resolveRefusal = (refusal: BillingRefusal): BillingRefusalPresentat
         message: "This token isn't bound to an org you can manage",
         title: 'Org access denied'
       }
-
     case 'monthly_cap_exceeded': {
       const remaining = refusal.payload?.remainingUsd
 

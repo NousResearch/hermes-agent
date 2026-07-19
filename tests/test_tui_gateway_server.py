@@ -1412,6 +1412,12 @@ def test_session_resume_uses_parent_lineage_for_display(monkeypatch):
         def reopen_session(self, target):
             captured["reopened"] = target
 
+        def get_resume_conversations(self, session_id):
+            return (
+                self.get_messages_as_conversation(session_id, repair_alternation=True),
+                self.get_messages_as_conversation(session_id, include_ancestors=True),
+            )
+
         def get_messages_as_conversation(self, target, include_ancestors=False, repair_alternation=False):
             captured.setdefault("history_calls", []).append((target, include_ancestors))
             return (
@@ -1543,6 +1549,12 @@ def test_session_resume_passes_stored_runtime_to_agent(monkeypatch):
         def reopen_session(self, target):
             pass
 
+        def get_resume_conversations(self, session_id):
+            return (
+                self.get_messages_as_conversation(session_id, repair_alternation=True),
+                self.get_messages_as_conversation(session_id, include_ancestors=True),
+            )
+
         def get_messages_as_conversation(self, target, include_ancestors=False, repair_alternation=False):
             return [{"role": "user", "content": "hello"}]
 
@@ -1602,6 +1614,12 @@ def test_session_resume_profile_uses_profile_db_cwd(monkeypatch, tmp_path):
 
         def reopen_session(self, _target):
             captured["reopened"] = _target
+
+        def get_resume_conversations(self, session_id):
+            return (
+                self.get_messages_as_conversation(session_id, repair_alternation=True),
+                self.get_messages_as_conversation(session_id, include_ancestors=True),
+            )
 
         def get_messages_as_conversation(self, _target, include_ancestors=False, repair_alternation=False):
             return [{"role": "user", "content": "hello"}]
@@ -2278,6 +2296,50 @@ def test_session_close_commits_memory_and_fires_finalize_hook(monkeypatch):
         server._sessions.pop("sid", None)
 
 
+def test_session_close_releases_resume_lock_before_slow_teardown(monkeypatch):
+    """One slow session finalizer must not stall unrelated session.resume RPCs."""
+    teardown_started = threading.Event()
+    release_teardown = threading.Event()
+    response = {}
+
+    def _slow_teardown(_session, *, end_reason="tui_close"):
+        assert end_reason == "tui_close"
+        teardown_started.set()
+        assert release_teardown.wait(timeout=2.0)
+
+    monkeypatch.setattr(server, "_teardown_session", _slow_teardown)
+    server._sessions["slow-close"] = _session()
+
+    def _close():
+        response.update(
+            server.handle_request(
+                {
+                    "id": "close",
+                    "method": "session.close",
+                    "params": {"session_id": "slow-close"},
+                }
+            )
+        )
+
+    thread = threading.Thread(target=_close)
+    thread.start()
+    acquired = False
+    try:
+        assert teardown_started.wait(timeout=1.0)
+        assert "slow-close" not in server._sessions
+        acquired = server._session_resume_lock.acquire(timeout=0.2)
+        assert acquired, "slow teardown kept the global resume lock held"
+    finally:
+        if acquired:
+            server._session_resume_lock.release()
+        release_teardown.set()
+        thread.join(timeout=2.0)
+        server._sessions.pop("slow-close", None)
+
+    assert not thread.is_alive()
+    assert response["result"] == {"closed": True}
+
+
 def test_ws_orphan_reap_closes_worker_when_session_stays_detached(monkeypatch):
     """A detached WS session past its grace window has its slash_worker closed.
 
@@ -2306,6 +2368,51 @@ def test_ws_orphan_reap_closes_worker_when_session_stays_detached(monkeypatch):
         assert closed["worker"] is True
     finally:
         server._sessions.pop("orphan-sid", None)
+
+
+def test_ws_orphan_reap_releases_resume_lock_before_slow_teardown(monkeypatch):
+    """Grace reaping claims under the lock but finalizes after releasing it."""
+    scheduled = {}
+    teardown_started = threading.Event()
+    release_teardown = threading.Event()
+
+    class _Timer:
+        def __init__(self, _delay, callback):
+            scheduled["callback"] = callback
+
+        def start(self):
+            return None
+
+    def _slow_teardown(_session, *, end_reason="tui_close"):
+        assert end_reason == "ws_orphan_reap"
+        teardown_started.set()
+        assert release_teardown.wait(timeout=2.0)
+
+    monkeypatch.setattr(server, "_WS_ORPHAN_REAP_GRACE_S", 0.01)
+    monkeypatch.setattr(server.threading, "Timer", _Timer)
+    monkeypatch.setattr(server, "_teardown_session", _slow_teardown)
+    server._sessions["slow-orphan"] = _session(
+        transport=server._detached_ws_transport,
+        running=False,
+    )
+
+    server._schedule_ws_orphan_reap("slow-orphan")
+    thread = threading.Thread(target=scheduled["callback"])
+    thread.start()
+    acquired = False
+    try:
+        assert teardown_started.wait(timeout=1.0)
+        assert "slow-orphan" not in server._sessions
+        acquired = server._session_resume_lock.acquire(timeout=0.2)
+        assert acquired, "orphan teardown kept the global resume lock held"
+    finally:
+        if acquired:
+            server._session_resume_lock.release()
+        release_teardown.set()
+        thread.join(timeout=2.0)
+        server._sessions.pop("slow-orphan", None)
+
+    assert not thread.is_alive()
 
 
 def test_finalize_session_closes_slash_worker(monkeypatch):
@@ -5093,6 +5200,170 @@ def test_config_set_model_switches_agent_without_touching_env(monkeypatch):
         server._sessions.clear()
 
 
+def test_config_set_model_once_keeps_env_and_records_restore(monkeypatch):
+    class Agent:
+        model = "old/model"
+        provider = "openrouter"
+        base_url = "https://openrouter.ai/api/v1"
+        api_key = "sk-old"
+        api_mode = "chat_completions"
+
+        def switch_model(self, **kwargs):
+            self.model = kwargs["new_model"]
+            self.provider = kwargs["new_provider"]
+            self.api_key = kwargs["api_key"]
+            self.base_url = kwargs["base_url"]
+            self.api_mode = kwargs["api_mode"]
+
+    result = types.SimpleNamespace(
+        success=True,
+        new_model="claude-sonnet-4.6",
+        target_provider="anthropic",
+        api_key="sk-ant",
+        base_url="https://api.anthropic.com",
+        api_mode="anthropic_messages",
+        warning_message="",
+    )
+    seen = {}
+    agent = Agent()
+    session = _session(agent=agent)
+    server._sessions["sid"] = session
+    monkeypatch.setenv("HERMES_INFERENCE_PROVIDER", "openrouter")
+    monkeypatch.setenv("HERMES_MODEL", "old/model")
+    monkeypatch.setattr(
+        "hermes_cli.model_switch.switch_model",
+        lambda **kwargs: seen.update(kwargs) or result,
+    )
+    monkeypatch.setattr(server, "_restart_slash_worker", lambda *args, **kwargs: None)
+    monkeypatch.setattr(server, "_emit", lambda *args, **kwargs: None)
+
+    try:
+        resp = server.handle_request(
+            {
+                "id": "1",
+                "method": "config.set",
+                "params": {
+                    "session_id": "sid",
+                    "key": "model",
+                    "value": "claude-sonnet-4.6 --provider anthropic --once",
+                },
+            }
+        )
+
+        assert resp["result"]["scope"] == "once"
+        assert seen["is_global"] is False
+        assert agent.model == "claude-sonnet-4.6"
+        assert session["one_turn_model_restore"]["model"] == "old/model"
+        assert os.environ["HERMES_INFERENCE_PROVIDER"] == "openrouter"
+        assert os.environ["HERMES_MODEL"] == "old/model"
+    finally:
+        server._sessions.clear()
+
+
+def test_config_set_model_once_requires_live_session(monkeypatch):
+    monkeypatch.setattr(
+        "hermes_cli.model_switch.switch_model",
+        lambda **_: (_ for _ in ()).throw(AssertionError("switch should not run")),
+    )
+
+    resp = server.handle_request(
+        {
+            "id": "1",
+            "method": "config.set",
+            "params": {
+                "key": "model",
+                "value": "claude-sonnet-4.6 --provider anthropic --once",
+            },
+        }
+    )
+
+    assert resp["error"]["code"] == 5001
+    assert "/model --once requires a live session" in resp["error"]["message"]
+
+
+def test_config_set_model_session_switch_clears_pending_once_restore(monkeypatch):
+    class Agent:
+        model = "temp/model"
+        provider = "anthropic"
+        base_url = "https://api.anthropic.com"
+        api_key = "sk-temp"
+        api_mode = "anthropic_messages"
+
+        def switch_model(self, **kwargs):
+            self.model = kwargs["new_model"]
+            self.provider = kwargs["new_provider"]
+            self.api_key = kwargs["api_key"]
+            self.base_url = kwargs["base_url"]
+            self.api_mode = kwargs["api_mode"]
+
+    result = types.SimpleNamespace(
+        success=True,
+        new_model="new/model",
+        target_provider="openrouter",
+        api_key="sk-new",
+        base_url="https://openrouter.ai/api/v1",
+        api_mode="chat_completions",
+        warning_message="",
+    )
+    session = _session(agent=Agent())
+    session["one_turn_model_restore"] = {"model": "old/model"}
+    server._sessions["sid"] = session
+    monkeypatch.setattr("hermes_cli.model_switch.switch_model", lambda **_kwargs: result)
+    monkeypatch.setattr(server, "_restart_slash_worker", lambda *args, **kwargs: None)
+    monkeypatch.setattr(server, "_emit", lambda *args, **kwargs: None)
+
+    try:
+        resp = server.handle_request(
+            {
+                "id": "1",
+                "method": "config.set",
+                "params": {
+                    "session_id": "sid",
+                    "key": "model",
+                    "value": "new/model --provider openrouter --session",
+                },
+            }
+        )
+
+        assert resp["result"]["scope"] == "session"
+        assert "one_turn_model_restore" not in session
+    finally:
+        server._sessions.clear()
+
+
+def test_restore_agent_model_runtime_falls_back_to_switch_model():
+    class Agent:
+        model = "temp/model"
+        provider = "anthropic"
+        base_url = "https://api.anthropic.com"
+        api_key = "sk-temp"
+        api_mode = "anthropic_messages"
+
+        def switch_model(self, **kwargs):
+            self.model = kwargs["new_model"]
+            self.provider = kwargs["new_provider"]
+            self.api_key = kwargs["api_key"]
+            self.base_url = kwargs["base_url"]
+            self.api_mode = kwargs["api_mode"]
+
+    agent = Agent()
+
+    server._restore_agent_model_runtime(
+        agent,
+        {
+            "model": "old/model",
+            "provider": "openrouter",
+            "api_key": "sk-old",
+            "base_url": "https://openrouter.ai/api/v1",
+            "api_mode": "chat_completions",
+        },
+    )
+
+    assert agent.model == "old/model"
+    assert agent.provider == "openrouter"
+    assert agent.base_url == "https://openrouter.ai/api/v1"
+
+
 def test_config_set_personality_rejects_unknown_name(monkeypatch):
     monkeypatch.setattr(
         server,
@@ -5286,6 +5557,12 @@ def test_slash_exec_r7_read_commands_use_metadata_mirror_flag_on(monkeypatch):
                 "updated_at": 1_700_000_060,
                 "pinned": True,
             }
+
+        def get_resume_conversations(self, session_id):
+            return (
+                self.get_messages_as_conversation(session_id, repair_alternation=True),
+                self.get_messages_as_conversation(session_id, include_ancestors=True),
+            )
 
         def get_messages_as_conversation(self, key, include_ancestors=True, repair_alternation=False):
             assert key == "session-key"
@@ -7887,6 +8164,46 @@ def test_session_activate_returns_inflight_stream_before_completion(monkeypatch)
         server._sessions.pop("sid-live", None)
 
 
+def test_session_activate_returns_prompt_queued_during_busy_turn(monkeypatch):
+    """A full client restart must recover an accepted next-turn prompt.
+
+    Busy prompts are intentionally not durable until they drain. Their only
+    authoritative copy is ``queued_prompt``, so the live projection must expose
+    that copy without leaking the transport object.
+    """
+    monkeypatch.setattr(server, "_load_busy_input_mode", lambda: "queue")
+    monkeypatch.setattr(server, "_session_info", lambda agent: {"model": agent.model})
+    agent = types.SimpleNamespace(model="model-live")
+    session = _session(
+        agent=agent,
+        running=True,
+        inflight_turn={
+            "assistant": "partial answer",
+            "streaming": True,
+            "user": "current prompt",
+        },
+    )
+    server._sessions["sid-live"] = session
+    try:
+        queued = server._handle_busy_submit(
+            "submit", "sid-live", session, "newest prompt", object()
+        )
+        assert queued["result"]["status"] == "queued"
+
+        activated = server.handle_request(
+            {
+                "id": "activate",
+                "method": "session.activate",
+                "params": {"session_id": "sid-live"},
+            }
+        )
+
+        assert activated["result"]["queued"] == {"user": "newest prompt"}
+        assert "transport" not in activated["result"]["queued"]
+    finally:
+        server._sessions.pop("sid-live", None)
+
+
 def test_session_activate_switches_live_session_without_closing_siblings(monkeypatch):
     monkeypatch.setattr(server, "_session_info", lambda agent: {"model": agent.model})
     server._sessions["sid-a"] = _session(
@@ -8213,6 +8530,7 @@ def test_browser_manage_connect_defaults_to_loopback(monkeypatch):
 
 def test_browser_manage_connect_default_local_reports_launch_hint(monkeypatch):
     monkeypatch.delenv("BROWSER_CDP_URL", raising=False)
+    monkeypatch.setattr("platform.system", lambda: "Linux")
     emitted: list[tuple[str, dict]] = []
     monkeypatch.setattr(
         server,
@@ -9773,17 +10091,20 @@ def test_restart_slash_worker_stores_on_live_session(monkeypatch):
         server._sessions.pop("live-restart", None)
 
 
-def test_session_close_rpc_delegates_to_close_session_by_id(monkeypatch):
+def test_session_close_rpc_claims_then_tears_down(monkeypatch):
     seen = []
+    claimed = {"session_key": "k"}
+    monkeypatch.setattr(server, "_pop_session_by_id", lambda sid: seen.append(sid) or claimed)
     monkeypatch.setattr(
-        server, "_close_session_by_id",
-        lambda sid, *, end_reason: bool(seen.append((sid, end_reason))) or True,
+        server,
+        "_teardown_popped_session",
+        lambda session, *, end_reason: seen.append((session, end_reason)) or True,
     )
     resp = server.handle_request(
         {"id": "1", "method": "session.close", "params": {"session_id": "s9"}}
     )
     assert resp["result"] == {"closed": True}
-    assert seen == [("s9", "tui_close")]
+    assert seen == ["s9", (claimed, "tui_close")]
 
 
 def test_close_sessions_for_transport_closes_flagged_repoints_rest(monkeypatch):

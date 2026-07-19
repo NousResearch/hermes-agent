@@ -7050,6 +7050,11 @@ def load_config() -> Dict[str, Any]:
     (which change ``HERMES_HOME`` and therefore ``get_config_path()``)
     don't collide.
 
+    When ``HERMES_IGNORE_USER_CONFIG=1`` is set, the user config file is
+    deliberately skipped and the loaded result starts from built-in defaults
+    plus any managed-scope config. The cache signature includes that mode so a
+    process can safely switch between normal and isolated loads.
+
     Read-only callers should use ``load_config_readonly()`` to skip the
     defensive deepcopy — that path matters in agent-loop hot spots like
     ``get_provider_request_timeout`` which is called once per API turn.
@@ -7202,6 +7207,7 @@ def _load_config_impl(*, want_deepcopy: bool) -> Dict[str, Any]:
         ensure_hermes_home()
         config_path = get_config_path()
         path_key = str(config_path)
+        ignore_user_config = os.environ.get("HERMES_IGNORE_USER_CONFIG") == "1"
 
         try:
             st = config_path.stat()
@@ -7222,10 +7228,20 @@ def _load_config_impl(*, want_deepcopy: bool) -> Dict[str, Any]:
         except OSError:
             managed_sig = (0, 0)
 
-        # Combined cache signature: user file + managed file. None only when the
-        # user config is absent AND no managed file exists (nothing to cache on).
-        if user_sig is not None:
-            cache_sig: Optional[Tuple[int, int, int, int]] = (
+        # Combined cache signature: user file + managed file. In isolated mode,
+        # use a sentinel user-file signature so the default-only result can be
+        # cached without depending on the ignored user's config.yaml.
+        # In normal mode, None means the user config is absent AND no managed
+        # file exists (nothing to cache on).
+        cache_sig: Optional[Tuple[int, int, int, int]]
+        if ignore_user_config:
+            # The user file is intentionally invisible in this mode, so its
+            # mtime/size must not invalidate the isolated config. Use a sentinel
+            # signature that cannot collide with a real stat result and keeps
+            # normal vs isolated loads from reusing each other's cache entry.
+            cache_sig = (-1, -1, managed_sig[0], managed_sig[1])
+        elif user_sig is not None:
+            cache_sig = (
                 user_sig[0],
                 user_sig[1],
                 managed_sig[0],
@@ -7249,7 +7265,7 @@ def _load_config_impl(*, want_deepcopy: bool) -> Dict[str, Any]:
 
         config = copy.deepcopy(DEFAULT_CONFIG)
 
-        if user_sig is not None:
+        if user_sig is not None and not ignore_user_config:
             try:
                 with open(config_path, encoding="utf-8") as f:
                     user_config = fast_safe_load(f) or {}

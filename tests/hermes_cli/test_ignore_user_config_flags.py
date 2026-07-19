@@ -113,6 +113,82 @@ class TestIgnoreUserConfigEnvGate:
         assert cfg["model"]["default"] == "test-vendor/ignore-user-config-sentinel"
 
 
+class TestLoadConfigIgnoreUserConfigEnvGate:
+    """``hermes_cli.config.load_config()`` follows the same env gate."""
+
+    def _write_user_config(self, home, model_default):
+        config_yaml = textwrap.dedent(
+            f"""
+            model:
+              default: {model_default}
+              provider: openrouter
+            agent:
+              system_prompt: "from user config"
+            """
+        ).lstrip()
+        (home / "config.yaml").write_text(config_yaml, encoding="utf-8")
+
+    def _model_default(self, config):
+        model = config.get("model")
+        if isinstance(model, dict):
+            return model.get("default")
+        return model
+
+    def _prepare_config_module(self, monkeypatch, home, managed=None):
+        import hermes_cli.config as config_mod
+        from hermes_cli import managed_scope
+
+        monkeypatch.setenv("HERMES_HOME", str(home))
+        if managed is None:
+            monkeypatch.delenv("HERMES_MANAGED_DIR", raising=False)
+        else:
+            monkeypatch.setenv("HERMES_MANAGED_DIR", str(managed))
+        config_mod._LOAD_CONFIG_CACHE.clear()
+        config_mod._RAW_CONFIG_CACHE.clear()
+        managed_scope.invalidate_managed_cache()
+        return config_mod
+
+    def test_load_config_skips_user_config_when_flag_set(self, tmp_path, monkeypatch):
+        self._write_user_config(tmp_path, "anthropic/claude-sonnet-4.6")
+        config_mod = self._prepare_config_module(monkeypatch, tmp_path)
+
+        cfg = config_mod.load_config()
+        assert self._model_default(cfg) == "anthropic/claude-sonnet-4.6"
+        assert cfg["agent"]["system_prompt"] == "from user config"
+
+        monkeypatch.setenv("HERMES_IGNORE_USER_CONFIG", "1")
+        ignored = config_mod.load_config()
+        assert self._model_default(ignored) != "anthropic/claude-sonnet-4.6"
+        assert ignored["agent"].get("system_prompt", "") != "from user config"
+
+        monkeypatch.delenv("HERMES_IGNORE_USER_CONFIG", raising=False)
+        restored = config_mod.load_config()
+        assert self._model_default(restored) == "anthropic/claude-sonnet-4.6"
+        assert restored["agent"]["system_prompt"] == "from user config"
+
+    def test_load_config_still_honors_managed_config_when_user_config_ignored(
+        self,
+        tmp_path,
+        monkeypatch,
+    ):
+        home = tmp_path / "home"
+        managed = tmp_path / "managed"
+        home.mkdir()
+        managed.mkdir()
+        self._write_user_config(home, "user/model")
+        (managed / "config.yaml").write_text(
+            "model:\n  default: managed/model\n",
+            encoding="utf-8",
+        )
+        monkeypatch.setenv("HERMES_IGNORE_USER_CONFIG", "1")
+        config_mod = self._prepare_config_module(monkeypatch, home, managed)
+
+        cfg = config_mod.load_config()
+
+        assert cfg["model"]["default"] == "managed/model"
+        assert cfg["agent"].get("system_prompt", "") != "from user config"
+
+
 class TestIgnoreRulesEnvGate:
     """The constructor / env var must propagate to ``HermesCLI.ignore_rules``
     so ``AIAgent`` is built with ``skip_context_files=True`` and

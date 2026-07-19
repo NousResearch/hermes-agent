@@ -72,6 +72,31 @@ def test_prepare_agent_startup_applies_safe_mode_before_plugin_discovery(monkeyp
     main_mod._prepare_agent_startup(args)
 
 
+def test_prepare_agent_startup_applies_ignore_user_config_before_plugin_discovery(monkeypatch):
+    import hermes_cli.main as main_mod
+
+    args = types.SimpleNamespace(
+        command="chat",
+        safe_mode=False,
+        ignore_user_config=True,
+        ignore_rules=False,
+        tui=False,
+    )
+    plugins = types.ModuleType("hermes_cli.plugins")
+
+    def discover_plugins() -> None:
+        assert os.environ.get("HERMES_SAFE_MODE") is None
+        assert os.environ["HERMES_IGNORE_USER_CONFIG"] == "1"
+        assert os.environ.get("HERMES_IGNORE_RULES") is None
+
+    setattr(plugins, "discover_plugins", discover_plugins)
+    monkeypatch.setitem(sys.modules, "hermes_cli.plugins", plugins)
+    monkeypatch.setattr(main_mod, "_should_background_mcp_startup", lambda _args: False)
+    monkeypatch.setattr(main_mod, "_command_has_dedicated_mcp_startup", lambda _args: True)
+
+    main_mod._prepare_agent_startup(args)
+
+
 def test_plugin_discovery_skipped(monkeypatch):
     monkeypatch.setenv("HERMES_SAFE_MODE", "1")
     from hermes_cli.plugins import PluginManager

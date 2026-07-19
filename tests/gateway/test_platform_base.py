@@ -326,6 +326,13 @@ class TestExtractMedia:
         assert media[0][0] == "/path/to/audio.ogg"
         assert media[0][1] is False  # no voice tag
 
+    def test_media_tag_supports_html_artifact(self):
+        content = "HTML-анимация:\nMEDIA:/root/taskflow-shareholder-demo/taskflow_agentic_work_animation.html"
+        media, cleaned = BasePlatformAdapter.extract_media(content)
+        assert media == [("/root/taskflow-shareholder-demo/taskflow_agentic_work_animation.html", False)]
+        assert "MEDIA:" not in cleaned
+        assert "HTML-анимация" in cleaned
+
     def test_media_with_voice_directive(self):
         content = "[[audio_as_voice]]\nMEDIA:/path/to/voice.ogg"
         media, cleaned = BasePlatformAdapter.extract_media(content)

@@ -388,6 +388,35 @@ export function useVoiceConversation({
     }
   }, [busy, consumePendingResponse, enabled, muted, pendingResponse, speak, startListening, status])
 
+  // If the renderer loses focus while the previous response is spoken or
+  // submitted, the normal idle transition can happen without a usable audio
+  // input context. Retry the armed next-turn start when the window becomes
+  // active again. This keeps voice conversation hands-free without changing
+  // the explicit microphone/mute controls.
+  useEffect(() => {
+    if (!enabled) {
+      return undefined
+    }
+
+    const retryPendingStart = () => {
+      if (document.visibilityState === 'hidden') {
+        return
+      }
+
+      if (pendingStartRef.current && !mutedRef.current && !busyRef.current && statusRef.current === 'idle') {
+        void startListening()
+      }
+    }
+
+    window.addEventListener('focus', retryPendingStart)
+    document.addEventListener('visibilitychange', retryPendingStart)
+
+    return () => {
+      window.removeEventListener('focus', retryPendingStart)
+      document.removeEventListener('visibilitychange', retryPendingStart)
+    }
+  }, [enabled, startListening])
+
   useEffect(() => {
     if (enabled && !wasEnabledRef.current) {
       void start()

@@ -247,6 +247,14 @@ class TestUnknownTopLevelKeys:
         unknown = [i for i in issues if "Unknown top-level config key" in i.message]
         assert unknown == [], f"Unexpected unknown-key warnings: {[i.message for i in unknown]}"
 
+    def test_runtime_written_optional_roots_are_accepted(self):
+        """Gateway isolation and saved plugin-toolset roots are valid user config."""
+        issues = validate_config_structure({
+            "group_sessions_per_user": True,
+            "known_plugin_toolsets": {"cli": ["spotify"]},
+        })
+        assert not any("Unknown top-level config key" in issue.message for issue in issues)
+
     def test_known_root_keys_derived_from_default_config(self):
         """_KNOWN_ROOT_KEYS must be DEFAULT_CONFIG.keys() plus extras — single source of truth."""
         assert set(DEFAULT_CONFIG.keys()).issubset(_KNOWN_ROOT_KEYS)

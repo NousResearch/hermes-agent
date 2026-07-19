@@ -24,7 +24,10 @@ import pytest
 pytest.importorskip("aiohttp")
 
 from gateway.config import PlatformConfig
-from gateway.platforms.api_server import APIServerAdapter
+from gateway.platforms.api_server import (
+    APIServerAdapter,
+    _buf_ends_with_media_prefix,
+)
 
 
 # ---------------------------------------------------------------------------
@@ -657,3 +660,129 @@ class TestUnicodePaths:
         assert items[0]["filename"] == "PPT模板.pptx"
         assert "MEDIA:" not in cleaned
         assert "PPT模板.pptx" in cleaned
+
+
+# ---------------------------------------------------------------------------
+# _buf_ends_with_media_prefix — streaming prefix detection
+# ---------------------------------------------------------------------------
+
+
+class TestBufEndsWithMediaPrefix:
+    def test_empty_buffer_returns_negative(self):
+        assert _buf_ends_with_media_prefix("") == -1
+
+    def test_no_prefix_match(self):
+        assert _buf_ends_with_media_prefix("hello world") == -1
+        assert _buf_ends_with_media_prefix("program") == -1
+
+    def test_full_prefix_match(self):
+        """Buffer ends with complete MEDIA: prefix."""
+        assert _buf_ends_with_media_prefix("text MEDIA:") == 5
+
+    def test_partial_prefix_medi(self):
+        """Buffer ends with 'MEDI' — could become MEDIA: in next delta."""
+        assert _buf_ends_with_media_prefix("text MEDI") == 5
+
+    def test_partial_prefix_media(self):
+        assert _buf_ends_with_media_prefix("text MEDIA") == 5
+
+    def test_partial_prefix_med(self):
+        assert _buf_ends_with_media_prefix("text MED") == 5
+
+    def test_partial_prefix_me(self):
+        assert _buf_ends_with_media_prefix("text ME") == 5
+
+    def test_partial_prefix_m(self):
+        assert _buf_ends_with_media_prefix("text M") == 5
+
+    def test_longest_prefix_wins(self):
+        """When buffer matches multiple prefixes, return the longest (MEDIA:)."""
+        assert _buf_ends_with_media_prefix("MEDIA:") == 0
+
+    def test_prefix_at_very_end(self):
+        """The prefix must be at the VERY end of the buffer."""
+        assert _buf_ends_with_media_prefix("MEDIA: then text") == -1
+
+    def test_prefix_normal_text_boundary(self):
+        """Prefix-like substrings inside words don't match at end."""
+        assert _buf_ends_with_media_prefix("named") == -1
+        assert _buf_ends_with_media_prefix("immediately") == -1
+
+    def test_all_prefixes_tabulated(self):
+        """Table-driven: every prefix at the tail is detected."""
+        for prefix in ("M", "ME", "MED", "MEDI", "MEDIA", "MEDIA:"):
+            buf = f"before {prefix}"
+            expected = len(buf) - len(prefix)
+            assert _buf_ends_with_media_prefix(buf) == expected, (
+                f"prefix={prefix!r}"
+            )
+
+
+# ---------------------------------------------------------------------------
+# Streaming buffer simulation — fragmented MEDIA: tag arrival
+# ---------------------------------------------------------------------------
+
+
+class TestStreamingMediaBuffer:
+    """Simulate the streaming Chat Completions buffer: text arrives in
+    fragments, and the buffer holds back incomplete MEDIA: prefixes."""
+
+    def test_fragmented_tag_across_four_deltas(self):
+        """MEDIA:/file.pdf split into 'M', 'EDI', 'A:', '/file.pdf'."""
+        buf = ""
+        emitted: list[str] = []
+
+        # Delta 1: "M" — hold
+        buf += "M"
+        pos = _buf_ends_with_media_prefix(buf)
+        assert pos == 0, "M should be held"
+        assert emitted == []
+
+        # Delta 2: "EDI" → "MEDI" — still hold
+        buf += "EDI"
+        pos = _buf_ends_with_media_prefix(buf)
+        assert pos == 0, "MEDI should be held"
+        assert emitted == []
+
+        # Delta 3: "A:" → "MEDIA:" — still hold
+        buf += "A:"
+        pos = _buf_ends_with_media_prefix(buf)
+        assert pos == 0, "MEDIA: should be held"
+        assert emitted == []
+
+        # Delta 4: "/file.pdf" → complete tag → process
+        buf += "/file.pdf"
+        assert "MEDIA:/file.pdf" in buf
+        pos = _buf_ends_with_media_prefix(buf)
+        assert pos == -1, "complete path should not match as prefix"
+
+    def test_fragmented_tag_medi_then_path(self):
+        """'MEDI' then 'A:/report.pdf'."""
+        buf = "MEDI"
+        assert _buf_ends_with_media_prefix(buf) == 0
+
+        buf += "A:/report.pdf\n"
+        assert "MEDIA:/report.pdf" in buf
+        assert _buf_ends_with_media_prefix(buf) == -1
+
+    def test_text_before_media_prefix(self):
+        """'Report\n' then 'MEDIA:' then '/tmp/f.pdf'."""
+        buf = "Report\n"
+        assert _buf_ends_with_media_prefix(buf) == -1
+
+        buf += "MEDIA:"
+        assert _buf_ends_with_media_prefix(buf) == 7
+
+        buf += "/tmp/f.pdf"
+        assert "/tmp/f.pdf" in buf
+        assert _buf_ends_with_media_prefix(buf) == -1
+
+    def test_plain_text_no_hold(self):
+        """Ordinary text flows through without buffering."""
+        buf = "Here is the report you asked for."
+        assert _buf_ends_with_media_prefix(buf) == -1
+
+    def test_tool_progress_does_not_go_into_buffer(self):
+        """Tool progress tuples are emitted directly, not buffered."""
+        buf = "Some text "
+        assert _buf_ends_with_media_prefix(buf) == -1

@@ -1626,6 +1626,23 @@ class APIServerAdapter(BasePlatformAdapter):
             logger.debug("SessionDB unavailable for API server: %s", e)
             return None
 
+    def _get_sessions_dir(self) -> "Optional[Path]":
+        """Return the sessions directory for transcript file cleanup."""
+        try:
+            from hermes_constants import get_hermes_home
+            return get_hermes_home() / "sessions"
+        except Exception:
+            return None
+
+    def _clear_session_store_mapping(self, session_id: str) -> None:
+        """Remove the channel→session mapping from the gateway SessionStore."""
+        try:
+            store = getattr(self, "_session_store", None)
+            if store is not None and hasattr(store, "remove_by_session_id"):
+                store.remove_by_session_id(session_id)
+        except Exception as exc:
+            logger.debug("Could not clear session store mapping for %s: %s", session_id, exc)
+
     # ------------------------------------------------------------------
     # Agent creation helper
     # ------------------------------------------------------------------
@@ -2299,7 +2316,13 @@ class APIServerAdapter(BasePlatformAdapter):
         if err:
             return err
         db = self._ensure_session_db()
-        deleted = db.delete_session(session_id)
+        # Pass sessions_dir so transcript files are also removed
+        sessions_dir = self._get_sessions_dir()
+        deleted = db.delete_session(session_id, sessions_dir=sessions_dir)
+        # Clear the gateway's durable channel→session mapping so the
+        # session is not resurrected by the next inbound message.
+        if deleted:
+            self._clear_session_store_mapping(session_id)
         return web.json_response({"object": "hermes.session.deleted", "id": session_id, "deleted": bool(deleted)})
 
     async def _handle_session_messages(self, request: "web.Request") -> "web.Response":

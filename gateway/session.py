@@ -2233,6 +2233,33 @@ class SessionStore:
             self._save()
             return True
 
+    def remove_by_session_id(self, session_id: str) -> bool:
+        """Remove the session_key → session_id mapping for a deleted session.
+
+        When a session is hard-deleted (e.g. via ``DELETE /api/sessions/<id>``),
+        the durable mapping in ``sessions.json`` must also be cleared so that
+        subsequent messages from the same channel create a fresh session instead
+        of resurrecting the deleted one.
+
+        Returns True if an entry was found and removed.
+        """
+        with self._lock:
+            self._ensure_loaded_locked()
+            removed_key = None
+            for key, entry in self._entries.items():
+                if entry.session_id == session_id:
+                    removed_key = key
+                    break
+            if removed_key is not None:
+                self._entries.pop(removed_key, None)
+                self._save()
+                logger.info(
+                    "SessionStore removed mapping for deleted session %s (key=%s)",
+                    session_id, removed_key,
+                )
+                return True
+        return False
+
     def prune_old_entries(self, max_age_days: int) -> int:
         """Drop SessionEntry records older than max_age_days.
 

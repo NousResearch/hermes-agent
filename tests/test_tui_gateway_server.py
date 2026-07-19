@@ -5185,13 +5185,39 @@ def test_config_set_model_switches_agent_without_touching_env(monkeypatch):
             "Model: anthropic/claude-sonnet-4.6\nProvider: anthropic"
         )
         assert agent._cached_system_prompt == db.system_prompt
-        assert session["history"][-1]["role"] == "user"
+        assert session["history"][-1]["role"] == "session_meta"
         assert "changed to anthropic/claude-sonnet-4.6" in session["history"][-1]["content"]
         assert db.messages[-1] == {
             "session_id": "session-key",
-            "role": "user",
+            "role": "session_meta",
             "content": session["history"][-1]["content"],
         }
+        agent_history = server._agent_conversation_history(
+            [
+                {"role": "user", "content": "hello"},
+                {"role": "assistant", "content": "hi"},
+                {
+                    "role": "system",
+                    "content": "[System: The active model for this chat has changed to old/model.]",
+                },
+                *session["history"],
+            ]
+        )
+        assert [m["role"] for m in agent_history] == ["user", "assistant"]
+        assert not any("changed to" in str(m.get("content")) for m in agent_history)
+        api_history = [
+            {"role": "system", "content": db.system_prompt},
+            *agent_history,
+            {"role": "user", "content": "what model is active?"},
+        ]
+        from run_agent import AIAgent
+
+        assert [m["role"] for m in AIAgent._sanitize_api_messages(api_history)] == [
+            "system",
+            "user",
+            "assistant",
+            "user",
+        ]
         # ...and the shared process env was NOT touched.
         assert os.environ["HERMES_TUI_PROVIDER"] == "openai-codex"
         assert "HERMES_MODEL" not in os.environ
@@ -6616,6 +6642,73 @@ def test_prompt_submit_history_version_match_persists_normally(monkeypatch):
         assert len(complete_calls) == 1
         _, _, payload = complete_calls[0]
         assert "warning" not in payload
+    finally:
+        server._sessions.pop("sid", None)
+
+
+def test_prompt_submit_preserves_transcript_meta_when_agent_history_is_filtered(
+    monkeypatch,
+):
+    seen = {}
+
+    class _Agent:
+        def run_conversation(
+            self, prompt, conversation_history=None, stream_callback=None
+        ):
+            seen["history"] = conversation_history
+            return {
+                "final_response": "new reply",
+                "messages": [
+                    *(conversation_history or []),
+                    {"role": "user", "content": prompt},
+                    {"role": "assistant", "content": "new reply"},
+                ],
+            }
+
+    class _ImmediateThread:
+        def __init__(self, target=None, daemon=None):
+            self._target = target
+
+        def start(self):
+            self._target()
+
+    initial_history = [
+        {"role": "system", "content": "Answer briefly."},
+        {"role": "session_meta", "content": "[Session: Model changed.]"},
+        {"role": "user", "content": "hello"},
+        {"role": "assistant", "content": "hi"},
+        {
+            "role": "system",
+            "content": "[System: The active model for this chat has changed to old/model.]",
+        },
+    ]
+    server._sessions["sid"] = _session(agent=_Agent(), history=initial_history)
+    try:
+        monkeypatch.setattr(server.threading, "Thread", _ImmediateThread)
+        monkeypatch.setattr(server, "_get_usage", lambda _a: {})
+        monkeypatch.setattr(server, "render_message", lambda _t, _c: "")
+        monkeypatch.setattr(server, "_emit", lambda *a: None)
+
+        resp = server.handle_request(
+            {
+                "id": "1",
+                "method": "prompt.submit",
+                "params": {"session_id": "sid", "text": "what model is active?"},
+            }
+        )
+        assert resp.get("result"), f"got error: {resp.get('error')}"
+
+        assert seen["history"] == [
+            {"role": "system", "content": "Answer briefly."},
+            {"role": "user", "content": "hello"},
+            {"role": "assistant", "content": "hi"},
+        ]
+        assert server._sessions["sid"]["history"] == [
+            *initial_history,
+            {"role": "user", "content": "what model is active?"},
+            {"role": "assistant", "content": "new reply"},
+        ]
+        assert server._sessions["sid"]["history_version"] == 1
     finally:
         server._sessions.pop("sid", None)
 

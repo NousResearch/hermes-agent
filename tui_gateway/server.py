@@ -2723,7 +2723,7 @@ def _persist_live_session_system_prompt(session: dict | None) -> None:
 
 
 def _append_model_switch_marker(session: dict | None, *, model: str, provider: str) -> None:
-    """Record a real system-history pivot after a live model switch."""
+    """Record transcript-only runtime metadata after a live model switch."""
     if not session:
         return
     session_key = str(session.get("session_key") or "").strip()
@@ -2732,15 +2732,13 @@ def _append_model_switch_marker(session: dict | None, *, model: str, provider: s
 
     provider_part = f" via provider {provider}" if provider else ""
     marker = (
-        "[System: The active model for this chat has changed to "
+        "[Session: The active model for this chat has changed to "
         f"{model}{provider_part}. From this point forward, use this runtime "
         "metadata when answering questions about what model/provider is active.]"
     )
-    # Persist as a user message, not a system message.  The gateway appends
-    # this marker after prior conversation turns, and strict OpenAI-compatible
-    # providers (vLLM, Qwen) reject system messages that are not at the
-    # beginning of the API message list (#48338).
-    entry = {"role": "user", "content": marker}
+    # The refreshed system prompt carries model identity to the next API call.
+    # Keep this persisted marker out of provider-visible history.
+    entry = {"role": "session_meta", "content": marker}
 
     lock = session.get("history_lock")
     if lock is not None:
@@ -2755,14 +2753,14 @@ def _append_model_switch_marker(session: dict | None, *, model: str, provider: s
         agent = session.get("agent")
         db = getattr(agent, "_session_db", None) if agent is not None else None
         if db is not None:
-            db.append_message(session_id=session_key, role="user", content=marker)
+            db.append_message(session_id=session_key, role="session_meta", content=marker)
             return
 
         _ensure_session_db_row(session)
         with _session_db(session) as scoped_db:
             if scoped_db is not None:
                 scoped_db.append_message(
-                    session_id=session_key, role="user", content=marker
+                    session_id=session_key, role="session_meta", content=marker
                 )
     except Exception:
         logger.debug("failed to persist model switch marker", exc_info=True)
@@ -5449,6 +5447,42 @@ def _history_to_messages(history: list[dict]) -> list[dict]:
         messages.append(msg)
 
     return messages
+
+
+def _agent_conversation_history(history: list[dict]) -> list[dict]:
+    """Return only provider-visible turns from persisted TUI history."""
+    visible = []
+    for msg in history:
+        if not isinstance(msg, dict):
+            continue
+        # session_meta is transcript-only. Historical TUI model-switch markers
+        # were persisted as system rows, but they are runtime notes rather than
+        # provider-visible instructions.
+        if msg.get("role") == "session_meta":
+            continue
+        if msg.get("role") == "system" and _is_model_switch_marker(msg):
+            continue
+        visible.append(msg)
+    return visible
+
+
+def _is_model_switch_marker(msg: dict) -> bool:
+    content = _coerce_message_text(msg.get("content")).strip()
+    return (
+        content.startswith("[System:")
+        and "active model for this chat has changed to" in content
+    )
+
+
+def _merge_agent_conversation_result(
+    raw_history: list[dict],
+    agent_history: list[dict],
+    agent_messages: list[dict],
+) -> list[dict]:
+    """Merge an append-style agent result back onto the raw TUI transcript."""
+    if len(agent_messages) > len(agent_history):
+        return [*raw_history, *agent_messages[len(agent_history) :]]
+    return list(agent_messages)
 
 
 def _coerce_seed_history(value: Any) -> list[dict]:
@@ -10006,8 +10040,9 @@ def _run_prompt_submit(rid, sid: str, session: dict, text: Any) -> None:
                     payload["rendered"] = r
                 _emit("message.delta", sid, payload)
 
+            agent_history = _agent_conversation_history(history)
             run_kwargs = {
-                "conversation_history": list(history),
+                "conversation_history": agent_history,
                 "stream_callback": _stream,
             }
             try:
@@ -10065,7 +10100,9 @@ def _run_prompt_submit(rid, sid: str, session: dict, text: Any) -> None:
                     with session["history_lock"]:
                         current_version = int(session.get("history_version", 0))
                         if current_version == history_version:
-                            session["history"] = result["messages"]
+                            session["history"] = _merge_agent_conversation_result(
+                                history, agent_history, result["messages"]
+                            )
                             session["history_version"] = history_version + 1
                         else:
                             # History mutated externally during the turn

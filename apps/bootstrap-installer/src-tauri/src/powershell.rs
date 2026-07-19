@@ -77,8 +77,11 @@ pub async fn run_script(
     let stdout = child.stdout.take().expect("stdout was piped");
     let stderr = child.stderr.take().expect("stderr was piped");
 
-    let mut stdout_reader = BufReader::new(stdout).lines();
-    let mut stderr_reader = BufReader::new(stderr).lines();
+    // Read lines as bytes and convert lossily so PowerShell output with
+    // non-UTF-8 bytes (common on non-English Windows) doesn't abort the
+    // reader with "stream did not contain valid UTF-8" (#67194).
+    let mut stdout_reader = BufReader::new(stdout);
+    let mut stderr_reader = BufReader::new(stderr);
 
     let mut combined_stdout = String::new();
     let mut combined_stderr = String::new();
@@ -87,7 +90,7 @@ pub async fn run_script(
     // Loop: poll stdout, stderr, cancel, and child exit concurrently.
     loop {
         tokio::select! {
-            line = stdout_reader.next_line() => {
+            line = read_lossy_line(&mut stdout_reader) => {
                 match line {
                     Ok(Some(l)) => {
                         (sink.on_stdout_line)(&l);
@@ -104,7 +107,7 @@ pub async fn run_script(
                     }
                 }
             }
-            line = stderr_reader.next_line() => {
+            line = read_lossy_line(&mut stderr_reader) => {
                 match line {
                     Ok(Some(l)) => {
                         (sink.on_stderr_line)(&l);
@@ -130,12 +133,12 @@ pub async fn run_script(
     }
 
     // Drain remaining lines after the loop exited.
-    while let Ok(Some(l)) = stdout_reader.next_line().await {
+    while let Ok(Some(l)) = read_lossy_line(&mut stdout_reader).await {
         (sink.on_stdout_line)(&l);
         combined_stdout.push_str(&l);
         combined_stdout.push('\n');
     }
-    while let Ok(Some(l)) = stderr_reader.next_line().await {
+    while let Ok(Some(l)) = read_lossy_line(&mut stderr_reader).await {
         (sink.on_stderr_line)(&l);
         combined_stderr.push_str(&l);
         combined_stderr.push('\n');
@@ -171,6 +174,28 @@ async fn recv_cancel(rx: &mut Option<CancelRx>) {
         }
         None => std::future::pending::<()>().await,
     }
+}
+
+/// Read one line of text from a buffered byte stream, converting non-UTF-8
+/// sequences lossily.  This tolerates PowerShell output that uses the system
+/// code page instead of UTF-8 (common on non-English Windows) without
+/// crashing the installer (#67194).
+async fn read_lossy_line<R: tokio::io::AsyncBufRead + Unpin>(
+    reader: &mut R,
+) -> std::io::Result<Option<String>> {
+    let mut buf = Vec::new();
+    let n = reader.read_until(b'\n', &mut buf).await?;
+    if n == 0 {
+        return Ok(None);
+    }
+    // Strip trailing \n or \r\n (BufReader::lines() behaviour).
+    if buf.ends_with(b"\n") {
+        buf.pop();
+        if buf.ends_with(b"\r") {
+            buf.pop();
+        }
+    }
+    Ok(Some(String::from_utf8_lossy(&buf).into_owned()))
 }
 
 #[cfg(target_os = "windows")]

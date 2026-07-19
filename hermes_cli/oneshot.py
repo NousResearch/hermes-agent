@@ -235,6 +235,48 @@ def _write_usage_file(path: Optional[str], result: dict, failure: Optional[str] 
         pass
 
 
+def _setup_oneshot_worktree() -> Optional[dict]:
+    """Create an isolated git worktree for ``hermes -z -w``.
+
+    Reuses the interactive ``hermes -w`` lifecycle (``cli._setup_worktree``): a
+    disposable worktree under ``.worktrees/`` on a dedicated ``hermes/...``
+    branch, branched from the freshly-fetched remote tip. Returns the worktree
+    info dict, or ``None`` on failure (the underlying helper prints the reason).
+
+    ``_setup_worktree`` writes its progress/error notices to stdout, but the
+    oneshot contract is that stdout carries only the agent's final response — so
+    those notices are redirected to stderr here.
+    """
+    try:
+        from cli import _git_repo_root, _prune_stale_worktrees, _setup_worktree
+    except Exception as exc:  # pragma: no cover - defensive import guard
+        sys.stderr.write(f"hermes -z: worktree support is unavailable ({exc}).\n")
+        return None
+    with redirect_stdout(sys.stderr):
+        repo_root = _git_repo_root()
+        if repo_root:
+            _prune_stale_worktrees(repo_root)
+        return _setup_worktree()
+
+
+def _cleanup_oneshot_worktree(info: dict) -> None:
+    """Tear down the oneshot worktree on exit (kept if it has unpushed commits).
+
+    Delegates to ``cli._cleanup_worktree``; its stdout notices are routed to
+    stderr so they never contaminate the oneshot response on stdout. Fail-soft:
+    cleanup must never turn a successful run into a failure.
+    """
+    try:
+        from cli import _cleanup_worktree
+    except Exception:  # pragma: no cover - defensive import guard
+        return
+    with redirect_stdout(sys.stderr):
+        try:
+            _cleanup_worktree(info)
+        except Exception:
+            pass
+
+
 def run_oneshot(
     prompt: str,
     model: Optional[str] = None,
@@ -244,13 +286,17 @@ def run_oneshot(
     usage_file: Optional[str] = None,
     resume: Optional[str] = None,
     reasoning: object = None,
+    worktree: bool = False,
 ) -> int:
     """Execute a single prompt and print only the final content block.
 
     Model/provider fall back to ``HERMES_INFERENCE_MODEL`` and config.yaml. ``usage_file`` gets a
     JSON usage report even when the run fails. ``resume`` is a session id (already normalized by
     the CLI layer: latest/title/--continue resolution) whose transcript is loaded and continued
-    by this turn. Returns the exit code; the caller owns process termination.
+    by this turn. ``worktree`` (``hermes -z -w``) runs the agent inside a disposable git worktree on a
+    dedicated ``hermes/...`` branch, mirroring interactive ``hermes -w``, so commits never land on the
+    caller's checked-out branch; it is removed on exit unless it has unpushed commits, and exit 2 means
+    it could not be created. Returns the exit code; the caller owns process termination.
     """
     # Silence every stdlib logger: AIAgent, tools and provider adapters log to stderr through the
     # root logger. File handlers from setup_logging() keep working (level-independent).
@@ -272,74 +318,97 @@ def run_oneshot(
         return 2
     use_config_toolsets = _normalize_toolsets(toolsets) is None
 
-    # Non-interactive by definition — an approval prompt would hang forever.
-    os.environ["HERMES_YOLO_MODE"] = "1"
-    os.environ["HERMES_ACCEPT_HOOKS"] = "1"
-    # Same finite-chat marker as `hermes chat -q` (cli.py): the session-source resolver uses it to drop an
-    # inherited tui/desktop transport label, and delegate dispatch to route detached results inline.
-    os.environ["HERMES_SINGLE_QUERY_SESSION"] = "1"
+    # `hermes -z -w`: create the isolated worktree BEFORE any agent work and chdir into it so the
+    # whole run (file edits, commits) happens on the dedicated branch, not the caller's checked-out
+    # branch. Fail loudly (exit 2) rather than silently running in the live repo.
+    wt_info = None
+    prev_cwd = None
+    if worktree:
+        wt_info = _setup_oneshot_worktree()
+        if not wt_info:
+            return 2
+        prev_cwd = os.getcwd()
+        os.chdir(wt_info["path"])
 
-    # Nothing here drains process_registry.completion_queue (only cli.py's process_loop and the
-    # gateway watchers do), so left unbound delegate_task would be forced background and every
-    # subagent result discarded. Stateless routes it to the inline/synchronous path.
-    declare_stateless_channel()
+    try:
+        # Non-interactive by definition — an approval prompt would hang forever.
+        os.environ["HERMES_YOLO_MODE"] = "1"
+        os.environ["HERMES_ACCEPT_HOOKS"] = "1"
+        # Same finite-chat marker as `hermes chat -q` (cli.py): the session-source resolver uses it to drop an
+        # inherited tui/desktop transport label, and delegate dispatch to route detached results inline.
+        os.environ["HERMES_SINGLE_QUERY_SESSION"] = "1"
 
-    # Redirect stderr AND stdout for the entire call tree; the final response goes to the real
-    # stdout at the end.
-    real_stdout = sys.stdout
-    real_stderr = sys.stderr
+        # Nothing here drains process_registry.completion_queue (only cli.py's process_loop and the
+        # gateway watchers do), so left unbound delegate_task would be forced background and every
+        # subagent result discarded. Stateless routes it to the inline/synchronous path.
+        declare_stateless_channel()
 
-    response: Optional[str] = None
-    result: dict = {}
-    failure: BaseException | None = None
-    with open(os.devnull, "w", encoding="utf-8") as devnull, redirect_stdout(devnull), redirect_stderr(devnull):
-        try:
-            response, result = _run_agent(
-                prompt,
-                model=model,
-                provider=provider,
-                toolsets=explicit_toolsets,
-                use_config_toolsets=use_config_toolsets,
-                skills=skills,
-                resume=resume,
-                reasoning=reasoning,
-                ledger=bool(usage_file),
-            )
-        except BaseException as exc:
-            # Capture anything escaping the agent (OSError from prompt_toolkit on a non-TTY pipe,
-            # KeyboardInterrupt, SystemExit, ...) so it reaches the real stderr instead of dying
-            # silently past the redirect — the worst failure mode in cron / SSH / subprocess use.
-            failure = exc
+        # Redirect stderr AND stdout for the entire call tree; the final response goes to the real
+        # stdout at the end.
+        real_stdout = sys.stdout
+        real_stderr = sys.stderr
 
-    if failure is not None:
-        # Control-flow exceptions (Ctrl-C / sys.exit inside the agent) re-raise to the parent.
-        if isinstance(failure, (KeyboardInterrupt, SystemExit)):
-            _write_usage_file(usage_file, result, failure=repr(failure))
-            raise failure
-        _write_usage_file(usage_file, result, failure=str(failure))
-        real_stderr.write(f"hermes -z: agent failed: {failure}\n")
-        real_stderr.flush()
-        return 1
+        response: Optional[str] = None
+        result: dict = {}
+        failure: BaseException | None = None
+        with open(os.devnull, "w", encoding="utf-8") as devnull, redirect_stdout(devnull), redirect_stderr(devnull):
+            try:
+                response, result = _run_agent(
+                    prompt,
+                    model=model,
+                    provider=provider,
+                    toolsets=explicit_toolsets,
+                    use_config_toolsets=use_config_toolsets,
+                    skills=skills,
+                    resume=resume,
+                    reasoning=reasoning,
+                    ledger=bool(usage_file),
+                )
+            except BaseException as exc:
+                # Capture anything escaping the agent (OSError from prompt_toolkit on a non-TTY pipe,
+                # KeyboardInterrupt, SystemExit, ...) so it reaches the real stderr instead of dying
+                # silently past the redirect — the worst failure mode in cron / SSH / subprocess use.
+                failure = exc
 
-    _write_usage_file(usage_file, result)
+        if failure is not None:
+            # Control-flow exceptions (Ctrl-C / sys.exit inside the agent) re-raise to the parent.
+            if isinstance(failure, (KeyboardInterrupt, SystemExit)):
+                _write_usage_file(usage_file, result, failure=repr(failure))
+                raise failure
+            _write_usage_file(usage_file, result, failure=str(failure))
+            real_stderr.write(f"hermes -z: agent failed: {failure}\n")
+            real_stderr.flush()
+            return 1
 
-    if response:
-        # Lone UTF-16 surrogates would raise UnicodeEncodeError on a real stdout and abort with
-        # exit 1 after the turn already completed — scrub to U+FFFD first.
-        # Model text can contain lone UTF-16 surrogates (invalid in UTF-8). See #80366.
-        from agent.message_sanitization import _sanitize_surrogates
+        _write_usage_file(usage_file, result)
 
-        response = _sanitize_surrogates(response)
-        real_stdout.write(response)
-        if not response.endswith("\n"):
-            real_stdout.write("\n")
-        real_stdout.flush()
+        if response:
+            # Lone UTF-16 surrogates would raise UnicodeEncodeError on a real stdout and abort with
+            # exit 1 after the turn already completed — scrub to U+FFFD first.
+            # Model text can contain lone UTF-16 surrogates (invalid in UTF-8). See #80366.
+            from agent.message_sanitization import _sanitize_surrogates
 
-    exit_code = _oneshot_exit_code(response, result)
-    if exit_code == 1:
-        real_stderr.write("hermes -z: no final response was produced; treating the run as failed.\n")
-        real_stderr.flush()
-    return exit_code
+            response = _sanitize_surrogates(response)
+            real_stdout.write(response)
+            if not response.endswith("\n"):
+                real_stdout.write("\n")
+            real_stdout.flush()
+
+        exit_code = _oneshot_exit_code(response, result)
+        if exit_code == 1:
+            real_stderr.write("hermes -z: no final response was produced; treating the run as failed.\n")
+            real_stderr.flush()
+        return exit_code
+    finally:
+        # Restore the original cwd and tear down the worktree (kept only if it has unpushed
+        # commits) regardless of how the run exited.
+        if prev_cwd is not None:
+            try:
+                os.chdir(prev_cwd)
+            except OSError:
+                pass
+        if wt_info is not None:
+            _cleanup_oneshot_worktree(wt_info)
 
 
 def _create_session_db_for_oneshot():

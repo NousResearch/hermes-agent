@@ -1921,6 +1921,7 @@ from gateway.session import (
     neutralize_untrusted_inline_text,
 )
 from gateway.delivery import DeliveryRouter, looks_like_telegram_private_chat_id
+from gateway.turn_lease import SessionTurnLeaseRegistry
 from gateway.authz_mixin import GatewayAuthorizationMixin
 from gateway.kanban_watchers import GatewayKanbanWatchersMixin
 from gateway.slash_commands import GatewaySlashCommandsMixin
@@ -2005,6 +2006,39 @@ def _own_policy_open_startup_violation(config) -> Optional[str]:
 # session from bypassing the "already running" guard during the async gap
 # between the guard check and actual agent creation.
 _AGENT_PENDING_SENTINEL = object()
+
+# Conversation-scoped per-session state registry.  Every GatewayRunner dict
+# keyed by session_key whose entries must NOT survive a conversation boundary
+# (/new, /resume, auto-reset, expiry finalization, compression-exhausted
+# reset) is listed here, and _clear_conversation_scope() pops them all.
+# Boundaries used to each carry a hand-copied pop-list that drifted whenever
+# a new dict was added (#48031, #58403, #10702, #35809). Adding a new
+# conversation-scoped dict means adding its attribute name HERE — every
+# boundary then handles it automatically.
+#
+# NOT in this list (different lifecycles):
+# - _running_agents/_running_agents_ts/_active_session_leases/_busy_ack_ts/
+#   _turn_lease_tokens: turn-scoped, owned by _release_running_agent_state
+#   and the dispatch finally.
+# - _session_run_generation: monotonic by design; clearing it would reset
+#   the counter and break stale-run detection (#28686).
+# - _agent_cache: has its own eviction path (_evict_cached_agent) with
+#   resource cleanup; boundaries call it explicitly.
+# - _pending_approvals/_update_prompt_pending/slash-confirm/tool-approval
+#   state: cleared via _clear_session_boundary_security_state, which
+#   _clear_conversation_scope calls.
+_CONVERSATION_SCOPED_STATE: tuple = (
+    "_session_model_overrides",
+    "_pending_one_turn_model_restores",
+    "_session_reasoning_overrides",
+    "_pending_model_notes",
+    "_last_resolved_model",
+    "_queued_events",
+    # Staged-but-never-consumed sidecar notes (turn aborted between staging
+    # and run_sync) must not leak into a future conversation's first user
+    # message — session keys are source-derived and REUSED.
+    "_pending_turn_sidecar_notes",
+)
 
 # Sentinel for "caller did not pass metadata" vs "caller passed None".
 _UNSET = object()
@@ -3152,6 +3186,17 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         self._running_agents: Dict[str, Any] = {}
         self._running_agents_ts: Dict[str, float] = {}  # start timestamp per session
         self._active_session_leases: Dict[str, Any] = {}
+        # Per-SESSION_ID turn lease (#64934): serializes the
+        # [load history → run → flush] region when two ROUTING KEYS resolve
+        # to one session_id (switch_session's many-to-one mapping). The
+        # routing-key guards above cannot see that overlap. Acquired in
+        # _handle_message_with_agent after session resolution is final,
+        # released via _release_turn_lease in the same method's finally.
+        self._turn_leases = SessionTurnLeaseRegistry()
+        # Tokens for held turn leases, keyed by (routing key, run generation)
+        # so release is granted per-turn and a stale unwind can never free a
+        # newer turn's lease (#28686 ownership lesson).
+        self._turn_lease_tokens: Dict[tuple, Any] = {}
         self._pending_messages: Dict[str, str] = {}  # Queued messages during interrupt
         # Last successfully-resolved (non-empty) model, keyed by session. Used
         # as a fallback when a fresh config read transiently returns an empty
@@ -8335,39 +8380,19 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                         # be garbage-collected.  Otherwise the cache grows
                         # unbounded across the gateway's lifetime.
                         self._evict_cached_agent(key)
-                        # Permanently finalizing this session — drop its
-                        # per-session control state so the dicts don't grow
+                        # Permanently finalizing this session — one funnel
+                        # call drops every conversation-scoped dict AND the
+                        # boundary security state (approvals, update
+                        # prompts, slash-confirm) so the dicts don't grow
                         # unbounded across the gateway's lifetime. (Idle
-                        # agent-cache eviction must NOT prune these: the
+                        # agent-cache eviction must NOT do this: the
                         # session is still alive and a resumed turn rebuilds
                         # its agent from these overrides. Only true session
-                        # finalization, /new, and /reset clear them.)
-                        self._session_model_overrides.pop(key, None)
-                        self._pending_one_turn_model_restores.pop(key, None)
-                        self._set_session_reasoning_override(key, None)
-                        if hasattr(self, "_pending_model_notes"):
-                            self._pending_model_notes.pop(key, None)
-                        # Session keys are source-derived and REUSED by the
-                        # next conversation: a staged-but-never-consumed
-                        # sidecar note (turn aborted between staging and
-                        # run_sync) must not leak into a future session's
-                        # first user message.
-                        _psn = getattr(self, "_pending_turn_sidecar_notes", None)
-                        if isinstance(_psn, dict):
-                            _psn.pop(key, None)
-                        # Clear per-session model cache so a resumed turn
-                        # resolves from current config, not a stale fallback
-                        # cached before the session went idle (mirrors /new
-                        # and the compression-exhausted auto-reset, #58403).
-                        _lrm = getattr(self, "_last_resolved_model", None)
-                        if _lrm is not None:
-                            _lrm.pop(key, None)
-                        _pending_approvals = getattr(self, "_pending_approvals", None)
-                        if isinstance(_pending_approvals, dict):
-                            _pending_approvals.pop(key, None)
-                        _update_prompt_pending = getattr(self, "_update_prompt_pending", None)
-                        if isinstance(_update_prompt_pending, dict):
-                            _update_prompt_pending.pop(key, None)
+                        # finalization, /new, and /reset clear them.) See
+                        # _CONVERSATION_SCOPED_STATE.
+                        self._clear_conversation_scope(
+                            key, reason="expiry_finalized"
+                        )
                         # Persist the finalized flag to sessions.json AND
                         # state.db (single write-path, #9006) — also drops
                         # the persisted /model override, since finalization
@@ -11371,6 +11396,10 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             # inside _run_agent returns False, and the old sentinel-only check here
             # missed the leftover real agent — locking the session out forever (#28686).
             self._release_running_agent_state(_quick_key)
+            # Turn lease (#64934): release THIS turn's lease token — keyed by
+            # (routing key, run generation) so this unwind can only ever free
+            # the lease its own turn acquired, never a newer turn's.
+            self._release_turn_lease(_quick_key, _run_generation)
 
     def _restore_moa_one_shot(self, event: "MessageEvent", quick_key: str) -> None:
         """Revert a ``/moa <prompt>`` one-shot model override after its turn.
@@ -11998,22 +12027,13 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         # wiping model/reasoning overrides set between turns (Closes #48031).
         _was_auto_reset = getattr(session_entry, "was_auto_reset", False)
         if _was_auto_reset:
-            # Treat auto-reset as a full conversation boundary — drop every
-            # session-scoped transient state so the fresh session does not
-            # inherit the previous conversation's model/reasoning overrides
-            # or a queued "/model switched" note.
-            self._session_model_overrides.pop(session_key, None)
-            self._pending_one_turn_model_restores.pop(session_key, None)
-            self._set_session_reasoning_override(session_key, None)
-            if hasattr(self, "_pending_model_notes"):
-                self._pending_model_notes.pop(session_key, None)
-            # Clear per-session model cache so the fresh session resolves
-            # from current config, not a stale fallback cached before the
-            # auto-reset (mirrors /new and the compression-exhausted
-            # auto-reset, #58403).
-            _lrm = getattr(self, "_last_resolved_model", None)
-            if _lrm is not None:
-                _lrm.pop(session_key, None)
+            # Treat auto-reset as a full conversation boundary — clear every
+            # conversation-scoped per-session dict in one funnel call so the
+            # fresh session does not inherit the previous conversation's
+            # model/reasoning overrides, a queued "/model switched" note, or
+            # a stale resolved-model cache (#48031, #58403). See
+            # _CONVERSATION_SCOPED_STATE.
+            self._clear_conversation_scope(session_key, reason="auto_reset")
             # Evict the cached agent so the fresh session does not inherit the
             # previous conversation's context_compressor._previous_summary —
             # the cache is keyed on the stable session_key, so an auto-reset
@@ -12182,6 +12202,33 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     )
             except Exception as e:
                 logger.warning("[Gateway] Failed to auto-load skill(s) %s: %s", _skill_names, e)
+
+        # ── Turn lease (#64934) ────────────────────────────────────────
+        # Session resolution is FINAL here (get_or_create → async-delegation
+        # pinning → topic tip-walk switch_session are all above). Serialize
+        # the [load history → run → flush] region per resolved SESSION_ID:
+        # when a second routing key is mapped to this same session_id, its
+        # turn waits here for the previous turn's flush instead of loading a
+        # stale history base and interleaving transcript writes. Same-key
+        # messages never reach this point mid-turn (adapter + runner guards
+        # hold them), so the lock is uncontended outside the alias-key route.
+        # Fail-open: on timeout the token comes back degraded and the turn
+        # proceeds unserialized (never a wedged session). Released in
+        # _handle_message's finally via _release_turn_lease — granted per
+        # (routing key, run generation) so a stale unwind can't release a
+        # newer turn's lease.
+        _lease_registry = getattr(self, "_turn_leases", None)
+        if _lease_registry is not None:
+            _lease_token = await _lease_registry.acquire(
+                session_entry.session_id,
+                owner_key=_quick_key,
+                generation=run_generation,
+                timeout=_float_env("HERMES_AGENT_TIMEOUT", 1800),
+            )
+            if _lease_token is not None:
+                if not hasattr(self, "_turn_lease_tokens"):
+                    self._turn_lease_tokens = {}
+                self._turn_lease_tokens[(_quick_key, run_generation)] = _lease_token
 
         # Load conversation history from transcript
         history = await self.async_session_store.load_transcript(session_entry.session_id)
@@ -12447,6 +12494,13 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                                     )
                                     if _hyg_rotated:
                                         session_entry.session_id = _hyg_new_sid
+                                        # The held turn lease follows the
+                                        # rotation so an alias key resolving
+                                        # the fresh child still serializes
+                                        # against this turn (#64934).
+                                        self._rebind_turn_lease(
+                                            _quick_key, run_generation, _hyg_new_sid
+                                        )
                                         await self.async_session_store._save()
                                         await asyncio.to_thread(
                                             self._sync_telegram_topic_binding,
@@ -12927,6 +12981,13 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             if agent_result.get("session_id") and agent_result["session_id"] != session_entry.session_id:
                 if session_entry.session_id == _run_start_session_id:
                     session_entry.session_id = agent_result["session_id"]
+                    # The held turn lease follows the rotation: the transcript
+                    # persistence below writes to the NEW id, so the
+                    # serialization boundary must move with it or an alias
+                    # key resolving the fresh child could interleave (#64934).
+                    self._rebind_turn_lease(
+                        _quick_key, run_generation, session_entry.session_id
+                    )
                     await self.async_session_store._save()
                     await self.async_session_store._record_gateway_session_peer(
                         session_entry.session_id,
@@ -13138,16 +13199,12 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 )
                 new_entry = await self.async_session_store.reset_session(session_key)
                 self._evict_cached_agent(session_key)
-                self._session_model_overrides.pop(session_key, None)
-                self._pending_one_turn_model_restores.pop(session_key, None)
-                self._set_session_reasoning_override(session_key, None)
-                if hasattr(self, "_pending_model_notes"):
-                    self._pending_model_notes.pop(session_key, None)
-                # Clear per-session model cache so the post-reset turn
-                # resolves from current config, not a stale fallback.
-                _lrm = getattr(self, "_last_resolved_model", None)
-                if _lrm is not None:
-                    _lrm.pop(session_key, None)
+                # Conversation boundary: one funnel call clears every
+                # conversation-scoped per-session dict (#58403 and siblings).
+                # See _CONVERSATION_SCOPED_STATE.
+                self._clear_conversation_scope(
+                    session_key, reason="compression_exhausted_reset"
+                )
                 if new_entry is not None:
                     # Drop the stale reference to the bloated compressed child and
                     # re-point the Telegram topic binding at the fresh session.
@@ -17458,6 +17515,104 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         # _persist_active_agents).
         self._persist_active_agents()
         return True
+
+    def _release_turn_lease(self, session_key: str, run_generation: int) -> bool:
+        """Release the turn lease acquired by (``session_key``, ``run_generation``).
+
+        Companion to the acquisition in ``_handle_message_with_agent``
+        (#64934). The token map is keyed by (routing key, run generation), so
+        this can only ever free the lease its own turn acquired — a stale
+        unwind whose generation was bumped by /stop or /new pops ITS token,
+        and the registry's identity check refuses it if a newer turn already
+        holds the lease. Idempotent and safe for bare test runners built via
+        ``object.__new__`` (getattr defaults).
+        """
+        if not session_key:
+            return False
+        tokens = getattr(self, "_turn_lease_tokens", None)
+        registry = getattr(self, "_turn_leases", None)
+        if tokens is None or registry is None:
+            return False
+        token = tokens.pop((session_key, run_generation), None)
+        if token is None:
+            return False
+        try:
+            return registry.release(token)
+        except Exception:
+            logger.debug("Failed to release turn lease", exc_info=True)
+            return False
+
+    def _rebind_turn_lease(
+        self, session_key: str, run_generation: int, new_session_id: str
+    ) -> bool:
+        """Follow a mid-turn session_id rotation with the held turn lease.
+
+        Compression (session-hygiene pre-compression or the agent's own
+        compressor) can rotate ``session_entry.session_id`` while this turn
+        is in flight. The turn's flush targets the NEW id, so the
+        serialization boundary must follow it — otherwise an alias routing
+        key resolving the new id (topic tip-walk onto the fresh child) could
+        start a concurrent turn the lease never sees (#64934 rotation-alias
+        window). Call at every site that reassigns session_entry.session_id
+        mid-turn. Fail-open no-op when there is no held token.
+        """
+        if not session_key or not new_session_id:
+            return False
+        tokens = getattr(self, "_turn_lease_tokens", None)
+        registry = getattr(self, "_turn_leases", None)
+        if tokens is None or registry is None:
+            return False
+        token = tokens.get((session_key, run_generation))
+        if token is None:
+            return False
+        try:
+            return registry.rebind(token, new_session_id)
+        except Exception:
+            logger.debug("Failed to rebind turn lease", exc_info=True)
+            return False
+
+    def _clear_conversation_scope(self, session_key: str, *, reason: str) -> None:
+        """Clear ALL conversation-scoped per-session state for ``session_key``.
+
+        THE single conversation-boundary funnel. Call this — and nothing
+        else — whenever a session_key crosses a conversation boundary:
+        /new, /resume, auto-reset (idle/daily/suspended), expiry
+        finalization, and the compression-exhausted auto-reset.
+
+        Why a funnel: these boundaries used to each carry a hand-copied
+        pop-list of the per-session dicts, and the lists drifted every time
+        a new dict was added (#48031, #58403, #10702, #35809 were all
+        "boundary X forgot dict Y" bugs — e.g. /new cleared the /model
+        override but not the /model --once restore snapshot). Adding a new
+        conversation-scoped dict now means adding its attribute name to
+        _CONVERSATION_SCOPED_STATE below; every boundary picks it up
+        automatically.
+
+        Scope rules:
+        - Conversation-scoped (cleared here): model/reasoning overrides,
+          one-turn restore snapshots, pending model notes, last-resolved
+          model cache, queued follow-up events, and the boundary security
+          state (approvals, /yolo, slash-confirm, update prompts).
+        - Turn-scoped (NOT cleared here): _running_agents/_ts, slot leases,
+          turn-lease tokens — owned by _release_running_agent_state and the
+          dispatch finally.
+        - Idle agent-cache eviction is NOT a conversation boundary: the
+          session is still alive and a resumed turn rebuilds from these
+          overrides. Only true boundaries call this.
+
+        Safe on bare test runners built via ``object.__new__`` (every
+        access is getattr-guarded).
+        """
+        if not session_key:
+            return
+        for attr in _CONVERSATION_SCOPED_STATE:
+            store = getattr(self, attr, None)
+            if isinstance(store, dict):
+                store.pop(session_key, None)
+        self._clear_session_boundary_security_state(session_key)
+        logger.debug(
+            "Cleared conversation scope for %s (%s)", session_key, reason
+        )
 
     def _clear_session_boundary_security_state(self, session_key: str) -> None:
         """Clear per-session control state that must not survive a boundary switch."""

@@ -1656,3 +1656,150 @@ terminal:
         assert "Deprecated: delegation.max_async_children" in out
         assert "Deprecated: HERMES_TOOL_PROGRESS_MODE" in out
         assert "⚠" in out or "Deprecated" in out
+
+
+_UNSET = object()
+
+
+class TestDoctorHomebrewEntrypoint:
+    """Command Installation: managed installs (Docker/NixOS) must not
+    warn about a missing venv — they ship their own entry point on PATH."""
+
+    def _run_command_installation(
+        self,
+        monkeypatch,
+        tmp_path,
+        executable,
+        which_hermes=_UNSET,
+        install_method=None,
+        is_uv=False,
+    ):
+        """Run doctor and return captured stdout."""
+        project_root = tmp_path / "project"
+        hermes_home = tmp_path / ".hermes"
+        project_root.mkdir()
+        hermes_home.mkdir()
+
+        monkeypatch.setattr(doctor_mod, "PROJECT_ROOT", project_root)
+        monkeypatch.setattr(doctor_mod, "HERMES_HOME", hermes_home)
+        monkeypatch.setattr(sys, "executable", str(executable))
+        monkeypatch.setattr("sys.platform", "linux")
+
+        fake_model_tools = types.SimpleNamespace(
+            check_tool_availability=lambda *a, **kw: None,
+            TOOLSET_REQUIREMENTS={},
+        )
+        monkeypatch.setitem(sys.modules, "model_tools", fake_model_tools)
+
+        # Optionally override install-method detection
+        if install_method is not None:
+            import hermes_cli.config as _cfg
+
+            monkeypatch.setattr(
+                _cfg, "detect_install_method", lambda *a, **kw: install_method
+            )
+            monkeypatch.setattr(_cfg, "is_uv_tool_install", lambda: is_uv)
+
+        # Optionally stub shutil.which so PATH lookup succeeds/fails. Always
+        # patch when the caller passes an explicit value (including None, for
+        # "hermes not on PATH") — otherwise the real environment's own
+        # `hermes` binary can leak into the test.
+        if which_hermes is not _UNSET:
+            import shutil as _shutil
+
+            monkeypatch.setattr(
+                _shutil, "which", lambda cmd: which_hermes if cmd == "hermes" else None
+            )
+
+        buf = io.StringIO()
+        try:
+            with contextlib.redirect_stdout(buf):
+                doctor_mod.run_doctor(Namespace(fix=False))
+        except SystemExit:
+            pass
+        return buf.getvalue()
+
+    # ------------------------------------------------------------------
+    # Docker
+    # ------------------------------------------------------------------
+
+    def test_docker_install_shows_ok(self, monkeypatch, tmp_path):
+        """detect_install_method() returns 'docker' — path check succeeds."""
+        regular_bin = tmp_path / "bin"
+        regular_bin.mkdir()
+        python_exe = regular_bin / "python"
+        python_exe.touch()
+
+        out = self._run_command_installation(
+            monkeypatch,
+            tmp_path,
+            python_exe,
+            which_hermes="/usr/local/bin/hermes",
+            install_method="docker",
+        )
+
+        assert "Hermes on PATH" in out
+        assert "docker" in out
+        assert "Venv entry point not found" not in out
+
+    # ------------------------------------------------------------------
+    # NixOS
+    # ------------------------------------------------------------------
+
+    def test_nixos_install_shows_ok(self, monkeypatch, tmp_path):
+        """detect_install_method() returns 'nixos' — path check succeeds."""
+        regular_bin = tmp_path / "bin"
+        regular_bin.mkdir()
+        python_exe = regular_bin / "python"
+        python_exe.touch()
+
+        out = self._run_command_installation(
+            monkeypatch,
+            tmp_path,
+            python_exe,
+            which_hermes="/run/current-system/sw/bin/hermes",
+            install_method="nixos",
+        )
+
+        assert "Hermes on PATH" in out
+        assert "nixos" in out
+        assert "Venv entry point not found" not in out
+
+    # ------------------------------------------------------------------
+    # Managed install but hermes not on PATH
+    # ------------------------------------------------------------------
+
+    def test_managed_install_not_on_path_shows_warn(self, monkeypatch, tmp_path):
+        """Docker detected but 'hermes' absent from PATH → actionable warning."""
+        regular_bin = tmp_path / "bin"
+        regular_bin.mkdir()
+        python_exe = regular_bin / "python"
+        python_exe.touch()
+
+        out = self._run_command_installation(
+            monkeypatch,
+            tmp_path,
+            python_exe,
+            which_hermes=None,  # hermes NOT on PATH
+            install_method="docker",
+        )
+
+        assert "Hermes not found on PATH" in out
+        assert "docker" in out
+        assert "Venv entry point not found" not in out
+
+    # ------------------------------------------------------------------
+    # Plain pip/git install without venv → original warning preserved
+    # ------------------------------------------------------------------
+
+    def test_non_managed_without_venv_shows_warning(self, monkeypatch, tmp_path):
+        """pip/git install with no venv entry point: original warning must still fire."""
+        regular_bin = tmp_path / "usr" / "bin"
+        regular_bin.mkdir(parents=True)
+        python_exe = regular_bin / "python"
+        python_exe.touch()
+
+        out = self._run_command_installation(monkeypatch, tmp_path, python_exe)
+
+        assert "Venv entry point not found" in out
+        assert "Hermes on PATH" not in out

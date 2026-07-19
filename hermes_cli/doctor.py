@@ -1485,6 +1485,24 @@ def run_doctor(args):
 
     if sys.platform != "win32":
         _section("Command Installation")
+        # ------------------------------------------------------------------
+        # Detect managed (non-venv) installs that ship their own entry point.
+        # This covers officially supported Tier 1/2 systems: Docker and NixOS.
+        #
+        # For these we skip the venv-presence check and instead verify
+        # that `hermes` is reachable on PATH via shutil.which().
+        # ------------------------------------------------------------------
+        _install_method = "pip"
+        _is_managed_install = False
+        try:
+            from hermes_cli.config import detect_install_method
+
+            _install_method = detect_install_method(PROJECT_ROOT)
+            if _install_method in ("docker", "nixos"):
+                _is_managed_install = True
+        except Exception:
+            pass
+
         # Determine the venv entry point location
         _venv_bin = None
         for _venv_name in ("venv", ".venv"):
@@ -1504,7 +1522,21 @@ def run_doctor(args):
             _cmd_link_display = "~/.local/bin"
         _cmd_link = _cmd_link_dir / "hermes"
 
-        if _venv_bin is None:
+        if _venv_bin is None and _is_managed_install:
+            # Non-venv install — verify hermes is reachable on PATH
+            _hermes_on_path = shutil.which("hermes")
+            if _hermes_on_path:
+                check_ok(
+                    f"Hermes on PATH ({_hermes_on_path})",
+                    f"— {_install_method} install, no venv required",
+                )
+            else:
+                check_warn(
+                    "Hermes not found on PATH",
+                    f"(detected {_install_method} install but 'hermes' is not on PATH"
+                    " — check your shell config)",
+                )
+        elif _venv_bin is None:
             check_warn(
                 "Venv entry point not found",
                 "(hermes not in venv/bin/ or .venv/bin/ — reinstall with pip install -e '.[all]')"

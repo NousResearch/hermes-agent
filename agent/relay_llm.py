@@ -296,6 +296,7 @@ class ManagedLlmStream(Iterator[Any]):
         self._accept_chunk = accept_chunk
         self._relay_observes_chunks = False
         self._raw_chunks: list[tuple[Any, Any]] = []
+        self.output_modified = False
 
         runtime, session, parent = relay_runtime.resolve_execution_context(session_id)
         if runtime is None or session is None:
@@ -405,6 +406,8 @@ class ManagedLlmStream(Iterator[Any]):
         try:
             chunk = self._loop.run_until_complete(next_chunk())
         except StopAsyncIteration:
+            if self._raw_chunks:
+                self.output_modified = True
             if not self._defer_logical_completion:
                 _complete_logical(self._logical, outcome="success")
                 self._logical = None
@@ -423,8 +426,11 @@ class ManagedLlmStream(Iterator[Any]):
             self._on_chunk(chunk)
         for index, (encoded, raw) in enumerate(self._raw_chunks):
             if _json_equal(chunk, encoded):
+                if index > 0:
+                    self.output_modified = True
                 del self._raw_chunks[: index + 1]
                 return raw
+        self.output_modified = True
         return self._chunk_adapter(chunk)
 
     def close(self) -> None:

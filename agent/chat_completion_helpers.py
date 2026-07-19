@@ -3282,6 +3282,8 @@ def interruptible_streaming_api_call(agent, api_kwargs: dict, *, on_first_delta=
 
         if agent._interrupt_requested:
             return None
+        if base_final_message is not None and not stream.output_modified:
+            return base_final_message
         final_message = accumulator.response(base_final_message)
         if (
             not getattr(final_message, "content", None)

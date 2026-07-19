@@ -63,7 +63,7 @@ class TestInstall:
         monkeypatch.setattr(bt, "_find_agent_browser", lambda: "npx agent-browser")
         monkeypatch.setattr(bt, "_build_browser_env", lambda: {})
         monkeypatch.setattr(bt, "_chromium_installed", lambda: True)
-        monkeypatch.setattr(bt.shutil, "which", lambda _: "/usr/bin/npx")
+        monkeypatch.setattr(bt.shutil, "which", lambda _, path=None: "/usr/bin/npx")
 
         captured = {}
         monkeypatch.setattr(

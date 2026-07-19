@@ -45,7 +45,7 @@ class TestChromiumInstalled:
         monkeypatch.setattr(
             bt.shutil,
             "which",
-            lambda name: "/usr/bin/chromium" if name == "chromium" else None,
+            lambda name, path=None: "/usr/bin/chromium" if name == "chromium" else None,
         )
 
         assert bt._chromium_installed() is True

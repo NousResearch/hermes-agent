@@ -2,12 +2,14 @@
 
 import json
 import os
+import sys
 from pathlib import Path
 from unittest.mock import patch, MagicMock, mock_open
 
 import pytest
 
 from tools.browser_tool import (
+    _agent_browser_candidate_present,
     _discover_homebrew_node_dirs,
     _find_agent_browser,
     _run_browser_command,
@@ -207,6 +209,168 @@ class TestFindAgentBrowser:
              ):
             with pytest.raises(FileNotFoundError, match="agent-browser CLI not found"):
                 _find_agent_browser()
+
+    def test_finds_in_local_node_modules_bin(self):
+        """Should fall through to the repo's node_modules/.bin when both the
+        bare PATH and the extended (Homebrew/fallback) PATH miss."""
+        repo_root = Path(_bt.__file__).parent.parent
+        local_bin_dir = repo_root / "node_modules" / ".bin"
+        local_bin_path = str(local_bin_dir / "agent-browser")
+
+        def mock_which(cmd, path=None):
+            if cmd == "agent-browser" and path and str(local_bin_dir) in path:
+                return local_bin_path
+            return None
+
+        original_is_dir = Path.is_dir
+
+        def mock_is_dir(self):
+            if self == local_bin_dir:
+                return True
+            return original_is_dir(self)
+
+        with patch("shutil.which", side_effect=mock_which), \
+             patch("os.path.isdir", return_value=False), \
+             patch.object(Path, "is_dir", mock_is_dir), \
+             patch("tools.browser_tool.agent_browser_runnable", return_value=True), \
+             patch(
+                 "tools.browser_tool._discover_homebrew_node_dirs",
+                 return_value=[],
+             ):
+            result = _find_agent_browser()
+
+        assert result == local_bin_path
+
+    def test_extended_path_hit_validate_false_skips_runnable_check(self, tmp_path):
+        """Readiness probes (validate=False, used by _has_agent_browser) must
+        resolve a candidate found via the extended PATH's path= kwarg lookup
+        without calling agent_browser_runnable — that keeps the probe a cheap
+        existence check with no subprocess spawn."""
+        fake_binary = tmp_path / "agent-browser"
+        fake_binary.write_text("#!/bin/sh\n")
+        fake_binary.chmod(0o755)
+
+        def mock_which(cmd, path=None):
+            if cmd == "agent-browser" and path:
+                return str(fake_binary)
+            return None  # bare (path=None) PATH lookup misses
+
+        with patch("shutil.which", side_effect=mock_which), \
+             patch("os.path.isdir", return_value=True), \
+             patch(
+                 "tools.browser_tool.agent_browser_runnable",
+                 side_effect=AssertionError(
+                     "validate=False must not call agent_browser_runnable"
+                 ),
+             ), \
+             patch(
+                 "tools.browser_tool._discover_homebrew_node_dirs",
+                 return_value=["/opt/homebrew/bin"],
+             ):
+            result = _find_agent_browser(validate=False)
+
+        assert result == str(fake_binary)
+
+    def test_local_bin_hit_validate_false_skips_runnable_check(self, tmp_path):
+        """Same no-subprocess-spawn contract for the node_modules/.bin
+        candidate: validate=False relies on _agent_browser_candidate_present's
+        existence+exec-bit check instead of shelling out to --version."""
+        repo_root = Path(_bt.__file__).parent.parent
+        local_bin_dir = repo_root / "node_modules" / ".bin"
+
+        fake_binary = tmp_path / "agent-browser"
+        fake_binary.write_text("#!/bin/sh\n")
+        fake_binary.chmod(0o755)
+
+        def mock_which(cmd, path=None):
+            if cmd == "agent-browser" and path and str(local_bin_dir) in path:
+                return str(fake_binary)
+            return None
+
+        original_is_dir = Path.is_dir
+
+        def mock_is_dir(self):
+            if self == local_bin_dir:
+                return True
+            return original_is_dir(self)
+
+        with patch("shutil.which", side_effect=mock_which), \
+             patch("os.path.isdir", return_value=False), \
+             patch.object(Path, "is_dir", mock_is_dir), \
+             patch(
+                 "tools.browser_tool.agent_browser_runnable",
+                 side_effect=AssertionError(
+                     "validate=False must not call agent_browser_runnable"
+                 ),
+             ), \
+             patch(
+                 "tools.browser_tool._discover_homebrew_node_dirs",
+                 return_value=[],
+             ):
+            result = _find_agent_browser(validate=False)
+
+        assert result == str(fake_binary)
+
+    def test_npx_fallback_validate_false(self):
+        """The npx sentinel must resolve through the validate=False path too,
+        independent of the fully-mocked coverage in test_nous_subscription.py."""
+        def mock_which(cmd, path=None):
+            if cmd == "agent-browser":
+                return None
+            if cmd == "npx":
+                return "/usr/bin/npx"
+            return None
+
+        original_path_exists = Path.exists
+
+        def mock_path_exists(self):
+            if "node_modules" in str(self) and "agent-browser" in str(self):
+                return False
+            return original_path_exists(self)
+
+        with patch("shutil.which", side_effect=mock_which), \
+             patch("os.path.isdir", return_value=False), \
+             patch.object(Path, "exists", mock_path_exists), \
+             patch(
+                 "tools.browser_tool._discover_homebrew_node_dirs",
+                 return_value=[],
+             ):
+            result = _find_agent_browser(validate=False)
+
+        assert result == "npx agent-browser"
+
+
+class TestAgentBrowserCandidatePresent:
+    """Direct unit tests for the validate=False candidate check used by every
+    branch of _find_agent_browser's readiness-probe (no-subprocess) mode."""
+
+    def test_none_is_false(self):
+        assert _agent_browser_candidate_present(None) is False
+
+    def test_empty_string_is_false(self):
+        assert _agent_browser_candidate_present("") is False
+
+    def test_npx_sentinel_is_true_without_touching_filesystem(self):
+        assert _agent_browser_candidate_present("npx agent-browser") is True
+
+    def test_executable_file_is_true(self, tmp_path):
+        binary = tmp_path / "agent-browser"
+        binary.write_text("#!/bin/sh\n")
+        binary.chmod(0o755)
+        assert _agent_browser_candidate_present(str(binary)) is True
+
+    @pytest.mark.skipif(
+        sys.platform == "win32",
+        reason="exec-bit is not meaningful on Windows; os.name == 'nt' short-circuits",
+    )
+    def test_nonexecutable_file_is_false(self, tmp_path):
+        binary = tmp_path / "agent-browser"
+        binary.write_text("#!/bin/sh\n")
+        binary.chmod(0o644)
+        assert _agent_browser_candidate_present(str(binary)) is False
+
+    def test_nonexistent_path_is_false(self, tmp_path):
+        assert _agent_browser_candidate_present(str(tmp_path / "missing")) is False
 
 
 class TestBrowserRequirements:

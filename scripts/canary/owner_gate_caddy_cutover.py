@@ -25,7 +25,9 @@ endpoint.  Any failure after that irreversible boundary converges to a fixed
 from __future__ import annotations
 
 import argparse
+import base64
 import copy
+import ctypes
 import fcntl
 import grp
 import hashlib
@@ -62,6 +64,10 @@ TERMINAL_RECEIPT_SCHEMA = "muncho-owner-gate-caddy-cutover-terminal.v1"
 MAINTENANCE_OBSERVATION_SCHEMA = (
     "muncho-owner-gate-caddy-cutover-maintenance-observation.v1"
 )
+CADDY_PREPARED_DEPENDENCY_SCHEMA = (
+    "muncho-production-caddy-prepared-dependency.v1"
+)
+CADDY_COMMIT_STARTED_SCHEMA = "muncho-owner-gate-caddy-commit-started.v1"
 JOURNAL_ENTRY_SCHEMA = "muncho-owner-gate-caddy-cutover-journal-entry.v2"
 AUTHORITY_SCHEMA = "muncho-owner-gate-caddy-cutover-authority.v1"
 
@@ -73,6 +79,15 @@ PUBLIC_HOST = "auth.lomliev.com"
 PUBLIC_PATH = "/readyz"
 PRIVATE_V2_UPSTREAM = "10.80.3.2:8080"
 MAINTENANCE_RESPONSE = b'respond "Service temporarily unavailable" 503'
+PUBLIC_READY_CONTENT_TYPE = "application/json"
+PUBLIC_READY_SCHEMA = "muncho-passkey-v2-readiness.v1"
+PUBLIC_READY_BODY = (
+    b'{"schema":"muncho-passkey-v2-readiness.v1","ok":true,'
+    b'"service":"muncho-passkey-v2-web",'
+    b'"authority_ready":true}'
+)
+PUBLIC_MAINTENANCE_CONTENT_TYPE = "text/plain; charset=utf-8"
+PUBLIC_MAINTENANCE_BODY = b"Service temporarily unavailable"
 BRIDGE_GET_MATCHER = "muncho_cutover_passkey_get"
 BRIDGE_POST_MATCHER = "muncho_cutover_passkey_post"
 BRIDGE_REQUEST_ID_TEMPLATE = "MUNCHO_V2_APPROVAL_REQUEST_ID"
@@ -134,6 +149,8 @@ MAX_JSON_BYTES = 8 * 1024 * 1024
 MAX_CADDY_OUTPUT_BYTES = 4 * 1024 * 1024
 MAX_PUBLIC_BODY_BYTES = 16 * 1024
 MAX_SYSTEMD_OUTPUT_BYTES = 1024 * 1024
+LEGACY_SERVICE_READY_TIMEOUT_SECONDS = 15.0
+LEGACY_SERVICE_READY_POLL_SECONDS = 0.1
 V2_APPROVAL_JS_SHA256 = (
     "918397ec05b7492794b5ffa9fa2c499fd4e52f2a4113074491cc830a19c772ce"
 )
@@ -384,6 +401,73 @@ _MAINTENANCE_OBSERVATION_FIELDS = frozenset(
         "receipt_sha256",
     }
 )
+_CADDY_PREPARED_DEPENDENCY_FIELDS = frozenset(
+    {
+        "schema",
+        "release_revision",
+        "freeze_plan_sha256",
+        "cutover_plan_sha256",
+        "freeze_approval_sha256",
+        "authority_sha256",
+        "caddy_prepare_receipt_sha256",
+        "original_caddy_sha256",
+        "approval_bridge_caddy_sha256",
+        "private_v2_caddy_sha256",
+        "maintenance_caddy_sha256",
+        "maintenance_caddy_b64",
+        "production_mutation_performed",
+        "caller_selected_input_accepted",
+        "secret_material_recorded",
+        "secret_digest_recorded",
+        "prepared_at_unix",
+        "receipt_sha256",
+    }
+)
+_CADDY_COMMIT_STARTED_FIELDS = frozenset(
+    {
+        "schema",
+        "cutover_plan_sha256",
+        "authority_sha256",
+        "prepare_receipt_sha256",
+        "legacy_activation_commit_intent_receipt_sha256",
+        "legacy_terminal_receipt_sha256",
+        "rollback_mode",
+        "started_at_unix",
+        "receipt_sha256",
+    }
+)
+_LEGACY_TERMINAL_FIELDS = frozenset(
+    {
+        "schema",
+        "plan_sha256",
+        "freeze_plan_sha256",
+        "freeze_approval_sha256",
+        "approval_sha256",
+        "final_tail_receipt_sha256",
+        "capability_prerequisite_receipt_sha256",
+        "capability_prerequisite_file_sha256",
+        "isolated_canary_goal_continuation_terminal_sha256",
+        "isolated_canary_workspace_gateway_receipt_sha256",
+        "isolation_equivalence_projection_sha256",
+        "zero_canonical_database_mutation_observed",
+        "pre_db_zero_write_observation_sha256",
+        "capability_topology_identity_sha256",
+        "database_apply_receipt_sha256",
+        "host_apply_receipt_sha256",
+        "host_boot_commit_receipt_sha256",
+        "activation_commit_intent_receipt_sha256",
+        "database_postflight_receipt_sha256",
+        "gateway_observation_sha256",
+        "writer_observation_sha256",
+        "connector_observation_sha256",
+        "direct_discord_disabled",
+        "discord_dm_allowed",
+        "rollback_used",
+        "secret_material_recorded",
+        "completed_at_unix",
+        "receipt_sha256",
+    }
+)
 
 
 class OwnerGateCaddyCutoverError(RuntimeError):
@@ -536,6 +620,12 @@ class _LegacyBridgeAuthorization:
 @dataclass(frozen=True)
 class _StableOwnedFile:
     path: Path
+    raw: bytes
+    identity: tuple[int, ...]
+
+
+@dataclass(frozen=True)
+class _PinnedLegacyHelper:
     raw: bytes
     identity: tuple[int, ...]
 
@@ -1800,12 +1890,18 @@ def _decode_legacy_json(snapshot: _StableOwnedFile) -> Mapping[str, Any]:
 
 
 def _utc_timestamp(value: Any, *, label: str) -> int:
-    if not isinstance(value, str) or not value or len(value) > 64:
+    if (
+        not isinstance(value, str)
+        or re.fullmatch(r"[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z", value)
+        is None
+    ):
         raise OwnerGateCaddyCutoverError(
             f"owner_gate_caddy_legacy_{label}_invalid"
         )
     try:
-        parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+        parsed = datetime.strptime(value, "%Y-%m-%dT%H:%M:%SZ").replace(
+            tzinfo=UTC
+        )
     except ValueError as exc:
         raise OwnerGateCaddyCutoverError(
             f"owner_gate_caddy_legacy_{label}_invalid"
@@ -1814,7 +1910,12 @@ def _utc_timestamp(value: Any, *, label: str) -> int:
         raise OwnerGateCaddyCutoverError(
             f"owner_gate_caddy_legacy_{label}_invalid"
         )
-    return int(parsed.timestamp())
+    timestamp = int(parsed.timestamp())
+    if time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(timestamp)) != value:
+        raise OwnerGateCaddyCutoverError(
+            f"owner_gate_caddy_legacy_{label}_invalid"
+        )
+    return timestamp
 
 
 @contextmanager
@@ -1873,6 +1974,244 @@ def _legacy_passkey_lock(
                 os.close(descriptor)
 
 
+def _assert_no_open_legacy_grant_consumers(
+    snapshot: _StableOwnedFile,
+    *,
+    proc_root: Path = Path("/proc"),
+) -> None:
+    """Prove no process retained the unused grant before it is claimed."""
+
+    if not proc_root.is_dir():
+        if sys.platform.startswith("linux"):
+            raise OwnerGateCaddyCutoverError(
+                "owner_gate_caddy_legacy_grant_consumer_proof_unavailable"
+            )
+        return
+    expected = (snapshot.identity[3], snapshot.identity[4])
+    try:
+        processes = sorted(
+            item for item in proc_root.iterdir() if item.name.isdigit()
+        )
+    except OSError as exc:
+        raise OwnerGateCaddyCutoverError(
+            "owner_gate_caddy_legacy_grant_consumer_proof_failed"
+        ) from exc
+    for process in processes:
+        descriptors = process / "fd"
+        try:
+            names = list(descriptors.iterdir())
+        except FileNotFoundError:
+            continue
+        except PermissionError as exc:
+            raise OwnerGateCaddyCutoverError(
+                "owner_gate_caddy_legacy_grant_consumer_proof_failed"
+            ) from exc
+        except OSError:
+            continue
+        for descriptor in names:
+            try:
+                observed = os.stat(descriptor)
+            except (FileNotFoundError, PermissionError):
+                continue
+            except OSError:
+                continue
+            if (observed.st_dev, observed.st_ino) == expected:
+                raise OwnerGateCaddyCutoverError(
+                    "owner_gate_caddy_legacy_grant_consumer_present"
+                )
+
+
+@contextmanager
+def _legacy_grant_consumer_fence(
+    snapshot: _StableOwnedFile,
+    *,
+    grants_root: Path,
+    expected_uid: int,
+    expected_gid: int,
+) -> Iterator[None]:
+    """Fence uid-owned noncooperative consumers with directory permissions."""
+
+    before = _require_legacy_directory(
+        grants_root,
+        expected_uid=expected_uid,
+        expected_gid=expected_gid,
+    )
+    descriptor: int | None = None
+    locked = False
+    try:
+        descriptor = os.open(
+            grants_root,
+            os.O_RDONLY
+            | getattr(os, "O_DIRECTORY", 0)
+            | getattr(os, "O_CLOEXEC", 0)
+            | getattr(os, "O_NOFOLLOW", 0),
+        )
+        opened = os.fstat(descriptor)
+        if (
+            (opened.st_dev, opened.st_ino) != (before[3], before[4])
+            or opened.st_uid != expected_uid
+            or opened.st_gid != expected_gid
+            or stat.S_IMODE(opened.st_mode) != 0o700
+        ):
+            raise OwnerGateCaddyCutoverError(
+                "owner_gate_caddy_legacy_grant_fence_invalid"
+            )
+        try:
+            fcntl.flock(descriptor, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except (BlockingIOError, OSError) as exc:
+            raise OwnerGateCaddyCutoverError(
+                "owner_gate_caddy_legacy_grant_fence_busy"
+            ) from exc
+        locked = True
+        # Production execution is root.  Non-root unit tests still exercise
+        # the same kernel-serialized claim protocol, while the deployed fixed
+        # runtime additionally fences noncooperative uid-owned readers by
+        # removing directory traversal permission.
+        if os.geteuid() != 0:
+            yield
+            return
+        os.fchmod(descriptor, 0)
+        os.fsync(descriptor)
+        fenced = os.fstat(descriptor)
+        reached = os.lstat(grants_root)
+        if (
+            (fenced.st_dev, fenced.st_ino) != (before[3], before[4])
+            or (reached.st_dev, reached.st_ino) != (before[3], before[4])
+            or fenced.st_uid != expected_uid
+            or fenced.st_gid != expected_gid
+            or stat.S_IMODE(fenced.st_mode) != 0
+        ):
+            raise OwnerGateCaddyCutoverError(
+                "owner_gate_caddy_legacy_grant_fence_invalid"
+            )
+        _assert_no_open_legacy_grant_consumers(snapshot)
+        yield
+    except OwnerGateCaddyCutoverError:
+        raise
+    except OSError as exc:
+        raise OwnerGateCaddyCutoverError(
+            "owner_gate_caddy_legacy_grant_fence_invalid"
+        ) from exc
+    finally:
+        if descriptor is not None:
+            try:
+                if os.geteuid() == 0:
+                    os.fchown(descriptor, expected_uid, expected_gid)
+                    os.fchmod(descriptor, 0o700)
+                    os.fsync(descriptor)
+                    restored = os.fstat(descriptor)
+                    reached = os.lstat(grants_root)
+                    if (
+                        (restored.st_dev, restored.st_ino)
+                        != (before[3], before[4])
+                        or (reached.st_dev, reached.st_ino)
+                        != (before[3], before[4])
+                        or restored.st_uid != expected_uid
+                        or restored.st_gid != expected_gid
+                        or stat.S_IMODE(restored.st_mode) != 0o700
+                    ):
+                        raise OwnerGateCaddyCutoverError(
+                            "owner_gate_caddy_legacy_grant_fence_restore_failed"
+                        )
+            finally:
+                if locked:
+                    fcntl.flock(descriptor, fcntl.LOCK_UN)
+                os.close(descriptor)
+
+
+def _read_claimed_legacy_grant(
+    path: Path,
+    *,
+    grants_root: Path,
+    expected_uid: int,
+    expected_gid: int,
+) -> _StableOwnedFile:
+    canonical_name = path.name.removesuffix(".json")
+    claim_match = re.fullmatch(
+        r"\.([A-Za-z0-9_-]{32})\.muncho-caddy-claim", path.name
+    )
+    consume_match = re.fullmatch(
+        r"\.([A-Za-z0-9_-]{32})\.muncho-caddy-consume", path.name
+    )
+    if (
+        path.parent != grants_root
+        or not (
+            _LEGACY_REQUEST_ID.fullmatch(canonical_name) is not None
+            or claim_match is not None
+            or consume_match is not None
+        )
+    ):
+        raise OwnerGateCaddyCutoverError(
+            "owner_gate_caddy_legacy_grant_claim_invalid"
+        )
+    descriptor: int | None = None
+    try:
+        reached = os.lstat(path)
+        descriptor = os.open(
+            path,
+            os.O_RDONLY
+            | getattr(os, "O_CLOEXEC", 0)
+            | getattr(os, "O_NOFOLLOW", 0),
+        )
+        opened = os.fstat(descriptor)
+        if (
+            stat.S_ISLNK(reached.st_mode)
+            or not stat.S_ISREG(opened.st_mode)
+            or (reached.st_dev, reached.st_ino)
+            != (opened.st_dev, opened.st_ino)
+            or opened.st_uid != expected_uid
+            or opened.st_gid != expected_gid
+            or stat.S_IMODE(opened.st_mode) != 0o600
+            or opened.st_nlink != 1
+            or not 0 < opened.st_size <= MAX_JSON_BYTES
+        ):
+            raise OwnerGateCaddyCutoverError(
+                "owner_gate_caddy_legacy_grant_claim_invalid"
+            )
+        raw = bytearray()
+        while len(raw) < opened.st_size:
+            chunk = os.read(descriptor, opened.st_size - len(raw))
+            if not chunk:
+                break
+            raw.extend(chunk)
+        after = os.fstat(descriptor)
+        identity = (
+            opened.st_mode,
+            opened.st_uid,
+            opened.st_gid,
+            opened.st_dev,
+            opened.st_ino,
+            opened.st_nlink,
+            opened.st_size,
+            opened.st_mtime_ns,
+            opened.st_ctime_ns,
+        )
+        if len(raw) != opened.st_size or identity != (
+            after.st_mode,
+            after.st_uid,
+            after.st_gid,
+            after.st_dev,
+            after.st_ino,
+            after.st_nlink,
+            after.st_size,
+            after.st_mtime_ns,
+            after.st_ctime_ns,
+        ):
+            raise OwnerGateCaddyCutoverError(
+                "owner_gate_caddy_legacy_grant_claim_invalid"
+            )
+        return _StableOwnedFile(path, bytes(raw), identity)
+    except OwnerGateCaddyCutoverError:
+        raise
+    except OSError as exc:
+        raise OwnerGateCaddyCutoverError(
+            "owner_gate_caddy_legacy_grant_claim_invalid"
+        ) from exc
+    finally:
+        if descriptor is not None:
+            os.close(descriptor)
+
+
 def _atomic_consume_legacy_grant(
     snapshot: _StableOwnedFile,
     value: Mapping[str, Any],
@@ -1882,60 +2221,149 @@ def _atomic_consume_legacy_grant(
     expected_uid: int,
     expected_gid: int,
 ) -> tuple[Mapping[str, Any], str]:
+    canonical_match = re.fullmatch(r"([A-Za-z0-9_-]{32})\.json", snapshot.path.name)
+    claim_match = re.fullmatch(
+        r"\.([A-Za-z0-9_-]{32})\.muncho-caddy-claim",
+        snapshot.path.name,
+    )
+    request_id = (
+        canonical_match.group(1)
+        if canonical_match is not None
+        else claim_match.group(1)
+        if claim_match is not None
+        else None
+    )
+    if request_id is None:
+        raise OwnerGateCaddyCutoverError(
+            "owner_gate_caddy_legacy_grant_claim_invalid"
+        )
+    canonical = grants_root / f"{request_id}.json"
+    temporary = grants_root / f".{request_id}.muncho-caddy-consume"
+    claim = grants_root / f".{request_id}.muncho-caddy-claim"
     consumed = copy.deepcopy(dict(value))
     consumed["used_at"] = time.strftime(
         "%Y-%m-%dT%H:%M:%SZ", time.gmtime(consumed_at_unix)
     )
     consumed["used_at_ts"] = consumed_at_unix
     payload = _canonical(consumed)
-    temporary = grants_root / (
-        f".{snapshot.path.stem}.muncho-caddy-consume.{os.getpid()}"
-    )
     flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_CLOEXEC", 0)
     flags |= getattr(os, "O_NOFOLLOW", 0)
     descriptor: int | None = None
     parent_descriptor: int | None = None
     try:
-        descriptor = os.open(temporary, flags, 0o600)
-        os.fchown(descriptor, expected_uid, expected_gid)
-        os.fchmod(descriptor, 0o600)
-        offset = 0
-        while offset < len(payload):
-            written = os.write(descriptor, payload[offset:])
-            if written <= 0:
-                raise OSError("write made no progress")
-            offset += written
-        os.fsync(descriptor)
-        os.close(descriptor)
-        descriptor = None
-        if (
-            _stable_legacy_file(
+        with _legacy_grant_consumer_fence(
+            snapshot,
+            grants_root=grants_root,
+            expected_uid=expected_uid,
+            expected_gid=expected_gid,
+        ):
+            already_claimed = snapshot.path == claim
+            if os.path.lexists(claim) and not already_claimed:
+                raise OwnerGateCaddyCutoverError(
+                    "owner_gate_caddy_legacy_grant_claim_conflict"
+                )
+            fenced_snapshot = _read_claimed_legacy_grant(
                 snapshot.path,
-                parent=grants_root,
+                grants_root=grants_root,
                 expected_uid=expected_uid,
                 expected_gid=expected_gid,
             )
-            != snapshot
-        ):
-            raise OwnerGateCaddyCutoverError(
-                "owner_gate_caddy_legacy_passkey_cas_failed"
+            if fenced_snapshot != snapshot:
+                raise OwnerGateCaddyCutoverError(
+                    "owner_gate_caddy_legacy_passkey_cas_failed"
+                )
+            if not already_claimed:
+                os.rename(snapshot.path, claim)
+            claimed = _read_claimed_legacy_grant(
+                claim,
+                grants_root=grants_root,
+                expected_uid=expected_uid,
+                expected_gid=expected_gid,
             )
-        os.replace(temporary, snapshot.path)
-        parent_descriptor = os.open(
-            grants_root,
-            os.O_RDONLY
-            | getattr(os, "O_DIRECTORY", 0)
-            | getattr(os, "O_CLOEXEC", 0)
-            | getattr(os, "O_NOFOLLOW", 0),
-        )
-        os.fsync(parent_descriptor)
-        installed = _stable_legacy_file(
-            snapshot.path,
+            if (
+                claimed.raw != snapshot.raw
+                or (claimed.identity[3], claimed.identity[4])
+                != (snapshot.identity[3], snapshot.identity[4])
+            ):
+                raise OwnerGateCaddyCutoverError(
+                    "owner_gate_caddy_legacy_grant_claim_invalid"
+                )
+            # Only the process holding the kernel directory lock may create,
+            # adopt, replace, or clean the deterministic staged consume file.
+            # This avoids a losing concurrent consumer deleting the winner's
+            # staged bytes, while keeping every crash state replayable.
+            if os.path.lexists(temporary):
+                staged = _read_claimed_legacy_grant(
+                    temporary,
+                    grants_root=grants_root,
+                    expected_uid=expected_uid,
+                    expected_gid=expected_gid,
+                )
+                staged_value = _decode_legacy_json(staged)
+                staged_used_at = _utc_timestamp(
+                    staged_value.get("used_at"),
+                    label="passkey_grant_consume_time",
+                )
+                expected_unconsumed = copy.deepcopy(dict(staged_value))
+                expected_unconsumed["used_at"] = None
+                expected_unconsumed["used_at_ts"] = None
+                if (
+                    set(staged_value) != _LEGACY_GRANT_FIELDS
+                    or staged_value.get("used_at_ts") != staged_used_at
+                    or staged_used_at > consumed_at_unix
+                    or expected_unconsumed != dict(value)
+                    or staged.raw != _canonical(staged_value)
+                ):
+                    raise OwnerGateCaddyCutoverError(
+                        "owner_gate_caddy_legacy_grant_staged_invalid"
+                    )
+                consumed = copy.deepcopy(dict(staged_value))
+                payload = staged.raw
+            else:
+                descriptor = os.open(temporary, flags, 0o600)
+                os.fchown(descriptor, expected_uid, expected_gid)
+                os.fchmod(descriptor, 0o600)
+                offset = 0
+                while offset < len(payload):
+                    written = os.write(descriptor, payload[offset:])
+                    if written <= 0:
+                        raise OSError("write made no progress")
+                    offset += written
+                os.fsync(descriptor)
+                os.close(descriptor)
+                descriptor = None
+            os.replace(temporary, canonical)
+            parent_descriptor = os.open(
+                grants_root,
+                os.O_RDONLY
+                | getattr(os, "O_DIRECTORY", 0)
+                | getattr(os, "O_CLOEXEC", 0)
+                | getattr(os, "O_NOFOLLOW", 0),
+            )
+            os.fsync(parent_descriptor)
+            installed = _read_claimed_legacy_grant(
+                canonical,
+                grants_root=grants_root,
+                expected_uid=expected_uid,
+                expected_gid=expected_gid,
+            )
+            if installed.raw != payload:
+                raise OwnerGateCaddyCutoverError(
+                    "owner_gate_caddy_legacy_passkey_consume_unconfirmed"
+                )
+            # Complete the deterministic claim cleanup while the consumer
+            # directory is still fenced.  A crash before this unlink leaves a
+            # recoverable consumed canonical + claim pair; a crash after it
+            # leaves the durable consumed canonical as the sole state.
+            os.unlink(claim)
+            os.fsync(parent_descriptor)
+        confirmed = _stable_legacy_file(
+            canonical,
             parent=grants_root,
             expected_uid=expected_uid,
             expected_gid=expected_gid,
         )
-        if installed.raw != payload:
+        if confirmed.raw != payload:
             raise OwnerGateCaddyCutoverError(
                 "owner_gate_caddy_legacy_passkey_consume_unconfirmed"
             )
@@ -2091,11 +2519,30 @@ def _legacy_request_and_grant(
     expires_at = _utc_timestamp(
         request.get("expires_at"), label="passkey_request_time"
     )
-    grant_snapshot = _stable_legacy_file(
-        grants_root / f"{request_id}.json",
-        parent=grants_root,
-        expected_uid=expected_uid,
-        expected_gid=expected_gid,
+    canonical_grant_path = grants_root / f"{request_id}.json"
+    claimed_grant_path = grants_root / (
+        f".{request_id}.muncho-caddy-claim"
+    )
+    canonical_exists = os.path.lexists(canonical_grant_path)
+    claim_exists = os.path.lexists(claimed_grant_path)
+    if not canonical_exists and not claim_exists:
+        raise OwnerGateCaddyCutoverError(
+            "owner_gate_caddy_legacy_passkey_grant_missing"
+        )
+    grant_snapshot = (
+        _stable_legacy_file(
+            canonical_grant_path,
+            parent=grants_root,
+            expected_uid=expected_uid,
+            expected_gid=expected_gid,
+        )
+        if canonical_exists
+        else _read_claimed_legacy_grant(
+            claimed_grant_path,
+            grants_root=grants_root,
+            expected_uid=expected_uid,
+            expected_gid=expected_gid,
+        )
     )
     grant = _decode_legacy_json(grant_snapshot)
     if set(grant) != _LEGACY_GRANT_FIELDS:
@@ -2130,6 +2577,7 @@ def _legacy_request_and_grant(
         or grant.get("case_id") != BRIDGE_CASE_ID
         or grant.get("action_hash") != action_hash
         or not created_at <= granted_at < grant_expires_at
+        or granted_at > now_unix
         or grant_expires_at != expires_at
         or type(grant.get("expires_at_ts")) is not int
         or grant["expires_at_ts"] != grant_expires_at
@@ -2146,7 +2594,201 @@ def _legacy_request_and_grant(
         raise OwnerGateCaddyCutoverError(
             "owner_gate_caddy_legacy_passkey_grant_invalid"
         )
+    if claim_exists and canonical_exists:
+        claimed = _read_claimed_legacy_grant(
+            claimed_grant_path,
+            grants_root=grants_root,
+            expected_uid=expected_uid,
+            expected_gid=expected_gid,
+        )
+        if (
+            not consumed
+            or _sha256(claimed.raw) != _unconsumed_grant_sha256(grant)
+        ):
+            raise OwnerGateCaddyCutoverError(
+                "owner_gate_caddy_legacy_grant_claim_conflict"
+            )
     return request_snapshot, request, grant_snapshot, grant
+
+
+@contextmanager
+def _immutable_legacy_helper_copy(
+    pinned: _PinnedLegacyHelper,
+    *,
+    root: Path = Path("/run"),
+) -> Iterator[Path]:
+    """Stage verified helper bytes in a root-owned, non-writable inode."""
+
+    if (
+        not isinstance(pinned, _PinnedLegacyHelper)
+        or len(pinned.raw) != LEGACY_STEP_UP_HELPER_SIZE
+        or _sha256(pinned.raw) != LEGACY_STEP_UP_HELPER_SHA256
+        or not root.is_absolute()
+        or ".." in root.parts
+    ):
+        raise OwnerGateCaddyCutoverError(
+            "owner_gate_caddy_legacy_helper_identity_invalid"
+        )
+    path = root / f".muncho-caddy-legacy-helper.{os.getpid()}"
+    descriptor: int | None = None
+    directory_descriptor: int | None = None
+    try:
+        root_stat = os.lstat(root)
+        if (
+            stat.S_ISLNK(root_stat.st_mode)
+            or not stat.S_ISDIR(root_stat.st_mode)
+            or root_stat.st_uid != 0
+            or root_stat.st_gid != 0
+            or root_stat.st_mode & (stat.S_IWGRP | stat.S_IWOTH)
+        ):
+            raise OwnerGateCaddyCutoverError(
+                "owner_gate_caddy_legacy_helper_copy_invalid"
+            )
+        flags = (
+            os.O_WRONLY
+            | os.O_CREAT
+            | os.O_EXCL
+            | getattr(os, "O_CLOEXEC", 0)
+            | getattr(os, "O_NOFOLLOW", 0)
+        )
+        descriptor = os.open(path, flags, 0o500)
+        os.fchown(descriptor, 0, 0)
+        os.fchmod(descriptor, 0o555)
+        offset = 0
+        while offset < len(pinned.raw):
+            written = os.write(descriptor, pinned.raw[offset:])
+            if written <= 0:
+                raise OSError("write made no progress")
+            offset += written
+        os.fsync(descriptor)
+        installed = os.fstat(descriptor)
+        reached = os.lstat(path)
+        if (
+            not stat.S_ISREG(installed.st_mode)
+            or stat.S_ISLNK(reached.st_mode)
+            or (installed.st_dev, installed.st_ino)
+            != (reached.st_dev, reached.st_ino)
+            or installed.st_uid != 0
+            or installed.st_gid != 0
+            or stat.S_IMODE(installed.st_mode) != 0o555
+            or installed.st_nlink != 1
+            or installed.st_size != len(pinned.raw)
+        ):
+            raise OwnerGateCaddyCutoverError(
+                "owner_gate_caddy_legacy_helper_copy_invalid"
+            )
+        os.close(descriptor)
+        descriptor = None
+        directory_descriptor = os.open(
+            root,
+            os.O_RDONLY
+            | getattr(os, "O_DIRECTORY", 0)
+            | getattr(os, "O_CLOEXEC", 0)
+            | getattr(os, "O_NOFOLLOW", 0),
+        )
+        os.fsync(directory_descriptor)
+        copied = _stable_legacy_helper_copy(path)
+        if copied != pinned.raw:
+            raise OwnerGateCaddyCutoverError(
+                "owner_gate_caddy_legacy_helper_copy_invalid"
+            )
+        yield path
+        if _stable_legacy_helper_copy(path) != pinned.raw:
+            raise OwnerGateCaddyCutoverError(
+                "owner_gate_caddy_legacy_helper_copy_changed"
+            )
+    except OwnerGateCaddyCutoverError:
+        raise
+    except OSError as exc:
+        raise OwnerGateCaddyCutoverError(
+            "owner_gate_caddy_legacy_helper_copy_invalid"
+        ) from exc
+    finally:
+        if descriptor is not None:
+            os.close(descriptor)
+        if directory_descriptor is not None:
+            os.close(directory_descriptor)
+        if os.path.lexists(path):
+            try:
+                os.unlink(path)
+                root_fd = os.open(
+                    root,
+                    os.O_RDONLY
+                    | getattr(os, "O_DIRECTORY", 0)
+                    | getattr(os, "O_CLOEXEC", 0)
+                    | getattr(os, "O_NOFOLLOW", 0),
+                )
+                try:
+                    os.fsync(root_fd)
+                finally:
+                    os.close(root_fd)
+            except OSError:
+                pass
+
+
+def _stable_legacy_helper_copy(path: Path) -> bytes:
+    descriptor: int | None = None
+    try:
+        reached = os.lstat(path)
+        descriptor = os.open(
+            path,
+            os.O_RDONLY
+            | getattr(os, "O_CLOEXEC", 0)
+            | getattr(os, "O_NOFOLLOW", 0),
+        )
+        opened = os.fstat(descriptor)
+        if (
+            stat.S_ISLNK(reached.st_mode)
+            or not stat.S_ISREG(opened.st_mode)
+            or (reached.st_dev, reached.st_ino)
+            != (opened.st_dev, opened.st_ino)
+            or opened.st_uid != 0
+            or opened.st_gid != 0
+            or stat.S_IMODE(opened.st_mode) != 0o555
+            or opened.st_nlink != 1
+            or opened.st_size != LEGACY_STEP_UP_HELPER_SIZE
+        ):
+            raise OwnerGateCaddyCutoverError(
+                "owner_gate_caddy_legacy_helper_copy_invalid"
+            )
+        raw = bytearray()
+        while len(raw) < opened.st_size:
+            chunk = os.read(descriptor, opened.st_size - len(raw))
+            if not chunk:
+                break
+            raw.extend(chunk)
+        after = os.fstat(descriptor)
+        if (
+            len(raw) != opened.st_size
+            or _sha256(bytes(raw)) != LEGACY_STEP_UP_HELPER_SHA256
+            or (
+                opened.st_dev,
+                opened.st_ino,
+                opened.st_size,
+                opened.st_mtime_ns,
+                opened.st_ctime_ns,
+            )
+            != (
+                after.st_dev,
+                after.st_ino,
+                after.st_size,
+                after.st_mtime_ns,
+                after.st_ctime_ns,
+            )
+        ):
+            raise OwnerGateCaddyCutoverError(
+                "owner_gate_caddy_legacy_helper_copy_changed"
+            )
+        return bytes(raw)
+    except OwnerGateCaddyCutoverError:
+        raise
+    except OSError as exc:
+        raise OwnerGateCaddyCutoverError(
+            "owner_gate_caddy_legacy_helper_copy_invalid"
+        ) from exc
+    finally:
+        if descriptor is not None:
+            os.close(descriptor)
 
 
 class ProductionLegacyRequestBoundary:
@@ -2172,7 +2814,7 @@ class ProductionLegacyRequestBoundary:
     )
 
     @staticmethod
-    def _require_identity() -> tuple[int, ...]:
+    def _require_identity() -> _PinnedLegacyHelper:
         descriptor: int | None = None
         try:
             user = pwd.getpwnam(LEGACY_STEP_UP_USER)
@@ -2249,63 +2891,64 @@ class ProductionLegacyRequestBoundary:
             raise OwnerGateCaddyCutoverError(
                 "owner_gate_caddy_legacy_helper_identity_invalid"
             )
-        return identity
+        return _PinnedLegacyHelper(bytes(raw), identity)
 
     def create_bridge_request(
         self,
         *,
         action: Mapping[str, Any],
     ) -> Mapping[str, Any]:
-        helper_identity = self._require_identity()
+        pinned_helper = self._require_identity()
         action_raw = _canonical(action)
         action_hash = _sha256(action_raw)
-        argv = (
-            str(RUNUSER),
-            "--user",
-            LEGACY_STEP_UP_USER,
-            "--",
-            str(LEGACY_STEP_UP_HELPER),
-            "create-action-request",
-            "--requester-discord-user-id",
-            OWNER_DISCORD_USER_ID,
-            "--approver-discord-user-id",
-            OWNER_DISCORD_USER_ID,
-            "--scope",
-            BRIDGE_APPROVAL_SCOPE,
-            "--case-id",
-            BRIDGE_CASE_ID,
-            "--target-system",
-            BRIDGE_TARGET_SYSTEM,
-            "--action-summary",
-            BRIDGE_ACTION_SUMMARY,
-            "--risk",
-            BRIDGE_ACTION_RISK,
-            "--rollback",
-            BRIDGE_ACTION_ROLLBACK,
-            "--action-json",
-            action_raw.decode("ascii", errors="strict"),
-            "--action-hash",
-            action_hash,
-            "--ttl-seconds",
-            "900",
-            "--approval-base-url",
-            f"https://{PUBLIC_HOST}",
-        )
         try:
-            completed = subprocess.run(
-                argv,
-                stdin=subprocess.DEVNULL,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE,
-                env={
-                    "LC_ALL": "C.UTF-8",
-                    "PATH": "/usr/bin:/bin",
-                    "PYTHONNOUSERSITE": "1",
-                },
-                shell=False,
-                timeout=30,
-                check=False,
-            )
+            with _immutable_legacy_helper_copy(pinned_helper) as helper_copy:
+                argv = (
+                    str(RUNUSER),
+                    "--user",
+                    LEGACY_STEP_UP_USER,
+                    "--",
+                    str(helper_copy),
+                    "create-action-request",
+                    "--requester-discord-user-id",
+                    OWNER_DISCORD_USER_ID,
+                    "--approver-discord-user-id",
+                    OWNER_DISCORD_USER_ID,
+                    "--scope",
+                    BRIDGE_APPROVAL_SCOPE,
+                    "--case-id",
+                    BRIDGE_CASE_ID,
+                    "--target-system",
+                    BRIDGE_TARGET_SYSTEM,
+                    "--action-summary",
+                    BRIDGE_ACTION_SUMMARY,
+                    "--risk",
+                    BRIDGE_ACTION_RISK,
+                    "--rollback",
+                    BRIDGE_ACTION_ROLLBACK,
+                    "--action-json",
+                    action_raw.decode("ascii", errors="strict"),
+                    "--action-hash",
+                    action_hash,
+                    "--ttl-seconds",
+                    "900",
+                    "--approval-base-url",
+                    f"https://{PUBLIC_HOST}",
+                )
+                completed = subprocess.run(
+                    argv,
+                    stdin=subprocess.DEVNULL,
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.PIPE,
+                    env={
+                        "LC_ALL": "C.UTF-8",
+                        "PATH": "/usr/bin:/bin",
+                        "PYTHONNOUSERSITE": "1",
+                    },
+                    shell=False,
+                    timeout=30,
+                    check=False,
+                )
         except (OSError, subprocess.SubprocessError) as exc:
             raise OwnerGateCaddyCutoverError(
                 "owner_gate_caddy_legacy_request_failed"
@@ -2321,10 +2964,6 @@ class ProductionLegacyRequestBoundary:
         ):
             raise OwnerGateCaddyCutoverError(
                 "owner_gate_caddy_legacy_request_failed"
-            )
-        if self._require_identity() != helper_identity:
-            raise OwnerGateCaddyCutoverError(
-                "owner_gate_caddy_legacy_helper_changed"
             )
         try:
             value = json.loads(
@@ -2674,7 +3313,17 @@ class ProductionLegacyServiceBoundary:
                 "owner_gate_caddy_legacy_service_changed"
             )
         self._run((SYSTEMCTL, "start", "--", LEGACY_STEP_UP_UNIT))
-        active = self._normalized(active=True)
+        deadline = time.monotonic() + LEGACY_SERVICE_READY_TIMEOUT_SECONDS
+        while True:
+            try:
+                active = self._normalized(active=True)
+                break
+            except OwnerGateCaddyCutoverError:
+                if time.monotonic() >= deadline:
+                    raise OwnerGateCaddyCutoverError(
+                        "owner_gate_caddy_legacy_service_start_unconfirmed"
+                    ) from None
+                time.sleep(LEGACY_SERVICE_READY_POLL_SECONDS)
         if (
             active["fragment_sha256"] != expected.get("fragment_sha256")
             or active["exec_start_argv"] != expected.get("exec_start_argv")
@@ -2685,7 +3334,7 @@ class ProductionLegacyServiceBoundary:
             )
         return active
 
-    def verify_local_v1(self) -> Mapping[str, Any]:
+    def _verify_local_v1_once(self) -> Mapping[str, Any]:
         connection = http.client.HTTPConnection("127.0.0.1", 8787, timeout=5)
         try:
             connection.request(
@@ -2748,6 +3397,19 @@ class ProductionLegacyServiceBoundary:
             ) from exc
         finally:
             connection.close()
+
+    def verify_local_v1(self) -> Mapping[str, Any]:
+        deadline = time.monotonic() + LEGACY_SERVICE_READY_TIMEOUT_SECONDS
+        while True:
+            try:
+                return self._verify_local_v1_once()
+            except OwnerGateCaddyCutoverError as exc:
+                if not isinstance(
+                    exc.__cause__,
+                    (OSError, http.client.HTTPException),
+                ) or time.monotonic() >= deadline:
+                    raise
+                time.sleep(LEGACY_SERVICE_READY_POLL_SECONDS)
 
 
 def _last(entries: Sequence[CaddyJournalEntry], event: str) -> CaddyJournalEntry | None:
@@ -3051,6 +3713,152 @@ def validate_maintenance_observation(
     return raw
 
 
+def _stable_config_path(path: Path) -> _StableConfig:
+    """Read one root-owned Caddy config without following or changing it."""
+
+    if path.parent != CADDYFILE_PATH.parent or not path.is_absolute():
+        raise OwnerGateCaddyCutoverError("owner_gate_caddy_config_invalid")
+    descriptor: int | None = None
+    try:
+        reached = os.lstat(path)
+        descriptor = os.open(
+            path,
+            os.O_RDONLY
+            | getattr(os, "O_CLOEXEC", 0)
+            | getattr(os, "O_NOFOLLOW", 0),
+        )
+        opened = os.fstat(descriptor)
+        if (
+            stat.S_ISLNK(reached.st_mode)
+            or not stat.S_ISREG(opened.st_mode)
+            or (reached.st_dev, reached.st_ino)
+            != (opened.st_dev, opened.st_ino)
+            or opened.st_uid != 0
+            or opened.st_gid != 0
+            or stat.S_IMODE(opened.st_mode) != ingress.CADDYFILE_MODE
+            or opened.st_nlink != 1
+            or not 0 < opened.st_size <= MAX_CADDYFILE_BYTES
+        ):
+            raise OwnerGateCaddyCutoverError(
+                "owner_gate_caddy_config_invalid"
+            )
+        raw = bytearray()
+        while len(raw) < opened.st_size:
+            chunk = os.read(descriptor, opened.st_size - len(raw))
+            if not chunk:
+                break
+            raw.extend(chunk)
+        after = os.fstat(descriptor)
+        final = os.lstat(path)
+        identity = (
+            opened.st_mode,
+            opened.st_uid,
+            opened.st_gid,
+            opened.st_dev,
+            opened.st_ino,
+            opened.st_nlink,
+            opened.st_size,
+            opened.st_mtime_ns,
+            opened.st_ctime_ns,
+        )
+        if (
+            len(raw) != opened.st_size
+            or identity
+            != (
+                after.st_mode,
+                after.st_uid,
+                after.st_gid,
+                after.st_dev,
+                after.st_ino,
+                after.st_nlink,
+                after.st_size,
+                after.st_mtime_ns,
+                after.st_ctime_ns,
+            )
+            or (final.st_dev, final.st_ino)
+            != (opened.st_dev, opened.st_ino)
+        ):
+            raise OwnerGateCaddyCutoverError(
+                "owner_gate_caddy_config_changed"
+            )
+        return _StableConfig(bytes(raw), identity)
+    except OwnerGateCaddyCutoverError:
+        raise
+    except OSError as exc:
+        raise OwnerGateCaddyCutoverError(
+            "owner_gate_caddy_config_invalid"
+        ) from exc
+    finally:
+        if descriptor is not None:
+            os.close(descriptor)
+
+
+def _atomic_exchange_paths(left: Path, right: Path) -> None:
+    """Atomically exchange two same-directory names using the host kernel."""
+
+    if (
+        left.parent != CADDYFILE_PATH.parent
+        or right != CADDYFILE_PATH
+        or left == right
+    ):
+        raise OwnerGateCaddyCutoverError(
+            "owner_gate_caddy_atomic_exchange_invalid"
+        )
+    libc = ctypes.CDLL(None, use_errno=True)
+    left_raw = os.fsencode(left)
+    right_raw = os.fsencode(right)
+    result: int
+    if sys.platform.startswith("linux"):
+        renameat2 = getattr(libc, "renameat2", None)
+        if renameat2 is None:
+            raise OwnerGateCaddyCutoverError(
+                "owner_gate_caddy_atomic_exchange_unavailable"
+            )
+        renameat2.argtypes = (
+            ctypes.c_int,
+            ctypes.c_char_p,
+            ctypes.c_int,
+            ctypes.c_char_p,
+            ctypes.c_uint,
+        )
+        renameat2.restype = ctypes.c_int
+        result = renameat2(-100, left_raw, -100, right_raw, 2)
+    elif sys.platform == "darwin":
+        renamex_np = getattr(libc, "renamex_np", None)
+        if renamex_np is None:
+            raise OwnerGateCaddyCutoverError(
+                "owner_gate_caddy_atomic_exchange_unavailable"
+            )
+        renamex_np.argtypes = (
+            ctypes.c_char_p,
+            ctypes.c_char_p,
+            ctypes.c_uint,
+        )
+        renamex_np.restype = ctypes.c_int
+        result = renamex_np(left_raw, right_raw, 2)
+    else:
+        raise OwnerGateCaddyCutoverError(
+            "owner_gate_caddy_atomic_exchange_unavailable"
+        )
+    if result != 0:
+        error_number = ctypes.get_errno()
+        raise OwnerGateCaddyCutoverError(
+            "owner_gate_caddy_atomic_exchange_failed"
+        ) from OSError(error_number, os.strerror(error_number))
+
+
+def _exchange_preimage_matches(
+    observed: _StableConfig,
+    expected: _StableConfig,
+) -> bool:
+    # rename(2) may advance ctime.  All other inode metadata, the inode itself,
+    # and every byte must match the transaction's stable snapshot.
+    return (
+        observed.raw == expected.raw
+        and observed.identity[:-1] == expected.identity[:-1]
+    )
+
+
 class ProductionCaddyBoundary:
     """Concrete fixed-path Caddy boundary; constructor accepts no coordinates."""
 
@@ -3205,29 +4013,44 @@ class ProductionCaddyBoundary:
             raise OwnerGateCaddyCutoverError("owner_gate_caddy_config_invalid")
         path = self._write_temporary(payload, purpose="replace")
         descriptor: int | None = None
+        preserve_captured_preimage = False
         try:
-            reached = os.lstat(path)
-            if (
-                stat.S_ISLNK(reached.st_mode)
-                or not stat.S_ISREG(reached.st_mode)
-                or reached.st_uid != 0
-                or reached.st_gid != 0
-                or stat.S_IMODE(reached.st_mode) != ingress.CADDYFILE_MODE
-                or reached.st_nlink != 1
-            ):
+            candidate = _stable_config_path(path)
+            if candidate.raw != payload:
                 raise OwnerGateCaddyCutoverError(
                     "owner_gate_caddy_temporary_invalid"
                 )
-            # The expected identity and bytes were captured by the transaction
-            # immediately before entering this boundary.  Re-read after the
-            # candidate is fully fsynced and compare before the rename: a
-            # concurrent writer is never overwritten and its bytes remain at
-            # the live path.
-            if self.stable_read() != expected:
+            # renameat2(RENAME_EXCHANGE) makes acquiring the live preimage and
+            # installing the candidate one indivisible kernel operation.  The
+            # previous live inode moves to ``path`` and is validated there.
+            _atomic_exchange_paths(path, CADDYFILE_PATH)
+            preserve_captured_preimage = True
+            captured = _stable_config_path(path)
+            if not _exchange_preimage_matches(captured, expected):
+                live = self.stable_read()
+                candidate_inode = (candidate.identity[3], candidate.identity[4])
+                live_inode = (live.identity[3], live.identity[4])
+                if live.raw == payload and live_inode == candidate_inode:
+                    _atomic_exchange_paths(path, CADDYFILE_PATH)
+                    restored = self.stable_read()
+                    if (
+                        restored.raw != captured.raw
+                        or (restored.identity[3], restored.identity[4])
+                        != (captured.identity[3], captured.identity[4])
+                    ):
+                        preserve_captured_preimage = True
+                        raise OwnerGateCaddyCutoverError(
+                            "owner_gate_caddy_cas_restore_unconfirmed"
+                        )
+                    preserve_captured_preimage = False
+                else:
+                    # A second writer replaced our candidate after the atomic
+                    # exchange.  Never overwrite it and never delete the first
+                    # captured third-party inode.
+                    preserve_captured_preimage = True
                 raise OwnerGateCaddyCutoverError(
                     "owner_gate_caddy_compare_and_swap_failed"
                 )
-            os.replace(path, CADDYFILE_PATH)
             descriptor = os.open(
                 CADDYFILE_PATH.parent,
                 os.O_RDONLY
@@ -3237,16 +4060,33 @@ class ProductionCaddyBoundary:
             )
             os.fsync(descriptor)
             installed = self.stable_read()
-            if installed.raw != payload:
+            if (
+                installed.raw != payload
+                or (installed.identity[3], installed.identity[4])
+                != (candidate.identity[3], candidate.identity[4])
+            ):
+                preserve_captured_preimage = True
                 raise OwnerGateCaddyCutoverError(
                     "owner_gate_caddy_replace_unconfirmed"
                 )
+            preserve_captured_preimage = False
         finally:
             if descriptor is not None:
                 os.close(descriptor)
-            if os.path.lexists(path):
+            if os.path.lexists(path) and not preserve_captured_preimage:
                 try:
                     os.unlink(path)
+                    parent = os.open(
+                        CADDYFILE_PATH.parent,
+                        os.O_RDONLY
+                        | getattr(os, "O_DIRECTORY", 0)
+                        | getattr(os, "O_CLOEXEC", 0)
+                        | getattr(os, "O_NOFOLLOW", 0),
+                    )
+                    try:
+                        os.fsync(parent)
+                    finally:
+                        os.close(parent)
                 except OSError:
                     pass
 
@@ -3310,18 +4150,65 @@ class ProductionCaddyBoundary:
             )
             response = connection.getresponse()
             encoding = response.getheader("Content-Encoding")
+            content_type = response.getheader("Content-Type")
+            content_length = response.getheader("Content-Length")
             body = response.read(MAX_PUBLIC_BODY_BYTES + 1)
+            expected_body = (
+                PUBLIC_READY_BODY
+                if expected_status == 200
+                else PUBLIC_MAINTENANCE_BODY
+            )
+            expected_content_type = (
+                PUBLIC_READY_CONTENT_TYPE
+                if expected_status == 200
+                else PUBLIC_MAINTENANCE_CONTENT_TYPE
+            )
             if (
                 response.status != expected_status
                 or encoding not in {None, "", "identity"}
                 or len(body) > MAX_PUBLIC_BODY_BYTES
+                or content_type != expected_content_type
+                or content_length != str(len(expected_body))
+                or body != expected_body
             ):
                 raise OwnerGateCaddyCutoverError(
                     "owner_gate_caddy_public_verify_failed"
                 )
+            authority_ready = False
+            service = "muncho-owner-gate-maintenance"
+            schema = "muncho-owner-gate-maintenance.v1"
+            if expected_status == 200:
+                try:
+                    value = json.loads(
+                        body.decode("utf-8", errors="strict"),
+                        object_pairs_hook=_reject_duplicate_keys,
+                        parse_constant=_reject_json_constant,
+                    )
+                except (UnicodeError, ValueError, json.JSONDecodeError) as exc:
+                    raise OwnerGateCaddyCutoverError(
+                        "owner_gate_caddy_public_verify_failed"
+                    ) from exc
+                expected_value = {
+                    "schema": PUBLIC_READY_SCHEMA,
+                    "ok": True,
+                    "service": "muncho-passkey-v2-web",
+                    "authority_ready": True,
+                }
+                if value != expected_value:
+                    raise OwnerGateCaddyCutoverError(
+                        "owner_gate_caddy_public_verify_failed"
+                    )
+                authority_ready = True
+                service = "muncho-passkey-v2-web"
+                schema = PUBLIC_READY_SCHEMA
             return {
                 "status": response.status,
                 "body_size": len(body),
+                "body_sha256": _sha256(body),
+                "content_type": content_type,
+                "schema": schema,
+                "service": service,
+                "authority_ready": authority_ready,
                 "tls_verified": True,
             }
         except OwnerGateCaddyCutoverError:
@@ -3652,6 +4539,75 @@ def _unconsumed_grant_sha256(grant: Mapping[str, Any]) -> str:
     return _sha256(_canonical(value))
 
 
+def _finalize_consumed_legacy_claim(
+    *,
+    request_id: str,
+    consumed: Mapping[str, Any],
+    grants_root: Path,
+    expected_uid: int,
+    expected_gid: int,
+) -> None:
+    claim = grants_root / f".{request_id}.muncho-caddy-claim"
+    temporary = grants_root / f".{request_id}.muncho-caddy-consume"
+    if not os.path.lexists(claim) and not os.path.lexists(temporary):
+        return
+    if not os.path.lexists(claim):
+        raise OwnerGateCaddyCutoverError(
+            "owner_gate_caddy_legacy_grant_claim_conflict"
+        )
+    claimed = _read_claimed_legacy_grant(
+        claim,
+        grants_root=grants_root,
+        expected_uid=expected_uid,
+        expected_gid=expected_gid,
+    )
+    if _sha256(claimed.raw) != _unconsumed_grant_sha256(consumed):
+        raise OwnerGateCaddyCutoverError(
+            "owner_gate_caddy_legacy_grant_claim_conflict"
+        )
+    if os.path.lexists(temporary):
+        staged = _read_claimed_legacy_grant(
+            temporary,
+            grants_root=grants_root,
+            expected_uid=expected_uid,
+            expected_gid=expected_gid,
+        )
+        if staged.raw != _canonical(consumed):
+            raise OwnerGateCaddyCutoverError(
+                "owner_gate_caddy_legacy_grant_staged_invalid"
+            )
+    with _legacy_grant_consumer_fence(
+        claimed,
+        grants_root=grants_root,
+        expected_uid=expected_uid,
+        expected_gid=expected_gid,
+    ):
+        confirmed = _read_claimed_legacy_grant(
+            claim,
+            grants_root=grants_root,
+            expected_uid=expected_uid,
+            expected_gid=expected_gid,
+        )
+        if confirmed != claimed:
+            raise OwnerGateCaddyCutoverError(
+                "owner_gate_caddy_legacy_grant_claim_conflict"
+            )
+        os.unlink(claim)
+        if os.path.lexists(temporary):
+            os.unlink(temporary)
+        descriptor = os.open(
+            grants_root,
+            os.O_RDONLY
+            | getattr(os, "O_DIRECTORY", 0)
+            | getattr(os, "O_CLOEXEC", 0)
+            | getattr(os, "O_NOFOLLOW", 0),
+        )
+        try:
+            os.fsync(descriptor)
+        finally:
+            os.close(descriptor)
+
+
 def activate_bridge_bootstrap(
     document: Mapping[str, Any],
     *,
@@ -3853,6 +4809,13 @@ def activate_bridge_bootstrap(
                     )
                 consumed = grant
                 consumed_sha256 = _sha256(grant_snapshot.raw)
+                _finalize_consumed_legacy_claim(
+                    request_id=request_snapshot.path.stem,
+                    consumed=consumed,
+                    grants_root=grants_root,
+                    expected_uid=expected_uid,
+                    expected_gid=expected_gid,
+                )
             prior_consume = _last(
                 store.load(foundation.freeze_plan_sha256),
                 "legacy_grant_consumed",
@@ -4120,6 +5083,157 @@ def _prepare_unsigned(
     }
 
 
+def _caddy_prepared_dependency(
+    authority: _Authority,
+    *,
+    prepare_receipt: Mapping[str, Any],
+    configs: _DerivedConfigs,
+) -> Mapping[str, Any]:
+    unsigned = {
+        "schema": CADDY_PREPARED_DEPENDENCY_SCHEMA,
+        "release_revision": authority.plan.value["release_revision"],
+        "freeze_plan_sha256": authority.freeze.sha256,
+        "cutover_plan_sha256": authority.plan.sha256,
+        "freeze_approval_sha256": authority.approval_sha256,
+        "authority_sha256": authority.sha256,
+        "caddy_prepare_receipt_sha256": prepare_receipt["receipt_sha256"],
+        "original_caddy_sha256": _sha256(configs.original),
+        "approval_bridge_caddy_sha256": _sha256(configs.approval_bridge),
+        "private_v2_caddy_sha256": _sha256(configs.private_v2),
+        "maintenance_caddy_sha256": _sha256(configs.maintenance),
+        "maintenance_caddy_b64": base64.b64encode(configs.maintenance).decode(
+            "ascii"
+        ),
+        "production_mutation_performed": False,
+        "caller_selected_input_accepted": False,
+        "secret_material_recorded": False,
+        "secret_digest_recorded": False,
+        "prepared_at_unix": prepare_receipt["prepared_at_unix"],
+    }
+    return {**unsigned, "receipt_sha256": _sha256(_canonical(unsigned))}
+
+
+def validate_caddy_prepared_dependency(
+    value: Any,
+    *,
+    authority: _Authority,
+    prepare_receipt: Mapping[str, Any] | None = None,
+) -> tuple[Mapping[str, Any], bytes]:
+    raw = _hashed(
+        value,
+        _CADDY_PREPARED_DEPENDENCY_FIELDS,
+        "prepared_dependency",
+    )
+    try:
+        maintenance = base64.b64decode(
+            raw["maintenance_caddy_b64"].encode("ascii", errors="strict"),
+            validate=True,
+        )
+    except (UnicodeError, ValueError) as exc:
+        raise OwnerGateCaddyCutoverError(
+            "owner_gate_caddy_prepared_dependency_invalid"
+        ) from exc
+    if (
+        raw["schema"] != CADDY_PREPARED_DEPENDENCY_SCHEMA
+        or raw["release_revision"] != authority.plan.value["release_revision"]
+        or raw["freeze_plan_sha256"] != authority.freeze.sha256
+        or raw["cutover_plan_sha256"] != authority.plan.sha256
+        or raw["freeze_approval_sha256"] != authority.approval_sha256
+        or raw["authority_sha256"] != authority.sha256
+        or any(
+            _SHA256.fullmatch(str(raw[field])) is None
+            for field in (
+                "caddy_prepare_receipt_sha256",
+                "original_caddy_sha256",
+                "approval_bridge_caddy_sha256",
+                "private_v2_caddy_sha256",
+                "maintenance_caddy_sha256",
+            )
+        )
+        or not 0 < len(maintenance) <= MAX_CADDYFILE_BYTES
+        or base64.b64encode(maintenance).decode("ascii")
+        != raw["maintenance_caddy_b64"]
+        or _sha256(maintenance) != raw["maintenance_caddy_sha256"]
+        or raw["production_mutation_performed"] is not False
+        or raw["caller_selected_input_accepted"] is not False
+        or raw["secret_material_recorded"] is not False
+        or raw["secret_digest_recorded"] is not False
+        or type(raw["prepared_at_unix"]) is not int
+        or raw["prepared_at_unix"] <= 0
+        or (
+            prepare_receipt is not None
+            and (
+                raw["caddy_prepare_receipt_sha256"]
+                != prepare_receipt.get("receipt_sha256")
+                or raw["prepared_at_unix"]
+                != prepare_receipt.get("prepared_at_unix")
+            )
+        )
+    ):
+        raise OwnerGateCaddyCutoverError(
+            "owner_gate_caddy_prepared_dependency_invalid"
+        )
+    return raw, maintenance
+
+
+def _publish_caddy_prepared_dependency(
+    authority: _Authority,
+    *,
+    prepare_receipt: Mapping[str, Any],
+    configs: _DerivedConfigs,
+    journal: cutover.CutoverJournal,
+    now_unix: int,
+) -> Mapping[str, Any]:
+    expected = _caddy_prepared_dependency(
+        authority,
+        prepare_receipt=prepare_receipt,
+        configs=configs,
+    )
+    entries = journal.load(authority.plan.sha256)
+    matches = [
+        entry
+        for entry in entries
+        if entry.value["event"] == "caddy_prepared"
+    ]
+    if len(matches) > 1:
+        raise OwnerGateCaddyCutoverError(
+            "owner_gate_caddy_prepared_dependency_invalid"
+        )
+    if matches:
+        observed, maintenance = validate_caddy_prepared_dependency(
+            matches[0].value["evidence"],
+            authority=authority,
+            prepare_receipt=prepare_receipt,
+        )
+        if observed != expected or maintenance != configs.maintenance:
+            raise OwnerGateCaddyCutoverError(
+                "owner_gate_caddy_prepared_dependency_invalid"
+            )
+        return observed
+    journal.append(
+        authority.plan.sha256,
+        "caddy_prepared",
+        expected,
+        now_unix,
+    )
+    entries = journal.load(authority.plan.sha256)
+    match = _last(entries, "caddy_prepared")
+    if match is None:
+        raise OwnerGateCaddyCutoverError(
+            "owner_gate_caddy_prepared_dependency_invalid"
+        )
+    observed, maintenance = validate_caddy_prepared_dependency(
+        match.value["evidence"],
+        authority=authority,
+        prepare_receipt=prepare_receipt,
+    )
+    if observed != expected or maintenance != configs.maintenance:
+        raise OwnerGateCaddyCutoverError(
+            "owner_gate_caddy_prepared_dependency_invalid"
+        )
+    return observed
+
+
 def _replace_transaction_owned(
     boundary: CaddyBoundary,
     payload: bytes,
@@ -4139,11 +5253,13 @@ def _replace_transaction_owned(
     return True
 
 
-def prepare_cutover(
+def _prepare_cutover_inner(
     authority: _Authority,
     *,
     boundary: CaddyBoundary,
     store: CaddyTransactionStore,
+    legacy_journal: cutover.CutoverJournal | None,
+    post_intent: bool,
     now_unix: int,
 ) -> Mapping[str, Any]:
     """Prepare candidates without changing the live Caddyfile."""
@@ -4199,6 +5315,14 @@ def prepare_cutover(
         ):
             raise OwnerGateCaddyCutoverError(
                 "owner_gate_caddy_bridge_replay_invalid"
+            )
+        if legacy_journal is not None:
+            _publish_caddy_prepared_dependency(
+                authority,
+                prepare_receipt=receipt,
+                configs=derived,
+                journal=legacy_journal,
+                now_unix=now_unix,
             )
         return receipt
 
@@ -4259,8 +5383,18 @@ def prepare_cutover(
             plan=authority.plan,
         )
         store.append(authority.plan.sha256, "prepared", receipt, now_unix)
+        if legacy_journal is not None:
+            _publish_caddy_prepared_dependency(
+                authority,
+                prepare_receipt=receipt,
+                configs=configs,
+                journal=legacy_journal,
+                now_unix=now_unix,
+            )
         return receipt
     except BaseException as primary:
+        if post_intent:
+            raise
         recovery_errors: list[BaseException] = []
         try:
             if boundary.stable_read().raw != configs.original:
@@ -4299,32 +5433,435 @@ def prepare_cutover(
         raise OwnerGateCaddyCutoverError("owner_gate_caddy_prepare_rolled_back") from primary
 
 
+def _has_legacy_activation_intent(
+    entries: Sequence[cutover.JournalEntry],
+) -> bool:
+    return any(
+        entry.value.get("event") == "activation_commit_intent"
+        for entry in entries
+    )
+
+
+def _prepared_dependency_from_entries(
+    authority: _Authority,
+    entries: Sequence[cutover.JournalEntry],
+) -> tuple[Mapping[str, Any], bytes]:
+    matches = [
+        entry
+        for entry in entries
+        if entry.value.get("event") == "caddy_prepared"
+    ]
+    if len(matches) != 1:
+        raise OwnerGateCaddyCutoverError(
+            "owner_gate_caddy_prepared_dependency_invalid"
+        )
+    return validate_caddy_prepared_dependency(
+        matches[0].value["evidence"], authority=authority
+    )
+
+
+def _force_post_intent_maintenance(
+    authority: _Authority,
+    *,
+    boundary: CaddyBoundary,
+    legacy_entries: Sequence[cutover.JournalEntry],
+) -> Mapping[str, Any]:
+    dependency, maintenance = _prepared_dependency_from_entries(
+        authority, legacy_entries
+    )
+    allowed_hashes = {
+        dependency["original_caddy_sha256"],
+        dependency["approval_bridge_caddy_sha256"],
+        dependency["private_v2_caddy_sha256"],
+        dependency["maintenance_caddy_sha256"],
+    }
+    return _force_exact_maintenance_payload(
+        boundary,
+        maintenance=maintenance,
+        allowed_hashes=allowed_hashes,
+    )
+
+
+def _force_exact_maintenance_payload(
+    boundary: CaddyBoundary,
+    *,
+    maintenance: bytes,
+    allowed_hashes: set[str],
+) -> Mapping[str, Any]:
+    boundary.validate_payload(maintenance, mode="maintenance")
+    for _attempt in range(3):
+        current = boundary.stable_read()
+        if _sha256(current.raw) not in allowed_hashes:
+            raise OwnerGateCaddyCutoverError(
+                "owner_gate_caddy_unowned_drift_detected"
+            )
+        if current.raw == maintenance:
+            break
+        try:
+            boundary.replace(maintenance, expected=current)
+            break
+        except OwnerGateCaddyCutoverError as exc:
+            if "compare_and_swap_failed" not in str(exc):
+                raise
+    else:
+        raise OwnerGateCaddyCutoverError(
+            "owner_gate_caddy_maintenance_cas_exhausted"
+        )
+    boundary.reload()
+    projection = boundary.observe(mode="maintenance")
+    public = boundary.verify_public(expected_status=503)
+    _require_public_verification(public, expected_status=503)
+    if boundary.stable_read().raw != maintenance:
+        raise OwnerGateCaddyCutoverError(
+            "owner_gate_caddy_maintenance_readback_invalid"
+        )
+    return {
+        "maintenance_caddy_sha256": _sha256(maintenance),
+        "active_route_projection_sha256": projection["projection_sha256"],
+        "public_status": 503,
+        "public_verified": True,
+        "v1_route_restored": False,
+    }
+
+
+def _force_caddy_local_post_intent_maintenance(
+    authority: _Authority,
+    *,
+    boundary: CaddyBoundary,
+    store: CaddyTransactionStore,
+    caddy_entries: Sequence[CaddyJournalEntry],
+) -> Mapping[str, Any]:
+    prepared_entry = _last(caddy_entries, "prepared")
+    if prepared_entry is None:
+        raise OwnerGateCaddyCutoverError(
+            "owner_gate_caddy_prepare_missing"
+        )
+    prepared = validate_prepare_receipt(
+        prepared_entry.value["evidence"], plan=authority.plan
+    )
+    if prepared["authority_sha256"] != authority.sha256:
+        raise OwnerGateCaddyCutoverError(
+            "owner_gate_caddy_authority_replay_invalid"
+        )
+    configs = _DerivedConfigs(
+        store.read_artifact(authority.plan.sha256, "original.Caddyfile"),
+        store.read_artifact(
+            authority.plan.sha256, "approval-bridge.Caddyfile"
+        ),
+        store.read_artifact(authority.plan.sha256, "private-v2.Caddyfile"),
+        store.read_artifact(authority.plan.sha256, "maintenance.Caddyfile"),
+    )
+    if configs != _derive_configs(
+        configs.original, bridge_request_id=prepared["passkey_request_id"]
+    ):
+        raise OwnerGateCaddyCutoverError(
+            "owner_gate_caddy_artifact_invalid"
+        )
+    return _force_exact_maintenance_payload(
+        boundary,
+        maintenance=configs.maintenance,
+        allowed_hashes={
+            _sha256(configs.original),
+            _sha256(configs.approval_bridge),
+            _sha256(configs.private_v2),
+            _sha256(configs.maintenance),
+        },
+    )
+
+
+def _recover_post_intent_maintenance(
+    authority: _Authority,
+    *,
+    boundary: CaddyBoundary,
+    store: CaddyTransactionStore,
+    legacy_entries: Sequence[cutover.JournalEntry],
+    caddy_entries: Sequence[CaddyJournalEntry],
+) -> Mapping[str, Any]:
+    """Recover from either independently durable prepared lineage.
+
+    The cutover-plan dependency and the Caddy-local prepared artifacts are
+    deliberately redundant.  Once either journal proves that activation has
+    crossed its irreversible boundary, a malformed peer journal must not make
+    recovery depend on parsing that peer again.
+    """
+
+    errors: list[BaseException] = []
+    if legacy_entries:
+        try:
+            return _force_post_intent_maintenance(
+                authority,
+                boundary=boundary,
+                legacy_entries=legacy_entries,
+            )
+        except BaseException as exc:
+            errors.append(exc)
+    if caddy_entries:
+        try:
+            return _force_caddy_local_post_intent_maintenance(
+                authority,
+                boundary=boundary,
+                store=store,
+                caddy_entries=caddy_entries,
+            )
+        except BaseException as exc:
+            errors.append(exc)
+    if not errors:
+        errors.append(
+            OwnerGateCaddyCutoverError(
+                "owner_gate_caddy_maintenance_lineage_unavailable"
+            )
+        )
+    raise BaseExceptionGroup(
+        "No durable Caddy maintenance lineage could be recovered", errors
+    )
+
+
+def prepare_cutover(
+    authority: _Authority,
+    *,
+    boundary: CaddyBoundary,
+    store: CaddyTransactionStore,
+    legacy_journal: cutover.CutoverJournal | None = None,
+    now_unix: int,
+) -> Mapping[str, Any]:
+    caddy_entries: Sequence[CaddyJournalEntry] = ()
+    caddy_marker = False
+    caddy_error: BaseException | None = None
+    try:
+        caddy_entries = store.load(authority.plan.sha256)
+        caddy_marker = _accepted_caddy_post_intent_marker(
+            authority, caddy_entries
+        )
+    except BaseException as exc:
+        caddy_error = exc
+
+    legacy_entries: Sequence[cutover.JournalEntry] = ()
+    post_intent = False
+    legacy_error: BaseException | None = None
+    if legacy_journal is not None:
+        try:
+            legacy_entries = legacy_journal.load(authority.plan.sha256)
+            post_intent = _has_legacy_activation_intent(legacy_entries)
+        except BaseException as exc:
+            legacy_error = exc
+
+    if legacy_error is not None:
+        if not caddy_marker:
+            raise legacy_error
+        try:
+            _force_caddy_local_post_intent_maintenance(
+                authority,
+                boundary=boundary,
+                store=store,
+                caddy_entries=caddy_entries,
+            )
+        except BaseException as recovery:
+            raise BaseExceptionGroup(
+                "Legacy journal failed during Caddy prepare replay and maintenance recovery was incomplete",
+                [legacy_error, recovery],
+            ) from None
+        raise OwnerGateCaddyCutoverError(
+            "owner_gate_caddy_prepare_post_intent_maintenance"
+        ) from legacy_error
+
+    if caddy_error is not None:
+        if not post_intent:
+            raise caddy_error
+        try:
+            _force_post_intent_maintenance(
+                authority,
+                boundary=boundary,
+                legacy_entries=legacy_entries,
+            )
+        except BaseException as recovery:
+            raise BaseExceptionGroup(
+                "Caddy state failed during prepare replay and maintenance recovery was incomplete",
+                [caddy_error, recovery],
+            ) from None
+        raise OwnerGateCaddyCutoverError(
+            "owner_gate_caddy_prepare_post_intent_maintenance"
+        ) from caddy_error
+
+    if caddy_marker and not post_intent:
+        _force_caddy_local_post_intent_maintenance(
+            authority,
+            boundary=boundary,
+            store=store,
+            caddy_entries=caddy_entries,
+        )
+        raise OwnerGateCaddyCutoverError(
+            "owner_gate_caddy_prepare_legacy_lineage_missing_after_commit_marker"
+        )
+    try:
+        return _prepare_cutover_inner(
+            authority,
+            boundary=boundary,
+            store=store,
+            legacy_journal=legacy_journal,
+            post_intent=post_intent,
+            now_unix=now_unix,
+        )
+    except BaseException as primary:
+        if not (post_intent or caddy_marker):
+            raise
+        try:
+            _recover_post_intent_maintenance(
+                authority,
+                boundary=boundary,
+                store=store,
+                legacy_entries=legacy_entries,
+                caddy_entries=caddy_entries,
+            )
+        except BaseException as recovery:
+            raise BaseExceptionGroup(
+                "Caddy prepare failed after activation intent and maintenance recovery was incomplete",
+                [primary, recovery],
+            ) from None
+        raise OwnerGateCaddyCutoverError(
+            "owner_gate_caddy_prepare_post_intent_maintenance"
+        ) from primary
+
+
 def _legacy_commit_lineage(
     authority: _Authority,
     *,
     journal: cutover.CutoverJournal,
 ) -> tuple[Mapping[str, Any], Mapping[str, Any] | None] | None:
     entries = journal.load(authority.plan.sha256)
+    intent_entries = [
+        entry
+        for entry in entries
+        if entry.value["event"] == "activation_commit_intent"
+    ]
+    terminal_entries = [
+        entry for entry in entries if entry.value["event"] == "terminal"
+    ]
     intent = cutover._accepted_activation_commit_intent(entries, authority.plan)
-    terminal_entry = cutover._last(entries, "terminal")
     if intent is None:
+        if intent_entries or terminal_entries:
+            raise OwnerGateCaddyCutoverError(
+                "owner_gate_caddy_legacy_lineage_invalid"
+            )
         return None
-    if terminal_entry is None:
+    if len(intent_entries) != 1:
+        raise OwnerGateCaddyCutoverError(
+            "owner_gate_caddy_legacy_lineage_invalid"
+        )
+    if not terminal_entries:
         return intent, None
+    if len(terminal_entries) != 1:
+        raise OwnerGateCaddyCutoverError(
+            "owner_gate_caddy_legacy_lineage_invalid"
+        )
+    intent_entry = intent_entries[0]
+    terminal_entry = terminal_entries[0]
     terminal = terminal_entry.value["evidence"]
+    try:
+        database = cutover._accepted_database_apply(entries, authority.plan)
+        host = cutover._accepted_host_apply(entries, authority.plan)
+        database_terminal = cutover._accepted_database_terminal(
+            entries, authority.plan
+        )
+        boot = cutover._accepted_host_boot_commit(entries, authority.plan)
+        capability_entry = cutover._last(
+            entries, "capability_prerequisites_validated"
+        )
+        capability = (
+            None
+            if capability_entry is None
+            else cutover._require_capability_prerequisite_acceptance(
+                capability_entry.value["evidence"], plan=authority.plan
+            )
+        )
+        gateway_entry = cutover._last(entries, "gateway_started")
+    except BaseException as exc:
+        raise OwnerGateCaddyCutoverError(
+            "owner_gate_caddy_legacy_terminal_invalid"
+        ) from exc
+    gateway = None if gateway_entry is None else gateway_entry.value["evidence"]
+    digest_fields = _LEGACY_TERMINAL_FIELDS - {
+        "schema",
+        "zero_canonical_database_mutation_observed",
+        "direct_discord_disabled",
+        "discord_dm_allowed",
+        "rollback_used",
+        "secret_material_recorded",
+        "completed_at_unix",
+    }
     if (
         not isinstance(terminal, Mapping)
+        or set(terminal) != _LEGACY_TERMINAL_FIELDS
         or terminal.get("schema") != cutover.TERMINAL_SCHEMA
+        or any(
+            _SHA256.fullmatch(str(terminal.get(field))) is None
+            for field in digest_fields
+        )
         or terminal.get("plan_sha256") != authority.plan.sha256
         or terminal.get("freeze_plan_sha256") != authority.freeze.sha256
         or terminal.get("freeze_approval_sha256") != authority.approval_sha256
+        or terminal.get("approval_sha256") != intent["approval_sha256"]
+        or terminal.get("final_tail_receipt_sha256")
+        != authority.plan.value["final_tail_receipt_sha256"]
+        or capability is None
+        or terminal.get("capability_prerequisite_receipt_sha256")
+        != capability["prerequisite_receipt_sha256"]
+        or terminal.get("capability_prerequisite_file_sha256")
+        != capability["prerequisite_file_sha256"]
+        or terminal.get("isolated_canary_goal_continuation_terminal_sha256")
+        != capability["goal_continuation_terminal_sha256"]
+        or terminal.get("isolated_canary_workspace_gateway_receipt_sha256")
+        != capability["workspace_gateway_receipt_sha256"]
+        or terminal.get("isolation_equivalence_projection_sha256")
+        != capability["isolation_equivalence_projection_sha256"]
+        or terminal.get("zero_canonical_database_mutation_observed")
+        is not True
+        or terminal.get("pre_db_zero_write_observation_sha256")
+        != capability["pre_db_zero_write_observation_sha256"]
+        or terminal.get("capability_topology_identity_sha256")
+        != cutover.production_capability_topology_identity_sha256(
+            authority.plan.value["capability_topology"]
+        )
+        or database is None
+        or host is None
+        or database_terminal is None
+        or boot is None
+        or terminal.get("database_apply_receipt_sha256")
+        != database["receipt_sha256"]
+        or terminal.get("host_apply_receipt_sha256")
+        != host["receipt_sha256"]
+        or terminal.get("host_boot_commit_receipt_sha256")
+        != boot["receipt_sha256"]
         or terminal.get("activation_commit_intent_receipt_sha256")
         != intent["receipt_sha256"]
+        or terminal.get("database_postflight_receipt_sha256")
+        != database_terminal["receipt_sha256"]
+        or not isinstance(gateway, Mapping)
+        or set(gateway)
+        != {
+            "gateway_observation_sha256",
+            "writer_observation_sha256",
+            "connector_observation_sha256",
+        }
+        or terminal.get("gateway_observation_sha256")
+        != gateway["gateway_observation_sha256"]
+        or terminal.get("writer_observation_sha256")
+        != gateway["writer_observation_sha256"]
+        or terminal.get("connector_observation_sha256")
+        != gateway["connector_observation_sha256"]
+        or terminal.get("direct_discord_disabled") is not True
+        or terminal.get("discord_dm_allowed") is not False
         or terminal.get("rollback_used") is not False
         or terminal.get("secret_material_recorded") is not False
+        or type(terminal.get("completed_at_unix")) is not int
+        or terminal["completed_at_unix"] != terminal_entry.value["recorded_at_unix"]
+        or terminal_entry.value["sequence"] <= intent_entry.value["sequence"]
+        or terminal_entry.value["recorded_at_unix"]
+        < intent_entry.value["recorded_at_unix"]
         or terminal.get("receipt_sha256")
-        != cutover._sha256_json(
+        != _sha256(
+            _canonical(
             {key: item for key, item in terminal.items() if key != "receipt_sha256"}
+            )
         )
     ):
         raise OwnerGateCaddyCutoverError(
@@ -4353,8 +5890,7 @@ def _forward_recovery_maintenance(
     boundary.reload()
     projection = boundary.observe(mode="maintenance")
     public = boundary.verify_public(expected_status=503)
-    if public.get("status") != 503 or public.get("tls_verified") is not True:
-        raise OwnerGateCaddyCutoverError("owner_gate_caddy_public_verify_failed")
+    _require_public_verification(public, expected_status=503)
     unsigned = {
         "schema": MAINTENANCE_OBSERVATION_SCHEMA,
         "release_revision": authority.plan.value["release_revision"],
@@ -4445,6 +5981,43 @@ def _terminal_unsigned(
     }
 
 
+def _require_public_verification(
+    value: Mapping[str, Any],
+    *,
+    expected_status: int,
+) -> None:
+    if not isinstance(value, Mapping) or expected_status not in {200, 503}:
+        raise OwnerGateCaddyCutoverError(
+            "owner_gate_caddy_public_verify_failed"
+        )
+    if expected_status == 200:
+        expected = {
+            "status": 200,
+            "body_size": len(PUBLIC_READY_BODY),
+            "body_sha256": _sha256(PUBLIC_READY_BODY),
+            "content_type": PUBLIC_READY_CONTENT_TYPE,
+            "schema": PUBLIC_READY_SCHEMA,
+            "service": "muncho-passkey-v2-web",
+            "authority_ready": True,
+            "tls_verified": True,
+        }
+    else:
+        expected = {
+            "status": 503,
+            "body_size": len(PUBLIC_MAINTENANCE_BODY),
+            "body_sha256": _sha256(PUBLIC_MAINTENANCE_BODY),
+            "content_type": PUBLIC_MAINTENANCE_CONTENT_TYPE,
+            "schema": "muncho-owner-gate-maintenance.v1",
+            "service": "muncho-owner-gate-maintenance",
+            "authority_ready": False,
+            "tls_verified": True,
+        }
+    if dict(value) != expected:
+        raise OwnerGateCaddyCutoverError(
+            "owner_gate_caddy_public_verify_failed"
+        )
+
+
 def _finish_mode(
     authority: _Authority,
     *,
@@ -4469,8 +6042,7 @@ def _finish_mode(
     boundary.reload()
     projection = boundary.observe(mode=mode)
     public = boundary.verify_public(expected_status=expected_status)
-    if public.get("status") != expected_status or public.get("tls_verified") is not True:
-        raise OwnerGateCaddyCutoverError("owner_gate_caddy_public_verify_failed")
+    _require_public_verification(public, expected_status=expected_status)
     unsigned = _terminal_unsigned(
         authority,
         prepare_receipt=prepare_receipt,
@@ -4490,7 +6062,7 @@ def _finish_mode(
     return receipt
 
 
-def commit_cutover(
+def _commit_cutover_inner(
     authority: _Authority,
     *,
     boundary: CaddyBoundary,
@@ -4564,10 +6136,10 @@ def commit_cutover(
             try:
                 projection = boundary.observe(mode="maintenance")
                 public = boundary.verify_public(expected_status=503)
+                _require_public_verification(public, expected_status=503)
                 if (
                     projection.get("projection_sha256")
                     != receipt["active_route_projection_sha256"]
-                    or public.get("status") != 503
                 ):
                     raise OwnerGateCaddyCutoverError(
                         "owner_gate_caddy_maintenance_replay_drifted"
@@ -4606,10 +6178,12 @@ def commit_cutover(
         try:
             projection = boundary.observe(mode=mode)
             public = boundary.verify_public(expected_status=terminal["public_status"])
+            _require_public_verification(
+                public, expected_status=terminal["public_status"]
+            )
             if (
                 projection.get("projection_sha256")
                 != terminal["active_route_projection_sha256"]
-                or public.get("status") != terminal["public_status"]
                 or boundary.stable_read().raw != payload
             ):
                 raise OwnerGateCaddyCutoverError(
@@ -4638,18 +6212,28 @@ def commit_cutover(
         return terminal
 
     if _last(entries, "commit_started") is None:
+        commit_started_unsigned = {
+            "schema": CADDY_COMMIT_STARTED_SCHEMA,
+            "cutover_plan_sha256": authority.plan.sha256,
+            "authority_sha256": authority.sha256,
+            "prepare_receipt_sha256": prepared["receipt_sha256"],
+            "legacy_activation_commit_intent_receipt_sha256": (
+                legacy_intent["receipt_sha256"]
+            ),
+            "legacy_terminal_receipt_sha256": legacy_terminal[
+                "receipt_sha256"
+            ],
+            "rollback_mode": "post_migration_maintenance_only",
+            "started_at_unix": now_unix,
+        }
         store.append(
             authority.plan.sha256,
             "commit_started",
             {
-                "authority_sha256": authority.sha256,
-                "legacy_activation_commit_intent_receipt_sha256": (
-                    legacy_intent["receipt_sha256"]
+                **commit_started_unsigned,
+                "receipt_sha256": _sha256(
+                    _canonical(commit_started_unsigned)
                 ),
-                "legacy_terminal_receipt_sha256": legacy_terminal[
-                    "receipt_sha256"
-                ],
-                "rollback_mode": "post_migration_maintenance_only",
             },
             now_unix,
         )
@@ -4705,6 +6289,179 @@ def commit_cutover(
                 "Caddy commit failed and maintenance recovery was incomplete",
                 [primary, recovery],
             ) from None
+
+
+def _accepted_caddy_post_intent_marker(
+    authority: _Authority,
+    entries: Sequence[CaddyJournalEntry],
+) -> bool:
+    markers = [
+        entry
+        for entry in entries
+        if entry.value["event"] in {"commit_started", "terminal"}
+    ]
+    if not markers:
+        return False
+    for entry in markers:
+        evidence = entry.value["evidence"]
+        if entry.value["event"] == "commit_started":
+            raw = _hashed(
+                evidence,
+                _CADDY_COMMIT_STARTED_FIELDS,
+                "commit_started",
+            )
+            if (
+                raw["schema"] != CADDY_COMMIT_STARTED_SCHEMA
+                or raw["cutover_plan_sha256"] != authority.plan.sha256
+                or raw["authority_sha256"] != authority.sha256
+                or any(
+                    _SHA256.fullmatch(str(raw[field])) is None
+                    for field in (
+                        "prepare_receipt_sha256",
+                        "legacy_activation_commit_intent_receipt_sha256",
+                        "legacy_terminal_receipt_sha256",
+                    )
+                )
+                or raw["rollback_mode"]
+                != "post_migration_maintenance_only"
+                or type(raw["started_at_unix"]) is not int
+                or raw["started_at_unix"] != entry.value["recorded_at_unix"]
+            ):
+                raise OwnerGateCaddyCutoverError(
+                    "owner_gate_caddy_commit_marker_invalid"
+                )
+        else:
+            if (
+                not isinstance(evidence, Mapping)
+                or set(evidence) != _TERMINAL_FIELDS
+                or evidence.get("schema") != TERMINAL_RECEIPT_SCHEMA
+                or evidence.get("cutover_plan_sha256")
+                != authority.plan.sha256
+                or evidence.get("authority_sha256") != authority.sha256
+                or evidence.get("v1_route_restored") is not False
+                or evidence.get("rollback_mode")
+                != "post_migration_maintenance_only"
+                or evidence.get("receipt_sha256")
+                != _sha256(
+                    _canonical(
+                        {
+                            key: item
+                            for key, item in evidence.items()
+                            if key != "receipt_sha256"
+                        }
+                    )
+                )
+            ):
+                raise OwnerGateCaddyCutoverError(
+                    "owner_gate_caddy_commit_marker_invalid"
+                )
+    return True
+
+
+def commit_cutover(
+    authority: _Authority,
+    *,
+    boundary: CaddyBoundary,
+    store: CaddyTransactionStore,
+    legacy_journal: cutover.CutoverJournal,
+    now_unix: int,
+) -> Mapping[str, Any]:
+    """Monotonic wrapper: any durable intent makes maintenance the floor."""
+
+    caddy_entries: Sequence[CaddyJournalEntry] = ()
+    caddy_marker = False
+    caddy_error: BaseException | None = None
+    try:
+        caddy_entries = store.load(authority.plan.sha256)
+        caddy_marker = _accepted_caddy_post_intent_marker(
+            authority, caddy_entries
+        )
+    except BaseException as exc:
+        caddy_error = exc
+
+    legacy_entries: Sequence[cutover.JournalEntry] = ()
+    legacy_marker = False
+    legacy_error: BaseException | None = None
+    try:
+        legacy_entries = legacy_journal.load(authority.plan.sha256)
+        legacy_marker = _has_legacy_activation_intent(legacy_entries)
+    except BaseException as exc:
+        legacy_error = exc
+
+    if legacy_error is not None:
+        if not caddy_marker:
+            raise legacy_error
+        try:
+            _force_caddy_local_post_intent_maintenance(
+                authority,
+                boundary=boundary,
+                store=store,
+                caddy_entries=caddy_entries,
+            )
+        except BaseException as recovery:
+            raise BaseExceptionGroup(
+                "Legacy journal failed after Caddy commit marker and maintenance recovery was incomplete",
+                [legacy_error, recovery],
+            ) from None
+        raise OwnerGateCaddyCutoverError(
+            "owner_gate_caddy_post_intent_maintenance"
+        ) from legacy_error
+
+    if caddy_error is not None:
+        if not legacy_marker:
+            raise caddy_error
+        try:
+            _force_post_intent_maintenance(
+                authority,
+                boundary=boundary,
+                legacy_entries=legacy_entries,
+            )
+        except BaseException as recovery:
+            raise BaseExceptionGroup(
+                "Caddy state validation failed after activation intent and maintenance recovery was incomplete",
+                [caddy_error, recovery],
+            ) from None
+        raise OwnerGateCaddyCutoverError(
+            "owner_gate_caddy_post_intent_maintenance"
+        ) from caddy_error
+
+    if caddy_marker and not legacy_marker:
+        _force_caddy_local_post_intent_maintenance(
+            authority,
+            boundary=boundary,
+            store=store,
+            caddy_entries=caddy_entries,
+        )
+        raise OwnerGateCaddyCutoverError(
+            "owner_gate_caddy_legacy_lineage_missing_after_commit_marker"
+        )
+    try:
+        return _commit_cutover_inner(
+            authority,
+            boundary=boundary,
+            store=store,
+            legacy_journal=legacy_journal,
+            now_unix=now_unix,
+        )
+    except BaseException as primary:
+        if not (legacy_marker or caddy_marker):
+            raise
+        try:
+            _recover_post_intent_maintenance(
+                authority,
+                boundary=boundary,
+                store=store,
+                legacy_entries=legacy_entries,
+                caddy_entries=caddy_entries,
+            )
+        except BaseException as recovery:
+            raise BaseExceptionGroup(
+                "Caddy commit failed after activation intent and maintenance recovery was incomplete",
+                [primary, recovery],
+            ) from None
+        raise OwnerGateCaddyCutoverError(
+            "owner_gate_caddy_post_intent_maintenance"
+        ) from primary
 
 
 def _require_release_runtime(authority: _Authority) -> None:
@@ -4815,6 +6572,7 @@ def execute_fixed_staged(
                 authority,
                 boundary=boundary,
                 store=store,
+                legacy_journal=legacy_journal,
                 now_unix=current,
             )
         return commit_cutover(

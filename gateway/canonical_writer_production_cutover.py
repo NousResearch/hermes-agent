@@ -21,6 +21,7 @@ accepted by any public schema.
 from __future__ import annotations
 
 import argparse
+import base64
 import copy
 import hashlib
 import ipaddress
@@ -3664,7 +3665,16 @@ def _require_or_record_passkey_intent(
 
     def valid_prelude(entries: list[JournalEntry]) -> bool:
         if phase == "cutover_apply":
-            return entries == []
+            if not isinstance(cutover_plan, CutoverPlan):
+                return False
+            try:
+                require_caddy_prepared_dependency(entries, cutover_plan)
+            except (TypeError, ValueError, ProductionCutoverError):
+                return False
+            return (
+                len(entries) == 1
+                and entries[0].value["event"] == "caddy_prepared"
+            )
         return valid_freeze_prelude(entries)
 
     if intents:
@@ -6500,6 +6510,83 @@ _ACTIVATION_COMMIT_INTENT_FIELDS = frozenset({
     "secret_material_recorded", "receipt_sha256",
 })
 
+CADDY_PREPARED_DEPENDENCY_SCHEMA = (
+    "muncho-production-caddy-prepared-dependency.v1"
+)
+_CADDY_PREPARED_DEPENDENCY_FIELDS = frozenset({
+    "schema", "release_revision", "freeze_plan_sha256",
+    "cutover_plan_sha256", "freeze_approval_sha256", "authority_sha256",
+    "caddy_prepare_receipt_sha256", "original_caddy_sha256",
+    "approval_bridge_caddy_sha256", "private_v2_caddy_sha256",
+    "maintenance_caddy_sha256", "maintenance_caddy_b64",
+    "production_mutation_performed", "caller_selected_input_accepted",
+    "secret_material_recorded", "secret_digest_recorded",
+    "prepared_at_unix", "receipt_sha256",
+})
+
+
+def require_caddy_prepared_dependency(
+    entries: list[JournalEntry],
+    plan: CutoverPlan,
+) -> Mapping[str, Any]:
+    matches = [
+        entry for entry in entries if entry.value["event"] == "caddy_prepared"
+    ]
+    if len(matches) != 1 or matches[0].value["sequence"] != 0:
+        raise ProductionCutoverError(
+            "production_caddy_prepared_dependency_missing"
+        )
+    raw = _hashed(
+        matches[0].value["evidence"],
+        _CADDY_PREPARED_DEPENDENCY_FIELDS,
+        "receipt_sha256",
+        "Caddy prepared dependency",
+    )
+    freeze = FreezePlan.from_mapping(plan.value["freeze_plan"])
+    try:
+        maintenance = base64.b64decode(
+            raw["maintenance_caddy_b64"].encode("ascii", errors="strict"),
+            validate=True,
+        )
+    except (UnicodeError, ValueError) as exc:
+        raise ProductionCutoverError(
+            "production_caddy_prepared_dependency_invalid"
+        ) from exc
+    if (
+        raw["schema"] != CADDY_PREPARED_DEPENDENCY_SCHEMA
+        or raw["release_revision"] != plan.value["release_revision"]
+        or raw["freeze_plan_sha256"] != freeze.sha256
+        or raw["cutover_plan_sha256"] != plan.sha256
+        or raw["freeze_approval_sha256"]
+        != plan.value["freeze_approval_sha256"]
+        or any(
+            _SHA256.fullmatch(str(raw[field])) is None
+            for field in (
+                "authority_sha256",
+                "caddy_prepare_receipt_sha256",
+                "original_caddy_sha256",
+                "approval_bridge_caddy_sha256",
+                "private_v2_caddy_sha256",
+                "maintenance_caddy_sha256",
+            )
+        )
+        or not 0 < len(maintenance) <= 1024 * 1024
+        or base64.b64encode(maintenance).decode("ascii")
+        != raw["maintenance_caddy_b64"]
+        or hashlib.sha256(maintenance).hexdigest()
+        != raw["maintenance_caddy_sha256"]
+        or raw["production_mutation_performed"] is not False
+        or raw["caller_selected_input_accepted"] is not False
+        or raw["secret_material_recorded"] is not False
+        or raw["secret_digest_recorded"] is not False
+        or type(raw["prepared_at_unix"]) is not int
+        or raw["prepared_at_unix"] <= 0
+    ):
+        raise ProductionCutoverError(
+            "production_caddy_prepared_dependency_invalid"
+        )
+    return raw
+
 
 def _require_activation_commit_intent(
     value: Mapping[str, Any],
@@ -6953,6 +7040,9 @@ def execute_cutover(
             raise PermissionError(
                 "cutover does not reuse the pre-stop owner approval"
             )
+        require_caddy_prepared_dependency(
+            dependencies.journal.load(plan.sha256), plan
+        )
         _require_or_record_passkey_intent(
             dependencies.journal,
             journal_plan_sha256=plan.sha256,

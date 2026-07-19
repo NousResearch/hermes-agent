@@ -5,9 +5,12 @@ from __future__ import annotations
 import copy
 import json
 import os
+import threading
 import time
 from contextlib import nullcontext
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any, Mapping
 
 import pytest
@@ -16,6 +19,7 @@ from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 from gateway import canonical_writer_production_cutover as cutover
 from scripts.canary import owner_gate_caddy_cutover as caddy
 from tests.gateway.test_canonical_writer_production_cutover import (
+    MemoryJournal,
     Services,
     _cutover_plan,
 )
@@ -219,7 +223,33 @@ class Boundary:
             raise caddy.OwnerGateCaddyCutoverError(
                 "owner_gate_caddy_public_verify_failed"
             )
-        return {"status": expected_status, "body_size": 0, "tls_verified": True}
+        body = (
+            caddy.PUBLIC_READY_BODY
+            if expected_status == 200
+            else caddy.PUBLIC_MAINTENANCE_BODY
+        )
+        return {
+            "status": expected_status,
+            "body_size": len(body),
+            "body_sha256": caddy._sha256(body),
+            "content_type": (
+                caddy.PUBLIC_READY_CONTENT_TYPE
+                if expected_status == 200
+                else caddy.PUBLIC_MAINTENANCE_CONTENT_TYPE
+            ),
+            "schema": (
+                caddy.PUBLIC_READY_SCHEMA
+                if expected_status == 200
+                else "muncho-owner-gate-maintenance.v1"
+            ),
+            "service": (
+                "muncho-passkey-v2-web"
+                if expected_status == 200
+                else "muncho-owner-gate-maintenance"
+            ),
+            "authority_ready": expected_status == 200,
+            "tls_verified": True,
+        }
 
     def verify_bridge(self, *, request_id: str) -> Mapping[str, Any]:
         assert request_id == BRIDGE_REQUEST_ID
@@ -234,6 +264,20 @@ class Boundary:
             **unsigned,
             "projection_sha256": caddy._sha256(caddy._canonical(unsigned)),
         }
+
+
+class LegacyJournal:
+    def __init__(self, *, post_intent: bool = True) -> None:
+        self.post_intent = post_intent
+
+    def load(self, _plan_sha256: str) -> list[Any]:
+        if not self.post_intent:
+            return []
+
+        class Entry:
+            value = {"event": "activation_commit_intent"}
+
+        return [Entry()]
 
 
 def _bridge_document(authority: caddy._Authority) -> Mapping[str, Any]:
@@ -512,6 +556,19 @@ def _bootstrap_roots(tmp_path: Path) -> tuple[Path, Path]:
     return requests, grants
 
 
+def _seed_legacy_authorization_files(
+    tmp_path: Path,
+) -> tuple[Mapping[str, Any], Path, Path, Mapping[str, Any]]:
+    authority = _authority()
+    action = _bridge_action_for(authority)
+    requests, grants = _bootstrap_roots(tmp_path)
+    request = _legacy_request(action)
+    grant = _legacy_grant(request)
+    _write_private_json(requests / f"{LEGACY_REQUEST_ID}.json", request)
+    _write_private_json(grants / f"{LEGACY_REQUEST_ID}.json", grant)
+    return action, requests, grants, grant
+
+
 def _prepare(
     authority: caddy._Authority,
     boundary: Boundary,
@@ -523,6 +580,39 @@ def _prepare(
         boundary=boundary,
         store=store,
         now_unix=NOW,
+    )
+
+
+def _bridge_action_for(authority: caddy._Authority) -> Mapping[str, Any]:
+    foundation = caddy.validate_bridge_bootstrap_input(
+        _bridge_document(authority)
+    )
+    return caddy._bridge_configs_and_action(foundation, ORIGINAL)[2]
+
+
+def _append_caddy_commit_marker(
+    authority: caddy._Authority,
+    store: caddy.CaddyTransactionStore,
+    prepared: Mapping[str, Any],
+) -> None:
+    unsigned = {
+        "schema": caddy.CADDY_COMMIT_STARTED_SCHEMA,
+        "cutover_plan_sha256": authority.plan.sha256,
+        "authority_sha256": authority.sha256,
+        "prepare_receipt_sha256": prepared["receipt_sha256"],
+        "legacy_activation_commit_intent_receipt_sha256": "6" * 64,
+        "legacy_terminal_receipt_sha256": "7" * 64,
+        "rollback_mode": "post_migration_maintenance_only",
+        "started_at_unix": NOW + 1,
+    }
+    store.append(
+        authority.plan.sha256,
+        "commit_started",
+        {
+            **unsigned,
+            "receipt_sha256": caddy._sha256(caddy._canonical(unsigned)),
+        },
+        NOW + 1,
     )
 
 
@@ -790,6 +880,89 @@ def test_prepare_rejects_artifact_clobber_on_replay(tmp_path: Path) -> None:
         _prepare(authority, boundary, store)
 
 
+def test_prepare_replay_corrupt_legacy_journal_with_valid_caddy_commit_marker_forces_maintenance(
+    tmp_path: Path,
+) -> None:
+    authority = _authority()
+    boundary = Boundary()
+    store = _store(tmp_path)
+    journal = MemoryJournal()
+    _seed_bridge(authority, boundary, store)
+    prepared = caddy.prepare_cutover(
+        authority,
+        boundary=boundary,
+        store=store,
+        legacy_journal=journal,
+        now_unix=NOW,
+    )
+    _append_caddy_commit_marker(authority, store, prepared)
+
+    class CorruptLegacyJournal:
+        def load(self, _plan_sha256: str) -> list[Any]:
+            raise ValueError("corrupt legacy journal")
+
+    with pytest.raises(
+        caddy.OwnerGateCaddyCutoverError,
+        match="prepare_post_intent_maintenance",
+    ):
+        caddy.prepare_cutover(
+            authority,
+            boundary=boundary,
+            store=store,
+            legacy_journal=CorruptLegacyJournal(),
+            now_unix=NOW + 2,
+        )
+
+    assert boundary.mode() == "maintenance"
+    assert ORIGINAL not in boundary.replace_calls
+    assert boundary.public_modes[-1] == "maintenance"
+
+
+def test_prepare_replay_corrupt_caddy_journal_with_valid_legacy_intent_forces_maintenance(
+    tmp_path: Path,
+) -> None:
+    authority = _authority()
+    boundary = Boundary()
+    store = _store(tmp_path)
+    journal = MemoryJournal()
+    _seed_bridge(authority, boundary, store)
+    caddy.prepare_cutover(
+        authority,
+        boundary=boundary,
+        store=store,
+        legacy_journal=journal,
+        now_unix=NOW,
+    )
+    journal.append(
+        authority.plan.sha256,
+        "activation_commit_intent",
+        {"durable": True},
+        NOW + 1,
+    )
+    entry_path = (
+        store._plan_root(authority.plan.sha256) / "entries/000001.json"
+    )
+    entry_path.chmod(0o600)
+    entry_path.write_bytes(b"{}")
+    entry_path.chmod(0o400)
+
+    with pytest.raises(
+        caddy.OwnerGateCaddyCutoverError,
+        match="prepare_post_intent_maintenance",
+    ):
+        caddy.prepare_cutover(
+            authority,
+            boundary=boundary,
+            store=store,
+            legacy_journal=journal,
+            now_unix=NOW + 2,
+        )
+
+    assert boundary.mode() == "maintenance"
+    assert ORIGINAL not in boundary.replace_calls
+    assert boundary.public_modes[-1] == "maintenance"
+
+
 def test_commit_requires_migration_and_restores_exact_preimage(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
@@ -809,7 +982,7 @@ def test_commit_requires_migration_and_restores_exact_preimage(
             authority,
             boundary=boundary,
             store=store,
-            legacy_journal=object(),
+            legacy_journal=LegacyJournal(post_intent=False),
             now_unix=NOW + 1,
         )
 
@@ -835,7 +1008,7 @@ def test_activation_intent_without_terminal_never_restores_v1(
         authority,
         boundary=boundary,
         store=store,
-        legacy_journal=object(),
+        legacy_journal=LegacyJournal(),
         now_unix=NOW + 1,
     )
 
@@ -861,14 +1034,14 @@ def test_commit_private_v2_and_replay_are_idempotent(
         authority,
         boundary=boundary,
         store=store,
-        legacy_journal=object(),
+        legacy_journal=LegacyJournal(),
         now_unix=NOW + 1,
     )
     second = caddy.commit_cutover(
         authority,
         boundary=boundary,
         store=store,
-        legacy_journal=object(),
+        legacy_journal=LegacyJournal(),
         now_unix=NOW + 2,
     )
 
@@ -877,6 +1050,54 @@ def test_commit_private_v2_and_replay_are_idempotent(
     assert first["v1_route_restored"] is False
     assert boundary.mode() == "private_v2"
     assert boundary.replace_calls.count(caddy._derive_configs(ORIGINAL).private_v2) == 1
+
+
+def test_replayed_terminal_rejects_nonexact_public_body_content_type_and_schema(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    authority = _authority()
+    boundary = Boundary()
+    store = _store(tmp_path)
+    _prepare(authority, boundary, store)
+    monkeypatch.setattr(caddy, "_legacy_commit_lineage", _committed_lineage)
+    first = caddy.commit_cutover(
+        authority,
+        boundary=boundary,
+        store=store,
+        legacy_journal=LegacyJournal(),
+        now_unix=NOW + 1,
+    )
+    assert first["outcome"] == "private_v2_active"
+    exact_verify = boundary.verify_public
+
+    def generic_public(*, expected_status: int) -> Mapping[str, Any]:
+        if expected_status == 503:
+            return exact_verify(expected_status=expected_status)
+        return {
+            "status": 200,
+            "body_size": 2,
+            "body_sha256": caddy._sha256(b"{}"),
+            "content_type": "application/json; charset=utf-8",
+            "schema": "generic-readiness.v1",
+            "service": "generic",
+            "authority_ready": True,
+            "tls_verified": True,
+        }
+
+    monkeypatch.setattr(boundary, "verify_public", generic_public)
+    recovered = caddy.commit_cutover(
+        authority,
+        boundary=boundary,
+        store=store,
+        legacy_journal=LegacyJournal(),
+        now_unix=NOW + 2,
+    )
+
+    assert recovered["outcome"] == "maintenance_active"
+    assert recovered["public_status"] == 503
+    assert boundary.mode() == "maintenance"
+    assert boundary.public_modes[-1] == "maintenance"
 
 
 def test_concurrent_foreign_edit_fails_cas_and_is_never_overwritten(
@@ -896,7 +1117,7 @@ def test_concurrent_foreign_edit_fails_cas_and_is_never_overwritten(
             authority,
             boundary=boundary,
             store=store,
-            legacy_journal=object(),
+            legacy_journal=LegacyJournal(),
             now_unix=NOW + 1,
         )
 
@@ -907,6 +1128,74 @@ def test_concurrent_foreign_edit_fails_cas_and_is_never_overwritten(
     assert boundary.reload_modes == []
 
 
+def test_replace_failure_immediately_after_rename_exchange_preserves_captured_preimage(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    live = tmp_path / "Caddyfile"
+    live.write_bytes(b"third-party-preimage\n")
+    live.chmod(0o600)
+    candidate = b"transaction-candidate\n"
+    staged = tmp_path / f".Caddyfile.muncho-replace.{os.getpid()}"
+    exchanged = False
+
+    def stable(path: Path) -> caddy._StableConfig:
+        if exchanged and path == staged:
+            raise caddy.OwnerGateCaddyCutoverError(
+                "injected_captured_preimage_read_failure"
+            )
+        observed = os.lstat(path)
+        return caddy._StableConfig(
+            path.read_bytes(),
+            (
+                observed.st_mode,
+                observed.st_uid,
+                observed.st_gid,
+                observed.st_dev,
+                observed.st_ino,
+                observed.st_nlink,
+                observed.st_size,
+                observed.st_mtime_ns,
+                observed.st_ctime_ns,
+            ),
+        )
+
+    def write_temporary(payload: bytes, *, purpose: str) -> Path:
+        assert purpose == "replace"
+        assert payload == candidate
+        staged.write_bytes(payload)
+        staged.chmod(0o600)
+        return staged
+
+    real_exchange = caddy._atomic_exchange_paths
+
+    def exchange(left: Path, right: Path) -> None:
+        nonlocal exchanged
+        real_exchange(left, right)
+        exchanged = True
+
+    monkeypatch.setattr(caddy, "CADDYFILE_PATH", live)
+    monkeypatch.setattr(caddy, "_stable_config_path", stable)
+    monkeypatch.setattr(caddy, "_atomic_exchange_paths", exchange)
+    monkeypatch.setattr(
+        caddy.ProductionCaddyBoundary,
+        "_write_temporary",
+        staticmethod(write_temporary),
+    )
+    boundary = caddy.ProductionCaddyBoundary()
+    monkeypatch.setattr(boundary, "stable_read", lambda: stable(live))
+    expected = stable(live)
+
+    with pytest.raises(
+        caddy.OwnerGateCaddyCutoverError,
+        match="captured_preimage_read_failure",
+    ):
+        boundary.replace(candidate, expected=expected)
+
+    assert live.read_bytes() == candidate
+    assert staged.read_bytes() == b"third-party-preimage\n"
+
+
 def test_crash_after_atomic_replace_resumes_without_restoring_v1(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
@@ -914,18 +1203,26 @@ def test_crash_after_atomic_replace_resumes_without_restoring_v1(
     authority = _authority()
     boundary = Boundary()
     store = _store(tmp_path)
-    _prepare(authority, boundary, store)
+    prepared = _prepare(authority, boundary, store)
     configs = caddy._derive_configs(ORIGINAL)
     boundary.raw = configs.private_v2
     boundary.generation += 1
+    started_unsigned = {
+        "schema": caddy.CADDY_COMMIT_STARTED_SCHEMA,
+        "cutover_plan_sha256": authority.plan.sha256,
+        "authority_sha256": authority.sha256,
+        "prepare_receipt_sha256": prepared["receipt_sha256"],
+        "legacy_activation_commit_intent_receipt_sha256": "6" * 64,
+        "legacy_terminal_receipt_sha256": "7" * 64,
+        "rollback_mode": "post_migration_maintenance_only",
+        "started_at_unix": NOW + 1,
+    }
     store.append(
         authority.plan.sha256,
         "commit_started",
         {
-            "authority_sha256": authority.sha256,
-            "legacy_activation_commit_intent_receipt_sha256": "6" * 64,
-            "legacy_terminal_receipt_sha256": "7" * 64,
-            "rollback_mode": "post_migration_maintenance_only",
+            **started_unsigned,
+            "receipt_sha256": caddy._sha256(caddy._canonical(started_unsigned)),
         },
         NOW + 1,
     )
@@ -935,13 +1232,88 @@ def test_crash_after_atomic_replace_resumes_without_restoring_v1(
         authority,
         boundary=boundary,
         store=store,
-        legacy_journal=object(),
+        legacy_journal=LegacyJournal(),
         now_unix=NOW + 2,
     )
 
     assert receipt["outcome"] == "private_v2_active"
     assert boundary.raw == configs.private_v2
     assert configs.original not in boundary.replace_calls
+
+
+def test_commit_corrupt_legacy_journal_with_valid_caddy_commit_marker_forces_maintenance(
+    tmp_path: Path,
+) -> None:
+    authority = _authority()
+    boundary = Boundary()
+    store = _store(tmp_path)
+    prepared = _prepare(authority, boundary, store)
+    _append_caddy_commit_marker(authority, store, prepared)
+
+    class CorruptLegacyJournal:
+        def load(self, _plan_sha256: str) -> list[Any]:
+            raise ValueError("corrupt legacy journal")
+
+    with pytest.raises(
+        caddy.OwnerGateCaddyCutoverError,
+        match="post_intent_maintenance",
+    ):
+        caddy.commit_cutover(
+            authority,
+            boundary=boundary,
+            store=store,
+            legacy_journal=CorruptLegacyJournal(),
+            now_unix=NOW + 2,
+        )
+
+    assert boundary.mode() == "maintenance"
+    assert ORIGINAL not in boundary.replace_calls
+    assert boundary.public_modes[-1] == "maintenance"
+
+
+def test_commit_corrupt_caddy_journal_with_valid_legacy_intent_forces_maintenance(
+    tmp_path: Path,
+) -> None:
+    authority = _authority()
+    boundary = Boundary()
+    store = _store(tmp_path)
+    journal = MemoryJournal()
+    _seed_bridge(authority, boundary, store)
+    caddy.prepare_cutover(
+        authority,
+        boundary=boundary,
+        store=store,
+        legacy_journal=journal,
+        now_unix=NOW,
+    )
+    journal.append(
+        authority.plan.sha256,
+        "activation_commit_intent",
+        {"durable": True},
+        NOW + 1,
+    )
+    entry_path = (
+        store._plan_root(authority.plan.sha256) / "entries/000001.json"
+    )
+    entry_path.chmod(0o600)
+    entry_path.write_bytes(b"{}")
+    entry_path.chmod(0o400)
+
+    with pytest.raises(
+        caddy.OwnerGateCaddyCutoverError,
+        match="post_intent_maintenance",
+    ):
+        caddy.commit_cutover(
+            authority,
+            boundary=boundary,
+            store=store,
+            legacy_journal=journal,
+            now_unix=NOW + 2,
+        )
+
+    assert boundary.mode() == "maintenance"
+    assert ORIGINAL not in boundary.replace_calls
+    assert boundary.public_modes[-1] == "maintenance"
 
 
 def test_reload_failure_converges_to_maintenance_never_v1(
@@ -959,7 +1331,7 @@ def test_reload_failure_converges_to_maintenance_never_v1(
         authority,
         boundary=boundary,
         store=store,
-        legacy_journal=object(),
+        legacy_journal=LegacyJournal(),
         now_unix=NOW + 1,
     )
 
@@ -987,7 +1359,7 @@ def test_public_verify_failure_converges_to_maintenance(
         authority,
         boundary=boundary,
         store=store,
-        legacy_journal=object(),
+        legacy_journal=LegacyJournal(),
         now_unix=NOW + 1,
     )
 
@@ -1008,7 +1380,7 @@ def test_terminal_tamper_cannot_change_passkey_or_rollback_mode(
         authority,
         boundary=boundary,
         store=store,
-        legacy_journal=object(),
+        legacy_journal=LegacyJournal(),
         now_unix=NOW + 1,
     )
     changed = copy.deepcopy(terminal)
@@ -1022,6 +1394,178 @@ def test_terminal_tamper_cannot_change_passkey_or_rollback_mode(
             plan=authority.plan,
             prepare_receipt=prepared,
         )
+
+
+@pytest.mark.parametrize("tamper", ["extra_field", "partial_hash", "before_intent"])
+def test_legacy_terminal_requires_full_schema_self_hash_and_intent_order(
+    monkeypatch: pytest.MonkeyPatch,
+    tamper: str,
+) -> None:
+    authority = _authority()
+    intent = {
+        "approval_sha256": "a" * 64,
+        "receipt_sha256": "b" * 64,
+    }
+    capability = {
+        "prerequisite_receipt_sha256": "c" * 64,
+        "prerequisite_file_sha256": "d" * 64,
+        "goal_continuation_terminal_sha256": "e" * 64,
+        "workspace_gateway_receipt_sha256": "f" * 64,
+        "isolation_equivalence_projection_sha256": "0" * 64,
+        "pre_db_zero_write_observation_sha256": "1" * 64,
+    }
+    database = {"receipt_sha256": "2" * 64}
+    host = {"receipt_sha256": "3" * 64}
+    database_terminal = {"receipt_sha256": "4" * 64}
+    boot = {"receipt_sha256": "5" * 64}
+    gateway = {
+        "gateway_observation_sha256": "6" * 64,
+        "writer_observation_sha256": "7" * 64,
+        "connector_observation_sha256": "8" * 64,
+    }
+    terminal: dict[str, Any] = {
+        field: "9" * 64 for field in caddy._LEGACY_TERMINAL_FIELDS
+    }
+    terminal.update(
+        {
+            "schema": cutover.TERMINAL_SCHEMA,
+            "plan_sha256": authority.plan.sha256,
+            "freeze_plan_sha256": authority.freeze.sha256,
+            "freeze_approval_sha256": authority.approval_sha256,
+            "approval_sha256": intent["approval_sha256"],
+            "final_tail_receipt_sha256": authority.plan.value[
+                "final_tail_receipt_sha256"
+            ],
+            "capability_prerequisite_receipt_sha256": capability[
+                "prerequisite_receipt_sha256"
+            ],
+            "capability_prerequisite_file_sha256": capability[
+                "prerequisite_file_sha256"
+            ],
+            "isolated_canary_goal_continuation_terminal_sha256": capability[
+                "goal_continuation_terminal_sha256"
+            ],
+            "isolated_canary_workspace_gateway_receipt_sha256": capability[
+                "workspace_gateway_receipt_sha256"
+            ],
+            "isolation_equivalence_projection_sha256": capability[
+                "isolation_equivalence_projection_sha256"
+            ],
+            "zero_canonical_database_mutation_observed": True,
+            "pre_db_zero_write_observation_sha256": capability[
+                "pre_db_zero_write_observation_sha256"
+            ],
+            "capability_topology_identity_sha256": "a" * 64,
+            "database_apply_receipt_sha256": database["receipt_sha256"],
+            "host_apply_receipt_sha256": host["receipt_sha256"],
+            "host_boot_commit_receipt_sha256": boot["receipt_sha256"],
+            "activation_commit_intent_receipt_sha256": intent[
+                "receipt_sha256"
+            ],
+            "database_postflight_receipt_sha256": database_terminal[
+                "receipt_sha256"
+            ],
+            **gateway,
+            "direct_discord_disabled": True,
+            "discord_dm_allowed": False,
+            "rollback_used": False,
+            "secret_material_recorded": False,
+            "completed_at_unix": NOW + 1,
+        }
+    )
+    terminal["receipt_sha256"] = caddy._sha256(
+        caddy._canonical(
+            {
+                key: item
+                for key, item in terminal.items()
+                if key != "receipt_sha256"
+            }
+        )
+    )
+    if tamper == "extra_field":
+        terminal["unexpected"] = True
+        terminal["receipt_sha256"] = caddy._sha256(
+            caddy._canonical(
+                {
+                    key: item
+                    for key, item in terminal.items()
+                    if key != "receipt_sha256"
+                }
+            )
+        )
+    elif tamper == "partial_hash":
+        terminal["receipt_sha256"] = caddy._sha256(
+            caddy._canonical({"schema": terminal["schema"]})
+        )
+
+    intent_entry = SimpleNamespace(
+        value={
+            "event": "activation_commit_intent",
+            "evidence": intent,
+            "sequence": 1,
+            "recorded_at_unix": NOW,
+        }
+    )
+    terminal_entry = SimpleNamespace(
+        value={
+            "event": "terminal",
+            "evidence": terminal,
+            "sequence": 0 if tamper == "before_intent" else 3,
+            "recorded_at_unix": NOW + 1,
+        }
+    )
+    entries = [
+        SimpleNamespace(
+            value={
+                "event": "capability_prerequisites_validated",
+                "evidence": {"accepted": True},
+                "sequence": 0,
+                "recorded_at_unix": NOW - 1,
+            }
+        ),
+        intent_entry,
+        SimpleNamespace(
+            value={
+                "event": "gateway_started",
+                "evidence": gateway,
+                "sequence": 2,
+                "recorded_at_unix": NOW + 1,
+            }
+        ),
+        terminal_entry,
+    ]
+
+    class Journal:
+        def load(self, _plan_sha256: str) -> list[Any]:
+            return entries
+
+    monkeypatch.setattr(
+        cutover, "_accepted_activation_commit_intent", lambda *_a: intent
+    )
+    monkeypatch.setattr(cutover, "_accepted_database_apply", lambda *_a: database)
+    monkeypatch.setattr(cutover, "_accepted_host_apply", lambda *_a: host)
+    monkeypatch.setattr(
+        cutover, "_accepted_database_terminal", lambda *_a: database_terminal
+    )
+    monkeypatch.setattr(
+        cutover, "_accepted_host_boot_commit", lambda *_a: boot
+    )
+    monkeypatch.setattr(
+        cutover,
+        "_require_capability_prerequisite_acceptance",
+        lambda *_a, **_k: capability,
+    )
+    monkeypatch.setattr(
+        cutover,
+        "production_capability_topology_identity_sha256",
+        lambda *_a: "a" * 64,
+    )
+
+    with pytest.raises(
+        caddy.OwnerGateCaddyCutoverError,
+        match="legacy_terminal_invalid",
+    ):
+        caddy._legacy_commit_lineage(authority, journal=Journal())
 
 
 def test_bridge_input_requires_exact_lowercase_sha256_request_id() -> None:
@@ -1093,6 +1637,255 @@ def test_prepare_bridge_adopts_request_after_lost_helper_response(
         entry.value["event"]
         for entry in store.load(authority.freeze.sha256)
     ] == ["bridge_request_intent", "bridge_authorization_requested"]
+
+
+def test_atomic_consume_adopts_crash_temp_only_state(tmp_path: Path) -> None:
+    _action, _requests, grants, grant = _seed_legacy_authorization_files(
+        tmp_path
+    )
+    canonical = grants / f"{LEGACY_REQUEST_ID}.json"
+    temporary = grants / f".{LEGACY_REQUEST_ID}.muncho-caddy-consume"
+    consumed = copy.deepcopy(dict(grant))
+    consumed["used_at"] = time.strftime(
+        "%Y-%m-%dT%H:%M:%SZ", time.gmtime(NOW)
+    )
+    consumed["used_at_ts"] = NOW
+    _write_private_json(temporary, consumed)
+    snapshot = caddy._stable_legacy_file(
+        canonical,
+        parent=grants,
+        expected_uid=os.getuid(),
+        expected_gid=os.getgid(),
+    )
+
+    observed, digest = caddy._atomic_consume_legacy_grant(
+        snapshot,
+        grant,
+        consumed_at_unix=NOW,
+        grants_root=grants,
+        expected_uid=os.getuid(),
+        expected_gid=os.getgid(),
+    )
+
+    assert observed == consumed
+    assert digest == caddy._sha256(caddy._canonical(consumed))
+    assert json.loads(canonical.read_text()) == consumed
+    assert not temporary.exists()
+    assert not (
+        grants / f".{LEGACY_REQUEST_ID}.muncho-caddy-claim"
+    ).exists()
+
+
+def test_atomic_consume_adopts_crash_claim_only_state(tmp_path: Path) -> None:
+    _action, _requests, grants, grant = _seed_legacy_authorization_files(
+        tmp_path
+    )
+    canonical = grants / f"{LEGACY_REQUEST_ID}.json"
+    claim = grants / f".{LEGACY_REQUEST_ID}.muncho-caddy-claim"
+    canonical.rename(claim)
+    snapshot = caddy._read_claimed_legacy_grant(
+        claim,
+        grants_root=grants,
+        expected_uid=os.getuid(),
+        expected_gid=os.getgid(),
+    )
+
+    observed, _digest = caddy._atomic_consume_legacy_grant(
+        snapshot,
+        grant,
+        consumed_at_unix=NOW,
+        grants_root=grants,
+        expected_uid=os.getuid(),
+        expected_gid=os.getgid(),
+    )
+
+    assert observed["used_at_ts"] == NOW
+    assert json.loads(canonical.read_text()) == observed
+    assert not claim.exists()
+
+
+@pytest.mark.parametrize("staged_temp", [False, True])
+def test_replay_adopts_crash_consumed_canonical_plus_claim_state(
+    tmp_path: Path,
+    staged_temp: bool,
+) -> None:
+    action, requests, grants, grant = _seed_legacy_authorization_files(
+        tmp_path
+    )
+    canonical = grants / f"{LEGACY_REQUEST_ID}.json"
+    claim = grants / f".{LEGACY_REQUEST_ID}.muncho-caddy-claim"
+    temporary = grants / f".{LEGACY_REQUEST_ID}.muncho-caddy-consume"
+    canonical.rename(claim)
+    consumed = copy.deepcopy(dict(grant))
+    consumed["used_at"] = time.strftime(
+        "%Y-%m-%dT%H:%M:%SZ", time.gmtime(NOW)
+    )
+    consumed["used_at_ts"] = NOW
+    _write_private_json(canonical, consumed)
+    if staged_temp:
+        _write_private_json(temporary, consumed)
+
+    _request_snapshot, _request, _grant_snapshot, observed = (
+        caddy._legacy_request_and_grant(
+            action=action,
+            now_unix=NOW,
+            requests_root=requests,
+            grants_root=grants,
+            expected_uid=os.getuid(),
+            expected_gid=os.getgid(),
+            allow_consumed=True,
+        )
+    )
+    caddy._finalize_consumed_legacy_claim(
+        request_id=LEGACY_REQUEST_ID,
+        consumed=observed,
+        grants_root=grants,
+        expected_uid=os.getuid(),
+        expected_gid=os.getgid(),
+    )
+
+    assert observed == consumed
+    assert json.loads(canonical.read_text()) == consumed
+    assert not claim.exists()
+    assert not temporary.exists()
+
+
+def test_two_concurrent_atomic_consume_attempts_have_exactly_one_winner(
+    tmp_path: Path,
+) -> None:
+    _action, _requests, grants, grant = _seed_legacy_authorization_files(
+        tmp_path
+    )
+    canonical = grants / f"{LEGACY_REQUEST_ID}.json"
+    snapshot = caddy._stable_legacy_file(
+        canonical,
+        parent=grants,
+        expected_uid=os.getuid(),
+        expected_gid=os.getgid(),
+    )
+    start = threading.Barrier(2)
+
+    def consume() -> bool:
+        start.wait()
+        try:
+            caddy._atomic_consume_legacy_grant(
+                snapshot,
+                grant,
+                consumed_at_unix=NOW,
+                grants_root=grants,
+                expected_uid=os.getuid(),
+                expected_gid=os.getgid(),
+            )
+        except caddy.OwnerGateCaddyCutoverError:
+            return False
+        return True
+
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        winners = list(pool.map(lambda _index: consume(), range(2)))
+
+    assert winners.count(True) == 1
+    assert json.loads(canonical.read_text())["used_at_ts"] == NOW
+
+
+@pytest.mark.parametrize(
+    "granted_at",
+    [
+        time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(NOW + 1)),
+        time.strftime("%Y-%m-%dT%H:%M:%S+00:00", time.gmtime(NOW - 1)),
+    ],
+)
+def test_legacy_grant_rejects_future_or_noncanonical_granted_at(
+    tmp_path: Path,
+    granted_at: str,
+) -> None:
+    action, requests, grants, grant = _seed_legacy_authorization_files(
+        tmp_path
+    )
+    changed = {**grant, "granted_at": granted_at}
+    _write_private_json(grants / f"{LEGACY_REQUEST_ID}.json", changed)
+
+    with pytest.raises(
+        caddy.OwnerGateCaddyCutoverError,
+        match="legacy_passkey_grant_invalid|passkey_grant_time",
+    ):
+        caddy._legacy_request_and_grant(
+            action=action,
+            now_unix=NOW,
+            requests_root=requests,
+            grants_root=grants,
+            expected_uid=os.getuid(),
+            expected_gid=os.getgid(),
+        )
+
+
+def test_legacy_helper_path_swap_executes_only_the_pinned_exact_copy(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    trusted = b"#!/bin/sh\ntrusted-helper\n"
+    malicious = b"#!/bin/sh\nmalicious-helper\n"
+    original = tmp_path / "legacy-helper"
+    copied = tmp_path / "pinned-helper"
+    original.write_bytes(trusted)
+    action = {"operation": "fixed-bridge-bootstrap"}
+    action_hash = caddy._sha256(caddy._canonical(action))
+    pinned = caddy._PinnedLegacyHelper(trusted, (1, 2, len(trusted), 3, 4))
+
+    def require_identity() -> caddy._PinnedLegacyHelper:
+        original.write_bytes(malicious)
+        return pinned
+
+    def immutable_copy(
+        observed: caddy._PinnedLegacyHelper,
+    ) -> nullcontext[Path]:
+        assert observed == pinned
+        copied.write_bytes(observed.raw)
+        return nullcontext(copied)
+
+    output = {
+        "ok": False,
+        "status": "DANGEROUS_ACTION_STEP_UP_REQUIRED",
+        "request_id": LEGACY_REQUEST_ID,
+        "case_id": caddy.BRIDGE_CASE_ID,
+        "scope": caddy.BRIDGE_APPROVAL_SCOPE,
+        "target_system": caddy.BRIDGE_TARGET_SYSTEM,
+        "action_hash": action_hash,
+        "action_hash_prefix": action_hash[:12],
+        "approval_url": (
+            f"https://{caddy.PUBLIC_HOST}/approve/{LEGACY_REQUEST_ID}"
+        ),
+        "approver_discord_user_id": caddy.OWNER_DISCORD_USER_ID,
+        "approver_label": "Emil",
+        "passkey_status": "PENDING_HTTPS_WEBAUTHN_SERVICE",
+        "totp_fallback_allowed": True,
+        "instructions_bg": "Approve with the registered passkey.",
+    }
+
+    def run(argv: tuple[str, ...], **_kwargs: Any) -> SimpleNamespace:
+        assert Path(argv[4]) == copied
+        assert original.read_bytes() == malicious
+        assert copied.read_bytes() == trusted
+        return SimpleNamespace(
+            returncode=2,
+            stdout=caddy._canonical(output) + b"\n",
+            stderr=b"",
+        )
+
+    monkeypatch.setattr(
+        caddy.ProductionLegacyRequestBoundary,
+        "_require_identity",
+        staticmethod(require_identity),
+    )
+    monkeypatch.setattr(caddy, "_immutable_legacy_helper_copy", immutable_copy)
+    monkeypatch.setattr(caddy.subprocess, "run", run)
+
+    observed = caddy.ProductionLegacyRequestBoundary().create_bridge_request(
+        action=action
+    )
+
+    assert observed == output
+    assert original.read_bytes() == malicious
+    assert copied.read_bytes() == trusted
 
 
 def test_activate_bridge_stops_v1_before_atomic_consume_and_replays(

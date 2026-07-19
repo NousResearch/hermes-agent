@@ -2280,6 +2280,7 @@ def create_web_app(config: Mapping[str, Any]) -> Any:
             ready = readiness.status()
             return JSONResponse(
                 {
+                    "schema": "muncho-passkey-v2-readiness.v1",
                     "ok": ready,
                     "service": "muncho-passkey-v2-web",
                     "authority_ready": ready,

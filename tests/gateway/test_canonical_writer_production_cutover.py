@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import base64
 import copy
+import hashlib
 import json
 from functools import lru_cache
 from contextlib import nullcontext
@@ -990,6 +992,44 @@ def _seed_passkey_authority(
     )
 
 
+def _seed_caddy_dependency(
+    journal: MemoryJournal,
+    plan: cutover.CutoverPlan,
+    *,
+    recorded_at_unix: int = NOW,
+) -> None:
+    freeze = cutover.FreezePlan.from_mapping(plan.value["freeze_plan"])
+    maintenance = b"fixed-test-maintenance-caddy"
+    caddy_unsigned = {
+        "schema": cutover.CADDY_PREPARED_DEPENDENCY_SCHEMA,
+        "release_revision": plan.value["release_revision"],
+        "freeze_plan_sha256": freeze.sha256,
+        "cutover_plan_sha256": plan.sha256,
+        "freeze_approval_sha256": plan.value["freeze_approval_sha256"],
+        "authority_sha256": "1" * 64,
+        "caddy_prepare_receipt_sha256": "2" * 64,
+        "original_caddy_sha256": "3" * 64,
+        "approval_bridge_caddy_sha256": "4" * 64,
+        "private_v2_caddy_sha256": "5" * 64,
+        "maintenance_caddy_sha256": hashlib.sha256(maintenance).hexdigest(),
+        "maintenance_caddy_b64": base64.b64encode(maintenance).decode("ascii"),
+        "production_mutation_performed": False,
+        "caller_selected_input_accepted": False,
+        "secret_material_recorded": False,
+        "secret_digest_recorded": False,
+        "prepared_at_unix": recorded_at_unix,
+    }
+    journal.append(
+        plan.sha256,
+        "caddy_prepared",
+        {
+            **caddy_unsigned,
+            "receipt_sha256": cutover._sha256_json(caddy_unsigned),
+        },
+        recorded_at_unix,
+    )
+
+
 def _seed_cutover_passkey(
     journal: MemoryJournal,
     plan: cutover.CutoverPlan,
@@ -1036,6 +1076,9 @@ def _seed_cutover_passkey(
         "final_tail_captured",
         plan.value["final_tail_receipt"],
         recorded_at_unix,
+    )
+    _seed_caddy_dependency(
+        journal, plan, recorded_at_unix=recorded_at_unix
     )
     if with_apply_intent:
         cutover._require_or_record_passkey_intent(
@@ -2813,6 +2856,7 @@ def test_cutover_apply_without_parent_freeze_intent_fails() -> None:
     journal = MemoryJournal()
     freeze = cutover.FreezePlan.from_mapping(plan.value["freeze_plan"])
     _seed_passkey_authority(journal, freeze, approval)
+    _seed_caddy_dependency(journal, plan)
     database = Database(plan)
 
     with pytest.raises(
@@ -2835,7 +2879,9 @@ def test_cutover_apply_without_parent_freeze_intent_fails() -> None:
         )
 
     assert database.calls == []
-    assert journal.load(plan.sha256) == []
+    assert [
+        entry.value["event"] for entry in journal.load(plan.sha256)
+    ] == ["caddy_prepared"]
 
 
 def test_expired_claim_can_record_apply_intent_from_durable_freeze_terminal() -> None:
@@ -2939,7 +2985,9 @@ def test_cutover_apply_rejects_parent_intent_bound_to_different_claim() -> None:
         )
 
     assert database.calls == []
-    assert journal.load(plan.sha256) == []
+    assert [
+        entry.value["event"] for entry in journal.load(plan.sha256)
+    ] == ["caddy_prepared"]
 
 
 def test_cutover_apply_rejects_stale_plan_after_abort_following_tail() -> None:
@@ -2981,7 +3029,13 @@ def test_cutover_apply_rejects_stale_plan_after_abort_following_tail() -> None:
         )
 
     assert database.calls == []
-    assert journal.load(plan.sha256) == []
+    remaining = journal.load(plan.sha256)
+    assert [entry.value["event"] for entry in remaining] == [
+        "caddy_prepared"
+    ]
+    assert cutover.require_caddy_prepared_dependency(remaining, plan)[
+        "production_mutation_performed"
+    ] is False
 
 
 def test_expired_claim_resumes_exact_cutover_after_durable_apply_intent() -> None:

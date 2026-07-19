@@ -374,6 +374,56 @@ async def test_reconnect_continues_if_drain_hangs(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_heartbeat_force_escalates_wedged_recovery_task(monkeypatch):
+    """#66377: the heartbeat is an independent, cause-agnostic watchdog.
+
+    Every recovery path (ladder re-entry, pending-update probe, PTB error
+    callback) gates new recovery on ``_polling_error_task.done()``. If that task
+    wedges on ANY hung await — not just the drain closed by #66492 — the gateway
+    stays alive but deaf with nothing retrying. The heartbeat must detect a
+    recovery task that stays in-flight past ``_POLLING_ERROR_TASK_STUCK_TIMEOUT``
+    and force a retryable-fatal so the background reconnector rebuilds the
+    adapter.
+    """
+    adapter = _make_adapter()
+
+    async def _wedged():
+        await asyncio.Event().wait()  # never completes — simulates the hang
+
+    wedged_task = asyncio.ensure_future(_wedged())
+    adapter._polling_error_task = wedged_task
+
+    mock_bot = MagicMock()
+    mock_bot.get_me = AsyncMock()
+    mock_app = MagicMock()
+    mock_app.bot = mock_bot
+    adapter._app = mock_app
+    adapter._probe_pending_updates = AsyncMock()
+    adapter._notify_fatal_error = AsyncMock()
+
+    # Controllable monotonic clock advanced by each (mocked) heartbeat sleep so
+    # the same wedged task is observed across the stuck threshold deterministically.
+    clock = [1000.0]
+
+    async def _fake_sleep(*_a, **_k):
+        clock[0] += 200.0
+
+    monkeypatch.setattr(tg_adapter.time, "monotonic", lambda: clock[0])
+
+    with patch("asyncio.sleep", new=AsyncMock(side_effect=_fake_sleep)):
+        await asyncio.wait_for(adapter._polling_heartbeat_loop(), timeout=5)
+
+    assert adapter.has_fatal_error, "wedged recovery task must force a fatal escalation"
+    adapter._notify_fatal_error.assert_awaited()
+
+    wedged_task.cancel()
+    try:
+        await wedged_task
+    except asyncio.CancelledError:
+        pass
+
+
+@pytest.mark.asyncio
 async def test_conflict_retry_also_drains_polling_connections():
     """_handle_polling_conflict must also drain the polling pool on retry."""
     adapter = _make_adapter()

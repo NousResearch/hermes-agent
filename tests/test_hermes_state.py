@@ -506,6 +506,148 @@ class TestSessionLifecycle:
             ("https://two.example/v1", "subscription_included", 20),
         ]
 
+    def test_v22_drifted_usage_primary_key_is_repaired_from_live_schema(self, tmp_path):
+        db_path = tmp_path / "drifted-v22.db"
+        db = SessionDB(db_path=db_path)
+        db.create_session(session_id="usage", source="cli")
+        db.close()
+
+        conn = sqlite3.connect(db_path)
+        conn.executescript("""
+            DROP TABLE session_model_usage;
+            CREATE TABLE session_model_usage (
+                session_id TEXT NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
+                model TEXT NOT NULL,
+                billing_provider TEXT NOT NULL DEFAULT '',
+                billing_base_url TEXT NOT NULL DEFAULT '',
+                billing_mode TEXT NOT NULL DEFAULT '',
+                task TEXT DEFAULT '',
+                api_call_count INTEGER NOT NULL DEFAULT 0,
+                input_tokens INTEGER NOT NULL DEFAULT 0,
+                output_tokens INTEGER NOT NULL DEFAULT 0,
+                cache_read_tokens INTEGER NOT NULL DEFAULT 0,
+                cache_write_tokens INTEGER NOT NULL DEFAULT 0,
+                reasoning_tokens INTEGER NOT NULL DEFAULT 0,
+                estimated_cost_usd REAL NOT NULL DEFAULT 0,
+                actual_cost_usd REAL NOT NULL DEFAULT 0,
+                cost_status TEXT,
+                cost_source TEXT,
+                first_seen REAL,
+                last_seen REAL,
+                PRIMARY KEY (
+                    session_id, model, billing_provider,
+                    billing_base_url, billing_mode
+                )
+            );
+            CREATE INDEX idx_session_model_usage_session
+                ON session_model_usage(session_id);
+            CREATE INDEX idx_session_model_usage_model
+                ON session_model_usage(model);
+            INSERT INTO session_model_usage (
+                session_id, model, billing_provider, billing_base_url,
+                billing_mode, task, api_call_count, input_tokens
+            ) VALUES (
+                'usage', 'shared-model', 'custom', 'https://example.test/v1',
+                'api_key', 'vision', 2, 20
+            );
+            INSERT INTO session_model_usage (
+                session_id, model, billing_provider, billing_base_url,
+                billing_mode, task, api_call_count, input_tokens
+            ) VALUES (
+                'usage', 'null-task-model', 'custom', 'https://example.test/v1',
+                'api_key', NULL, 1, 4
+            );
+            UPDATE schema_version SET version = 22;
+        """)
+        conn.commit()
+        conn.close()
+
+        repaired = SessionDB(db_path=db_path)
+        try:
+            pk_columns = [
+                row["name"]
+                for row in repaired._conn.execute(
+                    "PRAGMA table_info('session_model_usage')"
+                ).fetchall()
+                if row["pk"]
+            ]
+            assert pk_columns == [
+                "session_id", "model", "billing_provider",
+                "billing_base_url", "billing_mode", "task",
+            ]
+            assert {
+                row["name"]
+                for row in repaired._conn.execute(
+                    "PRAGMA index_list('session_model_usage')"
+                ).fetchall()
+            } >= {
+                "idx_session_model_usage_session",
+                "idx_session_model_usage_model",
+            }
+
+            repaired.update_token_counts(
+                "usage", input_tokens=10, output_tokens=3,
+                model="shared-model", billing_provider="custom",
+                billing_base_url="https://example.test/v1",
+                billing_mode="api_key", api_call_count=1,
+            )
+            rows = repaired._conn.execute(
+                "SELECT task, api_call_count, input_tokens, output_tokens "
+                "FROM session_model_usage WHERE session_id = 'usage' "
+                "AND model = 'shared-model' ORDER BY task"
+            ).fetchall()
+            assert [tuple(row) for row in rows] == [
+                ("", 1, 10, 3),
+                ("vision", 2, 20, 0),
+            ]
+            normalized = repaired._conn.execute(
+                "SELECT task, input_tokens FROM session_model_usage "
+                "WHERE session_id = 'usage' AND model = 'null-task-model'"
+            ).fetchone()
+            assert tuple(normalized) == ("", 4)
+        finally:
+            repaired.close()
+
+        reopened = SessionDB(db_path=db_path)
+        try:
+            pk_columns = [
+                row["name"]
+                for row in reopened._conn.execute(
+                    "PRAGMA table_info('session_model_usage')"
+                ).fetchall()
+                if row["pk"]
+            ]
+            assert pk_columns[-1] == "task"
+        finally:
+            reopened.close()
+
+    def test_correct_usage_primary_key_startup_does_not_rebuild_table(self, tmp_path):
+        db_path = tmp_path / "correct-v22.db"
+        db = SessionDB(db_path=db_path)
+        db.create_session(session_id="usage", source="cli")
+        db.update_token_counts(
+            "usage", input_tokens=7, model="model", api_call_count=1,
+        )
+        db._conn.execute(
+            "CREATE INDEX usage_startup_sentinel ON session_model_usage(last_seen)"
+        )
+        db._conn.commit()
+        db.close()
+
+        reopened = SessionDB(db_path=db_path)
+        try:
+            assert reopened._conn.execute(
+                "SELECT 1 FROM sqlite_master WHERE type = 'index' "
+                "AND name = 'usage_startup_sentinel'"
+            ).fetchone() is not None
+            row = reopened._conn.execute(
+                "SELECT input_tokens, api_call_count FROM session_model_usage "
+                "WHERE session_id = 'usage'"
+            ).fetchone()
+            assert tuple(row) == (7, 1)
+        finally:
+            reopened.close()
+
     def test_metadata_only_update_does_not_replace_requested_route(self, db):
         db.create_session(session_id="metadata", source="cli", model="primary")
         db.update_token_counts(

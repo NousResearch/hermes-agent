@@ -70,15 +70,9 @@ def _create_v22_db_with_legacy_usage_key(db_path: Path) -> None:
         conn.close()
 
 
-def test_single_query_exact_usage_survives_process_exit_on_legacy_v22_key(tmp_path):
-    """Run the real one-shot CLI turn/finalizer, then reopen and read state.db."""
-    hermes_home = tmp_path / "hermes-home"
-    hermes_home.mkdir()
-    db_path = hermes_home / "state.db"
-    _create_v22_db_with_legacy_usage_key(db_path)
-
+def _run_single_query_child(hermes_home: Path, usage_expression: str) -> subprocess.CompletedProcess:
     child = textwrap.dedent(
-        """
+        f"""
         from types import SimpleNamespace
 
         import cli
@@ -87,7 +81,7 @@ def test_single_query_exact_usage_survives_process_exit_on_legacy_v22_key(tmp_pa
         cli._run_state_db_auto_maintenance = lambda _db: None
         cli._run_checkpoint_auto_maintenance = lambda: None
         run_agent.get_tool_definitions = lambda **_kwargs: []
-        run_agent.check_toolset_requirements = lambda: {}
+        run_agent.check_toolset_requirements = lambda: {{}}
 
         real_agent_factory = cli.AIAgent
 
@@ -100,16 +94,7 @@ def test_single_query_exact_usage_survives_process_exit_on_legacy_v22_key(tmp_pa
                     type="message",
                     content=[SimpleNamespace(type="output_text", text="OK")],
                 )],
-                usage=SimpleNamespace(
-                    input_tokens=26,
-                    input_tokens_details=SimpleNamespace(
-                        cached_tokens=5,
-                        cache_write_tokens=2,
-                    ),
-                    output_tokens=9,
-                    output_tokens_details=SimpleNamespace(reasoning_tokens=3),
-                    total_tokens=35,
-                ),
+                usage={usage_expression},
                 status="completed",
                 model="gpt-5.6-sol",
             )
@@ -138,8 +123,7 @@ def test_single_query_exact_usage_survives_process_exit_on_legacy_v22_key(tmp_pa
     )
     env.pop("HERMES_KANBAN_TASK", None)
     env.pop("HERMES_KANBAN_GOAL_MODE", None)
-
-    proc = subprocess.run(
+    return subprocess.run(
         [sys.executable, "-c", child],
         cwd=Path(__file__).resolve().parents[2],
         env=env,
@@ -147,6 +131,28 @@ def test_single_query_exact_usage_survives_process_exit_on_legacy_v22_key(tmp_pa
         text=True,
         timeout=60,
         check=False,
+    )
+
+
+def test_single_query_exact_usage_survives_process_exit_on_legacy_v22_key(tmp_path):
+    """Run the real one-shot CLI turn/finalizer, then reopen and read state.db."""
+    hermes_home = tmp_path / "hermes-home"
+    hermes_home.mkdir()
+    db_path = hermes_home / "state.db"
+    _create_v22_db_with_legacy_usage_key(db_path)
+
+    proc = _run_single_query_child(
+        hermes_home,
+        """SimpleNamespace(
+            input_tokens=26,
+            input_tokens_details=SimpleNamespace(
+                cached_tokens=5,
+                cache_write_tokens=2,
+            ),
+            output_tokens=9,
+            output_tokens_details=SimpleNamespace(reasoning_tokens=3),
+            total_tokens=35,
+        )""",
     )
     assert proc.returncode == 0, proc.stderr
     assert "OK" in proc.stdout
@@ -177,3 +183,33 @@ def test_single_query_exact_usage_survives_process_exit_on_legacy_v22_key(tmp_pa
     assert dict(session) == EXPECTED_USAGE
     assert model_usage is not None
     assert dict(model_usage) == EXPECTED_USAGE
+
+
+def test_single_query_without_usage_persists_api_call_across_process_exit(tmp_path):
+    hermes_home = tmp_path / "hermes-home"
+    hermes_home.mkdir()
+
+    proc = _run_single_query_child(hermes_home, "None")
+    assert proc.returncode == 0, proc.stderr
+    assert "OK" in proc.stdout
+
+    reopened = SessionDB(db_path=hermes_home / "state.db")
+    try:
+        session = reopened._conn.execute(
+            "SELECT id, api_call_count, input_tokens, output_tokens, "
+            "cache_read_tokens, cache_write_tokens, reasoning_tokens "
+            "FROM sessions ORDER BY started_at DESC LIMIT 1"
+        ).fetchone()
+        assert session is not None
+        usage = reopened._conn.execute(
+            "SELECT api_call_count, input_tokens, output_tokens, "
+            "cache_read_tokens, cache_write_tokens, reasoning_tokens "
+            "FROM session_model_usage WHERE session_id = ?",
+            (session["id"],),
+        ).fetchone()
+    finally:
+        reopened.close()
+
+    assert tuple(session)[1:] == (1, 0, 0, 0, 0, 0)
+    assert usage is not None
+    assert tuple(usage) == (1, 0, 0, 0, 0, 0)

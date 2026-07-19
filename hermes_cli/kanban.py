@@ -338,6 +338,11 @@ def build_parser(parent_subparsers: argparse._SubParsersAction) -> argparse.Argu
                                "(repeatable). The kanban lifecycle is already "
                                "injected automatically. Example: "
                                "--skill translation --skill github-code-review")
+    p_create.add_argument("--model", default=None,
+                          help="Model override for the worker. When set, the "
+                               "dispatcher passes -m <model> to the worker. "
+                               "Canonical form: provider/model, e.g. "
+                               "openrouter/anthropic/claude-sonnet-4.")
     p_create.add_argument("--max-retries", type=int, default=None,
                           metavar="N",
                           help="Per-task override for the consecutive-failure "
@@ -1393,6 +1398,7 @@ def _cmd_create(args: argparse.Namespace) -> int:
             max_runtime_seconds=max_runtime,
             skills=getattr(args, "skills", None) or None,
             max_retries=max_retries,
+            model_override=getattr(args, "model", None),
             goal_mode=bool(getattr(args, "goal_mode", False)),
             goal_max_turns=getattr(args, "goal_max_turns", None),
             initial_status=getattr(args, "initial_status", "running"),

@@ -2741,6 +2741,7 @@ def create_task(
     initial_status: str = "running",
     session_id: Optional[str] = None,
     board: Optional[str] = None,
+    model_override: Optional[str] = None,
     project_id: Optional[str] = None,
 ) -> str:
     """Create a new task and optionally link it under parent tasks.
@@ -2970,8 +2971,9 @@ def create_task(
                         created_by, created_at, workspace_kind, workspace_path,
                         branch_name, project_id, tenant, idempotency_key,
                         max_runtime_seconds,
-                        skills, max_retries, goal_mode, goal_max_turns, session_id
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        skills, max_retries, goal_mode, goal_max_turns, session_id,
+                        model_override
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """,
                     (
                         task_id,
@@ -2994,6 +2996,7 @@ def create_task(
                         1 if goal_mode else 0,
                         int(goal_max_turns) if goal_max_turns is not None else None,
                         session_id,
+                        model_override,
                     ),
                 )
                 for pid in parents:
@@ -8640,8 +8643,6 @@ def _default_spawn(
         for sk in task.skills:
             if sk:
                 cmd.extend(["--skills", sk])
-    if task.model_override:
-        cmd.extend(["-m", task.model_override])
     worker_toolsets = _resolve_worker_cli_toolsets(env.get("HERMES_HOME"))
     if worker_toolsets:
         cmd.extend(["--toolsets", ",".join(worker_toolsets)])
@@ -8649,6 +8650,13 @@ def _default_spawn(
         "chat",
         "-q", prompt,
     ])
+    if task.model_override:
+        # -m/--model AFTER the chat subcommand so the chat subparser does
+        # NOT overwrite it with its own default (None). On Python argparse
+        # the subparser's default for a redefined flag wins over the
+        # top-level value, making model_override silently disappear.
+        # See #67459.
+        cmd.extend(["-m", task.model_override])
     if task.goal_mode:
         # Goal-mode workers must take the fully-quiet single-query path:
         # the kanban goal-loop hook (_run_kanban_goal_loop_q) only runs in

@@ -595,6 +595,18 @@ _TRUSTED_OWNER_SUPPORT_WHEELS = (
         48_172,
         "b727414169a36b7d524c1c3e31839a521725078d7b2ff038656844266160a992",
     ),
+    (
+        "packaging",
+        "26.0",
+        "packaging-26.0-py3-none-any.whl",
+        (
+            "https://files.pythonhosted.org/packages/b7/b9/"
+            "c538f279a4e237a006a2c98387d081e9eb060d203d8ed34467cc0f0b9b53/"
+            "packaging-26.0-py3-none-any.whl"
+        ),
+        74_366,
+        "b36f1fef9334a5588b4166f8bcd26a14e521f2b55e6b9de3aaa80d3ff7a37529",
+    ),
 )
 _TRUSTED_OWNER_SUPPORT_SOURCE_MODULES = (
     "gateway",
@@ -608,6 +620,7 @@ _TRUSTED_OWNER_SUPPORT_SITE_MODULES = (
     "cffi",
     "pycparser",
     "_cffi_backend",
+    "packaging",
 )
 _TRUSTED_OWNER_SUPPORT_MANAGED_MODULES = (
     *_TRUSTED_OWNER_SUPPORT_SOURCE_MODULES,
@@ -6642,6 +6655,7 @@ def _capture_owner_support_publication_tree(
         os.path.join(site_root, "yaml", "__init__.py"),
         os.path.join(site_root, "cffi", "__init__.py"),
         os.path.join(site_root, "pycparser", "__init__.py"),
+        os.path.join(site_root, "packaging", "__init__.py"),
     )
     if any(not os.path.isfile(path) for path in required):
         raise OwnerLauncherError("trusted_owner_support_invalid")

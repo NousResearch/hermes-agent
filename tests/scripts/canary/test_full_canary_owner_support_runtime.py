@@ -22,7 +22,7 @@ from scripts.canary import owner_gate_owner_reauth as owner_reauth
 
 RELEASE_SHA = "a" * 40
 SOURCE_TREE_OID = "b" * 40
-SOURCE_ARCHIVE = b"release-bound-gateway-and-scripts"
+SOURCE_ARCHIVE = b"release-bound-owner-support-source"
 REPOSITORY_ROOT = Path(launcher.__file__).parents[2]
 
 
@@ -84,7 +84,7 @@ def _support_tree(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     source = root / launcher._TRUSTED_OWNER_SUPPORT_SOURCE_RELATIVE
     site = root / launcher._TRUSTED_OWNER_SUPPORT_SITE_RELATIVE
 
-    for package in ("gateway", "scripts"):
+    for package in launcher._TRUSTED_OWNER_SUPPORT_SOURCE_MODULES:
         _write(source / package / "__init__.py", b"# release source\n")
     for package in ("cryptography", "yaml", "cffi", "pycparser"):
         _write(site / package / "__init__.py", b"# pinned wheel\n")
@@ -117,7 +117,7 @@ def _real_import_support_tree(
             if name == "__pycache__" or name.endswith((".pyc", ".pyo", ".pth"))
         }
 
-    for package in ("gateway", "scripts"):
+    for package in launcher._TRUSTED_OWNER_SUPPORT_SOURCE_MODULES:
         shutil.copytree(
             REPOSITORY_ROOT / package,
             source / package,
@@ -248,6 +248,8 @@ def test_owner_support_constants_pin_exact_release_inputs() -> None:
     assert launcher._TRUSTED_OWNER_SUPPORT_MANAGED_MODULES == (
         "gateway",
         "scripts",
+        "ops",
+        "tools",
         "cryptography",
         "yaml",
         "cffi",
@@ -580,6 +582,7 @@ namespace["activate_trusted_owner_support"](
 
 from scripts.canary import full_canary_owner_launcher as sealed_launcher
 from scripts.canary import owner_gate_v1_credential_migration as migration
+from scripts.canary import production_cutover_owner_launcher as cutover
 
 sealed_launcher._canonical_owner_home = lambda: {str(tmp_path)!r}
 runtime = object.__new__(sealed_launcher.TrustedGcloudExecutable)
@@ -592,6 +595,26 @@ runtime._owner_support_fingerprint = {tree!r}
 runtime._owner_support_manifest = {manifest!r}
 runtime.trusted_command_prefix = lambda: (sys.executable,)
 
+class FakeConfiguration:
+    pass
+
+class FakeIdentity:
+    def __init__(self, configuration):
+        self.gcloud_configuration = configuration
+
+    def account_for_read_only_preflight(self):
+        return "owner@example.com"
+
+configuration = FakeConfiguration()
+identity = FakeIdentity(configuration)
+sealed_launcher.require_trusted_owner_runtime = lambda revision: runtime
+sealed_launcher.PinnedGcloudConfiguration = lambda: configuration
+sealed_launcher.GcloudOwnerAccessToken = lambda **kwargs: identity
+cutover.PinnedProductionGoogleComputeKnownHosts = object
+transport = migration.V1CredentialMigrationTransport(
+    revision={RELEASE_SHA!r},
+)
+
 raw, digest = migration._collector_source(
     {RELEASE_SHA!r},
     trusted_runtime=runtime,
@@ -602,6 +625,7 @@ print(json.dumps({{
     "expected_digest": hashlib.sha256(expected).hexdigest(),
     "raw_matches": raw == expected,
     "origin": migration.__file__,
+    "transport_module": type(transport._transport).__module__,
 }}, sort_keys=True, separators=(",", ":")))
 """
     completed = subprocess.run(
@@ -637,6 +661,9 @@ print(json.dumps({{
         "expected_digest": hashlib.sha256(collector.read_bytes()).hexdigest(),
         "origin": str(collector),
         "raw_matches": True,
+        "transport_module": (
+            "scripts.canary.production_cutover_owner_launcher"
+        ),
     }
     assert not list(root.rglob("*.pyc"))
     assert not list(root.rglob("__pycache__"))
@@ -742,7 +769,12 @@ def _synthetic_publication_inputs(
 
     source_buffer = io.BytesIO()
     with tarfile.open(fileobj=source_buffer, mode="w") as archive:
-        for name in ("gateway/__init__.py", "scripts/__init__.py"):
+        for name in (
+            "gateway/__init__.py",
+            "scripts/__init__.py",
+            "ops/__init__.py",
+            "tools/__init__.py",
+        ):
             payload = b"# release source\n"
             member = tarfile.TarInfo(name)
             member.size = len(payload)

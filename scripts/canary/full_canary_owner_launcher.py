@@ -596,14 +596,22 @@ _TRUSTED_OWNER_SUPPORT_WHEELS = (
         "b727414169a36b7d524c1c3e31839a521725078d7b2ff038656844266160a992",
     ),
 )
-_TRUSTED_OWNER_SUPPORT_MANAGED_MODULES = (
+_TRUSTED_OWNER_SUPPORT_SOURCE_MODULES = (
     "gateway",
     "scripts",
+    "ops",
+    "tools",
+)
+_TRUSTED_OWNER_SUPPORT_SITE_MODULES = (
     "cryptography",
     "yaml",
     "cffi",
     "pycparser",
     "_cffi_backend",
+)
+_TRUSTED_OWNER_SUPPORT_MANAGED_MODULES = (
+    *_TRUSTED_OWNER_SUPPORT_SOURCE_MODULES,
+    *_TRUSTED_OWNER_SUPPORT_SITE_MODULES,
 )
 _TRUSTED_OWNER_SUPPORT_PREFLIGHT_MODULES = (
     "gateway.canonical_writer_schema_reconciliation_bootstrap",
@@ -6403,7 +6411,7 @@ def _owner_support_manifest_value(
         "release_sha": release_sha,
         "source_tree_oid": source_tree_oid,
         "source_archive_format": "git-archive-tar",
-        "source_archive_paths": ["gateway", "scripts"],
+        "source_archive_paths": list(_TRUSTED_OWNER_SUPPORT_SOURCE_MODULES),
         "source_archive_bytes": source_archive_bytes,
         "source_archive_sha256": source_archive_sha256,
         "wheels": _owner_support_wheel_receipt_values(),
@@ -6623,11 +6631,13 @@ def _capture_owner_support_publication_tree(
         "owner-support.json",
         _TRUSTED_OWNER_SUPPORT_SOURCE_RELATIVE,
         _TRUSTED_OWNER_SUPPORT_SITE_RELATIVE,
-    } or source_children != {"gateway", "scripts"}:
+    } or source_children != set(_TRUSTED_OWNER_SUPPORT_SOURCE_MODULES):
         raise OwnerLauncherError("trusted_owner_support_invalid")
     required = (
-        os.path.join(source_root, "gateway", "__init__.py"),
-        os.path.join(source_root, "scripts", "__init__.py"),
+        *(
+            os.path.join(source_root, package, "__init__.py")
+            for package in _TRUSTED_OWNER_SUPPORT_SOURCE_MODULES
+        ),
         os.path.join(site_root, "cryptography", "__init__.py"),
         os.path.join(site_root, "yaml", "__init__.py"),
         os.path.join(site_root, "cffi", "__init__.py"),
@@ -6665,8 +6675,7 @@ def _create_owner_support_source_archive(
                 "--format=tar",
                 release_sha,
                 "--",
-                "gateway",
-                "scripts",
+                *_TRUSTED_OWNER_SUPPORT_SOURCE_MODULES,
             ),
             stdin=subprocess.DEVNULL,
             stdout=descriptor,
@@ -6756,7 +6765,7 @@ def _safe_extract_owner_support_source_archive(
                 _owner_support_name_forbidden(name)
                 or not pure.parts
                 or pure.as_posix() != name
-                or pure.parts[0] not in {"gateway", "scripts"}
+                or pure.parts[0] not in _TRUSTED_OWNER_SUPPORT_SOURCE_MODULES
                 or name in seen
                 or "\\" in name
             ):
@@ -7874,9 +7883,9 @@ def _trusted_owner_support_module_root(
     site_root: str,
 ) -> str | None:
     top_level = module_name.split(".", 1)[0]
-    if top_level in _TRUSTED_OWNER_SUPPORT_MANAGED_MODULES[:2]:
+    if top_level in _TRUSTED_OWNER_SUPPORT_SOURCE_MODULES:
         return source_root
-    if top_level in _TRUSTED_OWNER_SUPPORT_MANAGED_MODULES[2:]:
+    if top_level in _TRUSTED_OWNER_SUPPORT_SITE_MODULES:
         return site_root
     return None
 

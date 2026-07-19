@@ -658,8 +658,9 @@ def strip_think_blocks(agent, content: str) -> str:
          `` <think>`` in prose aren't over-stripped.
       3. Stray orphan open/close tags that slip through.
       4. Tag variants: `` <think>``, ``<thinking>``, ``<reasoning>``,
-         ``<REASONING_SCRATCHPAD>``, ``<thought>`` (Gemma 4), all
-         case-insensitive.
+         ``<REASONING_SCRATCHPAD>``, ``<thought>``, and the asymmetric
+         Gemma 4 channel pair ``<|channel>thought`` … ``<channel|>``,
+         all case-insensitive.
 
     Additionally strips standalone tool-call XML blocks that some open
     models (notably Gemma variants on OpenRouter) emit inside assistant
@@ -718,6 +719,11 @@ def strip_think_blocks(agent, content: str) -> str:
     content = re.sub(r'<reasoning>.*?</reasoning>', '', content, flags=re.DOTALL | re.IGNORECASE)
     content = re.sub(r'<REASONING_SCRATCHPAD>.*?</REASONING_SCRATCHPAD>', '', content, flags=re.DOTALL | re.IGNORECASE)
     content = re.sub(r'<thought>.*?</thought>', '', content, flags=re.DOTALL | re.IGNORECASE)
+    # Gemma 4 channel-thought pair (<|channel>thought … <channel|>).
+    # Asymmetric open/close, so it gets its own pattern. Also matches the
+    # empty block Gemma emits when thinking is disabled
+    # (<|channel>thought\n<channel|>).
+    content = re.sub(r'<\|channel>thought.*?<channel\|>', '', content, flags=re.DOTALL | re.IGNORECASE)
     # 1b. Tool-call XML blocks (openclaw/openclaw#67318). Handle the
     #     generic tag names first — they have no attribute gating since
     #     a literal <tool_call> in prose is already vanishingly rare.
@@ -752,9 +758,24 @@ def strip_think_blocks(agent, content: str) -> str:
         content,
         flags=re.DOTALL | re.IGNORECASE,
     )
+    # 2b. Unterminated Gemma 4 channel-thought block at a boundary —
+    #     e.g. the stream was cut before <channel|> arrived.
+    content = re.sub(
+        r'(?:^|\n)[ \t]*<\|channel>thought.*$',
+        '',
+        content,
+        flags=re.DOTALL | re.IGNORECASE,
+    )
     # 3. Stray orphan open/close tags that slipped through.
     content = re.sub(
         r'</?(?:think|thinking|reasoning|thought|REASONING_SCRATCHPAD)>\s*',
+        '',
+        content,
+        flags=re.IGNORECASE,
+    )
+    # 3a. Stray Gemma 4 channel tags (either half of the pair).
+    content = re.sub(
+        r'(?:<\|channel>thought|<channel\|>)\s*',
         '',
         content,
         flags=re.IGNORECASE,
@@ -1499,6 +1520,12 @@ def extract_reasoning(agent, assistant_message) -> Optional[str]:
             r"<thought>(.*?)</thought>",
             r"<reasoning>(.*?)</reasoning>",
             r"<REASONING_SCRATCHPAD>(.*?)</REASONING_SCRATCHPAD>",
+            # Gemma 4 channel-thought pair: <|channel>thought\n…<channel|>
+            # (asymmetric — see the Gemma 4 model card, "Thinking Mode
+            # Configuration"). Capturing it here is what lets GUIs fold
+            # Gemma's inline reasoning the same way Qwen's <think> blocks
+            # are folded.
+            r"<\|channel>thought(.*?)<channel\|>",
         )
         for pattern in inline_patterns:
             flags = re.DOTALL | re.IGNORECASE

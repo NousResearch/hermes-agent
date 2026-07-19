@@ -4520,7 +4520,9 @@ def run_conversation(
                 _think_text = assistant_message.content.strip()
                 # Strip reasoning XML tags that shouldn't leak to parent display
                 _think_text = re.sub(
-                    r'</?(?:REASONING_SCRATCHPAD|think|reasoning)>', '', _think_text
+                    r'</?(?:REASONING_SCRATCHPAD|think|reasoning)>'
+                    r'|<\|channel>thought|<channel\|>',
+                    '', _think_text
                 ).strip()
                 # For subagents: relay first line to parent display (existing behaviour).
                 # For all agents with a structured callback: emit reasoning.available event.

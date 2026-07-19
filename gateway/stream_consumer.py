@@ -102,13 +102,18 @@ class GatewayStreamConsumer:
     # Reasoning/thinking tags that models emit inline in content.
     # Must stay in sync with cli.py _OPEN_TAGS/_CLOSE_TAGS and
     # run_agent.py _strip_think_blocks() tag variants.
+    # The final entry is the asymmetric Gemma 4 channel-thought pair
+    # (<|channel>thought … <channel|>); its close tag does NOT start
+    # with "</", so orphan-close matching below anchors on "<".
     _OPEN_THINK_TAGS = (
         "<REASONING_SCRATCHPAD>", "<think>", "<reasoning>",
         "<THINKING>", "<thinking>", "<thought>",
+        "<|channel>thought",
     )
     _CLOSE_THINK_TAGS = (
         "</REASONING_SCRATCHPAD>", "</think>", "</reasoning>",
         "</THINKING>", "</thinking>", "</thought>",
+        "<channel|>",
     )
 
     # Class-wide monotonic counter for native-streaming draft ids.  Telegram
@@ -504,14 +509,14 @@ class GatewayStreamConsumer:
         An orphan close tag is always noise — stripped along with any
         trailing whitespace so surrounding prose flows naturally.
         """
-        if "</" not in text:
+        if "<" not in text:
             return text
         text_lower = text.lower()
         out: list[str] = []
         i = 0
         while i < len(text):
             matched = False
-            if text_lower[i:i + 2] == "</":
+            if text_lower[i] == "<":
                 for tag in cls._CLOSE_THINK_TAGS:
                     tag_lower = tag.lower()
                     tag_len = len(tag_lower)

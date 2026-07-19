@@ -7538,12 +7538,23 @@ def extract_content_or_reasoning(response) -> str:
     content = (msg.content or "").strip()
 
     if content:
-        # Strip inline think/reasoning blocks (mirrors _strip_think_blocks)
+        # Strip inline think/reasoning blocks (mirrors _strip_think_blocks).
+        # Two passes: symmetric <tag>...</tag> variants, then the
+        # asymmetric Gemma 4 channel-thought pair
+        # (<|channel>thought…<channel|> — see the Gemma 4 model card,
+        # "Thinking Mode Configuration"). The close tag doesn't start
+        # with "</" so it can't share the symmetric pattern, and actual
+        # model output glues the open tag straight to the reasoning
+        # text with no separator, so no \b word boundary is used.
         cleaned = re.sub(
             r"<(?:think|thinking|reasoning|thought|REASONING_SCRATCHPAD)>"
             r".*?"
             r"</(?:think|thinking|reasoning|thought|REASONING_SCRATCHPAD)>",
             "", content, flags=re.DOTALL | re.IGNORECASE,
+        )
+        cleaned = re.sub(
+            r"<\|channel>thought.*?<channel\|>",
+            "", cleaned, flags=re.DOTALL | re.IGNORECASE,
         ).strip()
         if cleaned:
             return cleaned

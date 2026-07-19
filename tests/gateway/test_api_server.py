@@ -478,6 +478,41 @@ class TestAdapterInit:
         assert isinstance(agent, FakeAgent)
         assert captured["model"] == "primary/model"
 
+    def test_create_agent_forwards_interim_assistant_callback(self, monkeypatch):
+        """Codex ``phase="commentary"`` reaches streaming clients only if the
+        interim callback is wired through to AIAgent. Refs #67580."""
+        captured = {}
+
+        class FakeAgent:
+            def __init__(self, **kwargs):
+                captured.update(kwargs)
+
+        monkeypatch.setattr("run_agent.AIAgent", FakeAgent)
+        monkeypatch.setattr(
+            "gateway.run._resolve_runtime_agent_kwargs",
+            lambda: {"provider": "openai-codex", "api_mode": "codex_responses"},
+        )
+        monkeypatch.setattr("gateway.run._resolve_gateway_model", lambda: "gpt-5.5")
+        monkeypatch.setattr("gateway.run._load_gateway_config", lambda: {})
+        monkeypatch.setattr(
+            "gateway.run.GatewayRunner._load_reasoning_config",
+            staticmethod(lambda: {}),
+        )
+        monkeypatch.setattr("gateway.run.GatewayRunner._load_fallback_model", staticmethod(lambda: None))
+        monkeypatch.setattr("gateway.run._current_max_iterations", lambda: 90)
+        monkeypatch.setattr("hermes_cli.tools_config._get_platform_tools", lambda *_: set())
+
+        adapter = APIServerAdapter(PlatformConfig(enabled=True))
+        monkeypatch.setattr(adapter, "_ensure_session_db", lambda: None)
+
+        def _cb(text, *, already_streamed=False):
+            pass
+
+        agent = adapter._create_agent(session_id="api-session", interim_assistant_callback=_cb)
+
+        assert isinstance(agent, FakeAgent)
+        assert captured["interim_assistant_callback"] is _cb
+
 
 # ---------------------------------------------------------------------------
 # Auth checking

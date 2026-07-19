@@ -341,6 +341,68 @@ async def test_session_chat_stream_emits_lifecycle_events_and_keepalive_safe_sha
 
 
 @pytest.mark.asyncio
+async def test_session_chat_stream_emits_codex_commentary_as_typed_event(adapter, session_db):
+    """Codex ``phase="commentary"`` preambles must reach streaming clients as a
+    distinct ``assistant.commentary`` event — never concatenated into the final
+    answer — and an already-streamed interim must not be re-emitted. Refs #67580.
+    """
+    import json as _json
+
+    session_id = session_db.create_session("commentary-session", "api_server")
+
+    captured_kwargs = {}
+
+    async def fake_run(**kwargs):
+        captured_kwargs.update(kwargs)
+        interim = kwargs["interim_assistant_callback"]
+        assert interim is not None
+        interim("Let me check the repo first.")
+        # An interim already delivered through the delta channel must be
+        # dropped here so clients don't render it twice.
+        interim("streamed duplicate", already_streamed=True)
+        kwargs["stream_delta_callback"]("Done.")
+        return {"final_response": "Done.", "session_id": session_id}, {"total_tokens": 1}
+
+    app = _create_session_app(adapter)
+    with patch.object(adapter, "_run_agent", side_effect=fake_run):
+        async with TestClient(TestServer(app)) as cli:
+            resp = await cli.post(
+                f"/api/sessions/{session_id}/chat/stream",
+                json={"message": "hi"},
+            )
+            assert resp.status == 200, await resp.text()
+            body = await resp.text()
+
+    # Commentary is wired through to the agent and surfaced as its own event.
+    assert captured_kwargs.get("interim_assistant_callback") is not None
+    assert "event: assistant.commentary" in body
+    commentary_payload = None
+    for block in body.split("\n\n"):
+        if "event: assistant.commentary" in block:
+            for line in block.splitlines():
+                if line.startswith("data: "):
+                    commentary_payload = _json.loads(line[len("data: "):])
+            break
+    assert commentary_payload is not None, body
+    assert commentary_payload["content"] == "Let me check the repo first."
+
+    # An already-streamed interim is not re-emitted.
+    assert "streamed duplicate" not in body
+
+    # Commentary must not be concatenated into the final answer.
+    completed_payload = None
+    for block in body.split("\n\n"):
+        if "event: assistant.completed" in block:
+            for line in block.splitlines():
+                if line.startswith("data: "):
+                    completed_payload = _json.loads(line[len("data: "):])
+            break
+    assert completed_payload is not None, body
+    assert completed_payload["content"] == "Done."
+    assert "Let me check the repo first." not in completed_payload["content"]
+
+
+@pytest.mark.asyncio
 async def test_session_chat_stream_run_completed_carries_turn_transcript(adapter, session_db):
     """run.completed must include the full interleaved turn transcript so a
     client that lost intermediate (pre-tool-call) assistant text from the live

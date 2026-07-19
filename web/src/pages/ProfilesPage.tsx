@@ -515,20 +515,60 @@ export default function ProfilesPage() {
 
   const handleToggleGateway = async (name: string, verb: "start" | "stop") => {
     setBusyGateways((prev) => ({ ...prev, [name]: true }));
+    const desiredState = verb === "start";
+    let cancelled = false;
+
     try {
       if (verb === "start") {
         await api.startGateway(name);
       } else {
         await api.stopGateway(name);
       }
-      showToast(`Gateway ${verb}ed for profile '${name}'`, "success");
-      // Give the backend a second to update status, then reload
-      setTimeout(load, 1500);
     } catch (e) {
       showToast(`Failed to ${verb} gateway for '${name}': ${e}`, "error");
-    } finally {
       setBusyGateways((prev) => ({ ...prev, [name]: false }));
+      return;
     }
+
+    // Poll profiles until the requested gateway state is confirmed, so the
+    // success toast reflects actual completion — not just successful spawning.
+    //
+    // NOTE: start/stop assume the gateway service is already installed
+    // (e.g. systemd unit on Linux, launchd plist on macOS). The dashboard
+    // does not provision the service — if the underlying OS-level service
+    // is missing, the backend action will spawn but the poll below will
+    // eventually time out and show an error.
+    const POLL_INTERVAL = 1500;
+    const POLL_TIMEOUT = 30000;
+    const deadline = Date.now() + POLL_TIMEOUT;
+
+    const poll = () => {
+      if (cancelled) return;
+      if (Date.now() > deadline) {
+        showToast(`Gateway ${verb} timed out for '${name}'`, "error");
+        setBusyGateways((prev) => ({ ...prev, [name]: false }));
+        return;
+      }
+
+      api
+        .getProfiles()
+        .then((res) => {
+          if (cancelled) return;
+          const profile = res.profiles.find((p) => p.name === name);
+          if (profile && profile.gateway_running === desiredState) {
+            setProfiles(res.profiles);
+            showToast(`Gateway ${verb}ed for profile '${name}'`, "success");
+            setBusyGateways((prev) => ({ ...prev, [name]: false }));
+          } else {
+            setTimeout(poll, POLL_INTERVAL);
+          }
+        })
+        .catch(() => {
+          if (!cancelled) setTimeout(poll, POLL_INTERVAL);
+        });
+    };
+
+    setTimeout(poll, POLL_INTERVAL);
   };
 
   // Closes whichever editor dialog is open (model / description / SOUL).

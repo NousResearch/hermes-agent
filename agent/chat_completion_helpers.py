@@ -30,6 +30,7 @@ from hermes_cli.timeouts import get_provider_request_timeout, get_provider_stale
 from hermes_constants import PARTIAL_STREAM_STUB_ID, FINISH_REASON_LENGTH
 from agent.error_classifier import FailoverReason
 from agent.errors import EmptyStreamError
+from agent.prompt_privacy import get_middleware, clear_middleware  # PII anonymization
 from agent.gemini_native_adapter import is_native_gemini_base_url
 from agent.model_metadata import is_local_endpoint
 from agent.message_content import flatten_message_text
@@ -2565,6 +2566,14 @@ def interruptible_streaming_api_call(agent, api_kwargs: dict, *, on_first_delta=
                     "Cloud reasoning stream — read timeout raised to %.0fs to "
                     "match stale-stream detector", _stream_read_timeout,
                 )
+        # Prompt Privacy: scrub PII from messages before they reach the
+        # model provider.  The middleware instance is saved so the caller
+        # (if non-streaming) can restore PII in the response.
+        _privacy_mw = get_middleware()
+        if _privacy_mw is not None:
+            api_kwargs["messages"] = _privacy_mw.scrub_messages(
+                api_kwargs["messages"]
+            )
         # Cap connect/pool at 60s even when provider timeout is higher.
         # connect/pool cover TCP handshake, not model inference.
         _conn_cap = min(_base_timeout, 60.0) if _provider_timeout_cfg is not None else 30.0

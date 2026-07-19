@@ -2144,7 +2144,15 @@ DEFAULT_CONFIG = {
 
     # Privacy settings
     "privacy": {
-        "redact_pii": False,  # When True, hash user IDs and strip phone numbers from LLM context
+        "redact_pii": False,  # When True, hash user IDs / strip phone numbers from LLM context
+        # Prompt anonymization — scrubs PII from prompts before they reach the
+        # model provider. Restores original values in the response. Different
+        # from redact_pii (which strips permanently); this is reversible.
+        "anonymize_prompts": False,  # opt-in — OFF by default
+        "scrub_emails": True,        # email addresses → [EMAIL_xxx]
+        "scrub_tokens": True,        # API keys / Bearer tokens → [TOKEN_xxx]
+        "scrub_ips": True,           # IPv4 addresses → [IP_xxx]
+        "scrub_phones": True,        # phone numbers → [PHONE_xxx]
     },
     
     # Text-to-speech configuration

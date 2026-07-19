@@ -651,6 +651,321 @@ _BUILTIN_SKINS: Dict[str, Dict[str, Any]] = {
 
 _active_skin: Optional[SkinConfig] = None
 _active_skin_name: str = "default"
+_resolved_auto_skin_name: Optional[str] = None
+
+
+# =============================================================================
+# Auto skin detection — adapts to terminal light/dark mode
+# =============================================================================
+
+# Preference-ordered pairs: (dark_skin, light_skin)
+# When "auto" is active, we walk this list and pick the first available pair
+# whose skin exists (built-in or user). This way custom skins can override.
+_SKIN_VARIANT_PAIRS: List[Tuple[str, str]] = [
+    ("ko-dark", "ko-light"),
+    ("slate", "daylight"),
+    ("default", "warm-lightmode"),
+    ("mono", "warm-lightmode"),
+    ("ares", "daylight"),
+    ("poseidon", "daylight"),
+    ("sisyphus", "warm-lightmode"),
+    ("charizard", "warm-lightmode"),
+]
+
+
+def _detect_terminal_is_light() -> bool:
+    """Detect whether the terminal is in light mode.
+
+    Priority chain:
+    1. HERMES_LIGHT / HERMES_TUI_LIGHT env vars (explicit: "1" = light, "0" = dark)
+    2. HERMES_TUI_THEME env var ("light" / "dark")
+    3. HERMES_TUI_BACKGROUND hex value (luminance > 128 = light)
+    4. COLORFGBG env var (xterm/Konsole convention: last value > 7 = light bg)
+    5. macOS system appearance (defaults read -g AppleInterfaceStyle)
+    6. OSC 11 query (ask terminal for bg color)
+    7. Default: dark
+    """
+    import os
+
+    # 1. Explicit env overrides
+    for var in ("HERMES_LIGHT", "HERMES_TUI_LIGHT"):
+        val = os.environ.get(var, "").strip().lower()
+        if val in ("1", "true", "yes", "light"):
+            return True
+        if val in ("0", "false", "no", "dark"):
+            return False
+
+    # 2. Theme name
+    theme = os.environ.get("HERMES_TUI_THEME", "").strip().lower()
+    if theme in ("light", "lightmode", "light-mode"):
+        return True
+    if theme in ("dark", "darkmode", "dark-mode"):
+        return False
+
+    # 3. Background hex luminance
+    bg_hex = os.environ.get("HERMES_TUI_BACKGROUND", "").strip().lstrip("#")
+    if len(bg_hex) == 6:
+        try:
+            r, g, b = int(bg_hex[0:2], 16), int(bg_hex[2:4], 16), int(bg_hex[4:6], 16)
+            # Perceived luminance (ITU-R BT.601)
+            luminance = (0.299 * r + 0.587 * g + 0.114 * b)
+            return luminance > 128
+        except (ValueError, IndexError):
+            pass
+
+    # 4. COLORFGBG (xterm convention)
+    colorfgbg = os.environ.get("COLORFGBG", "")
+    if ";" in colorfgbg:
+        parts = colorfgbg.split(";")
+        if len(parts) >= 2:
+            try:
+                bg_val = int(parts[-1])
+                if bg_val > 7:
+                    return True
+                return False
+            except ValueError:
+                pass
+        elif parts:
+            try:
+                bg_val = int(parts[0])
+                if bg_val > 7:
+                    return True
+            except ValueError:
+                pass
+
+    # 5. macOS system appearance
+    import platform
+    if platform.system() == "Darwin":
+        try:
+            import subprocess
+            result = subprocess.run(
+                ["defaults", "read", "-g", "AppleInterfaceStyle"],
+                capture_output=True, text=True, timeout=5,
+            )
+            # AppleInterfaceStyle exists and equals "Dark" when in dark mode
+            # When in light mode, the key doesn't exist (command fails)
+            return "dark" not in result.stdout.lower()
+        except Exception:
+            pass
+
+    # 6. OSC 11 query (non-blocking)
+    try:
+        import sys
+        import termios
+        import tty
+        import select
+        if sys.stdin.isatty():
+            fd = sys.stdin.fileno()
+            old = termios.tcgetattr(fd)
+            try:
+                tty.setraw(fd)
+                sys.stdout.write("\033]11;?\007")
+                sys.stdout.flush()
+                if select.select([sys.stdin], [], [], 0.3)[0]:
+                    response = ""
+                    while True:
+                        if not select.select([sys.stdin], [], [], 0.1)[0]:
+                            break
+                        ch = sys.stdin.read(1)
+                        response += ch
+                        if ch in ("\x07", "\x1b\\"):
+                            break
+                    # Parse "rgb:RRRR/GGGG/BBBB" from response
+                    if "rgb:" in response:
+                        rgb_part = response.split("rgb:")[1].split("\x07")[0].split("\x1b")[0]
+                        components = rgb_part.split("/")
+                        if len(components) == 3:
+                            # Scale 16-bit to 8-bit
+                            r = int(components[0][:2], 16) if len(components[0]) >= 2 else 0
+                            g = int(components[1][:2], 16) if len(components[1]) >= 2 else 0
+                            b = int(components[2][:2], 16) if len(components[2]) >= 2 else 0
+                            luminance = (0.299 * r + 0.587 * g + 0.114 * b)
+                            return luminance > 128
+            finally:
+                termios.tcsetattr(fd, termios.TCSADRAIN, old)
+    except Exception:
+        pass  # Not a real terminal, or a platform without termios (e.g. Windows)
+
+    # 7. Default: assume dark
+    return False
+
+
+def resolve_auto_skin() -> str:
+    """Resolve 'auto' to a concrete skin name based on terminal detection.
+
+    Walks _SKIN_VARIANT_PAIRS and returns the first available skin from the
+    appropriate column (dark or light). Falls back to 'default' if nothing matches.
+    """
+    global _resolved_auto_skin_name
+
+    is_light = _detect_terminal_is_light()
+    available_names = {s["name"] for s in list_skins()}
+
+    for dark_skin, light_skin in _SKIN_VARIANT_PAIRS:
+        preferred = light_skin if is_light else dark_skin
+        fallback = dark_skin if is_light else light_skin
+        if preferred in available_names:
+            _resolved_auto_skin_name = preferred
+            return preferred
+        if fallback in available_names:
+            _resolved_auto_skin_name = fallback
+            return fallback
+
+    # Nothing matched — use default
+    _resolved_auto_skin_name = "default"
+    return "default"
+
+
+def get_resolved_auto_skin() -> Optional[str]:
+    """Return the last resolved auto skin name, or None if auto was never resolved."""
+    return _resolved_auto_skin_name
+
+
+# =============================================================================
+# Appearance watcher — real-time light/dark mode switching
+# =============================================================================
+
+import threading
+import subprocess as _subprocess
+import platform as _platform
+
+_appearance_watcher_thread: Optional[threading.Thread] = None
+_appearance_watcher_stop_event = threading.Event()
+
+
+def _get_os_appearance() -> str:
+    """Detect the current OS appearance. Returns 'dark' or 'light'.
+
+    This is the authoritative source for the appearance watcher —
+    it checks the actual OS setting, not terminal background.
+    """
+    system = _platform.system()
+
+    if system == "Darwin":
+        try:
+            result = _subprocess.run(
+                ["defaults", "read", "-g", "AppleInterfaceStyle"],
+                capture_output=True, text=True, timeout=5,
+            )
+            return "dark" if "dark" in result.stdout.lower() else "light"
+        except Exception:
+            return "dark"
+
+    elif system == "Linux":
+        try:
+            result = _subprocess.run(
+                ["gsettings", "get", "org.gnome.desktop.interface", "color-scheme"],
+                capture_output=True, text=True, timeout=5,
+            )
+            output = result.stdout.strip().lower()
+            if "dark" in output:
+                return "dark"
+            return "light"
+        except Exception:
+            return "dark"
+
+    elif system == "Windows":
+        try:
+            result = _subprocess.run(
+                ["reg", "query",
+                 r"HKCU\Software\Microsoft\Windows\CurrentVersion\Themes\Personalize",
+                 "/v", "AppsUseLightTheme"],
+                capture_output=True, text=True, timeout=5,
+            )
+            for line in result.stdout.splitlines():
+                if "AppsUseLightTheme" in line:
+                    if "0x0" in line.lower():
+                        return "dark"
+                    return "light"
+            return "dark"
+        except Exception:
+            return "dark"
+
+    return "dark"
+
+
+def _clear_auto_skin_cache() -> None:
+    """Clear the cached auto skin resolution so resolve_auto_skin() re-resolves."""
+    global _resolved_auto_skin_name
+    _resolved_auto_skin_name = None
+
+
+def _appearance_watcher_loop(callback, poll_interval: float = 2.0) -> None:
+    """Background thread that polls OS appearance and fires callback on change.
+
+    The OS-appearance probe shells out (``defaults`` / ``gsettings`` /
+    registry), so the loop checks the active skin FIRST and skips the probe
+    entirely while the skin is not ``auto`` — non-auto sessions pay nothing
+    per tick beyond an in-process name lookup.
+    """
+    last_appearance: Optional[str] = None
+
+    while not _appearance_watcher_stop_event.is_set():
+        _appearance_watcher_stop_event.wait(poll_interval)
+        if _appearance_watcher_stop_event.is_set():
+            break
+
+        if get_active_skin_name() != "auto":
+            # Drop the baseline so a later switch back to "auto" re-syncs
+            # silently on its first tick; set_active_skin("auto") already
+            # resolves the then-current appearance, so no callback is owed
+            # for changes that happened while the watcher was dormant.
+            last_appearance = None
+            continue
+
+        current_appearance = _get_os_appearance()
+        if last_appearance is None:
+            last_appearance = current_appearance
+            continue
+
+        if current_appearance != last_appearance:
+            last_appearance = current_appearance
+            _clear_auto_skin_cache()
+            new_skin = resolve_auto_skin()
+            callback(new_skin)
+
+
+def start_appearance_watcher(callback, poll_interval: float = 2.0) -> None:
+    """Start the appearance watcher daemon thread.
+
+    The callback is called with the new skin name (e.g. 'ko-dark' or 'ko-light')
+    whenever the OS appearance changes AND the active skin is 'auto'.
+
+    Args:
+        callback: Function called with new_skin_name: str when appearance changes.
+        poll_interval: Seconds between polls (default 2.0).
+    """
+    global _appearance_watcher_thread
+
+    if _appearance_watcher_thread is not None and _appearance_watcher_thread.is_alive():
+        return  # already running
+
+    _appearance_watcher_stop_event.clear()
+    _appearance_watcher_thread = threading.Thread(
+        target=_appearance_watcher_loop,
+        args=(callback, poll_interval),
+        daemon=True,
+        name="hermes-appearance-watcher",
+    )
+    _appearance_watcher_thread.start()
+
+
+def stop_appearance_watcher() -> None:
+    """Stop the appearance watcher daemon thread."""
+    global _appearance_watcher_thread
+    _appearance_watcher_stop_event.set()
+    if _appearance_watcher_thread is not None:
+        _appearance_watcher_thread.join(timeout=5)
+        _appearance_watcher_thread = None
+
+
+def get_current_os_appearance() -> str:
+    """Get the current OS appearance. Returns 'dark' or 'light'.
+
+    This is a standalone helper for programmatic use — it checks the
+    actual OS setting (not terminal background color).
+    """
+    return _get_os_appearance()
 
 
 def _skins_dir() -> Path:
@@ -720,8 +1035,18 @@ def list_skins() -> List[Dict[str, str]]:
     """List all available skins (built-in + user-installed).
 
     Returns list of {"name": ..., "description": ..., "source": "builtin"|"user"}.
+    Includes ``"auto"`` as a virtual entry that shows the resolved skin name.
     """
     result = []
+
+    # Virtual "auto" entry — follows the terminal/OS light-dark appearance.
+    resolved = _resolved_auto_skin_name or "?"
+    result.append({
+        "name": "auto",
+        "description": f"Auto-detect terminal light/dark (currently: {resolved})",
+        "source": "builtin",
+    })
+
     for name, data in _BUILTIN_SKINS.items():
         result.append({
             "name": name,
@@ -748,7 +1073,14 @@ def list_skins() -> List[Dict[str, str]]:
 
 
 def load_skin(name: str) -> SkinConfig:
-    """Load a skin by name. Checks user skins first, then built-in."""
+    """Load a skin by name. Checks user skins first, then built-in.
+
+    When name is ``"auto"``, resolves to a concrete skin based on terminal
+    light/dark detection and caches the resolution.
+    """
+    if name == "auto":
+        name = resolve_auto_skin()
+
     # Check user skins directory
     skins_path = _skins_dir()
     user_file = skins_path / f"{name}.yaml"

@@ -354,6 +354,21 @@ def main():
         _log_exit("startup write failed (broken stdout pipe before first event)")
         sys.exit(0)
 
+    # Start the appearance watcher so an 'auto' skin follows OS light/dark changes
+    try:
+        from hermes_cli.skin_engine import start_appearance_watcher
+
+        def _on_appearance_change(new_skin_name: str) -> None:
+            write_json({
+                "jsonrpc": "2.0",
+                "method": "event",
+                "params": {"type": "skin.changed", "payload": resolve_skin()},
+            })
+
+        start_appearance_watcher(_on_appearance_change)
+    except Exception:
+        pass  # Appearance watcher is optional
+
     for raw in sys.stdin:
         line = raw.strip()
         if not line:

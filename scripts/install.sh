@@ -1916,7 +1916,60 @@ strip_snap_browser_override() {
     fi
 }
 
+# Point installer-driven Playwright downloads at browser.browsers_path so the
+# ~500MB of browsers lands where the runtime will later look for it.
+# tools/browser_tool.py reads the same key (_configured_browsers_path, consulted
+# by _chromium_search_roots), so an installer that ignores it downloads to
+# Playwright's default cache on the system drive while the runtime searches the
+# configured directory and finds nothing.
+#
+# Precedence matches the runtime exactly: an ambient PLAYWRIGHT_BROWSERS_PATH
+# always wins (the Docker image sets it, and an operator who exports it means
+# it); config.yaml is only the fallback. Every failure path is a silent no-op,
+# so a missing venv, missing config, or unparseable YAML leaves behaviour
+# byte-identical to before this function existed.
+export_configured_browsers_path() {
+    if [ -n "${PLAYWRIGHT_BROWSERS_PATH:-}" ]; then
+        return 0
+    fi
+    # ${VAR:-} throughout: run_browser_install_with_timeout is exercised by
+    # tests/test_install_sh_browser_install.py under `set -u` with neither
+    # variable defined, and a nounset abort there would take the whole
+    # installer down on a code path that is meant to be optional.
+    local py="${INSTALL_DIR:-}/venv/bin/python"
+    local config_file="${HERMES_HOME:-}/config.yaml"
+    if [ ! -x "$py" ] || [ ! -f "$config_file" ]; then
+        return 0
+    fi
+    local configured=""
+    configured="$("$py" - "$config_file" <<'PY' 2>/dev/null || true
+import os
+import sys
+
+try:
+    import yaml
+
+    with open(sys.argv[1], encoding="utf-8") as fh:
+        cfg = yaml.safe_load(fh) or {}
+except Exception:
+    raise SystemExit(0)
+
+browser = cfg.get("browser")
+if isinstance(browser, dict):
+    raw = str(browser.get("browsers_path") or "").strip()
+    if raw:
+        print(os.path.expanduser(raw))
+PY
+)"
+    if [ -n "$configured" ]; then
+        export PLAYWRIGHT_BROWSERS_PATH="$configured"
+        log_info "Browser cache directory (browser.browsers_path): $PLAYWRIGHT_BROWSERS_PATH"
+    fi
+    return 0
+}
+
 run_browser_install_with_timeout() {
+    export_configured_browsers_path
     run_with_timeout "$@"
 }
 
@@ -2523,6 +2576,9 @@ ensure_browser() {
 
     log_info "Installing Chromium via agent-browser install..."
     local ab_bin="$HERMES_HOME/node/bin/agent-browser"
+    # This download does NOT go through run_browser_install_with_timeout, so it
+    # needs the browsers-path export on its own.
+    export_configured_browsers_path
     if [ -x "$ab_bin" ]; then
         "$ab_bin" install 2>/dev/null || {
             log_warn "Chromium install failed. Browser tools may not work without a system browser."

@@ -290,3 +290,213 @@ def test_override_retry_skipped_on_unsupported_arch() -> None:
     assert len(r["runs"]) == 1, r["runs"]
     assert r["final_rc"] == 1
 
+
+
+# ---------------------------------------------------------------------------
+# browser.browsers_path -> PLAYWRIGHT_BROWSERS_PATH for installer downloads
+# ---------------------------------------------------------------------------
+#
+# The installer downloads Chromium/headless-shell (~500MB on Windows once the
+# headless shell and ffmpeg are counted) but used to ignore the config key that
+# tells the *runtime* where those browsers live. tools/browser_tool.py reads
+# browser.browsers_path via _configured_browsers_path(), consulted by
+# _chromium_search_roots(), so an installer that ignores it downloads to
+# Playwright's default cache on the system drive while the runtime searches the
+# configured directory and finds nothing.
+
+
+def _run_browsers_path_fn(
+    *,
+    config_yaml: str | None,
+    ambient: str | None = None,
+    with_python: bool = True,
+    nounset: bool = False,
+) -> dict:
+    """Source export_configured_browsers_path() from install.sh and run it.
+
+    Builds a throwaway INSTALL_DIR/HERMES_HOME pair. The fake
+    ``venv/bin/python`` is a shim that execs the interpreter running the tests,
+    which has PyYAML (a hard dependency, pyproject.toml). Returns the exported
+    value, if any, plus the function's exit status.
+    """
+    import os
+    import re
+    import shutil
+    import subprocess
+    import sys
+    import tempfile
+
+    src = INSTALL_SH.read_text()
+    m = re.search(
+        r"^export_configured_browsers_path\(\) \{.*?^\}", src, re.MULTILINE | re.DOTALL
+    )
+    assert m, "could not extract export_configured_browsers_path() from install.sh"
+
+    tmp = tempfile.mkdtemp()
+    try:
+        install_dir = os.path.join(tmp, "install")
+        hermes_home = os.path.join(tmp, "home")
+        os.makedirs(os.path.join(install_dir, "venv", "bin"))
+        os.makedirs(hermes_home)
+
+        if with_python:
+            shim = os.path.join(install_dir, "venv", "bin", "python")
+            with open(shim, "w", encoding="utf-8") as fh:
+                fh.write(f'#!/bin/sh\nexec "{sys.executable}" "$@"\n')
+            os.chmod(shim, 0o755)
+
+        if config_yaml is not None:
+            with open(os.path.join(hermes_home, "config.yaml"), "w", encoding="utf-8") as fh:
+                fh.write(config_yaml)
+
+        opts = "set -eu" if nounset else "set -e"
+        ambient_line = (
+            f"export PLAYWRIGHT_BROWSERS_PATH={ambient!r}"
+            if ambient is not None
+            else "unset PLAYWRIGHT_BROWSERS_PATH 2>/dev/null || true"
+        )
+        harness = f"""
+{opts}
+INSTALL_DIR={install_dir!r}
+HERMES_HOME={hermes_home!r}
+{ambient_line}
+log_info() {{ :; }}
+
+{m.group(0)}
+
+export_configured_browsers_path
+echo "RC=$?"
+echo "VALUE=${{PLAYWRIGHT_BROWSERS_PATH:-<unset>}}"
+"""
+        proc = subprocess.run(
+            ["bash", "-c", harness], capture_output=True, text=True, timeout=60
+        )
+        out = proc.stdout
+        value = ""
+        rc = ""
+        for line in out.splitlines():
+            if line.startswith("VALUE="):
+                value = line[len("VALUE=") :]
+            elif line.startswith("RC="):
+                rc = line[len("RC=") :]
+        return {
+            "value": value,
+            "rc": rc,
+            "exit": proc.returncode,
+            "stderr": proc.stderr,
+            "home": hermes_home,
+        }
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)
+
+
+def test_browsers_path_from_config_is_exported() -> None:
+    """A configured browser.browsers_path becomes PLAYWRIGHT_BROWSERS_PATH."""
+    r = _run_browsers_path_fn(config_yaml='browser:\n  browsers_path: "/mnt/big/ms-playwright"\n')
+    assert r["value"] == "/mnt/big/ms-playwright", r
+    assert r["exit"] == 0, r
+
+
+def test_browsers_path_expands_tilde() -> None:
+    """``~`` is expanded, matching tools/browser_tool.py:_configured_browsers_path."""
+    import os
+
+    r = _run_browsers_path_fn(config_yaml='browser:\n  browsers_path: "~/ms-playwright"\n')
+    assert r["value"] == os.path.expanduser("~/ms-playwright"), r
+
+
+def test_windows_drive_path_survives_verbatim() -> None:
+    """A drive-letter path must not be mangled -- it is the headline use case."""
+    r = _run_browsers_path_fn(config_yaml='browser:\n  browsers_path: "D:/ms-playwright"\n')
+    assert r["value"] == "D:/ms-playwright", r
+
+
+def test_ambient_env_var_wins_over_config() -> None:
+    """An existing PLAYWRIGHT_BROWSERS_PATH is never relocated.
+
+    The Docker image sets this, and an operator who exports it means it. Config
+    is the fallback only, matching _browsers_path_env_overrides() precedence.
+    """
+    r = _run_browsers_path_fn(
+        config_yaml='browser:\n  browsers_path: "/from/config"\n',
+        ambient="/from/env",
+    )
+    assert r["value"] == "/from/env", r
+
+
+def test_missing_config_is_a_silent_no_op() -> None:
+    r = _run_browsers_path_fn(config_yaml=None)
+    assert r["value"] == "<unset>", r
+    assert r["exit"] == 0, r
+
+
+def test_config_without_browser_key_is_a_silent_no_op() -> None:
+    r = _run_browsers_path_fn(config_yaml="model:\n  default: x\n")
+    assert r["value"] == "<unset>", r
+    assert r["exit"] == 0, r
+
+
+def test_unparseable_config_does_not_abort_the_installer() -> None:
+    """install.sh runs under `set -e`; a broken config must not kill the install."""
+    r = _run_browsers_path_fn(config_yaml="browser: [unclosed\n  : :\n")
+    assert r["value"] == "<unset>", r
+    assert r["exit"] == 0, r
+
+
+def test_missing_venv_python_does_not_abort_the_installer() -> None:
+    r = _run_browsers_path_fn(
+        config_yaml='browser:\n  browsers_path: "/mnt/big"\n', with_python=False
+    )
+    assert r["value"] == "<unset>", r
+    assert r["exit"] == 0, r
+
+
+def test_survives_nounset_with_undefined_install_dir() -> None:
+    """run_browser_install_with_timeout is driven under `set -u` by the harness
+    above with neither INSTALL_DIR nor HERMES_HOME defined. A nounset abort
+    there would take down an optional code path."""
+    import re
+    import subprocess
+
+    src = INSTALL_SH.read_text()
+    m = re.search(
+        r"^export_configured_browsers_path\(\) \{.*?^\}", src, re.MULTILINE | re.DOTALL
+    )
+    assert m
+    harness = f"""
+set -eu
+unset INSTALL_DIR HERMES_HOME PLAYWRIGHT_BROWSERS_PATH 2>/dev/null || true
+log_info() {{ :; }}
+
+{m.group(0)}
+
+export_configured_browsers_path
+echo OK
+"""
+    proc = subprocess.run(["bash", "-c", harness], capture_output=True, text=True, timeout=60)
+    assert proc.returncode == 0, proc.stderr
+    assert "OK" in proc.stdout
+
+
+def test_every_installer_download_site_sets_the_browsers_path() -> None:
+    """Both download paths must export it: the shared timeout wrapper (which all
+    six `run_playwright_install` call sites funnel through) and the standalone
+    `agent-browser install` call, which does not use that wrapper."""
+    import re
+
+    text = INSTALL_SH.read_text()
+
+    wrapper = re.search(
+        r"^run_browser_install_with_timeout\(\) \{.*?^\}", text, re.MULTILINE | re.DOTALL
+    )
+    assert wrapper, "run_browser_install_with_timeout() not found"
+    assert "export_configured_browsers_path" in wrapper.group(0), (
+        "the shared browser-install wrapper must set PLAYWRIGHT_BROWSERS_PATH; "
+        "every `run_playwright_install` call site depends on it"
+    )
+
+    ab_block = text[text.index("Installing Chromium via agent-browser install") :][:400]
+    assert "export_configured_browsers_path" in ab_block, (
+        "`agent-browser install` bypasses run_browser_install_with_timeout, so it "
+        "needs the export on its own"
+    )

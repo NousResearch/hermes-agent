@@ -3,6 +3,29 @@ import { Codicon } from '@/components/ui/codicon'
 import { Skeleton } from '@/components/ui/skeleton'
 import { useI18n } from '@/i18n'
 import { cn } from '@/lib/utils'
+import { ALL_PROFILES, normalizeProfileKey } from '@/store/profile'
+
+interface SidebarSectionVisibility {
+  hasCronJobs: boolean
+  hasMessaging: boolean
+  hasProjects: boolean
+  hasSessions: boolean
+  loadingSessions: boolean
+}
+
+export function shouldShowSessionSections({
+  hasCronJobs,
+  hasMessaging,
+  hasProjects,
+  hasSessions,
+  loadingSessions
+}: SidebarSectionVisibility): boolean {
+  return loadingSessions || hasSessions || hasProjects || hasMessaging || hasCronJobs
+}
+
+export function shouldIncludeMessagingSession(profileScope: string, sessionProfile?: string): boolean {
+  return profileScope === ALL_PROFILES || normalizeProfileKey(sessionProfile) === profileScope
+}
 
 export function SidebarSessionSkeletons() {
   return (

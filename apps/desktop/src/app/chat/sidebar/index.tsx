@@ -129,7 +129,13 @@ import {
   StartWorkButton,
   useRepoWorktreeMap
 } from './projects'
-import { SidebarBlankState, SidebarPinnedEmptyState, SidebarSessionSkeletons } from './section-states'
+import {
+  shouldIncludeMessagingSession,
+  shouldShowSessionSections,
+  SidebarBlankState,
+  SidebarPinnedEmptyState,
+  SidebarSessionSkeletons
+} from './section-states'
 import { SidebarSessionsSection, VIRTUALIZE_THRESHOLD } from './sessions-section'
 import { CONTEXT_SPLIT_KIT, SplitSubmenu } from './split-submenu'
 
@@ -870,6 +876,10 @@ export function ChatSidebar({
     const bySource = new Map<string, SessionInfo[]>()
 
     for (const session of messagingSessions) {
+      if (!shouldIncludeMessagingSession(profileScope, session.profile)) {
+        continue
+      }
+
       const sourceId = normalizeSessionSource(session.source)
 
       if (!sourceId) {
@@ -899,7 +909,7 @@ export function ChatSidebar({
         }
       })
       .sort((a, b) => sessionTime(b.sessions[0]) - sessionTime(a.sessions[0]))
-  }, [messagingSessions, messagingPlatformTotals, messagingTruncated])
+  }, [messagingSessions, messagingPlatformTotals, messagingTruncated, profileScope])
 
   // ALL-profiles view: one collapsible group per profile, color on the header
   // (not on every row). Default profile floats to the top, the rest alpha.
@@ -1058,7 +1068,13 @@ export function ChatSidebar({
 
   const showSessionSkeletons = sessionsLoading && sortedSessions.length === 0
 
-  const showSessionSections = showSessionSkeletons || sortedSessions.length > 0 || projectModel.length > 0
+  const showSessionSections = shouldShowSessionSections({
+    hasCronJobs: cronJobs.length > 0,
+    hasMessaging: messagingGroups.length > 0,
+    hasProjects: projectModel.length > 0,
+    hasSessions: sortedSessions.length > 0,
+    loadingSessions: showSessionSkeletons
+  })
 
   // Each reorderable list reports its OWN new id order; persisting is a direct,
   // typed write — no id-prefix sniffing to figure out which level moved.

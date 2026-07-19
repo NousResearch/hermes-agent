@@ -121,6 +121,7 @@ def _hermes_version() -> str:
 DEFAULT_HOST = "127.0.0.1"
 DEFAULT_PORT = 8642
 MAX_STORED_RESPONSES = 100
+MAX_PREVIOUS_RESPONSE_ID_LENGTH = 128
 MAX_REQUEST_BYTES = 10_000_000  # 10 MB — accommodates long agent conversations with tool calls
 CHAT_COMPLETIONS_SSE_KEEPALIVE_SECONDS = 30.0
 MAX_NORMALIZED_TEXT_LENGTH = 65_536  # 64 KB cap for normalized content parts
@@ -3709,6 +3710,27 @@ class APIServerAdapter(BasePlatformAdapter):
 
         instructions = body.get("instructions")
         previous_response_id = body.get("previous_response_id")
+
+        # Basic hardening: ensure previous_response_id is a reasonable string.
+        if previous_response_id is not None:
+            if not isinstance(previous_response_id, str):
+                return web.json_response(
+                    _openai_error("Invalid 'previous_response_id' type"),
+                    status=400,
+                )
+            if not previous_response_id:
+                return web.json_response(
+                    _openai_error("Invalid 'previous_response_id' value"),
+                    status=400,
+                )
+            if len(previous_response_id) > MAX_PREVIOUS_RESPONSE_ID_LENGTH:
+                return web.json_response(
+                    _openai_error(
+                        "previous_response_id is too long.",
+                        code="previous_response_id_too_long",
+                    ),
+                    status=400,
+                )
         conversation = body.get("conversation")
         store = _coerce_request_bool(body.get("store"), default=True)
 
@@ -4702,6 +4724,27 @@ class APIServerAdapter(BasePlatformAdapter):
 
         instructions = body.get("instructions")
         previous_response_id = body.get("previous_response_id")
+
+        # Basic hardening: ensure previous_response_id is a reasonable string.
+        if previous_response_id is not None:
+            if not isinstance(previous_response_id, str):
+                return web.json_response(
+                    _openai_error("Invalid 'previous_response_id' type"),
+                    status=400,
+                )
+            if not previous_response_id:
+                return web.json_response(
+                    _openai_error("Invalid 'previous_response_id' value"),
+                    status=400,
+                )
+            if len(previous_response_id) > MAX_PREVIOUS_RESPONSE_ID_LENGTH:
+                return web.json_response(
+                    _openai_error(
+                        "previous_response_id is too long.",
+                        code="previous_response_id_too_long",
+                    ),
+                    status=400,
+                )
 
         # Accept explicit conversation_history from the request body.
         # Precedence: explicit conversation_history > previous_response_id.

@@ -18,6 +18,10 @@ import pytest
 
 from plugins.memory.honcho import oauth, oauth_flow
 
+# Opt-in: эти тесты поднимают собственный loopback OAuth-сервер внутри теста
+# и коннектятся к нему же - внешней сети нет (guard B8 это разрешает явно).
+pytestmark = pytest.mark.allow_network
+
 
 class _FakeAS(BaseHTTPRequestHandler):
     """Minimal OAuth 2.1 AS: /authorize 302s to the callback; /oauth/token mints."""

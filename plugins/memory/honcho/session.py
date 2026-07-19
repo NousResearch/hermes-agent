@@ -140,17 +140,16 @@ class HonchoSessionManager:
             config.dialectic_max_input_chars if config else 10000
         )
 
-        # Async write queue — started lazily on first enqueue
+        # Async write queue — the writer thread starts lazily on first enqueue
+        # (see _ensure_async_writer). Constructing a manager must not spawn
+        # background work or touch the network: unit tests build managers with
+        # mocked clients, and an eagerly-started writer raced ahead of the mock
+        # and wrote test messages to a live local Honcho.
         self._async_queue: queue.Queue | None = None
         self._async_thread: threading.Thread | None = None
+        self._async_thread_lock = threading.Lock()
         if write_frequency == "async":
             self._async_queue = queue.Queue()
-            self._async_thread = threading.Thread(
-                target=self._async_writer_loop,
-                name="honcho-async-writer",
-                daemon=True,
-            )
-            self._async_thread.start()
 
     @property
     def honcho(self) -> Honcho:
@@ -511,6 +510,7 @@ class HonchoSessionManager:
 
         if wf == "async":
             if self._async_queue is not None:
+                self._ensure_async_writer()
                 self._async_queue.put(session)
         elif wf == "turn":
             self._flush_session(session)
@@ -545,12 +545,26 @@ class HonchoSessionManager:
                 except queue.Empty:
                     break
 
+    def _ensure_async_writer(self) -> None:
+        """Start the async writer on first enqueue (idempotent, thread-safe)."""
+        if self._async_thread is not None and self._async_thread.is_alive():
+            return
+        with self._async_thread_lock:
+            if self._async_thread is None or not self._async_thread.is_alive():
+                self._async_thread = threading.Thread(
+                    target=self._async_writer_loop,
+                    name="honcho-async-writer",
+                    daemon=True,
+                )
+                self._async_thread.start()
+
     def shutdown(self) -> None:
         """Gracefully shut down the async writer thread."""
-        if self._async_queue is not None and self._async_thread is not None:
+        if self._async_queue is not None:
             self.flush_all()
-            self._async_queue.put(_ASYNC_SHUTDOWN)
-            self._async_thread.join(timeout=10)
+            if self._async_thread is not None and self._async_thread.is_alive():
+                self._async_queue.put(_ASYNC_SHUTDOWN)
+                self._async_thread.join(timeout=10)
 
     def delete(self, key: str) -> bool:
         """Delete a session from local cache."""

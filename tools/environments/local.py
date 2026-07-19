@@ -14,11 +14,53 @@ import time
 from pathlib import Path
 
 from tools.environments.base import BaseEnvironment, _pipe_stdin
-from hermes_cli._subprocess_compat import windows_hide_flags
+from hermes_cli._subprocess_compat import (
+    windows_detach_flags_without_breakaway,
+    windows_detach_popen_kwargs,
+    windows_hide_flags,
+)
 
 _IS_WINDOWS = platform.system() == "Windows"
 
 logger = logging.getLogger(__name__)
+
+
+def _process_in_job() -> bool:
+    """Return True if the current process belongs to a Windows job object.
+
+    Used to disambiguate a ``CREATE_BREAKAWAY_FROM_JOB`` refusal. That flag is
+    refused with ERROR_ACCESS_DENIED (winerror 5) only when a job object
+    exists that disallows breakaway; a process not in any job cannot receive
+    that refusal, so winerror 5 there is an unrelated access-denied condition.
+
+    Fails closed: returns False on non-Windows and on any query failure —
+    callers must never retry on an unknown membership state.
+    """
+    if not _IS_WINDOWS:
+        return False
+    try:
+        import ctypes
+        from ctypes import wintypes
+
+        kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+        kernel32.GetCurrentProcess.argtypes = []
+        kernel32.GetCurrentProcess.restype = wintypes.HANDLE
+        # Win32 BOOL is a 32-bit int (wintypes.BOOL) — NOT ctypes.c_bool,
+        # whose 1-byte buffer would be too small for IsProcessInJob's
+        # 4-byte PBOOL out-parameter write.
+        kernel32.IsProcessInJob.argtypes = [
+            wintypes.HANDLE,
+            wintypes.HANDLE,
+            ctypes.POINTER(wintypes.BOOL),
+        ]
+        kernel32.IsProcessInJob.restype = wintypes.BOOL
+        in_job = wintypes.BOOL(0)
+        ok = kernel32.IsProcessInJob(
+            kernel32.GetCurrentProcess(), None, ctypes.byref(in_job)
+        )
+        return bool(ok) and bool(in_job.value)
+    except Exception:
+        return False
 
 
 def _msys_to_windows_path(cwd: str) -> str:
@@ -1374,21 +1416,73 @@ class LocalEnvironment(BaseEnvironment):
 
         _popen_cwd = self.cwd
 
-        _popen_kwargs = {"creationflags": windows_hide_flags()} if _IS_WINDOWS else {}
+        # Platform-aware detach with a narrow breakaway-refusal fallback.
+        # On POSIX the helper supplies the same single ``start_new_session=True``
+        # this call site already used (os.setsid): the child is
+        # session-isolated — explicitly killable via its pgid during
+        # interrupt/timeout/shutdown, yet not torn down by an uncatchable
+        # parent death. On Windows it sets the full detach flag bundle
+        # (CREATE_NEW_PROCESS_GROUP | DETACHED_PROCESS | CREATE_NO_WINDOW |
+        # CREATE_BREAKAWAY_FROM_JOB) so a foreground child aligns with that
+        # same best-effort survival behavior where the parent's job object
+        # permits breakaway. DETACHED_PROCESS does not affect the explicit
+        # stdout/stderr/stdin redirections below — only inherited-console
+        # stdio, which this call site never uses.
+        _popen_kwargs = windows_detach_popen_kwargs()
 
-        proc = subprocess.Popen(
-            args,
-            text=True,
-            env=run_env,
-            encoding="utf-8",
-            errors="replace",
-            stdout=subprocess.PIPE,
-            stderr=subprocess.STDOUT,
-            stdin=subprocess.PIPE if stdin_data is not None else subprocess.DEVNULL,
-            start_new_session=True,
-            cwd=_popen_cwd,
-            **_popen_kwargs,
-        )
+        try:
+            proc = subprocess.Popen(
+                args,
+                text=True,
+                env=run_env,
+                encoding="utf-8",
+                errors="replace",
+                stdout=subprocess.PIPE,
+                stderr=subprocess.STDOUT,
+                stdin=subprocess.PIPE if stdin_data is not None else subprocess.DEVNULL,
+                cwd=_popen_cwd,
+                **_popen_kwargs,
+            )
+        except OSError as _spawn_err:
+            if not _IS_WINDOWS:
+                raise
+            # Narrow retry, only for an error consistent with a breakaway
+            # refusal: CREATE_BREAKAWAY_FROM_JOB is refused with
+            # ERROR_ACCESS_DENIED (winerror 5) when the parent belongs to a job
+            # that disallows breakaway. Two conditions must both hold before we
+            # retry, so an unrelated access-denied error is not mistaken for a
+            # breakaway refusal:
+            #   (a) exc.winerror == 5 — the breakaway-refusal error code;
+            #   (b) the current process is in a job object. Without (b) an
+            #       ERROR_ACCESS_DENIED cannot be a breakaway refusal (there is
+            #       no job to refuse from), so it is an unrelated access-denied
+            #       condition and must propagate rather than trigger a second
+            #       spawn with different creationflags.
+            # _process_in_job() fails closed (False on query failure), so an
+            # unknown membership state also propagates the original error.
+            # At most one retry; a successful Popen return is never respawned.
+            # Note: on modern nested-job Windows builds a forbidden breakaway
+            # can instead succeed silently with the child retained in the job
+            # — no error is raised, this fallback never runs, and the current
+            # (in-job) behavior simply continues for that configuration.
+            if getattr(_spawn_err, "winerror", None) == 5 and _process_in_job():
+                _popen_kwargs = {
+                    "creationflags": windows_detach_flags_without_breakaway()
+                }
+                proc = subprocess.Popen(
+                    args,
+                    text=True,
+                    env=run_env,
+                    encoding="utf-8",
+                    errors="replace",
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.STDOUT,
+                    stdin=subprocess.PIPE if stdin_data is not None else subprocess.DEVNULL,
+                    cwd=_popen_cwd,
+                    **_popen_kwargs,
+                )
+            else:
+                raise
         if not _IS_WINDOWS:
             try:
                 proc._hermes_pgid = os.getpgid(proc.pid)

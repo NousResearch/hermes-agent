@@ -117,6 +117,7 @@ import { ensureSpawnHelperExecutable } from './spawn-helper-perms'
 import { nativeOverlayWidth as computeNativeOverlayWidth, macTitleBarOverlayHeight } from './titlebar-overlay-width'
 import { resolveBehindCount, shouldCountCommits } from './update-count'
 import { readLiveUpdateMarker, writeUpdateMarker } from './update-marker'
+import { reapStaleBackendsForProfile } from './backend-stale-reap'
 import { runRebuildWithRetry } from './update-rebuild'
 import {
   buildRelaunchScript,
@@ -6761,6 +6762,17 @@ async function spawnPoolBackend(profile, entry) {
 
   rememberLog(`Starting Hermes backend for profile "${profile}" via ${backend.label}`)
 
+  // #67026: reap any stale hermes serve --profile <this profile> processes
+  // left over from a previous desktop session. The pool is in-memory and
+  // before-quit is fire-and-forget, so every restart orphans the previous
+  // round of backends; without this pre-spawn reap they'd accumulate.
+  const survivors = await reapStaleBackendsForProfile(profile)
+  if (survivors.length) {
+    rememberLog(
+      `Reaped ${survivors.length} stale backend PIDs for profile "${profile}" before spawn (survivors=${survivors.join(',')})`,
+    )
+  }
+
   const child = spawn(
     backend.command,
     backend.args,
@@ -7005,6 +7017,17 @@ async function startHermes() {
 
     await advanceBootProgress('backend.spawn', `Starting Hermes backend via ${backend.label}`, 84)
     rememberLog(`Starting Hermes backend via ${backend.label}`)
+
+    // #67026: reap any stale hermes serve --profile <this profile> processes
+    // left over from a previous desktop session. Without this the desktop
+    // accumulates orphan backends (in-memory pool + fire-and-forget quit).
+    const primaryProfile = activeProfile ?? 'default'
+    const primarySurvivors = await reapStaleBackendsForProfile(primaryProfile)
+    if (primarySurvivors.length) {
+      rememberLog(
+        `Reaped ${primarySurvivors.length} stale primary-backend PIDs for profile "${primaryProfile}" before spawn (survivors=${primarySurvivors.join(',')})`,
+      )
+    }
 
     const hermesProcess = spawn(
       backend.command,

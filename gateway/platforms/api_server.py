@@ -1987,6 +1987,7 @@ class APIServerAdapter(BasePlatformAdapter):
                 "run_events_sse": True,
                 "run_stop": True,
                 "run_approval_response": True,
+                "run_session_history": True,
                 "tool_progress_events": True,
                 "approval_events": True,
                 "session_resources": True,
@@ -4749,6 +4750,13 @@ class APIServerAdapter(BasePlatformAdapter):
 
         run_id = f"run_{uuid.uuid4().hex}"
         session_id = body.get("session_id") or stored_session_id or run_id
+        # External clients can address a persisted Hermes session without
+        # resending its transcript on every turn. An explicitly supplied
+        # conversation_history (including an empty array) remains authoritative;
+        # otherwise, session_id opts into the same SessionDB continuity used by
+        # the session chat endpoints.
+        if "conversation_history" not in body and not previous_response_id and body.get("session_id"):
+            conversation_history = self._conversation_history_for_session(session_id)
         # Approval queues gate host-side tool execution and must be isolated
         # per API run.  Client-provided session IDs and memory session keys are
         # conversation/memory scopes, not authorization namespaces: multiple

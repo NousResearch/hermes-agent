@@ -185,6 +185,79 @@ class TestStartRun:
         assert adapter._run_statuses == {}
 
     @pytest.mark.asyncio
+    async def test_session_id_loads_persisted_history_when_history_is_omitted(self, adapter):
+        persisted_history = [
+            {"role": "user", "content": "Earlier question"},
+            {"role": "assistant", "content": "Earlier answer"},
+        ]
+        app = _create_runs_app(adapter)
+        with patch.object(
+            adapter,
+            "_conversation_history_for_session",
+            return_value=persisted_history,
+        ) as load_history, patch.object(adapter, "_create_agent") as mock_create:
+            mock_agent = MagicMock()
+            mock_agent.run_conversation.return_value = {"final_response": "continued"}
+            mock_agent.session_prompt_tokens = 0
+            mock_agent.session_completion_tokens = 0
+            mock_agent.session_total_tokens = 0
+            mock_create.return_value = mock_agent
+
+            async with TestClient(TestServer(app)) as cli:
+                resp = await cli.post(
+                    "/v1/runs",
+                    json={"input": "Continue", "session_id": "existing-session"},
+                )
+                assert resp.status == 202
+                run_id = (await resp.json())["run_id"]
+
+                for _ in range(20):
+                    if adapter._run_statuses[run_id]["status"] == "completed":
+                        break
+                    await asyncio.sleep(0.05)
+
+        load_history.assert_called_once_with("existing-session")
+        mock_agent.run_conversation.assert_called_once_with(
+            user_message="Continue",
+            conversation_history=persisted_history,
+            task_id="existing-session",
+        )
+
+    @pytest.mark.asyncio
+    async def test_explicit_empty_history_does_not_load_session_history(self, adapter):
+        app = _create_runs_app(adapter)
+        with (
+            patch.object(adapter, "_conversation_history_for_session") as load_history,
+            patch.object(adapter, "_create_agent") as mock_create,
+        ):
+            mock_agent = MagicMock()
+            mock_agent.run_conversation.return_value = {"final_response": "fresh"}
+            mock_agent.session_prompt_tokens = 0
+            mock_agent.session_completion_tokens = 0
+            mock_agent.session_total_tokens = 0
+            mock_create.return_value = mock_agent
+
+            async with TestClient(TestServer(app)) as cli:
+                resp = await cli.post(
+                    "/v1/runs",
+                    json={
+                        "input": "Start fresh",
+                        "session_id": "existing-session",
+                        "conversation_history": [],
+                    },
+                )
+                assert resp.status == 202
+                run_id = (await resp.json())["run_id"]
+
+                for _ in range(20):
+                    if adapter._run_statuses[run_id]["status"] == "completed":
+                        break
+                    await asyncio.sleep(0.05)
+
+        load_history.assert_not_called()
+        assert mock_agent.run_conversation.call_args.kwargs["conversation_history"] == []
+
+    @pytest.mark.asyncio
     async def test_start_requires_auth(self, auth_adapter):
         app = _create_runs_app(auth_adapter)
         async with TestClient(TestServer(app)) as cli:

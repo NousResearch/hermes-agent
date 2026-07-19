@@ -835,11 +835,6 @@ def _validate_foundation_chain_files(
     )
 
     try:
-        if (
-            network_collector_public_key_path
-            == project_ancestry_collector_public_key_path
-        ):
-            raise ValueError
         reauth_raw = _read_chain_bytes(
             owner_reauthentication_receipt_path,
             maximum=owner_reauth.MAX_CAPTURE_BYTES,
@@ -865,6 +860,12 @@ def _validate_foundation_chain_files(
             maximum=32,
             code="owner_gate_trust_author_foundation_chain_invalid",
         )
+        # Foundation A intentionally has one network-observation authority.
+        # Project ancestry is another statement made by that same collector,
+        # not a second trust root.  Accept either one immutable path supplied
+        # for both roles or two immutable copies, but never two distinct keys.
+        if network_key_raw != ancestry_key_raw:
+            raise ValueError
         project_ancestry_raw = _read_chain_bytes(
             project_ancestry_evidence_path,
             maximum=project_ancestry.MAX_JSON_BYTES,

@@ -565,7 +565,7 @@ def test_real_foundation_chain_accepts_historical_success_after_f_freshness_expi
     ).parameters
 
 
-def test_real_foundation_chain_rejects_one_path_for_two_collector_authorities(
+def test_real_foundation_chain_accepts_one_path_for_foundation_collector(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -573,6 +573,30 @@ def test_real_foundation_chain_rejects_one_path_for_two_collector_authorities(
     paths["project_ancestry_collector_public_key_path"] = paths[
         "network_collector_public_key_path"
     ]
+    release_key = Ed25519PrivateKey.from_private_bytes(
+        (author.KEY_DIRECTORY / author.PRIVATE_KEY_NAME).read_bytes()
+    )
+
+    chain = _REAL_VALIDATE_FOUNDATION_CHAIN(
+        **paths,
+        release_public_key=release_key.public_key(),
+        final_release_revision="c" * 40,
+    )
+
+    assert chain.bootstrap_network_collector_public_key_id
+    assert chain.project_ancestry_evidence_sha256
+
+
+def test_real_foundation_chain_rejects_distinct_foundation_collector_keys(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    paths, _chain = _real_chain_inputs(tmp_path, monkeypatch)
+    other_key = Ed25519PrivateKey.generate().public_key().public_bytes_raw()
+    ancestry_key = paths["project_ancestry_collector_public_key_path"]
+    ancestry_key.chmod(0o600)
+    ancestry_key.write_bytes(other_key)
+    ancestry_key.chmod(0o444)
     release_key = Ed25519PrivateKey.from_private_bytes(
         (author.KEY_DIRECTORY / author.PRIVATE_KEY_NAME).read_bytes()
     )

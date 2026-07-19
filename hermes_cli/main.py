@@ -534,6 +534,19 @@ from hermes_cli.env_loader import load_hermes_dotenv
 
 load_hermes_dotenv(project_env=PROJECT_ROOT / ".env")
 
+# Bridge shared_auth.* (config.yaml) → internal HERMES_XAI_SHARED_AUTH /
+# HERMES_SHARED_AUTH_PROVIDERS so every subcommand (auth, chat, gateway
+# helpers, etc.) sees the same activation. User-facing switch is config.yaml
+# (AGENTS.md env-var-for-config); engine still reads the env vars. Gate-off
+# (absent/empty shared_auth) leaves env alone — power-user/test env overrides
+# keep working. Same pattern as terminal.cwd → TERMINAL_CWD.
+try:
+    from hermes_cli.config import apply_shared_auth_config_to_env as _apply_shared_auth
+
+    _apply_shared_auth()
+except Exception:
+    pass
+
 # Bridge security.redact_secrets from config.yaml → HERMES_REDACT_SECRETS env
 # var BEFORE hermes_logging imports agent.redact (which snapshots the flag at
 # module-import time). Without this, config.yaml's toggle is ignored because
@@ -2069,8 +2082,12 @@ def _launch_tui(
 
     env = os.environ.copy()
     try:
-        from hermes_cli.config import apply_terminal_config_to_env
+        from hermes_cli.config import (
+            apply_shared_auth_config_to_env,
+            apply_terminal_config_to_env,
+        )
         apply_terminal_config_to_env(env=env)
+        apply_shared_auth_config_to_env(env=env)
     except Exception:
         logger.debug("Failed to apply terminal config bridge for TUI launch", exc_info=True)
     active_session_fd, active_session_file = tempfile.mkstemp(
@@ -12508,9 +12525,13 @@ def cmd_dashboard(args):
     # (#63141, #54449, #61115, #65696). PTY chat spawns already bridge their
     # child env copy; this covers the in-process consumers.
     try:
-        from hermes_cli.config import apply_terminal_config_to_env
+        from hermes_cli.config import (
+            apply_shared_auth_config_to_env,
+            apply_terminal_config_to_env,
+        )
 
         apply_terminal_config_to_env()
+        apply_shared_auth_config_to_env()
     except Exception:
         logger.debug("terminal config → env bridge failed for dashboard/serve",
                      exc_info=True)

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import math
+import os
 import sys
 import time
 from types import SimpleNamespace
@@ -346,6 +347,16 @@ def auth_add_command(args) -> None:
         return
 
     if provider == "xai-oauth":
+        if auth_mod._xai_shared_auth_enabled():
+            raise SystemExit(
+                "Shared xAI OAuth mode is active: refusing to add a separate "
+                "manual:device_code pool entry that would fork the single-use "
+                "refresh-token family.\n"
+                "Use `hermes model` / device-code login (writes the canonical "
+                "shared store) or `hermes auth xai migrate-shared`.\n"
+                "Disable shared mode (`hermes auth xai disable-shared`) only if you "
+                "intentionally want independent per-entry grants."
+            )
         creds = auth_mod._xai_oauth_device_code_login(
             timeout_seconds=getattr(args, "timeout", None) or 20.0,
             open_browser=not getattr(args, "no_browser", False),
@@ -527,7 +538,15 @@ def auth_status_command(args) -> None:
 
 
 def auth_logout_command(args) -> None:
-    auth_mod.logout_command(SimpleNamespace(provider=getattr(args, "provider", None)))
+    auth_mod.logout_command(
+        SimpleNamespace(
+            provider=getattr(args, "provider", None),
+            global_logout=bool(
+                getattr(args, "global_logout", False) or getattr(args, "shared", False)
+            ),
+            shared=bool(getattr(args, "shared", False)),
+        )
+    )
 
 
 def auth_spotify_command(args) -> None:
@@ -775,6 +794,119 @@ def _interactive_strategy() -> None:
     print(f"Set {provider} strategy to: {strategy}")
 
 
+def auth_xai_command(args) -> None:
+    """Manage the canonical shared xAI OAuth store."""
+    action = getattr(args, "xai_action", None)
+    if action == "migrate-shared":
+        if not auth_mod._xai_shared_auth_enabled():
+            raise SystemExit(
+                "Shared xAI OAuth is not enabled.\n"
+                "Enable it with `hermes auth xai enable-shared` (writes "
+                "shared_auth.providers: [xai-oauth] to config.yaml), then retry.\n"
+                "Every gateway/cron/desktop process must load that config so the "
+                "internal env bridge activates fleet-wide."
+            )
+        try:
+            written = auth_mod.migrate_xai_oauth_to_shared_store(
+                source=getattr(args, "source", "auto") or "auto",
+                strip_legacy=True,  # A8: --keep-legacy removed; sole ownership required
+                force=bool(getattr(args, "force", False)),
+            )
+        except auth_mod.AuthError as exc:
+            raise SystemExit(str(exc)) from exc
+        print("Migrated xAI OAuth grant into the canonical shared store.")
+        print(f"  Shared path: {auth_mod._xai_shared_store_path()}")
+        print(f"  Generation:  {written.get('generation')}")
+        print(f"  Last refresh:{written.get('last_refresh')}")
+        print(
+            "  Legacy secret material was stripped from all profiles + root "
+            "(sole ownership)."
+        )
+        return
+    if action == "enable-shared":
+        # User-facing activation: write config.yaml (not HERMES_* env vars).
+        # Bridges into the internal env vars for this process so the engine
+        # gate flips on immediately (AGENTS.md env-var-for-config policy).
+        from hermes_cli.config import enable_shared_auth_provider
+
+        providers = enable_shared_auth_provider("xai-oauth")
+        print(
+            "Enabled shared xAI OAuth in config.yaml "
+            f"(shared_auth.providers: {providers})."
+        )
+        print(
+            "  Internal bridge set HERMES_XAI_SHARED_AUTH for this process; "
+            "restart gateway/cron/desktop workers so they reload config."
+        )
+        # If a usable canonical grant already exists, also re-enable this
+        # profile's marker and strip residual local RTs (prior behavior).
+        try:
+            if auth_mod._xai_shared_state_has_usable_tokens(
+                auth_mod._read_shared_xai_state()
+            ):
+                auth_mod.enable_profile_xai_shared_auth()
+                print("  Profile re-enabled against the existing shared grant.")
+            else:
+                print(
+                    "  Shared store is empty — run `hermes auth xai migrate-shared` "
+                    "or log in via `hermes model` / device-code to seed it."
+                )
+        except auth_mod.AuthError as exc:
+            raise SystemExit(str(exc)) from exc
+        return
+    if action == "disable-shared":
+        # Turn off the user-facing config switch (removes xai-oauth from
+        # shared_auth.providers). Also write the per-profile disable marker
+        # when the gate was on so mid-session consumers stop using the grant.
+        from hermes_cli.config import disable_shared_auth_provider
+
+        was_enabled = auth_mod._xai_shared_auth_enabled()
+        if was_enabled:
+            try:
+                auth_mod.disable_profile_xai_shared_auth()
+            except auth_mod.AuthError as exc:
+                # Gate might race; still proceed to clear config.
+                print(f"Note: per-profile disable marker: {exc}")
+        remaining = disable_shared_auth_provider("xai-oauth")
+        # Explicit user intent: ensure this process's internal gate is off even
+        # if the gate was env-only (no config key yet) or a stale .env export.
+        os.environ.pop("HERMES_XAI_SHARED_AUTH", None)
+        raw_providers = os.environ.get("HERMES_SHARED_AUTH_PROVIDERS", "")
+        if raw_providers.strip():
+            _xai_aliases = {"xai-oauth", "xai", "grok-oauth", "x-ai-oauth"}
+            left = [
+                p.strip()
+                for p in raw_providers.split(",")
+                if p.strip() and p.strip().lower() not in _xai_aliases
+            ]
+            if left:
+                os.environ["HERMES_SHARED_AUTH_PROVIDERS"] = ",".join(left)
+            else:
+                os.environ.pop("HERMES_SHARED_AUTH_PROVIDERS", None)
+        if remaining:
+            print(
+                "Removed xai-oauth from shared_auth.providers in config.yaml "
+                f"(remaining providers: {remaining})."
+            )
+        else:
+            print(
+                "Disabled shared xAI OAuth in config.yaml "
+                "(shared_auth.providers no longer lists xai-oauth)."
+            )
+        print(
+            "  Canonical grant is unchanged. Use "
+            "`hermes logout --provider xai-oauth --global` to delete it for "
+            "all profiles."
+        )
+        print(
+            "  Restart gateway/cron/desktop workers so they reload config."
+        )
+        return
+    raise SystemExit(
+        "usage: hermes auth xai {migrate-shared,enable-shared,disable-shared}"
+    )
+
+
 def auth_command(args) -> None:
     action = getattr(args, "auth_action", "")
     if action == "add":
@@ -797,6 +929,9 @@ def auth_command(args) -> None:
         return
     if action == "spotify":
         auth_spotify_command(args)
+        return
+    if action == "xai":
+        auth_xai_command(args)
         return
     # No subcommand — launch interactive mode
     _interactive_auth()

@@ -1511,31 +1511,56 @@ def _transcribe_xai(file_path: str, model_name: str) -> Dict[str, Any]:
         if use_diarize:
             data["diarize"] = "true"
 
-        with open(file_path, "rb") as audio_file:
-            response = requests.post(
-                f"{base_url}/stt",
-                headers={
-                    "Authorization": f"Bearer {api_key}",
-                    "User-Agent": hermes_xai_user_agent(),
-                },
-                files={
-                    "file": (Path(file_path).name, audio_file),
-                },
-                data=data,
-                timeout=120,
-            )
+        provider_name = str(creds.get("provider") or "xai")
+        headers = {
+            "Authorization": f"Bearer {api_key}",
+            "User-Agent": hermes_xai_user_agent(),
+        }
+        response = None
+        for attempt in range(2):
+            with open(file_path, "rb") as audio_file:
+                response = requests.post(
+                    f"{base_url}/stt",
+                    headers=headers,
+                    files={
+                        "file": (Path(file_path).name, audio_file),
+                    },
+                    data=data,
+                    timeout=120,
+                )
+            # C3: one canonical refresh + retry on 401/403 for OAuth.
+            if (
+                response.status_code in {401, 403}
+                and attempt == 0
+                and provider_name == "xai-oauth"
+            ):
+                try:
+                    from tools.xai_http import force_refresh_xai_http_credentials
 
-        if response.status_code != 200:
+                    refreshed = force_refresh_xai_http_credentials(api_key)
+                    new_key = str(refreshed.get("api_key") or "").strip()
+                    if new_key and new_key != api_key:
+                        api_key = new_key
+                        headers["Authorization"] = f"Bearer {api_key}"
+                        continue
+                except Exception:
+                    pass
+            break
+
+        if response is None or response.status_code != 200:
             detail = ""
+            status = response.status_code if response is not None else 0
             try:
-                err_body = response.json()
-                detail = err_body.get("error", {}).get("message", "") or response.text[:300]
+                err_body = response.json() if response is not None else {}
+                detail = err_body.get("error", {}).get("message", "") or (
+                    response.text[:300] if response is not None else ""
+                )
             except Exception:
-                detail = response.text[:300]
+                detail = response.text[:300] if response is not None else ""
             return {
                 "success": False,
                 "transcript": "",
-                "error": f"xAI STT API error (HTTP {response.status_code}): {detail}",
+                "error": f"xAI STT API error (HTTP {status}): {detail}",
             }
 
         result = response.json()

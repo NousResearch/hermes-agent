@@ -910,6 +910,33 @@ credential_pool_strategies:
 
 Options: `fill_first` (default), `round_robin`, `least_used`, `random`. See [Credential Pools](/user-guide/features/credential-pools) for full documentation.
 
+## Shared auth stores (`shared_auth`)
+
+Cross-profile **shared OAuth** activation is a non-secret config switch — not a
+`HERMES_*` env var. Hermes force-exports internal bridge env vars at process
+startup (same pattern as `terminal.cwd` → `TERMINAL_CWD`).
+
+```yaml
+shared_auth:
+  # Provider names that own grants in the shared auth directory.
+  # Include xai-oauth (or xai / grok-oauth / x-ai-oauth) to enable the
+  # multi-profile single-use refresh-token store for xAI Grok OAuth.
+  providers: [xai-oauth]
+  # Optional directory override (default: <hermes-root>/shared/)
+  # dir: ~/.hermes/shared
+```
+
+CLI equivalents:
+
+```bash
+hermes auth xai enable-shared    # adds xai-oauth to shared_auth.providers
+hermes auth xai disable-shared   # removes it
+hermes auth xai migrate-shared   # one-time legacy grant → shared store
+```
+
+Absent or empty `shared_auth` leaves legacy per-profile auth unchanged. See
+[xAI Grok OAuth — Shared-store mode](/guides/xai-grok-oauth#shared-store-mode-multi-profile).
+
 ## Prompt caching
 
 Hermes turns on cross-session prompt caching automatically when the active provider supports it — no user config needed.

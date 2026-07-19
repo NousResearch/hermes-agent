@@ -42,6 +42,15 @@ _hermes_home = get_hermes_home()
 load_hermes_dotenv(
     hermes_home=_hermes_home, project_env=Path(__file__).parent.parent / ".env"
 )
+# Bridge shared_auth.* (config.yaml) → internal HERMES_XAI_SHARED_AUTH etc.
+# so headless tui_gateway sees the same activation as CLI/gateway. Gate-off
+# (absent/empty shared_auth) leaves env alone.
+try:
+    from hermes_cli.config import apply_shared_auth_config_to_env
+
+    apply_shared_auth_config_to_env()
+except Exception:
+    logger.debug("shared_auth config → env bridge failed for tui_gateway", exc_info=True)
 
 
 # ── Panic logger ─────────────────────────────────────────────────────

@@ -275,8 +275,45 @@ def _remove_xai_oauth_device_code(provider: str, removed) -> RemovalResult:
     entry from the still-present singleton — credentials reappear with no
     user feedback. Clearing the singleton in step with the suppression set
     by the central dispatcher makes the removal stick.
+
+    Under shared xAI mode the canonical grant is NOT deleted here — that
+    requires an explicit global logout. Removal only disables this profile's
+    use of the shared store and clears local non-secret references.
     """
     result = RemovalResult()
+    try:
+        from hermes_cli import auth as auth_mod
+        from hermes_cli.auth import AuthError
+    except Exception:
+        auth_mod = None
+        AuthError = Exception  # type: ignore[misc, assignment]
+
+    if auth_mod is not None and auth_mod._xai_shared_auth_enabled():
+        # B1/R8: clear local reference first, THEN re-write the durable
+        # disable marker so it survives the provider-block deletion.
+        # Disable failures must surface — never claim cleanup success when
+        # the durable disable marker did not land.
+        if _clear_auth_store_provider(provider):
+            result.cleaned.append(
+                f"Cleared {provider} profile reference from auth store"
+            )
+        try:
+            auth_mod.disable_profile_xai_shared_auth()
+        except AuthError:
+            raise
+        except Exception as exc:
+            raise RuntimeError(
+                f"Failed to disable shared xAI OAuth for this profile: {exc}"
+            ) from exc
+        result.cleaned.append(
+            "Disabled shared xAI OAuth for this profile (canonical grant unchanged)"
+        )
+        result.hints.append(
+            "To delete the grant for all profiles: "
+            "`hermes logout --provider xai-oauth --global`"
+        )
+        return result
+
     if _clear_auth_store_provider(provider):
         result.cleaned.append(f"Cleared {provider} OAuth tokens from auth store")
     result.hints.append(

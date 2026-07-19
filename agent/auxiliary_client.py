@@ -3690,8 +3690,18 @@ async def _retry_same_provider_async(
     )
 
 
-def _refresh_provider_credentials(provider: str) -> bool:
-    """Refresh short-lived credentials for OAuth-backed auxiliary providers."""
+def _refresh_provider_credentials(
+    provider: str,
+    *,
+    rejected_api_key: Optional[str] = None,
+    expected_generation: Optional[int] = None,
+) -> bool:
+    """Refresh short-lived credentials for OAuth-backed auxiliary providers.
+
+    ``rejected_api_key`` / ``expected_generation`` are optional G4/D1 hints so
+    a concurrent winner is adopted instead of double-rotating a single-use
+    refresh token (xAI shared store and pool).
+    """
     normalized = _normalize_aux_provider(provider)
     try:
         if normalized == "copilot":
@@ -3740,21 +3750,59 @@ def _refresh_provider_credentials(provider: str) -> bool:
             _evict_cached_clients(normalized)
             return True
         if normalized == "xai-oauth":
-            # Preference: pool-level refresh (uses refresh_token from pool entry),
-            # then fall back to singleton auth-store resolver.
+            # D1: pass rejected bearer + expected generation so a concurrent
+            # winner is adopted instead of double-rotating the single-use RT.
+            # Shared mode always goes through the canonical resolver first.
+            from hermes_cli.auth import (
+                _xai_shared_auth_enabled,
+                resolve_xai_oauth_runtime_credentials,
+            )
+
+            rejected = str(rejected_api_key or "").strip() or None
+            expected_gen = None
+            try:
+                expected_gen = (
+                    int(expected_generation)
+                    if expected_generation is not None
+                    else None
+                )
+            except (TypeError, ValueError):
+                expected_gen = None
+
+            if _xai_shared_auth_enabled():
+                creds = resolve_xai_oauth_runtime_credentials(
+                    force_refresh=True,
+                    rejected_access_token=rejected,
+                    expected_generation=expected_gen,
+                )
+                if not str(creds.get("api_key", "") or "").strip():
+                    return False
+                _evict_cached_clients(normalized)
+                return True
+
+            # Legacy gate-off: pool refresh first, then singleton with the
+            # rejected bearer so we don't re-POST after a winner.
             pool = load_pool(normalized)
             if pool and pool.has_credentials():
-                # Ensure a current entry is selected before trying to refresh.
-                pool.select()
-                refreshed = pool.try_refresh_current()
-                if refreshed is not None and str(getattr(refreshed, "runtime_api_key", "") or "").strip():
+                if rejected:
+                    refreshed = pool.try_refresh_matching(rejected)
+                else:
+                    pool.select()
+                    refreshed = pool.try_refresh_current()
+                if refreshed is not None and str(
+                    getattr(refreshed, "runtime_api_key", "") or ""
+                ).strip():
                     _evict_cached_clients(normalized)
                     return True
-            from hermes_cli.auth import resolve_xai_oauth_runtime_credentials
-
-            creds = resolve_xai_oauth_runtime_credentials(force_refresh=True)
+            creds = resolve_xai_oauth_runtime_credentials(
+                force_refresh=True,
+                rejected_access_token=rejected,
+                expected_generation=expected_gen,
+            )
             if not str(creds.get("api_key", "") or "").strip():
                 return False
+            # G10: refresh success is insufficient if a cached aux client still
+            # holds the old bearer — always evict after canonical rotation.
             _evict_cached_clients(normalized)
             return True
     except Exception as exc:
@@ -3772,11 +3820,28 @@ def _auth_refresh_provider_for_route(
     Auto-routed auxiliary calls keep ``resolved_provider == "auto"`` even
     after _get_cached_client() selects a concrete backend. Infer the backend
     from the selected client's base URL so auth refresh works for auto →
-    Copilot/Codex/Anthropic/Nous routes too. (#20832)
+    Copilot/Codex/Anthropic/Nous/xAI routes too. (#20832, D2)
+
+    Configured fallback-chain labels look like
+    ``fallback_chain[0](xai-oauth)`` — extract the real provider id so refresh
+    hits the xai-oauth branch rather than treating the composite label as the
+    provider name (R6).
     """
-    normalized = _normalize_aux_provider(resolved_provider)
+    raw = (resolved_provider or "").strip()
+    # R6: unwrap fallback_chain[N](<provider>) before normalization.
+    chain_match = re.search(
+        r"fallback_chain\[\d+\]\(([^)]+)\)\s*$",
+        raw,
+        flags=re.IGNORECASE,
+    )
+    if chain_match:
+        raw = chain_match.group(1).strip()
+    normalized = _normalize_aux_provider(raw)
     if normalized and normalized != "auto":
-        return normalized
+        # Composite leftovers (e.g. still containing "fallback_chain") are not
+        # real providers — fall through to base-URL inference.
+        if "fallback_chain" not in normalized:
+            return normalized
     if base_url_host_matches(client_base_url, "api.githubcopilot.com"):
         return "copilot"
     if base_url_host_matches(client_base_url, "chatgpt.com"):
@@ -3785,7 +3850,11 @@ def _auth_refresh_provider_for_route(
         return "anthropic"
     if base_url_host_matches(client_base_url, "inference-api.nousresearch.com"):
         return "nous"
-    return normalized
+    # D2: auto-routed xAI aux clients must refresh xai-oauth, not keep a
+    # rejected bearer because the route label stayed "auto".
+    if base_url_host_matches(client_base_url, "api.x.ai"):
+        return "xai-oauth"
+    return normalized if "fallback_chain" not in (normalized or "") else "auto"
 
 
 def _fallback_entry_timeout(task: Optional[str], fb_label: str) -> Optional[float]:
@@ -3878,7 +3947,13 @@ def _call_fallback_candidate_sync(
         if not _is_auth_error(fb_err):
             raise
         fb_provider = _auth_refresh_provider_for_route(fb_label, fb_base)
-        if fb_provider not in {"auto", "", None} and _refresh_provider_credentials(fb_provider):
+        # F6: pass the rejected bearer so shared xAI adopts a concurrent winner
+        # instead of force-rotating the single-use RT a second time.
+        _rejected_bearer = str(getattr(fb_client, "api_key", None) or "").strip() or None
+        if fb_provider not in {"auto", "", None} and _refresh_provider_credentials(
+            fb_provider,
+            rejected_api_key=_rejected_bearer,
+        ):
             retry_client, retry_model = _get_cached_client(fb_provider, fb_model)
             if retry_client is not None:
                 retry_kwargs = _build_call_kwargs(
@@ -3944,7 +4019,13 @@ async def _call_fallback_candidate_async(
         if not _is_auth_error(fb_err):
             raise
         fb_provider = _auth_refresh_provider_for_route(fb_label, fb_base)
-        if fb_provider not in {"auto", "", None} and _refresh_provider_credentials(fb_provider):
+        # F6: pass the rejected bearer so shared xAI adopts a concurrent winner
+        # instead of force-rotating the single-use RT a second time.
+        _rejected_bearer = str(getattr(fb_client, "api_key", None) or "").strip() or None
+        if fb_provider not in {"auto", "", None} and _refresh_provider_credentials(
+            fb_provider,
+            rejected_api_key=_rejected_bearer,
+        ):
             retry_client, retry_model = _get_cached_client(
                 fb_provider, fb_model, async_mode=True)
             if retry_client is not None:
@@ -7287,7 +7368,15 @@ def call_llm(
         if (_is_auth_error(first_err)
                 and auth_refresh_provider not in {"auto", "", None}
                 and not client_is_nous):
-            if _refresh_provider_credentials(auth_refresh_provider):
+            # D1: pass the rejected bearer so shared xAI adopts a concurrent
+            # winner instead of double-rotating the single-use RT.
+            _rejected_bearer = str(
+                getattr(client, "api_key", None) or resolved_api_key or ""
+            ).strip() or None
+            if _refresh_provider_credentials(
+                auth_refresh_provider,
+                rejected_api_key=_rejected_bearer,
+            ):
                 if auth_refresh_provider != _normalize_aux_provider(resolved_provider):
                     # The stale client is cached under the route label
                     # (e.g. "auto"), not the concrete backend we refreshed.
@@ -7848,7 +7937,13 @@ async def async_call_llm(
         if (_is_auth_error(first_err)
                 and auth_refresh_provider not in {"auto", "", None}
                 and not client_is_nous):
-            if _refresh_provider_credentials(auth_refresh_provider):
+            _rejected_bearer = str(
+                getattr(client, "api_key", None) or resolved_api_key or ""
+            ).strip() or None
+            if _refresh_provider_credentials(
+                auth_refresh_provider,
+                rejected_api_key=_rejected_bearer,
+            ):
                 if auth_refresh_provider != _normalize_aux_provider(resolved_provider):
                     # The stale client is cached under the route label
                     # (e.g. "auto"), not the concrete backend we refreshed.

@@ -25,4 +25,19 @@ def build_logout_parser(subparsers, *, cmd_logout: Callable) -> None:
         default=None,
         help="Provider to log out from (default: active provider)",
     )
+    logout_parser.add_argument(
+        "--global",
+        dest="global_logout",
+        action="store_true",
+        help=(
+            "For xai-oauth shared mode: delete the canonical shared grant "
+            "(affects every profile). Default is per-profile disable only."
+        ),
+    )
+    logout_parser.add_argument(
+        "--shared",
+        dest="shared",
+        action="store_true",
+        help="Alias of --global for xai-oauth shared-store logout.",
+    )
     logout_parser.set_defaults(func=cmd_logout)

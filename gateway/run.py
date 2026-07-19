@@ -1767,6 +1767,16 @@ if _config_path.exists():
         _tz_cfg = _cfg.get("timezone", "")
         if _tz_cfg and isinstance(_tz_cfg, str):
             os.environ["HERMES_TIMEZONE"] = _tz_cfg.strip()
+        # Shared auth activation (config.yaml → internal HERMES_* env vars).
+        # User-facing switch is shared_auth.providers; engine still reads
+        # HERMES_XAI_SHARED_AUTH / HERMES_SHARED_AUTH_PROVIDERS (terminal.cwd
+        # → TERMINAL_CWD pattern). Absent/empty shared_auth leaves env alone.
+        try:
+            from hermes_cli.config import apply_shared_auth_config_to_env
+
+            apply_shared_auth_config_to_env(config=_cfg)
+        except Exception:
+            pass
         # Security settings
         _security_cfg = _cfg.get("security", {})
         if isinstance(_security_cfg, dict):

@@ -3037,6 +3037,19 @@ def run_job(
         )
         reset_secret_source_cache()
         load_hermes_dotenv(hermes_home=_get_hermes_home())
+        # Bridge shared_auth.* from config.yaml → internal HERMES_* env so
+        # cron workers honor the same activation as CLI/gateway (config is
+        # user-facing; env is the internal mechanism). Gate-off leaves env
+        # untouched. Mirrors terminal.cwd → TERMINAL_CWD.
+        try:
+            from hermes_cli.config import apply_shared_auth_config_to_env
+
+            apply_shared_auth_config_to_env()
+        except Exception:
+            logger.debug(
+                "shared_auth config → env bridge failed for cron job",
+                exc_info=True,
+            )
 
         delivery_target = _resolve_delivery_target(job)
         if delivery_target:

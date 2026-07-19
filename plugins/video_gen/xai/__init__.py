@@ -310,20 +310,56 @@ async def _submit(
     api_key: str,
     base_url: str,
     endpoint: str = "generations",
-) -> str:
-    """POST to one of xAI's async video endpoints and return request_id."""
-    response = await client.post(
-        f"{base_url}/videos/{endpoint}",
-        headers={**_xai_headers(api_key), "x-idempotency-key": str(uuid.uuid4())},
-        json=payload,
-        timeout=60,
-    )
-    response.raise_for_status()
-    body = response.json()
-    request_id = body.get("request_id")
-    if not request_id:
-        raise RuntimeError("xAI video response did not include request_id")
-    return request_id
+) -> Tuple[str, str]:
+    """POST to one of xAI's async video endpoints.
+
+    Returns ``(request_id, active_api_key)`` so a mid-submit OAuth refresh is
+    propagated into the subsequent poll (F5) — never poll with a stale bearer
+    after submit recovered.
+
+    C3: on 401/403 auth failure, force a canonical OAuth refresh once and retry.
+    """
+    active_key = api_key
+    last_exc: Optional[Exception] = None
+    for attempt in range(2):
+        try:
+            response = await client.post(
+                f"{base_url}/videos/{endpoint}",
+                headers={
+                    **_xai_headers(active_key),
+                    "x-idempotency-key": str(uuid.uuid4()),
+                },
+                json=payload,
+                timeout=60,
+            )
+            response.raise_for_status()
+            body = response.json()
+            request_id = body.get("request_id")
+            if not request_id:
+                raise RuntimeError("xAI video response did not include request_id")
+            return request_id, active_key
+        except httpx.HTTPStatusError as exc:
+            last_exc = exc
+            status = exc.response.status_code if exc.response is not None else 0
+            if attempt == 0 and status in {401, 403}:
+                try:
+                    from tools.xai_http import force_refresh_xai_http_credentials
+
+                    refreshed = force_refresh_xai_http_credentials(active_key)
+                    new_key = str(refreshed.get("api_key") or "").strip()
+                    if new_key and new_key != active_key:
+                        active_key = new_key
+                        continue
+                except Exception as refresh_exc:
+                    logger.debug(
+                        "xAI video OAuth refresh after %s failed: %s",
+                        status,
+                        refresh_exc,
+                    )
+            raise
+    if last_exc is not None:
+        raise last_exc
+    raise RuntimeError("xAI video submit failed without a response")
 
 
 async def _poll(
@@ -335,15 +371,38 @@ async def _poll(
     timeout_seconds: int,
     poll_interval: int,
 ) -> Dict[str, Any]:
+    """Poll a video job; one bounded 401/403 canonical recovery (F5)."""
+    active_key = api_key
+    refreshed_once = False
     elapsed = 0.0
     last_status = "queued"
     while elapsed < timeout_seconds:
-        response = await client.get(
-            f"{base_url}/videos/{request_id}",
-            headers=_xai_headers(api_key),
-            timeout=30,
-        )
-        response.raise_for_status()
+        try:
+            response = await client.get(
+                f"{base_url}/videos/{request_id}",
+                headers=_xai_headers(active_key),
+                timeout=30,
+            )
+            response.raise_for_status()
+        except httpx.HTTPStatusError as exc:
+            status = exc.response.status_code if exc.response is not None else 0
+            if not refreshed_once and status in {401, 403}:
+                refreshed_once = True
+                try:
+                    from tools.xai_http import force_refresh_xai_http_credentials
+
+                    refreshed = force_refresh_xai_http_credentials(active_key)
+                    new_key = str(refreshed.get("api_key") or "").strip()
+                    if new_key and new_key != active_key:
+                        active_key = new_key
+                        continue
+                except Exception as refresh_exc:
+                    logger.debug(
+                        "xAI video poll OAuth refresh after %s failed: %s",
+                        status,
+                        refresh_exc,
+                    )
+            raise
         body = response.json()
         last_status = (body.get("status") or "").lower()
 
@@ -813,7 +872,8 @@ async def _submit_xai_video_payload(
 
     async with httpx.AsyncClient() as client:
         try:
-            request_id = await _submit(
+            # F5: propagate any post-401 refreshed bearer into poll.
+            request_id, poll_api_key = await _submit(
                 client, payload, api_key=api_key, base_url=base_url,
                 endpoint=endpoint,
             )
@@ -833,7 +893,7 @@ async def _submit_xai_video_payload(
 
         poll_result = await _poll(
             client, request_id,
-            api_key=api_key, base_url=base_url,
+            api_key=poll_api_key, base_url=base_url,
             timeout_seconds=DEFAULT_TIMEOUT_SECONDS,
             poll_interval=DEFAULT_POLL_INTERVAL_SECONDS,
         )

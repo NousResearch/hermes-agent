@@ -89,6 +89,9 @@ Hermes reads environment variables from the process environment and, for user-ma
 | `OLLAMA_BASE_URL` | Override Ollama Cloud base URL (default: `https://ollama.com/v1`) |
 | `XAI_API_KEY` | xAI (Grok) API key for chat + TTS + web search ([console.x.ai](https://console.x.ai/)) |
 | `XAI_BASE_URL` | Override xAI base URL (default: `https://api.x.ai/v1`) |
+| `HERMES_XAI_SHARED_AUTH` | **Internal bridge target** — do not set by hand. Force-exported from config.yaml `shared_auth.providers` when the list includes an xAI alias (`xai-oauth` / `xai` / `grok-oauth` / `x-ai-oauth`). User-facing activation: `shared_auth.providers: [xai-oauth]` or `hermes auth xai enable-shared`. See [xAI Grok OAuth](../guides/xai-grok-oauth.md#shared-store-mode-multi-profile). |
+| `HERMES_SHARED_AUTH_PROVIDERS` | **Internal bridge target** — do not set by hand. Force-exported from config.yaml `shared_auth.providers` (comma-joined). Prefer the config key / `hermes auth xai enable-shared`. |
+| `HERMES_SHARED_AUTH_DIR` | Optional directory for cross-profile shared auth files (default: `<hermes-root>/shared/`). Holds `nous_auth.json` and, when shared xAI is enabled, `xai_oauth.json` + lock. Also settable via `shared_auth.dir` in config.yaml. Must be a **local** filesystem with reliable advisory locking (not NFS/SMB). Every gateway/cron/desktop process must resolve the same path. |
 | `MISTRAL_API_KEY` | Mistral API key for Voxtral TTS and Voxtral STT ([console.mistral.ai](https://console.mistral.ai)) |
 | `AWS_REGION` | AWS region for Bedrock inference (e.g. `us-east-1`, `eu-central-1`). Read by boto3. |
 | `AWS_PROFILE` | AWS named profile for Bedrock authentication (reads `~/.aws/credentials`). Leave unset to use default boto3 credential chain. |

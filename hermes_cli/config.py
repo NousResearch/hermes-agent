@@ -3444,6 +3444,23 @@ DEFAULT_CONFIG = {
         "region": "global",
     },
 
+    # Cross-profile shared OAuth stores (non-secret activation switch).
+    # User-facing opt-in for the canonical shared xAI OAuth store lives here —
+    # NOT as HERMES_XAI_SHARED_AUTH in .env (AGENTS.md env-var-for-config policy).
+    # Bridged to internal HERMES_XAI_SHARED_AUTH / HERMES_SHARED_AUTH_PROVIDERS
+    # at process startup (same pattern as terminal.cwd → TERMINAL_CWD). Empty /
+    # absent = legacy per-profile auth (byte-identical; engine gate still reads
+    # the internal env vars so tests and power-user overrides keep working).
+    "shared_auth": {
+        # Provider names that own grants in the shared auth directory.
+        # Include "xai-oauth" (or xai / grok-oauth / x-ai-oauth) to enable the
+        # multi-profile single-use refresh-token store for xAI Grok OAuth.
+        "providers": [],
+        # Optional override for the shared auth directory (mirrors
+        # HERMES_SHARED_AUTH_DIR). Leave unset to use <hermes-root>/shared/.
+        # "dir": "~/.hermes/shared",
+    },
+
     # Config schema version - bump this when adding new required fields
     "_config_version": 33,
 }
@@ -7195,6 +7212,220 @@ def apply_terminal_config_to_env(
         if should_override or env_var not in target:
             target[env_var] = _terminal_env_value(value)
     return target
+
+
+# Aliases that activate the shared xAI OAuth store (must match
+# hermes_cli.auth._xai_shared_auth_enabled). Kept here so the config→env bridge
+# can force-export without importing the auth engine.
+_XAI_SHARED_AUTH_PROVIDER_ALIASES = frozenset(
+    {"xai-oauth", "xai", "grok-oauth", "x-ai-oauth"}
+)
+
+
+def _normalize_shared_auth_providers(raw: Any) -> List[str]:
+    """Coerce shared_auth.providers from list/str/None into a clean string list."""
+    if raw is None:
+        return []
+    if isinstance(raw, str):
+        return [part.strip() for part in raw.split(",") if part.strip()]
+    if isinstance(raw, (list, tuple)):
+        return [str(part).strip() for part in raw if str(part).strip()]
+    return []
+
+
+def _shared_auth_section_from_config(
+    config: Optional[Dict[str, Any]] = None,
+) -> Optional[Dict[str, Any]]:
+    """Return the user-facing shared_auth dict, or None if absent.
+
+    Prefer the raw on-disk config so DEFAULT_CONFIG's empty ``providers: []``
+    never looks like a deliberate user setting. Callers that already hold a
+    merged or partial dict can pass it via *config*.
+    """
+    if config is not None:
+        shared = config.get("shared_auth") if isinstance(config, dict) else None
+    else:
+        raw = read_raw_config()
+        shared = raw.get("shared_auth") if isinstance(raw, dict) else None
+    if not isinstance(shared, dict):
+        return None
+    return shared
+
+
+def apply_shared_auth_config_to_env(
+    *,
+    env: Optional[Dict[str, str]] = None,
+    config: Optional[Dict[str, Any]] = None,
+) -> Dict[str, str]:
+    """Bridge ``shared_auth.*`` config into internal HERMES_* env vars.
+
+    User-facing activation is ``shared_auth.providers`` in config.yaml
+    (AGENTS.md env-var-for-config policy: non-secret feature flags belong in
+    config.yaml, not ``HERMES_*`` env vars). The shared-store engine still
+    gates on ``HERMES_XAI_SHARED_AUTH`` / ``HERMES_SHARED_AUTH_PROVIDERS`` —
+    those remain the **internal** mechanism, bridged here the same way
+    ``terminal.cwd`` is force-exported to ``TERMINAL_CWD``.
+
+    Gate-off invariant: if ``shared_auth`` is absent or ``providers`` is empty,
+    this function does **not** set or modify any related env vars. Legacy
+    behavior is byte-identical, and a power-user/test that sets
+    ``HERMES_XAI_SHARED_AUTH`` directly still works.
+    """
+    target = os.environ if env is None else env
+    shared = _shared_auth_section_from_config(config)
+    if shared is None:
+        return target
+
+    providers = _normalize_shared_auth_providers(shared.get("providers"))
+    if not providers:
+        # Empty providers list = no user opt-in. Do not clobber env overrides.
+        return target
+
+    # Config is authoritative when providers is non-empty (force-export so a
+    # stale/missing .env cannot leave fleet workers on the legacy path).
+    target["HERMES_SHARED_AUTH_PROVIDERS"] = ",".join(providers)
+
+    tokens = {p.lower() for p in providers}
+    if tokens & _XAI_SHARED_AUTH_PROVIDER_ALIASES:
+        target["HERMES_XAI_SHARED_AUTH"] = "1"
+
+    shared_dir = shared.get("dir")
+    if isinstance(shared_dir, str) and shared_dir.strip():
+        # Optional only — do not invent a default dir env var.
+        target["HERMES_SHARED_AUTH_DIR"] = os.path.expanduser(shared_dir.strip())
+
+    return target
+
+
+def enable_shared_auth_provider(provider: str = "xai-oauth") -> List[str]:
+    """Add *provider* to config.yaml ``shared_auth.providers`` and bridge env.
+
+    Returns the resulting providers list. Writes only the user config (no
+    default dump). Force-bridges into ``os.environ`` so the current process
+    sees the gate immediately (CLI commands that follow do not need a restart).
+    """
+    provider = (provider or "").strip()
+    if not provider:
+        raise ValueError("provider must be a non-empty string")
+
+    if is_managed():
+        managed_error("enable shared auth")
+        return []
+
+    config_path = get_config_path()
+    require_readable_config_before_write(config_path)
+    user_config: Dict[str, Any] = {}
+    if config_path.exists():
+        try:
+            with open(config_path, encoding="utf-8") as f:
+                user_config = fast_safe_load(f) or {}
+        except Exception:
+            user_config = {}
+    if not isinstance(user_config, dict):
+        user_config = {}
+
+    shared = user_config.get("shared_auth")
+    if not isinstance(shared, dict):
+        shared = {}
+        user_config["shared_auth"] = shared
+
+    providers = _normalize_shared_auth_providers(shared.get("providers"))
+    # De-dupe case-insensitively while preserving the first spelling.
+    lower_seen = {p.lower() for p in providers}
+    if provider.lower() not in lower_seen:
+        providers.append(provider)
+    shared["providers"] = providers
+
+    ensure_hermes_home()
+    from utils import atomic_yaml_write
+
+    # atomic_yaml_write updates mtime/size so the next load_config() cache miss
+    # re-reads the file; no explicit cache invalidation needed.
+    atomic_yaml_write(config_path, user_config, sort_keys=False)
+
+    apply_shared_auth_config_to_env(config={"shared_auth": shared})
+    return list(providers)
+
+
+def disable_shared_auth_provider(provider: str = "xai-oauth") -> List[str]:
+    """Remove *provider* from config.yaml ``shared_auth.providers``.
+
+    When the providers list becomes empty the ``providers`` key is dropped
+    (and ``shared_auth`` itself if empty). Does **not** invent env vars for
+    remaining state; when no xAI alias remains, clears ``HERMES_XAI_SHARED_AUTH``
+    on the current process so the CLI gate flips off without a restart.
+    Power-user env-only setups without a config key are left alone
+    (no shared_auth section → no-op write, no env pop of unrelated vars).
+    """
+    provider = (provider or "").strip()
+    if not provider:
+        raise ValueError("provider must be a non-empty string")
+
+    if is_managed():
+        managed_error("disable shared auth")
+        return []
+
+    config_path = get_config_path()
+    require_readable_config_before_write(config_path)
+    user_config: Dict[str, Any] = {}
+    if config_path.exists():
+        try:
+            with open(config_path, encoding="utf-8") as f:
+                user_config = fast_safe_load(f) or {}
+        except Exception:
+            user_config = {}
+    if not isinstance(user_config, dict):
+        user_config = {}
+
+    shared = user_config.get("shared_auth")
+    had_section = isinstance(shared, dict)
+    if not had_section:
+        shared = {}
+
+    providers = _normalize_shared_auth_providers(shared.get("providers"))
+    remaining = [p for p in providers if p.lower() != provider.lower()]
+    had_xai = any(p.lower() in _XAI_SHARED_AUTH_PROVIDER_ALIASES for p in providers)
+    still_has_xai = any(
+        p.lower() in _XAI_SHARED_AUTH_PROVIDER_ALIASES for p in remaining
+    )
+    xai_gate_cleared = had_xai and not still_has_xai
+
+    if remaining:
+        shared = dict(shared) if had_section else {}
+        shared["providers"] = remaining
+        user_config["shared_auth"] = shared
+    elif had_section:
+        shared = dict(shared)
+        shared.pop("providers", None)
+        if shared:
+            user_config["shared_auth"] = shared
+        else:
+            user_config.pop("shared_auth", None)
+
+    if had_section or providers:
+        ensure_hermes_home()
+        from utils import atomic_yaml_write
+
+        atomic_yaml_write(config_path, user_config, sort_keys=False)
+
+    # Sync current process: re-bridge remaining providers; clear xAI gate if gone.
+    if remaining:
+        bridge_cfg = dict(shared) if isinstance(shared, dict) else {}
+        bridge_cfg["providers"] = remaining
+        apply_shared_auth_config_to_env(config={"shared_auth": bridge_cfg})
+        if xai_gate_cleared:
+            # Bridge only *sets* HERMES_XAI_SHARED_AUTH when an xAI alias is
+            # present; it never pops. Clear explicitly when the last xAI alias
+            # was removed but other providers remain.
+            os.environ.pop("HERMES_XAI_SHARED_AUTH", None)
+    elif xai_gate_cleared or providers:
+        # Config no longer enables shared providers. Drop the bridge targets so
+        # this process matches a fresh start with gate-off config. Do not touch
+        # HERMES_SHARED_AUTH_DIR (pre-existing Nous path; optional).
+        os.environ.pop("HERMES_XAI_SHARED_AUTH", None)
+        os.environ.pop("HERMES_SHARED_AUTH_PROVIDERS", None)
+
+    return list(remaining)
 
 
 def _load_config_impl(*, want_deepcopy: bool) -> Dict[str, Any]:

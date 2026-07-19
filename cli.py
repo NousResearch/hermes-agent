@@ -672,7 +672,20 @@ def load_cli_config() -> Dict[str, Any]:
     for config_key, env_var in browser_env_mappings.items():
         if config_key in browser_config:
             os.environ[env_var] = str(browser_config[config_key])
-    
+
+    # Bridge shared_auth.* (config.yaml) → internal HERMES_XAI_SHARED_AUTH /
+    # HERMES_SHARED_AUTH_PROVIDERS env vars. User-facing activation is the
+    # config key (AGENTS.md env-var-for-config); the shared-store engine still
+    # reads the env vars. Gate-off (absent/empty shared_auth) leaves env alone.
+    try:
+        from hermes_cli.config import apply_shared_auth_config_to_env
+
+        # Prefer raw on-disk config so DEFAULT_CONFIG empty providers never
+        # looks like a deliberate user opt-in.
+        apply_shared_auth_config_to_env()
+    except Exception:
+        pass
+
     # Apply auxiliary model/direct-endpoint overrides to environment variables.
     # Vision and web_extract each have their own provider/model/base_url/api_key tuple.
     # Compression config is read directly from config.yaml by run_agent.py and

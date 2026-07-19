@@ -1397,17 +1397,53 @@ def _generate_xai_tts(text: str, output_path: str, tts_config: Dict[str, Any]) -
     ):
         payload["optimize_streaming_latency"] = optimize_streaming_latency
 
-    response = requests.post(
-        f"{base_url}/tts",
-        headers={
-            "Authorization": f"Bearer {api_key}",
-            "Content-Type": "application/json",
-            "User-Agent": hermes_xai_user_agent(),
-        },
-        json=payload,
-        timeout=60,
-    )
-    response.raise_for_status()
+    headers = {
+        "Authorization": f"Bearer {api_key}",
+        "Content-Type": "application/json",
+        "User-Agent": hermes_xai_user_agent(),
+    }
+    provider_name = str(creds.get("provider") or "xai")
+    response = None
+    last_http_exc = None
+    for attempt in range(2):
+        try:
+            response = requests.post(
+                f"{base_url}/tts",
+                headers=headers,
+                json=payload,
+                timeout=60,
+            )
+            response.raise_for_status()
+            last_http_exc = None
+            break
+        except requests.HTTPError as exc:
+            last_http_exc = exc
+            status = exc.response.status_code if exc.response is not None else 0
+            # C3: one canonical refresh + retry on 401/403 for OAuth.
+            if (
+                attempt == 0
+                and status in {401, 403}
+                and provider_name == "xai-oauth"
+            ):
+                try:
+                    from tools.xai_http import force_refresh_xai_http_credentials
+
+                    refreshed = force_refresh_xai_http_credentials(api_key)
+                    new_key = str(refreshed.get("api_key") or "").strip()
+                    if new_key and new_key != api_key:
+                        api_key = new_key
+                        headers["Authorization"] = f"Bearer {api_key}"
+                        continue
+                except Exception as refresh_exc:
+                    logger.debug(
+                        "xAI TTS OAuth refresh after %s failed: %s",
+                        status,
+                        refresh_exc,
+                    )
+            break
+    if last_http_exc is not None:
+        raise last_http_exc
+    assert response is not None
 
     with open(output_path, "wb") as f:
         f.write(response.content)

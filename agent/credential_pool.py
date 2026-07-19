@@ -795,22 +795,68 @@ class CredentialPool:
         return entry
 
     def _sync_xai_oauth_entry_from_auth_store(self, entry: PooledCredential) -> PooledCredential:
-        """Sync an xAI OAuth pool entry from auth.json if tokens differ.
+        """Sync an xAI OAuth pool entry from the canonical auth source.
 
-        xAI OAuth refresh tokens are single-use.  When another Hermes process
-        (or another profile sharing the same auth.json) refreshes the token,
-        it writes the new pair to ``providers["xai-oauth"]["tokens"]`` under
-        ``_auth_store_lock``.  Without this resync, our in-memory pool entry
-        keeps the consumed refresh_token and the next ``_refresh_entry`` call
-        would replay it and get a ``refresh_token_reused``-style 4xx.
-
-        Only applies to entries seeded from the singleton (``device_code``);
-        manually added entries are independent credentials with their own
-        refresh-token lifecycle.
+        Under shared xAI mode the canonical shared store is authoritative;
+        profile auth.json must never re-fork a durable refresh_token. A4:
+        same-family ``manual:*`` rows are rewritten onto the shared reference
+        rather than kept as independent durable RTs.
         """
-        if self.provider != "xai-oauth" or entry.source != "device_code":
+        if self.provider != "xai-oauth":
             return entry
+        source = str(entry.source or "")
+        if source.startswith("manual") and not auth_mod._xai_shared_auth_enabled():
+            return entry
+        if source not in {
+            "device_code",
+            auth_mod.XAI_SHARED_SOURCE,
+            "shared:xai-oauth",
+        } and not source.startswith("manual"):
+            # Unknown non-manual sources: only adopt shared when shared mode on.
+            if not auth_mod._xai_shared_auth_enabled():
+                return entry
+
         try:
+            if auth_mod._xai_shared_auth_enabled():
+                shared = auth_mod._read_shared_xai_state()
+                if not auth_mod._xai_shared_state_has_usable_tokens(shared):
+                    return entry
+                assert shared is not None
+                store_access = str(shared.get("access_token") or "")
+                # Intentionally do NOT copy refresh_token into durable pool state.
+                entry_access = entry.access_token or ""
+                needs_rewrite = (
+                    bool(entry.refresh_token)
+                    or source.startswith("manual")
+                    or source not in {auth_mod.XAI_SHARED_SOURCE, "shared:xai-oauth"}
+                    or (store_access and store_access != entry_access)
+                )
+                if needs_rewrite and store_access:
+                    logger.debug(
+                        "Pool entry %s: syncing xAI access token from shared store",
+                        entry.id,
+                    )
+                    field_updates: Dict[str, Any] = {
+                        "access_token": store_access,
+                        "refresh_token": None,
+                        "source": auth_mod.XAI_SHARED_SOURCE,
+                        "last_status": None,
+                        "last_status_at": None,
+                        "last_error_code": None,
+                        "last_error_reason": None,
+                        "last_error_message": None,
+                        "last_error_reset_at": None,
+                    }
+                    if shared.get("last_refresh"):
+                        field_updates["last_refresh"] = shared["last_refresh"]
+                    updated = replace(entry, **field_updates)
+                    self._replace_entry(entry, updated)
+                    self._persist()
+                    return updated
+                return entry
+
+            if entry.source != "device_code":
+                return entry
             with _auth_store_lock():
                 auth_store = _load_auth_store()
                 state = _load_provider_state(auth_store, "xai-oauth")
@@ -849,7 +895,7 @@ class CredentialPool:
                 self._persist()
                 return updated
         except Exception as exc:
-            logger.debug("Failed to sync xAI OAuth entry from auth.json: %s", exc)
+            logger.debug("Failed to sync xAI OAuth entry from auth store: %s", exc)
         return entry
 
     def _sync_xai_oauth_entry_from_pool_store(
@@ -1010,6 +1056,9 @@ class CredentialPool:
                     "openai-codex": "openai-codex",
                     "xai-oauth": "xai-oauth",
                 }.get(self.provider)
+                # G2: shared xAI mode disables the old root write-through path.
+                if self.provider == "xai-oauth" and auth_mod._xai_shared_auth_enabled():
+                    _wt_provider_id = None
                 write_through_to_root = bool(_wt_provider_id) and not (
                     isinstance(auth_store.get("providers"), dict)
                     and isinstance(
@@ -1054,6 +1103,10 @@ class CredentialPool:
                     _store_provider_state(auth_store, "openai-codex", state, set_active=False)
 
                 elif self.provider == "xai-oauth":
+                    # Shared mode: never materialize tokens into the profile.
+                    # The canonical resolver already wrote the shared store.
+                    if auth_mod._xai_shared_auth_enabled():
+                        return
                     state = _load_provider_state(auth_store, "xai-oauth")
                     if not isinstance(state, dict):
                         return
@@ -1079,10 +1132,22 @@ class CredentialPool:
             logger.debug("Failed to sync %s pool entry back to auth store: %s", self.provider, exc)
 
     def _refresh_entry(self, entry: PooledCredential, *, force: bool) -> Optional[PooledCredential]:
-        if entry.auth_type != AUTH_TYPE_OAUTH or not entry.refresh_token:
+        # Shared xAI entries are reference-backed and intentionally omit a
+        # durable refresh_token; they still refresh via the canonical resolver.
+        # A4: under shared mode manuals also route through the shared path so
+        # they never pure-refresh a durable local RT outside the shared lock.
+        shared_xai = (
+            self.provider == "xai-oauth"
+            and auth_mod._xai_shared_auth_enabled()
+        )
+        if entry.auth_type != AUTH_TYPE_OAUTH or (not entry.refresh_token and not shared_xai):
             if force:
                 self._mark_exhausted(entry, None)
             return None
+
+        if shared_xai:
+            # G1/G3: do NOT hold profile auth.lock around the shared refresh.
+            return self._refresh_entry_impl(entry, force=force)
 
         # Codex and xAI OAuth refresh tokens are single-use.  The
         # sync→POST→write-back sequence below must run atomically across Hermes
@@ -1185,24 +1250,57 @@ class CredentialPool:
                     last_refresh=refreshed.get("last_refresh"),
                 )
             elif self.provider == "xai-oauth":
-                # Adopt fresher tokens from auth.json before spending the
-                # refresh_token — single-use tokens consumed by another
-                # process (or another profile sharing the singleton) would
-                # otherwise trigger ``refresh_token_reused`` on the next
-                # POST.  Only meaningful for singleton-seeded entries.
-                synced = self._sync_xai_oauth_entry_from_auth_store(entry)
-                if synced is not entry:
-                    entry = synced
-                refreshed = auth_mod.refresh_xai_oauth_pure(
-                    entry.access_token,
-                    entry.refresh_token,
-                )
-                updated = replace(
-                    entry,
-                    access_token=refreshed["access_token"],
-                    refresh_token=refreshed["refresh_token"],
-                    last_refresh=refreshed.get("last_refresh"),
-                )
+                source = str(entry.source or "")
+                if auth_mod._xai_shared_auth_enabled():
+                    # A4/G1: under shared mode EVERY xAI pool row — including
+                    # legacy manual:* — routes through the canonical shared
+                    # resolver + lock. Never pure-refresh a durable local RT.
+                    if source.startswith("manual") and entry.refresh_token:
+                        logger.warning(
+                            "xAI shared mode: refusing pure-refresh of manual "
+                            "pool entry %s; routing through canonical shared store",
+                            entry.id,
+                        )
+                    creds = auth_mod.resolve_xai_oauth_runtime_credentials(
+                        force_refresh=force,
+                        refresh_if_expiring=True,
+                        rejected_access_token=entry.access_token or None,
+                    )
+                    updated = replace(
+                        entry,
+                        access_token=str(creds.get("api_key") or ""),
+                        refresh_token=None,
+                        source=auth_mod.XAI_SHARED_SOURCE,
+                        last_refresh=creds.get("last_refresh"),
+                        base_url=creds.get("base_url") or entry.base_url,
+                    )
+                elif source.startswith("manual"):
+                    # Legacy gate-off: independent manual grant pure-refresh.
+                    refreshed = auth_mod.refresh_xai_oauth_pure(
+                        entry.access_token,
+                        entry.refresh_token,
+                    )
+                    updated = replace(
+                        entry,
+                        access_token=refreshed["access_token"],
+                        refresh_token=refreshed["refresh_token"],
+                        last_refresh=refreshed.get("last_refresh"),
+                    )
+                else:
+                    # Legacy singleton path.
+                    synced = self._sync_xai_oauth_entry_from_auth_store(entry)
+                    if synced is not entry:
+                        entry = synced
+                    refreshed = auth_mod.refresh_xai_oauth_pure(
+                        entry.access_token,
+                        entry.refresh_token,
+                    )
+                    updated = replace(
+                        entry,
+                        access_token=refreshed["access_token"],
+                        refresh_token=refreshed["refresh_token"],
+                        last_refresh=refreshed.get("last_refresh"),
+                    )
             elif self.provider == "nous":
                 synced = self._sync_nous_entry_from_auth_store(entry)
                 if synced is not entry:
@@ -1289,28 +1387,34 @@ class CredentialPool:
                         "xAI OAuth refresh token is terminally invalid; clearing local token state"
                     )
                     try:
-                        with _auth_store_lock():
-                            auth_store = _load_auth_store()
-                            state = _load_provider_state(auth_store, "xai-oauth") or {}
-                            if isinstance(state, dict):
-                                tokens = state.get("tokens") or {}
-                                if isinstance(tokens, dict):
-                                    store_refresh = str(tokens.get("refresh_token") or "").strip()
-                                    entry_refresh = str(entry.refresh_token or "").strip()
-                                    if not store_refresh or store_refresh == entry_refresh:
-                                        tokens.pop("access_token", None)
-                                        tokens.pop("refresh_token", None)
-                                        state["tokens"] = tokens
-                                        state["last_auth_error"] = {
-                                            "provider": "xai-oauth",
-                                            "code": getattr(exc, "code", "unknown"),
-                                            "message": str(exc),
-                                            "reason": "credential_pool_refresh_failure",
-                                            "relogin_required": True,
-                                            "at": datetime.now(timezone.utc).isoformat(),
-                                        }
-                                        _save_provider_state(auth_store, "xai-oauth", state)
-                                        _save_auth_store(auth_store)
+                        if auth_mod._xai_shared_auth_enabled():
+                            # Resolver already compare-and-cleared the shared
+                            # store under the shared lock when the failure was
+                            # raised there; do not hold profile auth.lock here.
+                            pass
+                        else:
+                            with _auth_store_lock():
+                                auth_store = _load_auth_store()
+                                state = _load_provider_state(auth_store, "xai-oauth") or {}
+                                if isinstance(state, dict):
+                                    tokens = state.get("tokens") or {}
+                                    if isinstance(tokens, dict):
+                                        store_refresh = str(tokens.get("refresh_token") or "").strip()
+                                        entry_refresh = str(entry.refresh_token or "").strip()
+                                        if not store_refresh or store_refresh == entry_refresh:
+                                            tokens.pop("access_token", None)
+                                            tokens.pop("refresh_token", None)
+                                            state["tokens"] = tokens
+                                            state["last_auth_error"] = {
+                                                "provider": "xai-oauth",
+                                                "code": getattr(exc, "code", "unknown"),
+                                                "message": str(exc),
+                                                "reason": "credential_pool_refresh_failure",
+                                                "relogin_required": True,
+                                                "at": datetime.now(timezone.utc).isoformat(),
+                                            }
+                                            _save_provider_state(auth_store, "xai-oauth", state)
+                                            _save_auth_store(auth_store)
                     except Exception as clear_exc:
                         logger.debug(
                             "Failed to clear terminal xAI OAuth state: %s", clear_exc
@@ -2263,7 +2367,123 @@ def _seed_from_singletons(provider: str, entries: List[PooledCredential]) -> Tup
             )
 
     elif provider == "xai-oauth":
-        # When the user logs in via ``hermes model`` -> xAI Grok OAuth,
+        # Shared mode: seed a reference-backed ephemeral entry from the
+        # canonical shared store. Do NOT re-fork the refresh_token into the
+        # profile pool (G1). A3/A4: rewrite/discard pre-existing device_code
+        # and same-family manual rows so they cannot pure-refresh a local RT.
+        #
+        # F1 (CRITICAL): NEVER strip the last local RT while the canonical
+        # store is empty. Auto-promote first (durable shared write), THEN
+        # strip. If promotion cannot write, leave local intact and surface.
+        if auth_mod._xai_shared_auth_enabled():
+            if auth_mod._profile_xai_shared_disabled():
+                return changed, active_sources
+            source = auth_mod.XAI_SHARED_SOURCE
+            if _is_suppressed(provider, source) or _is_suppressed(provider, "device_code"):
+                return changed, active_sources
+
+            # Promote local → shared BEFORE any in-memory or on-disk strip.
+            # Raises AuthError on write/strip failure after a local grant was
+            # found (local RT preserved when the shared write itself failed).
+            shared = auth_mod.ensure_shared_xai_grant_from_local(strip_legacy=True)
+            if not auth_mod._xai_shared_state_has_usable_tokens(shared):
+                # Truly empty — leave any residual local rows alone; do not
+                # invent a "shared" seed and do not destroy local grants.
+                return changed, active_sources
+
+            # Shared has a durable grant: safe to rewrite/drop local forks.
+            rewritten: List[PooledCredential] = []
+            for entry in list(entries):
+                entry_source = str(entry.source or "")
+                if entry_source.startswith("manual") or entry_source in {
+                    "device_code",
+                    "loopback_pkce",
+                    "hermes_pkce",
+                }:
+                    changed = True
+                    continue  # drop durable local forks
+                if entry_source in {source, "shared:xai-oauth"}:
+                    if entry.refresh_token:
+                        changed = True
+                        rewritten.append(
+                            replace(
+                                entry,
+                                refresh_token=None,
+                                source=source,
+                                access_token=entry.access_token,
+                            )
+                        )
+                    else:
+                        rewritten.append(entry)
+                    continue
+                # Unknown sources: strip any RT and drop.
+                if entry.refresh_token:
+                    changed = True
+                    continue
+                rewritten.append(entry)
+            if len(rewritten) != len(entries) or changed:
+                entries[:] = rewritten
+                changed = True
+
+            assert shared is not None
+            active_sources.add(source)
+            from hermes_cli.auth import DEFAULT_XAI_OAUTH_BASE_URL
+
+            access = str(shared.get("access_token") or "")
+            changed |= _upsert_entry(
+                entries,
+                provider,
+                source,
+                {
+                    "source": source,
+                    "auth_type": AUTH_TYPE_OAUTH,
+                    "access_token": access,
+                    # Raw RT stripped at the persistence boundary via
+                    # borrowed-source sanitization; never seed it here.
+                    "refresh_token": None,
+                    "base_url": DEFAULT_XAI_OAUTH_BASE_URL,
+                    "last_refresh": shared.get("last_refresh"),
+                    "label": label_from_token(access, source),
+                },
+            )
+
+            # Active-profile residual strip (A1/A3). Fail loud (F3c) — never
+            # silently leave a durable local RT after seeding shared.
+            if auth_mod._auth_store_holds_durable_xai_refresh_token(
+                _load_auth_store()
+            ):
+                try:
+                    with _auth_store_lock():
+                        store = _load_auth_store()
+                        if auth_mod._strip_xai_secrets_in_store(
+                            store, remove_manuals=True
+                        ):
+                            _save_auth_store(store)
+                            changed = True
+                        verify = _load_auth_store()
+                        if auth_mod._auth_store_holds_durable_xai_refresh_token(
+                            verify
+                        ):
+                            raise auth_mod.AuthError(
+                                "Shared xAI OAuth load_pool could not strip residual "
+                                "durable refresh_token from the active profile after "
+                                "seeding the shared reference.",
+                                provider="xai-oauth",
+                                code="xai_shared_strip_incomplete",
+                                relogin_required=False,
+                            )
+                except auth_mod.AuthError:
+                    raise
+                except Exception as exc:
+                    raise auth_mod.AuthError(
+                        f"Shared xAI OAuth load_pool profile secret strip failed: {exc}",
+                        provider="xai-oauth",
+                        code="xai_shared_strip_incomplete",
+                        relogin_required=False,
+                    ) from exc
+            return changed, active_sources
+
+        # Legacy: When the user logs in via ``hermes model`` -> xAI Grok OAuth,
         # tokens are written to the auth.json singleton
         # (``providers["xai-oauth"]``).  Surface them in the pool too so
         # ``hermes auth list`` reflects the logged-in state and so the pool
@@ -2538,6 +2758,25 @@ def _seed_custom_pool(pool_key: str, entries: List[PooledCredential]) -> Tuple[b
 def load_pool(provider: str) -> CredentialPool:
     provider = (provider or "").strip().lower()
     raw_entries = read_credential_pool(provider)
+    # A7: under shared xAI mode, never materialize root-borrowed xAI rows
+    # (with real RTs) into the active profile. Prefer an empty local view and
+    # let the shared singleton seed supply a non-secret reference.
+    active_pool = _load_auth_store().get("credential_pool")
+    active_entries = active_pool.get(provider) if isinstance(active_pool, dict) else None
+    profile_owns_provider_rows = bool(
+        isinstance(active_entries, list) and active_entries
+    )
+    shared_xai = provider == "xai-oauth" and auth_mod._xai_shared_auth_enabled()
+    if shared_xai and not profile_owns_provider_rows:
+        # Borrowed-from-root only — drop secret-bearing rows before materialize.
+        raw_entries = [
+            payload
+            for payload in raw_entries
+            if isinstance(payload, dict)
+            and not str(payload.get("refresh_token") or "").strip()
+            and str(payload.get("source") or "")
+            in {auth_mod.XAI_SHARED_SOURCE, "shared:xai-oauth", ""}
+        ]
     disk_ids = {
         entry.get("id")
         for entry in raw_entries
@@ -2548,6 +2787,17 @@ def load_pool(provider: str) -> CredentialPool:
         and sanitize_borrowed_credential_payload(payload, provider) != payload
         for payload in raw_entries
     )
+    if shared_xai:
+        # A2/A3: also treat any durable RT under shared mode as needing rewrite.
+        raw_needs_sanitization = raw_needs_sanitization or any(
+            isinstance(payload, dict)
+            and (
+                str(payload.get("refresh_token") or "").strip()
+                or str(payload.get("source") or "")
+                not in {auth_mod.XAI_SHARED_SOURCE, "shared:xai-oauth", ""}
+            )
+            for payload in raw_entries
+        )
     entries = [PooledCredential.from_dict(provider, payload) for payload in raw_entries]
     raw_needs_auth_normalization = any(
         isinstance(payload, dict)
@@ -2562,9 +2812,8 @@ def load_pool(provider: str) -> CredentialPool:
         # A profile may be reading this provider from the global-root fallback.
         # Keep that fallback read-only: only the store that owns these rows may
         # rewrite them. Loading the default/root profile will heal global rows.
-        active_pool = _load_auth_store().get("credential_pool")
-        active_entries = active_pool.get(provider) if isinstance(active_pool, dict) else None
-        raw_needs_auth_normalization = bool(active_entries)
+        # (Re-use active_entries captured above.)
+        raw_needs_auth_normalization = bool(profile_owns_provider_rows)
 
     if provider.startswith(CUSTOM_POOL_PREFIX):
         # Custom endpoint pool — seed from custom_providers config and model config
@@ -2591,7 +2840,19 @@ def load_pool(provider: str) -> CredentialPool:
         )
         changed |= _normalize_pool_priorities(provider, entries)
 
+    # A7: under shared mode, never persist a write that only materializes
+    # root-borrowed secret rows. Seed may still have produced a local shared
+    # ref — that is fine to write (no RT).
     if changed:
+        if shared_xai and not profile_owns_provider_rows:
+            # Only allow writing non-secret shared references.
+            safe_entries = [
+                entry
+                for entry in entries
+                if not entry.refresh_token
+                and str(entry.source or "") in {auth_mod.XAI_SHARED_SOURCE, "shared:xai-oauth"}
+            ]
+            entries = safe_entries
         new_ids = {entry.id for entry in entries}
         write_credential_pool(
             provider,

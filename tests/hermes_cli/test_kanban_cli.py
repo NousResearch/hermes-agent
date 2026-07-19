@@ -149,14 +149,55 @@ def test_run_slash_comment_max_len_trims_long_body(kanban_home):
     assert "x" * 30 not in show
 
 
-def test_run_slash_block_unblock_cycle(kanban_home):
+def test_run_slash_block_unblock_cycle(kanban_home, monkeypatch):
     out = kc.run_slash("create 'x' --assignee alice")
     import re
     tid = re.search(r"(t_[a-f0-9]+)", out).group(1)
     # Claim first so block() finds it running
-    kc.run_slash(f"claim {tid}")
+    conn = kb.connect()
+    try:
+        claimed = kb.claim_task(conn, tid)
+        assert claimed is not None
+    finally:
+        conn.close()
+    monkeypatch.setenv("HERMES_KANBAN_TASK", tid)
+    monkeypatch.setenv("HERMES_KANBAN_RUN_ID", str(claimed.current_run_id))
+    monkeypatch.setenv("HERMES_KANBAN_WORKER_TOKEN", str(claimed.worker_token))
     assert "Blocked" in kc.run_slash(f"block {tid} 'need decision'")
     assert "Unblocked" in kc.run_slash(f"unblock {tid}")
+
+
+def test_manual_cli_claim_can_heartbeat_and_complete(kanban_home):
+    out = kc.run_slash("create 'manual complete' --assignee alice")
+    import re
+    tid = re.search(r"(t_[a-f0-9]+)", out).group(1)
+
+    assert f"Claimed {tid}" in kc.run_slash(f"claim {tid}")
+    assert f"Heartbeat recorded for {tid}" in kc.run_slash(f"heartbeat {tid}")
+    assert f"Completed {tid}" in kc.run_slash(
+        f"complete {tid} --summary 'operator finished'"
+    )
+
+    with kb.connect() as conn:
+        task = kb.get_task(conn, tid)
+        run = kb.latest_run(conn, tid)
+        completed = [e for e in kb.list_events(conn, tid) if e.kind == "completed"]
+    assert task is not None and task.status == "done"
+    assert run is not None and run.outcome == "completed"
+    assert completed[-1].payload["worker_authenticated"] is False
+
+
+def test_manual_cli_claim_can_block(kanban_home):
+    out = kc.run_slash("create 'manual block' --assignee alice")
+    import re
+    tid = re.search(r"(t_[a-f0-9]+)", out).group(1)
+
+    assert f"Claimed {tid}" in kc.run_slash(f"claim {tid}")
+    assert tid in kc.run_slash(f"block {tid} 'operator paused it'")
+
+    with kb.connect() as conn:
+        task = kb.get_task(conn, tid)
+    assert task is not None and task.status == "blocked"
 
 
 def test_run_slash_json_output(kanban_home):

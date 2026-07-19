@@ -841,6 +841,8 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
                 bridge_env[_key] = _v
             else:
                 bridge_env.pop(_key, None)
+        bridge_env["WHATSAPP_PROCESS_FROM_ME_GROUPS"] = str(_extra_or_secret(
+            self.config.extra, "process_from_me_groups", "WHATSAPP_PROCESS_FROM_ME_GROUPS", False)).strip().lower()
         # bridge.js gates DMs BEFORE Python sees them: it must run the same dm_policy / allow_from the
         # adapter resolved (scoped env → this profile's YAML → default), or a secondary's YAML
         # ``dm_policy: pairing`` runs under the default profile's allowlist and drops valid pairing DMs.

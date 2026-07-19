@@ -395,7 +395,7 @@ class ProductionOsLoginMetadataTransport:
             f"--resource-type={resource_type}",
             f"--project={cutover_owner.PRODUCTION_PROJECT}",
             f"--account={account}",
-            "--format=json(access)",
+            "--format=json(overallAccessState)",
             "--quiet",
         ))
 
@@ -478,7 +478,10 @@ class ProductionOsLoginMetadataTransport:
         iam: dict[str, str] = {}
         for permission in _IAM_PERMISSIONS:
             evidence = self._iam(account, permission)
-            if set(evidence) != {"access"} or evidence.get("access") != "GRANTED":
+            if (
+                set(evidence) != {"overallAccessState"}
+                or evidence.get("overallAccessState") != "CAN_ACCESS"
+            ):
                 raise OsLoginMetadataMigrationError("os_login_metadata_iam_invalid")
             iam[permission] = "GRANTED"
         if (

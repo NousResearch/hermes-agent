@@ -13,10 +13,10 @@ interface UseComposerPlaceholderOptions {
 
 /**
  * The composer's placeholder text. A resting starter (new session) / continuation
- * (existing session) is picked once and only re-rolled when we genuinely move to
- * a *different* conversation — the null→id persist of a freshly-started session
- * keeps its starter so the text doesn't flip mid-stream. While the transport is
- * down, it swaps to a reconnecting / starting message instead.
+ * (existing session) is picked once and re-rolled when the locale changes or we
+ * genuinely move to a *different* conversation — the null→id persist of a
+ * freshly-started session keeps its starter so the text doesn't flip mid-stream.
+ * While the transport is down, it swaps to a reconnecting / starting message.
  */
 export function useComposerPlaceholder({ disabled, reconnecting, sessionId }: UseComposerPlaceholderOptions): string {
   const { locale, t } = useI18n()
@@ -36,7 +36,11 @@ export function useComposerPlaceholder({ disabled, reconnecting, sessionId }: Us
     prevSessionIdRef.current = sessionId
     prevLocaleRef.current = locale
 
-    if (prev === sessionId && !localeChanged) {
+    if (prev === sessionId) {
+      if (localeChanged) {
+        setRestingPlaceholder(pickPlaceholder(sessionId ? followUpPlaceholders : newSessionPlaceholders))
+      }
+
       return
     }
 

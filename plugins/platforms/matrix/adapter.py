@@ -2695,7 +2695,7 @@ class MatrixAdapter(BasePlatformAdapter):
 
             # Parse coordinates from geo:lat,lon[;crs=...][;u=...]
             lat = lon = None
-            if geo_uri.startswith("geo:"):
+            if isinstance(geo_uri, str) and geo_uri.startswith("geo:"):
                 coords_part = geo_uri[4:].split(";")[0]
                 parts = coords_part.split(",")
                 if len(parts) >= 2:

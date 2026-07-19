@@ -4097,6 +4097,45 @@ class TestMatrixOnRoomMessageFilter:
         self.adapter._handle_text_message.assert_awaited_once()
 
     @pytest.mark.asyncio
+    async def test_location_with_valid_geo_uri_reaches_text_handler(self):
+        ev = self._mk_event(
+            sender="@alice:example.org", body="Location", msgtype="m.location"
+        )
+        ev.content.update({"geo_uri": "geo:40.5694,9.7845"})
+
+        await self.adapter._on_room_message(ev)
+
+        self.adapter._handle_text_message.assert_awaited_once()
+        forwarded_content = self.adapter._handle_text_message.await_args.args[4]
+        assert forwarded_content["body"] == "📍 Location: 40.5694, 9.7845"
+
+    @pytest.mark.asyncio
+    async def test_location_uses_msc3488_description_in_forwarded_text(self):
+        ev = self._mk_event(sender="@alice:example.org", msgtype="m.location")
+        ev.content.update(
+            {
+                "geo_uri": "geo:40.5694,9.7845",
+                "org.matrix.msc3488.location": {"description": "Current position"},
+            }
+        )
+
+        await self.adapter._on_room_message(ev)
+
+        self.adapter._handle_text_message.assert_awaited_once()
+        forwarded_content = self.adapter._handle_text_message.await_args.args[4]
+        assert forwarded_content["body"] == "📍 Location: 40.5694, 9.7845 (Current position)"
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("geo_uri", [None, 42, "not-a-geo-uri", "geo:bad,coords"])
+    async def test_location_with_malformed_geo_uri_is_dropped(self, geo_uri):
+        ev = self._mk_event(sender="@alice:example.org", msgtype="m.location")
+        ev.content.update({"geo_uri": geo_uri})
+
+        await self.adapter._on_room_message(ev)
+
+        self.adapter._handle_text_message.assert_not_called()
+
+    @pytest.mark.asyncio
     async def test_unauthorized_user_reaches_text_handler(self):
         """MATRIX_ALLOWED_USERS is enforced by gateway authz, not adapter intake."""
         self.adapter._allowed_user_ids = {"@alice:example.org"}

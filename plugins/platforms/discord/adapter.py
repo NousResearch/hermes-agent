@@ -18,6 +18,7 @@ import logging
 import math
 import os
 import re
+import secrets
 import struct
 import subprocess
 import tempfile
@@ -116,6 +117,12 @@ from gateway.operator_cards import (
     OperatorCard,
     operator_card_severity_display,
     render_operator_card_text,
+)
+from plugins.platforms.discord.workspace_headers import (
+    WorkspaceHeaderResult,
+    WorkspaceHeaderState,
+    WorkspaceHeaderStore,
+    WorkspaceHeaderStoreError,
 )
 
 from gateway.platforms.helpers import MessageDeduplicator, ThreadParticipationTracker, convert_table_to_bullets
@@ -996,6 +1003,11 @@ class DiscordAdapter(BasePlatformAdapter):
         # in those threads don't require @mention.  Persisted to disk so the
         # set survives gateway restarts.
         self._threads = ThreadParticipationTracker("discord")
+        # One durable header per Discord thread workspace. Identity is
+        # partitioned by canonical guild scope_id; locks close a create/create
+        # race when per-user thread sessions are enabled.
+        self._workspace_headers = WorkspaceHeaderStore()
+        self._workspace_header_locks: Dict[tuple[str, str], asyncio.Lock] = {}
         # Persistent typing indicator loops per channel (DMs don't reliably
         # show the standard typing gateway event for bots)
         self._typing_tasks: Dict[str, asyncio.Task] = {}
@@ -2920,15 +2932,25 @@ class DiscordAdapter(BasePlatformAdapter):
             event,
             outcome,
         )
-        if not self._reactions_enabled():
-            return
-        message = event.raw_message
-        if hasattr(message, "add_reaction"):
-            await self._remove_reaction(message, "👀")
-            if outcome == ProcessingOutcome.SUCCESS:
-                await self._add_reaction(message, "✅")
-            elif outcome == ProcessingOutcome.FAILURE:
-                await self._add_reaction(message, "❌")
+        if self._reactions_enabled():
+            message = event.raw_message
+            if hasattr(message, "add_reaction"):
+                await self._remove_reaction(message, "👀")
+                if outcome == ProcessingOutcome.SUCCESS:
+                    await self._add_reaction(message, "✅")
+                elif outcome == ProcessingOutcome.FAILURE:
+                    await self._add_reaction(message, "❌")
+        if outcome == ProcessingOutcome.SUCCESS:
+            # This hook runs after final delivery, so headers only appear for
+            # completed assistant turns. Header I/O remains non-fatal to chat.
+            try:
+                await self.ensure_workspace_header(event.source)
+            except Exception:
+                logger.debug(
+                    "[%s] Failed to refresh Discord workspace header",
+                    self.name,
+                    exc_info=True,
+                )
 
     async def send(
         self,
@@ -5670,6 +5692,18 @@ class DiscordAdapter(BasePlatformAdapter):
             user_name=interaction.user.display_name,
             thread_id=thread_id,
             chat_topic=chat_topic,
+            scope_id=(str(getattr(interaction, "guild_id", "") or "") or None),
+            parent_chat_id=(
+                str(
+                    getattr(
+                        getattr(interaction, "channel", None),
+                        "parent_id",
+                        "",
+                    )
+                    or ""
+                )
+                or None
+            ),
         )
 
         msg_type = MessageType.COMMAND if text.startswith("/") else MessageType.TEXT
@@ -5764,6 +5798,21 @@ class DiscordAdapter(BasePlatformAdapter):
             user_name=interaction.user.display_name,
             thread_id=thread_id,
             chat_topic=chat_topic,
+            scope_id=(
+                str(getattr(getattr(interaction, "guild", None), "id", "") or "")
+                or None
+            ),
+            parent_chat_id=(
+                str(
+                    getattr(
+                        self._thread_parent_channel(_chan),
+                        "id",
+                        "",
+                    )
+                    or ""
+                )
+                or None
+            ),
         )
 
         _parent_channel = self._thread_parent_channel(getattr(interaction, "channel", None))
@@ -6497,6 +6546,204 @@ class DiscordAdapter(BasePlatformAdapter):
         except Exception:
             logger.debug("[%s] Failed to rename Discord thread %s", self.name, thread_id, exc_info=True)
             return False
+
+    @staticmethod
+    def _workspace_header_message_missing(error: BaseException) -> bool:
+        """True only when Discord definitively says the tracked message is gone."""
+        code = getattr(error, "code", None)
+        status = getattr(error, "status", None)
+        text = str(error).casefold()
+        return code == 10008 or (status == 404 and "unknown message" in text)
+
+    def _build_workspace_header_card(
+        self,
+        source: Any,
+        thread: Any,
+        state: WorkspaceHeaderState,
+    ) -> OperatorCard:
+        """Build the standard thread-header operator card."""
+        scope_id = str(source.scope_id)
+        thread_id = str(source.thread_id)
+        thread_name = (
+            " ".join(str(getattr(thread, "name", "") or "").split()) or "Hermes"
+        )
+        return OperatorCard.from_mapping(
+            {
+                "kind": "operator_card",
+                "version": 1,
+                "card_type": "thread_header",
+                "title": f"Workspace · {thread_name}",
+                "severity": "info",
+                "summary": "Persistent Hermes context for this Discord thread.",
+                "fields": [
+                    {"label": "Owner", "value": state.owner},
+                    {"label": "Status", "value": state.status},
+                    {"label": "Thread", "value": f"<#{thread_id}>"},
+                    {
+                        "label": "Linked issue / artifact",
+                        "value": state.linked_issue_or_artifact,
+                    },
+                    {"label": "Last decision", "value": state.last_decision},
+                    {"label": "Next action", "value": state.next_action},
+                ],
+                "actions": [],
+                "links": [],
+                "state_ref": f"discord-workspace:{scope_id}:{thread_id}",
+            }
+        )
+
+    async def ensure_workspace_header(self, source: Any) -> WorkspaceHeaderResult:
+        """Create or edit the one persistent header for a Discord thread.
+
+        The method fails closed when canonical scope is missing/mismatched. A
+        tracked message is recreated only after Discord definitively reports
+        Unknown Message; transient fetch failures never risk a duplicate.
+        """
+        if (
+            getattr(source, "platform", None) != Platform.DISCORD
+            or getattr(source, "chat_type", None) != "thread"
+            or not getattr(source, "scope_id", None)
+            or not getattr(source, "thread_id", None)
+            or self._client is None
+        ):
+            return WorkspaceHeaderResult(
+                False, "skipped", error="not a scoped Discord thread"
+            )
+
+        scope_id = str(source.scope_id)
+        thread_id = str(source.thread_id)
+        try:
+            thread_id_int = int(thread_id)
+            thread = self._client.get_channel(thread_id_int)
+            if thread is None:
+                thread = await self._client.fetch_channel(thread_id_int)
+        except Exception as error:
+            return WorkspaceHeaderResult(False, "failed", error=str(error))
+        live_scope_id = str(
+            getattr(getattr(thread, "guild", None), "id", "") or ""
+        )
+        if live_scope_id != scope_id:
+            return WorkspaceHeaderResult(
+                False, "skipped", error="live guild scope mismatch"
+            )
+
+        lock_key = (scope_id, thread_id)
+        lock = self._workspace_header_locks.setdefault(lock_key, asyncio.Lock())
+        async with lock:
+            try:
+                binding = self._workspace_headers.get(scope_id, thread_id)
+                state = self._workspace_headers.get_state(scope_id, thread_id)
+            except WorkspaceHeaderStoreError as error:
+                return WorkspaceHeaderResult(False, "failed", error=str(error))
+            state = state or WorkspaceHeaderState()
+            card = self._build_workspace_header_card(source, thread, state)
+            content = render_operator_card_text(
+                card, max_length=self.MAX_MESSAGE_LENGTH
+            )
+            embed = _build_operator_card_embed(card)
+            action = "created"
+            expected_message_id: Optional[str] = None
+
+            if binding is not None:
+                if binding.pending or not binding.message_id:
+                    return WorkspaceHeaderResult(
+                        False,
+                        "failed",
+                        error="workspace header creation is pending in the registry",
+                    )
+                try:
+                    message = await thread.fetch_message(int(binding.message_id))
+                except Exception as error:
+                    if not self._workspace_header_message_missing(error):
+                        return WorkspaceHeaderResult(
+                            False,
+                            "failed",
+                            message_id=binding.message_id,
+                            error=str(error),
+                        )
+                    expected_message_id = binding.message_id
+                    action = "recreated"
+                else:
+                    try:
+                        await message.edit(content=content, embed=embed)
+                    except Exception as error:
+                        return WorkspaceHeaderResult(
+                            False,
+                            "failed",
+                            message_id=binding.message_id,
+                            error=str(error),
+                        )
+                    self._nonconversational_messages.mark_many(
+                        [binding.message_id]
+                    )
+                    return WorkspaceHeaderResult(
+                        True, "updated", message_id=binding.message_id
+                    )
+
+            reservation_token = secrets.token_hex(16)
+            try:
+                reserved = self._workspace_headers.reserve_creation(
+                    scope_id,
+                    thread_id,
+                    token=reservation_token,
+                    expected_message_id=expected_message_id,
+                )
+            except WorkspaceHeaderStoreError as error:
+                return WorkspaceHeaderResult(False, "failed", error=str(error))
+            if not reserved:
+                return WorkspaceHeaderResult(
+                    False,
+                    "failed",
+                    error="workspace header identity changed before creation",
+                )
+
+            try:
+                message = await thread.send(content=content, embed=embed)
+            except Exception as error:
+                try:
+                    self._workspace_headers.cancel_creation(
+                        scope_id, thread_id, token=reservation_token
+                    )
+                except WorkspaceHeaderStoreError:
+                    logger.debug(
+                        "[%s] Failed to release Discord workspace header reservation",
+                        self.name,
+                        exc_info=True,
+                    )
+                return WorkspaceHeaderResult(False, "failed", error=str(error))
+            message_id = str(getattr(message, "id", "") or "")
+            if not message_id:
+                try:
+                    self._workspace_headers.cancel_creation(
+                        scope_id, thread_id, token=reservation_token
+                    )
+                except WorkspaceHeaderStoreError:
+                    logger.debug(
+                        "[%s] Failed to release Discord workspace header reservation",
+                        self.name,
+                        exc_info=True,
+                    )
+                return WorkspaceHeaderResult(
+                    False, "failed", error="Discord send returned no message id"
+                )
+            self._nonconversational_messages.mark_many([message_id])
+            try:
+                self._workspace_headers.complete_creation(
+                    scope_id,
+                    thread_id,
+                    token=reservation_token,
+                    message_id=message_id,
+                )
+            except WorkspaceHeaderStoreError as error:
+                # The persisted pending reservation deliberately remains. A
+                # later turn fails closed instead of emitting a duplicate.
+                return WorkspaceHeaderResult(
+                    False,
+                    "failed",
+                    message_id=message_id,
+                    error=str(error),
+                )
+            return WorkspaceHeaderResult(True, action, message_id=message_id)
 
     async def create_handoff_thread(
         self,

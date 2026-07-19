@@ -9,6 +9,7 @@ All operations use the normal kanban connection path (WAL + FULL + FK).
 
 from __future__ import annotations
 
+import hashlib
 import json
 import re
 import sqlite3
@@ -46,8 +47,10 @@ NOTIFICATION_POLICIES: tuple[str, ...] = ("project_summary", "verbose", "silent"
 
 MEMBERSHIP_KINDS: tuple[str, ...] = ("required", "support", "repair", "checker")
 
-SCHEMA_VERSION = "2"
-MIGRATION_MARKER = "hermes-orch-finish-001-g3-v2"
+SCHEMA_VERSION = "3"
+MIGRATION_MARKER = "hermes-orch-finish-001-g4-r9-v3"
+_PREVIOUS_SCHEMA_VERSION = "2"
+_PREVIOUS_MIGRATION_MARKER = "hermes-orch-finish-001-g3-v2"
 _LEGACY_SCHEMA_VERSION = "1"
 _LEGACY_MIGRATION_MARKER = "hof002-v1"
 
@@ -318,6 +321,24 @@ CREATE TABLE IF NOT EXISTS project_cleanup_journal (
     created_at            INTEGER NOT NULL,
     executed_at           INTEGER,
     redacted_error        TEXT
+);
+
+-- An admitted project's final-delivery route is deliberately independent of
+-- the ordinary per-task notifier subscription.  The latter is garbage
+-- collected when the root task completes. This row is generation-scoped
+-- authority and is never rendered into project events or artifacts.
+CREATE TABLE IF NOT EXISTS project_finalization_notification_routes (
+    board_id       TEXT NOT NULL,
+    root_task_id   TEXT NOT NULL,
+    generation     INTEGER NOT NULL,
+    platform       TEXT NOT NULL,
+    chat_id        TEXT NOT NULL,
+    thread_id      TEXT NOT NULL DEFAULT '',
+    user_id        TEXT,
+    notifier_profile TEXT,
+    route_identity TEXT NOT NULL,
+    created_at     INTEGER NOT NULL,
+    PRIMARY KEY (board_id, root_task_id, generation, platform)
 );
 
 -- Queryable migration identity for HOF-002 (named marker + version row)
@@ -660,6 +681,38 @@ _TERMINAL_FENCE_TRIGGER_SQL: tuple[str, ...] = (
 )
 
 
+# Notification route authority is append-only.  The gateway may retain this
+# private, generation-scoped copy after the normal task subscription is
+# collected, but it must never be redirected or deleted behind the admitted
+# route-identity binding.
+_NOTIFICATION_ROUTE_TRIGGER_SQL: tuple[str, ...] = (
+    """
+    CREATE TRIGGER IF NOT EXISTS pfinal_v3_route_insert
+    BEFORE INSERT ON project_finalization_notification_routes
+    WHEN NEW.platform <> 'telegram'
+      OR NOT EXISTS (
+        SELECT 1 FROM project_finalizations AS f
+         WHERE f.board_id=NEW.board_id
+           AND f.root_task_id=NEW.root_task_id
+           AND f.generation=NEW.generation
+           AND f.admission_key IS NOT NULL
+           AND f.notification_route_identity=NEW.route_identity
+      )
+    BEGIN SELECT RAISE(ABORT, 'project notification route does not match admitted authority'); END
+    """,
+    """
+    CREATE TRIGGER IF NOT EXISTS pfinal_v3_route_update
+    BEFORE UPDATE ON project_finalization_notification_routes
+    BEGIN SELECT RAISE(ABORT, 'project notification route is immutable'); END
+    """,
+    """
+    CREATE TRIGGER IF NOT EXISTS pfinal_v3_route_delete
+    BEFORE DELETE ON project_finalization_notification_routes
+    BEGIN SELECT RAISE(ABORT, 'project notification route is immutable'); END
+    """,
+)
+
+
 @dataclass(frozen=True)
 class _SchemaColumn:
     name: str
@@ -790,6 +843,19 @@ _PROJECT_CLEANUP_COLUMNS = (
     _schema_column("redacted_error", "redacted_error TEXT"),
 )
 
+_PROJECT_NOTIFICATION_ROUTE_COLUMNS = (
+    _schema_column("board_id", "board_id TEXT NOT NULL", not_null=True, primary_key_position=1),
+    _schema_column("root_task_id", "root_task_id TEXT NOT NULL", not_null=True, primary_key_position=2),
+    _schema_column("generation", "generation INTEGER NOT NULL", not_null=True, primary_key_position=3),
+    _schema_column("platform", "platform TEXT NOT NULL", not_null=True, primary_key_position=4),
+    _schema_column("chat_id", "chat_id TEXT NOT NULL", not_null=True),
+    _schema_column("thread_id", "thread_id TEXT NOT NULL DEFAULT ''", not_null=True, default=""),
+    _schema_column("user_id", "user_id TEXT"),
+    _schema_column("notifier_profile", "notifier_profile TEXT"),
+    _schema_column("route_identity", "route_identity TEXT NOT NULL", not_null=True),
+    _schema_column("created_at", "created_at INTEGER NOT NULL", not_null=True),
+)
+
 _PROJECT_META_COLUMNS = (
     _schema_column("key", "key TEXT PRIMARY KEY", primary_key_position=1),
     _schema_column("value", "value TEXT NOT NULL", not_null=True),
@@ -801,6 +867,7 @@ _TABLE_COLUMNS: dict[str, tuple[_SchemaColumn, ...]] = {
     "project_delivery_attempts": _PROJECT_DELIVERY_COLUMNS,
     "project_failure_envelopes": _PROJECT_FAILURE_COLUMNS,
     "project_cleanup_journal": _PROJECT_CLEANUP_COLUMNS,
+    "project_finalization_notification_routes": _PROJECT_NOTIFICATION_ROUTE_COLUMNS,
     "project_finalization_meta": _PROJECT_META_COLUMNS,
 }
 
@@ -966,6 +1033,7 @@ def _validate_migration_metadata(conn: sqlite3.Connection) -> None:
         return
     if (version, migration) in {
         (_LEGACY_SCHEMA_VERSION, _LEGACY_MIGRATION_MARKER),
+        (_PREVIOUS_SCHEMA_VERSION, _PREVIOUS_MIGRATION_MARKER),
         (SCHEMA_VERSION, MIGRATION_MARKER),
     }:
         return
@@ -975,7 +1043,7 @@ def _validate_migration_metadata(conn: sqlite3.Connection) -> None:
         raise ValueError(f"unsupported schema version: {version!r}") from exc
     if parsed_version is not None and parsed_version > int(SCHEMA_VERSION):
         raise ValueError("unsupported future schema version")
-    if version not in {_LEGACY_SCHEMA_VERSION, SCHEMA_VERSION}:
+    if version not in {_LEGACY_SCHEMA_VERSION, _PREVIOUS_SCHEMA_VERSION, SCHEMA_VERSION}:
         raise ValueError(f"unsupported schema version: {version!r}")
     raise ValueError(f"unsupported migration marker: {migration!r}")
 
@@ -999,6 +1067,86 @@ def _ensure_terminal_fence_triggers(conn: sqlite3.Connection) -> None:
         conn.execute(statement)
 
 
+def _ensure_notification_route_triggers(conn: sqlite3.Connection) -> None:
+    for statement in _NOTIFICATION_ROUTE_TRIGGER_SQL:
+        conn.execute(statement)
+
+
+def _backfill_admitted_notification_routes(conn: sqlite3.Connection) -> None:
+    """Copy only unambiguous legacy root routes into v3 route authority.
+
+    A v2 admission stored a hash binding but sourced the actual destination
+    from the normal notifier row.  On upgrade, preserve that destination only
+    when the live root row is singular and reproduces the stored binding.
+    Ambiguity and mismatches remain deliberately un-routable.
+    """
+
+    tables = {
+        row["name"]
+        for row in conn.execute("SELECT name FROM sqlite_master WHERE type='table'")
+    }
+    if "kanban_notify_subs" not in tables:
+        return
+    projects = conn.execute(
+        """
+        SELECT f.board_id, f.root_task_id, f.generation, f.notification_route_identity, f.created_at
+          FROM project_finalizations AS f
+         WHERE f.admission_key IS NOT NULL
+           AND NOT EXISTS (
+               SELECT 1 FROM project_finalization_notification_routes AS r
+                WHERE r.board_id=f.board_id
+                  AND r.root_task_id=f.root_task_id
+                  AND r.generation=f.generation
+                  AND r.platform='telegram'
+           )
+        """
+    ).fetchall()
+    for project in projects:
+        rows = conn.execute(
+            """
+            SELECT platform, chat_id, thread_id, user_id, notifier_profile
+              FROM kanban_notify_subs
+             WHERE task_id=? AND platform='telegram'
+             ORDER BY chat_id, thread_id
+            """,
+            (project["root_task_id"],),
+        ).fetchall()
+        if len(rows) != 1:
+            continue
+        route = rows[0]
+        thread_id = route["thread_id"] or ""
+        canonical = json.dumps(
+            (route["platform"], route["chat_id"], thread_id),
+            ensure_ascii=True,
+            separators=(",", ":"),
+        )
+        identity = "subscription:sha256:" + hashlib.sha256(
+            canonical.encode("utf-8")
+        ).hexdigest()
+        if identity != project["notification_route_identity"]:
+            continue
+        conn.execute(
+            """
+            INSERT INTO project_finalization_notification_routes (
+                board_id, root_task_id, generation, platform, chat_id, thread_id,
+                user_id, notifier_profile, route_identity, created_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                project["board_id"],
+                project["root_task_id"],
+                project["generation"],
+                route["platform"],
+                route["chat_id"],
+                thread_id,
+                route["user_id"],
+                route["notifier_profile"],
+                identity,
+                project["created_at"],
+            ),
+        )
+
+
 def ensure_project_finalization_schema(conn: sqlite3.Connection) -> None:
     """Transactionally validate or safely repair the HOF-002 persistence schema.
 
@@ -1017,6 +1165,8 @@ def ensure_project_finalization_schema(conn: sqlite3.Connection) -> None:
         _validate_required_indexes(conn)
         _validate_migration_metadata(conn)
         _ensure_terminal_fence_triggers(conn)
+        _ensure_notification_route_triggers(conn)
+        _backfill_admitted_notification_routes(conn)
         conn.execute(
             "INSERT INTO project_finalization_meta (key, value) VALUES (?, ?) "
             "ON CONFLICT(key) DO UPDATE SET value=excluded.value",

@@ -9,6 +9,7 @@ from pathlib import Path
 
 import pytest
 
+import gateway.project_finalization as finalization_gateway
 from gateway.project_finalization import ProjectFinalizationService
 from hermes_cli import kanban_db as kb
 from hermes_cli import project_runtime_registration as runtime
@@ -530,6 +531,278 @@ def test_admitted_project_passes_checker_delivers_once_and_replays_safely(
         for task in kb.list_tasks(conn, include_archived=True)
         for event in kb.list_events(conn, task.id)
     ) == 3
+
+
+def test_admitted_route_survives_root_subscription_gc_before_checker_registration(
+    production_board,
+):
+    conn, db_path, workspace = production_board
+    root = kb.create_task(
+        conn,
+        title="Route durability root",
+        assignee="builder-sol",
+        workspace_kind="dir",
+        workspace_path=str(workspace),
+    )
+    kb.add_notify_sub(
+        conn,
+        task_id=root,
+        platform="telegram",
+        chat_id=CHAT_ID,
+        thread_id=THREAD_ID,
+        user_id="private-route-owner",
+        notifier_profile="private-route-profile",
+    )
+    kb.set_task_contract(conn, root, _contract())
+    implementation = kb.create_task(
+        conn,
+        title="Route durability implementation",
+        assignee="builder-sol",
+        workspace_kind="dir",
+        workspace_path=str(workspace),
+        parents=(root,),
+        contract=_contract(),
+    )
+    runtime.admit_existing_project(
+        conn,
+        board_id=BOARD,
+        root_task_id=root,
+        required_task_ids=(implementation,),
+        checker_profile=CHECKER_PROFILE,
+        now=600,
+    )
+
+    assert kb.complete_task(conn, root, result="root complete")
+    # This is the normal notifier cleanup shape: after the root completes, its
+    # mutable subscription is removed before the finalizer mints a checker.
+    assert kb.remove_notify_sub(
+        conn,
+        task_id=root,
+        platform="telegram",
+        chat_id=CHAT_ID,
+        thread_id=THREAD_ID,
+    )
+    kb.recompute_ready(conn)
+    assert kb.complete_task(conn, implementation, result="implementation complete")
+
+    async def unexpected_delivery(*_args):
+        raise AssertionError("checker registration must not deliver a terminal message")
+
+    service = ProjectFinalizationService(
+        lambda: kb.connect(db_path),
+        owner="route-durability-finalizer",
+        now=lambda: 610,
+        deliver=unexpected_delivery,
+        enabled=True,
+        canary_scope=(f"{BOARD}/{root}",),
+    )
+    result = asyncio.run(service.tick(board_id=BOARD))
+
+    assert result.checkers_reconciled == 1
+    aggregate = get_project_finalization(
+        conn, board_id=BOARD, root_task_id=root, generation=1
+    )
+    assert aggregate is not None
+    checker_routes = kb.list_notify_subs(conn, aggregate.final_checker_task_id)
+    assert [(row["chat_id"], row["thread_id"]) for row in checker_routes] == [
+        (CHAT_ID, THREAD_ID)
+    ]
+    durable = conn.execute(
+        """
+        SELECT platform, route_identity FROM project_finalization_notification_routes
+         WHERE board_id=? AND root_task_id=? AND generation=1
+        """,
+        (BOARD, root),
+    ).fetchone()
+    assert durable is not None
+    assert durable["platform"] == "telegram"
+    assert durable["route_identity"] == aggregate.notification_route_identity
+    assert CHAT_ID not in repr(aggregate)
+    # A durable route cannot be redirected or multiplied into another
+    # platform. Both cases fail closed at the persistence boundary.
+    with pytest.raises(sqlite3.IntegrityError, match="notification route is immutable"):
+        conn.execute(
+            "UPDATE project_finalization_notification_routes SET chat_id='-100-other' "
+            "WHERE board_id=? AND root_task_id=? AND generation=1",
+            (BOARD, root),
+        )
+    with pytest.raises(sqlite3.IntegrityError, match="notification route is immutable"):
+        conn.execute(
+            "DELETE FROM project_finalization_notification_routes "
+            "WHERE board_id=? AND root_task_id=? AND generation=1",
+            (BOARD, root),
+        )
+    with pytest.raises(
+        sqlite3.IntegrityError, match="does not match admitted authority"
+    ):
+        conn.execute(
+            """
+            INSERT INTO project_finalization_notification_routes (
+                board_id, root_task_id, generation, platform, chat_id, thread_id,
+                route_identity, created_at
+            ) VALUES (?, ?, 1, 'slack', 'other', '', ?, 612)
+            """,
+            (BOARD, root, aggregate.notification_route_identity),
+        )
+
+    checker_claim = kb.claim_task(
+        conn, aggregate.final_checker_task_id, claimer="route-durability-checker"
+    )
+    assert checker_claim is not None and checker_claim.current_run_id is not None
+    runtime.submit_project_checker_verdict(
+        conn,
+        board_id=BOARD,
+        task_id=aggregate.final_checker_task_id,
+        run_id=checker_claim.current_run_id,
+        worker_profile=CHECKER_PROFILE,
+        verdict="FAIL_REPAIRABLE",
+        reason="one bounded repair proves durable route copying",
+        evidence=(
+            {
+                "kind": "review",
+                "reference": "route-durability-repair",
+                "summary": "one repair is required",
+            },
+        ),
+        now=611,
+    )
+    repaired = asyncio.run(service.tick(board_id=BOARD))
+    assert repaired.repaired == 1
+    repair_member = next(
+        member
+        for member in list_project_members(
+            conn, board_id=BOARD, root_task_id=root, generation=1
+        )
+        if member.membership_kind == "repair"
+    )
+    repair_routes = kb.list_notify_subs(conn, repair_member.task_id)
+    assert [(row["chat_id"], row["thread_id"]) for row in repair_routes] == [
+        (CHAT_ID, THREAD_ID)
+    ]
+
+
+def test_accepted_delivery_restarts_to_terminal_cas_after_root_subscription_gc(
+    production_board,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    conn, db_path, workspace = production_board
+    root = kb.create_task(
+        conn,
+        title="Restart durable route root",
+        assignee="builder-sol",
+        workspace_kind="dir",
+        workspace_path=str(workspace),
+    )
+    kb.add_notify_sub(
+        conn,
+        task_id=root,
+        platform="telegram",
+        chat_id=CHAT_ID,
+        thread_id=THREAD_ID,
+    )
+    kb.set_task_contract(conn, root, _contract())
+    implementation = kb.create_task(
+        conn,
+        title="Restart durable route implementation",
+        assignee="builder-sol",
+        workspace_kind="dir",
+        workspace_path=str(workspace),
+        parents=(root,),
+        contract=_contract(),
+    )
+    runtime.admit_existing_project(
+        conn,
+        board_id=BOARD,
+        root_task_id=root,
+        required_task_ids=(implementation,),
+        checker_profile=CHECKER_PROFILE,
+        now=700,
+    )
+    assert kb.complete_task(conn, root, result="root complete")
+    kb.recompute_ready(conn)
+    assert kb.complete_task(conn, implementation, result="implementation complete")
+
+    deliveries: list[str] = []
+
+    async def accepted_delivery(
+        _platform: str, _chat_id: str, _thread_id: str | None, message: str
+    ) -> dict[str, str]:
+        deliveries.append(message)
+        return {"provider_message_id": "accepted-before-crash"}
+
+    service = ProjectFinalizationService(
+        lambda: kb.connect(db_path),
+        owner="route-restart-finalizer",
+        now=lambda: 710,
+        deliver=accepted_delivery,
+        enabled=True,
+        canary_scope=(f"{BOARD}/{root}",),
+    )
+    assert asyncio.run(service.tick(board_id=BOARD)).checkers_reconciled == 1
+    checker_id = get_project_finalization(
+        conn, board_id=BOARD, root_task_id=root, generation=1
+    ).final_checker_task_id
+    claim = kb.claim_task(conn, checker_id, claimer="durable-route-checker")
+    assert claim is not None and claim.current_run_id is not None
+    runtime.submit_project_checker_verdict(
+        conn,
+        board_id=BOARD,
+        task_id=checker_id,
+        run_id=claim.current_run_id,
+        worker_profile=CHECKER_PROFILE,
+        verdict="PASS",
+        reason="independent review passed durable route candidate",
+        evidence=(
+            {
+                "kind": "test",
+                "reference": "route-durability-test",
+                "summary": "route durability exercised",
+            },
+        ),
+        now=711,
+    )
+
+    real_terminal_cas = finalization_gateway.record_terminal_outcome
+
+    def crash_after_accepted_delivery(*_args, **_kwargs):
+        raise RuntimeError("simulated crash after accepted delivery")
+
+    monkeypatch.setattr(
+        finalization_gateway, "record_terminal_outcome", crash_after_accepted_delivery
+    )
+    crashed = asyncio.run(service.tick(board_id=BOARD))
+    assert crashed.failures
+    assert len(deliveries) == 1
+    attempt = list_delivery_attempts(
+        conn,
+        board_id=BOARD,
+        root_task_id=root,
+        generation=1,
+        platform="telegram",
+        destination_reference=CHAT_ID,
+        message_kind="project_complete",
+    )[-1]
+    assert attempt.delivery_state == "accepted"
+    assert attempt.accepted is True
+    assert get_project_finalization(
+        conn, board_id=BOARD, root_task_id=root, generation=1
+    ).terminal_outcome is None
+
+    assert kb.remove_notify_sub(
+        conn,
+        task_id=root,
+        platform="telegram",
+        chat_id=CHAT_ID,
+        thread_id=THREAD_ID,
+    )
+    monkeypatch.setattr(finalization_gateway, "record_terminal_outcome", real_terminal_cas)
+
+    replay = asyncio.run(service.tick(board_id=BOARD))
+
+    assert replay.terminalized == 1
+    assert len(deliveries) == 1
+    assert get_project_finalization(
+        conn, board_id=BOARD, root_task_id=root, generation=1).terminal_outcome == "COMPLETE"
 
 
 def test_repairable_verdict_rotates_authority_and_fresh_checker_can_pass(

@@ -15,6 +15,8 @@ Covers:
 - migration identity queryable
 """
 
+import hashlib
+import json
 import sqlite3
 import tempfile
 import time
@@ -94,6 +96,7 @@ def test_schema_creates_all_required_tables_and_indexes():
         assert "project_delivery_attempts" in tables
         assert "project_failure_envelopes" in tables
         assert "project_cleanup_journal" in tables
+        assert "project_finalization_notification_routes" in tables
         assert "project_finalization_meta" in tables
 
         # indexes
@@ -125,8 +128,8 @@ def test_migration_is_idempotent_and_marker_queryable():
         ensure_project_finalization_schema(conn)
         marker1 = get_project_finalization_migration_marker(conn)
         ver1 = get_project_finalization_schema_version(conn)
-        assert marker1 == "hermes-orch-finish-001-g3-v2"
-        assert ver1 == "2"
+        assert marker1 == "hermes-orch-finish-001-g4-r9-v3"
+        assert ver1 == "3"
 
         # repeated call
         ensure_project_finalization_schema(conn)
@@ -135,7 +138,88 @@ def test_migration_is_idempotent_and_marker_queryable():
 
         # meta table has rows
         rows = list(conn.execute("SELECT key, value FROM project_finalization_meta"))
-        assert ("migration", "hermes-orch-finish-001-g3-v2") in [(r[0], r[1]) for r in rows]
+        assert ("migration", "hermes-orch-finish-001-g4-r9-v3") in [(r[0], r[1]) for r in rows]
+    finally:
+        _close_and_unlink(conn, path)
+
+
+def test_v2_to_v3_route_authority_migration_is_additive_and_marked():
+    conn, path = _make_temp_db()
+    try:
+        # Build the exact pre-route table set, then retain its v2 marker.
+        # The v3 migration must create only the new route-authority table and
+        # advance metadata transactionally.
+        ensure_project_finalization_schema(conn)
+        conn.execute("DROP TABLE project_finalization_notification_routes")
+        conn.execute(
+            """
+            CREATE TABLE kanban_notify_subs (
+                task_id TEXT NOT NULL,
+                platform TEXT NOT NULL,
+                chat_id TEXT NOT NULL,
+                thread_id TEXT NOT NULL DEFAULT '',
+                user_id TEXT,
+                notifier_profile TEXT
+            )
+            """
+        )
+        route_identity = "subscription:sha256:" + hashlib.sha256(
+            json.dumps(
+                ("telegram", "-100-v2-route", "77"),
+                ensure_ascii=True,
+                separators=(",", ":"),
+            ).encode("utf-8")
+        ).hexdigest()
+        conn.execute(
+            """
+            INSERT INTO project_finalizations (
+                board_id, root_task_id, generation, state, final_checker_task_id,
+                admission_key, checker_profile, notification_route_identity,
+                repair_budget, notification_policy, retention_days, created_at,
+                updated_at, version
+            ) VALUES ('v2-board', 'v2-root', 7, 'open', 'v2-checker',
+                      'v2-admission', 'v2-checker-profile', ?, 1,
+                      'project_summary', 3, 701, 702, 1)
+            """,
+            (route_identity,),
+        )
+        conn.execute(
+            """
+            INSERT INTO kanban_notify_subs
+                (task_id, platform, chat_id, thread_id, user_id, notifier_profile)
+            VALUES ('v2-root', 'telegram', '-100-v2-route', '77', 'v2-user', 'v2-profile')
+            """
+        )
+        conn.execute(
+            "UPDATE project_finalization_meta SET value='2' WHERE key='version'"
+        )
+        conn.execute(
+            "UPDATE project_finalization_meta SET value='hermes-orch-finish-001-g3-v2' "
+            "WHERE key='migration'"
+        )
+
+        ensure_project_finalization_schema(conn)
+
+        columns = {
+            row["name"]
+            for row in conn.execute(
+                "PRAGMA table_info(project_finalization_notification_routes)"
+            )
+        }
+        assert {
+            "board_id", "root_task_id", "generation", "platform", "chat_id",
+            "thread_id", "route_identity", "created_at",
+        } <= columns
+        assert get_project_finalization_schema_version(conn) == "3"
+        assert get_project_finalization_migration_marker(conn) == "hermes-orch-finish-001-g4-r9-v3"
+        route = conn.execute(
+            """
+            SELECT generation, chat_id, thread_id, route_identity, created_at
+              FROM project_finalization_notification_routes
+             WHERE board_id='v2-board' AND root_task_id='v2-root'
+            """
+        ).fetchone()
+        assert tuple(route) == (7, "-100-v2-route", "77", route_identity, 701)
     finally:
         _close_and_unlink(conn, path)
 
@@ -219,7 +303,7 @@ def test_empty_compatible_partial_table_is_additively_repaired():
         columns = {row["name"] for row in conn.execute("PRAGMA table_info(project_finalizations)")}
         assert {"checker_verdict", "repair_generation", "version"} <= columns
         assert conn.execute("SELECT COUNT(*) FROM project_finalizations").fetchone()[0] == 0
-        assert get_project_finalization_migration_marker(conn) == "hermes-orch-finish-001-g3-v2"
+        assert get_project_finalization_migration_marker(conn) == "hermes-orch-finish-001-g4-r9-v3"
     finally:
         _close_and_unlink(conn, path)
 
@@ -275,8 +359,8 @@ def test_populated_v1_schema_migrates_additively_and_preserves_finalization_row(
         assert row["root_task_id"] == "root"
         assert row["created_at"] == 11
         assert row["admission_key"] is None
-        assert get_project_finalization_schema_version(conn) == "2"
-        assert get_project_finalization_migration_marker(conn) == "hermes-orch-finish-001-g3-v2"
+        assert get_project_finalization_schema_version(conn) == "3"
+        assert get_project_finalization_migration_marker(conn) == "hermes-orch-finish-001-g4-r9-v3"
     finally:
         _close_and_unlink(conn, path)
 
@@ -380,13 +464,13 @@ def test_future_schema_version_is_rejected_without_changing_marker():
     conn, path = _make_temp_db()
     try:
         ensure_project_finalization_schema(conn)
-        conn.execute("UPDATE project_finalization_meta SET value='3' WHERE key='version'")
+        conn.execute("UPDATE project_finalization_meta SET value='4' WHERE key='version'")
 
         with pytest.raises(ValueError, match="unsupported future schema version"):
             ensure_project_finalization_schema(conn)
 
-        assert get_project_finalization_schema_version(conn) == "3"
-        assert get_project_finalization_migration_marker(conn) == "hermes-orch-finish-001-g3-v2"
+        assert get_project_finalization_schema_version(conn) == "4"
+        assert get_project_finalization_migration_marker(conn) == "hermes-orch-finish-001-g4-r9-v3"
     finally:
         _close_and_unlink(conn, path)
 

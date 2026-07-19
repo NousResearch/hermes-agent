@@ -187,10 +187,11 @@ def resolve_project_telegram_destination(
 ) -> ProjectTelegramDestination:
     """Resolve one terminal Telegram route from generation-scoped durable state.
 
-    Root-task subscriptions take precedence over inherited member routes.  Each
-    tier is sorted by route fields, so the same snapshot always resolves the
-    same destination.  No send is attempted and subscriber ownership metadata
-    is neither selected nor returned.
+    Admitted generations use their immutable route-authority row, which is
+    intentionally separate from normal task subscriptions (those are removed
+    when a task completes).  Legacy, non-admitted generations retain the
+    deterministic subscription lookup.  No send is attempted and subscriber
+    ownership metadata is neither selected nor returned.
     """
 
     project_row = _project_row(conn, board_id, root_task_id, generation)
@@ -200,6 +201,44 @@ def resolve_project_telegram_destination(
             reason="project_generation_missing",
         )
     if project_row["admission_key"] is not None:
+        durable_rows = conn.execute(
+            """
+            SELECT platform, chat_id, thread_id, route_identity
+              FROM project_finalization_notification_routes
+             WHERE board_id = ? AND root_task_id = ? AND generation = ?
+               AND platform = 'telegram'
+             ORDER BY chat_id, thread_id
+            """,
+            (board_id, root_task_id, generation),
+        ).fetchall()
+        if durable_rows:
+            if len(durable_rows) != 1:
+                return ProjectTelegramDestination(
+                    status=DESTINATION_MISSING,
+                    reason="admitted_telegram_destination_ambiguous",
+                )
+            row = durable_rows[0]
+            thread_id = row["thread_id"] or None
+            identity = notification_route_identity("telegram", row["chat_id"], thread_id)
+            if (
+                identity != row["route_identity"]
+                or identity != project_row["notification_route_identity"]
+            ):
+                return ProjectTelegramDestination(
+                    status=DESTINATION_MISSING,
+                    reason="admitted_telegram_destination_changed",
+                )
+            return ProjectTelegramDestination(
+                status=DESTINATION_FOUND,
+                platform="telegram",
+                chat_id=row["chat_id"],
+                thread_id=thread_id,
+                route_identity=identity,
+            )
+
+        # A project admitted before the additive route migration can still be
+        # replayed while its original root subscription survives.  Its next
+        # explicit admission replay records the immutable authority row.
         rows = conn.execute(
             """
             SELECT platform, chat_id, thread_id
@@ -348,7 +387,7 @@ def admit_existing_project(
 
         route_rows = conn.execute(
             """
-            SELECT platform, chat_id, thread_id
+            SELECT platform, chat_id, thread_id, user_id, notifier_profile
               FROM kanban_notify_subs
              WHERE task_id = ? AND platform = 'telegram'
              ORDER BY chat_id, thread_id
@@ -405,6 +444,15 @@ def admit_existing_project(
                 generation=int(existing["generation"]),
             )
             assert finalization is not None
+            _persist_admitted_telegram_route(
+                conn,
+                board_id=board_id,
+                root_task_id=root_task_id,
+                generation=int(existing["generation"]),
+                route=route,
+                route_identity=route_identity,
+                created_at=current_time,
+            )
             return AtomicProjectAdmission(
                 ADMISSION_ALREADY_ADMITTED, finalization, admission_key
             )
@@ -439,6 +487,15 @@ def admit_existing_project(
             ),
         )
         _inject(inject_failure, "after_project")
+        _persist_admitted_telegram_route(
+            conn,
+            board_id=board_id,
+            root_task_id=root_task_id,
+            generation=1,
+            route=route,
+            route_identity=route_identity,
+            created_at=current_time,
+        )
         conn.executemany(
             """
             INSERT INTO project_finalization_members
@@ -1328,6 +1385,74 @@ def _project_task_ids(
     return tuple(sorted(ids))
 
 
+def _persist_admitted_telegram_route(
+    conn: sqlite3.Connection,
+    *,
+    board_id: str,
+    root_task_id: str,
+    generation: int,
+    route: sqlite3.Row,
+    route_identity: str,
+    created_at: int,
+) -> None:
+    """Record the private, immutable delivery route for an admitted generation.
+
+    This deliberately copies only the route data that the notifier needs to
+    recreate a checker/repair subscription.  It never enters a task event,
+    artifact, or public return value.  A conflicting replay is a durable
+    authority violation rather than an opportunity to redirect delivery.
+    """
+
+    existing = conn.execute(
+        """
+        SELECT platform, chat_id, thread_id, user_id, notifier_profile, route_identity
+          FROM project_finalization_notification_routes
+         WHERE board_id=? AND root_task_id=? AND generation=? AND platform='telegram'
+        """,
+        (board_id, root_task_id, generation),
+    ).fetchall()
+    if existing:
+        if len(existing) != 1:
+            raise ValueError("admitted project has ambiguous durable Telegram route")
+        current = existing[0]
+        # ``user_id`` and ``notifier_profile`` are copier metadata, not
+        # admission authority (and deliberately are not part of the admission
+        # key).  A normal notifier metadata refresh must not turn an exact
+        # admission replay into a route redirect conflict.
+        expected = (
+            route["platform"],
+            route["chat_id"],
+            route["thread_id"] or "",
+            route_identity,
+        )
+        actual = tuple(current[field] for field in (
+            "platform", "chat_id", "thread_id", "route_identity",
+        ))
+        if actual != expected:
+            raise ValueError("admitted project durable Telegram route conflicts with admission")
+        return
+    conn.execute(
+        """
+        INSERT INTO project_finalization_notification_routes (
+            board_id, root_task_id, generation, platform, chat_id, thread_id,
+            user_id, notifier_profile, route_identity, created_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """,
+        (
+            board_id,
+            root_task_id,
+            generation,
+            route["platform"],
+            route["chat_id"],
+            route["thread_id"] or "",
+            route["user_id"],
+            route["notifier_profile"],
+            route_identity,
+            created_at,
+        ),
+    )
+
+
 def _resolve_route_rows(
     conn: sqlite3.Connection,
     *,
@@ -1340,6 +1465,37 @@ def _resolve_route_rows(
     requested = set(identities)
     if not requested:
         raise ValueError("at least one notification route identity is required")
+    project_row = _project_row(conn, board_id, root_task_id, generation)
+    if project_row is not None and project_row["admission_key"] is not None:
+        durable_rows = conn.execute(
+            """
+            SELECT platform, chat_id, thread_id, user_id, notifier_profile, route_identity
+              FROM project_finalization_notification_routes
+             WHERE board_id=? AND root_task_id=? AND generation=?
+             ORDER BY platform, chat_id, thread_id
+            """,
+            (board_id, root_task_id, generation),
+        ).fetchall()
+        if durable_rows:
+            identities_found = {
+                notification_route_identity(
+                    row["platform"], row["chat_id"], row["thread_id"] or None
+                )
+                for row in durable_rows
+            }
+            if (
+                len(durable_rows) != 1
+                or identities_found != requested
+                or any(
+                    row["route_identity"] != notification_route_identity(
+                        row["platform"], row["chat_id"], row["thread_id"] or None
+                    )
+                    or row["route_identity"] != project_row["notification_route_identity"]
+                    for row in durable_rows
+                )
+            ):
+                raise ValueError("notification route identity is not durable project state")
+            return tuple(durable_rows)
     task_ids = _project_task_ids(
         conn,
         board_id=board_id,

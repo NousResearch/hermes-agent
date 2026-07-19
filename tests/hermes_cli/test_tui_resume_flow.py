@@ -820,14 +820,16 @@ def test_oneshot_distinguishes_disabled_mcp_from_unknown(monkeypatch, capsys):
 
 def test_oneshot_wires_session_db_for_recall(monkeypatch):
     """hermes -z bypasses HermesCLI, but recall still needs SessionDB."""
-    from hermes_cli.oneshot import _run_agent
+    import hermes_cli.oneshot as oneshot_mod
 
     captured = {}
+    cleanup_calls = []
     sentinel_db = object()
 
     class FakeAgent:
         def __init__(self, **kwargs):
             captured.update(kwargs)
+            captured["agent"] = self
             self.suppress_status_output = False
             self.stream_delta_callback = object()
             self.tool_gen_callback = object()
@@ -877,13 +879,19 @@ def test_oneshot_wires_session_db_for_recall(monkeypatch):
         "hermes_cli.tools_config",
         mod("hermes_cli.tools_config", _get_platform_tools=lambda *_args, **_kwargs: {"session_search"}),
     )
+    monkeypatch.setattr(
+        oneshot_mod,
+        "_cleanup_oneshot_resources",
+        lambda agent, session_db: cleanup_calls.append((agent, session_db)),
+    )
 
-    text, result = _run_agent("recall this")
+    text, result = oneshot_mod._run_agent("recall this")
     assert text == "ok"
     assert not result.get("failed")
     assert captured["session_db"] is sentinel_db
     assert captured["enabled_toolsets"] == ["session_search"]
     assert captured["prompt"] == "recall this"
+    assert cleanup_calls == [(captured["agent"], sentinel_db)]
 
 
 def test_launch_tui_exports_model_provider_and_toolsets(monkeypatch, main_mod):

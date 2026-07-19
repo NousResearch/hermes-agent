@@ -310,6 +310,87 @@ def _create_session_db_for_oneshot():
         return None
 
 
+def _cleanup_oneshot_resources(agent: object, session_db: object) -> None:
+    """Release the resources owned by a completed ``hermes -z`` run.
+
+    Oneshot intentionally bypasses ``HermesCLI``.  It therefore cannot rely on
+    the interactive CLI's ``atexit`` finalizer to close MCP and auxiliary
+    clients before Python starts unloading their native extensions.
+    """
+    try:
+        from hermes_cli.plugins import invoke_hook
+
+        invoke_hook(
+            "on_session_finalize",
+            session_id=getattr(agent, "session_id", None),
+            platform=getattr(agent, "platform", None) or "cli",
+            reason="shutdown",
+        )
+    except Exception:
+        logging.debug("Oneshot session finalizer failed", exc_info=True)
+
+    try:
+        from tools.terminal_tool import cleanup_all_environments
+
+        cleanup_all_environments()
+    except Exception:
+        logging.debug("Oneshot terminal cleanup failed", exc_info=True)
+    try:
+        from tools.async_delegation import interrupt_all
+
+        interrupt_all(reason="oneshot shutdown")
+    except Exception:
+        logging.debug("Oneshot delegation cleanup failed", exc_info=True)
+    try:
+        from tools.browser_tool import _emergency_cleanup_all_sessions
+
+        _emergency_cleanup_all_sessions()
+    except Exception:
+        logging.debug("Oneshot browser cleanup failed", exc_info=True)
+    try:
+        from tools.mcp_tool import shutdown_mcp_servers
+
+        shutdown_mcp_servers()
+    except Exception:
+        logging.debug("Oneshot MCP cleanup failed", exc_info=True)
+    try:
+        from agent.auxiliary_client import shutdown_cached_clients
+
+        shutdown_cached_clients()
+    except Exception:
+        logging.debug("Oneshot auxiliary client cleanup failed", exc_info=True)
+
+    try:
+        memory_manager = getattr(agent, "_memory_manager", None)
+        flush_pending = getattr(memory_manager, "flush_pending", None)
+        if callable(flush_pending):
+            flush_pending(timeout=10)
+    except Exception:
+        logging.debug("Oneshot memory flush failed", exc_info=True)
+    try:
+        shutdown_memory_provider = getattr(agent, "shutdown_memory_provider", None)
+        if callable(shutdown_memory_provider):
+            messages = getattr(agent, "_session_messages", None)
+            if isinstance(messages, list):
+                shutdown_memory_provider(messages)
+            else:
+                shutdown_memory_provider()
+    except Exception:
+        logging.debug("Oneshot memory cleanup failed", exc_info=True)
+    try:
+        close_agent = getattr(agent, "close", None)
+        if callable(close_agent):
+            close_agent()
+    except Exception:
+        logging.debug("Oneshot agent cleanup failed", exc_info=True)
+    try:
+        close_session_db = getattr(session_db, "close", None)
+        if callable(close_session_db):
+            close_session_db()
+    except Exception:
+        logging.debug("Oneshot session database cleanup failed", exc_info=True)
+
+
 def _run_agent(
     prompt: str,
     model: Optional[str] = None,
@@ -432,8 +513,11 @@ def _run_agent(
     agent.stream_delta_callback = None
     agent.tool_gen_callback = None
 
-    result = agent.run_conversation(prompt)
-    return (result.get("final_response") or "", result)
+    try:
+        result = agent.run_conversation(prompt)
+        return (result.get("final_response") or "", result)
+    finally:
+        _cleanup_oneshot_resources(agent, session_db)
 
 
 def _oneshot_clarify_callback(question: str, choices=None) -> str:

@@ -46,6 +46,18 @@ from gateway.config import Platform, PlatformConfig
 from utils import env_int, env_bool
 
 logger = logging.getLogger(__name__)
+
+# imaplib caps a single IMAP *response line* at ``_MAXLINE`` (1 MB by default).
+# ``UID SEARCH ALL`` / ``UID SEARCH UNSEEN`` return every matching UID on one
+# space-separated line; on a large mailbox that line exceeds 1 MB and imaplib
+# raises "command: UID => got more than 1000000 bytes". That fires inside
+# connect(), which then returns False and wedges the platform in an endless
+# reconnect loop (observed on a 420k-message Gmail INBOX → ~2.8 MB UID line).
+# Raise the cap so large mailboxes work. Message bodies are read as IMAP
+# literals, not lines, so they are unaffected by this limit.
+if getattr(imaplib, "_MAXLINE", 0) < 100_000_000:
+    imaplib._MAXLINE = 100_000_000
+
 # Automated sender patterns — emails from these are silently ignored
 _NOREPLY_PATTERNS = (
     "noreply", "no-reply", "no_reply", "donotreply", "do-not-reply",
@@ -585,13 +597,33 @@ class EmailAdapter(BasePlatformAdapter):
             imap = imaplib.IMAP4_SSL(self._imap_host, self._imap_port, timeout=30)
             imap.login(self._address, self._password)
             _send_imap_id(imap)
-            # Mark all existing messages as seen so we only process new ones
-            imap.select("INBOX")
-            status, data = imap.uid("search", None, "ALL")
-            if status == "OK" and data and data[0]:
-                for uid in data[0].split():
-                    self._seen_uids.add(uid)
-            # Keep only the most recent UIDs to prevent unbounded growth
+            # Seed the seen-UID set with the most recent messages so we only
+            # dispatch genuinely new mail. We fetch just the most recent
+            # ``_seen_uids_max`` UIDs by *sequence number* rather than issuing
+            # ``UID SEARCH ALL``: on a large INBOX the latter returns every UID
+            # on one multi-MB line (a 420k-message Gmail INBOX → ~2.8 MB) which
+            # is wasteful and can overflow imaplib's line cap — and we only keep
+            # the recent slice anyway. Sequence numbers are position-ordered, so
+            # ``lo:count`` is exactly the newest ``_seen_uids_max`` messages.
+            sel_status, sel_data = imap.select("INBOX")
+            count = 0
+            if sel_status == "OK" and sel_data and sel_data[0]:
+                try:
+                    count = int(sel_data[0])
+                except (ValueError, TypeError):
+                    count = 0
+            if count > 0:
+                lo = max(1, count - self._seen_uids_max + 1)
+                fetch_status, fetch_data = imap.fetch(f"{lo}:{count}", "(UID)")
+                if fetch_status == "OK" and fetch_data:
+                    for item in fetch_data:
+                        raw = item[0] if isinstance(item, tuple) else item
+                        if not isinstance(raw, (bytes, bytearray)):
+                            continue
+                        m = re.search(rb"UID (\d+)", raw)
+                        if m:
+                            self._seen_uids.add(m.group(1))
+            # Defensive: keep memory bounded even if the server over-returns.
             self._trim_seen_uids()
             imap.logout()
             logger.info("[Email] IMAP connection test passed. %d existing messages skipped.", len(self._seen_uids))

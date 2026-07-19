@@ -944,9 +944,30 @@ def _patch_skill(
     Requires a unique match unless replace_all is True.
     """
     if not old_string:
-        return {"success": False, "error": "old_string is required for 'patch'."}
+        # A bare "required" error is a dead end: the model cannot tell whether it
+        # omitted the arg or supplied it wrongly, so it retries blindly and often
+        # escapes to action='write_file', clobbering the whole skill file. Tell it
+        # how to recover. Upstream: NousResearch/hermes-agent#33064.
+        return {
+            "success": False,
+            "error": (
+                "old_string is required for 'patch' and must be the EXACT text currently in the "
+                "file. Read the target file first (read_file on the skill's SKILL.md, or the file "
+                "named by file_path) and copy the snippet verbatim, then retry 'patch'. "
+                "Do NOT fall back to action='write_file' — that rewrites the entire file and "
+                "destroys unrelated content."
+            ),
+        }
     if new_string is None:
         return {"success": False, "error": "new_string is required for 'patch'. Use an empty string to delete matched text."}
+    if old_string == new_string:
+        return {
+            "success": False,
+            "error": (
+                "old_string and new_string are identical — this patch would change nothing. "
+                "Supply the actual replacement text."
+            ),
+        }
 
     existing = _find_skill(name)
     if not existing:
@@ -1382,10 +1403,10 @@ def skill_manage(
         result = _edit_skill(name, content)
 
     elif action == "patch":
-        if not old_string:
-            return tool_error("old_string is required for 'patch'. Provide the text to find.", success=False)
-        if new_string is None:
-            return tool_error("new_string is required for 'patch'. Use empty string to delete matched text.", success=False)
+        # Argument validation lives in _patch_skill so the public tool and the
+        # helper return the same actionable guidance. A bare "required" error
+        # here would shadow it and leave the model with nowhere to go but
+        # action='write_file'. Upstream: NousResearch/hermes-agent#33064.
         result = _patch_skill(name, old_string, new_string, file_path, replace_all)
 
     elif action == "delete":

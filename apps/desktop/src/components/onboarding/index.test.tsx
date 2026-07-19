@@ -1,8 +1,16 @@
-import { cleanup, fireEvent, render, screen } from '@testing-library/react'
-import { afterEach, describe, expect, it } from 'vitest'
+import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
+import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
+import { afterEach, describe, expect, it, vi } from 'vitest'
 
-import { $desktopOnboarding, type DesktopOnboardingState, type OnboardingContext } from '@/store/onboarding'
+import {
+  $desktopOnboarding,
+  type DesktopOnboardingState,
+  type OnboardingContext,
+  type OnboardingFlow
+} from '@/store/onboarding'
 import type { OAuthProvider } from '@/types/hermes'
+
+import { FlowPanel } from './flow'
 
 import { Picker } from '.'
 
@@ -52,6 +60,47 @@ afterEach(() => {
     firstRunSkipped: false,
     manual: false,
     localEndpoint: false
+  })
+  Reflect.deleteProperty(window, 'hermesDesktop')
+})
+
+describe('onboarding profile scope', () => {
+  it('fetches confirmation metadata for the flow profile instead of the mutable active profile', async () => {
+    const api = vi.fn().mockResolvedValue({
+      providers: [{ models: ['gpt-test'], name: 'OpenAI Codex', slug: 'openai-codex' }]
+    })
+
+    Object.defineProperty(window, 'hermesDesktop', {
+      configurable: true,
+      value: { api }
+    })
+
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false } } })
+
+    const flow = {
+      currentModel: 'gpt-test',
+      label: 'OpenAI Codex',
+      profile: 'coder',
+      providerSlug: 'openai-codex',
+      requireProfileIdentity: true,
+      saving: false,
+      status: 'confirming_model'
+    } satisfies Extract<OnboardingFlow, { status: 'confirming_model' }>
+
+    render(
+      <QueryClientProvider client={client}>
+        <FlowPanel ctx={ctx} flow={flow} leaving={false} onBegin={() => undefined} />
+      </QueryClientProvider>
+    )
+
+    await waitFor(() =>
+      expect(api).toHaveBeenCalledWith(
+        expect.objectContaining({
+          path: '/api/model/options?include_unconfigured=1',
+          profile: 'coder'
+        })
+      )
+    )
   })
 })
 

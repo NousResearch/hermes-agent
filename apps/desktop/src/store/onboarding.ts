@@ -12,8 +12,10 @@ import {
   submitOAuthCode,
   validateProviderCredential
 } from '@/hermes'
-import { evaluateRuntimeReadiness, type RuntimeReadinessResult } from '@/lib/runtime-readiness'
+import { evaluateRuntimeReadiness, requiresProfileIdentity, type RuntimeReadinessResult } from '@/lib/runtime-readiness'
 import { notify, notifyError } from '@/store/notifications'
+import { $activeGatewayProfile, normalizeProfileKey } from '@/store/profile'
+import { $connection } from '@/store/session'
 import type { ModelOptionProvider, OAuthProvider, OAuthStartResponse } from '@/types/hermes'
 
 type PkceStart = Extract<OAuthStartResponse, { flow: 'pkce' }>
@@ -21,15 +23,20 @@ type DeviceStart = Extract<OAuthStartResponse, { flow: 'device_code' }>
 
 export type OnboardingMode = 'apikey' | 'oauth'
 
+interface OnboardingProfileScope {
+  profile: string
+  requireProfileIdentity: boolean
+}
+
 export type OnboardingFlow =
   | { status: 'idle' }
-  | { provider: OAuthProvider; status: 'starting' }
-  | { code: string; provider: OAuthProvider; start: PkceStart; status: 'awaiting_user' }
-  | { copied: boolean; provider: OAuthProvider; start: DeviceStart; status: 'polling' }
-  | { provider: OAuthProvider; start: OAuthStartResponse; status: 'submitting' }
-  | { copied: boolean; provider: OAuthProvider; status: 'external_pending' }
-  | { provider: OAuthProvider; status: 'success' }
-  | {
+  | ({ provider: OAuthProvider; status: 'starting' } & OnboardingProfileScope)
+  | ({ code: string; provider: OAuthProvider; start: PkceStart; status: 'awaiting_user' } & OnboardingProfileScope)
+  | ({ copied: boolean; provider: OAuthProvider; start: DeviceStart; status: 'polling' } & OnboardingProfileScope)
+  | ({ provider: OAuthProvider; start: OAuthStartResponse; status: 'submitting' } & OnboardingProfileScope)
+  | ({ copied: boolean; provider: OAuthProvider; status: 'external_pending' } & OnboardingProfileScope)
+  | ({ provider: OAuthProvider; status: 'success' } & OnboardingProfileScope)
+  | ({
       // After successful credential acquisition, before completing
       // onboarding: show the user which model they're getting and let
       // them change it. providerSlug is the model.options slug for the
@@ -42,8 +49,13 @@ export type OnboardingFlow =
       providerSlug: string
       saving: boolean
       status: 'confirming_model'
-    }
-  | { message: string; provider?: OAuthProvider; start?: OAuthStartResponse; status: 'error' }
+    } & OnboardingProfileScope)
+  | ({
+      message: string
+      provider?: OAuthProvider
+      start?: OAuthStartResponse
+      status: 'error'
+    } & Partial<OnboardingProfileScope>)
 
 export interface DesktopOnboardingState {
   /** null until the first runtime check resolves. Seeded from localStorage so
@@ -157,7 +169,7 @@ const INITIAL: DesktopOnboardingState = {
 export const $desktopOnboarding = atom<DesktopOnboardingState>(INITIAL)
 
 let pollTimer: number | null = null
-let providersRefreshPromise: null | Promise<void> = null
+const providerRefreshPromises = new Map<string, Promise<OAuthProvider[]>>()
 
 const errMessage = (e: unknown) => (e instanceof Error ? e.message : String(e))
 
@@ -175,9 +187,28 @@ function clearPoll() {
   }
 }
 
-async function checkRuntime(ctx: OnboardingContext, requestedProvider?: string): Promise<RuntimeReadinessResult> {
+function activeOnboardingScope(): OnboardingProfileScope {
+  return {
+    profile: normalizeProfileKey($activeGatewayProfile.get()),
+    requireProfileIdentity: requiresProfileIdentity($connection.get())
+  }
+}
+
+function profileIsActive(scope: OnboardingProfileScope): boolean {
+  const active = activeOnboardingScope()
+
+  return active.profile === scope.profile && active.requireProfileIdentity === scope.requireProfileIdentity
+}
+
+async function checkRuntime(
+  ctx: OnboardingContext,
+  requestedProvider?: string,
+  scope: OnboardingProfileScope = activeOnboardingScope()
+): Promise<RuntimeReadinessResult> {
   return evaluateRuntimeReadiness(ctx.requestGateway, {
     defaultReason: DEFAULT_ONBOARDING_REASON,
+    profile: scope.profile,
+    requireProfileIdentity: scope.requireProfileIdentity,
     requestedProvider,
     unknownReady: false
   })
@@ -234,12 +265,13 @@ function notifyGatewayTools(tools: string[] | undefined) {
 // we had before, which works but is surprising. The confirm step is
 // opportunistic polish, not a hard requirement for onboarding.
 async function fetchProviderDefaultModel(
-  preferredSlugs: string[]
+  preferredSlugs: string[],
+  scope: OnboardingProfileScope
 ): Promise<null | { providerSlug: string; defaultModel: string }> {
   let options
 
   try {
-    options = await getGlobalModelOptions({ includeUnconfigured: true, explicitOnly: false })
+    options = await getGlobalModelOptions({ includeUnconfigured: true, explicitOnly: false }, scope.profile)
   } catch {
     return null
   }
@@ -271,7 +303,7 @@ async function fetchProviderDefaultModel(
   let defaultModel = String(models[0])
 
   try {
-    const recommended = await getRecommendedDefaultModel(String(matched.slug))
+    const recommended = await getRecommendedDefaultModel(String(matched.slug), scope.profile)
 
     if (recommended.model && models.map(String).includes(recommended.model)) {
       defaultModel = recommended.model
@@ -303,38 +335,56 @@ async function completeWithModelConfirm(
   providerLabel: string,
   preferredSlugs: string[],
   onFail: (reason: null | string) => void,
+  scope: OnboardingProfileScope,
   // When true, a failing runtime check no longer blocks progression — the
   // user is allowed through onboarding regardless. Used by the API-key path,
   // where we intentionally don't validate the key (it blocked too many users).
   ignoreRuntimeGate = false
 ) {
-  await ctx.requestGateway('reload.env').catch(() => undefined)
+  // A shared remote backend from before contract v4 silently ignores the
+  // profile parameter and would reload its launch profile's process-global
+  // environment. Profile-scoped readiness rebuilds an isolated secret scope,
+  // so global-remote flows neither need nor safely support reload.env.
+  if (!scope.requireProfileIdentity) {
+    await ctx.requestGateway('reload.env').catch(() => undefined)
+  }
 
-  const defaults = await fetchProviderDefaultModel(preferredSlugs)
+  const defaults = await fetchProviderDefaultModel(preferredSlugs, scope)
 
   if (defaults) {
     // Persist the chosen provider/model before the runtime gate so a stale
     // config provider (e.g. anthropic from a prior failed setup) cannot make
     // setup.runtime_check validate the wrong backend after a fresh OAuth login.
     try {
-      const res = await setModelAssignment({
-        scope: 'main',
-        provider: defaults.providerSlug,
-        model: defaults.defaultModel
-      })
+      const res = await setModelAssignment(
+        {
+          scope: 'main',
+          provider: defaults.providerSlug,
+          model: defaults.defaultModel
+        },
+        scope.profile
+      )
 
-      notifyGatewayTools(res.gateway_tools)
+      if (profileIsActive(scope)) {
+        notifyGatewayTools(res.gateway_tools)
+      }
     } catch {
       // Persistence failed — still run the scoped runtime check below and
       // show the confirm card so the user can pick something explicitly.
     }
   }
 
-  const runtime = await checkRuntime(ctx, preferredSlugs[0])
+  const runtime = await checkRuntime(ctx, preferredSlugs[0], scope)
 
   if (!runtime.ready && !ignoreRuntimeGate) {
-    onFail(runtime.reason)
+    if (profileIsActive(scope)) {
+      onFail(runtime.reason)
+    }
 
+    return
+  }
+
+  if (!profileIsActive(scope)) {
     return
   }
 
@@ -349,6 +399,7 @@ async function completeWithModelConfirm(
 
   setFlow({
     status: 'confirming_model',
+    ...scope,
     providerSlug: defaults.providerSlug,
     currentModel: defaults.defaultModel,
     label: providerLabel,
@@ -364,25 +415,29 @@ function providerResolutionFailure(reason: null | string) {
     : 'Connected, but Hermes still cannot resolve a usable provider.'
 }
 
-async function refreshProviders() {
-  if (providersRefreshPromise) {
-    await providersRefreshPromise
+async function refreshProviders(scope: OnboardingProfileScope = activeOnboardingScope()) {
+  let pending = providerRefreshPromises.get(scope.profile)
 
-    return
+  if (!pending) {
+    pending = listOAuthProviders(scope.profile).then(({ providers }) => providers)
+    providerRefreshPromises.set(scope.profile, pending)
   }
 
-  providersRefreshPromise = (async () => {
-    try {
-      const { providers } = await listOAuthProviders()
-      patch({ mode: providers.length > 0 ? 'oauth' : 'apikey', providers })
-    } catch {
-      patch({ mode: 'apikey', providers: [] })
-    } finally {
-      providersRefreshPromise = null
-    }
-  })()
+  try {
+    const providers = await pending
 
-  await providersRefreshPromise
+    if (profileIsActive(scope)) {
+      patch({ mode: providers.length > 0 ? 'oauth' : 'apikey', providers })
+    }
+  } catch {
+    if (profileIsActive(scope)) {
+      patch({ mode: 'apikey', providers: [] })
+    }
+  } finally {
+    if (providerRefreshPromises.get(scope.profile) === pending) {
+      providerRefreshPromises.delete(scope.profile)
+    }
+  }
 }
 
 export function requestDesktopOnboarding(reason = DEFAULT_ONBOARDING_REASON) {
@@ -495,17 +550,32 @@ export function setOnboardingMode(mode: OnboardingMode) {
 }
 
 export async function refreshOnboarding(ctx: OnboardingContext) {
+  const scope = activeOnboardingScope()
+  const startingFlow = $desktopOnboarding.get().flow
+
+  // Profile switches do not remount this store. Drop any old profile's UI
+  // state (and pending OAuth session) before checking the newly active one.
+  if ('profile' in startingFlow && startingFlow.profile && startingFlow.profile !== scope.profile) {
+    cancelOnboardingFlow()
+  }
+
   // Manual mode (user opened the selector from a working app): never
   // auto-dismiss on runtime-ready — the whole point is to let them add /
   // switch a provider while already configured. Just ensure the provider
   // list is loaded and show the picker.
   if ($desktopOnboarding.get().manual) {
-    await refreshProviders()
+    await refreshProviders(scope)
 
     return false
   }
 
-  const runtime = await checkRuntime(ctx)
+  const runtime = await checkRuntime(ctx, undefined, scope)
+
+  // A profile switch may complete while either readiness request is in
+  // flight. Never apply profile A's answer to profile B's onboarding state.
+  if (!profileIsActive(scope)) {
+    return false
+  }
 
   if (runtime.ready) {
     completeDesktopOnboarding()
@@ -541,7 +611,7 @@ export async function refreshOnboarding(ctx: OnboardingContext) {
     return false
   }
 
-  await refreshProviders()
+  await refreshProviders(scope)
 
   return false
 }
@@ -568,55 +638,85 @@ async function openSignInUrl(url: string) {
 
 export async function startProviderOAuth(provider: OAuthProvider, ctx: OnboardingContext) {
   clearPoll()
+  const scope = activeOnboardingScope()
 
   if (provider.flow === 'external') {
-    setFlow({ status: 'external_pending', provider, copied: false })
+    setFlow({ status: 'external_pending', provider, copied: false, ...scope })
 
     return
   }
 
-  setFlow({ status: 'starting', provider })
+  setFlow({ status: 'starting', provider, ...scope })
 
   try {
-    const start = await startOAuthLogin(provider.id)
+    const start = await startOAuthLogin(provider.id, scope.profile)
     const browserUrl = start.flow === 'device_code' ? start.verification_url : start.auth_url
     await openSignInUrl(browserUrl)
 
-    if (start.flow === 'pkce') {
-      setFlow({ status: 'awaiting_user', provider, start, code: '' })
+    if (!profileIsActive(scope)) {
+      cancelOAuthSession(start.session_id, scope.profile).catch(() => undefined)
 
       return
     }
 
-    setFlow({ status: 'polling', provider, start, copied: false })
-    pollTimer = window.setInterval(() => void pollSession(provider, start, ctx), POLL_MS)
+    if (start.flow === 'pkce') {
+      setFlow({ status: 'awaiting_user', provider, start, code: '', ...scope })
+
+      return
+    }
+
+    setFlow({ status: 'polling', provider, start, copied: false, ...scope })
+    pollTimer = window.setInterval(() => void pollSession(provider, start, ctx, scope), POLL_MS)
   } catch (error) {
-    setFlow({ status: 'error', provider, message: `Could not start sign-in: ${errMessage(error)}` })
+    if (profileIsActive(scope)) {
+      setFlow({ status: 'error', provider, message: `Could not start sign-in: ${errMessage(error)}`, ...scope })
+    }
   }
 }
 
 // Poll a session-backed device-code flow until it resolves.
-async function pollSession(provider: OAuthProvider, start: DeviceStart, ctx: OnboardingContext) {
+async function pollSession(
+  provider: OAuthProvider,
+  start: DeviceStart,
+  ctx: OnboardingContext,
+  scope: OnboardingProfileScope
+) {
   try {
-    const { error_message, status } = await pollOAuthSession(provider.id, start.session_id)
+    const { error_message, status } = await pollOAuthSession(provider.id, start.session_id, scope.profile)
 
     if (status === 'approved') {
       clearPoll()
-      setFlow({ status: 'success', provider })
-      await completeWithModelConfirm(ctx, provider.name, [provider.id], reason =>
-        setFlow({
-          status: 'error',
-          provider,
-          message: providerResolutionFailure(reason)
-        })
+
+      if (profileIsActive(scope)) {
+        setFlow({ status: 'success', provider, ...scope })
+      }
+
+      await completeWithModelConfirm(
+        ctx,
+        provider.name,
+        [provider.id],
+        reason =>
+          setFlow({
+            status: 'error',
+            provider,
+            message: providerResolutionFailure(reason),
+            ...scope
+          }),
+        scope
       )
     } else if (status !== 'pending') {
       clearPoll()
-      setFlow({ status: 'error', provider, start, message: error_message || `Sign-in ${status}.` })
+
+      if (profileIsActive(scope)) {
+        setFlow({ status: 'error', provider, start, message: error_message || `Sign-in ${status}.`, ...scope })
+      }
     }
   } catch (error) {
     clearPoll()
-    setFlow({ status: 'error', provider, start, message: `Polling failed: ${errMessage(error)}` })
+
+    if (profileIsActive(scope)) {
+      setFlow({ status: 'error', provider, start, message: `Polling failed: ${errMessage(error)}`, ...scope })
+    }
   }
 }
 
@@ -635,35 +735,50 @@ export async function submitOnboardingCode(ctx: OnboardingContext) {
     return
   }
 
-  const { provider, start, code } = flow
-  setFlow({ status: 'submitting', provider, start })
+  const { provider, start, code, profile, requireProfileIdentity } = flow
+  const scope = { profile, requireProfileIdentity }
+  setFlow({ status: 'submitting', provider, start, ...scope })
 
   try {
-    const resp = await submitOAuthCode(provider.id, start.session_id, code.trim())
+    const resp = await submitOAuthCode(provider.id, start.session_id, code.trim(), scope.profile)
 
     if (resp.ok && resp.status === 'approved') {
-      setFlow({ status: 'success', provider })
-      await completeWithModelConfirm(ctx, provider.name, [provider.id], reason =>
-        setFlow({
-          status: 'error',
-          provider,
-          message: providerResolutionFailure(reason)
-        })
+      if (profileIsActive(scope)) {
+        setFlow({ status: 'success', provider, ...scope })
+      }
+
+      await completeWithModelConfirm(
+        ctx,
+        provider.name,
+        [provider.id],
+        reason =>
+          setFlow({
+            status: 'error',
+            provider,
+            message: providerResolutionFailure(reason),
+            ...scope
+          }),
+        scope
       )
     } else {
-      setFlow({ status: 'error', provider, start, message: resp.message || 'Token exchange failed.' })
+      if (profileIsActive(scope)) {
+        setFlow({ status: 'error', provider, start, message: resp.message || 'Token exchange failed.', ...scope })
+      }
     }
   } catch (error) {
-    setFlow({ status: 'error', provider, start, message: errMessage(error) })
+    if (profileIsActive(scope)) {
+      setFlow({ status: 'error', provider, start, message: errMessage(error), ...scope })
+    }
   }
 }
 
 export function cancelOnboardingFlow() {
   clearPoll()
-  const sessionId = sessionIdFor($desktopOnboarding.get().flow)
+  const flow = $desktopOnboarding.get().flow
+  const sessionId = sessionIdFor(flow)
 
   if (sessionId) {
-    cancelOAuthSession(sessionId).catch(() => undefined)
+    cancelOAuthSession(sessionId, 'profile' in flow ? flow.profile : undefined).catch(() => undefined)
   }
 
   setFlow({ status: 'idle' })
@@ -721,15 +836,22 @@ export async function recheckExternalSignin(ctx: OnboardingContext) {
     return
   }
 
-  const { provider } = flow
-  await completeWithModelConfirm(ctx, provider.name, [provider.id], reason =>
-    setFlow({
-      status: 'error',
-      provider,
-      message:
-        reason?.trim() ||
-        `Hermes still cannot reach ${provider.name}. Run \`${provider.cli_command}\` in a terminal first.`
-    })
+  const { provider, profile, requireProfileIdentity } = flow
+  const scope = { profile, requireProfileIdentity }
+  await completeWithModelConfirm(
+    ctx,
+    provider.name,
+    [provider.id],
+    reason =>
+      setFlow({
+        status: 'error',
+        provider,
+        message:
+          reason?.trim() ||
+          `Hermes still cannot reach ${provider.name}. Run \`${provider.cli_command}\` in a terminal first.`,
+        ...scope
+      }),
+    scope
   )
 }
 
@@ -744,6 +866,7 @@ export async function saveOnboardingApiKey(
   endpointApiKey?: string
 ) {
   const trimmed = value.trim()
+  const scope = activeOnboardingScope()
 
   if (!trimmed) {
     return { ok: false, message: 'Enter a value first.' }
@@ -763,7 +886,7 @@ export async function saveOnboardingApiKey(
   // provider probes, self-hosted endpoints). We now save the value as-is and
   // let the user proceed; an actually-bad key surfaces later at chat time.
   try {
-    await setEnvVar(envKey, trimmed)
+    await setEnvVar(envKey, trimmed, scope.profile)
     // For API-key flows we don't have a definitive provider id (the
     // user picked which API key they're entering, but the corresponding
     // backend slug — e.g. OPENROUTER_API_KEY → "openrouter" — is the
@@ -772,7 +895,7 @@ export async function saveOnboardingApiKey(
     // provider returned by /api/model/options if none match.
     const slugCandidates = [envKey.replace(/_API_KEY$/, '').toLowerCase(), label.toLowerCase()]
     // ignoreRuntimeGate=true: never block onboarding on the runtime check.
-    await completeWithModelConfirm(ctx, label, slugCandidates, () => undefined, true)
+    await completeWithModelConfirm(ctx, label, slugCandidates, () => undefined, scope, true)
 
     return { ok: true }
   } catch (error) {
@@ -801,6 +924,7 @@ export async function saveOnboardingApiKey(
 export async function saveOnboardingLocalEndpoint(baseUrl: string, apiKey: string, ctx: OnboardingContext) {
   const url = baseUrl.trim()
   const key = apiKey.trim()
+  const scope = activeOnboardingScope()
 
   if (!url) {
     return { ok: false, message: 'Enter the endpoint URL first.' }
@@ -812,7 +936,7 @@ export async function saveOnboardingLocalEndpoint(baseUrl: string, apiKey: strin
   let model = ''
 
   try {
-    const probe = await validateProviderCredential('OPENAI_BASE_URL', url, key)
+    const probe = await validateProviderCredential('OPENAI_BASE_URL', url, key, scope.profile)
 
     if (!probe.ok && probe.reachable) {
       return { ok: false, message: probe.message || 'Could not reach that endpoint.' }
@@ -835,10 +959,13 @@ export async function saveOnboardingLocalEndpoint(baseUrl: string, apiKey: strin
   }
 
   try {
-    await setModelAssignment({ scope: 'main', provider: 'custom', model, base_url: url, api_key: key })
-    await ctx.requestGateway('reload.env').catch(() => undefined)
+    await setModelAssignment({ scope: 'main', provider: 'custom', model, base_url: url, api_key: key }, scope.profile)
 
-    const runtime = await checkRuntime(ctx)
+    if (!scope.requireProfileIdentity) {
+      await ctx.requestGateway('reload.env').catch(() => undefined)
+    }
+
+    const runtime = await checkRuntime(ctx, undefined, scope)
 
     if (!runtime.ready) {
       const detail = (runtime.reason ?? '').trim()
@@ -846,9 +973,11 @@ export async function saveOnboardingLocalEndpoint(baseUrl: string, apiKey: strin
       return { ok: false, message: detail || `Saved, but Hermes still cannot reach ${url}.` }
     }
 
-    notifyReady('Local / custom endpoint')
-    completeDesktopOnboarding()
-    ctx.onCompleted?.()
+    if (profileIsActive(scope)) {
+      notifyReady('Local / custom endpoint')
+      completeDesktopOnboarding()
+      ctx.onCompleted?.()
+    }
 
     return { ok: true }
   } catch (error) {
@@ -872,21 +1001,24 @@ export async function setOnboardingModel(model: string) {
   setFlow({ ...flow, currentModel: model, saving: true })
 
   try {
-    await setModelAssignment({
-      scope: 'main',
-      provider: flow.providerSlug,
-      model
-    })
+    await setModelAssignment(
+      {
+        scope: 'main',
+        provider: flow.providerSlug,
+        model
+      },
+      flow.profile
+    )
     const current = $desktopOnboarding.get().flow
 
-    if (current.status === 'confirming_model') {
+    if (current.status === 'confirming_model' && current.profile === flow.profile && profileIsActive(flow)) {
       setFlow({ ...current, currentModel: model, saving: false })
     }
   } catch (error) {
     notifyError(error, 'Could not change model')
     const current = $desktopOnboarding.get().flow
 
-    if (current.status === 'confirming_model') {
+    if (current.status === 'confirming_model' && current.profile === flow.profile && profileIsActive(flow)) {
       setFlow({ ...current, currentModel: previous, saving: false })
     }
   }
@@ -900,6 +1032,10 @@ export function confirmOnboardingModel(ctx: OnboardingContext) {
   const { flow } = $desktopOnboarding.get()
 
   if (flow.status !== 'confirming_model') {
+    return
+  }
+
+  if (!profileIsActive(flow)) {
     return
   }
 

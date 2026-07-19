@@ -1,6 +1,8 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import * as notifications from '@/store/notifications'
+import { $activeGatewayProfile } from '@/store/profile'
+import { $connection } from '@/store/session'
 import type { OAuthProvider } from '@/types/hermes'
 
 import {
@@ -39,7 +41,7 @@ function baseState(overrides: Partial<DesktopOnboardingState> = {}): DesktopOnbo
   }
 }
 
-function installApiMock(api: (request: { path: string }) => Promise<unknown>) {
+function installApiMock(api: (request: { body?: unknown; path: string; profile?: string }) => Promise<unknown>) {
   Object.defineProperty(window, 'hermesDesktop', {
     configurable: true,
     value: { api }
@@ -77,13 +79,101 @@ function fallbackTimeoutGateway(): OnboardingContext['requestGateway'] {
 describe('refreshOnboarding', () => {
   beforeEach(() => {
     window.localStorage.clear()
+    $activeGatewayProfile.set('default')
+    $connection.set(null)
     $desktopOnboarding.set(baseState())
   })
 
   afterEach(() => {
     window.localStorage.clear()
+    $activeGatewayProfile.set('default')
+    $connection.set(null)
     $desktopOnboarding.set(baseState())
     vi.restoreAllMocks()
+  })
+
+  it('does not apply a late readiness result after the active profile changes', async () => {
+    let resolveSetup!: (value: unknown) => void
+    let resolveRuntime!: (value: unknown) => void
+
+    const setup = new Promise(resolve => {
+      resolveSetup = resolve
+    })
+
+    const runtime = new Promise(resolve => {
+      resolveRuntime = resolve
+    })
+
+    $activeGatewayProfile.set('coder')
+    $connection.set({ mode: 'remote', source: 'settings' } as never)
+    $desktopOnboarding.set(baseState({ configured: false }))
+
+    const pending = refreshOnboarding(
+      onboardingContext(async method => (method === 'setup.status' ? setup : runtime) as never)
+    )
+
+    $activeGatewayProfile.set('default')
+    $connection.set({ mode: 'local', source: 'local' } as never)
+    resolveSetup({ profile_name: 'coder', provider_configured: true })
+    resolveRuntime({ ok: true, profile_name: 'coder' })
+
+    await pending
+
+    expect($desktopOnboarding.get().configured).toBe(false)
+  })
+
+  it('does not apply readiness captured under an obsolete connection policy', async () => {
+    let resolveSetup!: (value: unknown) => void
+    let resolveRuntime!: (value: unknown) => void
+
+    const setup = new Promise(resolve => {
+      resolveSetup = resolve
+    })
+
+    const runtime = new Promise(resolve => {
+      resolveRuntime = resolve
+    })
+
+    $activeGatewayProfile.set('coder')
+    $connection.set({ mode: 'local', source: 'local' } as never)
+    $desktopOnboarding.set(baseState({ configured: false }))
+
+    const pending = refreshOnboarding(
+      onboardingContext(async method => (method === 'setup.status' ? setup : runtime) as never)
+    )
+
+    $connection.set({ mode: 'remote', source: 'settings' } as never)
+    resolveSetup({ provider_configured: true })
+    resolveRuntime({ ok: true })
+
+    await pending
+
+    expect($desktopOnboarding.get().configured).toBe(false)
+  })
+
+  it('drops an in-progress flow that belongs to the previous profile', async () => {
+    installApiMock(async ({ path }) => {
+      if (path === '/api/providers/oauth') {
+        return { providers: [] }
+      }
+
+      throw new Error(`unexpected api path: ${path}`)
+    })
+    $activeGatewayProfile.set('default')
+    $desktopOnboarding.set(
+      baseState({
+        flow: {
+          profile: 'coder',
+          provider: provider('openai-codex'),
+          requireProfileIdentity: true,
+          status: 'starting'
+        }
+      })
+    )
+
+    await refreshOnboarding(onboardingContext(runtimeMismatchGateway()))
+
+    expect($desktopOnboarding.get().flow.status).toBe('idle')
   })
 
   it('refreshes OAuth providers again when onboarding was explicitly requested', async () => {
@@ -264,21 +354,29 @@ describe('refreshOnboarding', () => {
 describe('OAuth onboarding', () => {
   beforeEach(() => {
     window.localStorage.clear()
+    $activeGatewayProfile.set('default')
+    $connection.set(null)
     $desktopOnboarding.set(baseState())
   })
 
   afterEach(() => {
     window.localStorage.clear()
+    $activeGatewayProfile.set('default')
+    $connection.set(null)
     $desktopOnboarding.set(baseState())
     vi.restoreAllMocks()
   })
 
   it('clears stale readiness errors after OAuth succeeds and model confirmation is shown', async () => {
     const model = 'anthropic/claude-opus-4.8'
-    const calls: { body?: unknown; path: string }[] = []
+    const calls: { body?: unknown; path: string; profile?: string }[] = []
+    const gatewayCalls: Array<{ method: string; params?: Record<string, unknown> }> = []
 
-    installApiMock(async ({ body, path }: { body?: unknown; path: string }) => {
-      calls.push({ body, path })
+    $activeGatewayProfile.set('coder')
+    $connection.set({ mode: 'remote', source: 'settings' } as never)
+
+    installApiMock(async ({ body, path, profile }) => {
+      calls.push({ body, path, profile })
 
       if (path === '/api/providers/oauth/nous/submit') {
         return { ok: true, status: 'approved' }
@@ -308,18 +406,18 @@ describe('OAuth onboarding', () => {
     })
 
     const requestGateway: OnboardingContext['requestGateway'] = async (method, params) => {
-      if (method === 'reload.env') {
-        return {} as never
-      }
+      gatewayCalls.push({ method, params })
 
       if (method === 'setup.status') {
-        return { provider_configured: true } as never
+        expect(params).toEqual({ profile: 'coder' })
+
+        return { profile_name: 'coder', provider_configured: true } as never
       }
 
       if (method === 'setup.runtime_check') {
-        expect(params).toEqual({ provider: 'nous' })
+        expect(params).toEqual({ profile: 'coder', provider: 'nous' })
 
-        return { ok: true } as never
+        return { ok: true, profile_name: 'coder' } as never
       }
 
       throw new Error(`unexpected gateway method: ${method}`)
@@ -329,6 +427,8 @@ describe('OAuth onboarding', () => {
       baseState({
         flow: {
           status: 'awaiting_user',
+          profile: 'coder',
+          requireProfileIdentity: true,
           provider: provider('nous', 'Nous Portal'),
           start: {
             auth_url: 'https://portal.example/auth',
@@ -364,6 +464,102 @@ describe('OAuth onboarding', () => {
     expect(optionsIndex).toBeGreaterThanOrEqual(0)
     expect(recommendedIndex).toBeGreaterThan(optionsIndex)
     expect(setIndex).toBeGreaterThan(recommendedIndex)
+    expect(calls.every(call => call.profile === 'coder')).toBe(true)
+    expect(gatewayCalls).toEqual([
+      { method: 'setup.status', params: { profile: 'coder' } },
+      { method: 'setup.runtime_check', params: { profile: 'coder', provider: 'nous' } }
+    ])
+  })
+
+  it('keeps an in-flight OAuth completion scoped to its starting profile without overwriting a new active profile', async () => {
+    const model = 'openai/gpt-5.4'
+    const apiCalls: Array<{ path: string; profile?: string }> = []
+    const gatewayCalls: Array<{ method: string; params?: Record<string, unknown> }> = []
+    const notify = vi.spyOn(notifications, 'notify')
+    let resolveOptions!: (value: unknown) => void
+
+    const options = new Promise(resolve => {
+      resolveOptions = resolve
+    })
+
+    $activeGatewayProfile.set('coder')
+    $connection.set({ mode: 'remote', source: 'settings' } as never)
+
+    installApiMock(async ({ path, profile }) => {
+      apiCalls.push({ path, profile })
+
+      if (path === '/api/providers/oauth/openai-codex/submit') {
+        return { ok: true, status: 'approved' }
+      }
+
+      if (path.startsWith('/api/model/options')) {
+        return options
+      }
+
+      if (path.startsWith('/api/model/recommended-default?')) {
+        return { provider: 'openai-codex', model, free_tier: null }
+      }
+
+      if (path === '/api/model/set') {
+        return { ok: true, provider: 'openai-codex', model, gateway_tools: ['web'] }
+      }
+
+      throw new Error(`unexpected api path: ${path}`)
+    })
+
+    const requestGateway: OnboardingContext['requestGateway'] = async (method, params) => {
+      gatewayCalls.push({ method, params })
+
+      if (method === 'reload.env') {
+        return {} as never
+      }
+
+      if (method === 'setup.status') {
+        return { profile_name: 'coder', provider_configured: true } as never
+      }
+
+      if (method === 'setup.runtime_check') {
+        return { ok: true, profile_name: 'coder' } as never
+      }
+
+      throw new Error(`unexpected gateway method: ${method}`)
+    }
+
+    $desktopOnboarding.set(
+      baseState({
+        flow: {
+          code: 'one-time-code',
+          profile: 'coder',
+          requireProfileIdentity: true,
+          provider: provider('openai-codex', 'OpenAI Codex'),
+          start: {
+            auth_url: 'https://example.invalid/auth',
+            expires_in: 600,
+            flow: 'pkce',
+            session_id: 'codex-session'
+          },
+          status: 'awaiting_user'
+        },
+        requested: true
+      })
+    )
+
+    const completion = submitOnboardingCode(onboardingContext(requestGateway))
+    await vi.waitFor(() => expect(apiCalls.some(call => call.path.startsWith('/api/model/options'))).toBe(true))
+
+    $activeGatewayProfile.set('default')
+    $connection.set({ mode: 'local', source: 'local' } as never)
+    resolveOptions({ providers: [{ name: 'OpenAI Codex', slug: 'openai-codex', models: [model] }] })
+    await completion
+
+    expect(apiCalls.every(call => call.profile === 'coder')).toBe(true)
+    expect(gatewayCalls).toEqual([
+      { method: 'setup.status', params: { profile: 'coder' } },
+      { method: 'setup.runtime_check', params: { profile: 'coder', provider: 'openai-codex' } }
+    ])
+    expect($desktopOnboarding.get().configured).not.toBe(true)
+    expect($desktopOnboarding.get().flow.status).not.toBe('confirming_model')
+    expect(notify).not.toHaveBeenCalled()
   })
 })
 
@@ -379,8 +575,12 @@ describe('saveOnboardingLocalEndpoint', () => {
     vi.restoreAllMocks()
   })
 
-  function readyGateway(): OnboardingContext['requestGateway'] {
-    return async method => {
+  function readyGateway(
+    calls?: Array<{ method: string; params?: Record<string, unknown> }>
+  ): OnboardingContext['requestGateway'] {
+    return async (method, params) => {
+      calls?.push({ method, params })
+
       if (method === 'reload.env') {
         return {} as never
       }
@@ -438,10 +638,11 @@ describe('saveOnboardingLocalEndpoint', () => {
 
     installApiMock(api)
     const onCompleted = vi.fn()
+    const gatewayCalls: Array<{ method: string; params?: Record<string, unknown> }> = []
 
     const result = await saveOnboardingLocalEndpoint('http://127.0.0.1:8000/v1', '', {
       onCompleted,
-      requestGateway: readyGateway()
+      requestGateway: readyGateway(gatewayCalls)
     })
 
     expect(result.ok).toBe(true)
@@ -456,6 +657,7 @@ describe('saveOnboardingLocalEndpoint', () => {
 
     expect(onCompleted).toHaveBeenCalledTimes(1)
     expect($desktopOnboarding.get().configured).toBe(true)
+    expect(gatewayCalls[0]).toEqual({ method: 'reload.env', params: undefined })
   })
 
   it('forwards the API key to the probe and persists it for auth-gated endpoints', async () => {

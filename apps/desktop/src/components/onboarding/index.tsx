@@ -25,6 +25,8 @@ import {
   setOnboardingMode,
   startProviderOAuth
 } from '@/store/onboarding'
+import { $activeGatewayProfile, normalizeProfileKey } from '@/store/profile'
+import { $connection } from '@/store/session'
 import type { ModelOptionProvider, OAuthProvider } from '@/types/hermes'
 
 import { DocsLink, FlowPanel, Status } from './flow'
@@ -112,16 +114,18 @@ const API_KEY_OPTIONS: ApiKeyOption[] = [
 // OAuth / external providers are intentionally excluded here — they go through
 // the OAuth picker / sign-in flow, not a pasted key.
 function useApiKeyCatalog(): ApiKeyOption[] {
+  const activeProfile = normalizeProfileKey(useStore($activeGatewayProfile))
   const [rows, setRows] = useState<ModelOptionProvider[]>([])
 
   useEffect(() => {
     let cancelled = false
+    setRows([])
 
     // Best-effort — on failure the curated defaults still render. Wrapped in
     // Promise.resolve().then so a synchronous throw (e.g. no desktop bridge in
     // tests) is funneled into the same .catch instead of escaping.
     void Promise.resolve()
-      .then(() => getGlobalModelOptions({ includeUnconfigured: true, explicitOnly: false }))
+      .then(() => getGlobalModelOptions({ includeUnconfigured: true, explicitOnly: false }, activeProfile))
       .then(res => {
         if (!cancelled) {
           setRows(res.providers ?? [])
@@ -134,7 +138,7 @@ function useApiKeyCatalog(): ApiKeyOption[] {
     return () => {
       cancelled = true
     }
-  }, [])
+  }, [activeProfile])
 
   return useMemo(() => {
     const curatedByEnv = new Map(API_KEY_OPTIONS.map(o => [o.envKey, o]))
@@ -181,6 +185,8 @@ export function DesktopOnboardingOverlay({ enabled, onCompleted, requestGateway 
   const { t } = useI18n()
   const onboarding = useStore($desktopOnboarding)
   const boot = useStore($desktopBoot)
+  const activeProfile = normalizeProfileKey(useStore($activeGatewayProfile))
+  const connection = useStore($connection)
   const ctxRef = useRef<OnboardingContext>({ requestGateway, onCompleted })
   ctxRef.current = { requestGateway, onCompleted }
 
@@ -218,7 +224,7 @@ export function DesktopOnboardingOverlay({ enabled, onCompleted, requestGateway 
     if (enabled || onboarding.requested) {
       void refreshOnboarding(ctx)
     }
-  }, [ctx, enabled, onboarding.requested])
+  }, [activeProfile, connection, ctx, enabled, onboarding.requested])
 
   // When the Providers settings page asked to connect a specific provider, the
   // store stashed its id. Once the provider list has loaded and we're back at

@@ -10,6 +10,7 @@ import {
   getSessionMessages,
   getStatus,
   listAllProfileSessions,
+  listOAuthProviders,
   listSessions,
   listSidebarSessions
 } from './hermes'
@@ -191,6 +192,17 @@ describe('Hermes REST session helpers', () => {
     expect(api).toHaveBeenCalledWith(
       expect.objectContaining({
         path: '/api/model/options?refresh=1&include_unconfigured=1'
+      })
+    )
+  })
+
+  it('allows an onboarding provider refresh to stay pinned to its starting profile', async () => {
+    await listOAuthProviders('coder')
+
+    expect(api).toHaveBeenCalledWith(
+      expect.objectContaining({
+        path: '/api/providers/oauth',
+        profile: 'coder'
       })
     )
   })

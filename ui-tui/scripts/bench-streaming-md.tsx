@@ -189,7 +189,12 @@ const nullStream = () => {
   return s
 }
 
-const bench = (label: string, updates: string[], node: (t: typeof DEFAULT_THEME, text: string) => React.ReactNode) => {
+const bench = (
+  label: string,
+  updates: string[],
+  node: (t: typeof DEFAULT_THEME, text: string) => React.ReactNode,
+  captureSeries = false
+) => {
   // Fresh theme per run → fresh (collectable) mdCache bucket.
   const runTheme = { ...DEFAULT_THEME }
 
@@ -200,12 +205,19 @@ const bench = (label: string, updates: string[], node: (t: typeof DEFAULT_THEME,
     stdout: nullStream() as unknown as NodeJS.WriteStream
   })
 
+  const times: number[] = []
   const start = performance.now()
 
   let n = 0
 
   for (const text of updates) {
+    const t0 = captureSeries ? performance.now() : 0
+
     instance.rerender(node(runTheme, text))
+
+    if (captureSeries) {
+      times.push(performance.now() - t0)
+    }
 
     // Something in the render path emits performance measures; unbounded,
     // the entry buffer itself becomes a memory leak over thousands of
@@ -221,7 +233,7 @@ const bench = (label: string, updates: string[], node: (t: typeof DEFAULT_THEME,
   instance.unmount()
   instance.cleanup()
 
-  return { elapsed, label }
+  return { elapsed, label, times }
 }
 
 const STRATEGIES = {
@@ -232,7 +244,21 @@ const STRATEGIES = {
 
 const [strategyArg, sizeArg] = process.argv.slice(2)
 
-if (strategyArg) {
+if (strategyArg === 'series') {
+  // Series mode: per-append render times for one strategy/size, as JSON.
+  // Usage: npx tsx scripts/bench-streaming-md.tsx series <strategy> <blocks>
+  const [, seriesStrategy, seriesSize] = process.argv.slice(2)
+  const size = Number(seriesSize)
+  const updates = makeUpdates(makeBlocks(size, `${seriesStrategy}${size}`))
+  const { elapsed, times } = bench(
+    seriesStrategy!,
+    updates,
+    STRATEGIES[seriesStrategy as keyof typeof STRATEGIES],
+    true
+  )
+
+  console.log(JSON.stringify({ appends: updates.length, elapsed, times }))
+} else if (strategyArg) {
   // Child mode: run one strategy/size and print elapsed ms as JSON.
   const size = Number(sizeArg)
   const updates = makeUpdates(makeBlocks(size, `${strategyArg}${size}`))

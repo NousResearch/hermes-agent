@@ -243,6 +243,36 @@ class TestRecordFileMutationResult:
 
         assert agent._turn_failed_file_mutations == {}
 
+    def test_write_file_success_prevents_false_positive_from_later_patch_failure(self):
+        """Regression: write_file succeeds then patch on same file fails.
+
+        The verifier should NOT warn because the file was already correctly
+        written by write_file. The later patch failure is a no-op — the
+        file content is already correct from the write_file call.
+        """
+        agent = _bare_agent()
+        # Step 1: write_file succeeds
+        agent._record_file_mutation_result(
+            "write_file",
+            {"path": "/tmp/chapter-14.md", "content": "new content"},
+            json.dumps({"bytes_written": 1024}),
+            is_error=False,
+        )
+        assert agent._turn_failed_file_mutations == {}
+        assert "/tmp/chapter-14.md" in agent._turn_file_mutation_paths
+
+        # Step 2: patch on same file fails (old_string identical to new_string)
+        agent._record_file_mutation_result(
+            "patch",
+            {"mode": "replace", "path": "/tmp/chapter-14.md",
+             "old_string": "same", "new_string": "same"},
+            json.dumps({"error": "old_string and new_string are identical"}),
+            is_error=True,
+        )
+        # Should NOT be recorded as a failure — write_file already landed
+        assert "/tmp/chapter-14.md" not in agent._turn_failed_file_mutations
+        assert agent._turn_failed_file_mutations == {}
+
     def test_repeated_failure_keeps_first_error(self):
         agent = _bare_agent()
         agent._record_file_mutation_result(

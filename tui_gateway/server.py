@@ -642,23 +642,12 @@ def _finalize_session(session: dict | None, end_reason: str = "tui_close") -> No
     # Use session_id (from agent.session_id) not session_key — after compression,
     # session_key may be stale (the ended parent) while session_id is the live
     # continuation. Fix for #20001.
-    _tui_owns_lifecycle = True
-    if session_id:
+    _tui_owns_lifecycle = _session_owns_durable_lifecycle(session_id)
+    if session_id and _tui_owns_lifecycle:
         try:
             db = _get_db()
             if db is not None:
-                # Don't end gateway-originated sessions — the gateway owns
-                # their lifecycle.  The TUI is a viewer, not the owner.
-                # Ending a gateway session in state.db triggers a Groundhog
-                # Day routing loop: the gateway's #54878 self-heal detects
-                # the stale entry, recovers to the parent session, context
-                # compression splits back to the reaped child, and the cycle
-                # repeats on every inbound message.  (#60609)
-                row = db.get_session(session_id)
-                source = (row or {}).get("source", "")
-                _tui_owns_lifecycle = not _is_gateway_owned_source(source)
-                if _tui_owns_lifecycle:
-                    db.end_session(session_id, end_reason)
+                db.end_session(session_id, end_reason)
         except Exception:
             pass
 
@@ -672,18 +661,11 @@ def _finalize_session(session: dict | None, end_reason: str = "tui_close") -> No
     try:
         from tools.async_delegation import interrupt_for_session
 
-        _own_sid = str(session.get("_sid") or "")
-        if not _own_sid:
-            try:
-                with _sessions_lock:
-                    for _cand_sid, _cand in _sessions.items():
-                        if _cand is session:
-                            _own_sid = _cand_sid
-                            break
-            except Exception:
-                _own_sid = ""
+        _own_sid, _owned_session_key = _session_async_delegation_selectors(
+            session, sid_hint=str(session.get("_sid") or "")
+        )
         interrupt_for_session(
-            session_key=str(session_key or "") if _tui_owns_lifecycle else "",
+            session_key=_owned_session_key,
             origin_ui_session_id=_own_sid,
             reason=end_reason,
         )
@@ -807,6 +789,64 @@ def _ws_session_is_orphaned(session: dict | None) -> bool:
     return session.get("transport") is _detached_ws_transport
 
 
+def _session_owns_durable_lifecycle(session_id: str | None) -> bool:
+    """Whether this TUI/desktop session may end its durable DB row by key."""
+    if not session_id:
+        return True
+    try:
+        db = _get_db()
+        if db is None:
+            return True
+        # Don't end gateway-originated sessions — the gateway owns their
+        # lifecycle. The TUI is only a viewer there (#60609).
+        row = db.get_session(session_id)
+        source = (row or {}).get("source", "")
+        return not _is_gateway_owned_source(source)
+    except Exception:
+        return True
+
+
+def _session_async_delegation_selectors(
+    session: dict | None, *, sid_hint: str = ""
+) -> tuple[str, str]:
+    """Ownership selectors for async background work tied to one UI session."""
+    if not session:
+        return "", ""
+    own_sid = str(sid_hint or session.get("_sid") or "")
+    if not own_sid:
+        try:
+            with _sessions_lock:
+                for _cand_sid, _cand in _sessions.items():
+                    if _cand is session:
+                        own_sid = _cand_sid
+                        break
+        except Exception:
+            own_sid = ""
+    agent = session.get("agent")
+    session_key = str(session.get("session_key") or "")
+    session_id = getattr(agent, "session_id", None) or session_key
+    owned_session_key = session_key if _session_owns_durable_lifecycle(session_id) else ""
+    return own_sid, owned_session_key
+
+
+def _session_has_live_async_delegation(sid: str, session: dict | None) -> bool:
+    """Detached-session keepalive for live background delegate_task work."""
+    if not session or session.get("_finalized"):
+        return False
+    own_sid, owned_session_key = _session_async_delegation_selectors(session, sid_hint=sid)
+    if not own_sid and not owned_session_key:
+        return False
+    try:
+        from tools.async_delegation import has_live_for_session
+
+        return has_live_for_session(
+            session_key=owned_session_key,
+            origin_ui_session_id=own_sid,
+        )
+    except Exception:
+        return False
+
+
 def _schedule_ws_orphan_reap(sid: str) -> None:
     """After a grace window, reap session ``sid`` iff it's still orphaned.
 
@@ -829,7 +869,11 @@ def _schedule_ws_orphan_reap(sid: str) -> None:
         # guard with _sessions_lock). _sessions_lock is an RLock and the global
         # ordering is always resume_lock -> sessions_lock, so nesting is safe.
         with _session_resume_lock:
-            if not _ws_session_is_orphaned(_sessions.get(sid)):
+            session = _sessions.get(sid)
+            if not _ws_session_is_orphaned(session):
+                return
+            if _session_has_live_async_delegation(sid, session):
+                _schedule_ws_orphan_reap(sid)
                 return
             session = _pop_session_by_id(sid)
         _teardown_popped_session(session, end_reason="ws_orphan_reap")

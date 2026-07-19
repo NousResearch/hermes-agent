@@ -281,7 +281,12 @@ Foundation plan creates and re-observes one exact organization-scoped custom
 read-only role; project-level IAM authority is insufficient. Grant this role
 only to the human owner account, verify the exact binding by readback, and
 remove it after the signed Foundation success terminal has been validated.
-Do not grant it to the owner-gate or runtime service account.
+The human owner must also retain the non-mutating organization-level
+`roles/iam.organizationRoleViewer` binding: the canonical direct-IAM collector
+must re-read the new organization custom role after the temporary administrator
+binding is removed. This stable read-only binding becomes part of the signed
+residual IAM inventory. Do not grant either human-owner role to the owner-gate
+or runtime service account.
 
 ```bash
 /Users/emillomliev/.local/share/uv/python/\
@@ -312,6 +317,17 @@ Never delete or edit its journal. After correcting the missing prerequisite,
 create, review, and merge a fresh fork release revision, publish the
 release-bound owner-support runtime for that new SHA, and invoke this same
 sole entrypoint from the new immutable owner-support path.
+
+On a successful terminal, do not pass the mode-`0600` append-only journal files
+directly to a downstream author and never `chmod` them. Immediately publish
+byte-identical, owner-owned, single-link mode-`0400` copies of `authority.json`,
+`owner-reauth.json`, `network-evidence.json`, and `ancestry-evidence.json` in a
+new owner-only mode-`0700` directory, and verify each copy byte-for-byte. Then
+remove the temporary `roles/iam.organizationRoleAdmin` binding, verify its
+absence, and invoke the canonical direct-IAM author while the copied authority
+is still fresh. If freshness expires before that author has durably published
+a candidate, recovery-only mode correctly refuses to collect; preserve both
+journals and use a fresh reviewed release revision.
 
 `success.json` is a signed journal transition wrapper, not a raw foundation
 apply receipt.  Downstream owner gates must not copy it, loosen its mode, or

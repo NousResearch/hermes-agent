@@ -4168,6 +4168,63 @@ class TestRunConversation:
         assert result["final_response"] == "Final answer"
         assert result["completed"] is True
 
+    def test_ephemeral_user_context_is_api_only_and_never_enters_transcript(self, agent):
+        self._setup_agent(agent)
+        agent.client.chat.completions.create.return_value = _mock_response(
+            content="Final answer", finish_reason="stop"
+        )
+
+        with (
+            patch.object(agent, "_persist_session") as persist_session,
+            patch.object(agent, "_save_trajectory"),
+            patch.object(agent, "_cleanup_task_resources"),
+        ):
+            result = agent.run_conversation(
+                "Where am I?",
+                ephemeral_user_context="[Volatile location] 1.0, 2.0",
+            )
+
+        api_messages = agent.client.chat.completions.create.call_args.kwargs["messages"]
+        api_user = next(message for message in reversed(api_messages) if message["role"] == "user")
+        assert api_user["content"] == "Where am I?\n\n[Volatile location] 1.0, 2.0"
+        assert result["messages"][0]["content"] == "Where am I?"
+        assert all(
+            "[Volatile location]" not in str(call.args[0])
+            for call in persist_session.call_args_list
+        )
+
+    def test_ephemeral_user_context_preserves_clean_multimodal_transcript(self, agent):
+        self._setup_agent(agent)
+        agent._model_supports_vision = lambda: True
+        agent.client.chat.completions.create.return_value = _mock_response(
+            content="Final answer", finish_reason="stop"
+        )
+        user_message = [
+            {"type": "text", "text": "What is in this image?"},
+            {"type": "image_url", "image_url": {"url": "https://example.test/image.png"}},
+        ]
+
+        with (
+            patch.object(agent, "_persist_session") as persist_session,
+            patch.object(agent, "_save_trajectory"),
+            patch.object(agent, "_cleanup_task_resources"),
+        ):
+            result = agent.run_conversation(
+                user_message,
+                ephemeral_user_context="[Volatile location] 3.0, 4.0",
+            )
+
+        api_messages = agent.client.chat.completions.create.call_args.kwargs["messages"]
+        api_user = next(message for message in reversed(api_messages) if message["role"] == "user")
+        assert api_user["content"][0]["text"] == (
+            "What is in this image?\n\n[Volatile location] 3.0, 4.0"
+        )
+        assert result["messages"][0]["content"] == user_message
+        assert all(
+            "[Volatile location]" not in str(call.args[0])
+            for call in persist_session.call_args_list
+        )
+
     def test_codex_content_filter_incomplete_routes_to_policy_fallback(self, agent):
         self._setup_agent(agent)
         agent.api_mode = "codex_responses"

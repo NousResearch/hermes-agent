@@ -665,8 +665,8 @@ class TelegramAdapter(BasePlatformAdapter):
         # Location shares can be passive telemetry rather than conversational
         # turns.  Keep this opt-in for compatibility: when enabled, accepted
         # location and venue updates are persisted under the active profile and
-        # never dispatched to the agent loop.  The latest value is attached as
-        # ephemeral per-turn system context to the same sender's later
+        # never dispatched to the agent loop. The latest value is attached as
+        # API-only per-turn user context to the same sender's later
         # text/command turns.
         self._background_locations_enabled: bool = self._coerce_bool_extra(
             "background_locations", False
@@ -8660,6 +8660,12 @@ class TelegramAdapter(BasePlatformAdapter):
             if event.text:
                 existing.text = f"{existing.text}\n{event.text}" if existing.text else event.text
             existing._last_chunk_len = chunk_len  # type: ignore[attr-defined]
+            # A live-location snapshot is volatile per-turn state, not part of
+            # the text aggregation.  Prefer the newest non-empty snapshot so
+            # split Telegram messages do not retain stale coordinates.
+            incoming_context = getattr(event, "ephemeral_user_context", None)
+            if isinstance(incoming_context, str) and incoming_context.strip():
+                existing.ephemeral_user_context = incoming_context
             # Merge any media that might be attached
             if event.media_urls:
                 existing.media_urls.extend(event.media_urls)

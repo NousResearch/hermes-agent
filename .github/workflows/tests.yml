@@ -120,6 +120,40 @@ jobs:
           path: test_durations.json
           retention-days: 1
 
+  # The default suite deliberately omits opt-in messaging SDKs. Keep the
+  # real python-telegram-bot edited-update regression under CI rather than
+  # making a clean default test slice fail at import time.
+  telegram-sdk:
+    name: Telegram SDK regression
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@fac544c07dec837d0ccb6301d7b5580bf5edae39 # 8.2.0
+        with:
+          enable-cache: true
+          cache-dependency-glob: |
+            pyproject.toml
+            uv.lock
+
+      - name: Set up Python 3.11
+        run: uv python install 3.11
+
+      - name: Install locked dependencies with Telegram support
+        uses: ./.github/actions/retry
+        with:
+          command: uv sync --locked --python 3.11 --extra all --extra dev --extra messaging
+
+      - name: Run real Telegram edited-update regression
+        run: scripts/run_tests.sh tests/test_telegram_background_location_dispatch.py -q
+        env:
+          OPENROUTER_API_KEY: ""
+          OPENAI_API_KEY: ""
+          NOUS_API_KEY: ""
+
   # Merge per-slice duration data into a single cache, so future runs
   # (including PRs) get balanced slicing.
   save-durations:

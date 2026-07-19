@@ -164,6 +164,43 @@ def _coerce_request_bool(value: Any, default: bool = False) -> bool:
     return default
 
 
+def _parse_ephemeral_user_context(
+    body: Dict[str, Any],
+) -> tuple[Optional[str], Optional["web.Response"]]:
+    """Read Hermes' proxy-only API context field without making it a message.
+
+    Gateway proxy mode uses this field for volatile platform data such as a
+    user's current location.  Keeping it outside ``messages`` lets the agent
+    inject it into the request copy for this turn while preserving a clean
+    session transcript.
+    """
+    raw_context = body.get("hermes_ephemeral_user_context")
+    if raw_context is None:
+        return None, None
+    if not isinstance(raw_context, str):
+        return None, web.json_response(
+            _openai_error(
+                "hermes_ephemeral_user_context must be a string",
+                code="invalid_request_error",
+                param="hermes_ephemeral_user_context",
+            ),
+            status=400,
+        )
+    context = raw_context.strip()
+    if not context:
+        return None, None
+    if len(context) > MAX_NORMALIZED_TEXT_LENGTH:
+        return None, web.json_response(
+            _openai_error(
+                f"hermes_ephemeral_user_context must be at most {MAX_NORMALIZED_TEXT_LENGTH} characters",
+                code="invalid_request_error",
+                param="hermes_ephemeral_user_context",
+            ),
+            status=400,
+        )
+    return context, None
+
+
 def _normalize_chat_content(
     content: Any, *, _max_depth: int = 10, _depth: int = 0,
 ) -> str:
@@ -2557,6 +2594,10 @@ class APIServerAdapter(BasePlatformAdapter):
         except (json.JSONDecodeError, Exception):
             return web.json_response(_openai_error("Invalid JSON in request body"), status=400)
 
+        ephemeral_user_context, context_error = _parse_ephemeral_user_context(body)
+        if context_error is not None:
+            return context_error
+
         messages = body.get("messages")
         if not messages or not isinstance(messages, list):
             return web.json_response(
@@ -2565,6 +2606,11 @@ class APIServerAdapter(BasePlatformAdapter):
             )
 
         stream = _coerce_request_bool(body.get("stream"), default=False)
+        _ephemeral_context_kwargs = (
+            {"ephemeral_user_context": ephemeral_user_context}
+            if ephemeral_user_context
+            else {}
+        )
 
         # Extract system message (becomes ephemeral system prompt layered ON TOP of core)
         system_prompt = None
@@ -2761,6 +2807,7 @@ class APIServerAdapter(BasePlatformAdapter):
                 agent_ref=agent_ref,
                 gateway_session_key=gateway_session_key,
                 route=route,
+                **_ephemeral_context_kwargs,
             ))
             # Ensure SSE drain loops can terminate without relying on polling
             # agent_task.done(), which can race with queue timeout checks.
@@ -2781,11 +2828,22 @@ class APIServerAdapter(BasePlatformAdapter):
                 session_id=session_id,
                 gateway_session_key=gateway_session_key,
                 route=route,
+                **_ephemeral_context_kwargs,
             )
 
         idempotency_key = request.headers.get("Idempotency-Key")
         if idempotency_key:
-            fp = _make_request_fingerprint(body, keys=["model", "messages", "tools", "tool_choice", "stream"])
+            fp = _make_request_fingerprint(
+                body,
+                keys=[
+                    "model",
+                    "messages",
+                    "tools",
+                    "tool_choice",
+                    "stream",
+                    "hermes_ephemeral_user_context",
+                ],
+            )
             try:
                 result, usage = await _idem_cache.get_or_set(idempotency_key, fp, _compute_completion)
             except Exception as e:
@@ -4520,6 +4578,7 @@ class APIServerAdapter(BasePlatformAdapter):
         user_message: str,
         conversation_history: List[Dict[str, str]],
         ephemeral_system_prompt: Optional[str] = None,
+        ephemeral_user_context: Optional[str] = None,
         session_id: Optional[str] = None,
         stream_delta_callback=None,
         tool_progress_callback=None,
@@ -4573,11 +4632,14 @@ class APIServerAdapter(BasePlatformAdapter):
                     if agent_ref is not None:
                         agent_ref[0] = agent
                     effective_task_id = session_id or str(uuid.uuid4())
-                    result = agent.run_conversation(
-                        user_message=user_message,
-                        conversation_history=conversation_history,
-                        task_id=effective_task_id,
-                    )
+                    _conversation_kwargs = {
+                        "user_message": user_message,
+                        "conversation_history": conversation_history,
+                        "task_id": effective_task_id,
+                    }
+                    if ephemeral_user_context:
+                        _conversation_kwargs["ephemeral_user_context"] = ephemeral_user_context
+                    result = agent.run_conversation(**_conversation_kwargs)
                     usage = {
                         "input_tokens": getattr(agent, "session_prompt_tokens", 0) or 0,
                         "output_tokens": getattr(agent, "session_completion_tokens", 0) or 0,

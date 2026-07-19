@@ -52,10 +52,12 @@ class _CapturingAgent:
         conversation_history=None,
         task_id=None,
         persist_user_message=None,
+        ephemeral_user_context=None,
     ):
         self.calls.append({
             "user_message": user_message,
             "persist_user_message": persist_user_message,
+            "ephemeral_user_context": ephemeral_user_context,
         })
         return {
             "final_response": "ok",
@@ -294,11 +296,13 @@ async def test_run_agent_keeps_user_context_out_of_system_prompt_cache_and_trans
     assert "Location:" not in _CapturingAgent.last_init["ephemeral_system_prompt"]
     assert _CapturingAgent.last_instance.calls == [
         {
-            "user_message": "hi\n\nLocation: 1.0, 2.0",
-            "persist_user_message": "hi",
+            "user_message": "hi",
+            "persist_user_message": None,
+            "ephemeral_user_context": "Location: 1.0, 2.0",
         },
         {
-            "user_message": "hi again\n\nLocation: 3.0, 4.0",
-            "persist_user_message": "hi again",
+            "user_message": "hi again",
+            "persist_user_message": None,
+            "ephemeral_user_context": "Location: 3.0, 4.0",
         },
     ]

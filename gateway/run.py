@@ -991,28 +991,6 @@ def _wrap_current_message_with_observed_context(message: Any, observed_context: 
     return message
 
 
-def _append_ephemeral_user_context(message: Any, user_context: Optional[str]) -> Any:
-    """Append volatile context to the API-only current user turn."""
-
-    context = (user_context or "").strip()
-    if not context:
-        return message
-
-    suffix = f"\n\n{context}"
-    if isinstance(message, str):
-        return f"{message}{suffix}"
-
-    if isinstance(message, list):
-        wrapped = [dict(part) if isinstance(part, dict) else part for part in message]
-        for part in wrapped:
-            if isinstance(part, dict) and part.get("type") == "text":
-                part["text"] = f"{part.get('text', '')}{suffix}"
-                return wrapped
-        return wrapped + [{"type": "text", "text": context}]
-
-    return message
-
-
 def _last_transcript_timestamp(history: Optional[List[Dict[str, Any]]]) -> Any:
     """Return the ``timestamp`` of the last usable transcript row, if any.
 
@@ -1036,6 +1014,12 @@ def _last_transcript_timestamp(history: Optional[List[Dict[str, Any]]]) -> Any:
         # Returning None lets the caller fall through to the legacy-fresh path.
         return None
     return None
+
+
+def _event_has_ephemeral_user_context(event: "MessageEvent") -> bool:
+    """Whether an event carries volatile context that needs a turn boundary."""
+    context = getattr(event, "ephemeral_user_context", None)
+    return isinstance(context, str) and bool(context.strip())
 
 
 # Tool results can contain literal MEDIA: examples in docs, logs, or other
@@ -5648,6 +5632,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             steer_text = (event.text or "").strip()
             can_steer = (
                 steer_text
+                and not _event_has_ephemeral_user_context(event)
                 and running_agent is not None
                 and running_agent is not _AGENT_PENDING_SENTINEL
                 and hasattr(running_agent, "steer")
@@ -5658,6 +5643,11 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 except Exception as exc:
                     logger.warning("Gateway steer failed for session %s: %s", session_key, exc)
                     steered = False
+            elif _event_has_ephemeral_user_context(event):
+                logger.debug(
+                    "Queueing steer-mode follow-up with API-only context for %s",
+                    session_key,
+                )
             if not steered:
                 # Fall back to queue (merge into pending messages, no interrupt)
                 effective_mode = "queue"
@@ -9696,6 +9686,22 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                         )
                         adapter._pending_messages[_quick_key] = queued_event
                     return "Agent still starting — /steer queued for the next turn."
+                if _event_has_ephemeral_user_context(event):
+                    # ``steer()`` stores its text inside the live agent turn.
+                    # Volatile platform context must instead use the next
+                    # turn's API-only injection path.
+                    adapter = self._adapter_for_source(source)
+                    if adapter:
+                        queued_event = MessageEvent(
+                            text=steer_text,
+                            message_type=MessageType.TEXT,
+                            source=event.source,
+                            message_id=event.message_id,
+                            channel_prompt=event.channel_prompt,
+                            ephemeral_user_context=event.ephemeral_user_context,
+                        )
+                        adapter._pending_messages[_quick_key] = queued_event
+                    return "Location context requires a new turn — /steer queued for the next turn."
                 if running_agent and hasattr(running_agent, "steer"):
                     try:
                         accepted = running_agent.steer(steer_text)
@@ -9904,7 +9910,11 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 # is empty, the agent lacks steer(), or steer() rejects.
                 steer_text = (event.text or "").strip()
                 steered = False
-                if steer_text and hasattr(running_agent, "steer"):
+                if (
+                    steer_text
+                    and not _event_has_ephemeral_user_context(event)
+                    and hasattr(running_agent, "steer")
+                ):
                     try:
                         steered = bool(running_agent.steer(steer_text))
                     except Exception as exc:
@@ -17244,6 +17254,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         session_key: str = None,
         run_generation: Optional[int] = None,
         event_message_id: Optional[str] = None,
+        ephemeral_user_context: Optional[str] = None,
     ) -> Dict[str, Any]:
         """Forward the message to a remote Hermes API server instead of
         running a local AIAgent.
@@ -17319,6 +17330,12 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             "messages": api_messages,
             "stream": True,
         }
+        # This is a Hermes-to-Hermes proxy extension, not a chat message.  The
+        # remote API server forwards it to AIAgent's API-only current-turn
+        # injection path so volatile platform data never enters its session
+        # transcript.
+        if isinstance(ephemeral_user_context, str) and ephemeral_user_context.strip():
+            body["hermes_ephemeral_user_context"] = ephemeral_user_context
 
         # Set up platform streaming if available -------------------------
         _stream_consumer = None
@@ -17728,6 +17745,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 session_key=session_key,
                 run_generation=run_generation,
                 event_message_id=event_message_id,
+                ephemeral_user_context=ephemeral_user_context,
             )
 
         from run_agent import AIAgent
@@ -19472,8 +19490,6 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             # message so stale guidance never replays as user-authored text.
             _persist_user_message_override: Optional[Any] = persist_user_message
             _persist_user_timestamp_override: Optional[float] = persist_user_timestamp
-            if ephemeral_user_context and _persist_user_message_override is None:
-                _persist_user_message_override = message
 
             # Prepend pending model switch note so the model knows about the switch
             _pending_notes = getattr(self, '_pending_model_notes', {})
@@ -19671,12 +19687,8 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 else:
                     _run_message = message
 
-                _api_run_message = _append_ephemeral_user_context(
-                    _run_message,
-                    ephemeral_user_context,
-                )
                 _api_run_message = _wrap_current_message_with_observed_context(
-                    _api_run_message,
+                    _run_message,
                     observed_group_context,
                 )
                 _conversation_kwargs = {
@@ -19691,6 +19703,8 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     _conversation_kwargs["moa_config"] = moa_config
                 if _persist_user_timestamp_override is not None:
                     _conversation_kwargs["persist_user_timestamp"] = _persist_user_timestamp_override
+                if isinstance(ephemeral_user_context, str) and ephemeral_user_context.strip():
+                    _conversation_kwargs["ephemeral_user_context"] = ephemeral_user_context
                 result = agent.run_conversation(_api_run_message, **_conversation_kwargs)
             finally:
                 unregister_gateway_notify(_approval_session_key)

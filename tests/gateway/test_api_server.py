@@ -718,6 +718,29 @@ class TestAgentExecution:
             task_id="session-123",
         )
 
+    @pytest.mark.asyncio
+    async def test_run_agent_forwards_ephemeral_user_context_without_rewriting_user_message(self, adapter):
+        mock_agent = MagicMock()
+        mock_agent.run_conversation.return_value = {"final_response": "ok"}
+        mock_agent.session_prompt_tokens = 1
+        mock_agent.session_completion_tokens = 2
+        mock_agent.session_total_tokens = 3
+
+        with patch.object(adapter, "_create_agent", return_value=mock_agent):
+            await adapter._run_agent(
+                user_message="hello",
+                conversation_history=[],
+                session_id="session-123",
+                ephemeral_user_context="Location: 1.0, 2.0",
+            )
+
+        mock_agent.run_conversation.assert_called_once_with(
+            user_message="hello",
+            conversation_history=[],
+            task_id="session-123",
+            ephemeral_user_context="Location: 1.0, 2.0",
+        )
+
 
 # ---------------------------------------------------------------------------
 # /health endpoint
@@ -1189,6 +1212,46 @@ class TestChatCompletionsEndpoint:
         async with TestClient(TestServer(app)) as cli:
             resp = await cli.post("/v1/chat/completions", json={"model": "test", "messages": []})
             assert resp.status == 400
+
+    @pytest.mark.asyncio
+    async def test_hermes_ephemeral_user_context_reaches_agent_separately(self, adapter):
+        mock_result = {"final_response": "ok", "messages": [], "api_calls": 1}
+        app = _create_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            with patch.object(adapter, "_run_agent", new_callable=AsyncMock) as mock_run:
+                mock_run.return_value = (
+                    mock_result,
+                    {"input_tokens": 0, "output_tokens": 0, "total_tokens": 0},
+                )
+                response = await cli.post(
+                    "/v1/chat/completions",
+                    json={
+                        "model": "hermes-agent",
+                        "messages": [{"role": "user", "content": "Where am I?"}],
+                        "hermes_ephemeral_user_context": "Location: 1.0, 2.0",
+                    },
+                )
+
+        assert response.status == 200
+        assert mock_run.call_args.kwargs["user_message"] == "Where am I?"
+        assert mock_run.call_args.kwargs["ephemeral_user_context"] == "Location: 1.0, 2.0"
+
+    @pytest.mark.asyncio
+    async def test_hermes_ephemeral_user_context_must_be_a_string(self, adapter):
+        app = _create_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            response = await cli.post(
+                "/v1/chat/completions",
+                json={
+                    "model": "hermes-agent",
+                    "messages": [{"role": "user", "content": "Where am I?"}],
+                    "hermes_ephemeral_user_context": {"location": "1.0, 2.0"},
+                },
+            )
+            body = await response.json()
+
+        assert response.status == 400
+        assert "hermes_ephemeral_user_context" in body["error"]["message"]
 
     @pytest.mark.asyncio
     async def test_stream_true_returns_sse(self, adapter):

@@ -2131,6 +2131,14 @@ def merge_pending_message_event(
     """
     existing = pending_messages.get(session_key)
     if existing:
+        # A queued turn represents the newest available platform state.  Keep
+        # an older value only when the incoming event has no volatile context;
+        # this is especially important for Telegram live-location updates
+        # arriving alongside batched text or media.
+        incoming_context = getattr(event, "ephemeral_user_context", None)
+        if isinstance(incoming_context, str) and incoming_context.strip():
+            existing.ephemeral_user_context = incoming_context
+
         existing_is_photo = getattr(existing, "message_type", None) == MessageType.PHOTO
         incoming_is_photo = event.message_type == MessageType.PHOTO
         existing_has_media = bool(existing.media_urls)

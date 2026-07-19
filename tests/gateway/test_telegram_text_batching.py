@@ -50,11 +50,16 @@ def _make_adapter():
     return adapter
 
 
-def _make_event(text: str, chat_id: str = "12345") -> MessageEvent:
+def _make_event(
+    text: str,
+    chat_id: str = "12345",
+    ephemeral_user_context: str | None = None,
+) -> MessageEvent:
     return MessageEvent(
         text=text,
         message_type=MessageType.TEXT,
         source=SessionSource(platform=Platform.TELEGRAM, chat_id=chat_id, chat_type="dm"),
+        ephemeral_user_context=ephemeral_user_context,
     )
 
 
@@ -95,6 +100,23 @@ class TestTextBatching:
         dispatched = adapter.handle_message.call_args[0][0]
         assert "part one" in dispatched.text
         assert "split by Telegram" in dispatched.text
+
+    @pytest.mark.asyncio
+    async def test_split_messages_keep_newest_ephemeral_user_context(self):
+        adapter = _make_adapter()
+
+        adapter._enqueue_text_event(
+            _make_event("first fragment", ephemeral_user_context="old location")
+        )
+        await asyncio.sleep(0.02)
+        adapter._enqueue_text_event(
+            _make_event("second fragment", ephemeral_user_context="new location")
+        )
+
+        await asyncio.sleep(0.2)
+
+        dispatched = adapter.handle_message.call_args.args[0]
+        assert dispatched.ephemeral_user_context == "new location"
 
     @pytest.mark.asyncio
     async def test_three_way_split_aggregated(self):

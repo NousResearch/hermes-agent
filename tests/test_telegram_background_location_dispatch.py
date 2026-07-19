@@ -7,6 +7,11 @@ from datetime import datetime, timezone
 from types import SimpleNamespace
 
 import pytest
+
+pytest.importorskip(
+    "telegram", reason="python-telegram-bot is an optional messaging dependency"
+)
+
 from telegram import Chat, Location, Message, Update, User
 
 from gateway.config import PlatformConfig
